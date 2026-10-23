@@ -12,3 +12,6 @@ unsafe_code = "forbid"
 
 [profile.release]
 debug = 1
+
+[profile.dev]
+panic = "unwind"
