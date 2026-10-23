@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>je-code scene-web (H08)</title>
+<style>body{margin:0;background:#111;color:#ccc;font:12px monospace}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<pre id="result">medindo...</pre>
+<script type="module">
+// Página mínima de teste: busca fontes e texto, entrega ao wasm e mostra o relatório.
+// Parâmetros de URL: mode=gpu|cpu, dense=1|4, frames=300.
+import init, { run } from "./pkg/scene_web.js";
+const q = new URLSearchParams(location.search);
+const bytes = async (u) => new Uint8Array(await (await fetch(u)).arrayBuffer());
+const out = document.getElementById("result");
+try {
+  const gpu = navigator.gpu ? await navigator.gpu.requestAdapter() : null;
+  const header = `navigator.gpu: ${!!navigator.gpu}, adapter: ${gpu ? JSON.stringify(gpu.info ? { vendor: gpu.info.vendor, architecture: gpu.info.architecture, description: gpu.info.description, isFallbackAdapter: gpu.isFallbackAdapter } : {}) : "nenhum"}\n`;
+  await init();
+  const report = await run(
+    q.get("mode") ?? "gpu",
+    await bytes("assets/mono.ttf"),
+    await bytes("assets/ui.ttf"),
+    await (await fetch("assets/source.ts")).text(),
+    Number(q.get("dense") ?? 1),
+    Number(q.get("frames") ?? 300),
+  );
+  out.textContent = header + report;
+} catch (e) {
+  out.textContent = "ERRO: " + e + (e && e.stack ? "\n" + e.stack : "");
+}
+document.body.dataset.done = "1";
+console.log(out.textContent);
+</script>
+</body>
+</html>
