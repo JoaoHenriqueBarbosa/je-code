@@ -37,6 +37,9 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 const UI_FONT: &str = "system-ui, \"Ubuntu\", \"Droid Sans\", sans-serif";
+/// O tema padrão relativo à pasta de extensões embutidas.
+const BUILTIN_DEFAULT_THEME: &str = "theme-defaults/themes/2026-dark.json";
+#[cfg(test)]
 const DEFAULT_THEME: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../je-theme/tests/golden/themes/2026-dark.json");
 /// O intervalo máximo entre cliques para contar como duplo e triplo, e a distância máxima entre eles.
 const MULTI_CLICK: Duration = Duration::from_millis(500);
@@ -586,7 +589,17 @@ fn main() {
         None
     };
     let file = args.next().map(PathBuf::from);
-    let theme_path = std::env::var_os("JE_THEME").map_or_else(|| PathBuf::from(DEFAULT_THEME), PathBuf::from);
+    // O tema padrão vem da extensão embutida `theme-defaults`, como no VS Code; `JE_THEME` troca o arquivo.
+    let theme_path = match std::env::var_os("JE_THEME") {
+        Some(path) => PathBuf::from(path),
+        None => match find_builtin_extensions() {
+            Some(dir) => dir.join(BUILTIN_DEFAULT_THEME),
+            None => {
+                eprintln!("je-code: pasta de extensões não encontrada (defina JE_BUILTIN_EXTENSIONS ou JE_THEME)");
+                std::process::exit(1);
+            }
+        },
+    };
     let mut workbench = match Workbench::open(&theme_path, file.as_deref(), 1200.0, 800.0) {
         Ok(w) => w,
         Err(e) => {

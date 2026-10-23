@@ -17,8 +17,12 @@
 //!   aqui as entradas são copiadas e o resultado é de valores novos, então as listas do chamador não
 //!   são alteradas. O resultado é o mesmo.
 //! - `type` é `r#type: Option<String>` (`string | undefined`); número de linha é `u32`.
+//! - [`FoldingRegion`] guarda o `Rc<FoldingRegions>` de onde veio, como o objeto do original guarda a
+//!   referência a `ranges`: uma região continua válida (e lê o estado antigo) depois de o `FoldingModel`
+//!   trocar as suas regiões. Por isso `to_region` recebe `&Rc<Self>`.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use super::SelectedLines;
 
@@ -295,8 +299,8 @@ impl FoldingRegions {
         has_changed
     }
 
-    pub fn to_region(&self, index: usize) -> FoldingRegion<'_> {
-        FoldingRegion::new(self, index)
+    pub fn to_region(self: &Rc<Self>, index: usize) -> FoldingRegion {
+        FoldingRegion::new(self.clone(), index)
     }
 
     /// O índice do pai, ou `-1` se a região não tem pai.
@@ -526,15 +530,23 @@ impl std::fmt::Display for FoldingRegions {
 }
 
 /// `FoldingRegion`: uma região de `FoldingRegions`, por índice.
-#[derive(Clone, Copy)]
-pub struct FoldingRegion<'a> {
-    ranges: &'a FoldingRegions,
+#[derive(Clone)]
+pub struct FoldingRegion {
+    ranges: Rc<FoldingRegions>,
     index: usize,
 }
 
-impl<'a> FoldingRegion<'a> {
-    pub fn new(ranges: &'a FoldingRegions, index: usize) -> Self {
+impl FoldingRegion {
+    pub fn new(ranges: Rc<FoldingRegions>, index: usize) -> Self {
         Self { ranges, index }
+    }
+
+    /// A região como `ILineRange` (o original passa o próprio `FoldingRegion`, que implementa a interface).
+    pub fn to_line_range(&self) -> ILineRange {
+        ILineRange {
+            start_line_number: self.start_line_number(),
+            end_line_number: self.end_line_number(),
+        }
     }
 
     pub fn start_line_number(&self) -> u32 {
