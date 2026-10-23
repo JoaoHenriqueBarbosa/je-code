@@ -1,0 +1,20 @@
+[package]
+name = "scene-bevy"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+bevy = { version = "0.20", default-features = false, features = [
+    "ui_bevy_render",
+    "bevy_winit",
+    "std",
+    "multi_threaded",
+    "x11",
+    "wayland",
+] }
+# O blake3 (via bevy_asset) compila C e assembly sem a feature `pure`.
+blake3 = { version = "1", features = ["pure"] }
+
+[lints]
+workspace = true
