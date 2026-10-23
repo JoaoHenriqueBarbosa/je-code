@@ -6,3 +6,5 @@ pub mod terminal_contrib;
 pub mod update;
 
 pub mod terminal;
+
+pub mod debug;
