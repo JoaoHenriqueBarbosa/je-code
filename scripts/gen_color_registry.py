@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Gera `crates/je-theme/src/registered_colors.rs` a partir das chamadas `registerColor(...)` do VS Code.
+"""Gera `crates/je-theme/src/registered_colors.rs` a partir de TODAS as cores que o VS Code registra.
 
-Fontes (relativas a `ref/vscode/src/vs`): `platform/theme/common/colors/*.ts` (na ordem de
-`colorRegistry.ts`) e `workbench/common/theme.ts`.
+Fontes (relativas a `ref/vscode/src/vs`): toda chamada `registerColor(...)` de qualquer `.ts` fora de pastas
+de teste (os nomes importados são resolvidos arquivo a arquivo, seguindo `import`, `export * from` e
+`export { } from`), o laço `registerColors()` do terminal (`terminal.ansi*`, expandido de `ansiColorMap`)
+e os `contributes.colors` dos `package.json` das extensões embutidas (`ref/vscode/extensions/*`), que o
+VS Code registra na partida. As cores de `platform/theme/common/colors/*.ts` e `workbench/common/theme.ts`
+vêm primeiro, na ordem do `colorRegistry.ts`; as demais seguem por caminho de arquivo.
 
 Uso (a partir da raiz do repositório):
 
@@ -10,11 +14,12 @@ Uso (a partir da raiz do repositório):
     python3 -I scripts/gen_color_registry.py --check    # só confere se o arquivo versionado está em dia
 
 O gerador não chuta: tudo que ele não consegue traduzir com certeza (expressão fora do subconjunto
-conhecido, referência sem definição, `registerColor` fora de uma declaração `const`, cor com hexadecimal
+conhecido, referência sem definição, chamada a `registerColor` que não virou cor, cor com hexadecimal
 inválido, identificador duplicado, referência a cor não registrada) vira uma linha na lista de erros,
 e o programa sai com código 1 sem escrever nada.
 """
 
+import json
 import os
 import re
 import sys
@@ -66,7 +71,7 @@ TOKEN_RE = re.compile(
   | (?P<id>[A-Za-z_$][A-Za-z0-9_$]*)
   | (?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)
   | (?P<str>'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")
-  | (?P<tpl>`)
+  | (?P<tpl>`(?:[^`\\$]|\\.|\$(?!\{))*`)
   | (?P<punct>=>|===|!==|==|!=|&&|\|\||[(){}\[\],:;.+\-*/=<>?!&|])
     """,
     re.VERBOSE | re.DOTALL,
@@ -104,7 +109,10 @@ def tokenize(src):
         kind = m.lastgroup
         text = m.group()
         if kind == "tpl":
-            raise GenError(f"template literal na linha {line} não é suportado")
+            toks.append(("str", unescape(text), line))
+            line += text.count("\n")
+            pos = m.end()
+            continue
         if kind not in ("ws", "lcomment", "bcomment"):
             if kind == "str":
                 toks.append(("str", unescape(text), line))
@@ -251,108 +259,309 @@ def statement_end(toks, pos):
     return len(toks) - 1
 
 
-# ---------------------------------------------------------------- coleta
+# ---------------------------------------------------------------- leitura dos arquivos
 
-class Collected:
-    def __init__(self):
-        self.consts = {}  # nome -> (ast, arquivo, linha) de const que não é registerColor
-        self.registered = {}  # nome -> ast do registerColor
-        self.order = []  # nomes registrados na ordem de leitura
-        self.errors = []
-        self.opaque = set()  # consts que não consegui parsear (referência a elas falha)
+IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
+CONST_RE = re.compile(r"\bconst\s+(" + IDENT + r")\s*(?::[^=]*?)?=(?![=>])")
+CALL_RE = re.compile(r"(?<![.\w$])registerColor\s*\(")
+IMPORT_RE = re.compile(r"\bimport\s+(?:type\s+)?(?:(\*\s+as\s+" + IDENT + r")|\{([^}]*)\}|(" + IDENT + r"))\s*from\s*'([^']+)'")
+EXPORT_FROM_RE = re.compile(r"\bexport\s+(?:type\s+)?(?:(\*)(?:\s+as\s+(" + IDENT + r"))?|\{([^}]*)\})\s*from\s*'([^']+)'")
+BINDING_RE = re.compile(r"\bconst\s+(" + IDENT + r")\s*(?::[^=;]*?)?=\s*$")
 
 
-def collect_file(rel, src, out):
-    toks = tokenize(src)
-    total_calls = sum(1 for i, t in enumerate(toks) if t[0] == "id" and t[1] == "registerColor" and i + 1 < len(toks) and toks[i + 1][1] == "(")
-    parsed_calls = 0
-    i = 0
-    while i < len(toks):
-        t = toks[i]
-        if t[0] == "id" and t[1] == "export":
-            i += 1
-            continue
-        if t[0] == "id" and t[1] == "const" and toks[i + 1][0] == "id" and toks[i + 2][1] == "=":
-            name = toks[i + 1][1]
-            end = statement_end(toks, i)
-            needs = any(x[0] == "id" and x[1] == "registerColor" and toks[j + 1][1] == "(" for j, x in enumerate(toks[i:end + 1], start=i) if j + 1 < len(toks))
-            try:
-                p = Parser(toks, i + 3)
-                ast = p.expression()
-                if p.pos != end:
-                    raise GenError(f"linha {toks[p.pos][2]}: sobrou texto depois da expressão ({toks[p.pos][1]!r})")
-            except GenError as e:
-                if needs:
-                    out.errors.append(f"{rel}: const {name}: {e}")
-                    parsed_calls += sum(1 for j in range(i, end + 1) if toks[j][0] == "id" and toks[j][1] == "registerColor" and toks[j + 1][1] == "(")
-                else:
-                    out.opaque.add(name)
-                i = end + 1
+def mask_source(src):
+    """Devolve (sem_comentarios, mascarado): o primeiro troca comentários por espaços, o segundo troca
+    também o conteúdo de strings e templates, mantendo os deslocamentos e as quebras de linha."""
+    nc = list(src)
+    mk = list(src)
+    n = len(src)
+
+    def blank(arr, a, b):
+        for k in range(a, b):
+            if arr[k] != "\n":
+                arr[k] = " "
+
+    def scan_string(i, quote):
+        j = i + 1
+        while j < n:
+            ch = src[j]
+            if ch == "\\":
+                j += 2
                 continue
-            if ast[0] == "call" and ast[1] == ("id", "registerColor"):
-                if name in out.registered or name in out.consts:
-                    out.errors.append(f"{rel}: const {name} definida duas vezes")
-                out.registered[name] = (ast, rel, t[2])
-                out.order.append(name)
-                parsed_calls += 1
+            if ch == quote:
+                return j
+            if quote == "`" and ch == "$" and src[j + 1:j + 2] == "{":
+                j = scan_code(j + 2, closing="}")
+                continue
+            if quote != "`" and ch == "\n":
+                return j
+            j += 1
+        return n
+
+    def scan_code(i, closing=None):
+        depth = 0
+        while i < n:
+            ch = src[i]
+            nxt = src[i + 1:i + 2]
+            if ch == "/" and nxt == "/":
+                e = src.find("\n", i)
+                e = n if e < 0 else e
+                blank(nc, i, e)
+                blank(mk, i, e)
+                i = e
+            elif ch == "/" and nxt == "*":
+                e = src.find("*/", i + 2)
+                e = n if e < 0 else e + 2
+                blank(nc, i, e)
+                blank(mk, i, e)
+                i = e
+            elif ch in "'\"`":
+                e = scan_string(i, ch)
+                blank(mk, i + 1, e)
+                i = e + 1
+            elif closing and ch == "{":
+                depth += 1
+                i += 1
+            elif closing and ch == "}":
+                if depth == 0:
+                    return i + 1
+                depth -= 1
+                i += 1
             else:
-                if needs:
-                    out.errors.append(f"{rel}: const {name}: registerColor dentro de expressão que não é a chamada direta")
-                    parsed_calls += 1
-                if name in out.registered or name in out.consts:
-                    out.errors.append(f"{rel}: const {name} definida duas vezes")
-                out.consts[name] = (ast, rel, t[2])
-            i = end + 1
+                i += 1
+        return i
+
+    scan_code(0)
+    return "".join(nc), "".join(mk)
+
+
+def match_close(masked, open_pos):
+    """Posição do fecho que casa com o abre em `open_pos`, no texto mascarado."""
+    depth = 0
+    for i in range(open_pos, len(masked)):
+        ch = masked[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise GenError("parêntese sem fecho")
+
+
+def expression_end(masked, start):
+    """Fim da expressão que começa em `start`: `;` ou fecho sem abre, ambos em profundidade zero."""
+    depth = 0
+    for i in range(start, len(masked)):
+        ch = masked[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return i
+            depth -= 1
+        elif ch == ";" and depth == 0:
+            return i
+    return len(masked)
+
+
+def line_of(src, pos):
+    return src.count("\n", 0, pos) + 1
+
+
+def parse_slice(src, a, b, base_line):
+    toks = tokenize(src[a:b])
+    toks = [(k, v, ln + base_line - 1) for k, v, ln in toks]
+    p = Parser(toks, 0)
+    ast = p.expression()
+    if p.pos != len(toks):
+        raise GenError(f"linha {toks[p.pos][2]}: sobrou texto depois da expressão ({toks[p.pos][1]!r})")
+    return ast
+
+
+class SourceFile:
+    """Um arquivo .ts: constantes, chamadas a `registerColor`, imports e reexportações."""
+
+    def __init__(self, rel, src):
+        self.rel = rel
+        self.src = src
+        self.nc, self.masked = mask_source(src)
+        self.consts = {}  # nome -> [posição depois do `=`]
+        for m in CONST_RE.finditer(self.masked):
+            self.consts.setdefault(m.group(1), []).append(m.end())
+        self.imports = {}  # nome local -> (módulo, nome exportado) ou (módulo, None) para `* as`
+        for m in IMPORT_RE.finditer(self.nc):
+            module = m.group(4)
+            if m.group(1):
+                self.imports[m.group(1).split()[-1]] = (module, None)
+            elif m.group(3):
+                self.imports[m.group(3)] = (module, "default")
+            else:
+                for part in m.group(2).split(","):
+                    part = re.sub(r"^\s*type\s+", "", part).strip()
+                    if not part:
+                        continue
+                    pieces = part.split(" as ")
+                    self.imports[pieces[-1].strip()] = (module, pieces[0].strip())
+        self.star_exports = []
+        self.named_exports = {}  # nome exportado -> (módulo, nome original)
+        for m in EXPORT_FROM_RE.finditer(self.nc):
+            module = m.group(4)
+            if m.group(1) and not m.group(2):
+                self.star_exports.append(module)
+            elif m.group(3):
+                for part in m.group(3).split(","):
+                    part = re.sub(r"^\s*type\s+", "", part).strip()
+                    if part:
+                        pieces = part.split(" as ")
+                        self.named_exports[pieces[-1].strip()] = (module, pieces[0].strip())
+
+
+class Project:
+    def __init__(self):
+        self.files = {}
+        self.errors = []
+
+    def load(self, rel):
+        if rel not in self.files:
+            with open(os.path.join(VS, rel), encoding="utf-8") as f:
+                self.files[rel] = SourceFile(rel, f.read())
+        return self.files[rel]
+
+    def module_path(self, rel, spec):
+        if not spec.startswith("."):
+            return None
+        base = os.path.normpath(os.path.join(os.path.dirname(rel), spec))
+        if base.endswith(".js"):
+            base = base[:-3]
+        for cand in (base + ".ts", os.path.join(base, "index.ts")):
+            if os.path.isfile(os.path.join(VS, cand)):
+                return cand
+        return None
+
+    def definition(self, rel, name, seen=None):
+        """Acha a definição do nome `name` visível no arquivo `rel`: ('const', arquivo, nome) ou None."""
+        seen = seen or set()
+        if (rel, name) in seen:
+            return None
+        seen.add((rel, name))
+        f = self.load(rel)
+        if name in f.consts:
+            return (f.rel, name)
+        if name in f.imports:
+            module, orig = f.imports[name]
+            target = self.module_path(rel, module)
+            if target is None or orig is None:
+                return None
+            return self.exported(target, orig, seen)
+        return None
+
+    def exported(self, rel, name, seen):
+        f = self.load(rel)
+        if name in f.consts:
+            return (f.rel, name)
+        if name in f.named_exports:
+            module, orig = f.named_exports[name]
+            target = self.module_path(rel, module)
+            return self.exported(target, orig, seen) if target else None
+        for module in f.star_exports:
+            target = self.module_path(rel, module)
+            if target and (target, name) not in seen:
+                seen.add((target, name))
+                found = self.exported(target, name, seen)
+                if found:
+                    return found
+        return None
+
+    def const_expr(self, rel, name):
+        """Devolve ('reg', chamada, linha) se o const é `registerColor(...)`, senão ('expr', ast, linha)."""
+        f = self.load(rel)
+        starts = f.consts[name]
+        texts = set()
+        for start in starts:
+            end = expression_end(f.masked, start)
+            texts.add(re.sub(r"\s+", " ", f.nc[start:end]).strip())
+        if len(texts) > 1:
+            raise GenError(f"{rel}: const {name} definida mais de uma vez com expressões diferentes")
+        start = starts[0]
+        end = expression_end(f.masked, start)
+        line = line_of(f.src, start)
+        ast = parse_slice(f.nc, start, end, line)
+        if ast[0] == "call" and ast[1] == ("id", "registerColor"):
+            return ("reg", ast, line)
+        return ("expr", ast, line)
+
+
+def find_calls(project, rel):
+    """Todas as chamadas `registerColor(...)` do arquivo: lista de (nome do const ou None, ast, linha)."""
+    f = project.load(rel)
+    calls = []
+    for m in CALL_RE.finditer(f.masked):
+        before = f.masked[max(0, m.start() - 300):m.start()]
+        if re.search(r"\bfunction\s+$", before):
             continue
-        if t[0] == "id" and t[1] == "registerColor" and toks[i + 1][1] == "(":
-            end = statement_end(toks, i)
-            try:
-                p = Parser(toks, i)
-                ast = p.expression()
-                if p.pos != end:
-                    raise GenError(f"linha {toks[p.pos][2]}: sobrou texto depois da expressão ({toks[p.pos][1]!r})")
-                name = f"<chamada solta na linha {t[2]}>"
-                out.registered[name] = (ast, rel, t[2])
-                out.order.append(name)
-            except GenError as e:
-                out.errors.append(f"{rel}:{t[2]}: chamada solta a registerColor: {e}")
-            parsed_calls += 1
-            i = end + 1
+        open_pos = m.end() - 1
+        close = match_close(f.masked, open_pos)
+        line = line_of(f.src, m.start())
+        binding = BINDING_RE.search(before)
+        name = binding.group(1) if binding else None
+        try:
+            ast = parse_slice(f.nc, m.start(), close + 1, line)
+        except GenError as e:
+            project.errors.append(f"{rel}:{line}: {e}")
             continue
-        i = statement_end(toks, i) + 1
-    if parsed_calls != total_calls:
-        out.errors.append(f"{rel}: {total_calls} chamadas a registerColor, mas só {parsed_calls} foram traduzidas")
+        calls.append((name, ast, line))
+    return calls
+
+
+def list_sources():
+    out = []
+    for dirpath, _, names in os.walk(VS):
+        rel_dir = os.path.relpath(dirpath, VS)
+        parts = rel_dir.split(os.sep)
+        if "test" in parts or "node_modules" in parts:
+            continue
+        for n in names:
+            if n.endswith(".ts") and not n.endswith(".test.ts") and not n.endswith(".d.ts"):
+                rel = os.path.normpath(os.path.join(rel_dir, n))
+                with open(os.path.join(VS, rel), encoding="utf-8") as f:
+                    if "registerColor" in f.read():
+                        out.append(rel)
+    return sorted(out)
 
 
 # ---------------------------------------------------------------- avaliação
 
 
 class Evaluator:
-    def __init__(self, c):
-        self.c = c
+    def __init__(self, project):
+        self.p = project
         self.stack = []
 
-    def number(self, ast):
+    def lookup(self, rel, name):
+        d = self.p.definition(rel, name)
+        if d is None:
+            raise GenError(f"identificador {name} sem definição conhecida")
+        return d
+
+    def number(self, ast, rel):
         if ast[0] == "num":
             return ast[1]
         if ast[0] == "id":
-            return self.const_number(ast[1])
+            drel, dname = self.lookup(rel, ast[1])
+            kind, node, _ = self.p.const_expr(drel, dname)
+            if kind == "expr" and node[0] == "num":
+                return node[1]
+            raise GenError(f"const numérica {ast[1]} não é um número literal")
         raise GenError(f"número esperado, achei {ast[0]}")
-
-    def const_number(self, name):
-        if name in self.c.consts:
-            ast = self.c.consts[name][0]
-            if ast[0] == "num":
-                return ast[1]
-        raise GenError(f"const numérica {name} não definida")
 
     def check_hex(self, h):
         if not re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", h):
             raise GenError(f"hexadecimal inválido {h!r}")
         return h
 
-    def color(self, ast):
-        """Traduz uma expressão de ColorValue para a representação intermediária."""
+    def color(self, ast, rel):
+        """Traduz uma expressão de ColorValue (no escopo do arquivo `rel`) para a representação intermediária."""
         kind = ast[0]
         if kind == "str":
             if ast[1].startswith("#"):
@@ -360,25 +569,23 @@ class Evaluator:
             return ("id", ast[1])
         if kind == "id":
             name = ast[1]
-            if name in self.c.registered:
-                return ("id", self.registered_id(name))
-            if name in self.c.consts:
-                if name in self.stack:
-                    raise GenError(f"referência circular em {name}")
-                self.stack.append(name)
-                try:
-                    return self.color(self.c.consts[name][0])
-                finally:
-                    self.stack.pop()
-            if name in self.c.opaque:
-                raise GenError(f"{name} é uma const que o gerador não traduz")
-            raise GenError(f"identificador {name} sem definição conhecida")
+            drel, dname = self.lookup(rel, name)
+            if (drel, dname) in self.stack:
+                raise GenError(f"referência circular em {name}")
+            self.stack.append((drel, dname))
+            try:
+                ckind, node, _ = self.p.const_expr(drel, dname)
+                if ckind == "reg":
+                    return ("id", self.registered_id(node))
+                return self.color(node, drel)
+            finally:
+                self.stack.pop()
         if kind == "obj":
             entries = dict(ast[1])
             op = entries.get("op")
             if op == ("member", ("id", "ColorTransformType"), "Mix") and set(entries) <= {"op", "color", "with", "ratio"} and {"color", "with"} <= set(entries):
-                ratio = self.number(entries["ratio"]) if "ratio" in entries else None
-                return ("mix", self.color(entries["color"]), self.color(entries["with"]), ratio)
+                ratio = self.number(entries["ratio"], rel) if "ratio" in entries else None
+                return ("mix", self.color(entries["color"], rel), self.color(entries["with"], rel), ratio)
             raise GenError(f"objeto de transformação não suportado: {sorted(entries)}")
         if kind == "member" and ast[1] == ("id", "Color"):
             if ast[2] in NAMED_COLORS:
@@ -386,7 +593,7 @@ class Evaluator:
             raise GenError(f"Color.{ast[2]} não suportado")
         if kind == "new" and ast[1] == "Color":
             if len(ast[2]) == 1 and ast[2][0][0] == "new" and ast[2][0][1] == "RGBA":
-                args = [self.number(a) for a in ast[2][0][2]]
+                args = [self.number(a, rel) for a in ast[2][0][2]]
                 if len(args) == 3:
                     args.append(1.0)
                 if len(args) != 4:
@@ -403,33 +610,32 @@ class Evaluator:
             if callee[0] == "id":
                 fn = callee[1]
                 if fn in ("transparent", "lighten", "darken") and len(args) == 2:
-                    return (fn, self.color(args[0]), self.number(args[1]))
+                    return (fn, self.color(args[0], rel), self.number(args[1], rel))
                 if fn == "opaque" and len(args) == 2:
-                    return ("opaque", self.color(args[0]), self.color(args[1]))
+                    return ("opaque", self.color(args[0], rel), self.color(args[1], rel))
                 if fn == "oneOf" and args:
-                    return ("oneOf", [self.color(a) for a in args])
+                    return ("oneOf", [self.color(a, rel) for a in args])
                 if fn == "ifDefinedThenElse" and len(args) == 3:
-                    cond = self.color(args[0])
+                    cond = self.color(args[0], rel)
                     if cond[0] != "id":
                         raise GenError("o primeiro argumento de ifDefinedThenElse deve ser um identificador de cor")
-                    return ("ifDefinedThenElse", cond[1], self.color(args[1]), self.color(args[2]))
+                    return ("ifDefinedThenElse", cond[1], self.color(args[1], rel), self.color(args[2], rel))
                 if fn == "lessProminent" and len(args) == 4:
-                    return ("lessProminent", self.color(args[0]), self.color(args[1]), self.number(args[2]), self.number(args[3]))
+                    return ("lessProminent", self.color(args[0], rel), self.color(args[1], rel), self.number(args[2], rel), self.number(args[3], rel))
                 raise GenError(f"função {fn}/{len(args)} não suportada")
             if callee[0] == "member":
                 base, method = callee[1], callee[2]
                 if base == ("id", "Color") and method == "fromHex" and len(args) == 1 and args[0][0] == "str":
                     return ("hex", self.check_hex(args[0][1]))
                 if method in ("transparent", "lighten", "darken") and len(args) == 1:
-                    return (method, self.color(base), self.number(args[0]))
+                    return (method, self.color(base, rel), self.number(args[0], rel))
                 raise GenError(f"método {method} não suportado")
         raise GenError(f"expressão de cor não suportada ({kind})")
 
-    def registered_id(self, name):
-        ast = self.c.registered[name][0]
-        arg0 = ast[2][0]
+    def registered_id(self, call):
+        arg0 = call[2][0]
         if arg0[0] != "str":
-            raise GenError(f"{name}: o id do registerColor não é uma string literal")
+            raise GenError("o id do registerColor não é uma string literal")
         return arg0[1]
 
     def description(self, ast):
@@ -437,29 +643,31 @@ class Evaluator:
             return ast[1]
         if ast[0] == "call" and ast[1] in (("id", "localize"), ("member", ("id", "nls"), "localize")):
             args = ast[2]
-            if len(args) == 2 and args[0][0] == "str" and args[1][0] == "str":
-                return args[1][1]
-            raise GenError("localize com argumentos além de (chave, mensagem) ou com chave não literal")
+            if len(args) >= 2 and all(a[0] == "str" for a in args):
+                message = args[1][1]
+                for i, extra in enumerate(args[2:]):
+                    message = message.replace("{%d}" % i, extra[1])
+                return message
+            raise GenError("localize com argumentos que não são strings literais")
         raise GenError("descrição não suportada")
 
-    def defaults(self, ast):
+    def defaults(self, ast, rel):
         if ast[0] == "null":
             return None
         if ast[0] == "obj" and any(k == "op" for k, _ in ast[1]):
-            return ("single", self.color(ast))
+            return ("single", self.color(ast, rel))
         if ast[0] == "obj":
             keys = [k for k, _ in ast[1]]
             if sorted(keys) != sorted(THEME_KEYS):
                 raise GenError(f"objeto de padrões com chaves {keys}, esperado {list(THEME_KEYS)}")
             per = {}
             for k, v in ast[1]:
-                per[k] = None if v[0] == "null" else self.color(v)
+                per[k] = None if v[0] == "null" else self.color(v, rel)
             return ("per_theme", per)
-        return ("single", self.color(ast))
+        return ("single", self.color(ast, rel))
 
-    def contribution(self, name):
-        ast, rel, line = self.c.registered[name]
-        args = ast[2]
+    def contribution(self, call, rel, line):
+        args = call[2]
         if not 3 <= len(args) <= 5:
             raise GenError(f"registerColor com {len(args)} argumentos")
         if args[0][0] != "str":
@@ -476,11 +684,96 @@ class Evaluator:
         return {
             "id": args[0][1],
             "description": self.description(args[2]),
-            "defaults": self.defaults(args[1]),
+            "defaults": self.defaults(args[1], rel),
             "needs_transparency": needs_transparency,
             "deprecation": deprecation,
             "source": rel,
+            "line": line,
         }
+
+    def terminal_ansi(self, rel, call, line):
+        """`registerColors()` do terminal: um laço sobre `ansiColorMap` que registra `terminal.ansi*`."""
+        expected_args = [("id", "id"), ("member", ("id", "entry"), "defaults")]
+        args = call[2]
+        if len(args) != 3 or args[:2] != expected_args or args[2][0] != "call":
+            raise GenError("laço de registerColor com forma desconhecida")
+        loc = args[2][2]
+        if len(loc) < 2 or loc[1][0] != "str" or "{0}" not in loc[1][1]:
+            raise GenError("descrição do laço sem {0}")
+        template = loc[1][1]
+        kind, node, _ = self.p.const_expr(rel, "ansiColorMap")
+        if kind != "expr" or node[0] != "obj":
+            raise GenError("ansiColorMap não é um objeto literal")
+        out = []
+        for key, entry in node[1]:
+            fields = dict(entry[1])
+            if set(fields) != {"index", "defaults"}:
+                raise GenError(f"entrada {key} de ansiColorMap com campos {sorted(fields)}")
+            out.append({
+                "id": key,
+                "description": template.replace("{0}", key[13:]),
+                "defaults": self.defaults(fields["defaults"], rel),
+                "needs_transparency": False,
+                "deprecation": None,
+                "source": rel,
+                "line": line,
+            })
+        return out
+
+
+def extension_colors(project):
+    """`contributes.colors` dos package.json das extensões embutidas (o VS Code os registra na partida)."""
+    out = []
+    ext_dir = os.path.join(VSCODE, "extensions")
+    for name in sorted(os.listdir(ext_dir)):
+        pkg = os.path.join(ext_dir, name, "package.json")
+        if not os.path.isfile(pkg):
+            continue
+        with open(pkg, encoding="utf-8") as f:
+            data = json.load(f)
+        colors = data.get("contributes", {}).get("colors")
+        if not colors:
+            continue
+        nls_path = os.path.join(ext_dir, name, "package.nls.json")
+        nls = {}
+        if os.path.isfile(nls_path):
+            with open(nls_path, encoding="utf-8") as f:
+                nls = json.load(f)
+        rel = f"extensions/{name}/package.json"
+        for c in colors:
+            try:
+                desc = c["description"]
+                m = re.fullmatch(r"%(.+)%", desc)
+                if m:
+                    entry = nls[m.group(1)]
+                    desc = entry["message"] if isinstance(entry, dict) else entry
+                d = c["defaults"]
+                if not re.fullmatch(r"[A-Za-z0-9]+(\.[A-Za-z0-9]+)*", c["id"]):
+                    raise GenError("id com formato inválido")
+
+                def val(s):
+                    if not s:
+                        raise GenError("valor de cor vazio")
+                    return ("hex", Evaluator(project).check_hex(s)) if s.startswith("#") else ("id", s)
+
+                per = {
+                    "light": val(d["light"]),
+                    "dark": val(d["dark"]),
+                    "hcDark": val(d.get("highContrast") or d["dark"]),
+                    "hcLight": val(d.get("highContrastLight") or d["light"]),
+                }
+                out.append({
+                    "id": c["id"],
+                    "description": desc,
+                    "defaults": ("per_theme", per),
+                    "needs_transparency": False,
+                    "deprecation": None,
+                    "source": rel,
+                    "line": 0,
+                })
+            except (GenError, KeyError) as e:
+                project.errors.append(f"{rel}: cor {c.get('id')}: {e!r}")
+    return out
 
 
 # ---------------------------------------------------------------- emissão
@@ -566,21 +859,42 @@ def vscode_version():
     return m.group(1) if m else "desconhecida"
 
 
+# Pastas que o porte deixa fora de escopo (decisão do user), mas cujas cores o VS Code registra e os
+# temas de terceiros definem: o registro é barato, então entram assim mesmo, com a origem marcada.
+OUT_OF_SCOPE = (
+    ("sessions/", "src/vs/sessions"),
+    ("workbench/contrib/chat/", "chat"),
+    ("workbench/common/agentsColors.ts", "agents view"),
+    ("workbench/contrib/agentsVoice/", "agents view"),
+)
+
+
+def origin_note(rel):
+    for prefix, label in OUT_OF_SCOPE:
+        if rel.startswith(prefix):
+            return f"{rel} (fora do escopo do porte: {label}; registrada mesmo assim)"
+    return rel
+
+
 def render(contributions):
     lines = [
         "// ARQUIVO GERADO por `scripts/gen_color_registry.py`. NÃO EDITE À MÃO: rode",
         "// `python3 -I scripts/gen_color_registry.py` para regerar.",
         "//",
-        f"// Origem: as chamadas `registerColor(...)` do VS Code {vscode_version()} em",
-        *[f"// - {s}" for s in SOURCES],
-        "// (caminhos relativos a `ref/vscode/src/vs`), na ordem do `colorRegistry.ts` e por fim o `theme.ts`.",
+        f"// Origem: todas as cores registradas pelo VS Code {vscode_version()}: as chamadas `registerColor(...)`",
+        "// de `ref/vscode/src/vs` (caminhos relativos a `src/vs`), o laço de `terminal.ansi*` e os",
+        "// `contributes.colors` das extensões embutidas. Cada grupo abaixo traz a sua origem num comentário.",
         "",
         "use crate::registry::{ColorContribution, ColorDefaults, ColorTransform as T, ColorValue as V, Defaults};",
         "",
         f"/// As {len(contributions)} cores registradas, com id, padrões por tipo de tema e descrição.",
         "pub static REGISTERED_COLORS: &[ColorContribution] = &[",
     ]
+    last = None
     for c in contributions:
+        if c["source"] != last:
+            lines.append(f"    // origem: {origin_note(c['source'])}")
+            last = c["source"]
         lines.append("    ColorContribution {")
         lines.append(f"        id: {rust_str(c['id'])},")
         lines.append(f"        description: {rust_str(c['description'])},")
@@ -619,27 +933,33 @@ def referenced_ids(v, acc):
 
 def main(argv):
     check = "--check" in argv
-    c = Collected()
-    for rel in SOURCES:
-        path = os.path.join(VS, rel)
-        try:
-            with open(path, encoding="utf-8") as f:
-                src = f.read()
-            collect_file(rel, src, c)
-        except (GenError, OSError) as e:
-            c.errors.append(f"{rel}: {e}")
-    ev = Evaluator(c)
+    project = Project()
+    ev = Evaluator(project)
+    sources = list_sources()
+    ordered = [r for r in SOURCES if r in sources] + [r for r in sources if r not in SOURCES]
     contributions = []
-    for name in c.order:
-        try:
-            contributions.append(ev.contribution(name))
-        except GenError as e:
-            _, rel, line = c.registered[name]
-            c.errors.append(f"{rel}:{line}: {name}: {e}")
+    for rel in ordered:
+        if rel == "platform/theme/common/colorUtils.ts":
+            continue  # define `registerColor`, não registra cor
+        total = len(CALL_RE.findall(project.load(rel).masked)) - len(
+            re.findall(r"\bfunction\s+registerColor\s*\(", project.load(rel).masked)
+        )
+        calls = find_calls(project, rel)
+        if len(calls) != total:
+            project.errors.append(f"{rel}: {total} chamadas a registerColor, mas só {len(calls)} foram lidas")
+        for name, call, line in calls:
+            try:
+                if call[2] and call[2][0] == ("id", "id") and rel.endswith("terminal/common/terminalColorRegistry.ts"):
+                    contributions.extend(ev.terminal_ansi(rel, call, line))
+                else:
+                    contributions.append(ev.contribution(call, rel, line))
+            except GenError as e:
+                project.errors.append(f"{rel}:{line}: {name or 'chamada sem nome'}: {e}")
+    contributions.extend(extension_colors(project))
     seen = {}
     for contribution in contributions:
         if contribution["id"] in seen:
-            c.errors.append(f"id duplicado {contribution['id']!r} em {seen[contribution['id']]} e {contribution['source']}")
+            project.errors.append(f"id duplicado {contribution['id']!r} em {seen[contribution['id']]} e {contribution['source']}")
         seen[contribution["id"]] = contribution["source"]
     refs = set()
     for contribution in contributions:
@@ -650,10 +970,10 @@ def main(argv):
             referenced_ids(v, refs)
     for ref in sorted(refs):
         if ref not in seen:
-            c.errors.append(f"referência a cor não registrada: {ref!r}")
-    if c.errors:
-        print(f"{len(c.errors)} erro(s), nada foi escrito:", file=sys.stderr)
-        for e in c.errors:
+            project.errors.append(f"referência a cor não registrada: {ref!r}")
+    if project.errors:
+        print(f"{len(project.errors)} erro(s), nada foi escrito:", file=sys.stderr)
+        for e in project.errors:
             print(f"  - {e}", file=sys.stderr)
         return 1
     text = render(contributions)

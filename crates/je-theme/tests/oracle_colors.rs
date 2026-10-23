@@ -65,29 +65,83 @@ fn compare(golden_name: &str, theme_file: &str) -> (usize, usize, Vec<String>) {
     (colors.len(), matched, mismatches)
 }
 
-fn assert_all_registered_match(golden_name: &str, theme_file: &str) {
+/// Variáveis que o porte registra e o oráculo não escreve, com o motivo. Nunca saem da golden: a lista só
+/// cresce com motivo, e o teste exige que ela seja exatamente o conjunto de divergências.
+///
+/// As quatro cores abaixo são registradas só por módulos de `src/vs/sessions` (a janela de Agent Sessions:
+/// `mobileDiffColors.ts` e `agentFeedbackOverviewRulerContribution.ts`), que o workbench padrão do oráculo
+/// nunca carrega. O porte as registra assim mesmo (decisão do user: o registro é barato e temas de
+/// terceiros as definem), então o oráculo do workbench padrão não tem a variável.
+const REGISTERED_ONLY_BY_SESSIONS_WINDOW: &[&str] = &[
+    "--vscode-agentsMobileDiff-addedForeground",
+    "--vscode-agentsMobileDiff-deletedForeground",
+    "--vscode-agentsMobileDiff-modifiedForeground",
+    "--vscode-editorOverviewRuler-agentFeedbackForeground",
+];
+
+fn is_known_divergence(var: &str) -> bool {
+    REGISTERED_ONLY_BY_SESSIONS_WINDOW.contains(&var)
+}
+
+/// Exige igualdade em TODAS as variáveis de cor da golden e em todas as cores registradas, exceto as
+/// divergências conhecidas e justificadas acima (que precisam divergir de fato).
+fn assert_all_match_oracle(golden_name: &str, theme_file: &str) {
+    let golden = read_golden(golden_name);
     let (registered, matched, mismatches) = compare(golden_name, theme_file);
+
+    let registered_vars: std::collections::BTreeSet<String> = color_registry()
+        .get_colors()
+        .iter()
+        .map(|c| as_css_variable_name(c.id))
+        .collect();
+    let missing: Vec<&String> = golden
+        .keys()
+        .filter(|var| !registered_vars.contains(*var))
+        .collect();
     assert!(
-        mismatches.is_empty(),
-        "{golden_name}: {matched} de {registered} batem; divergências:\n{}",
-        mismatches.join("\n")
+        missing.is_empty(),
+        "{golden_name}: variáveis da golden que o porte não registra: {missing:?}"
     );
-    eprintln!("{golden_name}: {matched} de {registered} cores registradas batem com o oráculo");
+
+    let unexpected: Vec<&String> = mismatches
+        .iter()
+        .filter(|m| !is_known_divergence(m.split(':').next().unwrap_or("")))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "{golden_name}: {matched} de {registered} batem; divergências:\n{}",
+        unexpected
+            .iter()
+            .map(|m| m.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let expected = REGISTERED_ONLY_BY_SESSIONS_WINDOW.len();
+    assert_eq!(
+        mismatches.len(),
+        expected,
+        "{golden_name}: a lista de divergências conhecidas ficou desatualizada"
+    );
+    // Toda variável da golden está registrada (conferido acima) e `compare` percorre todas as registradas,
+    // então cada variável da golden foi comparada e bateu.
+    eprintln!(
+        "{golden_name}: {} de {} variáveis da golden batem; {matched} de {registered} cores registradas batem ({expected} divergências conhecidas)",
+        golden.len(),
+        golden.len()
+    );
 }
 
 #[test]
 fn registered_colors_match_oracle_2026_dark() {
-    assert_all_registered_match("2026-dark", "2026-dark.json");
+    assert_all_match_oracle("2026-dark", "2026-dark.json");
 }
 
 #[test]
 fn registered_colors_match_oracle_dark_modern() {
-    assert_all_registered_match("dark_modern", "dark_modern.json");
+    assert_all_match_oracle("dark_modern", "dark_modern.json");
 }
 
-/// O oráculo escreve variáveis que o porte ainda não registra: elas vêm de outros arquivos do VS Code
-/// (terminal, debug, scm, chat, notebook, extensões...). Aqui só se confere que o porte não inventa
-/// variável que o oráculo não tem.
+/// O porte não inventa variável que o oráculo não tem, salvo as divergências conhecidas.
 #[test]
 fn every_resolved_color_is_a_variable_of_the_oracle_or_undefined() {
     for (golden_name, theme_file) in [
@@ -98,7 +152,7 @@ fn every_resolved_color_is_a_variable_of_the_oracle_or_undefined() {
         let theme = ColorTheme::load(&golden_dir().join("themes").join(theme_file)).unwrap();
         for contribution in color_registry().get_colors() {
             let var = as_css_variable_name(contribution.id);
-            if theme.resolve_color(contribution.id, true).is_some() {
+            if theme.resolve_color(contribution.id, true).is_some() && !is_known_divergence(&var) {
                 assert!(
                     golden.contains_key(&var),
                     "{golden_name}: {var} resolvida pelo porte mas ausente no oráculo"
