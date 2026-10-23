@@ -499,7 +499,7 @@ mod index_tree_model {
         let model = IndexTreeModel::<f64>::new("test", -1.0, IndexTreeModelOptions { filter: Some(filter.clone()), ..Default::default() });
         let disposable = bind_list_to_model(&list, &model);
         model.splice(&[0], 0, vec![ITreeElement { element: 0.0, children: Some(vec![ITreeElement { element: 1.0, children: None, collapsible: None, collapsed: None }, ITreeElement { element: 2.0, children: None, collapsible: None, collapsed: None }]), collapsible: None, collapsed: None }], &Default::default());
-        assert_eq!(to_array(&list), vec![]);
+        assert_eq!(to_array(&list), Vec::<f64>::new());
         disposable.dispose();
     }
     #[test]
