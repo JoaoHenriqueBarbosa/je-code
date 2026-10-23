@@ -140,6 +140,26 @@ pub fn now() -> u64 {
     LOOP.with(EventLoop::now)
 }
 
+thread_local! {
+    /// O deslocamento do relógio de parede em relação ao do loop (`clock.setSystemTime` do sinon).
+    static SYSTEM_TIME_SHIFT: Cell<i64> = const { Cell::new(0) };
+}
+
+/// `Date.now()`: o relógio de parede, que é o do loop mais o deslocamento de [`set_system_time`]. Os
+/// timers contam pelo relógio do loop e não notam o deslocamento (um `setTimeout` não se importa com o
+/// relógio de parede mudar).
+pub fn date_now() -> u64 {
+    let now = i64::try_from(now()).unwrap_or(i64::MAX);
+    u64::try_from(now.saturating_add(SYSTEM_TIME_SHIFT.with(Cell::get))).unwrap_or(0)
+}
+
+/// `clock.setSystemTime(ms)` do sinon: muda só o `Date.now()`, sem disparar timers nem mexer no relógio
+/// que os conta.
+pub fn set_system_time(ms: u64) {
+    let delta = i64::try_from(ms).unwrap_or(i64::MAX).saturating_sub(i64::try_from(now()).unwrap_or(i64::MAX));
+    SYSTEM_TIME_SHIFT.with(|s| s.set(delta));
+}
+
 fn run_guarded(task: Task) {
     if let Err(e) = errors::catch(task) {
         errors::on_unexpected_error(&e);
@@ -188,6 +208,8 @@ pub fn run_microtasks() {
             }
         }
     }
+    // Como o Node, rejeições sem tratador são conferidas depois que as microtarefas acabam.
+    crate::promise::flush_unhandled_rejections();
 }
 
 /// Roda uma tarefa `async` local até o fim, retomando-a por microtarefa a cada `await` que acorda,
@@ -252,10 +274,12 @@ pub fn time_to_next_timer() -> Option<Duration> {
 /// original, sem limite). Restaura o relógio real ao sair.
 pub fn with_faked_timers<T>(f: impl FnOnce() -> T) -> T {
     LOOP.with(|l| *l.clock.borrow_mut() = Clock::Fake(Cell::new(0)));
+    SYSTEM_TIME_SHIFT.with(|s| s.set(0));
     let result = errors::catch(f);
     run_microtasks();
     while run_next_timer(true) {}
     LOOP.with(|l| *l.clock.borrow_mut() = Clock::Real(Instant::now()));
+    SYSTEM_TIME_SHIFT.with(|s| s.set(0));
     match result {
         Ok(v) => v,
         Err(e) => errors::throw(e),

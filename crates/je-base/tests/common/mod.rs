@@ -7,7 +7,9 @@ use std::future::Future;
 use std::rc::Rc;
 
 use je_base::errors::{self, Error};
-use je_base::lifecycle::{DisposableRef, DisposableStore, DisposableTracker, IDisposable, set_disposable_tracker};
+use je_base::lifecycle::{
+    DisposableRef, DisposableStore, DisposableTracker, IDisposable, set_disposable_tracker,
+};
 use je_base::promise::Promise;
 use je_base::runtime;
 
@@ -24,7 +26,15 @@ pub fn record_unexpected_errors() {
 /// Reprova o teste se algum erro inesperado foi reportado desde a última conferência.
 pub fn fail_on_unexpected_errors() {
     let reported = UNEXPECTED.with(|u| std::mem::take(&mut *u.borrow_mut()));
-    assert!(reported.is_empty(), "erros inesperados reportados: {}", reported.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));
+    assert!(
+        reported.is_empty(),
+        "erros inesperados reportados: {}",
+        reported
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
 }
 
 /// `ensureNoDisposablesAreLeakedInTestSuite()`: o `setup` roda na criação e o `teardown` no `Drop`.
@@ -75,7 +85,11 @@ fn compute_leaking_disposables(tracker: &DisposableTracker, log_to_console: bool
         if log_to_console {
             eprintln!("{}", result.details);
         }
-        panic!("There are {} undisposed disposables!{}", result.leaks.len(), result.details);
+        panic!(
+            "There are {} undisposed disposables!{}",
+            result.leaks.len(),
+            result.details
+        );
     }
 }
 

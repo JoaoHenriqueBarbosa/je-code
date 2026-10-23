@@ -9,6 +9,16 @@ description = "Porte de vs/base/common do VS Code: utilitários sem UI."
 [lints]
 workspace = true
 
+# `Intl.Collator` (colação CLDR, mesma crate e mesma versão do `zjsc` do pseudo-linus, vendorizada) e a
+# normalização NFC/NFD de `String.prototype.normalize`. As duas ficam em `~2.3.0` para dividir os dados
+# compilados do ICU4X com o `icu_collator` vendorizado, ver `vendor/icu_collator/JE-CODE.md`.
+[dependencies]
+icu_collator = { path = "../../vendor/icu_collator" }
+icu_locale_core = "2"
+icu_normalizer = "~2.3.0"
+# `RegExp` ECMAScript do `glob`: o glob do VS Code compila cada padrão para uma regex.
+zyarr = { path = "../zyarr" }
+
 # Fonte de aleatoriedade do SO para `Math.random` e `crypto.randomUUID`. No alvo web
 # (wasm32-unknown-unknown) o `random` cai num fallback do std, ver `src/random.rs`.
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]

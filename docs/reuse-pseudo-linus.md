@@ -10,7 +10,7 @@ licença) no README dela, como o `zbun` faz com o bun; mudança local fica lista
 | `RegExp` ECMAScript (glob, busca, find widget, `createRegExp`, snippets) | `zjsc/src/yarr` (YARR do JavaScriptCore, 25 915 linhas; depende de ~10 itens do `wtf` e de uma opção da `VM`) | `crates/zyarr` | **feito** (450 testes, 2026-10-23) |
 | Extension host: motor JS | `zjsc` (98,6% do test262, vigente 2026-10-12) | Fase 5 | a integrar |
 | Transpilar TypeScript para JS (extensões e scripts) | `zbun` (transpilador do bun 1.4.2) | Fase 5 | a avaliar |
-| Intl (collation do `comparers.ts`, `Intl.Segmenter`, datas) | `zjsc` usa `icu_collator`, `icu_segmenter`, `jiff` (crates Rust) | usar as mesmas crates ICU4X, nas mesmas versões | a medir |
+| Intl (collation do `comparers.ts`, `Intl.Segmenter`, datas) | `zjsc` usa `icu_collator`, `icu_segmenter`, `jiff` (crates Rust) | usar as mesmas crates ICU4X, nas mesmas versões | collation **feita**: `vendor/icu_collator` (2.3.1 do zjsc) em `je-base::collator`, 13 funções do `comparers.ts` iguais ao Node 26.12.1 em 28 561 pares cada (2026-10-23); segmenter e datas a medir |
 | Rasterização e shaping idênticos ao Linux do oráculo (Chromium usa FreeType e HarfBuzz) | `zft` (FreeType 2.13.3), `zhb` (HarfBuzz 10.2.0) | comparar com parley/skrifa na H10 e H11 | a medir |
 | Webviews de extensão (HTML de terceiros) | `ul-chromium` (DOM, Stylo, Blitz, zjsc) | Fase 6, só dentro da webview; a UI continua nativa | a avaliar |
 | Armazenamento das webviews e do Chromium no user data (`Local Storage`, `IndexedDB`) | `ul-leveldb` (formato do leveldb do Chromium), `ul-chromium/src/idb` | retrocompatibilidade de user data | a avaliar |

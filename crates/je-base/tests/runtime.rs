@@ -77,3 +77,51 @@ fn all_settled_igual_ao_node() {
     });
     assert_eq!(log.borrow().join(" "), "m1 e-then then m2 e-after after m3 m4 m5 m6");
 }
+
+#[test]
+fn adocao_finally_all_race_igual_ao_node() {
+    // const log=[]; chain: Promise.resolve().then(()=>log.push('t1')).then(...) até t8
+    // new Promise(r=>r(Promise.resolve(1))).then(()=>log.push('A'));
+    // Promise.resolve().then(()=>Promise.resolve(2)).then(()=>log.push('B'));
+    // Promise.resolve(3).finally(()=>{}).then(()=>log.push('C'));
+    // Promise.reject(4).finally(()=>{}).catch(()=>log.push('D'));
+    // Promise.all([Promise.resolve(1),Promise.resolve(2)]).then(()=>log.push('E'));
+    // Promise.all([]).then(()=>log.push('F'));
+    // Promise.race([Promise.resolve(1),Promise.resolve(2)]).then(()=>log.push('G'));
+    // (a cadeia t1..t8 é criada por último)
+    // Node: F t1 E G t2 A t3 B C D t4 t5 t6 t7 t8
+    use je_base::errors::Error;
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let push = |l: &Rc<RefCell<Vec<String>>>, s: &str| l.borrow_mut().push(s.to_string());
+    runtime::with_faked_timers(|| {
+        let l = log.clone();
+        let a = Promise::<i32>::with_executor(|resolver| resolver.resolve_with(&Promise::resolved(1)));
+        a.then(move |_| push(&l, "A"));
+
+        let l = log.clone();
+        Promise::resolved(()).then_promise(|_| Promise::resolved(2)).then(move |_| push(&l, "B"));
+
+        let l = log.clone();
+        Promise::resolved(3).finally(|| {}).then(move |_| push(&l, "C"));
+
+        let l = log.clone();
+        Promise::<i32>::rejected(Error::new("4")).finally(|| {}).catch(move |_| {
+            push(&l, "D");
+            0
+        });
+
+        let l = log.clone();
+        Promise::all(vec![Promise::resolved(1), Promise::resolved(2)]).then(move |_| push(&l, "E"));
+        let l = log.clone();
+        Promise::<i32>::all(Vec::new()).then(move |_| push(&l, "F"));
+        let l = log.clone();
+        Promise::race(vec![Promise::resolved(1), Promise::resolved(2)]).then(move |_| push(&l, "G"));
+
+        let mut chain = Promise::resolved(());
+        for i in 1..=8 {
+            let l = log.clone();
+            chain = chain.then(move |_| push(&l, &format!("t{i}")));
+        }
+    });
+    assert_eq!(log.borrow().join(" "), "F t1 E G t2 A t3 B C D t4 t5 t6 t7 t8");
+}
