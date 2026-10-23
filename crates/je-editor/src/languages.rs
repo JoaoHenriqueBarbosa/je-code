@@ -135,3 +135,146 @@ pub struct TokenizationSupportChangedEvent {
     pub changed_languages: Vec<String>,
     pub changed_color_map: bool,
 }
+
+// Completion: `CompletionItemKind`, `CompletionItemLabel`, `CompletionItemTag`,
+// `CompletionItemInsertTextRule`, `CompletionItem` e `CompletionItemProvider` de
+// `src/vs/editor/common/languages.ts` (linhas 353 a 736 do original).
+//
+// Diferenças do original:
+// - `CompletionItem` não tem `range`, `additionalTextEdits`, `command`, `action`, `extensionId` nem `_id`
+//   (dependem de `IRange`, `ISingleEditOperation`, `Command` e `ExtensionIdentifier`, que nenhum consumidor
+//   atual lê); os demais campos estão todos.
+// - `CompletionItemProvider` só traz `_debugDisplayName`, `triggerCharacters` e `resolveCompletionItem`;
+//   `provideCompletionItems` precisa de `ITextModel` e de `ProviderResult`, e fica para quando o consumidor
+//   chegar. O `ProviderResult<CompletionItem>` do `resolveCompletionItem` é uma `Promise<Option<_>>`
+//   (`null` e `undefined` viram `None`).
+// - `resolveCompletionItem?` opcional vira [`CompletionItemProvider::has_resolve_completion_item`].
+// - `CompletionItemKinds` (ícone, rótulo traduzido, `fromString`) não foi portado: dependem de `Codicon` e
+//   de `localize`, e só o enum é lido pelo terminal.
+// - `string | CompletionItemLabel` é [`CompletionLabel`] e `string | IMarkdownString` é [`StringOrMarkdown`].
+
+/// `CompletionItemKind`. `Snippet` é o maior valor (usado em comparações).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CompletionItemKind {
+    Method,
+    Function,
+    Constructor,
+    Field,
+    Variable,
+    Class,
+    Struct,
+    Interface,
+    Module,
+    Property,
+    Event,
+    Operator,
+    Unit,
+    Value,
+    Constant,
+    Enum,
+    EnumMember,
+    Keyword,
+    Text,
+    Color,
+    File,
+    Reference,
+    Customcolor,
+    Folder,
+    TypeParameter,
+    User,
+    Issue,
+    Tool,
+    Snippet,
+}
+
+/// `CompletionItemLabel`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionItemLabel {
+    pub label: String,
+    pub detail: Option<String>,
+    pub description: Option<String>,
+}
+
+/// `string | CompletionItemLabel`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompletionLabel {
+    Text(String),
+    Item(CompletionItemLabel),
+}
+
+/// `CompletionItemTag`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionItemTag {
+    Deprecated = 1,
+}
+
+/// `CompletionItemInsertTextRule`: máscara de bits para `CompletionItem::insert_text_rules`.
+pub mod completion_item_insert_text_rule {
+    pub const NONE: u32 = 0;
+    /// Ajusta espaços e indentação de textos de várias linhas à indentação da linha atual.
+    pub const KEEP_WHITESPACE: u32 = 0b001;
+    /// `insertText` é um snippet.
+    pub const INSERT_AS_SNIPPET: u32 = 0b100;
+}
+
+/// `string | IMarkdownString`.
+#[derive(Clone, Debug)]
+pub enum StringOrMarkdown {
+    String(String),
+    Markdown(je_base::html_content::IMarkdownString),
+}
+
+impl StringOrMarkdown {
+    /// O valor é verdadeiro no sentido do JavaScript: texto não vazio, ou qualquer objeto markdown.
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Self::String(text) => !text.is_empty(),
+            Self::Markdown(_) => true,
+        }
+    }
+}
+
+/// `CompletionItem`.
+#[derive(Clone, Debug)]
+pub struct CompletionItem {
+    /// O rótulo; por padrão é também o texto inserido ao escolher o item.
+    pub label: CompletionLabel,
+    pub kind: CompletionItemKind,
+    /// Modificadores do `kind` que afetam a exibição (por exemplo, `Deprecated` fica riscado).
+    pub tags: Option<Vec<CompletionItemTag>>,
+    pub detail: Option<String>,
+    pub documentation: Option<StringOrMarkdown>,
+    pub sort_text: Option<String>,
+    pub filter_text: Option<String>,
+    pub preselect: Option<bool>,
+    pub insert_text: String,
+    /// Máscara de [`completion_item_insert_text_rule`].
+    pub insert_text_rules: Option<u32>,
+    pub commit_characters: Option<Vec<String>>,
+}
+
+/// `CompletionItemProvider` (ver as diferenças acima).
+pub trait CompletionItemProvider {
+    /// `_debugDisplayName`.
+    fn debug_display_name(&self) -> &str;
+
+    /// `triggerCharacters`.
+    fn trigger_characters(&self) -> Option<&[String]> {
+        None
+    }
+
+    /// Se o provedor implementa o `resolveCompletionItem?` opcional.
+    fn has_resolve_completion_item(&self) -> bool {
+        false
+    }
+
+    /// `resolveCompletionItem`: completa o item (documentação, detalhes). Só é chamado quando
+    /// [`Self::has_resolve_completion_item`] é verdadeiro.
+    fn resolve_completion_item(
+        &self,
+        _item: &CompletionItem,
+        _token: &je_base::cancellation::CancellationToken,
+    ) -> je_base::promise::Promise<Option<CompletionItem>> {
+        je_base::promise::Promise::resolved(None)
+    }
+}
