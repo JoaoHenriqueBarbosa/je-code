@@ -83,3 +83,4 @@ pub mod position_to_offset;
 
 pub mod lines_layout;
 pub mod view_model_types;
+pub mod line_heights;
