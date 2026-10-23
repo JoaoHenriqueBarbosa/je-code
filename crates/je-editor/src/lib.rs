@@ -164,3 +164,10 @@ pub mod comment;
 pub mod cursor_events;
 pub mod cursor;
 pub mod view_model_lines;
+
+pub mod rgba;
+pub mod editor_theme;
+pub mod screen_reader_simple_model;
+pub mod minimap_tokens_color_tracker;
+pub mod view_context;
+pub mod view_model_impl_support;
