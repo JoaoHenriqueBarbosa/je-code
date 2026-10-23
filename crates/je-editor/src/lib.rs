@@ -155,3 +155,5 @@ pub mod trim_trailing_whitespace_command;
 
 pub mod view_line_renderer;
 pub mod model_line_projection;
+
+pub mod cursor_move_commands;
