@@ -5,12 +5,15 @@
 
 use std::cell::Cell;
 
-use zyarr::{Match, RegExp, RegExpError};
+use zyarr::{Flags, Match, RegExp, RegExpError};
 
 /// `RegExp` com `lastIndex`.
 #[derive(Debug)]
 pub struct JsRegExp {
     inner: RegExp,
+    /// O padrão como foi dado ao construtor (o `source` do original sem o escape de `/` e de quebra de
+    /// linha, que não muda o significado ao recriar o `RegExp`).
+    source: Vec<u16>,
     last_index: Cell<usize>,
 }
 
@@ -20,6 +23,7 @@ impl JsRegExp {
         let flags: Vec<u16> = flags.encode_utf16().collect();
         Ok(JsRegExp {
             inner: RegExp::new(pattern, &flags)?,
+            source: pattern.to_vec(),
             last_index: Cell::new(0),
         })
     }
@@ -28,6 +32,15 @@ impl JsRegExp {
     pub fn from_str(pattern: &str, flags: &str) -> Result<JsRegExp, RegExpError> {
         let pattern: Vec<u16> = pattern.encode_utf16().collect();
         JsRegExp::new(&pattern, flags)
+    }
+
+    pub fn source(&self) -> &[u16] {
+        &self.source
+    }
+
+    /// As flags (`global`, `ignoreCase`, `multiline`, `unicode` e as demais).
+    pub fn flags(&self) -> Flags {
+        self.inner.flags()
     }
 
     pub fn last_index(&self) -> usize {

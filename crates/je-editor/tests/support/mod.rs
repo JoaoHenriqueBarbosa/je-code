@@ -2,6 +2,9 @@
 //! buffer, conferência das invariantes rubro-negras da árvore e das linhas.
 #![allow(dead_code)]
 
+pub mod editable_text_model_test_utils;
+pub mod test_text_model;
+
 use std::rc::Rc;
 
 use je_base::JsString;

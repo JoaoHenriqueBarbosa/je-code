@@ -17,3 +17,7 @@ zyarr = { path = "../zyarr" }
 [[bench]]
 name = "piece_tree"
 harness = false
+
+[[bench]]
+name = "text_model_decorations"
+harness = false
