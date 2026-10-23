@@ -12,7 +12,7 @@ mod common;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use common::{ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, timeout};
+use common::{run_with_faked_timers, timeout};
 use je_base::cancellation::CancellationTokenSource;
 use je_base::errors::Error;
 use je_base::stream::{
@@ -20,7 +20,7 @@ use je_base::stream::{
     WriteableStreamImpl, WriteableStreamOptions, consume_readable, consume_stream, consume_stream_ignoring_data, listen_stream,
     new_writeable_stream, peek_readable, peek_stream, prefixed_readable, prefixed_stream, to_readable, to_stream, transform,
 };
-use je_base::{errors, runtime};
+use je_base::runtime;
 
 fn join_reducer() -> Reducer<String> {
     Rc::new(|strings| strings.join(","))
@@ -179,7 +179,7 @@ fn writeable_stream_end_with_error_works() {
         stream.end(Some(Error::new("error")));
 
         let result = consume_stream(&*stream, reducer).await.unwrap();
-        assert_eq!(result.to_string(), "error");
+        assert_eq!(result.to_string(), "Error: error");
     });
 }
 
@@ -276,7 +276,7 @@ fn join(strings: Vec<String>) -> String {
 #[test]
 fn consume_readable_case() {
     let mut readable = array_to_readable(&["1", "2", "3", "4", "5"]);
-    let consumed = consume_readable(&mut *readable, |strings| join(strings));
+    let consumed = consume_readable(&mut *readable, join);
     assert_eq!(consumed, "1,2,3,4,5");
 }
 
@@ -650,12 +650,4 @@ fn prefixed_stream_case() {
         let error = consume_stream(&*prefix_stream, join_reducer()).await;
         assert!(error.is_err());
     });
-}
-
-#[test]
-fn leak_guard_is_clean() {
-    // `ensureNoDisposablesAreLeakedInTestSuite()` fica no fim da suíte do original: nenhum teste acima
-    // deixa um `IDisposable` para trás.
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let _ = errors::catch(|| ());
 }

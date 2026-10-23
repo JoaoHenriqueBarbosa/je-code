@@ -14,6 +14,9 @@
 
 use crate::map::OrderedMap;
 
+/// O `onNode` de `insert` e `mutatePath`: chamado para cada nó na descida.
+pub type OnNode<'a, V> = &'a mut dyn FnMut(&mut Node<V>);
+
 /// `IPrefixTreeNode` e o `Node` do original: os filhos possíveis e o valor, quando há dado neste nó.
 #[derive(Debug, Clone)]
 pub struct Node<V> {
@@ -81,7 +84,7 @@ impl<V> WellDefinedPrefixTree<V> {
     /// Inserts a new value in the prefix tree.
     /// `on_node` is called for each node as we descend to the insertion point,
     /// including the insertion point itself.
-    pub fn insert<S: AsRef<str>>(&mut self, key: impl IntoIterator<Item = S>, value: V, on_node: Option<&mut dyn FnMut(&mut Node<V>)>) {
+    pub fn insert<S: AsRef<str>>(&mut self, key: impl IntoIterator<Item = S>, value: V, on_node: Option<OnNode<'_, V>>) {
         self.op_node(key, |n| n.value = Some(value), on_node);
     }
 
@@ -114,11 +117,9 @@ impl<V> WellDefinedPrefixTree<V> {
         };
         let mut removed = Vec::new();
         if let Some(subtree) = subtree {
-            for node in bfs_iterate(subtree) {
-                if let Some(value) = node {
-                    self.size -= 1;
-                    removed.push(value);
-                }
+            for value in bfs_iterate(subtree).flatten() {
+                self.size -= 1;
+                removed.push(value);
             }
         }
         removed.into_iter()
@@ -166,7 +167,7 @@ impl<V> WellDefinedPrefixTree<V> {
         &mut self,
         key: impl IntoIterator<Item = S>,
         f: impl FnOnce(&mut Node<V>),
-        mut on_descend: Option<&mut dyn FnMut(&mut Node<V>)>,
+        mut on_descend: Option<OnNode<'_, V>>,
     ) {
         let mut node = &mut self.root;
         for part in key {

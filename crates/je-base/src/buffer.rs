@@ -452,9 +452,8 @@ pub fn encode_base64(buffer: &VSBuffer, padded: bool, url_safe: bool) -> String 
     buffer.with_bytes(|buffer| {
         let mut output = String::with_capacity(buffer.len().div_ceil(3) * 4);
 
-        let mut chunks = buffer.chunks_exact(3);
-        for chunk in &mut chunks {
-            let (a, b, c) = (chunk[0], chunk[1], chunk[2]);
+        let (triples, remainder) = buffer.as_chunks::<3>();
+        for &[a, b, c] in triples {
 
             output.push(at(a >> 2));
             output.push(at(a << 4 | b >> 4));
@@ -462,7 +461,7 @@ pub fn encode_base64(buffer: &VSBuffer, padded: bool, url_safe: bool) -> String 
             output.push(at(c));
         }
 
-        match *chunks.remainder() {
+        match *remainder {
             [a] => {
                 output.push(at(a >> 2));
                 output.push(at(a << 4));
@@ -491,10 +490,11 @@ pub fn encode_hex(buffer: &VSBuffer) -> String {
 
 pub fn decode_hex(hex: &str) -> VSBuffer {
     let units: Vec<u16> = hex.encode_utf16().collect();
-    if units.len() % 2 != 0 {
+    if !units.len().is_multiple_of(2) {
         syntax_error("Hex string must have an even length".to_string());
     }
-    let out = units.chunks_exact(2).enumerate().map(|(i, pair)| (decode_hex_char(pair[0], i * 2) << 4) | decode_hex_char(pair[1], i * 2 + 1)).collect();
+    let (pairs, _) = units.as_chunks::<2>();
+    let out = pairs.iter().enumerate().map(|(i, &[high, low])| (decode_hex_char(high, i * 2) << 4) | decode_hex_char(low, i * 2 + 1)).collect();
     VSBuffer::wrap(out)
 }
 

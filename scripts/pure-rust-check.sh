@@ -3,6 +3,8 @@
 #
 # Duas camadas:
 # 1. Lockfile: crates cuja razão de existir é fonte C (ban duro).
+# O `yeslogic-fontconfig-sys` fica fora da lista: com a feature `dlopen` (que o fontique liga) ele só
+# declara a ABI e abre a libfontconfig do sistema em tempo de execução, sem compilar nem ligar C.
 # 2. Build scripts: roda `cargo check --target X` (os build.rs executam) e varre o que eles
 #    emitiram em target/X/debug/build/*/output. `rustc-link-lib=static=` é C compilado por `cc`
 #    (ou `cmake`) entrando no binário; `rustc-link-lib=dylib=` ou sem kind é ligação a lib C
@@ -18,7 +20,7 @@ targets=(
   aarch64-apple-darwin
   wasm32-unknown-unknown
 )
-banned='^(cmake|openssl-sys|libsqlite3-sys|ring|aws-lc-sys|aws-lc-rs|onig_sys|libz-sys|zstd-sys|bzip2-sys|freetype-sys|fontconfig-sys|servo-fontconfig-sys|yeslogic-fontconfig-sys|libgit2-sys|libssh2-sys|curl-sys|lzma-sys|bindgen|nasm-rs|libffi-sys|sqlite3-src|brotli-sys|libwebp-sys|mozjpeg-sys|libmimalloc-sys|tikv-jemalloc-sys) '
+banned='^(cmake|openssl-sys|libsqlite3-sys|ring|aws-lc-sys|aws-lc-rs|onig_sys|libz-sys|zstd-sys|bzip2-sys|freetype-sys|servo-fontconfig-sys|libgit2-sys|libssh2-sys|curl-sys|lzma-sys|bindgen|nasm-rs|libffi-sys|sqlite3-src|brotli-sys|libwebp-sys|mozjpeg-sys|libmimalloc-sys|tikv-jemalloc-sys) '
 
 # Só o produto (crates/*) entra na régua. As sondas de testbench/ medem candidatos, inclusive os que
 # a régua reprova (o turso completo, o Bevy), e não são distribuídas.

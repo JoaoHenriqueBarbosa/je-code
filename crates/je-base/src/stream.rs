@@ -501,17 +501,14 @@ pub enum PeekedReadable<T> {
 pub fn peek_readable<T: 'static>(mut readable: Box<dyn Readable<T>>, reducer: impl FnOnce(Vec<T>) -> T, max_chunks: usize) -> PeekedReadable<T> {
     let mut chunks: Vec<T> = Vec::new();
 
-    // `None` é o `undefined` do original (nada lido ainda); `Some(None)` é o `null` (fim do readable).
-    let mut chunk: Option<Option<T>> = None;
-    loop {
+    // `Some(None)` é o `null` do original (fim do readable); `Some(Some(_))` é um chunk lido que não coube.
+    let mut chunk: Option<Option<T>> = loop {
         let read = readable.read();
-        let stop = read.is_none() || chunks.len() >= max_chunks;
-        if stop {
-            chunk = Some(read);
-            break;
+        if read.is_none() || chunks.len() >= max_chunks {
+            break Some(read);
         }
-        chunks.push(read.expect("não é o fim"));
-    }
+        chunks.extend(read);
+    };
 
     // If the last chunk is null, it means we reached the end of
     // the readable and return all the data at once
