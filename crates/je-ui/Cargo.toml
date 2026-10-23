@@ -7,6 +7,7 @@ publish = false
 description = "Widgets nativos do je-code: a árvore retida que substitui o DOM do VS Code."
 
 [dependencies]
+je-base = { path = "../je-base" }
 je-render = { path = "../je-render" }
 je-text = { path = "../je-text" }
 

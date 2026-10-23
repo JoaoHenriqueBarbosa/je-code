@@ -4041,6 +4041,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-languages"
+version = "0.0.0"
+dependencies = [
+ "ferriki-textmate",
+ "je-base",
+ "je-editor",
+ "serde_json",
+]
+
+[[package]]
 name = "je-platform"
 version = "0.0.0"
 dependencies = [

@@ -12,10 +12,16 @@
 //! - **Pintura.** A árvore vira uma [`je_render::DisplayList`] por frame, pela ordem dos filhos (a
 //!   ordem do DOM), com recorte por nó (`overflow: hidden`).
 //! - **Eventos.** Ponteiro por hit test do nó mais ao fundo; teclado para o nó com foco; eventos com
-//!   fase de captura e de bolha como no DOM, porque os widgets do VS Code dependem disso.
+//!   fase de captura e de bolha como no DOM, porque os widgets do VS Code dependem disso. Ver [`events`].
+//! - **Caixa.** O mínimo do modelo de caixa do CSS que o código dos widgets escreve ou herda:
+//!   `left/top/width/height` explícitos, `width/height: 100%` ([`Tree::set_fill`]), `right/bottom`
+//!   ([`Tree::set_right`], [`Tree::set_bottom`]), `z-index` entre irmãos, `pointer-events` e `display:
+//!   none`.
 //! - **Acessibilidade.** Cada nó declara papel e rótulo (`role`, `aria-label`), para a árvore do
 //!   AccessKit.
 
+pub mod events;
 mod tree;
 
-pub use tree::{Border, Content, NodeId, NodeStyle, Role, Tree};
+pub use events::{Event, EventKind, Handler, KeyData, Modifiers, Phase, PointerButton, PointerData, PointerInput, PointerInputKind, Ui};
+pub use tree::{Border, Content, Cursor, NodeId, PointerEvents, NodeStyle, Role, Tree};
