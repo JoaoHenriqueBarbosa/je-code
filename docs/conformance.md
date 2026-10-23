@@ -4,20 +4,23 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 80 | 1502 | 65.94 |
-| `platform` | 723 | 15868 | 23 | 426 | 2.68 |
+| `base` | 150 | 2278 | 86 | 1588 | 69.71 |
+| `platform` | 192 | 2806 | 23 | 426 | 15.18 |
 | `editor` | 182 | 3144 | 38 | 758 | 24.11 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
-| `workbench/contrib` | 402 | 5033 | 0 | 0 | 0.00 |
+| `workbench/contrib` | 370 | 4636 | 0 | 0 | 0.00 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 29869 | | 2686 | 8.99 |
+| **total** | | 16410 | | 2772 | 16.89 |
 
 ## Arquivos portados
 
 | Origem | Casos do oráculo | Porte | Casos portados |
 | --- | --- | --- | --- |
+| `src/vs/base/parts/ipc/test/common/ipc.test.ts` | 26 | `crates/je-base/tests/ipc.rs` | 25 |
+| `src/vs/base/parts/ipc/test/common/webSocketFraming.test.ts` | 8 | `crates/je-base/tests/web_socket_framing.rs` | 8 |
+| `src/vs/base/parts/ipc/test/node/ipc.net.test.ts` | 23 | `crates/je-base/tests/ipc_net.rs` | 11 |
 | `src/vs/base/test/browser/comparers.test.ts` | 10 | `crates/je-base/tests/comparers.rs` | 10 |
 | `src/vs/base/test/browser/ui/grid/grid.test.ts` | 38 | `crates/je-widgets/tests/grid.rs` | 38 |
 | `src/vs/base/test/browser/ui/grid/gridview.test.ts` | 9 | `crates/je-widgets/tests/gridview.rs` | 9 |
@@ -28,7 +31,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/browser/ui/scrollbar/scrollbarState.test.ts` | 2 | `crates/je-widgets/tests/scrollbar_state.rs` | 2 |
 | `src/vs/base/test/browser/ui/splitview/paneview.test.ts` | 2 | `crates/je-widgets/tests/paneview.rs` | 2 |
 | `src/vs/base/test/browser/ui/splitview/splitview.test.ts` | 18 | `crates/je-widgets/tests/splitview.rs` | 18 |
+| `src/vs/base/test/browser/ui/tree/compressedObjectTreeModel.test.ts` | 13 | `crates/je-widgets/tests/compressed_object_tree_model.rs` | 13 |
 | `src/vs/base/test/browser/ui/tree/indexTreeModel.test.ts` | 25 | `crates/je-widgets/tests/index_tree_model.rs` | 25 |
+| `src/vs/base/test/browser/ui/tree/objectTree.test.ts` | 18 | `crates/je-widgets/tests/object_tree.rs` | 18 |
+| `src/vs/base/test/browser/ui/tree/objectTreeModel.test.ts` | 11 | `crates/je-widgets/tests/object_tree_model.rs` | 11 |
 | `src/vs/base/test/common/arrays.test.ts` | 29 | `crates/je-base/tests/arrays.rs` | 28 |
 | `src/vs/base/test/common/arraysFind.test.ts` | 3 | `crates/je-base/tests/arrays_find.rs` | 3 |
 | `src/vs/base/test/common/assert.test.ts` | 4 | `crates/je-base/tests/assert.rs` | 4 |

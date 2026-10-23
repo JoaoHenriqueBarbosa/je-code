@@ -13,7 +13,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 VS = ROOT / 'ref' / 'vscode' / 'src' / 'vs'
-OUT_OF_SCOPE = ['sessions', 'workbench/contrib/chat', 'workbench/contrib/welcomeAgentSessions',
+OUT_OF_SCOPE = ['sessions', 'platform/agentHost', 'platform/github', 'platform/mcp', 'platform/agentPlugins',
+                'platform/customizationMarketplace', 'workbench/contrib/chat', 'workbench/contrib/inlineChat',
+                'workbench/contrib/mcp', 'workbench/contrib/welcomeAgentSessions',
                 'workbench/contrib/remoteCodingAgents', 'workbench/contrib/agentsVoice']
 LAYERS = ['base', 'platform', 'editor', 'workbench/services', 'workbench/api', 'workbench/contrib', 'server', 'code']
 TEST_RE = re.compile(r'^\s*test\(', re.M)

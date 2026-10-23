@@ -46,12 +46,19 @@ tema se medem por screenshot do oráculo sob xvfb contra o nosso, por diferença
 
 ## Fora de escopo
 
-- **Agents view e sidebar do Copilot/chat com BYOK** (decisão do user, 2026-10-23). Sai: `vs/sessions`
-  (181 195 linhas, 6 208 testes), `workbench/contrib/chat` (359 163 linhas, 10 802 testes),
-  `contrib/welcomeAgentSessions`, `contrib/remoteCodingAgents`, `contrib/agentsVoice` e a extensão embutida
-  `copilot` (eu, tag 1.143.1). A confirmar com o user, sem portar até lá: `vs/platform/agentHost` (289 182 linhas e 12 108 dos 15 868 casos de `vs/platform`, medido em 2026-10-23; é o backend dos agentes de IA, na mesma família do que o user cortou), `vs/platform/github` e `mcp`; `contrib/inlineChat` (4 182 linhas)
-  e `contrib/mcp` (22 148 linhas), que dependem do chat. Os contadores de paridade das fases 6 e 8
-  descontam essas pastas.
+- **IA e agentes** (decisão do user, 2026-10-23; "pode ser adicionado no futuro ou não": fica fora do
+  objetivo atual, mas NADA no desenho pode tornar a adição impossível). Sai: agents view, sidebar do
+  Copilot/chat (BYOK), `vs/sessions`, `vs/platform/{agentHost,github,mcp,agentPlugins,customizationMarketplace}`,
+  `workbench/contrib/{chat,inlineChat,mcp,welcomeAgentSessions,remoteCodingAgents,agentsVoice}` e a extensão
+  embutida `copilot`. Medido em 2026-10-23 (tag 1.143.1): `agentHost` 289 182 linhas e 12 108 casos; `sessions`
+  181 195 linhas e 6 208; `contrib/chat` 359 163 e 10 802; `contrib/mcp` 22 148 e 344; `inlineChat` 4 182 e 53.
+  Regras para manter a porta aberta: (1) pontos de extensão que o chat usa (`languageModels`, `chatParticipants`,
+  `lm` API, `mcpServerDefinitionProviders`) continuam na API `vscode.d.ts` como tipos e registros vazios, para
+  extensões de terceiros que os usam ativarem sem erro; (2) as cores já registradas dessas pastas ficam no
+  registro (já estão, 998 cores); (3) serviços de plataforma que o chat consome (arquivos, configuração,
+  storage, eventos, instanciação) são os mesmos, sem desvio para esse caso; (4) o placar de conformidade
+  desconta essas pastas (`scripts/conformance.py`, lista `OUT_OF_SCOPE`) e o `docs/conformance.md` lista o
+  tamanho delas à parte.
 - Reproduzir o Electron, o Chromium ou o DOM. Os `.css` são lidos como especificação.
 - Telemetria para a Microsoft e serviços que exigem conta deles (Copilot, Settings Sync com a conta
   deles) são implementados como protocolo, não como obrigação: funcionam se o user configurar.
