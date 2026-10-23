@@ -1319,6 +1319,7 @@ pub mod paste_as;
 pub mod pixel_ratio;
 pub mod placeholder;
 pub mod quick_suggestions;
+pub mod registry;
 pub mod rulers;
 pub mod scrollbar;
 pub mod simple_keys;
