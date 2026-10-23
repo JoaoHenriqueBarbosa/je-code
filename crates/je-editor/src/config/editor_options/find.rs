@@ -3,7 +3,6 @@
 use je_base::dynamic::{Dynamic, Truthy};
 use je_base::platform::Platform;
 
-use crate::config::editor_options::option_support::string_enum;
 use crate::config::editor_options::{boolean, strings_array, EditorOption, EditorOptionImpl, Opt};
 
 string_enum! {

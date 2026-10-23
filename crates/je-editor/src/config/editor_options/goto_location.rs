@@ -2,7 +2,6 @@
 
 use je_base::dynamic::{Dynamic, Truthy};
 
-use crate::config::editor_options::option_support::string_enum;
 use crate::config::editor_options::{string, strings_array, EditorOption, EditorOptionImpl, Opt};
 
 string_enum! {

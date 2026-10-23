@@ -5,7 +5,6 @@
 //! `effective_fullwidth_character_width` lê `env.font_info.is_monospace`. A opção `fullwidthCharacterWidth` que ela lê tem valor `String` (`'font' | 'twoCells'`).
 
 use crate::config::editor_options::cursor_style::TextEditorCursorStyle;
-use crate::config::editor_options::option_support::string_enum;
 use crate::config::editor_options::{AccessibilitySupport, ComputedEditorOption, EditorOption, InputMode, Opt};
 
 /// Chave tipada da opção `effectiveCursorStyle`.
