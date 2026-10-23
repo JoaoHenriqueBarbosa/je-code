@@ -19,6 +19,7 @@ pub mod character_pair;
 pub mod contiguous_multiline_tokens;
 pub mod contiguous_tokens_editing;
 pub mod contiguous_tokens_store;
+pub mod cursor_atomic_move_operations;
 pub mod cursor_columns;
 pub mod edit_operation;
 pub mod edit_stack;
