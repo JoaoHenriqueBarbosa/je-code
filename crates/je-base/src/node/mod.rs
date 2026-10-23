@@ -2,4 +2,5 @@
 //! servidor remoto e o desktop.
 
 pub mod crypto;
+pub mod ps;
 pub mod unc;
