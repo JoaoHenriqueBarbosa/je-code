@@ -84,3 +84,5 @@ pub mod line_heights;
 pub mod find_section_headers;
 
 pub mod default_document_colors_computer;
+
+pub mod semantic_tokens_dto;
