@@ -80,3 +80,6 @@ pub mod word_character_classifier;
 pub mod word_helper;
 
 pub mod position_to_offset;
+
+pub mod lines_layout;
+pub mod view_model_types;
