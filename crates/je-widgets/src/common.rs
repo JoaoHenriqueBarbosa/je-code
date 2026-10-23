@@ -50,6 +50,13 @@ pub(crate) fn registered_emitter<T: 'static>(base: &Rc<Disposable>) -> Rc<Emitte
     emitter
 }
 
+/// `disposables.add(new Emitter<T>())`: um emissor que o `store` descarta.
+pub(crate) fn store_emitter<T: 'static>(store: &Rc<DisposableStore>) -> Rc<Emitter<T>> {
+    let emitter = Emitter::new();
+    store.add_rc(emitter.clone());
+    emitter
+}
+
 /// `this._register(new DisposableStore())`.
 pub(crate) fn registered_store(base: &Rc<Disposable>) -> Rc<DisposableStore> {
     let store = DisposableStore::new();

@@ -19,7 +19,7 @@ use je_base::symbols::Delay;
 use crate::common::throw;
 use crate::list::list_types::IIdentityProvider;
 use crate::tree::tree_types::{
-    CollapseStateChangeEvent, ITreeElement, ITreeFilter, TreeFilterResult, TreeListSpliceData, TreeModelSpliceEvent, TreeVisibility, VisibilityValue, tree_error,
+    CollapseStateChangeEvent, ITreeElement, ITreeFilter, ITreeModel, TreeFilterResult, TreeListSpliceData, TreeModelSpliceEvent, TreeNodeApi, TreeVisibility, VisibilityValue, tree_error,
 };
 
 /// O callback de criação e de remoção de nó.
@@ -45,6 +45,44 @@ pub struct TreeNode<T, F = ()> {
 impl<T, F> TreeNode<T, F> {
     pub fn parent(&self) -> Option<Rc<TreeNode<T, F>>> {
         self.parent.borrow().upgrade()
+    }
+}
+
+impl<T: Clone + 'static, F: Clone + 'static> TreeNodeApi<T, F> for TreeNode<T, F> {
+    fn element(&self) -> T {
+        self.element.clone()
+    }
+
+    fn children(&self) -> Vec<Rc<Self>> {
+        self.children.borrow().clone()
+    }
+
+    fn depth(&self) -> usize {
+        self.depth
+    }
+
+    fn visible_children_count(&self) -> usize {
+        self.visible_children_count.get()
+    }
+
+    fn visible_child_index(&self) -> i64 {
+        self.visible_child_index.get()
+    }
+
+    fn collapsible(&self) -> bool {
+        self.collapsible.get()
+    }
+
+    fn collapsed(&self) -> bool {
+        self.collapsed.get()
+    }
+
+    fn visible(&self) -> bool {
+        self.visible.get()
+    }
+
+    fn filter_data(&self) -> Option<F> {
+        self.filter_data.borrow().clone()
     }
 }
 
@@ -176,22 +214,6 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
             auto_expand_single_children: options.auto_expand_single_children,
             refilter_delayer: Delayer::new(Delay::Microtask),
         })
-    }
-
-    pub fn on_did_splice_model(&self) -> BaseEvent<TreeModelSpliceEvent<TreeNode<T, F>>> {
-        self.on_did_splice_model.event()
-    }
-
-    pub fn on_did_splice_rendered_nodes(&self) -> BaseEvent<TreeListSpliceData<TreeNode<T, F>>> {
-        self.on_did_splice_rendered_nodes.event()
-    }
-
-    pub fn on_did_change_collapse_state(&self) -> BaseEvent<CollapseStateChangeEvent<TreeNode<T, F>>> {
-        self.event_bufferer.wrap_event(&self.on_did_change_collapse_state_raw.event())
-    }
-
-    pub fn on_did_change_render_node_count(&self) -> BaseEvent<Rc<TreeNode<T, F>>> {
-        self.event_bufferer.wrap_event(&self.on_did_change_render_node_count_raw.event())
     }
 
     pub fn splice(&self, location: &[usize], delete_count: usize, to_insert: Vec<ITreeElement<T>>, options: &IndexTreeModelSpliceOptions<T, F>) {
@@ -385,53 +407,6 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
         }
     }
 
-    pub fn rerender(&self, location: &[usize]) {
-        if location.is_empty() {
-            throw(&tree_error(&self.user, "Invalid tree location").to_string());
-        }
-
-        let (node, list_index, revealed, _) = self.get_tree_node_with_list_index(location);
-
-        if node.visible.get() && revealed {
-            self.on_did_splice_rendered_nodes.fire(TreeListSpliceData { start: list_index as usize, delete_count: 1, elements: vec![node] });
-        }
-    }
-
-    pub fn has(&self, location: &[usize]) -> bool {
-        self.has_tree_node(location, &self.root)
-    }
-
-    pub fn get_list_index(&self, location: &[usize]) -> i64 {
-        let (_, list_index, revealed, visible) = self.get_tree_node_with_list_index(location);
-        if visible && revealed { list_index } else { -1 }
-    }
-
-    pub fn get_list_render_count(&self, location: &[usize]) -> usize {
-        self.get_tree_node(location).render_node_count.get()
-    }
-
-    pub fn is_collapsible(&self, location: &[usize]) -> bool {
-        self.get_tree_node(location).collapsible.get()
-    }
-
-    pub fn set_collapsible(&self, location: &[usize], collapsible: Option<bool>) -> bool {
-        let node = self.get_tree_node(location);
-        let collapsible = collapsible.unwrap_or(!node.collapsible.get());
-        let update = CollapseStateUpdate::Collapsible { collapsible };
-        self.event_bufferer.buffer_events(|| self.set_collapse_state(location, update))
-    }
-
-    pub fn is_collapsed(&self, location: &[usize]) -> bool {
-        self.get_tree_node(location).collapsed.get()
-    }
-
-    pub fn set_collapsed(&self, location: &[usize], collapsed: Option<bool>, recursive: Option<bool>) -> bool {
-        let node = self.get_tree_node(location);
-        let collapsed = collapsed.unwrap_or(!node.collapsed.get());
-        let update = CollapseStateUpdate::Collapsed { collapsed, recursive: recursive.unwrap_or(false) };
-        self.event_bufferer.buffer_events(|| self.set_collapse_state(location, update))
-    }
-
     fn set_collapse_state(&self, location: &[usize], update: CollapseStateUpdate) -> bool {
         let (node, list_index, revealed, _) = self.get_tree_node_with_list_index(location);
 
@@ -516,29 +491,6 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
         }
 
         result
-    }
-
-    pub fn expand_to(&self, location: &[usize]) {
-        self.event_bufferer.buffer_events(|| {
-            let mut node = self.get_tree_node(location);
-            let mut location = location.to_vec();
-
-            while let Some(parent) = node.parent() {
-                node = parent;
-                location.pop();
-
-                if node.collapsed.get() {
-                    self.set_collapse_state(&location, CollapseStateUpdate::Collapsed { collapsed: false, recursive: false });
-                }
-            }
-        });
-    }
-
-    pub fn refilter(&self) {
-        let previous_render_node_count = self.root.render_node_count.get();
-        let to_insert = self.update_node_after_filter_change(&self.root);
-        self.on_did_splice_rendered_nodes.fire(TreeListSpliceData { start: 0, delete_count: previous_render_node_count, elements: to_insert });
-        self.refilter_delayer.cancel();
     }
 
     fn create_tree_node(
@@ -830,11 +782,115 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
         }
     }
 
-    pub fn get_node(&self, location: &[usize]) -> Rc<TreeNode<T, F>> {
+    fn do_get_last_element_ancestor(node: &Rc<TreeNode<T, F>>) -> T {
+        match node.children.borrow().last() {
+            None => node.element.clone(),
+            Some(last) => Self::do_get_last_element_ancestor(last),
+        }
+    }
+}
+
+impl<T: Clone + 'static, F: Clone + 'static> ITreeModel for IndexTreeModel<T, F> {
+    type Element = T;
+    type FilterData = F;
+    type Ref = Vec<usize>;
+    type Node = TreeNode<T, F>;
+
+    fn root_ref(&self) -> Vec<usize> {
+        self.root_ref.clone()
+    }
+
+    fn on_did_splice_model(&self) -> BaseEvent<TreeModelSpliceEvent<TreeNode<T, F>>> {
+        self.on_did_splice_model.event()
+    }
+
+    fn on_did_splice_rendered_nodes(&self) -> BaseEvent<TreeListSpliceData<TreeNode<T, F>>> {
+        self.on_did_splice_rendered_nodes.event()
+    }
+
+    fn on_did_change_collapse_state(&self) -> BaseEvent<CollapseStateChangeEvent<TreeNode<T, F>>> {
+        self.event_bufferer.wrap_event(&self.on_did_change_collapse_state_raw.event())
+    }
+
+    fn on_did_change_render_node_count(&self) -> BaseEvent<Rc<TreeNode<T, F>>> {
+        self.event_bufferer.wrap_event(&self.on_did_change_render_node_count_raw.event())
+    }
+
+    fn rerender(&self, location: &Vec<usize>) {
+        if location.is_empty() {
+            throw(&tree_error(&self.user, "Invalid tree location").to_string());
+        }
+
+        let (node, list_index, revealed, _) = self.get_tree_node_with_list_index(location);
+
+        if node.visible.get() && revealed {
+            self.on_did_splice_rendered_nodes.fire(TreeListSpliceData { start: list_index as usize, delete_count: 1, elements: vec![node] });
+        }
+    }
+
+    fn has(&self, location: &Vec<usize>) -> bool {
+        self.has_tree_node(location, &self.root)
+    }
+
+    fn get_list_index(&self, location: &Vec<usize>) -> i64 {
+        let (_, list_index, revealed, visible) = self.get_tree_node_with_list_index(location);
+        if visible && revealed { list_index } else { -1 }
+    }
+
+    fn get_list_render_count(&self, location: &Vec<usize>) -> usize {
+        self.get_tree_node(location).render_node_count.get()
+    }
+
+    fn is_collapsible(&self, location: &Vec<usize>) -> bool {
+        self.get_tree_node(location).collapsible.get()
+    }
+
+    fn set_collapsible(&self, location: &Vec<usize>, collapsible: Option<bool>) -> bool {
+        let node = self.get_tree_node(location);
+        let collapsible = collapsible.unwrap_or(!node.collapsible.get());
+        let update = CollapseStateUpdate::Collapsible { collapsible };
+        self.event_bufferer.buffer_events(|| self.set_collapse_state(location, update))
+    }
+
+    fn is_collapsed(&self, location: &Vec<usize>) -> bool {
+        self.get_tree_node(location).collapsed.get()
+    }
+
+    fn set_collapsed(&self, location: &Vec<usize>, collapsed: Option<bool>, recursive: Option<bool>) -> bool {
+        let node = self.get_tree_node(location);
+        let collapsed = collapsed.unwrap_or(!node.collapsed.get());
+        let update = CollapseStateUpdate::Collapsed { collapsed, recursive: recursive.unwrap_or(false) };
+        self.event_bufferer.buffer_events(|| self.set_collapse_state(location, update))
+    }
+
+    fn expand_to(&self, location: &Vec<usize>) {
+        self.event_bufferer.buffer_events(|| {
+            let mut node = self.get_tree_node(location);
+            let mut location = location.to_vec();
+
+            while let Some(parent) = node.parent() {
+                node = parent;
+                location.pop();
+
+                if node.collapsed.get() {
+                    self.set_collapse_state(&location, CollapseStateUpdate::Collapsed { collapsed: false, recursive: false });
+                }
+            }
+        });
+    }
+
+    fn refilter(&self) {
+        let previous_render_node_count = self.root.render_node_count.get();
+        let to_insert = self.update_node_after_filter_change(&self.root);
+        self.on_did_splice_rendered_nodes.fire(TreeListSpliceData { start: 0, delete_count: previous_render_node_count, elements: to_insert });
+        self.refilter_delayer.cancel();
+    }
+
+    fn get_node(&self, location: &Vec<usize>) -> Rc<TreeNode<T, F>> {
         self.get_tree_node(location)
     }
 
-    pub fn get_node_location(&self, node: &Rc<TreeNode<T, F>>) -> Vec<usize> {
+    fn get_node_location(&self, node: &Rc<TreeNode<T, F>>) -> Vec<usize> {
         let mut location = Vec::new();
         let mut current = node.clone();
 
@@ -848,7 +904,7 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
         location
     }
 
-    pub fn get_parent_node_location(&self, location: &[usize]) -> Option<Vec<usize>> {
+    fn get_parent_node_location(&self, location: &Vec<usize>) -> Option<Vec<usize>> {
         match location.len() {
             0 => None,
             1 => Some(Vec::new()),
@@ -856,11 +912,11 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
         }
     }
 
-    pub fn get_first_element_child(&self, location: &[usize]) -> Option<T> {
+    fn get_first_element_child(&self, location: &Vec<usize>) -> Option<T> {
         self.get_tree_node(location).children.borrow().first().map(|c| c.element.clone())
     }
 
-    pub fn get_last_element_ancestor(&self, location: &[usize]) -> Option<T> {
+    fn get_last_element_ancestor(&self, location: &Vec<usize>) -> Option<T> {
         let node = self.get_tree_node(location);
 
         if node.children.borrow().is_empty() {
@@ -868,13 +924,6 @@ impl<T: Clone + 'static, F: Clone + 'static> IndexTreeModel<T, F> {
         }
 
         Some(Self::do_get_last_element_ancestor(&node))
-    }
-
-    fn do_get_last_element_ancestor(node: &Rc<TreeNode<T, F>>) -> T {
-        match node.children.borrow().last() {
-            None => node.element.clone(),
-            Some(last) => Self::do_get_last_element_ancestor(last),
-        }
     }
 }
 

@@ -63,6 +63,12 @@ pub struct BrowserEvent {
     pub modifiers: Modifiers,
     pub button: PointerButton,
     pub target: Option<NodeId>,
+    /// O `detail` do evento de ponteiro (1 no primeiro clique, 2 no duplo clique); 0 no teclado.
+    pub click_count: u32,
+    /// `isKeyboardEvent(browserEvent)`.
+    pub is_keyboard: bool,
+    /// O `__forceEvent` do `Trait.set` da árvore: dispara o evento mesmo sem mudança.
+    pub force_event: bool,
 }
 
 /// `IListEvent<T>`.
@@ -139,4 +145,10 @@ impl<T, K: std::hash::Hash + Eq> IListVirtualDelegate<T> for CachedListVirtualDe
             self.cache.borrow_mut().insert((self.key)(element), height);
         }
     }
+}
+
+/// `IKeyboardNavigationLabelProvider<T>.getKeyboardNavigationLabel`: um rótulo (ou vários) por elemento.
+/// Cada `None` é o `undefined` do original (o elemento não tem rótulo).
+pub trait IKeyboardNavigationLabelProvider<T> {
+    fn get_keyboard_navigation_label(&self, element: &T) -> Vec<Option<String>>;
 }

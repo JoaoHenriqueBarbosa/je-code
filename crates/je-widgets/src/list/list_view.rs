@@ -650,7 +650,9 @@ impl<T: Clone + 'static> ListView<T> {
     pub fn layout(&self, height: Option<f64>, width: Option<f64>) {
         let mut scroll_dimensions = INewScrollDimensions { height: Some(height.unwrap_or_else(|| self.ui.tree().bounds(self.dom_node).height())), ..Default::default() };
 
-        if let Some(disposable) = self.scrollable_element_update_disposable.borrow_mut().take() {
+        // Solta o `RefCell` antes de usar o valor: `set_scroll_dimensions` dispara `on_scroll`, que reentra aqui.
+        let pending_update = self.scrollable_element_update_disposable.borrow_mut().take();
+        if let Some(disposable) = pending_update {
             disposable.dispose();
             scroll_dimensions.scroll_height = Some(self.scroll_height());
         }
@@ -821,7 +823,9 @@ impl<T: Clone + 'static> ListView<T> {
 
     /// `setScrollTop(scrollTop, reuseAnimation?)`.
     pub fn set_scroll_top(&self, scroll_top: f64, reuse_animation: bool) {
-        if let Some(disposable) = self.scrollable_element_update_disposable.borrow_mut().take() {
+        // Solta o `RefCell` antes de usar o valor: `set_scroll_dimensions` dispara `on_scroll`, que reentra aqui.
+        let pending_update = self.scrollable_element_update_disposable.borrow_mut().take();
+        if let Some(disposable) = pending_update {
             disposable.dispose();
             self.scrollable_element.set_scroll_dimensions(&INewScrollDimensions { scroll_height: Some(self.scroll_height()), ..Default::default() });
         }
@@ -850,7 +854,7 @@ impl<T: Clone + 'static> ListView<T> {
         let index = self.get_item_index_from_event_target(target);
         let element = index.and_then(|i| self.items.borrow().get(i).map(|item| item.element.clone()));
         ListMouseEvent {
-            browser_event: BrowserEvent { modifiers: pointer.modifiers, button: pointer.button, target: Some(target) },
+            browser_event: BrowserEvent { modifiers: pointer.modifiers, button: pointer.button, target: Some(target), click_count: pointer.click_count, is_keyboard: false, force_event: false },
             is_handled_by_list: Rc::new(Cell::new(false)),
             element,
             index,
@@ -860,6 +864,16 @@ impl<T: Clone + 'static> ListView<T> {
     /// O índice da linha que contém `target`, ou nada fora das linhas.
     pub fn index_of_row_node(&self, node: NodeId) -> Option<usize> {
         self.row_indexes.borrow().get(&node).copied()
+    }
+
+    /// Registra (ou, com `None`, remove) um nó de fora das linhas como a linha de `index`: o `data-index`
+    /// que a linha do sticky scroll da árvore carrega, para os eventos de ponteiro nela resolverem o
+    /// elemento (a linha fixada não é uma linha da lista).
+    pub fn set_external_row_index(&self, node: NodeId, index: Option<usize>) {
+        match index {
+            Some(index) => self.row_indexes.borrow_mut().insert(node, index),
+            None => self.row_indexes.borrow_mut().remove(&node),
+        };
     }
 
     fn get_item_index_from_event_target(&self, target: NodeId) -> Option<usize> {

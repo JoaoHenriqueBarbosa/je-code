@@ -214,6 +214,28 @@ fn splice_trait<T: Clone + 'static>(trait_: &Trait, view: &ListView<T>, identity
     trait_.splice(start, delete_count, &with_trait);
 }
 
+/// Os métodos que uma subclasse da `List` sobrescreve no original (a `TreeNodeList` e o
+/// `TreeNodeListMouseController` da árvore). Cada `after_*` roda depois da versão base; os de mouse
+/// substituem o comportamento padrão e chamam `list.default_*` quando o original chama `super`.
+pub trait ListOverrides<T: Clone + 'static> {
+    fn after_splice(&self, _list: &List<T>, _start: usize, _elements: &[T]) {}
+    fn after_set_focus(&self, _list: &List<T>, _indexes: &[usize], _browser_event: Option<BrowserEvent>) {}
+    fn after_set_selection(&self, _list: &List<T>, _indexes: &[usize], _browser_event: Option<BrowserEvent>) {}
+    fn after_set_anchor(&self, _list: &List<T>, _index: Option<usize>) {}
+    /// `MouseController.onViewPointer`.
+    fn view_pointer(&self, list: &List<T>, e: &ListMouseEvent<T>) {
+        list.default_view_pointer(e);
+    }
+    /// `MouseController.onDoubleClick`.
+    fn double_click(&self, list: &List<T>, e: &ListMouseEvent<T>) {
+        list.default_double_click(e);
+    }
+    /// `MouseController.onMouseDown`.
+    fn mouse_down(&self, list: &List<T>, e: &ListMouseEvent<T>) {
+        list.default_mouse_down(e);
+    }
+}
+
 /// `IListOptions<T>` (os campos que a lista usa; os de DnD, tipo-para-navegar e estilo não existem).
 #[derive(Clone)]
 pub struct ListOptions<T> {
@@ -221,11 +243,13 @@ pub struct ListOptions<T> {
     pub identity_provider: Option<Rc<dyn IIdentityProvider<T>>>,
     pub multiple_selection_support: Option<bool>,
     pub keyboard_support: Option<bool>,
+    /// A subclasse da lista, quando há (ver [`ListOverrides`]).
+    pub overrides: Option<Rc<dyn ListOverrides<T>>>,
 }
 
 impl<T> Default for ListOptions<T> {
     fn default() -> Self {
-        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None }
+        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None, overrides: None }
     }
 }
 
@@ -421,6 +445,10 @@ impl<T: Clone + 'static> List<T> {
             splice_trait(&self.anchor, &self.view, identity, start, delete_count, elements);
             self.view.splice(start, delete_count, elements);
         });
+
+        if let Some(overrides) = &self.options.overrides {
+            overrides.after_splice(self, start, elements);
+        }
     }
 
     pub fn update_element_height(&self, index: usize, size: Option<f64>) {
@@ -480,6 +508,15 @@ impl<T: Clone + 'static> List<T> {
     }
 
     pub fn set_selection(&self, indexes: Vec<usize>, browser_event: Option<BrowserEvent>) {
+        self.set_selection_base(indexes.clone(), browser_event);
+
+        if let Some(overrides) = &self.options.overrides {
+            overrides.after_set_selection(self, &indexes, browser_event);
+        }
+    }
+
+    /// O `super.setSelection` da `TreeNodeList` (e o `fromAPI = true` dela).
+    pub fn set_selection_base(&self, indexes: Vec<usize>, browser_event: Option<BrowserEvent>) {
         for index in &indexes {
             if *index >= self.length() {
                 throw(&list_error(&self.user, &format!("Invalid index {index}")).to_string());
@@ -499,6 +536,15 @@ impl<T: Clone + 'static> List<T> {
     }
 
     pub fn set_anchor(&self, index: Option<usize>) {
+        self.set_anchor_base(index);
+
+        if let Some(overrides) = &self.options.overrides {
+            overrides.after_set_anchor(self, index);
+        }
+    }
+
+    /// O `super.setAnchor` da `TreeNodeList` (e o `fromAPI = true` dela).
+    pub fn set_anchor_base(&self, index: Option<usize>) {
         let Some(index) = index else {
             self.anchor.set(Vec::new(), None);
             return;
@@ -537,6 +583,15 @@ impl<T: Clone + 'static> List<T> {
     }
 
     pub fn set_focus(&self, indexes: Vec<usize>, browser_event: Option<BrowserEvent>) {
+        self.set_focus_base(indexes.clone(), browser_event);
+
+        if let Some(overrides) = &self.options.overrides {
+            overrides.after_set_focus(self, &indexes, browser_event);
+        }
+    }
+
+    /// O `super.setFocus` da `TreeNodeList` (e o `fromAPI = true` dela).
+    pub fn set_focus_base(&self, indexes: Vec<usize>, browser_event: Option<BrowserEvent>) {
         for index in &indexes {
             if *index >= self.length() {
                 throw(&list_error(&self.user, &format!("Invalid index {index}")).to_string());
@@ -798,7 +853,7 @@ impl<T: Clone + 'static> List<T> {
         let multiple = self.options.multiple_selection_support;
         self.base.register(self.ui.listen(self.view.dom_node, EventKind::KeyDown, false, move |e| {
             let (Some(list), Some(KeyData { key_code, modifiers })) = (weak.upgrade(), e.key) else { return };
-            let browser_event = Some(BrowserEvent { modifiers, button: PointerButton::Primary, target: Some(e.target) });
+            let browser_event = Some(BrowserEvent { modifiers, button: PointerButton::Primary, target: Some(e.target), click_count: 0, is_keyboard: true, force_event: false });
             match key_code {
                 KeyCode::Enter => {
                     e.stop(true);
@@ -866,44 +921,72 @@ impl<T: Clone + 'static> List<T> {
         if !self.options.view.mouse_support {
             return;
         }
-        let multiple = self.options.multiple_selection_support != Some(false);
 
         let weak = self.weak_self.clone();
-        self.base.register(self.view.on_mouse_down().listen(move |_| {
-            if let Some(list) = weak.upgrade()
-                && !list.is_dom_focused()
-            {
-                list.dom_focus();
+        self.base.register(self.view.on_mouse_down().listen(move |e| {
+            let Some(list) = weak.upgrade() else { return };
+            match &list.options.overrides {
+                Some(overrides) => overrides.mouse_down(&list, e),
+                None => list.default_mouse_down(e),
             }
         }));
 
         let weak = self.weak_self.clone();
         self.base.register(self.view.on_mouse_click().listen(move |e| {
-            if let Some(list) = weak.upgrade() {
-                list.on_view_pointer(e, multiple);
+            let Some(list) = weak.upgrade() else { return };
+            match &list.options.overrides {
+                Some(overrides) => overrides.view_pointer(&list, e),
+                None => list.default_view_pointer(e),
             }
         }));
 
         let weak = self.weak_self.clone();
         self.base.register(self.view.on_mouse_dbl_click().listen(move |e| {
             let Some(list) = weak.upgrade() else { return };
-            if multiple && (Self::is_selection_single_change_event(e) || e.browser_event.modifiers.shift) {
-                return;
+            match &list.options.overrides {
+                Some(overrides) => overrides.double_click(&list, e),
+                None => list.default_double_click(e),
             }
-            if e.is_handled_by_list.get() {
-                return;
-            }
-            e.is_handled_by_list.set(true);
-            let focus = list.get_focus();
-            list.set_selection(focus, Some(e.browser_event));
         }));
     }
 
-    fn is_selection_single_change_event(event: &ListMouseEvent<T>) -> bool {
+    fn multiple_selection(&self) -> bool {
+        self.options.multiple_selection_support != Some(false)
+    }
+
+    /// `MouseController.onMouseDown`.
+    pub fn default_mouse_down(&self, _e: &ListMouseEvent<T>) {
+        if !self.is_dom_focused() {
+            self.dom_focus();
+        }
+    }
+
+    /// `MouseController.onDoubleClick`.
+    pub fn default_double_click(&self, e: &ListMouseEvent<T>) {
+        if self.multiple_selection() && (Self::is_selection_single_change_event(e) || Self::is_selection_range_change_event(e)) {
+            return;
+        }
+        if e.is_handled_by_list.get() {
+            return;
+        }
+        e.is_handled_by_list.set(true);
+        let focus = self.get_focus();
+        self.set_selection(focus, Some(e.browser_event));
+    }
+
+    /// `MouseController.isSelectionRangeChangeEvent`.
+    pub fn is_selection_range_change_event(event: &ListMouseEvent<T>) -> bool {
+        event.browser_event.modifiers.shift
+    }
+
+    /// `MouseController.isSelectionSingleChangeEvent`.
+    pub fn is_selection_single_change_event(event: &ListMouseEvent<T>) -> bool {
         if is_macintosh() { event.browser_event.modifiers.meta } else { event.browser_event.modifiers.ctrl }
     }
 
-    fn on_view_pointer(&self, e: &ListMouseEvent<T>, multiple: bool) {
+    /// `MouseController.onViewPointer`.
+    pub fn default_view_pointer(&self, e: &ListMouseEvent<T>) {
+        let multiple = self.multiple_selection();
         if e.is_handled_by_list.get() {
             return;
         }
@@ -916,7 +999,7 @@ impl<T: Clone + 'static> List<T> {
             return;
         };
 
-        if multiple && (Self::is_selection_single_change_event(e) || e.browser_event.modifiers.shift) {
+        if multiple && (Self::is_selection_single_change_event(e) || Self::is_selection_range_change_event(e)) {
             return self.change_selection(e, focus);
         }
 
