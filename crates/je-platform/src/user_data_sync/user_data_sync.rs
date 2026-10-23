@@ -11,6 +11,19 @@ use je_base::json_formatter::FormattingOptions;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 
+use crate::storage::StorageScope;
+
+/// `IStorageValue`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IStorageValue {
+    pub version: f64,
+    pub value: JsString,
+    pub scope: Option<StorageScope>,
+}
+
+/// `SYNC_SERVICE_URL_TYPE`: chave sincronizada só na web.
+pub const SYNC_SERVICE_URL_TYPE: &str = "sync.store.url.type";
+
 /// `IUserDataSyncUtilService`.
 pub trait IUserDataSyncUtilService {
     /// Resolve cada atalho do usuário (`alt+c`, `cmd+k cmd+c`...) para a forma normalizada, que independe
