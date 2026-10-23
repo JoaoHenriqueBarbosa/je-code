@@ -13,13 +13,15 @@
 //!
 //! Divergências e pendências:
 //!
-//! - `unknown` do TypeScript é [`OptionInput`], um tipo próprio mínimo.
-//!   `// TODO(config)`: trocar por `je_base::dynamic::Dynamic` quando `IEditorOptions` existir.
-//! - `IConfigurationPropertySchema` ainda não tem porte em `je-base` (`json_schema.rs` só tem
-//!   `get_compressed_content` sobre `Dynamic`), então [`ConfigurationPropertySchema`] guarda só os
-//!   campos que as classes deste arquivo escrevem. `// TODO(config)`: trocar pelo tipo de `je-base`.
-//! - `FontInfo` e `IMinimapLayoutInput` não existem ainda: ficam de fora de [`EnvironmentalOptions`] e
-//!   de [`ComputeOptionsMemory`] (ver os `TODO(config)`).
+//! - `unknown` do TypeScript é [`Dynamic`], que carrega objetos e arrays, então as opções-objeto
+//!   validam campo a campo.
+//! - `IConfigurationPropertySchema` e `{ [path: string]: IConfigurationPropertySchema }` são objetos
+//!   [`Dynamic`] (a convenção de `je-base/src/json_schema.rs`): os construtores escrevem neles `type`,
+//!   `default`, `minimum`, `maximum` e `enum` na mesma ordem de chaves do original.
+//! - `IMinimapLayoutInput` não existe ainda: fica de fora de [`ComputeOptionsMemory`] (ver o
+//!   `TODO(config)`).
+//! - Os valores de texto das opções são `String`, então um surrogate isolado de uma `string` do
+//!   JavaScript vira U+FFFD ao entrar.
 //! - `applyUpdate` do original faz mesclagem profunda em objetos. Aqui o padrão compara por
 //!   igualdade (`PartialEq`), que é o caso de primitivos e arrays; opção cujo valor é struct com campos
 //!   parciais sobrescreve [`EditorOptionImpl::apply_update`].
@@ -30,6 +32,10 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
+
+use je_base::dynamic::{Dynamic, Truthy};
+
+use super::font_info::FontInfo;
 
 // ---------------------------------------------------------------------------------------------
 // enum EditorOption
@@ -245,67 +251,6 @@ editor_options! {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Entrada sem tipo e esquema
-
-/// O `unknown` que `validate` recebe. `// TODO(config)`: trocar por `Dynamic` quando `IEditorOptions` existir.
-#[derive(Clone, Debug, PartialEq)]
-pub enum OptionInput {
-    Undefined,
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(String),
-    /// Objeto ou array: só importa que é verdadeiro e que não é número nem string.
-    Other,
-}
-
-impl OptionInput {
-    pub fn string(value: &str) -> Self {
-        OptionInput::String(value.to_string())
-    }
-
-    /// `Boolean(value)` do JavaScript.
-    fn truthy(&self) -> bool {
-        match self {
-            OptionInput::Undefined | OptionInput::Null => false,
-            OptionInput::Bool(b) => *b,
-            OptionInput::Number(n) => *n != 0.0 && !n.is_nan(),
-            OptionInput::String(s) => !s.is_empty(),
-            OptionInput::Other => true,
-        }
-    }
-}
-
-/// Valor de `default` de um esquema.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SchemaValue {
-    Bool(bool),
-    Number(f64),
-    String(String),
-}
-
-/// Subconjunto de `IConfigurationPropertySchema` que este arquivo escreve ou lê.
-/// `// TODO(config)`: trocar pelo tipo de `je-base` quando ele existir.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ConfigurationPropertySchema {
-    pub type_: Option<String>,
-    pub default: Option<SchemaValue>,
-    pub minimum: Option<f64>,
-    pub maximum: Option<f64>,
-    pub enum_values: Option<Vec<String>>,
-    pub description: Option<String>,
-    pub markdown_description: Option<String>,
-}
-
-/// `IConfigurationPropertySchema | { [path: string]: IConfigurationPropertySchema } | undefined`
-/// (o `undefined` é `Option<OptionSchema>`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum OptionSchema {
-    Single(ConfigurationPropertySchema),
-    Map(Vec<(String, ConfigurationPropertySchema)>),
-}
-
-// ---------------------------------------------------------------------------------------------
 // Ambiente, memória, evento, valores calculados
 
 /// `AccessibilitySupport` (`src/vs/platform/accessibility/common/accessibility.ts`).
@@ -344,7 +289,7 @@ pub struct EnvironmentalOptions {
     pub memory: Option<Rc<RefCell<ComputeOptionsMemory>>>,
     pub outer_width: f64,
     pub outer_height: f64,
-    // TODO(config): `fontInfo: FontInfo`, quando `config/font_info.rs` existir.
+    pub font_info: FontInfo,
     pub extra_editor_class_name: String,
     pub is_dominated_by_long_lines: bool,
     pub view_line_count: f64,
@@ -460,9 +405,9 @@ pub trait EditorOptionImpl {
     fn id(&self) -> EditorOption;
     fn name(&self) -> &str;
     fn default_value(&self) -> Self::Value;
-    fn validate(&self, input: &OptionInput) -> Self::Value;
+    fn validate(&self, input: &Dynamic) -> Self::Value;
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         None
     }
 
@@ -479,9 +424,9 @@ pub trait EditorOptionImpl {
 pub trait ErasedEditorOption {
     fn id(&self) -> EditorOption;
     fn name(&self) -> &str;
-    fn schema(&self) -> Option<&OptionSchema>;
+    fn schema(&self) -> Option<&Dynamic>;
     fn default_value(&self) -> Rc<dyn Any>;
-    fn validate(&self, input: &OptionInput) -> Rc<dyn Any>;
+    fn validate(&self, input: &Dynamic) -> Rc<dyn Any>;
     fn compute(&self, env: &EnvironmentalOptions, options: &ComputedEditorOptions, value: &dyn Any) -> Rc<dyn Any>;
     /// Devolve o novo valor e se mudou.
     fn apply_update(&self, value: Option<&dyn Any>, update: &dyn Any) -> (Rc<dyn Any>, bool);
@@ -500,7 +445,7 @@ impl<O: EditorOptionImpl> ErasedEditorOption for O {
         EditorOptionImpl::name(self)
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         EditorOptionImpl::schema(self)
     }
 
@@ -508,7 +453,7 @@ impl<O: EditorOptionImpl> ErasedEditorOption for O {
         Rc::new(EditorOptionImpl::default_value(self))
     }
 
-    fn validate(&self, input: &OptionInput) -> Rc<dyn Any> {
+    fn validate(&self, input: &Dynamic) -> Rc<dyn Any> {
         Rc::new(EditorOptionImpl::validate(self, input))
     }
 
@@ -600,23 +545,23 @@ fn to_int32(value: f64) -> f64 {
 }
 
 /// `boolean(value, defaultValue)`.
-pub fn boolean(value: &OptionInput, default_value: bool) -> bool {
-    if matches!(value, OptionInput::Undefined) {
+pub fn boolean(value: &Dynamic, default_value: bool) -> bool {
+    if value.is_undefined() {
         return default_value;
     }
-    if matches!(value, OptionInput::String(s) if s == "false") {
+    if matches!(value, Dynamic::String(s) if *s == "false") {
         // A string 'false' conta como falso.
         return false;
     }
-    value.truthy()
+    value.is_truthy()
 }
 
 /// `clampedInt<T>(value, defaultValue, minimum, maximum)`: `Err(default)` é o caso `number | T` em que
 /// vale o valor padrão.
-pub fn clamped_int_or<T>(value: &OptionInput, default_value: T, minimum: f64, maximum: f64) -> Result<f64, T> {
+pub fn clamped_int_or<T>(value: &Dynamic, default_value: T, minimum: f64, maximum: f64) -> Result<f64, T> {
     let number = match value {
-        OptionInput::String(s) => js_parse_int(s),
-        OptionInput::Number(n) => *n,
+        Dynamic::String(s) => js_parse_int(&s.to_string_lossy()),
+        Dynamic::Number(n) => *n,
         _ => return Err(default_value),
     };
     if number.is_nan() {
@@ -630,15 +575,15 @@ pub fn clamped_int_or<T>(value: &OptionInput, default_value: T, minimum: f64, ma
 }
 
 /// `clampedInt` com padrão numérico.
-pub fn clamped_int(value: &OptionInput, default_value: f64, minimum: f64, maximum: f64) -> f64 {
+pub fn clamped_int(value: &Dynamic, default_value: f64, minimum: f64, maximum: f64) -> f64 {
     clamped_int_or(value, default_value, minimum, maximum).unwrap_or_else(|d| d)
 }
 
 /// `EditorFloatOption.float`.
-pub fn float(value: &OptionInput, default_value: f64) -> f64 {
+pub fn float(value: &Dynamic, default_value: f64) -> f64 {
     let number = match value {
-        OptionInput::String(s) => js_parse_float(s),
-        OptionInput::Number(n) => *n,
+        Dynamic::String(s) => js_parse_float(&s.to_string_lossy()),
+        Dynamic::Number(n) => *n,
         _ => return default_value,
     };
     if number.is_nan() { default_value } else { number }
@@ -656,35 +601,36 @@ pub fn clamp_float(n: f64, min: f64, max: f64) -> f64 {
 }
 
 /// `clampedFloat(value, defaultValue, minimum, maximum)`.
-pub fn clamped_float(value: &OptionInput, default_value: f64, minimum: f64, maximum: f64) -> f64 {
-    if matches!(value, OptionInput::Undefined) {
+pub fn clamped_float(value: &Dynamic, default_value: f64, minimum: f64, maximum: f64) -> f64 {
+    if value.is_undefined() {
         return default_value;
     }
     clamp_float(float(value, default_value), minimum, maximum)
 }
 
 /// `EditorStringOption.string`.
-pub fn string(value: &OptionInput, default_value: &str) -> String {
+pub fn string(value: &Dynamic, default_value: &str) -> String {
     match value {
-        OptionInput::String(s) => s.clone(),
+        Dynamic::String(s) => s.to_string_lossy(),
         _ => default_value.to_string(),
     }
 }
 
 /// `stringSet(value, defaultValue, allowedValues, renamedValues)`.
-pub fn string_set(value: &OptionInput, default_value: &str, allowed_values: &[&str], renamed_values: Option<&[(&str, &str)]>) -> String {
-    let OptionInput::String(value) = value else {
+pub fn string_set(value: &Dynamic, default_value: &str, allowed_values: &[&str], renamed_values: Option<&[(&str, &str)]>) -> String {
+    let Dynamic::String(value) = value else {
         return default_value.to_string();
     };
+    let value = value.to_string_lossy();
     if let Some(renamed) = renamed_values {
-        if let Some((_, to)) = renamed.iter().find(|(from, _)| from == value) {
+        if let Some((_, to)) = renamed.iter().find(|(from, _)| *from == value) {
             return (*to).to_string();
         }
     }
     if !allowed_values.contains(&value.as_str()) {
         return default_value.to_string();
     }
-    value.clone()
+    value
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -719,7 +665,7 @@ impl<V: Clone + PartialEq + 'static> EditorOptionImpl for ComputedEditorOption<V
         self.default_value.clone()
     }
 
-    fn validate(&self, _input: &OptionInput) -> V {
+    fn validate(&self, _input: &Dynamic) -> V {
         self.default_value.clone()
     }
 
@@ -728,13 +674,18 @@ impl<V: Clone + PartialEq + 'static> EditorOptionImpl for ComputedEditorOption<V
     }
 }
 
-/// Aplica ao esquema o que os construtores das opções simples escrevem nele.
-fn typed_schema(schema: Option<ConfigurationPropertySchema>, type_: &str, default: SchemaValue) -> Option<OptionSchema> {
-    schema.map(|mut schema| {
-        schema.type_ = Some(type_.to_string());
-        schema.default = Some(default);
-        OptionSchema::Single(schema)
-    })
+/// `schema.<key> = value` do original, na ordem de chamada. Um esquema que não é objeto (o
+/// original só passa objetos) não recebe nada.
+fn write_schema(schema: &Option<Dynamic>, entries: Vec<(&str, Dynamic)>) {
+    if let Some(Dynamic::Object(object)) = schema {
+        for (key, value) in entries {
+            object.set(&key.into(), value);
+        }
+    }
+}
+
+fn strings_array(values: &[&str]) -> Dynamic {
+    Dynamic::array(values.iter().map(|value| Dynamic::string(value)))
 }
 
 /// `EditorBooleanOption`.
@@ -742,12 +693,12 @@ pub struct EditorBooleanOption {
     id: EditorOption,
     name: &'static str,
     default_value: bool,
-    schema: Option<OptionSchema>,
+    schema: Option<Dynamic>,
 }
 
 impl EditorBooleanOption {
-    pub fn new(id: EditorOption, name: &'static str, default_value: bool, schema: Option<ConfigurationPropertySchema>) -> Self {
-        let schema = typed_schema(schema, "boolean", SchemaValue::Bool(default_value));
+    pub fn new(id: EditorOption, name: &'static str, default_value: bool, schema: Option<Dynamic>) -> Self {
+        write_schema(&schema, vec![("type", Dynamic::string("boolean")), ("default", default_value.into())]);
         Self { id, name, default_value, schema }
     }
 }
@@ -767,11 +718,11 @@ impl EditorOptionImpl for EditorBooleanOption {
         self.default_value
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         self.schema.as_ref()
     }
 
-    fn validate(&self, input: &OptionInput) -> bool {
+    fn validate(&self, input: &Dynamic) -> bool {
         boolean(input, self.default_value)
     }
 }
@@ -783,17 +734,20 @@ pub struct EditorIntOption {
     default_value: f64,
     pub minimum: f64,
     pub maximum: f64,
-    schema: Option<OptionSchema>,
+    schema: Option<Dynamic>,
 }
 
 impl EditorIntOption {
-    pub fn new(id: EditorOption, name: &'static str, default_value: f64, minimum: f64, maximum: f64, schema: Option<ConfigurationPropertySchema>) -> Self {
-        let schema = schema.map(|mut schema| {
-            schema.minimum = Some(minimum);
-            schema.maximum = Some(maximum);
-            schema
-        });
-        let schema = typed_schema(schema, "integer", SchemaValue::Number(default_value));
+    pub fn new(id: EditorOption, name: &'static str, default_value: f64, minimum: f64, maximum: f64, schema: Option<Dynamic>) -> Self {
+        write_schema(
+            &schema,
+            vec![
+                ("type", Dynamic::string("integer")),
+                ("default", default_value.into()),
+                ("minimum", minimum.into()),
+                ("maximum", maximum.into()),
+            ],
+        );
         Self { id, name, default_value, minimum, maximum, schema }
     }
 }
@@ -813,11 +767,11 @@ impl EditorOptionImpl for EditorIntOption {
         self.default_value
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         self.schema.as_ref()
     }
 
-    fn validate(&self, input: &OptionInput) -> f64 {
+    fn validate(&self, input: &Dynamic) -> f64 {
         clamped_int(input, self.default_value, self.minimum, self.maximum)
     }
 }
@@ -830,7 +784,7 @@ pub struct EditorFloatOption {
     pub minimum: Option<f64>,
     pub maximum: Option<f64>,
     pub validation_fn: fn(f64) -> f64,
-    schema: Option<OptionSchema>,
+    schema: Option<Dynamic>,
 }
 
 impl EditorFloatOption {
@@ -839,17 +793,21 @@ impl EditorFloatOption {
         name: &'static str,
         default_value: f64,
         validation_fn: fn(f64) -> f64,
-        schema: Option<ConfigurationPropertySchema>,
+        schema: Option<Dynamic>,
         minimum: Option<f64>,
         maximum: Option<f64>,
     ) -> Self {
-        let schema = schema.map(|mut schema| {
-            // O original escreve `minimum`/`maximum` mesmo quando `undefined`.
-            schema.minimum = minimum;
-            schema.maximum = maximum;
-            schema
-        });
-        let schema = typed_schema(schema, "number", SchemaValue::Number(default_value));
+        // O original escreve `minimum`/`maximum` mesmo quando `undefined` (a chave passa a existir).
+        let optional = |value: Option<f64>| value.map_or(Dynamic::Undefined, Dynamic::Number);
+        write_schema(
+            &schema,
+            vec![
+                ("type", Dynamic::string("number")),
+                ("default", default_value.into()),
+                ("minimum", optional(minimum)),
+                ("maximum", optional(maximum)),
+            ],
+        );
         Self { id, name, default_value, minimum, maximum, validation_fn, schema }
     }
 }
@@ -869,11 +827,11 @@ impl EditorOptionImpl for EditorFloatOption {
         self.default_value
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         self.schema.as_ref()
     }
 
-    fn validate(&self, input: &OptionInput) -> f64 {
+    fn validate(&self, input: &Dynamic) -> f64 {
         (self.validation_fn)(float(input, self.default_value))
     }
 }
@@ -883,12 +841,12 @@ pub struct EditorStringOption {
     id: EditorOption,
     name: &'static str,
     default_value: String,
-    schema: Option<OptionSchema>,
+    schema: Option<Dynamic>,
 }
 
 impl EditorStringOption {
-    pub fn new(id: EditorOption, name: &'static str, default_value: &str, schema: Option<ConfigurationPropertySchema>) -> Self {
-        let schema = typed_schema(schema, "string", SchemaValue::String(default_value.to_string()));
+    pub fn new(id: EditorOption, name: &'static str, default_value: &str, schema: Option<Dynamic>) -> Self {
+        write_schema(&schema, vec![("type", Dynamic::string("string")), ("default", Dynamic::string(default_value))]);
         Self { id, name, default_value: default_value.to_string(), schema }
     }
 }
@@ -908,21 +866,13 @@ impl EditorOptionImpl for EditorStringOption {
         self.default_value.clone()
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         self.schema.as_ref()
     }
 
-    fn validate(&self, input: &OptionInput) -> String {
+    fn validate(&self, input: &Dynamic) -> String {
         string(input, &self.default_value)
     }
-}
-
-fn enum_schema(schema: Option<ConfigurationPropertySchema>, allowed: &[&str], default: &str) -> Option<OptionSchema> {
-    let schema = schema.map(|mut schema| {
-        schema.enum_values = Some(allowed.iter().map(|s| (*s).to_string()).collect());
-        schema
-    });
-    typed_schema(schema, "string", SchemaValue::String(default.to_string()))
 }
 
 /// `EditorStringEnumOption`.
@@ -931,7 +881,7 @@ pub struct EditorStringEnumOption {
     name: &'static str,
     default_value: String,
     allowed_values: Vec<&'static str>,
-    schema: Option<OptionSchema>,
+    schema: Option<Dynamic>,
 }
 
 impl EditorStringEnumOption {
@@ -940,9 +890,16 @@ impl EditorStringEnumOption {
         name: &'static str,
         default_value: &str,
         allowed_values: &[&'static str],
-        schema: Option<ConfigurationPropertySchema>,
+        schema: Option<Dynamic>,
     ) -> Self {
-        let schema = enum_schema(schema, allowed_values, default_value);
+        write_schema(
+            &schema,
+            vec![
+                ("type", Dynamic::string("string")),
+                ("enum", strings_array(allowed_values)),
+                ("default", Dynamic::string(default_value)),
+            ],
+        );
         Self { id, name, default_value: default_value.to_string(), allowed_values: allowed_values.to_vec(), schema }
     }
 }
@@ -962,11 +919,11 @@ impl EditorOptionImpl for EditorStringEnumOption {
         self.default_value.clone()
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         self.schema.as_ref()
     }
 
-    fn validate(&self, input: &OptionInput) -> String {
+    fn validate(&self, input: &Dynamic) -> String {
         string_set(input, &self.default_value, &self.allowed_values, None)
     }
 }
@@ -978,7 +935,7 @@ pub struct EditorEnumOption<V> {
     default_value: V,
     allowed_values: Vec<&'static str>,
     convert: fn(&str) -> V,
-    schema: Option<OptionSchema>,
+    schema: Option<Dynamic>,
 }
 
 impl<V> EditorEnumOption<V> {
@@ -990,9 +947,16 @@ impl<V> EditorEnumOption<V> {
         default_string_value: &str,
         allowed_values: &[&'static str],
         convert: fn(&str) -> V,
-        schema: Option<ConfigurationPropertySchema>,
+        schema: Option<Dynamic>,
     ) -> Self {
-        let schema = enum_schema(schema, allowed_values, default_string_value);
+        write_schema(
+            &schema,
+            vec![
+                ("type", Dynamic::string("string")),
+                ("enum", strings_array(allowed_values)),
+                ("default", Dynamic::string(default_string_value)),
+            ],
+        );
         Self { id, name, default_value, allowed_values: allowed_values.to_vec(), convert, schema }
     }
 }
@@ -1012,18 +976,19 @@ impl<V: Clone + PartialEq + 'static> EditorOptionImpl for EditorEnumOption<V> {
         self.default_value.clone()
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         self.schema.as_ref()
     }
 
-    fn validate(&self, input: &OptionInput) -> V {
-        let OptionInput::String(input) = input else {
+    fn validate(&self, input: &Dynamic) -> V {
+        let Dynamic::String(input) = input else {
             return self.default_value.clone();
         };
+        let input = input.to_string_lossy();
         if !self.allowed_values.contains(&input.as_str()) {
             return self.default_value.clone();
         }
-        (self.convert)(input)
+        (self.convert)(&input)
     }
 }
 
@@ -1058,12 +1023,44 @@ pub fn auto_indent_from_string(auto_indent: &str) -> Option<EditorAutoIndentStra
 mod tests {
     use super::*;
 
-    fn num(n: f64) -> OptionInput {
-        OptionInput::Number(n)
+    use crate::config::font_info::{BareFontInfoOptions, FontInfoOptions};
+
+    fn num(n: f64) -> Dynamic {
+        Dynamic::Number(n)
     }
 
-    fn text(s: &str) -> OptionInput {
-        OptionInput::string(s)
+    fn text(s: &str) -> Dynamic {
+        Dynamic::string(s)
+    }
+
+    fn schema_with_description() -> Option<Dynamic> {
+        Some(Dynamic::object([("description", text("d"))]))
+    }
+
+    fn font_info() -> FontInfo {
+        FontInfo::new(
+            FontInfoOptions {
+                bare: BareFontInfoOptions {
+                    pixel_ratio: 1.0,
+                    font_family: "monospace".into(),
+                    font_weight: "normal".into(),
+                    font_size: 14.0,
+                    font_feature_settings: "normal".into(),
+                    font_variation_settings: "normal".into(),
+                    line_height: 19.0,
+                    letter_spacing: 0.0,
+                },
+                is_monospace: true,
+                typical_halfwidth_character_width: 8.0,
+                typical_fullwidth_character_width: 16.0,
+                can_use_halfwidth_rightwards_arrow: true,
+                space_width: 8.0,
+                middot_width: 8.0,
+                wsmiddot_width: 8.0,
+                max_digit_width: 8.0,
+            },
+            true,
+        )
     }
 
     #[test]
@@ -1082,18 +1079,19 @@ mod tests {
 
     #[test]
     fn boolean_cases() {
-        assert!(boolean(&OptionInput::Undefined, true));
-        assert!(!boolean(&OptionInput::Undefined, false));
+        assert!(boolean(&Dynamic::Undefined, true));
+        assert!(!boolean(&Dynamic::Undefined, false));
         assert!(!boolean(&text("false"), true));
         assert!(boolean(&text("true"), false));
         assert!(boolean(&text("x"), false));
         assert!(!boolean(&text(""), true));
-        assert!(!boolean(&OptionInput::Null, true));
+        assert!(!boolean(&Dynamic::Null, true));
         assert!(!boolean(&num(0.0), true));
         assert!(!boolean(&num(f64::NAN), true));
         assert!(boolean(&num(1.0), false));
-        assert!(boolean(&OptionInput::Other, false));
-        assert!(!boolean(&OptionInput::Bool(false), true));
+        assert!(boolean(&Dynamic::array([]), false));
+        assert!(boolean(&Dynamic::object([("a", Dynamic::Null)]), false));
+        assert!(!boolean(&Dynamic::Bool(false), true));
     }
 
     #[test]
@@ -1101,8 +1099,8 @@ mod tests {
         assert_eq!(clamped_int(&text("12"), 5.0, 0.0, 100.0), 12.0);
         assert_eq!(clamped_int(&text("12px"), 5.0, 0.0, 100.0), 12.0);
         assert_eq!(clamped_int(&text("abc"), 5.0, 0.0, 100.0), 5.0);
-        assert_eq!(clamped_int(&OptionInput::Undefined, 5.0, 0.0, 100.0), 5.0);
-        assert_eq!(clamped_int(&OptionInput::Bool(true), 5.0, 0.0, 100.0), 5.0);
+        assert_eq!(clamped_int(&Dynamic::Undefined, 5.0, 0.0, 100.0), 5.0);
+        assert_eq!(clamped_int(&Dynamic::Bool(true), 5.0, 0.0, 100.0), 5.0);
         assert_eq!(clamped_int(&num(f64::NAN), 5.0, 0.0, 100.0), 5.0);
         assert_eq!(clamped_int(&num(5.7), 0.0, 0.0, 100.0), 5.0);
         assert_eq!(clamped_int(&num(-5.7), 0.0, -10.0, 100.0), -5.0);
@@ -1117,13 +1115,13 @@ mod tests {
 
     #[test]
     fn clamped_float_cases() {
-        assert_eq!(clamped_float(&OptionInput::Undefined, 1.5, 0.0, 10.0), 1.5);
+        assert_eq!(clamped_float(&Dynamic::Undefined, 1.5, 0.0, 10.0), 1.5);
         assert_eq!(clamped_float(&text("2.5"), 1.5, 0.0, 10.0), 2.5);
         assert_eq!(clamped_float(&text("2.5abc"), 1.5, 0.0, 10.0), 2.5);
         assert_eq!(clamped_float(&text(".5"), 1.0, 0.0, 10.0), 0.5);
         assert_eq!(clamped_float(&text("1e1"), 1.0, 0.0, 100.0), 10.0);
         assert_eq!(clamped_float(&text("abc"), 1.5, 0.0, 10.0), 1.5);
-        assert_eq!(clamped_float(&OptionInput::Null, 1.5, 0.0, 10.0), 1.5);
+        assert_eq!(clamped_float(&Dynamic::Null, 1.5, 0.0, 10.0), 1.5);
         assert_eq!(clamped_float(&num(-3.0), 1.5, 0.0, 10.0), 0.0);
         assert_eq!(clamped_float(&num(30.0), 1.5, 0.0, 10.0), 10.0);
         assert_eq!(clamped_float(&text("-Infinity"), 1.5, -5.0, 10.0), -5.0);
@@ -1135,7 +1133,8 @@ mod tests {
         assert_eq!(string_set(&text("off"), "on", &allowed, None), "off");
         assert_eq!(string_set(&text("nope"), "on", &allowed, None), "on");
         assert_eq!(string_set(&num(1.0), "on", &allowed, None), "on");
-        assert_eq!(string_set(&OptionInput::Undefined, "on", &allowed, None), "on");
+        assert_eq!(string_set(&Dynamic::Undefined, "on", &allowed, None), "on");
+        assert_eq!(string_set(&Dynamic::array([text("on")]), "off", &allowed, None), "off");
         let renamed: &[(&str, &str)] = &[("true", "on"), ("false", "off")];
         assert_eq!(string_set(&text("true"), "smart", &allowed, Some(renamed)), "on");
         assert_eq!(string_set(&text("false"), "smart", &allowed, Some(renamed)), "off");
@@ -1157,41 +1156,54 @@ mod tests {
 
     #[test]
     fn simple_options_validate_and_fill_schema() {
-        let boolean_option = EditorBooleanOption::new(
-            EditorOption::ReadOnly,
-            "readOnly",
-            true,
-            Some(ConfigurationPropertySchema { description: Some("d".into()), ..Default::default() }),
-        );
-        assert!(EditorOptionImpl::validate(&boolean_option, &OptionInput::Undefined));
+        let boolean_option = EditorBooleanOption::new(EditorOption::ReadOnly, "readOnly", true, schema_with_description());
+        assert!(EditorOptionImpl::validate(&boolean_option, &Dynamic::Undefined));
         assert!(!EditorOptionImpl::validate(&boolean_option, &text("false")));
-        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&boolean_option) else { panic!("sem esquema") };
-        assert_eq!(schema.type_.as_deref(), Some("boolean"));
-        assert_eq!(schema.default, Some(SchemaValue::Bool(true)));
-        assert_eq!(schema.description.as_deref(), Some("d"));
+        let schema = EditorOptionImpl::schema(&boolean_option).expect("sem esquema");
+        assert_eq!(schema.get_str("type"), text("boolean"));
+        assert_eq!(schema.get_str("default"), Dynamic::Bool(true));
+        assert_eq!(schema.get_str("description"), text("d"));
+        assert_eq!(schema.own_keys(), vec!["description", "type", "default"]);
 
-        let int_option = EditorIntOption::new(EditorOption::CursorWidth, "cursorWidth", 0.0, 0.0, 10.0, Some(Default::default()));
+        let int_option = EditorIntOption::new(EditorOption::CursorWidth, "cursorWidth", 0.0, 0.0, 10.0, Some(Dynamic::object::<&str>([])));
         assert_eq!(EditorOptionImpl::validate(&int_option, &num(99.0)), 10.0);
-        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&int_option) else { panic!("sem esquema") };
-        assert_eq!(schema.type_.as_deref(), Some("integer"));
-        assert_eq!((schema.minimum, schema.maximum), (Some(0.0), Some(10.0)));
+        let schema = EditorOptionImpl::schema(&int_option).expect("sem esquema");
+        assert_eq!(schema.get_str("type"), text("integer"));
+        assert_eq!((schema.get_str("minimum"), schema.get_str("maximum")), (num(0.0), num(10.0)));
+        assert_eq!(schema.own_keys(), vec!["type", "default", "minimum", "maximum"]);
 
         let float_option = EditorFloatOption::new(EditorOption::LetterSpacing, "letterSpacing", 0.0, |n| clamp_float(n, -5.0, 20.0), None, None, None);
         assert_eq!(EditorOptionImpl::validate(&float_option, &text("30")), 20.0);
         assert_eq!(EditorOptionImpl::validate(&float_option, &text("zz")), 0.0);
         assert!(EditorOptionImpl::schema(&float_option).is_none());
 
+        // O original escreve `minimum`/`maximum` mesmo quando `undefined`: as chaves existem.
+        let float_with_schema =
+            EditorFloatOption::new(EditorOption::LetterSpacing, "letterSpacing", 1.0, |n| n, Some(Dynamic::object::<&str>([])), Some(0.5), None);
+        let schema = EditorOptionImpl::schema(&float_with_schema).expect("sem esquema");
+        assert_eq!(schema.get_str("type"), text("number"));
+        assert_eq!(schema.own_keys(), vec!["type", "default", "minimum", "maximum"]);
+        assert_eq!(schema.get_str("minimum"), num(0.5));
+        assert_eq!(schema.get_str("maximum"), Dynamic::Undefined);
+
+        let string_option = EditorStringOption::new(EditorOption::AriaLabel, "ariaLabel", "x", Some(Dynamic::object::<&str>([])));
+        assert_eq!(EditorOptionImpl::validate(&string_option, &text("y")), "y");
+        assert_eq!(EditorOptionImpl::validate(&string_option, &num(1.0)), "x");
+        let schema = EditorOptionImpl::schema(&string_option).expect("sem esquema");
+        assert_eq!((schema.get_str("type"), schema.get_str("default")), (text("string"), text("x")));
+
         let enum_option = EditorStringEnumOption::new(
             EditorOption::AcceptSuggestionOnEnter,
             "acceptSuggestionOnEnter",
             "on",
             &["on", "smart", "off"],
-            Some(Default::default()),
+            Some(Dynamic::object::<&str>([])),
         );
         assert_eq!(EditorOptionImpl::validate(&enum_option, &text("smart")), "smart");
         assert_eq!(EditorOptionImpl::validate(&enum_option, &text("x")), "on");
-        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&enum_option) else { panic!("sem esquema") };
-        assert_eq!(schema.enum_values.as_ref().map(Vec::len), Some(3));
+        let schema = EditorOptionImpl::schema(&enum_option).expect("sem esquema");
+        assert_eq!(schema.get_str("enum").get_str("length"), num(3.0));
+        assert_eq!(schema.own_keys(), vec!["type", "enum", "default"]);
 
         let auto_indent = EditorEnumOption::new(
             EditorOption::AutoIndent,
@@ -1200,8 +1212,11 @@ mod tests {
             "full",
             &["none", "keep", "brackets", "advanced", "full"],
             |s| auto_indent_from_string(s).unwrap_or(EditorAutoIndentStrategy::Full),
-            None,
+            Some(Dynamic::object::<&str>([])),
         );
+        let schema = EditorOptionImpl::schema(&auto_indent).expect("sem esquema");
+        assert_eq!(schema.own_keys(), vec!["type", "enum", "default"]);
+        assert_eq!(schema.get_str("default"), text("full"));
         assert_eq!(EditorOptionImpl::validate(&auto_indent, &text("keep")), EditorAutoIndentStrategy::Keep);
         assert_eq!(EditorOptionImpl::validate(&auto_indent, &text("x")), EditorAutoIndentStrategy::Full);
         assert_eq!(EditorOptionImpl::validate(&auto_indent, &num(1.0)), EditorAutoIndentStrategy::Full);
@@ -1244,6 +1259,7 @@ mod tests {
             memory: None,
             outer_width: 0.0,
             outer_height: 0.0,
+            font_info: font_info(),
             extra_editor_class_name: String::new(),
             is_dominated_by_long_lines: false,
             view_line_count: 1.0,
