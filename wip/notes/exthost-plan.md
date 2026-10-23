@@ -105,3 +105,18 @@ interpretador 21 a 28%, registro de células (`RefCell<Registry>`) 6 a 22%, deco
 - O startup completo do `extensionHostProcess.js` (a sonda corta a chamada final de inicialização).
 - Ganho de um cache de AST e bytecode do `lib` entre sessões, e de otimizações no zjsc (registro de células,
   decodificação de operandos).
+
+## Restrição que muda as saídas da H16 (eu, 2026-10-23)
+
+A H16 previa "um JIT de linha de base em Rust safe" como saída. Isso não existe sob `unsafe_code = "forbid"`:
+executar código de máquina gerado exige `unsafe` (mapear página executável e saltar para ela), e uma dependência
+que fizesse isso por nós quebraria a regra de só Rust sem unsafe no caminho de execução do produto. As saídas que
+sobram, em ordem de custo:
+
+1. Cache de AST e bytecode do `lib.*.d.ts` entre sessões (o parse do `lib.dom.d.ts` é 30,8 s do zjsc contra 251 ms
+   do Node; com a lib em cache a completion cai a 91 ms).
+2. Otimizar o interpretador do zjsc (o perfil do pseudo-linus: registro de células 22%, operandos 10 a 14%, sem
+   cache inline 13 a 17%, SipHash 4 a 7%; ganho estimado 2 a 3 vezes pelo fork, não medido por mim).
+3. Servidor de TypeScript nativo em Rust: não existe um maduro (o `tsgo` da Microsoft é Go).
+4. Rodar o `tsserver` fora do produto (processo do Node do sistema, quando existir), perdendo a regra de só Rust
+   nesse processo; decisão do user, não minha.
