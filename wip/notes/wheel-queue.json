@@ -496,158 +496,6 @@
   "source_lines": 4534
  },
  {
-  "test": "ref/vscode/src/vs/base/test/browser/ui/dropdown/dropdown.test.ts",
-  "cases": 1,
-  "test_lines": 55,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/base/browser/contextmenu.ts",
-    "lines": 63
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/dom.ts",
-    "lines": 3024
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/contextview/contextview.ts",
-    "lines": 537
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/dropdown/dropdown.ts",
-    "lines": 260
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
-    "lines": 974
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-base/tests/dropdown.rs",
-  "dest_crate": "je-base",
-  "source_lines": 4858
- },
- {
-  "test": "ref/vscode/src/vs/base/test/browser/ui/menu/menu.test.ts",
-  "cases": 7,
-  "test_lines": 277,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/base/browser/dom.ts",
-    "lines": 3024
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/menu/menu.ts",
-    "lines": 1599
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/actions.ts",
-    "lines": 303
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
-    "lines": 974
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/platform.ts",
-    "lines": 284
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/keybindings.ts",
-    "lines": 284
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/mock.ts",
-    "lines": 47
-   },
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-base/tests/menu.rs",
-  "dest_crate": "je-base",
-  "source_lines": 6468
- },
- {
-  "test": "ref/vscode/src/vs/base/test/browser/ui/menu/menubar.test.ts",
-  "cases": 3,
-  "test_lines": 97,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/base/browser/dom.ts",
-    "lines": 3024
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/menu/menu.ts",
-    "lines": 1599
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/menu/menubar.ts",
-    "lines": 1063
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-base/tests/menubar.rs",
-  "dest_crate": "je-base",
-  "source_lines": 5686
- },
- {
-  "test": "ref/vscode/src/vs/base/test/browser/ui/toolbar/toolbar.test.ts",
-  "cases": 23,
-  "test_lines": 997,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/base/browser/contextmenu.ts",
-    "lines": 63
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/dom.ts",
-    "lines": 3024
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/actionbar/actionbar.ts",
-    "lines": 668
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/actionbar/actionViewItems.ts",
-    "lines": 507
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/dropdown/dropdownActionViewItem.ts",
-    "lines": 273
-   },
-   {
-    "path": "ref/vscode/src/vs/base/browser/ui/toolbar/toolbar.ts",
-    "lines": 817
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/actions.ts",
-    "lines": 303
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-base/tests/toolbar.rs",
-  "dest_crate": "je-base",
-  "source_lines": 5655
- },
- {
   "test": "ref/vscode/src/vs/base/test/common/cancelPreviousCalls.test.ts",
   "cases": 3,
   "test_lines": 303,
@@ -2246,30 +2094,6 @@
   "source_lines": 6762
  },
  {
-  "test": "ref/vscode/src/vs/editor/contrib/find/test/browser/replacePattern.test.ts",
-  "cases": 8,
-  "test_lines": 254,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/base/common/search.ts",
-    "lines": 48
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/contrib/find/browser/replacePattern.ts",
-    "lines": 347
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/replace_pattern.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 395
- },
- {
   "test": "ref/vscode/src/vs/editor/contrib/folding/test/browser/foldingModel.test.ts",
   "cases": 22,
   "test_lines": 1092,
@@ -2424,34 +2248,6 @@
   "dest_test": "crates/je-editor/tests/indent_fold.rs",
   "dest_crate": "je-editor",
   "source_lines": 225
- },
- {
-  "test": "ref/vscode/src/vs/editor/contrib/folding/test/browser/indentRangeProvider.test.ts",
-  "cases": 26,
-  "test_lines": 372,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/languages/languageConfiguration.ts",
-    "lines": 430
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/contrib/folding/browser/indentRangeProvider.ts",
-    "lines": 225
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
-    "lines": 113
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/indent_range_provider.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 655
  },
  {
   "test": "ref/vscode/src/vs/editor/contrib/folding/test/browser/syntaxFold.test.ts",
@@ -3548,34 +3344,6 @@
   "dest_test": "crates/je-editor/tests/move_lines_command.rs",
   "dest_crate": "je-editor",
   "source_lines": 9851
- },
- {
-  "test": "ref/vscode/src/vs/editor/contrib/linesOperations/test/browser/sortLinesCommand.test.ts",
-  "cases": 7,
-  "test_lines": 169,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
-    "lines": 220
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/contrib/linesOperations/browser/sortLinesCommand.ts",
-    "lines": 112
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/test/browser/testCommand.ts",
-    "lines": 82
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/sort_lines_command.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 332
  },
  {
   "test": "ref/vscode/src/vs/editor/contrib/linkedEditing/test/browser/linkedEditing.test.ts",
@@ -7662,102 +7430,6 @@
   "source_lines": 4093
  },
  {
-  "test": "ref/vscode/src/vs/editor/test/common/controller/cursorAtomicMoveOperations.test.ts",
-  "cases": 2,
-  "test_lines": 155,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/cursor/cursorAtomicMoveOperations.ts",
-    "lines": 160
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/cursor_atomic_move_operations.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 160
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/core/lineRange.test.ts",
-  "cases": 4,
-  "test_lines": 65,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/ranges/lineRange.ts",
-    "lines": 414
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/line_range.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 414
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/core/positionOffsetTransformer.test.ts",
-  "cases": 2,
-  "test_lines": 59,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
-    "lines": 290
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/text/positionToOffset.ts",
-    "lines": 24
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/position_offset_transformer.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 314
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/core/stringEdit.test.ts",
-  "cases": 15,
-  "test_lines": 344,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/edits/arrayEdit.ts",
-    "lines": 90
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/edits/stringEdit.ts",
-    "lines": 613
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
-    "lines": 290
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/test/common/core/random.ts",
-    "lines": 228
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/string_edit.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 993
- },
- {
   "test": "ref/vscode/src/vs/editor/test/common/core/textEdit.test.ts",
   "cases": 2,
   "test_lines": 69,
@@ -7820,54 +7492,6 @@
   "dest_test": "crates/je-editor/tests/diff_computer.rs",
   "dest_crate": "je-editor",
   "source_lines": 2898
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/languages/defaultDocumentColorsComputer.test.ts",
-  "cases": 12,
-  "test_lines": 191,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/languages/defaultDocumentColorsComputer.ts",
-    "lines": 152
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/default_document_colors_computer.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 152
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/model/annotations.test.ts",
-  "cases": 23,
-  "test_lines": 514,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/model/tokens/annotations.ts",
-    "lines": 291
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
-    "lines": 290
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/edits/stringEdit.ts",
-    "lines": 613
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/annotations.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 1194
  },
  {
   "test": "ref/vscode/src/vs/editor/test/common/model/linesTextBuffer/linesTextBuffer.test.ts",
@@ -7994,30 +7618,6 @@
   "source_lines": 3262
  },
  {
-  "test": "ref/vscode/src/vs/editor/test/common/modes/languageSelector.test.ts",
-  "cases": 12,
-  "test_lines": 199,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/base/common/uri.ts",
-    "lines": 765
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/languageSelector.ts",
-    "lines": 159
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/language_selector.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 924
- },
- {
   "test": "ref/vscode/src/vs/editor/test/common/modes/linkComputer.test.ts",
   "cases": 14,
   "test_lines": 286,
@@ -8040,30 +7640,6 @@
   "dest_test": "crates/je-editor/tests/link_computer.rs",
   "dest_crate": "je-editor",
   "source_lines": 2999
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/modes/supports/tokenization.test.ts",
-  "cases": 16,
-  "test_lines": 358,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
-    "lines": 193
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/languages/supports/tokenization.ts",
-    "lines": 468
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/tokenization.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 661
  },
  {
   "test": "ref/vscode/src/vs/editor/test/common/modes/textToHtmlTokenizer.test.ts",
@@ -8148,26 +7724,6 @@
   "dest_test": "crates/je-editor/tests/editor_web_worker.rs",
   "dest_crate": "je-editor",
   "source_lines": 3919
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/services/findSectionHeaders.test.ts",
-  "cases": 14,
-  "test_lines": 408,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/services/findSectionHeaders.ts",
-    "lines": 181
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/find_section_headers.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 181
  },
  {
   "test": "ref/vscode/src/vs/editor/test/common/services/markerDecorationsService.test.ts",
@@ -8314,30 +7870,6 @@
   "source_lines": 8781
  },
  {
-  "test": "ref/vscode/src/vs/editor/test/common/services/semanticTokensDto.test.ts",
-  "cases": 4,
-  "test_lines": 139,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/services/semanticTokensDto.ts",
-    "lines": 152
-   },
-   {
-    "path": "ref/vscode/src/vs/base/common/buffer.ts",
-    "lines": 499
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/semantic_tokens_dto.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 651
- },
- {
   "test": "ref/vscode/src/vs/editor/test/common/services/semanticTokensProviderStyling.test.ts",
   "cases": 3,
   "test_lines": 175,
@@ -8456,94 +7988,6 @@
   "dest_test": "crates/je-editor/tests/unicode_text_model_highlighter.rs",
   "dest_crate": "je-editor",
   "source_lines": 784
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/view/overviewZoneManager.test.ts",
-  "cases": 3,
-  "test_lines": 91,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/viewModel/overviewZoneManager.ts",
-    "lines": 247
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/overview_zone_manager.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 247
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/lineDecorations.test.ts",
-  "cases": 8,
-  "test_lines": 168,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
-    "lines": 520
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/viewLayout/lineDecorations.ts",
-    "lines": 267
-   },
-   {
-    "path": "ref/vscode/src/vs/editor/common/viewModel/inlineDecorations.ts",
-    "lines": 290
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/line_decorations.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 1077
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/lineHeights.test.ts",
-  "cases": 38,
-  "test_lines": 535,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/viewLayout/lineHeights.ts",
-    "lines": 493
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/line_heights.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 493
- },
- {
-  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/linesLayout.test.ts",
-  "cases": 12,
-  "test_lines": 1244,
-  "sources": [
-   {
-    "path": "ref/vscode/src/vs/editor/common/viewLayout/linesLayout.ts",
-    "lines": 912
-   }
-  ],
-  "helpers": [
-   {
-    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
-    "lines": 107
-   }
-  ],
-  "dest_test": "crates/je-editor/tests/lines_layout.rs",
-  "dest_crate": "je-editor",
-  "source_lines": 912
  },
  {
   "test": "ref/vscode/src/vs/editor/test/common/viewLayout/viewLineRenderer.test.ts",

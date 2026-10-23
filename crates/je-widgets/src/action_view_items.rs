@@ -71,7 +71,7 @@ use crate::context_view_api::IContextViewProvider;
 use crate::dom::create_el;
 use crate::hover_api::{HoverPlacement, IHoverDelegate, IManagedHover, IManagedHoverOptions, ManagedHoverContent, ManagedHoverContentOrFactory, get_base_layer_hover_delegate, get_default_hover_delegate};
 use crate::select_box::{ISelectBoxDelegate, ISelectBoxOptions, ISelectBoxStyles, ISelectOptionItem, SelectBox};
-use crate::text::{measure_text, natural_line_height, ui_font};
+use crate::text::{WORKBENCH_LINE_HEIGHT, measure_text, ui_font};
 
 /// O `--vscode-cornerRadius-medium` (`baseSizes.ts`: 6px em todos os temas).
 pub const CORNER_RADIUS_MEDIUM: f64 = 6.0;
@@ -142,6 +142,8 @@ pub(crate) struct LabelState {
     pub active: bool,
     pub highlight_toggled_checked: bool,
     pub focused: bool,
+    /// O item é de um `Menu` (`isMenu`): o separador vertical dele é o do `menu.css`, não o do `actionbar.css`.
+    pub menu: bool,
 }
 
 impl ActionBarStyles {
@@ -151,7 +153,14 @@ impl ActionBarStyles {
     pub(crate) fn apply_to_label(&self, style: &mut NodeStyle, state: LabelState, has_icon_class: bool) -> Option<Rgba> {
         let mut background = None;
         let mut border = None;
-        if state.separator {
+        // O separador de uma barra vertical comum é uma caixa de 2px (`padding-top: 1px` mais `border-bottom: 1px`,
+        // altura 0): só a linha de baixo pinta. O do menu é a caixa de 1px com o fundo.
+        let ruled_separator = state.separator && state.vertical && !state.menu;
+        style.border_widths = None;
+        if ruled_separator {
+            border = self.menu_separator_background.or(self.disabled_foreground);
+            style.border_widths = Some([0.0, 0.0, 1.0, 0.0]);
+        } else if state.separator {
             background = if state.vertical { self.menu_separator_background.or(self.disabled_foreground) } else { self.disabled_foreground };
         } else {
             if state.hovered && !state.disabled && !state.vertical {
@@ -712,7 +721,7 @@ impl ActionViewItem {
     /// Recalcula o tamanho natural (o que o CSS mediria) e avisa a barra.
     fn relayout(&self) {
         let font = ui_font(ACTION_LABEL_FONT_SIZE, 400);
-        let line_height = natural_line_height(&font);
+        let line_height = WORKBENCH_LINE_HEIGHT;
         let pad = 2.0 * ACTION_LABEL_PADDING;
         let label = if self.is_separator() {
             (1.0 + 8.0, ACTION_ICON_SIZE + 10.0)
@@ -747,7 +756,7 @@ impl ActionViewItem {
         let checked = action.checked() == Some(true);
 
         let has_icon_class = tree.has_class(label, "icon");
-        let state = LabelState { separator, vertical, disabled, hovered: self.hovered.get(), active, highlight_toggled_checked: highlight_toggled && checked, focused };
+        let state = LabelState { separator, vertical, disabled, hovered: self.hovered.get(), active, highlight_toggled_checked: highlight_toggled && checked, focused, menu: self.base.options.is_menu };
         let color = styles.apply_to_label(tree.style_mut(label), state, has_icon_class);
         if let (Some(text), Some(color)) = (self.text.get(), color)
             && let Content::Text { color: text_color, .. } = &mut tree.style_mut(text).content
@@ -771,7 +780,7 @@ impl ActionViewItem {
         let styles = &self.styles;
         let font = ui_font(ACTION_LABEL_FONT_SIZE, 400);
         let color = styles.foreground.unwrap_or(Rgba::new(204, 204, 204, 255));
-        let line_height = natural_line_height(&font);
+        let line_height = WORKBENCH_LINE_HEIGHT;
         let mut tree = self.base.ui.tree_mut();
         let class = self.css_class.borrow().clone();
         let icon_id = if self.icon && !self.is_separator() { Self::codicon_id(&class) } else { None };
@@ -810,7 +819,7 @@ impl IActionViewItem for ActionViewItem {
             if let (true, Some(keybinding), false) = (self.label_enabled, self.base.options.keybinding.clone(), self.base.options.keybinding_not_rendered_with_label) {
                 let node = create_el(&mut tree, container, Role::Generic, "keybinding");
                 let font = ui_font(ACTION_LABEL_FONT_SIZE, 400);
-                let line_height = natural_line_height(&font);
+                let line_height = WORKBENCH_LINE_HEIGHT;
                 let text = create_el(&mut tree, node, Role::Generic, "keybinding-text");
                 let width = crate::text::set_node_text(&mut tree, text, &keybinding, &font, self.styles.foreground.unwrap_or(Rgba::new(204, 204, 204, 255)), line_height);
                 tree.set_bounds(text, Rect::new(ACTION_LABEL_PADDING, ACTION_LABEL_PADDING, ACTION_LABEL_PADDING + width, ACTION_LABEL_PADDING + line_height));
@@ -975,9 +984,10 @@ impl IActionViewItem for ActionViewItem {
     fn size(&self, vertical: bool) -> ItemSize {
         let metrics = self.metrics.get();
         if self.is_separator() && vertical {
-            // `margin: 4px .8em`, `padding-top: 1px`, `border-bottom: 1px`: 10px de altura, a largura é a da barra.
+            // `margin: 5px 4px !important` (a do `.separator` genérico vence a de `.8em`), `padding-top: 1px`,
+            // `border-bottom: 1px`: 12px de altura, a largura é a da barra.
             // Num menu (`menu.ts`): `margin: 5px 0`, `border-bottom: 1px` e altura 0: 11px.
-            (0.0, if self.base.options.is_menu { MENU_SEPARATOR_HEIGHT } else { 10.0 })
+            (0.0, if self.base.options.is_menu { MENU_SEPARATOR_HEIGHT } else { 12.0 })
         } else {
             (metrics.label.0.max(metrics.keybinding.0), metrics.label.1 + metrics.keybinding.1)
         }
@@ -989,10 +999,13 @@ impl IActionViewItem for ActionViewItem {
         let mut tree = self.base.ui.tree_mut();
         if self.is_separator() {
             if vertical {
-                // `margin: 4px .8em` com a linha de 1px depois de 1px de `padding-top` (num menu, `margin: 5px 0`
-                // e a largura toda).
-                let margin = if self.base.options.is_menu { 0.0 } else { 0.8 * f64::from(ACTION_LABEL_FONT_SIZE) };
-                tree.set_bounds(label, Rect::new(margin, 5.0, (width - margin).max(margin), 6.0));
+                // Barra comum: `margin: 5px 4px`, `width: 100%` (de caixa de conteúdo: passa 4px do `li`) e a caixa de
+                // 2px (1px de `padding-top` e a linha de 1px). Num menu, `margin: 5px 0` e a linha de 1px.
+                if self.base.options.is_menu {
+                    tree.set_bounds(label, Rect::new(0.0, 5.0, width, 6.0));
+                } else {
+                    tree.set_bounds(label, Rect::new(4.0, 5.0, 4.0 + width, 7.0));
+                }
             } else {
                 // `width: 1px; height: 16px; margin: 5px 4px`.
                 tree.set_bounds(label, Rect::new(4.0, 5.0, 5.0, 5.0 + ACTION_ICON_SIZE));

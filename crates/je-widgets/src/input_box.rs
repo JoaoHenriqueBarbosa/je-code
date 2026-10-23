@@ -24,7 +24,10 @@
 //!   com `overflow: hidden`) dentro do campo: a janela é a caixa de conteúdo, com o `padding: 4px 6px` do
 //!   CSS. A borda de 1px do `border: 1px solid ...` é a borda do `je-ui`, que fica dentro da caixa, então
 //!   os filhos são deslocados 1px.
-//! - A altura vem do CSS: `line-height: inherit` do workbench (1.4em) mais o `padding` e a borda. Não há
+//! - A altura é a da linha natural da fonte (`line-height: normal`) mais o `padding` e a borda: o CSS manda
+//!   `.input { height: 100%; line-height: inherit }`, mas a porcentagem sobre o `ibwrapper` de altura automática
+//!   não resolve e o Chromium dá ao `<input>` a altura intrínseca (medido no oráculo: 25 px com a fonte de 13 px,
+//!   e não 28,2 px do `line-height: 1.4em` herdado do workbench; ver H26). Não há
 //!   motor de layout: o contêiner que muda de largura chama [`InputBox::layout`] (como o VS Code chama
 //!   `inputBox.layout()`), que reposiciona a janela de texto.
 //! - O anel de foco (`outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px`, da folha de
@@ -84,8 +87,6 @@ const PADDING_Y: f64 = 4.0;
 const BORDER: f64 = 1.0;
 /// O `border-radius: 4px`.
 const RADIUS: f64 = 4.0;
-/// O `line-height: 1.4em` do `.monaco-workbench`, que o `.input` herda.
-const LINE_HEIGHT_EM: f64 = 1.4;
 /// O intervalo do cursor piscando.
 const CARET_BLINK_MS: u64 = 500;
 /// O fundo da seleção quando o estilo não diz (o `Highlight` do Chromium para Linux).
@@ -252,10 +253,6 @@ enum MessageState {
     Idle,
     Open,
     Closed,
-}
-
-fn truncate_layout_unit(px: f64) -> f64 {
-    (px * 64.0).floor() / 64.0
 }
 
 /// O `InputBox`. Ver a documentação do módulo.
@@ -479,8 +476,9 @@ impl InputBox {
         ui_font(self.options.font_size, 400)
     }
 
+    /// A altura da linha do `<input>`: a natural da fonte, não o `line-height` herdado (ver o `//!` do módulo).
     fn line_height(&self) -> f64 {
-        truncate_layout_unit(LINE_HEIGHT_EM * f64::from(self.options.font_size))
+        natural_line_height(&self.font())
     }
 
     fn foreground(&self) -> Rgba {

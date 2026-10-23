@@ -841,7 +841,9 @@ impl WorkbenchHoverWidget {
             let mut height = 0.0;
             for (i, block) in self.blocks.iter().enumerate() {
                 let lines: Vec<String> = block.lines.iter().flat_map(|l| wrap_text(l, &font, max_text)).collect();
-                width = lines.iter().map(|l| measure_text(l, &font)).fold(width, f64::max);
+                // A largura de ajuste ao conteúdo (`shrink-to-fit`) é `min(max-content, disponível)`: um parágrafo que
+                // quebra ocupa a largura toda, não a da sua linha mais larga depois da quebra (medido, H26).
+                width = block.lines.iter().flat_map(|l| l.split('\n')).map(|l| measure_text(l.trim_end(), &font).min(max_text)).fold(width, f64::max);
                 height += lines.len() as f64 * LINE_HEIGHT + if i > 0 { 8.0 } else { 0.0 };
             }
             (width + 16.0, height + padding_y)
@@ -900,13 +902,16 @@ impl WorkbenchHoverWidget {
         tree.set_bounds(row, Rect::new(0.0, 0.0, inner_width, full_content_height));
         tree.set_bounds(self.hover.contents_dom_node(), Rect::new(0.0, 0.0, inner_width, full_content_height));
         let scroll_node = self.hover.scrollbar().get_dom_node();
-        tree.set_bounds(scroll_node, Rect::new(0.0, 0.0, inner_width, visible_contents));
+        // A borda de 1px do `.monaco-hover` fica por dentro da caixa no `je-ui`: o conteúdo entra deslocado dela
+        // (medido contra o oráculo, H26: sem isso o texto saía 1px acima e à esquerda).
+        let border = HOVER_BORDER_WIDTH / 2.0;
+        tree.set_bounds(scroll_node, Rect::new(border, border, border + inner_width, border + visible_contents));
         // As linhas da barra de status, abaixo do conteúdo.
-        let mut y = visible_contents;
+        let mut y = border + visible_contents;
         for (i, row) in self.status_rows.iter().enumerate() {
             let has_border = self.styles.border.is_some() && (i > 0 || self.html_content.is_some() || !self.blocks.is_empty());
             let height = STATUS_LINE_HEIGHT + if self.styles.border.is_some() { 1.0 } else { 0.0 };
-            tree.set_bounds(row.node, Rect::new(0.0, y, inner_width, y + height));
+            tree.set_bounds(row.node, Rect::new(border, y, border + inner_width, y + height));
             if has_border && let Some(border) = self.styles.border {
                 tree.style_mut(row.node).border = None;
                 let line = tree.children(row.node).iter().copied().find(|c| tree.has_class(*c, "row-border"));

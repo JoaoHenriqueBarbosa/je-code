@@ -511,7 +511,7 @@ fn separators_measure_9_by_26_horizontally_and_stack_vertically() {
     let rects: Vec<Rect> = (0..3).map(|i| tree.bounds(li_of(&ui, &v, i))).collect();
     assert_eq!(rects[0].y0, 0.0);
     assert_eq!(rects[1].y0, rects[0].y1);
-    assert_eq!(rects[1].height(), 10.0);
+    assert_eq!(rects[1].height(), 12.0);
     assert_eq!(rects[2].y0, rects[1].y1);
     assert!(rects.iter().all(|r| r.width() == 120.0), "os itens de uma barra vertical ocupam a largura toda");
 }

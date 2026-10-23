@@ -74,7 +74,7 @@ struct Metrics {
     label_text: f64,
     /// A largura do texto do atalho (0 sem atalho).
     keybinding_text: f64,
-    keybinding_visible: bool,
+    keybinding_in_layout: bool,
 }
 
 /// O que é só do item de submenu (`SubmenuMenuActionViewItem`).
@@ -397,11 +397,11 @@ impl MenuActionViewItem {
     fn relayout(&self) {
         let metrics = self.metrics.get();
         let mut width = MENU_ITEM_MARGIN * 2.0 + metrics.label_text + 2.0 * MENU_LABEL_PADDING;
-        if metrics.keybinding_visible {
+        if metrics.keybinding_in_layout {
             width += metrics.keybinding_text + 2.0 * MENU_LABEL_PADDING;
         }
         if self.is_submenu() {
-            width += 2.0 * MENU_SUBMENU_INDICATOR_PADDING;
+            width += 2.0 * MENU_SUBMENU_INDICATOR_PADDING + MENU_SUBMENU_INDICATOR_SIZE;
         }
         let size = (width, MENU_ITEM_HEIGHT);
         if size != self.last_size.replace(size) {
@@ -423,11 +423,11 @@ impl MenuActionViewItem {
         let label_natural = metrics.label_text + 2.0 * MENU_LABEL_PADDING;
         // Os itens flex em ordem, com `flex-grow` (rótulo 1, atalho e indicador 2).
         let mut flex: Vec<(&'static str, f64, f64)> = vec![("label", label_natural, 1.0)];
-        if metrics.keybinding_visible {
+        if metrics.keybinding_in_layout {
             flex.push(("keybinding", metrics.keybinding_text + 2.0 * MENU_LABEL_PADDING, 2.0));
         }
         if nodes.submenu_indicator.is_some() {
-            flex.push(("indicator", 2.0 * MENU_SUBMENU_INDICATOR_PADDING, 2.0));
+            flex.push(("indicator", 2.0 * MENU_SUBMENU_INDICATOR_PADDING + MENU_SUBMENU_INDICATOR_SIZE, 2.0));
         }
         let natural: f64 = flex.iter().map(|f| f.1).sum();
         let grow: f64 = flex.iter().map(|f| f.2).sum();
@@ -467,7 +467,7 @@ impl MenuActionViewItem {
                         // O `::before` de 16px (`margin-left: auto; margin-right: -20px`) fica no fim do conteúdo,
                         // depois do `padding: 0 1.8em`: a borda direita dele fica 20px depois do fim do conteúdo.
                         if let Some(glyph) = tree.children(node).first().copied() {
-                            let left = w - MENU_SUBMENU_INDICATOR_PADDING + 4.0;
+                            let left = w - MENU_SUBMENU_INDICATOR_PADDING - MENU_SUBMENU_INDICATOR_SIZE + 20.0;
                             tree.set_bounds(glyph, Rect::new(left, (MENU_ITEM_HEIGHT - MENU_SUBMENU_INDICATOR_SIZE) / 2.0, left + MENU_SUBMENU_INDICATOR_SIZE, (MENU_ITEM_HEIGHT + MENU_SUBMENU_INDICATOR_SIZE) / 2.0));
                         }
                     }
@@ -668,9 +668,11 @@ impl IActionViewItem for MenuActionViewItem {
                 self.keybinding_piece.set(Some(node));
                 metrics.keybinding_text = width;
             }
-            // `this._keybinding.hidden = !keybinding`
-            metrics.keybinding_visible = keybinding.is_some_and(|k| !k.is_empty());
-            self.ui.tree_mut().style_mut(keybinding_node).visible = metrics.keybinding_visible;
+            // `this._keybinding.hidden = !keybinding`: o atributo `hidden` perde para `display: inline-block` da
+            // folha do menu (`.keybinding`), então o atalho vazio continua no layout com o `padding: 0 2em` (a
+            // linha de um submenu sem atalho fica 52px mais larga; medido no menu Arquivo do oráculo, H26).
+            metrics.keybinding_in_layout = true;
+            self.ui.tree_mut().style_mut(keybinding_node).visible = keybinding.is_some_and(|k| !k.is_empty());
         }
         let stripped = String::from_utf16_lossy(strip_icons(&self.action().label().encode_utf16().collect::<Vec<_>>()).units());
         let pieces = if stripped.is_empty() {

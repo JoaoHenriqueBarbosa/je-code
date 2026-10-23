@@ -74,7 +74,7 @@ use crate::list::list_types::{IListRenderer, IListVirtualDelegate, ListElementRe
 use crate::list::list_view::ListViewOptions;
 use crate::list::list_widget::{List, ListOptions};
 use crate::select_box::{CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, ISelectBoxDelegate, ISelectBoxOptions, ISelectBoxStyles, ISelectData, ISelectOptionItem};
-use crate::text::{clear_node_content, ellipsize, measure_text, natural_line_height, set_node_text, ui_font};
+use crate::text::{clear_node_content, clip_text, ellipsize, measure_text, natural_line_height, set_node_text, ui_font};
 
 const SELECT_OPTION_ENTRY_TEMPLATE_ID: &str = "selectOption.entry.template";
 const SELECT_OPTION_HEIGHT: f64 = 22.0;
@@ -83,6 +83,9 @@ const DEFAULT_DROPDOWN_MINIMUM_TOP_MARGIN: f64 = 2.0;
 const DEFAULT_MINIMUM_VISIBLE_OPTIONS: i64 = 3;
 /// O `font-size` do `<select>` e da lista (`--vscode-font-size`).
 const FONT_SIZE: f32 = 13.0;
+/// O `font-size` do `<select>` fechado: `.monaco-workbench select` só herda a família, e o tamanho fica o da
+/// folha UA do Chromium (`-webkit-small-control`, 13,3333 px; medido no oráculo, H26).
+const SELECT_ELEMENT_FONT_SIZE: f32 = 40.0 / 3.0;
 /// A cor do texto quando o estilo não define `selectForeground` (o `foreground` do tema escuro).
 const FALLBACK_FOREGROUND: Rgba = Rgba::new(204, 204, 204, 255);
 /// A largura e a altura do chevron.
@@ -668,7 +671,7 @@ impl SelectBoxList {
     }
 
     fn font() -> je_text::TextStyle {
-        ui_font(FONT_SIZE, 400)
+        ui_font(SELECT_ELEMENT_FONT_SIZE, 400)
     }
 
     /// O tamanho natural do `<select>` (largura e altura, em px): a maior opção mais o preenchimento e a
@@ -697,7 +700,8 @@ impl SelectBoxList {
         let text = self.selected_text().unwrap_or_default();
         let left = 1.0 + metrics.padding[3];
         let available = (width - 2.0 - metrics.padding[3] - metrics.padding[1]).max(0.0);
-        let shown = ellipsize(&text, &font, available);
+        // O `<select>` corta o texto na caixa de conteúdo, sem reticências.
+        let shown = clip_text(&text, &font, available);
         let color = self.styles.select_foreground.unwrap_or(FALLBACK_FOREGROUND);
         let text_width = set_node_text(&mut tree, self.select_text, &shown, &font, color, height);
         tree.set_bounds(self.select_text, Rect::new(left, 0.0, left + text_width, height));

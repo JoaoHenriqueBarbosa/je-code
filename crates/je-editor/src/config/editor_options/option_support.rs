@@ -44,7 +44,6 @@ macro_rules! string_enum {
     };
 }
 
-pub(crate) use string_enum;
 
 /// Montagem de ambiente e de opções calculadas para os testes das opções.
 #[cfg(test)]

@@ -24,7 +24,8 @@ use support::{ensure_no_disposables_are_leaked_in_test_suite, LeakGuard};
 
 const FOCUS_BORDER: Rgba = Rgba::opaque(0x00, 0x7f, 0xd4);
 const INPUT_BORDER: Rgba = Rgba::opaque(0x55, 0x55, 0x55);
-const LINE_HEIGHT: f64 = 18.1875;
+/// A altura da linha do `<input>` (a natural da fonte de 13px; medida no oráculo, H26).
+const LINE_HEIGHT: f64 = 15.0;
 const SELECTION: Rgba = Rgba::opaque(0x26, 0x4f, 0x78);
 
 fn styles() -> InputBoxStyles {
