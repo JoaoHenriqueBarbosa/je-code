@@ -187,7 +187,7 @@ impl ResolvedKeybinding for WindowsNativeResolvedKeybinding {
 }
 
 /// `IMMUTABLE_CODE_TO_KEY_CODE[scanCode]`, com [`KeyCode::DependsOnKbLayout`] para o que o mapa não conhece.
-fn immutable_key_code(scan_code: ScanCode) -> KeyCode {
+pub(super) fn immutable_key_code(scan_code: ScanCode) -> KeyCode {
     immutable_code_to_key_code(scan_code).unwrap_or(KeyCode::DependsOnKbLayout)
 }
 
@@ -412,7 +412,7 @@ impl WindowsKeyboardMapperState {
 }
 
 /// `_leftPad`: o comprimento conta unidades UTF-16, como o `str.length` do original.
-fn left_pad(str: Option<&str>, cnt: usize) -> String {
+pub(super) fn left_pad(str: Option<&str>, cnt: usize) -> String {
     let str = str.unwrap_or("null");
     let length = str.encode_utf16().count();
     format!("{}{str}", " ".repeat(cnt.saturating_sub(length)))

@@ -62,6 +62,48 @@ pub struct MacKeyMapping {
     pub with_shift_alt_gr_is_dead_key: bool,
 }
 
+/// `IMacLinuxKeyMapping`: o que o mapeador lê de uma tecla, no Mac ou no Linux.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MacLinuxKeyMapping {
+    pub value: String,
+    pub with_shift: String,
+    pub with_alt_gr: String,
+    pub with_shift_alt_gr: String,
+}
+
+impl MacLinuxKeyMapping {
+    pub fn new(value: &str, with_shift: &str, with_alt_gr: &str, with_shift_alt_gr: &str) -> Self {
+        Self {
+            value: value.to_string(),
+            with_shift: with_shift.to_string(),
+            with_alt_gr: with_alt_gr.to_string(),
+            with_shift_alt_gr: with_shift_alt_gr.to_string(),
+        }
+    }
+}
+
+impl From<&LinuxKeyMapping> for MacLinuxKeyMapping {
+    fn from(mapping: &LinuxKeyMapping) -> Self {
+        Self {
+            value: mapping.value.clone(),
+            with_shift: mapping.with_shift.clone(),
+            with_alt_gr: mapping.with_alt_gr.clone(),
+            with_shift_alt_gr: mapping.with_shift_alt_gr.clone(),
+        }
+    }
+}
+
+impl From<&MacKeyMapping> for MacLinuxKeyMapping {
+    fn from(mapping: &MacKeyMapping) -> Self {
+        Self {
+            value: mapping.value.clone(),
+            with_shift: mapping.with_shift.clone(),
+            with_alt_gr: mapping.with_alt_gr.clone(),
+            with_shift_alt_gr: mapping.with_shift_alt_gr.clone(),
+        }
+    }
+}
+
 /// `IKeyboardMapping`: o mapa de escancode (`"KeyA"`) para a tecla, num dos três formatos.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyboardMapping {
