@@ -8,3 +8,8 @@ pub mod capabilities;
 pub mod environment_variable;
 pub mod environment_variable_collection;
 pub mod environment_variable_shared;
+
+pub mod request_store;
+pub mod terminal;
+pub mod terminal_environment;
+pub mod terminal_profiles;
