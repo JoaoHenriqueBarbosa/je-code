@@ -132,3 +132,6 @@ pub mod input_mode;
 pub mod token_store;
 
 pub mod coordinates_converter;
+
+pub mod cursor_move_operations;
+pub mod cursor_column_selection;
