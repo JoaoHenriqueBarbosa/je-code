@@ -16,7 +16,7 @@ OUT = ['sessions', 'platform/agentHost', 'platform/github', 'platform/mcp', 'pla
        'workbench/contrib/mcp', 'workbench/contrib/welcomeAgentSessions',
        'workbench/contrib/remoteCodingAgents', 'workbench/contrib/agentsVoice']
 CRATE = [('base/', 'je-base'), ('platform/', 'je-platform'), ('editor/', 'je-editor'),
-         ('workbench/', 'je-workbench')]
+         ('workbench/', 'je-workbench'), ('server/', 'je-server'), ('code/', 'je-code')]
 IMPORT = re.compile(r"from '(\.[^']+)\.js'")
 
 
@@ -54,7 +54,7 @@ def main():
                 continue
             entry = {'path': path.relative_to(ROOT).as_posix(), 'lines': sum(1 for _ in path.open(encoding='utf-8', errors='replace'))}
             (helpers if '/test/' in entry['path'] else sources).append(entry)
-        crate = next(c for p, c in CRATE if rel.startswith(p))
+        crate = next((c for p, c in CRATE if rel.startswith(p)), 'je-platform')
         queue.append({
             'test': test.relative_to(ROOT).as_posix(), 'cases': cases,
             'test_lines': sum(1 for _ in text.splitlines()),
