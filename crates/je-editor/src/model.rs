@@ -274,11 +274,12 @@ pub struct ModelDecorationMinimapInit {
 
 /// `InjectedTextOptions`.
 ///
-/// Pendente: `tokens` (`TokenArray`, vem com o `lineTokens.ts`) e `attachedData` (`unknown`, sem
-/// consumidor nesta camada).
+/// Pendente: `attachedData` (`unknown`, sem consumidor nesta camada).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InjectedTextOptions {
     pub content: String,
+    /// `tokens`: os tokens do texto injetado (`TokenArray`), quando ele não usa o token padrão.
+    pub tokens: Option<crate::line_tokens::TokenArray>,
     pub inline_class_name: Option<String>,
     pub inline_class_name_affects_letter_spacing: bool,
     /// `widthInEm`: aceita qualquer número, a normalização de `ModelDecorationInjectedTextOptions` descarta

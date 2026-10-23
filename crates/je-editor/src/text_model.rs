@@ -171,6 +171,7 @@ impl ModelDecorationMinimapOptions {
 pub fn normalize_injected_text_options(options: &InjectedTextOptions) -> Rc<InjectedTextOptions> {
     Rc::new(InjectedTextOptions {
         content: options.content.clone(),
+        tokens: options.tokens.clone(),
         inline_class_name: options.inline_class_name.clone().filter(|name| !name.is_empty()),
         inline_class_name_affects_letter_spacing: options.inline_class_name_affects_letter_spacing,
         width_in_em: options.width_in_em.filter(|width| width.is_finite() && *width >= 0.0),
@@ -3389,6 +3390,39 @@ impl crate::bracket_pairs_text_model_part::bracket_pairs_tree::tokenizer::IToken
     fn get_line_tokens(&self, line_number: i32) -> crate::line_tokens::LineTokens {
         self.tokenization().get_line_tokens(line_number)
     }
+}
+
+/// `getLineTokensWithInjections(tokens, injectionOptions, injectionOffsets)`: os tokens da linha com os
+/// textos injetados inseridos. Sem tokens próprios, o texto injetado entra com o metadado de token padrão.
+pub fn get_line_tokens_with_injections(
+    tokens: &crate::line_tokens::LineTokens,
+    injection_options: Option<&[InjectedTextOptions]>,
+    injection_offsets: Option<&[i32]>,
+) -> crate::line_tokens::LineTokens {
+    let Some(injection_offsets) = injection_offsets else {
+        return tokens.clone();
+    };
+    let injection_options = injection_options.expect("há deslocamentos de injeção, então há opções");
+
+    let mut tokens_to_insert: Vec<crate::line_tokens::InsertToken> = Vec::new();
+    for (offset, options) in injection_offsets.iter().zip(injection_options) {
+        let content: Vec<u16> = options.content.encode_utf16().collect();
+        match &options.tokens {
+            Some(token_array) => token_array.for_each(|range, info| {
+                tokens_to_insert.push(crate::line_tokens::InsertToken {
+                    offset: *offset,
+                    text: JsString::from_units(range.substring(&content).to_vec()),
+                    token_metadata: info.metadata,
+                });
+            }),
+            None => tokens_to_insert.push(crate::line_tokens::InsertToken {
+                offset: *offset,
+                text: JsString::from_units(content),
+                token_metadata: crate::line_tokens::DEFAULT_TOKEN_METADATA,
+            }),
+        }
+    }
+    tokens.with_inserted(&tokens_to_insert)
 }
 
 /// O `ITextModel` do original atende o `ICursorSimpleModel` por tipagem estrutural; aqui os métodos moram no trait.

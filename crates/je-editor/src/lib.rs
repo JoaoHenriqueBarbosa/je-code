@@ -150,3 +150,5 @@ pub mod auto_indent;
 pub mod enter_action;
 
 pub mod trim_trailing_whitespace_command;
+
+pub mod model_line_projection;
