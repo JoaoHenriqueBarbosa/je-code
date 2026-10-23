@@ -877,3 +877,18 @@ pub fn date_to_iso_string(time_value: f64) -> Option<String> {
         ms_of_day % 1000
     ))
 }
+
+impl Dynamic {
+    /// O valor que `JSON.parse` devolveria para `value`: objetos e arrays novos, na mesma ordem de chaves.
+    pub fn from_json(value: &crate::json::Value) -> Self {
+        use crate::json::Value;
+        match value {
+            Value::Null => Self::Null,
+            Value::Bool(b) => Self::Bool(*b),
+            Value::Number(n) => Self::Number(*n),
+            Value::String(s) => Self::String(s.clone()),
+            Value::Array(items) => Self::array(items.iter().map(Self::from_json)),
+            Value::Object(object) => Self::object(object.iter().map(|(k, v)| (k.clone(), Self::from_json(v)))),
+        }
+    }
+}

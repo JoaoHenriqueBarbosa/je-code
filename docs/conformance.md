@@ -4,7 +4,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 70 | 1423 | 62.47 |
+| `base` | 150 | 2278 | 73 | 1462 | 64.18 |
 | `platform` | 723 | 15868 | 17 | 342 | 2.16 |
 | `editor` | 182 | 3144 | 30 | 677 | 21.53 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
@@ -12,7 +12,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `workbench/contrib` | 402 | 5033 | 0 | 0 | 0.00 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 29869 | | 2442 | 8.18 |
+| **total** | | 29869 | | 2481 | 8.31 |
 
 ## Arquivos portados
 
@@ -21,7 +21,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/browser/comparers.test.ts` | 10 | `crates/je-base/tests/comparers.rs` | 10 |
 | `src/vs/base/test/browser/ui/grid/grid.test.ts` | 38 | `crates/je-widgets/tests/grid.rs` | 38 |
 | `src/vs/base/test/browser/ui/grid/gridview.test.ts` | 9 | `crates/je-widgets/tests/gridview.rs` | 9 |
+| `src/vs/base/test/browser/ui/list/rangeMap.test.ts` | 28 | `crates/je-widgets/tests/range_map.rs` | 28 |
 | `src/vs/base/test/browser/ui/sash/sash.test.ts` | 1 | `crates/je-widgets/tests/sash.rs` | 1 |
+| `src/vs/base/test/browser/ui/scrollbar/scrollableElement.test.ts` | 9 | `crates/je-widgets/tests/scrollable_element.rs` | 9 |
+| `src/vs/base/test/browser/ui/scrollbar/scrollbarState.test.ts` | 2 | `crates/je-widgets/tests/scrollbar_state.rs` | 2 |
 | `src/vs/base/test/browser/ui/splitview/paneview.test.ts` | 2 | `crates/je-widgets/tests/paneview.rs` | 2 |
 | `src/vs/base/test/browser/ui/splitview/splitview.test.ts` | 18 | `crates/je-widgets/tests/splitview.rs` | 18 |
 | `src/vs/base/test/common/arrays.test.ts` | 29 | `crates/je-base/tests/arrays.rs` | 28 |

@@ -1413,6 +1413,12 @@ impl<T: 'static> Emitter<T> {
         self.size.set(size);
     }
 
+    /// Só para teste: o `emitter['_size']` do original (o número de listeners).
+    #[doc(hidden)]
+    pub fn size_for_testing(&self) -> usize {
+        self.size.get()
+    }
+
     /// Só para teste: o `Object.hasOwn(emitter, '_leakageMon')` do original.
     #[doc(hidden)]
     pub fn has_leakage_monitor_for_testing(&self) -> bool {
