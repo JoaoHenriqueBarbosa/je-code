@@ -1,16 +1,22 @@
-//! Porte do trait `IUserDataSyncUtilService` de `src/vs/platform/userDataSync/common/userDataSync.ts`.
+//! Porte de `src/vs/platform/userDataSync/common/userDataSync.ts`, só o que o portado até agora usa: o trait
+//! `IUserDataSyncUtilService`, `IConflictSetting`, `getDisallowedIgnoredSettings`, `IStorageValue` e
+//! `SYNC_SERVICE_URL_TYPE`.
 //!
 //! Divergências de tipo: `IStringDictionary<string>` é `HashMap<JsString, JsString>`; os métodos `async`
 //! devolvem [`Promise`], que se espera com `.await`; `resolveFormattingOptions` recebe `Option<&URI>`
-//! porque a implementação de teste do original declara o parâmetro como opcional (`file?: URI`).
+//! porque a implementação de teste do original declara o parâmetro como opcional (`file?: URI`);
+//! `any | undefined` (em `IConflictSetting`) é `Option<Value>`.
 
 use std::collections::HashMap;
 
 use je_base::JsString;
+use je_base::dynamic::Truthy;
+use je_base::json::Value;
 use je_base::json_formatter::FormattingOptions;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 
+use crate::configuration::registry::configuration_registry;
 use crate::storage::StorageScope;
 
 /// `IStorageValue`.
@@ -33,4 +39,24 @@ pub trait IUserDataSyncUtilService {
     fn resolve_formatting_options(&self, resource: Option<&URI>) -> Promise<FormattingOptions>;
 
     fn resolve_default_core_ignored_settings(&self) -> Promise<Vec<JsString>>;
+}
+
+/// `IConflictSetting`: um setting em conflito, com o valor de cada lado (`None` é `undefined`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct IConflictSetting {
+    pub key: JsString,
+    pub local_value: Option<Value>,
+    pub remote_value: Option<Value>,
+}
+
+/// `getDisallowedIgnoredSettings`: as chaves registradas que não podem ser ignoradas na sincronização
+/// (`disallowSyncIgnore`).
+pub fn get_disallowed_ignored_settings() -> Vec<JsString> {
+    configuration_registry()
+        .get_configuration_properties()
+        .entries()
+        .into_iter()
+        .filter(|(_, property)| property.get("disallowSyncIgnore").is_truthy())
+        .map(|(setting, _)| setting)
+        .collect()
 }
