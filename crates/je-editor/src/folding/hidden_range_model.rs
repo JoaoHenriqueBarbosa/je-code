@@ -36,7 +36,7 @@ pub struct HiddenRangeModel {
 
 impl HiddenRangeModel {
     pub fn new(model: Rc<FoldingModel>) -> Rc<HiddenRangeModel> {
-        let this = Rc::new_cyclic(|me| {
+        let this = Rc::new_cyclic(|me: &std::rc::Weak<HiddenRangeModel>| {
             let me = me.clone();
             let listener = model.on_did_change().listen(move |_| {
                 if let Some(this) = me.upgrade() {
