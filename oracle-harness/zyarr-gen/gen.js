@@ -3,7 +3,7 @@ const { C } = require('./cases.js');
 const node = require('./node.json');
 const errsNode = require('./errs_node.json');
 const errsBun = require('./errs_bun.json');
-const outDir = '/home/john/projects/je-code/crates/zyarr/tests';
+const outDir = require('path').resolve(__dirname, '../../crates/zyarr/tests');
 
 const rs = (s) => {
   let o = '"';

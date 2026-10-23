@@ -16,21 +16,28 @@ use je_platform::js::{for_in_entries, from_json, object_keys};
 
 use common::*;
 
-const USER_SETTINGS: &str = "/mnt/c/Users/John/AppData/Roaming/Code/User/settings.json";
+/// O caminho do `settings.json` real vem do ambiente (`JE_USER_SETTINGS`), nunca do código: o
+/// repositório é público e não guarda caminho da máquina de quem desenvolve.
+const USER_SETTINGS_ENV: &str = "JE_USER_SETTINGS";
 
 #[test]
-#[ignore = "lê o settings.json real do usuário em /mnt/c (somente leitura); rode com --ignored"]
+#[ignore = "lê o settings.json real do usuário apontado por JE_USER_SETTINGS (somente leitura); rode com --ignored"]
 fn real_user_settings_parse_without_errors_and_keep_all_keys() {
     let _leaks = ensure_no_disposables_are_leaked_in_test_suite();
-    let Ok(bytes) = std::fs::read(USER_SETTINGS) else {
-        eprintln!("{USER_SETTINGS} não existe nesta máquina: nada a conferir");
+    let Ok(path) = std::env::var(USER_SETTINGS_ENV) else {
+        eprintln!("{USER_SETTINGS_ENV} não definido: nada a conferir");
+        return;
+    };
+    let user_settings = path.as_str();
+    let Ok(bytes) = std::fs::read(user_settings) else {
+        eprintln!("{user_settings} não existe: nada a conferir");
         return;
     };
     let text = String::from_utf8(bytes).expect("o settings.json é UTF-8");
 
     // O parser do VS Code: o `errors` original nunca recebe os erros de sintaxe (o `visit` não lança), por
     // isso o `syntax_errors` e o `json::parse` independente conferem de verdade que o texto é JSONC válido.
-    let mut parser = ConfigurationModelParser::new(USER_SETTINGS, null_log());
+    let mut parser = ConfigurationModelParser::new(user_settings, null_log());
     parser.parse(Some(&text), None);
     assert!(parser.errors().is_empty(), "o parser reportou erro");
     assert!(parser.syntax_errors().is_empty(), "o texto tem erro de sintaxe: {:?}", parser.syntax_errors());
