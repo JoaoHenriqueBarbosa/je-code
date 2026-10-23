@@ -78,3 +78,5 @@ pub mod undo_redo;
 pub mod undo_redo_service;
 pub mod word_character_classifier;
 pub mod word_helper;
+
+pub mod position_to_offset;
