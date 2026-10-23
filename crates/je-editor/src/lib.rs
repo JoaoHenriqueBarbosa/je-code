@@ -1,0 +1,22 @@
+//! Porte de `src/vs/editor/common` do VS Code: o núcleo do editor.
+//!
+//! Esta primeira fatia traz `core` (posição, intervalo, seleção, contagem de fins de linha, classificadores
+//! de caractere, mudança de texto) e o buffer de texto do modelo (`pieceTreeTextBuffer`: a árvore rubro-negra,
+//! o piece tree, o buffer e o construtor). Texto segue a semântica do JavaScript, como no `je-base`:
+//! comprimentos, colunas e deslocamentos contam unidades UTF-16.
+
+pub mod character_classifier;
+pub mod eol_counter;
+pub mod js_reg_exp;
+pub mod model;
+pub mod piece_tree_base;
+pub mod piece_tree_text_buffer;
+pub mod piece_tree_text_buffer_builder;
+pub mod position;
+pub mod range;
+pub mod rb_tree_base;
+pub mod selection;
+pub mod string_builder;
+pub mod text_change;
+pub mod text_model_search;
+pub mod word_character_classifier;

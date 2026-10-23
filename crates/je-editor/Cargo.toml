@@ -1,0 +1,19 @@
+[package]
+name = "je-editor"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Porte de vs/editor/common do VS Code: o núcleo do editor (posições, intervalos, piece tree do buffer de texto)."
+
+[lints]
+workspace = true
+
+[dependencies]
+je-base = { path = "../je-base" }
+# `RegExp` ECMAScript da busca no buffer (`findMatchesLineByLine`).
+zyarr = { path = "../zyarr" }
+
+[[bench]]
+name = "piece_tree"
+harness = false

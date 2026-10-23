@@ -4,15 +4,15 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 37 | 929 | 40.78 |
-| `platform` | 723 | 15868 | 2 | 43 | 0.27 |
+| `base` | 150 | 2278 | 39 | 933 | 40.96 |
+| `platform` | 723 | 15868 | 5 | 160 | 1.01 |
 | `editor` | 182 | 3144 | 5 | 111 | 3.53 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
 | `workbench/contrib` | 402 | 5033 | 0 | 0 | 0.00 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 29869 | | 1083 | 3.63 |
+| **total** | | 29869 | | 1204 | 4.03 |
 
 ## Arquivos portados
 
@@ -27,6 +27,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/cancellation.test.ts` | 22 | `crates/je-base/tests/cancellation.rs` | 22 |
 | `src/vs/base/test/common/collections.test.ts` | 12 | `crates/je-base/tests/collections.rs` | 12 |
 | `src/vs/base/test/common/color.test.ts` | 29 | `crates/je-theme/tests/color.rs` | 29 |
+| `src/vs/base/test/common/decorators.test.ts` | 5 | `crates/je-base/tests/decorators.rs` | 3 |
+| `src/vs/base/test/common/envfile.test.ts` | 1 | `crates/je-base/tests/envfile.rs` | 1 |
 | `src/vs/base/test/common/event.test.ts` | 93 | `crates/je-base/tests/event.rs` | 92 |
 | `src/vs/base/test/common/extpath.test.ts` | 11 | `crates/je-base/tests/extpath.rs` | 17 |
 | `src/vs/base/test/common/filters.test.ts` | 40 | `crates/je-base/tests/filters.rs` | 41 |
@@ -56,7 +58,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/uri.test.ts` | 46 | `crates/je-base/tests/uri.rs` | 51 |
 | `src/vs/base/test/common/uuid.test.ts` | 3 | `crates/je-base/tests/uuid.rs` | 3 |
 | `src/vs/platform/configuration/test/common/configuration.test.ts` | 21 | `crates/je-platform/tests/configuration.rs` | 21 |
+| `src/vs/platform/configuration/test/common/configurationModels.test.ts` | 94 | `crates/je-platform/tests/configuration_models.rs` | 94 |
 | `src/vs/platform/configuration/test/common/configurationRegistry.test.ts` | 22 | `crates/je-platform/tests/configuration_registry.rs` | 22 |
+| `src/vs/platform/configuration/test/common/configurationVariables.test.ts` | 7 | `crates/je-platform/tests/configuration_variables.rs` | 8 |
+| `src/vs/platform/configuration/test/common/configurations.test.ts` | 15 | `crates/je-platform/tests/configurations.rs` | 15 |
 | `src/vs/editor/test/common/core/characterClassifier.test.ts` | 1 | `crates/je-editor/tests/character_classifier.rs` | 1 |
 | `src/vs/editor/test/common/core/range.test.ts` | 9 | `crates/je-editor/tests/range.rs` | 9 |
 | `src/vs/editor/test/common/core/stringBuilder.test.ts` | 4 | `crates/je-editor/tests/string_builder.rs` | 4 |
