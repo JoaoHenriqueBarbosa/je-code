@@ -1,15 +1,19 @@
 //! Porte de `src/vs/editor/test/common/testTextModel.ts`: a criação de modelos para os testes.
 //!
-//! `createModelServices` do original monta o contêiner de serviços; aqui o único serviço de que o
-//! `TextModel` depende é o [`UndoRedoService`], então `create_model_services` devolve um serviço novo
-//! (cada modelo de teste tem o seu).
+//! `createModelServices` do original monta o contêiner de serviços; `create_model_services` devolve só o
+//! [`UndoRedoService`] (cada modelo de teste tem o seu), e `create_language_model_services` monta também o
+//! `ILanguageService` e o `ILanguageConfigurationService`, para os casos que registram linguagens.
 
 use std::rc::Rc;
 
 use je_base::uri::URI;
 use je_editor::model::{RelaxedTextModelCreationOptions, TextModelCreationOptions};
-use je_editor::text_model::{TextModel, TextSource};
+use je_editor::language_configuration_registry::LanguageConfigurationService;
+use je_editor::language_service::LanguageService;
+use je_editor::text_model::{TextModel, TextModelServices, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
+
+use crate::common::LeakGuard;
 
 /// `PLAINTEXT_LANGUAGE_ID`.
 pub const PLAINTEXT_LANGUAGE_ID: &str = "plaintext";
@@ -74,4 +78,38 @@ pub fn instantiate_text_model(
 /// `createModelServices(disposables)`.
 pub fn create_model_services() -> Rc<UndoRedoService> {
     UndoRedoService::for_tests()
+}
+
+/// Os serviços de um modelo com linguagens de verdade: o `createModelServices(disposables)` do original,
+/// onde `ILanguageService` e `ILanguageConfigurationService` existem de fato (e não só o `UndoRedoService`).
+pub struct LanguageModelServices {
+    pub undo_redo_service: Rc<UndoRedoService>,
+    pub language_service: Rc<LanguageService>,
+    pub language_configuration_service: Rc<LanguageConfigurationService>,
+}
+
+/// `createModelServices(disposables)` com os serviços de linguagem, descartados com o `LeakGuard`.
+pub fn create_language_model_services(ds: &LeakGuard) -> LanguageModelServices {
+    let language_service = ds.add_rc(LanguageService::new(false));
+    let language_configuration_service = ds.add_rc(LanguageConfigurationService::new(language_service.clone()));
+    LanguageModelServices { undo_redo_service: create_model_services(), language_service, language_configuration_service }
+}
+
+/// `instantiateTextModel(instantiationService, text, languageId)` com os serviços de linguagem injetados.
+pub fn instantiate_text_model_with_languages(
+    services: &LanguageModelServices,
+    text: impl Into<TextSource>,
+    language_id: &str,
+) -> Rc<TextModel> {
+    TextModel::new_with_language_service(
+        text.into(),
+        language_id,
+        resolve_options(&RelaxedTextModelCreationOptions::default()),
+        None,
+        services.undo_redo_service.clone(),
+        Some(TextModelServices {
+            language_service: services.language_service.clone(),
+            language_configuration_service: services.language_configuration_service.clone(),
+        }),
+    )
 }

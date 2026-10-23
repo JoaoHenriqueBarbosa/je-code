@@ -341,3 +341,40 @@ impl LineInjectedText {
         }
     }
 }
+
+/// `IModelLanguageChangedEvent`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelLanguageChangedEvent {
+    /// Previous language
+    pub old_language: String,
+    /// New language
+    pub new_language: String,
+    /// Source of the call that caused the event.
+    pub source: String,
+}
+
+/// `IModelLanguageConfigurationChangedEvent`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModelLanguageConfigurationChangedEvent;
+
+/// `IModelTokensChangedEvent`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelTokensChangedEvent {
+    pub semantic_tokens_applied: bool,
+    pub ranges: Vec<ModelTokensChangedRange>,
+}
+
+/// Um intervalo de linhas de [`ModelTokensChangedEvent`] (`{ fromLineNumber, toLineNumber }`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelTokensChangedRange {
+    /// The start of the range (inclusive)
+    pub from_line_number: i32,
+    /// The end of the range (inclusive)
+    pub to_line_number: i32,
+}
+
+/// `IModelFontTokensChangedEvent`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelFontTokensChangedEvent {
+    pub changes: crate::languages::FontTokensUpdate,
+}

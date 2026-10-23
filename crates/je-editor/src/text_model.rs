@@ -8,18 +8,19 @@
 //! - Texto é UTF-16 ([`JsString`]); `getEOL(): string` vira [`Eol`]; os números de versão são `i64`.
 //! - As exceções do original viram pânico com [`Error`] (`BugIndicatingError` na validação de linha e no
 //!   modelo descartado).
-//! - O `IUndoRedoService` injetado é o [`UndoRedoService`] concreto; `ILanguageService`,
-//!   `ILanguageConfigurationService` e `IInstantiationService` não existem ainda, e o modelo guarda só o
-//!   `language_id` (padrão `plaintext`).
+//! - O `IUndoRedoService` injetado é o [`UndoRedoService`] concreto. `ILanguageService` e
+//!   `ILanguageConfigurationService` chegam por [`TextModelServices`] (`new_with_language_service`); sem eles
+//!   o modelo cria os seus e os descarta junto. `IInstantiationService` não existe: a parte de tokenização
+//!   é criada no construtor, com a definição de palavra por linguagem vinda do serviço de configuração.
+//! - `TextModel::tokenization()` é o `ITokenizationTextModelPart` (`tokenization_text_model_part.rs`):
+//!   `getLineTokens`, `forceTokenization`, `getLanguageId`/`setLanguageId`, tokens semânticos e eventos.
 //!
-//! Pendente, por depender de serviços ainda não portados: tokenização (`tokenization`, `getLineTokens`,
-//! `getLanguageIdAtPosition`, `setLanguage`, eventos de linguagem e de tokens), `bracketPairs`, `guides`,
-//! os provedores de decoração de colorização de pares de colchetes e de fontes por token,
-//! `onDidChangeAttached`/`onBeforeAttached` com `AttachedViews`, `getFormattingOptions` (`languages.ts`),
-//! `edit(TextEdit)` (`edits/textEdit.ts`) e a criação do buffer a partir de stream
+//! Pendente, por depender de serviços ainda não portados: `bracketPairs`, `guides`, os provedores de
+//! decoração de colorização de pares de colchetes e de fontes por token, `getFormattingOptions`
+//! (`languages.ts`), `edit(TextEdit)` (`edits/textEdit.ts`) e a criação do buffer a partir de stream
 //! (`createTextBufferFactoryFromStream`, depende de `stream.ts`).
 
-use std::cell::{Cell, Ref, RefCell};
+use std::cell::{Cell, OnceCell, Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
@@ -30,13 +31,13 @@ use je_base::lifecycle::{Disposable, DisposableRef, IDisposable};
 use je_base::strings;
 use je_base::uri::URI;
 
+use crate::attached_views::{AttachedView, AttachedViews};
 use crate::edit_operation::SingleEditOperation;
 use crate::edit_stack::EditStack;
 use crate::eol_counter::count_eol;
 use crate::indentation::normalize_indentation;
 use crate::indentation_guesser::guess_indentation;
 use crate::interval_tree::{IntervalArena, IntervalNode, IntervalTree, NodeId, recompute_max_end};
-use crate::js_reg_exp::JsRegExp;
 use crate::model::{
     BracketPairColorizationOptions, DecorationColor, DefaultEndOfLine, EndOfLinePreference, EndOfLineSequence, Eol,
     GlyphMarginLane, IndentSize, InjectedTextOptions, MarkdownString, MinimapPosition, MinimapSectionHeaderStyle,
@@ -45,7 +46,10 @@ use crate::model::{
     TextModelCreationOptions, TextModelResolvedOptions, TextModelUpdateOptions, TextSnapshot, TrackedRangeStickiness,
     ValidAnnotatedEditOperation, ValidEditOperation, CursorStateComputer, FindMatch, SearchData,
 };
+use crate::language_configuration_registry::{ILanguageConfigurationService, LanguageConfigurationService};
+use crate::language_service::{ILanguageService, LanguageService};
 use crate::piece_tree_text_buffer::PieceTreeTextBuffer;
+use crate::tokenization_text_model_part::{TokenizationTextModelPart, WordDefinitionProvider};
 use crate::piece_tree_text_buffer_builder::{PieceTreeTextBufferBuilder, PieceTreeTextBufferFactory};
 use crate::position::Position;
 use crate::range::Range;
@@ -61,7 +65,7 @@ use crate::text_model_events::{
 use crate::text_model_search::{SearchParams, TextModelSearch};
 use crate::undo_redo::{ResourceEditStackSnapshot, UndoRedoGroup};
 use crate::undo_redo_service::{UndoRedoService, UndoRedoTarget};
-use crate::word_helper::{WordAtPosition, default_word_regexp, get_word_at_text};
+use crate::word_helper::WordAtPosition;
 
 /// `Constants.MAX_SAFE_SMALL_INTEGER` do `uint.ts`.
 // TODO(integração): mover para je_base::uint.
@@ -1027,6 +1031,13 @@ fn tracked_range_options(stickiness: TrackedRangeStickiness) -> Rc<ModelDecorati
     })
 }
 
+/// Os serviços de linguagem que o `TextModel` recebe por injeção.
+#[derive(Clone)]
+pub struct TextModelServices {
+    pub language_service: Rc<dyn ILanguageService>,
+    pub language_configuration_service: Rc<dyn ILanguageConfigurationService>,
+}
+
 /// O `TextModel`.
 pub struct TextModel {
     me: Weak<TextModel>,
@@ -1040,7 +1051,13 @@ pub struct TextModel {
     buffer: RefCell<PieceTreeTextBuffer>,
     buffer_disposable: RefCell<DisposableRef>,
     options: Cell<TextModelResolvedOptions>,
-    language_id: RefCell<String>,
+    language_service: Rc<dyn ILanguageService>,
+    language_configuration_service: Rc<dyn ILanguageConfigurationService>,
+    /// Os serviços criados pelo próprio modelo (quando ninguém os injetou), descartados com ele.
+    owned_services: Option<(Rc<LanguageService>, Rc<LanguageConfigurationService>)>,
+    attached_views: Rc<AttachedViews>,
+    on_did_change_attached: Rc<Emitter<()>>,
+    tokenization: OnceCell<Rc<TokenizationTextModelPart>>,
 
     is_disposed: Cell<bool>,
     is_disposing: Cell<bool>,
@@ -1065,7 +1082,6 @@ pub struct TextModel {
     last_decoration_id: Cell<u64>,
     decorations: RefCell<DecorationsState>,
 
-    word_definition: Rc<JsRegExp>,
     view_models: RefCell<Vec<Rc<dyn ViewModel>>>,
 
     on_will_dispose: Rc<Emitter<()>>,
@@ -1128,7 +1144,7 @@ impl TextModel {
         )
     }
 
-    /// O construtor. `language_id` é o do `ILanguageService` (o modelo só o guarda por enquanto).
+    /// O construtor com um `ILanguageService` próprio do modelo (criado e descartado com ele).
     pub fn new(
         source: TextSource,
         language_id: &str,
@@ -1136,6 +1152,31 @@ impl TextModel {
         associated_resource: Option<URI>,
         undo_redo_service: Rc<UndoRedoService>,
     ) -> Rc<TextModel> {
+        Self::new_with_language_service(source, language_id, creation_options, associated_resource, undo_redo_service, None)
+    }
+
+    /// O construtor com os serviços de linguagem injetados (`ILanguageService` e
+    /// `ILanguageConfigurationService`). Sem eles, o modelo cria os seus e os descarta junto.
+    pub fn new_with_language_service(
+        source: TextSource,
+        language_id: &str,
+        creation_options: TextModelCreationOptions,
+        associated_resource: Option<URI>,
+        undo_redo_service: Rc<UndoRedoService>,
+        services: Option<TextModelServices>,
+    ) -> Rc<TextModel> {
+        let (language_service, language_configuration_service, owned_services) = match services {
+            Some(services) => (services.language_service, services.language_configuration_service, None),
+            None => {
+                let language_service = LanguageService::new(false);
+                let configuration_service = LanguageConfigurationService::new(language_service.clone());
+                (
+                    language_service.clone() as Rc<dyn ILanguageService>,
+                    configuration_service.clone() as Rc<dyn ILanguageConfigurationService>,
+                    Some((language_service, configuration_service)),
+                )
+            }
+        };
         // Gera um id novo e único para o modelo
         let model_id = MODEL_ID.with(|counter| {
             counter.set(counter.get() + 1);
@@ -1179,8 +1220,12 @@ impl TextModel {
         base.register(on_did_change_font.clone());
         base.register(on_did_change_decorations.actual.clone());
         base.register(event_emitter.emitter.clone());
+        let on_did_change_attached = Emitter::new();
+        base.register(on_did_change_attached.clone());
+        let attached_views = AttachedViews::new();
+        base.register(attached_views.clone());
 
-        Rc::new_cyclic(|me| TextModel {
+        let model = Rc::new_cyclic(|me| TextModel {
             me: me.clone(),
             base,
             id: format!("$model{model_id}"),
@@ -1190,7 +1235,12 @@ impl TextModel {
             buffer: RefCell::new(buffer),
             buffer_disposable: RefCell::new(buffer_disposable),
             options: Cell::new(options),
-            language_id: RefCell::new(language_id.to_owned()),
+            language_service: language_service.clone(),
+            language_configuration_service: language_configuration_service.clone(),
+            owned_services,
+            attached_views: attached_views.clone(),
+            on_did_change_attached,
+            tokenization: OnceCell::new(),
             is_disposed: Cell::new(false),
             is_disposing: Cell::new(false),
             version_id: Cell::new(1),
@@ -1208,7 +1258,6 @@ impl TextModel {
             delta_decoration_call_cnt: Cell::new(0),
             last_decoration_id: Cell::new(0),
             decorations: RefCell::new(DecorationsState::new()),
-            word_definition: default_word_regexp(),
             view_models: RefCell::new(Vec::new()),
             on_will_dispose,
             on_did_change_decorations,
@@ -1216,7 +1265,21 @@ impl TextModel {
             on_did_change_line_height,
             on_did_change_font,
             event_emitter,
-        })
+        });
+        let configuration_for_words = language_configuration_service.clone();
+        let word_definition: WordDefinitionProvider =
+            Rc::new(move |language_id| configuration_for_words.get_language_configuration(language_id).get_word_definition());
+        let part = TokenizationTextModelPart::new(model.me.clone(), language_id, &attached_views, &language_service, word_definition);
+        let _ = model.tokenization.set(part);
+        language_service.request_rich_language_features(language_id);
+
+        let weak = model.me.clone();
+        model.base.register(language_configuration_service.on_did_change().listen(move |e| {
+            if let Some(model) = weak.upgrade() {
+                model.tokenization().handle_language_configuration_service_change(|language_id| e.affects(language_id));
+            }
+        }));
+        model
     }
 
     /// O `Weak` do próprio modelo (o elemento de desfazer o guarda).
@@ -1275,8 +1338,13 @@ impl TextModel {
     pub fn dispose(&self) {
         self.is_disposing.set(true);
         self.on_will_dispose.fire(());
+        IDisposable::dispose(&**self.tokenization());
         self.is_disposed.set(true);
         IDisposable::dispose(&*self.base);
+        if let Some((language_service, configuration_service)) = &self.owned_services {
+            IDisposable::dispose(&**configuration_service);
+            IDisposable::dispose(&**language_service);
+        }
         self.buffer_disposable.borrow().dispose();
         self.is_disposing.set(false);
         // Solta a referência ao buffer anterior para evitar vazamento grande caso alguém retenha o modelo
@@ -1295,13 +1363,15 @@ impl TextModel {
     pub fn has_listeners(&self) -> bool {
         self.on_will_dispose.has_listeners()
             || self.on_did_change_decorations.has_listeners()
+            || self.tokenization().has_listeners()
             || self.on_did_change_options.has_listeners()
+            || self.on_did_change_attached.has_listeners()
             || self.on_did_change_line_height.has_listeners()
             || self.on_did_change_font.has_listeners()
             || self.event_emitter.has_listeners()
     }
 
-    fn assert_not_disposed(&self) {
+    pub(crate) fn assert_not_disposed(&self) {
         if self.is_disposed.get() {
             errors::throw(Error::bug_indicating(Some("Model is disposed!")));
         }
@@ -1332,6 +1402,7 @@ impl TextModel {
             // Não confunde os listeners emitindo evento depois de descartar
             return;
         }
+        self.tokenization().handle_did_change_content(&change);
         let mut content_change_event = InternalModelContentChangeEvent {
             raw_content_changed_event: raw_change,
             content_changed_event: change,
@@ -2045,38 +2116,79 @@ impl TextModel {
 
     /// `getLanguageId()`.
     pub fn get_language_id(&self) -> String {
-        self.language_id.borrow().clone()
+        self.tokenization().get_language_id()
+    }
+
+    /// `setLanguage(languageId, source)`.
+    pub fn set_language(&self, language_id: &str, source: Option<&str>) {
+        self.tokenization().set_language_id(language_id, source.unwrap_or("api"));
+        self.language_service.request_rich_language_features(language_id);
+    }
+
+    /// `getLanguageIdAtPosition(lineNumber, column)`.
+    pub fn get_language_id_at_position(&self, line_number: i32, column: i32) -> String {
+        self.tokenization().get_language_id_at_position(line_number, column)
+    }
+
+    /// `tokenization`: a parte de tokenização (`ITokenizationTextModelPart`).
+    pub fn tokenization(&self) -> &Rc<TokenizationTextModelPart> {
+        self.tokenization.get().expect("a parte de tokenização é criada no construtor")
+    }
+
+    /// O `ILanguageConfigurationService` do modelo.
+    pub fn language_configuration_service(&self) -> &Rc<dyn ILanguageConfigurationService> {
+        &self.language_configuration_service
+    }
+
+    /// O `ILanguageService` do modelo.
+    pub fn language_service(&self) -> &Rc<dyn ILanguageService> {
+        &self.language_service
+    }
+
+    pub fn on_did_change_language(&self) -> Event<crate::text_model_events::ModelLanguageChangedEvent> {
+        self.tokenization().on_did_change_language()
+    }
+
+    pub fn on_did_change_language_configuration(&self) -> Event<crate::text_model_events::ModelLanguageConfigurationChangedEvent> {
+        self.tokenization().on_did_change_language_configuration()
+    }
+
+    pub fn on_did_change_tokens(&self) -> Event<crate::text_model_events::ModelTokensChangedEvent> {
+        self.tokenization().on_did_change_tokens()
+    }
+
+    pub fn on_did_change_attached(&self) -> Event<()> {
+        self.on_did_change_attached.event()
+    }
+
+    /// `onBeforeAttached()`: um editor passa a mostrar o modelo.
+    pub fn on_before_attached(&self) -> Rc<AttachedView> {
+        self.attached_editor_count.set(self.attached_editor_count.get() + 1);
+        if self.attached_editor_count.get() == 1 {
+            self.tokenization().handle_did_change_attached();
+            self.on_did_change_attached.fire(());
+        }
+        self.attached_views.attach_view()
+    }
+
+    /// `onBeforeDetached(view)`.
+    pub fn on_before_detached(&self, view: &Rc<AttachedView>) {
+        self.attached_editor_count.set(self.attached_editor_count.get() - 1);
+        if self.attached_editor_count.get() == 0 {
+            self.tokenization().handle_did_change_attached();
+            self.on_did_change_attached.fire(());
+        }
+        self.attached_views.detach_view(view);
     }
 
     /// `getWordAtPosition(position)`.
     pub fn get_word_at_position(&self, position: Position) -> Option<WordAtPosition> {
-        self.assert_not_disposed();
-        let validated = self.validate_position(position);
-        let line_content = self.get_line_content(validated.line_number);
-        // Sem tokenização, a linha inteira é um token só da linguagem do modelo.
-        let result = get_word_at_text(validated.column, &self.word_definition, line_content.units(), 0, None)?;
-        if result.start_column <= position.column && position.column <= result.end_column {
-            return Some(result);
-        }
-        None
+        self.tokenization().get_word_at_position(position)
     }
 
     /// `getWordUntilPosition(position)`.
     pub fn get_word_until_position(&self, position: Position) -> WordAtPosition {
-        match self.get_word_at_position(position) {
-            None => WordAtPosition {
-                word: JsString::new(),
-                start_column: position.column,
-                end_column: position.column,
-            },
-            Some(word_at_position) => WordAtPosition {
-                word: word_at_position
-                    .word
-                    .slice(0, ((position.column - word_at_position.start_column).max(0) as usize).min(word_at_position.word.len())),
-                start_column: word_at_position.start_column,
-                end_column: position.column,
-            },
-        }
+        self.tokenization().get_word_until_position(position)
     }
 
     // #endregion

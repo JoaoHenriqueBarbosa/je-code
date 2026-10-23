@@ -1,17 +1,20 @@
 //! Tokenização de um arquivo no formato da golden: o `Snapper` do `themes.test.contribution.ts`.
+//!
+//! A linguagem, a gramática (com as injeções e as linguagens embutidas) e o tema vêm do crate
+//! `je-languages`, o mesmo caminho do produto; aqui só se pede ao ferriki a tokenização com escopos
+//! (`tokenize_line_with_scopes`), que o `TokenizationRegistry` não expõe.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
-use ferriki_textmate::{
-    EmbeddedLanguages, EncodedTokenAttributes, GrammarConfiguration, RawTheme, StandardTokenType, SyncRegistry,
-    parse_raw_grammar,
-};
-
-use crate::catalog::Catalog;
-use crate::jsonc;
-use crate::theme::Theme;
+use ferriki_textmate::EncodedTokenAttributes;
+use je_base::uri::URI;
+use je_editor::language_service::{ILanguageService, LanguageService};
+use je_languages::extensions::ExtensionsCatalog;
+use je_languages::text_mate_tokenization_feature::TextMateTokenizationFeature;
+use je_languages::token_theme::TokenTheme;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Token {
@@ -24,68 +27,6 @@ pub struct Outcome {
     pub tokens: Vec<Token>,
     /// Vazio quando a tokenização terminou; senão o motivo (sem linguagem, erro de regex...).
     pub status: String,
-}
-
-/// Variações de medição, desligadas por padrão.
-#[derive(Clone, Copy, Default)]
-pub struct Options {
-    /// Reescreve `\p` sem `{` (aceito pelo Oniguruma, recusado pelo ferroni) para `p`, para medir o
-    /// que sobra quando só esse defeito da crate é contornado.
-    pub workaround_bare_p: bool,
-    /// Controle negativo: sem injeções, o resultado precisa divergir das goldens.
-    pub no_injections: bool,
-}
-
-/// Texto de cada gramática, lido uma vez (os arquivos `.json` já normalizados de JSONC).
-pub struct GrammarSources {
-    texts: Vec<(String, String)>,
-    options: Options,
-}
-
-/// `\p` do regex (no texto JSON, duas barras e `p`) que não é seguido de `{`, vira `p`.
-fn replace_bare_p(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] != '\\' {
-            out.push(chars[i]);
-            i += 1;
-            continue;
-        }
-        let run = chars[i..].iter().take_while(|&&c| c == '\\').count();
-        let bare_p = chars.get(i + run) == Some(&'p') && run % 4 == 2 && chars.get(i + run + 1) != Some(&'{');
-        if bare_p {
-            out.extend(std::iter::repeat_n('\\', run - 2));
-            out.push('p');
-            i += run + 1;
-        } else {
-            out.extend(std::iter::repeat_n('\\', run));
-            i += run;
-        }
-    }
-    out
-}
-
-impl GrammarSources {
-    pub fn load(catalog: &Catalog, options: Options) -> Self {
-        let texts = catalog
-            .grammars
-            .iter()
-            .filter_map(|g| {
-                let path = g.path.to_string_lossy().to_string();
-                let text = fs::read_to_string(&g.path).ok()?;
-                let text = if path.ends_with(".json") {
-                    jsonc::parse(&text).ok()?.to_string()
-                } else {
-                    text
-                };
-                let text = if options.workaround_bare_p { replace_bare_p(&text) } else { text };
-                Some((path, text))
-            })
-            .collect();
-        Self { texts, options }
-    }
 }
 
 fn utf16_slice(units: &[u16], start: usize, end: usize) -> Vec<u16> {
@@ -126,46 +67,13 @@ struct ThemedToken {
     color: Option<String>,
 }
 
-fn standard_token_type(name: &str) -> Option<StandardTokenType> {
-    match name {
-        "string" => Some(StandardTokenType::String),
-        "other" => Some(StandardTokenType::Other),
-        "comment" => Some(StandardTokenType::Comment),
-        "regex" => Some(StandardTokenType::RegEx),
-        _ => None,
-    }
-}
-
-fn build_registry(catalog: &Catalog, sources: &GrammarSources) -> Result<SyncRegistry, String> {
-    let mut registry = SyncRegistry::new(None, None).map_err(|e| e.to_string())?;
-    for (path, text) in &sources.texts {
-        let raw = parse_raw_grammar(text, Some(path)).map_err(|e| format!("gramática {path}: {e}"))?;
-        registry.add_grammar(raw, Vec::new());
-    }
-    // `getInjections` do TMGrammarFactory soma as injeções de cada prefixo do escopo.
-    let injections = if sources.options.no_injections { BTreeMap::new() } else { catalog.injections() };
-    for g in &catalog.grammars {
-        let parts: Vec<&str> = g.scope_name.split('.').collect();
-        let combined: Vec<String> = (1..=parts.len())
-            .flat_map(|n| injections.get(parts[..n].join(".").as_str()).cloned().unwrap_or_default())
-            .map(str::to_string)
-            .collect();
-        if !combined.is_empty() {
-            registry.set_injections(g.scope_name.clone(), combined);
-        }
-    }
-    Ok(registry)
-}
-
-pub fn run(catalog: &Catalog, themes: &[Theme], sources: &GrammarSources, fixture: &Path) -> Outcome {
+pub fn run(extensions: &Path, themes: &[TokenTheme], fixture: &Path) -> Outcome {
+    let catalog = match ExtensionsCatalog::load(extensions) {
+        Ok(c) => c,
+        Err(e) => return Outcome { tokens: Vec::new(), status: format!("catálogo: {e}") },
+    };
     let fail = |status: String| Outcome { tokens: Vec::new(), status };
     let name = fixture.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let Some(language) = catalog.guess_language(&name) else {
-        return fail("sem linguagem".into());
-    };
-    let Some(scope) = catalog.language_scopes().get(language).map(|s| s.to_string()) else {
-        return fail(format!("sem gramática para a linguagem {language}"));
-    };
     let bytes = match fs::read(fixture) {
         Ok(b) => b,
         Err(e) => return fail(format!("leitura: {e}")),
@@ -173,45 +81,24 @@ pub fn run(catalog: &Catalog, themes: &[Theme], sources: &GrammarSources, fixtur
     let content = String::from_utf8_lossy(&bytes);
     let lines = split_lines(&content);
 
-    let mut registry = match build_registry(catalog, sources) {
-        Ok(r) => r,
-        Err(e) => return fail(format!("registro: {e}")),
+    let language_service = LanguageService::new(false);
+    language_service.set_dynamic_languages(catalog.languages.clone());
+    let service: Rc<dyn ILanguageService> = language_service.clone();
+    let uri = URI::file(format!("/{name}"), je_base::path::Platform::Posix);
+    let Some(language) = service.guess_language_id_by_filepath_or_first_line(Some(&uri), None) else {
+        return fail("sem linguagem".into());
     };
-    let embedded: EmbeddedLanguages = catalog
-        .embedded_languages_for(&scope)
-        .into_iter()
-        .map(|(scope, lang)| (scope, catalog.encoded_language_id(&lang)))
-        .collect();
-    let token_types = catalog
-        .grammars
-        .iter()
-        .rev()
-        .find(|g| g.scope_name == scope)
-        .map(|g| g.token_types.iter().filter_map(|(s, t)| Some((s.clone(), standard_token_type(t)?))).collect())
-        .unwrap_or_default();
-    let configuration = GrammarConfiguration::default()
-        .with_initial_language_id(catalog.encoded_language_id(language))
-        .with_embedded_languages(embedded)
-        .with_token_types(token_types)
-        .with_balanced_bracket_selectors(Some(vec!["*".to_string()]));
-    let grammar = match registry.grammar_for_scope_name(&scope, configuration) {
-        Ok(Some(g)) => g,
-        Ok(None) => return fail(format!("gramática {scope} não registrada")),
-        Err(e) => return fail(format!("tema: {e}")),
+    let feature = TextMateTokenizationFeature::new(service, &catalog.grammars, catalog.max_tokenization_line_length.clone());
+    let Some(grammar) = feature.create_tokenizer(&language) else {
+        return fail(format!("sem gramática para a linguagem {language}"));
     };
 
     let mut status = String::new();
     let mut tokens: Vec<Token> = Vec::new();
     let mut themed: Vec<Vec<ThemedToken>> = Vec::new();
     for (theme_index, theme) in themes.iter().enumerate() {
-        let raw: RawTheme = match serde_json::from_value(theme.raw_theme()) {
-            Ok(r) => r,
-            Err(e) => return fail(format!("tema {}: {e}", theme.id)),
-        };
-        if let Err(e) = registry.set_theme(Some(raw), None) {
-            return fail(format!("tema {}: {e}", theme.id));
-        }
-        let color_map = registry.get_color_map();
+        feature.set_theme(theme);
+        let color_map = feature.color_map();
         let mut state = None;
         let mut themed_tokens = Vec::new();
         for line in &lines {
@@ -259,8 +146,8 @@ pub fn run(catalog: &Catalog, themes: &[Theme], sources: &GrammarSources, fixtur
 }
 
 /// `_enrichResult`: consome o texto dos tokens temáticos conforme avança pelos tokens agrupados.
-fn enrich(tokens: &mut [Token], themes: &[Theme], themed: &mut [Vec<ThemedToken>]) {
-    let mut themes: Vec<Theme> = themes.to_vec();
+fn enrich(tokens: &mut [Token], themes: &[TokenTheme], themed: &mut [Vec<ThemedToken>]) {
+    let mut themes: Vec<TokenTheme> = themes.to_vec();
     let mut index = vec![0usize; themed.len()];
     for token in tokens.iter_mut() {
         let length = token.c.encode_utf16().count();

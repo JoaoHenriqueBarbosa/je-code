@@ -2,7 +2,14 @@
 //! buffer, conferência das invariantes rubro-negras da árvore e das linhas.
 #![allow(dead_code)]
 
+pub mod auto_closing_pairs_rules;
+pub mod bracket_rules;
 pub mod editable_text_model_test_utils;
+pub mod indentation_rules;
+pub mod modes_test_utils;
+pub mod on_enter_rules;
+pub mod test_language_configuration_service;
+pub mod test_line_token;
 pub mod test_text_model;
 
 use std::rc::Rc;
@@ -58,6 +65,11 @@ pub fn random_char(rng: &mut Rng) -> char {
 /// `randomStr(len)`: o laço do original vai de 1 a `len - 1`, então são `len - 1` caracteres.
 pub fn random_str(rng: &mut Rng, len: usize) -> String {
     (1..len).map(|_| random_char(rng)).collect()
+}
+
+/// `/pattern/flags`: o literal de `RegExp` do original.
+pub fn re(pattern: &str, flags: &str) -> Rc<JsRegExp> {
+    Rc::new(JsRegExp::from_str(pattern, flags).expect("regex válida"))
 }
 
 pub fn u(s: &str) -> Vec<u16> {

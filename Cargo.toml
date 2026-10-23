@@ -24,3 +24,8 @@ ferroni = { path = "vendor/ferroni" }
 # O zjsc tem cerca de 635 mil linhas numa crate só: sem debuginfo para o link e a memória caberem.
 [profile.release.package.zjsc]
 debug = 0
+
+# O ferroni em debug estoura o limite de 500 ms por linha do tokenizeLine2 (1 das 109 fixtures); o
+# restante do workspace continua em debug.
+[profile.dev.package.ferroni]
+opt-level = 3

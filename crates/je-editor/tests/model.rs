@@ -2,22 +2,15 @@
 //!
 //! Cada `suite` do original vira um `mod`.
 //!
-//! Pendente:
-//! - `Editor Model - Words` / `getWordAtPosition at embedded language boundaries`: precisa do
-//!   `ILanguageService` (registrar as linguagens `outerMode` e `innerMode`), do
-//!   `ILanguageConfigurationService` e do `TokenizationRegistry` (o tokenizador que marca cada `x` como da
-//!   linguagem interna, com `EncodedTokenizationResult` e `MetadataConsts.LANGUAGEID_OFFSET`), nada disso
-//!   portado. Sem tokenização, o `TextModel` trata a linha inteira como um token só da linguagem do modelo.
-//! - `Editor Model - Words` / `issue #61296: VS code freezes when editing CSS file with emoji`: precisa do
-//!   `ILanguageService` e do `ILanguageConfigurationService` para registrar a linguagem `testMode` com o
-//!   `wordPattern` próprio; o `TextModel` do porte usa sempre a definição de palavra padrão.
-//!
 //! Notas de tradução:
 //! - O `setup`/`teardown` do original vira `with_model`, que cria o modelo, roda o caso e o descarta.
 //! - O view model espião do `withEventCapturing` implementa o trait `ViewModel` do `TextModel` (o `mock` do
 //!   original só sobrescreve os dois métodos que o modelo chama). O `assert.fail` dentro do espião vira
 //!   pânico, que derruba o caso do mesmo jeito.
 //! - `applyEdits(ops, true)` é `apply_edits_computing_undo`.
+//! - `createModelServices(disposables)` com os serviços de linguagem é `create_language_model_services`
+//!   (`tests/support/test_text_model.rs`); `OuterMode` e `InnerMode` do original são as funções
+//!   `register_outer_mode` e `register_inner_mode`, que devolvem o `Disposable` com os registros.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -28,14 +21,24 @@ use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
+use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, plain_disposable};
 use je_editor::edit_operation::{EditOperation, SingleEditOperation};
+use je_editor::encoded_token_attributes::metadata_consts;
+use je_editor::language_configuration::LanguageConfiguration;
+use je_editor::language_configuration_registry::ILanguageConfigurationService;
+use je_editor::language_service::ILanguageService;
+use je_editor::languages::{EncodedTokenizationResult, ILanguageIdCodec, ITokenizationSupport, State, TokenizationResult};
+use je_editor::modes_registry::LanguageExtensionPoint;
+use je_editor::null_tokenize::null_state;
 use je_editor::position::Position;
 use je_editor::range::Range;
 use je_editor::text_model::{ContentOrInjectedTextEvent, TextModel, ViewModel};
 use je_editor::text_model_events::{
     ModelRawChange, ModelRawContentChangedEvent, ModelRawLineChanged, ModelRawLinesDeleted, ModelRawLinesInserted,
 };
+use je_editor::tokenization_registry::tokenization_registry;
 use je_editor::word_helper::WordAtPosition;
+use support::re;
 use support::test_text_model::*;
 
 // --------- utilitários
@@ -477,30 +480,121 @@ mod editor_model_words {
         this_model.dispose();
     }
 
-    #[test]
-    #[ignore = "Pendente: ILanguageService, ILanguageConfigurationService e TokenizationRegistry não portados"]
-    fn get_word_at_position_at_embedded_language_boundaries() {
-        // Pendente: o original registra as linguagens `outerMode` e `innerMode` no `ILanguageService` e no
-        // `ILanguageConfigurationService`, e um tokenizador no `TokenizationRegistry` que põe cada `x` na
-        // linguagem interna; o `getWordAtPosition` usa os tokens para cortar a palavra na fronteira das
-        // linguagens. Nenhum dos três serviços existe no porte, e o modelo de `'ab<xx>ab<x>'` com a
-        // linguagem `outerMode` não pode ser criado com a tokenização que o caso exige. As asserções do
-        // original:
-        // (1, 1), (1, 2), (1, 3) => { word: 'ab', startColumn: 1, endColumn: 3 }
-        // (1, 4), (1, 5), (1, 6) => { word: 'xx', startColumn: 4, endColumn: 6 }
-        // (1, 7)                 => { word: 'ab', startColumn: 7, endColumn: 9 }
+    const OUTER_LANGUAGE_ID: &str = "outerMode";
+    const INNER_LANGUAGE_ID: &str = "innerMode";
+
+    /// O tokenizador do `OuterMode`: cada `x` é da linguagem interna e o resto, da externa.
+    struct OuterModeTokenizationSupport {
+        language_id_codec: Rc<dyn ILanguageIdCodec>,
+    }
+
+    impl ITokenizationSupport for OuterModeTokenizationSupport {
+        fn get_initial_state(&self) -> State {
+            null_state()
+        }
+
+        fn tokenize(&self, _line: &JsString, _has_eol: bool, _state: &State) -> TokenizationResult {
+            unreachable!("`tokenize: undefined!` no original")
+        }
+
+        fn tokenize_encoded(&self, line: &JsString, _has_eol: bool, state: &State) -> EncodedTokenizationResult {
+            let mut tokens: Vec<u32> = Vec::new();
+            let mut prev_language_id: Option<&str> = None;
+            for (i, unit) in line.units().iter().enumerate() {
+                let language_id = if *unit == u16::from(b'x') { INNER_LANGUAGE_ID } else { OUTER_LANGUAGE_ID };
+                let encoded_language_id = self.language_id_codec.encode_language_id(language_id);
+                if prev_language_id != Some(language_id) {
+                    tokens.push(i as u32);
+                    tokens.push(encoded_language_id << metadata_consts::LANGUAGEID_OFFSET);
+                }
+                prev_language_id = Some(language_id);
+            }
+            EncodedTokenizationResult { tokens, font_info: Vec::new(), end_state: state.clone() }
+        }
+    }
+
+    /// `class OuterMode`: registra a linguagem, a configuração vazia e o tokenizador.
+    fn register_outer_mode(services: &LanguageModelServices) -> Rc<Disposable> {
+        let mode = Disposable::new();
+        mode.register(services.language_service.register_language(LanguageExtensionPoint::new(OUTER_LANGUAGE_ID)));
+        mode.register(services.language_configuration_service.register(
+            OUTER_LANGUAGE_ID,
+            LanguageConfiguration::default(),
+            None,
+        ));
+
+        let support = OuterModeTokenizationSupport { language_id_codec: services.language_service.language_id_codec() };
+        mode.register(tokenization_registry().register(OUTER_LANGUAGE_ID, Rc::new(support)));
+        mode
+    }
+
+    /// `class InnerMode`: registra a linguagem e a configuração vazia.
+    fn register_inner_mode(services: &LanguageModelServices) -> Rc<Disposable> {
+        let mode = Disposable::new();
+        mode.register(services.language_service.register_language(LanguageExtensionPoint::new(INNER_LANGUAGE_ID)));
+        mode.register(services.language_configuration_service.register(
+            INNER_LANGUAGE_ID,
+            LanguageConfiguration::default(),
+            None,
+        ));
+        mode
+    }
+
+    /// `disposables.add(model)`: o descarte do modelo, para o `DisposableStore` do caso.
+    fn dispose_with(model: &Rc<TextModel>) -> DisposableRef {
+        let model = model.clone();
+        plain_disposable(move || model.dispose())
     }
 
     #[test]
-    #[ignore = "Pendente: ILanguageService e ILanguageConfigurationService (wordPattern por linguagem) não portados"]
+    fn get_word_at_position_at_embedded_language_boundaries() {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let services = create_language_model_services(&guard);
+        guard.add_rc(register_outer_mode(&services));
+        guard.add_rc(register_inner_mode(&services));
+
+        let model = instantiate_text_model_with_languages(&services, "ab<xx>ab<x>", OUTER_LANGUAGE_ID);
+        guard.add(dispose_with(&model));
+
+        assert_eq!(model.get_word_at_position(Position::new(1, 1)), word("ab", 1, 3));
+        assert_eq!(model.get_word_at_position(Position::new(1, 2)), word("ab", 1, 3));
+        assert_eq!(model.get_word_at_position(Position::new(1, 3)), word("ab", 1, 3));
+        assert_eq!(model.get_word_at_position(Position::new(1, 4)), word("xx", 4, 6));
+        assert_eq!(model.get_word_at_position(Position::new(1, 5)), word("xx", 4, 6));
+        assert_eq!(model.get_word_at_position(Position::new(1, 6)), word("xx", 4, 6));
+        assert_eq!(model.get_word_at_position(Position::new(1, 7)), word("ab", 7, 9));
+
+        guard.store().dispose();
+    }
+
+    #[test]
     fn issue_61296_vs_code_freezes_when_editing_css_file_with_emoji() {
-        // Pendente: o original registra a linguagem `testMode` no `ILanguageService` e, no
-        // `ILanguageConfigurationService`, o `wordPattern`
-        // `/(#?-?\d*\.\d\w*%?)|(::?[\w-]*(?=[^,{;]*[,{]))|(([@#.!])?[\w-?]+%?|[@#!.])/g`; o modelo de
-        // `'.🐷-a-b'` precisa usar esse padrão em vez da definição de palavra padrão. As asserções do
-        // original:
-        // (1, 1), (1, 2)                 => { word: '.', startColumn: 1, endColumn: 2 }
-        // (1, 3)                         => null
-        // (1, 4), (1, 5), (1, 6), (1, 7), (1, 8) => { word: '-a-b', startColumn: 4, endColumn: 8 }
+        const MODE_ID: &str = "testMode";
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let services = create_language_model_services(&guard);
+
+        guard.add(services.language_service.register_language(LanguageExtensionPoint::new(MODE_ID)));
+        guard.add(services.language_configuration_service.register(
+            MODE_ID,
+            LanguageConfiguration {
+                word_pattern: Some(re(r"(#?-?\d*\.\d\w*%?)|(::?[\w-]*(?=[^,{;]*[,{]))|(([@#.!])?[\w-?]+%?|[@#!.])", "g")),
+                ..LanguageConfiguration::default()
+            },
+            None,
+        ));
+
+        let this_model = instantiate_text_model_with_languages(&services, ".\u{1F437}-a-b", MODE_ID);
+        guard.add(dispose_with(&this_model));
+
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 1)), word(".", 1, 2));
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 2)), word(".", 1, 2));
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 3)), None);
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 4)), word("-a-b", 4, 8));
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 5)), word("-a-b", 4, 8));
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 6)), word("-a-b", 4, 8));
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 7)), word("-a-b", 4, 8));
+        assert_eq!(this_model.get_word_at_position(Position::new(1, 8)), word("-a-b", 4, 8));
+
+        guard.store().dispose();
     }
 }

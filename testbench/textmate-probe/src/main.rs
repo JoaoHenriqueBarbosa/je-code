@@ -1,10 +1,6 @@
 //! Sonda da H14: tokeniza as fixtures do `vscode-colorize-tests` com o `ferriki-textmate` e compara
 //! com as goldens geradas pelo `_workbench.captureSyntaxTokens` do VS Code 1.143.1.
 
-mod catalog;
-mod glob;
-mod jsonc;
-mod theme;
 mod tokenize;
 
 use std::collections::{BTreeMap, HashMap};
@@ -13,9 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use catalog::Catalog;
+use je_languages::extensions::ExtensionsCatalog;
+use je_languages::jsonc;
+use je_languages::token_theme::TokenTheme;
 use serde_json::Value;
-use theme::Theme;
 use tokenize::{Outcome, Token};
 
 const FIXTURE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -115,17 +112,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let detail = args.iter().position(|a| a == "--detail").and_then(|i| args.get(i + 1)).cloned();
     let only = args.iter().position(|a| a == "--only").and_then(|i| args.get(i + 1)).cloned();
-    let options = tokenize::Options {
-        workaround_bare_p: args.iter().any(|a| a == "--workaround-bare-p"),
-        no_injections: args.iter().any(|a| a == "--control-no-injections"),
-    };
     let root = workspace_root();
     let extensions = root.join("ref/vscode/extensions");
     let tests = extensions.join("vscode-colorize-tests/test");
 
-    let catalog = Arc::new(Catalog::load(&extensions).expect("catálogo de extensões"));
+    // O catálogo guarda `URI` (com `Rc`): cada thread de fixture monta o seu.
+    let catalog = ExtensionsCatalog::load(&extensions).expect("catálogo de extensões");
     let themes = Arc::new(load_themes(&extensions));
-    let grammars = Arc::new(tokenize::GrammarSources::load(&catalog, options));
     println!(
         "{} linguagens, {} gramáticas, {} temas ({})",
         catalog.languages.len(),
@@ -153,12 +146,12 @@ fn main() {
         };
         let started = Instant::now();
         let (tx, rx) = mpsc::channel();
-        let (catalog, themes, grammars, path) = (catalog.clone(), themes.clone(), grammars.clone(), fixture.clone());
+        let (extensions, themes, path) = (extensions.clone(), themes.clone(), fixture.clone());
         std::thread::Builder::new()
             .stack_size(512 << 20)
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    tokenize::run(&catalog, &themes, &grammars, &path)
+                    tokenize::run(&extensions, &themes, &path)
                 }))
                 .unwrap_or_else(|p| {
                     let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()));
@@ -177,14 +170,14 @@ fn main() {
     std::process::exit(0);
 }
 
-fn load_themes(extensions: &Path) -> Vec<Theme> {
+fn load_themes(extensions: &Path) -> Vec<TokenTheme> {
     let dir = extensions.join("theme-defaults");
     let manifest = jsonc::parse(&fs::read_to_string(dir.join("package.json")).expect("package.json")).expect("json");
     manifest["contributes"]["themes"]
         .as_array()
         .expect("themes")
         .iter()
-        .map(|entry| Theme::load(&dir, entry).unwrap_or_else(|e| panic!("tema: {e}")))
+        .map(|entry| TokenTheme::load(&dir, entry).unwrap_or_else(|e| panic!("tema: {e}")))
         .collect()
 }
 

@@ -4,15 +4,15 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 69 | 1420 | 62.34 |
+| `base` | 150 | 2278 | 70 | 1423 | 62.47 |
 | `platform` | 723 | 15868 | 17 | 342 | 2.16 |
-| `editor` | 182 | 3144 | 25 | 595 | 18.92 |
+| `editor` | 182 | 3144 | 30 | 677 | 21.53 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
 | `workbench/contrib` | 402 | 5033 | 0 | 0 | 0.00 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 29869 | | 2357 | 7.89 |
+| **total** | | 29869 | | 2442 | 8.18 |
 
 ## Arquivos portados
 
@@ -60,6 +60,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/linkedList.test.ts` | 7 | `crates/je-base/tests/linked_list.rs` | 7 |
 | `src/vs/base/test/common/linkedText.test.ts` | 2 | `crates/je-base/tests/linked_text.rs` | 2 |
 | `src/vs/base/test/common/map.test.ts` | 44 | `crates/je-base/tests/map.rs` | 44 |
+| `src/vs/base/test/common/markdownLinks.test.ts` | 3 | `crates/je-base/tests/markdown_links.rs` | 3 |
 | `src/vs/base/test/common/markdownString.test.ts` | 14 | `crates/je-base/tests/markdown_string.rs` | 14 |
 | `src/vs/base/test/common/marshalling.test.ts` | 3 | `crates/je-base/tests/marshalling.rs` | 3 |
 | `src/vs/base/test/common/mime.test.ts` | 3 | `crates/je-base/tests/mime.rs` | 3 |
@@ -114,6 +115,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/model/editableTextModelAuto.test.ts` | 4 | `crates/je-editor/tests/editable_text_model_auto.rs` | 4 |
 | `src/vs/editor/test/common/model/intervalTree.test.ts` | 25 | `crates/je-editor/tests/interval_tree.rs` | 25 |
 | `src/vs/editor/test/common/model/model.line.test.ts` | 53 | `crates/je-editor/tests/model_line.rs` | 54 |
+| `src/vs/editor/test/common/model/model.modes.test.ts` | 14 | `crates/je-editor/tests/model_modes.rs` | 14 |
 | `src/vs/editor/test/common/model/model.test.ts` | 32 | `crates/je-editor/tests/model.rs` | 32 |
 | `src/vs/editor/test/common/model/modelDecorations.test.ts` | 101 | `crates/je-editor/tests/model_decorations.rs` | 101 |
 | `src/vs/editor/test/common/model/modelEditOperation.test.ts` | 8 | `crates/je-editor/tests/model_edit_operation.rs` | 8 |
@@ -122,10 +124,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/model/textModel.test.ts` | 40 | `crates/je-editor/tests/text_model.rs` | 40 |
 | `src/vs/editor/test/common/model/textModelSearch.test.ts` | 42 | `crates/je-editor/tests/text_model_search.rs` | 42 |
 | `src/vs/editor/test/common/model/textModelTokens.test.ts` | 2 | `crates/je-editor/tests/text_model_tokens.rs` | 2 |
+| `src/vs/editor/test/common/model/textModelWithTokens.test.ts` | 29 | `crates/je-editor/tests/text_model_with_tokens.rs` | 30 |
+| `src/vs/editor/test/common/model/tokensStore.test.ts` | 17 | `crates/je-editor/tests/tokens_store.rs` | 17 |
 | `src/vs/editor/test/common/modes/languageConfiguration.test.ts` | 11 | `crates/je-editor/tests/language_configuration.rs` | 11 |
 | `src/vs/editor/test/common/modes/supports/characterPair.test.ts` | 13 | `crates/je-editor/tests/character_pair.rs` | 13 |
 | `src/vs/editor/test/common/modes/supports/electricCharacter.test.ts` | 2 | `crates/je-editor/tests/electric_character.rs` | 2 |
 | `src/vs/editor/test/common/modes/supports/onEnter.test.ts` | 4 | `crates/je-editor/tests/on_enter.rs` | 4 |
 | `src/vs/editor/test/common/modes/supports/richEditBrackets.test.ts` | 10 | `crates/je-editor/tests/rich_edit_brackets.rs` | 10 |
+| `src/vs/editor/test/common/services/languageService.test.ts` | 4 | `crates/je-editor/tests/language_service.rs` | 7 |
 | `src/vs/editor/test/common/services/languagesAssociations.test.ts` | 10 | `crates/je-editor/tests/languages_associations.rs` | 11 |
+| `src/vs/editor/test/common/services/languagesRegistry.test.ts` | 14 | `crates/je-editor/tests/languages_registry.rs` | 14 |
 | `src/vs/editor/test/common/viewModel/prefixSumComputer.test.ts` | 48 | `crates/je-editor/tests/prefix_sum_computer.rs` | 48 |
