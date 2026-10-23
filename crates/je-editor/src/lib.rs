@@ -105,3 +105,6 @@ pub mod annotations;
 
 pub mod editor_common;
 pub mod sort_lines_command;
+
+pub mod copy_lines_command;
+pub mod move_caret_command;
