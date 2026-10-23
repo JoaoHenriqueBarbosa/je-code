@@ -126,6 +126,12 @@ impl Presenter {
         .map_err(|e| err("device", e))?;
         let (width, height) = size_of(window);
         let mut config = surface.get_default_config(&adapter, width, height).ok_or_else(|| PresentError("surface sem formato".into()))?;
+        // O vello escreve valores já codificados em sRGB numa textura `Rgba8Unorm`, e o blit só os copia.
+        // Numa surface `*Srgb` o hardware codificaria de novo (linear para sRGB) e a imagem sairia
+        // desbotada, com um véu leitoso por cima. A surface tem de ser UNORM: escolhe o primeiro formato
+        // não sRGB da lista da surface, ou o mesmo sem o sufixo.
+        let caps = surface.get_capabilities(&adapter);
+        config.format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or_else(|| config.format.remove_srgb_suffix());
         // Sem tearing: o editor apresenta com vsync, como o Chromium do VS Code.
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
