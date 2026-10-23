@@ -17,6 +17,7 @@
 
 use je_base::JsString;
 
+use crate::cursor_type_edit_operations::BaseTypeWithAutoClosingCommand;
 use crate::model::ValidEditOperation;
 use crate::range::Range;
 use crate::selection::Selection;
@@ -57,6 +58,13 @@ pub trait Command {
 
     /// `computeCursorState(model, helper)`.
     fn compute_cursor_state(&mut self, model: &TextModel, helper: &dyn CursorStateComputerData) -> Selection;
+
+    /// O `command instanceof BaseTypeWithAutoClosingCommand` do controlador de cursores: os comandos que
+    /// digitam e fecham um par automaticamente devolvem a base (com `close_character_range` e
+    /// `enclosing_range`, preenchidos depois de `compute_cursor_state`); os demais devolvem `None`.
+    fn as_type_with_auto_closing(&self) -> Option<&BaseTypeWithAutoClosingCommand> {
+        None
+    }
 }
 
 /// `ScrollType`.

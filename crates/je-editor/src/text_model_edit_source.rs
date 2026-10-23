@@ -23,6 +23,10 @@ impl TextModelEditSource {
         if self.source == "unknown" {
             return self.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| "unknown".to_owned());
         }
+        if self.source == "cursor" {
+            // `case 'cursor': return metadata.kind`
+            return self.name.clone().unwrap_or_default();
+        }
         self.source.clone()
     }
 }
@@ -55,5 +59,14 @@ impl EditSources {
 
     pub fn apply_edits() -> TextModelEditSource {
         Self::simple("applyEdits")
+    }
+
+    /// `EditSources.cursor({ kind, detailedSource })`: `kind` fica em `name` (é o que `getType()` devolve para
+    /// a origem `cursor`). O `detailedSource` não tem campo nesta representação simplificada e não é guardado.
+    pub fn cursor(kind: &str, _detailed_source: Option<&str>) -> TextModelEditSource {
+        TextModelEditSource {
+            source: "cursor".to_owned(),
+            name: Some(kind.to_owned()),
+        }
     }
 }

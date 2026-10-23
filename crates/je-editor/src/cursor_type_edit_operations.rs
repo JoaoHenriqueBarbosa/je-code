@@ -1511,6 +1511,10 @@ impl Command for TypeWithAutoClosingCommand {
         let range = helper.get_inverse_edit_operations()[0].range;
         self.base.compute_cursor_state_with_range(model, range, helper)
     }
+
+    fn as_type_with_auto_closing(&self) -> Option<&BaseTypeWithAutoClosingCommand> {
+        Some(&self.base)
+    }
 }
 
 pub struct TypeWithIndentationAndAutoClosingCommand {
@@ -1567,6 +1571,10 @@ impl Command for TypeWithIndentationAndAutoClosingCommand {
         let range2 = inverse_edit_operations[1].range;
         let range = range1.plus_range(&range2);
         self.base.compute_cursor_state_with_range(model, range, helper)
+    }
+
+    fn as_type_with_auto_closing(&self) -> Option<&BaseTypeWithAutoClosingCommand> {
+        Some(&self.base)
     }
 }
 
