@@ -1165,21 +1165,21 @@ mod tests {
         );
         assert!(EditorOptionImpl::validate(&boolean_option, &OptionInput::Undefined));
         assert!(!EditorOptionImpl::validate(&boolean_option, &text("false")));
-        let Some(OptionSchema::Single(schema)) = boolean_option.schema() else { panic!("sem esquema") };
+        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&boolean_option) else { panic!("sem esquema") };
         assert_eq!(schema.type_.as_deref(), Some("boolean"));
         assert_eq!(schema.default, Some(SchemaValue::Bool(true)));
         assert_eq!(schema.description.as_deref(), Some("d"));
 
         let int_option = EditorIntOption::new(EditorOption::CursorWidth, "cursorWidth", 0.0, 0.0, 10.0, Some(Default::default()));
         assert_eq!(EditorOptionImpl::validate(&int_option, &num(99.0)), 10.0);
-        let Some(OptionSchema::Single(schema)) = int_option.schema() else { panic!("sem esquema") };
+        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&int_option) else { panic!("sem esquema") };
         assert_eq!(schema.type_.as_deref(), Some("integer"));
         assert_eq!((schema.minimum, schema.maximum), (Some(0.0), Some(10.0)));
 
         let float_option = EditorFloatOption::new(EditorOption::LetterSpacing, "letterSpacing", 0.0, |n| clamp_float(n, -5.0, 20.0), None, None, None);
         assert_eq!(EditorOptionImpl::validate(&float_option, &text("30")), 20.0);
         assert_eq!(EditorOptionImpl::validate(&float_option, &text("zz")), 0.0);
-        assert!(float_option.schema().is_none());
+        assert!(EditorOptionImpl::schema(&float_option).is_none());
 
         let enum_option = EditorStringEnumOption::new(
             EditorOption::AcceptSuggestionOnEnter,
@@ -1190,7 +1190,7 @@ mod tests {
         );
         assert_eq!(EditorOptionImpl::validate(&enum_option, &text("smart")), "smart");
         assert_eq!(EditorOptionImpl::validate(&enum_option, &text("x")), "on");
-        let Some(OptionSchema::Single(schema)) = enum_option.schema() else { panic!("sem esquema") };
+        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&enum_option) else { panic!("sem esquema") };
         assert_eq!(schema.enum_values.as_ref().map(Vec::len), Some(3));
 
         let auto_indent = EditorEnumOption::new(
@@ -1238,7 +1238,7 @@ mod tests {
         let computed = ComputedEditorOption::new(EditorOption::PixelRatio, 1.0, |env, _, _| env.pixel_ratio);
         assert_eq!(EditorOptionImpl::name(&computed), "_never_");
         assert_eq!(EditorOptionImpl::validate(&computed, &text("x")), 1.0);
-        assert!(computed.schema().is_none());
+        assert!(EditorOptionImpl::schema(&computed).is_none());
 
         let env = EnvironmentalOptions {
             memory: None,
