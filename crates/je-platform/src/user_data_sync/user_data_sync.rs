@@ -1,6 +1,6 @@
 //! Porte de `src/vs/platform/userDataSync/common/userDataSync.ts`, só o que o portado até agora usa: o trait
-//! `IUserDataSyncUtilService`, `IConflictSetting`, `getDisallowedIgnoredSettings`, `IStorageValue` e
-//! `SYNC_SERVICE_URL_TYPE`.
+//! `IUserDataSyncUtilService`, `IConflictSetting`, `getDisallowedIgnoredSettings`, `IStorageValue`,
+//! `SYNC_SERVICE_URL_TYPE` e `ISyncUserDataProfile`.
 //!
 //! Divergências de tipo: `IStringDictionary<string>` é `HashMap<JsString, JsString>`; os métodos `async`
 //! devolvem [`Promise`], que se espera com `.await`; `resolveFormattingOptions` recebe `Option<&URI>`
@@ -18,6 +18,18 @@ use je_base::uri::URI;
 
 use crate::configuration::registry::configuration_registry;
 use crate::storage::StorageScope;
+use crate::user_data_profile::UseDefaultProfileFlags;
+
+/// `ISyncUserDataProfile`: um perfil como a sincronização o guarda (com a coleção do servidor). `icon` e
+/// `useDefaultFlags` ausentes são `None`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ISyncUserDataProfile {
+    pub id: String,
+    pub collection: String,
+    pub name: String,
+    pub icon: Option<String>,
+    pub use_default_flags: Option<UseDefaultProfileFlags>,
+}
 
 /// `IStorageValue`.
 #[derive(Clone, Debug, PartialEq)]
