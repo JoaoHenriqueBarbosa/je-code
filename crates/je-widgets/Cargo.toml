@@ -13,3 +13,6 @@ je-ui = { path = "../je-ui" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+je-text = { path = "../je-text" }

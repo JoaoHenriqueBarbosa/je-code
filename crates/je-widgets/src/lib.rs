@@ -5,8 +5,13 @@
 //! [`je_ui`]. As regras de CSS que o original deixa para a folha de estilo viram código do widget, ver a
 //! documentação de cada módulo.
 
+pub(crate) mod common;
+pub mod global_pointer_move_monitor;
 pub mod sash;
+pub mod scrollbar;
 pub mod grid;
+pub mod list;
 pub mod gridview;
 pub mod paneview;
 pub mod splitview;
+pub mod tree;

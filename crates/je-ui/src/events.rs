@@ -25,17 +25,22 @@
 //!   [`Ui::focus`] e [`Ui::blur`] despacham `Blur` e `Focus`, que não borbulham (o `trackFocus` do VS
 //!   Code escuta os dois com captura).
 //!
-//! Fica de fora, por enquanto: toque e gesto (`Gesture`, `EventType.Tap`), arrastar e soltar do DOM, roda
-//! do mouse, entrada de texto/IME e `PointerEvent` com vários ponteiros.
+//! - **Roda do mouse.** [`Ui::wheel_input`] despacha um [`EventKind::Wheel`] (que borbulha) ao nó sob o
+//!   ponteiro, com os deltas em pixels ou em linhas e o `deltaMode` ([`crate::wheel`]). O
+//!   [`crate::StandardWheelEvent`] faz a normalização do `mouseEvent.ts` do VS Code (entalhes da roda).
+//!
+//! Fica de fora, por enquanto: toque e gesto (`Gesture`, `EventType.Tap`), arrastar e soltar do DOM,
+//! entrada de texto/IME e `PointerEvent` com vários ponteiros.
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::key_codes::KeyCode;
-use je_base::lifecycle::{DisposableRef, to_disposable};
+use je_base::lifecycle::{DisposableRef, plain_disposable, to_disposable};
 
 use crate::tree::{Cursor, NodeId, Tree};
+use crate::wheel::WheelData;
 
 /// O tipo de um evento (o `type` do DOM).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,6 +59,8 @@ pub enum EventKind {
     Click,
     /// `dblclick`.
     DoubleClick,
+    /// `wheel`.
+    Wheel,
     /// `keydown`.
     KeyDown,
     /// `keyup`.
@@ -130,17 +137,24 @@ pub struct Event {
     pub phase: Phase,
     pub pointer: Option<PointerData>,
     pub key: Option<KeyData>,
+    /// Os dados da roda do mouse, num evento [`EventKind::Wheel`].
+    pub wheel: Option<WheelData>,
     default_prevented: bool,
     propagation_stopped: bool,
 }
 
 impl Event {
     pub fn new(kind: EventKind, target: NodeId) -> Self {
-        Self { kind, target, current_target: target, phase: Phase::Target, pointer: None, key: None, default_prevented: false, propagation_stopped: false }
+        Self { kind, target, current_target: target, phase: Phase::Target, pointer: None, key: None, wheel: None, default_prevented: false, propagation_stopped: false }
     }
 
     pub fn with_pointer(mut self, pointer: PointerData) -> Self {
         self.pointer = Some(pointer);
+        self
+    }
+
+    pub fn with_wheel(mut self, wheel: WheelData) -> Self {
+        self.wheel = Some(wheel);
         self
     }
 
@@ -228,10 +242,21 @@ struct InputState {
     next_override: u64,
 }
 
+/// Um callback agendado para o próximo quadro de animação.
+struct FrameCallback {
+    id: u64,
+    priority: i32,
+    /// Falso depois de cancelado, para o quadro em andamento não chamá-lo.
+    active: Rc<Cell<bool>>,
+    runner: Box<dyn FnOnce()>,
+}
+
 struct UiInner {
     tree: RefCell<Tree>,
     input: RefCell<InputState>,
     next_listener: Cell<u64>,
+    frame_callbacks: RefCell<Vec<FrameCallback>>,
+    next_frame_callback: Cell<u64>,
 }
 
 /// A árvore de UI de uma janela, com os eventos. Clonar é barato (é um `Rc`).
@@ -246,7 +271,7 @@ impl Default for Ui {
 
 impl Ui {
     pub fn new() -> Self {
-        Self(Rc::new(UiInner { tree: RefCell::new(Tree::new()), input: RefCell::default(), next_listener: Cell::new(0) }))
+        Self(Rc::new(UiInner { tree: RefCell::new(Tree::new()), input: RefCell::default(), next_listener: Cell::new(0), frame_callbacks: RefCell::new(Vec::new()), next_frame_callback: Cell::new(0) }))
     }
 
     /// A raiz da árvore: a janela e o `document` ao mesmo tempo. Ouvinte de borbulha aqui é o ouvinte
@@ -314,6 +339,43 @@ impl Ui {
                 }
             }
         })
+    }
+
+    /// `scheduleAtNextAnimationFrame(window, runner, priority)`: agenda `runner` para o próximo quadro.
+    /// Dentro de um quadro, a prioridade maior roda antes e, na mesma prioridade, a ordem de agendamento
+    /// vale. Descartar o resultado cancela. O dono da janela chama [`Ui::run_animation_frame`] a cada
+    /// quadro (60 vezes por segundo, no ritmo do monitor).
+    pub fn schedule_at_next_animation_frame(&self, priority: i32, runner: impl FnOnce() + 'static) -> DisposableRef {
+        let id = self.0.next_frame_callback.get();
+        self.0.next_frame_callback.set(id + 1);
+        let active = Rc::new(Cell::new(true));
+        self.0.frame_callbacks.borrow_mut().push(FrameCallback { id, priority, active: active.clone(), runner: Box::new(runner) });
+        let ui = Rc::downgrade(&self.0);
+        plain_disposable(move || {
+            active.set(false);
+            if let Some(ui) = ui.upgrade() {
+                ui.frame_callbacks.borrow_mut().retain(|c| c.id != id);
+            }
+        })
+    }
+
+    /// Roda os callbacks agendados até aqui (o que o navegador faz antes de pintar cada quadro). O que um
+    /// callback agenda enquanto roda fica para o próximo quadro. Devolve quantos rodaram.
+    pub fn run_animation_frame(&self) -> usize {
+        let mut batch = std::mem::take(&mut *self.0.frame_callbacks.borrow_mut());
+        batch.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
+        let count = batch.len();
+        for callback in batch {
+            if callback.active.get() {
+                (callback.runner)();
+            }
+        }
+        count
+    }
+
+    /// Há callbacks esperando o próximo quadro?
+    pub fn has_pending_animation_frame(&self) -> bool {
+        !self.0.frame_callbacks.borrow().is_empty()
     }
 
     /// Empilha um cursor que vale para a janela inteira (o `* { cursor: X !important }` que o `sash` põe
@@ -480,6 +542,13 @@ impl Ui {
     fn common_ancestor(&self, a: NodeId, b: NodeId) -> Option<NodeId> {
         let (pa, pb) = (self.path_to(a), self.path_to(b));
         pa.iter().zip(&pb).take_while(|(x, y)| x == y).last().map(|(n, _)| *n)
+    }
+
+    /// Processa uma entrada de roda do mouse: o alvo é o nó mais ao fundo sob o ponteiro (ou a raiz) e o
+    /// evento borbulha. Devolve falso se algum ouvinte chamou `preventDefault` (a roda foi consumida).
+    pub fn wheel_input(&self, wheel: WheelData) -> bool {
+        let target = self.0.tree.borrow().hit_test(wheel.x, wheel.y).unwrap_or_else(|| self.root());
+        self.dispatch(&mut Event::new(EventKind::Wheel, target).with_wheel(wheel))
     }
 
     /// Entrega uma tecla ao nó com foco (ou à raiz). Devolve falso se `preventDefault` foi chamado.

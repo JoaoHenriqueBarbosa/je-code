@@ -34,7 +34,8 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_ui::{Cursor, EventKind, NodeId, PointerEvents, Role, Ui};
 
-use crate::sash::{BoundarySashes, Orientation, registered_emitter};
+use crate::common::registered_emitter;
+use crate::sash::{BoundarySashes, Orientation};
 use crate::splitview::{LayoutPriority, ScrollEvent, Sizing, SplitView, SplitViewOptions, SplitViewView, ViewRef};
 
 /// O tamanho padrão do cabeçalho (`DEFAULT_PANE_HEADER_SIZE`).

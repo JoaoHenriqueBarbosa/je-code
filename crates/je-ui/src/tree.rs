@@ -4,6 +4,14 @@ use je_render::kurbo::{Rect, RoundedRect, Vec2};
 use je_render::{DisplayList, Rgba, Shape};
 use je_text::{TextStyle, with_text_system};
 
+/// Aplica a opacidade ao alfa da cor.
+fn fade(color: Rgba, opacity: f32) -> Rgba {
+    if opacity >= 1.0 {
+        return color;
+    }
+    Rgba { a: (f32::from(color.a) * opacity).round() as u8, ..color }
+}
+
 /// O índice de um nó na arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(u32);
@@ -94,12 +102,16 @@ pub struct NodeStyle {
     pub z_index: i32,
     /// O `cursor`: `None` herda do pai, como o CSS.
     pub cursor: Option<Cursor>,
+    /// O `opacity` do CSS, de 0 a 1, acumulado com o dos antepassados. É a aproximação por alfa de cada
+    /// cor pintada (sem camada de composição), exata para o que o workbench faz: esmaecer uma barra de
+    /// rolagem sem sobreposição interna.
+    pub opacity: f32,
     pub content: Content,
 }
 
 impl Default for NodeStyle {
     fn default() -> Self {
-        Self { background: None, border: None, radius: 0.0, clip: false, visible: true, pointer_events: PointerEvents::Inherit, z_index: 0, cursor: None, content: Content::None }
+        Self { background: None, border: None, radius: 0.0, clip: false, visible: true, pointer_events: PointerEvents::Inherit, z_index: 0, cursor: None, opacity: 1.0, content: Content::None }
     }
 }
 
@@ -352,6 +364,11 @@ impl Tree {
         }
     }
 
+    /// `className = value`: troca todas as classes (separadas por espaço).
+    pub fn set_class_name(&mut self, id: NodeId, value: &str) {
+        self.node_mut(id).classes = value.split_whitespace().map(str::to_owned).collect();
+    }
+
     /// `classList.remove`.
     pub fn remove_class(&mut self, id: NodeId, class: &str) {
         self.node_mut(id).classes.retain(|c| c != class);
@@ -428,13 +445,14 @@ impl Tree {
     /// Pinta a árvore na lista de exibição, em pixels de dispositivo (`scale` = devicePixelRatio).
     pub fn paint(&self, list: &mut DisplayList, scale: f64) {
         let root = self.bounds(self.root);
-        self.paint_node(self.root, root, list, Vec2::ZERO, scale);
+        self.paint_node(self.root, root, list, Vec2::ZERO, scale, 1.0);
     }
 
-    fn paint_node(&self, id: NodeId, own: Rect, list: &mut DisplayList, origin: Vec2, scale: f64) {
+    fn paint_node(&self, id: NodeId, own: Rect, list: &mut DisplayList, origin: Vec2, scale: f64, inherited_opacity: f32) {
         let node = self.node(id);
         let style = &node.style;
-        if !style.visible {
+        let opacity = inherited_opacity * style.opacity;
+        if !style.visible || opacity <= 0.0 {
             return;
         }
         let rect = own + origin;
@@ -442,9 +460,9 @@ impl Tree {
         let radius = style.radius * scale;
         if let Some(bg) = style.background {
             if radius > 0.0 {
-                list.fill(Shape::RoundedRect(RoundedRect::from_rect(device, radius)), bg);
+                list.fill(Shape::RoundedRect(RoundedRect::from_rect(device, radius)), fade(bg, opacity));
             } else {
-                list.fill_rect(device, bg);
+                list.fill_rect(device, fade(bg, opacity));
             }
         }
         match &style.content {
@@ -453,12 +471,12 @@ impl Tree {
                 let line = with_text_system(|t| t.line(text, text_style));
                 let top = rect.y0 + (line_height - f64::from(line.line_height)) / 2.0;
                 if (scale - 1.0).abs() < f64::EPSILON {
-                    line.paint(list, rect.x0 as f32, top as f32, *color);
+                    line.paint(list, rect.x0 as f32, top as f32, fade(*color, opacity));
                 } else {
                     let scaled = TextStyle { size_64: (f64::from(text_style.size_64) * scale).round() as u32, ..text_style.clone() };
                     let line = with_text_system(|t| t.line(text, &scaled));
                     let top = rect.y0 * scale + (line_height * scale - f64::from(line.line_height)) / 2.0;
-                    line.paint(list, (rect.x0 * scale) as f32, top as f32, *color);
+                    line.paint(list, (rect.x0 * scale) as f32, top as f32, fade(*color, opacity));
                 }
             }
             Content::Codicon { id: icon, size, color } => {
@@ -466,7 +484,7 @@ impl Tree {
                 if let Some(line) = with_text_system(|t| t.codicon(icon, px)) {
                     let x = device.x0 + (device.width() - f64::from(line.width)) / 2.0;
                     let y = device.y0 + (device.height() - f64::from(line.line_height)) / 2.0;
-                    line.paint(list, x as f32, y as f32, *color);
+                    line.paint(list, x as f32, y as f32, fade(*color, opacity));
                 }
             }
         }
@@ -476,7 +494,7 @@ impl Tree {
         let child_origin = Vec2::new(rect.x0, rect.y0);
         for child in self.paint_order(id) {
             let child_rect = self.resolve(child, (own.width(), own.height()));
-            self.paint_node(child, child_rect, list, child_origin, scale);
+            self.paint_node(child, child_rect, list, child_origin, scale, opacity);
         }
         if style.clip {
             list.pop_clip();
@@ -487,7 +505,7 @@ impl Tree {
             let w = border.width * scale;
             let inset = device.inset(-w / 2.0);
             let shape = if radius > 0.0 { Shape::RoundedRect(RoundedRect::from_rect(inset, (radius - w / 2.0).max(0.0))) } else { Shape::Rect(inset) };
-            list.stroke(shape, w, border.color);
+            list.stroke(shape, w, fade(border.color, opacity));
         }
     }
 }

@@ -33,7 +33,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::{Rc, Weak};
 
 use je_base::arrays::{push_to_end, push_to_start};
-use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event as BaseEvent};
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, combined_disposable};
 use je_base::numbers::clamp;
@@ -42,7 +41,8 @@ use je_render::kurbo::Rect;
 use je_ui::{EventKind, NodeId, PointerEvents, Role, Ui};
 
 pub use crate::sash::Orientation;
-use crate::sash::{HorizontalSashLayoutProvider, Sash, SashEvent, SashOptions, SashState, VerticalSashLayoutProvider, registered_emitter};
+use crate::common::{js_round, registered_emitter, throw};
+use crate::sash::{HorizontalSashLayoutProvider, Sash, SashEvent, SashOptions, SashState, VerticalSashLayoutProvider};
 
 /// O `ISplitViewStyles`: a cor da linha entre as views (`None` é `Color.transparent`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -180,15 +180,6 @@ impl Drop for BusyGuard<'_> {
     fn drop(&mut self) {
         self.0.set(State::Idle);
     }
-}
-
-fn throw(message: &str) -> ! {
-    errors::throw(Error::new(message))
-}
-
-/// `Math.round`.
-fn js_round(x: f64) -> f64 {
-    (x + 0.5).floor()
 }
 
 /// `range(from, to)` do `arrays.ts`: de `from` até `to` (exclusivo), subindo ou descendo.

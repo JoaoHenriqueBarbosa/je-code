@@ -35,34 +35,12 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_ui::{Cursor, EventKind, NodeId, PointerData, PointerEvents, Role, Ui};
 
+use crate::common::{GlobalSetting, registered_emitter, registered_store, subscribe};
+
 /// Se o sistema é o macOS (o `isMacintosh`).
 // TODO(integração): ler do `je_base::platform` quando houver a plataforma global.
 pub(crate) fn is_macintosh() -> bool {
     cfg!(target_os = "macos")
-}
-
-/// Uma configuração global que avisa quem se inscreveu (o `Emitter` de módulo do original). Não é um
-/// `Emitter` porque o rastreador de vazamento do `je-base` veria um disposable criado dentro de um teste.
-type Subscriber<T> = (u64, Rc<dyn Fn(T)>);
-
-struct GlobalSetting<T: Copy + 'static> {
-    value: Cell<T>,
-    subscribers: RefCell<Vec<Subscriber<T>>>,
-    next: Cell<u64>,
-}
-
-impl<T: Copy + 'static> GlobalSetting<T> {
-    fn new(value: T) -> Self {
-        Self { value: Cell::new(value), subscribers: RefCell::new(Vec::new()), next: Cell::new(0) }
-    }
-
-    fn set(&self, value: T) {
-        self.value.set(value);
-        let subscribers: Vec<_> = self.subscribers.borrow().iter().map(|(_, f)| f.clone()).collect();
-        for subscriber in subscribers {
-            subscriber(value);
-        }
-    }
 }
 
 thread_local! {
@@ -70,16 +48,6 @@ thread_local! {
     static GLOBAL_HOVER_DELAY: GlobalSetting<u64> = GlobalSetting::new(300);
     static GLOBAL_HOVER_SIZE: GlobalSetting<f64> = GlobalSetting::new(4.0);
     static GLOBAL_HOVER_BORDER: Cell<Option<Rgba>> = const { Cell::new(None) };
-}
-
-fn subscribe<T: Copy + 'static>(setting: &'static std::thread::LocalKey<GlobalSetting<T>>, f: impl Fn(T) + 'static) -> DisposableRef {
-    let id = setting.with(|s| {
-        let id = s.next.get();
-        s.next.set(id + 1);
-        s.subscribers.borrow_mut().push((id, Rc::new(f)));
-        id
-    });
-    to_disposable(move || setting.with(|s| s.subscribers.borrow_mut().retain(|(i, _)| *i != id)))
 }
 
 /// `setGlobalSashSize`: o tamanho dos sashes que não definem o próprio.
@@ -101,20 +69,6 @@ pub fn set_global_sash_hover_size(size: f64) {
 /// transparente (a variável de CSS indefinida).
 pub fn set_global_sash_hover_border(color: Option<Rgba>) {
     GLOBAL_HOVER_BORDER.with(|c| c.set(color));
-}
-
-/// `this._register(new Emitter<T>())`.
-pub(crate) fn registered_emitter<T: 'static>(base: &Rc<Disposable>) -> Rc<Emitter<T>> {
-    let emitter = Emitter::new();
-    base.register(emitter.clone());
-    emitter
-}
-
-/// `this._register(new DisposableStore())`.
-pub(crate) fn registered_store(base: &Rc<Disposable>) -> Rc<DisposableStore> {
-    let store = DisposableStore::new();
-    base.register(store.clone());
-    store
 }
 
 /// O provedor de layout de um sash vertical: posição e altura.
