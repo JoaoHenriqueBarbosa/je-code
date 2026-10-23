@@ -3,3 +3,5 @@
 //! As pastas seguem a árvore do original: `contrib/<área>/common/...` vira `contrib::<área>::...`.
 
 pub mod contrib;
+
+pub mod services;
