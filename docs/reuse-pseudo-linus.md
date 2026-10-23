@@ -7,7 +7,7 @@ licença) no README dela, como o `zbun` faz com o bun; mudança local fica lista
 
 | Necessidade do je-code | Crate do pseudo-linus | Uso previsto | Estado |
 | --- | --- | --- | --- |
-| `RegExp` ECMAScript (glob, busca, find widget, `createRegExp`, snippets) | `zjsc/src/yarr` (YARR do JavaScriptCore, 25 915 linhas; depende de ~10 itens do `wtf` e de uma opção da `VM`) | extrair como `crates/zyarr` | em extração |
+| `RegExp` ECMAScript (glob, busca, find widget, `createRegExp`, snippets) | `zjsc/src/yarr` (YARR do JavaScriptCore, 25 915 linhas; depende de ~10 itens do `wtf` e de uma opção da `VM`) | `crates/zyarr` | **feito** (450 testes, 2026-10-23) |
 | Extension host: motor JS | `zjsc` (98,6% do test262, vigente 2026-10-12) | Fase 5 | a integrar |
 | Transpilar TypeScript para JS (extensões e scripts) | `zbun` (transpilador do bun 1.4.2) | Fase 5 | a avaliar |
 | Intl (collation do `comparers.ts`, `Intl.Segmenter`, datas) | `zjsc` usa `icu_collator`, `icu_segmenter`, `jiff` (crates Rust) | usar as mesmas crates ICU4X, nas mesmas versões | a medir |
