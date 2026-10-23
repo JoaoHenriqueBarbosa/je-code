@@ -12,5 +12,7 @@ workspace = true
 [dependencies]
 je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
+# `RegExp` ECMAScript do `terminalLinkParsing`: o comportamento depende dos grupos nomeados e do `lastIndex`.
+zyarr = { path = "../zyarr" }
 # `Date.parse` e `toLocaleDateString` de `updateUtils` (mesmo `jiff` do je-base, fuso do sistema).
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
