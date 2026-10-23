@@ -3031,6 +3031,7 @@ impl TextModel {
         owner_id: i32,
         filter_out_validation: bool,
         filter_font_decorations: bool,
+        only_minimap_decorations: bool,
         only_margin_decorations: bool,
     ) -> Vec<ModelDecoration> {
         let validated_range = self.validate_range(range);
@@ -3041,7 +3042,7 @@ impl TextModel {
             Some(owner_id),
             filter_out_validation,
             filter_font_decorations,
-            false,
+            only_minimap_decorations,
         ));
         decorations
     }

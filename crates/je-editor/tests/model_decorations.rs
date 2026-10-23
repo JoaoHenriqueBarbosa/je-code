@@ -1850,7 +1850,7 @@ mod delta_decorations {
             0,
         );
 
-        let in_range = model.get_decorations_in_range(&Range::new(2, 6, 2, 6), 0, false, false, false);
+        let in_range = model.get_decorations_in_range(&Range::new(2, 6, 2, 6), 0, false, false, false, false);
 
         let mut in_range_class_names: Vec<Option<String>> = in_range.iter().map(|d| d.options.class_name.clone()).collect();
         in_range_class_names.sort();

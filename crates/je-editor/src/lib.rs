@@ -159,3 +159,5 @@ pub mod model_line_projection;
 pub mod view_events;
 pub mod view_model_event_dispatcher;
 pub mod cursor_move_commands;
+
+pub mod view_model_lines;
