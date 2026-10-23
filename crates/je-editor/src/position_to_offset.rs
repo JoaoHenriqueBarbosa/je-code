@@ -5,19 +5,22 @@
 //! `PositionOffsetTransformer`; em Rust não há ciclo, então o registro não existe e `ensureDependenciesAreSet`
 //! (um no-op marcado como dívida no original) também não.
 //!
-//! Pendente: `getStringEdit`, `getStringReplacement`, `getTextReplacement` e `getTextEdit` da base dependem de
-//! `StringEdit`, `StringReplacement`, `TextEdit` e `TextReplacement` (`core/edits`), que ainda não existem no
-//! crate; entram junto com esses tipos. Texto segue a semântica do JavaScript: deslocamentos e colunas contam
-//! unidades UTF-16.
+//! Texto segue a semântica do JavaScript: deslocamentos e colunas contam unidades UTF-16. `getStringEdit`,
+//! `getStringReplacement`, `getTextReplacement` e `getTextEdit` da base vêm de `StringEdit`/`TextEdit`
+//! (`core/edits`), que o original recebe por injeção de dependência; aqui são importados direto.
 
 use std::cell::OnceCell;
 
+use crate::edits::edit::BaseEdit;
+use crate::edits::string_edit::{StringEdit, StringReplacement};
+use crate::edits::text_edit::{TextEdit, TextReplacement};
+use crate::line_range::LineRange;
 use crate::offset_range::OffsetRange;
 use crate::position::Position;
 use crate::range::Range;
 
-// TODO(integração): mover para o módulo próprio (`core/text/textLength.ts`). Ficam de fora `ofSubstr`
-// (precisa de `OffsetRange.substring`) e `toLineRange` (precisa de `LineRange.ofLength`).
+// TODO(integração): mover para o módulo próprio (`core/text/textLength.ts`). Fica de fora `ofSubstr`
+// (o porte de texto é `&str`/`&[u16]`; use `of_text_units` com `OffsetRange::substring`).
 /// `TextLength`: comprimento não negativo de texto em contagem de linhas e colunas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextLength {
@@ -76,6 +79,11 @@ impl TextLength {
             }
         }
         TextLength::new(line, column)
+    }
+
+    /// `ofText` sobre unidades UTF-16 (um surrogate isolado conta como um ponto de código, como no `for...of`).
+    pub fn of_text_units(text: &[u16]) -> TextLength {
+        TextLength::of_text(&String::from_utf16_lossy(text))
     }
 
     /// `sum`.
@@ -146,6 +154,10 @@ impl TextLength {
         Range::new(1, 1, self.line_count + 1, self.column_count + 1)
     }
 
+    pub fn to_line_range(&self) -> LineRange {
+        LineRange::of_length(1, self.line_count + 1)
+    }
+
     pub fn add_to_position(&self, position: Position) -> Position {
         if self.line_count == 0 {
             Position::new(position.line_number, position.column + self.column_count)
@@ -181,6 +193,22 @@ pub trait PositionOffsetTransformerBase {
 
     fn get_range(&self, offset_range: OffsetRange) -> Range {
         Range::from_positions(self.get_position(offset_range.start), self.get_position(offset_range.end_exclusive))
+    }
+
+    fn get_string_edit(&self, edit: &TextEdit) -> StringEdit {
+        StringEdit::new(edit.replacements.iter().map(|e| self.get_string_replacement(e)).collect())
+    }
+
+    fn get_string_replacement(&self, edit: &TextReplacement) -> StringReplacement {
+        StringReplacement::new(self.get_offset_range(&edit.range), edit.text.clone())
+    }
+
+    fn get_text_replacement(&self, edit: &StringReplacement) -> TextReplacement {
+        TextReplacement::new(self.get_range(edit.replace_range), edit.new_text.clone())
+    }
+
+    fn get_text_edit(&self, edit: &StringEdit) -> TextEdit {
+        TextEdit::new(edit.replacements().iter().map(|e| self.get_text_replacement(e)).collect())
     }
 }
 

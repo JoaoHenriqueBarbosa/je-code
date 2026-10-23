@@ -15,7 +15,7 @@ mod support;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_editor::inline_completions::compute_ghost_text::{GhostTextMode, compute_ghost_text};
-use je_editor::inline_completions::ghost_text::TextReplacement;
+use je_editor::edits::text_edit::TextReplacement;
 use je_editor::range::Range;
 use support::test_text_model::create_text_model;
 

@@ -18,7 +18,9 @@ use je_base::diff::{DiffChange, ISequence, LcsDiff, SequenceElements};
 use je_base::js_string::substring;
 use je_base::strings::{common_prefix_length, get_leading_whitespace};
 
-use crate::inline_completions::ghost_text::{GhostText, GhostTextPart, TextReplacement};
+use crate::edits::string_edit::replace_all_units;
+use crate::edits::text_edit::TextReplacement;
+use crate::inline_completions::ghost_text::{GhostText, GhostTextPart};
 use crate::model::EndOfLinePreference;
 use crate::position::Position;
 use crate::position_to_offset::TextLength;
@@ -48,19 +50,7 @@ pub fn single_text_remove_common_prefix(
     };
 
     // `edit.text.replaceAll('\r\n', '\n')`
-    let source = edit.text.units();
-    let mut normalized = Vec::with_capacity(source.len());
-    let mut i = 0;
-    while i < source.len() {
-        if source[i] == u16::from(b'\r') && source.get(i + 1) == Some(&u16::from(b'\n')) {
-            normalized.push(u16::from(b'\n'));
-            i += 2;
-        } else {
-            normalized.push(source[i]);
-            i += 1;
-        }
-    }
-
+    let normalized = replace_all_units(edit.text.units(), &[13, 10], &[10]);
     let value_to_replace = model.get_value_in_range_with(&model_range, EndOfLinePreference::Lf);
     let common_prefix_len = common_prefix_length(value_to_replace.units(), &normalized);
     let prefix = JsString::from(&value_to_replace.units()[..common_prefix_len]);

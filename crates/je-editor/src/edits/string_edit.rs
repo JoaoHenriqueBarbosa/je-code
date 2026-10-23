@@ -14,9 +14,6 @@
 //! - `toEdit` de uma substituição anotada devolve um `StringEdit` com o mesmo intervalo e texto (o original
 //!   guarda o próprio objeto anotado dentro do `StringEdit`).
 //! - `normalizeEOL` recebe o enum [`Eol`] no lugar de `'\r\n' | '\n'`.
-//!
-//! Pendente: `applyOnText(docContents: StringText)`, porque o `StringText` de `core/text/abstractText.ts` ainda
-//! não existe neste crate.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -27,6 +24,7 @@ use je_base::strings::{common_prefix_length, common_suffix_length};
 
 use super::edit::{BaseEdit, BaseReplacement, EditPair, validate_replacements};
 use crate::offset_range::OffsetRange;
+use crate::text::abstract_text::StringText;
 
 /// `'\r\n' | '\n'`: o fim de linha do `normalizeEOL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,8 +68,8 @@ fn units_of(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
-/// `text.replace(/from/g, to)` com `from` literal.
-fn replace_all_units(text: &[u16], from: &[u16], to: &[u16]) -> Vec<u16> {
+/// `text.replace(/from/g, to)` com `from` literal (e `text.replaceAll(from, to)`).
+pub(crate) fn replace_all_units(text: &[u16], from: &[u16], to: &[u16]) -> Vec<u16> {
     let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
@@ -318,6 +316,10 @@ where
 
     fn remove_common_suffix_and_prefix(&self, source: &[u16]) -> Self {
         Self::create_new(self.replacements().iter().map(|e| e.remove_common_suffix_and_prefix(source)).collect()).normalize()
+    }
+
+    fn apply_on_text(&self, doc_contents: &StringText) -> StringText {
+        StringText::new(self.apply(doc_contents.value.units()))
     }
 
     fn map_data<D: IEditData>(&self, f: impl Fn(&Self::Replacement) -> D) -> AnnotatedStringEdit<D> {

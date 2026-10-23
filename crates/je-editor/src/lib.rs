@@ -121,6 +121,8 @@ pub mod view_layer;
 
 pub mod diff;
 pub mod link_computer;
+pub mod column_range;
+pub mod text;
 
 pub mod cursor_common;
 pub mod input_mode;

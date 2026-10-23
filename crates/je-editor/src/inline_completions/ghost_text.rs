@@ -6,129 +6,20 @@
 //! - `GhostText | GhostTextReplacement` é o enum [`GhostTextOrReplacement`]; o `instanceof` vira `match`.
 //! - `IGhostTextLine` é [`GhostTextLine`]; `LineDecoration.equalsArr` é a igualdade de `Vec<LineDecoration>`.
 //! - `assertFn(() => checkAdjacentItems(...))` do construtor de `GhostText` é `assert_fn` de `je_base::assert`.
-//!
-//! Tipos de apoio portados aqui porque ainda não existem no crate (sair daqui quando ganharem módulo próprio,
-//! em `edits/textEdit.ts` e `ranges/columnRange.ts`):
-//! - [`TextReplacement`] e [`TextEdit`]: só o que o `ghostText.ts` e o `computeGhostText.ts` usam (construtor,
-//!   `delete`, `apply`/`applyToString`). `TextEdit::apply` trabalha sobre o texto em unidades UTF-16.
-//! - [`ColumnRange`]: completo (`fromOffsetRange`, `toRange`, `equals`, `toZeroBasedOffsetRange`).
+//! - `TextReplacement`, `TextEdit` (`edits/textEdit.ts`) e `ColumnRange` (`ranges/columnRange.ts`) vêm dos
+//!   módulos próprios ([`crate::edits::text_edit`], [`crate::column_range`]).
 
 use je_base::JsString;
 use je_base::arrays;
 use je_base::assert::{assert_fn, check_adjacent_items};
-use je_base::errors::{self, Error};
 use je_base::strings::split_lines;
 
+use crate::column_range::ColumnRange;
+use crate::edits::text_edit::{TextEdit, TextReplacement};
 use crate::inline_decorations::InlineDecoration;
 use crate::line_decorations::LineDecoration;
-use crate::offset_range::OffsetRange;
 use crate::position::Position;
-use crate::position_to_offset::{PositionOffsetTransformer, PositionOffsetTransformerBase};
 use crate::range::Range;
-
-/// `TextReplacement` (`textEdit.ts`): troca o texto de `range` por `text`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TextReplacement {
-    pub range: Range,
-    pub text: JsString,
-}
-
-impl TextReplacement {
-    pub fn new(range: Range, text: impl Into<JsString>) -> Self {
-        Self { range, text: text.into() }
-    }
-
-    /// `TextReplacement.delete(range)`.
-    pub fn delete(range: Range) -> Self {
-        Self::new(range, "")
-    }
-
-    /// `isEmpty`.
-    pub fn is_empty(&self) -> bool {
-        self.range.is_empty() && self.text.is_empty()
-    }
-}
-
-/// `TextEdit` (`textEdit.ts`): substituições paralelas, ordenadas e sem sobreposição.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TextEdit {
-    pub replacements: Vec<TextReplacement>,
-}
-
-impl TextEdit {
-    pub fn new(replacements: Vec<TextReplacement>) -> Self {
-        assert_fn(|| {
-            check_adjacent_items(&replacements, |a, b| a.range.get_end_position().is_before_or_equal(&b.range.get_start_position()))
-        });
-        Self { replacements }
-    }
-
-    /// `apply(text)` sobre o texto em unidades UTF-16.
-    pub fn apply(&self, text: &[u16]) -> JsString {
-        let transformer = PositionOffsetTransformer::new(&String::from_utf16_lossy(text));
-        let mut result = JsString::new();
-        let mut last_edit_end = 0usize;
-        for replacement in &self.replacements {
-            let start = transformer.get_offset(replacement.range.get_start_position()) as usize;
-            let end = transformer.get_offset(replacement.range.get_end_position()) as usize;
-            if last_edit_end < start {
-                result.push_units(&text[last_edit_end..start]);
-            }
-            result.push_units(replacement.text.units());
-            last_edit_end = end;
-        }
-        if last_edit_end < text.len() {
-            result.push_units(&text[last_edit_end..]);
-        }
-        result
-    }
-
-    /// `applyToString(str)`.
-    pub fn apply_to_string(&self, str: &str) -> String {
-        let units: Vec<u16> = str.encode_utf16().collect();
-        self.apply(&units).to_string_lossy()
-    }
-}
-
-/// `ColumnRange` (`columnRange.ts`): intervalo de colunas, a partir de 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ColumnRange {
-    /// A partir de 1.
-    pub start_column: i32,
-    pub end_column_exclusive: i32,
-}
-
-impl ColumnRange {
-    /// `ColumnRange.fromOffsetRange`.
-    pub fn from_offset_range(offset_range: OffsetRange) -> Self {
-        Self::new(offset_range.start + 1, offset_range.end_exclusive + 1)
-    }
-
-    /// O construtor lança `BugIndicatingError` se o início vier depois do fim.
-    pub fn new(start_column: i32, end_column_exclusive: i32) -> Self {
-        if start_column > end_column_exclusive {
-            errors::throw(Error::bug_indicating(Some(&format!(
-                "startColumn {start_column} cannot be after endColumnExclusive {end_column_exclusive}"
-            ))));
-        }
-        Self { start_column, end_column_exclusive }
-    }
-
-    /// `toRange(lineNumber)`.
-    pub fn to_range(&self, line_number: i32) -> Range {
-        Range::new(line_number, self.start_column, line_number, self.end_column_exclusive)
-    }
-
-    /// `equals`.
-    pub fn equals(&self, other: &ColumnRange) -> bool {
-        self == other
-    }
-
-    /// `toZeroBasedOffsetRange`.
-    pub fn to_zero_based_offset_range(&self) -> OffsetRange {
-        OffsetRange::new(self.start_column - 1, self.end_column_exclusive - 1)
-    }
-}
 
 /// `'\n'` entre as linhas (`lines.map(l => l.line).join('\n')`).
 fn join_lines<'a>(lines: impl IntoIterator<Item = &'a [u16]>) -> JsString {
@@ -185,6 +76,7 @@ impl GhostText {
                 .collect(),
         )
         .apply_to_string(document_text)
+        .to_string_lossy()
     }
 
     pub fn render_for_screen_reader(&self, line_text: &[u16]) -> JsString {
@@ -206,7 +98,7 @@ impl GhostText {
                 })
                 .collect(),
         )
-        .apply(capped_line_text);
+        .apply_to_string(capped_line_text);
 
         // `text.substring(this.parts[0].column - 1)`
         je_base::js_string::substring(text.units(), i64::from(first_part.column - 1), text.len() as i64).into()
@@ -303,8 +195,9 @@ impl GhostTextReplacement {
                 TextReplacement::new(Range::from_positions(replace_range.get_end_position(), replace_range.get_end_position()), close),
             ])
             .apply_to_string(document_text)
+            .to_string_lossy()
         } else {
-            TextEdit::new(vec![TextReplacement::new(replace_range, joined)]).apply_to_string(document_text)
+            TextEdit::new(vec![TextReplacement::new(replace_range, joined)]).apply_to_string(document_text).to_string_lossy()
         }
     }
 

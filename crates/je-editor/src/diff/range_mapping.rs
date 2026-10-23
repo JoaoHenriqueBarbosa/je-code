@@ -7,23 +7,26 @@
 //! - `Number.MAX_SAFE_INTEGER` das colunas vira `i32::MAX`, a maior coluna que o `Range` representa (a mesma
 //!   convenção de `LineRange::to_inclusive_range`);
 //! - as estáticas `RangeMapping.join(list)` e `RangeMapping#join(other)` dividem o nome no original; a
-//!   estática é [`RangeMapping::join_all`], como em `LineRange::join_all`.
-//!
-//! Pendente, por depender de `TextEdit`/`TextReplacement` (`edits/textEdit.ts`), `AbstractText`
-//! (`text/abstractText.ts`) e `groupAdjacentBy`, ainda não portados: `DetailedLineRangeMapping.toTextEdit`,
-//! `RangeMapping.fromEdit`, `fromEditJoin`, `toTextEdit`, `lineRangeMappingFromRangeMappings` e
-//! `getLineRangeMapping`.
+//!   estática é [`RangeMapping::join_all`], como em `LineRange::join_all`;
+//! - `DetailedLineRangeMapping.toTextEdit` (estática) é [`DetailedLineRangeMapping::to_text_edit`];
+//! - `AbstractText` é o trait de [`crate::text::abstract_text`], recebido como `&dyn AbstractText`;
+//! - `groupAdjacentBy` é o `group_adjacent_by` de `je_base::arrays`, e o `assertFn` de
+//!   `lineRangeMappingFromRangeMappings` é o `assert_fn` de `je_base::assert`.
 
 use std::fmt;
 use std::ops::Deref;
 
 use je_base::JsString;
+use je_base::arrays::group_adjacent_by;
+use je_base::assert::{assert_fn, check_adjacent_items};
 use je_base::errors::{self, Error};
 
 use crate::diff::legacy_lines_diff_computer::IChange;
+use crate::edits::text_edit::{TextEdit, TextReplacement};
 use crate::line_range::LineRange;
 use crate::position::Position;
 use crate::range::Range;
+use crate::text::abstract_text::AbstractText;
 
 /// Maps a line range in the original text model to a line range in the modified text model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +217,17 @@ impl Deref for DetailedLineRangeMapping {
 }
 
 impl DetailedLineRangeMapping {
+    pub fn to_text_edit(mapping: &[DetailedLineRangeMapping], modified: &dyn AbstractText) -> TextEdit {
+        let mut replacements: Vec<TextReplacement> = Vec::new();
+        for m in mapping {
+            for r in m.inner_changes.as_deref().unwrap_or(&[]) {
+                let replacement = r.to_text_edit(modified);
+                replacements.push(replacement);
+            }
+        }
+        TextEdit::new(replacements)
+    }
+
     pub fn new(original_range: LineRange, modified_range: LineRange, inner_changes: Option<Vec<RangeMapping>>) -> Self {
         Self { base: LineRangeMapping::new(original_range, modified_range), inner_changes }
     }
@@ -250,6 +264,15 @@ pub struct RangeMapping {
 }
 
 impl RangeMapping {
+    pub fn from_edit(edit: &TextEdit) -> Vec<RangeMapping> {
+        let new_ranges = edit.get_new_ranges();
+        edit.replacements.iter().enumerate().map(|(idx, e)| RangeMapping::new(e.range, new_ranges[idx])).collect()
+    }
+
+    pub fn from_edit_join(edit: &TextEdit) -> RangeMapping {
+        RangeMapping::join_all(&RangeMapping::from_edit(edit))
+    }
+
     pub fn new(original_range: Range, modified_range: Range) -> Self {
         Self { original_range, modified_range }
     }
@@ -281,6 +304,12 @@ impl RangeMapping {
         RangeMapping::new(self.modified_range, self.original_range)
     }
 
+    /// Creates a single text edit that describes the change from the original to the modified text.
+    pub fn to_text_edit(&self, modified: &dyn AbstractText) -> TextReplacement {
+        let new_text = modified.get_value_of_range(&self.modified_range);
+        TextReplacement::new(self.original_range, new_text)
+    }
+
     pub fn join(&self, other: &RangeMapping) -> RangeMapping {
         RangeMapping::new(self.original_range.plus_range(&other.original_range), self.modified_range.plus_range(&other.modified_range))
     }
@@ -290,6 +319,100 @@ impl fmt::Display for RangeMapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{{{}->{}}}", self.original_range, self.modified_range)
     }
+}
+
+/// `lineRangeMappingFromRangeMappings`.
+pub fn line_range_mapping_from_range_mappings(
+    alignments: &[RangeMapping],
+    original_lines: &dyn AbstractText,
+    modified_lines: &dyn AbstractText,
+    dont_assert_start_line: bool,
+) -> Vec<DetailedLineRangeMapping> {
+    let mut changes: Vec<DetailedLineRangeMapping> = Vec::new();
+    for g in group_adjacent_by(
+        alignments.iter().map(|a| get_line_range_mapping(a, original_lines, modified_lines)).collect::<Vec<_>>(),
+        |a1, a2| a1.original.intersects_or_touches(&a2.original) || a1.modified.intersects_or_touches(&a2.modified),
+    ) {
+        let first = &g[0];
+        let last = &g[g.len() - 1];
+
+        changes.push(DetailedLineRangeMapping::new(
+            first.original.join(&last.original),
+            first.modified.join(&last.modified),
+            Some(
+                g.iter()
+                    .map(|a| a.inner_changes.as_ref().expect("getLineRangeMapping sempre preenche innerChanges")[0])
+                    .collect(),
+            ),
+        ));
+    }
+
+    assert_fn(|| {
+        if !dont_assert_start_line && !changes.is_empty() {
+            if changes[0].modified.start_line_number != changes[0].original.start_line_number {
+                return false;
+            }
+
+            let last = &changes[changes.len() - 1];
+            if modified_lines.length().line_count - last.modified.end_line_number_exclusive
+                != original_lines.length().line_count - last.original.end_line_number_exclusive
+            {
+                return false;
+            }
+        }
+        check_adjacent_items(&changes, |m1, m2| {
+            m2.original.start_line_number - m1.original.end_line_number_exclusive
+                == m2.modified.start_line_number - m1.modified.end_line_number_exclusive
+                // There has to be an unchanged line in between (otherwise both diffs should have been joined)
+                && m1.original.end_line_number_exclusive < m2.original.start_line_number
+                && m1.modified.end_line_number_exclusive < m2.modified.start_line_number
+        })
+    });
+
+    changes
+}
+
+/// `getLineRangeMapping`.
+pub fn get_line_range_mapping(
+    range_mapping: &RangeMapping,
+    original_lines: &dyn AbstractText,
+    modified_lines: &dyn AbstractText,
+) -> DetailedLineRangeMapping {
+    let mut line_start_delta = 0;
+    let mut line_end_delta = 0;
+    let original = range_mapping.original_range;
+    let modified = range_mapping.modified_range;
+
+    // rangeMapping describes the edit that replaces `rangeMapping.originalRange` with `newText := getText(modifiedLines, rangeMapping.modifiedRange)`.
+
+    // original: ]xxx \n <- this line is not modified
+    // modified: ]xx  \n
+    if modified.end_column == 1
+        && original.end_column == 1
+        && original.start_line_number + line_start_delta <= original.end_line_number
+        && modified.start_line_number + line_start_delta <= modified.end_line_number
+    {
+        // We can only do this if the range is not empty yet
+        line_end_delta = -1;
+    }
+
+    // original: xxx[ \n <- this line is not modified
+    // modified: xxx[ \n
+    if modified.start_column - 1 >= modified_lines.get_line_length(modified.start_line_number)
+        && original.start_column - 1 >= original_lines.get_line_length(original.start_line_number)
+        && original.start_line_number <= original.end_line_number + line_end_delta
+        && modified.start_line_number <= modified.end_line_number + line_end_delta
+    {
+        // We can only do this if the range is not empty yet
+        line_start_delta = 1;
+    }
+
+    let original_line_range =
+        LineRange::new(original.start_line_number + line_start_delta, original.end_line_number + 1 + line_end_delta);
+    let modified_line_range =
+        LineRange::new(modified.start_line_number + line_start_delta, modified.end_line_number + 1 + line_end_delta);
+
+    DetailedLineRangeMapping::new(original_line_range, modified_line_range, Some(vec![*range_mapping]))
 }
 
 /// Os intervalos de linhas (original e modificado) que um [`IChange`] descreve: um lado com
