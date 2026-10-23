@@ -13,6 +13,13 @@ Paridade completa e retrocompatível com o VS Code (extensões, settings, keybin
   ou liga biblioteca C (`cc`, `cmake`, `*-sys` com fonte C, `ring`, `aws-lc`, `openssl`, `libsqlite3-sys`,
   `onig`) está proibida. `scripts/pure-rust-check.sh` confere o lockfile; falha dele é bloqueio.
 
+## Reutilizar o pseudo-linus antes de portar
+
+Antes de portar um módulo ou escolher uma dependência, conferir `docs/reuse-pseudo-linus.md` e
+procurar em `ref/pseudo-linus/crates` (zjsc com o YARR, zbun, zft, zhb, ul-archive, ul-git, ul-net...).
+Se já existe porte lá, a crate é copiada para `crates/` com a origem (repositório, commit, licença) no
+README dela, e a mudança local fica listada ali. Escrever de novo o que já existe é retrabalho.
+
 ## Renderização nativa, nunca tecnologia web
 
 A UI é uma árvore de widgets nativa em Rust desenhada por wgpu na GPU e por rasterizador em software na
