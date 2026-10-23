@@ -4,3 +4,5 @@ pub mod files;
 pub mod merge_editor;
 pub mod terminal_contrib;
 pub mod update;
+
+pub mod terminal;
