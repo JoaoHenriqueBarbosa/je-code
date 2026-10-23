@@ -7,6 +7,7 @@
 //!   de cada colchete é o do original e o tema resolve a cor pelo nome.
 //! - As opções da decoração (`{ description, inlineClassName }`) viram um `ModelDecorationOptions` dinâmico.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
 

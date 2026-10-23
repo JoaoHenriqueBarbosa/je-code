@@ -6,6 +6,7 @@
 //! tokens. Para evitar cintilação, só se troca da inicial para a com tokens quando a tokenização termina. Como o
 //! texto pode ser editado durante a tokenização em segundo plano, as duas são atualizadas.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};

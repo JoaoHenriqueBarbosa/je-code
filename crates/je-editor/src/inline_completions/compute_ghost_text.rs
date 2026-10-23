@@ -10,6 +10,7 @@
 //! - `IDiffChange` é `DiffChange` de `je_base::diff`.
 //! - `previewSuffixLength = 0` (parâmetro com padrão) é um argumento explícito.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::rc::Rc;
 

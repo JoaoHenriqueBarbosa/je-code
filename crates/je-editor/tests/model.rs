@@ -16,6 +16,7 @@
 mod common;
 mod support;
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::rc::Rc;
 

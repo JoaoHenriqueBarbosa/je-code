@@ -35,6 +35,7 @@ use je_base::strings;
 use je_base::uri::URI;
 
 use crate::bracket_pairs_text_model_part::BracketPairsTextModelPart;
+use crate::cursor_common::CursorSimpleModel;
 use crate::text_model_defaults::EDITOR_MODEL_DEFAULTS;
 use crate::bracket_pairs_text_model_part::colorized_bracket_pairs_decoration_provider::ColorizedBracketPairsDecorationProvider;
 use crate::guides_text_model_part::GuidesTextModelPart;
@@ -1859,11 +1860,6 @@ impl TextModel {
         self.buffer.borrow().get_character_count_in_range(&self.validate_range(raw_range), eol)
     }
 
-    /// `getLineCount()`.
-    pub fn get_line_count(&self) -> i32 {
-        self.assert_not_disposed();
-        self.buffer.borrow().get_line_count() as i32
-    }
 
     fn assert_line_number(&self, line_number: i32) {
         if line_number < 1 || line_number > self.get_line_count() {
@@ -1871,12 +1867,6 @@ impl TextModel {
         }
     }
 
-    /// `getLineContent(lineNumber)`.
-    pub fn get_line_content(&self, line_number: i32) -> JsString {
-        self.assert_not_disposed();
-        self.assert_line_number(line_number);
-        self.buffer.borrow().get_line_content(line_number)
-    }
 
     /// `getLineLength(lineNumber)`.
     pub fn get_line_length(&self, line_number: i32) -> usize {
@@ -1906,32 +1896,9 @@ impl TextModel {
         EndOfLineSequence::from(self.buffer.borrow().get_eol())
     }
 
-    /// `getLineMinColumn(lineNumber)`.
-    pub fn get_line_min_column(&self, _line_number: i32) -> i32 {
-        self.assert_not_disposed();
-        1
-    }
 
-    /// `getLineMaxColumn(lineNumber)`.
-    pub fn get_line_max_column(&self, line_number: i32) -> i32 {
-        self.assert_not_disposed();
-        self.assert_line_number(line_number);
-        self.buffer.borrow().get_line_length(line_number) as i32 + 1
-    }
 
-    /// `getLineFirstNonWhitespaceColumn(lineNumber)`.
-    pub fn get_line_first_non_whitespace_column(&self, line_number: i32) -> i32 {
-        self.assert_not_disposed();
-        self.assert_line_number(line_number);
-        self.buffer.borrow().get_line_first_non_whitespace_column(line_number) as i32
-    }
 
-    /// `getLineLastNonWhitespaceColumn(lineNumber)`.
-    pub fn get_line_last_non_whitespace_column(&self, line_number: i32) -> i32 {
-        self.assert_not_disposed();
-        self.assert_line_number(line_number);
-        self.buffer.borrow().get_line_last_non_whitespace_column(line_number) as i32
-    }
 
     /// `_validateRangeRelaxedNoAllocations(range)`: valida o intervalo dentro do buffer, mas deixa ele cair
     /// entre pares substitutos etc.
@@ -2127,16 +2094,7 @@ impl TextModel {
         self.buffer.borrow().get_range_at(start, end - start)
     }
 
-    /// `getLineIndentColumn(lineNumber)`: a coluna em que a indentação termina.
-    pub fn get_line_indent_column(&self, line_number: i32) -> i32 {
-        // As colunas começam em 1.
-        indent_of_line(&self.get_line_content(line_number)) as i32 + 1
-    }
 
-    /// `normalizePosition(position, affinity)`.
-    pub fn normalize_position(&self, position: Position, _affinity: PositionAffinity) -> Position {
-        position
-    }
 
     /// `getLanguageId()`.
     pub fn get_language_id(&self) -> String {
@@ -3421,7 +3379,7 @@ impl crate::bracket_pairs_text_model_part::bracket_pairs_tree::tokenizer::IToken
     }
 
     fn get_line_count(&self) -> i32 {
-        TextModel::get_line_count(self)
+        <TextModel as CursorSimpleModel>::get_line_count(self)
     }
 
     fn get_line_length(&self, line_number: i32) -> usize {
@@ -3430,5 +3388,59 @@ impl crate::bracket_pairs_text_model_part::bracket_pairs_tree::tokenizer::IToken
 
     fn get_line_tokens(&self, line_number: i32) -> crate::line_tokens::LineTokens {
         self.tokenization().get_line_tokens(line_number)
+    }
+}
+
+/// O `ITextModel` do original atende o `ICursorSimpleModel` por tipagem estrutural; aqui os métodos moram no trait.
+impl CursorSimpleModel for TextModel {
+    /// `getLineCount()`.
+    fn get_line_count(&self) -> i32 {
+        self.assert_not_disposed();
+        self.buffer.borrow().get_line_count() as i32
+    }
+
+    /// `getLineContent(lineNumber)`.
+    fn get_line_content(&self, line_number: i32) -> JsString {
+        self.assert_not_disposed();
+        self.assert_line_number(line_number);
+        self.buffer.borrow().get_line_content(line_number)
+    }
+
+    /// `getLineMinColumn(lineNumber)`.
+    fn get_line_min_column(&self, _line_number: i32) -> i32 {
+        self.assert_not_disposed();
+        1
+    }
+
+    /// `getLineMaxColumn(lineNumber)`.
+    fn get_line_max_column(&self, line_number: i32) -> i32 {
+        self.assert_not_disposed();
+        self.assert_line_number(line_number);
+        self.buffer.borrow().get_line_length(line_number) as i32 + 1
+    }
+
+    /// `getLineFirstNonWhitespaceColumn(lineNumber)`.
+    fn get_line_first_non_whitespace_column(&self, line_number: i32) -> i32 {
+        self.assert_not_disposed();
+        self.assert_line_number(line_number);
+        self.buffer.borrow().get_line_first_non_whitespace_column(line_number) as i32
+    }
+
+    /// `getLineLastNonWhitespaceColumn(lineNumber)`.
+    fn get_line_last_non_whitespace_column(&self, line_number: i32) -> i32 {
+        self.assert_not_disposed();
+        self.assert_line_number(line_number);
+        self.buffer.borrow().get_line_last_non_whitespace_column(line_number) as i32
+    }
+
+    /// `getLineIndentColumn(lineNumber)`: a coluna em que a indentação termina.
+    fn get_line_indent_column(&self, line_number: i32) -> i32 {
+        // As colunas começam em 1.
+        indent_of_line(&self.get_line_content(line_number)) as i32 + 1
+    }
+
+    /// `normalizePosition(position, affinity)`.
+    fn normalize_position(&self, position: Position, _affinity: PositionAffinity) -> Position {
+        position
     }
 }

@@ -10,6 +10,7 @@
 //!   de `tokens/common.ts`) vira `eprintln!` com o mesmo limite, contado pelo relógio de parede do loop
 //!   (`runtime::date_now`).
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::Cell;
 
 use je_base::char_code;

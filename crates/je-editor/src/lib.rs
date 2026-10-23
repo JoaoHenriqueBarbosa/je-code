@@ -133,6 +133,7 @@ pub mod token_store;
 
 pub mod coordinates_converter;
 
+pub mod cursor_word_operations;
 pub mod cursor_context;
 pub mod one_cursor;
 pub mod cursor_collection;

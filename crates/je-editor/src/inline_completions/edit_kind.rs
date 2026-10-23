@@ -11,6 +11,7 @@
 //!   `JSON.stringify` omite `undefined`.
 //! - `computeEditKind(edit, textModel, cursorPosition?)` é [`compute_edit_kind`], com `Option<Position>`.
 
+use crate::cursor_common::CursorSimpleModel;
 use je_base::js_string::{self, is_js_whitespace};
 
 use crate::edits::edit::BaseEdit;

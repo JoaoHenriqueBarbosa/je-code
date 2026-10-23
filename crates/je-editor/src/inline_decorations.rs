@@ -12,6 +12,7 @@
 //! do valor.
 // TODO(integração): unificar com view_model_types quando o viewModel for portado.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

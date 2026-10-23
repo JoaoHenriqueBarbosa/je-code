@@ -14,6 +14,7 @@
 // TODO(integração): salvar pelo `FileService` (escrita atômica, `files.encoding`, `files.eol`) quando o
 // workbench existir.
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

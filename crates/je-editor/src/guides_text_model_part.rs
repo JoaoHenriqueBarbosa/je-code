@@ -8,6 +8,7 @@
 //!   estado de cada direção é um [`ContentLines`] passado às funções de resolução, no lugar das variáveis
 //!   capturadas pelas closures do original.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::rc::{Rc, Weak};
 
 use je_base::errors::{self, Error};

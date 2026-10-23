@@ -16,6 +16,7 @@
 mod common;
 mod support;
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;

@@ -1,5 +1,6 @@
 //! Porte de `src/vs/editor/contrib/caretOperations/browser/moveCaretCommand.ts`.
 
+use crate::cursor_common::CursorSimpleModel;
 use crate::editor_common::{Command, CursorStateComputerData, EditOperationBuilder};
 use crate::range::Range;
 use crate::selection::Selection;

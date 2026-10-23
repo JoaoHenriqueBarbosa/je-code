@@ -3,6 +3,7 @@
 // TODO(integração): trocar pelo porte de `src/vs/editor/common/cursor` (CursorMoveCommands, WordOperations,
 // DeleteOperations, TypeOperations) quando ele existir.
 
+use je_editor::cursor_common::CursorSimpleModel;
 use je_base::strings::{is_high_surrogate, is_low_surrogate};
 use je_editor::cursor_columns::{column_from_visible_column, visible_column_from_column};
 use je_editor::position::Position;

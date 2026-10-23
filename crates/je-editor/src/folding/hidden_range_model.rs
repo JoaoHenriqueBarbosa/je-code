@@ -13,6 +13,7 @@
 //!   `if (adjustedStartLine)` trata `0` como falso (`startLineNumber - 1` de uma faixa que começa na
 //!   linha 1), por isso o `!= 0`.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

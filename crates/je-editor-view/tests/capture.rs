@@ -7,6 +7,7 @@
 
 mod support;
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::time::Instant;
 
 use je_render::{DisplayList, Rgba, render_rgba};

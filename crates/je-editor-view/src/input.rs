@@ -6,6 +6,7 @@
 // TODO(integração): trocar a lógica de digitação, exclusão e indentação pelo porte de `cursor` do Monaco
 // (TypeOperations, DeleteOperations, auto fechamento, vários cursores).
 
+use je_editor::cursor_common::CursorSimpleModel;
 use je_base::js_string::JsString;
 use je_base::strings::get_leading_whitespace;
 use je_editor::cursor_columns::{column_from_visible_column, prev_render_tab_stop, visible_column_from_column};

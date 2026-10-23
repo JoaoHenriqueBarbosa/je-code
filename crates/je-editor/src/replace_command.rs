@@ -7,6 +7,7 @@
 //!   calculam o cursor a partir da primeira operação inversa fazem o mesmo acesso.
 //! - `throw new Error(...)` vira [`je_base::errors::throw`], o pânico que o resto do porte usa.
 
+use crate::cursor_common::CursorSimpleModel;
 use je_base::JsString;
 use je_base::errors::{self, Error};
 

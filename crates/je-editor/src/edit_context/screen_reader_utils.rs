@@ -6,6 +6,7 @@
 //! Fora do porte, por dependerem de serviços ainda inexistentes: `ariaLabelForScreenReaderContent`
 //! (precisa de `IComputedEditorOptions`, `IKeybindingService`, `AccessibilitySupport` e `nls`).
 
+use crate::cursor_common::CursorSimpleModel;
 use je_base::JsString;
 
 use crate::model::EndOfLinePreference;
@@ -26,15 +27,15 @@ pub trait ISimpleModel {
 
 impl ISimpleModel for TextModel {
     fn get_line_content(&self, line_number: i32) -> JsString {
-        TextModel::get_line_content(self, line_number)
+        <TextModel as CursorSimpleModel>::get_line_content(self, line_number)
     }
 
     fn get_line_count(&self) -> i32 {
-        TextModel::get_line_count(self)
+        <TextModel as CursorSimpleModel>::get_line_count(self)
     }
 
     fn get_line_max_column(&self, line_number: i32) -> i32 {
-        TextModel::get_line_max_column(self, line_number)
+        <TextModel as CursorSimpleModel>::get_line_max_column(self, line_number)
     }
 
     fn get_value_in_range(&self, range: &Range, eol: EndOfLinePreference) -> JsString {

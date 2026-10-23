@@ -11,6 +11,7 @@
 //! com as do oráculo. O layout fica em cache por linha e é invalidado pelos eventos de conteúdo, de tokens e
 //! de colchetes do modelo.
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;

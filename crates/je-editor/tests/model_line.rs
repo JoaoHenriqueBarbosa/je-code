@@ -14,6 +14,7 @@
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;

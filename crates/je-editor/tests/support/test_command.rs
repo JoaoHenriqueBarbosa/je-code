@@ -18,6 +18,7 @@
 //!   perde o `accessor` pelo mesmo motivo e recebe só a seleção.
 //! - `languageId: string | null` é `Option<&str>`; o `DisposableStore` do original é o `dispose` do modelo.
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::panic::AssertUnwindSafe;
 
 use je_base::JsString;

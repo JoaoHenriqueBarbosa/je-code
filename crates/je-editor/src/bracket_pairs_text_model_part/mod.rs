@@ -14,6 +14,7 @@
 pub mod bracket_pairs_tree;
 pub mod colorized_bracket_pairs_decoration_provider;
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Instant;

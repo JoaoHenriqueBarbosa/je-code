@@ -15,6 +15,7 @@
 //!   mesmo nome e os mesmos campos do original (em `snake_case`).
 //! - `onEnter` recebe os textos como `&[u16]` (UTF-16, como o modelo).
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;

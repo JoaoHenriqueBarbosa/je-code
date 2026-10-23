@@ -5,6 +5,7 @@
 //!
 //! O `createRegExp` e o `regExpLeadsToEndlessLoop` do `strings.ts` estão em `je_base::strings`.
 
+use crate::cursor_common::CursorSimpleModel;
 use je_base::JsString;
 use je_base::char_code;
 use je_base::strings::{RegExpOptions, create_reg_exp};

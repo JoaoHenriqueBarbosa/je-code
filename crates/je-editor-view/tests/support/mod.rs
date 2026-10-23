@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 

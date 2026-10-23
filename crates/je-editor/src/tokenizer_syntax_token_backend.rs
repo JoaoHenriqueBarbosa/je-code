@@ -5,6 +5,7 @@
 //! O backend por tree-sitter (`TreeSitterSyntaxTokenBackend`) não existe no porte, então não há classe
 //! abstrata: `TokenizerSyntaxTokenBackend` é o único backend e o `TokenizationTextModelPart` o usa direto.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 

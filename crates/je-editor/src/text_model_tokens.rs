@@ -11,6 +11,7 @@
 //!   `onUnexpectedError`.
 //! - `StopWatch.create(false)` é um `Instant`; `Date.now()` e `setTimeout0` vêm do `runtime` do `je-base`.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Instant;

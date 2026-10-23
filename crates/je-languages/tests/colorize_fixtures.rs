@@ -11,6 +11,7 @@
 //! tem de ser o das linhas do modelo, e a cor do modelo em cada posição tem de ser a da golden. Os escopos
 //! (`t`) e os seletores (`r`) são conferidos pela sonda `testbench/textmate-probe`, que usa a API de escopos.
 
+use je_editor::cursor_common::CursorSimpleModel;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

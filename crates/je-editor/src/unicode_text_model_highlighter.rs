@@ -10,6 +10,7 @@
 //! - O `Set` de candidatos do original mantém a ordem de inserção; aqui é um `BTreeSet`, e a ordem não
 //!   muda o que a classe de caracteres do regex casa.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::collections::BTreeSet;
 
 use je_base::JsString;
@@ -41,11 +42,11 @@ pub trait UnicodeCharacterSearcherTarget {
 
 impl UnicodeCharacterSearcherTarget for TextModel {
     fn get_line_count(&self) -> i32 {
-        TextModel::get_line_count(self)
+        <TextModel as CursorSimpleModel>::get_line_count(self)
     }
 
     fn get_line_content(&self, line_number: i32) -> JsString {
-        TextModel::get_line_content(self, line_number)
+        <TextModel as CursorSimpleModel>::get_line_content(self, line_number)
     }
 }
 

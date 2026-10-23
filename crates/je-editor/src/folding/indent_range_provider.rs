@@ -11,6 +11,7 @@
 //! - `_indentOccurrences` é um `Vec` preenchido com zero; as posições vazias do array esparso do
 //!   original (`if (n)`) são os zeros.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;

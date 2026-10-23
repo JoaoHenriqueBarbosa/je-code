@@ -14,6 +14,7 @@
 //!   `ArrayListAstNode`, usada em depuração e por `ListAstNode.create`) são as variantes de [`ListChildren`].
 //! - `Number.MAX_SAFE_INTEGER` (a indentação mínima de um nó sem texto) é [`MAX_SAFE_INTEGER`].
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::rc::Rc;
 

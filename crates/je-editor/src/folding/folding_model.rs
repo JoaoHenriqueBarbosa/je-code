@@ -29,6 +29,7 @@
 //!   concatenadas, e o `%` do `int32` mantém o sinal do dividendo como o do JavaScript.
 //! - `applyMemento(state)` não confere `Array.isArray(state)`: o tipo já garante a lista.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::{Rc, Weak};

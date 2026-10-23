@@ -1,5 +1,6 @@
 //! Porte de `src/vs/editor/contrib/linesOperations/browser/copyLinesCommand.ts`.
 
+use crate::cursor_common::CursorSimpleModel;
 use je_base::JsString;
 
 use crate::editor_common::{Command, CursorStateComputerData, EditOperationBuilder};

@@ -4,6 +4,7 @@
 //! original: [`je_base::collator::Collator`] com as opções padrão, e `compare` de `-1`, `0` ou `1`. O
 //! `Array.prototype.sort` do JavaScript é estável, como o `sort_by` do Rust.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cmp::Ordering;
 
 use je_base::JsString;

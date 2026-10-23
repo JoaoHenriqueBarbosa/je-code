@@ -10,6 +10,7 @@
 mod common;
 mod support;
 
+use je_editor::cursor_common::CursorSimpleModel;
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
 use je_editor::edit_operation::SingleEditOperation;

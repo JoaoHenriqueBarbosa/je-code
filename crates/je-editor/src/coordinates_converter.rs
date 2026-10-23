@@ -4,6 +4,7 @@
 //! Representação: os parâmetros opcionais do original (`affinity?`, `allowZeroLineNumber?`,
 //! `belowHiddenRanges?`) são `Option`. O `ITextModel` do conversor é o `Rc<TextModel>`.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::rc::Rc;
 
 use crate::model::PositionAffinity;

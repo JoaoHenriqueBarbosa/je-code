@@ -8,6 +8,7 @@
 //! - A definição de palavra de cada linguagem vem de um provedor ([`WordDefinitionProvider`]), que o
 //!   `TextModel` liga ao `ILanguageConfigurationService`.
 
+use crate::cursor_common::CursorSimpleModel;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
