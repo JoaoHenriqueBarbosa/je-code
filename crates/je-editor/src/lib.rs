@@ -121,6 +121,9 @@ pub mod view_layer;
 
 pub mod diff;
 pub mod link_computer;
+
+pub mod model_line_projection_data;
+pub mod monospace_line_breaks_computer;
 pub mod column_range;
 pub mod text;
 

@@ -8,8 +8,7 @@
 //!
 //! Pendente: os eventos de tokenização (`IModelTokensChangedEvent`, `IModelFontTokensChangedEvent`,
 //! `FontTokensUpdate`), de linguagem (`IModelLanguageChangedEvent`, `IModelLanguageConfigurationChangedEvent`),
-//! `ISerializedModelContentChangedEvent` e `FixedWidthInjectedTextRange`/`getFixedWidthInjectedTextRanges`
-//! (dependem do renderizador de linhas).
+//! `ISerializedModelContentChangedEvent` (depende do renderizador de linhas).
 
 use je_base::JsString;
 
@@ -269,6 +268,15 @@ fn occupies_horizontal_space(options: &InjectedTextOptions) -> bool {
     !options.content.is_empty() || options.width_in_em.is_some_and(|width| width > 0.0)
 }
 
+/// `FixedWidthInjectedTextRange`: um trecho do texto com os textos injetados aplicados que é desenhado
+/// com largura fixa (`widthInEm` vezes o tamanho da fonte).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FixedWidthInjectedTextRange {
+    pub start_offset: usize,
+    pub end_offset: usize,
+    pub width_in_em: f64,
+}
+
 /// `LineInjectedText`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LineInjectedText {
@@ -296,6 +304,29 @@ impl LineInjectedText {
             result.push_units(&injected_text.options.content.encode_utf16().collect::<Vec<u16>>());
         }
         result.push_units(&units[last_original_offset.min(units.len())..]);
+        result
+    }
+
+    /// `getFixedWidthInjectedTextRanges(injectedTexts)`: os trechos de `applyInjectedText(...)` desenhados
+    /// com largura fixa. Um texto injetado só de largura produz um trecho vazio
+    /// (`start_offset == end_offset`), que reserva espaço horizontal sem cobrir caractere algum.
+    ///
+    /// `injected_texts` precisa estar ordenado por coluna, como `fromDecorations` produz e
+    /// `applyInjectedText` já exige. O resultado fica ordenado por `start_offset` e sem sobreposição.
+    pub fn get_fixed_width_injected_text_ranges(
+        injected_texts: Option<&[LineInjectedText]>,
+    ) -> Vec<FixedWidthInjectedTextRange> {
+        let mut result = Vec::new();
+        let mut injected_text_length = 0usize;
+        for injected_text in injected_texts.unwrap_or_default() {
+            let length = injected_text.options.content.encode_utf16().count();
+            let start_offset = (injected_text.column - 1).max(0) as usize + injected_text_length;
+            let end_offset = start_offset + length;
+            if let Some(width_in_em) = injected_text.options.width_in_em {
+                result.push(FixedWidthInjectedTextRange { start_offset, end_offset, width_in_em });
+            }
+            injected_text_length += length;
+        }
         result
     }
 
