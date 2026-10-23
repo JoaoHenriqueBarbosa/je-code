@@ -7,10 +7,12 @@
 mod cpu;
 mod display_list;
 mod gpu;
+mod offscreen;
 mod presenter;
 pub mod wsl;
 
 pub use display_list::{Command, DisplayList, Glyph, Rgba, Shape};
+pub use offscreen::render_rgba;
 pub use presenter::{Backend, Presenter, Preference};
 pub use vello::kurbo;
 pub use vello::peniko::FontData;
