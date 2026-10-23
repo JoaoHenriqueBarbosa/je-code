@@ -46,15 +46,30 @@ pub fn test_command(
 ) {
     let model = create_text_model_with(lines.join("\n").as_str(), language_id, RelaxedTextModelCreationOptions::default(), None);
 
+    test_command_on_model(&model, selection, command_factory, expected_lines, expected_selection, force_tokenization);
+}
+
+/// O `testCommand` sobre um modelo já criado: é o caminho dos casos cujo `prepare` do original registra
+/// linguagens nos serviços (`ILanguageService`, `ILanguageConfigurationService`) que o modelo e o comando
+/// compartilham. Quem chama monta esses serviços e o modelo (`instantiate_text_model_with_languages`).
+/// Descarta o modelo no fim.
+pub fn test_command_on_model(
+    model: &TextModel,
+    selection: Selection,
+    command_factory: impl FnOnce(Selection) -> Box<dyn Command>,
+    expected_lines: &[&str],
+    expected_selection: Selection,
+    force_tokenization: bool,
+) {
     if force_tokenization {
         model.tokenization().force_tokenization(model.get_line_count());
     }
 
     // `viewModel.setSelections('tests', [selection])` e `viewModel.getSelection()`.
-    let selection = validate_selection(&model, selection);
+    let selection = validate_selection(model, selection);
 
     let mut command = command_factory(selection);
-    let actual_selection = execute_command(&model, selection, command.as_mut());
+    let actual_selection = execute_command(model, selection, command.as_mut());
 
     let expected: Vec<JsString> = expected_lines.iter().map(|line| JsString::from(*line)).collect();
     assert_eq!(model.get_lines_content(), expected);
