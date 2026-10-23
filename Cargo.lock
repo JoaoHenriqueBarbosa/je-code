@@ -4191,6 +4191,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-workbench"
+version = "0.0.0"
+dependencies = [
+ "je-base",
+ "je-platform",
+]
+
+[[package]]
 name = "jiff"
 version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
