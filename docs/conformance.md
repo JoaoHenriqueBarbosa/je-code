@@ -6,13 +6,13 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 110 | 1791 | 78.62 |
 | `platform` | 192 | 2806 | 55 | 961 | 34.25 |
-| `editor` | 182 | 3144 | 52 | 911 | 28.98 |
+| `editor` | 182 | 3144 | 54 | 960 | 30.53 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
 | `workbench/contrib` | 370 | 4636 | 1 | 4 | 0.09 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 16410 | | 3667 | 22.35 |
+| **total** | | 16410 | | 3716 | 22.64 |
 
 ## Arquivos portados
 
@@ -184,6 +184,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/workspaces/test/common/workspaces.test.ts` | 3 | `crates/je-platform/tests/workspaces.rs` | 3 |
 | `src/vs/platform/workspaces/test/node/workspaces.test.ts` | 2 | `crates/je-platform/tests/workspaces_node.rs` | 2 |
 | `src/vs/editor/contrib/find/test/browser/replacePattern.test.ts` | 8 | `crates/je-editor/tests/replace_pattern.rs` | 8 |
+| `src/vs/editor/contrib/folding/test/browser/indentRangeProvider.test.ts` | 26 | `crates/je-editor/tests/indent_range_provider.rs` | 26 |
 | `src/vs/editor/test/common/controller/cursorAtomicMoveOperations.test.ts` | 2 | `crates/je-editor/tests/cursor_atomic_move_operations.rs` | 2 |
 | `src/vs/editor/test/common/core/characterClassifier.test.ts` | 1 | `crates/je-editor/tests/character_classifier.rs` | 1 |
 | `src/vs/editor/test/common/core/cursorColumns.test.ts` | 5 | `crates/je-editor/tests/cursor_columns.rs` | 7 |
@@ -194,6 +195,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/core/stringBuilder.test.ts` | 4 | `crates/je-editor/tests/string_builder.rs` | 4 |
 | `src/vs/editor/test/common/core/stringEdit.test.ts` | 15 | `crates/je-editor/tests/string_edit.rs` | 18 |
 | `src/vs/editor/test/common/languages/defaultDocumentColorsComputer.test.ts` | 12 | `crates/je-editor/tests/default_document_colors_computer.rs` | 12 |
+| `src/vs/editor/test/common/model/annotations.test.ts` | 23 | `crates/je-editor/tests/annotations.rs` | 23 |
 | `src/vs/editor/test/common/model/bracketPairColorizer/beforeEditPositionMapper.test.ts` | 9 | `crates/je-editor/tests/bracket_pair_colorizer_before_edit_position_mapper.rs` | 9 |
 | `src/vs/editor/test/common/model/bracketPairColorizer/brackets.test.ts` | 1 | `crates/je-editor/tests/bracket_pair_colorizer_brackets.rs` | 1 |
 | `src/vs/editor/test/common/model/bracketPairColorizer/combineTextEditInfos.test.ts` | 1 | `crates/je-editor/tests/bracket_pair_colorizer_combine_text_edit_infos.rs` | 50 |

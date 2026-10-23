@@ -503,13 +503,13 @@ impl Tree {
             Content::None => {}
             Content::Text { text, style: text_style, color, line_height } => {
                 let line = with_text_system(|t| t.line(text, text_style));
-                let top = rect.y0 + (line_height - f64::from(line.line_height)) / 2.0;
+                let top = rect.y0 + half_leading(*line_height, f64::from(line.line_height));
                 if (scale - 1.0).abs() < f64::EPSILON {
                     line.paint(list, rect.x0 as f32, top as f32, fade(*color, opacity));
                 } else {
                     let scaled = TextStyle { size_64: (f64::from(text_style.size_64) * scale).round() as u32, ..text_style.clone() };
                     let line = with_text_system(|t| t.line(text, &scaled));
-                    let top = rect.y0 * scale + (line_height * scale - f64::from(line.line_height)) / 2.0;
+                    let top = rect.y0 * scale + half_leading(*line_height * scale, f64::from(line.line_height));
                     line.paint(list, (rect.x0 * scale) as f32, top as f32, fade(*color, opacity));
                 }
             }
@@ -547,6 +547,14 @@ impl Tree {
             }
         }
     }
+}
+
+/// O deslocamento do topo do texto dentro da caixa de linha: metade do espaço que sobra (o `line-height` menos a
+/// altura natural da fonte), arredondada para BAIXO. É o `FontHeight::AddLeading` do Blink
+/// (`ascent += half_leading.Floor()`), medido contra o oráculo (H26): sem o `floor`, linhas de espaço ímpar
+/// (p.ex. `line-height: 10px` com fonte de 13 px) saíam 1 px abaixo do Chromium.
+fn half_leading(line_height: f64, natural: f64) -> f64 {
+    ((line_height - natural) / 2.0).floor()
 }
 
 /// O retângulo com o raio de cada canto (superior esquerdo, superior direito, inferior direito, inferior
