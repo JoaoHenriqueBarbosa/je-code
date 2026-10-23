@@ -45,3 +45,5 @@ pub mod update;
 pub mod remote;
 
 pub mod opener;
+
+pub mod terminal;
