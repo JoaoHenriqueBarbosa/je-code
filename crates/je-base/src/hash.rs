@@ -8,12 +8,34 @@
 //!
 //! Texto é `&[u16]` (unidades UTF-16), como o `charCodeAt` do original.
 //!
-//! Pendente: `hashAsync` (SHA-1 por `crypto.subtle`, assíncrono, sobre `VSBuffer` de `buffer.ts`,
-//! ainda não portado). `StringSHA1` está portado e dá o mesmo resumo para texto.
+//! `hashAsync` (SHA-1 de `string | ArrayBufferView | VSBuffer`) devolve uma [`Promise`] já resolvida: o
+//! original usa `crypto.subtle` para entrada grande (assíncrono), e o SHA-1 que o `crypto.subtle` calcula é
+//! o mesmo de [`StringSha1`], que dá o mesmo resumo para texto (surrogate isolado vira U+FFFD, como no
+//! `TextEncoder`) e, por [`StringSha1::update_bytes`], para bytes.
 
 use crate::assert::assert;
+use crate::buffer::VSBuffer;
 use crate::dynamic::Dynamic;
+use crate::promise::Promise;
 use crate::strings::{compute_code_point, is_high_surrogate, is_low_surrogate};
+
+/// A entrada de [`hash_async`]: `string | ArrayBufferView | VSBuffer`.
+pub enum HashAsyncInput<'a> {
+    Text(&'a [u16]),
+    Bytes(&'a [u8]),
+    Buffer(&'a VSBuffer),
+}
+
+/// `hashAsync`: o SHA-1 da entrada em hexadecimal.
+pub fn hash_async(input: HashAsyncInput<'_>) -> Promise<String> {
+    let mut sha = StringSha1::new();
+    match input {
+        HashAsyncInput::Text(units) => sha.update(units),
+        HashAsyncInput::Bytes(bytes) => sha.update_bytes(bytes),
+        HashAsyncInput::Buffer(buffer) => buffer.with_bytes(|bytes| sha.update_bytes(bytes)),
+    }
+    Promise::resolved(sha.digest())
+}
 
 /// `ToInt32` do JavaScript.
 fn to_int32(x: f64) -> i32 {
@@ -186,27 +208,34 @@ impl StringSha1 {
     }
 
     fn push(&mut self, code_point: u32) {
-        let mut len = self.buff_len;
-        let b = &mut self.buff;
-        if code_point < 0x0080 {
-            b[len] = code_point as u8;
-            len += 1;
+        let mut bytes = [0u8; 4];
+        let size = if code_point < 0x0080 {
+            bytes[0] = code_point as u8;
+            1
         } else if code_point < 0x0800 {
-            b[len] = 0b1100_0000 | ((code_point & 0x7C0) >> 6) as u8;
-            b[len + 1] = 0b1000_0000 | (code_point & 0x3F) as u8;
-            len += 2;
+            bytes[0] = 0b1100_0000 | ((code_point & 0x7C0) >> 6) as u8;
+            bytes[1] = 0b1000_0000 | (code_point & 0x3F) as u8;
+            2
         } else if code_point < 0x10000 {
-            b[len] = 0b1110_0000 | ((code_point & 0xF000) >> 12) as u8;
-            b[len + 1] = 0b1000_0000 | ((code_point & 0xFC0) >> 6) as u8;
-            b[len + 2] = 0b1000_0000 | (code_point & 0x3F) as u8;
-            len += 3;
+            bytes[0] = 0b1110_0000 | ((code_point & 0xF000) >> 12) as u8;
+            bytes[1] = 0b1000_0000 | ((code_point & 0xFC0) >> 6) as u8;
+            bytes[2] = 0b1000_0000 | (code_point & 0x3F) as u8;
+            3
         } else {
-            b[len] = 0b1111_0000 | ((code_point & 0x1C0000) >> 18) as u8;
-            b[len + 1] = 0b1000_0000 | ((code_point & 0x3F000) >> 12) as u8;
-            b[len + 2] = 0b1000_0000 | ((code_point & 0xFC0) >> 6) as u8;
-            b[len + 3] = 0b1000_0000 | (code_point & 0x3F) as u8;
-            len += 4;
-        }
+            bytes[0] = 0b1111_0000 | ((code_point & 0x1C0000) >> 18) as u8;
+            bytes[1] = 0b1000_0000 | ((code_point & 0x3F000) >> 12) as u8;
+            bytes[2] = 0b1000_0000 | ((code_point & 0xFC0) >> 6) as u8;
+            bytes[3] = 0b1000_0000 | (code_point & 0x3F) as u8;
+            4
+        };
+        self.push_bytes(&bytes[..size]);
+    }
+
+    /// Acrescenta até 4 bytes ao bloco e processa o bloco quando enche.
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        let mut len = self.buff_len;
+        self.buff[len..len + bytes.len()].copy_from_slice(bytes);
+        len += bytes.len();
         if len >= BLOCK_SIZE {
             self.buff_len = len;
             self.step();
@@ -216,6 +245,14 @@ impl StringSha1 {
             self.buff.copy_within(BLOCK_SIZE..BLOCK_SIZE + 3, 0);
         }
         self.buff_len = len;
+    }
+
+    /// SHA-1 de bytes já codificados (o `crypto.subtle.digest('sha-1', ...)` de [`hash_async`] sobre
+    /// `ArrayBufferView`), pelo mesmo bloco de [`StringSha1::update`].
+    pub fn update_bytes(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(4) {
+            self.push_bytes(chunk);
+        }
     }
 
     /// O resumo em hexadecimal (40 caracteres). Chamadas seguintes devolvem o mesmo valor.

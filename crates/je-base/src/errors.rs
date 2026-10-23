@@ -10,6 +10,9 @@ use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
+use crate::dynamic::{Dynamic, number_to_js_string};
+use crate::js_string::JsString;
+
 /// O nome do `CancellationError` (`canceledName` do original).
 pub const CANCELED_NAME: &str = "Canceled";
 
@@ -23,6 +26,8 @@ pub struct Error {
     pub errors: Vec<Error>,
     pub stack: Option<String>,
     pub props: Vec<(String, String)>,
+    /// `error.cause` (`new Error(message, { cause })`).
+    pub cause: Option<Box<Error>>,
 }
 
 impl Error {
@@ -31,7 +36,13 @@ impl Error {
     }
 
     pub fn named(name: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { name: name.into(), message: message.into(), errors: Vec::new(), stack: None, props: Vec::new() }
+        Self { name: name.into(), message: message.into(), errors: Vec::new(), stack: None, props: Vec::new(), cause: None }
+    }
+
+    /// `new Error(message, { cause })`.
+    pub fn with_cause(mut self, cause: Error) -> Self {
+        self.cause = Some(Box::new(cause));
+        self
     }
 
     /// `error.stack = stack`.
@@ -193,6 +204,86 @@ pub fn on_unexpected_external_error(error: &Error) {
 /// `onBugIndicatingError`.
 pub fn on_bug_indicating_error(error: &Error) {
     dispatch(error, true);
+}
+
+/// `getErrorCode`: o `code` próprio de um objeto, quando é texto ou número (o número vira o seu texto).
+/// `Object.hasOwn` olha só as propriedades próprias; o [`Dynamic`] não tem cadeia de protótipos, então um
+/// `code` herdado nem chega a existir e dá `None` do mesmo jeito.
+pub fn get_error_code(error: &Dynamic) -> Option<String> {
+    if error.type_of() != "object" || error.is_null() || !error.has_property(&JsString::from("code")) {
+        return None;
+    }
+    match error.get_str("code") {
+        Dynamic::String(code) => Some(code.to_string_lossy()),
+        Dynamic::Number(code) => Some(number_to_js_string(code)),
+        _ => None,
+    }
+}
+
+/// `SerializedError`. O `$isError: true` do original é constante e não ocupa campo aqui (o canal do
+/// worker o escreve em `worker::web_worker::serialized_error`). `stack` é opcional porque o `Error` do
+/// porte pode não ter pilha; no JavaScript ela é sempre uma `string`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SerializedError {
+    pub name: String,
+    pub message: String,
+    pub stack: Option<String>,
+    pub no_telemetry: bool,
+    pub code: Option<String>,
+    pub cause: Option<Box<SerializedError>>,
+}
+
+/// `transformErrorForSerialization`: `stacktrace` (quando existe e não é vazio) vale mais que `stack`, e o
+/// `code` é a propriedade `code` do erro.
+pub fn transform_error_for_serialization(error: &Error) -> SerializedError {
+    SerializedError {
+        name: error.name.clone(),
+        message: error.message.clone(),
+        stack: error.prop("stacktrace").filter(|s| !s.is_empty()).map(str::to_owned).or_else(|| error.stack.clone()),
+        no_telemetry: error.is_error_no_telemetry(),
+        code: error.prop("code").map(str::to_owned),
+        cause: error.cause.as_deref().map(|cause| Box::new(transform_error_for_serialization(cause))),
+    }
+}
+
+/// `transformErrorFromSerialization`: com `noTelemetry` o erro é um `ErrorNoTelemetry`, senão um `Error`
+/// com o `name` dado; o `code` só é posto quando não é vazio.
+pub fn transform_error_from_serialization(data: &SerializedError) -> Error {
+    let mut error = if data.no_telemetry { Error::no_telemetry("") } else { Error::named(data.name.clone(), "") };
+    error.message = data.message.clone();
+    error.stack = data.stack.clone();
+    if let Some(code) = data.code.as_deref().filter(|code| !code.is_empty()) {
+        error.props.push(("code".to_owned(), code.to_owned()));
+    }
+    error.cause = data.cause.as_deref().map(|cause| Box::new(transform_error_from_serialization(cause)));
+    error
+}
+
+/// O nome do `ErrorNoTelemetry` (`'CodeExpectedError'`).
+pub const NO_TELEMETRY_NAME: &str = "CodeExpectedError";
+
+impl Error {
+    /// `new ErrorNoTelemetry(msg)`: erro que não vai para a telemetria como erro não tratado.
+    pub fn no_telemetry(message: impl Into<String>) -> Self {
+        Self::named(NO_TELEMETRY_NAME, message)
+    }
+
+    /// `ErrorNoTelemetry.fromError(err)`: o próprio erro se já é um `ErrorNoTelemetry`, senão um novo com a
+    /// mensagem e a pilha dele.
+    pub fn no_telemetry_from_error(err: &Error) -> Self {
+        if err.is_error_no_telemetry() {
+            return err.clone();
+        }
+        let mut result = Self::no_telemetry("");
+        result.message = err.message.clone();
+        result.stack = err.stack.clone();
+        result
+    }
+
+    /// `ErrorNoTelemetry.isErrorNoTelemetry(err)`.
+    pub fn is_error_no_telemetry(&self) -> bool {
+        self.name == NO_TELEMETRY_NAME
+    }
 }
 
 impl Error {
