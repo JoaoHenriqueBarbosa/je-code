@@ -90,3 +90,5 @@ pub mod default_document_colors_computer;
 
 pub mod overview_zone_manager;
 pub mod semantic_tokens_dto;
+
+pub mod folding;
