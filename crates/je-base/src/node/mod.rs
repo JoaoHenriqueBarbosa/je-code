@@ -4,3 +4,7 @@
 pub mod crypto;
 pub mod ps;
 pub mod unc;
+
+pub mod id;
+pub mod mac_address;
+pub mod network_interfaces;
