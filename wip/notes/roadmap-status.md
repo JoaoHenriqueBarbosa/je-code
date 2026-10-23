@@ -18,7 +18,7 @@ Fase corrente: **0 (bancada e fundações)**.
 
 | Critério | Estado | Fonte |
 | --- | --- | --- |
-| Testes de `vs/base` portados (oráculo: 2 278 casos em 150 arquivos) | 72 casos em 3 arquivos (`json` 17/17, `path` 9/9, `strings` 46/48; os 2 restantes dependem de RegExp ECMAScript) | eu, `cargo test -p je-base`, 2026-10-23 |
+| Testes de `vs/base` portados (oráculo: 2 278 casos em 150 arquivos) | 582 casos em 26 arquivos (25,55%), 566 `#[test]` passando no `je-base` (o placar conta casos do original; laços viram testes múltiplos) | eu, `scripts/conformance.py` + `cargo test -p je-base`, 2026-10-23 |
 | Widgets de base com screenshot comparado ao oráculo | NÃO MEDIDO | |
 
 ## Fases 2 a 8
@@ -40,3 +40,4 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 - 2026-10-23: H26 confirmada de ponta a ponta (je-render offscreen + je-theme contra a captura do oráculo).
 - 2026-10-23: je-codicons (785 ids, fonte codicon.ttf); H09 parcial (fontique resolve as listas do VS Code como o oráculo no latino; emoji e scripts sem conferência); no WSLg a janela vai pelo X11 (60 fps).
 - 2026-10-23: H14 confirmada: ferriki-textmate + ferroni corrigido = 109 de 109 goldens de tokenização do VS Code, 100% dos tokens.
+- 2026-10-23: vs/base em 25,55% dos casos do oráculo (582); je-theme com as 450 cores registradas iguais ao oráculo.
