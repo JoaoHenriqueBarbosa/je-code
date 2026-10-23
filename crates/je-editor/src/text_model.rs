@@ -35,6 +35,7 @@ use je_base::strings;
 use je_base::uri::URI;
 
 use crate::bracket_pairs_text_model_part::BracketPairsTextModelPart;
+use crate::text_model_defaults::EDITOR_MODEL_DEFAULTS;
 use crate::bracket_pairs_text_model_part::colorized_bracket_pairs_decoration_provider::ColorizedBracketPairsDecorationProvider;
 use crate::guides_text_model_part::GuidesTextModelPart;
 use crate::attached_views::{AttachedView, AttachedViews};
@@ -45,7 +46,7 @@ use crate::indentation::normalize_indentation;
 use crate::indentation_guesser::guess_indentation;
 use crate::interval_tree::{IntervalArena, IntervalNode, IntervalTree, NodeId, recompute_max_end};
 use crate::model::{
-    BracketPairColorizationOptions, DecorationColor, DefaultEndOfLine, EndOfLinePreference, EndOfLineSequence, Eol,
+    DecorationColor, DefaultEndOfLine, EndOfLinePreference, EndOfLineSequence, Eol,
     GlyphMarginLane, IndentSize, InjectedTextOptions, MarkdownString, MinimapPosition, MinimapSectionHeaderStyle,
     ModelDecoration, ModelDecorationGlyphMarginInit, ModelDecorationMinimapInit, ModelDecorationOptionsInit,
     ModelDecorationOverviewRulerInit, ModelDeltaDecoration, OverviewRulerLane, PositionAffinity, TextDirection,
@@ -77,9 +78,6 @@ use crate::word_helper::WordAtPosition;
 // TODO(integração): mover para je_base::uint.
 const MAX_SAFE_SMALL_INTEGER: usize = 1 << 30;
 
-/// `EDITOR_MODEL_DEFAULTS.tabSize` e `indentSize` (`core/misc/textModelDefaults.ts`).
-const EDITOR_MODEL_DEFAULTS_TAB_SIZE: i32 = 4;
-const EDITOR_MODEL_DEFAULTS_INDENT_SIZE: i32 = 4;
 
 const LINE_HEIGHT_CEILING: f64 = 300.0;
 
@@ -1116,17 +1114,14 @@ impl TextModel {
     pub fn default_creation_options() -> TextModelCreationOptions {
         TextModelCreationOptions {
             is_for_simple_widget: false,
-            tab_size: EDITOR_MODEL_DEFAULTS_TAB_SIZE,
-            indent_size: IndentSize::Size(EDITOR_MODEL_DEFAULTS_INDENT_SIZE),
-            insert_spaces: true,
+            tab_size: EDITOR_MODEL_DEFAULTS.tab_size,
+            indent_size: IndentSize::Size(EDITOR_MODEL_DEFAULTS.indent_size),
+            insert_spaces: EDITOR_MODEL_DEFAULTS.insert_spaces,
             detect_indentation: false,
             default_eol: DefaultEndOfLine::Lf,
-            trim_auto_whitespace: true,
-            large_file_optimizations: true,
-            bracket_pair_colorization_options: BracketPairColorizationOptions {
-                enabled: true,
-                independent_color_pool_per_bracket_type: false,
-            },
+            trim_auto_whitespace: EDITOR_MODEL_DEFAULTS.trim_auto_whitespace,
+            large_file_optimizations: EDITOR_MODEL_DEFAULTS.large_file_optimizations,
+            bracket_pair_colorization_options: EDITOR_MODEL_DEFAULTS.bracket_pair_colorization_options,
         }
     }
 

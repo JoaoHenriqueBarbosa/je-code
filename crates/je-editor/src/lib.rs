@@ -64,6 +64,7 @@ pub mod string_builder;
 pub mod supports;
 pub mod text_change;
 pub mod text_model;
+pub mod text_model_defaults;
 pub mod text_model_bracket_pairs;
 pub mod text_model_edit_source;
 pub mod text_model_events;

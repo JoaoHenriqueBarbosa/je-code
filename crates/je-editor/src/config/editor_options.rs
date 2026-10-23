@@ -1289,6 +1289,7 @@ mod tests {
 // ---------------------------------------------------------------------------------------------
 // Classes de opção, uma por arquivo em `config/editor_options/`.
 
+pub mod bracket_pair_colorization;
 pub mod comments;
 pub mod cursor_style;
 pub mod editor_class_name;
@@ -1301,8 +1302,10 @@ pub mod font_size;
 pub mod font_variations;
 pub mod font_weight;
 pub mod goto_location;
+pub mod guides;
 pub mod hover;
 pub mod inlay_hints;
+pub mod inline_suggest;
 pub mod lightbulb;
 pub mod line_decorations_width;
 pub mod line_height;
