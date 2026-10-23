@@ -120,4 +120,5 @@ pub mod edit_context;
 
 pub mod view_layer;
 
+pub mod diff;
 pub mod link_computer;
