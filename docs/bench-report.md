@@ -33,7 +33,7 @@ Máquina de medição: WSL2 (kernel 6.18) sobre Windows com RTX 5060 Ti via `/de
 
 | Id | Hipótese | Experimento | Veredito |
 | --- | --- | --- | --- |
-| H12 | Um SQLite em Rust puro (`turso`) lê e escreve `state.vscdb` e os bancos de `workspaceStorage` do oráculo sem corromper nada que o `@vscode/sqlite3` leia depois | ida e volta com os bancos reais de `ref/oracle` e do user data do Windows | a medir |
+| H12 | Um SQLite em Rust puro (`turso`) lê e escreve `state.vscdb` e os bancos de `workspaceStorage` do oráculo sem corromper nada que o `@vscode/sqlite3` leia depois | `testbench/sqlite-probe` + `oracle-harness/sqlite_dump.js` (Node do Electron do oráculo com o `@vscode/sqlite3` dele), sobre cópia do `state.vscdb` global real | **Confirmada no comportamento, parcial na pureza** (eu, 2026-10-23): despejo das 186 linhas de `ItemTable` byte a byte idêntico ao do oráculo; upsert nosso relido pelo oráculo com `integrity_check: ok`; upsert do oráculo relido por nós. Mas a crate `turso` puxa `turso_core` com features padrão, e a feature `autovacuum` liga o `simsimd`, que compila C (`rustc-link-lib=static=simsimd`). `turso_core` com `default-features = false` e só `pure-rust-crypto`, `fs` e `json` compila sem nenhum C (varredura de link-lib vazia). Decisão: a camada de storage usa `turso_core` direto (API de `Statement::step`), não a crate `turso` |
 | H13 | `settings.json`, `keybindings.json`, snippets, perfis, `extensions.json`, temas JSON com comentários e vírgula final são lidos pelo mesmo parser tolerante do VS Code (`jsonc`) com as mesmas mensagens de erro | porte do `json.ts` do `vs/base` e os 100+ casos de teste dele | a medir |
 
 ## Linguagem e extensões
