@@ -33,7 +33,6 @@ pub mod indent_rules;
 pub mod indentation;
 pub mod indentation_guesser;
 pub mod interval_tree;
-pub mod js_reg_exp;
 pub mod language_associations;
 pub mod language_brackets_configuration;
 pub mod language_configuration;

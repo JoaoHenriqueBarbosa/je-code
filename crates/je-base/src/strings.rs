@@ -5,10 +5,8 @@
 //! resultado é texto novo). Parâmetros que no TypeScript têm valor padrão são obrigatórios aqui, e
 //! onde o original devolve `-1` por "não achei" o porte devolve `Option`.
 
-// Pendente: o que depende de um motor de regex com semântica ECMAScript, que o projeto ainda não tem,
-// ficou de fora para não inventar uma aproximação:
-// - `createRegExp` e `RegExpOptions` (montam e devolvem um `RegExp`);
-// - `regExpLeadsToEndlessLoop` (recebe um `RegExp` e executa `exec('')`);
+// `createRegExp`, `RegExpOptions` e `regExpLeadsToEndlessLoop` usam o `RegExp` ECMAScript do `zyarr`
+// (`crate::js_regexp::JsRegExp`). Pendente, ainda sem uso no porte:
 // - `indexOfPattern` (recebe um `RegExp`);
 // - `replaceAsync` (recebe um `RegExp`, itera `matchAll` e aceita callback assíncrono);
 // - `UNUSUAL_LINE_TERMINATORS` (constante exportada do tipo `RegExp`; o uso dela, a função
@@ -25,7 +23,9 @@ use crate::js_string::{
     char_code_at, code_point_at, ends_with_at, index_of, is_js_whitespace, starts_with_at, substring, trim_end,
     trim_start,
 };
+use crate::js_regexp::JsRegExp;
 use crate::strings_tables as tables;
+use zyarr::RegExpError;
 
 /// `Ellipsis`: `…` (U+2026).
 pub const ELLIPSIS: [u16; 1] = [0x2026];
@@ -1334,4 +1334,70 @@ pub fn multibyte_aware_btoa(str: &[u16]) -> JsString {
         }
     }
     JsString::from_units(out)
+}
+
+/// `RegExpOptions` do `strings.ts`: campo ausente é `false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegExpOptions {
+    pub match_case: bool,
+    pub whole_word: bool,
+    pub multiline: bool,
+    pub global: bool,
+    pub unicode: bool,
+}
+
+/// `/\B/.test(ch)` sobre um único caractere: só não casa quando ele é caractere de palavra ASCII.
+fn is_non_word_boundary_char(ch: u16) -> bool {
+    !(u8::try_from(ch).is_ok_and(|b| b.is_ascii_alphanumeric() || b == b'_'))
+}
+
+/// `createRegExp(searchString, isRegex, options)`. A cadeia vazia lança (pânico, como as demais exceções
+/// do porte); padrão inválido volta como `Err`, o `SyntaxError` do `new RegExp`.
+pub fn create_reg_exp(search_string: &[u16], is_regex: bool, options: &RegExpOptions) -> Result<JsRegExp, RegExpError> {
+    if search_string.is_empty() {
+        crate::errors::throw(crate::errors::Error::new("Cannot create regex from empty string"));
+    }
+    let mut search_string: Vec<u16> = if is_regex {
+        search_string.to_vec()
+    } else {
+        escape_reg_exp_characters(search_string).units().to_vec()
+    };
+    if options.whole_word {
+        let word_boundary: [u16; 2] = [u16::from(b'\\'), u16::from(b'b')];
+        if !is_non_word_boundary_char(search_string[0]) {
+            search_string.splice(0..0, word_boundary);
+        }
+        if !is_non_word_boundary_char(search_string[search_string.len() - 1]) {
+            search_string.extend_from_slice(&word_boundary);
+        }
+    }
+    let mut modifiers = String::new();
+    if options.global {
+        modifiers.push('g');
+    }
+    if !options.match_case {
+        modifiers.push('i');
+    }
+    if options.multiline {
+        modifiers.push('m');
+    }
+    if options.unicode {
+        modifiers.push('u');
+    }
+    JsRegExp::new(&search_string, &modifiers)
+}
+
+/// `regExpLeadsToEndlessLoop(regexp)`: a regex casa a cadeia vazia sem avançar `lastIndex`.
+pub fn reg_exp_leads_to_endless_loop(regexp: &JsRegExp) -> bool {
+    // Sai cedo nos casos especiais, feitos para casar a cadeia vazia.
+    let source = regexp.source();
+    if ["^", "^$", "$", "^\\s*$"]
+        .iter()
+        .any(|special| source.iter().copied().eq(special.encode_utf16()))
+    {
+        return false;
+    }
+
+    // Testa contra a cadeia vazia: se a regex não avança (laço sem fim), ela casa a cadeia vazia.
+    regexp.exec(&[]).is_some() && regexp.last_index() == 0
 }

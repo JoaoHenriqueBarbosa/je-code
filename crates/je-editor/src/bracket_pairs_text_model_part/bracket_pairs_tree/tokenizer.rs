@@ -22,7 +22,7 @@ use super::length::{
 };
 use super::small_immutable_set::SmallImmutableSet;
 use crate::encoded_token_attributes::{TokenMetadata, standard_token_type};
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::line_tokens::{IViewLineTokens, LineTokens};
 
 /// `Tokenizer`.

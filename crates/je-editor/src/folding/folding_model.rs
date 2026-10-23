@@ -39,7 +39,7 @@ use je_base::lifecycle::IDisposable;
 
 use super::SelectedLines;
 use super::folding_ranges::{FoldRange, FoldSource, FoldingRangesInput, FoldingRegion, FoldingRegions};
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::reg_exp_test;
 use crate::model::ModelDeltaDecoration;
 use crate::range::Range;

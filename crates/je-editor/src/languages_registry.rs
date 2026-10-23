@@ -15,13 +15,13 @@ use je_base::strings;
 use je_base::uri::URI;
 
 use crate::encoded_token_attributes::language_id;
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_associations::{
     LanguageAssociation, clear_platform_language_associations, get_language_ids, register_platform_language_association,
 };
 use crate::languages::ILanguageIdCodec;
 use crate::modes_registry::{LanguageExtensionPoint, LanguageIcon, PLAINTEXT_LANGUAGE_ID, modes_registry};
-use crate::text_model_search::reg_exp_leads_to_endless_loop;
+use je_base::strings::reg_exp_leads_to_endless_loop;
 
 const NULL_LANGUAGE_ID: &str = "vs.editor.nullLanguage";
 

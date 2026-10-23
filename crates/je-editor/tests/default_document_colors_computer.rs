@@ -7,7 +7,7 @@ use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_editor::default_document_colors_computer::{
     IDocumentColorComputerTarget, RegExpMatchArray, compute_default_document_colors, match_all,
 };
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use je_editor::position::Position;
 
 struct TestDocumentModel {

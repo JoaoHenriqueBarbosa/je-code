@@ -15,10 +15,11 @@ use je_base::JsString;
 use je_base::errors::{self, Error};
 use zyarr::Match;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::FoldingRules;
 use crate::range::Range;
-use crate::text_model_search::{is_multiline_reg_exp_source, reg_exp_leads_to_endless_loop};
+use crate::text_model_search::is_multiline_reg_exp_source;
+use je_base::strings::reg_exp_leads_to_endless_loop;
 
 const LINE_FEED: u16 = b'\n' as u16;
 const DASH: u16 = b'-' as u16;

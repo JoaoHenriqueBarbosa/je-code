@@ -31,7 +31,7 @@ use je_base::js_regexp::Captures;
 use je_base::js_string::trim;
 use zyarr::Match;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 
 // ---------------------------------------------------------------------------------------------
 // Scanner

@@ -12,7 +12,7 @@ use std::rc::Rc;
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
 use je_base::lifecycle::IDisposable;
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use je_editor::word_helper::{
     GetWordAtTextConfig, WordAtPosition, create_word_reg_exp, default_word_regexp, ensure_valid_word_definition,
     get_word_at_text, set_default_get_word_at_text_config,

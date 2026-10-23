@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use je_base::JsString;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::range::Range;
 use crate::text_change::TextChange;
 use crate::word_character_classifier::WordCharacterClassifier;

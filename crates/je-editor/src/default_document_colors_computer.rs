@@ -18,7 +18,7 @@ use std::ops::Range as StdRange;
 use je_theme::color::{Color, Hsla, format};
 use zyarr::Match;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::position::Position;
 use crate::range::Range;
 

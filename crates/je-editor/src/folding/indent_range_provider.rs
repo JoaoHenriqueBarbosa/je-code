@@ -19,7 +19,7 @@ use zyarr::Match;
 
 use super::folding_ranges::{FoldingRegions, MAX_LINE_NUMBER};
 use super::{FoldingLimitReporter, RangeProvider};
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::{FoldingMarkers, reg_exp_test};
 use crate::language_configuration_registry::ILanguageConfigurationService;
 use crate::model_utils::compute_indent_level;

@@ -17,7 +17,7 @@ use je_base::assert::assert_never;
 use je_base::js_string::{char_code_at, code_point_at, substring};
 use je_base::strings::{self, AmbiguousCharacters, InvisibleCharacters};
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::range::Range;
 use crate::text_model::TextModel;
 use crate::text_model_search::Searcher;

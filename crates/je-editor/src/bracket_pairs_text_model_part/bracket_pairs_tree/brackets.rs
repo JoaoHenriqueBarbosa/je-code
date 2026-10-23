@@ -18,7 +18,7 @@ use super::ast::BracketAstNode;
 use super::length::to_length;
 use super::small_immutable_set::{DenseKeyProvider, IDENTITY_KEY_PROVIDER, SmallImmutableSet};
 use super::tokenizer::{Token, TokenKind};
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_brackets_configuration::BracketKind;
 use crate::language_configuration_registry::ResolvedLanguageConfiguration;
 use std::cell::OnceCell;

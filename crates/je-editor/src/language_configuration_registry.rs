@@ -30,7 +30,7 @@ use crate::character_pair::CharacterPairSupport;
 use crate::editor_auto_indent_strategy::EditorAutoIndentStrategy;
 use crate::electric_character::BracketElectricCharacterSupport;
 use crate::indent_rules::IndentRulesSupport;
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_brackets_configuration::LanguageBracketsConfiguration;
 use crate::language_configuration::{
     AutoClosingPair, AutoClosingPairs, EnterAction, FoldingRules, IndentationRule,

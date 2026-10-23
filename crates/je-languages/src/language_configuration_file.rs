@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use je_base::lifecycle::{Disposable, DisposableStore, IDisposable};
 use je_base::uri::URI;
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use je_editor::language_configuration::{
     AutoClosingPair, AutoClosingPairConditional, CharacterPair, CommentRule, EnterAction, FoldingMarkers, FoldingRules,
     IndentAction, IndentationRule, LanguageConfiguration, LineComment, LineCommentConfig, OnEnterRule,

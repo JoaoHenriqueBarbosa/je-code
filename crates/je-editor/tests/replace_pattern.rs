@@ -7,7 +7,7 @@ use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
 use je_base::search::build_replace_string_with_case_preserved;
 use je_editor::find::replace_pattern::{ReplacePattern, ReplacePiece, parse_replace_string as parse};
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 
 fn js(text: &str) -> JsString {
     JsString::from(text)

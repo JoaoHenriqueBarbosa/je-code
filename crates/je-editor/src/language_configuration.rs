@@ -20,7 +20,7 @@ use std::rc::Rc;
 use je_base::JsString;
 
 use crate::encoded_token_attributes::standard_token_type;
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::supports::ScopedLineTokens;
 
 /// `regex.test(text)`: com `g` ou `y` mexe no `lastIndex`, como no original.

@@ -5,8 +5,6 @@
 //! Decisões de tradução:
 //! - Os colchetes são comparados com o texto do modelo, então viram [`JsString`] (UTF-16) aqui dentro;
 //!   a configuração entra como [`CharacterPair`] de `String`.
-//! - `createRegExp` e `RegExpOptions` (de `strings.ts`) ainda não existem no `je-base`: ficam aqui, com o
-//!   mesmo comportamento, até o `strings.ts` ser completado.
 //! - `toReversedString` do original guarda a última entrada em cache; aqui é uma função pura.
 //! - `text.match(regex)` com um regex global devolve todos os casamentos e `m.index` fica indefinido
 //!   (vira 0): [`match_first`] reproduz isso.
@@ -15,24 +13,13 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use je_base::JsString;
-use je_base::errors::{Error, throw};
+use je_base::strings::{RegExpOptions, create_reg_exp};
 use je_base::js_string::{index_of, substring};
 use je_base::strings::escape_reg_exp_characters;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::CharacterPair;
 use crate::range::Range;
-
-/// `RegExpOptions`.
-// TODO(integração): mover para `je_base::strings`, junto de `create_reg_exp`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RegExpOptions {
-    pub match_case: bool,
-    pub whole_word: bool,
-    pub multiline: bool,
-    pub global: bool,
-    pub unicode: bool,
-}
 
 /// `/\w/.test(c)` para um caractere: `[A-Za-z0-9_]`.
 pub(crate) fn is_word_unit(unit: u16) -> bool {
@@ -43,42 +30,6 @@ pub(crate) fn is_word_unit(unit: u16) -> bool {
 /// vazia o `\B` casa.
 pub(crate) fn is_word_boundary_char(unit: Option<u16>) -> bool {
     unit.is_some_and(is_word_unit)
-}
-
-/// `createRegExp(searchString, isRegex, options)`.
-// TODO(integração): mover para `je_base::strings`.
-pub fn create_reg_exp(search_string: &[u16], is_regex: bool, options: &RegExpOptions) -> JsRegExp {
-    if search_string.is_empty() {
-        throw(Error::new("Cannot create regex from empty string"));
-    }
-    let mut source: Vec<u16> = if is_regex {
-        search_string.to_vec()
-    } else {
-        escape_reg_exp_characters(search_string).units().to_vec()
-    };
-    if options.whole_word {
-        if is_word_boundary_char(source.first().copied()) {
-            source.splice(0..0, "\\b".encode_utf16());
-        }
-        if is_word_boundary_char(source.last().copied()) {
-            source.extend("\\b".encode_utf16());
-        }
-    }
-    let mut modifiers = String::new();
-    if options.global {
-        modifiers.push('g');
-    }
-    if !options.match_case {
-        modifiers.push('i');
-    }
-    if options.multiline {
-        modifiers.push('m');
-    }
-    if options.unicode {
-        modifiers.push('u');
-    }
-    JsRegExp::new(&source, &modifiers)
-        .unwrap_or_else(|error| throw(Error::named("SyntaxError", error.message())))
 }
 
 /// `toReversedString`: inverte as unidades UTF-16 e passa pelo decodificador, que troca por U+FFFD os
@@ -402,7 +353,8 @@ pub fn create_bracket_or_reg_exp(pieces: &[JsString], options: Option<&RegExpOpt
         source.extend(prepare_bracket_for_reg_exp(piece));
     }
     source.push(u16::from(b')'));
-    create_reg_exp(&source, true, &options.copied().unwrap_or_default())
+    // As peças já vêm escapadas: o `new RegExp` do original nunca lança aqui.
+    create_reg_exp(&source, true, &options.copied().unwrap_or_default()).expect("a regex dos colchetes é válida")
 }
 
 /// `text.match(regex)` sem a flag `g`: o índice e o comprimento do primeiro casamento. Com `g` o

@@ -1,7 +1,7 @@
 //! Porte de `src/vs/editor/common/languages/supports/indentRules.ts`: o que as regras de indentação
 //! (`IndentationRule`) dizem de uma linha.
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::{IndentationRule, reg_exp_test};
 
 /// `IndentConsts`.

@@ -8,7 +8,7 @@ mod common;
 mod support;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use je_editor::range::Range;
 use je_editor::rich_edit_brackets::BracketsUtils;
 use support::u;

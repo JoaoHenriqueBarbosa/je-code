@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::strings;
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use je_editor::model::{DefaultEndOfLine, SearchData, TextSnapshot, ValidAnnotatedEditOperation};
 use je_editor::piece_tree_base::PieceTreeBase;
 use je_editor::piece_tree_text_buffer::PieceTreeTextBuffer;

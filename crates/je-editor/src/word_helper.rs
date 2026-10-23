@@ -19,7 +19,7 @@ use je_base::lifecycle::{DisposableRef, to_disposable};
 use je_base::linked_list::LinkedList;
 use zyarr::Match;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 
 pub const USUAL_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 

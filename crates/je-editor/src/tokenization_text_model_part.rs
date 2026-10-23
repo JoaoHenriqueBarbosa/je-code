@@ -18,7 +18,7 @@ use je_base::lifecycle::{Disposable, IDisposable};
 
 use crate::attached_views::AttachedViews;
 use crate::eol_counter::count_eol;
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_service::ILanguageService;
 use crate::line_tokens::{IViewLineTokens, LineTokens};
 use crate::position::Position;

@@ -16,7 +16,7 @@ use je_base::resources::data_uri;
 use je_base::strings;
 use je_base::uri::URI;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 
 /// `ILanguageAssociation`.
 #[derive(Clone, Debug, Default)]

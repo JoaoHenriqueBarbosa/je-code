@@ -14,9 +14,10 @@ use std::collections::HashSet;
 
 use je_base::JsString;
 
-use crate::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::{CharacterPair, LanguageConfiguration};
-use crate::rich_edit_brackets::{RegExpOptions, create_bracket_or_reg_exp};
+use crate::rich_edit_brackets::create_bracket_or_reg_exp;
+use je_base::strings::RegExpOptions;
 
 thread_local! {
     static NEXT_CONFIG_ID: Cell<usize> = const { Cell::new(0) };

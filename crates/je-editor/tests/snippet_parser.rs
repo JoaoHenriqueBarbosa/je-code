@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
-use je_editor::js_reg_exp::JsRegExp;
+use je_base::js_regexp::JsRegExp;
 use je_editor::snippet::snippet_parser::MarkerKind::*;
 use je_editor::snippet::snippet_parser::{
     FormatStringData, Marker, MarkerKind, MarkerRef, Scanner, SnippetParser, TokenType, VariableResolver,
