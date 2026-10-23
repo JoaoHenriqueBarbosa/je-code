@@ -164,3 +164,8 @@ pub mod comment;
 pub mod cursor_events;
 pub mod cursor;
 pub mod view_model_lines;
+
+pub mod view_model_decoration;
+pub mod view_model_decorations;
+pub mod glyph_lanes_model;
+pub mod view_lines_viewport_data;

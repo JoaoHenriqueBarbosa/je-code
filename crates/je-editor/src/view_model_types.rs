@@ -203,7 +203,7 @@ fn test_tokens_in_range(model: &TextModel, range: &Range, mut callback: impl FnM
 }
 
 /// `x | 0` do JavaScript sobre um `number`: `ToInt32` (trunca, dá a volta em 2^32; `NaN` e infinito viram 0).
-fn to_int32(value: f64) -> f64 {
+pub(crate) fn to_int32(value: f64) -> f64 {
     if !value.is_finite() {
         return 0.0;
     }
