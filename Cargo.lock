@@ -4195,6 +4195,7 @@ name = "je-workbench"
 version = "0.0.0"
 dependencies = [
  "je-base",
+ "je-editor",
  "je-platform",
  "jiff",
  "zyarr",

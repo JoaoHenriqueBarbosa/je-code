@@ -19,7 +19,7 @@ use je_base::dynamic::Dynamic;
 
 use crate::config::editor_options::accessibility_support::ACCESSIBILITY_SUPPORT;
 use crate::config::editor_options::layout_info::{
-    EditorLayoutInfo, EditorMinimapLayoutInfo, OverviewRulerPosition, RenderMinimap, LAYOUT_INFO,
+    EditorLayoutInfo, EditorMinimapLayoutInfo, OverviewRulerPosition, RenderMinimap,
 };
 use crate::config::editor_options::line_decorations_width::LINE_DECORATIONS_WIDTH;
 use crate::config::editor_options::line_numbers::{
@@ -599,6 +599,7 @@ impl EditorOptionImpl for EditorLayoutInfoComputer {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::editor_options::layout_info::LAYOUT_INFO;
     use super::*;
 
     #[test]
