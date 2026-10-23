@@ -633,6 +633,10 @@ pub fn string_set(value: &Dynamic, default_value: &str, allowed_values: &[&str],
     value
 }
 
+/// Peças comuns aos arquivos de cada opção (`config/editor_options/*.rs`).
+#[macro_use]
+pub mod option_support;
+
 // ---------------------------------------------------------------------------------------------
 // Opções concretas
 
