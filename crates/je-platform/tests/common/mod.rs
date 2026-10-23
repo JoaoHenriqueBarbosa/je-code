@@ -21,6 +21,9 @@ use je_platform::js::from_json;
 use je_platform::log::NullLogService;
 use je_platform::workspace::{Workspace, WorkspaceFolder, to_workspace_folder};
 
+pub mod contextkey;
+pub mod keybinding;
+
 #[path = "../../../je-base/tests/common/mod.rs"]
 mod base;
 

@@ -7,17 +7,29 @@
 //! (`unknown`, `IStringDictionary<unknown>`) são [`je_base::dynamic::Dynamic`]; o texto que é chave
 //! de configuração é [`je_base::JsString`] (UTF-16, como no JavaScript).
 
+pub mod action;
+pub mod actions;
+pub mod commands;
+pub mod backup;
 pub mod configuration;
+pub mod dialogs;
+pub mod contextkey;
 pub mod environment;
 pub mod files;
 pub mod js;
+pub mod keybinding;
 pub mod log;
+pub mod markers;
+pub mod notification;
 pub mod policy;
 pub mod product;
 pub mod resources;
 pub mod state;
+pub mod telemetry;
 pub mod storage;
+pub mod user_data_profile;
 pub mod workspace;
+pub mod workspaces;
 
 #[doc(hidden)]
 pub use je_base::event as __je_event;

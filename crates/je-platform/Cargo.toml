@@ -13,6 +13,10 @@ workspace = true
 je-base = { path = "../je-base" }
 # O `Storage` e o `SqliteStorageDatabase` (o `state.vscdb` do VS Code) sobre os quais o serviço de armazenamento roda.
 je-storage = { path = "../je-storage" }
+# A injeção de dependência: os identificadores dos serviços (`createDecorator`).
+je-instantiation = { path = "../je-instantiation" }
+# O motor de `RegExp` ECMAScript (as regex do `when`, do scanner).
+zyarr = { path = "../zyarr" }
 
 # Observação do sistema de arquivos (inotify, FSEvents, ReadDirectoryChangesW): o `notify` no lugar do
 # `@parcel/watcher` e do `fs.watch` do Node. Fora do alvo web, onde não há sistema de arquivos.
