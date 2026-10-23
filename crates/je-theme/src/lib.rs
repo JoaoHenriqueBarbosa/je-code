@@ -256,3 +256,8 @@ impl ColorThemeContext for ColorTheme {
         ColorTheme::defines(self, id)
     }
 }
+
+// Registro de tamanhos do tema (`sizeUtils.ts`, `sizeRegistry.ts`, `sizes/`).
+pub mod size_utils;
+pub mod size_registry;
+pub mod sizes;
