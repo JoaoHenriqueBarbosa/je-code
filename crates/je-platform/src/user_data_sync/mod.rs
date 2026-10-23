@@ -4,6 +4,7 @@
 //! texto JSON ([`content`]) e o contrato do serviço de utilidades ([`user_data_sync::IUserDataSyncUtilService`]).
 
 pub mod content;
+pub mod global_state_merge;
 pub mod keybindings_merge;
 pub mod snippets_merge;
 #[allow(clippy::module_inception)] // `user_data_sync.rs` é o porte de `userDataSync.ts`, como no original
