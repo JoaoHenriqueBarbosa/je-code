@@ -2,9 +2,7 @@
 //! `effectiveExperimentalEditContext`, `effectiveAllowVariableFonts` e `effectiveFullwidthCharacterWidth`).
 //! Cada uma é um [`ComputedEditorOption`] (`name = "_never_"`, sem esquema).
 //!
-//! `effective_fullwidth_character_width` lê `env.font_info.is_monospace`, então depende de
-//! `EnvironmentalOptions::font_info` (o `TODO(config)` de `editor_options.rs` o anuncia).
-//! A opção `fullwidthCharacterWidth` que ela lê tem valor `String` (`'font' | 'twoCells'`).
+//! `effective_fullwidth_character_width` lê `env.font_info.is_monospace`. A opção `fullwidthCharacterWidth` que ela lê tem valor `String` (`'font' | 'twoCells'`).
 
 use crate::config::editor_options::cursor_style::TextEditorCursorStyle;
 use crate::config::editor_options::option_support::string_enum;
@@ -77,7 +75,8 @@ pub fn effective_fullwidth_character_width() -> ComputedEditorOption<FullwidthCh
 mod tests {
     use super::*;
     use crate::config::editor_options::option_support::testing;
-    use crate::config::editor_options::{EditorOptionImpl, EnvironmentalOptions, OptionInput};
+    use crate::config::editor_options::{EditorOptionImpl, EnvironmentalOptions};
+    use je_base::dynamic::Dynamic;
 
     fn env(is_monospace: bool) -> EnvironmentalOptions {
         testing::environment(testing::font_info(is_monospace, 14.0, "normal"))
@@ -141,9 +140,9 @@ mod tests {
 
     #[test]
     fn computed_options_ignore_the_input_in_validate() {
-        assert!(!EditorOptionImpl::validate(&effective_edit_context_enabled(), &OptionInput::Bool(true)));
+        assert!(!EditorOptionImpl::validate(&effective_edit_context_enabled(), &Dynamic::Bool(true)));
         assert_eq!(
-            EditorOptionImpl::validate(&effective_fullwidth_character_width(), &OptionInput::string("twoCells")),
+            EditorOptionImpl::validate(&effective_fullwidth_character_width(), &Dynamic::string("twoCells")),
             FullwidthCharacterWidth::Font
         );
         assert_eq!(FullwidthCharacterWidth::from_text("twoCells"), Some(FullwidthCharacterWidth::TwoCells));

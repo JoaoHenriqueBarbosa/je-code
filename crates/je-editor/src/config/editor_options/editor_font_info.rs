@@ -1,6 +1,5 @@
 //! Porte de `EditorFontInfo` (`editorOptions.ts`, região `fontInfo`): a opção só calculada que expõe o
-//! `FontInfo` medido do ambiente. `EnvironmentalOptions::font_info` precisa existir (o `TODO(config)` de
-//! `editor_options.rs` o anuncia).
+//! `FontInfo` medido do ambiente (`env.font_info`).
 
 use crate::config::editor_options::{ComputedEditorOption, EditorOption, Opt};
 use crate::config::font_info::{BareFontInfoOptions, FontInfo, FontInfoOptions};
@@ -67,7 +66,7 @@ mod tests {
         let options = testing::options_with(vec![]);
         assert_eq!(EditorOptionImpl::compute(&option, &env, &options, &default_font_info()), env_font);
         assert_eq!(
-            EditorOptionImpl::validate(&option, &crate::config::editor_options::OptionInput::string("x")),
+            EditorOptionImpl::validate(&option, &je_base::dynamic::Dynamic::string("x")),
             default_font_info()
         );
     }

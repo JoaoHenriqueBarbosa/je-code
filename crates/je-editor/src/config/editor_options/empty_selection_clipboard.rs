@@ -1,10 +1,9 @@
 //! Porte de `EditorEmptySelectionClipboard` (`editorOptions.ts`, região `emptySelectionClipboard`): uma
 //! `EditorBooleanOption` cujo valor calculado também depende do ambiente.
 
-use crate::config::editor_options::{
-    ComputedEditorOptions, ConfigurationPropertySchema, EditorBooleanOption, EditorOption, EditorOptionImpl, EnvironmentalOptions, Opt,
-    OptionInput, OptionSchema,
-};
+use je_base::dynamic::Dynamic;
+
+use crate::config::editor_options::{ComputedEditorOptions, EditorBooleanOption, EditorOption, EditorOptionImpl, EnvironmentalOptions, Opt};
 
 /// Chave tipada da opção `emptySelectionClipboard`.
 pub const EMPTY_SELECTION_CLIPBOARD: Opt<bool> = Opt::new(EditorOption::EmptySelectionClipboard);
@@ -21,10 +20,10 @@ impl EditorEmptySelectionClipboard {
                 EditorOption::EmptySelectionClipboard,
                 "emptySelectionClipboard",
                 true,
-                Some(ConfigurationPropertySchema {
-                    description: Some("Controls whether copying without a selection copies the current line.".to_string()),
-                    ..Default::default()
-                }),
+                Some(Dynamic::object([(
+                    "description",
+                    Dynamic::string("Controls whether copying without a selection copies the current line."),
+                )])),
             ),
         }
     }
@@ -51,11 +50,11 @@ impl EditorOptionImpl for EditorEmptySelectionClipboard {
         EditorOptionImpl::default_value(&self.base)
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         EditorOptionImpl::schema(&self.base)
     }
 
-    fn validate(&self, input: &OptionInput) -> bool {
+    fn validate(&self, input: &Dynamic) -> bool {
         EditorOptionImpl::validate(&self.base, input)
     }
 
@@ -68,16 +67,15 @@ impl EditorOptionImpl for EditorEmptySelectionClipboard {
 mod tests {
     use super::*;
     use crate::config::editor_options::option_support::testing;
-    use crate::config::editor_options::SchemaValue;
 
     #[test]
     fn validate_is_the_boolean_option_validate() {
         let option = EditorEmptySelectionClipboard::new();
         assert!(EditorOptionImpl::default_value(&option));
-        assert!(EditorOptionImpl::validate(&option, &OptionInput::Undefined));
-        assert!(!EditorOptionImpl::validate(&option, &OptionInput::string("false")));
-        assert!(!EditorOptionImpl::validate(&option, &OptionInput::Number(0.0)));
-        assert!(EditorOptionImpl::validate(&option, &OptionInput::string("x")));
+        assert!(EditorOptionImpl::validate(&option, &Dynamic::Undefined));
+        assert!(!EditorOptionImpl::validate(&option, &Dynamic::string("false")));
+        assert!(!EditorOptionImpl::validate(&option, &Dynamic::Number(0.0)));
+        assert!(EditorOptionImpl::validate(&option, &Dynamic::string("x")));
         assert_eq!(EditorOptionImpl::name(&option), "emptySelectionClipboard");
     }
 
@@ -97,8 +95,9 @@ mod tests {
     #[test]
     fn schema_is_a_typed_boolean() {
         let option = EditorEmptySelectionClipboard::new();
-        let Some(OptionSchema::Single(schema)) = EditorOptionImpl::schema(&option) else { panic!("sem esquema") };
-        assert_eq!(schema.type_.as_deref(), Some("boolean"));
-        assert_eq!(schema.default, Some(SchemaValue::Bool(true)));
+        let schema = EditorOptionImpl::schema(&option).expect("sem esquema");
+        assert_eq!(schema.own_keys(), vec!["description", "type", "default"]);
+        assert_eq!(schema.get_str("type"), Dynamic::string("boolean"));
+        assert_eq!(schema.get_str("default"), Dynamic::Bool(true));
     }
 }

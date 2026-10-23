@@ -1,12 +1,8 @@
 //! Porte de `EditorFontWeight` (`editorOptions.ts`, região `fontWeight`).
-//!
-//! `// TODO(config)`: o esquema do original usa `anyOf` (número de 1 a 1000 com `errorMessage`, string com
-//! `pattern`, e a lista `SUGGESTION_VALUES`), que `ConfigurationPropertySchema` ainda não tem. Aqui o esquema
-//! guarda só o padrão e a descrição.
 
-use crate::config::editor_options::{
-    clamped_int_or, ConfigurationPropertySchema, EditorOption, EditorOptionImpl, Opt, OptionInput, OptionSchema, SchemaValue,
-};
+use je_base::dynamic::Dynamic;
+
+use crate::config::editor_options::{clamped_int_or, strings_array, EditorOption, EditorOptionImpl, Opt};
 use crate::config::font_info::editor_font_defaults;
 
 /// Chave tipada da opção `fontWeight`.
@@ -20,18 +16,37 @@ const MAXIMUM_VALUE: f64 = 1000.0;
 
 /// `EditorFontWeight`.
 pub struct EditorFontWeight {
-    schema: OptionSchema,
+    schema: Dynamic,
 }
 
 impl EditorFontWeight {
     pub fn new() -> Self {
-        let schema = OptionSchema::Single(ConfigurationPropertySchema {
-            default: Some(SchemaValue::String(editor_font_defaults().font_weight.to_string())),
-            description: Some(
-                "Controls the font weight. Accepts \"normal\" and \"bold\" keywords or numbers between 1 and 1000.".to_string(),
+        let schema = Dynamic::object([
+            (
+                "anyOf",
+                Dynamic::array([
+                    Dynamic::object([
+                        ("type", Dynamic::string("number")),
+                        ("minimum", MINIMUM_VALUE.into()),
+                        ("maximum", MAXIMUM_VALUE.into()),
+                        (
+                            "errorMessage",
+                            Dynamic::string("Only \"normal\" and \"bold\" keywords or numbers between 1 and 1000 are allowed."),
+                        ),
+                    ]),
+                    Dynamic::object([
+                        ("type", Dynamic::string("string")),
+                        ("pattern", Dynamic::string("^(normal|bold|1000|[1-9][0-9]{0,2})$")),
+                    ]),
+                    Dynamic::object([("enum", strings_array(&SUGGESTION_VALUES))]),
+                ]),
             ),
-            ..Default::default()
-        });
+            ("default", Dynamic::string(editor_font_defaults().font_weight)),
+            (
+                "description",
+                Dynamic::string("Controls the font weight. Accepts \"normal\" and \"bold\" keywords or numbers between 1 and 1000."),
+            ),
+        ]);
         Self { schema }
     }
 }
@@ -57,14 +72,14 @@ impl EditorOptionImpl for EditorFontWeight {
         editor_font_defaults().font_weight.to_string()
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         Some(&self.schema)
     }
 
-    fn validate(&self, input: &OptionInput) -> String {
-        if let OptionInput::String(text) = input {
-            if text == "normal" || text == "bold" {
-                return text.clone();
+    fn validate(&self, input: &Dynamic) -> String {
+        if let Dynamic::String(text) = input {
+            if *text == "normal" || *text == "bold" {
+                return text.to_string_lossy();
             }
         }
         // `String(clampedInt(input, 'normal', 1, 1000))`: o padrão é a própria string.
@@ -79,44 +94,55 @@ impl EditorOptionImpl for EditorFontWeight {
 mod tests {
     use super::*;
 
-    fn validate(input: &OptionInput) -> String {
+    fn validate(input: &Dynamic) -> String {
         EditorOptionImpl::validate(&EditorFontWeight::new(), input)
     }
 
     #[test]
     fn keywords_pass_through() {
-        assert_eq!(validate(&OptionInput::string("normal")), "normal");
-        assert_eq!(validate(&OptionInput::string("bold")), "bold");
+        assert_eq!(validate(&Dynamic::string("normal")), "normal");
+        assert_eq!(validate(&Dynamic::string("bold")), "bold");
     }
 
     #[test]
     fn numbers_are_clamped_and_become_strings() {
-        assert_eq!(validate(&OptionInput::Number(400.0)), "400");
-        assert_eq!(validate(&OptionInput::string("700")), "700");
-        assert_eq!(validate(&OptionInput::string("450px")), "450");
-        assert_eq!(validate(&OptionInput::Number(0.0)), "1");
-        assert_eq!(validate(&OptionInput::Number(-30.0)), "1");
-        assert_eq!(validate(&OptionInput::Number(5000.0)), "1000");
-        assert_eq!(validate(&OptionInput::Number(350.9)), "350");
+        assert_eq!(validate(&Dynamic::Number(400.0)), "400");
+        assert_eq!(validate(&Dynamic::string("700")), "700");
+        assert_eq!(validate(&Dynamic::string("450px")), "450");
+        assert_eq!(validate(&Dynamic::Number(0.0)), "1");
+        assert_eq!(validate(&Dynamic::Number(-30.0)), "1");
+        assert_eq!(validate(&Dynamic::Number(5000.0)), "1000");
+        assert_eq!(validate(&Dynamic::Number(350.9)), "350");
     }
 
     #[test]
     fn invalid_values_fall_back_to_normal() {
-        assert_eq!(validate(&OptionInput::Undefined), "normal");
-        assert_eq!(validate(&OptionInput::string("semibold")), "normal");
-        assert_eq!(validate(&OptionInput::string("")), "normal");
-        assert_eq!(validate(&OptionInput::Bool(true)), "normal");
-        assert_eq!(validate(&OptionInput::Null), "normal");
-        assert_eq!(validate(&OptionInput::Number(f64::NAN)), "normal");
+        assert_eq!(validate(&Dynamic::Undefined), "normal");
+        assert_eq!(validate(&Dynamic::string("semibold")), "normal");
+        assert_eq!(validate(&Dynamic::string("")), "normal");
+        assert_eq!(validate(&Dynamic::Bool(true)), "normal");
+        assert_eq!(validate(&Dynamic::Null), "normal");
+        assert_eq!(validate(&Dynamic::Number(f64::NAN)), "normal");
+        assert_eq!(validate(&Dynamic::array([Dynamic::Number(400.0)])), "normal");
         // Só as palavras exatas passam direto.
-        assert_eq!(validate(&OptionInput::string("Bold")), "normal");
+        assert_eq!(validate(&Dynamic::string("Bold")), "normal");
     }
 
     #[test]
-    fn default_and_suggestions() {
+    fn default_suggestions_and_schema() {
         assert_eq!(EditorOptionImpl::default_value(&EditorFontWeight::new()), "normal");
         assert_eq!(SUGGESTION_VALUES.len(), 11);
         assert_eq!(SUGGESTION_VALUES[0], "normal");
         assert_eq!(SUGGESTION_VALUES[10], "900");
+
+        let option = EditorFontWeight::new();
+        let schema = EditorOptionImpl::schema(&option).expect("sem esquema");
+        assert_eq!(schema.own_keys(), vec!["anyOf", "default", "description"]);
+        let any_of = schema.get_str("anyOf");
+        assert_eq!(any_of.get_str("length"), Dynamic::Number(3.0));
+        assert_eq!(any_of.get_str("0").own_keys(), vec!["type", "minimum", "maximum", "errorMessage"]);
+        assert_eq!(any_of.get_str("1").get_str("pattern"), Dynamic::string("^(normal|bold|1000|[1-9][0-9]{0,2})$"));
+        assert_eq!(any_of.get_str("2").get_str("enum").get_str("length"), Dynamic::Number(11.0));
+        assert_eq!(schema.get_str("default"), Dynamic::string("normal"));
     }
 }

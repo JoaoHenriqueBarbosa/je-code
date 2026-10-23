@@ -1,19 +1,9 @@
 //! Porte de `EditorGoToLocation` (`editorOptions.ts`, região `gotoLocation`).
-//!
-//! Divergências:
-//! - `validate(unknown)` do original lê os campos do objeto. [`OptionInput`] ainda não carrega objetos,
-//!   então [`EditorOptionImpl::validate`] devolve o padrão e a validação real é
-//!   [`EditorGoToLocation::validate_input`]. `// TODO(config)`: ligar quando `OptionInput` virar `Dynamic`.
-//! - `enumDescriptions` e `deprecationMessage` ainda não existem em `ConfigurationPropertySchema`:
-//!   `editor.gotoLocation.multiple` entra no esquema sem campos (o original só escreve a mensagem de
-//!   depreciação, "This setting is deprecated, please use separate settings like
-//!   'editor.editor.gotoLocation.multipleDefinitions' or 'editor.editor.gotoLocation.multipleImplementations'
-//!   instead."). `// TODO(config)`.
 
-use crate::config::editor_options::option_support::{string_enum, string_input};
-use crate::config::editor_options::{
-    ConfigurationPropertySchema, EditorOption, EditorOptionImpl, Opt, OptionInput, OptionSchema, SchemaValue,
-};
+use je_base::dynamic::{Dynamic, Truthy};
+
+use crate::config::editor_options::option_support::string_enum;
+use crate::config::editor_options::{string, strings_array, EditorOption, EditorOptionImpl, Opt};
 
 string_enum! {
     /// `GoToLocationValues`: `'peek' | 'gotoAndPeek' | 'goto'`.
@@ -24,7 +14,7 @@ string_enum! {
     }
 }
 
-/// Ids de comando aceitos nas chaves `alternative*Command` (a lista `alternativeCommandOptions`).
+/// `alternativeCommandOptions`: ids de comando aceitos nas chaves `alternative*Command` do esquema.
 const ALTERNATIVE_COMMAND_OPTIONS: [&str; 12] = [
     "",
     "editor.action.referenceSearch.trigger",
@@ -39,27 +29,6 @@ const ALTERNATIVE_COMMAND_OPTIONS: [&str; 12] = [
     "editor.action.revealDefinitionAside",
     "editor.action.revealDefinition",
 ];
-
-/// `IGotoLocationOptions`: configuração do "ir para" quando há vários destinos.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IGotoLocationOptions {
-    /// `'peek' | 'gotoAndPeek' | 'goto'` (depreciado, use as chaves separadas).
-    pub multiple: Option<String>,
-
-    pub multiple_definitions: Option<String>,
-    pub multiple_type_definitions: Option<String>,
-    pub multiple_declarations: Option<String>,
-    pub multiple_implementations: Option<String>,
-    pub multiple_references: Option<String>,
-    pub multiple_tests: Option<String>,
-
-    pub alternative_definition_command: Option<String>,
-    pub alternative_type_definition_command: Option<String>,
-    pub alternative_declaration_command: Option<String>,
-    pub alternative_implementation_command: Option<String>,
-    pub alternative_reference_command: Option<String>,
-    pub alternative_tests_command: Option<String>,
-}
 
 /// `GoToLocationOptions` (`Readonly<Required<IGotoLocationOptions>>`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,32 +53,38 @@ pub struct GoToLocationOptions {
 /// Chave tipada da opção `gotoLocation`.
 pub const GOTO_LOCATION: Opt<GoToLocationOptions> = Opt::new(EditorOption::GotoLocation);
 
-/// O `jsonSubset` do original mais a descrição de cada chave `multiple*`.
-fn multiple_schema(description: &str) -> ConfigurationPropertySchema {
-    ConfigurationPropertySchema {
-        type_: Some("string".to_string()),
-        default: Some(SchemaValue::String(GoToLocationValues::Peek.as_str().to_string())),
-        enum_values: Some(GoToLocationValues::ALLOWED.iter().map(|s| (*s).to_string()).collect()),
-        description: Some(description.to_string()),
-        ..Default::default()
-    }
+/// `{ description, ...jsonSubset }`: `jsonSubset` é `type`, `enum`, `default` e `enumDescriptions`.
+fn multiple_schema(description: &str) -> Dynamic {
+    Dynamic::object([
+        ("description", Dynamic::string(description)),
+        ("type", Dynamic::string("string")),
+        ("enum", strings_array(GoToLocationValues::ALLOWED)),
+        ("default", Dynamic::string(GoToLocationValues::Peek.as_str())),
+        (
+            "enumDescriptions",
+            strings_array(&[
+                "Show Peek view of the results (default)",
+                "Go to the primary result and show a Peek view",
+                "Go to the primary result and enable Peek-less navigation to others",
+            ]),
+        ),
+    ])
 }
 
-/// Esquema de uma chave `alternative*Command`.
-fn alternative_command_schema(default: &str, description: &str) -> ConfigurationPropertySchema {
-    ConfigurationPropertySchema {
-        type_: Some("string".to_string()),
-        default: Some(SchemaValue::String(default.to_string())),
-        enum_values: Some(ALTERNATIVE_COMMAND_OPTIONS.iter().map(|s| (*s).to_string()).collect()),
-        description: Some(description.to_string()),
-        ..Default::default()
-    }
+/// `{ type: 'string', default, enum: alternativeCommandOptions, description }`.
+fn alternative_command_schema(default: &str, description: &str) -> Dynamic {
+    Dynamic::object([
+        ("type", Dynamic::string("string")),
+        ("default", Dynamic::string(default)),
+        ("enum", strings_array(&ALTERNATIVE_COMMAND_OPTIONS)),
+        ("description", Dynamic::string(description)),
+    ])
 }
 
 /// `EditorGoToLocation`.
 pub struct EditorGoToLocation {
     default_value: GoToLocationOptions,
-    schema: OptionSchema,
+    schema: Dynamic,
 }
 
 impl EditorGoToLocation {
@@ -129,59 +104,64 @@ impl EditorGoToLocation {
             alternative_reference_command: String::new(),
             alternative_tests_command: String::new(),
         };
-        let schema = OptionSchema::Map(vec![
-            // `// TODO(config)`: só `deprecationMessage`, ver o topo do arquivo.
-            ("editor.gotoLocation.multiple".to_string(), ConfigurationPropertySchema::default()),
+        let schema = Dynamic::object([
             (
-                "editor.gotoLocation.multipleDefinitions".to_string(),
+                "editor.gotoLocation.multiple",
+                Dynamic::object([(
+                    "deprecationMessage",
+                    Dynamic::string("This setting is deprecated, please use separate settings like 'editor.editor.gotoLocation.multipleDefinitions' or 'editor.editor.gotoLocation.multipleImplementations' instead."),
+                )]),
+            ),
+            (
+                "editor.gotoLocation.multipleDefinitions",
                 multiple_schema("Controls the behavior the 'Go to Definition'-command when multiple target locations exist."),
             ),
             (
-                "editor.gotoLocation.multipleTypeDefinitions".to_string(),
+                "editor.gotoLocation.multipleTypeDefinitions",
                 multiple_schema("Controls the behavior the 'Go to Type Definition'-command when multiple target locations exist."),
             ),
             (
-                "editor.gotoLocation.multipleDeclarations".to_string(),
+                "editor.gotoLocation.multipleDeclarations",
                 multiple_schema("Controls the behavior the 'Go to Declaration'-command when multiple target locations exist."),
             ),
             (
-                "editor.gotoLocation.multipleImplementations".to_string(),
+                "editor.gotoLocation.multipleImplementations",
                 multiple_schema("Controls the behavior the 'Go to Implementations'-command when multiple target locations exist."),
             ),
             (
-                "editor.gotoLocation.multipleReferences".to_string(),
+                "editor.gotoLocation.multipleReferences",
                 multiple_schema("Controls the behavior the 'Go to References'-command when multiple target locations exist."),
             ),
             (
-                "editor.gotoLocation.alternativeDefinitionCommand".to_string(),
+                "editor.gotoLocation.alternativeDefinitionCommand",
                 alternative_command_schema(
                     &defaults.alternative_definition_command,
                     "Alternative command id that is being executed when the result of 'Go to Definition' is the current location.",
                 ),
             ),
             (
-                "editor.gotoLocation.alternativeTypeDefinitionCommand".to_string(),
+                "editor.gotoLocation.alternativeTypeDefinitionCommand",
                 alternative_command_schema(
                     &defaults.alternative_type_definition_command,
                     "Alternative command id that is being executed when the result of 'Go to Type Definition' is the current location.",
                 ),
             ),
             (
-                "editor.gotoLocation.alternativeDeclarationCommand".to_string(),
+                "editor.gotoLocation.alternativeDeclarationCommand",
                 alternative_command_schema(
                     &defaults.alternative_declaration_command,
                     "Alternative command id that is being executed when the result of 'Go to Declaration' is the current location.",
                 ),
             ),
             (
-                "editor.gotoLocation.alternativeImplementationCommand".to_string(),
+                "editor.gotoLocation.alternativeImplementationCommand",
                 alternative_command_schema(
                     &defaults.alternative_implementation_command,
                     "Alternative command id that is being executed when the result of 'Go to Implementation' is the current location.",
                 ),
             ),
             (
-                "editor.gotoLocation.alternativeReferenceCommand".to_string(),
+                "editor.gotoLocation.alternativeReferenceCommand",
                 alternative_command_schema(
                     &defaults.alternative_reference_command,
                     "Alternative command id that is being executed when the result of 'Go to Reference' is the current location.",
@@ -189,35 +169,6 @@ impl EditorGoToLocation {
             ),
         ]);
         Self { default_value: defaults, schema }
-    }
-
-    /// `validate` sobre a entrada tipada. `None` é a entrada que não é objeto (`undefined`, `null`...).
-    pub fn validate_input(&self, input: Option<&IGotoLocationOptions>) -> GoToLocationOptions {
-        let Some(input) = input else {
-            return self.default_value.clone();
-        };
-        let defaults = &self.default_value;
-        // O original usa `defaultValue.multiple` na chave `multiple` e `'peek'` nas demais, que é o mesmo valor.
-        let multiple = |value: &Option<String>, default_value: GoToLocationValues| {
-            GoToLocationValues::validate(&string_input(value.as_deref()), default_value)
-        };
-        // `EditorStringOption.string`: só vale se for string.
-        let command = |value: &Option<String>, default_value: &str| value.clone().unwrap_or_else(|| default_value.to_string());
-        GoToLocationOptions {
-            multiple: multiple(&input.multiple, defaults.multiple),
-            multiple_definitions: multiple(&input.multiple_definitions, GoToLocationValues::Peek),
-            multiple_type_definitions: multiple(&input.multiple_type_definitions, GoToLocationValues::Peek),
-            multiple_declarations: multiple(&input.multiple_declarations, GoToLocationValues::Peek),
-            multiple_implementations: multiple(&input.multiple_implementations, GoToLocationValues::Peek),
-            multiple_references: multiple(&input.multiple_references, GoToLocationValues::Peek),
-            multiple_tests: multiple(&input.multiple_tests, GoToLocationValues::Peek),
-            alternative_definition_command: command(&input.alternative_definition_command, &defaults.alternative_definition_command),
-            alternative_type_definition_command: command(&input.alternative_type_definition_command, &defaults.alternative_type_definition_command),
-            alternative_declaration_command: command(&input.alternative_declaration_command, &defaults.alternative_declaration_command),
-            alternative_implementation_command: command(&input.alternative_implementation_command, &defaults.alternative_implementation_command),
-            alternative_reference_command: command(&input.alternative_reference_command, &defaults.alternative_reference_command),
-            alternative_tests_command: command(&input.alternative_tests_command, &defaults.alternative_tests_command),
-        }
     }
 }
 
@@ -242,13 +193,33 @@ impl EditorOptionImpl for EditorGoToLocation {
         self.default_value.clone()
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         Some(&self.schema)
     }
 
-    fn validate(&self, _input: &OptionInput) -> GoToLocationOptions {
-        // `// TODO(config)`: ver a divergência no topo do arquivo.
-        self.default_value.clone()
+    fn validate(&self, input: &Dynamic) -> GoToLocationOptions {
+        if !input.is_truthy() || input.type_of() != "object" {
+            return self.default_value.clone();
+        }
+        let defaults = &self.default_value;
+        // O original usa `defaultValue.multiple` na chave `multiple` e `'peek'` nas demais, que é o mesmo valor.
+        let multiple = |key: &str, default_value: GoToLocationValues| GoToLocationValues::validate(&input.get_str(key), default_value);
+        let command = |key: &str, default_value: &str| string(&input.get_str(key), default_value);
+        GoToLocationOptions {
+            multiple: multiple("multiple", defaults.multiple),
+            multiple_definitions: multiple("multipleDefinitions", GoToLocationValues::Peek),
+            multiple_type_definitions: multiple("multipleTypeDefinitions", GoToLocationValues::Peek),
+            multiple_declarations: multiple("multipleDeclarations", GoToLocationValues::Peek),
+            multiple_implementations: multiple("multipleImplementations", GoToLocationValues::Peek),
+            multiple_references: multiple("multipleReferences", GoToLocationValues::Peek),
+            multiple_tests: multiple("multipleTests", GoToLocationValues::Peek),
+            alternative_definition_command: command("alternativeDefinitionCommand", &defaults.alternative_definition_command),
+            alternative_type_definition_command: command("alternativeTypeDefinitionCommand", &defaults.alternative_type_definition_command),
+            alternative_declaration_command: command("alternativeDeclarationCommand", &defaults.alternative_declaration_command),
+            alternative_implementation_command: command("alternativeImplementationCommand", &defaults.alternative_implementation_command),
+            alternative_reference_command: command("alternativeReferenceCommand", &defaults.alternative_reference_command),
+            alternative_tests_command: command("alternativeTestsCommand", &defaults.alternative_tests_command),
+        }
     }
 }
 
@@ -256,14 +227,21 @@ impl EditorOptionImpl for EditorGoToLocation {
 mod tests {
     use super::*;
 
-    fn some(text: &str) -> Option<String> {
-        Some(text.to_string())
+    fn text(value: &str) -> Dynamic {
+        Dynamic::string(value)
+    }
+
+    fn validate(entries: Vec<(&str, Dynamic)>) -> GoToLocationOptions {
+        EditorOptionImpl::validate(&EditorGoToLocation::new(), &Dynamic::object(entries))
+    }
+
+    fn defaults() -> GoToLocationOptions {
+        EditorOptionImpl::default_value(&EditorGoToLocation::new())
     }
 
     #[test]
     fn defaults_match_the_original() {
-        let option = EditorGoToLocation::new();
-        let defaults = EditorOptionImpl::default_value(&option);
+        let defaults = defaults();
         assert_eq!(defaults.multiple, GoToLocationValues::Peek);
         assert_eq!(defaults.multiple_tests, GoToLocationValues::Peek);
         assert_eq!(defaults.alternative_definition_command, "editor.action.goToReferences");
@@ -272,25 +250,24 @@ mod tests {
         assert_eq!(defaults.alternative_implementation_command, "");
         assert_eq!(defaults.alternative_reference_command, "");
         assert_eq!(defaults.alternative_tests_command, "");
-        assert_eq!(option.validate_input(None), defaults);
-        assert_eq!(option.validate_input(Some(&IGotoLocationOptions::default())), defaults);
-        assert_eq!(EditorOptionImpl::validate(&option, &OptionInput::Null), defaults);
+        assert_eq!(validate(vec![]), defaults);
+        let option = EditorGoToLocation::new();
+        for input in [Dynamic::Undefined, Dynamic::Null, Dynamic::Bool(true), Dynamic::Number(2.0), text("peek")] {
+            assert_eq!(EditorOptionImpl::validate(&option, &input), defaults);
+        }
     }
 
     #[test]
     fn multiple_values_validate_and_fall_back_to_peek() {
-        let option = EditorGoToLocation::new();
-        let input = IGotoLocationOptions {
-            multiple: some("goto"),
-            multiple_definitions: some("gotoAndPeek"),
-            multiple_type_definitions: some("goto"),
-            multiple_declarations: some("nonsense"),
-            multiple_implementations: some(""),
-            multiple_references: some("Peek"),
-            multiple_tests: None,
-            ..Default::default()
-        };
-        let value = option.validate_input(Some(&input));
+        let value = validate(vec![
+            ("multiple", text("goto")),
+            ("multipleDefinitions", text("gotoAndPeek")),
+            ("multipleTypeDefinitions", text("goto")),
+            ("multipleDeclarations", text("nonsense")),
+            ("multipleImplementations", text("")),
+            ("multipleReferences", text("Peek")),
+            ("multipleTests", Dynamic::Number(1.0)),
+        ]);
         assert_eq!(value.multiple, GoToLocationValues::Goto);
         assert_eq!(value.multiple_definitions, GoToLocationValues::GotoAndPeek);
         assert_eq!(value.multiple_type_definitions, GoToLocationValues::Goto);
@@ -298,24 +275,25 @@ mod tests {
         assert_eq!(value.multiple_implementations, GoToLocationValues::Peek);
         assert_eq!(value.multiple_references, GoToLocationValues::Peek);
         assert_eq!(value.multiple_tests, GoToLocationValues::Peek);
+        assert_eq!(validate(vec![("multipleTests", text("goto"))]).multiple_tests, GoToLocationValues::Goto);
     }
 
     #[test]
     fn alternative_commands_accept_any_string() {
-        let option = EditorGoToLocation::new();
-        let input = IGotoLocationOptions {
-            alternative_definition_command: some("my.command"),
-            alternative_type_definition_command: some(""),
-            alternative_reference_command: some("editor.action.peekDefinition"),
-            ..Default::default()
-        };
-        let value = option.validate_input(Some(&input));
-        // Não há lista de valores permitidos na validação, só no esquema.
+        let value = validate(vec![
+            ("alternativeDefinitionCommand", text("my.command")),
+            ("alternativeTypeDefinitionCommand", text("")),
+            ("alternativeReferenceCommand", text("editor.action.peekDefinition")),
+            ("alternativeTestsCommand", Dynamic::Bool(true)),
+            ("alternativeImplementationCommand", Dynamic::Null),
+        ]);
+        // Não há lista de valores permitidos na validação, só no esquema; o que não é string cai no padrão.
         assert_eq!(value.alternative_definition_command, "my.command");
         assert_eq!(value.alternative_type_definition_command, "");
         assert_eq!(value.alternative_declaration_command, "editor.action.goToReferences");
         assert_eq!(value.alternative_reference_command, "editor.action.peekDefinition");
         assert_eq!(value.alternative_tests_command, "");
+        assert_eq!(value.alternative_implementation_command, "");
     }
 
     #[test]
@@ -324,20 +302,31 @@ mod tests {
         assert_eq!(GoToLocationValues::from_text("Goto"), None);
         assert_eq!(GoToLocationValues::GotoAndPeek.as_str(), "gotoAndPeek");
         assert_eq!(GoToLocationValues::ALLOWED, ["peek", "gotoAndPeek", "goto"]);
-        assert_eq!(GoToLocationValues::validate(&OptionInput::Number(1.0), GoToLocationValues::Goto), GoToLocationValues::Goto);
+        assert_eq!(GoToLocationValues::validate(&Dynamic::Number(1.0), GoToLocationValues::Goto), GoToLocationValues::Goto);
     }
 
     #[test]
-    fn schema_has_eleven_keys_without_tests() {
+    fn schema_has_eleven_keys_in_order() {
         let option = EditorGoToLocation::new();
-        let Some(OptionSchema::Map(entries)) = EditorOptionImpl::schema(&option) else { panic!("sem esquema") };
-        assert_eq!(entries.len(), 11);
-        assert!(!entries.iter().any(|(key, _)| key.contains("Tests")));
-        let (_, definitions) = entries.iter().find(|(key, _)| key == "editor.gotoLocation.multipleDefinitions").unwrap();
-        assert_eq!(definitions.default, Some(SchemaValue::String("peek".to_string())));
-        assert_eq!(definitions.enum_values.as_ref().map(Vec::len), Some(3));
-        let (_, alternative) = entries.iter().find(|(key, _)| key == "editor.gotoLocation.alternativeDefinitionCommand").unwrap();
-        assert_eq!(alternative.default, Some(SchemaValue::String("editor.action.goToReferences".to_string())));
-        assert_eq!(alternative.enum_values.as_ref().map(Vec::len), Some(12));
+        let schema = EditorOptionImpl::schema(&option).expect("sem esquema");
+        let keys = schema.own_keys();
+        assert_eq!(keys.len(), 11);
+        assert_eq!(keys[0], "editor.gotoLocation.multiple");
+        assert_eq!(keys[1], "editor.gotoLocation.multipleDefinitions");
+        assert_eq!(keys[10], "editor.gotoLocation.alternativeReferenceCommand");
+        assert!(!keys.iter().any(|key| key.to_string_lossy().contains("Tests")));
+
+        let deprecated = schema.get_str("editor.gotoLocation.multiple");
+        assert_eq!(deprecated.own_keys(), vec!["deprecationMessage"]);
+
+        let definitions = schema.get_str("editor.gotoLocation.multipleDefinitions");
+        assert_eq!(definitions.own_keys(), vec!["description", "type", "enum", "default", "enumDescriptions"]);
+        assert_eq!(definitions.get_str("default"), text("peek"));
+        assert_eq!(definitions.get_str("enum").get_str("length"), Dynamic::Number(3.0));
+
+        let alternative = schema.get_str("editor.gotoLocation.alternativeDefinitionCommand");
+        assert_eq!(alternative.own_keys(), vec!["type", "default", "enum", "description"]);
+        assert_eq!(alternative.get_str("default"), text("editor.action.goToReferences"));
+        assert_eq!(alternative.get_str("enum").get_str("length"), Dynamic::Number(12.0));
     }
 }

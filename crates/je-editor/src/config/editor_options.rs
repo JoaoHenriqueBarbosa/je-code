@@ -1285,3 +1285,19 @@ mod tests {
         assert!(did_change);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Opções portadas (lote w31)
+
+pub mod comments;
+pub mod cursor_style;
+pub mod editor_class_name;
+pub mod editor_font_info;
+pub mod effective_options;
+pub mod empty_selection_clipboard;
+pub mod find;
+pub mod font_ligatures;
+pub mod font_size;
+pub mod font_variations;
+pub mod font_weight;
+pub mod goto_location;

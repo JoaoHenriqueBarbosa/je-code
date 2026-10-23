@@ -1,20 +1,10 @@
 //! Porte de `EditorFind` (`editorOptions.ts`, região `find`).
-//!
-//! Divergências:
-//! - `validate(unknown)` do original lê os campos do objeto. [`OptionInput`] ainda não carrega objetos,
-//!   então [`EditorOptionImpl::validate`] devolve o padrão e a validação real é
-//!   [`EditorFind::validate_input`]. `// TODO(config)`: ligar quando `OptionInput` virar `Dynamic`.
-//! - `seedSearchStringFromSelection` e `autoFindInSelection` aceitam, em tempo de execução, o booleano
-//!   legado (`true` é `always`, `false` é `never`), por isso os campos de [`IEditorFindOptions`] são
-//!   [`OptionInput`] nesses dois casos.
-//! - `included: platform.isMacintosh` de `editor.find.globalFindClipboard`: a chave só entra no esquema no
-//!   macOS, que é o efeito de `included: false` no registro de configuração.
-//! - `enumDescriptions` ainda não existe em `ConfigurationPropertySchema`. `// TODO(config)`.
 
+use je_base::dynamic::{Dynamic, Truthy};
 use je_base::platform::Platform;
 
-use crate::config::editor_options::option_support::{boolean_schema, string_enum, string_enum_schema, string_input};
-use crate::config::editor_options::{EditorOption, EditorOptionImpl, Opt, OptionInput, OptionSchema};
+use crate::config::editor_options::option_support::string_enum;
+use crate::config::editor_options::{boolean, strings_array, EditorOption, EditorOptionImpl, Opt};
 
 string_enum! {
     /// `'never' | 'always' | 'selection'`.
@@ -42,53 +32,56 @@ string_enum! {
     }
 }
 
-/// `IEditorFindOptions`: configuração do widget de busca.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct IEditorFindOptions {
-    /// O cursor deve ir para as ocorrências enquanto se digita.
-    pub cursor_move_on_type: Option<bool>,
-    /// O widget busca enquanto se digita.
-    pub find_on_type: Option<bool>,
-    /// `'never' | 'always' | 'selection'`, ou o booleano legado.
-    pub seed_search_string_from_selection: Option<OptionInput>,
-    /// `'never' | 'always' | 'multiline'`, ou o booleano legado.
-    pub auto_find_in_selection: Option<OptionInput>,
-    /// O widget acrescenta linhas extras no alto do editor.
-    pub add_extra_space_on_top: Option<bool>,
-    /// Interno: o widget lê e altera a área de transferência de busca compartilhada do macOS.
-    pub global_find_clipboard: Option<bool>,
-    /// A busca recomeça do início (ou do fim) quando não há mais ocorrências (`loop`).
-    pub r#loop: Option<bool>,
-    /// O widget fecha depois que um comando de navegação explícito cai numa ocorrência.
-    pub close_on_result: Option<bool>,
-    /// Interno: `'never' | 'workspace'`, como guardar o histórico de busca.
-    pub history: Option<String>,
-    /// Interno: `'never' | 'workspace'`, como guardar o histórico de substituição.
-    pub replace_history: Option<String>,
-}
-
 /// `EditorFindOptions` (`Readonly<Required<IEditorFindOptions>>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditorFindOptions {
+    /// O cursor deve ir para as ocorrências enquanto se digita.
     pub cursor_move_on_type: bool,
+    /// O widget busca enquanto se digita.
     pub find_on_type: bool,
     pub seed_search_string_from_selection: SeedSearchStringFromSelection,
     pub auto_find_in_selection: AutoFindInSelection,
+    /// Interno: o widget lê e altera a área de transferência de busca compartilhada do macOS.
     pub global_find_clipboard: bool,
+    /// O widget acrescenta linhas extras no alto do editor.
     pub add_extra_space_on_top: bool,
+    /// A busca recomeça do início (ou do fim) quando não há mais ocorrências (`loop`).
     pub r#loop: bool,
+    /// O widget fecha depois que um comando de navegação explícito cai numa ocorrência.
     pub close_on_result: bool,
+    /// Interno: como guardar o histórico de busca.
     pub history: FindHistory,
+    /// Interno: como guardar o histórico de substituição.
     pub replace_history: FindHistory,
 }
 
 /// Chave tipada da opção `find`.
 pub const FIND: Opt<EditorFindOptions> = Opt::new(EditorOption::Find);
 
+/// `{ type: 'boolean', default, description }`.
+fn boolean_entry(default: bool, description: &str) -> Vec<(&'static str, Dynamic)> {
+    vec![
+        ("type", Dynamic::string("boolean")),
+        ("default", default.into()),
+        ("description", Dynamic::string(description)),
+    ]
+}
+
+/// `{ type: 'string', enum, default, enumDescriptions, description }`.
+fn enum_entry(allowed: &[&str], default: &str, enum_descriptions: &[&str], description: &str) -> Dynamic {
+    Dynamic::object([
+        ("type", Dynamic::string("string")),
+        ("enum", strings_array(allowed)),
+        ("default", Dynamic::string(default)),
+        ("enumDescriptions", strings_array(enum_descriptions)),
+        ("description", Dynamic::string(description)),
+    ])
+}
+
 /// `EditorFind`.
 pub struct EditorFind {
     default_value: EditorFindOptions,
-    schema: OptionSchema,
+    schema: Dynamic,
 }
 
 impl EditorFind {
@@ -105,113 +98,92 @@ impl EditorFind {
             history: FindHistory::Workspace,
             replace_history: FindHistory::Workspace,
         };
-        let mut entries = vec![
+        let boolean_schema = |default: bool, description: &str| Dynamic::object(boolean_entry(default, description));
+        let schema = Dynamic::object([
             (
-                "editor.find.cursorMoveOnType".to_string(),
+                "editor.find.cursorMoveOnType",
                 boolean_schema(defaults.cursor_move_on_type, "Controls whether the cursor should jump to find matches while typing."),
             ),
             (
-                "editor.find.seedSearchStringFromSelection".to_string(),
-                string_enum_schema(
-                    defaults.seed_search_string_from_selection.as_str(),
+                "editor.find.seedSearchStringFromSelection",
+                enum_entry(
                     SeedSearchStringFromSelection::ALLOWED,
+                    defaults.seed_search_string_from_selection.as_str(),
+                    &[
+                        "Never seed search string from the editor selection.",
+                        "Always seed search string from the editor selection, including word at cursor position.",
+                        "Only seed search string from the editor selection.",
+                    ],
                     "Controls whether the search string in the Find Widget is seeded from the editor selection.",
                 ),
             ),
             (
-                "editor.find.autoFindInSelection".to_string(),
-                string_enum_schema(
-                    defaults.auto_find_in_selection.as_str(),
+                "editor.find.autoFindInSelection",
+                enum_entry(
                     AutoFindInSelection::ALLOWED,
+                    defaults.auto_find_in_selection.as_str(),
+                    &[
+                        "Never turn on Find in Selection automatically (default).",
+                        "Always turn on Find in Selection automatically.",
+                        "Turn on Find in Selection automatically when multiple lines of content are selected.",
+                    ],
                     "Controls the condition for turning on Find in Selection automatically.",
                 ),
             ),
-        ];
-        if Platform::detect().is_macintosh {
-            entries.push((
-                "editor.find.globalFindClipboard".to_string(),
-                boolean_schema(
-                    defaults.global_find_clipboard,
-                    "Controls whether the Find Widget should read or modify the shared find clipboard on macOS.",
-                ),
-            ));
-        }
-        entries.extend([
             (
-                "editor.find.addExtraSpaceOnTop".to_string(),
+                "editor.find.globalFindClipboard",
+                {
+                    // `included: platform.isMacintosh`: o registro de configuração ignora a chave fora do macOS.
+                    let mut entries = boolean_entry(
+                        defaults.global_find_clipboard,
+                        "Controls whether the Find Widget should read or modify the shared find clipboard on macOS.",
+                    );
+                    entries.push(("included", Dynamic::Bool(Platform::detect().is_macintosh)));
+                    Dynamic::object(entries)
+                },
+            ),
+            (
+                "editor.find.addExtraSpaceOnTop",
                 boolean_schema(
                     defaults.add_extra_space_on_top,
                     "Controls whether the Find Widget should add extra lines on top of the editor. When true, you can scroll beyond the first line when the Find Widget is visible.",
                 ),
             ),
             (
-                "editor.find.loop".to_string(),
+                "editor.find.loop",
                 boolean_schema(
                     defaults.r#loop,
                     "Controls whether the search automatically restarts from the beginning (or the end) when no further matches can be found.",
                 ),
             ),
             (
-                "editor.find.closeOnResult".to_string(),
+                "editor.find.closeOnResult",
                 boolean_schema(
                     defaults.close_on_result,
                     "Controls whether the Find Widget closes after an explicit find navigation command lands on a result.",
                 ),
             ),
             (
-                "editor.find.history".to_string(),
-                string_enum_schema(
-                    defaults.history.as_str(),
+                "editor.find.history",
+                enum_entry(
                     FindHistory::ALLOWED,
+                    "workspace",
+                    &["Do not store search history from the find widget.", "Store search history across the active workspace"],
                     "Controls how the find widget history should be stored",
                 ),
             ),
             (
-                "editor.find.replaceHistory".to_string(),
-                string_enum_schema(
-                    defaults.replace_history.as_str(),
+                "editor.find.replaceHistory",
+                enum_entry(
                     FindHistory::ALLOWED,
+                    "workspace",
+                    &["Do not store history from the replace widget.", "Store replace history across the active workspace"],
                     "Controls how the replace widget history should be stored",
                 ),
             ),
-            (
-                "editor.find.findOnType".to_string(),
-                boolean_schema(defaults.find_on_type, "Controls whether the Find Widget should search as you type."),
-            ),
+            ("editor.find.findOnType", boolean_schema(defaults.find_on_type, "Controls whether the Find Widget should search as you type.")),
         ]);
-        Self { default_value: defaults, schema: OptionSchema::Map(entries) }
-    }
-
-    /// `validate` sobre a entrada tipada. `None` é a entrada que não é objeto (`undefined`, `null`...).
-    pub fn validate_input(&self, input: Option<&IEditorFindOptions>) -> EditorFindOptions {
-        let Some(input) = input else {
-            return self.default_value;
-        };
-        let defaults = &self.default_value;
-        let undefined = OptionInput::Undefined;
-        // `typeof x === 'boolean'`: o booleano legado vira `always` ou `never`.
-        let seed_search_string_from_selection = match &input.seed_search_string_from_selection {
-            Some(OptionInput::Bool(true)) => SeedSearchStringFromSelection::Always,
-            Some(OptionInput::Bool(false)) => SeedSearchStringFromSelection::Never,
-            other => SeedSearchStringFromSelection::validate(other.as_ref().unwrap_or(&undefined), defaults.seed_search_string_from_selection),
-        };
-        let auto_find_in_selection = match &input.auto_find_in_selection {
-            Some(OptionInput::Bool(true)) => AutoFindInSelection::Always,
-            Some(OptionInput::Bool(false)) => AutoFindInSelection::Never,
-            other => AutoFindInSelection::validate(other.as_ref().unwrap_or(&undefined), defaults.auto_find_in_selection),
-        };
-        EditorFindOptions {
-            cursor_move_on_type: input.cursor_move_on_type.unwrap_or(defaults.cursor_move_on_type),
-            find_on_type: input.find_on_type.unwrap_or(defaults.find_on_type),
-            seed_search_string_from_selection,
-            auto_find_in_selection,
-            global_find_clipboard: input.global_find_clipboard.unwrap_or(defaults.global_find_clipboard),
-            add_extra_space_on_top: input.add_extra_space_on_top.unwrap_or(defaults.add_extra_space_on_top),
-            r#loop: input.r#loop.unwrap_or(defaults.r#loop),
-            close_on_result: input.close_on_result.unwrap_or(defaults.close_on_result),
-            history: FindHistory::validate(&string_input(input.history.as_deref()), defaults.history),
-            replace_history: FindHistory::validate(&string_input(input.replace_history.as_deref()), defaults.replace_history),
-        }
+        Self { default_value: defaults, schema }
     }
 }
 
@@ -236,13 +208,38 @@ impl EditorOptionImpl for EditorFind {
         self.default_value
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         Some(&self.schema)
     }
 
-    fn validate(&self, _input: &OptionInput) -> EditorFindOptions {
-        // `// TODO(config)`: ver a divergência no topo do arquivo.
-        self.default_value
+    fn validate(&self, input: &Dynamic) -> EditorFindOptions {
+        if !input.is_truthy() || input.type_of() != "object" {
+            return self.default_value;
+        }
+        let defaults = &self.default_value;
+        // `typeof x === 'boolean'`: o booleano legado vira `always` ou `never`.
+        let seed_search_string_from_selection = match input.get_str("seedSearchStringFromSelection") {
+            Dynamic::Bool(true) => SeedSearchStringFromSelection::Always,
+            Dynamic::Bool(false) => SeedSearchStringFromSelection::Never,
+            other => SeedSearchStringFromSelection::validate(&other, defaults.seed_search_string_from_selection),
+        };
+        let auto_find_in_selection = match input.get_str("autoFindInSelection") {
+            Dynamic::Bool(true) => AutoFindInSelection::Always,
+            Dynamic::Bool(false) => AutoFindInSelection::Never,
+            other => AutoFindInSelection::validate(&other, defaults.auto_find_in_selection),
+        };
+        EditorFindOptions {
+            cursor_move_on_type: boolean(&input.get_str("cursorMoveOnType"), defaults.cursor_move_on_type),
+            find_on_type: boolean(&input.get_str("findOnType"), defaults.find_on_type),
+            seed_search_string_from_selection,
+            auto_find_in_selection,
+            global_find_clipboard: boolean(&input.get_str("globalFindClipboard"), defaults.global_find_clipboard),
+            add_extra_space_on_top: boolean(&input.get_str("addExtraSpaceOnTop"), defaults.add_extra_space_on_top),
+            r#loop: boolean(&input.get_str("loop"), defaults.r#loop),
+            close_on_result: boolean(&input.get_str("closeOnResult"), defaults.close_on_result),
+            history: FindHistory::validate(&input.get_str("history"), defaults.history),
+            replace_history: FindHistory::validate(&input.get_str("replaceHistory"), defaults.replace_history),
+        }
     }
 }
 
@@ -250,76 +247,84 @@ impl EditorOptionImpl for EditorFind {
 mod tests {
     use super::*;
 
-    fn input_with(tweak: impl FnOnce(&mut IEditorFindOptions)) -> EditorFindOptions {
-        let mut input = IEditorFindOptions::default();
-        tweak(&mut input);
-        EditorFind::new().validate_input(Some(&input))
+    fn text(value: &str) -> Dynamic {
+        Dynamic::string(value)
+    }
+
+    fn validate(entries: Vec<(&str, Dynamic)>) -> EditorFindOptions {
+        EditorOptionImpl::validate(&EditorFind::new(), &Dynamic::object(entries))
+    }
+
+    fn defaults() -> EditorFindOptions {
+        EditorOptionImpl::default_value(&EditorFind::new())
     }
 
     #[test]
     fn defaults_match_the_original() {
-        let option = EditorFind::new();
-        let defaults = EditorOptionImpl::default_value(&option);
+        let defaults = defaults();
         assert!(defaults.cursor_move_on_type && defaults.find_on_type && defaults.add_extra_space_on_top && defaults.r#loop);
         assert!(!defaults.global_find_clipboard && !defaults.close_on_result);
         assert_eq!(defaults.seed_search_string_from_selection, SeedSearchStringFromSelection::Always);
         assert_eq!(defaults.auto_find_in_selection, AutoFindInSelection::Never);
         assert_eq!(defaults.history, FindHistory::Workspace);
         assert_eq!(defaults.replace_history, FindHistory::Workspace);
-        assert_eq!(option.validate_input(None), defaults);
-        assert_eq!(option.validate_input(Some(&IEditorFindOptions::default())), defaults);
-        assert_eq!(EditorOptionImpl::validate(&option, &OptionInput::Bool(true)), defaults);
+        assert_eq!(validate(vec![]), defaults);
+        let option = EditorFind::new();
+        for input in [Dynamic::Undefined, Dynamic::Null, Dynamic::Bool(true), Dynamic::Number(1.0), text("find")] {
+            assert_eq!(EditorOptionImpl::validate(&option, &input), defaults);
+        }
     }
 
     #[test]
     fn legacy_boolean_seed_and_auto_find() {
-        let seed_true = input_with(|i| i.seed_search_string_from_selection = Some(OptionInput::Bool(true)));
-        assert_eq!(seed_true.seed_search_string_from_selection, SeedSearchStringFromSelection::Always);
-        let seed_false = input_with(|i| i.seed_search_string_from_selection = Some(OptionInput::Bool(false)));
-        assert_eq!(seed_false.seed_search_string_from_selection, SeedSearchStringFromSelection::Never);
-        let auto_true = input_with(|i| i.auto_find_in_selection = Some(OptionInput::Bool(true)));
-        assert_eq!(auto_true.auto_find_in_selection, AutoFindInSelection::Always);
-        let auto_false = input_with(|i| i.auto_find_in_selection = Some(OptionInput::Bool(false)));
-        assert_eq!(auto_false.auto_find_in_selection, AutoFindInSelection::Never);
+        assert_eq!(
+            validate(vec![("seedSearchStringFromSelection", Dynamic::Bool(true))]).seed_search_string_from_selection,
+            SeedSearchStringFromSelection::Always
+        );
+        assert_eq!(
+            validate(vec![("seedSearchStringFromSelection", Dynamic::Bool(false))]).seed_search_string_from_selection,
+            SeedSearchStringFromSelection::Never
+        );
+        assert_eq!(validate(vec![("autoFindInSelection", Dynamic::Bool(true))]).auto_find_in_selection, AutoFindInSelection::Always);
+        assert_eq!(validate(vec![("autoFindInSelection", Dynamic::Bool(false))]).auto_find_in_selection, AutoFindInSelection::Never);
     }
 
     #[test]
     fn string_values_and_invalid_values() {
-        let selection = input_with(|i| i.seed_search_string_from_selection = Some(OptionInput::string("selection")));
-        assert_eq!(selection.seed_search_string_from_selection, SeedSearchStringFromSelection::Selection);
-        let multiline = input_with(|i| i.auto_find_in_selection = Some(OptionInput::string("multiline")));
-        assert_eq!(multiline.auto_find_in_selection, AutoFindInSelection::Multiline);
+        assert_eq!(
+            validate(vec![("seedSearchStringFromSelection", text("selection"))]).seed_search_string_from_selection,
+            SeedSearchStringFromSelection::Selection
+        );
+        assert_eq!(validate(vec![("autoFindInSelection", text("multiline"))]).auto_find_in_selection, AutoFindInSelection::Multiline);
 
         // Valor inválido (outra string, número, `null`) cai no padrão.
-        let invalid = input_with(|i| {
-            i.seed_search_string_from_selection = Some(OptionInput::string("sometimes"));
-            i.auto_find_in_selection = Some(OptionInput::Number(1.0));
-            i.history = Some("forever".to_string());
-            i.replace_history = Some(String::new());
-        });
-        assert_eq!(invalid.seed_search_string_from_selection, SeedSearchStringFromSelection::Always);
-        assert_eq!(invalid.auto_find_in_selection, AutoFindInSelection::Never);
-        assert_eq!(invalid.history, FindHistory::Workspace);
-        assert_eq!(invalid.replace_history, FindHistory::Workspace);
-        let null = input_with(|i| i.auto_find_in_selection = Some(OptionInput::Null));
-        assert_eq!(null.auto_find_in_selection, AutoFindInSelection::Never);
+        let invalid = validate(vec![
+            ("seedSearchStringFromSelection", text("sometimes")),
+            ("autoFindInSelection", Dynamic::Number(1.0)),
+            ("history", text("forever")),
+            ("replaceHistory", text("")),
+        ]);
+        assert_eq!(invalid, defaults());
+        assert_eq!(validate(vec![("autoFindInSelection", Dynamic::Null)]).auto_find_in_selection, AutoFindInSelection::Never);
         // `multiline` não vale para `seedSearchStringFromSelection`.
-        let crossed = input_with(|i| i.seed_search_string_from_selection = Some(OptionInput::string("multiline")));
-        assert_eq!(crossed.seed_search_string_from_selection, SeedSearchStringFromSelection::Always);
+        assert_eq!(
+            validate(vec![("seedSearchStringFromSelection", text("multiline"))]).seed_search_string_from_selection,
+            SeedSearchStringFromSelection::Always
+        );
     }
 
     #[test]
     fn booleans_and_history() {
-        let value = input_with(|i| {
-            i.cursor_move_on_type = Some(false);
-            i.find_on_type = Some(false);
-            i.add_extra_space_on_top = Some(false);
-            i.global_find_clipboard = Some(true);
-            i.r#loop = Some(false);
-            i.close_on_result = Some(true);
-            i.history = Some("never".to_string());
-            i.replace_history = Some("never".to_string());
-        });
+        let value = validate(vec![
+            ("cursorMoveOnType", Dynamic::Bool(false)),
+            ("findOnType", text("false")),
+            ("addExtraSpaceOnTop", Dynamic::Number(0.0)),
+            ("globalFindClipboard", Dynamic::Bool(true)),
+            ("loop", Dynamic::Bool(false)),
+            ("closeOnResult", Dynamic::Bool(true)),
+            ("history", text("never")),
+            ("replaceHistory", text("never")),
+        ]);
         assert!(!value.cursor_move_on_type && !value.find_on_type && !value.add_extra_space_on_top && !value.r#loop);
         assert!(value.global_find_clipboard && value.close_on_result);
         assert_eq!(value.history, FindHistory::Never);
@@ -327,18 +332,33 @@ mod tests {
     }
 
     #[test]
-    fn schema_keys_and_enums() {
+    fn schema_keys_order_and_entries() {
         let option = EditorFind::new();
-        let Some(OptionSchema::Map(entries)) = EditorOptionImpl::schema(&option) else { panic!("sem esquema") };
-        let keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
-        let has_clipboard = keys.contains(&"editor.find.globalFindClipboard");
-        assert_eq!(has_clipboard, Platform::detect().is_macintosh);
-        assert_eq!(keys.len(), if has_clipboard { 10 } else { 9 });
-        assert_eq!(keys.first(), Some(&"editor.find.cursorMoveOnType"));
-        assert_eq!(keys.last(), Some(&"editor.find.findOnType"));
-        let (_, seed) = entries.iter().find(|(key, _)| key == "editor.find.seedSearchStringFromSelection").unwrap();
-        assert_eq!(seed.enum_values.as_deref(), Some(&["never".to_string(), "always".to_string(), "selection".to_string()][..]));
-        let (_, history) = entries.iter().find(|(key, _)| key == "editor.find.history").unwrap();
-        assert_eq!(history.enum_values.as_ref().map(Vec::len), Some(2));
+        let schema = EditorOptionImpl::schema(&option).expect("sem esquema");
+        assert_eq!(
+            schema.own_keys(),
+            vec![
+                "editor.find.cursorMoveOnType",
+                "editor.find.seedSearchStringFromSelection",
+                "editor.find.autoFindInSelection",
+                "editor.find.globalFindClipboard",
+                "editor.find.addExtraSpaceOnTop",
+                "editor.find.loop",
+                "editor.find.closeOnResult",
+                "editor.find.history",
+                "editor.find.replaceHistory",
+                "editor.find.findOnType",
+            ]
+        );
+        let clipboard = schema.get_str("editor.find.globalFindClipboard");
+        assert_eq!(clipboard.own_keys(), vec!["type", "default", "description", "included"]);
+        assert_eq!(clipboard.get_str("included"), Dynamic::Bool(Platform::detect().is_macintosh));
+        let seed = schema.get_str("editor.find.seedSearchStringFromSelection");
+        assert_eq!(seed.own_keys(), vec!["type", "enum", "default", "enumDescriptions", "description"]);
+        assert_eq!(seed.get_str("enum").get_str("length"), Dynamic::Number(3.0));
+        assert_eq!(seed.get_str("default"), text("always"));
+        let history = schema.get_str("editor.find.history");
+        assert_eq!(history.get_str("enum").get_str("length"), Dynamic::Number(2.0));
+        assert_eq!(history.get_str("enumDescriptions").get_str("length"), Dynamic::Number(2.0));
     }
 }
