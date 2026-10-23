@@ -9,7 +9,7 @@ Fase corrente: **0 (bancada e fundações)**.
 
 | Critério | Estado | Fonte |
 | --- | --- | --- |
-| H01 a H14, H23 a H27 com veredito | 11 de 19 (H02, H03, H07, H23 no Windows, H24, H27 confirmadas; H05 refutada; H01, H04, H12 parciais; H06 dispensada) | eu, 2026-10-23 |
+| H01 a H14, H23 a H27 com veredito | 13 de 19 (H02, H03, H07, H10, H23 no Windows, H24, H26 no lado do oráculo, H27 confirmadas; H05 refutada; H01, H04, H12 parciais; H06 dispensada) | eu, 2026-10-23 |
 | Substrato gráfico e de texto escolhido pela medida | **Escolhido**: winit + vello (GPU) + vello_cpu (CPU) + parley + accesskit; Bevy refutado (H05) | eu, 2026-10-23 |
 | Harness do oráculo com um teste mocha portado e um screenshot comparado | Testes mocha: 72+ casos portados passando. Screenshot: captura do oráculo por CDP pronta e determinística (0 pixels de ruído); falta o lado do je-code | eu, 2026-10-23 |
 | `scripts/pure-rust-check.sh` verde nos 4 alvos | NÃO MEDIDO | |
@@ -36,3 +36,4 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 - 2026-10-23: H05 refutada (Bevy: sem CPU, 34/27 fps em software, sem RTX no WSLg); H07 confirmada: substrato = winit + vello + vello_cpu + parley + accesskit.
 - 2026-10-23: H23 confirmada para Windows (cross no container llvm-mingw; no Windows nativo a cena faz 703 fps na GPU e 153 na CPU); macOS aberto (SDK não redistribuível, runner de CI).
 - 2026-10-23: H27 confirmada (o `je-code` se relança com a GPU no WSL); `vs/base`: json, path e strings portados (72 casos).
+- 2026-10-23: H10 confirmada (parley + teto em 1/64 px = largura do Chromium do oráculo); zyarr integrado (RegExp ECMAScript do pseudo-linus, 450 testes).
