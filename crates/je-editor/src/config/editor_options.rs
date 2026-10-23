@@ -18,8 +18,6 @@
 //! - `IConfigurationPropertySchema` e `{ [path: string]: IConfigurationPropertySchema }` são objetos
 //!   [`Dynamic`] (a convenção de `je-base/src/json_schema.rs`): os construtores escrevem neles `type`,
 //!   `default`, `minimum`, `maximum` e `enum` na mesma ordem de chaves do original.
-//! - `IMinimapLayoutInput` não existe ainda: fica de fora de [`ComputeOptionsMemory`] (ver o
-//!   `TODO(config)`).
 //! - Os valores de texto das opções são `String`, então um surrogate isolado de uma `string` do
 //!   JavaScript vira U+FFFD ao entrar.
 //! - `applyUpdate` do original faz mesclagem profunda em objetos. Aqui o padrão compara por
@@ -272,7 +270,7 @@ pub enum InputMode {
 /// `ComputeOptionsMemory`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ComputeOptionsMemory {
-    // TODO(config): `stableMinimapLayoutInput: IMinimapLayoutInput | null`, quando o tipo existir.
+    pub stable_minimap_layout_input: Option<layout_info_computer::MinimapLayoutInput>,
     pub stable_fit_max_minimap_scale: f64,
     pub stable_fit_remaining_width: f64,
 }
@@ -1289,6 +1287,7 @@ mod tests {
 // ---------------------------------------------------------------------------------------------
 // Classes de opção, uma por arquivo em `config/editor_options/`.
 
+pub mod accessibility_support;
 pub mod bracket_pair_colorization;
 pub mod comments;
 pub mod cursor_style;
@@ -1308,6 +1307,7 @@ pub mod hover;
 pub mod inlay_hints;
 pub mod inline_suggest;
 pub mod layout_info;
+pub mod layout_info_computer;
 pub mod lightbulb;
 pub mod line_decorations_width;
 pub mod line_height;
@@ -1321,6 +1321,7 @@ pub mod placeholder;
 pub mod quick_suggestions;
 pub mod rulers;
 pub mod scrollbar;
+pub mod simple_keys;
 pub mod smart_select;
 pub mod sticky_scroll;
 pub mod suggest;
