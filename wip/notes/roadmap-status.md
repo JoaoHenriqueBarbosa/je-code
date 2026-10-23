@@ -42,3 +42,7 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 - 2026-10-23: H14 confirmada: ferriki-textmate + ferroni corrigido = 109 de 109 goldens de tokenização do VS Code, 100% dos tokens.
 - 2026-10-23: vs/base em 25,55% dos casos do oráculo (582); je-theme com as 450 cores registradas iguais ao oráculo.
 - 2026-10-23: vs/base em 40,78% (async 145/145, glob, filters, fuzzyScorer, comparers com ICU, keyCodes); je-theme com 998 cores iguais ao oráculo; je-storage com ida e volta no SQLite do oráculo; H14 confirmada (TextMate 109/109).
+
+## Pendência antes do primeiro push
+
+- O histórico local tem caminho da máquina em dois commits já corrigidos (`oracle-harness/zyarr-gen/gen.js` no c468a64 e `crates/je-platform/tests/settings_compat.rs` no 55c6335). Reescrever esses dois commits (ou fazer squash do histórico) antes de publicar o repositório.
