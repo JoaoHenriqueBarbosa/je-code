@@ -1,0 +1,791 @@
+//! Tests ported from oniguruma/test/test_regset.c.
+//
+// Tests the RegSet API: multi-regex simultaneous search with both
+// position-lead and regex-lead modes.
+
+use ferroni::oniguruma::*;
+use ferroni::regcomp::onig_new;
+use ferroni::regset::{
+    OnigRegSet, OnigRegSetLead, onig_regset_get_region, onig_regset_new, onig_regset_search,
+};
+use ferroni::regsyntax::OnigSyntaxOniguruma;
+use ferroni::scanner::{OnigString, Scanner, ScannerConfig, ScannerFindOptions, ScannerMatch};
+
+fn compile(pattern: &[u8]) -> Box<RegexType> {
+    let reg = onig_new(
+        pattern,
+        ONIG_OPTION_NONE,
+        &ferroni::encodings::utf8::ONIG_ENCODING_UTF8,
+        &OnigSyntaxOniguruma,
+    );
+    match reg {
+        Ok(r) => Box::new(r),
+        Err(e) => panic!(
+            "compile failed for {:?}: error {}",
+            std::str::from_utf8(pattern).unwrap_or("<?>"),
+            e
+        ),
+    }
+}
+
+fn make_regset(patterns: &[&[u8]]) -> Box<OnigRegSet> {
+    let regs: Vec<Box<RegexType>> = patterns.iter().map(|p| compile(p)).collect();
+    let (set, r) = onig_regset_new(regs);
+    assert_eq!(r, ONIG_NORMAL, "onig_regset_new failed: {}", r);
+    set.unwrap()
+}
+
+/// x2: expect match at [from, to] for group 0
+fn x2(set: &mut Box<OnigRegSet>, input: &[u8], lead: OnigRegSetLead, from: i32, to: i32) {
+    let (idx, _pos) = onig_regset_search(
+        set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        lead,
+        ONIG_OPTION_NONE,
+    );
+    assert!(
+        idx >= 0,
+        "x2: expected match, got index {} for input {:?}",
+        idx,
+        std::str::from_utf8(input).unwrap_or("<?>")
+    );
+    let region = onig_regset_get_region(set, idx as usize).unwrap();
+    assert_eq!(
+        region.beg[0],
+        from,
+        "x2: beg mismatch for input {:?}: expected {}, got {}",
+        std::str::from_utf8(input).unwrap_or("<?>"),
+        from,
+        region.beg[0]
+    );
+    assert_eq!(
+        region.end[0],
+        to,
+        "x2: end mismatch for input {:?}: expected {}, got {}",
+        std::str::from_utf8(input).unwrap_or("<?>"),
+        to,
+        region.end[0]
+    );
+}
+
+/// x3: expect match at [from, to] for capture group `mem`
+fn x3(
+    set: &mut Box<OnigRegSet>,
+    input: &[u8],
+    lead: OnigRegSetLead,
+    from: i32,
+    to: i32,
+    mem: usize,
+) {
+    let (idx, _pos) = onig_regset_search(
+        set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        lead,
+        ONIG_OPTION_NONE,
+    );
+    assert!(
+        idx >= 0,
+        "x3: expected match, got index {} for input {:?}",
+        idx,
+        std::str::from_utf8(input).unwrap_or("<?>")
+    );
+    let region = onig_regset_get_region(set, idx as usize).unwrap();
+    assert_eq!(
+        region.beg[mem],
+        from,
+        "x3: beg[{}] mismatch for input {:?}: expected {}, got {}",
+        mem,
+        std::str::from_utf8(input).unwrap_or("<?>"),
+        from,
+        region.beg[mem]
+    );
+    assert_eq!(
+        region.end[mem],
+        to,
+        "x3: end[{}] mismatch for input {:?}: expected {}, got {}",
+        mem,
+        std::str::from_utf8(input).unwrap_or("<?>"),
+        to,
+        region.end[mem]
+    );
+}
+
+/// n: expect no match
+fn n_search(set: &mut Box<OnigRegSet>, input: &[u8], lead: OnigRegSetLead) {
+    let (idx, _pos) = onig_regset_search(
+        set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        lead,
+        ONIG_OPTION_NONE,
+    );
+    assert_eq!(
+        idx,
+        ONIG_MISMATCH,
+        "n: expected no match, got index {} for input {:?}",
+        idx,
+        std::str::from_utf8(input).unwrap_or("<?>")
+    );
+}
+
+/// nzero: search with empty set, expect no match
+fn nzero(input: &[u8], lead: OnigRegSetLead) {
+    let mut set = make_regset(&[]);
+    n_search(&mut set, input, lead);
+}
+
+// ============================================================================
+// Position-lead tests (C: XX_LEAD = ONIG_REGSET_POSITION_LEAD)
+// ============================================================================
+
+#[test]
+fn pos_lead_empty_set() {
+    nzero(b" abab bccab ca", OnigRegSetLead::PositionLead);
+}
+
+#[test]
+fn pos_lead_p1_x2() {
+    let mut set = make_regset(&[b"abc", b"(bca)", b"(cab)"]);
+    x2(
+        &mut set,
+        b" abab bccab ca",
+        OnigRegSetLead::PositionLead,
+        8,
+        11,
+    );
+}
+
+#[test]
+fn pos_lead_p1_x3() {
+    let mut set = make_regset(&[b"abc", b"(bca)", b"(cab)"]);
+    x3(
+        &mut set,
+        b" abab bccab ca",
+        OnigRegSetLead::PositionLead,
+        8,
+        11,
+        1,
+    );
+}
+
+#[test]
+fn pos_lead_p2_no_match() {
+    let mut set = make_regset(&["小説".as_bytes(), b"9", "夏目漱石".as_bytes()]);
+    n_search(
+        &mut set,
+        b" XXXX AAA 1223 012345678bbb",
+        OnigRegSetLead::PositionLead,
+    );
+}
+
+#[test]
+fn pos_lead_p2_digit() {
+    let mut set = make_regset(&["小説".as_bytes(), b"9", "夏目漱石".as_bytes()]);
+    x2(&mut set, b"0123456789", OnigRegSetLead::PositionLead, 9, 10);
+}
+
+#[test]
+fn pos_lead_p7_digits() {
+    let mut set = make_regset(&[
+        b"0+", b"1+", b"2+", b"3+", b"4+", b"5+", b"6+", b"7+", b"8+", b"9+",
+    ]);
+    x2(
+        &mut set,
+        b"abcde 555 qwert",
+        OnigRegSetLead::PositionLead,
+        6,
+        9,
+    );
+}
+
+#[test]
+fn pos_lead_p8_empty_string() {
+    let mut set = make_regset(&[b"a", b".*"]);
+    x2(&mut set, b"", OnigRegSetLead::PositionLead, 0, 0);
+}
+
+// ============================================================================
+// Regex-lead tests (C: XX_LEAD = ONIG_REGSET_REGEX_LEAD)
+// ============================================================================
+
+#[test]
+fn reg_lead_empty_set() {
+    nzero(b" abab bccab ca", OnigRegSetLead::RegexLead);
+}
+
+#[test]
+fn reg_lead_p1_x2() {
+    let mut set = make_regset(&[b"abc", b"(bca)", b"(cab)"]);
+    x2(
+        &mut set,
+        b" abab bccab ca",
+        OnigRegSetLead::RegexLead,
+        8,
+        11,
+    );
+}
+
+#[test]
+fn reg_lead_p1_x3() {
+    let mut set = make_regset(&[b"abc", b"(bca)", b"(cab)"]);
+    x3(
+        &mut set,
+        b" abab bccab ca",
+        OnigRegSetLead::RegexLead,
+        8,
+        11,
+        1,
+    );
+}
+
+#[test]
+fn reg_lead_p2_no_match() {
+    let mut set = make_regset(&["小説".as_bytes(), b"9", "夏目漱石".as_bytes()]);
+    n_search(
+        &mut set,
+        b" XXXX AAA 1223 012345678bbb",
+        OnigRegSetLead::RegexLead,
+    );
+}
+
+#[test]
+fn reg_lead_p2_digit() {
+    let mut set = make_regset(&["小説".as_bytes(), b"9", "夏目漱石".as_bytes()]);
+    x2(&mut set, b"0123456789", OnigRegSetLead::RegexLead, 9, 10);
+}
+
+#[test]
+fn reg_lead_p7_digits() {
+    let mut set = make_regset(&[
+        b"0+", b"1+", b"2+", b"3+", b"4+", b"5+", b"6+", b"7+", b"8+", b"9+",
+    ]);
+    x2(
+        &mut set,
+        b"abcde 555 qwert",
+        OnigRegSetLead::RegexLead,
+        6,
+        9,
+    );
+}
+
+#[test]
+fn scanner_cache_id_small_input_progression() {
+    let mut scanner = Scanner::new(&[";", "}"]).expect("scanner");
+    let input = "a;b}";
+
+    let m1 = scanner
+        .find_next_match_with_id(input, 1, 0, ScannerFindOptions::NONE)
+        .expect("first match");
+    assert_eq!(m1.index, 0);
+    assert_eq!(m1.captures()[0].start, 1);
+    assert_eq!(m1.captures()[0].end, 2);
+
+    let m2 = scanner
+        .find_next_match_with_id(input, 1, 2, ScannerFindOptions::NONE)
+        .expect("second match");
+    assert_eq!(m2.index, 1);
+    assert_eq!(m2.captures()[0].start, 3);
+    assert_eq!(m2.captures()[0].end, 4);
+}
+
+#[test]
+fn scanner_cache_id_small_input_no_match() {
+    let mut scanner = Scanner::new(&[";", "}"]).expect("scanner");
+    let input = "abc";
+
+    let m = scanner.find_next_match_with_id(input, 7, 0, ScannerFindOptions::NONE);
+    assert!(m.is_none());
+}
+
+#[test]
+fn scanner_optional_prefix_exact_matches_from_the_match_start() {
+    let mut scanner = Scanner::new(&["a?bc"]).expect("scanner");
+
+    let m = scanner
+        .find_next_match("xabc", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(m.index, 0);
+    assert_eq!(m.captures()[0].start, 1);
+    assert_eq!(m.captures()[0].end, 4);
+}
+
+#[test]
+fn scanner_optional_prefix_map_matches_from_the_match_start() {
+    let mut scanner = Scanner::new(&["x?[abc]"]).expect("scanner");
+
+    let m = scanner
+        .find_next_match("qxa", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(m.index, 0);
+    assert_eq!(m.captures()[0].start, 1);
+    assert_eq!(m.captures()[0].end, 3);
+}
+
+#[test]
+fn scanner_unbounded_prefix_matches_from_the_match_start() {
+    let mut scanner = Scanner::new(&["a*bc"]).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("aabc", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(matched.index, 0);
+    assert_eq!(matched.captures()[0].start, 0);
+    assert_eq!(matched.captures()[0].end, 4);
+}
+
+#[test]
+fn scanner_fallback_match_may_extend_past_a_later_table_winner() {
+    for (patterns, expected_index) in [(["bc", r"(a*)\1bc"], 1), ([r"(a*)\1bc", "bc"], 0)] {
+        let mut scanner = Scanner::new(&patterns).expect("scanner");
+
+        let matched = scanner
+            .find_next_match("aabc", 0, ScannerFindOptions::NONE)
+            .expect("match");
+
+        assert_eq!(matched.index, expected_index);
+        assert_eq!(matched.captures()[0].start, 0);
+        assert_eq!(matched.captures()[0].end, 4);
+    }
+}
+
+/// Repeat one `find_next_match_with_id` call often enough for the adaptive
+/// cache route to probe (and possibly switch to) the per-regex path, and
+/// require every result to equal a fresh uncached search.
+fn assert_with_id_stable(patterns: &[&str], input: &str, start: usize) -> Option<ScannerMatch> {
+    let expected = Scanner::new(patterns).expect("scanner").find_next_match(
+        input,
+        start,
+        ScannerFindOptions::NONE,
+    );
+    let mut scanner = Scanner::new(patterns).expect("scanner");
+    for call in 1..=40 {
+        let found = scanner.find_next_match_with_id(input, 1, start, ScannerFindOptions::NONE);
+        assert_eq!(
+            found, expected,
+            "{patterns:?} on {input:?} from {start}, call {call}"
+        );
+    }
+    expected
+}
+
+#[test]
+fn scanner_with_id_reports_zero_width_g_anchor_match_at_end_on_every_call() {
+    for pattern in [r"\G$", r"\G", r"\G\z"] {
+        let expected = assert_with_id_stable(&[pattern], "abc", 3).expect("end match");
+        assert_eq!(expected.index, 0);
+        assert_eq!(capture_spans(&expected), [(3, 3)]);
+        assert_with_id_stable(&[pattern], "", 0).expect("empty-input match");
+        assert_with_id_stable(&["q", pattern], "abc", 3).expect("end match");
+    }
+    // A `\G` alternation whose other branch only matches at the end.
+    let expected = assert_with_id_stable(&[r"\Ga|$"], "abc", 1).expect("end match");
+    assert_eq!(capture_spans(&expected), [(3, 3)]);
+    // Enough patterns for the route to settle on per-regex mode.
+    let expected =
+        assert_with_id_stable(&["a", "b", "c", "x", "y", r"\G$"], "abc", 3).expect("end match");
+    assert_eq!(expected.index, 5);
+}
+
+#[test]
+fn scanner_with_id_utf16_reports_zero_width_g_anchor_match_at_end_on_every_call() {
+    let mut scanner = Scanner::new(&[r"\G$"]).expect("scanner");
+    let string = OnigString::new("a💻b");
+    for call in 1..=40 {
+        let found = scanner
+            .find_next_match_utf16_with_id(&string, 1, 4, ScannerFindOptions::NONE)
+            .unwrap_or_else(|| panic!("missing end match on call {call}"));
+        assert_eq!(capture_spans(&found), [(4, 4)], "call {call}");
+    }
+}
+
+#[test]
+fn scanner_with_id_narrowed_range_keeps_matches_that_extend_past_an_earlier_winner() {
+    // `a.*b` wins at 6 first; `(?:foo|ba)*r` starts earlier at 5 but ends at
+    // 8, past that winner. Narrowing must bound start positions only.
+    let patterns = ["a.*b", r"\s*//", "(?:foo|ba)*r", "x?y?z"];
+    let expected = assert_with_id_stable(&patterns, "foo \"bar\" // 42 baz", 0).expect("match");
+    assert_eq!(expected.index, 2);
+    assert_eq!(capture_spans(&expected), [(5, 8)]);
+
+    let patterns = [r"\S*\z", r"(?<=b)\w*", "(?:ab|b)+", "k1", "k2", "k3", "k4"];
+    for start in 0..=5 {
+        assert_with_id_stable(&patterns, "abababc  xyz", start).expect("match");
+    }
+}
+
+#[test]
+fn regset_find_longest_keeps_position_lead_earliest_start() {
+    let mut set = make_regset(&[br"(a*)\1b"]);
+    let input = b"bxxaaaab";
+
+    let (index, position) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_FIND_LONGEST,
+    );
+
+    assert_eq!((index, position), (0, 0));
+    let region = onig_regset_get_region(&set, index as usize).expect("winning region");
+    assert_eq!((region.beg[0], region.end[0]), (0, 1));
+}
+
+#[test]
+fn scanner_negated_multibyte_optional_prefix_includes_ascii_starts() {
+    let mut scanner = Scanner::new(&["[^é]?x"]).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("ax", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(matched.index, 0);
+    assert_eq!(matched.captures()[0].start, 0);
+    assert_eq!(matched.captures()[0].end, 2);
+}
+
+#[test]
+fn regset_optional_prefix_wins_at_the_earliest_position() {
+    let mut set = make_regset(&[b"a?b", br"\s", b"[abc]", b"a|b"]);
+    let input = b"abc";
+
+    let (idx, pos) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+
+    assert_eq!(idx, 0);
+    assert_eq!(pos, 0);
+    let region = onig_regset_get_region(&set, idx as usize).expect("winning region");
+    assert_eq!(region.beg[0], 0);
+    assert_eq!(region.end[0], 2);
+}
+
+#[test]
+fn regset_fixed_first_byte_pattern_wins_fallback_ties_by_order() {
+    let mut set = make_regset(&[b"a", b"a?b"]);
+    let input = b"ab";
+
+    let (idx, pos) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+
+    assert_eq!(idx, 0);
+    assert_eq!(pos, 0);
+    let region = onig_regset_get_region(&set, idx as usize).expect("winning region");
+    assert_eq!(region.beg[0], 0);
+    assert_eq!(region.end[0], 1);
+}
+
+#[test]
+fn scanner_repeated_optional_prefix_match_agrees_across_routes() {
+    let mut scanner = Scanner::new(&["a?bc", "q"]).expect("scanner");
+    let input = "qabc";
+
+    for _ in 0..25 {
+        let matched = scanner
+            .find_next_match_with_id(input, 55, 1, ScannerFindOptions::NONE)
+            .expect("match");
+        assert_eq!(matched.index, 0);
+        assert_eq!(matched.captures()[0].start, 1);
+        assert_eq!(matched.captures()[0].end, 4);
+    }
+}
+
+#[test]
+fn large_regset_variable_map_finds_the_true_earliest_start() {
+    let mut patterns: Vec<&[u8]> = vec![b"a?[bcd]", b"x"];
+    patterns.resize(33, b"(?!)");
+    let mut set = make_regset(&patterns);
+    let input = b"qac";
+
+    let (index, position) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+
+    assert_eq!((index, position), (0, 1));
+    let region = onig_regset_get_region(&set, index as usize).expect("winning region");
+    assert_eq!((region.beg[0], region.end[0]), (1, 3));
+}
+
+#[test]
+fn large_regset_merges_variable_and_table_ties_by_regex_order() {
+    let mut patterns: Vec<&[u8]> = vec![b"a", b"a?[bcd]"];
+    patterns.resize(33, b"(?!)");
+    let mut set = make_regset(&patterns);
+    let input = b"ab";
+
+    let (index, position) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+
+    assert_eq!((index, position), (0, 0));
+    let region = onig_regset_get_region(&set, index as usize).expect("winning region");
+    assert_eq!((region.beg[0], region.end[0]), (0, 1));
+}
+
+#[test]
+fn regset_clears_the_superseded_table_winner_region() {
+    let mut set = make_regset(&[b"bc", b"(?<=x)a?bc"]);
+    let input = b"xabc";
+
+    let (index, position) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        0,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+
+    assert_eq!((index, position), (1, 1));
+    let losing_region = onig_regset_get_region(&set, 0).expect("losing region");
+    assert_eq!(losing_region.beg[0], ONIG_REGION_NOTPOS);
+    assert_eq!(losing_region.end[0], ONIG_REGION_NOTPOS);
+}
+
+// C Oniguruma's position-lead search starts with prev_is_newline = 1, so a
+// leading `.*` may match at the search start even in the middle of a line.
+// Values checked against C Oniguruma v6.9.10.
+#[test]
+fn regset_anychar_star_matches_at_a_mid_line_search_start() {
+    x_from_5(&[b".*"], b"<div class", 0, 5, 10);
+    x_from_5(&[b"--.*", b".*"], b"<div class", 1, 5, 10);
+    x_from_5(&[b".*"], b"<div class=\"x\">\n", 0, 5, 15);
+}
+
+/// Position-lead search from byte 5; expect regex `index` to match [from, to].
+fn x_from_5(patterns: &[&[u8]], input: &[u8], index: i32, from: i32, to: i32) {
+    let mut set = make_regset(patterns);
+
+    let (idx, pos) = onig_regset_search(
+        &mut set,
+        input,
+        input.len(),
+        5,
+        input.len(),
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+
+    assert_eq!((idx, pos), (index, from));
+    let region = onig_regset_get_region(&set, idx as usize).expect("winning region");
+    assert_eq!((region.beg[0], region.end[0]), (from, to));
+}
+
+#[test]
+fn scanner_anychar_star_matches_at_a_mid_line_start_position() {
+    let mut scanner = Scanner::new(&["--.*", ".*"]).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("<div class", 5, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(matched.index, 1);
+    assert_eq!(matched.captures()[0].start, 5);
+    assert_eq!(matched.captures()[0].end, 10);
+}
+
+fn capture_spans(matched: &ScannerMatch) -> Vec<(usize, usize)> {
+    matched
+        .captures()
+        .iter()
+        .map(|capture| (capture.start, capture.end))
+        .collect()
+}
+
+fn config_without_capture_group() -> ScannerConfig {
+    ScannerConfig::default().options(ONIG_OPTION_NONE)
+}
+
+#[test]
+fn scanner_config_default_enables_capture_group() {
+    assert_eq!(ScannerConfig::default().options, ONIG_OPTION_CAPTURE_GROUP);
+}
+
+#[test]
+fn scanner_keeps_unnamed_captures_next_to_named_groups_by_default() {
+    let mut scanner = Scanner::new(&["(x)(?<n>y)(z)"]).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("xyz", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(matched.index, 0);
+    assert_eq!(capture_spans(&matched), [(0, 3), (0, 1), (1, 2), (2, 3)]);
+}
+
+#[test]
+fn scanner_keeps_captures_of_the_go_grammar_function_call_pattern() {
+    // From Go's TextMate grammar: a named recursive `brackets` group next to
+    // the unnamed groups that the grammar's `captures` refer to by number.
+    let pattern = r"(?:((?<=\.)\b\w+)|\b(\w+))(?<brackets>\[(?:[^]\[]|\g<brackets>)*])?(?=\()";
+    let mut scanner = Scanner::new(&[pattern]).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("\tfmt.Println(\"Hello\")", 5, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(matched.index, 0);
+    assert_eq!(matched.captures().len(), 4);
+    assert_eq!(capture_spans(&matched)[..2], [(5, 12), (5, 12)]);
+}
+
+#[test]
+fn scanner_allows_numbered_backrefs_next_to_named_groups_by_default() {
+    let mut scanner = Scanner::new(&[r"(?<n>a)(b)\2"]).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("abb", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(matched.index, 0);
+    assert_eq!(capture_spans(&matched)[0], (0, 3));
+}
+
+#[test]
+fn scanner_config_without_capture_group_restores_named_group_rules() {
+    let config = config_without_capture_group();
+    let mut scanner = Scanner::with_config(&["(x)(?<n>y)(z)"], &config).expect("scanner");
+
+    let matched = scanner
+        .find_next_match("xyz", 0, ScannerFindOptions::NONE)
+        .expect("match");
+
+    assert_eq!(capture_spans(&matched), [(0, 3), (1, 2)]);
+    assert!(Scanner::with_config(&[r"(?<n>a)(b)\2"], &config).is_err());
+}
+
+// `^` never matches at the very end of the subject, not even right after a
+// trailing newline. Expectations checked against C Oniguruma.
+
+#[test]
+fn regset_begin_line_does_not_match_at_end_after_trailing_newline() {
+    let input = b"a\n";
+    for lead in [OnigRegSetLead::PositionLead, OnigRegSetLead::RegexLead] {
+        let mut set = make_regset(&[b"x", b"^"]);
+        let (index, _) = onig_regset_search(&mut set, input, 2, 2, 2, lead, ONIG_OPTION_NONE);
+        assert_eq!(index, ONIG_MISMATCH, "lead {lead:?}");
+    }
+
+    // `$` still matches there. (Regex-lead rejects any match at the range
+    // end, so only position-lead reports it, as in C.)
+    let mut set = make_regset(&[b"^", b"$"]);
+    let (index, position) = onig_regset_search(
+        &mut set,
+        input,
+        2,
+        2,
+        2,
+        OnigRegSetLead::PositionLead,
+        ONIG_OPTION_NONE,
+    );
+    assert_eq!((index, position), (1, 2));
+}
+
+#[test]
+fn scanner_begin_line_does_not_match_at_end_after_trailing_newline() {
+    let mut scanner = Scanner::new(&["^"]).unwrap();
+    assert!(
+        scanner
+            .find_next_match("a\n", 2, ScannerFindOptions::NONE)
+            .is_none()
+    );
+    assert!(
+        scanner
+            .find_next_match_with_id("a\n", 7, 2, ScannerFindOptions::NONE)
+            .is_none()
+    );
+
+    let mut scanner = Scanner::new(&["^", "$"]).unwrap();
+    let m = scanner
+        .find_next_match("a\n", 2, ScannerFindOptions::NONE)
+        .unwrap();
+    assert_eq!(m.index, 1);
+    assert_eq!((m.captures()[0].start, m.captures()[0].end), (2, 2));
+}
+
+// Regex-lead narrows only the range of match starts to the current winner; a
+// later regex may still match past it (C: search_in_range(reg, str, end,
+// start, ep, orig_range, ...)). Expectations checked against C Oniguruma.
+
+#[test]
+fn reg_lead_match_may_extend_past_current_winner() {
+    use ferroni::regexec::onig_new_match_param;
+    use ferroni::regset::onig_regset_search_with_param;
+
+    // (patterns, subject, (index, position), winning match span)
+    type Case<'a> = (&'a [&'a [u8]], &'a [u8], (i32, i32), (i32, i32));
+    let cases: [Case; 3] = [
+        (&[b"b", b"^.*$"], b"ab", (1, 0), (0, 2)),
+        (&[b"b", b"(?:^|\\n)b"], b"a\nb", (1, 1), (1, 3)),
+        (&[b"b", b"abc|bca|nab|xyz"], b"abc\nabc\n", (1, 0), (0, 3)),
+    ];
+    for (patterns, input, expected, span) in cases {
+        let len = input.len();
+        let mut set = make_regset(patterns);
+        let found = onig_regset_search(
+            &mut set,
+            input,
+            len,
+            0,
+            len,
+            OnigRegSetLead::RegexLead,
+            ONIG_OPTION_NONE,
+        );
+        assert_eq!(found, expected, "{patterns:?}");
+        let region = onig_regset_get_region(&set, found.0 as usize).unwrap();
+        assert_eq!((region.beg[0], region.end[0]), span, "{patterns:?}");
+
+        let mps: Vec<_> = patterns.iter().map(|_| onig_new_match_param()).collect();
+        let mut set = make_regset(patterns);
+        let found = onig_regset_search_with_param(
+            &mut set,
+            input,
+            len,
+            0,
+            len,
+            OnigRegSetLead::RegexLead,
+            ONIG_OPTION_NONE,
+            &mps,
+        );
+        assert_eq!(found, expected, "{patterns:?} with params");
+    }
+}

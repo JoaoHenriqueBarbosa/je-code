@@ -26,5 +26,6 @@ licença) no README dela, como o `zbun` faz com o bun; mudança local fica lista
 - Módulos do Node no zjsc (`path`, `url`, `util`, `stream`): são o JS do bun rodando dentro do motor,
   não API Rust; servem ao extension host, não ao `vs/base` em Rust.
 - `ul-sqlite`: usa `rusqlite` (C). O storage do je-code usa `turso_core` (H12).
+- Oniguruma do TextMate: o pseudo-linus já usava o `ferroni` (crates.io) no `ul-jq`; o je-code usa o mesmo, vendorizado com uma correção (`vendor/ferroni`).
 - `regex-posix`: semântica POSIX; o VS Code usa ECMAScript (YARR) e Oniguruma (TextMate).
 - `ul-textproc` (grep do GNU): a busca do VS Code é o ripgrep; a paridade vem das crates do ripgrep.

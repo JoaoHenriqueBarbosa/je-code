@@ -1,0 +1,68 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [pattern-compile, pattern-match, scanner-api, prefilter-differential, precompiled-loader]
+    # cargo-fuzz needs nightly; rust-toolchain.toml pins the local default to
+    # stable, so RUSTUP_TOOLCHAIN keeps this job on the toolchain it asked for.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Seed the pre-filter corpus from the compat pairs
+        # The long run starts from the pattern/text pairs of the compat files
+        # and the review regressions, written in the target's raw layout
+        # (fuzz/README.md); the smoke run gets by with the dictionary.
+        if: matrix.target == 'prefilter-differential' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          FERRONI_FUZZ_SEED_DIR: fuzz/corpus/prefilter-differential
+        run: cargo test --locked --test compat_prefilter_differential write_fuzz_seeds -- --ignored
+      - name: Fuzz ${{ matrix.target }}
+        # Pull requests and pushes get a smoke run that only has to catch an
+        # obviously broken target; the weekly schedule does the real work.
+        env:
+          MAX_TOTAL_TIME: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '900' || '60' }}
+        run: >-
+          cargo fuzz run ${{ matrix.target }} --
+          -dict=fuzz/ferroni.dict
+          -max_total_time="$MAX_TOTAL_TIME"
+          -max_len=16384
+          -timeout=10
+          -rss_limit_mb=2048
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 7

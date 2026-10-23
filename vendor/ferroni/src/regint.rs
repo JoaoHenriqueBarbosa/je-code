@@ -1,0 +1,1290 @@
+// regint.rs - Port of regint.h
+// Internal types, OpCode, Operation, BitSet, MemStatus, regex_t.
+
+use std::collections::HashMap;
+
+use crate::oniguruma::*;
+use crate::regenc::OnigEncoding;
+
+// === Feature Flags (C #define USE_*) ===
+pub(crate) const USE_CALL: bool = true;
+pub(crate) const USE_CALLOUT: bool = true;
+pub(crate) const USE_BACKREF_WITH_LEVEL: bool = true;
+pub(crate) const USE_CAPTURE_HISTORY: bool = true;
+
+// === Config Constants ===
+/// Default nesting limit, in parser units: a group costs two, a nested
+/// character class one. Ferroni-specific; C Oniguruma defaults to 4096. The
+/// value keeps a compile of any pattern within it inside a 2 MiB thread, in
+/// debug builds too. See ADR-013.
+pub(crate) const DEFAULT_PARSE_DEPTH_LIMIT: u32 = 256;
+/// Default per-pattern AST budget, in expression nodes; a flat concatenation or
+/// alternation costs one node per cell. Ferroni-only. See ADR-013.
+pub(crate) const DEFAULT_AST_NODE_LIMIT: u32 = 4096;
+pub(crate) const INIT_MATCH_STACK_SIZE: usize = 160;
+pub(crate) const DEFAULT_MATCH_STACK_LIMIT_SIZE: u32 = 0;
+/// The stack size up to which C does not check `match_stack_limit`: its
+/// first stack doubles once without a check. See `match_stack_cap`.
+pub(crate) const MATCH_STACK_LIMIT_FLOOR: usize = 2 * INIT_MATCH_STACK_SIZE;
+/// Rust-only (ADR-008): the backtrack stack never grows past this many
+/// entries unless a larger `match_stack_limit` is set. C lets it grow without
+/// bound when the limit is 0, so one hostile line can exhaust memory. This
+/// is a separate cap and not a default for `match_stack_limit`: a non-zero
+/// limit turns off other optimizations that a plain search is allowed.
+pub(crate) const HARD_MATCH_STACK_CAP: usize = 10_000_000;
+pub(crate) const DEFAULT_RETRY_LIMIT_IN_MATCH: u64 = 10_000_000;
+pub(crate) const DEFAULT_RETRY_LIMIT_IN_SEARCH: u64 = 0;
+pub(crate) const DEFAULT_TIME_LIMIT_MSEC: u64 = 0;
+pub(crate) const DEFAULT_SUBEXP_CALL_LIMIT_IN_SEARCH: u64 = 0;
+pub(crate) const DEFAULT_SUBEXP_CALL_MAX_NEST_LEVEL: i32 = 20;
+
+// === Internal Constants ===
+pub(crate) const CHAR_MAP_SIZE: usize = 256;
+pub(crate) const INFINITE_LEN: OnigLen = ONIG_INFINITE_DISTANCE;
+pub(crate) const STEP_BACK_MAX_CHAR_LEN: i32 = 65535;
+pub(crate) const LOOK_BEHIND_MAX_CHAR_LEN: i32 = STEP_BACK_MAX_CHAR_LEN;
+pub(crate) const INFINITE_REPEAT: i32 = -1;
+
+/// The `max` of a counted character repeat without an upper bound (`{n,}`).
+pub(crate) const CHAR_REPEAT_UNBOUNDED: u32 = u32::MAX;
+
+#[inline]
+pub(crate) fn is_infinite_repeat(n: i32) -> bool {
+    n == INFINITE_REPEAT
+}
+
+// === Bytecode Types ===
+pub(crate) type RelAddrType = i32;
+pub(crate) type AbsAddrType = i32;
+pub(crate) type LengthType = i32;
+pub(crate) type RelPositionType = i32;
+pub(crate) type RepeatNumType = i32;
+pub(crate) type MemNumType = i32;
+pub(crate) type ModeType = i32;
+
+// === MemStatus (bit status for captures) ===
+pub(crate) type MemStatusType = u32;
+
+pub(crate) const MEM_STATUS_BITS_NUM: usize = 32;
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_clear(stats: &mut MemStatusType) {
+    *stats = 0;
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_on_all(stats: &mut MemStatusType) {
+    *stats = !0u32;
+}
+
+#[inline]
+pub(crate) fn mem_status_at(stats: MemStatusType, n: usize) -> bool {
+    if n < MEM_STATUS_BITS_NUM {
+        (stats & (1u32 << n)) != 0
+    } else {
+        (stats & 1) != 0
+    }
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_at0(stats: MemStatusType, n: usize) -> bool {
+    if n > 0 && n < MEM_STATUS_BITS_NUM {
+        (stats & (1u32 << n)) != 0
+    } else {
+        (stats & 1) != 0
+    }
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_is_all_on(stats: MemStatusType) -> bool {
+    (stats & 1) != 0
+}
+
+#[inline]
+pub(crate) fn mem_status_on(stats: &mut MemStatusType, n: usize) {
+    if n < MEM_STATUS_BITS_NUM {
+        if n != 0 {
+            *stats |= 1u32 << n;
+        }
+    } else {
+        *stats |= 1;
+    }
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_on_simple(stats: &mut MemStatusType, n: usize) {
+    if n < MEM_STATUS_BITS_NUM {
+        *stats |= 1u32 << n;
+    }
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_limit_at(stats: MemStatusType, n: usize) -> bool {
+    if n < MEM_STATUS_BITS_NUM {
+        (stats & (1u32 << n)) != 0
+    } else {
+        false
+    }
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mem_status_limit_on(stats: &mut MemStatusType, n: usize) {
+    if n < MEM_STATUS_BITS_NUM && n != 0 {
+        *stats |= 1u32 << n;
+    }
+}
+
+// === BitSet (256 bits for ASCII character classes) ===
+pub(crate) const BITS_PER_BYTE: usize = 8;
+pub(crate) const SINGLE_BYTE_SIZE: usize = 1 << BITS_PER_BYTE;
+pub(crate) const BITS_IN_ROOM: usize = 32;
+pub(crate) const BITSET_REAL_SIZE: usize = SINGLE_BYTE_SIZE / BITS_IN_ROOM;
+pub(crate) type Bits = u32;
+pub(crate) type BitSet = [Bits; BITSET_REAL_SIZE];
+
+pub(crate) const SIZE_BITSET: usize = std::mem::size_of::<BitSet>();
+
+#[inline]
+pub(crate) fn bitset_clear(bs: &mut BitSet) {
+    for slot in bs.iter_mut() {
+        *slot = 0;
+    }
+}
+
+#[inline]
+pub(crate) fn bs_room(pos: usize) -> usize {
+    pos >> 5
+}
+
+#[inline]
+pub(crate) fn bs_bit(pos: usize) -> u32 {
+    1u32 << (pos & 0x1f)
+}
+
+#[inline]
+pub(crate) fn bitset_at(bs: &BitSet, pos: usize) -> bool {
+    (bs[bs_room(pos)] & bs_bit(pos)) != 0
+}
+
+/// The positions of the set bits of `bs`, ascending. Visits whole words, so
+/// sparse sets cost their population rather than 256 bit tests.
+#[inline]
+pub(crate) fn bitset_members(bs: &BitSet) -> impl Iterator<Item = usize> + '_ {
+    bs.iter().enumerate().flat_map(|(room, &word)| {
+        let mut bits = word;
+        std::iter::from_fn(move || {
+            (bits != 0).then(|| {
+                let pos = room * BITS_IN_ROOM + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                pos
+            })
+        })
+    })
+}
+
+#[inline]
+pub(crate) fn bitset_set_bit(bs: &mut BitSet, pos: usize) {
+    bs[bs_room(pos)] |= bs_bit(pos);
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn bitset_clear_bit(bs: &mut BitSet, pos: usize) {
+    bs[bs_room(pos)] &= !bs_bit(pos);
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn bitset_invert_bit(bs: &mut BitSet, pos: usize) {
+    bs[bs_room(pos)] ^= bs_bit(pos);
+}
+
+// === Anchor Flags ===
+pub(crate) const ANCR_PREC_READ: i32 = 1 << 0;
+pub(crate) const ANCR_PREC_READ_NOT: i32 = 1 << 1;
+pub(crate) const ANCR_LOOK_BEHIND: i32 = 1 << 2;
+pub(crate) const ANCR_LOOK_BEHIND_NOT: i32 = 1 << 3;
+pub(crate) const ANCR_BEGIN_BUF: i32 = 1 << 4;
+pub(crate) const ANCR_BEGIN_LINE: i32 = 1 << 5;
+pub(crate) const ANCR_BEGIN_POSITION: i32 = 1 << 6;
+pub(crate) const ANCR_END_BUF: i32 = 1 << 7;
+pub(crate) const ANCR_SEMI_END_BUF: i32 = 1 << 8;
+pub(crate) const ANCR_END_LINE: i32 = 1 << 9;
+pub(crate) const ANCR_WORD_BOUNDARY: i32 = 1 << 10;
+pub(crate) const ANCR_NO_WORD_BOUNDARY: i32 = 1 << 11;
+pub(crate) const ANCR_WORD_BEGIN: i32 = 1 << 12;
+pub(crate) const ANCR_WORD_END: i32 = 1 << 13;
+pub(crate) const ANCR_ANYCHAR_INF: i32 = 1 << 14;
+pub(crate) const ANCR_ANYCHAR_INF_ML: i32 = 1 << 15;
+pub(crate) const ANCR_TEXT_SEGMENT_BOUNDARY: i32 = 1 << 16;
+pub(crate) const ANCR_NO_TEXT_SEGMENT_BOUNDARY: i32 = 1 << 17;
+pub(crate) const ANCR_ANYCHAR_INF_MASK: i32 = ANCR_ANYCHAR_INF | ANCR_ANYCHAR_INF_ML;
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn anchor_has_body(anchor_type: i32) -> bool {
+    anchor_type < ANCR_BEGIN_BUF
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn is_word_anchor_type(anchor_type: i32) -> bool {
+    anchor_type == ANCR_WORD_BOUNDARY
+        || anchor_type == ANCR_NO_WORD_BOUNDARY
+        || anchor_type == ANCR_WORD_BEGIN
+        || anchor_type == ANCR_WORD_END
+}
+
+// === OpCode Enum ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum OpCode {
+    Finish = 0,
+    End = 1,
+    Str1 = 2,
+    Str2 = 3,
+    Str3 = 4,
+    Str4 = 5,
+    Str5 = 6,
+    StrN = 7,
+    StrMb2n1 = 8,
+    StrMb2n2 = 9,
+    StrMb2n3 = 10,
+    StrMb2n = 11,
+    StrMb3n = 12,
+    StrMbn = 13,
+    CClass = 14,
+    CClassMb = 15,
+    CClassMix = 16,
+    CClassNot = 17,
+    CClassMbNot = 18,
+    CClassMixNot = 19,
+    AnyChar = 20,
+    AnyCharMl = 21,
+    AnyCharStar = 22,
+    AnyCharMlStar = 23,
+    AnyCharStarPeekNext = 24,
+    AnyCharMlStarPeekNext = 25,
+    Word = 26,
+    WordAscii = 27,
+    NoWord = 28,
+    NoWordAscii = 29,
+    WordBoundary = 30,
+    NoWordBoundary = 31,
+    WordBegin = 32,
+    WordEnd = 33,
+    TextSegmentBoundary = 34,
+    BeginBuf = 35,
+    EndBuf = 36,
+    BeginLine = 37,
+    EndLine = 38,
+    SemiEndBuf = 39,
+    CheckPosition = 40,
+    BackRef1 = 41,
+    BackRef2 = 42,
+    BackRefN = 43,
+    BackRefNIc = 44,
+    BackRefMulti = 45,
+    BackRefMultiIc = 46,
+    BackRefWithLevel = 47,
+    BackRefWithLevelIc = 48,
+    BackRefCheck = 49,
+    BackRefCheckWithLevel = 50,
+    MemStart = 51,
+    MemStartPush = 52,
+    MemEndPush = 53,
+    MemEndPushRec = 54,
+    MemEnd = 55,
+    MemEndRec = 56,
+    Fail = 57,
+    Jump = 58,
+    Push = 59,
+    PushSuper = 60,
+    Pop = 61,
+    PopToMark = 62,
+    PushOrJumpExact1 = 63,
+    PushIfPeekNext = 64,
+    Repeat = 65,
+    RepeatNg = 66,
+    RepeatInc = 67,
+    RepeatIncNg = 68,
+    EmptyCheckStart = 69,
+    EmptyCheckEnd = 70,
+    EmptyCheckEndMemst = 71,
+    EmptyCheckEndMemstPush = 72,
+    Move = 73,
+    StepBackStart = 74,
+    StepBackNext = 75,
+    CutToMark = 76,
+    Mark = 77,
+    SaveVal = 78,
+    UpdateVar = 79,
+    Call = 80,
+    Return = 81,
+    CalloutContents = 82,
+    CalloutName = 83,
+    CClassStar = 84,
+    CClassMixStar = 85,
+    CClassMbStar = 86,
+    WordStar = 87,
+    WordAsciiStar = 88,
+    CClassStarPeekNext = 89,
+    WordAsciiStarPeekNext = 90,
+    AltLiterals = 91,
+    CClassNotStar = 92,
+    CClassMbNotStar = 93,
+    CClassMixNotStar = 94,
+    /// Rust-only (ADR-008): a fixed-length look-behind whose body is the
+    /// single character or string instruction that follows it.
+    LookBehindOp = 95,
+    /// Rust-only (ADR-008): `PushOrJumpExact1` with a byte set. Pushes the
+    /// alternative only when the current byte can start the main path.
+    PushOrJumpByteSet = 96,
+    /// A bounded run of identical ASCII character classes.
+    CClassRun = 97,
+    /// Rust-only (ADR-008): positive ASCII class star with no exit choices.
+    /// Emitted only by the explicitly enabled decimal rewrite pass.
+    CClassPossessiveStar = 98,
+    /// Rust-only (ADR-008): decimal prefix reserving the final digit for its tail.
+    DecimalTailPrefix = 99,
+    /// Rust-only (ADR-008): lazy dot push across a plain capture end to a literal.
+    PushLazyAnyChar = 100,
+    /// Rust-only (ADR-008): pops the backtracking choices the star
+    /// instruction just before it pushed, which makes that star possessive.
+    /// Emitted only after a star `crate::possessify` proved never has to
+    /// give anything back.
+    PopStarChoices = 101,
+    /// Rust-only (ADR-008): `\X` outside look-behinds as one instruction. It
+    /// advances over one character and then to the next extended grapheme
+    /// cluster boundary, the steps of upstream's `\O(?:\Y\O)*` in one
+    /// dispatch, and never pushes a backtrack entry.
+    GraphemeCluster = 102,
+    /// Rust-only (ADR-008): a greedy bounded repeat `[class]{min,max}` run as a
+    /// counted star loop instead of a `Repeat` counter loop.
+    CClassRepeat = 103,
+    /// Rust-only (ADR-008): a greedy bounded repeat `.{min,max}` (`AnyChar`
+    /// or `AnyCharMl`) run as a counted star loop.
+    AnyCharRepeat = 104,
+}
+
+// === SaveType ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum SaveType {
+    Keep = 0,
+    S = 1,
+    RightRange = 2,
+}
+
+// === UpdateVarType ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum UpdateVarType {
+    KeepFromStackLast = 0,
+    SFromStack = 1,
+    RightRangeFromStack = 2,
+    RightRangeFromSStack = 3,
+    RightRangeToS = 4,
+    RightRangeInit = 5,
+}
+
+// === CheckPositionType ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum CheckPositionType {
+    SearchStart = 0,
+    CurrentRightRange = 1,
+}
+
+// === TextSegmentBoundaryType ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum TextSegmentBoundaryType {
+    ExtendedGraphemeCluster = 0,
+    Word = 1,
+}
+
+// === Stack Pop Level ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum StackPopLevel {
+    Free = 0,
+    MemStart = 1,
+    All = 2,
+}
+
+// === Optimize Type ===
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OptimizeType {
+    None,
+    Str,
+    StrFast,
+    StrFastStepForward,
+    Map,
+}
+
+// === CClass Flags ===
+pub(crate) const FLAG_NCCLASS_NOT: u32 = 1 << 0;
+pub(crate) const FLAG_NCCLASS_SHARE: u32 = 1 << 1;
+
+// === Operation (Bytecode Instruction) ===
+//
+// In C this is a struct with opcode + union. In Rust we use struct + enum payload.
+// The opcode field is stored separately for direct access (needed for dispatch).
+pub(crate) struct Operation {
+    pub opcode: OpCode,
+    pub payload: OperationPayload,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CClassAsciiFastKind {
+    None,
+    Eq(u8),
+    EqFoldLower(u8),
+}
+
+pub(crate) enum OperationPayload {
+    None,
+    /// Captures around the repeated decimal/optional-underscore body, outer first.
+    DecimalTailPrefix {
+        captures: Vec<MemNumType>,
+    },
+    Exact {
+        s: [u8; 16],
+    },
+    ExactN {
+        s: Vec<u8>,
+        n: LengthType,
+    },
+    ExactLenN {
+        s: Vec<u8>,
+        n: LengthType,
+        len: LengthType,
+    },
+    CClass {
+        bsp: Box<BitSet>,
+        ascii_fast: CClassAsciiFastKind,
+    },
+    CClassRun {
+        bsp: Box<BitSet>,
+        len: u8,
+    },
+    CClassMb {
+        mb: Vec<u32>,
+    },
+    CClassMix {
+        mb: Vec<u32>,
+        bsp: Box<BitSet>,
+    },
+    AnyCharStarPeekNext {
+        c: u8,
+    },
+    CClassStarPeekNext {
+        bsp: Box<BitSet>,
+        c: u8,
+    },
+    /// Rust-only (ADR-008): `CClassRepeat`. The character test is the
+    /// single-character opcode's (`CClass`, or `CClassNot` when `not`), and
+    /// the run takes between `min` and `max` characters, `max` being
+    /// `CHAR_REPEAT_UNBOUNDED` for `{n,}`. A non-zero `peek` is the byte the
+    /// follower starts with, for a run of one-byte characters: only the
+    /// positions holding it are given back to the follower.
+    CClassRepeat {
+        bsp: Box<BitSet>,
+        ascii_fast: CClassAsciiFastKind,
+        not: bool,
+        min: u32,
+        max: u32,
+        peek: u8,
+        /// Only one-byte characters match (a non-negated class without
+        /// multibyte bits), so the run is a plain byte scan.
+        ascii_only: bool,
+    },
+    /// Rust-only (ADR-008): `AnyCharRepeat`, `.{min,max}` with the same bounds.
+    AnyCharRepeat {
+        multiline: bool,
+        min: u32,
+        max: u32,
+    },
+    WordAsciiStarPeekNext {
+        c: u8,
+    },
+    WordBoundary {
+        mode: ModeType,
+    },
+    TextSegmentBoundary {
+        boundary_type: TextSegmentBoundaryType,
+        not: bool,
+    },
+    CheckPosition {
+        check_type: CheckPositionType,
+    },
+    BackRefN {
+        n1: MemNumType,
+    },
+    BackRefGeneral {
+        num: i32,
+        ns: Vec<MemNumType>,
+        nest_level: i32,
+    },
+    MemoryStart {
+        num: MemNumType,
+    },
+    MemoryEnd {
+        num: MemNumType,
+    },
+    Jump {
+        addr: RelAddrType,
+    },
+    Push {
+        addr: RelAddrType,
+    },
+    PushOrJumpExact1 {
+        addr: RelAddrType,
+        c: u8,
+        /// Rust-only (ADR-008): on a guarded `Push`, the backtracks its jump
+        /// counts for the push it skips (see `guard_skipped_retries`).
+        /// Upstream's own instruction counts none.
+        skipped_retries: u32,
+        /// Rust-only (ADR-008): the skip path of the guard chain from here on,
+        /// an index into `RegexType::skip_gates` (see `GuardSkipGate`).
+        skip_gate: Option<u32>,
+    },
+    PushIfPeekNext {
+        addr: RelAddrType,
+        c: u8,
+    },
+    PopToMark {
+        id: MemNumType,
+    },
+    Repeat {
+        id: MemNumType,
+        addr: RelAddrType,
+    },
+    RepeatInc {
+        id: MemNumType,
+    },
+    EmptyCheckStart {
+        mem: MemNumType,
+    },
+    EmptyCheckEnd {
+        mem: MemNumType,
+        empty_status_mem: MemStatusType,
+    },
+    Move {
+        n: RelPositionType,
+    },
+    StepBackStart {
+        initial: LengthType,
+        remaining: LengthType,
+        addr: RelAddrType,
+    },
+    CutToMark {
+        id: MemNumType,
+        restore_pos: bool,
+    },
+    Mark {
+        id: MemNumType,
+        save_pos: bool,
+    },
+    SaveVal {
+        save_type: SaveType,
+        id: MemNumType,
+    },
+    UpdateVar {
+        var_type: UpdateVarType,
+        id: MemNumType,
+        clear: bool,
+    },
+    Call {
+        addr: AbsAddrType,
+    },
+    Return,
+    CalloutContents {
+        num: MemNumType,
+    },
+    CalloutName {
+        num: MemNumType,
+        id: MemNumType,
+    },
+    AltLiterals {
+        trie_idx: u32,
+    },
+    LookBehindOp {
+        /// Characters to step back, as `StepBackStart`.
+        char_len: u32,
+        /// `(?<!...)` rather than `(?<=...)`.
+        not: bool,
+        /// Fixed encoding property, cached for the short ASCII backward walk.
+        ascii_compatible: bool,
+    },
+    /// Rust-only (ADR-008): `PushLazyAnyChar`. `c` is the byte that the
+    /// literal after the loop's capture end must start with (see
+    /// `lazy_literal_byte`).
+    PushLazyAnyChar {
+        addr: RelAddrType,
+        c: u8,
+    },
+    PushOrJumpByteSet {
+        addr: RelAddrType,
+        /// The bytes the main path can consume first.
+        bsp: Box<BitSet>,
+        /// The backtracks the jump counts for the push it skips (see
+        /// `guard_skipped_retries`).
+        skipped_retries: u32,
+        /// Rust-only (ADR-008): the skip path of the guard chain from here on,
+        /// an index into `RegexType::skip_gates` (see `GuardSkipGate`).
+        skip_gate: Option<u32>,
+    },
+}
+
+/// Rust-only (ADR-008): the skip path of a chain of guards, composed into one
+/// jump. A guard whose byte set misses the current byte jumps to the next
+/// guard of its chain (`addr` is both its push target and its skip target),
+/// so a run of such guards that all miss ends at the first instruction that
+/// is not a guard. The gate holds the union of those byte sets, the sum of
+/// their skipped retries and the relative address of that instruction. When
+/// the current byte is outside the union, the gate jumps there and counts the
+/// sum; the VM otherwise runs the guard as before.
+#[derive(Clone, Debug)]
+pub(crate) struct GuardSkipGate {
+    /// The bytes that some guard of the chain from this one on can take.
+    pub(crate) bsp: BitSet,
+    /// The sum of the chain's `skipped_retries` from this guard on.
+    pub(crate) skipped_retries: u32,
+    /// Relative address, from this guard, of the first non-guard instruction
+    /// the skip path reaches.
+    pub(crate) addr: RelAddrType,
+    /// The number of guards the gate covers, this one included.
+    pub(crate) links: u32,
+}
+
+// === Callout constants ===
+pub(crate) const CALLOUT_IN_PROGRESS: i32 = OnigCalloutIn::Progress as i32;
+pub(crate) const CALLOUT_IN_RETRACTION: i32 = OnigCalloutIn::Retraction as i32;
+pub(crate) const CALLOUT_IN_BOTH: i32 = CALLOUT_IN_PROGRESS | CALLOUT_IN_RETRACTION;
+
+/// Builtin callout IDs (hard-coded instead of global name registry)
+pub(crate) const CALLOUT_BUILTIN_FAIL: i32 = 0;
+pub(crate) const CALLOUT_BUILTIN_MAX: i32 = 1;
+pub(crate) const CALLOUT_BUILTIN_COUNT: i32 = 2;
+pub(crate) const CALLOUT_BUILTIN_CMP: i32 = 3;
+pub(crate) const CALLOUT_BUILTIN_SKIP: i32 = 4;
+pub(crate) const CALLOUT_BUILTIN_MISMATCH: i32 = 5;
+pub(crate) const CALLOUT_BUILTIN_ERROR: i32 = 6;
+
+/// Result codes for callout functions
+pub(crate) const ONIG_CALLOUT_FAIL: i32 = 1;
+pub(crate) const ONIG_CALLOUT_SUCCESS: i32 = 0;
+
+// === Callout argument ===
+/// A callout argument, as `onig_get_arg_by_callout_args` returns it.
+#[derive(Clone, Debug)]
+pub enum CalloutArg {
+    /// A number.
+    Long(i64),
+    /// A character.
+    Char(u8),
+    /// A multibyte character used by a user-defined callout argument.
+    CodePoint(OnigCodePoint),
+    /// The name of a callout tag.
+    Tag(Vec<u8>),
+    /// A tag value supplied as a default by the registration API.
+    TagId(i32),
+    /// A string.
+    Str(Vec<u8>),
+}
+
+// === CalloutListEntry ===
+pub(crate) struct CalloutListEntry {
+    pub of: i32,         // 0=contents, 1=name
+    pub callout_in: i32, // CALLOUT_IN_PROGRESS / RETRACTION / BOTH
+    pub builtin_id: i32, // CALLOUT_BUILTIN_MAX etc., -1 for contents
+    /// Oniguruma name ID for named callouts, or ONIG_NON_NAME_ID for contents.
+    pub name_id: i32,
+    /// The callback captured when this pattern was parsed.
+    pub start_func: Option<crate::regexec::OnigCalloutFunc>,
+    /// The registered end callback is retained for C structural parity. The
+    /// upstream VM snapshots it but invokes `start_func` for both progress
+    /// and retraction; execution therefore deliberately does not call it.
+    pub end_func: Option<crate::regexec::OnigCalloutFunc>,
+    /// Number of arguments supplied in the pattern before defaults were added.
+    pub passed_args_num: i32,
+    pub tag: Option<Vec<u8>>,
+    pub tag_start: usize, // byte offset of tag start in pattern
+    pub tag_end: usize,   // byte offset of tag end in pattern
+    pub args: Vec<CalloutArg>,
+    pub content: Option<Vec<u8>>, // Content bytes for contents callouts
+}
+
+// === RepeatRange ===
+#[derive(Clone, Debug)]
+pub(crate) struct RepeatRange {
+    pub lower: i32,
+    pub upper: i32,
+    pub u_offset: i32,
+}
+
+// === RegexExt (Callout Extension) ===
+pub(crate) struct RegexExt {
+    pub pattern: Vec<u8>,
+    pub tag_table: Option<HashMap<Vec<u8>, i32>>,
+    pub callout_num: i32,
+    pub callout_list: Vec<CalloutListEntry>,
+}
+
+// === regex_t (re_pattern_buffer) ===
+/// A compiled pattern: C's `regex_t`, which `onig_new` returns. Its fields are
+/// crate-private, so C callers only pass it to the functions that take it.
+pub struct RegexType {
+    /// Rust-only: findings of the compile-time backtracking check.
+    pub(crate) backtrack_warnings: Vec<crate::backtrack_lint::BacktrackWarning>,
+    /// Rust-only: reports from the explicitly enabled AST rewrite pass.
+    pub(crate) backtrack_rewrites: Vec<crate::backtrack_rewrite::BacktrackingRewrite>,
+    // bytecode
+    pub(crate) ops: Vec<Operation>,
+    pub(crate) string_pool: Vec<u8>,
+
+    // capture info
+    pub(crate) num_mem: i32,
+    pub(crate) num_repeat: i32,
+    pub(crate) num_empty_check: i32,
+    pub(crate) num_call: i32,
+    pub(crate) capture_history: MemStatusType,
+    pub(crate) push_mem_start: MemStatusType,
+    pub(crate) push_mem_end: MemStatusType,
+    pub(crate) stack_pop_level: StackPopLevel,
+    pub(crate) repeat_range: Vec<RepeatRange>,
+
+    // metadata
+    pub(crate) enc: OnigEncoding,
+    pub(crate) options: OnigOptionType,
+    /// Owned syntax configuration captured at compile time. Keeping a clone
+    /// avoids tying a compiled regex to the lifetime of its caller's syntax.
+    pub(crate) syntax: OnigSyntaxType,
+    pub(crate) case_fold_flag: OnigCaseFoldType,
+    pub(crate) name_table: Option<crate::regparse_types::NameTable>,
+
+    // optimization
+    pub(crate) optimize: OptimizeType,
+    pub(crate) threshold_len: i32,
+    pub(crate) anchor: i32,
+    pub(crate) anc_dist_min: OnigLen,
+    pub(crate) anc_dist_max: OnigLen,
+    pub(crate) sub_anchor: i32,
+    pub(crate) exact: Vec<u8>,
+    /// Reuse the forward literal search plan across haystacks (ADR-008).
+    pub(crate) exact_finder: Option<Box<memchr::memmem::Finder<'static>>>,
+    /// Rust-only (ADR-008): the whole program is `exact` (a string op and
+    /// `End`, no captures, anchors or distances), so the forward literal
+    /// search answers a search that sees all of its subject without entering
+    /// the VM (`pure_literal_first`). Set by `detect_pure_literal`.
+    pub(crate) pure_literal: bool,
+    /// Rust-only (ADR-008): the program has no `\G` (`CheckPosition`), no `\K`
+    /// and no callout, so a search from the end of an empty match finds that
+    /// same empty match again. The match iterators then step past it without
+    /// that search (`MatchCursor::accept`). Set by
+    /// `detect_skip_repeated_empty_search` when compilation ends.
+    pub(crate) skip_repeated_empty_search: bool,
+    pub(crate) map: [u8; CHAR_MAP_SIZE],
+    pub(crate) map_offset: i32,
+    pub(crate) map_bytes: [u8; 3],
+    pub(crate) map_byte_count: u8,
+    /// Rust-only (ADR-008): the ASCII part of `map` as byte ranges, for a
+    /// map search that checks eight ASCII bytes at a time.
+    pub(crate) map_ascii_ranges: MapAsciiRanges,
+    pub(crate) dist_min: OnigLen,
+    pub(crate) dist_max: OnigLen,
+    /// True when capture registers are needed for matching semantics even if
+    /// the caller does not request a region (e.g. backrefs, recursive mem ops).
+    pub(crate) needs_capture_tracking: bool,
+
+    /// True when the pattern uses `\K`, so the match start can move away from
+    /// the position its attempt began at. The region is then the only place
+    /// that carries the whole match: `[attempt position, attempt position +
+    /// match length]` no longer describes it.
+    pub(crate) keep_moves_match_start: bool,
+
+    /// First-byte prefilter map for regset dispatch.
+    /// Unlike `map` (which may be repurposed as BMH skip table when optimize=StrFast),
+    /// this always contains the character membership map for possible first bytes.
+    /// Only valid when `has_first_byte_map` is true.
+    pub(crate) first_byte_map: [u8; CHAR_MAP_SIZE],
+    pub(crate) has_first_byte_map: bool,
+    /// Rust-only RegSet routing hint: the optimizer (C's) has an unbounded
+    /// distance, but the extra class and type maps would give one within a
+    /// bounded distance of the match start. Such an entry is dispatched by
+    /// its start bytes, with C's optimizer still deciding which positions it
+    /// attempts; `first_byte_map` holds those maps' start bytes where they
+    /// sit at the match start.
+    pub(crate) start_dispatch: bool,
+
+    // subroutine call support
+    pub(crate) called_addrs: Vec<i32>, // group_num -> called entry address
+    pub(crate) unset_call_addrs: Vec<(usize, i32)>, // (op_index, group_num) for patching
+
+    // extension (callouts)
+    pub(crate) extp: Option<RegexExt>,
+
+    // literal alternation tries (for AltLiterals opcode)
+    pub(crate) literal_tries: Vec<crate::literal_trie::LiteralTrie>,
+
+    /// Rust-only (ADR-008): some guarded push carries
+    /// `GUARD_RETRIES_BY_CHECKS`.
+    pub(crate) check_dependent_guards: bool,
+
+    /// Rust-only (ADR-008): the skip gates of the guard chains, which the
+    /// guards' `skip_gate` indexes (see `GuardSkipGate`).
+    pub(crate) skip_gates: Vec<GuardSkipGate>,
+
+    // Aho-Corasick automaton for pure literal alternation fast path.
+    // `ac_alt_has_capture` is true when the alternation is wrapped in a single
+    // capture group, so the fast path must also populate region[1].
+    pub(crate) ac_alt: Option<aho_corasick::AhoCorasick>,
+    pub(crate) ac_alt_has_capture: bool,
+
+    /// Rust-only (ADR-008): skips for a leading class run
+    /// (`crate::leading_run`).
+    pub(crate) leading_run: Option<Box<crate::leading_run::LeadingRun>>,
+    /// Rust-only (ADR-008): bytecode start bytes for positions C's optimizer
+    /// does not narrow down (`crate::leading_run`).
+    pub(crate) search_start_map: Option<Box<crate::leading_run::SearchStartMap>>,
+    /// Rust-only (ADR-008): where attempts can pass the leading checks
+    /// (`crate::leading_run::SearchJump`).
+    pub(crate) search_jump: Option<Box<crate::leading_run::SearchJump>>,
+    /// Rust-only (ADR-008): the literal after a leading zero-width and class
+    /// repetition part (`crate::leading_run::LiteralPrefix`).
+    pub(crate) literal_prefix: Option<Box<crate::leading_run::LiteralPrefix>>,
+    /// Rust-only (ADR-008): the expression repeats `.` without an upper
+    /// bound, so a match may run to the end of the line and a second pass
+    /// that records its captures repeat a long attempt
+    /// (`crate::regexec::two_pass_capture_fill_pays`).
+    pub(crate) anychar_run: bool,
+    /// Rust-only (ADR-008): the most characters a fixed-length positive
+    /// look-behind before the first character a match reads steps back, or
+    /// 0 without one. Over malformed UTF-8 it goes on where its body ends,
+    /// as in C, so the start maps leave out a start only where those
+    /// characters line up (`crate::first_bytes::start_map_may_skip`).
+    pub(crate) look_behind_reach: u32,
+    /// Rust-only (ADR-008): the optimizer's map is an extra start map, where
+    /// C has no optimizer. C's map search cannot leave a start to a leading
+    /// look-behind (`look_behind_reach`), so there the search goes without
+    /// it (`map_search_bypassed`).
+    pub(crate) extra_map_optimizer: bool,
+    /// Rust-only (ADR-008): literals one of which every match contains,
+    /// for RegSet fallback searches (`crate::required_literals`).
+    pub(crate) required_literals: Option<Box<crate::required_literals::RequiredLiterals>>,
+}
+
+/// The ASCII bytes of an optimizer map as at most [`MapAsciiRanges::MAX`]
+/// inclusive ranges. Rust-only (ADR-008): `map_search` tests eight ASCII
+/// bytes at a time against them (`first_member`), instead of one table
+/// lookup and one character step per byte.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct MapAsciiRanges {
+    ranges: [(u8, u8); MapAsciiRanges::MAX],
+    /// Zero when the map's ASCII part needs more ranges than fit.
+    count: u8,
+}
+
+impl MapAsciiRanges {
+    pub(crate) const MAX: usize = 6;
+
+    /// The ranges of `map` below 0x80, or none if they do not fit.
+    pub(crate) fn of(map: &[u8; CHAR_MAP_SIZE]) -> Self {
+        let mut out = Self::default();
+        let mut at = 0;
+        while at < 0x80 {
+            if map[at] == 0 {
+                at += 1;
+                continue;
+            }
+            let lo = at;
+            while at < 0x80 && map[at] != 0 {
+                at += 1;
+            }
+            if out.count as usize == Self::MAX {
+                return Self::default();
+            }
+            out.ranges[out.count as usize] = (lo as u8, (at - 1) as u8);
+            out.count += 1;
+        }
+        out
+    }
+
+    /// Whether `first_member` applies: the map has an ASCII member.
+    #[inline]
+    pub(crate) fn usable(&self) -> bool {
+        self.count != 0
+    }
+
+    /// For eight ASCII bytes (little-endian, every high bit clear), the
+    /// index of the first byte inside a range. Adding `0x80 - lo` sets a
+    /// byte's high bit exactly when the byte is at least `lo`, and adding
+    /// `0x7F - hi` when it is above `hi`; no sum carries into the next byte.
+    #[inline]
+    pub(crate) fn first_member(&self, chunk: u64) -> Option<usize> {
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        const HIGH: u64 = 0x8080_8080_8080_8080;
+        debug_assert_eq!(chunk & HIGH, 0, "ASCII bytes only");
+        let mut hits = 0;
+        for &(lo, hi) in &self.ranges[..self.count as usize] {
+            let at_least_lo = chunk + ONES * (0x80 - lo as u64);
+            let above_hi = chunk + ONES * (0x7F - hi as u64);
+            hits |= at_least_lo & !above_hi;
+        }
+        let hits = hits & HIGH;
+        (hits != 0).then(|| hits.trailing_zeros() as usize / 8)
+    }
+}
+
+/// Set in a guard's `skipped_retries` when the backtracks it skips depend on
+/// position checks on its main path (anchors, word boundaries, fused
+/// look-behinds); the other bits then hold the largest count. Such a guard
+/// jumps only where an upper bound of the count is good enough (see
+/// `guard_may_jump` in `regexec.rs`), and pushes like the unguarded
+/// instruction otherwise.
+pub(crate) const GUARD_RETRIES_BY_CHECKS: u32 = 1 << 31;
+
+// === Optimization data structures ===
+pub(crate) const OPT_EXACT_MAXLEN: usize = 24;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MinMaxLen {
+    pub min: OnigLen,
+    pub max: OnigLen,
+}
+
+impl MinMaxLen {
+    pub(crate) fn new() -> Self {
+        MinMaxLen { min: 0, max: 0 }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.min = 0;
+        self.max = 0;
+    }
+
+    pub(crate) fn set(&mut self, min: OnigLen, max: OnigLen) {
+        self.min = min;
+        self.max = max;
+    }
+
+    pub(crate) fn add(&mut self, other: &MinMaxLen) {
+        self.min = crate::regcomp::distance_add(self.min, other.min);
+        self.max = crate::regcomp::distance_add(self.max, other.max);
+    }
+
+    pub(crate) fn alt_merge(&mut self, other: &MinMaxLen) {
+        if self.min > other.min {
+            self.min = other.min;
+        }
+        if self.max < other.max {
+            self.max = other.max;
+        }
+    }
+
+    pub(crate) fn is_equal(&self, other: &MinMaxLen) -> bool {
+        self.min == other.min && self.max == other.max
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OptAnc {
+    pub left: i32,
+    pub right: i32,
+}
+
+impl OptAnc {
+    pub(crate) fn new() -> Self {
+        OptAnc { left: 0, right: 0 }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.left = 0;
+        self.right = 0;
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OptStr {
+    pub mm: MinMaxLen,
+    pub anc: OptAnc,
+    pub reach_end: i32,
+    pub len: usize,
+    pub s: [u8; OPT_EXACT_MAXLEN],
+}
+
+impl OptStr {
+    pub(crate) fn new() -> Self {
+        OptStr {
+            mm: MinMaxLen::new(),
+            anc: OptAnc::new(),
+            reach_end: 0,
+            len: 0,
+            s: [0u8; OPT_EXACT_MAXLEN],
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.mm.clear();
+        self.anc.clear();
+        self.reach_end = 0;
+        self.len = 0;
+        self.s[0] = 0;
+    }
+
+    pub(crate) fn is_full(&self) -> bool {
+        self.len >= OPT_EXACT_MAXLEN
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct OptMap {
+    pub mm: MinMaxLen,
+    pub anc: OptAnc,
+    pub value: i32,
+    pub map: [u8; CHAR_MAP_SIZE],
+}
+
+impl OptMap {
+    pub(crate) fn new() -> Self {
+        OptMap {
+            mm: MinMaxLen::new(),
+            anc: OptAnc::new(),
+            value: 0,
+            map: [0u8; CHAR_MAP_SIZE],
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.mm.clear();
+        self.anc.clear();
+        self.value = 0;
+        self.map = [0u8; CHAR_MAP_SIZE];
+    }
+}
+
+impl Default for OptMap {
+    fn default() -> Self {
+        Self {
+            mm: MinMaxLen::default(),
+            anc: OptAnc::default(),
+            value: 0,
+            map: [0u8; CHAR_MAP_SIZE],
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OptNode {
+    pub len: MinMaxLen,
+    pub anc: OptAnc,
+    pub sb: OptStr,
+    pub sm: OptStr,
+    pub spr: OptStr,
+    pub map: OptMap,
+}
+
+impl Default for OptNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptNode {
+    pub(crate) fn new() -> Self {
+        OptNode {
+            len: MinMaxLen::new(),
+            anc: OptAnc::new(),
+            sb: OptStr::new(),
+            sm: OptStr::new(),
+            spr: OptStr::new(),
+            map: OptMap::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.len.clear();
+        self.anc.clear();
+        self.sb.clear();
+        self.sm.clear();
+        self.spr.clear();
+        self.map.clear();
+    }
+}
+
+// === Option check macros as functions ===
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_ignorecase(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_IGNORECASE)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_extend(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_EXTEND)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_multiline(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_MULTILINE)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_singleline(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_SINGLELINE)
+}
+
+#[inline]
+pub(crate) fn opton_find_longest(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_FIND_LONGEST)
+}
+
+#[inline]
+pub(crate) fn opton_find_not_empty(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_FIND_NOT_EMPTY)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_negate_singleline(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_NEGATE_SINGLELINE)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_dont_capture_group(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_DONT_CAPTURE_GROUP)
+}
+
+#[inline]
+pub(crate) fn opton_capture_group(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_CAPTURE_GROUP)
+}
+
+#[inline]
+pub(crate) fn opton_notbol(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_NOTBOL)
+}
+
+#[inline]
+pub(crate) fn opton_noteol(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_NOTEOL)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_posix_region(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_POSIX_REGION)
+}
+
+#[inline]
+pub(crate) fn opton_check_validity_of_string(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_CHECK_VALIDITY_OF_STRING)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_callback_each_match(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_CALLBACK_EACH_MATCH)
+}
+
+#[inline]
+pub(crate) fn opton_not_begin_string(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_NOT_BEGIN_STRING)
+}
+
+#[inline]
+pub(crate) fn opton_not_end_string(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_NOT_END_STRING)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn opton_not_begin_position(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_NOT_BEGIN_POSITION)
+}
+
+#[inline]
+pub(crate) fn opton_match_whole_string(option: OnigOptionType) -> bool {
+    option.contains(ONIG_OPTION_MATCH_WHOLE_STRING)
+}
+
+// === Syntax macros ===
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mc_esc(syn: &OnigSyntaxType) -> OnigCodePoint {
+    syn.meta_char_table.esc
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mc_anychar(syn: &OnigSyntaxType) -> OnigCodePoint {
+    syn.meta_char_table.anychar
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mc_anytime(syn: &OnigSyntaxType) -> OnigCodePoint {
+    syn.meta_char_table.anytime
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mc_zero_or_one_time(syn: &OnigSyntaxType) -> OnigCodePoint {
+    syn.meta_char_table.zero_or_one_time
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mc_one_or_more_time(syn: &OnigSyntaxType) -> OnigCodePoint {
+    syn.meta_char_table.one_or_more_time
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mc_anychar_anytime(syn: &OnigSyntaxType) -> OnigCodePoint {
+    syn.meta_char_table.anychar_anytime
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn is_mc_esc_code(code: OnigCodePoint, syn: &OnigSyntaxType) -> bool {
+    code == mc_esc(syn) && !is_syntax_op2(syn, ONIG_SYN_OP2_INEFFECTIVE_ESCAPE)
+}
+
+// === Value helpers ===
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn digitval(code: OnigCodePoint) -> u32 {
+    code - b'0' as u32
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn odigitval(code: OnigCodePoint) -> u32 {
+    digitval(code)
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn is_code_word_ascii(code: OnigCodePoint) -> bool {
+    code < 128
+}
+
+#[inline]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn is_code_digit_ascii(code: OnigCodePoint) -> bool {
+    code < 128 && (code >= b'0' as u32 && code <= b'9' as u32)
+}

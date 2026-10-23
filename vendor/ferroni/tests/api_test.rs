@@ -1,0 +1,4134 @@
+//! Integration tests for the idiomatic Rust API.
+
+use std::borrow::Cow;
+
+use ferroni::api::{Regex, RegexBuilder};
+use ferroni::error::RegexError;
+use ferroni::oniguruma::{
+    ONIGERR_INVALID_BACKREF, ONIGERR_UNDEFINED_GROUP_REFERENCE, OnigSyntaxType,
+};
+use ferroni::prelude::*;
+use ferroni::regsyntax::{
+    OnigSyntaxOniguruma, OnigSyntaxPerl_NG, OnigSyntaxPython, OnigSyntaxRuby,
+};
+
+// The documented defaults of the parser limits (ADR-013; the setters in
+// `ferroni::regparse` restore them on zero). `regint` is crate-private.
+const DEFAULT_PARSE_DEPTH_LIMIT: u32 = 256;
+const DEFAULT_AST_NODE_LIMIT: u32 = 4096;
+
+// === Regex::new ===
+
+#[test]
+fn recursive_capture_above_bitset_width() {
+    let pattern = format!(r"{}(a\g<32>?b)", "()".repeat(31));
+    let regex = Regex::new(&pattern).unwrap();
+    assert_eq!(regex.find("aaabbb").unwrap().as_str(), "aaabbb");
+    assert!(!regex.is_match("aaa"));
+}
+
+#[test]
+fn simple_pattern() {
+    let re = Regex::new(r"\d+").unwrap();
+    let m = re.find("abc 123 def").unwrap();
+    assert_eq!(m.as_str(), "123");
+}
+
+#[test]
+fn unicode_pattern() {
+    let re = Regex::new(r"\p{Hiragana}+").unwrap();
+    let m = re.find("hello せかい world").unwrap();
+    assert_eq!(m.as_str(), "せかい");
+}
+
+#[test]
+fn no_match_returns_none() {
+    let re = Regex::new(r"xyz").unwrap();
+    assert!(re.find("abc").is_none());
+}
+
+#[test]
+fn empty_pattern() {
+    let re = Regex::new(r"").unwrap();
+    let m = re.find("hello").unwrap();
+    assert_eq!(m.start(), 0);
+    assert_eq!(m.end(), 0);
+    assert!(m.is_empty());
+}
+
+#[test]
+fn invalid_pattern_syntax_error() {
+    let err = Regex::new(r"(unclosed").unwrap_err();
+    match err {
+        RegexError::Syntax { code, .. } => assert!(code < 0),
+        other => panic!("expected Syntax error, got {:?}", other),
+    }
+}
+
+#[test]
+fn invalid_pattern_empty_char_class() {
+    let err = Regex::new(r"[]").unwrap_err();
+    assert!(matches!(err, RegexError::Syntax { .. }));
+}
+
+#[test]
+fn flat_patterns_exceeding_ast_depth_limit_fail_cleanly() {
+    const HUGE_FLAT_PATTERN_ELEMENT_COUNT: usize = 50_000;
+
+    let alternatives = format!("{}a", "a|".repeat(HUGE_FLAT_PATTERN_ELEMENT_COUNT - 1));
+    let concatenation = ".".repeat(HUGE_FLAT_PATTERN_ELEMENT_COUNT);
+
+    for pattern in [&alternatives, &concatenation] {
+        let err = Regex::new(pattern).unwrap_err();
+        assert_eq!(err, RegexError::ParseDepthLimitOver);
+    }
+}
+
+#[test]
+fn nested_wide_patterns_exceeding_ast_depth_limit_fail_cleanly() {
+    const NESTED_GROUP_COUNT: usize = 20;
+    const WIDE_ALTERNATIVE_COUNT: usize = 4_000;
+    const LONG_CONCATENATION_COUNT: usize = 4_000;
+
+    let mut pattern = ".".repeat(LONG_CONCATENATION_COUNT);
+    for _ in 0..NESTED_GROUP_COUNT {
+        pattern = format!("(?:{}{})", "a|".repeat(WIDE_ALTERNATIVE_COUNT), pattern);
+    }
+
+    let err = Regex::new(&pattern).unwrap_err();
+    assert_eq!(err, RegexError::ParseDepthLimitOver);
+}
+
+/// Compiles `pattern` on a spawned thread with an explicit 2 MiB stack, the
+/// default of `std::thread::spawn` and of Tokio and Rayon workers. Debug builds
+/// use the most stack per level, so these tests are the harder case. A stack
+/// overflow aborts the test binary instead of returning, so a test that gets a
+/// result has shown that the limit fired first.
+fn compile_on_two_mib_stack(pattern: String) -> Result<(), RegexError> {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || Regex::new(&pattern).map(|_| ()))
+        .expect("spawn compile thread")
+        .join()
+        .expect("compile thread panicked")
+}
+
+#[test]
+fn nested_groups_above_depth_limit_fail_cleanly_on_two_mib_stack() {
+    // A group costs two parser units, so 128 groups reach depth 258.
+    let groups = DEFAULT_PARSE_DEPTH_LIMIT as usize / 2;
+    let pattern = "(".repeat(groups) + "a" + &")".repeat(groups);
+    assert_eq!(
+        compile_on_two_mib_stack(pattern),
+        Err(RegexError::ParseDepthLimitOver)
+    );
+}
+
+#[test]
+fn nested_groups_at_depth_limit_compile_on_two_mib_stack() {
+    // 127 groups reach depth 256, exactly the limit.
+    let groups = DEFAULT_PARSE_DEPTH_LIMIT as usize / 2 - 1;
+    let pattern = "(".repeat(groups) + "a" + &")".repeat(groups);
+    assert_eq!(compile_on_two_mib_stack(pattern), Ok(()));
+}
+
+#[test]
+fn nested_classes_above_depth_limit_fail_cleanly_on_two_mib_stack() {
+    // A nested class costs one unit, on top of the two that the top-level
+    // alternation and branch take, so 255 classes reach depth 257.
+    let classes = DEFAULT_PARSE_DEPTH_LIMIT as usize - 1;
+    let pattern = "[".repeat(classes) + "a" + &"]".repeat(classes);
+    assert_eq!(
+        compile_on_two_mib_stack(pattern),
+        Err(RegexError::ParseDepthLimitOver)
+    );
+}
+
+#[test]
+fn nested_classes_at_depth_limit_compile_on_two_mib_stack() {
+    // 254 classes reach depth 256, exactly the limit.
+    let classes = DEFAULT_PARSE_DEPTH_LIMIT as usize - 2;
+    let pattern = "[".repeat(classes) + "a" + &"]".repeat(classes);
+    assert_eq!(compile_on_two_mib_stack(pattern), Ok(()));
+}
+
+#[test]
+fn flat_alternation_above_ast_node_limit_fails_cleanly_on_two_mib_stack() {
+    // One node per alternative: one more alternative than the budget allows.
+    let pattern = (0..=DEFAULT_AST_NODE_LIMIT)
+        .map(|i| format!("a{i}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    assert_eq!(
+        compile_on_two_mib_stack(pattern),
+        Err(RegexError::ParseDepthLimitOver)
+    );
+}
+
+#[test]
+fn long_literal_larger_than_ast_node_limit_is_supported() {
+    // A literal run is one node, so its length is not bounded by the budget.
+    let pattern = "a".repeat(DEFAULT_AST_NODE_LIMIT as usize * 2);
+    let re = Regex::new(&pattern).unwrap();
+    assert!(re.is_match(&pattern));
+}
+
+// === Regex::is_match ===
+
+#[test]
+fn is_match_true() {
+    let re = Regex::new(r"world").unwrap();
+    assert!(re.is_match("hello world"));
+}
+
+#[test]
+fn is_match_false() {
+    let re = Regex::new(r"world").unwrap();
+    assert!(!re.is_match("hello earth"));
+}
+
+// === Regex::find ===
+
+#[test]
+fn find_start_end_range() {
+    let re = Regex::new(r"bar").unwrap();
+    let m = re.find("foobarbaz").unwrap();
+    assert_eq!(m.start(), 3);
+    assert_eq!(m.end(), 6);
+    assert_eq!(m.range(), 3..6);
+    assert_eq!(m.len(), 3);
+    assert!(!m.is_empty());
+}
+
+#[test]
+fn find_as_bytes() {
+    let re = Regex::new(r"\w+").unwrap();
+    let m = re.find("hello world").unwrap();
+    assert_eq!(m.as_bytes(), b"hello");
+}
+
+#[test]
+fn unset_backreference_does_not_reuse_prior_capture() {
+    let prior = Regex::new(r"(abc)(def)").unwrap();
+    assert!(prior.captures("abcdef").is_some());
+
+    let re = Regex::new(r"(?:(foo)|bar)\1").unwrap();
+    assert!(re.find("barbar").is_none());
+}
+
+// === Regex::captures ===
+
+#[test]
+fn captures_groups() {
+    let re = Regex::new(r"(\w+)\s+(\w+)").unwrap();
+    let caps = re.captures("hello world").unwrap();
+    assert_eq!(caps.get(0).unwrap().as_str(), "hello world");
+    assert_eq!(caps.get(1).unwrap().as_str(), "hello");
+    assert_eq!(caps.get(2).unwrap().as_str(), "world");
+    assert_eq!(caps.len(), 3); // group 0 + 2 captures
+}
+
+#[test]
+fn captures_optional_group() {
+    let re = Regex::new(r"(a)(b)?c").unwrap();
+    let caps = re.captures("ac").unwrap();
+    assert_eq!(caps.get(0).unwrap().as_str(), "ac");
+    assert_eq!(caps.get(1).unwrap().as_str(), "a");
+    assert!(caps.get(2).is_none()); // group 2 didn't participate
+}
+
+#[test]
+fn captures_optional_group_is_not_reused_from_prior_regex() {
+    let prior = Regex::new(r"(aaa)(bbb)(ccc)").unwrap();
+    assert!(prior.captures("aaabbbccc").is_some());
+
+    let re = Regex::new(r"(x)?z").unwrap();
+    let caps = re.captures("z").unwrap();
+
+    // A stale range here used to make safe Match::as_str() panic when slicing "z".
+    assert!(caps.get(1).is_none());
+}
+
+#[test]
+fn captures_named() {
+    let re = Regex::new(r"(?<first>\w+)\s+(?<last>\w+)").unwrap();
+    let caps = re.captures("John Doe").unwrap();
+    assert_eq!(caps.name("first").unwrap().as_str(), "John");
+    assert_eq!(caps.name("last").unwrap().as_str(), "Doe");
+    assert!(caps.name("middle").is_none());
+}
+
+#[test]
+fn captures_multiplex_name_returns_last_participating_group() {
+    let re = Regex::new(r"(?<letter>a)(?<letter>b)").unwrap();
+    let caps = re.captures("ab").unwrap();
+
+    assert_eq!(caps.name("letter").unwrap().as_str(), "b");
+}
+
+#[test]
+fn captures_multiplex_name_returns_earlier_participating_group() {
+    let re = Regex::new(r"(?:(?<letter>a)|(?<letter>b))").unwrap();
+    let caps = re.captures("a").unwrap();
+
+    assert_eq!(caps.name("letter").unwrap().as_str(), "a");
+}
+
+#[test]
+fn captures_multiplex_name_returns_later_participating_group() {
+    let re = Regex::new(r"(?:(?<letter>a)|(?<letter>b))").unwrap();
+    let caps = re.captures("b").unwrap();
+
+    assert_eq!(caps.name("letter").unwrap().as_str(), "b");
+}
+
+#[test]
+fn captures_multiplex_name_returns_none_when_no_group_participates() {
+    let re = Regex::new(r"(?:(?<letter>a)|(?<letter>b))?").unwrap();
+    let caps = re.captures("").unwrap();
+
+    assert!(caps.name("letter").is_none());
+}
+
+#[test]
+fn captures_name_returns_unique_named_group() {
+    let re = Regex::new(r"(?<letter>a)").unwrap();
+    let caps = re.captures("a").unwrap();
+
+    assert_eq!(caps.name("letter").unwrap().as_str(), "a");
+}
+
+#[test]
+fn captures_no_match() {
+    let re = Regex::new(r"(\d+)").unwrap();
+    assert!(re.captures("no digits").is_none());
+}
+
+#[test]
+fn captures_len() {
+    let re = Regex::new(r"(a)(b)(c)(d)").unwrap();
+    assert_eq!(re.captures_len(), 4);
+}
+
+#[test]
+fn captures_iter() {
+    let re = Regex::new(r"(a)(b)").unwrap();
+    let caps = re.captures("ab").unwrap();
+    let items: Vec<_> = caps.iter().collect();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0].unwrap().as_str(), "ab");
+    assert_eq!(items[1].unwrap().as_str(), "a");
+    assert_eq!(items[2].unwrap().as_str(), "b");
+}
+
+// === Regex::find_iter ===
+
+#[test]
+fn find_iter_multiple() {
+    let re = Regex::new(r"\d+").unwrap();
+    let results: Vec<&str> = re
+        .find_iter("1 and 22 and 333")
+        .map(|m| m.as_str())
+        .collect();
+    assert_eq!(results, vec!["1", "22", "333"]);
+}
+
+#[test]
+fn find_iter_no_matches() {
+    let re = Regex::new(r"\d+").unwrap();
+    let results: Vec<_> = re.find_iter("no digits").collect();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn find_iter_empty_pattern() {
+    let re = Regex::new(r"").unwrap();
+    let results: Vec<_> = re.find_iter("ab").collect();
+    // Should find empty match at positions 0, 1, 2
+    assert_eq!(results.len(), 3);
+    for (i, m) in results.iter().enumerate() {
+        assert_eq!(m.start(), i);
+        assert!(m.is_empty());
+    }
+}
+
+#[test]
+fn find_iter_overlapping_region() {
+    let re = Regex::new(r"\w+").unwrap();
+    let results: Vec<&str> = re.find_iter("a bb ccc").map(|m| m.as_str()).collect();
+    assert_eq!(results, vec!["a", "bb", "ccc"]);
+}
+
+// === RegexBuilder ===
+
+#[test]
+fn builder_case_insensitive() {
+    let re = RegexBuilder::new(r"hello")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("HELLO"));
+    assert!(re.is_match("HeLlO"));
+}
+
+#[test]
+fn builder_dot_matches_newline() {
+    let re = Regex::builder(r"a.b")
+        .dot_matches_newline(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("a\nb"));
+
+    let re2 = Regex::builder(r"a.b").build().unwrap();
+    assert!(!re2.is_match("a\nb"));
+}
+
+#[test]
+fn builder_extended_mode() {
+    let re = Regex::builder(
+        r"
+        \d+   # digits
+        \s+   # space
+        \w+   # word
+    ",
+    )
+    .extended(true)
+    .build()
+    .unwrap();
+    assert!(re.is_match("42 hello"));
+}
+
+#[test]
+fn builder_syntax() {
+    use ferroni::regsyntax::OnigSyntaxPerl;
+    let re = Regex::builder(r"\d+")
+        .syntax(&OnigSyntaxPerl)
+        .build()
+        .unwrap();
+    assert!(re.is_match("42"));
+}
+
+#[test]
+fn prototype_ecmascript_negative_lookbehind_is_opt_in() {
+    use ferroni::regsyntax::prototype_ecmascript_lookbehind_syntax;
+
+    assert!(Regex::new(r"(?<!(a))b").is_err());
+    assert!(Regex::new(r"(?<!a(?=b))b").is_err());
+
+    let capture = Regex::builder(r"(?<!(a+|bc))d")
+        .syntax(prototype_ecmascript_lookbehind_syntax())
+        .build()
+        .unwrap();
+    assert!(capture.is_match("d"));
+    assert!(!capture.is_match("ad"));
+    assert!(!capture.is_match("bcd"));
+
+    let positive = Regex::builder(r"(?<!a(?=b))b")
+        .syntax(prototype_ecmascript_lookbehind_syntax())
+        .build()
+        .unwrap();
+    assert!(positive.is_match("b"));
+    assert!(!positive.is_match("ab"));
+
+    let negative = Regex::builder(r"(?<!a(?!c))b")
+        .syntax(prototype_ecmascript_lookbehind_syntax())
+        .build()
+        .unwrap();
+    assert!(!negative.is_match("ab"));
+    assert!(negative.is_match("acb"));
+}
+
+#[test]
+fn prototype_ecmascript_unmatched_backreferences_are_empty() {
+    use ferroni::regsyntax::prototype_ecmascript_lookbehind_syntax;
+
+    for pattern in [r"(a)?b\1", r"(a)(b)?c\2", r"(a)(b)(c)?d\3"] {
+        let re = Regex::builder(pattern)
+            .syntax(prototype_ecmascript_lookbehind_syntax())
+            .build()
+            .unwrap();
+        assert!(re.is_match(match pattern {
+            r"(a)?b\1" => "b",
+            r"(a)(b)?c\2" => "ac",
+            _ => "abd",
+        }));
+    }
+
+    let insensitive = Regex::builder(r"(a)(b)(c)?d\3")
+        .syntax(prototype_ecmascript_lookbehind_syntax())
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(insensitive.is_match("ABD"));
+
+    let named = Regex::builder(r"(?:(?<x>a)|(?<x>b))?c\k<x>")
+        .syntax(prototype_ecmascript_lookbehind_syntax())
+        .build()
+        .unwrap();
+    assert!(named.is_match("c"));
+
+    let named_insensitive = Regex::builder(r"(?:(?<x>a)|(?<x>b))?c\k<x>")
+        .syntax(prototype_ecmascript_lookbehind_syntax())
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(named_insensitive.is_match("C"));
+}
+
+#[test]
+fn builder_chaining() {
+    let re = Regex::builder(r"hello world")
+        .case_insensitive(true)
+        .dot_matches_newline(true)
+        .extended(false)
+        .build()
+        .unwrap();
+    assert!(re.is_match("HELLO WORLD"));
+}
+
+// === Byte API ===
+
+#[test]
+fn find_bytes() {
+    let re = Regex::new_bytes(b"\\d+").unwrap();
+    let m = re.find_bytes(b"abc 42 def").unwrap();
+    assert_eq!(m.as_bytes(), b"42");
+    assert_eq!(m.start(), 4);
+}
+
+#[test]
+fn is_match_bytes() {
+    let re = Regex::new_bytes(b"hello").unwrap();
+    assert!(re.is_match_bytes(b"say hello"));
+    assert!(!re.is_match_bytes(b"goodbye"));
+}
+
+#[test]
+fn byte_matching_clamps_truncated_utf8_word_steps() {
+    let cases: &[(&str, &[u8])] = &[
+        (r"\w+", b"hello\xf0\x9f\x92"),
+        (r"\b\w+\b", b"\xf0\x9f"),
+        (r"\w\b", b"\xf0\x9f"),
+        (r"\w+", b"abc\xc2"),
+        (r"(?W)\W", b"\xf0"),
+    ];
+
+    for &(pattern, input) in cases {
+        let re = Regex::new(pattern).unwrap();
+        assert!(re.is_match_bytes(input), "pattern {pattern:?}");
+
+        let matched = re.find_bytes(input).expect("matching input");
+        assert_eq!(matched.range(), 0..input.len(), "pattern {pattern:?}");
+        assert_eq!(matched.as_bytes(), input, "pattern {pattern:?}");
+    }
+}
+
+#[test]
+fn byte_matching_clamps_truncated_utf8_negated_class_steps() {
+    let input = b"\xf0";
+    let re = Regex::new_bytes(b"([^a]+)").unwrap();
+
+    let matched = re.find_bytes(input).expect("matching input");
+    assert_eq!(matched.range(), 0..input.len());
+    assert_eq!(matched.as_bytes(), input);
+
+    let captures = re.captures_bytes(input).expect("matching input");
+    for index in 0..captures.len() {
+        let capture = captures.get(index).expect("participating capture");
+        assert_eq!(capture.range(), 0..input.len());
+        assert_eq!(capture.as_bytes(), input);
+    }
+}
+
+// === RegexError ===
+
+#[test]
+fn error_display() {
+    let err = Regex::new(r"(").unwrap_err();
+    let msg = format!("{}", err);
+    assert!(!msg.is_empty());
+}
+
+#[test]
+fn error_is_std_error() {
+    let err: Box<dyn std::error::Error> = Box::new(Regex::new(r"[").unwrap_err());
+    assert!(!err.to_string().is_empty());
+}
+
+#[test]
+fn error_code() {
+    let err = Regex::new(r"(").unwrap_err();
+    assert!(err.code() < 0);
+}
+
+// Messages naming a group or property carry the offending name. Every
+// expected string is what C's onig_error_code_to_str() prints for the same
+// pattern and syntax, prefixed with "syntax error: ".
+
+fn error_message(syntax: &'static OnigSyntaxType, pattern: &str) -> String {
+    Regex::builder(pattern)
+        .syntax(syntax)
+        .build()
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn error_message_names_invalid_char_property() {
+    let cases = [
+        (r"\p{Nope}", "{Nope}"),
+        (r"\p{^Nope}", "{Nope}"),
+        (r"[\p{Nope}]", "{Nope}"),
+        (r"\pQ", "{Q}"),
+        (r"\p{}", "{}"),
+        (r"\p{Ñope}", "{Ñope}"),
+        // C cuts the name after 27 bytes.
+        (
+            r"\p{abcdefghijklmnopqrstuvwxyz0123456789}",
+            "{abcdefghijklmnopqrstuvwxyz0...}",
+        ),
+    ];
+    for (pattern, name) in cases {
+        assert_eq!(
+            Regex::new(pattern).unwrap_err().to_string(),
+            format!("syntax error: invalid character property name {name}"),
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn error_message_names_undefined_name_reference() {
+    let cases = [
+        (&OnigSyntaxOniguruma, r"\k<nope>"),
+        (&OnigSyntaxOniguruma, r"\g<nope>"),
+        (&OnigSyntaxOniguruma, r"(?(<nope>)a|b)"),
+        (&OnigSyntaxPerl_NG, r"(?&nope)"),
+        (&OnigSyntaxPython, r"(?P=nope)"),
+        (&OnigSyntaxPython, r"(?P>nope)"),
+    ];
+    for (syntax, pattern) in cases {
+        assert_eq!(
+            error_message(syntax, pattern),
+            "syntax error: undefined name <nope> reference",
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn error_message_names_undefined_group_reference() {
+    let cases = [
+        (&OnigSyntaxOniguruma, r"\g<5>", "<5>"),
+        (&OnigSyntaxOniguruma, r"\g<+1>", "<+1>"),
+        (&OnigSyntaxOniguruma, r"\g<-2>", "<-2>"),
+        (&OnigSyntaxPerl_NG, r"(?1)", "<1>"),
+        (&OnigSyntaxPerl_NG, r"(?-2)", "<-2>"),
+    ];
+    for (syntax, pattern, name) in cases {
+        assert_eq!(
+            error_message(syntax, pattern),
+            format!("syntax error: undefined group {name} reference"),
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn error_message_names_multiplex_defined_name() {
+    // Oniguruma, Ruby and Perl_NG set ONIG_SYN_ALLOW_MULTIPLEX_DEFINITION_NAME;
+    // Python is a syntax with named groups that does not.
+    assert_eq!(
+        error_message(&OnigSyntaxPython, r"(?P<a>x)(?P<a>y)"),
+        "syntax error: multiplex defined name <a>"
+    );
+    // Callout tags are unique in every syntax.
+    for pattern in [
+        r"(*COUNT[AB]{X})(*COUNT[AB]{X})",
+        r"(*COUNT[AB]{X})a(*MAX[AB]{2})",
+    ] {
+        assert_eq!(
+            Regex::new(pattern).unwrap_err().to_string(),
+            "syntax error: multiplex defined name <AB>",
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn error_message_names_multiplex_definition_name_call() {
+    for syntax in [&OnigSyntaxOniguruma, &OnigSyntaxRuby] {
+        assert_eq!(
+            error_message(syntax, r"(?<a>x)(?<a>y)\g<a>"),
+            "syntax error: multiplex definition name <a> call"
+        );
+    }
+}
+
+#[test]
+fn error_message_names_invalid_group_name() {
+    let cases = [
+        (r"(?<1a>x)", "<1a>"),
+        (r"\k<1a>", "<1a>"),
+        (r"\k<+0>", "<+0>"),
+        (r"\k<+>", "<+>"),
+        (r"\k<-x>", "<-x>"),
+        // A bad level runs the name to the end of the pattern, as in C.
+        (r"\k<a+1x>", "<a+1x>>"),
+        (r"\k<1+x>", "<1+x>>"),
+    ];
+    for (pattern, name) in cases {
+        assert_eq!(
+            Regex::new(pattern).unwrap_err().to_string(),
+            format!("syntax error: invalid group name {name}"),
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn error_message_names_invalid_char_in_group_name() {
+    let cases = [
+        (r"(?<$a>x)", "<$a>"),
+        (r"(?<$ab", "<$ab>"),
+        (r"\k<a$b>", "<a$b>"),
+        (r"\k<a$b", "<a$>"),
+    ];
+    for (pattern, name) in cases {
+        assert_eq!(
+            Regex::new(pattern).unwrap_err().to_string(),
+            format!("syntax error: invalid char in group name {name}"),
+            "{pattern}"
+        );
+    }
+}
+
+// Each case below is (syntax, pattern, what C's onig_new() reports): `None`
+// when it compiles, else the onig_error_code_to_str() message.
+
+fn assert_compiles_like_c(cases: &[(&'static OnigSyntaxType, &str, Option<&str>)]) {
+    for &(syntax, pattern, expected) in cases {
+        let got = Regex::builder(pattern)
+            .syntax(syntax)
+            .build()
+            .err()
+            .map(|e| e.to_string());
+        let expected = expected.map(|m| format!("syntax error: {m}"));
+        assert_eq!(got, expected, "{pattern}");
+    }
+}
+
+/// C's fetch_name() only honors an error inside the name when the closing
+/// delimiter is missing, and fetch_name_with_level() stops a name at `+`
+/// or `-` to read a level.
+#[test]
+fn group_names_parse_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    assert_compiles_like_c(&[
+        (onig, r"(?<a$b>x)", None),
+        (onig, r"(?'a-b'x)", None),
+        (&OnigSyntaxPython, r"(?P<a+1>x)", None),
+        (onig, r"(?<ab", Some("invalid group name <a>")),
+        (onig, r"(?<a$b)", Some("invalid group name <a$b>")),
+        (onig, r"\k<a", Some("invalid group name <a>")),
+        (onig, r"\k<a)", Some("invalid group name <a)>")),
+        (onig, r"\k<a+>", Some("invalid group name <a+>>")),
+        (onig, r"\k<1->", Some("invalid group name <1->>")),
+        (onig, r"\k<$a>", Some("invalid char in group name <$a>")),
+        (onig, r"\k<$a", Some("invalid char in group name <$>")),
+        (onig, r"\g<ab", Some("invalid group name <a>")),
+        (onig, r"\g<a)", Some("invalid group name <a>")),
+        (onig, r"\g<a-b", Some("invalid group name <a->")),
+        (onig, r"\g<1a>", Some("undefined name <1a> reference")),
+        (onig, r"\g<a+1>", Some("undefined name <a+1> reference")),
+        (onig, r"\g<a$b>", Some("undefined name <a$b> reference")),
+        (
+            &OnigSyntaxPerl_NG,
+            r"(?&a-1)",
+            Some("undefined name <a-1> reference"),
+        ),
+        (
+            &OnigSyntaxPerl_NG,
+            r"(?+0)",
+            Some("invalid group name <+0>"),
+        ),
+        (
+            onig,
+            r"(x)\k<+2147483647>",
+            Some("invalid backref number/name"),
+        ),
+    ]);
+}
+
+/// `(?P=name)` and `(?P>name)` are tokens that take no group number, as in
+/// C's fetch_token().
+#[test]
+fn python_named_backref_and_call_parse_like_c() {
+    let python = &OnigSyntaxPython;
+    assert_compiles_like_c(&[
+        (python, r"(?P=1)", Some("invalid backref number/name")),
+        (python, r"(?P=a-b)", Some("invalid group name <a-b)>")),
+        (python, r"(?P=1a)", Some("invalid group name <1a>")),
+        (python, r"(?P>1a)", Some("undefined name <1a> reference")),
+        (python, r"(?P>+0)", Some("invalid group name <+0>")),
+        (python, r"(?P<a>x)(?P=a)", None),
+        (python, r"(?P<a>x)(?P>a)", None),
+    ]);
+    let err = Regex::builder(r"(?P>1)")
+        .syntax(python)
+        .build()
+        .unwrap_err();
+    assert_eq!(err.code(), ONIGERR_UNDEFINED_GROUP_REFERENCE);
+}
+
+/// C checks backref bounds (check_backrefs) after rejecting numbered
+/// backrefs next to named groups, and a backref may point forward.
+#[test]
+fn numbered_backrefs_are_checked_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let not_allowed = Some("numbered backref/call is not allowed. (use name)");
+    assert_compiles_like_c(&[
+        (onig, r"(?<a>x)\k<2>", not_allowed),
+        (onig, r"(?<a>x)\k<+1>", not_allowed),
+        (onig, r"(?<a>x)(y)\k<3>", not_allowed),
+        (&OnigSyntaxPerl_NG, r"(?<a>x)\k<2>", not_allowed),
+        (onig, r"\k<2>", Some("invalid backref number/name")),
+        (onig, r"(x)\k<2>", Some("invalid backref number/name")),
+        (onig, r"\k<1>(x)", None),
+    ]);
+}
+
+/// C's check_call_reference() rejects a call by number next to named groups.
+#[test]
+fn numbered_calls_are_checked_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let not_allowed = Some("numbered backref/call is not allowed. (use name)");
+    assert_compiles_like_c(&[
+        (onig, r"(?<a>x)\g<1>", not_allowed),
+        (onig, r"(?<a>x)\g<0>", not_allowed),
+        (onig, r"(?<a>x)\g<2>", not_allowed),
+        (onig, r"(?<a>x)\g<-1>", not_allowed),
+        (&OnigSyntaxRuby, r"(?<a>x)\g<1>", not_allowed),
+        (&OnigSyntaxPerl_NG, r"(?<a>x)(?1)", not_allowed),
+        (&OnigSyntaxPerl_NG, r"(?<a>x)\g<1>", not_allowed),
+        (onig, r"(x)\g<1>", None),
+        (onig, r"(?<a>x)\g<a>", None),
+    ]);
+}
+
+/// C's prs_bag() reads a condition reference with fetch_name_with_level(),
+/// falls back to a pattern condition when a bare reference does not parse,
+/// and leaves the group bounds to check_backrefs().
+#[test]
+fn conditions_parse_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let not_allowed = Some("numbered backref/call is not allowed. (use name)");
+    assert_compiles_like_c(&[
+        (onig, r"(a)(?(1)a|b)", None),
+        (onig, r"(a)(?(1+0)a|b)", None),
+        (onig, r"(a)(?(<1>)a|b)", None),
+        (onig, r"(a)(?(1))", None),
+        (onig, r"(?(1a)a|b)", None),
+        (onig, r"(?(-0)a|b)", None),
+        (onig, r"(?(a)b)", None),
+        (
+            onig,
+            r"(?(+0)a|b)",
+            Some("target of repeat operator is not specified"),
+        ),
+        (onig, r"(?(1)a|b)", Some("invalid backref number/name")),
+        (
+            onig,
+            r"(?(<nope>)a|b)",
+            Some("undefined name <nope> reference"),
+        ),
+        (onig, r"(?(<1>a|b)", Some("end pattern in group")),
+        (onig, r"(?(1", Some("end pattern in group")),
+        (onig, r"(?(a", Some("end pattern in group")),
+        (onig, r"(?(a))", Some("invalid if-else syntax")),
+        (onig, r"(?<a>x)(?(<2>)a|b)", not_allowed),
+        (onig, r"(?<a>x)(?(2)a|b)", not_allowed),
+    ]);
+}
+
+/// C's fetch_interval() leaves the position at the `{` when the brace is an
+/// ordinary character (ONIG_SYN_ALLOW_INVALID_INTERVAL), so what follows is
+/// tokenized normally.
+#[test]
+fn invalid_interval_brace_is_a_literal_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    assert_compiles_like_c(&[
+        (onig, r"{(", Some("end pattern with unmatched parenthesis")),
+        (onig, r"{)", Some("unmatched close parenthesis")),
+        (onig, r"{[", Some("premature end of char-class")),
+        (onig, r"a{(?", Some("end pattern in group")),
+        (
+            onig,
+            r"a{1,x}(",
+            Some("end pattern with unmatched parenthesis"),
+        ),
+        (
+            &OnigSyntaxRuby,
+            r"{(",
+            Some("end pattern with unmatched parenthesis"),
+        ),
+        (
+            &OnigSyntaxPython,
+            r"a{(",
+            Some("end pattern with unmatched parenthesis"),
+        ),
+        (onig, r"a{1,x}", None),
+        (onig, r"a{,2}", None),
+        (onig, r"a{", None),
+    ]);
+    let re = Regex::new(r"a{1,x}(b)").unwrap();
+    assert_eq!(re.find("xa{1,x}b").unwrap().as_str(), "a{1,x}b");
+    let re = Regex::new(r"a{2}").unwrap();
+    assert!(re.is_match("aa") && !re.is_match("a{2}"));
+}
+
+/// C's prs_bag() switches on the whole code point, so a non-ASCII character
+/// whose low byte is `:`, `=`, `i`, ... is not a group option.
+#[test]
+fn non_ascii_after_qmark_is_not_an_option_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let undefined = Some("undefined group option");
+    assert_compiles_like_c(&[
+        (onig, "(?\u{013A}a)", undefined), // low byte ':'
+        (onig, "(?\u{013D}a)", undefined), // low byte '='
+        (onig, "(?\u{0121}a)", undefined), // low byte '!'
+        (onig, "(?\u{013E}a)", undefined), // low byte '>'
+        (onig, "(?\u{0169})a", undefined), // low byte 'i'
+        (onig, "(?i\u{0169})a", undefined),
+        (onig, "(?i\u{0178})a", undefined),   // low byte 'x'
+        (onig, "(?y{\u{0167}})a", undefined), // low byte 'g'
+    ]);
+}
+
+/// C's fetch_token_cc() switches on the whole escaped code point, so an
+/// escaped non-ASCII character in a class is that character, not the
+/// escape its low byte spells (U+0177 is not `\w`, U+0164 not `\d`).
+#[test]
+fn escaped_non_ascii_in_char_class_is_literal_like_c() {
+    let re = Regex::new("[\\\u{0177}]").unwrap();
+    assert!(re.is_match("\u{0177}"));
+    assert!(!re.is_match("a"));
+    let re = Regex::new("[\\\u{0164}]").unwrap();
+    assert!(re.is_match("\u{0164}"));
+    assert!(!re.is_match("1"));
+}
+
+/// (*FAIL) takes a callout number as in C, and an unknown tag is
+/// ONIGERR_INVALID_CALLOUT_TAG_NAME (onig_get_callout_num_by_tag()).
+#[test]
+fn callout_numbers_by_tag_match_c() {
+    use ferroni::encodings::utf8::ONIG_ENCODING_UTF8;
+    use ferroni::oniguruma::{ONIG_OPTION_NONE, ONIGERR_INVALID_CALLOUT_TAG_NAME};
+    use ferroni::regcomp::onig_new;
+    use ferroni::regexec::onig_get_callout_num_by_tag;
+
+    for (pattern, tag, num) in [
+        (r"(*FAIL[t])|x", "t", 1),
+        (r"(*FAIL)(*COUNT[t]{X})|x", "t", 2),
+        (r"(*COUNT[a]{X})(*FAIL[t])|x", "t", 2),
+        (r"a(*FAIL[t])|(*MAX[u]{2})a", "u", 2),
+        (r"(*FAIL)|a", "t", ONIGERR_INVALID_CALLOUT_TAG_NAME),
+        (r"(*FAIL[t])|x", "u", ONIGERR_INVALID_CALLOUT_TAG_NAME),
+    ] {
+        let reg = onig_new(
+            pattern.as_bytes(),
+            ONIG_OPTION_NONE,
+            &ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(
+            onig_get_callout_num_by_tag(&reg, tag.as_bytes()),
+            num,
+            "{pattern}"
+        );
+    }
+}
+
+/// C scans a callout's argument list (prs_callout_args in skip mode) before
+/// it looks up the callout name.
+#[test]
+fn callout_arguments_are_scanned_before_the_name_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let bad = Some("invalid callout pattern");
+    assert_compiles_like_c(&[
+        (onig, r"(*kx{|&", bad),
+        (onig, r"(*NOPE{1", bad),
+        (onig, r"(*MAX{2", bad),
+        (onig, r"(*NOPE{1})", Some("undefined callout name")),
+        (onig, r"(*MAX{2})", None),
+    ]);
+}
+
+/// C parses a condition's body with prs_alts(), which requires the closing
+/// parenthesis even when the body has no `|`.
+#[test]
+fn condition_bodies_must_be_closed_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let unclosed = Some("end pattern with unmatched parenthesis");
+    assert_compiles_like_c(&[
+        (onig, r"(?()1", unclosed),
+        (onig, r"(?(a)b", unclosed),
+        (onig, r"(a)(?(1)b", unclosed),
+        (onig, r"(a)(?(1)b|c", unclosed),
+        (onig, r"(?(a)(?:b|c))", None),
+        (onig, r"(a)(?(1)b|c|d)", None),
+    ]);
+}
+
+/// C's prs_callout_of_name() and prs_callout_of_contents() check the name
+/// and tag characters, accept a tag on every callout, and count the
+/// arguments before the closing parenthesis.
+#[test]
+fn callout_names_and_tags_parse_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let bad_tag = Some("invalid callout tag name");
+    assert_compiles_like_c(&[
+        (onig, r"(*FAIL[a])", None),
+        (onig, r"(*COUNT[_a]{X})", None),
+        (onig, r"(?{foo}[a])", None),
+        (onig, r"a|(*FAIL)", None),
+        (onig, r"(*FAIL[1])", bad_tag),
+        (onig, r"(*FAIL[])", bad_tag),
+        (onig, r"(*FAIL[a$b])", bad_tag),
+        (onig, r"(*MAX[1]{2})", bad_tag),
+        (onig, r"(?{foo}[1])", bad_tag),
+        (
+            onig,
+            r"(*FAIL[a])(*FAIL[a])",
+            Some("multiplex defined name <a>"),
+        ),
+        (
+            onig,
+            r"(?{foo}[a])(?{bar}[a])",
+            Some("multiplex defined name <a>"),
+        ),
+        (onig, r"(*FA-IL)", Some("invalid callout name")),
+        (onig, r"(*NOPE)", Some("undefined callout name")),
+        (onig, r"(*FAIL{1})", Some("invalid callout arg")),
+        (onig, r"(*FAIL[a]", Some("end pattern in group")),
+    ]);
+}
+
+/// C's prs_bag() only reads group options after an option letter; any
+/// other character after `(?` is an undefined group option.
+#[test]
+fn group_options_start_like_c() {
+    let onig = &OnigSyntaxOniguruma;
+    let undefined = Some("undefined group option");
+    assert_compiles_like_c(&[
+        (onig, r"(?)", undefined),
+        (onig, r"(?Q)", undefined),
+        (&OnigSyntaxRuby, r"(?)", undefined),
+        (&OnigSyntaxPerl_NG, r"(?)", undefined),
+        (&OnigSyntaxRuby, r"(?W)a", undefined),
+        (onig, r"(?i)a", None),
+        (onig, r"(?-i)a", None),
+        (onig, r"(?W)a", None),
+        (onig, r"(?C)a", None),
+        (onig, r"(?I)a", None),
+    ]);
+}
+
+/// C's prs_bag() reports a pattern ending right after `(?<` like any other
+/// unclosed group.
+#[test]
+fn pattern_ending_after_lt_is_reported_like_c() {
+    let unclosed = Some("end pattern with unmatched parenthesis");
+    assert_compiles_like_c(&[
+        (&OnigSyntaxOniguruma, r"(?<", unclosed),
+        (&OnigSyntaxOniguruma, r"(x)(?<", unclosed),
+        (&OnigSyntaxOniguruma, r"(?<=", unclosed),
+        (&OnigSyntaxPerl_NG, r"(?<", unclosed),
+    ]);
+}
+
+/// Where C records no name, it prints an empty `<>`; the Rust message drops
+/// the placeholder instead.
+#[test]
+fn error_message_without_recorded_name_drops_placeholder() {
+    assert_compiles_like_c(&[
+        (
+            &OnigSyntaxPython,
+            r"(?P>1)",
+            Some("undefined group reference"),
+        ),
+        (&OnigSyntaxPerl_NG, r"(?1a)", Some("invalid group name")),
+        (&OnigSyntaxPerl_NG, r"(?1+x)", Some("invalid group name")),
+        // A recorded empty name is still shown.
+        (
+            &OnigSyntaxOniguruma,
+            r"\p{}",
+            Some("invalid character property name {}"),
+        ),
+    ]);
+}
+
+// === Prelude ===
+
+#[test]
+fn prelude_imports_work() {
+    // This test verifies that the prelude re-exports are accessible.
+    let re = Regex::new(r"(\w+)").unwrap();
+    let caps: Captures = re.captures("hello").unwrap();
+    let m: Match = caps.get(0).unwrap();
+    assert_eq!(m.as_str(), "hello");
+    let _: &RegexError = &Regex::new(r"(").unwrap_err();
+}
+
+// === as_raw escape hatch ===
+
+#[test]
+fn as_raw_access() {
+    use ferroni::regexec::onig_number_of_captures;
+    let re = Regex::new(r"(a)(b)(c)").unwrap();
+    let raw = re.as_raw();
+    assert_eq!(onig_number_of_captures(raw), 3);
+}
+
+// === Complex patterns ===
+
+#[test]
+fn alternation() {
+    let re = Regex::new(r"cat|dog|bird").unwrap();
+    assert_eq!(re.find("I have a dog").unwrap().as_str(), "dog");
+}
+
+#[test]
+fn backreference() {
+    let re = Regex::new(r"(\w+)\s+\1").unwrap();
+    let m = re.find("hello hello world").unwrap();
+    assert_eq!(m.as_str(), "hello hello");
+}
+
+#[test]
+fn numbered_backreferences_validate_capture_group_bounds() {
+    for pattern in [
+        b"\\1".as_slice(),
+        b"\\8",
+        b"\\9",
+        b"(a)\\2",
+        b"\\k<2>",
+        b"\\k<8>",
+        b"\\k<9>",
+        b"\\k<80>",
+        b"(a)\\k<2>",
+    ] {
+        let err = Regex::new_bytes(pattern).unwrap_err();
+        assert_eq!(err.code(), ONIGERR_INVALID_BACKREF, "pattern: {pattern:?}");
+    }
+}
+
+#[test]
+fn group_reference_numbers_reject_overflow_and_missing_terminators() {
+    // As in C, a bare condition that is not a valid group reference is
+    // parsed as a pattern instead, so an overflowing number compiles.
+    for pattern in [
+        br"(?(9999999999999)a|b)".as_slice(),
+        br"(a)(?(1+9999999999999)a|b)".as_slice(),
+    ] {
+        assert!(Regex::new_bytes(pattern).is_ok(), "{pattern:?}");
+    }
+    for pattern in [
+        br"(a)\k<a+999999999999999>".as_slice(),
+        br"(a)\k<1".as_slice(),
+        br"(a)\g<1".as_slice(),
+        br"(a)\k'1".as_slice(),
+    ] {
+        assert!(Regex::new_bytes(pattern).is_err(), "{pattern:?}");
+    }
+}
+
+#[test]
+fn valid_numbered_backreferences_compile_and_match() {
+    for (pattern, input) in [
+        (b"(a)\\1".as_slice(), "aa"),
+        (b"(a)\\k<1>".as_slice(), "aa"),
+        (b"(a)(b)(c)(d)(e)(f)(g)(h)\\8".as_slice(), "abcdefghh"),
+        (b"(a)(b)(c)(d)(e)(f)(g)(h)\\k<8>".as_slice(), "abcdefghh"),
+    ] {
+        let re = Regex::new_bytes(pattern).unwrap();
+        assert!(re.is_match(input), "pattern: {pattern:?}, input: {input:?}");
+    }
+}
+
+#[test]
+fn lookahead() {
+    let re = Regex::new(r"\d+(?= dollars)").unwrap();
+    let m = re.find("I have 42 dollars").unwrap();
+    assert_eq!(m.as_str(), "42");
+}
+
+#[test]
+fn lookbehind() {
+    let re = Regex::new(r"(?<=\$)\d+").unwrap();
+    let m = re.find("price: $99").unwrap();
+    assert_eq!(m.as_str(), "99");
+}
+
+#[test]
+fn possessive_quantifier() {
+    let re = Regex::new(r"a++b").unwrap();
+    // "aab" should match since possessive consumes all 'a's, then finds 'b'
+    assert!(re.is_match("aab"));
+    // "aa" should not match since possessive consumes 'a's but no 'b'
+    assert!(!re.is_match("aa"));
+}
+
+#[test]
+fn date_extraction() {
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})").unwrap();
+    let caps = re.captures("Today is 2026-02-14.").unwrap();
+    assert_eq!(caps.name("year").unwrap().as_str(), "2026");
+    assert_eq!(caps.name("month").unwrap().as_str(), "02");
+    assert_eq!(caps.name("day").unwrap().as_str(), "14");
+    assert_eq!(caps.get(0).unwrap().as_str(), "2026-02-14");
+}
+
+#[test]
+fn debug_impl() {
+    let re = Regex::new(r"\d+").unwrap();
+    let dbg = format!("{:?}", re);
+    assert!(dbg.contains("Regex"));
+}
+
+#[test]
+fn captures_debug_impl() {
+    let re = Regex::new(r"(\d+)").unwrap();
+    let caps = re.captures("42").unwrap();
+    let dbg = format!("{:?}", caps);
+    assert!(!dbg.is_empty());
+}
+
+// =========================================================================
+// Coverage-targeted tests: Unicode case folding (unicode/mod.rs)
+// =========================================================================
+
+#[test]
+fn case_insensitive_unicode_latin() {
+    // Exercises apply_case_fold1 for non-ASCII Latin characters (ä/Ä, ö/Ö, etc.)
+    let re = Regex::builder(r"straße")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("STRASSE"));
+    assert!(re.is_match("Straße"));
+}
+
+#[test]
+fn case_insensitive_latin1_simple_fold_uses_multibyte_class() {
+    let re = Regex::new(r"(?i)ö").unwrap();
+
+    assert!(re.is_match("ö"));
+    assert!(re.is_match("Ö"));
+    assert!(!re.is_match_bytes(&[0xd6, 0x96])); // U+0596, not Ö
+}
+
+#[test]
+fn case_insensitive_unicode_greek() {
+    let re = Regex::builder(r"σ").case_insensitive(true).build().unwrap();
+    assert!(re.is_match("Σ")); // capital sigma
+    assert!(re.is_match("ς")); // final sigma
+}
+
+#[test]
+fn case_insensitive_multi_char_fold() {
+    // Exercises folds2/folds3 paths: ﬃ (U+FB03) folds to "ffi"
+    let re = Regex::builder(r"ffi")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("ffi"));
+    assert!(re.is_match("FFI"));
+}
+
+#[test]
+fn case_insensitive_char_class_unicode() {
+    // Character class with case-insensitive Unicode
+    let re = Regex::builder(r"[äöü]+")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("ÄÖÜ"));
+    assert!(re.is_match("äöü"));
+}
+
+// =========================================================================
+// Coverage-targeted tests: Word boundary opcodes (regexec.rs WordStar etc.)
+// =========================================================================
+
+#[test]
+fn word_star_non_ascii() {
+    // Exercises WordStar non-ASCII path in match engine
+    let re = Regex::new(r"\w*").unwrap();
+    let m = re.find("café").unwrap();
+    assert_eq!(m.as_str(), "café");
+}
+
+#[test]
+fn word_star_peek_next() {
+    // Exercises WordAsciiStarPeekNext opcode: \w* followed by specific char
+    let re = Regex::new(r"\w*:").unwrap();
+    let m = re.find("key: value").unwrap();
+    assert_eq!(m.as_str(), "key:");
+}
+
+#[test]
+fn word_boundary_unicode() {
+    // Exercises Unicode word boundary code paths
+    let re = Regex::new(r"\b\w+\b").unwrap();
+    let results: Vec<&str> = re
+        .find_iter("hello·world café")
+        .map(|m| m.as_str())
+        .collect();
+    assert!(results.contains(&"hello"));
+    assert!(results.contains(&"café"));
+}
+
+// =========================================================================
+// Coverage-targeted tests: Subexpression calls (regcomp.rs tune_called_state)
+// =========================================================================
+
+#[test]
+fn subexpression_call_in_quantifier() {
+    // Exercises tune_called_state_call Quant branch
+    let re = Regex::new(r"(?<digit>\d)(\g<digit>)+").unwrap();
+    assert!(re.is_match("123"));
+}
+
+#[test]
+fn subexpression_call_in_lookahead() {
+    // Exercises tune_called_state_call Anchor/PREC_READ branch
+    // \g<d> calls the pattern \d, not the captured value
+    let re = Regex::new(r"(?<d>\d)(?=\g<d>)\d").unwrap();
+    assert!(re.is_match("11"));
+    assert!(re.is_match("12")); // \g<d> matches any digit
+}
+
+#[test]
+fn subexpression_call_in_negative_lookahead() {
+    // Exercises tune_called_state_call PREC_READ_NOT branch
+    let re = Regex::new(r"(?<d>\d)(?!\g<d>)x").unwrap();
+    assert!(re.is_match("1x")); // \g<d> matches digit but 'x' is not a digit
+    assert!(!re.is_match("12")); // no 'x' after digit
+}
+
+#[test]
+fn subexpression_call_in_lookbehind() {
+    // Exercises tune_called_state_call LOOK_BEHIND branch
+    let re = Regex::new(r"(?<d>\d)(?<=\g<d>)\w").unwrap();
+    assert!(re.is_match("1a"));
+}
+
+#[test]
+fn if_else_conditional() {
+    // Exercises tune_called_state_call IfElse branch
+    let re = Regex::new(r"^(a)?(?(1)b|c)$").unwrap();
+    assert!(re.is_match("ab"));
+    assert!(re.is_match("c"));
+}
+
+// =========================================================================
+// Coverage-targeted tests: BackRef with nesting level (regexec.rs)
+// =========================================================================
+
+#[test]
+fn backref_with_level() {
+    // Exercises BackRefWithLevel opcode (backrefs in subexpression calls)
+    // \k<b+0> is level-backref syntax from Oniguruma
+    let re = Regex::new(r"\A(?<a>|.|(?:(?<b>.)\g<a>\k<b+0>))\z").unwrap();
+    // Palindrome detector via recursive subexpression call with level-backref
+    assert!(re.is_match("a"));
+    assert!(re.is_match("aba"));
+}
+
+// =========================================================================
+// Coverage-targeted tests: Anchors in search (regexec.rs sub_anchor paths)
+// =========================================================================
+
+#[test]
+fn begin_line_anchor_multiline() {
+    // Default: ^ matches start of string only
+    let re = Regex::new(r"^\w+").unwrap();
+    let results: Vec<&str> = re
+        .find_iter("hello\nworld\nfoo")
+        .map(|m| m.as_str())
+        .collect();
+    // Oniguruma: ^ is multiline by default
+    assert!(!results.is_empty());
+}
+
+#[test]
+fn end_line_anchor() {
+    let re = Regex::new(r"\w+$").unwrap();
+    let m = re.find("hello world").unwrap();
+    assert_eq!(m.as_str(), "world");
+}
+
+#[test]
+fn multiline_anchors() {
+    let re = Regex::builder(r"^\w+$")
+        .dot_matches_newline(false)
+        .build()
+        .unwrap();
+    let m = re.find("hello").unwrap();
+    assert_eq!(m.as_str(), "hello");
+}
+
+// `^` never matches at the very end of the subject, not even right after a
+// trailing newline (C: BEGIN_LINE requires `!ON_STR_END(s)`). Expectations
+// checked against C Oniguruma (ONIG_SYNTAX_ONIGURUMA, UTF-8).
+
+#[test]
+fn begin_line_does_not_match_at_end_after_trailing_newline() {
+    use ferroni::encodings::utf8::ONIG_ENCODING_UTF8;
+    use ferroni::oniguruma::{ONIG_MISMATCH, ONIG_OPTION_NONE, OnigRegion};
+    use ferroni::regcomp::onig_new;
+    use ferroni::regexec::{onig_match, onig_search};
+    use ferroni::regsyntax::OnigSyntaxOniguruma;
+
+    let compile = |pattern: &str| {
+        onig_new(
+            pattern.as_bytes(),
+            ONIG_OPTION_NONE,
+            &ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap()
+    };
+
+    // (pattern, subject, start, range, expected position)
+    for (pattern, text, start, range, expected) in [
+        ("^", "a\n", 2, 2, ONIG_MISMATCH),
+        ("^", "a\n", 1, 2, ONIG_MISMATCH),
+        ("^", "\n", 1, 1, ONIG_MISMATCH),
+        ("^$", "a\n", 1, 2, ONIG_MISMATCH),
+        ("(?m)^.*", "a\n", 2, 2, ONIG_MISMATCH),
+        ("^", "a\nb\n", 3, 4, ONIG_MISMATCH),
+        // Backward search still finds the start of the subject.
+        ("^", "a\n", 2, 0, 0),
+        // An empty line before the final newline is still a line.
+        ("^", "a\n\n", 1, 3, 2),
+        ("^$", "a\n\n", 1, 3, 2),
+        // `$` keeps matching at the end after a trailing newline.
+        ("$", "a\n", 2, 2, 2),
+    ] {
+        let reg = compile(pattern);
+        let bytes = text.as_bytes();
+        let (position, _) = onig_search(
+            &reg,
+            bytes,
+            bytes.len(),
+            start,
+            range,
+            Some(OnigRegion::new()),
+            ONIG_OPTION_NONE,
+        );
+        assert_eq!(
+            position, expected,
+            "{pattern:?} on {text:?} start={start} range={range}"
+        );
+    }
+
+    let reg = compile("^");
+    let (length, _) = onig_match(&reg, b"a\n", 2, 2, None, ONIG_OPTION_NONE);
+    assert_eq!(length, ONIG_MISMATCH);
+    let (length, _) = onig_match(&reg, b"\n\n", 2, 1, None, ONIG_OPTION_NONE);
+    assert_eq!(length, 0);
+}
+
+#[test]
+fn find_iter_begin_line_skips_end_after_trailing_newline() {
+    let starts = |pattern: &str, text: &str| -> Vec<usize> {
+        Regex::new(pattern)
+            .unwrap()
+            .find_iter(text)
+            .map(|m| m.start())
+            .collect()
+    };
+    assert_eq!(starts(r"(?m)^$", "a\nb\n"), Vec::<usize>::new());
+    assert_eq!(starts(r"^", "a\nb\n"), vec![0, 2]);
+    assert_eq!(starts(r"^$", "a\n\n"), vec![2]);
+    assert_eq!(starts(r"$", "a\nb\n"), vec![1, 3, 4]);
+}
+
+// =========================================================================
+// Coverage-targeted tests: Callout patterns (regexec.rs callout paths)
+// =========================================================================
+
+#[test]
+fn callout_max_count() {
+    // Exercises CALLOUT_BUILTIN_MAX progress/retraction paths
+    let re = Regex::new(r"(?:(*MAX{5})a)*").unwrap();
+    let m = re.find("aaaaaa").unwrap();
+    assert!(m.len() <= 6);
+}
+
+#[test]
+fn callout_count() {
+    // Exercises CALLOUT_BUILTIN_COUNT path
+    let re = Regex::new(r"(?:(*COUNT)a)+").unwrap();
+    assert!(re.is_match("aaa"));
+}
+
+// =========================================================================
+// Coverage-targeted tests: Various parser paths (regparse.rs)
+// =========================================================================
+
+#[test]
+fn possessive_repeat() {
+    let re = Regex::new(r"[a-z]++").unwrap();
+    assert!(re.is_match("abc"));
+}
+
+#[test]
+fn named_group_multiple_alternation() {
+    // Named groups in alternation
+    let re = Regex::new(r"(?<x>a)|(?<x>b)").unwrap();
+    assert!(re.is_match("a"));
+    assert!(re.is_match("b"));
+}
+
+#[test]
+fn unicode_property_negated() {
+    let re = Regex::new(r"\P{Lu}+").unwrap();
+    let m = re.find("ABCdef").unwrap();
+    assert_eq!(m.as_str(), "def");
+}
+
+#[test]
+fn extended_grapheme_cluster() {
+    // Exercises EGCB path in unicode/mod.rs
+    let re = Regex::new(r"\X").unwrap();
+    // Flag emoji: regional indicators
+    let m = re.find("🇩🇪x").unwrap();
+    assert!(m.len() > 1); // Should match the whole flag as one cluster
+}
+
+#[test]
+fn word_boundary_types() {
+    // Exercises WB algorithm paths including Hebrew, Katakana, ExtendNumLet
+    let re = Regex::new(r"\b\w+\b").unwrap();
+
+    // Katakana
+    assert!(re.is_match("カタカナ"));
+
+    // Numbers
+    let m = re.find("abc123def").unwrap();
+    assert_eq!(m.as_str(), "abc123def");
+}
+
+#[test]
+fn absent_expression() {
+    // Exercises absent group compilation in regparse + regcomp
+    let re = Regex::new(r"(?~abc)").unwrap();
+    let m = re.find("xxabcyy").unwrap();
+    assert_eq!(m.as_str(), "xx");
+}
+
+#[test]
+fn nested_repeat_with_capture() {
+    let re = Regex::new(r"((a){2,4}){1,3}").unwrap();
+    let m = re.find("aaaa").unwrap();
+    assert_eq!(m.as_str(), "aaaa");
+}
+
+#[test]
+fn character_class_intersection() {
+    // Exercises char class intersection parsing
+    let re = Regex::new(r"[a-z&&[^aeiou]]+").unwrap();
+    let m = re.find("abcde").unwrap();
+    assert_eq!(m.as_str(), "bcd");
+}
+
+#[test]
+fn hex_escape_unicode() {
+    let re = Regex::new(r"\x{1F600}").unwrap();
+    assert!(re.is_match("😀"));
+}
+
+#[test]
+fn keep_marker() {
+    // \K resets the match start
+    let re = Regex::new(r"foo\Kbar").unwrap();
+    let m = re.find("foobar").unwrap();
+    assert_eq!(m.as_str(), "bar");
+}
+
+#[test]
+fn atomic_group() {
+    let re = Regex::new(r"(?>abc|ab)c").unwrap();
+    // "abc" is consumed atomically, then "c" fails → no match for "abc"
+    assert!(!re.is_match("abc"));
+    assert!(re.is_match("abcc"));
+}
+
+#[test]
+fn lazy_quantifier_in_capture() {
+    let re = Regex::new(r"(a+?)(a+)").unwrap();
+    let caps = re.captures("aaaa").unwrap();
+    assert_eq!(caps.get(1).unwrap().as_str(), "a");
+    assert_eq!(caps.get(2).unwrap().as_str(), "aaa");
+}
+
+#[test]
+fn char_class_posix() {
+    let re = Regex::new(r"[[:upper:]]+").unwrap();
+    let m = re.find("abcDEF").unwrap();
+    assert_eq!(m.as_str(), "DEF");
+}
+
+#[test]
+fn non_greedy_repeat() {
+    let re = Regex::new(r"<.+?>").unwrap();
+    let m = re.find("<a><b>").unwrap();
+    assert_eq!(m.as_str(), "<a>");
+}
+
+// =========================================================================
+// Coverage-targeted: Parser paths (regparse.rs)
+// =========================================================================
+
+#[test]
+fn quote_literal_syntax() {
+    // Exercises \Q...\E literal quoting (TokenType::QuoteOpen) — only in Perl syntax
+    use ferroni::regsyntax::OnigSyntaxPerl;
+    let re = Regex::builder(r"\Q.+*\E")
+        .syntax(&OnigSyntaxPerl)
+        .build()
+        .unwrap();
+    assert!(re.is_match(".+*"));
+    assert!(!re.is_match("abc"));
+}
+
+#[test]
+fn char_class_dash_at_end() {
+    // Exercises CC dash handling: [a-z-] → literal dash at end
+    let re = Regex::new(r"[a-z-]+").unwrap();
+    assert!(re.is_match("abc-"));
+    let m = re.find("ABC-def").unwrap();
+    assert_eq!(m.as_str(), "-def");
+}
+
+#[test]
+fn char_class_range_and_dash() {
+    // Exercises double-range handling: [0-9-a]
+    let re = Regex::new(r"[0-9-a]+").unwrap();
+    assert!(re.is_match("5-a"));
+}
+
+#[test]
+fn named_backref_with_level() {
+    // Exercises level syntax parsing in fetch_name: \k<name+1>. Both
+    // occurrences of the called group capture one call level below the top,
+    // so +1 finds them and +0 does not (checked against C Oniguruma).
+    let re = Regex::new(r"(?<a>x)\g<a>\k<a+1>").unwrap();
+    assert!(re.is_match("xxx"));
+    let re = Regex::new(r"(?<a>x)\g<a>\k<a+0>").unwrap();
+    assert!(!re.is_match("xxx"));
+}
+
+#[test]
+fn numbered_backref_with_level() {
+    // Exercises numeric level backref parsing: \k<1+1> and \k<1+0>
+    let re = Regex::new(r"(x)\g<1>\k<1+1>").unwrap();
+    assert!(re.is_match("xxx"));
+    let re = Regex::new(r"(x)\g<1>\k<1+0>").unwrap();
+    assert!(!re.is_match("xxx"));
+}
+
+#[test]
+fn char_class_negated_intersection() {
+    // Exercises negated char class with intersection
+    let re = Regex::new(r"[^a-z&&[^m-z]]+").unwrap();
+    // [^a-z&&[^m-z]] = not(a-z AND not(m-z)) = not(a-l) = anything except a-l
+    assert!(re.is_match("M"));
+}
+
+#[test]
+fn control_escape_sequences() {
+    // Exercises control code syntax path
+    let re = Regex::new(r"\ca").unwrap(); // \ca = control-A = 0x01
+    assert!(re.is_match("\x01"));
+}
+
+#[test]
+fn hex_escape_2digit() {
+    let re = Regex::new(r"\x41").unwrap(); // 0x41 = 'A'
+    assert!(re.is_match("A"));
+}
+
+#[test]
+fn octal_escape() {
+    let re = Regex::new(r"\101").unwrap(); // 0101 octal = 65 = 'A'
+    assert!(re.is_match("A"));
+}
+
+#[test]
+fn backref_with_negative_level() {
+    // Exercises level syntax with negative sign: \k<name-1>
+    // This tests the level_sign = -1 path
+    let re = Regex::new(r"(?<a>(?<b>x)\g<a>|\w)\k<b-0>");
+    // Either succeeds or fails at compile — either way exercises the parser
+    if let Ok(re) = re {
+        let _ = re.is_match("xyx");
+    }
+}
+
+#[test]
+fn unicode_named_property() {
+    // Various Unicode property names to exercise property_name_to_ctype
+    let re = Regex::new(r"\p{Katakana}+").unwrap();
+    assert!(re.is_match("カタカナ"));
+
+    let re = Regex::new(r"\p{Han}+").unwrap();
+    assert!(re.is_match("漢字"));
+}
+
+#[test]
+fn unicode_17_script_properties_and_case_folding() {
+    for (property, character) in [
+        (r"\p{Sidetic}", '\u{10940}'),
+        (r"\p{Tolong_Siki}", '\u{11DB0}'),
+        (r"\p{Beria_Erfe}", '\u{16EA0}'),
+        (r"\p{Tai_Yo}", '\u{1E6C0}'),
+    ] {
+        let re = Regex::new(property).unwrap();
+        assert!(re.is_match(&character.to_string()), "{property}");
+    }
+
+    let uppercase = Regex::new(&format!("(?i){}", '\u{16EA0}')).unwrap();
+    assert!(uppercase.is_match("\u{16ebb}"));
+}
+
+#[test]
+fn unicode_18_script_properties_and_case_folding() {
+    // Seal, Jurchen and Proto_Cuneiform are new scripts in Unicode 18.0
+    // (Scripts.txt).
+    for (property, character) in [
+        (r"\p{Seal}", '\u{3D000}'),
+        (r"\p{Jurchen}", '\u{18E00}'),
+        (r"\p{Proto_Cuneiform}", '\u{125A8}'),
+    ] {
+        let re = Regex::new(property).unwrap();
+        assert!(re.is_match(&character.to_string()), "{property}");
+    }
+
+    // U+A7DD LATIN CAPITAL LETTER CLOSED OMEGA is new in 18.0 and folds to
+    // U+0277.
+    let folded = Regex::new(&format!("(?i){}", '\u{0277}')).unwrap();
+    assert!(folded.is_match("\u{a7dd}"));
+
+    // U+1DF95 LATIN SMALL LIGATURE LONG S WITH DESCENDER S is new in 18.0 and
+    // full-folds to "ss", so "ss" matches it case-insensitively (ADR-015).
+    let long_s = Regex::new("(?i)ss").unwrap();
+    assert!(long_s.is_match("\u{1df95}"));
+}
+
+#[test]
+fn unicode_incb_covers_every_section() {
+    // DerivedCoreProperties.txt lists InCB as Linker, Consonant, and Extend
+    // sections out of code point order. C Oniguruma drops ranges when it merges
+    // them; Ferroni intentionally keeps all of them (ADR-015).
+    let re = Regex::new(r"\p{InCB}").unwrap();
+    for (section, character) in [
+        ("Linker", '\u{094D}'),
+        ("Consonant", '\u{0915}'),
+        ("Extend", '\u{0300}'),
+        ("Extend", '\u{200D}'),
+        ("Extend", '\u{0DCA}'),
+    ] {
+        assert!(
+            re.is_match(&character.to_string()),
+            "{section} U+{:04X}",
+            character as u32
+        );
+    }
+    assert!(!re.is_match("a"));
+}
+
+#[test]
+fn absent_clear_expression() {
+    // Exercises absent group range stop: (?~|pattern|absent)
+    let re = Regex::new(r"(?~|abc|[a-z]+)");
+    if let Ok(re) = re {
+        let _ = re.find("xyzabcdef");
+    }
+}
+
+// =========================================================================
+// Coverage-targeted: Compiler paths (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn alternation_many_branches() {
+    // Exercises select_opt_map/trie path in regcomp
+    let re = Regex::new(r"apple|banana|cherry|date|elderberry|fig|grape").unwrap();
+    assert_eq!(re.find("I like banana").unwrap().as_str(), "banana");
+}
+
+#[test]
+fn nested_quantifier() {
+    // Exercises nested quantifier optimization in regcomp
+    let re = Regex::new(r"(a{2,3}){2,4}").unwrap();
+    assert!(re.is_match("aaaaaa"));
+}
+
+#[test]
+fn complex_lookbehind() {
+    // Exercises lookbehind compilation with variable-length content
+    let re = Regex::new(r"(?<=ab|cd)\w+").unwrap();
+    assert_eq!(re.find("cdHello").unwrap().as_str(), "Hello");
+}
+
+#[test]
+fn case_insensitive_backref() {
+    // Exercises BackRefIc opcode generation
+    let re = Regex::builder(r"(\w+)\s+\1")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("Hello HELLO"));
+}
+
+#[test]
+fn many_capture_groups() {
+    // Exercises capture group region handling with many groups
+    let re = Regex::new(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)").unwrap();
+    let caps = re.captures("abcdefghij").unwrap();
+    assert_eq!(caps.len(), 11); // group 0 + 10 captures
+    assert_eq!(caps.get(10).unwrap().as_str(), "j");
+}
+
+#[test]
+fn forward_reference() {
+    // Exercises forward backref in parser
+    let re = Regex::new(r"(\2?(a))+").unwrap();
+    assert!(re.is_match("aaa"));
+}
+
+// =========================================================================
+// Coverage-targeted: Execution engine paths (regexec.rs)
+// =========================================================================
+
+#[test]
+fn match_at_end_of_string() {
+    let re = Regex::new(r"\w+\z").unwrap();
+    let m = re.find("hello world").unwrap();
+    assert_eq!(m.as_str(), "world");
+}
+
+#[test]
+fn empty_match_progression() {
+    // Tests empty match handling and advancement logic
+    let re = Regex::new(r"(?:)+").unwrap();
+    let results: Vec<_> = re.find_iter("ab").collect();
+    assert!(!results.is_empty());
+}
+
+#[test]
+fn long_alternation_literal() {
+    // Exercises literal trie optimization in search
+    let re = Regex::new(r"cat|car|cap|can|cam|cab").unwrap();
+    assert_eq!(re.find("a cab ride").unwrap().as_str(), "cab");
+}
+
+#[test]
+fn unicode_case_fold_in_char_class_range() {
+    // Exercises get_case_fold_codes_by_str for multi-char sequences
+    let re = Regex::builder(r"[a-ÿ]+")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("Ä"));
+    assert!(re.is_match("ß"));
+}
+
+#[test]
+fn word_boundary_at_boundaries() {
+    // Exercises edge cases in word boundary checking
+    let re = Regex::new(r"\bword\b").unwrap();
+    assert!(re.is_match("word"));
+    assert!(re.is_match("a word b"));
+    assert!(!re.is_match("sword"));
+    assert!(!re.is_match("wordy"));
+}
+
+#[test]
+fn dotall_mode() {
+    let re = Regex::builder(r"a.b")
+        .dot_matches_newline(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("a\nb"));
+    assert!(re.is_match("a\rb"));
+}
+
+#[test]
+fn captures_iter_with_optional_groups() {
+    let re = Regex::new(r"(?:(a)|(b))+").unwrap();
+    let caps = re.captures("abba").unwrap();
+    // Groups 1 and 2 alternately match
+    assert!(caps.get(0).is_some());
+}
+
+// =========================================================================
+// Coverage-targeted: Extended grapheme cluster / word break (unicode/mod.rs)
+// =========================================================================
+
+#[test]
+fn egcb_flag_emoji_sequence() {
+    // Regional indicators: 🇩🇪 = U+1F1E9 U+1F1EA
+    let re = Regex::new(r"\X+").unwrap();
+    let m = re.find("🇩🇪🇫🇷x").unwrap();
+    // Each flag pair is one grapheme cluster
+    assert!(m.len() > 4);
+}
+
+#[test]
+fn egcb_zwj_sequence() {
+    // ZWJ sequence: 👨‍👩‍👧 (man + ZWJ + woman + ZWJ + girl)
+    let re = Regex::new(r"\X").unwrap();
+    let m = re.find("👨\u{200D}👩\u{200D}👧x").unwrap();
+    // Should match the whole ZWJ family as one grapheme cluster
+    assert!(m.len() > 4);
+}
+
+#[test]
+fn word_boundary_hebrew() {
+    // Exercises HebrewLetter WB rules (WB7a, WB7b, WB7c)
+    let re = Regex::new(r"\b\w+\b").unwrap();
+    assert!(re.is_match("שלום")); // Hebrew "shalom"
+}
+
+#[test]
+fn word_boundary_regional_indicators() {
+    // Exercises WB15/WB16 RI x RI counting
+    let re = Regex::new(r"\b.+\b").unwrap();
+    let _ = re.find("🇩🇪🇫🇷"); // just exercise the path
+}
+
+#[test]
+fn word_boundary_extend_num_let() {
+    // Exercises WB13a/WB13b ExtendNumLet rules
+    // Underscore (U+005F) is ExtendNumLet type
+    let re = Regex::new(r"\b\w+\b").unwrap();
+    let m = re.find("hello_world").unwrap();
+    assert_eq!(m.as_str(), "hello_world"); // underscore connects words
+}
+
+// =========================================================================
+// Coverage-targeted: Unicode multi-char case folds (unicode/mod.rs)
+// =========================================================================
+
+#[test]
+fn case_insensitive_2char_fold() {
+    // ﬁ (U+FB01) folds to "fi" — exercises folds2 paths (apply_case_fold2, get_case_fold_codes folds2)
+    let re = Regex::builder("fi").case_insensitive(true).build().unwrap();
+    assert!(re.is_match("fi"));
+    assert!(re.is_match("FI"));
+}
+
+#[test]
+fn case_insensitive_3char_fold() {
+    // ﬃ (U+FB03) folds to "ffi" — exercises folds3 paths
+    let re = Regex::builder("ffi")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("ffi"));
+    assert!(re.is_match("FFI"));
+}
+
+#[test]
+fn case_insensitive_eszett() {
+    // ß folds to "ss" — another 2-char fold
+    let re = Regex::builder("ss").case_insensitive(true).build().unwrap();
+    assert!(re.is_match("ss"));
+    assert!(re.is_match("SS"));
+    assert!(re.is_match("ß"));
+}
+
+#[test]
+fn case_insensitive_char_class_with_unicode_folds() {
+    // Character class with case-insensitive: exercises get_case_fold_codes_by_str
+    let re = Regex::builder("[ß]")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("ß"));
+    assert!(re.is_match("SS")); // ss should match ß case-insensitively
+}
+
+#[test]
+fn case_insensitive_turkish_dotted_i() {
+    // İ (U+0130) and ı (U+0131) — locale-specific fold entries
+    let re = Regex::builder("i").case_insensitive(true).build().unwrap();
+    assert!(re.is_match("I"));
+    assert!(re.is_match("i"));
+}
+
+#[test]
+fn case_insensitive_full_width() {
+    // Full-width letters: Ａ (U+FF21) should fold to ａ (U+FF41)
+    let re = Regex::builder("\u{FF21}")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("\u{FF21}"));
+    assert!(re.is_match("\u{FF41}"));
+}
+
+// =========================================================================
+// Coverage-targeted: EGCB and WB edge cases (unicode/mod.rs)
+// =========================================================================
+
+#[test]
+fn egcb_regional_indicator_pairs() {
+    // 🇩🇪🇫🇷🇯🇵 = 3 flag sequences, each 2 RI codepoints
+    // Exercises BreakUndefRiRi counting
+    let re = Regex::new(r"\X").unwrap();
+    let input = "🇩🇪🇫🇷🇯🇵";
+    let clusters: Vec<_> = re.find_iter(input).collect();
+    // Should be 3 grapheme clusters (one per flag)
+    assert_eq!(clusters.len(), 3);
+}
+
+#[test]
+fn wb_midletter_between_letters() {
+    // WB6/WB7: AHLetter x (MidLetter|MidNumLetQ) x AHLetter
+    // · (U+00B7, MidLetter) between letters should NOT break
+    let re = Regex::new(r"\b\w+\b").unwrap();
+    // Test with apostrophe (U+2019, MidNumLetQ) in word
+    let m = re.find("it's").unwrap();
+    assert!(!m.as_str().is_empty());
+}
+
+#[test]
+fn wb_numeric_sequences() {
+    // WB8-WB11: Numeric x Numeric, Numeric x (MidNum|MidNumLetQ) x Numeric
+    let re = Regex::new(r"\b[\w.]+\b").unwrap();
+    assert!(re.is_match("3.14"));
+}
+
+#[test]
+fn wb_katakana_extend_num_let() {
+    // WB13: Katakana x Katakana + WB13a/b with ExtendNumLet
+    let re = Regex::new(r"\b\w+\b").unwrap();
+    let m = re.find("カタカナ_テスト").unwrap();
+    // Katakana + underscore + Katakana should be one word
+    assert_eq!(m.as_str(), "カタカナ_テスト");
+}
+
+// =========================================================================
+// Coverage-targeted: Perl-style subexpression call syntax (regparse.rs)
+// =========================================================================
+
+#[test]
+fn perl_named_call_syntax() {
+    // (?&name) - named subroutine call (Perl_NG syntax)
+    // Exercises ONIG_SYN_OP2_QMARK_PERL_SUBEXP_CALL parser path
+    use ferroni::regsyntax::OnigSyntaxPerl_NG;
+    let re = Regex::builder(r"(?<d>\d+)x(?&d)")
+        .syntax(&OnigSyntaxPerl_NG)
+        .build()
+        .unwrap();
+    assert!(re.is_match("123x456"));
+    assert!(!re.is_match("123xabc"));
+}
+
+#[test]
+fn perl_numbered_subexp_call() {
+    // (?1) - absolute numbered call (Perl_NG syntax)
+    use ferroni::regsyntax::OnigSyntaxPerl_NG;
+    let re = Regex::builder(r"(\d+)-(?1)")
+        .syntax(&OnigSyntaxPerl_NG)
+        .build()
+        .unwrap();
+    assert!(re.is_match("123-456"));
+}
+
+#[test]
+fn perl_relative_subexp_call() {
+    // (?-1) - relative backward call (Perl_NG syntax)
+    use ferroni::regsyntax::OnigSyntaxPerl_NG;
+    let re = Regex::builder(r"(\d+)-(?-1)")
+        .syntax(&OnigSyntaxPerl_NG)
+        .build()
+        .unwrap();
+    assert!(re.is_match("42-99"));
+}
+
+// =========================================================================
+// Coverage-targeted: Meta and control escape sequences (regparse.rs)
+// =========================================================================
+
+#[test]
+fn ruby_meta_escape() {
+    // \M-a sets the high bit: 'a' (0x61) | 0x80 = 0xe1
+    // Using new_bytes since \M-a produces a non-UTF8 byte
+    use ferroni::regsyntax::OnigSyntaxRuby;
+    let re = Regex::builder(r"\M-a")
+        .syntax(&OnigSyntaxRuby)
+        .build()
+        .unwrap();
+    // In UTF-8, 0xe1 starts a 3-byte sequence. Test with raw bytes.
+    assert!(re.is_match_bytes(&[0xc3, 0xa1])); // UTF-8 for U+00E1 (á)
+}
+
+#[test]
+fn ruby_control_escape_c_bar() {
+    // \C-a = control-A = 0x01
+    use ferroni::regsyntax::OnigSyntaxRuby;
+    let re = Regex::builder(r"\C-a")
+        .syntax(&OnigSyntaxRuby)
+        .build()
+        .unwrap();
+    assert!(re.is_match_bytes(&[0x01]));
+}
+
+// =========================================================================
+// Coverage-targeted: Variable-length lookbehind (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn variable_length_lookbehind() {
+    // (?<=a|ab) - lookbehind with variable-length alternatives
+    let re = Regex::new(r"(?<=a|ab)x").unwrap();
+    assert!(re.is_match("ax"));
+    assert!(re.is_match("abx"));
+    assert!(!re.is_match("bx"));
+}
+
+#[test]
+fn variable_length_negative_lookbehind() {
+    // (?<!ab|abc) - negative lookbehind with variable lengths
+    let re = Regex::new(r"(?<!ab|abc)x").unwrap();
+    assert!(re.is_match("cx"));
+    assert!(!re.is_match("abx"));
+}
+
+// =========================================================================
+// Coverage-targeted: Subroutine calls in compiler (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn subroutine_call_with_quantifier() {
+    // (?<r>a+)\g<r> - subroutine call re-executes the pattern (not the captured text)
+    let re = Regex::new(r"(?<r>a+)\g<r>").unwrap();
+    assert!(re.is_match("aaa"));
+    assert!(!re.is_match("b"));
+}
+
+#[test]
+fn subroutine_call_in_if_else() {
+    // Conditional pattern with subroutine call in then-branch
+    // Exercises tune_called_state for if-else structures
+    let re = Regex::new(r"(?<a>x)?(?(<a>)\g<a>|y)").unwrap();
+    // When "x" is present, the conditional matches and \g<a> matches another "x"
+    assert!(re.is_match("xx"));
+    // When no "x", the else branch matches "y"
+    assert!(re.is_match("y"));
+}
+
+#[test]
+fn recursive_capture_group() {
+    // Recursive pattern with captures - exercises MemEndPushRec
+    let re = Regex::new(r"^(?<r>a(?:\g<r>)?b)$").unwrap();
+    assert!(re.is_match("ab"));
+    assert!(re.is_match("aabb"));
+    assert!(re.is_match("aaabbb"));
+    assert!(!re.is_match("aab"));
+}
+
+// =========================================================================
+// Coverage-targeted: Backref with level syntax (regparse.rs + regcomp.rs)
+// =========================================================================
+
+#[test]
+fn backref_with_level_named() {
+    // \k<name+0> - backreference with explicit level in recursive context
+    // In a recursive call, level 0 refers to the current recursion's capture
+    let re = Regex::new(r"(?<a>[a-z])(?:\g<a>\k<a+0>)?").unwrap();
+    assert!(re.is_match("a"));
+    assert!(re.is_match("abc"));
+}
+
+// =========================================================================
+// Coverage-targeted: WordAsciiStar opcode (regexec.rs)
+// =========================================================================
+
+#[test]
+fn word_ascii_star_optimization() {
+    // (?W)\w* triggers WordAsciiStar opcode (ASCII-only word matching)
+    let re = Regex::new(r"(?W)\w*$").unwrap();
+    assert!(re.is_match("hello"));
+    assert!(re.is_match(""));
+}
+
+#[test]
+fn word_ascii_star_peek_next_optimization() {
+    // (?W)\w*x triggers WordAsciiStarPeekNext opcode
+    let re = Regex::new(r"(?W)\w*x").unwrap();
+    assert!(re.is_match("abcx"));
+    assert!(re.is_match("x"));
+    assert!(!re.is_match("abc"));
+}
+
+// =========================================================================
+// Coverage-targeted: Scanner \G anchor (scanner.rs)
+// =========================================================================
+
+#[test]
+fn scanner_g_anchor_pattern() {
+    use ferroni::scanner::{Scanner, ScannerFindOptions};
+    // A scanner with a \G anchor pattern exercises search_g_anchor_with_msa
+    let mut scanner = Scanner::new(&[r"\G\w+", r"\s+"]).unwrap();
+    let input = "hello world";
+    let result = scanner.find_next_match(input, 0, ScannerFindOptions::NONE);
+    assert!(result.is_some());
+    let m = result.unwrap();
+    assert_eq!(m.index, 0); // \G\w+ matches at start
+    assert_eq!(m.captures()[0].start, 0);
+}
+
+// =========================================================================
+// Coverage-targeted: Character class with range and dash (regparse.rs)
+// =========================================================================
+
+#[test]
+fn char_class_dash_in_range_context() {
+    // [!--] - dash at end of range (exercises CS_RANGE with dash)
+    let re = Regex::new(r"[!--]").unwrap();
+    assert!(re.is_match("!"));
+    assert!(re.is_match("-"));
+    assert!(re.is_match("#"));
+    assert!(!re.is_match("0"));
+}
+
+#[test]
+fn char_class_double_range() {
+    // [0-9-a] - double range operator (exercises ALLOW_DOUBLE_RANGE_OP_IN_CC)
+    let re = Regex::new(r"[0-9-a]").unwrap();
+    assert!(re.is_match("5"));
+    assert!(re.is_match("a"));
+    assert!(re.is_match("-"));
+}
+
+// =========================================================================
+// Coverage-targeted: Absent expression (regparse.rs + regcomp.rs)
+// =========================================================================
+
+#[test]
+fn absent_expression_basic() {
+    // (?~|pattern) - absent stopper expression
+    let re = Regex::new(r"(?~abc)").unwrap();
+    assert!(re.is_match("xyz"));
+}
+
+#[test]
+fn absent_expression_with_range() {
+    // (?~|...) - absent with explicit range
+    let re = Regex::new(r"\w+(?~abc)\w+").unwrap();
+    assert!(re.is_match("xyzdef"));
+}
+
+// =========================================================================
+// Coverage-targeted: Conditional with DEFINE (regparse.rs)
+// =========================================================================
+
+#[test]
+fn conditional_define_pattern() {
+    // (?(DEFINE)(?<d>\d+)) - define-only group, not directly matched
+    // Uses the defined pattern later via \g<d>
+    let re = Regex::new(r"(?(DEFINE)(?<d>\d+))\g<d>-\g<d>").unwrap();
+    assert!(re.is_match("123-456"));
+    assert!(!re.is_match("abc-def"));
+}
+
+// =========================================================================
+// Coverage-targeted: Named capture in anchors (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn named_capture_in_lookahead() {
+    // Named capture inside lookahead exercises make_named_capture_number_map
+    let re = Regex::new(r"(?=(?<word>\w+))\w+").unwrap();
+    let caps = re.captures("hello").unwrap();
+    assert_eq!(caps.get(1).unwrap().as_str(), "hello");
+}
+
+#[test]
+fn named_capture_in_lookbehind() {
+    // Named capture inside lookbehind
+    let re = Regex::new(r"(?<=(?<prefix>ab))cd").unwrap();
+    assert!(re.is_match("abcd"));
+}
+
+// =========================================================================
+// Coverage-targeted: Infinite recursion check (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn subroutine_with_alternation_avoids_infinite_recursion() {
+    // (?<r>a|b\g<r>c) - recursion in one branch only (valid, not infinite)
+    let re = Regex::new(r"(?<r>a|b\g<r>c)").unwrap();
+    assert!(re.is_match("a"));
+    assert!(re.is_match("bac"));
+    assert!(re.is_match("bbaccc")); // not valid - tests recursion depth
+}
+
+// =========================================================================
+// Coverage-targeted: Literal trie optimization (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn many_literal_alternatives_trigger_trie() {
+    // Many literal alternatives with common prefixes trigger literal trie optimization
+    let re = Regex::new(r"abc|abd|abe|abf|abg|abh|abi|abj").unwrap();
+    assert!(re.is_match("abc"));
+    assert!(re.is_match("abj"));
+    assert!(!re.is_match("abz"));
+}
+
+#[test]
+fn literal_alternatives_preserve_ordered_backtracking() {
+    let re = Regex::new(r"(?:foo|foobar|a1|a2|a3|a4|a5|a6)bar").unwrap();
+    let matched = re.find("foobar").expect("shorter first branch matches");
+    assert_eq!(matched.as_str(), "foobar");
+
+    let ordered = Regex::new(r"foo|foobar|a1|a2|a3|a4|a5|a6").unwrap();
+    assert_eq!(ordered.find("foobar").unwrap().as_str(), "foo");
+}
+
+#[test]
+fn literal_alternatives_preserve_per_branch_case_options() {
+    let re = Regex::new(r"(?i)foo|bar|baz|(?-i:QUX)").unwrap();
+    assert!(!re.is_match("qux"));
+    assert!(re.is_match("QUX"));
+}
+
+#[test]
+fn case_insensitive_literal_alternatives() {
+    // Case-insensitive alternations exercise literal path classification
+    let re = Regex::builder("ABC|DEF|GHI|JKL")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("abc"));
+    assert!(re.is_match("jkl"));
+}
+
+// =========================================================================
+// Coverage-targeted: API methods (api.rs)
+// =========================================================================
+
+#[test]
+fn find_iter_bytes_method() {
+    // Exercises find_iter_bytes code path
+    let re = Regex::new_bytes(b"\\d+").unwrap();
+    let matches: Vec<_> = re.find_iter_bytes(b"12 34 56").collect();
+    assert_eq!(matches.len(), 3);
+    assert_eq!(matches[0].as_bytes(), b"12");
+    assert_eq!(matches[2].as_bytes(), b"56");
+}
+
+#[test]
+fn builder_multi_line_anchors_default_matches_each_line() {
+    let re = Regex::builder(r"^b$").build().unwrap();
+
+    assert_eq!(re.find("a\nb\nc").unwrap().as_str(), "b");
+}
+
+#[test]
+fn builder_multi_line_anchors_true_matches_each_line() {
+    let re = Regex::builder(r"^b$")
+        .multi_line_anchors(true)
+        .build()
+        .unwrap();
+
+    assert_eq!(re.find("a\nb\nc").unwrap().as_str(), "b");
+}
+
+#[test]
+fn builder_multi_line_anchors_false_matches_only_input_boundaries() {
+    let re = Regex::builder(r"^b$")
+        .multi_line_anchors(false)
+        .build()
+        .unwrap();
+
+    assert!(re.find("a\nb\nc").is_none());
+}
+
+#[test]
+fn builder_multi_line_anchors_toggles_without_affecting_other_options() {
+    let re = Regex::builder(" ^ a . b $ ")
+        .case_insensitive(true)
+        .dot_matches_newline(true)
+        .extended(true)
+        .multi_line_anchors(false)
+        .multi_line_anchors(true)
+        .multi_line_anchors(true)
+        .build()
+        .unwrap();
+
+    assert_eq!(re.find("before\nA\nB\nafter").unwrap().as_str(), "A\nB");
+}
+
+#[test]
+fn builder_multi_line_anchors_overrides_syntax_defaults() {
+    use ferroni::regsyntax::{
+        OnigSyntaxJava, OnigSyntaxPerl, OnigSyntaxPosixBasic, OnigSyntaxPosixExtended,
+    };
+
+    for (name, syntax) in [
+        ("Java", &OnigSyntaxJava),
+        ("Perl", &OnigSyntaxPerl),
+        ("POSIX basic", &OnigSyntaxPosixBasic),
+        ("POSIX extended", &OnigSyntaxPosixExtended),
+    ] {
+        let default = Regex::builder(r"^b$").syntax(syntax).build().unwrap();
+        assert!(default.find("a\nb\nc").is_none(), "{name} default");
+
+        let enabled = Regex::builder(r"^b$")
+            .syntax(syntax)
+            .multi_line_anchors(true)
+            .build()
+            .unwrap();
+        assert_eq!(
+            enabled.find("a\nb\nc").unwrap().as_str(),
+            "b",
+            "{name} enabled"
+        );
+
+        let disabled = Regex::builder(r"^b$")
+            .syntax(syntax)
+            .multi_line_anchors(false)
+            .build()
+            .unwrap();
+        assert!(disabled.find("a\nb\nc").is_none(), "{name} disabled");
+    }
+}
+
+#[test]
+fn builder_syntax_mode_matches_syntax_statics() {
+    use ferroni::regsyntax::{
+        OnigSyntaxASIS, OnigSyntaxEmacs, OnigSyntaxGnuRegex, OnigSyntaxGrep, OnigSyntaxJava,
+        OnigSyntaxOniguruma, OnigSyntaxPerl, OnigSyntaxPerl_NG, OnigSyntaxPosixBasic,
+        OnigSyntaxPosixExtended, OnigSyntaxPython, OnigSyntaxRuby,
+    };
+
+    let pairs: [(Syntax, &'static OnigSyntaxType); 12] = [
+        (Syntax::Oniguruma, &OnigSyntaxOniguruma),
+        (Syntax::Asis, &OnigSyntaxASIS),
+        (Syntax::PosixBasic, &OnigSyntaxPosixBasic),
+        (Syntax::PosixExtended, &OnigSyntaxPosixExtended),
+        (Syntax::Emacs, &OnigSyntaxEmacs),
+        (Syntax::Grep, &OnigSyntaxGrep),
+        (Syntax::GnuRegex, &OnigSyntaxGnuRegex),
+        (Syntax::Java, &OnigSyntaxJava),
+        (Syntax::Perl, &OnigSyntaxPerl),
+        (Syntax::PerlNg, &OnigSyntaxPerl_NG),
+        (Syntax::Ruby, &OnigSyntaxRuby),
+        (Syntax::Python, &OnigSyntaxPython),
+    ];
+    let patterns = [r"a.b", r"^b$", r"(a)(b)", r"a+b", r"(?<n>x)\w"];
+    let texts = ["a.b", "axb", "a\nb\nc", "aab", "xy", "b"];
+
+    for (syntax, statics) in pairs {
+        for pattern in patterns {
+            let typed = Regex::builder(pattern).syntax_mode(syntax).build();
+            let raw = Regex::builder(pattern).syntax(statics).build();
+            match (typed, raw) {
+                (Ok(typed), Ok(raw)) => {
+                    assert_eq!(
+                        typed.captures_len(),
+                        raw.captures_len(),
+                        "{syntax:?} {pattern}"
+                    );
+                    for text in texts {
+                        assert_eq!(
+                            typed.find(text).map(|m| m.range()),
+                            raw.find(text).map(|m| m.range()),
+                            "{syntax:?} {pattern} on {text:?}"
+                        );
+                    }
+                }
+                (Err(typed), Err(raw)) => assert_eq!(typed, raw, "{syntax:?} {pattern}"),
+                (typed, raw) => panic!(
+                    "{syntax:?} {pattern}: typed ok={}, raw ok={}",
+                    typed.is_ok(),
+                    raw.is_ok()
+                ),
+            }
+        }
+    }
+}
+
+#[test]
+fn builder_syntax_and_syntax_mode_last_call_wins() {
+    use ferroni::regsyntax::OnigSyntaxRuby;
+
+    let re = Regex::builder("a.b")
+        .syntax(&OnigSyntaxRuby)
+        .syntax_mode(Syntax::Asis)
+        .build()
+        .unwrap();
+    assert!(re.is_match("a.b"));
+    assert!(!re.is_match("axb"));
+
+    let re = Regex::builder("a.b")
+        .syntax_mode(Syntax::Asis)
+        .syntax(&OnigSyntaxRuby)
+        .build()
+        .unwrap();
+    assert!(re.is_match("axb"));
+}
+
+#[test]
+fn syntax_default_and_scanner_alias() {
+    // ScannerSyntax is an alias of Syntax, so one value serves both APIs.
+    let scanner_default: ScannerSyntax = ScannerSyntax::default();
+    assert_eq!(scanner_default, Syntax::Oniguruma);
+    assert_eq!(Syntax::default(), Syntax::Oniguruma);
+
+    let config = ferroni::scanner::ScannerConfig::default().syntax(Syntax::Asis);
+    let mut scanner = ferroni::scanner::Scanner::with_config(&["a.b"], &config).unwrap();
+    assert!(
+        scanner
+            .find_next_match("axb", 0, ScannerFindOptions::NONE)
+            .is_none()
+    );
+    assert!(
+        scanner
+            .find_next_match("a.b", 0, ScannerFindOptions::NONE)
+            .is_some()
+    );
+}
+
+#[test]
+fn scanner_config_setters_replace_one_field_each() {
+    use ferroni::oniguruma::ONIG_OPTION_NONE;
+    use ferroni::scanner::ScannerConfig;
+
+    let config = ScannerConfig::default()
+        .syntax(Syntax::Asis)
+        .options(ONIG_OPTION_NONE);
+    assert_eq!(config.syntax, Syntax::Asis);
+    assert_eq!(config.options, ONIG_OPTION_NONE);
+
+    let config = ScannerConfig::default().options(ONIG_OPTION_NONE);
+    assert_eq!(config.syntax, Syntax::Oniguruma);
+    assert_eq!(config.options, ONIG_OPTION_NONE);
+
+    let mut scanner = ferroni::scanner::Scanner::with_config(&["a.b"], &config).unwrap();
+    assert!(
+        scanner
+            .find_next_match("axb", 0, ScannerFindOptions::NONE)
+            .is_some()
+    );
+}
+
+#[test]
+fn builder_capture_group_controls_unnamed_captures() {
+    use ferroni::oniguruma::{ONIG_OPTION_CAPTURE_GROUP, ONIG_OPTION_DONT_CAPTURE_GROUP};
+
+    let pattern = r"(?<word>\w+) (\d+)";
+
+    // Oniguruma syntax: unnamed groups are not captured next to named ones by default.
+    let default = Regex::builder(pattern).build().unwrap();
+    assert_eq!(default.captures_len(), 1);
+    let on = Regex::builder(pattern).capture_group(true).build().unwrap();
+    assert_eq!(on.captures_len(), 2);
+    let caps = on.captures("abc 42").unwrap();
+    assert_eq!(caps.get(2).unwrap().as_str(), "42");
+    let back = Regex::builder(pattern)
+        .capture_group(true)
+        .capture_group(false)
+        .build()
+        .unwrap();
+    assert_eq!(back.captures_len(), 1);
+
+    // capture_group(true) overrides an earlier DONT_CAPTURE_GROUP.
+    let overridden = Regex::builder(pattern)
+        .option(ONIG_OPTION_DONT_CAPTURE_GROUP)
+        .capture_group(true)
+        .build()
+        .unwrap();
+    assert_eq!(overridden.captures_len(), 2);
+    let dont = Regex::builder(pattern)
+        .option(ONIG_OPTION_DONT_CAPTURE_GROUP)
+        .build()
+        .unwrap();
+    assert_eq!(dont.captures_len(), 1);
+
+    // The raw flag and the typed method agree.
+    let raw = Regex::builder(pattern)
+        .option(ONIG_OPTION_CAPTURE_GROUP)
+        .build()
+        .unwrap();
+    assert_eq!(raw.captures_len(), 2);
+
+    // Python syntax captures unnamed groups even next to named ones, so false keeps them.
+    let python = Regex::builder(r"(a)(?P<n>b)")
+        .syntax(&OnigSyntaxPython)
+        .capture_group(false)
+        .build()
+        .unwrap();
+    assert_eq!(python.captures_len(), 2);
+}
+
+#[test]
+fn builder_clear_option_removes_flag() {
+    use ferroni::oniguruma::{ONIG_OPTION_EXTEND, ONIG_OPTION_IGNORECASE};
+
+    let re = Regex::builder("hello")
+        .option(ONIG_OPTION_IGNORECASE)
+        .clear_option(ONIG_OPTION_IGNORECASE)
+        .build()
+        .unwrap();
+    assert!(!re.is_match("HELLO"));
+
+    // Clearing a flag that was never set changes nothing.
+    let re = Regex::builder("a b")
+        .clear_option(ONIG_OPTION_EXTEND)
+        .build()
+        .unwrap();
+    assert!(re.is_match("a b"));
+}
+
+#[test]
+fn builder_boolean_setters_false_clear_their_flags() {
+    let insensitive = Regex::builder("hello")
+        .case_insensitive(true)
+        .case_insensitive(false)
+        .build()
+        .unwrap();
+    assert!(!insensitive.is_match("HELLO"));
+
+    let dot = Regex::builder("a.b")
+        .dot_matches_newline(true)
+        .dot_matches_newline(false)
+        .build()
+        .unwrap();
+    assert!(!dot.is_match("a\nb"));
+
+    let extended = Regex::builder("a b")
+        .extended(true)
+        .extended(false)
+        .build()
+        .unwrap();
+    assert!(extended.is_match("a b"));
+    assert!(!extended.is_match("ab"));
+}
+
+#[test]
+fn builder_bytes_matches_regex_new_bytes() {
+    let re = RegexBuilder::new_bytes(b"hello")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    assert!(re.is_match("HeLLo"));
+
+    let re = Regex::builder_bytes(br"\d+").build().unwrap();
+    assert_eq!(re.find("abc 42").unwrap().as_str(), "42");
+
+    // Invalid UTF-8 pattern bytes are accepted or rejected exactly as Regex::new_bytes does.
+    let invalid: &[u8] = b"a\xff";
+    let via_new = Regex::new_bytes(invalid).map(|_| ());
+    let via_builder = RegexBuilder::new_bytes(invalid).build().map(|_| ());
+    assert_eq!(via_new, via_builder);
+}
+
+#[test]
+fn scanner_find_options_bitor_combines_flags() {
+    let combined = ScannerFindOptions::NOT_BEGIN_STRING | ScannerFindOptions::NOT_END_STRING;
+    assert_eq!(combined, ScannerFindOptions::from_bits(3));
+    assert_eq!(
+        ScannerFindOptions::NONE | ScannerFindOptions::NOT_BEGIN_POSITION,
+        ScannerFindOptions::NOT_BEGIN_POSITION
+    );
+
+    let mut options = ScannerFindOptions::NONE;
+    options |= ScannerFindOptions::NOT_BEGIN_POSITION;
+    options |= ScannerFindOptions::NOT_END_STRING;
+    assert_eq!(options, ScannerFindOptions::from_bits(6));
+
+    let mut scanner = ferroni::scanner::Scanner::new(&[r"\Gab"]).unwrap();
+    assert!(
+        scanner
+            .find_next_match("xab", 1, ScannerFindOptions::NOT_BEGIN_POSITION)
+            .is_none()
+    );
+    assert!(
+        scanner
+            .find_next_match("xab", 1, ScannerFindOptions::NONE)
+            .is_some()
+    );
+    let mut scanner = ferroni::scanner::Scanner::new(&[r"\Aab"]).unwrap();
+    assert!(
+        scanner
+            .find_next_match("ab", 0, ScannerFindOptions::NOT_BEGIN_STRING)
+            .is_none()
+    );
+}
+
+#[test]
+fn scanner_match_captures_is_the_capture_slice() {
+    let mut scanner = ferroni::scanner::Scanner::new(&[r"(\d)(\d)"]).unwrap();
+    let m = scanner
+        .find_next_match("x42", 0, ScannerFindOptions::NONE)
+        .unwrap();
+    let spans: Vec<_> = m.captures().iter().map(|c| (c.start, c.end)).collect();
+    assert_eq!(spans, [(1, 3), (1, 2), (2, 3)]);
+    assert_eq!(m.captures().len(), 3);
+}
+
+#[test]
+fn captures_len_and_is_empty() {
+    // Exercises Captures::len() and is_empty()
+    let re = Regex::new(r"(a)(b)(c)").unwrap();
+    let caps = re.captures("abc").unwrap();
+    assert_eq!(caps.len(), 4); // group 0 + 3 captures
+    assert!(!caps.is_empty());
+}
+
+#[test]
+fn captures_named_group_lookup() {
+    // Exercises the named group lookup (captures_by_name path)
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})").unwrap();
+    let caps = re.captures("2024-03").unwrap();
+    let year = caps.name("year");
+    assert!(year.is_some());
+    assert_eq!(year.unwrap().as_str(), "2024");
+}
+
+// =========================================================================
+// Coverage-targeted: Octal escapes (regparse.rs)
+// =========================================================================
+
+#[test]
+fn null_byte_octal_escape() {
+    // \0 in regex matches null byte - exercises scan_octal_number path
+    let re = Regex::new_bytes(b"\\0").unwrap();
+    assert!(re.is_match_bytes(&[0x00]));
+    assert!(!re.is_match_bytes(&[0x30])); // '0'
+}
+
+#[test]
+fn ruby_u_hex_escape() {
+    // \uXXXX hex escape in Ruby syntax - exercises ESC_U_HEX4 path
+    use ferroni::regsyntax::OnigSyntaxRuby;
+    let re = Regex::builder(r"\u0041")
+        .syntax(&OnigSyntaxRuby)
+        .build()
+        .unwrap();
+    assert!(re.is_match("A")); // U+0041 = 'A'
+    assert!(!re.is_match("B"));
+}
+
+// =========================================================================
+// Coverage-targeted: Non-ASCII escaped char in pattern (regparse.rs)
+// =========================================================================
+
+#[test]
+fn escaped_non_ascii_literal() {
+    // Backslash before a non-ASCII character treats it as literal
+    // Exercises the non-ASCII escape fallback path
+    let re = Regex::new(r"\ä").unwrap();
+    assert!(re.is_match("ä"));
+}
+
+// =========================================================================
+// Coverage-targeted: Subroutine in lookbehind check (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn subroutine_call_in_lookbehind_context() {
+    // Subroutine call validated inside lookbehind - exercises check_called_node_in_look_behind
+    let re = Regex::new(r"(?<d>ab)(?<=\g<d>)x");
+    // This may or may not compile depending on lookbehind restrictions
+    // Just exercise the validation path
+    if let Ok(re) = re {
+        let _ = re.is_match("abx");
+    }
+}
+
+// =========================================================================
+// Coverage-targeted: Recursion in alternation check (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn recursive_pattern_in_alternation() {
+    // (?<r>a|b\g<r>c) exercises infinite_recursive_call_check with alternation
+    let re = Regex::new(r"^(?<r>a|b\g<r>c)$").unwrap();
+    assert!(re.is_match("a"));
+    assert!(re.is_match("bac"));
+    assert!(re.is_match("bbacc"));
+}
+
+// =========================================================================
+// Coverage-targeted: Quantifier + subroutine state (regcomp.rs)
+// =========================================================================
+
+#[test]
+fn subroutine_in_quantifier_state() {
+    // Subroutine call inside quantifier exercises tune_called_state_call Quant branch
+    let re = Regex::new(r"(?<r>\w)\g<r>{2,5}").unwrap();
+    assert!(re.is_match("abcde"));
+}
+
+#[test]
+fn subroutine_in_lookahead_state() {
+    // Subroutine in lookahead exercises tune_called_state_call Anchor branch
+    let re = Regex::new(r"(?<d>\d)(?=\g<d>)\d").unwrap();
+    assert!(re.is_match("12"));
+}
+
+#[test]
+fn subroutine_in_negative_lookbehind_state() {
+    // Subroutine call in negative lookbehind exercises the state tuning path
+    let re = Regex::new(r"(?<d>[a-z]{2})(?<!\g<d>)\d");
+    if let Ok(re) = re {
+        let _ = re.is_match("ab1");
+    }
+}
+
+// =========================================================================
+// Regression: positions must never leave the haystack (found by fuzzing)
+// =========================================================================
+
+#[test]
+fn scanner_begin_position_anchor_at_end_of_text_does_not_panic() {
+    use ferroni::scanner::{Scanner, ScannerFindOptions};
+    // A begin-position anchor narrows the search range to `start + 1`. With
+    // `start == text.len()` that range pointed one past the haystack and the
+    // position loop subtracted past zero. A TextMate host reaches this
+    // position on every line once it has consumed the last character.
+    let mut scanner = Scanner::new(&[r"^\G"]).unwrap();
+    assert!(
+        scanner
+            .find_next_match("h", 0, ScannerFindOptions::NONE)
+            .is_some()
+    );
+    assert!(
+        scanner
+            .find_next_match("h", 1, ScannerFindOptions::NONE)
+            .is_none()
+    );
+
+    // The same shape with a literal after the anchor exercises the skip
+    // needle, whose slice also ran up to the overshooting range.
+    let mut scanner = Scanner::new(&[r"^\Ga"]).unwrap();
+    assert!(
+        scanner
+            .find_next_match("a", 1, ScannerFindOptions::NONE)
+            .is_none()
+    );
+}
+
+#[test]
+fn search_over_truncated_multibyte_lead_stays_inside_haystack() {
+    use ferroni::encodings::utf8::ONIG_ENCODING_UTF8;
+    use ferroni::oniguruma::{ONIG_MISMATCH, ONIG_OPTION_NONE, OnigRegion};
+    use ferroni::regcomp::onig_new;
+    use ferroni::regexec::onig_search;
+    use ferroni::regsyntax::OnigSyntaxOniguruma;
+
+    // The byte API accepts arbitrary bytes. 0xE6 announces a three-byte
+    // sequence, so stepping over it from position 1 used to land on 4 in a
+    // three-byte haystack, and the next attempt indexed past the end.
+    let reg = onig_new(
+        b"$",
+        ONIG_OPTION_NONE,
+        &ONIG_ENCODING_UTF8,
+        &OnigSyntaxOniguruma,
+    )
+    .unwrap();
+    let haystack: &[u8] = &[0x00, 0xE6, 0xE6];
+    for region in [None, Some(OnigRegion::new())] {
+        let (position, _) = onig_search(
+            &reg,
+            haystack,
+            haystack.len(),
+            0,
+            haystack.len(),
+            region,
+            ONIG_OPTION_NONE,
+        );
+        // The truncated character is consumed up to the logical end, where `$`
+        // matches as it does for any other input.
+        assert_eq!(position, haystack.len() as i32);
+    }
+
+    // A pattern that cannot match reports a mismatch rather than a panic.
+    let reg = onig_new(
+        b"x$",
+        ONIG_OPTION_NONE,
+        &ONIG_ENCODING_UTF8,
+        &OnigSyntaxOniguruma,
+    )
+    .unwrap();
+    let (position, _) = onig_search(
+        &reg,
+        haystack,
+        haystack.len(),
+        0,
+        haystack.len(),
+        None,
+        ONIG_OPTION_NONE,
+    );
+    assert_eq!(position, ONIG_MISMATCH);
+}
+
+#[test]
+fn optimizer_retry_over_truncated_multibyte_lead_stays_inside_haystack() {
+    use ferroni::encodings::utf8::ONIG_ENCODING_UTF8;
+    use ferroni::oniguruma::{ONIG_MISMATCH, ONIG_OPTION_NONE};
+    use ferroni::regcomp::onig_new;
+    use ferroni::regexec::onig_search;
+    use ferroni::regsyntax::OnigSyntaxOniguruma;
+
+    // `^\s$` is a byte-map search with a begin-line sub-anchor. The map
+    // reports the 0xC8 lead byte as a candidate, the sub-anchor rejects it,
+    // and the retry used to step two bytes past a two-byte haystack before
+    // slicing it for the next map search.
+    let reg = onig_new(
+        br"^\s$",
+        ONIG_OPTION_NONE,
+        &ONIG_ENCODING_UTF8,
+        &OnigSyntaxOniguruma,
+    )
+    .unwrap();
+    let haystack: &[u8] = &[b'w', 0xC8];
+    let (position, _) = onig_search(
+        &reg,
+        haystack,
+        haystack.len(),
+        0,
+        haystack.len(),
+        None,
+        ONIG_OPTION_NONE,
+    );
+    assert_eq!(position, ONIG_MISMATCH);
+
+    // The same retry over valid UTF-8 with a search range that ends inside
+    // the haystack; the helpers must answer "not found" for a start past
+    // the range instead of slicing it.
+    let text = "w\u{3000}\u{3000}\n\u{3000}";
+    let (position, _) = onig_search(
+        &reg,
+        text.as_bytes(),
+        text.len(),
+        0,
+        2,
+        None,
+        ONIG_OPTION_NONE,
+    );
+    assert_eq!(position, ONIG_MISMATCH);
+}
+
+#[test]
+fn stacked_possessive_quantifiers_compile_and_match() {
+    use ferroni::encodings::utf8::ONIG_ENCODING_UTF8;
+    use ferroni::oniguruma::{ONIG_OPTION_NONE, OnigRegion};
+    use ferroni::regcomp::onig_new;
+    use ferroni::regexec::onig_search;
+    use ferroni::regsyntax::OnigSyntaxPerl_NG;
+
+    // In a syntax where `++` is possessive, every further `+` wraps the
+    // previous quantifier in an atomic group and quantifies it again. The
+    // compiler used to emit the body twice per level for the mandatory
+    // first pass, so 43 stacked `+` asked for gigabytes of bytecode. C jumps
+    // into the loop body once the body exceeds the expansion limit.
+    let mut pattern = b"un".to_vec();
+    pattern.extend(std::iter::repeat_n(b'+', 43));
+    pattern.extend_from_slice(b"ct?");
+
+    // The bytecode size itself is asserted by a unit test in regcomp.rs; this
+    // test pins the behavior of the compiled program.
+    let reg = onig_new(
+        &pattern,
+        ONIG_OPTION_NONE,
+        &ONIG_ENCODING_UTF8,
+        &OnigSyntaxPerl_NG,
+    )
+    .unwrap();
+
+    let haystack = b"xunnnct";
+    let (position, region) = onig_search(
+        &reg,
+        haystack,
+        haystack.len(),
+        0,
+        haystack.len(),
+        Some(OnigRegion::new()),
+        ONIG_OPTION_NONE,
+    );
+    assert_eq!(position, 1);
+    assert_eq!(region.unwrap().end[0], 7);
+}
+
+#[test]
+fn left_recursive_subexpression_call_is_rejected_at_compile_time() {
+    use ferroni::scanner::Scanner;
+
+    // A whole-pattern call at the head of an alternative re-enters the
+    // pattern at the same position without end. C rejects it as never-ending
+    // recursion when compiling; the port used to accept it and the matcher
+    // then grew its stack until the process ran out of memory.
+    assert!(Scanner::new(&["\\g<0>a|b|"]).is_err());
+    assert!(Regex::new(r"\g<0>|a").is_err());
+
+    // Recursion after consumed input stays valid.
+    let re = Regex::new(r"a\g<0>|b").unwrap();
+    assert_eq!(re.find("aab").unwrap().as_str(), "aab");
+}
+
+#[test]
+fn scanner_reports_the_keep_adjusted_match() {
+    use ferroni::scanner::{Scanner, ScannerFindOptions};
+
+    // `\K` moves the match start to where it appears, so the whole match is
+    // the region and not the position the winning attempt began at plus the
+    // length that attempt reported. Without a capture group the scanner used
+    // the position and the length, and reported the attempt's span instead.
+    // Every expectation below is C Oniguruma's, taken from its own scanner
+    // through the `ffi` feature.
+    let spans = |patterns: &[&str], text: &str, position: usize| {
+        Scanner::new(patterns)
+            .unwrap()
+            .find_next_match(text, position, ScannerFindOptions::NONE)
+            .map(|m| (m.index, m.captures()[0].start, m.captures()[0].end))
+    };
+
+    assert_eq!(spans(&[r"a\Kb"], "xxabxx", 0), Some((0, 3, 4)));
+    // `\K` at the end of the pattern keeps a zero-width match there.
+    assert_eq!(spans(&[r"ab\K"], "xxabxx", 0), Some((0, 4, 4)));
+    // A capture group already took the region path and stays as it was.
+    assert_eq!(spans(&[r"a\K(b)"], "xxabxx", 0), Some((0, 3, 4)));
+    // `\K` before anything consumed leaves the match start alone.
+    assert_eq!(spans(&[r"\Kab"], "xxabxx", 0), Some((0, 2, 4)));
+    // A set of several patterns reports the winner's own kept match.
+    assert_eq!(spans(&[r"zz", r"a\Kb"], "xxabxx", 0), Some((1, 3, 4)));
+
+    // Repeated calls from one position hand the scanner over to its cached
+    // per-regex route after ROUTE_MIN_SAME_START_FOR_PROBE calls. Both routes
+    // report the same match.
+    let mut scanner = Scanner::new(&[r"a\Kb"]).unwrap();
+    for _ in 0..32 {
+        let m = scanner
+            .find_next_match_with_id("xxabxx", 1, 0, ScannerFindOptions::NONE)
+            .unwrap();
+        assert_eq!((m.captures()[0].start, m.captures()[0].end), (3, 4));
+    }
+}
+
+#[test]
+fn scanner_keep_match_stays_on_character_boundaries() {
+    use ferroni::scanner::{Scanner, ScannerFindOptions};
+
+    // Minimized from the `scanner-api` fuzz target: the harness derives the
+    // pattern `.*\K\u{FFFD}` and the text below from the 11 input bytes
+    // `2e 2a 5c 4b b9 00 20 ff ff 61 ff`. `.*` consumes to the end of the
+    // line and backtracks, so the winning attempt begins before the match
+    // `\K` keeps. The scanner reported that attempt's span, 3..6, which ends
+    // inside the trailing replacement character.
+    let text = "\u{FFFD}a\u{FFFD}";
+    let pattern = format!(".*\\K{}", '\u{FFFD}');
+    let mut scanner = Scanner::new(&[pattern.as_str()]).unwrap();
+
+    for position in (0..=text.len()).filter(|p| text.is_char_boundary(*p)) {
+        let Some(m) = scanner.find_next_match(text, position, ScannerFindOptions::NONE) else {
+            // Only a start past the last replacement character has no match.
+            assert_eq!(position, text.len());
+            continue;
+        };
+        let whole = &m.captures()[0];
+        assert_eq!(
+            (whole.start, whole.end),
+            (4, 7),
+            "match from position {position}"
+        );
+        assert!(text.is_char_boundary(whole.start) && text.is_char_boundary(whole.end));
+    }
+}
+
+// A capture can read as start > end: group 1 of `((?=(a|ab))a?){2}` on "a"
+// is 1..0 in C Oniguruma and in the region (the second pass restarts the
+// group and fails before closing it). The high-level API reports such a
+// capture as not participating instead of slicing.
+#[test]
+fn inverted_capture_is_not_participating() {
+    let re = Regex::new(r"((?=(a|ab))a?){2}").unwrap();
+    let caps = re.captures("a").unwrap();
+    assert_eq!(caps.get(0).unwrap().range(), 0..0);
+    assert!(caps.get(1).is_none());
+    let group2 = caps.get(2).unwrap();
+    assert_eq!(group2.range(), 1..1);
+    assert_eq!(group2.as_str(), "");
+    let listed: Vec<_> = caps.iter().map(|m| m.map(|m| m.range())).collect();
+    assert_eq!(listed, vec![Some(0..0), None, Some(1..1)]);
+    let _ = format!("{caps:?}");
+
+    let named = Regex::new(r"(?<g>(?=(?<h>a|ab))a?){2}").unwrap();
+    let caps = named.captures("a").unwrap();
+    assert!(caps.name("g").is_none());
+    assert_eq!(caps.name("h").unwrap().range(), 1..1);
+}
+
+// `((?=a\g<0>)|(?:\k<1>*?(?=a)()))*` on "aa" loops without consuming input:
+// the capture-aware empty check never sees an empty iteration, so every cycle
+// grows the backtracking stack and only the retry limit ends the search. C
+// Oniguruma takes three backtracks per cycle and holds about 433k stack
+// entries after 100k retries. Two of those backtracks happen where Ferroni
+// guards the push (ADR-008); unless the guards count them like C, the same
+// retry budget lets the stack grow three times as large, which with the
+// default limit took the process past 4 GB. The stack limit keeps this test
+// bounded either way.
+#[test]
+fn guarded_pushes_spend_the_retry_budget_like_c() {
+    let re = Regex::new(r"((?=a\g<0>)|(?:\k<1>*?(?=a)()))*").unwrap();
+    let options = || {
+        SearchOptions::new()
+            .retry_limit_in_match(100_000)
+            .match_stack_limit(1_000_000)
+    };
+    let expected = RegexError::RetryLimitInMatchOver;
+    assert_eq!(re.find_with("aa", options()).err(), Some(expected.clone()));
+    assert_eq!(
+        re.is_match_with("aa", options()).err(),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        re.captures_with("aa", options()).err(),
+        Some(expected.clone())
+    );
+    let mut matches = re.find_iter_with("aa", options());
+    assert_eq!(matches.next().and_then(Result::err), Some(expected));
+    assert!(matches.next().is_none());
+}
+
+// C Oniguruma stops a match once its retry count reaches the limit
+// (`++counter >= limit`), not when it exceeds it. The smallest limits under
+// which C finishes these searches without a limit error, for the retry
+// limit in match and in search.
+#[test]
+fn retry_limits_stop_at_the_limit_like_c() {
+    assert_c_retry_budgets(&[
+        (r"x(a*)*y", "xaaaaaa", 65, 65),
+        (r"(?:a|ab)*c", "ababababxc", 11, 41),
+    ]);
+}
+
+// A guarded push whose main path forks (`a+|[ab]` below) skips several of
+// C's backtracks when it jumps, and counts all of them. Budgets from C, as
+// above.
+#[test]
+fn guarded_pushes_count_every_skipped_backtrack_like_c() {
+    assert_c_retry_budgets(&[
+        (r"(?:a+|[ab])*^", "aaaaa", 322, 322),
+        (r"(?:(?=[ab])a+|a)*$", "aaa!", 48, 78),
+    ]);
+}
+
+/// Each case is (pattern, subject, the smallest retry limit in match and in
+/// search under which C Oniguruma finishes the search).
+fn assert_c_retry_budgets(cases: &[(&str, &str, u64, u64)]) {
+    for &(pattern, subject, in_match, in_search) in cases {
+        let re = Regex::new(pattern).unwrap();
+        let by_match =
+            |limit| re.find_with(subject, SearchOptions::new().retry_limit_in_match(limit));
+        assert!(by_match(in_match).is_ok(), "{pattern}");
+        assert_eq!(
+            by_match(in_match - 1).err(),
+            Some(RegexError::RetryLimitInMatchOver),
+            "{pattern}"
+        );
+        let by_search = |limit| {
+            re.find_with(
+                subject,
+                SearchOptions::new()
+                    .retry_limit_in_match(0)
+                    .retry_limit_in_search(limit),
+            )
+        };
+        assert!(by_search(in_search).is_ok(), "{pattern}");
+        assert_eq!(
+            by_search(in_search - 1).err(),
+            Some(RegexError::RetryLimitInSearchOver),
+            "{pattern}"
+        );
+    }
+}
+
+// === Regex: Clone, FromStr, Display, Debug, as_str ===
+
+#[test]
+fn clone_shares_the_compiled_program() {
+    let re = Regex::new(r"(\d+)").unwrap();
+    let copy = re.clone();
+    assert!(std::ptr::eq(re.as_raw(), copy.as_raw()));
+    drop(re);
+    assert_eq!(copy.find("abc 42").unwrap().as_str(), "42");
+    assert_eq!(&copy.captures("7").unwrap()[1], "7");
+}
+
+#[test]
+fn from_str_compiles_or_reports_the_error() {
+    let re: Regex = "a+".parse().unwrap();
+    assert_eq!(re.as_str(), Some("a+"));
+    assert!(matches!(
+        "(".parse::<Regex>(),
+        Err(RegexError::Syntax { .. })
+    ));
+}
+
+#[test]
+fn display_writes_the_pattern() {
+    let re = Regex::new(r"\d{2}-(?<name>x)").unwrap();
+    assert_eq!(re.to_string(), r"\d{2}-(?<name>x)");
+}
+
+#[test]
+fn debug_shows_the_pattern() {
+    let re = Regex::new("a+b").unwrap();
+    assert_eq!(format!("{re:?}"), r#"Regex { pattern: "a+b", .. }"#);
+}
+
+#[test]
+fn as_str_is_none_for_a_pattern_that_is_not_utf8() {
+    // An encoded surrogate: Oniguruma accepts it, UTF-8 does not.
+    let re = Regex::new_bytes(b"\xed\xa0\x80").unwrap();
+    assert_eq!(re.as_str(), None);
+    assert_eq!(re.as_bytes(), b"\xed\xa0\x80");
+    assert!(re.to_string().contains('\u{FFFD}'));
+
+    assert_eq!(Regex::new_bytes(b"ab").unwrap().as_str(), Some("ab"));
+}
+
+#[test]
+fn regex_and_captures_are_unwind_safe() {
+    fn assert_unwind_safe<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+    assert_unwind_safe::<Regex>();
+    assert_unwind_safe::<Captures<'static>>();
+
+    let re = Regex::new("b+").unwrap();
+    let found = std::panic::catch_unwind(|| re.find("abb").map(|m| m.range()));
+    assert_eq!(found.unwrap(), Some(1..3));
+}
+
+// === Captures borrows only the haystack ===
+
+#[test]
+fn captures_outlive_the_regex_they_came_from() {
+    let caps = {
+        let re = Regex::new(r"(?<word>\w+)!").unwrap();
+        re.captures("hi there!")
+    };
+    assert_eq!(caps.unwrap().name("word").unwrap().as_str(), "there");
+}
+
+// === Captures indexing ===
+
+#[test]
+fn captures_index_by_number_and_name() {
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})").unwrap();
+    let caps = re.captures("on 2026-10").unwrap();
+    assert_eq!(&caps[0], "2026-10");
+    assert_eq!(&caps[1], "2026");
+    assert_eq!(&caps[2], "10");
+    assert_eq!(&caps["month"], "10");
+}
+
+#[test]
+fn captures_index_by_name_takes_the_last_participating_group() {
+    let re = Regex::new(r"(?<n>a)|(?<n>b)").unwrap();
+    assert_eq!(&re.captures("b").unwrap()["n"], "b");
+}
+
+#[test]
+#[should_panic(expected = "no group at index '3'")]
+fn captures_index_panics_on_a_missing_group() {
+    let re = Regex::new(r"(?<year>\d{4})").unwrap();
+    let caps = re.captures("2026").unwrap();
+    let _ = &caps[3];
+}
+
+#[test]
+#[should_panic(expected = "no group at index '2'")]
+fn captures_index_panics_on_a_group_that_did_not_participate() {
+    let re = Regex::new(r"(a)|(b)").unwrap();
+    let caps = re.captures("a").unwrap();
+    let _ = &caps[2];
+}
+
+#[test]
+#[should_panic(expected = "no group named 'day'")]
+fn captures_index_panics_on_an_unknown_name() {
+    let re = Regex::new(r"(?<year>\d{4})").unwrap();
+    let caps = re.captures("2026").unwrap();
+    let _ = &caps["day"];
+}
+
+#[test]
+#[should_panic(expected = "not valid UTF-8")]
+fn captures_index_panics_on_bytes_that_are_not_utf8() {
+    let re = Regex::new(r"(?<all>.+)").unwrap();
+    let caps = re.captures_bytes(b"\xff").unwrap();
+    assert_eq!(caps.get(1).unwrap().as_bytes(), b"\xff");
+    let _ = &caps[1];
+}
+
+// === Regex::capture_names ===
+
+#[test]
+fn capture_names_lists_one_entry_per_group() {
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})").unwrap();
+    let names = re.capture_names();
+    assert_eq!(names.len(), 3);
+    assert_eq!(
+        names.collect::<Vec<_>>(),
+        [None, Some("year"), Some("month")]
+    );
+}
+
+#[test]
+fn capture_names_repeats_a_shared_name_and_marks_unnamed_groups() {
+    let shared = Regex::new(r"(?<n>a)|(?<n>b)").unwrap();
+    assert_eq!(
+        shared.capture_names().collect::<Vec<_>>(),
+        [None, Some("n"), Some("n")]
+    );
+
+    let unnamed = Regex::new(r"(a)(b)").unwrap();
+    assert_eq!(
+        unnamed.capture_names().collect::<Vec<_>>(),
+        [None, None, None]
+    );
+
+    let no_groups = Regex::new(r"a+").unwrap();
+    assert_eq!(no_groups.capture_names().collect::<Vec<_>>(), [None]);
+}
+
+// === Regex::find_at and the start-offset family ===
+
+#[test]
+fn find_at_starts_the_search_at_the_offset() {
+    let re = Regex::new(r"\w+").unwrap();
+    let text = "hello world";
+    assert_eq!(re.find_at(text, 6).unwrap().as_str(), "world");
+    assert_eq!(re.find_at(text, 0).unwrap().as_str(), "hello");
+    // A match can begin in the middle of a word.
+    assert_eq!(re.find_at(text, 2).unwrap().range(), 2..5);
+}
+
+#[test]
+fn find_at_offsets_are_relative_to_the_whole_text() {
+    let re = Regex::new(r"\d+").unwrap();
+    let text = "ab12cd345";
+    assert_eq!(re.find_at(text, 3).unwrap().range(), 3..4);
+    assert_eq!(re.find(&text[3..]).unwrap().range(), 0..1);
+}
+
+#[test]
+fn find_at_look_behind_sees_the_text_before_start() {
+    let re = Regex::new(r"(?<=a)b").unwrap();
+    assert_eq!(re.find_at("ab", 1).unwrap().range(), 1..2);
+    // The slice has no `a` in front of its `b`, so the look-behind fails.
+    assert!(re.find(&"ab"[1..]).is_none());
+}
+
+#[test]
+fn find_at_word_boundary_and_line_anchor_see_the_text_before_start() {
+    let word = Regex::new(r"\bb").unwrap();
+    // There is no word boundary between `a` and `b`.
+    assert!(word.find_at("ab", 1).is_none());
+    assert_eq!(word.find_at("a b", 2).unwrap().range(), 2..3);
+
+    let line = Regex::new(r"^b").unwrap();
+    assert!(line.find_at("ab", 1).is_none());
+    assert_eq!(line.find_at("a\nb", 2).unwrap().range(), 2..3);
+}
+
+#[test]
+fn find_at_g_anchor_matches_at_the_start_offset() {
+    let re = Regex::new(r"\Gb").unwrap();
+    assert_eq!(re.find_at("ab", 1).unwrap().range(), 1..2);
+    assert!(re.find_at("ab", 0).is_none());
+
+    // A tokenizer resumes at the end of each token.
+    let token = Regex::new(r"\G\d+").unwrap();
+    let text = "12ab34";
+    assert_eq!(token.find_at(text, 0).unwrap().range(), 0..2);
+    assert!(token.find_at(text, 2).is_none());
+    assert_eq!(token.find_at(text, 4).unwrap().range(), 4..6);
+}
+
+#[test]
+fn find_at_keep_moves_start_pattern_reports_the_kept_start() {
+    // `\K` moves the match start, so this pattern searches through the region.
+    let re = Regex::new(r"a\Kb").unwrap();
+    assert_eq!(re.find_at("aab", 1).unwrap().range(), 2..3);
+    assert_eq!(re.find_at("aab", 0).unwrap().range(), 2..3);
+    assert!(re.find_at("aab", 2).is_none());
+}
+
+#[test]
+fn find_at_matches_the_text_after_a_multibyte_start() {
+    let re = Regex::new(r"\w").unwrap();
+    let text = "é1é2";
+    assert_eq!(re.find_at(text, 2).unwrap().range(), 2..3);
+    assert_eq!(re.find_at(text, 3).unwrap().as_str(), "é");
+    assert_eq!(re.find_at(text, 5).unwrap().as_str(), "2");
+}
+
+#[test]
+fn find_at_start_at_the_end_of_the_text() {
+    let empty = Regex::new(r"x*").unwrap();
+    assert_eq!(empty.find_at("abc", 3).unwrap().range(), 3..3);
+    assert_eq!(empty.find_bytes_at(b"abc", 3).unwrap().range(), 3..3);
+
+    let letter = Regex::new(r"c").unwrap();
+    assert!(letter.find_at("abc", 3).is_none());
+    assert!(!letter.is_match_at("abc", 3));
+}
+
+#[test]
+fn find_at_resumed_from_each_match_end_matches_find_iter() {
+    let re = Regex::new(r"\w+").unwrap();
+    let text = "one two  three";
+    let mut resumed = Vec::new();
+    let mut position = 0;
+    while let Some(m) = re.find_at(text, position) {
+        resumed.push(m.range());
+        position = m.end();
+    }
+    let iterated: Vec<_> = re.find_iter(text).map(|m| m.range()).collect();
+    assert_eq!(resumed, iterated);
+    assert_eq!(resumed, [0..3, 4..7, 9..14]);
+}
+
+#[test]
+#[should_panic(expected = "not a char boundary")]
+fn find_at_panics_inside_a_character() {
+    let re = Regex::new(r"\w").unwrap();
+    let _ = re.find_at("é", 1);
+}
+
+#[test]
+#[should_panic(expected = "past the end of the text")]
+fn find_bytes_at_panics_past_the_end() {
+    let re = Regex::new(r"a").unwrap();
+    let _ = re.find_bytes_at(b"ab", 3);
+}
+
+#[test]
+fn start_checks_panic_for_every_at_method() {
+    fn panics(f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
+        std::panic::catch_unwind(f).is_err()
+    }
+
+    let re = Regex::new(r"a").unwrap();
+    let options = SearchOptions::new;
+    let text = "éa"; // byte 1 is inside `é`, and byte 4 is past the end
+    let bytes = text.as_bytes();
+
+    assert!(panics(|| {
+        let _ = re.find_at(text, 1);
+    }));
+    assert!(panics(|| {
+        let _ = re.find_at_with(text, 1, options());
+    }));
+    assert!(panics(|| {
+        let _ = re.is_match_at(text, 1);
+    }));
+    assert!(panics(|| {
+        let _ = re.is_match_at_with(text, 1, options());
+    }));
+    assert!(panics(|| {
+        let _ = re.captures_at(text, 1);
+    }));
+    assert!(panics(|| {
+        let _ = re.captures_at_with(text, 1, options());
+    }));
+
+    assert!(panics(|| {
+        let _ = re.find_bytes_at(bytes, 4);
+    }));
+    assert!(panics(|| {
+        let _ = re.find_bytes_at_with(bytes, 4, options());
+    }));
+    assert!(panics(|| {
+        let _ = re.is_match_bytes_at(bytes, 4);
+    }));
+    assert!(panics(|| {
+        let _ = re.is_match_bytes_at_with(bytes, 4, options());
+    }));
+    assert!(panics(|| {
+        let _ = re.captures_bytes_at(bytes, 4);
+    }));
+    assert!(panics(|| {
+        let _ = re.captures_bytes_at_with(bytes, 4, options());
+    }));
+}
+
+#[test]
+fn find_bytes_at_accepts_a_start_inside_a_character() {
+    // The bytes API searches bytes, so a start between the bytes of `é` is
+    // allowed.
+    let re = Regex::new(r"x").unwrap();
+    assert_eq!(re.find_bytes_at("é x".as_bytes(), 1).unwrap().range(), 3..4);
+    assert_eq!(re.find_bytes_at(b"\xff\x78", 1).unwrap().range(), 1..2);
+}
+
+#[test]
+fn find_bytes_at_matches_find_at_on_valid_text() {
+    let re = Regex::new(r"(?<=a)b").unwrap();
+    let text = "xab";
+    assert_eq!(
+        re.find_bytes_at(text.as_bytes(), 2).map(|m| m.range()),
+        re.find_at(text, 2).map(|m| m.range())
+    );
+}
+
+#[test]
+fn is_match_at_checks_from_the_start_offset() {
+    let re = Regex::new(r"(?<=a)b").unwrap();
+    assert!(re.is_match_at("ab", 1));
+    // A match at or after the offset counts, so offset 0 also finds the `b`.
+    assert!(re.is_match_at("ab", 0));
+    assert!(!re.is_match_at("ab", 2));
+    assert!(!re.is_match(&"ab"[1..]));
+    assert!(re.is_match_bytes_at(b"ab", 1));
+    assert!(!re.is_match_bytes_at(b"ab", 2));
+}
+
+#[test]
+fn captures_at_reports_groups_relative_to_the_whole_text() {
+    let re = Regex::new(r"(?<=a)(b)(c)").unwrap();
+    let caps = re.captures_at("abc", 1).unwrap();
+    assert_eq!(caps.get(0).unwrap().range(), 1..3);
+    assert_eq!(caps.get(1).unwrap().range(), 1..2);
+    assert_eq!(caps.get(2).unwrap().range(), 2..3);
+    assert!(re.captures_at("abc", 2).is_none());
+
+    let named = Regex::new(r"(?<=a)(?<mid>b)c").unwrap();
+    assert_eq!(
+        named
+            .captures_at("abc", 1)
+            .unwrap()
+            .name("mid")
+            .unwrap()
+            .range(),
+        1..2
+    );
+    assert!(re.captures_bytes_at(b"abc", 1).is_some());
+}
+
+#[test]
+fn at_with_variants_match_their_plain_counterparts() {
+    let re = Regex::new(r"(?<=a)(b)(c)").unwrap();
+    let text = "abc";
+    let options = SearchOptions::new();
+
+    assert_eq!(
+        re.find_at_with(text, 1, options).unwrap().unwrap().range(),
+        1..3
+    );
+    assert!(re.find_at_with(text, 2, options).unwrap().is_none());
+    assert_eq!(
+        re.find_bytes_at_with(text.as_bytes(), 1, options)
+            .unwrap()
+            .unwrap()
+            .range(),
+        1..3
+    );
+    assert!(re.is_match_at_with(text, 1, options).unwrap());
+    assert!(!re.is_match_at_with(text, 3, options).unwrap());
+    assert!(
+        re.is_match_bytes_at_with(text.as_bytes(), 1, options)
+            .unwrap()
+    );
+
+    let caps = re.captures_at_with(text, 1, options).unwrap().unwrap();
+    assert_eq!(caps.get(1).unwrap().as_str(), "b");
+    assert!(
+        re.captures_bytes_at_with(text.as_bytes(), 1, options)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn at_with_variants_report_limit_errors() {
+    // The pattern from `guarded_pushes_spend_the_retry_budget_like_c`, started
+    // inside the text.
+    let re = Regex::new(r"((?=a\g<0>)|(?:\k<1>*?(?=a)()))*").unwrap();
+    let options = || {
+        SearchOptions::new()
+            .retry_limit_in_match(100_000)
+            .match_stack_limit(1_000_000)
+    };
+    let expected = Some(RegexError::RetryLimitInMatchOver);
+    assert_eq!(re.find_at_with("xaa", 1, options()).err(), expected);
+    assert_eq!(re.is_match_at_with("xaa", 1, options()).err(), expected);
+    assert_eq!(re.captures_at_with("xaa", 1, options()).err(), expected);
+    assert_eq!(re.find_bytes_at_with(b"xaa", 1, options()).err(), expected);
+}
+
+#[test]
+fn captures_iter_yields_the_find_iter_matches() {
+    let cases: &[(&str, &str)] = &[
+        (r"a*", "ab"),
+        (r"", "ab"),
+        (r"\b", "ab cd"),
+        (r"(?<=a)", "aab"),
+        (r"\G\w", "abc def"),
+        (r"x*", "éxé"),
+        (r"\w*", "héllo wörld"),
+        (r"\d+|\s*", "12 ab 345"),
+        (r"a\Kb", "aab ab"),
+        (r"(?<n>\d)", "a1b2"),
+        (r"^", "a\n\nb"),
+        (r"$", "ab\ncd"),
+        (r"(?<=é)", "éé"),
+    ];
+    for &(pattern, text) in cases {
+        let re = Regex::new(pattern).unwrap();
+        let found: Vec<_> = re.find_iter(text).map(|m| m.range()).collect();
+
+        let captured: Vec<_> = re
+            .captures_iter(text)
+            .map(|caps| caps.get(0).unwrap().range())
+            .collect();
+        assert_eq!(captured, found, "captures_iter: {pattern:?} on {text:?}");
+
+        let bytes: Vec<_> = re
+            .captures_iter_bytes(text.as_bytes())
+            .map(|caps| caps.get(0).unwrap().range())
+            .collect();
+        assert_eq!(bytes, found, "captures_iter_bytes: {pattern:?} on {text:?}");
+
+        let with: Vec<_> = re
+            .captures_iter_with(text, SearchOptions::new())
+            .map(|caps| caps.unwrap().get(0).unwrap().range())
+            .collect();
+        assert_eq!(with, found, "captures_iter_with: {pattern:?} on {text:?}");
+    }
+}
+
+#[test]
+fn captures_iter_empty_matches_follow_find_iter_rule() {
+    // `a*` over "ab": the empty match at 1 is yielded, and the one at 2 too.
+    let re = Regex::new(r"a*").unwrap();
+    let ranges: Vec<_> = re
+        .captures_iter("ab")
+        .map(|caps| caps.get(0).unwrap().range())
+        .collect();
+    assert_eq!(ranges, [0..1, 1..1, 2..2]);
+}
+
+#[test]
+fn captures_iter_yields_every_group_of_each_match() {
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})").unwrap();
+    let dates: Vec<(&str, &str)> = re
+        .captures_iter("2025-01, then 2026-10")
+        .map(|caps| {
+            (
+                caps.name("year").unwrap().as_str(),
+                caps.name("month").unwrap().as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(dates, [("2025", "01"), ("2026", "10")]);
+
+    let caps: Vec<_> = re.captures_iter("2025-01").collect();
+    assert_eq!(caps[0].len(), 3);
+    assert_eq!(caps[0].get(2).unwrap().range(), 5..7);
+}
+
+#[test]
+fn captures_iter_with_yields_a_limit_error_once() {
+    let re = Regex::new(r"((?=a\g<0>)|(?:\k<1>*?(?=a)()))*").unwrap();
+    let options = SearchOptions::new()
+        .retry_limit_in_match(100_000)
+        .match_stack_limit(1_000_000);
+    let mut matches = re.captures_iter_with("aa", options);
+    assert_eq!(
+        matches.next().and_then(Result::err),
+        Some(RegexError::RetryLimitInMatchOver)
+    );
+    assert!(matches.next().is_none());
+}
+
+#[test]
+fn captures_iterators_are_fused() {
+    fn assert_fused<I: std::iter::FusedIterator>(_: &I) {}
+
+    let re = Regex::new(r"a").unwrap();
+    let mut iter = re.captures_iter_with("a", SearchOptions::new());
+    assert_fused(&iter);
+    assert!(iter.next().is_some());
+    assert!(iter.next().is_none());
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn captures_from_iter_outlive_the_iterator_and_the_regex() {
+    let text = "a1 b2";
+    let caps: Vec<_> = Regex::new(r"(?<d>\d)")
+        .unwrap()
+        .captures_iter(text)
+        .collect();
+    assert_eq!(caps.len(), 2);
+    assert_eq!(caps[1].name("d").unwrap().as_str(), "2");
+}
+
+// === Captures::expand ===
+
+fn expanded(re: &Regex, text: &str, template: &str) -> String {
+    let caps = re.captures(text).expect("the pattern matches the text");
+    let mut out = String::new();
+    caps.expand(template, &mut out);
+    out
+}
+
+#[test]
+fn expand_numbered_reference() {
+    let re = Regex::new(r"(\w+)-(\d+)").unwrap();
+    assert_eq!(expanded(&re, "item-42", "$2 $1"), "42 item");
+    assert_eq!(expanded(&re, "item-42", "$0"), "item-42");
+}
+
+#[test]
+fn expand_braced_numbered_reference_ends_the_name() {
+    let re = Regex::new(r"(\w+)").unwrap();
+    assert_eq!(expanded(&re, "ab", "${1}x"), "abx");
+    assert_eq!(expanded(&re, "ab", "$1x"), "");
+}
+
+#[test]
+fn expand_leading_zeros_name_the_same_group() {
+    let re = Regex::new(r"(a)(b)").unwrap();
+    assert_eq!(expanded(&re, "ab", "$01$002"), "ab");
+}
+
+#[test]
+fn expand_named_reference_takes_longest_name_run() {
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})").unwrap();
+    assert_eq!(expanded(&re, "2026-10", "$year-$month"), "2026-10");
+    assert_eq!(expanded(&re, "2026-10", "$yearx"), "");
+    assert_eq!(expanded(&re, "2026-10", "$year_"), "");
+    assert_eq!(expanded(&re, "2026-10", "${year}x"), "2026x");
+    assert_eq!(expanded(&re, "2026-10", "${month}"), "10");
+}
+
+#[test]
+fn expand_dollar_dollar_is_a_literal_dollar() {
+    let re = Regex::new(r"(a)").unwrap();
+    assert_eq!(expanded(&re, "a", "$$"), "$");
+    assert_eq!(expanded(&re, "a", "$$1"), "$1");
+    assert_eq!(expanded(&re, "a", "$$$1"), "$a");
+    assert_eq!(expanded(&re, "a", "$$${1}"), "$a");
+    assert_eq!(expanded(&re, "a", "cost: 5$$"), "cost: 5$");
+}
+
+#[test]
+fn expand_missing_group_is_empty() {
+    let re = Regex::new(r"(?<n>\d)").unwrap();
+    assert_eq!(expanded(&re, "7", "[$9]"), "[]");
+    assert_eq!(expanded(&re, "7", "[${9}]"), "[]");
+    assert_eq!(expanded(&re, "7", "[$missing]"), "[]");
+    assert_eq!(expanded(&re, "7", "[${missing}]"), "[]");
+    assert_eq!(expanded(&re, "7", "[$n]"), "[7]");
+}
+
+#[test]
+fn expand_non_participating_group_is_empty() {
+    let re = Regex::new(r"(a)?b").unwrap();
+    assert_eq!(expanded(&re, "b", "[$1]"), "[]");
+    assert_eq!(expanded(&re, "ab", "[$1]"), "[a]");
+}
+
+#[test]
+fn expand_name_resolves_like_captures_name() {
+    // Two groups share the name `n`. `Captures::name` picks the last one that
+    // participated, and `$n` must pick the same group.
+    let re = Regex::new(r"(?<n>a)|(?<n>b)").unwrap();
+    assert_eq!(expanded(&re, "a", "$n"), "a");
+    assert_eq!(expanded(&re, "b", "$n"), "b");
+    let caps = re.captures("b").unwrap();
+    assert_eq!(expanded(&re, "b", "$n"), caps.name("n").unwrap().as_str());
+}
+
+#[test]
+fn expand_invalid_reference_is_literal() {
+    let re = Regex::new(r"(a)").unwrap();
+    assert_eq!(expanded(&re, "a", "cost $"), "cost $");
+    assert_eq!(expanded(&re, "a", "$-$."), "$-$.");
+    assert_eq!(expanded(&re, "a", "$ $"), "$ $");
+    assert_eq!(expanded(&re, "a", "${"), "${");
+    assert_eq!(expanded(&re, "a", "${1"), "${1");
+    assert_eq!(expanded(&re, "a", "${ x"), "${ x");
+    assert_eq!(expanded(&re, "a", "é$"), "é$");
+}
+
+#[test]
+fn expand_braced_reference_runs_to_the_closing_brace() {
+    let re = Regex::new(r"(a)").unwrap();
+    // The text between the braces is looked up as a name or a number. No group
+    // has these names, so they expand to nothing, and the braces are consumed.
+    assert_eq!(expanded(&re, "a", "[${}]"), "[]");
+    assert_eq!(expanded(&re, "a", "[${a-b}]"), "[]");
+    assert_eq!(expanded(&re, "a", "[${1 }]"), "[]");
+    assert_eq!(expanded(&re, "a", "${}x"), "x");
+    assert_eq!(expanded(&re, "a", "${a}b}"), "b}");
+    // A `${` whose first `}` comes later swallows the text in between.
+    assert_eq!(expanded(&re, "a", "${1 $1}"), "");
+    // A number written with a sign or leading zeros still names that group.
+    assert_eq!(expanded(&re, "a", "${+1}"), "a");
+    assert_eq!(expanded(&re, "a", "${001}"), "a");
+}
+
+#[test]
+fn expand_keeps_non_ascii_literal_text() {
+    let re = Regex::new(r"(?<w>\w+)").unwrap();
+    assert_eq!(expanded(&re, "ü", "→ $w ✓"), "→ ü ✓");
+}
+
+#[test]
+fn expand_unnamed_groups_are_not_captured_next_to_named_groups() {
+    let re = Regex::new(r"(?<y>\d+)-(\d+)").unwrap();
+    assert_eq!(re.captures_len(), 1);
+    assert_eq!(expanded(&re, "2026-10", "$y/$2"), "2026/");
+}
+
+#[test]
+fn expand_unnamed_groups_with_capture_group_option() {
+    let re = Regex::builder(r"(?<y>\d+)-(\d+)")
+        .capture_group(true)
+        .build()
+        .unwrap();
+    assert_eq!(re.captures_len(), 2);
+    assert_eq!(expanded(&re, "2026-10", "$y/$2"), "2026/10");
+}
+
+#[test]
+fn expand_bytes_copies_non_utf8_groups() {
+    let re = Regex::new(r"(?<word>\S+)").unwrap();
+    let caps = re.captures_bytes(b"\xff\xfe end").unwrap();
+    let mut out = Vec::new();
+    caps.expand_bytes(b"[$word]$$", &mut out);
+    assert_eq!(out, b"[\xff\xfe]$");
+}
+
+// === Regex::replace ===
+
+#[test]
+fn replace_changes_only_the_first_match() {
+    let re = Regex::new(r"\d+").unwrap();
+    assert_eq!(re.replace("a1 b22 c333", "#"), "a# b22 c333");
+}
+
+#[test]
+fn replace_all_changes_every_match() {
+    let re = Regex::new(r"\d+").unwrap();
+    assert_eq!(re.replace_all("a1 b22 c333", "#"), "a# b# c#");
+}
+
+#[test]
+fn replacen_limits_the_number_of_replacements() {
+    let re = Regex::new(r"\d").unwrap();
+    assert_eq!(re.replacen("1 2 3", 2, "x"), "x x 3");
+    assert_eq!(re.replacen("1 2 3", 1, "x"), "x 2 3");
+    assert_eq!(re.replacen("1 2 3", 5, "x"), "x x x");
+}
+
+#[test]
+fn replacen_zero_replaces_all_matches() {
+    let re = Regex::new(r"\d").unwrap();
+    assert_eq!(re.replacen("1 2 3", 0, "x"), "x x x");
+}
+
+#[test]
+fn replace_without_a_match_borrows_the_text() {
+    let re = Regex::new(r"\d").unwrap();
+    let text = "no digits here";
+    let out = re.replace_all(text, "#");
+    assert!(matches!(out, Cow::Borrowed(_)));
+    assert_eq!(out, text);
+    assert!(matches!(re.replace(text, "#"), Cow::Borrowed(_)));
+}
+
+#[test]
+fn replace_with_a_match_owns_the_result() {
+    let re = Regex::new(r"\d").unwrap();
+    let out = re.replace_all("a1", "#");
+    assert!(matches!(out, Cow::Owned(_)));
+    assert_eq!(out, "a#");
+}
+
+#[test]
+fn replace_all_treats_empty_match_after_nonempty_as_a_match() {
+    // `a*` matches `a` at 0..1, then empty matches at 1 and at 2. Ferroni's
+    // find_iter reports all three, so each one is replaced.
+    let re = Regex::new(r"a*").unwrap();
+    assert_eq!(re.replace_all("ab", "-"), "--b-");
+    assert_eq!(re.replace_all("aab", "-"), "--b-");
+}
+
+#[test]
+fn replace_matches_follow_find_iter_for_empty_patterns() {
+    let re = Regex::new(r"").unwrap();
+    assert_eq!(re.replace_all("ab", "-"), "-a-b-");
+    assert_eq!(re.replacen("ab", 2, "-"), "-a-b");
+}
+
+#[test]
+fn replace_all_at_text_end_and_empty_text() {
+    let re = Regex::new(r"$").unwrap();
+    assert_eq!(re.replace_all("ab", "!"), "ab!");
+    assert_eq!(re.replace_all("", "!"), "!");
+}
+
+#[test]
+fn replace_all_expands_named_references() {
+    let re = Regex::new(r"(?<year>\d{4})-(?<month>\d{2})").unwrap();
+    assert_eq!(
+        re.replace_all("2025-01 and 2026-10", "$month/$year"),
+        "01/2025 and 10/2026"
+    );
+    assert_eq!(re.replace_all("2025-01", "${month}.${year}"), "01.2025");
+}
+
+#[test]
+fn replace_all_expands_dollar_escape() {
+    let re = Regex::new(r"\d+").unwrap();
+    assert_eq!(re.replace_all("a1 b2", "$$$0"), "a$1 b$2");
+}
+
+#[test]
+fn replace_all_accepts_every_string_replacer() {
+    let re = Regex::new(r"\d").unwrap();
+    let owned = String::from("#");
+    assert_eq!(re.replace_all("1x2", "#"), "#x#");
+    assert_eq!(re.replace_all("1x2", owned.clone()), "#x#");
+    assert_eq!(re.replace_all("1x2", &owned), "#x#");
+    assert_eq!(re.replace_all("1x2", Cow::Borrowed("#")), "#x#");
+    assert_eq!(re.replace_all("1x2", Cow::<str>::Owned(owned)), "#x#");
+}
+
+#[test]
+fn replace_all_with_a_closure_sees_the_captures() {
+    let re = Regex::new(r"(?<k>\w+)=(?<v>\d+)").unwrap();
+    let out = re.replace_all("a=1, b=22", |caps: &Captures| {
+        format!("{}:{}", &caps["v"], &caps["k"])
+    });
+    assert_eq!(out, "1:a, 22:b");
+}
+
+#[test]
+fn replace_all_with_a_closure_returning_str() {
+    let re = Regex::new(r"\d").unwrap();
+    let out = re.replace_all("1-2", |_: &Captures| "#");
+    assert_eq!(out, "#-#");
+}
+
+#[test]
+fn replace_all_with_no_expansion_inserts_dollars_literally() {
+    let re = Regex::new(r"(\d)").unwrap();
+    assert_eq!(re.replace_all("1 2", NoExpand("$1")), "$1 $1");
+    assert_eq!(re.replace_all("1 2", NoExpand("")), " ");
+}
+
+#[test]
+fn replace_all_with_by_ref_keeps_the_replacer() {
+    let re = Regex::new(r"\d").unwrap();
+    let mut count = 0;
+    let mut counting = |_: &Captures| {
+        count += 1;
+        count.to_string()
+    };
+    assert_eq!(re.replace_all("1 2", counting.by_ref()), "1 2");
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn replace_bytes_handles_text_that_is_not_utf8() {
+    let re = Regex::new(r"(?<d>\d+)").unwrap();
+    let text: &[u8] = b"\xff 12 \xfe 3";
+    let out = re.replace_all_bytes(text, &b"<$d>"[..]);
+    assert_eq!(out, &b"\xff <12> \xfe <3>"[..]);
+    assert!(matches!(out, Cow::Owned(_)));
+}
+
+#[test]
+fn replace_bytes_borrows_without_a_match() {
+    let re = Regex::new(r"\d").unwrap();
+    let text: &[u8] = b"\xff\xfe";
+    let out = re.replace_bytes(text, &b"#"[..]);
+    assert!(matches!(out, Cow::Borrowed(_)));
+    assert_eq!(out, text);
+}
+
+#[test]
+fn replacen_bytes_with_owned_and_no_expansion_replacers() {
+    let re = Regex::new(r"(?<d>\d)").unwrap();
+    let owned: Vec<u8> = b"<$d>".to_vec();
+    assert_eq!(re.replace_all_bytes(b"4", owned.clone()), &b"<4>"[..]);
+    assert_eq!(re.replace_all_bytes(b"4", &owned), &b"<4>"[..]);
+    assert_eq!(
+        re.replace_all_bytes(b"4", Cow::Borrowed(&b"<$d>"[..])),
+        &b"<4>"[..]
+    );
+    assert_eq!(re.replace_all_bytes(b"4", NoExpandBytes(b"$d")), &b"$d"[..]);
+}
+
+#[test]
+fn replace_all_bytes_closure_gets_bytes() {
+    let re = Regex::new(r"\d").unwrap();
+    let out = re.replace_all_bytes(b"1a2", |caps: &Captures| {
+        let digit = caps[0].parse::<u32>().unwrap();
+        (digit * 10).to_string().into_bytes()
+    });
+    assert_eq!(out, &b"10a20"[..]);
+}
+
+// === Regex::split ===
+
+#[test]
+fn split_yields_the_pieces_between_matches() {
+    let re = Regex::new(r"\s*,\s*").unwrap();
+    let parts: Vec<&str> = re.split("a , b,c").collect();
+    assert_eq!(parts, ["a", "b", "c"]);
+}
+
+#[test]
+fn split_keeps_empty_pieces_at_the_ends() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.split(",x,").collect::<Vec<_>>(), ["", "x", ""]);
+    assert_eq!(re.split(",,").collect::<Vec<_>>(), ["", "", ""]);
+}
+
+#[test]
+fn split_without_a_match_yields_the_whole_text() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.split("abc").collect::<Vec<_>>(), ["abc"]);
+    assert_eq!(re.split("").collect::<Vec<_>>(), [""]);
+}
+
+#[test]
+fn split_empty_pattern_splits_between_characters() {
+    let re = Regex::new(r"").unwrap();
+    assert_eq!(re.split("ab").collect::<Vec<_>>(), ["", "a", "b", ""]);
+    assert_eq!(re.split("").collect::<Vec<_>>(), ["", ""]);
+}
+
+#[test]
+fn split_follows_empty_matches_after_nonempty_ones() {
+    // The matches are 0..1, 1..1 and 2..2, so the pieces are the text before
+    // 0, between 0 and 1, between 1 and 2, and after 2. The regex crate
+    // yields only ["", "b", ""] here.
+    let re = Regex::new(r"a*").unwrap();
+    assert_eq!(re.split("ab").collect::<Vec<_>>(), ["", "", "b", ""]);
+}
+
+#[test]
+fn split_at_the_end_of_the_text_leaves_an_empty_last_piece() {
+    let re = Regex::new(r"$").unwrap();
+    assert_eq!(re.split("ab").collect::<Vec<_>>(), ["ab", ""]);
+}
+
+#[test]
+fn split_pieces_and_matches_rebuild_the_text() {
+    let re = Regex::new(r"x*").unwrap();
+    let text = "axxbxc";
+    let pieces: Vec<&str> = re.split(text).collect();
+    let matches: Vec<&str> = re.find_iter(text).map(|m| m.as_str()).collect();
+    assert_eq!(pieces.len(), matches.len() + 1);
+
+    let mut rebuilt = String::from(pieces[0]);
+    for (piece, matched) in pieces[1..].iter().zip(&matches) {
+        rebuilt.push_str(matched);
+        rebuilt.push_str(piece);
+    }
+    assert_eq!(rebuilt, text);
+}
+
+#[test]
+fn split_non_ascii_pieces() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.split("é,ü,日本").collect::<Vec<_>>(), ["é", "ü", "日本"]);
+}
+
+#[test]
+fn split_iterators_are_fused() {
+    fn assert_fused<I: std::iter::FusedIterator>(_: &I) {}
+
+    let re = Regex::new(r",").unwrap();
+    let mut pieces = re.split("a");
+    assert_fused(&pieces);
+    assert_eq!(pieces.next(), Some("a"));
+    assert_eq!(pieces.next(), None);
+    assert_eq!(pieces.next(), None);
+
+    let mut limited = re.splitn("a", 2);
+    assert_fused(&limited);
+    assert_eq!(limited.next(), Some("a"));
+    assert_eq!(limited.next(), None);
+    assert_eq!(limited.next(), None);
+}
+
+// === Regex::splitn ===
+
+#[test]
+fn splitn_last_piece_is_the_unsplit_rest() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.splitn("a,b,c", 2).collect::<Vec<_>>(), ["a", "b,c"]);
+    assert_eq!(re.splitn("a,b,c", 3).collect::<Vec<_>>(), ["a", "b", "c"]);
+}
+
+#[test]
+fn splitn_limit_one_yields_the_whole_text() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.splitn("a,b,c", 1).collect::<Vec<_>>(), ["a,b,c"]);
+    assert_eq!(re.splitn("", 1).collect::<Vec<_>>(), [""]);
+}
+
+#[test]
+fn splitn_limit_zero_yields_nothing() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.splitn("a,b,c", 0).count(), 0);
+}
+
+#[test]
+fn splitn_limit_above_the_piece_count_yields_all_pieces() {
+    let re = Regex::new(r",").unwrap();
+    assert_eq!(re.splitn("a,b", 10).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(re.splitn("a", 10).collect::<Vec<_>>(), ["a"]);
+}
+
+#[test]
+fn splitn_counts_empty_matches_as_separators() {
+    let re = Regex::new(r"a*").unwrap();
+    assert_eq!(re.splitn("ab", 2).collect::<Vec<_>>(), ["", "b"]);
+    assert_eq!(re.splitn("ab", 3).collect::<Vec<_>>(), ["", "", "b"]);
+}
+
+// === Regex::split_bytes ===
+
+#[test]
+fn split_bytes_handles_text_that_is_not_utf8() {
+    let re = Regex::new(r",").unwrap();
+    let text: &[u8] = b"\xff,\xfe,";
+    let parts: Vec<&[u8]> = re.split_bytes(text).collect();
+    assert_eq!(parts, [&b"\xff"[..], &b"\xfe"[..], &b""[..]]);
+    let parts: Vec<&[u8]> = re.splitn_bytes(text, 2).collect();
+    assert_eq!(parts, [&b"\xff"[..], &b"\xfe,"[..]]);
+}

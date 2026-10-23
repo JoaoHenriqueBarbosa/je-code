@@ -1,0 +1,12 @@
+{
+  "standards": 15,
+  "visibility": "oss",
+  "since": 2026,
+  "platform": "github",
+  "workspaces": [
+    "docs"
+  ],
+  "readme": {
+    "owner": "mdtheme"
+  }
+}

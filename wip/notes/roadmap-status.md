@@ -9,7 +9,7 @@ Fase corrente: **0 (bancada e fundações)**.
 
 | Critério | Estado | Fonte |
 | --- | --- | --- |
-| H01 a H14, H23 a H27 com veredito | 16 de 19 (confirmadas: H02, H03, H07, H10, H23 no Windows, H24, H26, H27; refutada: H05; parciais: H01, H04, H09, H12, H13 (só o JSON); dispensada: H06). Em medição: H14 (agente), H11. NÃO MEDIDO: H08 (web), H25 além de `vs/base` | eu, 2026-10-23 |
+| H01 a H14, H23 a H27 com veredito | 17 de 19 (confirmadas: H02, H03, H07, H10, H14, H23 no Windows, H24, H26, H27; refutada: H05; parciais: H01, H04, H09, H12, H13 (só o JSON); dispensada: H06). Em medição: H11. NÃO MEDIDO: H08 (web), H25 além de `vs/base` | eu, 2026-10-23 |
 | Substrato gráfico e de texto escolhido pela medida | **Escolhido**: winit + vello (GPU) + vello_cpu (CPU) + parley + accesskit; Bevy refutado (H05) | eu, 2026-10-23 |
 | Harness do oráculo com um teste mocha portado e um screenshot comparado | Testes mocha: 72+ casos portados passando. Screenshot de ponta a ponta: moldura do je-code contra o oráculo, fundos idênticos, 5,285% de pixels diferentes só no que falta portar (H26) | eu, 2026-10-23 |
 | `scripts/pure-rust-check.sh` verde nos 4 alvos | **Verde** para o produto (`crates/*`) nos 4 alvos; ligações só a libs do sistema (`libdl` no Linux, `libobjc` no macOS) | eu, 2026-10-23 |
@@ -39,3 +39,4 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 - 2026-10-23: H10 confirmada (parley + teto em 1/64 px = largura do Chromium do oráculo); zyarr integrado (RegExp ECMAScript do pseudo-linus, 450 testes).
 - 2026-10-23: H26 confirmada de ponta a ponta (je-render offscreen + je-theme contra a captura do oráculo).
 - 2026-10-23: je-codicons (785 ids, fonte codicon.ttf); H09 parcial (fontique resolve as listas do VS Code como o oráculo no latino; emoji e scripts sem conferência); no WSLg a janela vai pelo X11 (60 fps).
+- 2026-10-23: H14 confirmada: ferriki-textmate + ferroni corrigido = 109 de 109 goldens de tokenização do VS Code, 100% dos tokens.

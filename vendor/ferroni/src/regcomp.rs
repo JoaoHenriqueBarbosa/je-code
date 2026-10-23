@@ -1,0 +1,15978 @@
+//! Port of `regcomp.c`: the compiler, which turns the AST (node trees) into
+//! bytecode (operation arrays). [`onig_new`] is its entry point, and
+//! [`RegexBuilder`](crate::api::RegexBuilder) is the idiomatic way to compile a
+//! pattern.
+
+// This is a 1:1 port of oniguruma's regcomp.c (~8,500 LOC).
+// Structure mirrors the C original: operation management → string compilation →
+// cclass compilation → quantifier compilation → bag compilation → anchor compilation →
+// tree compilation → entry point.
+
+#![allow(non_upper_case_globals)]
+#![allow(unused_variables)]
+#![allow(unused_assignments)]
+#![allow(unused_mut)]
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use crate::oniguruma::*;
+use crate::regenc::*;
+use crate::regint::*;
+use crate::regparse_types::*;
+
+// ============================================================================
+// Global Default Case Fold Flag (port of C's OnigDefaultCaseFoldFlag)
+// ============================================================================
+
+static DEFAULT_CASE_FOLD_FLAG: AtomicU32 = AtomicU32::new(ONIGENC_CASE_FOLD_MIN);
+
+/// Returns the default case-fold flag, which starts as `ONIGENC_CASE_FOLD_MIN`.
+/// Deprecated upstream. [`onig_new`] starts every pattern from this flag, as C
+/// does through `ONIGENC_CASE_FOLD_DEFAULT`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn onig_get_default_case_fold_flag() -> OnigCaseFoldType {
+    DEFAULT_CASE_FOLD_FLAG.load(Ordering::Relaxed)
+}
+
+/// Stores the default case-fold flag and returns 0. Deprecated upstream.
+/// The flag is process-wide: patterns compiled after the call, through
+/// [`onig_new`] or the Rust API, start from `flag`, as in C. Clearing
+/// `INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR`, for example, stops `(?i)ß` from
+/// matching `ss`. Compiled regexes keep the flag they were compiled with.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn onig_set_default_case_fold_flag(flag: OnigCaseFoldType) -> i32 {
+    DEFAULT_CASE_FOLD_FLAG.store(flag, Ordering::Relaxed);
+    0
+}
+
+/// Maximum `{n}` exact count that gets unrolled into flat bytecode.
+/// Beyond this threshold we fall back to the REPEAT/REPEAT_INC loop.
+const EXACT_REPEAT_UNROLL_THRESHOLD: i32 = 16;
+
+/// Maximum bytecode size of a finite greedy range that is expanded inline.
+///
+/// This mirrors Oniguruma's `QUANTIFIER_EXPAND_LIMIT_SIZE` guard. Larger
+/// `{n,m}` ranges use the bounded REPEAT/REPEAT_INC bytecode instead.
+const QUANTIFIER_EXPAND_LIMIT_SIZE: OnigLen = 10;
+
+/// Rust-only: the most bytecode a `{n,}` over a body that cannot be empty
+/// writes out inline (`expand_infinite_quantifier`). The grammars and the
+/// production catalog expand at most 126.
+const INFINITE_EXPAND_LIMIT_SIZE: OnigLen = 1024;
+
+thread_local! {
+    /// Set while `upstream_body_len` measures a body the way C would.
+    static UPSTREAM_LENGTH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn upstream_length() -> bool {
+    UPSTREAM_LENGTH.with(|flag| flag.get())
+}
+
+/// The length C gives a quantifier body, for the decisions C bases on it:
+/// expanding `{n,}` / `{n,m}` or using REPEAT, and jumping into a large
+/// `+` body. For a body that can match empty they are observable, since
+/// only the REPEAT and jump forms run the first iterations through the
+/// empty check. The Rust-only star opcodes and fused look-behinds (ADR-008)
+/// compile shorter than C's code, so such a body is measured again without
+/// them. They only ever shorten the code, so a body already over the limit
+/// is not measured again.
+fn upstream_body_len(
+    body: &Node,
+    body_len: i32,
+    can_be_empty: bool,
+    reg: &RegexType,
+    env: &ParseEnv,
+) -> i32 {
+    if !can_be_empty
+        || body_len < 0
+        || body_len as OnigLen > QUANTIFIER_EXPAND_LIMIT_SIZE
+        || upstream_length()
+    {
+        return body_len;
+    }
+    UPSTREAM_LENGTH.with(|flag| flag.set(true));
+    let len = compile_length_tree(body, reg, env);
+    UPSTREAM_LENGTH.with(|flag| flag.set(false));
+    len
+}
+
+/// Get encoded character length from a byte slice (for optimization functions).
+fn enclen(enc: OnigEncoding, p: &[u8], _offset: usize) -> usize {
+    if p.is_empty() {
+        return 1;
+    }
+    enc.mbc_enc_len(p)
+}
+
+// ============================================================================
+// Constants (matching C OPSIZE_* and SIZE_INC)
+// ============================================================================
+
+// All operations are 1 slot in the ops array (matching C where every OPSIZE_* = 1)
+pub(crate) const SIZE_INC: i32 = 1;
+
+const OPSIZE_ANYCHAR_STAR: i32 = 1;
+const OPSIZE_ANYCHAR_STAR_PEEK_NEXT: i32 = 1;
+const OPSIZE_JUMP: i32 = 1;
+const OPSIZE_PUSH: i32 = 1;
+const OPSIZE_PUSH_SUPER: i32 = 1;
+const OPSIZE_POP: i32 = 1;
+const OPSIZE_POP_TO_MARK: i32 = 1;
+const OPSIZE_PUSH_OR_JUMP_EXACT1: i32 = 1;
+const OPSIZE_PUSH_IF_PEEK_NEXT: i32 = 1;
+const OPSIZE_REPEAT: i32 = 1;
+const OPSIZE_REPEAT_INC: i32 = 1;
+const OPSIZE_REPEAT_INC_NG: i32 = 1;
+const OPSIZE_WORD_BOUNDARY: i32 = 1;
+const OPSIZE_BACKREF: i32 = 1;
+const OPSIZE_FAIL: i32 = 1;
+const OPSIZE_MEM_START: i32 = 1;
+const OPSIZE_MEM_START_PUSH: i32 = 1;
+const OPSIZE_MEM_END_PUSH: i32 = 1;
+const OPSIZE_MEM_END_PUSH_REC: i32 = 1;
+const OPSIZE_MEM_END: i32 = 1;
+const OPSIZE_MEM_END_REC: i32 = 1;
+const OPSIZE_EMPTY_CHECK_START: i32 = 1;
+const OPSIZE_EMPTY_CHECK_END: i32 = 1;
+const OPSIZE_CHECK_POSITION: i32 = 1;
+const OPSIZE_CALL: i32 = 1;
+const OPSIZE_RETURN: i32 = 1;
+const OPSIZE_MOVE: i32 = 1;
+const OPSIZE_STEP_BACK_START: i32 = 1;
+const OPSIZE_STEP_BACK_NEXT: i32 = 1;
+const OPSIZE_CUT_TO_MARK: i32 = 1;
+const OPSIZE_MARK: i32 = 1;
+const OPSIZE_SAVE_VAL: i32 = 1;
+const OPSIZE_UPDATE_VAR: i32 = 1;
+
+// ============================================================================
+// Operation management
+// ============================================================================
+
+/// Add an operation with the given opcode and payload to the regex's ops array.
+/// Returns the index of the newly added operation.
+pub(crate) fn add_op(reg: &mut RegexType, opcode: OpCode, payload: OperationPayload) -> i32 {
+    let idx = reg.ops.len();
+    reg.ops.push(Operation { opcode, payload });
+    idx as i32
+}
+
+/// Get the index of the current (last) operation.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn ops_curr_offset(reg: &RegexType) -> i32 {
+    (reg.ops.len() as i32) - 1
+}
+
+// ============================================================================
+// Utility functions
+// ============================================================================
+
+/// Safe multiplication comparison: a * b > limit
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn len_multiply_cmp(a: OnigLen, b: i32, limit: OnigLen) -> bool {
+    if a == 0 || b == 0 {
+        return false;
+    }
+    if a > limit / (b as OnigLen) {
+        return true;
+    }
+    a * (b as OnigLen) > limit
+}
+
+/// Whether a finite greedy range can use inline expansion without producing
+/// excessive bytecode. Port of the expansion guard in `compile_quantifier_node`.
+fn can_expand_finite_greedy_quantifier(body_len: i32, upper: i32) -> bool {
+    upper == 1
+        || (body_len >= 0
+            && upper >= 0
+            && !len_multiply_cmp(
+                body_len as OnigLen + OPSIZE_PUSH as OnigLen,
+                upper,
+                QUANTIFIER_EXPAND_LIMIT_SIZE,
+            ))
+}
+
+/// Add two lengths safely, capping at INFINITE_LEN.
+pub(crate) fn distance_add(d1: OnigLen, d2: OnigLen) -> OnigLen {
+    if d1 == INFINITE_LEN || d2 == INFINITE_LEN {
+        INFINITE_LEN
+    } else if d1 <= INFINITE_LEN - d2 {
+        d1 + d2
+    } else {
+        INFINITE_LEN
+    }
+}
+
+/// Multiply a length by a count safely, capping at INFINITE_LEN.
+fn distance_multiply(d: OnigLen, m: i32) -> OnigLen {
+    if m == 0 {
+        return 0;
+    }
+    if d >= INFINITE_LEN / (m as OnigLen) {
+        return INFINITE_LEN;
+    }
+    d * (m as OnigLen)
+}
+
+/// Check if a bitset is empty (all zeros).
+fn bitset_is_empty(bs: &BitSet) -> bool {
+    bs.iter().all(|&slot| slot == 0)
+}
+
+/// Check if a node is a "strict real" node (actually matches characters).
+fn is_strict_real_node(node: &Node) -> bool {
+    match node.inner {
+        // C: `sn->end != sn->s`. A possessive repeat of an empty string
+        // would compile to a PUSH/POP loop that never advances. A literal
+        // alternation compiled to a trie (Rust-only, ADR-008) is an
+        // alternation in C.
+        NodeInner::String(ref sn) => !sn.s.is_empty() && !node.has_status(ND_ST_LITERAL_ALT),
+        NodeInner::CClass(_) | NodeInner::CType(_) => true,
+        _ => false,
+    }
+}
+
+// ============================================================================
+// get_tree_head_literal / is_exclusive / tune_next (C lines 3043-4743)
+// ============================================================================
+
+/// Walk the AST to find the leading literal node.
+/// If `exact` is true, only String nodes (not IGNORECASE) qualify.
+/// If `exact` is false, CType and CClass nodes also qualify.
+/// Returns a reference to the found node, or None.
+fn get_tree_head_literal<'a>(node: &'a Node, exact: bool, _reg: &RegexType) -> Option<&'a Node> {
+    match &node.inner {
+        NodeInner::BackRef(_) | NodeInner::Alt(_) | NodeInner::Call(_) => None,
+
+        NodeInner::CType(ct) => {
+            if ct.ctype == CTYPE_ANYCHAR {
+                None
+            } else if !exact {
+                Some(node)
+            } else {
+                None
+            }
+        }
+
+        NodeInner::CClass(_) => {
+            if !exact {
+                Some(node)
+            } else {
+                None
+            }
+        }
+
+        NodeInner::List(cons) => get_tree_head_literal(&cons.car, exact, _reg),
+
+        NodeInner::String(sn) => {
+            // A literal alternation trie stores its index, not its text.
+            if sn.s.is_empty() || node.has_status(ND_ST_LITERAL_ALT) {
+                return None;
+            }
+            // ND_IS_REAL_IGNORECASE = IGNORECASE && !CRUDE
+            let is_real_ic = (node.status & ND_ST_IGNORECASE) != 0 && !sn.is_crude();
+            if !exact || !is_real_ic {
+                Some(node)
+            } else {
+                None
+            }
+        }
+
+        NodeInner::Quant(qn) => {
+            if qn.lower > 0 {
+                // C returns the `head_exact` node. Here `head_exact` holds only
+                // its byte, so find the node again in the body the way
+                // `tune_tree` found it (exact).
+                let exact = exact || qn.head_exact.is_some();
+                qn.body
+                    .as_ref()
+                    .and_then(|b| get_tree_head_literal(b, exact, _reg))
+            } else {
+                None
+            }
+        }
+
+        NodeInner::Bag(bn) => match bn.bag_type {
+            BagType::Option | BagType::Memory | BagType::StopBacktrack => bn
+                .body
+                .as_ref()
+                .and_then(|b| get_tree_head_literal(b, exact, _reg)),
+            _ => None,
+        },
+
+        NodeInner::Anchor(an) => {
+            if an.anchor_type == ANCR_PREC_READ {
+                an.body
+                    .as_ref()
+                    .and_then(|b| get_tree_head_literal(b, exact, _reg))
+            } else {
+                None
+            }
+        }
+
+        _ => None,
+    }
+}
+
+/// Extract the first byte from a head literal node (String only, for exact matching).
+fn get_head_literal_byte(node: &Node, exact: bool, reg: &RegexType) -> Option<u8> {
+    let n = get_tree_head_literal(node, exact, reg)?;
+    if let NodeInner::String(sn) = &n.inner {
+        if !sn.s.is_empty() && sn.s[0] != 0 {
+            return Some(sn.s[0]);
+        }
+    }
+    None
+}
+
+/// C: enum GetValue
+#[derive(Clone, Copy)]
+enum GetValue<'a> {
+    None,
+    Ignore,
+    Found(&'a Node),
+}
+
+/// C: MAX_NEST_LEVEL_GET_TREE_TAIL_LITERAL
+const MAX_NEST_LEVEL_GET_TREE_TAIL_LITERAL: i32 = 16;
+
+/// Walk the AST to find the trailing literal node (String, CClass or CType).
+/// C: get_tree_tail_literal — used by tune_look_behind() for `lead_node`.
+///
+/// C marks memory groups with MARK1 to stop at a recursive re-entry; here the
+/// tree is only borrowed shared, so a cycle through a call instead runs into
+/// the nest-level cap, which yields the same `None` result.
+fn get_tree_tail_literal(node: &Node, nest_level: i32) -> GetValue<'_> {
+    let nest_level = nest_level + 1;
+    if nest_level >= MAX_NEST_LEVEL_GET_TREE_TAIL_LITERAL {
+        return GetValue::None;
+    }
+
+    match &node.inner {
+        NodeInner::List(cons) => match cons.cdr {
+            None => get_tree_tail_literal(&cons.car, nest_level),
+            Some(ref cdr) => {
+                let r = get_tree_tail_literal(cdr, nest_level);
+                if matches!(r, GetValue::Ignore) {
+                    get_tree_tail_literal(&cons.car, nest_level)
+                } else {
+                    r
+                }
+            }
+        },
+
+        NodeInner::Call(cn) => {
+            if cn.target_node.is_null() {
+                GetValue::None
+            } else {
+                // SAFETY: `target_node` is non-null (checked above) and was set by
+                // resolve_call_references/refresh_call_targets to the called group's
+                // Bag node inside this same live tree; only shared reads follow.
+                get_tree_tail_literal(unsafe { &*cn.target_node }, nest_level)
+            }
+        }
+
+        NodeInner::CType(ct) => {
+            if ct.ctype == CTYPE_ANYCHAR {
+                GetValue::None
+            } else {
+                GetValue::Found(node)
+            }
+        }
+
+        NodeInner::CClass(_) => GetValue::Found(node),
+
+        NodeInner::String(sn) => {
+            if sn.s.is_empty() {
+                GetValue::Ignore
+            } else if (node.status & ND_ST_IGNORECASE) != 0 && !sn.is_crude() {
+                // ND_IS_REAL_IGNORECASE
+                GetValue::None
+            } else if node.has_status(ND_ST_LITERAL_ALT) {
+                // Rust-only: a literal alternation trie stores its index, not its text.
+                GetValue::None
+            } else {
+                GetValue::Found(node)
+            }
+        }
+
+        NodeInner::Quant(qn) => match qn.body {
+            Some(ref body) if qn.lower != 0 => get_tree_tail_literal(body, nest_level),
+            _ => GetValue::None,
+        },
+
+        NodeInner::Bag(bn) => match bn.body {
+            Some(ref body) => get_tree_tail_literal(body, nest_level),
+            None => GetValue::None,
+        },
+
+        NodeInner::Anchor(_) | NodeInner::Gimmick(_) => GetValue::Ignore,
+
+        NodeInner::Alt(_) | NodeInner::BackRef(_) => GetValue::None,
+    }
+}
+
+/// Check if a codepoint is in a character class.
+pub(crate) fn onig_is_code_in_cc(enc: OnigEncoding, code: OnigCodePoint, cc: &CClassNode) -> bool {
+    let len = if enc.min_enc_len() > 1 {
+        2
+    } else {
+        let len = enc.code_to_mbclen(code);
+        if len < 0 {
+            return false;
+        }
+        len
+    };
+    onig_is_code_in_cc_len(len, code, cc)
+}
+
+/// C: a multibyte code is only looked up in the code ranges, a single-byte
+/// code only in the bitset.
+fn onig_is_code_in_cc_len(elen: i32, code: OnigCodePoint, cc: &CClassNode) -> bool {
+    let found = if elen > 1 || code as usize >= SINGLE_BYTE_SIZE {
+        cc.mbuf
+            .as_ref()
+            .is_some_and(|mbuf| onig_is_in_code_range_bbuf(mbuf, code))
+    } else {
+        bitset_at(&cc.bs, code as usize)
+    };
+    if cc.is_not() { !found } else { found }
+}
+
+/// Check if code ranges in a BBuf contain a codepoint.
+/// BBuf stores code ranges as packed u32 values in native-endian bytes.
+fn onig_is_in_code_range_bbuf(mbuf: &BBuf, code: OnigCodePoint) -> bool {
+    let data = &mbuf.data;
+    if data.len() < 4 {
+        return false;
+    }
+
+    let read_u32 = |offset: usize| -> u32 {
+        if offset + 4 > data.len() {
+            return 0;
+        }
+        u32::from_ne_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ])
+    };
+
+    let n = read_u32(0) as usize;
+    let mut low = 0usize;
+    let mut high = n;
+    while low < high {
+        let mid = (low + high) / 2;
+        let from = read_u32((mid * 2 + 1) * 4);
+        let to = read_u32((mid * 2 + 2) * 4);
+        if code < from {
+            high = mid;
+        } else if code > to {
+            low = mid + 1;
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if two head-literal nodes are mutually exclusive.
+/// If they are, a quantifier before x followed by y can be made possessive.
+pub(crate) fn is_exclusive(x: &Node, y: &Node, reg: &RegexType) -> bool {
+    // Dispatch on x type, with swap for certain y types
+    match (&x.inner, &y.inner) {
+        // CType × CType
+        (NodeInner::CType(xct), NodeInner::CType(yct)) => {
+            if xct.ctype == CTYPE_ANYCHAR || yct.ctype == CTYPE_ANYCHAR {
+                return false;
+            }
+            xct.ctype == yct.ctype && xct.not != yct.not && xct.ascii_mode == yct.ascii_mode
+        }
+
+        // CType × CClass or CType × String → swap and retry
+        (NodeInner::CType(_), NodeInner::CClass(_)) => is_exclusive(y, x, reg),
+        (NodeInner::CType(_), NodeInner::String(_)) => is_exclusive(y, x, reg),
+
+        // CClass × CType
+        (NodeInner::CClass(xc), NodeInner::CType(yct)) => {
+            if yct.ctype == CTYPE_ANYCHAR {
+                return false;
+            }
+            if yct.ctype != ONIGENC_CTYPE_WORD as i32 {
+                return false;
+            }
+            if !yct.not {
+                // \w: check if any word chars are in the class
+                if xc.mbuf.is_some() || xc.is_not() {
+                    return false;
+                }
+                let range = if yct.ascii_mode {
+                    128
+                } else {
+                    SINGLE_BYTE_SIZE
+                };
+                for i in 0..range {
+                    if bitset_at(&xc.bs, i) && is_code_word(reg.enc, i as OnigCodePoint) {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                // \W: check if any non-word chars are in the class
+                if xc.mbuf.is_some() || xc.is_not() {
+                    return false;
+                }
+                let range = if yct.ascii_mode {
+                    128
+                } else {
+                    SINGLE_BYTE_SIZE
+                };
+                for i in 0..range {
+                    if !is_code_word(reg.enc, i as OnigCodePoint) && bitset_at(&xc.bs, i) {
+                        return false;
+                    }
+                }
+                for i in range..SINGLE_BYTE_SIZE {
+                    if bitset_at(&xc.bs, i) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+
+        // CClass × CClass
+        (NodeInner::CClass(xc), NodeInner::CClass(yc)) => {
+            for i in 0..SINGLE_BYTE_SIZE {
+                let xv = bitset_at(&xc.bs, i);
+                let x_in = if xc.is_not() { !xv } else { xv };
+                if x_in {
+                    let yv = bitset_at(&yc.bs, i);
+                    let y_in = if yc.is_not() { !yv } else { yv };
+                    if y_in {
+                        return false;
+                    }
+                }
+            }
+            // If either has no mbuf and is not negated, they can't overlap on multi-byte
+            if (xc.mbuf.is_none() && !xc.is_not()) || (yc.mbuf.is_none() && !yc.is_not()) {
+                return true;
+            }
+            false
+        }
+
+        // CClass × String → swap
+        (NodeInner::CClass(_), NodeInner::String(_)) => is_exclusive(y, x, reg),
+
+        // String × CType
+        (NodeInner::String(xs), NodeInner::CType(yct)) => {
+            if xs.s.is_empty() {
+                return false;
+            }
+            if yct.ctype == CTYPE_ANYCHAR {
+                return false;
+            }
+            if yct.ctype == ONIGENC_CTYPE_WORD as i32 {
+                let is_word = if !yct.ascii_mode {
+                    is_mbc_word(reg.enc, &xs.s)
+                } else {
+                    is_mbc_word_ascii(reg.enc, &xs.s)
+                };
+                return if is_word { yct.not } else { !yct.not };
+            }
+            false
+        }
+
+        // String × CClass
+        (NodeInner::String(xs), NodeInner::CClass(yc)) => {
+            if xs.s.is_empty() {
+                return false;
+            }
+            let code = reg.enc.mbc_to_code(&xs.s, xs.s.len());
+            !onig_is_code_in_cc(reg.enc, code, yc)
+        }
+
+        // String × String
+        (NodeInner::String(xs), NodeInner::String(ys)) => {
+            if xs.s.is_empty() || ys.s.is_empty() {
+                return false;
+            }
+            let len = xs.s.len().min(ys.s.len());
+            for i in 0..len {
+                if xs.s[i] != ys.s[i] {
+                    return true;
+                }
+            }
+            false
+        }
+
+        _ => false,
+    }
+}
+
+/// Check if a character is a "word" character.
+fn is_code_word(enc: OnigEncoding, code: OnigCodePoint) -> bool {
+    if code < 128 {
+        let c = code as u8;
+        c.is_ascii_alphanumeric() || c == b'_'
+    } else {
+        enc.is_code_ctype(code, ONIGENC_CTYPE_WORD)
+    }
+}
+
+/// Check if the first character in buf is a word character.
+fn is_mbc_word(enc: OnigEncoding, buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    let code = enc.mbc_to_code(buf, buf.len());
+    is_code_word(enc, code)
+}
+
+/// Check if the first character in buf is an ASCII word character.
+fn is_mbc_word_ascii(_enc: OnigEncoding, buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    let c = buf[0];
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+/// tune_next: propagate next-node info to optimize quantifiers.
+/// Sets qn.next_head_exact for PushIfPeekNext optimization.
+/// Auto-possessifies when body and next are exclusive.
+fn tune_next(node: &mut Node, next_node: &Node, reg: &RegexType) -> i32 {
+    tune_next_inner(node, next_node, reg, false)
+}
+
+fn tune_next_inner(node: &mut Node, next_node: &Node, reg: &RegexType, called: bool) -> i32 {
+    let status = node.status;
+    match &mut node.inner {
+        NodeInner::Quant(qn) => {
+            let mut replacement = None;
+            // Rust-only (ADR-008): a finite range records the exact byte of
+            // its follower as well. Only the counted character repeats read
+            // it for those; the other expansions keep their code.
+            if qn.greedy && !is_infinite_repeat(qn.upper) && !called {
+                if let Some(byte) = get_head_literal_byte(next_node, true, reg) {
+                    qn.next_head_exact = Some(byte);
+                }
+            }
+            if qn.greedy && is_infinite_repeat(qn.upper) {
+                if !called {
+                    if let Some(byte) = get_head_literal_byte(next_node, true, reg) {
+                        qn.next_head_exact = Some(byte);
+                    }
+                }
+
+                if qn.lower <= 1 {
+                    let should_possessify = qn.body.as_ref().is_some_and(|body| {
+                        is_strict_real_node(body)
+                            && get_tree_head_literal(body, false, reg).is_some_and(|x| {
+                                get_tree_head_literal(next_node, false, reg)
+                                    .is_some_and(|y| is_exclusive(x, y, reg))
+                            })
+                    });
+                    if should_possessify {
+                        let body = qn.body.take().expect("quantifier body was checked above");
+                        replacement = Some(NodeInner::Bag(BagNode {
+                            body: Some(Box::new(Node {
+                                inner: NodeInner::Quant(QuantNode {
+                                    body: Some(body),
+                                    lower: qn.lower,
+                                    upper: qn.upper,
+                                    greedy: qn.greedy,
+                                    emptiness: qn.emptiness,
+                                    head_exact: qn.head_exact.take(),
+                                    next_head_exact: qn.next_head_exact.take(),
+                                    include_referred: qn.include_referred,
+                                    empty_status_mem: qn.empty_status_mem,
+                                    possessive_star: false,
+                                }),
+                                status,
+                                parent: std::ptr::null_mut(),
+                            })),
+                            bag_type: BagType::StopBacktrack,
+                            bag_data: BagData::StopBacktrack,
+                            min_len: 0,
+                            max_len: INFINITE_LEN,
+                            min_char_len: 0,
+                            max_char_len: INFINITE_LEN,
+                            opt_count: 0,
+                        }));
+                    }
+                }
+            }
+            if let Some(inner) = replacement {
+                node.inner = inner;
+                node.status |= ND_ST_STRICT_REAL_REPEAT;
+            }
+            0
+        }
+        NodeInner::Bag(bn) if bn.bag_type == BagType::Memory => {
+            let called = called || (status & ND_ST_CALLED) != 0;
+            match bn.body.as_mut() {
+                Some(body) => tune_next_inner(body, next_node, reg, called),
+                None => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+// ============================================================================
+// String compilation
+// ============================================================================
+
+/// Select the opcode for a string of given byte length and encoding char width.
+fn select_str_opcode(mb_len: i32, str_len: i32) -> OpCode {
+    if mb_len == 1 {
+        match str_len {
+            1 => OpCode::Str1,
+            2 => OpCode::Str2,
+            3 => OpCode::Str3,
+            4 => OpCode::Str4,
+            5 => OpCode::Str5,
+            _ => OpCode::StrN,
+        }
+    } else if mb_len == 2 {
+        match str_len {
+            1 => OpCode::StrMb2n1,
+            2 => OpCode::StrMb2n2,
+            3 => OpCode::StrMb2n3,
+            _ => OpCode::StrMb2n,
+        }
+    } else if mb_len == 3 {
+        OpCode::StrMb3n
+    } else {
+        OpCode::StrMbn
+    }
+}
+
+/// Calculate bytecode length for adding a compiled string segment.
+fn add_compile_string_length(_s: &[u8], mb_len: i32, str_len: i32) -> i32 {
+    SIZE_INC
+}
+
+/// Add a compiled string segment to the bytecode.
+fn add_compile_string(reg: &mut RegexType, s: &[u8], mb_len: i32, str_len: i32) -> i32 {
+    let op = select_str_opcode(mb_len, str_len);
+    let byte_len = mb_len * str_len;
+
+    let payload = if mb_len == 1 && str_len <= 5 {
+        // Single-byte encoding, Str1-Str5: use compact Exact payload
+        let mut buf = [0u8; 16];
+        buf[..byte_len as usize].copy_from_slice(&s[..byte_len as usize]);
+        OperationPayload::Exact { s: buf }
+    } else if mb_len == 1 {
+        // Single-byte encoding, StrN: use ExactN payload
+        OperationPayload::ExactN {
+            s: s[..byte_len as usize].to_vec(),
+            n: str_len,
+        }
+    } else {
+        // Multi-byte encoding: always use ExactLenN with byte count
+        OperationPayload::ExactLenN {
+            s: s[..byte_len as usize].to_vec(),
+            n: byte_len, // total byte count
+            len: mb_len, // bytes per character
+        }
+    };
+
+    add_op(reg, op, payload);
+    0
+}
+
+/// Calculate bytecode length for a string node.
+fn compile_length_string_node(node: &Node, reg: &RegexType) -> i32 {
+    let sn = node.as_str().unwrap();
+    let enc = reg.enc;
+
+    if sn.s.is_empty() {
+        return 0;
+    }
+
+    let mut len = 0i32;
+    let mut pos = 0usize;
+    let slen = sn.s.len();
+
+    while pos < slen {
+        let first_len = enc.mbc_enc_len(&sn.s[pos..]);
+        let mut run = 1;
+        let next = pos + first_len;
+        let mut p = next;
+
+        // Group consecutive characters with the same mb_len
+        while p < slen {
+            let enc_len = enc.mbc_enc_len(&sn.s[p..]);
+            if enc_len != first_len {
+                break;
+            }
+            run += 1;
+            p += enc_len;
+        }
+
+        len += add_compile_string_length(&sn.s[pos..], first_len as i32, run);
+        pos = p;
+    }
+
+    len
+}
+
+/// Calculate bytecode length for a "crude" string node.
+fn compile_length_string_crude_node(node: &Node, reg: &RegexType) -> i32 {
+    let sn = node.as_str().unwrap();
+    if sn.s.is_empty() {
+        return 0;
+    }
+    add_compile_string_length(&sn.s, 1 /* sb */, sn.s.len() as i32)
+}
+
+/// Compile a string node to bytecode.
+fn compile_string_node(node: &Node, reg: &mut RegexType) -> i32 {
+    let sn = node.as_str().unwrap();
+    let enc = reg.enc;
+
+    if sn.s.is_empty() {
+        return 0;
+    }
+
+    let mut pos = 0usize;
+    let slen = sn.s.len();
+
+    while pos < slen {
+        let first_len = enc.mbc_enc_len(&sn.s[pos..]);
+        let mut run = 1;
+        let next = pos + first_len;
+        let mut p = next;
+
+        while p < slen {
+            let enc_len = enc.mbc_enc_len(&sn.s[p..]);
+            if enc_len != first_len {
+                break;
+            }
+            run += 1;
+            p += enc_len;
+        }
+
+        let r = add_compile_string(reg, &sn.s[pos..], first_len as i32, run);
+        if r != 0 {
+            return r;
+        }
+        pos = p;
+    }
+
+    0
+}
+
+/// Compile a crude string node to bytecode.
+fn compile_string_crude_node(node: &Node, reg: &mut RegexType) -> i32 {
+    let sn = node.as_str().unwrap();
+    if sn.s.is_empty() {
+        return 0;
+    }
+
+    add_compile_string(reg, &sn.s, 1 /* sb */, sn.s.len() as i32)
+}
+
+// ============================================================================
+// Character class compilation
+// ============================================================================
+
+/// Calculate bytecode length for a character class node.
+pub(crate) fn compile_length_cclass_node(cc: &CClassNode, reg: &RegexType) -> i32 {
+    SIZE_INC
+}
+
+/// Convert a BBuf byte buffer to a Vec<u32> for direct indexing at execution time.
+/// BBuf stores code ranges as packed u32 values in native-endian bytes.
+fn bbuf_to_u32_vec(data: &[u8]) -> Vec<u32> {
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_ne_bytes(*chunk))
+        .collect()
+}
+
+pub(crate) fn detect_cclass_ascii_fast(bs: &BitSet) -> CClassAsciiFastKind {
+    if bs.iter().map(|word| word.count_ones()).sum::<u32>() > 2 {
+        return CClassAsciiFastKind::None;
+    }
+    let mut members = bitset_members(bs).map(|pos| pos as u8);
+    let first = members.next();
+    let second = members.next();
+
+    match (first, second) {
+        (Some(a), None) if a < 0x80 => CClassAsciiFastKind::Eq(a),
+        (Some(a), Some(b))
+            if a < 0x80
+                && b < 0x80
+                && a.is_ascii_alphabetic()
+                && b.is_ascii_alphabetic()
+                && (a ^ b) == 0x20 =>
+        {
+            CClassAsciiFastKind::EqFoldLower(a | 0x20)
+        }
+        _ => CClassAsciiFastKind::None,
+    }
+}
+
+/// The bits a single-byte class instruction tests. C's `OP_CCLASS` fails on
+/// the first byte of a multibyte character (`ONIGENC_IS_MBC_HEAD`), while
+/// Ferroni's class instructions step over the whole character, so the bits
+/// of such first bytes are cleared. They come from inverting a bitset, as in
+/// `[[^\H]]`. The negated instruction fails on a set bit and keeps them.
+fn single_byte_cclass_bits(cc: &CClassNode, enc: OnigEncoding) -> BitSet {
+    let mut bs = cc.bs;
+    let high_bits = bs[128 / BITS_IN_ROOM..].iter().any(|&bits| bits != 0);
+    if high_bits && !cc.is_not() && enc.max_enc_len() > 1 {
+        for b in 0x80..SINGLE_BYTE_SIZE {
+            if bitset_at(&bs, b) && enc.mbc_enc_len(&[b as u8]) != 1 {
+                bitset_clear_bit(&mut bs, b);
+            }
+        }
+    }
+    bs
+}
+
+/// The code ranges a multibyte-only class instruction tests. C's
+/// `OP_CCLASS_MB` fails on a single-byte character and `OP_CCLASS_MB_NOT`
+/// matches it, without a look at the ranges, so the single-byte codes in
+/// them are dropped. Such codes come from negated ctypes, which keep their
+/// ASCII gaps in the ranges (`[^[^[^İ]\S]]` keeps U+0020).
+fn multibyte_only_ranges(mb: Vec<u32>, enc: OnigEncoding) -> Vec<u32> {
+    if enc.min_enc_len() > 1 || mb.len() < 3 || mb[1] >= 0x80 {
+        return mb;
+    }
+    let n = (mb[0] as usize).min((mb.len() - 1) / 2);
+    let mut out = vec![0];
+    for &[from, to] in mb[1..1 + 2 * n].as_chunks::<2>().0 {
+        if to >= 0x80 {
+            out.push(from.max(0x80));
+            out.push(to);
+        }
+    }
+    out[0] = ((out.len() - 1) / 2) as u32;
+    out
+}
+
+/// Compile a character class node to bytecode.
+pub(crate) fn compile_cclass_node(cc: &CClassNode, reg: &mut RegexType) -> i32 {
+    let has_mb = cc.mbuf.is_some();
+    let has_sb = !bitset_is_empty(&cc.bs);
+
+    if has_mb && has_sb {
+        // Mixed single-byte and multi-byte
+        let opcode = if cc.is_not() {
+            OpCode::CClassMixNot
+        } else {
+            OpCode::CClassMix
+        };
+        let mb_data = cc
+            .mbuf
+            .as_ref()
+            .map(|b| bbuf_to_u32_vec(&b.data))
+            .unwrap_or_default();
+        add_op(
+            reg,
+            opcode,
+            OperationPayload::CClassMix {
+                mb: mb_data,
+                bsp: Box::new(cc.bs),
+            },
+        );
+    } else if has_mb {
+        // Multi-byte only
+        let opcode = if cc.is_not() {
+            OpCode::CClassMbNot
+        } else {
+            OpCode::CClassMb
+        };
+        let mb_data = cc
+            .mbuf
+            .as_ref()
+            .map(|b| bbuf_to_u32_vec(&b.data))
+            .unwrap_or_default();
+        let mb_data = multibyte_only_ranges(mb_data, reg.enc);
+        add_op(reg, opcode, OperationPayload::CClassMb { mb: mb_data });
+    } else {
+        // Single-byte only
+        let opcode = if cc.is_not() {
+            OpCode::CClassNot
+        } else {
+            OpCode::CClass
+        };
+        let bs = single_byte_cclass_bits(cc, reg.enc);
+        let ascii_fast = detect_cclass_ascii_fast(&bs);
+        add_op(
+            reg,
+            opcode,
+            OperationPayload::CClass {
+                bsp: Box::new(bs),
+                ascii_fast,
+            },
+        );
+    }
+
+    0
+}
+
+// ============================================================================
+// Repeat range management
+// ============================================================================
+
+/// Register a repeat range entry. Returns the repeat ID.
+fn entry_repeat_range(reg: &mut RegexType, lower: i32, upper: i32) -> Result<i32, i32> {
+    let id = reg.num_repeat;
+    reg.num_repeat += 1;
+
+    reg.repeat_range.push(RepeatRange {
+        lower,
+        upper,
+        u_offset: 0,
+    });
+
+    Ok(id)
+}
+
+// ============================================================================
+// Quantifier compilation
+// ============================================================================
+
+/// Compile a quantifier body wrapped with empty-match check if needed.
+/// Mirrors C's compile_quant_body_with_empty_check().
+fn compile_quant_body_with_empty_check(
+    node: &Node,
+    reg: &mut RegexType,
+    env: &ParseEnv,
+    emptiness: BodyEmptyType,
+    qn_empty_status_mem: u32,
+) -> i32 {
+    let is_empty = emptiness != BodyEmptyType::NotEmpty;
+    let saved_mem = reg.num_empty_check;
+
+    if is_empty {
+        reg.num_empty_check += 1;
+        add_op(
+            reg,
+            OpCode::EmptyCheckStart,
+            OperationPayload::EmptyCheckStart { mem: saved_mem },
+        );
+    }
+
+    let r = compile_tree(node, reg, env);
+    if r != 0 {
+        return r;
+    }
+
+    if is_empty {
+        let mem = saved_mem;
+        // C: EMPTY_CHECK_END_MEMST only when a backref outside the loop reads
+        // one of its captures (ND_IS_EMPTY_STATUS_CHECK, which is set exactly
+        // when a bit of empty_status_mem is), EMPTY_CHECK_END_MEMST_PUSH for
+        // a body that may recurse.
+        let (opcode, empty_status_mem) = match emptiness {
+            BodyEmptyType::MayBeEmptyMem if qn_empty_status_mem != 0 => {
+                (OpCode::EmptyCheckEndMemst, qn_empty_status_mem)
+            }
+            BodyEmptyType::MayBeEmptyRec => (OpCode::EmptyCheckEndMemstPush, qn_empty_status_mem),
+            _ => (OpCode::EmptyCheckEnd, 0),
+        };
+        add_op(
+            reg,
+            opcode,
+            OperationPayload::EmptyCheckEnd {
+                mem,
+                empty_status_mem,
+            },
+        );
+    }
+
+    0
+}
+
+/// Compile a node N times (for expanding small-count quantifiers).
+fn compile_tree_n_times(node: &Node, n: i32, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    for _ in 0..n {
+        let r = compile_tree(node, reg, env);
+        if r != 0 {
+            return r;
+        }
+    }
+    0
+}
+
+/// Check if this is a greedy infinite repeat of a character class [class]* / [class]+
+fn is_cclass_infinite_greedy(qn: &QuantNode) -> bool {
+    qn.greedy
+        && is_infinite_repeat(qn.upper)
+        && qn.lower <= 1
+        && qn
+            .body
+            .as_ref()
+            .is_some_and(|b| matches!(b.inner, NodeInner::CClass(_)))
+}
+
+/// Rust-only (ADR-008): the byte of a greedy `c*` / `c+` whose body is one
+/// ASCII byte. Such a body compiles to a single `Str1 c`, which matches
+/// exactly what the one-member class `[c]` matches, so the loop runs as the
+/// class star opcode (one lazy backtrack entry per run) instead of one
+/// `PUSH_OR_JUMP_EXACT1; STR_1; JUMP` round per character.
+fn single_ascii_byte_star(qn: &QuantNode) -> Option<u8> {
+    if !qn.greedy || !is_infinite_repeat(qn.upper) || qn.lower > 1 {
+        return None;
+    }
+    let body = qn.body.as_ref()?;
+    if body.has_status(ND_ST_LITERAL_ALT) {
+        return None;
+    }
+    match body.as_str()?.s.as_slice() {
+        [c] if *c < 0x80 => Some(*c),
+        _ => None,
+    }
+}
+
+/// Check if this is a greedy infinite repeat of \w or \W.
+/// Returns Some((not, ascii_mode)) if match.
+fn is_word_ctype_infinite_greedy(qn: &QuantNode) -> Option<(bool, bool)> {
+    if qn.greedy && is_infinite_repeat(qn.upper) && qn.lower <= 1 {
+        if let Some(body) = &qn.body {
+            if let NodeInner::CType(ct) = &body.inner {
+                if ct.ctype == ONIGENC_CTYPE_WORD as i32 {
+                    return Some((ct.not, ct.ascii_mode));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if this is a greedy infinite repeat of `(?:CClass|...)`
+/// where the first alternative is a non-negated character class.
+/// Returns the CClass and the remaining alternatives (cdr) if matched.
+fn is_alt_cclass_first_infinite_greedy(qn: &QuantNode) -> Option<(&CClassNode, &Node)> {
+    if !qn.greedy || !is_infinite_repeat(qn.upper) || qn.lower > 1 {
+        return None;
+    }
+    if qn.emptiness != BodyEmptyType::NotEmpty {
+        return None;
+    }
+    let body = qn.body.as_ref()?;
+    if let NodeInner::Alt(cons) = &body.inner {
+        if let NodeInner::CClass(cc) = &cons.car.inner {
+            if let Some(cdr) = &cons.cdr {
+                return Some((cc, cdr));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Compiles bounded character repeats the upstream way (`Repeat` /
+    /// `RepeatInc`), as the reference for `CClassRepeat` and `AnyCharRepeat`
+    /// in differential tests.
+    pub(crate) static COUNTED_CHAR_REPEAT_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Whether bounded character repeats compile to counted loops (ADR-008).
+fn counted_char_repeat_enabled() -> bool {
+    #[cfg(test)]
+    {
+        !COUNTED_CHAR_REPEAT_DISABLED.with(|disabled| disabled.get())
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+/// The character instruction a counted repeat runs (ADR-008).
+enum CountedChar {
+    /// A single-byte class test: `CClass` with `not` false, `CClassNot` with
+    /// it true. A one-byte literal is the one-member class of that byte.
+    Class {
+        bsp: BitSet,
+        ascii_fast: CClassAsciiFastKind,
+        not: bool,
+    },
+    /// `.`: `AnyChar`, or `AnyCharMl` when `multiline`.
+    AnyChar { multiline: bool },
+}
+
+/// A counted repeat compiled for `counted_char_repeat`.
+struct CountedRepeat {
+    body: CountedChar,
+    min: u32,
+    /// `CHAR_REPEAT_UNBOUNDED` for `{n,}`.
+    max: u32,
+    /// The byte the follower must start with, when the run only holds
+    /// one-byte characters (an ASCII-only class or a one-byte literal);
+    /// otherwise 0. Give-backs are tried only where the byte is.
+    peek: u8,
+    /// The run holds one-byte characters only (see `CClassRepeat`).
+    ascii_only: bool,
+}
+
+/// Rust-only (ADR-008): a greedy `C{min,max}` whose body is one character
+/// instruction, which the counted loop runs without `Repeat` / `RepeatInc`
+/// and their stack scan for the count.
+///
+/// The counted loop tries the same alternatives in the same order: as many
+/// characters as allowed, then one fewer at a time down to `min`. It takes
+/// the body's single-character test as the upstream opcode does, so it
+/// matches exactly what the counter loop matches.
+///
+/// The body must be one instruction that consumes one character and cannot
+/// be empty. Ranges that C expands inline are left as they are: `{n,}` with
+/// `n >= 2` gets an expansion for every body that cannot be empty (only a
+/// body that may be empty switches to REPEAT), and a finite range is left to
+/// `can_expand_finite_greedy_quantifier`.
+///
+/// The retry count stays at or below C's. C's finite ranges (`REPEAT`) count
+/// every give-back, as this loop does. C's `{n,}` expansion pushes only where
+/// the follower can start, when its first byte is known: an ASCII-only run
+/// does the same here (`peek`); for other bodies such a `{n,}` keeps its
+/// expansion.
+fn counted_char_repeat(qn: &QuantNode, reg: &RegexType) -> Option<CountedRepeat> {
+    if !counted_char_repeat_enabled()
+        || !qn.greedy
+        || qn.include_referred != 0
+        || qn.emptiness != BodyEmptyType::NotEmpty
+    {
+        return None;
+    }
+    let infinite = is_infinite_repeat(qn.upper);
+    let (min, max) = if infinite {
+        // `*` and `+` have their own star opcodes.
+        if qn.lower < 2 {
+            return None;
+        }
+        (qn.lower as u32, CHAR_REPEAT_UNBOUNDED)
+    } else {
+        // The body is one instruction: C's `tlen` of 1 decides the expansion.
+        if qn.upper < 2 || qn.lower >= qn.upper || can_expand_finite_greedy_quantifier(1, qn.upper)
+        {
+            return None;
+        }
+        (qn.lower as u32, qn.upper as u32)
+    };
+    let body = qn.body.as_deref()?;
+    let (body, ascii_only) = match &body.inner {
+        NodeInner::CClass(cc) if cc.mbuf.is_none() => {
+            // The bits compile_cclass_node tests for a single-byte class.
+            let bsp = single_byte_cclass_bits(cc, reg.enc);
+            let ascii_only = !cc.is_not() && bsp[128 / BITS_IN_ROOM..].iter().all(|&b| b == 0);
+            let ascii_fast = detect_cclass_ascii_fast(&bsp);
+            let body = CountedChar::Class {
+                bsp,
+                ascii_fast,
+                not: cc.is_not(),
+            };
+            (body, ascii_only)
+        }
+        NodeInner::CType(ct) if ct.ctype == CTYPE_ANYCHAR => (
+            CountedChar::AnyChar {
+                multiline: is_anychar_multiline(body),
+            },
+            false,
+        ),
+        NodeInner::String(sn)
+            if sn.s.len() == 1
+                && sn.s[0] < 0x80
+                && !body.has_status(ND_ST_IGNORECASE)
+                && !body.has_status(ND_ST_LITERAL_ALT) =>
+        {
+            let mut bsp: BitSet = [0; BITSET_REAL_SIZE];
+            bitset_set_bit(&mut bsp, sn.s[0] as usize);
+            let body = CountedChar::Class {
+                bsp,
+                ascii_fast: CClassAsciiFastKind::Eq(sn.s[0]),
+                not: false,
+            };
+            (body, true)
+        }
+        _ => return None,
+    };
+    // C's `{n,}` expansion pushes its give-backs only where the follower's
+    // first byte is; the other bodies keep that expansion.
+    if infinite && qn.next_head_exact.is_some() && !ascii_only {
+        return None;
+    }
+    let peek = if ascii_only {
+        qn.next_head_exact.unwrap_or(0)
+    } else {
+        0
+    };
+    Some(CountedRepeat {
+        body,
+        min,
+        max,
+        peek,
+        ascii_only,
+    })
+}
+
+/// Emit the counted loop of `counted_char_repeat`.
+fn compile_counted_char_repeat(repeat: CountedRepeat, reg: &mut RegexType) {
+    let CountedRepeat {
+        body,
+        min,
+        max,
+        peek,
+        ascii_only,
+    } = repeat;
+    match body {
+        CountedChar::Class {
+            bsp,
+            ascii_fast,
+            not,
+        } => {
+            add_op(
+                reg,
+                OpCode::CClassRepeat,
+                OperationPayload::CClassRepeat {
+                    bsp: Box::new(bsp),
+                    ascii_fast,
+                    not,
+                    min,
+                    max,
+                    peek,
+                    ascii_only,
+                },
+            );
+        }
+        CountedChar::AnyChar { multiline } => {
+            add_op(
+                reg,
+                OpCode::AnyCharRepeat,
+                OperationPayload::AnyCharRepeat {
+                    multiline,
+                    min,
+                    max,
+                },
+            );
+        }
+    }
+}
+
+/// Rust-only (ADR-008): whether a greedy repeat compiles to one of the star
+/// instructions above (`CClassStar` and its class forms, or `WordStar` /
+/// `WordAsciiStar`) and nothing else, which `crate::possessify` needs to make
+/// it possessive with `PopStarChoices`. Mirrors the branches of
+/// `compile_quantifier_node` that end in such an instruction; a known next
+/// byte selects a peek-next form instead, which is left alone.
+pub(crate) fn compiles_to_plain_star(qn: &QuantNode) -> bool {
+    qn.next_head_exact.is_none() && has_star_instruction(qn)
+}
+
+/// Rust-only (ADR-008): whether a greedy repeat has one of the star
+/// instructions of `compiles_to_plain_star`, regardless of a known next byte.
+fn has_star_instruction(qn: &QuantNode) -> bool {
+    let Some(body) = qn.body.as_deref() else {
+        return false;
+    };
+    (is_cclass_infinite_greedy(qn) && body.as_cclass().is_some())
+        || single_ascii_byte_star(qn).is_some()
+        || matches!(is_word_ctype_infinite_greedy(qn), Some((false, _)))
+}
+
+/// Rust-only (ADR-008): emit the star instruction of a repeat for which
+/// `has_star_instruction` holds, without its mandatory first pass and without
+/// a peek-next form.
+fn add_star_instruction(qn: &QuantNode, reg: &mut RegexType) -> i32 {
+    if let Some(cc) = qn.body.as_deref().and_then(Node::as_cclass) {
+        return compile_cclass_star_node(cc, reg);
+    }
+    if let Some(c) = single_ascii_byte_star(qn) {
+        let mut bs: BitSet = [0; BITSET_REAL_SIZE];
+        bitset_set_bit(&mut bs, c as usize);
+        add_op(
+            reg,
+            OpCode::CClassStar,
+            OperationPayload::CClass {
+                bsp: Box::new(bs),
+                ascii_fast: CClassAsciiFastKind::Eq(c),
+            },
+        );
+        return 0;
+    }
+    let Some((false, ascii_mode)) = is_word_ctype_infinite_greedy(qn) else {
+        unreachable!("the repeat has a star instruction");
+    };
+    let opcode = if ascii_mode {
+        OpCode::WordAsciiStar
+    } else {
+        OpCode::WordStar
+    };
+    add_op(reg, opcode, OperationPayload::None);
+    0
+}
+
+/// C's `ND_IS_STRICT_REAL_REPEAT` on a stop-backtrack bag: its body is a
+/// greedy `*` or `+` over one strict real node. C sets the flag where it
+/// tests this shape: in `tune_next` on the bag of an automatic
+/// possessification, and in `tune_tree` on `(?>a*)`, `a*+` and `a++`. It is
+/// read from the shape here because every status bit is in use and
+/// `ND_ST_STRICT_REAL_REPEAT` marks only the automatic bags
+/// (`dfa_prefilter::automatic_possessive`).
+fn strict_real_repeat(bag: &BagNode) -> Option<&QuantNode> {
+    let NodeInner::Quant(qn) = &bag.body.as_deref()?.inner else {
+        return None;
+    };
+    (qn.greedy
+        && is_infinite_repeat(qn.upper)
+        && qn.lower <= 1
+        && qn.body.as_deref().is_some_and(is_strict_real_node))
+    .then_some(qn)
+}
+
+/// The length `compile_strict_real_repeat` emits.
+fn compile_length_strict_real_repeat(qn: &QuantNode, reg: &RegexType, env: &ParseEnv) -> i32 {
+    let body = qn.body.as_deref().expect("strict real repeat has a body");
+    let tlen = compile_length_tree(body, reg, env);
+    if tlen < 0 {
+        return tlen;
+    }
+    let Some(mandatory) = tlen.checked_mul(qn.lower) else {
+        return ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE;
+    };
+    if !upstream_length() && has_star_instruction(qn) {
+        return mandatory + SIZE_INC + SIZE_INC;
+    }
+    mandatory + OPSIZE_PUSH + tlen + OPSIZE_POP + OPSIZE_JUMP
+}
+
+/// C's `BAG_STOP_BACKTRACK` with `STRICT_REAL_REPEAT`: the body `lower`
+/// times, then a loop whose every pass pops the choice it pushed
+/// (PUSH, body, POP, JUMP), so the repeat leaves nothing on the stack. C
+/// needs no stack per iteration here; a mark and cut would leave the mark and
+/// the voided choices behind.
+///
+/// Rust-only (ADR-008): a body with a star instruction runs as that
+/// instruction followed by `PopStarChoices`, which pops the choices it just
+/// pushed: one entry per run over valid UTF-8, where C's loop also holds one.
+fn compile_strict_real_repeat(qn: &QuantNode, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    let body = qn.body.as_deref().expect("strict real repeat has a body");
+    let r = compile_tree_n_times(body, qn.lower, reg, env);
+    if r != 0 {
+        return r;
+    }
+    if has_star_instruction(qn) {
+        let r = add_star_instruction(qn, reg);
+        if r != 0 {
+            return r;
+        }
+        add_op(reg, OpCode::PopStarChoices, OperationPayload::None);
+        return 0;
+    }
+    let len = compile_length_tree(body, reg, env);
+    if len < 0 {
+        return len;
+    }
+    add_op(
+        reg,
+        OpCode::Push,
+        OperationPayload::Push {
+            addr: SIZE_INC + len + OPSIZE_POP + OPSIZE_JUMP,
+        },
+    );
+    let r = compile_tree(body, reg, env);
+    if r != 0 {
+        return r;
+    }
+    add_op(reg, OpCode::Pop, OperationPayload::None);
+    add_op(
+        reg,
+        OpCode::Jump,
+        OperationPayload::Jump {
+            addr: -(OPSIZE_PUSH + len + OPSIZE_POP),
+        },
+    );
+    0
+}
+
+/// Rust-only (ADR-008): `PopStarChoices` after the star instruction of a
+/// repeat that `crate::possessify` made possessive.
+fn add_pop_star_choices(qn: &QuantNode, reg: &mut RegexType) {
+    if qn.possessive_star {
+        add_op(reg, OpCode::PopStarChoices, OperationPayload::None);
+    }
+}
+
+/// The length `add_pop_star_choices` adds.
+fn pop_star_choices_length(qn: &QuantNode) -> i32 {
+    if qn.possessive_star { SIZE_INC } else { 0 }
+}
+
+/// Compile a character class star node (CClassStar/CClassMixStar/CClassMbStar,
+/// or their negated `*NotStar` forms). Mirrors the payload selection of
+/// `compile_cclass_node`, so each star opcode matches exactly the characters
+/// its single-character counterpart matches.
+fn compile_cclass_star_node(cc: &CClassNode, reg: &mut RegexType) -> i32 {
+    let not = cc.is_not();
+    let has_mb = cc.mbuf.is_some();
+    let has_sb = !bitset_is_empty(&cc.bs);
+
+    if has_mb && has_sb {
+        let mb_data = cc
+            .mbuf
+            .as_ref()
+            .map(|b| bbuf_to_u32_vec(&b.data))
+            .unwrap_or_default();
+        add_op(
+            reg,
+            if not {
+                OpCode::CClassMixNotStar
+            } else {
+                OpCode::CClassMixStar
+            },
+            OperationPayload::CClassMix {
+                mb: mb_data,
+                bsp: Box::new(cc.bs),
+            },
+        );
+    } else if has_mb {
+        let mb_data = cc
+            .mbuf
+            .as_ref()
+            .map(|b| bbuf_to_u32_vec(&b.data))
+            .unwrap_or_default();
+        let mb_data = multibyte_only_ranges(mb_data, reg.enc);
+        add_op(
+            reg,
+            if not {
+                OpCode::CClassMbNotStar
+            } else {
+                OpCode::CClassMbStar
+            },
+            OperationPayload::CClassMb { mb: mb_data },
+        );
+    } else {
+        let bs = single_byte_cclass_bits(cc, reg.enc);
+        let ascii_fast = detect_cclass_ascii_fast(&bs);
+        add_op(
+            reg,
+            if not {
+                OpCode::CClassNotStar
+            } else {
+                OpCode::CClassStar
+            },
+            OperationPayload::CClass {
+                bsp: Box::new(bs),
+                ascii_fast,
+            },
+        );
+    }
+    0
+}
+
+/// Check if a quantifier node represents .* or .+ (anychar infinite greedy).
+///
+/// Keep backref-bearing patterns on the generic quantifier path. The specialized
+/// ANYCHAR_STAR opcodes precompute all exit points up front, which is unsafe for
+/// backref-heavy patterns like `(.*)a\\1f` that rely on conservative backtracking.
+fn is_anychar_infinite_greedy(qn: &QuantNode, env: &ParseEnv) -> bool {
+    if env.backref_num == 0 && qn.greedy && is_infinite_repeat(qn.upper) && qn.lower <= 1 {
+        if let Some(body) = &qn.body {
+            return matches!(body.inner, NodeInner::CType(ref ct) if ct.ctype == CTYPE_ANYCHAR);
+        }
+    }
+    false
+}
+
+/// Check if the body of a CType node has MULTILINE flag set.
+fn is_anychar_multiline(body: &Node) -> bool {
+    matches!(&body.inner, NodeInner::CType(_) if (body.status & ND_ST_MULTILINE) != 0)
+}
+
+/// Calculate bytecode length for a quantifier node.
+fn compile_length_quantifier_node(qn: &QuantNode, reg: &RegexType, env: &ParseEnv) -> i32 {
+    let body = qn.body.as_ref().unwrap();
+
+    if qn.upper == 0 {
+        if qn.include_referred != 0 {
+            // {0} with CALLED group: JUMP + body
+            let tlen = compile_length_tree(body, reg, env);
+            return OPSIZE_JUMP + tlen;
+        }
+        // {0} matches nothing
+        if is_anychar_infinite_greedy(qn, env) {
+            return SIZE_INC;
+        }
+        return 0;
+    }
+
+    // AnyChar star/plus optimization
+    if is_anychar_infinite_greedy(qn, env) {
+        let tlen = compile_length_tree(body, reg, env);
+        if qn.next_head_exact.is_some() {
+            return OPSIZE_ANYCHAR_STAR_PEEK_NEXT + tlen * qn.lower;
+        }
+        return SIZE_INC + tlen * qn.lower;
+    }
+
+    // The Rust-only star forms below are skipped when measuring C's length.
+    let rust_only = !upstream_length();
+
+    // Rust-only (ADR-008): a counted character repeat is one instruction.
+    if rust_only && counted_char_repeat(qn, reg).is_some() {
+        return SIZE_INC;
+    }
+
+    // CClass star/plus optimization: [class]* or [class]+ (negated too)
+    if rust_only && is_cclass_infinite_greedy(qn) && body.as_cclass().is_some() {
+        let tlen = compile_length_tree(body, reg, env);
+        return SIZE_INC + tlen * qn.lower + pop_star_choices_length(qn);
+    }
+
+    // Single ASCII byte star/plus: c* or c+ (runs as [c]*)
+    if rust_only && single_ascii_byte_star(qn).is_some() {
+        let tlen = compile_length_tree(body, reg, env);
+        return SIZE_INC + tlen * qn.lower + pop_star_choices_length(qn);
+    }
+
+    // Word ctype star/plus optimization: \w* or \w+
+    if let Some((not, _ascii_mode)) = is_word_ctype_infinite_greedy(qn).filter(|_| rust_only) {
+        if !not {
+            let tlen = compile_length_tree(body, reg, env);
+            return SIZE_INC + tlen * qn.lower + pop_star_choices_length(qn);
+        }
+    }
+
+    // Alt-CClass fusion: (?:CClass|B)* or (?:CClass|B)+
+    if let Some((_cc, cdr)) = is_alt_cclass_first_infinite_greedy(qn).filter(|_| rust_only) {
+        let cdr_len = compile_length_tree(cdr, reg, env);
+        let body_len = compile_length_tree(body, reg, env);
+        // Layout: [body × lower] + CClassStar(1) + PUSH(1) + cdr + JUMP(1)
+        return body_len * qn.lower + SIZE_INC + OPSIZE_PUSH + cdr_len + OPSIZE_JUMP;
+    }
+
+    let is_empty = qn.emptiness != BodyEmptyType::NotEmpty;
+    let body_len = compile_length_tree(body, reg, env);
+    if body_len < 0 {
+        return body_len;
+    }
+
+    let empty_len = if is_empty {
+        OPSIZE_EMPTY_CHECK_START + OPSIZE_EMPTY_CHECK_END
+    } else {
+        0
+    };
+    let mod_tlen = body_len + empty_len;
+    let c_body_len = upstream_body_len(body, body_len, is_empty, reg, env);
+
+    if is_infinite_repeat(qn.upper) {
+        if qn.lower <= 1 {
+            // *, +, *?, +?
+            let push_size = infinite_loop_push_size(qn);
+            // C: a `+` over a large body jumps into the loop body instead of
+            // emitting the body once more for the mandatory first pass.
+            let first_pass = if qn.lower == 1 && c_body_len > QUANTIFIER_EXPAND_LIMIT_SIZE as i32 {
+                OPSIZE_JUMP
+            } else {
+                body_len * qn.lower
+            };
+            first_pass + push_size + mod_tlen + OPSIZE_JUMP
+        } else if expand_infinite_quantifier(qn, c_body_len) {
+            // {n,} or {n,}?
+            let n_body_len = compile_length_tree_n_times(body, qn.lower, reg, env);
+            n_body_len + infinite_loop_push_size(qn) + mod_tlen + OPSIZE_JUMP
+        } else {
+            OPSIZE_REPEAT + mod_tlen + OPSIZE_REPEAT_INC
+        }
+    } else if qn.upper == 0 {
+        0
+    } else if !is_infinite_repeat(qn.upper) && qn.lower == qn.upper {
+        // {n,n} exact repeat
+        if qn.lower == 1 {
+            body_len
+        } else if !is_empty && qn.include_referred == 0 && qn.lower <= EXACT_REPEAT_UNROLL_THRESHOLD
+        {
+            // Unroll small exact repeats into flat bytecode
+            body_len * qn.lower
+        } else {
+            // Use REPEAT opcodes for larger exact counts
+            OPSIZE_REPEAT + mod_tlen + OPSIZE_REPEAT_INC
+        }
+    } else if !qn.greedy && qn.upper == 1 && qn.lower == 0 {
+        // ?? path: PUSH + JUMP + body
+        OPSIZE_PUSH + OPSIZE_JUMP + body_len
+    } else if qn.greedy
+        && !is_infinite_repeat(qn.upper)
+        && can_expand_finite_greedy_quantifier(c_body_len, qn.upper)
+    {
+        // Greedy expansion: lower*body + (upper-lower)*(PUSH+body)
+        let n = qn.upper - qn.lower;
+        let iteration_len = match body_len.checked_add(OPSIZE_PUSH) {
+            Some(len) => len,
+            None => return ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+        };
+        let mandatory_len = match body_len.checked_mul(qn.lower) {
+            Some(len) => len,
+            None => return ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+        };
+        let optional_len = match iteration_len.checked_mul(n) {
+            Some(len) => len,
+            None => return ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+        };
+        match mandatory_len.checked_add(optional_len) {
+            Some(len) => len,
+            None => ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+        }
+    } else {
+        // {n,m} range repeat (lazy non-trivial)
+        OPSIZE_REPEAT + mod_tlen + OPSIZE_REPEAT_INC
+    }
+}
+
+/// Calculate compile length for N repetitions of a node.
+fn compile_length_tree_n_times(node: &Node, n: i32, reg: &RegexType, env: &ParseEnv) -> i32 {
+    let len = compile_length_tree(node, reg, env);
+    if len < 0 {
+        return len;
+    }
+    len * n
+}
+
+/// The size of the push that enters an infinite quantifier's loop: C's
+/// `PUSH_OR_JUMP_EXACT1` or `PUSH_IF_PEEK_NEXT` for a greedy loop with a head
+/// or next literal, `PUSH` otherwise (a lazy loop's `JUMP` and `PUSH` add up
+/// to the same size).
+fn infinite_loop_push_size(qn: &QuantNode) -> i32 {
+    if qn.greedy && qn.head_exact.is_some() {
+        OPSIZE_PUSH_OR_JUMP_EXACT1
+    } else if qn.greedy && qn.next_head_exact.is_some() {
+        OPSIZE_PUSH_IF_PEEK_NEXT
+    } else {
+        OPSIZE_PUSH
+    }
+}
+
+/// C: the greedy loop of an infinite quantifier in `compile_quantifier_node`,
+/// after its mandatory iterations: the push picked from `head_exact` and
+/// `next_head_exact`, the body, and the jump back.
+fn compile_greedy_infinite_loop(
+    qn: &QuantNode,
+    body: &Node,
+    mod_tlen: i32,
+    reg: &mut RegexType,
+    env: &ParseEnv,
+) -> i32 {
+    let addr = SIZE_INC + mod_tlen + OPSIZE_JUMP;
+    if let Some(c) = qn.head_exact {
+        // Push the alternative only if the next char is the head literal,
+        // otherwise jump out of the loop
+        add_op(
+            reg,
+            OpCode::PushOrJumpExact1,
+            OperationPayload::PushOrJumpExact1 {
+                addr,
+                c,
+                skipped_retries: 0,
+                skip_gate: None,
+            },
+        );
+    } else if let Some(c) = qn.next_head_exact {
+        // Push the alternative only if the next char starts the follower
+        add_op(
+            reg,
+            OpCode::PushIfPeekNext,
+            OperationPayload::PushIfPeekNext { addr, c },
+        );
+    } else {
+        add_op(reg, OpCode::Push, OperationPayload::Push { addr });
+    }
+    let r = compile_quant_body_with_empty_check(body, reg, env, qn.emptiness, qn.empty_status_mem);
+    if r != 0 {
+        return r;
+    }
+    let addr = -(mod_tlen + infinite_loop_push_size(qn));
+    add_op(reg, OpCode::Jump, OperationPayload::Jump { addr });
+    0
+}
+
+/// Compile a quantifier node to bytecode.
+fn compile_quantifier_node(qn: &QuantNode, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    let body = qn.body.as_ref().unwrap();
+
+    if qn.upper == 0 {
+        if qn.include_referred != 0 {
+            // {0} with CALLED group: JUMP over body, then compile body
+            let tlen = compile_length_tree(body, reg, env);
+            add_op(
+                reg,
+                OpCode::Jump,
+                OperationPayload::Jump {
+                    addr: tlen + SIZE_INC,
+                },
+            );
+            return compile_tree(body, reg, env);
+        }
+        return 0;
+    }
+
+    // Rust-only (ADR-008): a bounded repeat of one character instruction.
+    if let Some(repeat) = counted_char_repeat(qn, reg) {
+        compile_counted_char_repeat(repeat, reg);
+        return 0;
+    }
+
+    // AnyChar star/plus with peek optimization: .* or .+
+    if is_anychar_infinite_greedy(qn, env) {
+        let r = compile_tree_n_times(body, qn.lower, reg, env);
+        if r != 0 {
+            return r;
+        }
+        if let Some(c) = qn.next_head_exact {
+            let opcode = if is_anychar_multiline(body) {
+                OpCode::AnyCharMlStarPeekNext
+            } else {
+                OpCode::AnyCharStarPeekNext
+            };
+            add_op(reg, opcode, OperationPayload::AnyCharStarPeekNext { c });
+        } else {
+            let opcode = if is_anychar_multiline(body) {
+                OpCode::AnyCharMlStar
+            } else {
+                OpCode::AnyCharStar
+            };
+            add_op(reg, opcode, OperationPayload::None);
+        }
+        return 0;
+    }
+
+    // CClass star/plus optimization: [class]* or [class]+ (negated too)
+    if is_cclass_infinite_greedy(qn) {
+        if let Some(cc) = body.as_cclass() {
+            let r = compile_tree_n_times(body, qn.lower, reg, env);
+            if r != 0 {
+                return r;
+            }
+            // Use PeekNext variant for ASCII-only classes when next byte is known
+            if let Some(c) = qn.next_head_exact {
+                let has_mb = cc.mbuf.is_some();
+                if !has_mb && !cc.is_not() {
+                    // ASCII-only bitset: use CClassStarPeekNext
+                    add_op(
+                        reg,
+                        OpCode::CClassStarPeekNext,
+                        OperationPayload::CClassStarPeekNext {
+                            bsp: Box::new(cc.bs),
+                            c,
+                        },
+                    );
+                    return 0;
+                }
+            }
+            compile_cclass_star_node(cc, reg);
+            add_pop_star_choices(qn, reg);
+            return 0;
+        }
+    }
+
+    // Single ASCII byte star/plus: c* or c+ (runs as [c]*)
+    if let Some(c) = single_ascii_byte_star(qn) {
+        let r = compile_tree_n_times(body, qn.lower, reg, env);
+        if r != 0 {
+            return r;
+        }
+        let mut bs: BitSet = [0; BITSET_REAL_SIZE];
+        bitset_set_bit(&mut bs, c as usize);
+        if let Some(next) = qn.next_head_exact {
+            add_op(
+                reg,
+                OpCode::CClassStarPeekNext,
+                OperationPayload::CClassStarPeekNext {
+                    bsp: Box::new(bs),
+                    c: next,
+                },
+            );
+        } else {
+            add_op(
+                reg,
+                OpCode::CClassStar,
+                OperationPayload::CClass {
+                    bsp: Box::new(bs),
+                    ascii_fast: CClassAsciiFastKind::Eq(c),
+                },
+            );
+            add_pop_star_choices(qn, reg);
+        }
+        return 0;
+    }
+
+    // Word ctype star/plus optimization: \w* or \w+
+    if let Some((not, ascii_mode)) = is_word_ctype_infinite_greedy(qn) {
+        if !not {
+            let r = compile_tree_n_times(body, qn.lower, reg, env);
+            if r != 0 {
+                return r;
+            }
+            if ascii_mode {
+                if let Some(c) = qn.next_head_exact {
+                    add_op(
+                        reg,
+                        OpCode::WordAsciiStarPeekNext,
+                        OperationPayload::WordAsciiStarPeekNext { c },
+                    );
+                    return 0;
+                }
+            }
+            let opcode = if ascii_mode {
+                OpCode::WordAsciiStar
+            } else {
+                OpCode::WordStar
+            };
+            add_op(reg, opcode, OperationPayload::None);
+            add_pop_star_choices(qn, reg);
+            return 0;
+        }
+    }
+
+    // Alt-CClass fusion: (?:CClass|B)* → CClassStar + PUSH exit + [B] + JUMP loop
+    if let Some((cc, cdr)) = is_alt_cclass_first_infinite_greedy(qn) {
+        // For +: compile one mandatory match of the full alternation first
+        if qn.lower == 1 {
+            let r = compile_tree(body, reg, env);
+            if r != 0 {
+                return r;
+            }
+        }
+
+        // Emit CClassStar for the first branch's character class
+        compile_cclass_star_node(cc, reg);
+
+        // PUSH exit: skip over cdr + JUMP to exit the loop
+        let cdr_len = compile_length_tree(cdr, reg, env);
+        let push_addr = SIZE_INC + cdr_len + OPSIZE_JUMP;
+        add_op(
+            reg,
+            OpCode::Push,
+            OperationPayload::Push { addr: push_addr },
+        );
+
+        // Compile remaining alternation branches (B, or B|C|...)
+        let r = compile_tree(cdr, reg, env);
+        if r != 0 {
+            return r;
+        }
+
+        // JUMP back to CClassStar
+        let jump_addr = -(SIZE_INC + OPSIZE_PUSH + cdr_len);
+        add_op(
+            reg,
+            OpCode::Jump,
+            OperationPayload::Jump { addr: jump_addr },
+        );
+
+        return 0;
+    }
+
+    let is_empty = qn.emptiness != BodyEmptyType::NotEmpty;
+    let body_len = compile_length_tree(body, reg, env);
+    if body_len < 0 {
+        return body_len;
+    }
+
+    let empty_len = if is_empty {
+        OPSIZE_EMPTY_CHECK_START + OPSIZE_EMPTY_CHECK_END
+    } else {
+        0
+    };
+    let mod_tlen = body_len + empty_len;
+    let c_body_len = upstream_body_len(body, body_len, is_empty, reg, env);
+
+    if is_infinite_repeat(qn.upper) {
+        if qn.lower <= 1 {
+            // C: a `+` over a body larger than QUANTIFIER_EXPAND_LIMIT_SIZE
+            // does not duplicate the body for the mandatory first pass. It
+            // jumps over the PUSH into the loop body instead, so nested
+            // quantifiers grow the bytecode linearly rather than doubling it
+            // at every level.
+            let jump_into_body = qn.lower == 1 && c_body_len > QUANTIFIER_EXPAND_LIMIT_SIZE as i32;
+            if jump_into_body {
+                let addr = if !qn.greedy {
+                    OPSIZE_JUMP + SIZE_INC
+                } else if qn.head_exact.is_some() {
+                    OPSIZE_PUSH_OR_JUMP_EXACT1 + SIZE_INC
+                } else if qn.next_head_exact.is_some() {
+                    OPSIZE_PUSH_IF_PEEK_NEXT + SIZE_INC
+                } else {
+                    OPSIZE_PUSH + SIZE_INC
+                };
+                add_op(reg, OpCode::Jump, OperationPayload::Jump { addr });
+            }
+
+            if qn.greedy {
+                // a* or a+
+                if qn.lower == 1 && !jump_into_body {
+                    // a+ : body first, then loop
+                    compile_tree_n_times(body, 1, reg, env);
+                }
+
+                let r = compile_greedy_infinite_loop(qn, body, mod_tlen, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            } else {
+                // a*? or a+?
+                if qn.lower == 1 && !jump_into_body {
+                    compile_tree_n_times(body, 1, reg, env);
+                }
+                // JUMP forward → body → PUSH back
+                // C: COP(reg)->jump.addr = mod_tlen + SIZE_INC;
+                add_op(
+                    reg,
+                    OpCode::Jump,
+                    OperationPayload::Jump {
+                        addr: mod_tlen + SIZE_INC,
+                    },
+                );
+                let r = compile_quant_body_with_empty_check(
+                    body,
+                    reg,
+                    env,
+                    qn.emptiness,
+                    qn.empty_status_mem,
+                );
+                if r != 0 {
+                    return r;
+                }
+                // C: COP(reg)->push.addr = -mod_tlen;
+                add_op(
+                    reg,
+                    OpCode::Push,
+                    OperationPayload::Push { addr: -mod_tlen },
+                );
+            }
+        } else if !expand_infinite_quantifier(qn, c_body_len) {
+            return compile_range_repeat_node(qn, body, mod_tlen, reg, env);
+        } else {
+            // {n,} with n >= 2
+            // Compile body n times, then loop
+            let r = compile_tree_n_times(body, qn.lower, reg, env);
+            if r != 0 {
+                return r;
+            }
+
+            if qn.greedy {
+                // C picks the push of a `{n,}` loop as for `*` and `+`.
+                let r = compile_greedy_infinite_loop(qn, body, mod_tlen, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            } else {
+                // C: COP(reg)->jump.addr = mod_tlen + SIZE_INC;
+                add_op(
+                    reg,
+                    OpCode::Jump,
+                    OperationPayload::Jump {
+                        addr: mod_tlen + SIZE_INC,
+                    },
+                );
+                let r = compile_quant_body_with_empty_check(
+                    body,
+                    reg,
+                    env,
+                    qn.emptiness,
+                    qn.empty_status_mem,
+                );
+                if r != 0 {
+                    return r;
+                }
+                // C: COP(reg)->push.addr = -mod_tlen;
+                add_op(
+                    reg,
+                    OpCode::Push,
+                    OperationPayload::Push { addr: -mod_tlen },
+                );
+            }
+        }
+    } else if qn.lower == qn.upper {
+        // {n} exact repeat
+        if qn.lower == 1 {
+            return compile_tree(body, reg, env);
+        }
+        // Unroll small exact repeats into flat bytecode (no REPEAT/REPEAT_INC overhead)
+        if !is_empty && qn.include_referred == 0 && qn.lower <= EXACT_REPEAT_UNROLL_THRESHOLD {
+            return compile_tree_n_times(body, qn.lower, reg, env);
+        }
+        // Use REPEAT opcode for large or empty-body repeats
+        let id = entry_repeat_range(reg, qn.lower, qn.upper);
+        if let Err(e) = id {
+            return e;
+        }
+        let id = id.unwrap();
+
+        add_op(
+            reg,
+            OpCode::Repeat,
+            OperationPayload::Repeat {
+                id,
+                addr: SIZE_INC + mod_tlen + OPSIZE_REPEAT_INC,
+            },
+        );
+        // Patch u_offset to point to the body start (op after REPEAT)
+        reg.repeat_range[id as usize].u_offset = reg.ops.len() as i32;
+        let r =
+            compile_quant_body_with_empty_check(body, reg, env, qn.emptiness, qn.empty_status_mem);
+        if r != 0 {
+            return r;
+        }
+        add_op(
+            reg,
+            if qn.greedy {
+                OpCode::RepeatInc
+            } else {
+                OpCode::RepeatIncNg
+            },
+            OperationPayload::RepeatInc { id },
+        );
+    } else if !qn.greedy && qn.upper == 1 && qn.lower == 0 {
+        // ?? path: PUSH(skip JUMP + SIZE_INC) + JUMP(skip body + SIZE_INC) + body
+        // C: COP(reg)->push.addr = SIZE_INC + OPSIZE_JUMP;
+        add_op(
+            reg,
+            OpCode::Push,
+            OperationPayload::Push {
+                addr: SIZE_INC + OPSIZE_JUMP,
+            },
+        );
+        // C: COP(reg)->jump.addr = body_len + SIZE_INC;
+        add_op(
+            reg,
+            OpCode::Jump,
+            OperationPayload::Jump {
+                addr: body_len + SIZE_INC,
+            },
+        );
+        let r = compile_tree(body, reg, env);
+        if r != 0 {
+            return r;
+        }
+    } else if qn.greedy
+        && !is_infinite_repeat(qn.upper)
+        // Keep this in sync with compile_length_quantifier_node above.
+        && can_expand_finite_greedy_quantifier(c_body_len, qn.upper)
+    {
+        // Greedy expansion: body*lower + (upper-lower) * (PUSH + body)
+        let r = compile_tree_n_times(body, qn.lower, reg, env);
+        if r != 0 {
+            return r;
+        }
+        let n = qn.upper - qn.lower;
+        let iteration_len = match body_len.checked_add(OPSIZE_PUSH) {
+            Some(len) => len,
+            None => return ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+        };
+        for i in 0..n {
+            let push_addr = match (n - i).checked_mul(iteration_len) {
+                Some(addr) => addr,
+                None => return ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+            };
+            add_op(
+                reg,
+                OpCode::Push,
+                OperationPayload::Push { addr: push_addr },
+            );
+            let r = compile_tree(body, reg, env);
+            if r != 0 {
+                return r;
+            }
+        }
+    } else {
+        // {n,m} range repeat (lazy non-trivial)
+        return compile_range_repeat_node(qn, body, mod_tlen, reg, env);
+    }
+
+    0
+}
+
+/// Whether `{n,}` (n >= 2) repeats its body inline before the loop.
+/// C: compile_quantifier_node takes the loop form only while
+/// `len_multiply_cmp(tlen, lower, QUANTIFIER_EXPAND_LIMIT_SIZE) <= 0` and
+/// otherwise falls through to compile_range_repeat_node.
+///
+/// Both forms match the same strings unless the body may be empty: with
+/// REPEAT, the empty check also runs on the mandatory iterations. The port
+/// therefore keeps the inline form for bodies that cannot be empty, which
+/// matches faster (`(?:\w+\s+){3,}fox` 0.35 ms inline against 0.99 ms
+/// with REPEAT), up to `INFINITE_EXPAND_LIMIT_SIZE`. Past that the inline
+/// form grows with the count, and nested counts multiply it: the fuzzer's
+/// `}{1,}{26666,}{1,}{26666,}` compiled for over three minutes into some
+/// 20 GB. Such a body takes C's REPEAT.
+///
+/// The inline form is not faster for a body that may be empty either: after
+/// an empty pass, every remaining mandatory copy retries paths that already
+/// failed. `(?:(ab|cd|ef|gh|ij)?){3,}z` over longer runs of pairs measured
+/// about six times slower inline than with REPEAT.
+fn expand_infinite_quantifier(qn: &QuantNode, body_len: i32) -> bool {
+    let limit = if qn.emptiness == BodyEmptyType::NotEmpty {
+        INFINITE_EXPAND_LIMIT_SIZE
+    } else {
+        QUANTIFIER_EXPAND_LIMIT_SIZE
+    };
+    !len_multiply_cmp(body_len as OnigLen, qn.lower, limit)
+}
+
+/// C: compile_range_repeat_node.
+fn compile_range_repeat_node(
+    qn: &QuantNode,
+    body: &Node,
+    mod_tlen: i32,
+    reg: &mut RegexType,
+    env: &ParseEnv,
+) -> i32 {
+    let id = match entry_repeat_range(reg, qn.lower, qn.upper) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+
+    let opcode = if qn.greedy {
+        OpCode::Repeat
+    } else {
+        OpCode::RepeatNg
+    };
+    add_op(
+        reg,
+        opcode,
+        OperationPayload::Repeat {
+            id,
+            addr: SIZE_INC + mod_tlen + OPSIZE_REPEAT_INC,
+        },
+    );
+    // Patch u_offset to point to the body start (op after REPEAT)
+    reg.repeat_range[id as usize].u_offset = reg.ops.len() as i32;
+    let r = compile_quant_body_with_empty_check(body, reg, env, qn.emptiness, qn.empty_status_mem);
+    if r != 0 {
+        return r;
+    }
+    add_op(
+        reg,
+        if qn.greedy {
+            OpCode::RepeatInc
+        } else {
+            OpCode::RepeatIncNg
+        },
+        OperationPayload::RepeatInc { id },
+    );
+    0
+}
+
+// ============================================================================
+// Bag (group) compilation
+// ============================================================================
+
+#[cfg(test)]
+thread_local! {
+    /// Compiles `\X` as upstream's atomic group, as the reference for
+    /// `GraphemeCluster` in differential tests.
+    pub(crate) static GRAPHEME_CLUSTER_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Whether a bag is the `\X` group that the parser marks with
+/// [`BagData::TextSegment`] and that has the shape it builds, `(?>\O(?:\Y\O)*)`
+/// with `\O` the multiline any-character and `\Y` the negated extended
+/// grapheme cluster boundary. Rust-only (ADR-008): such a group compiles to
+/// one `GraphemeCluster` instruction. Any other shape keeps the atomic group.
+fn is_text_segment_cluster(bag: &BagNode) -> bool {
+    #[cfg(test)]
+    if GRAPHEME_CLUSTER_DISABLED.with(|disabled| disabled.get()) {
+        return false;
+    }
+    fn cells(node: &Node) -> Option<(&Node, Option<&Node>)> {
+        match &node.inner {
+            NodeInner::List(cons) => Some((&cons.car, cons.cdr.as_deref())),
+            _ => None,
+        }
+    }
+    fn multiline_anychar(node: &Node) -> bool {
+        matches!(&node.inner, NodeInner::CType(ct) if ct.ctype == CTYPE_ANYCHAR && !ct.not)
+            && node.has_status(ND_ST_MULTILINE)
+    }
+    fn shape(bag: &BagNode) -> Option<()> {
+        if bag.bag_type != BagType::StopBacktrack {
+            return None;
+        }
+        // (\O . (quant . nil))
+        let (first, rest) = cells(bag.body.as_deref()?)?;
+        let (quant, tail) = cells(rest?)?;
+        if !multiline_anychar(first) || tail.is_some() {
+            return None;
+        }
+        let NodeInner::Quant(qn) = &quant.inner else {
+            return None;
+        };
+        if !qn.greedy || qn.lower != 0 || !is_infinite_repeat(qn.upper) {
+            return None;
+        }
+        // (\Y . (\O . nil)), with the character boundary, not the word one.
+        let (boundary, after) = cells(qn.body.as_deref()?)?;
+        let NodeInner::Anchor(an) = &boundary.inner else {
+            return None;
+        };
+        let (loop_char, end) = cells(after?)?;
+        (an.anchor_type == ANCR_NO_TEXT_SEGMENT_BOUNDARY
+            && !boundary.has_status(ND_ST_TEXT_SEGMENT_WORD)
+            && multiline_anychar(loop_char)
+            && end.is_none())
+        .then_some(())
+    }
+    matches!(bag.bag_data, BagData::TextSegment) && shape(bag).is_some()
+}
+
+/// Calculate bytecode length for a bag node.
+fn compile_length_bag_node(
+    bag: &BagNode,
+    node_status: u32,
+    reg: &RegexType,
+    env: &ParseEnv,
+) -> i32 {
+    let body = bag.body.as_ref();
+
+    match bag.bag_type {
+        BagType::Memory => {
+            let body_len = if let Some(b) = body {
+                compile_length_tree(b, reg, env)
+            } else {
+                0
+            };
+            if body_len < 0 {
+                return body_len;
+            }
+            let regnum = match &bag.bag_data {
+                BagData::Memory { regnum, .. } => *regnum,
+                _ => 0,
+            };
+            if regnum == 0 && (node_status & ND_ST_CALLED) != 0 {
+                // \g<0> wrapper: CALL + JUMP + body + RETURN (no MEM_START/END)
+                return OPSIZE_CALL + OPSIZE_JUMP + body_len + OPSIZE_RETURN;
+            }
+            let mut len = OPSIZE_MEM_START + body_len + OPSIZE_MEM_END;
+            if (node_status & ND_ST_CALLED) != 0 {
+                // Called group: CALL + JUMP + (MEM_START + body + MEM_END + RETURN)
+                len += OPSIZE_CALL + OPSIZE_JUMP + OPSIZE_RETURN;
+            }
+            len
+        }
+        BagType::StopBacktrack => {
+            if is_text_segment_cluster(bag) {
+                return SIZE_INC;
+            }
+            if let Some(length) =
+                crate::backtrack_rewrite::lowering::compile_length(bag, node_status, reg, env)
+            {
+                return length;
+            }
+            if let Some(qn) = strict_real_repeat(bag) {
+                return compile_length_strict_real_repeat(qn, reg, env);
+            }
+            let body_len = if let Some(b) = body {
+                compile_length_tree(b, reg, env)
+            } else {
+                0
+            };
+            if body_len < 0 {
+                return body_len;
+            }
+            // MARK + body + CUT_TO_MARK
+            OPSIZE_MARK + body_len + OPSIZE_CUT_TO_MARK
+        }
+        BagType::Option => {
+            let body_len = if let Some(b) = body {
+                compile_length_tree(b, reg, env)
+            } else {
+                0
+            };
+            if body_len < 0 {
+                return body_len;
+            }
+            body_len
+        }
+        BagType::IfElse => {
+            // Conditional: MARK + PUSH + condition + CUT_TO_MARK + then + JUMP + CUT_TO_MARK + else
+            let cond_len = if let Some(b) = body {
+                compile_length_tree(b, reg, env)
+            } else {
+                0
+            };
+            if cond_len < 0 {
+                return cond_len;
+            }
+
+            let mut len = OPSIZE_PUSH + OPSIZE_MARK + cond_len + OPSIZE_CUT_TO_MARK;
+
+            if let BagData::IfElse {
+                ref then_node,
+                ref else_node,
+            } = bag.bag_data
+            {
+                if let Some(then_n) = then_node {
+                    let tlen = compile_length_tree(then_n, reg, env);
+                    if tlen < 0 {
+                        return tlen;
+                    }
+                    len += tlen;
+                }
+
+                len += OPSIZE_JUMP + OPSIZE_CUT_TO_MARK;
+
+                if let Some(else_n) = else_node {
+                    let elen = compile_length_tree(else_n, reg, env);
+                    if elen < 0 {
+                        return elen;
+                    }
+                    len += elen;
+                }
+            }
+
+            len
+        }
+    }
+}
+
+/// Compile a bag memory (capture group) node.
+fn compile_bag_memory_node(
+    bag: &BagNode,
+    node_status: u32,
+    reg: &mut RegexType,
+    env: &ParseEnv,
+) -> i32 {
+    let regnum = match &bag.bag_data {
+        BagData::Memory { regnum, .. } => *regnum,
+        _ => return ONIGERR_TYPE_BUG,
+    };
+
+    let is_called = (node_status & ND_ST_CALLED) != 0;
+
+    if is_called {
+        // Called group: emit CALL + JUMP wrapper
+        let body_len = if let Some(body) = &bag.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+        if body_len < 0 {
+            return body_len;
+        }
+
+        if regnum == 0 {
+            // \g<0> wrapper: simpler layout without MEM_START/END
+            // Layout: CALL(entry) + JUMP(skip) + [entry: body + RETURN]
+            let callable_len = body_len + OPSIZE_RETURN;
+
+            let call_idx = reg.ops.len();
+            let entry_addr = (call_idx + 2) as i32;
+            add_op(
+                reg,
+                OpCode::Call,
+                OperationPayload::Call { addr: entry_addr },
+            );
+
+            add_op(
+                reg,
+                OpCode::Jump,
+                OperationPayload::Jump {
+                    addr: callable_len + SIZE_INC,
+                },
+            );
+
+            let called_addr = reg.ops.len() as i32;
+            if reg.called_addrs.is_empty() {
+                reg.called_addrs.resize(1, -1);
+            }
+            reg.called_addrs[0] = called_addr;
+
+            if let Some(body) = &bag.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            add_op(reg, OpCode::Return, OperationPayload::Return);
+            return 0;
+        }
+
+        // Regular called group: CALL + JUMP + MEM_START + body + MEM_END + RETURN
+        let callable_len = OPSIZE_MEM_START + body_len + OPSIZE_MEM_END + OPSIZE_RETURN;
+
+        let call_idx = reg.ops.len();
+        let entry_addr = (call_idx + 2) as i32;
+        add_op(
+            reg,
+            OpCode::Call,
+            OperationPayload::Call { addr: entry_addr },
+        );
+
+        add_op(
+            reg,
+            OpCode::Jump,
+            OperationPayload::Jump {
+                addr: callable_len + SIZE_INC,
+            },
+        );
+
+        let called_addr = reg.ops.len() as i32;
+        if reg.called_addrs.len() <= regnum as usize {
+            reg.called_addrs.resize(regnum as usize + 1, -1);
+        }
+        reg.called_addrs[regnum as usize] = called_addr;
+    }
+
+    // Determine if we need push variants
+    let need_push = mem_status_at(reg.push_mem_start, regnum as usize);
+
+    if need_push {
+        add_op(
+            reg,
+            OpCode::MemStartPush,
+            OperationPayload::MemoryStart { num: regnum },
+        );
+    } else {
+        add_op(
+            reg,
+            OpCode::MemStart,
+            OperationPayload::MemoryStart { num: regnum },
+        );
+    }
+
+    if let Some(body) = &bag.body {
+        let r = compile_tree(body, reg, env);
+        if r != 0 {
+            return r;
+        }
+    }
+
+    let need_push_end = mem_status_at(reg.push_mem_end, regnum as usize);
+    let is_recursion = (node_status & ND_ST_RECURSION) != 0;
+    if need_push_end {
+        let opcode = if is_recursion {
+            OpCode::MemEndPushRec
+        } else {
+            OpCode::MemEndPush
+        };
+        add_op(reg, opcode, OperationPayload::MemoryEnd { num: regnum });
+    } else {
+        let opcode = if is_recursion {
+            OpCode::MemEndRec
+        } else {
+            OpCode::MemEnd
+        };
+        add_op(reg, opcode, OperationPayload::MemoryEnd { num: regnum });
+    }
+
+    if is_called {
+        add_op(reg, OpCode::Return, OperationPayload::Return);
+    }
+
+    0
+}
+
+/// Compile a bag node to bytecode.
+fn compile_bag_node(bag: &BagNode, node_status: u32, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    match bag.bag_type {
+        BagType::Memory => compile_bag_memory_node(bag, node_status, reg, env),
+        BagType::StopBacktrack => {
+            if is_text_segment_cluster(bag) {
+                add_op(reg, OpCode::GraphemeCluster, OperationPayload::None);
+                return 0;
+            }
+            if let Some(result) =
+                crate::backtrack_rewrite::lowering::compile(bag, node_status, reg, env)
+            {
+                return result;
+            }
+            if let Some(qn) = strict_real_repeat(bag) {
+                return compile_strict_real_repeat(qn, reg, env);
+            }
+            let id = reg.num_call; // use call count as mark ID
+            reg.num_call += 1;
+
+            add_op(
+                reg,
+                OpCode::Mark,
+                OperationPayload::Mark { id, save_pos: true },
+            );
+
+            if let Some(body) = &bag.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            add_op(
+                reg,
+                OpCode::CutToMark,
+                OperationPayload::CutToMark {
+                    id,
+                    restore_pos: false,
+                },
+            );
+
+            0
+        }
+        BagType::Option => {
+            // Option change: just compile the body with the option set.
+            // The option was already applied to the parse env during parsing.
+            if let Some(body) = &bag.body {
+                return compile_tree(body, reg, env);
+            }
+            0
+        }
+        BagType::IfElse => {
+            let id = reg.num_call;
+            reg.num_call += 1;
+
+            // Emit MARK
+            add_op(
+                reg,
+                OpCode::Mark,
+                OperationPayload::Mark {
+                    id,
+                    save_pos: false,
+                },
+            );
+
+            // Calculate condition and then lengths for PUSH address
+            let cond_len = if let Some(body) = &bag.body {
+                compile_length_tree(body, reg, env)
+            } else {
+                0
+            };
+            if cond_len < 0 {
+                return cond_len;
+            }
+
+            let then_len = if let BagData::IfElse { ref then_node, .. } = bag.bag_data {
+                then_node
+                    .as_ref()
+                    .map_or(0, |then_n| compile_length_tree(then_n, reg, env))
+            } else {
+                0
+            };
+            if then_len < 0 {
+                return then_len;
+            }
+
+            let jump_len = cond_len + OPSIZE_CUT_TO_MARK + then_len + OPSIZE_JUMP;
+
+            // Emit PUSH to else section
+            add_op(
+                reg,
+                OpCode::Push,
+                OperationPayload::Push {
+                    addr: SIZE_INC + jump_len,
+                },
+            );
+
+            // Emit condition
+            if let Some(body) = &bag.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            // On condition success, cut mark
+            add_op(
+                reg,
+                OpCode::CutToMark,
+                OperationPayload::CutToMark {
+                    id,
+                    restore_pos: false,
+                },
+            );
+
+            // Emit then branch
+            if let BagData::IfElse {
+                ref then_node,
+                ref else_node,
+            } = bag.bag_data
+            {
+                if let Some(then_n) = then_node {
+                    let r = compile_tree(then_n, reg, env);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+
+                // Calculate else length for JUMP
+                let else_len = if let Some(else_n) = else_node {
+                    compile_length_tree(else_n, reg, env)
+                } else {
+                    0
+                };
+                if else_len < 0 {
+                    return else_len;
+                }
+
+                // Jump over else
+                add_op(
+                    reg,
+                    OpCode::Jump,
+                    OperationPayload::Jump {
+                        addr: OPSIZE_CUT_TO_MARK + else_len + SIZE_INC,
+                    },
+                );
+
+                // On condition failure, cut mark
+                add_op(
+                    reg,
+                    OpCode::CutToMark,
+                    OperationPayload::CutToMark {
+                        id,
+                        restore_pos: false,
+                    },
+                );
+
+                // Emit else branch
+                if let Some(else_n) = else_node {
+                    let r = compile_tree(else_n, reg, env);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+            }
+
+            0
+        }
+    }
+}
+
+// ============================================================================
+// Anchor compilation
+// ============================================================================
+
+#[cfg(test)]
+thread_local! {
+    /// Compiles look-behinds the upstream way, as the reference for
+    /// `LookBehindOp` in differential tests.
+    pub(crate) static FUSED_LOOK_BEHIND_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// The body of a fixed-length look-behind that compiles to a single
+/// character-class or string instruction. Rust-only (ADR-008): such a
+/// look-behind compiles to `LookBehindOp` followed by that instruction,
+/// which the VM checks in place after stepping back. Upstream's
+/// MARK / PUSH / STEP_BACK_START / ... / CUT_TO_MARK sequence costs five to
+/// seven instructions and stack entries for what TextMate grammars mostly
+/// use as a one-character word-boundary test, `(?<![$_[:alnum:]])`.
+fn fused_look_behind_body<'a>(
+    an: &'a AnchorNode,
+    reg: &RegexType,
+    env: &ParseEnv,
+) -> Option<&'a Node> {
+    if (an.anchor_type != ANCR_LOOK_BEHIND && an.anchor_type != ANCR_LOOK_BEHIND_NOT)
+        || an.char_min_len != an.char_max_len
+        || an.char_min_len == 0
+    {
+        return None;
+    }
+    #[cfg(test)]
+    if FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.get()) {
+        return None;
+    }
+    if upstream_length() {
+        return None;
+    }
+    let body = an.body.as_deref()?;
+    (matches!(
+        body.inner,
+        NodeInner::CClass(_) | NodeInner::String(_) | NodeInner::CType(_)
+    ) && !body.has_status(ND_ST_LITERAL_ALT)
+        && fusable_look_behind_ctype(body)
+        && compile_length_tree(body, reg, env) == SIZE_INC)
+        .then_some(body)
+}
+
+/// Whether a character-type body is one a fused look-behind checks: `\w` and
+/// `\W` (`Word`, `WordAscii`, `NoWord`, `NoWordAscii`). The anychar type
+/// compiles to `AnyChar`, which the fused check does not evaluate.
+fn fusable_look_behind_ctype(body: &Node) -> bool {
+    match &body.inner {
+        NodeInner::CType(ct) => ct.ctype == ONIGENC_CTYPE_WORD as i32,
+        _ => true,
+    }
+}
+
+/// Calculate bytecode length for an anchor node.
+fn compile_length_anchor_node(an: &AnchorNode, reg: &RegexType, env: &ParseEnv) -> i32 {
+    let at = an.anchor_type;
+
+    if fused_look_behind_body(an, reg, env).is_some() {
+        return SIZE_INC + SIZE_INC;
+    }
+
+    if at == ANCR_PREC_READ {
+        // (?=...) positive lookahead: MARK + body + CUT_TO_MARK
+        let body_len = if let Some(body) = &an.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+        if body_len < 0 {
+            return body_len;
+        }
+        OPSIZE_MARK + body_len + OPSIZE_CUT_TO_MARK
+    } else if at == ANCR_PREC_READ_NOT {
+        // (?!...) negative lookahead: PUSH + MARK + body + POP_TO_MARK + POP + FAIL
+        let body_len = if let Some(body) = &an.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+        if body_len < 0 {
+            return body_len;
+        }
+        OPSIZE_PUSH + OPSIZE_MARK + body_len + OPSIZE_POP_TO_MARK + OPSIZE_POP + OPSIZE_FAIL
+    } else if at == ANCR_LOOK_BEHIND {
+        // (?<=...) positive lookbehind
+        let body_len = if let Some(body) = &an.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+        if body_len < 0 {
+            return body_len;
+        }
+        if an.char_min_len == an.char_max_len {
+            // Fixed-length
+            OPSIZE_MARK + OPSIZE_STEP_BACK_START + body_len + OPSIZE_CUT_TO_MARK
+        } else {
+            // Variable-length: SAVE_VAL + UPDATE_VAR + MARK + PUSH + JUMP +
+            //   UPDATE_VAR + FAIL + [SAVE_VAL] + STEP_BACK_START + STEP_BACK_NEXT +
+            //   body + [UPDATE_VAR] + CHECK_POSITION + CUT_TO_MARK + UPDATE_VAR
+            let mut len = OPSIZE_SAVE_VAL
+                + OPSIZE_UPDATE_VAR
+                + OPSIZE_MARK
+                + OPSIZE_PUSH
+                + OPSIZE_JUMP
+                + OPSIZE_UPDATE_VAR
+                + OPSIZE_FAIL
+                + OPSIZE_STEP_BACK_START
+                + OPSIZE_STEP_BACK_NEXT
+                + body_len
+                + OPSIZE_CHECK_POSITION
+                + OPSIZE_CUT_TO_MARK
+                + OPSIZE_UPDATE_VAR;
+            if let Some(lead) = &an.lead_node {
+                let llen = compile_length_tree(lead, reg, env);
+                if llen < 0 {
+                    return llen;
+                }
+                len += OPSIZE_MOVE + llen;
+            }
+            if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                len += OPSIZE_SAVE_VAL + OPSIZE_UPDATE_VAR;
+            }
+            len
+        }
+    } else if at == ANCR_LOOK_BEHIND_NOT {
+        // (?<!...) negative lookbehind
+        let body_len = if let Some(body) = &an.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+        if body_len < 0 {
+            return body_len;
+        }
+        if an.char_min_len == an.char_max_len {
+            // Fixed-length
+            OPSIZE_MARK
+                + OPSIZE_PUSH
+                + OPSIZE_STEP_BACK_START
+                + body_len
+                + OPSIZE_POP_TO_MARK
+                + OPSIZE_FAIL
+                + OPSIZE_POP
+        } else {
+            // Variable-length: SAVE_VAL + UPDATE_VAR + MARK + PUSH +
+            //   [SAVE_VAL] + STEP_BACK_START + STEP_BACK_NEXT + body + [UPDATE_VAR] +
+            //   CHECK_POSITION + POP_TO_MARK + UPDATE_VAR + POP + FAIL +
+            //   UPDATE_VAR + POP + POP
+            let mut len = OPSIZE_SAVE_VAL
+                + OPSIZE_UPDATE_VAR
+                + OPSIZE_MARK
+                + OPSIZE_PUSH
+                + OPSIZE_STEP_BACK_START
+                + OPSIZE_STEP_BACK_NEXT
+                + body_len
+                + OPSIZE_CHECK_POSITION
+                + OPSIZE_POP_TO_MARK
+                + OPSIZE_UPDATE_VAR
+                + OPSIZE_POP
+                + OPSIZE_FAIL
+                + OPSIZE_UPDATE_VAR
+                + OPSIZE_POP
+                + OPSIZE_POP;
+            if let Some(lead) = &an.lead_node {
+                let llen = compile_length_tree(lead, reg, env);
+                if llen < 0 {
+                    return llen;
+                }
+                len += OPSIZE_MOVE + llen;
+            }
+            if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                len += OPSIZE_SAVE_VAL + OPSIZE_UPDATE_VAR;
+            }
+            len
+        }
+    } else {
+        // Simple anchors: ^, $, \b, \B, \A, \z, etc.
+        SIZE_INC
+    }
+}
+
+/// Emit the `lead_node` check of a variable-length look-behind: step back
+/// over the trailing literal's length and match it there, which leaves the
+/// position where it started.
+/// C: the `IS_NOT_NULL(node->lead_node)` blocks of
+/// compile_anchor_look_behind_node / compile_anchor_look_behind_not_node.
+fn compile_look_behind_lead_node(lead: &Node, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    let mut ci = MinMaxCharLen::default();
+    let r = node_char_len(lead, reg, &mut ci, env);
+    if r < 0 {
+        return r;
+    }
+    add_op(
+        reg,
+        OpCode::Move,
+        OperationPayload::Move {
+            n: -(ci.min as RelPositionType),
+        },
+    );
+    compile_tree(lead, reg, env)
+}
+
+/// Compile an anchor node to bytecode.
+fn compile_anchor_node(
+    an: &AnchorNode,
+    node_status: u32,
+    reg: &mut RegexType,
+    env: &ParseEnv,
+) -> i32 {
+    let at = an.anchor_type;
+
+    if let Some(body) = fused_look_behind_body(an, reg, env) {
+        let ascii_compatible = onigenc_is_ascii_compatible_encoding(reg.enc);
+        add_op(
+            reg,
+            OpCode::LookBehindOp,
+            OperationPayload::LookBehindOp {
+                char_len: an.char_min_len,
+                not: at == ANCR_LOOK_BEHIND_NOT,
+                ascii_compatible,
+            },
+        );
+        return compile_tree(body, reg, env);
+    }
+
+    if at == ANCR_PREC_READ {
+        // (?=...) positive lookahead
+        let id = reg.num_call;
+        reg.num_call += 1;
+
+        add_op(
+            reg,
+            OpCode::Mark,
+            OperationPayload::Mark { id, save_pos: true },
+        );
+
+        if let Some(body) = &an.body {
+            let r = compile_tree(body, reg, env);
+            if r != 0 {
+                return r;
+            }
+        }
+
+        add_op(
+            reg,
+            OpCode::CutToMark,
+            OperationPayload::CutToMark {
+                id,
+                restore_pos: true,
+            },
+        );
+        return 0;
+    }
+
+    if at == ANCR_PREC_READ_NOT {
+        // (?!...) negative lookahead
+        let body_len = if let Some(body) = &an.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+
+        let id = reg.num_call;
+        reg.num_call += 1;
+
+        // PUSH past the fail section (C: SIZE_INC + MARK + body + POP_TO_MARK + POP + FAIL)
+        let push_addr =
+            SIZE_INC + OPSIZE_MARK + body_len + OPSIZE_POP_TO_MARK + OPSIZE_POP + OPSIZE_FAIL;
+        add_op(
+            reg,
+            OpCode::Push,
+            OperationPayload::Push { addr: push_addr },
+        );
+
+        add_op(
+            reg,
+            OpCode::Mark,
+            OperationPayload::Mark {
+                id,
+                save_pos: false,
+            },
+        );
+
+        if let Some(body) = &an.body {
+            let r = compile_tree(body, reg, env);
+            if r != 0 {
+                return r;
+            }
+        }
+
+        add_op(reg, OpCode::PopToMark, OperationPayload::PopToMark { id });
+        add_op(reg, OpCode::Pop, OperationPayload::None);
+        add_op(reg, OpCode::Fail, OperationPayload::None);
+        return 0;
+    }
+
+    if at == ANCR_LOOK_BEHIND {
+        if an.char_min_len == an.char_max_len {
+            // (?<=...) positive lookbehind — fixed-length. C keeps the
+            // position where the body ends (`save_pos`/`restore_pos` FALSE):
+            // over malformed UTF-8 that can differ from where it started.
+            let id = reg.num_call;
+            reg.num_call += 1;
+
+            add_op(
+                reg,
+                OpCode::Mark,
+                OperationPayload::Mark {
+                    id,
+                    save_pos: false,
+                },
+            );
+
+            let char_len = an.char_min_len as i32;
+            add_op(
+                reg,
+                OpCode::StepBackStart,
+                OperationPayload::StepBackStart {
+                    initial: char_len,
+                    remaining: 0,
+                    addr: 1,
+                },
+            );
+
+            if let Some(body) = &an.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            add_op(
+                reg,
+                OpCode::CutToMark,
+                OperationPayload::CutToMark {
+                    id,
+                    restore_pos: false,
+                },
+            );
+        } else {
+            // (?<=...) positive lookbehind — variable-length
+            if let Some(lead) = &an.lead_node {
+                let r = compile_look_behind_lead_node(lead, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            let mid1 = reg.num_call;
+            reg.num_call += 1;
+            let mid2 = reg.num_call;
+            reg.num_call += 1;
+
+            // SAVE_VAL(RightRange, mid1)
+            add_op(
+                reg,
+                OpCode::SaveVal,
+                OperationPayload::SaveVal {
+                    save_type: SaveType::RightRange,
+                    id: mid1,
+                },
+            );
+            // UPDATE_VAR(RightRangeToS)
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type: UpdateVarType::RightRangeToS,
+                    id: 0,
+                    clear: false,
+                },
+            );
+            // MARK(mid2, save_pos=false)
+            add_op(
+                reg,
+                OpCode::Mark,
+                OperationPayload::Mark {
+                    id: mid2,
+                    save_pos: false,
+                },
+            );
+            // PUSH(addr → JUMP instruction, i.e. skip past JUMP to UPDATE_VAR)
+            // PUSH is at position X, JUMP at X+1, UPDATE_VAR at X+2
+            // So alt target = X + SIZE_INC + OPSIZE_JUMP = X + 2 → UPDATE_VAR
+            add_op(
+                reg,
+                OpCode::Push,
+                OperationPayload::Push {
+                    addr: SIZE_INC + OPSIZE_JUMP,
+                },
+            );
+            // JUMP(addr → past UPDATE_VAR + FAIL to STEP_BACK_START)
+            add_op(
+                reg,
+                OpCode::Jump,
+                OperationPayload::Jump {
+                    addr: SIZE_INC + OPSIZE_UPDATE_VAR + OPSIZE_FAIL,
+                },
+            );
+            // UPDATE_VAR(RightRangeFromStack, mid1, clear=false) — fail path restores right_range
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type: UpdateVarType::RightRangeFromStack,
+                    id: mid1,
+                    clear: false,
+                },
+            );
+            // FAIL
+            add_op(reg, OpCode::Fail, OperationPayload::None);
+
+            // Absent stopper: save right-range before step-back
+            let mid3 = if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                let mid3 = reg.num_call;
+                reg.num_call += 1;
+                add_op(
+                    reg,
+                    OpCode::SaveVal,
+                    OperationPayload::SaveVal {
+                        save_type: SaveType::RightRange,
+                        id: mid3,
+                    },
+                );
+                mid3
+            } else {
+                0
+            };
+
+            // STEP_BACK_START(initial=min, remaining=max-min, addr=2)
+            let diff = if an.char_max_len != INFINITE_LEN {
+                (an.char_max_len - an.char_min_len) as i32
+            } else {
+                INFINITE_LEN as i32
+            };
+            add_op(
+                reg,
+                OpCode::StepBackStart,
+                OperationPayload::StepBackStart {
+                    initial: an.char_min_len as i32,
+                    remaining: diff,
+                    addr: 2,
+                },
+            );
+            // STEP_BACK_NEXT
+            add_op(reg, OpCode::StepBackNext, OperationPayload::None);
+
+            // <body>
+            if let Some(body) = &an.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            // Absent stopper: restore right-range after body
+            if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                add_op(
+                    reg,
+                    OpCode::UpdateVar,
+                    OperationPayload::UpdateVar {
+                        var_type: UpdateVarType::RightRangeFromStack,
+                        id: mid3,
+                        clear: false,
+                    },
+                );
+            }
+
+            // CHECK_POSITION(CurrentRightRange)
+            add_op(
+                reg,
+                OpCode::CheckPosition,
+                OperationPayload::CheckPosition {
+                    check_type: CheckPositionType::CurrentRightRange,
+                },
+            );
+            // CUT_TO_MARK(mid2, restore_pos=false)
+            add_op(
+                reg,
+                OpCode::CutToMark,
+                OperationPayload::CutToMark {
+                    id: mid2,
+                    restore_pos: false,
+                },
+            );
+            // UPDATE_VAR(RightRangeFromStack, mid1, clear=true)
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type: UpdateVarType::RightRangeFromStack,
+                    id: mid1,
+                    clear: true,
+                },
+            );
+        }
+        return 0;
+    }
+
+    if at == ANCR_LOOK_BEHIND_NOT {
+        let body_len = if let Some(body) = &an.body {
+            compile_length_tree(body, reg, env)
+        } else {
+            0
+        };
+
+        if an.char_min_len == an.char_max_len {
+            // (?<!...) negative lookbehind — fixed-length
+            let id = reg.num_call;
+            reg.num_call += 1;
+
+            add_op(
+                reg,
+                OpCode::Mark,
+                OperationPayload::Mark {
+                    id,
+                    save_pos: false,
+                },
+            );
+
+            let push_addr =
+                SIZE_INC + OPSIZE_STEP_BACK_START + body_len + OPSIZE_POP_TO_MARK + OPSIZE_FAIL;
+            add_op(
+                reg,
+                OpCode::Push,
+                OperationPayload::Push { addr: push_addr },
+            );
+
+            let char_len = an.char_min_len as i32;
+            add_op(
+                reg,
+                OpCode::StepBackStart,
+                OperationPayload::StepBackStart {
+                    initial: char_len,
+                    remaining: 0,
+                    addr: 1,
+                },
+            );
+
+            if let Some(body) = &an.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            add_op(reg, OpCode::PopToMark, OperationPayload::PopToMark { id });
+            add_op(reg, OpCode::Fail, OperationPayload::None);
+            add_op(reg, OpCode::Pop, OperationPayload::None);
+        } else {
+            // (?<!...) negative lookbehind — variable-length
+            let mid1 = reg.num_call;
+            reg.num_call += 1;
+            let mid2 = reg.num_call;
+            reg.num_call += 1;
+
+            // SAVE_VAL(RightRange, mid1)
+            add_op(
+                reg,
+                OpCode::SaveVal,
+                OperationPayload::SaveVal {
+                    save_type: SaveType::RightRange,
+                    id: mid1,
+                },
+            );
+            // UPDATE_VAR(RightRangeToS)
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type: UpdateVarType::RightRangeToS,
+                    id: 0,
+                    clear: false,
+                },
+            );
+            // MARK(mid2, save_pos=false)
+            add_op(
+                reg,
+                OpCode::Mark,
+                OperationPayload::Mark {
+                    id: mid2,
+                    save_pos: false,
+                },
+            );
+            // PUSH(addr → success path past body-matched-fail section)
+            // From PUSH: skip [SAVE_VAL] + STEP_BACK_START + STEP_BACK_NEXT + body +
+            //   [UPDATE_VAR] + CHECK_POSITION + POP_TO_MARK + UPDATE_VAR + POP + FAIL
+            let mut push_addr = SIZE_INC
+                + OPSIZE_STEP_BACK_START
+                + OPSIZE_STEP_BACK_NEXT
+                + body_len
+                + OPSIZE_CHECK_POSITION
+                + OPSIZE_POP_TO_MARK
+                + OPSIZE_UPDATE_VAR
+                + OPSIZE_POP
+                + OPSIZE_FAIL;
+            if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                push_addr += OPSIZE_SAVE_VAL + OPSIZE_UPDATE_VAR;
+            }
+            let lead_len = match &an.lead_node {
+                Some(lead) => compile_length_tree(lead, reg, env),
+                None => 0,
+            };
+            if lead_len < 0 {
+                return lead_len;
+            }
+            if an.lead_node.is_some() {
+                push_addr += OPSIZE_MOVE + lead_len;
+            }
+            add_op(
+                reg,
+                OpCode::Push,
+                OperationPayload::Push { addr: push_addr },
+            );
+
+            if let Some(lead) = &an.lead_node {
+                let r = compile_look_behind_lead_node(lead, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            // Absent stopper: save right-range before step-back
+            let mid3 = if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                let mid3 = reg.num_call;
+                reg.num_call += 1;
+                add_op(
+                    reg,
+                    OpCode::SaveVal,
+                    OperationPayload::SaveVal {
+                        save_type: SaveType::RightRange,
+                        id: mid3,
+                    },
+                );
+                mid3
+            } else {
+                0
+            };
+
+            // STEP_BACK_START(initial=min, remaining=max-min, addr=2)
+            let diff = if an.char_max_len != INFINITE_LEN {
+                (an.char_max_len - an.char_min_len) as i32
+            } else {
+                INFINITE_LEN as i32
+            };
+            add_op(
+                reg,
+                OpCode::StepBackStart,
+                OperationPayload::StepBackStart {
+                    initial: an.char_min_len as i32,
+                    remaining: diff,
+                    addr: 2,
+                },
+            );
+            // STEP_BACK_NEXT
+            add_op(reg, OpCode::StepBackNext, OperationPayload::None);
+
+            // <body>
+            if let Some(body) = &an.body {
+                let r = compile_tree(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            // Absent stopper: restore right-range after body
+            if (env.flags & PE_FLAG_HAS_ABSENT_STOPPER) != 0 {
+                add_op(
+                    reg,
+                    OpCode::UpdateVar,
+                    OperationPayload::UpdateVar {
+                        var_type: UpdateVarType::RightRangeFromStack,
+                        id: mid3,
+                        clear: false,
+                    },
+                );
+            }
+
+            // CHECK_POSITION(CurrentRightRange) — body matched here, verify position
+            add_op(
+                reg,
+                OpCode::CheckPosition,
+                OperationPayload::CheckPosition {
+                    check_type: CheckPositionType::CurrentRightRange,
+                },
+            );
+            // POP_TO_MARK(mid2) — body succeeded: clean up mark
+            add_op(
+                reg,
+                OpCode::PopToMark,
+                OperationPayload::PopToMark { id: mid2 },
+            );
+            // UPDATE_VAR(RightRangeFromStack, mid1, clear=false) — restore right_range
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type: UpdateVarType::RightRangeFromStack,
+                    id: mid1,
+                    clear: false,
+                },
+            );
+            // POP — discard outer PUSH's SaveVal
+            add_op(reg, OpCode::Pop, OperationPayload::None);
+            // FAIL — negative lookbehind: body match = overall failure
+            add_op(reg, OpCode::Fail, OperationPayload::None);
+
+            // === Success path (body failed at all positions) ===
+            // UPDATE_VAR(RightRangeFromStack, mid1, clear=false) — restore right_range
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type: UpdateVarType::RightRangeFromStack,
+                    id: mid1,
+                    clear: false,
+                },
+            );
+            // POP — discard Mark
+            add_op(reg, OpCode::Pop, OperationPayload::None);
+            // POP — discard SaveVal
+            add_op(reg, OpCode::Pop, OperationPayload::None);
+        }
+        return 0;
+    }
+
+    // Simple anchors
+    match at {
+        ANCR_BEGIN_BUF => {
+            add_op(reg, OpCode::BeginBuf, OperationPayload::None);
+        }
+        ANCR_END_BUF => {
+            add_op(reg, OpCode::EndBuf, OperationPayload::None);
+        }
+        ANCR_BEGIN_LINE => {
+            add_op(reg, OpCode::BeginLine, OperationPayload::None);
+        }
+        ANCR_END_LINE => {
+            add_op(reg, OpCode::EndLine, OperationPayload::None);
+        }
+        ANCR_SEMI_END_BUF => {
+            add_op(reg, OpCode::SemiEndBuf, OperationPayload::None);
+        }
+        ANCR_BEGIN_POSITION => {
+            add_op(
+                reg,
+                OpCode::CheckPosition,
+                OperationPayload::CheckPosition {
+                    check_type: CheckPositionType::SearchStart,
+                },
+            );
+        }
+        ANCR_WORD_BOUNDARY => {
+            let mode = if an.ascii_mode { 1 } else { 0 };
+            add_op(
+                reg,
+                OpCode::WordBoundary,
+                OperationPayload::WordBoundary { mode },
+            );
+        }
+        ANCR_NO_WORD_BOUNDARY => {
+            let mode = if an.ascii_mode { 1 } else { 0 };
+            add_op(
+                reg,
+                OpCode::NoWordBoundary,
+                OperationPayload::WordBoundary { mode },
+            );
+        }
+        ANCR_WORD_BEGIN => {
+            let mode = if an.ascii_mode { 1 } else { 0 };
+            add_op(
+                reg,
+                OpCode::WordBegin,
+                OperationPayload::WordBoundary { mode },
+            );
+        }
+        ANCR_WORD_END => {
+            let mode = if an.ascii_mode { 1 } else { 0 };
+            add_op(
+                reg,
+                OpCode::WordEnd,
+                OperationPayload::WordBoundary { mode },
+            );
+        }
+        ANCR_TEXT_SEGMENT_BOUNDARY | ANCR_NO_TEXT_SEGMENT_BOUNDARY => {
+            let boundary_type = if (node_status & ND_ST_TEXT_SEGMENT_WORD) != 0 {
+                TextSegmentBoundaryType::Word
+            } else {
+                TextSegmentBoundaryType::ExtendedGraphemeCluster
+            };
+            let not = at == ANCR_NO_TEXT_SEGMENT_BOUNDARY;
+            add_op(
+                reg,
+                OpCode::TextSegmentBoundary,
+                OperationPayload::TextSegmentBoundary { boundary_type, not },
+            );
+        }
+        _ => {
+            return ONIGERR_TYPE_BUG;
+        }
+    }
+
+    0
+}
+
+// ============================================================================
+// Gimmick compilation
+// ============================================================================
+
+/// Calculate bytecode length for a gimmick node.
+fn compile_length_gimmick_node(gn: &GimmickNode) -> i32 {
+    match gn.gimmick_type {
+        GimmickType::Fail => SIZE_INC,
+        GimmickType::Save => OPSIZE_SAVE_VAL,
+        GimmickType::UpdateVar => OPSIZE_UPDATE_VAR,
+        GimmickType::Callout => SIZE_INC,
+    }
+}
+
+/// Compile a gimmick node to bytecode.
+fn compile_gimmick_node(gn: &GimmickNode, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    match gn.gimmick_type {
+        GimmickType::Fail => {
+            add_op(reg, OpCode::Fail, OperationPayload::None);
+        }
+        GimmickType::Save => {
+            let save_type = match gn.detail_type {
+                1 => SaveType::S,
+                2 => SaveType::RightRange,
+                _ => SaveType::Keep,
+            };
+            add_op(
+                reg,
+                OpCode::SaveVal,
+                OperationPayload::SaveVal {
+                    save_type,
+                    id: gn.id,
+                },
+            );
+        }
+        GimmickType::UpdateVar => {
+            let var_type = match gn.detail_type {
+                1 => UpdateVarType::SFromStack,
+                2 => UpdateVarType::RightRangeFromStack,
+                3 => UpdateVarType::RightRangeFromSStack,
+                4 => UpdateVarType::RightRangeToS,
+                5 => UpdateVarType::RightRangeInit,
+                _ => UpdateVarType::KeepFromStackLast,
+            };
+            add_op(
+                reg,
+                OpCode::UpdateVar,
+                OperationPayload::UpdateVar {
+                    var_type,
+                    id: gn.id,
+                    clear: false,
+                },
+            );
+        }
+        GimmickType::Callout => {
+            if gn.detail_type == OnigCalloutOf::Name as i32 {
+                add_op(
+                    reg,
+                    OpCode::CalloutName,
+                    OperationPayload::CalloutName {
+                        num: gn.num,
+                        id: gn.id,
+                    },
+                );
+            } else {
+                add_op(
+                    reg,
+                    OpCode::CalloutContents,
+                    OperationPayload::CalloutContents { num: gn.num },
+                );
+            }
+        }
+    }
+    0
+}
+
+// ============================================================================
+// Main compilation passes
+// ============================================================================
+
+/// Pass 1: Calculate the bytecode length needed for a node tree.
+/// Returns the number of operations that will be generated.
+pub(crate) fn compile_length_tree(node: &Node, reg: &RegexType, env: &ParseEnv) -> i32 {
+    // Literal alternation trie: single AltLiterals opcode.
+    if node.has_status(ND_ST_LITERAL_ALT) {
+        return SIZE_INC;
+    }
+
+    match &node.inner {
+        NodeInner::List(cons) => {
+            let mut len = 0i32;
+            // Compile car
+            len += compile_length_tree(&cons.car, reg, env);
+            // Walk cdr chain
+            let mut cur = cons.cdr.as_ref();
+            while let Some(next) = cur {
+                if let NodeInner::List(c) = &next.inner {
+                    len += compile_length_tree(&c.car, reg, env);
+                    cur = c.cdr.as_ref();
+                } else {
+                    len += compile_length_tree(next, reg, env);
+                    break;
+                }
+            }
+            len
+        }
+
+        NodeInner::Alt(cons) => {
+            // For alternation, each branch needs PUSH + body + JUMP (except last)
+            let mut total = 0i32;
+            let mut n_alts = 0i32;
+
+            // First alternative
+            let first_len = compile_length_tree(&cons.car, reg, env);
+            total += first_len;
+            n_alts += 1;
+
+            let mut cur = cons.cdr.as_ref();
+            while let Some(next) = cur {
+                if let NodeInner::Alt(c) = &next.inner {
+                    let branch_len = compile_length_tree(&c.car, reg, env);
+                    total += branch_len;
+                    n_alts += 1;
+                    cur = c.cdr.as_ref();
+                } else {
+                    let branch_len = compile_length_tree(next, reg, env);
+                    total += branch_len;
+                    n_alts += 1;
+                    cur = None;
+                }
+            }
+
+            // Each branch except the last needs PUSH + JUMP
+            total += (n_alts - 1) * (OPSIZE_PUSH + OPSIZE_JUMP);
+            total
+        }
+
+        NodeInner::String(_) => {
+            let sn = node.as_str().unwrap();
+            if sn.is_crude() {
+                compile_length_string_crude_node(node, reg)
+            } else {
+                compile_length_string_node(node, reg)
+            }
+        }
+
+        NodeInner::CClass(cc) => compile_length_cclass_node(cc, reg),
+
+        NodeInner::CType(ct) => SIZE_INC,
+
+        NodeInner::BackRef(_br) => OPSIZE_BACKREF,
+
+        NodeInner::Quant(qn) => compile_length_quantifier_node(qn, reg, env),
+
+        NodeInner::Bag(bag) => compile_length_bag_node(bag, node.status, reg, env),
+
+        NodeInner::Anchor(an) => compile_length_anchor_node(an, reg, env),
+
+        NodeInner::Gimmick(gn) => compile_length_gimmick_node(gn),
+
+        NodeInner::Call(_) => OPSIZE_CALL,
+    }
+}
+
+/// Pass 2: Generate bytecode operations from the node tree.
+/// Returns 0 on success or a negative error code.
+pub(crate) fn compile_tree(node: &Node, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    // Literal alternation trie: emit single AltLiterals opcode.
+    if node.has_status(ND_ST_LITERAL_ALT) {
+        if let NodeInner::String(ref sn) = node.inner {
+            let trie_idx = LiteralAltSummary::decode(&sn.s).trie_idx;
+            add_op(
+                reg,
+                OpCode::AltLiterals,
+                OperationPayload::AltLiterals { trie_idx },
+            );
+            return 0;
+        }
+    }
+
+    match &node.inner {
+        NodeInner::List(cons) => {
+            let r = compile_tree(&cons.car, reg, env);
+            if r != 0 {
+                return r;
+            }
+            let mut cur = cons.cdr.as_ref();
+            while let Some(next) = cur {
+                if let NodeInner::List(c) = &next.inner {
+                    let r = compile_tree(&c.car, reg, env);
+                    if r != 0 {
+                        return r;
+                    }
+                    cur = c.cdr.as_ref();
+                } else {
+                    return compile_tree(next, reg, env);
+                }
+            }
+            0
+        }
+
+        NodeInner::Alt(cons) => {
+            // Check if this Alt has SUPER status (used by absent function)
+            let is_super = node.has_status(ND_ST_SUPER);
+            let push_opcode = if is_super {
+                OpCode::PushSuper
+            } else {
+                OpCode::Push
+            };
+
+            // Collect all alternatives to calculate lengths
+            let mut branches: Vec<&Node> = Vec::new();
+            branches.push(&cons.car);
+
+            let mut cur = cons.cdr.as_ref();
+            while let Some(next) = cur {
+                if let NodeInner::Alt(c) = &next.inner {
+                    branches.push(&c.car);
+                    cur = c.cdr.as_ref();
+                } else {
+                    branches.push(next);
+                    cur = None;
+                }
+            }
+
+            let n = branches.len();
+            if n == 1 {
+                return compile_tree(branches[0], reg, env);
+            }
+
+            // Pre-calculate branch lengths
+            let mut branch_lens: Vec<i32> = Vec::with_capacity(n);
+            for b in &branches {
+                branch_lens.push(compile_length_tree(b, reg, env));
+            }
+
+            // Calculate total length to find goal position
+            // Layout: for each branch i < n-1: PUSH + body_i + JUMP; last branch: body_{n-1}
+            let mut total_len = 0i32;
+            for (i, branch_len) in branch_lens.iter().enumerate() {
+                total_len += branch_len;
+                if i < n - 1 {
+                    total_len += OPSIZE_PUSH + OPSIZE_JUMP;
+                }
+            }
+
+            let goal = reg.ops.len() as i32 + total_len;
+
+            for (i, branch) in branches.iter().enumerate() {
+                if i < n - 1 {
+                    // PUSH to next alternative (skip over body + JUMP)
+                    let push_addr = SIZE_INC + branch_lens[i] + OPSIZE_JUMP;
+                    add_op(reg, push_opcode, OperationPayload::Push { addr: push_addr });
+                }
+
+                let r = compile_tree(branch, reg, env);
+                if r != 0 {
+                    return r;
+                }
+
+                if i < n - 1 {
+                    // JUMP to end of alternation (goal position)
+                    let jump_addr = goal - reg.ops.len() as i32;
+                    add_op(
+                        reg,
+                        OpCode::Jump,
+                        OperationPayload::Jump { addr: jump_addr },
+                    );
+                }
+            }
+            0
+        }
+
+        NodeInner::String(_) => {
+            let sn = node.as_str().unwrap();
+            if sn.is_crude() {
+                compile_string_crude_node(node, reg)
+            } else {
+                compile_string_node(node, reg)
+            }
+        }
+
+        NodeInner::CClass(cc) => compile_cclass_node(cc, reg),
+
+        NodeInner::CType(ct) => {
+            let opcode = match ct.ctype as u32 {
+                ONIGENC_CTYPE_WORD => {
+                    if ct.not {
+                        if ct.ascii_mode {
+                            OpCode::NoWordAscii
+                        } else {
+                            OpCode::NoWord
+                        }
+                    } else {
+                        if ct.ascii_mode {
+                            OpCode::WordAscii
+                        } else {
+                            OpCode::Word
+                        }
+                    }
+                }
+                _ => {
+                    // Anychar type
+                    if node.has_status(ND_ST_MULTILINE) {
+                        OpCode::AnyCharMl
+                    } else {
+                        OpCode::AnyChar
+                    }
+                }
+            };
+            add_op(reg, opcode, OperationPayload::None);
+            0
+        }
+
+        NodeInner::BackRef(br) => {
+            let refs = br.back_refs();
+
+            if node.has_status(ND_ST_CHECKER) {
+                // BackRef checker for conditionals: (?(1)then|else)
+                let ns = refs.to_vec();
+                let opcode = if node.has_status(ND_ST_NEST_LEVEL) {
+                    OpCode::BackRefCheckWithLevel
+                } else {
+                    OpCode::BackRefCheck
+                };
+                add_op(
+                    reg,
+                    opcode,
+                    OperationPayload::BackRefGeneral {
+                        num: refs.len() as i32,
+                        ns,
+                        nest_level: br.nest_level,
+                    },
+                );
+            } else if node.has_status(ND_ST_NEST_LEVEL) {
+                // Level-based backref for recursion: \k<1+3>
+                let ns = refs.to_vec();
+                let opcode = if node.has_status(ND_ST_IGNORECASE) {
+                    OpCode::BackRefWithLevelIc
+                } else {
+                    OpCode::BackRefWithLevel
+                };
+                add_op(
+                    reg,
+                    opcode,
+                    OperationPayload::BackRefGeneral {
+                        num: refs.len() as i32,
+                        ns,
+                        nest_level: br.nest_level,
+                    },
+                );
+            } else if refs.len() == 1 {
+                let n = refs[0];
+                if node.has_status(ND_ST_IGNORECASE) {
+                    add_op(
+                        reg,
+                        OpCode::BackRefNIc,
+                        OperationPayload::BackRefN { n1: n },
+                    );
+                } else {
+                    match n {
+                        1 => {
+                            add_op(reg, OpCode::BackRef1, OperationPayload::None);
+                        }
+                        2 => {
+                            add_op(reg, OpCode::BackRef2, OperationPayload::None);
+                        }
+                        _ => {
+                            add_op(reg, OpCode::BackRefN, OperationPayload::BackRefN { n1: n });
+                        }
+                    }
+                }
+            } else {
+                // Multi backref
+                let ns = refs.to_vec();
+                if node.has_status(ND_ST_IGNORECASE) {
+                    add_op(
+                        reg,
+                        OpCode::BackRefMultiIc,
+                        OperationPayload::BackRefGeneral {
+                            num: refs.len() as i32,
+                            ns,
+                            nest_level: 0,
+                        },
+                    );
+                } else {
+                    add_op(
+                        reg,
+                        OpCode::BackRefMulti,
+                        OperationPayload::BackRefGeneral {
+                            num: refs.len() as i32,
+                            ns,
+                            nest_level: 0,
+                        },
+                    );
+                }
+            }
+            0
+        }
+
+        NodeInner::Quant(qn) => compile_quantifier_node(qn, reg, env),
+
+        NodeInner::Bag(bag) => compile_bag_node(bag, node.status, reg, env),
+
+        NodeInner::Anchor(an) => compile_anchor_node(an, node.status, reg, env),
+
+        NodeInner::Gimmick(gn) => compile_gimmick_node(gn, reg, env),
+
+        NodeInner::Call(call) => {
+            // Look up the called_addr for this group
+            let gnum = call.called_gnum as usize;
+            let addr = if gnum < reg.called_addrs.len() && reg.called_addrs[gnum] >= 0 {
+                reg.called_addrs[gnum]
+            } else {
+                0 // Will be patched later if not yet compiled
+            };
+            add_op(reg, OpCode::Call, OperationPayload::Call { addr });
+            // Record for later patching if the group hasn't been compiled yet
+            if gnum >= reg.called_addrs.len() || reg.called_addrs[gnum] < 0 {
+                // Store the index of this OP_CALL for patching
+                let call_idx = reg.ops.len() - 1;
+                reg.unset_call_addrs.push((call_idx, gnum as i32));
+            }
+            0
+        }
+    }
+}
+
+// ============================================================================
+// Entry points
+// ============================================================================
+
+/// Helper: check if mem_status bit 0 is on (meaning "all on")
+#[inline]
+fn mem_status_is_all_on(stats: MemStatusType) -> bool {
+    (stats & 1) != 0
+}
+
+// ============================================================================
+// tune_tree state flags (matching C's IN_* defines from regcomp.c:4481)
+// ============================================================================
+const IN_ALT: i32 = 1 << 0;
+const IN_NOT: i32 = 1 << 1;
+const IN_REAL_REPEAT: i32 = 1 << 2;
+const IN_VAR_REPEAT: i32 = 1 << 3;
+const IN_MULTI_ENTRY: i32 = 1 << 5;
+const IN_ZERO_REPEAT: i32 = 1 << 4;
+const IN_PREC_READ: i32 = 1 << 6;
+const IN_LOOK_BEHIND: i32 = 1 << 7;
+const IN_PEEK: i32 = 1 << 8;
+
+/// Calculate minimum byte length a node can match.
+/// Mirrors C's node_min_byte_len() from regcomp.c.
+fn node_min_byte_len(node: &Node, env: &ParseEnv) -> OnigLen {
+    match &node.inner {
+        // A literal alternation trie stores its index; the summary holds the
+        // shortest byte length of the alternation it replaced.
+        NodeInner::String(sn) if node.has_status(ND_ST_LITERAL_ALT) => {
+            LiteralAltSummary::decode(&sn.s).min_len
+        }
+        NodeInner::String(sn) => sn.s.len() as OnigLen,
+
+        NodeInner::CType(_) | NodeInner::CClass(_) => env.enc.min_enc_len() as OnigLen,
+
+        NodeInner::List(_) => {
+            let mut len: OnigLen = 0;
+            let mut cur = node;
+            while let NodeInner::List(cons) = &cur.inner {
+                let tmin = node_min_byte_len(&cons.car, env);
+                len = distance_add(len, tmin);
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            len
+        }
+
+        NodeInner::Alt(_) => {
+            let mut len: OnigLen = 0;
+            let mut first = true;
+            let mut cur = node;
+            while let NodeInner::Alt(cons) = &cur.inner {
+                let tmin = node_min_byte_len(&cons.car, env);
+                if first {
+                    len = tmin;
+                    first = false;
+                } else if len > tmin {
+                    len = tmin;
+                }
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            len
+        }
+
+        NodeInner::Quant(qn) => {
+            if qn.lower > 0 {
+                if let Some(ref body) = qn.body {
+                    let len = node_min_byte_len(body, env);
+                    distance_multiply(len, qn.lower)
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+
+        NodeInner::Bag(bn) => {
+            match bn.bag_type {
+                BagType::Option | BagType::StopBacktrack => {
+                    if let Some(ref body) = bn.body {
+                        node_min_byte_len(body, env)
+                    } else {
+                        0
+                    }
+                }
+                BagType::Memory => {
+                    // Do not cache through a shared node reference. Calls are
+                    // conservatively treated as empty below, so this ownership-tree
+                    // traversal cannot recurse through a self-reference.
+                    if let Some(body) = &bn.body {
+                        node_min_byte_len(body, env)
+                    } else {
+                        0
+                    }
+                }
+                BagType::IfElse => {
+                    if let BagData::IfElse {
+                        ref then_node,
+                        ref else_node,
+                    } = bn.bag_data
+                    {
+                        let mut len = if let Some(ref body) = bn.body {
+                            node_min_byte_len(body, env)
+                        } else {
+                            0
+                        };
+                        if let Some(then_n) = then_node {
+                            len += node_min_byte_len(then_n, env);
+                        }
+                        let elen = if let Some(else_n) = else_node {
+                            node_min_byte_len(else_n, env)
+                        } else {
+                            0
+                        };
+                        if elen < len { elen } else { len }
+                    } else {
+                        0
+                    }
+                }
+            }
+        }
+
+        // C: the minimum over the referenced groups of
+        // node_min_byte_len(mem_env[backs[i]].mem_node). Like a call, the
+        // port reads each group's length from env.group_min_len instead of
+        // following the raw capture pointer.
+        NodeInner::BackRef(br) => {
+            if node.has_status(ND_ST_CHECKER) || node.has_status(ND_ST_RECURSION) {
+                0
+            } else {
+                br.back_refs()
+                    .iter()
+                    .map(|&back| env.group_min_len.get(back as usize).copied().unwrap_or(0))
+                    .min()
+                    .unwrap_or(0)
+            }
+        }
+
+        // C: the called group's cached min_len (or its computation). The
+        // port precomputes it per group in compute_group_min_lens instead of
+        // following the call's self-referential raw pointer; a group without
+        // an entry falls back to the conservative zero.
+        NodeInner::Call(cn) => env
+            .group_min_len
+            .get(cn.called_gnum as usize)
+            .copied()
+            .unwrap_or(0),
+
+        NodeInner::Anchor(_) | NodeInner::Gimmick(_) => 0,
+    }
+}
+
+/// C: the min_len that node_min_byte_len caches on each BAG_MEMORY node
+/// (ND_ST_FIXED_MIN) and returns for a call or a back-reference to the
+/// group. A group reached again while its own length is being computed
+/// counts as 0 (C: MARK1).
+///
+/// C fills the cache lazily, so a value computed inside a recursion cycle can
+/// depend on which group was asked first. Every such value is still a lower
+/// bound of the group's true minimum, so the choice only decides whether a
+/// loop over a body that cannot match empty gets an empty check, which then
+/// never fires.
+struct GroupMinLen<'a> {
+    groups: Vec<Option<&'a Node>>,
+    fixed: Vec<Option<OnigLen>>,
+    mark1: Vec<bool>,
+}
+
+impl GroupMinLen<'_> {
+    fn group(&mut self, regnum: usize, env: &ParseEnv) -> OnigLen {
+        if let Some(Some(len)) = self.fixed.get(regnum) {
+            return *len;
+        }
+        if self.mark1.get(regnum).copied().unwrap_or(true) {
+            return 0; /* recursive */
+        }
+        let Some(Some(node)) = self.groups.get(regnum).copied() else {
+            return 0;
+        };
+        self.mark1[regnum] = true;
+        let len = match &node.inner {
+            NodeInner::Bag(bn) => bn.body.as_deref().map_or(0, |body| self.len(body, env)),
+            _ => 0,
+        };
+        self.mark1[regnum] = false;
+        self.fixed[regnum] = Some(len);
+        len
+    }
+
+    /// node_min_byte_len with calls and groups resolved through the cache.
+    fn len(&mut self, node: &Node, env: &ParseEnv) -> OnigLen {
+        match &node.inner {
+            NodeInner::List(_) => {
+                let mut len: OnigLen = 0;
+                let mut cur = node;
+                while let NodeInner::List(cons) = &cur.inner {
+                    len = distance_add(len, self.len(&cons.car, env));
+                    match &cons.cdr {
+                        Some(next) => cur = next,
+                        None => break,
+                    }
+                }
+                len
+            }
+            NodeInner::Alt(_) => {
+                let mut len: OnigLen = 0;
+                let mut first = true;
+                let mut cur = node;
+                while let NodeInner::Alt(cons) = &cur.inner {
+                    let tmin = self.len(&cons.car, env);
+                    if first || len > tmin {
+                        len = tmin;
+                        first = false;
+                    }
+                    match &cons.cdr {
+                        Some(next) => cur = next,
+                        None => break,
+                    }
+                }
+                len
+            }
+            NodeInner::Quant(qn) => match (&qn.body, qn.lower > 0) {
+                (Some(body), true) => distance_multiply(self.len(body, env), qn.lower),
+                _ => 0,
+            },
+            NodeInner::Bag(bn) => match bn.bag_type {
+                BagType::Memory => self.group(bn.regnum() as usize, env),
+                BagType::Option | BagType::StopBacktrack => {
+                    bn.body.as_deref().map_or(0, |body| self.len(body, env))
+                }
+                BagType::IfElse => {
+                    let BagData::IfElse {
+                        then_node,
+                        else_node,
+                    } = &bn.bag_data
+                    else {
+                        return 0;
+                    };
+                    let mut len = bn.body.as_deref().map_or(0, |body| self.len(body, env));
+                    if let Some(then_node) = then_node {
+                        len += self.len(then_node, env);
+                    }
+                    let elen = else_node.as_deref().map_or(0, |e| self.len(e, env));
+                    if elen < len { elen } else { len }
+                }
+            },
+            NodeInner::Call(cn) => self.group(cn.called_gnum as usize, env),
+            NodeInner::BackRef(br)
+                if !node.has_status(ND_ST_CHECKER) && !node.has_status(ND_ST_RECURSION) =>
+            {
+                let mut len: OnigLen = 0;
+                for (i, &back) in br.back_refs().iter().enumerate() {
+                    let tmin = self.group(back as usize, env);
+                    if i == 0 || len > tmin {
+                        len = tmin;
+                    }
+                }
+                len
+            }
+            _ => node_min_byte_len(node, env),
+        }
+    }
+}
+
+/// Fill `env.group_min_len` for every group of a pattern with calls or
+/// back-references.
+fn compute_group_min_lens(root: &Node, env: &ParseEnv) -> Vec<OnigLen> {
+    let n = env.num_mem.max(0) as usize + 1;
+    let mut groups = vec![None; n];
+    collect_memory_groups(root, &mut groups);
+    let mut cache = GroupMinLen {
+        groups,
+        fixed: vec![None; n],
+        mark1: vec![false; n],
+    };
+    (0..n).map(|regnum| cache.group(regnum, env)).collect()
+}
+
+/// Check if a quantifier body contains capture groups (Memory bags).
+/// Returns the appropriate emptiness type. Mirrors C's quantifiers_memory_node_info().
+///
+/// C follows a non-recursive call into its target group, which yields
+/// `BODY_MAY_BE_EMPTY_REC` when that group is recursive. The port reads the
+/// group's recursion from `env.recursive_mem` instead of dereferencing the
+/// call's raw target pointer, which may point at an ancestor of `node`.
+fn quantifiers_memory_node_info(node: &Node, env: &ParseEnv) -> BodyEmptyType {
+    let mut r = BodyEmptyType::MayBeEmpty;
+
+    match &node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = node;
+            loop {
+                let (car, cdr) = match &cur.inner {
+                    NodeInner::List(cons) => (&cons.car, &cons.cdr),
+                    NodeInner::Alt(cons) => (&cons.car, &cons.cdr),
+                    _ => break,
+                };
+                let v = quantifiers_memory_node_info(car, env);
+                if v as i32 > r as i32 {
+                    r = v;
+                }
+                match cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if qn.upper != 0 {
+                if let Some(ref body) = qn.body {
+                    r = quantifiers_memory_node_info(body, env);
+                }
+            }
+        }
+        NodeInner::Call(cn) => {
+            if node.has_status(ND_ST_RECURSION) {
+                return BodyEmptyType::MayBeEmptyRec; /* tiny version */
+            }
+            // C: r = quantifiers_memory_node_info(ND_BODY(node)); the body is
+            // the called BAG_MEMORY node.
+            r = if env
+                .recursive_mem
+                .get(cn.called_gnum as usize)
+                .copied()
+                .unwrap_or(false)
+            {
+                BodyEmptyType::MayBeEmptyRec
+            } else {
+                BodyEmptyType::MayBeEmptyMem
+            };
+        }
+        NodeInner::Bag(bn) => match bn.bag_type {
+            BagType::Memory => {
+                if node.has_status(ND_ST_RECURSION) {
+                    return BodyEmptyType::MayBeEmptyRec;
+                }
+                return BodyEmptyType::MayBeEmptyMem;
+            }
+            BagType::Option | BagType::StopBacktrack => {
+                if let Some(ref body) = bn.body {
+                    r = quantifiers_memory_node_info(body, env);
+                }
+            }
+            BagType::IfElse => {
+                if let Some(ref body) = bn.body {
+                    r = quantifiers_memory_node_info(body, env);
+                }
+                if let BagData::IfElse {
+                    ref then_node,
+                    ref else_node,
+                } = bn.bag_data
+                {
+                    if let Some(then_n) = then_node {
+                        let v = quantifiers_memory_node_info(then_n, env);
+                        if v as i32 > r as i32 {
+                            r = v;
+                        }
+                    }
+                    if let Some(else_n) = else_node {
+                        let v = quantifiers_memory_node_info(else_n, env);
+                        if v as i32 > r as i32 {
+                            r = v;
+                        }
+                    }
+                }
+            }
+        },
+        _ => {}
+    }
+
+    r
+}
+
+/// Get min and max byte_len across case-fold items.
+/// Mirrors C's get_min_max_byte_len_case_fold_items().
+fn get_min_max_byte_len_case_fold_items(
+    n: i32,
+    items: &[OnigCaseFoldCodeItem],
+) -> (OnigLen, OnigLen) {
+    let mut min_len: OnigLen = INFINITE_LEN;
+    let mut max_len: OnigLen = 0;
+    for item in items.iter().take(n as usize) {
+        let len = item.byte_len as OnigLen;
+        if len < min_len {
+            min_len = len;
+        }
+        if len > max_len {
+            max_len = len;
+        }
+    }
+    (min_len, max_len)
+}
+
+/// Expand a case-insensitive string node into CClass/List nodes.
+/// Mirrors C's unravel_case_fold_string() from regcomp.c.
+///
+/// For each character in the string:
+/// - If it has case-fold alternatives (e.g. 'c' -> 'C'), create a CClass node [cC]
+/// - Otherwise, accumulate into a plain string node
+/// - Combine all resulting nodes into a List
+fn unravel_case_fold_string(node: &mut Node, reg: &mut RegexType, state: i32) -> i32 {
+    let enc = reg.enc;
+    let in_look_behind = (state & IN_LOOK_BEHIND) != 0;
+
+    // Extract string bytes and clear ignorecase flag
+    let s_bytes = if let NodeInner::String(ref sn) = node.inner {
+        sn.s.clone()
+    } else {
+        return ONIG_NORMAL;
+    };
+    node.status_remove(ND_ST_IGNORECASE);
+
+    let mut items = vec![
+        OnigCaseFoldCodeItem {
+            byte_len: 0,
+            code_len: 0,
+            code: [0; ONIGENC_MAX_COMP_CASE_FOLD_CODE_LEN]
+        };
+        ONIGENC_GET_CASE_FOLD_CODES_MAX_NUM
+    ];
+
+    let mut nodes: Vec<Box<Node>> = Vec::new();
+    let mut pending: Vec<u8> = Vec::new(); // accumulate non-foldable chars
+
+    let mut pos = 0;
+    while pos < s_bytes.len() {
+        let one_len = enc.mbc_enc_len(&s_bytes[pos..]);
+        let mut n = enc.get_case_fold_codes_by_str(
+            reg.case_fold_flag,
+            &s_bytes[pos..],
+            s_bytes.len(),
+            &mut items,
+        );
+
+        if n > 0 {
+            // Flush pending plain string
+            if !pending.is_empty() {
+                nodes.push(node_new_str(&pending));
+                pending.clear();
+            }
+
+            if in_look_behind {
+                // In lookbehind: only allow same-byte-length single-codepoint folds
+                let q = pos + one_len;
+                // If first item's byte_len differs from one_len, re-query with shorter end
+                if items[0].byte_len != one_len as i32 {
+                    n = enc.get_case_fold_codes_by_str(
+                        reg.case_fold_flag,
+                        &s_bytes[pos..q],
+                        q - pos,
+                        &mut items,
+                    );
+                }
+
+                // Check if any same-byte-length single-code fold exists
+                let found = items
+                    .iter()
+                    .take(n as usize)
+                    .any(|item| item.byte_len == one_len as i32 && item.code_len == 1);
+
+                if !found {
+                    // No valid fold for lookbehind — keep as plain string
+                    pending.extend_from_slice(&s_bytes[pos..q]);
+                    pos = q;
+                } else {
+                    // Build CClass with original + same-length folds
+                    let mut cc_node = node_new_cclass();
+                    let cc = cc_node.as_cclass_mut().unwrap();
+                    let code = enc.mbc_to_code(&s_bytes[pos..], s_bytes.len() - pos);
+                    crate::regparse::add_code_into_cc(cc, code, enc);
+                    for item in items.iter().take(n as usize) {
+                        if item.byte_len == one_len as i32 && item.code_len == 1 {
+                            crate::regparse::add_code_into_cc(cc, item.code[0], enc);
+                        }
+                    }
+                    nodes.push(cc_node);
+                    pos = q;
+                }
+            } else {
+                // Normal (non-lookbehind) case fold
+
+                // Check if all items are single-codepoint folds
+                let all_single = items.iter().take(n as usize).all(|item| item.code_len == 1);
+
+                if all_single {
+                    // All single-char: create CClass with original + alternatives
+                    let mut cc_node = node_new_cclass();
+                    let cc = cc_node.as_cclass_mut().unwrap();
+                    let code = enc.mbc_to_code(&s_bytes[pos..], s_bytes.len() - pos);
+                    crate::regparse::add_code_into_cc(cc, code, enc);
+                    for item in items.iter().take(n as usize) {
+                        crate::regparse::add_code_into_cc(cc, item.code[0], enc);
+                    }
+                    nodes.push(cc_node);
+                    pos += one_len;
+                } else {
+                    // Multi-char folds present: create Alt with string alternatives
+                    let (min_byte_len, max_byte_len_val) =
+                        get_min_max_byte_len_case_fold_items(n, &items);
+                    if min_byte_len != max_byte_len_val {
+                        return ONIGERR_PARSER_BUG;
+                    }
+                    let max_byte_len = max_byte_len_val as usize;
+
+                    // First alternative: original string bytes
+                    let orig_str = &s_bytes[pos..pos + max_byte_len];
+                    let mut alt_node: Box<Node> = node_new_alt(node_new_str(orig_str), None);
+                    let mut curr = &mut alt_node;
+
+                    for item in items.iter().take(n as usize) {
+                        // Convert codepoints to string bytes
+                        let mut buf = Vec::new();
+                        let mut tmp = [0u8; 6]; // max UTF-8 bytes per codepoint
+                        for ci in 0..(item.code_len as usize) {
+                            let blen = enc.code_to_mbc(item.code[ci], &mut tmp);
+                            buf.extend_from_slice(&tmp[..blen as usize]);
+                        }
+                        let new_alt = node_new_alt(node_new_str(&buf), None);
+                        // Append to chain
+                        if let NodeInner::Alt(ref mut ca) = curr.inner {
+                            ca.cdr = Some(new_alt);
+                            curr = ca.cdr.as_mut().unwrap();
+                        }
+                    }
+
+                    nodes.push(alt_node);
+                    pos += max_byte_len;
+                }
+            }
+        } else {
+            // No case fold: accumulate into pending string
+            pending.extend_from_slice(&s_bytes[pos..pos + one_len]);
+            pos += one_len;
+        }
+    }
+
+    // Flush any remaining pending string
+    if !pending.is_empty() {
+        nodes.push(node_new_str(&pending));
+    }
+
+    // Build result: single node or List
+    if nodes.is_empty() {
+        node.inner = NodeInner::String(StrNode {
+            s: Vec::new(),
+            flag: 0,
+        });
+    } else if nodes.len() == 1 {
+        let n = nodes.pop().unwrap();
+        *node = *n;
+    } else {
+        // Build List from right to left
+        let mut list: Option<Box<Node>> = None;
+        for n in nodes.into_iter().rev() {
+            list = Some(node_new_list(n, list));
+        }
+        *node = *list.unwrap();
+    }
+
+    ONIG_NORMAL
+}
+
+// ============================================================================
+// Lookbehind support: node_char_len, tune_look_behind, divide_look_behind_alternatives
+// ============================================================================
+
+/// C: the non-negative returns of node_char_len().
+const CHAR_LEN_NORMAL: i32 = 0; /* fixed or variable */
+const CHAR_LEN_TOP_ALT_FIXED: i32 = 1;
+
+/// C: MinMaxCharLen
+#[derive(Clone, Copy, Default)]
+struct MinMaxCharLen {
+    min: OnigLen,
+    max: OnigLen,
+    min_is_sure: bool,
+}
+
+/// C: mmcl_fixed
+fn mmcl_fixed(c: &MinMaxCharLen) -> bool {
+    c.min == c.max && c.min != INFINITE_LEN
+}
+
+/// C: mmcl_set
+fn mmcl_set(l: &mut MinMaxCharLen, len: OnigLen) {
+    l.min = len;
+    l.max = len;
+    l.min_is_sure = true;
+}
+
+/// C: mmcl_set_min_max
+fn mmcl_set_min_max(l: &mut MinMaxCharLen, min: OnigLen, max: OnigLen, min_is_sure: bool) {
+    l.min = min;
+    l.max = max;
+    l.min_is_sure = min_is_sure;
+}
+
+/// C: mmcl_add
+fn mmcl_add(to: &mut MinMaxCharLen, add: &MinMaxCharLen) {
+    to.min = distance_add(to.min, add.min);
+    to.max = distance_add(to.max, add.max);
+
+    to.min_is_sure = add.min_is_sure && to.min_is_sure;
+}
+
+/// C: mmcl_multiply
+fn mmcl_multiply(to: &mut MinMaxCharLen, m: i32) {
+    to.min = distance_multiply(to.min, m);
+    to.max = distance_multiply(to.max, m);
+}
+
+/// C: mmcl_repeat_range_multiply
+fn mmcl_repeat_range_multiply(to: &mut MinMaxCharLen, mlow: i32, mhigh: i32) {
+    to.min = distance_multiply(to.min, mlow);
+
+    if is_infinite_repeat(mhigh) {
+        to.max = INFINITE_LEN;
+    } else {
+        to.max = distance_multiply(to.max, mhigh);
+    }
+}
+
+/// C: mmcl_alt_merge
+fn mmcl_alt_merge(to: &mut MinMaxCharLen, alt: &MinMaxCharLen) {
+    if to.min > alt.min {
+        to.min = alt.min;
+        to.min_is_sure = alt.min_is_sure;
+    } else if to.min == alt.min && alt.min_is_sure {
+        to.min_is_sure = true;
+    }
+
+    if to.max < alt.max {
+        to.max = alt.max;
+    }
+}
+
+/// C keeps two marks on a BAG_MEMORY node for node_char_len1(): MARK1
+/// while its body is measured, so that a group reached again through a
+/// call or a back-reference counts as 0..INFINITE instead of recursing, and
+/// FIXED_CLEN (+ FIXED_CLEN_MIN_SURE) with the measured min_char_len /
+/// max_char_len, so that each group is measured once. The port only
+/// borrows the tree here and keeps both per group number for one
+/// node_char_len() call.
+struct CharLenMarks {
+    mark1: Vec<bool>,
+    fixed_clen: Vec<Option<MinMaxCharLen>>,
+}
+
+/// Port of C's node_char_len1(): the character length range of a fixed
+/// size pattern node (a look-behind body). Returns CHAR_LEN_NORMAL,
+/// CHAR_LEN_TOP_ALT_FIXED (the top-level node is an alternation whose
+/// branches after the first all have a fixed length, but not one length),
+/// or an error code.
+fn node_char_len1(
+    node: &Node,
+    reg: &RegexType,
+    ci: &mut MinMaxCharLen,
+    env: &ParseEnv,
+    marks: &mut CharLenMarks,
+    mut level: i32,
+) -> i32 {
+    let mut tci = MinMaxCharLen::default();
+    let mut r = CHAR_LEN_NORMAL;
+
+    level += 1;
+
+    match &node.inner {
+        NodeInner::List(_) => {
+            let mut first = true;
+            let mut cur = node;
+            while let NodeInner::List(cons) = &cur.inner {
+                r = node_char_len1(&cons.car, reg, &mut tci, env, marks, level);
+                if r < 0 {
+                    break;
+                }
+                if first {
+                    *ci = tci;
+                    first = false;
+                } else {
+                    mmcl_add(ci, &tci);
+                }
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+
+        NodeInner::Alt(cons) => {
+            r = node_char_len1(&cons.car, reg, ci, env, marks, level);
+            if r < 0 {
+                return r;
+            }
+
+            let mut fixed = true;
+            let mut next = &cons.cdr;
+            while let Some(alt) = next {
+                let NodeInner::Alt(cons) = &alt.inner else {
+                    break;
+                };
+                r = node_char_len1(&cons.car, reg, &mut tci, env, marks, level);
+                if r < 0 {
+                    break;
+                }
+                if !mmcl_fixed(&tci) {
+                    fixed = false;
+                }
+                mmcl_alt_merge(ci, &tci);
+                next = &cons.cdr;
+            }
+            if r < 0 {
+                return r;
+            }
+
+            r = CHAR_LEN_NORMAL;
+            if !mmcl_fixed(ci) && fixed && level == 1 {
+                r = CHAR_LEN_TOP_ALT_FIXED;
+            }
+        }
+
+        // Rust-only (ADR-008): a literal alternation trie stands for the
+        // alternation of its literals (C: an ND_ALT of strings, each
+        // unraveled by case folding).
+        NodeInner::String(_) if node.has_status(ND_ST_LITERAL_ALT) => {
+            match literal_alt_trie_index(node).and_then(|i| reg.literal_tries.get(i)) {
+                // C: the ND_IS_REAL_IGNORECASE check below, for strings
+                // tune_tree has not unraveled yet.
+                Some(trie)
+                    if trie.is_case_insensitive()
+                        && !trie.is_tuned()
+                        && case_fold_is_not_ascii_only(env.case_fold_flag) =>
+                {
+                    return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+                }
+                Some(trie) => {
+                    let chars = |s: &[u8]| onigenc_strlen(env.enc, s, 0, s.len());
+                    for (i, (min, max)) in trie.literal_char_lens(chars).enumerate() {
+                        mmcl_set_min_max(&mut tci, min as OnigLen, max as OnigLen, true);
+                        if i == 0 {
+                            *ci = tci;
+                        } else {
+                            mmcl_alt_merge(ci, &tci);
+                        }
+                    }
+                }
+                None => mmcl_set_min_max(ci, 0, INFINITE_LEN, false),
+            }
+        }
+
+        NodeInner::String(sn) => {
+            if node.has_status(ND_ST_IGNORECASE)
+                && !sn.is_crude()
+                && case_fold_is_not_ascii_only(env.case_fold_flag)
+            {
+                /* Such a case is possible.
+                  ex. /(?i)(?<=\1)(a)/
+                  Backref node refer to capture group, but it doesn't tune yet.
+                */
+                return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+            }
+
+            let clen = onigenc_strlen(env.enc, &sn.s, 0, sn.s.len());
+            mmcl_set(ci, clen as OnigLen);
+        }
+
+        NodeInner::Quant(qn) => {
+            let Some(body) = qn.body.as_deref() else {
+                mmcl_set(ci, 0);
+                return r;
+            };
+            if qn.lower == qn.upper {
+                if qn.upper == 0 {
+                    mmcl_set(ci, 0);
+                } else {
+                    r = node_char_len1(body, reg, ci, env, marks, level);
+                    if r < 0 {
+                        return r;
+                    }
+                    mmcl_multiply(ci, qn.lower);
+                }
+            } else {
+                r = node_char_len1(body, reg, ci, env, marks, level);
+                if r < 0 {
+                    return r;
+                }
+                mmcl_repeat_range_multiply(ci, qn.lower, qn.upper);
+            }
+        }
+
+        NodeInner::Call(cn) => {
+            if node.has_status(ND_ST_RECURSION) {
+                mmcl_set_min_max(ci, 0, INFINITE_LEN, false);
+            } else if !cn.target_node.is_null() {
+                // SAFETY: `target_node` is non-null (checked above) and was set by
+                // resolve_call_references/refresh_call_targets to the called group's
+                // Bag node inside this same live tree; only shared reads follow.
+                let target = unsafe { &*cn.target_node };
+                r = node_char_len1(target, reg, ci, env, marks, level);
+            } else {
+                mmcl_set(ci, 0);
+            }
+        }
+
+        NodeInner::CType(_) | NodeInner::CClass(_) => mmcl_set(ci, 1),
+
+        NodeInner::Bag(bn) => match &bn.bag_data {
+            BagData::Memory { .. } => {
+                let regnum = bn.regnum() as usize;
+                if let Some(Some(fixed)) = marks.fixed_clen.get(regnum) {
+                    *ci = *fixed;
+                } else if marks.mark1.get(regnum).copied().unwrap_or(false) {
+                    mmcl_set_min_max(ci, 0, INFINITE_LEN, false);
+                } else {
+                    if let Some(m) = marks.mark1.get_mut(regnum) {
+                        *m = true;
+                    }
+                    r = match bn.body.as_deref() {
+                        Some(body) => node_char_len1(body, reg, ci, env, marks, level),
+                        None => {
+                            mmcl_set(ci, 0);
+                            CHAR_LEN_NORMAL
+                        }
+                    };
+                    if let Some(m) = marks.mark1.get_mut(regnum) {
+                        *m = false;
+                    }
+                    if r < 0 {
+                        return r;
+                    }
+
+                    if let Some(fixed) = marks.fixed_clen.get_mut(regnum) {
+                        *fixed = Some(*ci);
+                    }
+                }
+                /* can't optimize look-behind if capture exists. */
+                ci.min_is_sure = false;
+            }
+            BagData::Option { .. } | BagData::StopBacktrack | BagData::TextSegment => {
+                match bn.body.as_deref() {
+                    Some(body) => r = node_char_len1(body, reg, ci, env, marks, level),
+                    None => mmcl_set(ci, 0),
+                }
+            }
+            BagData::IfElse {
+                then_node,
+                else_node,
+            } => {
+                let mut eci = MinMaxCharLen::default();
+
+                match bn.body.as_deref() {
+                    Some(body) => {
+                        r = node_char_len1(body, reg, ci, env, marks, level);
+                        if r < 0 {
+                            return r;
+                        }
+                    }
+                    None => mmcl_set(ci, 0),
+                }
+
+                if let Some(then_node) = then_node.as_deref() {
+                    r = node_char_len1(then_node, reg, &mut tci, env, marks, level);
+                    if r < 0 {
+                        return r;
+                    }
+                    mmcl_add(ci, &tci);
+                }
+
+                if let Some(else_node) = else_node.as_deref() {
+                    r = node_char_len1(else_node, reg, &mut eci, env, marks, level);
+                    if r < 0 {
+                        return r;
+                    }
+                } else {
+                    mmcl_set(&mut eci, 0);
+                }
+
+                mmcl_alt_merge(ci, &eci);
+            }
+        },
+
+        NodeInner::Gimmick(_) => mmcl_set(ci, 0),
+
+        NodeInner::Anchor(_) => {
+            mmcl_set(ci, 0);
+            /* can't optimize look-behind if anchor exists. */
+            ci.min_is_sure = false;
+        }
+
+        NodeInner::BackRef(br) => {
+            if node.has_status(ND_ST_CHECKER) {
+                // C: goto zero
+                mmcl_set(ci, 0);
+                ci.min_is_sure = false;
+                return r;
+            }
+
+            if node.has_status(ND_ST_RECURSION) {
+                if node.has_status(ND_ST_NEST_LEVEL) {
+                    mmcl_set_min_max(ci, 0, INFINITE_LEN, false);
+                    return r;
+                }
+
+                mmcl_set_min_max(ci, 0, 0, false);
+                return r;
+            }
+
+            // C: node_char_len1(mem_env[backs[i]].mem_node, ...) for every
+            // referenced group, merged as alternatives.
+            for (i, &back) in br.back_refs().iter().enumerate() {
+                let to = if i == 0 { &mut *ci } else { &mut tci };
+                let mem_node = env.mem_env(back as usize).mem_node;
+                if mem_node.is_null() {
+                    // No group node to measure: any length.
+                    mmcl_set_min_max(to, 0, INFINITE_LEN, false);
+                } else {
+                    // SAFETY: `mem_node` is non-null (checked above) and was set by
+                    // refresh_node_references to the referenced group's Bag node
+                    // inside this same live tree; tuning does not move capture
+                    // nodes. A back-reference without RECURSION never lies inside
+                    // its group, and only shared reads follow.
+                    let mem = unsafe { &*mem_node };
+                    r = node_char_len1(mem, reg, to, env, marks, level);
+                    if r < 0 {
+                        break;
+                    }
+                }
+                if !mmcl_fixed(to) {
+                    to.min_is_sure = false;
+                }
+                if i != 0 {
+                    mmcl_alt_merge(ci, &tci);
+                }
+            }
+        }
+    }
+
+    r
+}
+
+/// C: node_char_len
+fn node_char_len(node: &Node, reg: &RegexType, ci: &mut MinMaxCharLen, env: &ParseEnv) -> i32 {
+    let n = env.num_mem.max(0) as usize + 1;
+    let mut marks = CharLenMarks {
+        mark1: vec![false; n],
+        fixed_clen: vec![None; n],
+    };
+    node_char_len1(node, reg, ci, env, &mut marks, 0)
+}
+
+/// Divide variable-length lookbehind with Alt body into per-branch lookbehinds;
+/// tuning the new anchors measures and checks each branch.
+/// For positive: Alt(Anchor(LB,a), Anchor(LB,b)) — any branch must match (OR).
+/// For negative: List(Anchor(LB_NOT,a), Anchor(LB_NOT,b)) — all branches must pass (AND).
+/// C: divide_look_behind_alternatives
+fn divide_look_behind_alt(node: &mut Node, anchor_type: i32) -> i32 {
+    // Extract anchor fields
+    let (body, ascii_mode) = if let NodeInner::Anchor(ref mut an) = node.inner {
+        (an.body.take().unwrap(), an.ascii_mode)
+    } else {
+        return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+    };
+
+    // Collect all Alt branches
+    let mut branches: Vec<Box<Node>> = Vec::new();
+    let mut cur = body;
+    loop {
+        if let NodeInner::Alt(cons) = cur.inner {
+            branches.push(cons.car);
+            match cons.cdr {
+                Some(next) => cur = next,
+                None => break,
+            }
+        } else {
+            branches.push(cur);
+            break;
+        }
+    }
+
+    let use_list = anchor_type == ANCR_LOOK_BEHIND_NOT;
+
+    // Build new node tree of anchors, from last to first
+    let mut result: Option<Box<Node>> = None;
+    for branch in branches.into_iter().rev() {
+        let mut anchor = node_new_anchor(anchor_type);
+        if let NodeInner::Anchor(ref mut an) = anchor.inner {
+            an.body = Some(branch);
+            an.ascii_mode = ascii_mode;
+        }
+
+        if use_list {
+            // Negative lookbehind: ALL branches must pass (List = AND)
+            result = Some(node_new_list(anchor, result));
+        } else {
+            // Positive lookbehind: ANY branch must match (Alt = OR)
+            result = Some(node_new_alt(anchor, result));
+        }
+    }
+
+    // Replace the original node with the new tree
+    if let Some(new_node) = result {
+        *node = *new_node;
+    }
+
+    ONIG_NORMAL
+}
+
+/// Check if a node tree contains absent stoppers (ND_ST_ABSENT_WITH_SIDE_EFFECTS).
+/// Returns true if invalid nodes are found inside lookbehind.
+/// C: check_node_in_look_behind (simplified — we only need the absent stopper check).
+// Allowed node types in lookbehind (C: ALLOWED_TYPE_IN_LB)
+const ALLOWED_TYPE_IN_LB: u32 = ND_BIT_LIST
+    | ND_BIT_ALT
+    | ND_BIT_STRING
+    | ND_BIT_CCLASS
+    | ND_BIT_CTYPE
+    | ND_BIT_ANCHOR
+    | ND_BIT_BAG
+    | ND_BIT_QUANT
+    | ND_BIT_CALL
+    | ND_BIT_BACKREF
+    | ND_BIT_GIMMICK;
+
+// Allowed bag types: positive lookbehind allows Memory; negative does not
+const ALLOWED_BAG_IN_LB: u32 = (1 << BagType::Memory as u32)
+    | (1 << BagType::Option as u32)
+    | (1 << BagType::StopBacktrack as u32)
+    | (1 << BagType::IfElse as u32);
+const ALLOWED_BAG_IN_LB_NOT: u32 = (1 << BagType::Option as u32)
+    | (1 << BagType::StopBacktrack as u32)
+    | (1 << BagType::IfElse as u32);
+
+// Allowed anchor types in positive/negative lookbehind
+const ALLOWED_ANCHOR_IN_LB: i32 = ANCR_LOOK_BEHIND
+    | ANCR_BEGIN_LINE
+    | ANCR_END_LINE
+    | ANCR_BEGIN_BUF
+    | ANCR_BEGIN_POSITION
+    | ANCR_WORD_BOUNDARY
+    | ANCR_NO_WORD_BOUNDARY
+    | ANCR_WORD_BEGIN
+    | ANCR_WORD_END
+    | ANCR_TEXT_SEGMENT_BOUNDARY
+    | ANCR_NO_TEXT_SEGMENT_BOUNDARY;
+
+const ALLOWED_ANCHOR_IN_LB_NOT: i32 = ANCR_LOOK_BEHIND
+    | ANCR_LOOK_BEHIND_NOT
+    | ANCR_BEGIN_LINE
+    | ANCR_END_LINE
+    | ANCR_BEGIN_BUF
+    | ANCR_BEGIN_POSITION
+    | ANCR_WORD_BOUNDARY
+    | ANCR_NO_WORD_BOUNDARY
+    | ANCR_WORD_BEGIN
+    | ANCR_WORD_END
+    | ANCR_TEXT_SEGMENT_BOUNDARY
+    | ANCR_NO_TEXT_SEGMENT_BOUNDARY;
+
+/// Check if node tree is valid within a lookbehind call target.
+/// Returns 0 = ok, 1 = forbidden.
+fn check_called_node_in_look_behind(node: &Node, _not: bool) -> i32 {
+    match &node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            let mut r = check_called_node_in_look_behind(&cons.car, _not);
+            if r == 0 {
+                if let Some(ref cdr) = cons.cdr {
+                    r = check_called_node_in_look_behind(cdr, _not);
+                }
+            }
+            r
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(ref body) = qn.body {
+                check_called_node_in_look_behind(body, _not)
+            } else {
+                0
+            }
+        }
+        NodeInner::Bag(en) => {
+            if en.bag_type == BagType::Memory {
+                if node.has_status(ND_ST_MARK1) {
+                    return 0;
+                }
+                // Note: can't mutate here to add MARK1, but recursion cycles are
+                // already broken by tune_call. Just check the body.
+                if let Some(ref body) = en.body {
+                    return check_called_node_in_look_behind(body, _not);
+                }
+                0
+            } else {
+                let mut r = 0;
+                if let Some(ref body) = en.body {
+                    r = check_called_node_in_look_behind(body, _not);
+                }
+                if r == 0 {
+                    if let BagData::IfElse {
+                        ref then_node,
+                        ref else_node,
+                    } = en.bag_data
+                    {
+                        if let Some(tn) = then_node {
+                            r = check_called_node_in_look_behind(tn, _not);
+                            if r != 0 {
+                                return r;
+                            }
+                        }
+                        if let Some(en) = else_node {
+                            r = check_called_node_in_look_behind(en, _not);
+                        }
+                    }
+                }
+                r
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(ref body) = an.body {
+                check_called_node_in_look_behind(body, _not)
+            } else {
+                0
+            }
+        }
+        NodeInner::Gimmick(_) => {
+            if node.has_status(ND_ST_ABSENT_WITH_SIDE_EFFECTS) {
+                1
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Full validation of nodes in lookbehind. Returns 0 = ok, 1 = forbidden.
+/// `not`: true for negative lookbehind.
+/// `used`: set to true if the body contains backrefs, called groups, or SAVE_KEEP.
+fn check_node_in_look_behind(
+    node: &Node,
+    not: bool,
+    used: &mut bool,
+    syntax: &OnigSyntaxType,
+) -> i32 {
+    let type_bit = node.node_type_bit();
+    if (type_bit & ALLOWED_TYPE_IN_LB) == 0 {
+        return 1;
+    }
+
+    match &node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            let mut r = check_node_in_look_behind(&cons.car, not, used, syntax);
+            if r == 0 {
+                if let Some(ref cdr) = cons.cdr {
+                    r = check_node_in_look_behind(cdr, not, used, syntax);
+                }
+            }
+            r
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(ref body) = qn.body {
+                check_node_in_look_behind(body, not, used, syntax)
+            } else {
+                0
+            }
+        }
+        NodeInner::Bag(en) => {
+            let mut bag_mask = if not {
+                ALLOWED_BAG_IN_LB_NOT
+            } else {
+                ALLOWED_BAG_IN_LB
+            };
+            if not && is_syntax_bv(syntax, FERRONI_SYN_ALLOW_CAPTURE_IN_NEGATIVE_LOOK_BEHIND) {
+                bag_mask |= 1 << BagType::Memory as u32;
+            }
+            if ((1 << en.bag_type as u32) & bag_mask) == 0 {
+                return 1;
+            }
+
+            let mut r = 0;
+            if let Some(ref body) = en.body {
+                r = check_node_in_look_behind(body, not, used, syntax);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            if en.bag_type == BagType::Memory {
+                if node.has_status(ND_ST_BACKREF)
+                    || node.has_status(ND_ST_CALLED)
+                    || node.has_status(ND_ST_REFERENCED)
+                {
+                    *used = true;
+                }
+            } else if let BagData::IfElse {
+                ref then_node,
+                ref else_node,
+            } = en.bag_data
+            {
+                if let Some(tn) = then_node {
+                    r = check_node_in_look_behind(tn, not, used, syntax);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+                if let Some(en) = else_node {
+                    r = check_node_in_look_behind(en, not, used, syntax);
+                }
+            }
+            r
+        }
+        NodeInner::Anchor(an) => {
+            let mut anchor_mask = if not {
+                ALLOWED_ANCHOR_IN_LB_NOT
+            } else {
+                ALLOWED_ANCHOR_IN_LB
+            };
+            if not && is_syntax_bv(syntax, FERRONI_SYN_ALLOW_LOOK_AHEAD_IN_NEGATIVE_LOOK_BEHIND) {
+                anchor_mask |= ANCR_PREC_READ | ANCR_PREC_READ_NOT;
+            }
+            if (an.anchor_type & anchor_mask) == 0 {
+                return 1;
+            }
+            if let Some(ref body) = an.body {
+                check_node_in_look_behind(body, not, used, syntax)
+            } else {
+                0
+            }
+        }
+        NodeInner::Call(cn) => {
+            if node.has_status(ND_ST_RECURSION) {
+                *used = true;
+                0
+            } else if !cn.target_node.is_null() {
+                // SAFETY: `target_node` is non-null (checked above) and was set by
+                // resolve_call_references/refresh_call_targets to the called group's
+                // Bag node inside this same live tree; only shared reads follow.
+                let target = unsafe { &*cn.target_node };
+                check_called_node_in_look_behind(target, not)
+            } else {
+                0
+            }
+        }
+        NodeInner::Gimmick(gn) => {
+            if node.has_status(ND_ST_ABSENT_WITH_SIDE_EFFECTS) {
+                return 1;
+            }
+            if gn.gimmick_type == GimmickType::Save && gn.detail_type == SaveType::Keep as i32 {
+                *used = true;
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// Reduce quantifiers in lookbehind: set upper = lower for simple body quantifiers.
+/// C: node_reduce_in_look_behind — returns true if node should be removed (upper==0).
+fn node_reduce_in_look_behind(node: &mut Node) -> bool {
+    if let NodeInner::Quant(ref mut qn) = node.inner {
+        if let Some(ref body) = qn.body {
+            let reducible = matches!(
+                body.inner,
+                NodeInner::String(_)
+                    | NodeInner::CType(_)
+                    | NodeInner::CClass(_)
+                    | NodeInner::BackRef(_)
+            );
+            if reducible {
+                qn.upper = qn.lower;
+                return qn.upper == 0;
+            }
+        }
+    }
+    false
+}
+
+/// C: list_reduce_in_look_behind
+fn list_reduce_in_look_behind(node: &mut Node) {
+    match node.inner {
+        NodeInner::Quant(_) => {
+            node_reduce_in_look_behind(node);
+        }
+        NodeInner::List(_) => {
+            // Walk the list, reducing each car
+            let mut cur: &mut Node = node;
+            while let NodeInner::List(cons) = &mut cur.inner {
+                let removed = node_reduce_in_look_behind(&mut cons.car);
+                if !removed {
+                    // Only continue if the current node was reduced (removed)
+                    // C: "if (r <= 0) break" — r>0 means removed, keep going
+                    break;
+                }
+                match &mut cons.cdr {
+                    Some(cdr) => cur = cdr,
+                    None => break,
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// C: alt_reduce_in_look_behind
+///
+/// Intentionally returns nothing. C returns 1 when every element of a
+/// branch reduces to `{0}`, and tune_look_behind() passes that through as
+/// the compile result, so C's onig_new() gives up on `(?<=a*a*)` with the
+/// non-error code 1. Ferroni compiles such patterns instead.
+fn alt_reduce_in_look_behind(node: &mut Node) {
+    match node.inner {
+        NodeInner::Alt(_) => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::Alt(cons) = &mut cur.inner {
+                list_reduce_in_look_behind(&mut cons.car);
+                match &mut cons.cdr {
+                    Some(cdr) => cur = cdr,
+                    None => break,
+                }
+            }
+        }
+        _ => {
+            list_reduce_in_look_behind(node);
+        }
+    }
+}
+
+/// Strip redundant multi-char case-fold alternatives from a CClass body in a lookbehind.
+///
+/// When `(?i)` is active, the parser wraps a CClass into `Alt(CClass, f1, f2, ...)`
+/// where each branch reads a multi-char case fold (e.g., ß→"ss" as `[sSſ][sSſ]`). In a
+/// lookbehind, this causes O(N) separate lookbehind anchors to be created, each costing
+/// ~7 ops.
+///
+/// If every character a fold branch can end with is already in the CClass, the
+/// multi-char alternatives are redundant: the single-char CClass check already
+/// rejects/accepts those positions. We can safely collapse back to just the CClass.
+fn strip_redundant_casefold_alts_in_lookbehind(node: &mut Node, enc: OnigEncoding) {
+    let body = if let NodeInner::Anchor(ref mut an) = node.inner {
+        if let Some(ref mut body) = an.body {
+            body
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+
+    // Check if body is Alt(CClass, ...) — the pattern generated by case-fold expansion
+    let cc: &CClassNode = if let NodeInner::Alt(ref cons) = body.inner {
+        if let NodeInner::CClass(ref cc) = cons.car.inner {
+            cc
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+
+    // Walk the cdr chain and check each string alternative
+    let all_covered = {
+        let mut cur: &Node = body;
+        let mut has_alts = false;
+        let mut covered = true;
+        while let NodeInner::Alt(cons) = &cur.inner {
+            let next = match cons.cdr.as_deref() {
+                Some(node) => node,
+                None => break,
+            };
+
+            // Each node in the cdr chain is either another Alt or the last branch
+            let branch = if let NodeInner::Alt(ref cons2) = next.inner {
+                &cons2.car
+            } else {
+                // Last branch is the node itself
+                next
+            };
+
+            // A fold branch is a string or a list ending in one or in a class.
+            let mut last = branch;
+            while let NodeInner::List(ref cons) = last.inner {
+                match cons.cdr.as_deref() {
+                    Some(next) => last = next,
+                    None => last = &cons.car,
+                }
+            }
+            if !ends_in_cc(last, cc, enc) {
+                covered = false;
+                break;
+            }
+            has_alts = true;
+
+            // Move to next in chain
+            if let NodeInner::Alt(_) = next.inner {
+                cur = next;
+            } else {
+                break;
+            }
+        }
+        has_alts && covered
+    };
+
+    if all_covered {
+        // Collapse: replace Alt(CClass, str1, str2, ...) with just the CClass node
+        let old_inner = std::mem::replace(
+            &mut body.inner,
+            NodeInner::String(StrNode {
+                s: Vec::new(),
+                flag: 0,
+            }),
+        );
+        if let NodeInner::Alt(cons) = old_inner {
+            **body = *cons.car;
+        }
+    }
+}
+
+/// Whether every character `node`, a string or a positive class read as the
+/// end of a case-fold branch, can end with is in `cc`. False for anything
+/// else, and for a class of more than a few members.
+fn ends_in_cc(node: &Node, cc: &CClassNode, enc: OnigEncoding) -> bool {
+    match &node.inner {
+        NodeInner::String(sn) => {
+            !sn.s.is_empty() && onig_is_code_in_cc(enc, decode_last_codepoint(&sn.s, enc), cc)
+        }
+        NodeInner::CClass(last) if !last.is_not() => {
+            // The fold classes hold a character's case variants: a few codes.
+            let mut codes: Vec<OnigCodePoint> = (0..SINGLE_BYTE_SIZE)
+                .filter(|&code| {
+                    bitset_at(&last.bs, code) && enc.code_to_mbclen(code as OnigCodePoint) == 1
+                })
+                .map(|code| code as OnigCodePoint)
+                .collect();
+            let ranges = last.mbuf.as_ref().map(crate::regparse::code_ranges_of);
+            for (from, to) in ranges.unwrap_or_default() {
+                if to - from >= 8 {
+                    return false;
+                }
+                codes.extend(from..=to);
+            }
+            !codes.is_empty()
+                && codes.len() <= 8
+                && codes.iter().all(|&code| onig_is_code_in_cc(enc, code, cc))
+        }
+        _ => false,
+    }
+}
+
+/// Decode the last codepoint from a UTF-8 byte slice.
+fn decode_last_codepoint(bytes: &[u8], enc: OnigEncoding) -> OnigCodePoint {
+    if bytes.is_empty() {
+        return 0;
+    }
+    // Walk forward through the string to find the start of the last character
+    let mut pos = 0;
+    let mut last_pos = 0;
+    while pos < bytes.len() {
+        last_pos = pos;
+        let clen = enc.mbc_enc_len(&bytes[pos..]);
+        if clen == 0 {
+            break;
+        }
+        pos += clen;
+    }
+    enc.mbc_to_code(&bytes[last_pos..], bytes.len())
+}
+
+/// Tune a lookbehind anchor: tune its body, compute char lengths, split
+/// fixed-length alternatives and record the trailing literal.
+/// C: tune_look_behind
+fn tune_look_behind(node: &mut Node, reg: &mut RegexType, state: i32, env: &mut ParseEnv) -> i32 {
+    let enc = env.enc;
+    let (anchor_type, has_body) = if let NodeInner::Anchor(ref an) = node.inner {
+        (an.anchor_type, an.body.is_some())
+    } else {
+        return 0;
+    };
+
+    if !has_body {
+        return 0;
+    }
+
+    // Strip redundant multi-char case-fold alternatives from CClass in lookbehind.
+    //
+    // Under (?i), the parser expands a CClass like [-\w] into
+    //   Alt(CClass[-\w...], "ss", "fi", "fl", ...)
+    // because characters like ß case-fold to "ss". In a lookbehind, this causes
+    // divide_look_behind_alt to create ~100 separate lookbehind anchors (one per
+    // multi-char fold), each with its own Mark/Push/StepBack/body/PopToMark/Fail/Pop.
+    //
+    // These multi-char alternatives are redundant when the last character of each
+    // fold sequence is already in the CClass. For [-\w], every multi-char fold of
+    // a word character ends with a word character (e.g., ß→"ss", ﬁ→"fi"), so the
+    // single-char CClass check already covers all cases.
+    //
+    // The strip makes branches of different lengths one fixed-length class,
+    // so it runs only where C accepts those branches anyway; elsewhere C's
+    // length check rejects the look-behind.
+    if is_syntax_bv(&env.syntax, ONIG_SYN_DIFFERENT_LEN_ALT_LOOK_BEHIND)
+        || is_syntax_bv(&env.syntax, ONIG_SYN_VARIABLE_LEN_LOOK_BEHIND)
+    {
+        strip_redundant_casefold_alts_in_lookbehind(node, enc);
+    }
+
+    // Full validation of nodes inside lookbehind (C: check_node_in_look_behind)
+    let mut lb_used = false;
+    {
+        let is_not = anchor_type == ANCR_LOOK_BEHIND_NOT;
+        let body = if let NodeInner::Anchor(ref an) = node.inner {
+            an.body.as_ref().unwrap()
+        } else {
+            return 0;
+        };
+        let r = check_node_in_look_behind(body, is_not, &mut lb_used, &env.syntax);
+        if r < 0 {
+            return r;
+        }
+        if r > 0 {
+            return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+        }
+    }
+
+    let state1 = if anchor_type == ANCR_LOOK_BEHIND_NOT {
+        state | IN_NOT | IN_LOOK_BEHIND
+    } else {
+        state | IN_LOOK_BEHIND
+    };
+
+    // C: "Execute tune_tree(body) before call node_char_len(). Because
+    // case-fold expansion must be done before node_char_len()." The
+    // quantifier reduction runs before node_char_len() as well, so a leading
+    // `x*` that it cuts to `x{0}` no longer makes the look-behind
+    // variable-length.
+    {
+        let body = if let NodeInner::Anchor(ref mut an) = node.inner {
+            an.body.as_mut().unwrap()
+        } else {
+            return 0;
+        };
+        let r = tune_tree(body, reg, state1, env);
+        if r != 0 {
+            return r;
+        }
+        alt_reduce_in_look_behind(body);
+    }
+
+    let mut ci = MinMaxCharLen::default();
+    let r = {
+        let body = if let NodeInner::Anchor(ref an) = node.inner {
+            an.body.as_ref().unwrap()
+        } else {
+            return 0;
+        };
+        node_char_len(body, reg, &mut ci, env)
+    };
+    if r < 0 {
+        return r;
+    }
+
+    // C: "#177: overflow in onigenc_step_back()"
+    const LOOK_BEHIND_MAX_CHAR_LEN: OnigLen = 65535;
+    if (ci.max != INFINITE_LEN && ci.max > LOOK_BEHIND_MAX_CHAR_LEN)
+        || ci.min > LOOK_BEHIND_MAX_CHAR_LEN
+    {
+        return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+    }
+
+    // C: a body that can match the empty string, without a capture, anchor
+    // or back-reference on its shortest path and without a referenced
+    // capture, always matches right at the current position: the
+    // look-behind is then an empty node, and a negative one a FAIL.
+    if ci.min == 0 && ci.min_is_sure && !lb_used {
+        if anchor_type == ANCR_LOOK_BEHIND_NOT {
+            onig_node_reset_fail(node);
+        } else {
+            onig_node_reset_empty(node);
+        }
+        return ONIG_NORMAL;
+    }
+
+    if r == CHAR_LEN_TOP_ALT_FIXED {
+        if is_syntax_bv(&env.syntax, ONIG_SYN_DIFFERENT_LEN_ALT_LOOK_BEHIND) {
+            // C: divide_look_behind_alternatives() + tune_tree(node); the
+            // new anchors each go through tune_look_behind() again.
+            let r = divide_look_behind_alt(node, anchor_type);
+            if r != ONIG_NORMAL {
+                return r;
+            }
+            return tune_tree(node, reg, state, env);
+        } else if !is_syntax_bv(&env.syntax, ONIG_SYN_VARIABLE_LEN_LOOK_BEHIND) {
+            return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+        }
+        // C: goto normal
+    }
+
+    // C: CHAR_LEN_NORMAL (normal:)
+    if ci.min == INFINITE_LEN {
+        return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+    }
+    if ci.min != ci.max && !is_syntax_bv(&env.syntax, ONIG_SYN_VARIABLE_LEN_LOOK_BEHIND) {
+        return ONIGERR_INVALID_LOOK_BEHIND_PATTERN;
+    }
+
+    if let NodeInner::Anchor(ref mut an) = node.inner {
+        // C: "check lead_node is already set by double call after
+        // divide_look_behind_alternatives()"
+        if an.lead_node.is_none() {
+            an.char_min_len = ci.min;
+            an.char_max_len = ci.max;
+            // A copy of the body's trailing literal. The variable-length
+            // look-behind code checks it right before the current position,
+            // ahead of the step-back loop, so a position that cannot end the
+            // body fails without scanning back over the subject.
+            if let Some(body) = an.body.as_ref() {
+                if let GetValue::Found(tail) = get_tree_tail_literal(body, 0) {
+                    an.lead_node = onig_node_copy(tail);
+                }
+            }
+        }
+    }
+    ONIG_NORMAL
+}
+
+/// Resolve all \g<name>/\g<num> call references in the tree.
+/// Sets called_gnum on Call nodes and marks target groups as CALLED.
+fn resolve_call_references(node: &mut Node, reg: &mut RegexType, env: &mut ParseEnv) -> i32 {
+    match &mut node.inner {
+        NodeInner::Call(call) => {
+            // Resolve the call target
+            let mem_node_ptr;
+            if call.by_number {
+                let gnum = call.called_gnum;
+
+                if env.num_named > 0
+                    && is_syntax_bv(&env.syntax, ONIG_SYN_CAPTURE_ONLY_NAMED_GROUP)
+                    && !opton_capture_group(env.options)
+                {
+                    return ONIGERR_NUMBERED_BACKREF_OR_CALL_NOT_ALLOWED;
+                }
+
+                if gnum > env.num_mem || gnum < 0 {
+                    env.set_error_string(ONIGERR_UNDEFINED_GROUP_REFERENCE, &call.name);
+                    return ONIGERR_UNDEFINED_GROUP_REFERENCE;
+                }
+                mem_node_ptr = env.mem_env(gnum as usize).mem_node;
+            } else {
+                // Named call - look up name
+                let nums = reg
+                    .name_table
+                    .as_ref()
+                    .and_then(|nt| nt.name_to_group_numbers(&call.name));
+                match nums {
+                    Some(nums) if nums.len() == 1 => {
+                        call.called_gnum = nums[0];
+                        mem_node_ptr = env.mem_env(nums[0] as usize).mem_node;
+                    }
+                    Some(nums) if nums.len() > 1 => {
+                        env.set_error_string(ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL, &call.name);
+                        return ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL;
+                    }
+                    _ => {
+                        env.set_error_string(ONIGERR_UNDEFINED_NAME_REFERENCE, &call.name);
+                        return ONIGERR_UNDEFINED_NAME_REFERENCE;
+                    }
+                }
+            }
+            // Link the call node to its target (so recursive_call_check can follow calls)
+            // Note: we store the raw pointer as a non-owning reference (the target node
+            // is owned by the tree, not by this call). We wrap it in Box without ownership.
+            if mem_node_ptr.is_null() {
+                env.set_error_string(ONIGERR_UNDEFINED_NAME_REFERENCE, &call.name);
+                return ONIGERR_UNDEFINED_NAME_REFERENCE;
+            }
+            // Store target pointer for recursion detection (not owning)
+            call.target_node = mem_node_ptr;
+            0
+        }
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            let r = resolve_call_references(&mut cons.car, reg, env);
+            if r != 0 {
+                return r;
+            }
+            if let Some(ref mut cdr) = cons.cdr {
+                resolve_call_references(cdr, reg, env)
+            } else {
+                0
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(ref mut body) = qn.body {
+                resolve_call_references(body, reg, env)
+            } else {
+                0
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(ref mut body) = bn.body {
+                let r = resolve_call_references(body, reg, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+            if let BagData::IfElse {
+                ref mut then_node,
+                ref mut else_node,
+            } = bn.bag_data
+            {
+                if let Some(then_n) = then_node {
+                    let r = resolve_call_references(then_n, reg, env);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+                if let Some(else_n) = else_node {
+                    let r = resolve_call_references(else_n, reg, env);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+            }
+            0
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(ref mut body) = an.body {
+                resolve_call_references(body, reg, env)
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn collect_called_groups(node: &Node, groups: &mut Vec<i32>) {
+    match &node.inner {
+        NodeInner::Call(call) => groups.push(call.called_gnum),
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            collect_called_groups(&cons.car, groups);
+            if let Some(cdr) = &cons.cdr {
+                collect_called_groups(cdr, groups);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &qn.body {
+                collect_called_groups(body, groups);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(body) = &bn.body {
+                collect_called_groups(body, groups);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    collect_called_groups(then_node, groups);
+                }
+                if let Some(else_node) = else_node {
+                    collect_called_groups(else_node, groups);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                collect_called_groups(body, groups);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Group numbers named by back-references, checkers included.
+fn collect_backref_groups(node: &Node, groups: &mut Vec<i32>) {
+    match &node.inner {
+        NodeInner::BackRef(br) => groups.extend_from_slice(br.back_refs()),
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            collect_backref_groups(&cons.car, groups);
+            if let Some(cdr) = &cons.cdr {
+                collect_backref_groups(cdr, groups);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &qn.body {
+                collect_backref_groups(body, groups);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(body) = &bn.body {
+                collect_backref_groups(body, groups);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    collect_backref_groups(then_node, groups);
+                }
+                if let Some(else_node) = else_node {
+                    collect_backref_groups(else_node, groups);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                collect_backref_groups(body, groups);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn mark_groups_status(node: &mut Node, groups: &[i32], status: u32) {
+    if let NodeInner::Bag(bn) = &node.inner {
+        if bn.bag_type == BagType::Memory && groups.contains(&bn.regnum()) {
+            node.status_add(status);
+        }
+    }
+
+    match &mut node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            mark_groups_status(&mut cons.car, groups, status);
+            if let Some(cdr) = &mut cons.cdr {
+                mark_groups_status(cdr, groups, status);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &mut qn.body {
+                mark_groups_status(body, groups, status);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(body) = &mut bn.body {
+                mark_groups_status(body, groups, status);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &mut bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    mark_groups_status(then_node, groups, status);
+                }
+                if let Some(else_node) = else_node {
+                    mark_groups_status(else_node, groups, status);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &mut an.body {
+                mark_groups_status(body, groups, status);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn mark_called_groups_as_multi_entry(node: &mut Node) {
+    let is_called = node.has_status(ND_ST_CALLED);
+    match &mut node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            mark_called_groups_as_multi_entry(&mut cons.car);
+            if let Some(cdr) = &mut cons.cdr {
+                mark_called_groups_as_multi_entry(cdr);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &mut qn.body {
+                mark_called_groups_as_multi_entry(body);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if bn.bag_type == BagType::Memory && is_called {
+                if let BagData::Memory { entry_count, .. } = &mut bn.bag_data {
+                    // A call graph can enter a group through recursive paths that
+                    // are not representable as a single tree borrow. Treating every
+                    // called group as multi-entry is conservative: it only disables
+                    // single-entry optimizations while keeping traversal alias-free.
+                    *entry_count = (*entry_count).max(2);
+                }
+            }
+            if let Some(body) = &mut bn.body {
+                mark_called_groups_as_multi_entry(body);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &mut bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    mark_called_groups_as_multi_entry(then_node);
+                }
+                if let Some(else_node) = else_node {
+                    mark_called_groups_as_multi_entry(else_node);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &mut an.body {
+                mark_called_groups_as_multi_entry(body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_call_edges(node: &Node, current_groups: &mut Vec<usize>, edges: &mut [Vec<usize>]) {
+    match &node.inner {
+        NodeInner::Call(call) => {
+            let target = call.called_gnum as usize;
+            if target < edges.len() {
+                for &group in current_groups.iter() {
+                    edges[group].push(target);
+                }
+            }
+        }
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            collect_call_edges(&cons.car, current_groups, edges);
+            if let Some(cdr) = &cons.cdr {
+                collect_call_edges(cdr, current_groups, edges);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &qn.body {
+                collect_call_edges(body, current_groups, edges);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            let is_memory = bn.bag_type == BagType::Memory;
+            if is_memory {
+                let group = bn.regnum() as usize;
+                for &parent in current_groups.iter() {
+                    if parent != group {
+                        edges[parent].push(group);
+                    }
+                }
+                current_groups.push(group);
+            }
+            if let Some(body) = &bn.body {
+                collect_call_edges(body, current_groups, edges);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    collect_call_edges(then_node, current_groups, edges);
+                }
+                if let Some(else_node) = else_node {
+                    collect_call_edges(else_node, current_groups, edges);
+                }
+            }
+            if is_memory {
+                current_groups.pop();
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                collect_call_edges(body, current_groups, edges);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reaches_group(edges: &[Vec<usize>], from: usize, target: usize, seen: &mut [bool]) -> bool {
+    if from == target {
+        return true;
+    }
+    if seen[from] {
+        return false;
+    }
+    seen[from] = true;
+    edges[from]
+        .iter()
+        .copied()
+        .any(|next| reaches_group(edges, next, target, seen))
+}
+
+fn node_contains_called_group(node: &Node) -> bool {
+    if node.has_status(ND_ST_CALLED) {
+        return true;
+    }
+
+    match &node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            node_contains_called_group(&cons.car)
+                || cons.cdr.as_deref().is_some_and(node_contains_called_group)
+        }
+        NodeInner::Quant(qn) => qn.body.as_deref().is_some_and(node_contains_called_group),
+        NodeInner::Bag(bn) => {
+            bn.body.as_deref().is_some_and(node_contains_called_group)
+                || match &bn.bag_data {
+                    BagData::IfElse {
+                        then_node,
+                        else_node,
+                    } => {
+                        then_node.as_deref().is_some_and(node_contains_called_group)
+                            || else_node.as_deref().is_some_and(node_contains_called_group)
+                    }
+                    _ => false,
+                }
+        }
+        NodeInner::Anchor(an) => an.body.as_deref().is_some_and(node_contains_called_group),
+        _ => false,
+    }
+}
+
+fn apply_call_graph_state(
+    node: &mut Node,
+    current_groups: &mut Vec<usize>,
+    edges: &[Vec<usize>],
+    recursive: &[bool],
+    env: &mut ParseEnv,
+) {
+    let mut recursive_group = None;
+    match &mut node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            apply_call_graph_state(&mut cons.car, current_groups, edges, recursive, env);
+            if let Some(cdr) = &mut cons.cdr {
+                apply_call_graph_state(cdr, current_groups, edges, recursive, env);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if qn.upper == 0 && qn.body.as_deref().is_some_and(node_contains_called_group) {
+                qn.include_referred = 1;
+            }
+            if let Some(body) = &mut qn.body {
+                apply_call_graph_state(body, current_groups, edges, recursive, env);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            let is_memory = bn.bag_type == BagType::Memory;
+            if is_memory {
+                let regnum = bn.regnum() as usize;
+                if recursive.get(regnum).copied().unwrap_or(false) {
+                    recursive_group = Some(regnum);
+                }
+                current_groups.push(regnum);
+            }
+            if let Some(body) = &mut bn.body {
+                apply_call_graph_state(body, current_groups, edges, recursive, env);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &mut bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    apply_call_graph_state(then_node, current_groups, edges, recursive, env);
+                }
+                if let Some(else_node) = else_node {
+                    apply_call_graph_state(else_node, current_groups, edges, recursive, env);
+                }
+            }
+            if is_memory {
+                current_groups.pop();
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &mut an.body {
+                apply_call_graph_state(body, current_groups, edges, recursive, env);
+            }
+        }
+        NodeInner::Call(call) => {
+            let target = call.called_gnum as usize;
+            if target < edges.len()
+                && current_groups.iter().copied().any(|group| {
+                    let mut seen = vec![false; edges.len()];
+                    reaches_group(edges, target, group, &mut seen)
+                })
+            {
+                node.status_add(ND_ST_RECURSION);
+            }
+        }
+        _ => {}
+    }
+    if let Some(regnum) = recursive_group {
+        node.status_add(ND_ST_RECURSION);
+        mem_status_on(&mut env.backtrack_mem, regnum);
+    }
+}
+
+fn analyze_call_graph(root: &mut Node, env: &mut ParseEnv) -> Vec<bool> {
+    let mut edges = vec![Vec::new(); env.num_mem.max(0) as usize + 1];
+    let mut current_groups = vec![0];
+    collect_call_edges(root, &mut current_groups, &mut edges);
+    let recursive = (0..edges.len())
+        .map(|group| {
+            edges[group].iter().copied().any(|next| {
+                let mut seen = vec![false; edges.len()];
+                reaches_group(&edges, next, group, &mut seen)
+            })
+        })
+        .collect::<Vec<_>>();
+    apply_call_graph_state(root, &mut current_groups, &edges, &recursive, env);
+    recursive
+}
+
+// C: RECURSION_EXIST / RECURSION_MUST / RECURSION_INFINITE
+const RECURSION_EXIST: i32 = 1 << 0;
+const RECURSION_MUST: i32 = 1 << 1;
+const RECURSION_INFINITE: i32 = 1 << 2;
+
+/// State for the infinite-recursion check. C keeps MARK1 and MARK2 in the
+/// node status bits and follows the call node's pointer to its group; the
+/// port keeps both marks and the group lookup by number here so the check
+/// never re-enters the tree through raw self-references.
+struct InfiniteRecursionCheck<'a> {
+    /// BAG_MEMORY node of each group, by group number.
+    groups: Vec<Option<&'a Node>>,
+    /// The group whose body is currently being checked.
+    mark1: Vec<bool>,
+    /// Groups already entered on the current path.
+    mark2: Vec<bool>,
+}
+
+fn collect_memory_groups<'a>(node: &'a Node, groups: &mut Vec<Option<&'a Node>>) {
+    match &node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &cur.inner {
+                collect_memory_groups(&cons.car, groups);
+                match &cons.cdr {
+                    Some(cdr) => cur = cdr,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &qn.body {
+                collect_memory_groups(body, groups);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if bn.bag_type == BagType::Memory {
+                let regnum = bn.regnum() as usize;
+                if let Some(slot) = groups.get_mut(regnum) {
+                    *slot = Some(node);
+                }
+            }
+            if let Some(body) = &bn.body {
+                collect_memory_groups(body, groups);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &bn.bag_data
+            {
+                if let Some(then_node) = then_node {
+                    collect_memory_groups(then_node, groups);
+                }
+                if let Some(else_node) = else_node {
+                    collect_memory_groups(else_node, groups);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                collect_memory_groups(body, groups);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Mirrors C's node_min_byte_len for the infinite-recursion check. The
+/// general `node_min_byte_len` treats a call as empty because it cannot
+/// follow the call to its group; here the group is looked up by number and
+/// MARK1 cuts the recursion, as in C, so a consuming call clears `head`
+/// before a later recursive call is visited.
+fn min_byte_len_through_calls(
+    node: &Node,
+    env: &ParseEnv,
+    ctx: &mut InfiniteRecursionCheck<'_>,
+) -> OnigLen {
+    match &node.inner {
+        NodeInner::List(_) => {
+            let mut len: OnigLen = 0;
+            let mut cur = node;
+            while let NodeInner::List(cons) = &cur.inner {
+                let tmin = min_byte_len_through_calls(&cons.car, env, ctx);
+                len = distance_add(len, tmin);
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            len
+        }
+        NodeInner::Alt(_) => {
+            let mut len: OnigLen = 0;
+            let mut first = true;
+            let mut cur = node;
+            while let NodeInner::Alt(cons) = &cur.inner {
+                let tmin = min_byte_len_through_calls(&cons.car, env, ctx);
+                if first {
+                    len = tmin;
+                    first = false;
+                } else if len > tmin {
+                    len = tmin;
+                }
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            len
+        }
+        NodeInner::Quant(qn) => match (&qn.body, qn.lower > 0) {
+            (Some(body), true) => {
+                let len = min_byte_len_through_calls(body, env, ctx);
+                distance_multiply(len, qn.lower)
+            }
+            _ => 0,
+        },
+        NodeInner::Bag(bn) => match bn.bag_type {
+            BagType::Option | BagType::StopBacktrack => bn
+                .body
+                .as_deref()
+                .map_or(0, |body| min_byte_len_through_calls(body, env, ctx)),
+            BagType::Memory => {
+                let regnum = bn.regnum() as usize;
+                if ctx.mark1.get(regnum).copied().unwrap_or(false) {
+                    return 0;
+                }
+                if let Some(mark) = ctx.mark1.get_mut(regnum) {
+                    *mark = true;
+                }
+                let len = bn
+                    .body
+                    .as_deref()
+                    .map_or(0, |body| min_byte_len_through_calls(body, env, ctx));
+                if let Some(mark) = ctx.mark1.get_mut(regnum) {
+                    *mark = false;
+                }
+                len
+            }
+            BagType::IfElse => {
+                let BagData::IfElse {
+                    then_node,
+                    else_node,
+                } = &bn.bag_data
+                else {
+                    return 0;
+                };
+                let mut len = bn
+                    .body
+                    .as_deref()
+                    .map_or(0, |body| min_byte_len_through_calls(body, env, ctx));
+                if let Some(then_node) = then_node {
+                    len += min_byte_len_through_calls(then_node, env, ctx);
+                }
+                let elen = else_node.as_deref().map_or(0, |else_node| {
+                    min_byte_len_through_calls(else_node, env, ctx)
+                });
+                if elen < len { elen } else { len }
+            }
+        },
+        NodeInner::Call(cn) => match ctx.groups.get(cn.called_gnum as usize).copied().flatten() {
+            Some(target) => min_byte_len_through_calls(target, env, ctx),
+            None => 0,
+        },
+        _ => node_min_byte_len(node, env),
+    }
+}
+
+/// Mirrors C's infinite_recursive_call_check. `head` stays set while no
+/// node in the enclosing sequence has consumed input yet; reaching the
+/// group under check with `head` still set is infinite left recursion.
+fn infinite_recursive_call_check(
+    node: &Node,
+    env: &ParseEnv,
+    mut head: bool,
+    ctx: &mut InfiniteRecursionCheck<'_>,
+) -> i32 {
+    let mut r = 0;
+    match &node.inner {
+        NodeInner::List(_) => {
+            let mut cur = node;
+            while let NodeInner::List(cons) = &cur.inner {
+                let ret = infinite_recursive_call_check(&cons.car, env, head, ctx);
+                if ret < 0 || (ret & RECURSION_INFINITE) != 0 {
+                    return ret;
+                }
+                r |= ret;
+                if head && min_byte_len_through_calls(&cons.car, env, ctx) != 0 {
+                    head = false;
+                }
+                match &cons.cdr {
+                    Some(cdr) => cur = cdr,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Alt(_) => {
+            let mut must = RECURSION_MUST;
+            let mut cur = node;
+            while let NodeInner::Alt(cons) = &cur.inner {
+                let ret = infinite_recursive_call_check(&cons.car, env, head, ctx);
+                if ret < 0 || (ret & RECURSION_INFINITE) != 0 {
+                    return ret;
+                }
+                r |= ret & RECURSION_EXIST;
+                must &= ret;
+                match &cons.cdr {
+                    Some(cdr) => cur = cdr,
+                    None => break,
+                }
+            }
+            r |= must;
+        }
+        NodeInner::Quant(qn) => {
+            if qn.upper == 0 {
+                return 0;
+            }
+            if let Some(body) = &qn.body {
+                r = infinite_recursive_call_check(body, env, head, ctx);
+                if r < 0 {
+                    return r;
+                }
+                if (r & RECURSION_MUST) != 0 && qn.lower == 0 {
+                    r &= !RECURSION_MUST;
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                r = infinite_recursive_call_check(body, env, head, ctx);
+            }
+        }
+        NodeInner::Call(cn) => {
+            // C: ND_BODY(call) is the called group's BAG_MEMORY node.
+            if let Some(target) = ctx.groups.get(cn.called_gnum as usize).copied().flatten() {
+                r = infinite_recursive_call_check(target, env, head, ctx);
+            }
+        }
+        NodeInner::Bag(bn) => match bn.bag_type {
+            BagType::Memory => {
+                let regnum = bn.regnum() as usize;
+                if ctx.mark2.get(regnum).copied().unwrap_or(false) {
+                    return 0;
+                }
+                if ctx.mark1.get(regnum).copied().unwrap_or(false) {
+                    return if head {
+                        RECURSION_EXIST | RECURSION_MUST | RECURSION_INFINITE
+                    } else {
+                        RECURSION_EXIST | RECURSION_MUST
+                    };
+                }
+                if let Some(body) = &bn.body {
+                    if let Some(mark) = ctx.mark2.get_mut(regnum) {
+                        *mark = true;
+                    }
+                    r = infinite_recursive_call_check(body, env, head, ctx);
+                    if let Some(mark) = ctx.mark2.get_mut(regnum) {
+                        *mark = false;
+                    }
+                }
+            }
+            BagType::IfElse => {
+                if let Some(body) = &bn.body {
+                    let ret = infinite_recursive_call_check(body, env, head, ctx);
+                    if ret < 0 || (ret & RECURSION_INFINITE) != 0 {
+                        return ret;
+                    }
+                    r |= ret;
+                }
+                if let BagData::IfElse {
+                    then_node,
+                    else_node,
+                } = &bn.bag_data
+                {
+                    if let Some(then_node) = then_node {
+                        let min = match (&bn.body, head) {
+                            (Some(body), true) => min_byte_len_through_calls(body, env, ctx),
+                            _ => 0,
+                        };
+                        let ret = infinite_recursive_call_check(
+                            then_node,
+                            env,
+                            if min != 0 { false } else { head },
+                            ctx,
+                        );
+                        if ret < 0 || (ret & RECURSION_INFINITE) != 0 {
+                            return ret;
+                        }
+                        r |= ret;
+                    }
+                    if let Some(else_node) = else_node {
+                        let eret = infinite_recursive_call_check(else_node, env, head, ctx);
+                        if eret < 0 || (eret & RECURSION_INFINITE) != 0 {
+                            return eret;
+                        }
+                        r |= eret & RECURSION_EXIST;
+                        if (eret & RECURSION_MUST) == 0 {
+                            r &= !RECURSION_MUST;
+                        }
+                    } else {
+                        r &= !RECURSION_MUST;
+                    }
+                }
+            }
+            _ => {
+                if let Some(body) = &bn.body {
+                    r = infinite_recursive_call_check(body, env, head, ctx);
+                }
+            }
+        },
+        _ => {}
+    }
+    r
+}
+
+/// Mirrors C's infinite_recursive_call_check_trav: check the body of every
+/// called recursive group, starting with `head` set.
+fn infinite_recursive_call_check_trav(
+    node: &Node,
+    env: &ParseEnv,
+    recursive: &[bool],
+    ctx: &mut InfiniteRecursionCheck<'_>,
+) -> i32 {
+    match &node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &cur.inner {
+                let r = infinite_recursive_call_check_trav(&cons.car, env, recursive, ctx);
+                if r != 0 {
+                    return r;
+                }
+                match &cons.cdr {
+                    Some(cdr) => cur = cdr,
+                    None => break,
+                }
+            }
+            0
+        }
+        NodeInner::Anchor(an) => an.body.as_deref().map_or(0, |body| {
+            infinite_recursive_call_check_trav(body, env, recursive, ctx)
+        }),
+        NodeInner::Quant(qn) => qn.body.as_deref().map_or(0, |body| {
+            infinite_recursive_call_check_trav(body, env, recursive, ctx)
+        }),
+        NodeInner::Bag(bn) => {
+            if bn.bag_type == BagType::Memory {
+                let regnum = bn.regnum() as usize;
+                if recursive.get(regnum).copied().unwrap_or(false) && node.has_status(ND_ST_CALLED)
+                {
+                    if let Some(body) = &bn.body {
+                        ctx.mark1[regnum] = true;
+                        let ret = infinite_recursive_call_check(body, env, true, ctx);
+                        ctx.mark1[regnum] = false;
+                        if ret < 0 {
+                            return ret;
+                        }
+                        if (ret & (RECURSION_MUST | RECURSION_INFINITE)) != 0 {
+                            return ONIGERR_NEVER_ENDING_RECURSION;
+                        }
+                    }
+                }
+            } else if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &bn.bag_data
+            {
+                for branch in [then_node, else_node].into_iter().flatten() {
+                    let r = infinite_recursive_call_check_trav(branch, env, recursive, ctx);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+            }
+            bn.body.as_deref().map_or(0, |body| {
+                infinite_recursive_call_check_trav(body, env, recursive, ctx)
+            })
+        }
+        _ => 0,
+    }
+}
+
+fn infinite_recursive_call_check_root(root: &Node, env: &ParseEnv, recursive: &[bool]) -> i32 {
+    let mut groups = vec![None; recursive.len()];
+    collect_memory_groups(root, &mut groups);
+    let mut ctx = InfiniteRecursionCheck {
+        groups,
+        mark1: vec![false; recursive.len()],
+        mark2: vec![false; recursive.len()],
+    };
+    infinite_recursive_call_check_trav(root, env, recursive, &mut ctx)
+}
+
+// ============================================================================
+// disable_noname_group_capture — CAPTURE_ONLY_NAMED_GROUP support
+// When syntax has this flag and named groups exist, unnamed groups become
+// non-capturing and group numbers are renumbered to only include named groups.
+// ============================================================================
+
+/// Traverse tree: assign new sequential numbers to named groups, remove unnamed BAG_MEMORY.
+/// Returns 1 when node was replaced (parent may need to reduce nested quantifiers).
+fn make_named_capture_number_map(
+    node: &mut Node,
+    map: &mut [GroupNumMap],
+    counter: &mut i32,
+) -> i32 {
+    let node_type = node.node_type();
+    match node_type {
+        NodeType::List | NodeType::Alt => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &mut cur.inner {
+                let r = make_named_capture_number_map(&mut cons.car, map, counter);
+                if r < 0 {
+                    return r;
+                }
+                match &mut cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            0
+        }
+        NodeType::Quant => {
+            if let NodeInner::Quant(ref mut qn) = node.inner {
+                if let Some(ref mut body) = qn.body {
+                    let r = make_named_capture_number_map(body, map, counter);
+                    if r < 0 {
+                        return r;
+                    }
+                    // If node was replaced and became a quantifier, could reduce nested quantifiers
+                    // (rare case, skip for now like C's onig_reduce_nested_quantifier)
+                }
+            }
+            0
+        }
+        NodeType::Bag => {
+            let is_memory =
+                matches!(&node.inner, NodeInner::Bag(bn) if bn.bag_type == BagType::Memory);
+            let is_named = node.has_status(ND_ST_NAMED_GROUP);
+
+            if is_memory && !is_named {
+                // Unnamed group — remove bag wrapper, replace node with its body
+                let body = if let NodeInner::Bag(ref mut bn) = node.inner {
+                    bn.body.take()
+                } else {
+                    None
+                };
+                if let Some(body) = body {
+                    let body = *body;
+                    node.inner = body.inner;
+                    node.status = body.status;
+                } else {
+                    node.inner = NodeInner::String(StrNode {
+                        s: Vec::new(),
+                        flag: 0,
+                    });
+                }
+                let r = make_named_capture_number_map(node, map, counter);
+                if r < 0 {
+                    return r;
+                }
+                return 1;
+            }
+
+            if is_memory && is_named {
+                if let NodeInner::Bag(ref mut bn) = node.inner {
+                    *counter += 1;
+                    if let BagData::Memory { ref mut regnum, .. } = bn.bag_data {
+                        map[*regnum as usize].new_val = *counter;
+                        *regnum = *counter;
+                    }
+                    if let Some(ref mut body) = bn.body {
+                        let r = make_named_capture_number_map(body, map, counter);
+                        if r < 0 {
+                            return r;
+                        }
+                    }
+                }
+                return 0;
+            }
+
+            // IfElse or other bag types
+            if let NodeInner::Bag(ref mut bn) = node.inner {
+                if bn.bag_type == BagType::IfElse {
+                    if let Some(ref mut body) = bn.body {
+                        let r = make_named_capture_number_map(body, map, counter);
+                        if r < 0 {
+                            return r;
+                        }
+                    }
+                    if let BagData::IfElse {
+                        ref mut then_node,
+                        ref mut else_node,
+                    } = bn.bag_data
+                    {
+                        if let Some(tn) = then_node {
+                            let r = make_named_capture_number_map(tn, map, counter);
+                            if r < 0 {
+                                return r;
+                            }
+                        }
+                        if let Some(en) = else_node {
+                            let r = make_named_capture_number_map(en, map, counter);
+                            if r < 0 {
+                                return r;
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(ref mut body) = bn.body {
+                        let r = make_named_capture_number_map(body, map, counter);
+                        if r < 0 {
+                            return r;
+                        }
+                    }
+                }
+            }
+            0
+        }
+        NodeType::Anchor => {
+            if let NodeInner::Anchor(ref mut a) = node.inner {
+                if let Some(ref mut body) = a.body {
+                    let r = make_named_capture_number_map(body, map, counter);
+                    if r < 0 {
+                        return r;
+                    }
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// Renumber backrefs in a single backref node using the group number map.
+fn renumber_backref_node(node: &mut Node, map: &[GroupNumMap]) -> i32 {
+    if !node.has_status(ND_ST_BY_NAME) {
+        return ONIGERR_NUMBERED_BACKREF_OR_CALL_NOT_ALLOWED;
+    }
+    if let NodeInner::BackRef(ref mut br) = node.inner {
+        let old_num = br.back_num as usize;
+        let mut pos = 0usize;
+        if let Some(ref mut dyn_refs) = br.back_dynamic {
+            for i in 0..old_num {
+                let n = map[dyn_refs[i] as usize].new_val;
+                if n > 0 {
+                    dyn_refs[pos] = n;
+                    pos += 1;
+                }
+            }
+        } else {
+            for i in 0..old_num {
+                let n = map[br.back_static[i] as usize].new_val;
+                if n > 0 {
+                    br.back_static[pos] = n;
+                    pos += 1;
+                }
+            }
+        }
+        br.back_num = pos as i32;
+    }
+    0
+}
+
+/// Traverse tree to renumber all backrefs using the group number map.
+fn renumber_backref_traverse(node: &mut Node, map: &[GroupNumMap]) -> i32 {
+    match node.node_type() {
+        NodeType::List | NodeType::Alt => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &mut cur.inner {
+                let r = renumber_backref_traverse(&mut cons.car, map);
+                if r != 0 {
+                    return r;
+                }
+                match &mut cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            0
+        }
+        NodeType::Quant => {
+            if let NodeInner::Quant(ref mut qn) = node.inner {
+                if let Some(ref mut body) = qn.body {
+                    return renumber_backref_traverse(body, map);
+                }
+            }
+            0
+        }
+        NodeType::Bag => {
+            if let NodeInner::Bag(ref mut bn) = node.inner {
+                if let Some(ref mut body) = bn.body {
+                    let r = renumber_backref_traverse(body, map);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+                if bn.bag_type == BagType::IfElse {
+                    if let BagData::IfElse {
+                        ref mut then_node,
+                        ref mut else_node,
+                    } = bn.bag_data
+                    {
+                        if let Some(tn) = then_node {
+                            let r = renumber_backref_traverse(tn, map);
+                            if r != 0 {
+                                return r;
+                            }
+                        }
+                        if let Some(en) = else_node {
+                            let r = renumber_backref_traverse(en, map);
+                            if r != 0 {
+                                return r;
+                            }
+                        }
+                    }
+                }
+            }
+            0
+        }
+        NodeType::BackRef => renumber_backref_node(node, map),
+        NodeType::Anchor => {
+            if let NodeInner::Anchor(ref mut a) = node.inner {
+                if let Some(ref mut body) = a.body {
+                    return renumber_backref_traverse(body, map);
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// Mirrors C's check_backrefs(): reject a backref to a group the pattern does
+/// not have, and flag every referenced capture with ND_ST_BACKREF, which
+/// check_node_in_look_behind() reads. It runs after the
+/// CAPTURE_ONLY_NAMED_GROUP check, so a numbered backref there is reported as
+/// not allowed first. C sets the flag through mem_env; Ferroni marks the
+/// capture nodes in a second walk.
+fn check_backrefs(root: &mut Node, env: &ParseEnv) -> i32 {
+    let r = check_backrefs_bounds(root, env);
+    if r != 0 {
+        return r;
+    }
+    let mut groups = Vec::new();
+    collect_backref_groups(root, &mut groups);
+    if !groups.is_empty() {
+        mark_groups_status(root, &groups, ND_ST_BACKREF);
+    }
+    0
+}
+
+fn check_backrefs_bounds(node: &Node, env: &ParseEnv) -> i32 {
+    match &node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = Some(node);
+            while let Some(n) = cur {
+                let (NodeInner::List(cons) | NodeInner::Alt(cons)) = &n.inner else {
+                    break;
+                };
+                let r = check_backrefs_bounds(&cons.car, env);
+                if r != 0 {
+                    return r;
+                }
+                cur = cons.cdr.as_deref();
+            }
+            0
+        }
+        NodeInner::Anchor(an) => match an.body {
+            Some(ref body) => check_backrefs_bounds(body, env),
+            None => 0,
+        },
+        NodeInner::Quant(qn) => match qn.body {
+            Some(ref body) => check_backrefs_bounds(body, env),
+            None => 0,
+        },
+        NodeInner::Bag(bn) => {
+            if let Some(ref body) = bn.body {
+                let r = check_backrefs_bounds(body, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+            if let BagData::IfElse {
+                ref then_node,
+                ref else_node,
+            } = bn.bag_data
+            {
+                for branch in [then_node, else_node].into_iter().flatten() {
+                    let r = check_backrefs_bounds(branch, env);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+            }
+            0
+        }
+        NodeInner::BackRef(br) => {
+            if br.back_refs().iter().any(|&b| b > env.num_mem) {
+                return ONIGERR_INVALID_BACKREF;
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// Check that no numbered (non-named) backrefs exist in the tree.
+/// Called when all captures are named (num_named == num_mem).
+fn numbered_ref_check(node: &Node) -> i32 {
+    match &node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            let r = numbered_ref_check(&cons.car);
+            if r != 0 {
+                return r;
+            }
+            if let Some(ref next) = cons.cdr {
+                return numbered_ref_check(next);
+            }
+            0
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(ref body) = qn.body {
+                numbered_ref_check(body)
+            } else {
+                0
+            }
+        }
+        NodeInner::Anchor(a) => {
+            if let Some(ref body) = a.body {
+                numbered_ref_check(body)
+            } else {
+                0
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(ref body) = bn.body {
+                let r = numbered_ref_check(body);
+                if r != 0 {
+                    return r;
+                }
+            }
+            if bn.bag_type == BagType::IfElse {
+                if let BagData::IfElse {
+                    ref then_node,
+                    ref else_node,
+                } = bn.bag_data
+                {
+                    if let Some(tn) = then_node {
+                        let r = numbered_ref_check(tn);
+                        if r != 0 {
+                            return r;
+                        }
+                    }
+                    if let Some(en) = else_node {
+                        let r = numbered_ref_check(en);
+                        if r != 0 {
+                            return r;
+                        }
+                    }
+                }
+            }
+            0
+        }
+        NodeInner::BackRef(_) => {
+            if !node.has_status(ND_ST_BY_NAME) {
+                ONIGERR_NUMBERED_BACKREF_OR_CALL_NOT_ALLOWED
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// When CAPTURE_ONLY_NAMED_GROUP is active and both named and unnamed groups
+/// exist, remove unnamed captures and renumber everything to only use named groups.
+fn disable_noname_group_capture(root: &mut Node, reg: &mut RegexType, env: &mut ParseEnv) -> i32 {
+    let num_mem = env.num_mem as usize;
+    let mut map: Vec<GroupNumMap> = (0..=num_mem).map(|_| GroupNumMap { new_val: 0 }).collect();
+    let mut counter: i32 = 0;
+
+    let r = make_named_capture_number_map(root, &mut map, &mut counter);
+    if r < 0 {
+        return r;
+    }
+
+    let r = renumber_backref_traverse(root, &map);
+    if r != 0 {
+        return r;
+    }
+
+    // Compact mem_env: shift named entries down to fill gaps left by removed unnamed groups
+    let mut pos: usize = 1;
+    for (i, map_entry) in map.iter().enumerate().skip(1).take(num_mem) {
+        if map_entry.new_val > 0 {
+            if pos != i {
+                let src_node = env.mem_env(i).mem_node;
+                let src_empty = env.mem_env(i).empty_repeat_node;
+                let dst = env.mem_env_mut(pos);
+                dst.mem_node = src_node;
+                dst.empty_repeat_node = src_empty;
+            }
+            pos += 1;
+        }
+    }
+
+    // Update cap_history bitmap with renumbered groups
+    let loc = env.cap_history;
+    env.cap_history = 0;
+    for (i, map_entry) in map
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(std::cmp::min(num_mem, 31))
+    {
+        if (loc & (1u32 << i)) != 0 {
+            let new_val = map_entry.new_val;
+            if new_val > 0 && new_val <= 31 {
+                env.cap_history |= 1u32 << (new_val as u32);
+            }
+        }
+    }
+
+    env.num_mem = env.num_named;
+    reg.num_mem = env.num_named;
+
+    // Renumber name table entries
+    if let Some(ref mut nt) = reg.name_table {
+        for entry in nt.entries.values_mut() {
+            for back_ref in entry.back_refs.iter_mut() {
+                let idx = *back_ref as usize;
+                if idx < map.len() {
+                    *back_ref = map[idx].new_val;
+                }
+            }
+        }
+    }
+
+    0
+}
+
+// ============================================================================
+// Call-node tuning: tune_call + tune_called_state
+// ============================================================================
+
+/// C: tune_call — mark zero-repeat contexts and adjust entry counts.
+/// Call reference resolution is already handled by resolve_call_references.
+fn tune_call(node: &mut Node, state: i32) {
+    // `status` and `inner` are disjoint fields, so the status updates below
+    // are written as field operations while `inner` is still borrowed.
+    match &mut node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::List(c) | NodeInner::Alt(c) = &mut cur.inner {
+                tune_call(&mut c.car, state);
+                match &mut c.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Quant(qn) => {
+            let s = if qn.upper == 0 {
+                state | IN_ZERO_REPEAT
+            } else {
+                state
+            };
+            if let Some(ref mut body) = qn.body {
+                tune_call(body, s);
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(ref mut body) = an.body {
+                tune_call(body, state);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            let bt = bn.bag_type;
+            if bt == BagType::Memory {
+                if (state & IN_ZERO_REPEAT) != 0 {
+                    node.status |= ND_ST_IN_ZERO_REPEAT;
+                    if let BagData::Memory {
+                        ref mut entry_count,
+                        ..
+                    } = bn.bag_data
+                    {
+                        *entry_count -= 1;
+                    }
+                    if let Some(ref mut body) = bn.body {
+                        tune_call(body, state);
+                    }
+                } else if let Some(ref mut body) = bn.body {
+                    tune_call(body, state);
+                }
+            } else if bt == BagType::IfElse {
+                if let Some(ref mut body) = bn.body {
+                    tune_call(body, state);
+                }
+                if let BagData::IfElse {
+                    ref mut then_node,
+                    ref mut else_node,
+                } = bn.bag_data
+                {
+                    if let Some(t) = then_node {
+                        tune_call(t, state);
+                    }
+                    if let Some(e) = else_node {
+                        tune_call(e, state);
+                    }
+                }
+            } else if let Some(ref mut body) = bn.body {
+                tune_call(body, state);
+            }
+        }
+        NodeInner::Call(cn) => {
+            if (state & IN_ZERO_REPEAT) != 0 {
+                node.status |= ND_ST_IN_ZERO_REPEAT;
+                cn.entry_count -= 1;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// C: tune_called_state_call — propagate state flags through called nodes.
+///
+/// Internal compiler pass that propagates state bits (IN_ALT, IN_PEEK,
+/// IN_REAL_REPEAT, etc.) through the call graph of subroutine-call nodes.
+/// Only reachable when the pattern uses `\g<name>` or `(?R)` in specific
+/// contexts. Tested indirectly through compat_utf8 suite.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn tune_called_state_call(node: &mut Node, state: i32) {
+    // `status` and `inner` are disjoint fields, so the status updates below
+    // are field writes made while `inner` is still borrowed.
+    match &mut node.inner {
+        NodeInner::Alt(_) => {
+            let s = state | IN_ALT;
+            let mut cur: &mut Node = node;
+            while let NodeInner::Alt(c) | NodeInner::List(c) = &mut cur.inner {
+                tune_called_state_call(&mut c.car, s);
+                match &mut c.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::List(_) => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::Alt(c) | NodeInner::List(c) = &mut cur.inner {
+                tune_called_state_call(&mut c.car, state);
+                match &mut c.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Quant(qn) => {
+            let mut s = state;
+            if is_infinite_repeat(qn.upper) || qn.upper >= 2 {
+                s |= IN_REAL_REPEAT;
+            }
+            if qn.lower != qn.upper {
+                s |= IN_VAR_REPEAT;
+            }
+            if (state & IN_PEEK) != 0 {
+                node.status |= ND_ST_INPEEK;
+            }
+            if let Some(ref mut body) = qn.body {
+                tune_called_state_call(body, s);
+            }
+        }
+        NodeInner::Anchor(an) => match an.anchor_type {
+            ANCR_PREC_READ_NOT | ANCR_LOOK_BEHIND_NOT => {
+                if let Some(ref mut body) = an.body {
+                    tune_called_state_call(body, state | IN_NOT | IN_PEEK);
+                }
+            }
+            ANCR_PREC_READ | ANCR_LOOK_BEHIND => {
+                if let Some(ref mut body) = an.body {
+                    tune_called_state_call(body, state | IN_PEEK);
+                }
+            }
+            _ => {}
+        },
+        NodeInner::Bag(bn) => {
+            let bt = bn.bag_type;
+            if bt == BagType::Memory {
+                if (node.status & ND_ST_MARK1) != 0 {
+                    if let BagData::Memory {
+                        ref mut called_state,
+                        ..
+                    } = bn.bag_data
+                    {
+                        if (!*called_state & state) != 0 {
+                            *called_state |= state;
+                            if let Some(ref mut body) = bn.body {
+                                tune_called_state_call(body, state);
+                            }
+                        }
+                    }
+                } else {
+                    node.status |= ND_ST_MARK1;
+                    if let BagData::Memory {
+                        ref mut called_state,
+                        ..
+                    } = bn.bag_data
+                    {
+                        *called_state |= state;
+                    }
+                    if let Some(ref mut body) = bn.body {
+                        tune_called_state_call(body, state);
+                    }
+                    node.status &= !ND_ST_MARK1;
+                }
+            } else if bt == BagType::IfElse {
+                let s = state | IN_ALT;
+                if let Some(ref mut body) = bn.body {
+                    tune_called_state_call(body, s);
+                }
+                if let BagData::IfElse {
+                    ref mut then_node,
+                    ref mut else_node,
+                } = bn.bag_data
+                {
+                    if let Some(t) = then_node {
+                        tune_called_state_call(t, s);
+                    }
+                    if let Some(e) = else_node {
+                        tune_called_state_call(e, s);
+                    }
+                }
+            } else if let Some(ref mut body) = bn.body {
+                tune_called_state_call(body, state);
+            }
+        }
+        NodeInner::Call(cn) => {
+            if (state & IN_PEEK) != 0 {
+                node.status |= ND_ST_INPEEK;
+            }
+            if (state & IN_REAL_REPEAT) != 0 {
+                node.status |= ND_ST_IN_REAL_REPEAT;
+            }
+            if let Some(ref mut body) = cn.body {
+                tune_called_state_call(body, state);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// C: tune_called_state — propagate state flags down the tree, entering called groups.
+fn tune_called_state(node: &mut Node, state: i32) {
+    // `status` and `inner` are disjoint fields, so the status updates below
+    // are field writes made while `inner` is still borrowed.
+    match &mut node.inner {
+        NodeInner::Alt(_) => {
+            let s = state | IN_ALT;
+            let mut cur: &mut Node = node;
+            while let NodeInner::Alt(c) | NodeInner::List(c) = &mut cur.inner {
+                tune_called_state(&mut c.car, s);
+                match &mut c.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::List(_) => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::List(c) | NodeInner::Alt(c) = &mut cur.inner {
+                tune_called_state(&mut c.car, state);
+                match &mut c.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Call(_) => {
+            if (state & IN_PEEK) != 0 {
+                node.status |= ND_ST_INPEEK;
+            }
+            if (state & IN_REAL_REPEAT) != 0 {
+                node.status |= ND_ST_IN_REAL_REPEAT;
+            }
+            tune_called_state_call(node, state);
+        }
+        NodeInner::Bag(bn) => {
+            let bt = bn.bag_type;
+            match bt {
+                BagType::Memory => {
+                    let mut s = state;
+                    if let BagData::Memory {
+                        entry_count,
+                        ref mut called_state,
+                        ..
+                    } = bn.bag_data
+                    {
+                        if entry_count > 1 {
+                            s |= IN_MULTI_ENTRY;
+                        }
+                        *called_state |= s;
+                    }
+                    if let Some(ref mut body) = bn.body {
+                        tune_called_state(body, s);
+                    }
+                }
+                BagType::Option | BagType::StopBacktrack => {
+                    if let Some(ref mut body) = bn.body {
+                        tune_called_state(body, state);
+                    }
+                }
+                BagType::IfElse => {
+                    let s = state | IN_ALT;
+                    if let Some(ref mut body) = bn.body {
+                        tune_called_state(body, s);
+                    }
+                    if let BagData::IfElse {
+                        ref mut then_node,
+                        ref mut else_node,
+                    } = bn.bag_data
+                    {
+                        if let Some(t) = then_node {
+                            tune_called_state(t, s);
+                        }
+                        if let Some(e) = else_node {
+                            tune_called_state(e, s);
+                        }
+                    }
+                }
+            }
+        }
+        NodeInner::Quant(qn) => {
+            let mut s = state;
+            if is_infinite_repeat(qn.upper) || qn.upper >= 2 {
+                s |= IN_REAL_REPEAT;
+            }
+            if qn.lower != qn.upper {
+                s |= IN_VAR_REPEAT;
+            }
+            if (state & IN_PEEK) != 0 {
+                node.status |= ND_ST_INPEEK;
+            }
+            if let Some(ref mut body) = qn.body {
+                tune_called_state(body, s);
+            }
+        }
+        NodeInner::Anchor(an) => match an.anchor_type {
+            ANCR_PREC_READ_NOT | ANCR_LOOK_BEHIND_NOT => {
+                if let Some(ref mut body) = an.body {
+                    tune_called_state(body, state | IN_NOT | IN_PEEK);
+                }
+            }
+            ANCR_PREC_READ | ANCR_LOOK_BEHIND => {
+                if let Some(ref mut body) = an.body {
+                    tune_called_state(body, state | IN_PEEK);
+                }
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+// ============================================================================
+// Literal alternation detection — replaces pure literal Alt trees with trie
+// ============================================================================
+
+/// Minimum number of literal alternatives to trigger trie optimization.
+const LITERAL_ALT_THRESHOLD: usize = 4;
+
+/// Maximum number of extracted paths from nested alternation structures.
+/// Prevents exponential blowup from deeply nested optionals.
+const MAX_NESTED_TRIE_PATHS: usize = 8192;
+
+/// Info about one branch in an Alt cons-chain.
+struct AltBranchInfo {
+    /// Index of this branch in the Alt cons-chain (0-based).
+    index: usize,
+    /// Whether this branch is a literal (plain string or nested structure
+    /// that was successfully extracted into literal paths).
+    is_literal: bool,
+    /// The literal byte sequences extracted from this branch.
+    /// A plain string branch has exactly one entry; a nested structure
+    /// may have multiple.  Empty if `is_literal` is false.
+    literals: Vec<Vec<u8>>,
+}
+
+/// Assertion context for the additive literal-alternation compiler pass.
+/// Negative lookahead admits whole literal lists but not mixed-run compaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiteralAltContext {
+    OutsideAnchor,
+    NegativeLookahead,
+    OtherAnchor,
+}
+
+/// Walk the AST and detect semantically safe literal alternations. When found,
+/// build a `LiteralTrie` and replace the complete alternation with one trie
+/// node. Large consecutive literal runs can also become tries in place:
+/// no literal branch moves across a non-literal branch.
+///
+/// **Must be called before `tune_tree`** so that case-fold expansion has not
+/// yet rewritten the string nodes.
+pub(crate) fn detect_literal_alternations(
+    node: &mut Node,
+    reg: &mut RegexType,
+    backrefed_mem: MemStatusType,
+) {
+    detect_literal_alternations_inner(node, reg, LiteralAltContext::OutsideAnchor, backrefed_mem);
+}
+
+/// Recurse into the children of a node for literal alternation detection.
+fn recurse_into_children(
+    node: &mut Node,
+    reg: &mut RegexType,
+    context: LiteralAltContext,
+    backrefed_mem: MemStatusType,
+) {
+    match &mut node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            // Walk the cdr chain. `car` and `cdr` are disjoint fields, so the
+            // recursion into car (which may rewrite that subtree in place)
+            // never aliases the chain still being walked.
+            let mut cur: &mut Node = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &mut cur.inner {
+                detect_literal_alternations_inner(&mut cons.car, reg, context, backrefed_mem);
+                match &mut cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(ref mut body) = qn.body {
+                detect_literal_alternations_inner(body, reg, context, backrefed_mem);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(ref mut body) = bn.body {
+                detect_literal_alternations_inner(body, reg, context, backrefed_mem);
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(ref mut body) = an.body {
+                // Keep lookbehind and nested assertions on the original path.
+                // Only complete plain-string alternatives in an otherwise
+                // unanchored negative lookahead are eligible.
+                let child_context = if context == LiteralAltContext::OutsideAnchor
+                    && an.anchor_type == ANCR_PREC_READ_NOT
+                {
+                    LiteralAltContext::NegativeLookahead
+                } else {
+                    LiteralAltContext::OtherAnchor
+                };
+                detect_literal_alternations_inner(body, reg, child_context, backrefed_mem);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Try to trie-optimize an Alt node using nested extraction.  Returns true
+/// if optimization was applied (full or partial).
+fn try_trie_optimize_alt(
+    node: &mut Node,
+    reg: &mut RegexType,
+    backrefed_mem: MemStatusType,
+) -> bool {
+    // Collect info about each branch.
+    let mut branches: Vec<AltBranchInfo> = Vec::new();
+    let mut case_insensitive = false;
+    let mut all_case_insensitive = true;
+    let mut literal_count = 0usize;
+    let mut all_plain_strings = true;
+
+    {
+        let mut cur: &Node = node;
+        let mut idx = 0usize;
+        loop {
+            let (car, cdr) = match &cur.inner {
+                NodeInner::Alt(cons) => (&*cons.car, &cons.cdr),
+                _ => {
+                    all_plain_strings &=
+                        matches!(&cur.inner, NodeInner::String(sn) if !sn.is_crude());
+                    let info = classify_branch(cur, backrefed_mem);
+                    if info.is_literal && cur.has_status(ND_ST_IGNORECASE) {
+                        case_insensitive = true;
+                    } else {
+                        all_case_insensitive = false;
+                    }
+                    if info.is_literal {
+                        literal_count += info.literals.len();
+                    }
+                    branches.push(AltBranchInfo { index: idx, ..info });
+                    break;
+                }
+            };
+            all_plain_strings &= matches!(&car.inner, NodeInner::String(sn) if !sn.is_crude());
+            let info = classify_branch(car, backrefed_mem);
+            if info.is_literal && car.has_status(ND_ST_IGNORECASE) {
+                case_insensitive = true;
+            } else {
+                all_case_insensitive = false;
+            }
+            if info.is_literal {
+                literal_count += info.literals.len();
+            }
+            branches.push(AltBranchInfo { index: idx, ..info });
+            idx += 1;
+            match cdr {
+                Some(next) => cur = &**next,
+                None => break,
+            }
+        }
+    }
+
+    let all_literal = branches.iter().all(|b| b.is_literal);
+    if literal_count < LITERAL_ALT_THRESHOLD || !all_literal || !all_plain_strings {
+        return false;
+    }
+    if case_insensitive {
+        return all_case_insensitive && try_case_insensitive_trie(node, reg, &branches);
+    }
+    if reg.options.intersects(ONIG_OPTION_IGNORECASE) {
+        return false;
+    }
+
+    // In alternation order: when one literal is a prefix of another, the
+    // matching op continues with the earlier one and backtracks into the
+    // others in this order, as the alternation would.
+    let literal_refs: Vec<&[u8]> = branches
+        .iter()
+        .flat_map(|b| b.literals.iter().map(Vec::as_slice))
+        .collect();
+    // An empty literal matches anywhere; the start-byte summary cannot
+    // express that.
+    if literal_refs.iter().any(|literal| literal.is_empty()) {
+        return false;
+    }
+    let mut start_bytes = [0; BITSET_REAL_SIZE];
+    for literal in &literal_refs {
+        bitset_set_bit(&mut start_bytes, literal[0] as usize);
+    }
+    let summary = LiteralAltSummary {
+        trie_idx: reg.literal_tries.len() as u32,
+        min_len: literal_refs.iter().map(|l| l.len()).min().unwrap_or(0) as OnigLen,
+        max_len: literal_refs.iter().map(|l| l.len()).max().unwrap_or(0) as OnigLen,
+        start_bytes,
+        unravelled: Vec::new(),
+    };
+    let trie = crate::literal_trie::LiteralTrie::build(&literal_refs, false);
+    reg.literal_tries.push(trie);
+
+    node.inner = NodeInner::String(StrNode {
+        s: summary.encode(),
+        flag: 0,
+    });
+    node.status_add(ND_ST_LITERAL_ALT);
+
+    true
+}
+
+/// `optimize_nodes` with C's maps on the alternation C's
+/// `unravel_case_fold_string` would have left for the literals of a
+/// case-insensitive trie, read from their encoding
+/// (`LiteralAltSummary::unravelled`) without building it: per literal a list
+/// of strings, letter classes (a multibyte range where the letter folds to a
+/// non-ASCII character) and alternations of a segment's strings. A list or
+/// alternation of one node is that node, as unravel leaves it.
+fn optimize_unravelled(encoded: &[u8], opt: &mut OptNode, enc: OnigEncoding, env_mm: &MinMaxLen) {
+    struct Units<'a> {
+        bytes: &'a [u8],
+        at: usize,
+    }
+    impl<'a> Units<'a> {
+        fn take(&mut self, n: usize) -> &'a [u8] {
+            self.at += n;
+            &self.bytes[self.at - n..self.at]
+        }
+        fn num(&mut self) -> usize {
+            u32::from_le_bytes(self.take(4).try_into().unwrap()) as usize
+        }
+    }
+    type Each = fn(&mut OptNode, &mut Units, OnigEncoding, &MinMaxLen);
+
+    // The NodeInner::String arm.
+    fn string(opt: &mut OptNode, text: &[u8], enc: OnigEncoding, env_mm: &MinMaxLen) {
+        opt.clear();
+        set_bound_node_opt_info(opt, env_mm);
+        concat_opt_exact_str(&mut opt.sb, text, enc);
+        add_char_opt_map(&mut opt.map, text[0], enc);
+        opt.len.set(text.len() as OnigLen, text.len() as OnigLen);
+    }
+    // The NodeInner::Alt arm over the next `n` branches.
+    fn alternation(
+        opt: &mut OptNode,
+        units: &mut Units,
+        n: usize,
+        enc: OnigEncoding,
+        env_mm: &MinMaxLen,
+        branch: Each,
+    ) {
+        if n == 1 {
+            return branch(opt, units, enc, env_mm);
+        }
+        for i in 0..n {
+            let mut xo = OptNode::new();
+            branch(&mut xo, units, enc, env_mm);
+            if i == 0 {
+                *opt = xo;
+            } else {
+                alt_merge_node_opt_info(opt, &xo, enc);
+            }
+        }
+    }
+    fn segment_string(opt: &mut OptNode, units: &mut Units, enc: OnigEncoding, env_mm: &MinMaxLen) {
+        let len = units.num();
+        string(opt, units.take(len), enc, env_mm);
+    }
+    fn unit(opt: &mut OptNode, units: &mut Units, enc: OnigEncoding, env_mm: &MinMaxLen) {
+        match units.take(1)[0] {
+            0 => segment_string(opt, units, enc, env_mm),
+            // The NodeInner::CClass arm with C's maps.
+            1 => {
+                let &[lower, multibyte] = units.take(2) else {
+                    unreachable!()
+                };
+                opt.clear();
+                set_bound_node_opt_info(opt, env_mm);
+                if multibyte != 0 {
+                    opt.len
+                        .set(enc.min_enc_len() as OnigLen, enc.max_enc_len() as OnigLen);
+                } else {
+                    add_char_opt_map(&mut opt.map, lower.to_ascii_uppercase(), enc);
+                    add_char_opt_map(&mut opt.map, lower, enc);
+                    opt.len.set(1, 1);
+                }
+            }
+            _ => {
+                let n = units.num();
+                alternation(opt, units, n, enc, env_mm, segment_string);
+            }
+        }
+    }
+    // The NodeInner::List arm.
+    fn literal(opt: &mut OptNode, units: &mut Units, enc: OnigEncoding, env_mm: &MinMaxLen) {
+        let n = units.num();
+        if n == 1 {
+            return unit(opt, units, enc, env_mm);
+        }
+        opt.clear();
+        set_bound_node_opt_info(opt, env_mm);
+        let mut nenv_mm = *env_mm;
+        for _ in 0..n {
+            let mut xo = OptNode::new();
+            unit(&mut xo, units, enc, &nenv_mm);
+            nenv_mm.add(&xo.len);
+            concat_left_node_opt_info(enc, opt, &mut xo);
+        }
+    }
+    let mut units = Units {
+        bytes: encoded,
+        at: 0,
+    };
+    let n = units.num();
+    alternation(opt, &mut units, n, enc, env_mm, literal);
+}
+
+/// Payload of the string node that stands for a literal alternation trie
+/// (`ND_ST_LITERAL_ALT`): the trie's index plus what the optimizer derives
+/// from the alternation it replaces, so a pattern keeps its start-byte map.
+struct LiteralAltSummary {
+    trie_idx: u32,
+    min_len: OnigLen,
+    max_len: OnigLen,
+    /// Bytes a match can start with.
+    start_bytes: BitSet,
+    /// For a case-insensitive trie, each literal as `unravel_case_fold_string`
+    /// would have expanded it, so the optimizer sees C's alternation
+    /// (`optimize_nodes`). Empty for a case-sensitive trie, whose literals
+    /// are plain strings.
+    unravelled: Vec<Vec<FoldUnit>>,
+}
+
+/// One node of a literal as C's `unravel_case_fold_string` expands it.
+#[derive(Clone, Debug, PartialEq)]
+enum FoldUnit {
+    /// A run of bytes without case folds, one string node.
+    Bytes(Vec<u8>),
+    /// A letter's class of both cases; `multibyte` when it also holds
+    /// non-ASCII members (`ſ` for `s`, `K` for `k`), as a multibyte range.
+    Letter { lower: u8, multibyte: bool },
+    /// A multi-character segment: an alternation of the strings it accepts.
+    Strings(Vec<Vec<u8>>),
+}
+
+impl LiteralAltSummary {
+    fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(16 + SIZE_BITSET);
+        let mut put =
+            |bytes: &mut Vec<u8>, n: usize| bytes.extend_from_slice(&(n as u32).to_le_bytes());
+        bytes.extend_from_slice(&self.trie_idx.to_le_bytes());
+        bytes.extend_from_slice(&self.min_len.to_le_bytes());
+        bytes.extend_from_slice(&self.max_len.to_le_bytes());
+        for word in self.start_bytes {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        put(&mut bytes, self.unravelled.len());
+        for units in &self.unravelled {
+            put(&mut bytes, units.len());
+            for unit in units {
+                match unit {
+                    FoldUnit::Bytes(text) => {
+                        bytes.push(0);
+                        put(&mut bytes, text.len());
+                        bytes.extend_from_slice(text);
+                    }
+                    FoldUnit::Letter { lower, multibyte } => {
+                        bytes.extend_from_slice(&[1, *lower, u8::from(*multibyte)]);
+                    }
+                    FoldUnit::Strings(strings) => {
+                        bytes.push(2);
+                        put(&mut bytes, strings.len());
+                        for string in strings {
+                            put(&mut bytes, string.len());
+                            bytes.extend_from_slice(string);
+                        }
+                    }
+                }
+            }
+        }
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        LiteralAltSummary {
+            trie_idx: word(0),
+            min_len: word(4),
+            max_len: word(8),
+            start_bytes: std::array::from_fn(|i| word(12 + 4 * i)),
+            unravelled: Vec::new(),
+        }
+    }
+
+    /// The encoded literals as C unravels them (`unravelled`), for
+    /// `optimize_unravelled`; `None` for a case-sensitive trie.
+    fn unravelled(bytes: &[u8]) -> Option<&[u8]> {
+        let units = &bytes[12 + SIZE_BITSET..];
+        (units[..4] != [0; 4]).then_some(units)
+    }
+}
+
+/// Rust-only (ADR-008): the trie a literal alternation node stands for, as
+/// an index into `RegexType::literal_tries`.
+pub(crate) fn literal_alt_trie_index(node: &Node) -> Option<usize> {
+    match &node.inner {
+        NodeInner::String(sn) if node.has_status(ND_ST_LITERAL_ALT) => {
+            Some(LiteralAltSummary::decode(&sn.s).trie_idx as usize)
+        }
+        _ => None,
+    }
+}
+
+/// Replace an alternation of case-insensitive ASCII literals with a folded
+/// trie. Rust-only (ADR-008): the trie must accept exactly what the
+/// alternation accepts once `unravel_case_fold_string` has expanded it,
+/// including the non-ASCII input Unicode case folding admits (`K` for `k`,
+/// `ß` for `ss`); `literal_trie_case_folds` derives that from the same
+/// case-fold queries and refuses anything outside the trie's model.
+fn try_case_insensitive_trie(
+    node: &mut Node,
+    reg: &mut RegexType,
+    branches: &[AltBranchInfo],
+) -> bool {
+    if !std::ptr::addr_eq(reg.enc, &crate::encodings::utf8::ONIG_ENCODING_UTF8) {
+        return false;
+    }
+    let literals: Vec<&[u8]> = branches
+        .iter()
+        .flat_map(|b| b.literals.iter().map(Vec::as_slice))
+        .collect();
+    if literals
+        .iter()
+        .any(|literal| literal.is_empty() || !literal.is_ascii())
+    {
+        return false;
+    }
+    let Some(folds) = literal_trie_case_folds(reg, &literals) else {
+        return false;
+    };
+
+    // Case variants of the first letters, and any lead byte: non-ASCII
+    // input matches too.
+    let mut start_bytes = [0; BITSET_REAL_SIZE];
+    for literal in &literals {
+        bitset_set_bit(&mut start_bytes, literal[0].to_ascii_lowercase() as usize);
+        bitset_set_bit(&mut start_bytes, literal[0].to_ascii_uppercase() as usize);
+    }
+    for byte in 0x80..SINGLE_BYTE_SIZE {
+        bitset_set_bit(&mut start_bytes, byte);
+    }
+
+    // C: unravel_case_fold_string turns each literal into runs of plain
+    // bytes, letter classes and, for a multi-character segment, an
+    // alternation of its accepted strings. The optimizer reads that form
+    // (`LiteralAltSummary::unravelled`), and the byte lengths follow it: a
+    // class with multibyte members reads 1..max_enc_len bytes.
+    let multibyte_letters: Vec<u8> = folds
+        .class_members
+        .iter()
+        .map(|&(_, letter)| letter)
+        .collect();
+    let max_enc_len = reg.enc.max_enc_len();
+    let mut unravelled = Vec::with_capacity(literals.len());
+    let (mut min_len, mut max_len) = (usize::MAX, 0);
+    for (literal, segments) in literals.iter().zip(&folds.segments) {
+        let mut units: Vec<FoldUnit> = Vec::new();
+        let (mut lo, mut hi) = (0, 0);
+        let mut segments = segments.iter().peekable();
+        let mut pos = 0;
+        while pos < literal.len() {
+            if let Some(&(_, seg_len, accepted)) = segments.next_if(|&&(start, ..)| start == pos) {
+                let strings = &folds.accepted[accepted];
+                lo += strings.iter().map(Vec::len).min().unwrap_or(seg_len);
+                hi += strings.iter().map(Vec::len).max().unwrap_or(seg_len);
+                units.push(FoldUnit::Strings(strings.clone()));
+                pos += seg_len;
+                continue;
+            }
+            let c = literal[pos];
+            if c.is_ascii_alphabetic() {
+                let lower = c.to_ascii_lowercase();
+                let multibyte = multibyte_letters.contains(&lower);
+                lo += 1;
+                hi += if multibyte { max_enc_len } else { 1 };
+                units.push(FoldUnit::Letter { lower, multibyte });
+            } else {
+                lo += 1;
+                hi += 1;
+                match units.last_mut() {
+                    Some(FoldUnit::Bytes(text)) => text.push(c),
+                    _ => units.push(FoldUnit::Bytes(vec![c])),
+                }
+            }
+            pos += 1;
+        }
+        min_len = min_len.min(lo);
+        max_len = max_len.max(hi);
+        unravelled.push(units);
+    }
+    let summary = LiteralAltSummary {
+        trie_idx: reg.literal_tries.len() as u32,
+        min_len: min_len as OnigLen,
+        max_len: max_len as OnigLen,
+        start_bytes,
+        unravelled,
+    };
+    let trie = crate::literal_trie::LiteralTrie::build_folded(&literals, folds);
+    reg.literal_tries.push(trie);
+    node.inner = NodeInner::String(StrNode {
+        s: summary.encode(),
+        flag: 0,
+    });
+    node.status_remove(ND_ST_IGNORECASE);
+    node.status_add(ND_ST_LITERAL_ALT);
+    true
+}
+
+/// Case-fold data for a trie over case-insensitive ASCII `literals`.
+///
+/// Mirrors `unravel_case_fold_string`: at each literal position it asks
+/// `get_case_fold_codes_by_str` what the engine would compile, a
+/// single-character class or an alternation of exact strings covering a
+/// multi-character segment. Returns `None` unless the result fits the
+/// folded trie: each letter's class holds its ASCII case pair plus
+/// non-ASCII members, every segment accepts all its ASCII case variants,
+/// and every non-ASCII character in a segment's strings reads either as a
+/// class member or as a ligature standing for the whole segment.
+fn literal_trie_case_folds(
+    reg: &RegexType,
+    literals: &[&[u8]],
+) -> Option<crate::literal_trie::CaseFolds> {
+    let enc = reg.enc;
+    let flag = reg.case_fold_flag;
+    let mut items = vec![
+        OnigCaseFoldCodeItem {
+            byte_len: 0,
+            code_len: 0,
+            code: [0; ONIGENC_MAX_COMP_CASE_FOLD_CODE_LEN]
+        };
+        ONIGENC_GET_CASE_FOLD_CODES_MAX_NUM
+    ];
+    let mut folds = crate::literal_trie::CaseFolds::default();
+
+    // The class unravel builds for an ASCII character whose folds are all
+    // single code points, as sorted code points.
+    let class_of = |c: u8, items: &[OnigCaseFoldCodeItem]| -> Option<Vec<OnigCodePoint>> {
+        if !items
+            .iter()
+            .all(|item| item.code_len == 1 && item.byte_len == 1)
+        {
+            return None;
+        }
+        let mut class: Vec<OnigCodePoint> = std::iter::once(c as OnigCodePoint)
+            .chain(items.iter().map(|item| item.code[0]))
+            .collect();
+        class.sort_unstable();
+        class.dedup();
+        Some(class)
+    };
+
+    let mut letter_classes: Vec<Vec<OnigCodePoint>> = Vec::with_capacity(26);
+    for letter in b'a'..=b'z' {
+        let mut classes: [Vec<OnigCodePoint>; 2] = Default::default();
+        for (class, c) in classes
+            .iter_mut()
+            .zip([letter, letter.to_ascii_uppercase()])
+        {
+            let n = enc.get_case_fold_codes_by_str(flag, &[c], 1, &mut items);
+            *class = class_of(c, &items[..usize::try_from(n).ok()?])?;
+        }
+        let [lower, upper] = classes;
+        let ascii: Vec<OnigCodePoint> = lower.iter().copied().filter(|&m| m < 0x80).collect();
+        if lower != upper
+            || ascii
+                != [
+                    letter.to_ascii_uppercase() as OnigCodePoint,
+                    letter as OnigCodePoint,
+                ]
+        {
+            return None;
+        }
+        // A class with multibyte members decodes non-ASCII input and also
+        // tests the code against its ASCII members; without them, such
+        // input never matches.
+        if lower.iter().any(|&m| m >= 0x80) {
+            folds
+                .class_members
+                .extend(lower.iter().map(|&m| (m, letter)));
+        }
+        letter_classes.push(lower);
+    }
+    folds.class_members.sort_unstable();
+    if folds
+        .class_members
+        .windows(2)
+        .any(|pair| pair[0].0 == pair[1].0)
+    {
+        return None;
+    }
+
+    let mut segment_sets: Vec<(Vec<u8>, usize)> = Vec::new();
+    for literal in literals {
+        let mut segments = Vec::new();
+        let mut pos = 0;
+        while pos < literal.len() {
+            let n =
+                enc.get_case_fold_codes_by_str(flag, &literal[pos..], literal.len(), &mut items);
+            let found = &items[..usize::try_from(n).ok()?];
+            let c = literal[pos];
+            if found.is_empty() || found.iter().all(|item| item.code_len == 1) {
+                // A plain byte, or a single-character class that must be
+                // the letter's class.
+                if !found.is_empty()
+                    && (!c.is_ascii_alphabetic()
+                        || class_of(c, found)?
+                            != letter_classes[(c.to_ascii_lowercase() - b'a') as usize])
+                {
+                    return None;
+                }
+                pos += 1;
+                continue;
+            }
+            let (min_len, max_len) = get_min_max_byte_len_case_fold_items(n, found);
+            let len = max_len as usize;
+            if min_len != max_len || len < 2 || pos + len > literal.len() {
+                return None;
+            }
+            let original = &literal[pos..pos + len];
+            let accepted = match segment_sets.iter().find(|(text, _)| text == original) {
+                Some(&(_, accepted)) => accepted,
+                None => {
+                    let mut strings = vec![original.to_vec()];
+                    for item in found {
+                        let mut bytes = Vec::new();
+                        let mut buf = [0u8; ONIGENC_CODE_TO_MBC_MAXLEN];
+                        for &code in &item.code[..item.code_len as usize] {
+                            let written = enc.code_to_mbc(code, &mut buf);
+                            bytes.extend_from_slice(&buf[..written as usize]);
+                        }
+                        strings.push(bytes);
+                    }
+                    let text = original.to_ascii_lowercase();
+                    for string in &strings {
+                        segment_string_fits(enc, string, &text, &mut folds)?;
+                    }
+                    if !ascii_case_variants(&text).all(|variant| strings.contains(&variant)) {
+                        return None;
+                    }
+                    folds.accepted.push(strings);
+                    segment_sets.push((original.to_vec(), folds.accepted.len() - 1));
+                    folds.accepted.len() - 1
+                }
+            };
+            segments.push((pos, len, accepted));
+            pos += len;
+        }
+        folds.segments.push(segments);
+    }
+    Some(folds)
+}
+
+/// Check that the folded walk reads `string` as the segment text `text`:
+/// either one non-ASCII character, recorded as a ligature for `text`, or
+/// characters that each read as the letter at their offset.
+fn segment_string_fits(
+    enc: OnigEncoding,
+    string: &[u8],
+    text: &[u8],
+    folds: &mut crate::literal_trie::CaseFolds,
+) -> Option<()> {
+    let class_member = |code: OnigCodePoint| {
+        folds
+            .class_members
+            .binary_search_by_key(&code, |&(member, _)| member)
+            .ok()
+            .map(|at| folds.class_members[at].1)
+    };
+    let len = enc.mbc_enc_len(string);
+    if string[0] >= 0x80 && len == string.len() {
+        // A ligature. It must not also read as a class member, and one
+        // character stands for one text only.
+        if class_member(enc.mbc_to_code(string, len)).is_some() {
+            return None;
+        }
+        match folds.ligatures.iter().find(|(bytes, _)| bytes == string) {
+            Some((_, known)) if known != text => return None,
+            Some(_) => {}
+            None => folds.ligatures.push((string.to_vec(), text.to_vec())),
+        }
+        return Some(());
+    }
+    let mut at = 0;
+    for &expected in text {
+        let c = *string.get(at)?;
+        if c < 0x80 {
+            if c.to_ascii_lowercase() != expected {
+                return None;
+            }
+            at += 1;
+        } else {
+            let len = enc.mbc_enc_len(&string[at..]);
+            let code = enc.mbc_to_code(&string[at..], len);
+            if class_member(code) != Some(expected) {
+                return None;
+            }
+            at += len;
+        }
+    }
+    (at == string.len()).then_some(())
+}
+
+/// Every ASCII case variant of the lowercase `text`.
+fn ascii_case_variants(text: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ {
+    let letters: Vec<usize> = (0..text.len())
+        .filter(|&i| text[i].is_ascii_alphabetic())
+        .collect();
+    (0u32..1 << letters.len()).map(move |mask| {
+        let mut variant = text.to_vec();
+        for (bit, &i) in letters.iter().enumerate() {
+            if mask & (1 << bit) != 0 {
+                variant[i] = variant[i].to_ascii_uppercase();
+            }
+        }
+        variant
+    })
+}
+
+fn detect_literal_alternations_inner(
+    node: &mut Node,
+    reg: &mut RegexType,
+    context: LiteralAltContext,
+    backrefed_mem: MemStatusType,
+) {
+    // Try top-down: if this node is an eligible Alt, try nested
+    // extraction BEFORE recursing into children.  This prevents inner Alts
+    // from being trie-optimized first (which makes them opaque to outer
+    // extraction).
+    if matches!(node.inner, NodeInner::Alt(_))
+        && context != LiteralAltContext::OtherAnchor
+        && try_trie_optimize_alt(node, reg, backrefed_mem)
+    {
+        // Successfully trie-optimized this complete literal alternation.
+        recurse_into_children(node, reg, context, backrefed_mem);
+        return;
+    }
+
+    if context == LiteralAltContext::OutsideAnchor && matches!(node.inner, NodeInner::Alt(_)) {
+        compact_contiguous_literal_runs(node, reg, backrefed_mem);
+    }
+
+    // Recurse into children, then retry flat-check on this Alt.
+    recurse_into_children(node, reg, context, backrefed_mem);
+
+    // After recursion, retry on this Alt.  Inner Alts may now be trie
+    // nodes; classify_branch handles that via check_literal_branch.
+    if matches!(node.inner, NodeInner::Alt(_)) && context != LiteralAltContext::OtherAnchor {
+        try_trie_optimize_alt(node, reg, backrefed_mem);
+    }
+}
+
+/// Keep mixed alternatives in their original order while compacting long
+/// consecutive runs of plain strings with the existing trie compiler.
+/// Non-literal branches, captures and option boundaries remain in place.
+/// Short runs stay on C's path; the first experiment requires 16 literals.
+/// Each run is bounded by the existing 8,192-path limit. No nested-path
+/// extraction is enabled: it could lose captures or reorder lazy optionals.
+fn compact_contiguous_literal_runs(
+    node: &mut Node,
+    reg: &mut RegexType,
+    backrefed_mem: MemStatusType,
+) {
+    const MIN_CONTIGUOUS_LITERALS: usize = 16;
+    let mut cursor = node;
+    loop {
+        let mut scan = &*cursor;
+        let mut literals = Vec::new();
+        let mut ignorecase = None;
+        while let NodeInner::Alt(cons) = &scan.inner {
+            let branch = &*cons.car;
+            let NodeInner::String(sn) = &branch.inner else {
+                break;
+            };
+            let folded = branch.has_status(ND_ST_IGNORECASE);
+            if sn.is_crude()
+                || sn.s.is_empty()
+                || branch.has_status(ND_ST_LITERAL_ALT)
+                || ignorecase.is_some_and(|prior| prior != folded)
+                || literals.len() == MAX_NESTED_TRIE_PATHS
+            {
+                break;
+            }
+            ignorecase = Some(folded);
+            literals.push(branch);
+            match cons.cdr.as_deref() {
+                Some(next) => scan = next,
+                None => break,
+            }
+        }
+        let count = literals.len();
+        let mut replacement = None;
+        if count >= MIN_CONTIGUOUS_LITERALS {
+            let mut chain = None;
+            for branch in literals.into_iter().rev() {
+                let NodeInner::String(sn) = &branch.inner else {
+                    unreachable!("only plain strings were collected");
+                };
+                let literal = Node {
+                    status: branch.status,
+                    parent: std::ptr::null_mut(),
+                    inner: NodeInner::String(StrNode {
+                        s: sn.s.clone(),
+                        flag: sn.flag,
+                    }),
+                };
+                chain = Some(Box::new(Node {
+                    status: 0,
+                    parent: std::ptr::null_mut(),
+                    inner: NodeInner::Alt(ConsAltNode {
+                        car: Box::new(literal),
+                        cdr: chain,
+                    }),
+                }));
+            }
+            let mut candidate = chain.unwrap();
+            if try_trie_optimize_alt(&mut candidate, reg, backrefed_mem) {
+                replacement = Some(candidate);
+            }
+        }
+        let compacted = replacement.is_some();
+        if let Some(candidate) = replacement {
+            let NodeInner::Alt(cons) = &mut cursor.inner else {
+                unreachable!("a collected run begins at an alternation");
+            };
+            // Preserve the first boxed node's address and parent link. Only
+            // plain string nodes and their owning Alt cells are discarded.
+            cons.car.inner = candidate.inner;
+            cons.car.status = candidate.status;
+            let mut tail = cons.cdr.take();
+            for _ in 1..count {
+                let NodeInner::Alt(next) = tail.unwrap().inner else {
+                    unreachable!("every collected literal has an Alt cell");
+                };
+                tail = next.cdr;
+            }
+            cons.cdr = tail;
+        }
+        for _ in 0..if compacted { 1 } else { count.max(1) } {
+            let NodeInner::Alt(cons) = &mut cursor.inner else {
+                return;
+            };
+            let Some(next) = cons.cdr.as_deref_mut() else {
+                return;
+            };
+            cursor = next;
+        }
+    }
+}
+
+/// Recursively extract all possible literal byte sequences from a nested AST
+/// branch.  Handles String, List (sequence), Alt (fork), Bag (non-capturing or
+/// non-backreferenced capturing groups), and Quant(0,1) (optional `?`).
+///
+/// Returns `None` if any sub-expression is non-literal (CClass, CType, complex
+/// Quant, Anchor, BackRef, etc.).  The `limit` prevents exponential blowup.
+fn extract_literal_paths(
+    node: &Node,
+    current_prefixes: Vec<Vec<u8>>,
+    limit: usize,
+    backrefed_mem: MemStatusType,
+) -> Option<Vec<Vec<u8>>> {
+    if current_prefixes.len() > limit {
+        return None;
+    }
+    match &node.inner {
+        NodeInner::String(sn) => {
+            if sn.is_crude() || node.has_status(ND_ST_LITERAL_ALT) {
+                return None;
+            }
+            // Append this string's bytes to each prefix
+            let result: Vec<Vec<u8>> = current_prefixes
+                .into_iter()
+                .map(|mut prefix| {
+                    prefix.extend_from_slice(&sn.s);
+                    prefix
+                })
+                .collect();
+            Some(result)
+        }
+        NodeInner::List(cons) => {
+            // Sequence: walk car then cdr, threading prefixes through
+            let after_car =
+                extract_literal_paths(&cons.car, current_prefixes, limit, backrefed_mem)?;
+            if after_car.len() > limit {
+                return None;
+            }
+            match &cons.cdr {
+                Some(next) => extract_literal_paths(next, after_car, limit, backrefed_mem),
+                None => Some(after_car),
+            }
+        }
+        NodeInner::Alt(_) => {
+            // Fork: recurse into each branch, collect all resulting paths
+            let mut all_paths: Vec<Vec<u8>> = Vec::new();
+            let mut cur: &Node = node;
+            loop {
+                let (car, cdr) = match &cur.inner {
+                    NodeInner::Alt(cons) => (&*cons.car, &cons.cdr),
+                    _ => {
+                        // Last node in the chain (not wrapped in Alt)
+                        let branch_paths = extract_literal_paths(
+                            cur,
+                            current_prefixes.clone(),
+                            limit,
+                            backrefed_mem,
+                        )?;
+                        all_paths.extend(branch_paths);
+                        if all_paths.len() > limit {
+                            return None;
+                        }
+                        break;
+                    }
+                };
+                let branch_paths =
+                    extract_literal_paths(car, current_prefixes.clone(), limit, backrefed_mem)?;
+                all_paths.extend(branch_paths);
+                if all_paths.len() > limit {
+                    return None;
+                }
+                match cdr {
+                    Some(next) => cur = &**next,
+                    None => break,
+                }
+            }
+            Some(all_paths)
+        }
+        NodeInner::Bag(bn) => {
+            match bn.bag_type {
+                BagType::Memory => {
+                    // Capturing group: only safe if not backreferenced
+                    if mem_status_at(backrefed_mem, bn.regnum() as usize) {
+                        return None;
+                    }
+                    match &bn.body {
+                        Some(body) => {
+                            extract_literal_paths(body, current_prefixes, limit, backrefed_mem)
+                        }
+                        None => Some(current_prefixes),
+                    }
+                }
+                BagType::Option => {
+                    // Non-capturing group (?:...) or option group
+                    match &bn.body {
+                        Some(body) => {
+                            extract_literal_paths(body, current_prefixes, limit, backrefed_mem)
+                        }
+                        None => Some(current_prefixes),
+                    }
+                }
+                _ => None, // StopBacktrack, IfElse — not literal
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if qn.lower == 0 && qn.upper == 1 {
+                // Optional `?`: fork into "with" and "without" paths
+                match &qn.body {
+                    Some(body) => {
+                        let with_paths = extract_literal_paths(
+                            body,
+                            current_prefixes.clone(),
+                            limit,
+                            backrefed_mem,
+                        )?;
+                        let mut all = current_prefixes; // "without" paths
+                        all.extend(with_paths);
+                        if all.len() > limit {
+                            return None;
+                        }
+                        Some(all)
+                    }
+                    None => Some(current_prefixes),
+                }
+            } else {
+                None // Complex quantifier — not literal
+            }
+        }
+        // CClass, CType, BackRef, Anchor, Call, Gimmick — not literal
+        _ => None,
+    }
+}
+
+/// Classify a branch as literal or non-literal.  Tries the fast path
+/// (`check_literal_branch`) first, then falls back to `extract_literal_paths`
+/// for nested structures.
+fn classify_branch(node: &Node, backrefed_mem: MemStatusType) -> AltBranchInfo {
+    let (is_lit, lit) = check_literal_branch(node);
+    if is_lit {
+        return AltBranchInfo {
+            index: 0, // caller will override
+            is_literal: true,
+            literals: vec![lit],
+        };
+    }
+    // Try nested extraction
+    if let Some(paths) =
+        extract_literal_paths(node, vec![Vec::new()], MAX_NESTED_TRIE_PATHS, backrefed_mem)
+    {
+        if !paths.is_empty() && paths.iter().all(|p| !p.is_empty()) {
+            return AltBranchInfo {
+                index: 0,
+                is_literal: true,
+                literals: paths,
+            };
+        }
+    }
+    AltBranchInfo {
+        index: 0,
+        is_literal: false,
+        literals: Vec::new(),
+    }
+}
+
+/// Check if a node is a plain literal string (non-crude, no ND_ST_LITERAL_ALT).
+fn check_literal_branch(node: &Node) -> (bool, Vec<u8>) {
+    if node.has_status(ND_ST_LITERAL_ALT) {
+        return (false, Vec::new());
+    }
+    if let NodeInner::String(ref sn) = node.inner {
+        if !sn.is_crude() {
+            return (true, sn.s.clone());
+        }
+    }
+    (false, Vec::new())
+}
+
+/// Extract specific branches (by index) from an Alt cons-chain.
+/// Returns the extracted nodes in the order of their indices.
+fn extract_alt_branches(alt_node: &mut Node, indices: &[usize], out: &mut Vec<Node>) {
+    // Walk the Alt cons-chain and collect the nodes at the given indices.
+    let mut idx = 0usize;
+    let mut cur: &mut Node = alt_node;
+    loop {
+        // Test for the tail with a shared check, so the mutable borrow of
+        // `cur.inner` below exists only on the Alt path.
+        if !matches!(cur.inner, NodeInner::Alt(_)) {
+            // Last node (tail) — check if it's in the indices
+            if indices.contains(&idx) {
+                let placeholder = Node {
+                    status: 0,
+                    parent: std::ptr::null_mut(),
+                    inner: NodeInner::String(StrNode {
+                        s: Vec::new(),
+                        flag: 0,
+                    }),
+                };
+                let taken = std::mem::replace(cur, placeholder);
+                out.push(taken);
+            }
+            break;
+        }
+        let NodeInner::Alt(cons) = &mut cur.inner else {
+            break;
+        };
+        if indices.contains(&idx) {
+            // Take the car node
+            let taken = std::mem::replace(
+                &mut cons.car,
+                Box::new(Node {
+                    status: 0,
+                    parent: std::ptr::null_mut(),
+                    inner: NodeInner::String(StrNode {
+                        s: Vec::new(),
+                        flag: 0,
+                    }),
+                }),
+            );
+            out.push(*taken);
+        }
+        idx += 1;
+        match &mut cons.cdr {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+}
+
+/// Tree tuning pass - sets emptiness on quantifier nodes and propagates state.
+/// Mirrors C's tune_tree() from regcomp.c.
+pub(crate) fn tune_tree(
+    node: &mut Node,
+    reg: &mut RegexType,
+    state: i32,
+    env: &mut ParseEnv,
+) -> i32 {
+    // Skip nodes already optimized as literal alternation tries.
+    if node.has_status(ND_ST_LITERAL_ALT) {
+        // C unravels the case-insensitive strings the trie replaces here.
+        if let Some(trie) = literal_alt_trie_index(node).and_then(|i| reg.literal_tries.get_mut(i))
+        {
+            trie.set_tuned();
+        }
+        return 0;
+    }
+
+    // Case-fold expansion: before the main match to get full &mut Node access
+    if let NodeInner::String(ref sn) = node.inner {
+        if node.has_status(ND_ST_IGNORECASE) && !sn.is_crude() {
+            let r = unravel_case_fold_string(node, reg, state);
+            if r != 0 {
+                return r;
+            }
+            // After expansion, the node may have changed type (CClass, List, etc.)
+            // Recurse to tune the expanded tree
+            return tune_tree(node, reg, state, env);
+        }
+    }
+
+    match &mut node.inner {
+        NodeInner::List(_) => {
+            // Walk the list: tune each element, then call tune_next for sequential pairs
+            // `prev` is the previous element's car, a node distinct from the
+            // current `cons.car`, so tune_next receives both borrows at once.
+            let mut cur: &mut Node = node;
+            let mut prev: Option<&mut Node> = None;
+            while let NodeInner::List(cons) = &mut cur.inner {
+                let r = tune_tree(&mut cons.car, reg, state, env);
+                if r != 0 {
+                    return r;
+                }
+                // Call tune_next on previous node with current as next
+                if let Some(prev_node) = prev.take() {
+                    let r = tune_next(prev_node, &cons.car, reg);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+                prev = Some(&mut *cons.car);
+                match &mut cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            0
+        }
+
+        NodeInner::Alt(_) => {
+            let mut cur: &mut Node = node;
+            while let NodeInner::Alt(cons) = &mut cur.inner {
+                let r = tune_tree(&mut cons.car, reg, state | IN_ALT, env);
+                if r != 0 {
+                    return r;
+                }
+                match &mut cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            0
+        }
+
+        NodeInner::Quant(qn) => {
+            // Propagate repeat status flags
+            if (state & IN_REAL_REPEAT) != 0 {
+                node.status |= ND_ST_IN_REAL_REPEAT;
+            }
+            if (state & IN_MULTI_ENTRY) != 0 {
+                node.status |= ND_ST_IN_MULTI_ENTRY;
+            }
+
+            // Check if body can match empty
+            if is_infinite_repeat(qn.upper) || qn.upper >= 1 {
+                if let Some(ref body) = qn.body {
+                    let d = node_min_byte_len(body, env);
+                    if d == 0 {
+                        // Use quantifiers_memory_node_info to detect captures in body
+                        qn.emptiness = quantifiers_memory_node_info(body, env);
+                    }
+                }
+            }
+
+            // Update state for recursive call
+            let mut new_state = state;
+            if is_infinite_repeat(qn.upper) || qn.upper >= 2 {
+                new_state |= IN_REAL_REPEAT;
+            }
+            if qn.lower != qn.upper {
+                new_state |= IN_VAR_REPEAT;
+            }
+
+            // Recurse into body
+            if let Some(ref mut body) = qn.body {
+                let r = tune_tree(body, reg, new_state, env);
+                if r != 0 {
+                    return r;
+                }
+            }
+
+            // Expand string: "abc"{3} => "abcabcabc"
+            const EXPAND_STRING_MAX_LENGTH: i32 = 100;
+            if let Some(ref body) = qn.body {
+                if let (NodeInner::String(sn), false) =
+                    (&body.inner, body.has_status(ND_ST_LITERAL_ALT))
+                {
+                    if !is_infinite_repeat(qn.lower)
+                        && qn.lower == qn.upper
+                        && qn.lower > 1
+                        && qn.lower <= EXPAND_STRING_MAX_LENGTH
+                    {
+                        let len = sn.s.len() as i32;
+                        if len * qn.lower <= EXPAND_STRING_MAX_LENGTH {
+                            let n = qn.lower as usize;
+                            let orig_bytes = sn.s.clone();
+                            let flag = sn.flag;
+                            // Build expanded string
+                            let mut expanded = Vec::with_capacity(orig_bytes.len() * n);
+                            for _ in 0..n {
+                                expanded.extend_from_slice(&orig_bytes);
+                            }
+                            // Replace quantifier node with string node
+                            let mut str_node = node_new_str(&expanded);
+                            if let NodeInner::String(ref mut esn) = str_node.inner {
+                                esn.flag = flag;
+                            }
+                            str_node.status = node.status;
+                            *node = *str_node;
+                            return 0;
+                        }
+                    }
+                }
+            }
+
+            // Set head_exact: extract leading literal byte from body
+            if qn.greedy && qn.emptiness == BodyEmptyType::NotEmpty {
+                if let Some(ref mut body) = qn.body {
+                    if let NodeInner::Quant(ref mut tqn) = body.inner {
+                        // Move head_exact from the nested quantifier, as C
+                        // does (`tqn->head_exact = NULL`)
+                        if tqn.head_exact.is_some() {
+                            qn.head_exact = tqn.head_exact.take();
+                        }
+                    } else {
+                        qn.head_exact = get_head_literal_byte(body, true, reg);
+                    }
+                }
+            }
+
+            0
+        }
+
+        NodeInner::Bag(bn) => {
+            match bn.bag_type {
+                BagType::Option => {
+                    let saved_options = reg.options;
+                    if let BagData::Option { options } = bn.bag_data {
+                        reg.options = options;
+                    }
+                    let r = if let Some(ref mut body) = bn.body {
+                        tune_tree(body, reg, state, env)
+                    } else {
+                        0
+                    };
+                    reg.options = saved_options;
+                    r
+                }
+                BagType::Memory => {
+                    // Propagate called_state into state (C: state |= en->m.called_state)
+                    let mut state = state;
+                    if let BagData::Memory { called_state, .. } = bn.bag_data {
+                        state |= called_state;
+                    }
+                    if (state & (IN_ALT | IN_NOT | IN_VAR_REPEAT | IN_MULTI_ENTRY)) != 0
+                        || (node.status & ND_ST_RECURSION) != 0
+                    {
+                        // Backtrack mem needed for captures in alternation/variable repeat/recursion
+                        if let BagData::Memory { regnum, .. } = bn.bag_data {
+                            mem_status_on(&mut env.backtrack_mem, regnum as usize);
+                        }
+                    }
+                    if let Some(ref mut body) = bn.body {
+                        tune_tree(body, reg, state, env)
+                    } else {
+                        0
+                    }
+                }
+                BagType::StopBacktrack => {
+                    if let Some(ref mut body) = bn.body {
+                        tune_tree(body, reg, state, env)
+                    } else {
+                        0
+                    }
+                }
+                BagType::IfElse => {
+                    if let Some(ref mut body) = bn.body {
+                        let r = tune_tree(body, reg, state | IN_ALT, env);
+                        if r != 0 {
+                            return r;
+                        }
+                    }
+                    if let BagData::IfElse {
+                        ref mut then_node,
+                        ref mut else_node,
+                    } = bn.bag_data
+                    {
+                        if let Some(then_n) = then_node {
+                            let r = tune_tree(then_n, reg, state | IN_ALT, env);
+                            if r != 0 {
+                                return r;
+                            }
+                        }
+                        if let Some(else_n) = else_node {
+                            let r = tune_tree(else_n, reg, state | IN_ALT, env);
+                            if r != 0 {
+                                return r;
+                            }
+                        }
+                    }
+                    0
+                }
+            }
+        }
+
+        NodeInner::Anchor(an) => {
+            let at = an.anchor_type;
+            // C: tune_anchor
+            if at == ANCR_LOOK_BEHIND || at == ANCR_LOOK_BEHIND_NOT {
+                return tune_look_behind(node, reg, state, env);
+            }
+            if let NodeInner::Anchor(ref mut an) = node.inner {
+                let anchor_type = an.anchor_type;
+                if let Some(ref mut body) = an.body {
+                    let new_state = if anchor_type == ANCR_PREC_READ {
+                        state | IN_PREC_READ
+                    } else if anchor_type == ANCR_PREC_READ_NOT {
+                        state | IN_PREC_READ | IN_NOT
+                    } else {
+                        state
+                    };
+                    return tune_tree(body, reg, new_state, env);
+                }
+            }
+            0
+        }
+
+        &mut NodeInner::BackRef(ref br) => {
+            // Set backrefed_mem for each referenced group
+            for &back in br.back_refs() {
+                if back > 0 {
+                    mem_status_on(&mut env.backrefed_mem, back as usize);
+                    // C: "More precisely, it should be checked whether
+                    // alt/repeat exists before the subject capture node ...";
+                    // C turns backtrack_mem on for every referenced group
+                    // here. The port makes that check after tune_tree, in
+                    // the Rust-only backref_groups_needing_push (ADR-008).
+                }
+            }
+            0
+        }
+
+        // Terminal nodes - nothing to tune
+        NodeInner::String(_)
+        | NodeInner::CType(_)
+        | NodeInner::CClass(_)
+        | NodeInner::Call(_)
+        | NodeInner::Gimmick(_) => 0,
+    }
+}
+
+// ============================================================================
+// Rust-only (ADR-008): back-referenced groups whose captures need a push
+// ============================================================================
+
+/// One step from a container node into one of its children. `container` is
+/// the node's address (for a `List` or `Alt` chain, its first cell's);
+/// `ordered` marks a `List`, whose children run one after the other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TreeStep {
+    container: usize,
+    child: u32,
+    ordered: bool,
+}
+
+#[derive(Default)]
+struct BackrefPushScan {
+    path: Vec<TreeStep>,
+    /// Containers on `path` that can run a child more than once, skip it,
+    /// or undo it (anything but a list, an option, a capture or an atomic
+    /// group).
+    non_linear: usize,
+    /// Per group number: the path to its capture node, and whether every
+    /// container on it is linear.
+    groups: Vec<Option<(Vec<TreeStep>, bool)>>,
+    /// Per group number: the first byte of its capture when the capture is a
+    /// plain, case-sensitive, non-empty string (Rust-only, ADR-008).
+    literal_first: Vec<Option<u8>>,
+    /// Back references and conditions: group number and the path to them.
+    reads: Vec<(usize, Vec<TreeStep>)>,
+    /// Groups that need a push whatever their reads (capture seen twice,
+    /// read by a level back reference).
+    forced: MemStatusType,
+    /// The back-referenced groups (`ParseEnv::backrefed_mem`).
+    backrefed: MemStatusType,
+    /// A construct the analysis does not model was found.
+    give_up: bool,
+}
+
+impl BackrefPushScan {
+    /// Whether the read at `read` of group `g` always sees the capture of
+    /// `g` written on its path: the group is linear and occurs once, and the
+    /// read follows it (`read_follows_group`).
+    fn read_sees_group_set(&self, g: usize, read: &[TreeStep]) -> bool {
+        match self.groups.get(g) {
+            Some(Some((group, true))) => read_follows_group(group, read),
+            _ => false,
+        }
+    }
+
+    fn enter(&mut self, container: usize, child: u32, ordered: bool, linear: bool) {
+        self.path.push(TreeStep {
+            container,
+            child,
+            ordered,
+        });
+        if !linear {
+            self.non_linear += 1;
+        }
+    }
+
+    fn leave(&mut self, linear: bool) {
+        self.path.pop();
+        if !linear {
+            self.non_linear -= 1;
+        }
+    }
+
+    fn child(&mut self, node: &Node, container: usize, child: u32, ordered: bool, linear: bool) {
+        self.enter(container, child, ordered, linear);
+        self.scan(node);
+        self.leave(linear);
+    }
+
+    fn scan(&mut self, node: &Node) {
+        if self.give_up {
+            return;
+        }
+        let addr = node as *const Node as usize;
+        match &node.inner {
+            NodeInner::List(_) | NodeInner::Alt(_) => {
+                let ordered = matches!(node.inner, NodeInner::List(_));
+                let mut cur = node;
+                let mut i = 0u32;
+                while let NodeInner::List(cons) | NodeInner::Alt(cons) = &cur.inner {
+                    self.child(&cons.car, addr, i, ordered, ordered);
+                    i += 1;
+                    match &cons.cdr {
+                        Some(next) => cur = next,
+                        None => break,
+                    }
+                }
+            }
+            NodeInner::Quant(qn) => {
+                if let Some(body) = &qn.body {
+                    self.child(body, addr, 0, false, false);
+                }
+            }
+            NodeInner::Anchor(an) => {
+                if let Some(body) = &an.body {
+                    self.child(body, addr, 0, false, false);
+                }
+            }
+            NodeInner::Bag(bn) => {
+                if let BagData::Memory { regnum, .. } = bn.bag_data {
+                    let g = regnum as usize;
+                    // Only back-referenced groups matter (a reference to a
+                    // group past the status bits gives up at the reference).
+                    if g > 0 && g < MEM_STATUS_BITS_NUM && mem_status_at(self.backrefed, g) {
+                        if self.groups.len() <= g {
+                            self.groups.resize_with(g + 1, || None);
+                        }
+                        if self.groups[g].is_some() {
+                            mem_status_on(&mut self.forced, g);
+                        } else {
+                            self.groups[g] = Some((self.path.clone(), self.non_linear == 0));
+                            if self.literal_first.len() <= g {
+                                self.literal_first.resize(g + 1, None);
+                            }
+                            self.literal_first[g] =
+                                bn.body.as_deref().and_then(plain_literal_first_byte);
+                        }
+                    }
+                }
+                let linear = bn.bag_type != BagType::IfElse;
+                if let Some(body) = &bn.body {
+                    self.child(body, addr, 0, false, linear);
+                }
+                if let BagData::IfElse {
+                    then_node,
+                    else_node,
+                } = &bn.bag_data
+                {
+                    if let Some(then_node) = then_node {
+                        self.child(then_node, addr, 1, false, false);
+                    }
+                    if let Some(else_node) = else_node {
+                        self.child(else_node, addr, 2, false, false);
+                    }
+                }
+            }
+            NodeInner::BackRef(br) => {
+                let level = node.has_status(ND_ST_NEST_LEVEL);
+                for &back in br.back_refs() {
+                    let g = back as usize;
+                    if back <= 0 || g >= MEM_STATUS_BITS_NUM {
+                        self.give_up = true;
+                        return;
+                    }
+                    if level {
+                        mem_status_on(&mut self.forced, g);
+                    }
+                    let mut path = self.path.clone();
+                    path.push(TreeStep {
+                        container: addr,
+                        child: 0,
+                        ordered: false,
+                    });
+                    self.reads.push((g, path));
+                }
+            }
+            NodeInner::Call(_) => self.give_up = true,
+            NodeInner::Gimmick(gn) => {
+                if gn.gimmick_type != GimmickType::Fail {
+                    self.give_up = true;
+                }
+            }
+            NodeInner::String(_) | NodeInner::CType(_) | NodeInner::CClass(_) => {}
+        }
+    }
+}
+
+/// Whether a read at `read` always sees a value of the group at `group`
+/// written on the current path: the read's node comes after the group's in
+/// a list that holds both, so every path to it passes the whole group.
+fn read_follows_group(group: &[TreeStep], read: &[TreeStep]) -> bool {
+    for (g, r) in group.iter().zip(read) {
+        if g != r {
+            return g.container == r.container && g.ordered && g.child < r.child;
+        }
+    }
+    // The group's path is a prefix of the read's: the read is inside it.
+    false
+}
+
+/// The back-referenced groups whose captures have to be pushed.
+///
+/// C (tune_tree, BACKREF) pushes every back-referenced group so that
+/// backtracking restores its captures, and notes that this is conservative:
+/// "More precisely, it should be checked whether alt/repeat exists before
+/// the subject capture node, and then this backreference position exists
+/// before (or in) the capture node." A capture without a push keeps the last
+/// value written, also one written on a path that later failed. A read can
+/// only see such a stale value if some path reaches it without passing the
+/// group again after the backtrack. That cannot happen when
+///
+/// - the group's capture node occurs once, and every node above it is a
+///   list, an option, a capture or an atomic group, so each attempt runs the
+///   group exactly once, start to end, and in its fixed place; and
+/// - every read of the group (back reference or condition, without a
+///   recursion level) sits in a later element of a list that also holds the
+///   group, so it runs only after the group has been written on the current
+///   path.
+///
+/// Such a group then holds the same value with or without the push whenever
+/// it is read, and at the end of a match. A back reference with a recursion
+/// level reads the match stack itself, so its groups stay pushed. The
+/// capture-aware empty checks only compare captures written inside the loop
+/// body; those groups have a quantifier above them and stay pushed as well.
+/// Subroutine calls, callouts, `\K` and absent operators are not modelled;
+/// with them every back-referenced group is pushed, as in C.
+fn backref_groups_needing_push(root: &Node, env: &ParseEnv) -> MemStatusType {
+    if env.backrefed_mem == 0 {
+        return 0;
+    }
+    if env.num_call > 0 {
+        return env.backrefed_mem;
+    }
+    let mut scan = BackrefPushScan {
+        backrefed: env.backrefed_mem,
+        ..BackrefPushScan::default()
+    };
+    scan.scan(root);
+    if scan.give_up {
+        return env.backrefed_mem;
+    }
+    let mut needed = scan.forced;
+    for (g, read) in &scan.reads {
+        if !scan.read_sees_group_set(*g, read) {
+            mem_status_on(&mut needed, *g);
+        }
+    }
+    needed & env.backrefed_mem
+}
+
+/// Rust-only (ADR-008): the first byte of each back-referenced group whose
+/// capture is a plain, case-sensitive, non-empty string, and whose every read
+/// sees the capture written on its path (the analysis of
+/// `backref_groups_needing_push`). Such a group reads the same bytes at every
+/// attempt: a back reference to it compares its first byte with the byte at
+/// the position first, so a failed comparison there is the whole failure.
+/// Index 0 and every other group are `None`.
+fn backref_literal_first_bytes(root: &Node, env: &ParseEnv) -> [Option<u8>; MEM_STATUS_BITS_NUM] {
+    let mut first = [None; MEM_STATUS_BITS_NUM];
+    if env.backrefed_mem == 0 || env.num_call > 0 {
+        return first;
+    }
+    let mut scan = BackrefPushScan {
+        backrefed: env.backrefed_mem,
+        ..BackrefPushScan::default()
+    };
+    scan.scan(root);
+    if scan.give_up {
+        return first;
+    }
+    let mut unsafe_reads: MemStatusType = 0;
+    for (g, read) in &scan.reads {
+        if !scan.read_sees_group_set(*g, read) {
+            mem_status_on(&mut unsafe_reads, *g);
+        }
+    }
+    for (g, slot) in first.iter_mut().enumerate().skip(1) {
+        if mem_status_at(scan.forced, g) || mem_status_at(unsafe_reads, g) {
+            continue;
+        }
+        if let Some(Some((_, true))) = scan.groups.get(g) {
+            *slot = scan.literal_first.get(g).copied().flatten();
+        }
+    }
+    first
+}
+
+/// The first byte of a group body that is a plain string: case-sensitive
+/// (no `(?i)` status, whose strings compile to folded instructions) and
+/// non-empty.
+fn plain_literal_first_byte(body: &Node) -> Option<u8> {
+    match &body.inner {
+        NodeInner::String(sn)
+            if !sn.s.is_empty()
+                && !body.has_status(ND_ST_IGNORECASE)
+                && !body.has_status(ND_ST_LITERAL_ALT) =>
+        {
+            Some(sn.s[0])
+        }
+        _ => None,
+    }
+}
+
+// ============================================================================
+// setup_empty_status_mem: compute qn.empty_status_mem for quantifiers
+// ============================================================================
+
+/// C: set_empty_repeat_node_trav. Records, for every capture group, the
+/// innermost may-be-empty quantifier around it. Look-ahead and look-behind
+/// bodies start without one. The quantifier is stored by address only; it is
+/// never dereferenced through `empty_repeat_node`.
+fn set_empty_repeat_node_trav(node: &Node, empty: *const Node, env: &mut ParseEnv) {
+    match &node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &cur.inner {
+                set_empty_repeat_node_trav(&cons.car, empty, env);
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                let empty =
+                    if an.anchor_type == ANCR_PREC_READ || an.anchor_type == ANCR_LOOK_BEHIND {
+                        std::ptr::null()
+                    } else {
+                        empty
+                    };
+                set_empty_repeat_node_trav(body, empty, env);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            let empty = if qn.emptiness != BodyEmptyType::NotEmpty {
+                node as *const Node
+            } else {
+                empty
+            };
+            if let Some(body) = &qn.body {
+                set_empty_repeat_node_trav(body, empty, env);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(body) = &bn.body {
+                set_empty_repeat_node_trav(body, empty, env);
+            }
+            match &bn.bag_data {
+                // C also requires ND_IS_BACKREF(node); only groups that a
+                // backref names are ever looked up, so the filter is implied.
+                BagData::Memory { regnum, .. } => {
+                    if !empty.is_null() {
+                        env.mem_env_mut(*regnum as usize).empty_repeat_node = empty as *mut Node;
+                    }
+                }
+                BagData::IfElse {
+                    then_node,
+                    else_node,
+                } => {
+                    if let Some(t) = then_node {
+                        set_empty_repeat_node_trav(t, empty, env);
+                    }
+                    if let Some(e) = else_node {
+                        set_empty_repeat_node_trav(e, empty, env);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// C: set_empty_status_check_trav. A backref to a capture whose empty
+/// quantifier is not an ancestor of the backref makes that quantifier check
+/// the capture (EMPTY_CHECK_END_MEMST). Returns `(quantifier, group)` pairs;
+/// `setup_empty_status_mem` applies them.
+///
+/// C decides ancestry with is_ancestor_node over the parent links set by
+/// set_parent_node_trav. That pass links the element of each list or
+/// alternation cell to its cell, but only the first cell to the parent, so
+/// the chain from a node in any later element stops at its cell. `chain`
+/// holds the ancestors C can reach that way.
+fn set_empty_status_check_trav(
+    node: &Node,
+    chain: &mut Vec<*const Node>,
+    env: &ParseEnv,
+    found: &mut Vec<(*const Node, usize)>,
+) {
+    let node_ptr = node as *const Node;
+    match &node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            chain.push(node_ptr);
+            set_empty_status_check_trav(&cons.car, chain, env, found);
+            chain.pop();
+            let mut next = cons.cdr.as_deref();
+            // Rust-only (ADR-008): one buffer for every later cell, reset to
+            // the cell alone as before, instead of a new Vec per cell.
+            let mut cell_chain: Vec<*const Node> = Vec::new();
+            while let Some(cell) = next {
+                let (NodeInner::List(c) | NodeInner::Alt(c)) = &cell.inner else {
+                    break;
+                };
+                cell_chain.clear();
+                cell_chain.push(cell as *const Node);
+                set_empty_status_check_trav(&c.car, &mut cell_chain, env, found);
+                next = c.cdr.as_deref();
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &an.body {
+                chain.push(node_ptr);
+                set_empty_status_check_trav(body, chain, env, found);
+                chain.pop();
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = &qn.body {
+                chain.push(node_ptr);
+                set_empty_status_check_trav(body, chain, env, found);
+                chain.pop();
+            }
+        }
+        NodeInner::Bag(bn) => {
+            chain.push(node_ptr);
+            if let Some(body) = &bn.body {
+                set_empty_status_check_trav(body, chain, env, found);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &bn.bag_data
+            {
+                if let Some(t) = then_node {
+                    set_empty_status_check_trav(t, chain, env, found);
+                }
+                if let Some(e) = else_node {
+                    set_empty_status_check_trav(e, chain, env, found);
+                }
+            }
+            chain.pop();
+        }
+        NodeInner::BackRef(br) => {
+            for &back in br.back_refs() {
+                if back <= 0 {
+                    continue;
+                }
+                let back = back as usize;
+                let ernode = env.mem_env(back).empty_repeat_node as *const Node;
+                if !ernode.is_null() && !chain.contains(&ernode) {
+                    found.push((ernode, back));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply the `(quantifier, group)` pairs found by set_empty_status_check_trav:
+/// C's MEM_STATUS_LIMIT_ON(empty_status_mem, group) and
+/// ND_STATUS_ADD(quantifier, EMPTY_STATUS_CHECK).
+fn apply_empty_status_check(node: &mut Node, found: &[(*const Node, usize)]) {
+    let node_ptr = node as *const Node;
+    match &mut node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = node;
+            while let NodeInner::List(cons) | NodeInner::Alt(cons) = &mut cur.inner {
+                apply_empty_status_check(&mut cons.car, found);
+                match &mut cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = &mut an.body {
+                apply_empty_status_check(body, found);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            let mut hit = false;
+            for &(ernode, back) in found {
+                if ernode == node_ptr {
+                    mem_status_limit_on(&mut qn.empty_status_mem, back);
+                    hit = true;
+                }
+            }
+            if let Some(body) = &mut qn.body {
+                apply_empty_status_check(body, found);
+            }
+            if hit {
+                node.status |= ND_ST_EMPTY_STATUS_CHECK;
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(body) = &mut bn.body {
+                apply_empty_status_check(body, found);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &mut bn.bag_data
+            {
+                if let Some(t) = then_node {
+                    apply_empty_status_check(t, found);
+                }
+                if let Some(e) = else_node {
+                    apply_empty_status_check(e, found);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Compute qn.empty_status_mem for all quantifiers in the tree.
+fn setup_empty_status_mem(root: &mut Node, env: &mut ParseEnv) {
+    // C runs this only when backref_num != 0; without backref nodes the
+    // check pass below finds nothing, so the port skips the gate.
+    set_empty_repeat_node_trav(root, std::ptr::null(), env);
+    let mut found = Vec::new();
+    set_empty_status_check_trav(root, &mut Vec::new(), env, &mut found);
+    if !found.is_empty() {
+        apply_empty_status_check(root, &found);
+    }
+}
+
+fn refresh_capture_nodes(node: &mut Node, env: &mut ParseEnv) {
+    let node_ptr = node as *mut Node;
+    match &mut node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            refresh_capture_nodes(cons.car.as_mut(), env);
+            if let Some(cdr) = cons.cdr.as_mut() {
+                refresh_capture_nodes(cdr.as_mut(), env);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = qn.body.as_mut() {
+                refresh_capture_nodes(body.as_mut(), env);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if bn.bag_type == BagType::Memory {
+                let regnum = bn.regnum() as usize;
+                if regnum <= env.num_mem as usize {
+                    env.mem_env_mut(regnum).mem_node = node_ptr;
+                }
+            }
+            if let Some(body) = bn.body.as_mut() {
+                refresh_capture_nodes(body.as_mut(), env);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &mut bn.bag_data
+            {
+                if let Some(then_n) = then_node.as_mut() {
+                    refresh_capture_nodes(then_n.as_mut(), env);
+                }
+                if let Some(else_n) = else_node.as_mut() {
+                    refresh_capture_nodes(else_n.as_mut(), env);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = an.body.as_mut() {
+                refresh_capture_nodes(body.as_mut(), env);
+            }
+            if let Some(lead) = an.lead_node.as_mut() {
+                refresh_capture_nodes(lead.as_mut(), env);
+            }
+        }
+        NodeInner::Call(cn) => {
+            if let Some(body) = cn.body.as_mut() {
+                refresh_capture_nodes(body.as_mut(), env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn refresh_call_targets(node: &mut Node, env: &ParseEnv) {
+    match &mut node.inner {
+        NodeInner::List(cons) | NodeInner::Alt(cons) => {
+            refresh_call_targets(cons.car.as_mut(), env);
+            if let Some(cdr) = cons.cdr.as_mut() {
+                refresh_call_targets(cdr.as_mut(), env);
+            }
+        }
+        NodeInner::Quant(qn) => {
+            if let Some(body) = qn.body.as_mut() {
+                refresh_call_targets(body.as_mut(), env);
+            }
+        }
+        NodeInner::Bag(bn) => {
+            if let Some(body) = bn.body.as_mut() {
+                refresh_call_targets(body.as_mut(), env);
+            }
+            if let BagData::IfElse {
+                then_node,
+                else_node,
+            } = &mut bn.bag_data
+            {
+                if let Some(then_n) = then_node.as_mut() {
+                    refresh_call_targets(then_n.as_mut(), env);
+                }
+                if let Some(else_n) = else_node.as_mut() {
+                    refresh_call_targets(else_n.as_mut(), env);
+                }
+            }
+        }
+        NodeInner::Anchor(an) => {
+            if let Some(body) = an.body.as_mut() {
+                refresh_call_targets(body.as_mut(), env);
+            }
+            if let Some(lead) = an.lead_node.as_mut() {
+                refresh_call_targets(lead.as_mut(), env);
+            }
+        }
+        NodeInner::Call(cn) => {
+            cn.target_node = if cn.called_gnum > 0 && cn.called_gnum <= env.num_mem {
+                env.mem_env(cn.called_gnum as usize).mem_node
+            } else {
+                std::ptr::null_mut()
+            };
+            if let Some(body) = cn.body.as_mut() {
+                refresh_call_targets(body.as_mut(), env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn refresh_node_references(root: &mut Node, env: &mut ParseEnv) {
+    if env.num_mem <= 0 && env.num_call <= 0 {
+        return;
+    }
+
+    for i in 1..=env.num_mem as usize {
+        env.mem_env_mut(i).mem_node = std::ptr::null_mut();
+    }
+    refresh_capture_nodes(root, env);
+
+    if env.num_call > 0 {
+        refresh_call_targets(root, env);
+    }
+}
+
+/// Flatten a List node into a Vec of car elements.
+fn flatten_list(mut node: Node) -> Vec<Node> {
+    let mut items = Vec::new();
+    loop {
+        match node.inner {
+            NodeInner::List(cons) => {
+                items.push(*cons.car);
+                match cons.cdr {
+                    Some(next) => node = *next,
+                    None => break,
+                }
+            }
+            _ => {
+                // Shouldn't happen - the last cdr should be None
+                items.push(node);
+                break;
+            }
+        }
+    }
+    items
+}
+
+/// Rebuild a List node from a Vec of car elements.
+fn rebuild_list(items: Vec<Node>) -> Box<Node> {
+    let mut items = items;
+    assert!(!items.is_empty());
+    let mut result = Box::new(Node {
+        status: 0,
+        parent: std::ptr::null_mut(),
+        inner: NodeInner::List(ConsAltNode {
+            car: Box::new(items.pop().unwrap()),
+            cdr: None,
+        }),
+    });
+    while let Some(item) = items.pop() {
+        result = Box::new(Node {
+            status: 0,
+            parent: std::ptr::null_mut(),
+            inner: NodeInner::List(ConsAltNode {
+                car: Box::new(item),
+                cdr: Some(result),
+            }),
+        });
+    }
+    result
+}
+
+/// Consolidate adjacent string nodes in the parse tree.
+/// Mirrors C's reduce_string_list() from regcomp.c.
+pub(crate) fn reduce_string_list(node: &mut Node, _enc: OnigEncoding) -> i32 {
+    match &mut node.inner {
+        NodeInner::List(_) => {
+            // Take ownership of the list, flatten, merge, rebuild
+            let placeholder = NodeInner::String(StrNode {
+                s: Vec::new(),
+                flag: 0,
+            });
+            let old_inner = std::mem::replace(&mut node.inner, placeholder);
+            let list_node = Box::new(Node {
+                status: 0,
+                parent: std::ptr::null_mut(),
+                inner: old_inner,
+            });
+            let mut items = flatten_list(*list_node);
+
+            // First recurse into non-string children
+            for item in items.iter_mut() {
+                if item.node_type() != NodeType::String {
+                    let r = reduce_string_list(item, _enc);
+                    if r != 0 {
+                        // Rebuild and put back before returning error
+                        node.inner = rebuild_list(items).inner;
+                        return r;
+                    }
+                }
+            }
+
+            // Merge adjacent string nodes with same flags and status.
+            // Rust-only (ADR-008): the bytes of a merged node are appended
+            // straight from it, and the output is sized up front.
+            let mut merged: Vec<Node> = Vec::with_capacity(items.len());
+            for item in items {
+                if item.node_type() == NodeType::String {
+                    let can_merge = if let Some(last) = merged.last() {
+                        if last.node_type() == NodeType::String {
+                            let last_str = last.as_str().unwrap();
+                            let curr_str = item.as_str().unwrap();
+                            last_str.flag == curr_str.flag && last.status == item.status
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if can_merge {
+                        let last = merged.last_mut().unwrap();
+                        last.as_str_mut()
+                            .unwrap()
+                            .s
+                            .extend_from_slice(&item.as_str().unwrap().s);
+                    } else {
+                        merged.push(item);
+                    }
+                } else {
+                    merged.push(item);
+                }
+            }
+
+            // Rebuild the list
+            if merged.len() == 1 {
+                // Single node: unwrap from list
+                let single = merged.into_iter().next().unwrap();
+                *node = single;
+            } else {
+                node.inner = rebuild_list(merged).inner;
+            }
+
+            0
+        }
+
+        NodeInner::Alt(_) => {
+            // Recurse into each alternative
+            let saved_status = node.status; // preserve flags like ND_ST_SUPER
+            let placeholder = NodeInner::String(StrNode {
+                s: Vec::new(),
+                flag: 0,
+            });
+            let old_inner = std::mem::replace(&mut node.inner, placeholder);
+            let alt_node = Box::new(Node {
+                status: 0,
+                parent: std::ptr::null_mut(),
+                inner: old_inner,
+            });
+
+            // Flatten the alt chain
+            let mut items = Vec::new();
+            let mut current: Option<Box<Node>> = Some(alt_node);
+            while let Some(n) = current {
+                match n.inner {
+                    NodeInner::Alt(cons) => {
+                        items.push(cons.car);
+                        current = cons.cdr;
+                    }
+                    _ => {
+                        items.push(n);
+                        current = None;
+                    }
+                }
+            }
+
+            // Recurse into each alternative
+            for item in items.iter_mut() {
+                let r = reduce_string_list(item, _enc);
+                if r != 0 {
+                    // Rebuild alt chain and put back
+                    let mut result = Node {
+                        status: 0,
+                        parent: std::ptr::null_mut(),
+                        inner: NodeInner::Alt(ConsAltNode {
+                            car: items.pop().unwrap(),
+                            cdr: None,
+                        }),
+                    };
+                    while let Some(item) = items.pop() {
+                        result = Node {
+                            status: 0,
+                            parent: std::ptr::null_mut(),
+                            inner: NodeInner::Alt(ConsAltNode {
+                                car: item,
+                                cdr: Some(Box::new(result)),
+                            }),
+                        };
+                    }
+                    *node = result;
+                    return r;
+                }
+            }
+
+            // Rebuild alt chain, preserving the original root status (e.g. ND_ST_SUPER)
+            let mut items_rev: Vec<Box<Node>> = items;
+            let last = items_rev.pop().unwrap();
+            let mut result = Node {
+                status: 0,
+                parent: std::ptr::null_mut(),
+                inner: NodeInner::Alt(ConsAltNode {
+                    car: last,
+                    cdr: None,
+                }),
+            };
+            while let Some(item) = items_rev.pop() {
+                result = Node {
+                    status: 0,
+                    parent: std::ptr::null_mut(),
+                    inner: NodeInner::Alt(ConsAltNode {
+                        car: item,
+                        cdr: Some(Box::new(result)),
+                    }),
+                };
+            }
+            result.status = saved_status;
+            *node = result;
+            0
+        }
+
+        NodeInner::Quant(q) => {
+            if let Some(ref mut body) = q.body {
+                reduce_string_list(body, _enc)
+            } else {
+                0
+            }
+        }
+
+        NodeInner::Anchor(a) => {
+            if let Some(ref mut body) = a.body {
+                let r = reduce_string_list(body, _enc);
+                if r != 0 {
+                    return r;
+                }
+            }
+            0
+        }
+
+        NodeInner::Bag(b) => {
+            if let Some(ref mut body) = b.body {
+                let r = reduce_string_list(body, _enc);
+                if r != 0 {
+                    return r;
+                }
+            }
+            if let BagData::IfElse {
+                ref mut then_node,
+                ref mut else_node,
+            } = b.bag_data
+            {
+                if let Some(then_n) = then_node {
+                    let r = reduce_string_list(then_n, _enc);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+                if let Some(else_n) = else_node {
+                    let r = reduce_string_list(else_n, _enc);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+            }
+            0
+        }
+
+        _ => 0,
+    }
+}
+
+/// Simple compilation from a pre-parsed AST tree.
+/// Used internally and by tests that parse separately.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn compile_from_tree(root: &Node, reg: &mut RegexType, env: &ParseEnv) -> i32 {
+    // Clear previous bytecode
+    reg.ops.clear();
+
+    // Compile the tree to bytecode
+    let r = compile_tree(root, reg, env);
+    if r != 0 {
+        return r;
+    }
+
+    // Add OP_END
+    add_op(reg, OpCode::End, OperationPayload::None);
+    refresh_capture_tracking_requirement(reg);
+
+    0
+}
+
+fn opcode_requires_capture_tracking(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::BackRef1
+            | OpCode::BackRef2
+            | OpCode::BackRefN
+            | OpCode::BackRefNIc
+            | OpCode::BackRefMulti
+            | OpCode::BackRefMultiIc
+            | OpCode::BackRefWithLevel
+            | OpCode::BackRefWithLevelIc
+            | OpCode::BackRefCheck
+            | OpCode::BackRefCheckWithLevel
+            | OpCode::MemEndPushRec
+            | OpCode::MemEndRec
+            | OpCode::EmptyCheckEndMemst
+            | OpCode::EmptyCheckEndMemstPush
+            | OpCode::Call
+    )
+}
+
+fn refresh_capture_tracking_requirement(reg: &mut RegexType) {
+    reg.needs_capture_tracking = reg
+        .ops
+        .iter()
+        .any(|op| opcode_requires_capture_tracking(op.opcode));
+}
+
+// ============================================================================
+// Optimization subsystem — mirrors C's regcomp.c lines 5881-7064
+// ============================================================================
+
+const MAX_ND_OPT_INFO_REF_COUNT: i32 = 5;
+
+const MAP_POSITION_VALS: [i16; 128] = [
+    5, 1, 1, 1, 1, 1, 1, 1, 1, 10, 10, 1, 1, 10, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 12, 4, 7, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5,
+    5, 5, 5, 6, 6, 6, 6, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 6, 5,
+    5, 5, 5, 6, 6, 6, 6, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5,
+    5, 1,
+];
+
+fn map_position_value(enc: OnigEncoding, i: usize) -> i32 {
+    if i < MAP_POSITION_VALS.len() {
+        if i == 0 && enc.min_enc_len() > 1 {
+            20
+        } else {
+            MAP_POSITION_VALS[i] as i32
+        }
+    } else {
+        4
+    }
+}
+
+/// Rust-only: `map_position_value` of every byte as one table, so that a
+/// loop over a whole map sums it without a call per byte. Byte 0 is the
+/// value for an encoding whose characters can be one byte long; the others
+/// correct it with `map_position_value(enc, 0)`.
+const MAP_POSITION_VALUES: [i32; CHAR_MAP_SIZE] = {
+    let mut values = [4; CHAR_MAP_SIZE];
+    let mut i = 0;
+    while i < MAP_POSITION_VALS.len() {
+        values[i] = MAP_POSITION_VALS[i] as i32;
+        i += 1;
+    }
+    values
+};
+
+fn distance_value(mm: &MinMaxLen) -> i32 {
+    static DIST_VALS: [i16; 100] = [
+        1000, 500, 333, 250, 200, 167, 143, 125, 111, 100, 91, 83, 77, 71, 67, 63, 59, 56, 53, 50,
+        48, 45, 43, 42, 40, 38, 37, 36, 34, 33, 32, 31, 30, 29, 29, 28, 27, 26, 26, 25, 24, 24, 23,
+        23, 22, 22, 21, 21, 20, 20, 20, 19, 19, 19, 18, 18, 18, 17, 17, 17, 16, 16, 16, 16, 15, 15,
+        15, 15, 14, 14, 14, 14, 14, 14, 13, 13, 13, 13, 13, 13, 12, 12, 12, 12, 12, 12, 11, 11, 11,
+        11, 11, 11, 11, 11, 11, 10, 10, 10, 10, 10,
+    ];
+    if mm.max == INFINITE_LEN {
+        return 0;
+    }
+    let d = (mm.max - mm.min) as usize;
+    if d < DIST_VALS.len() {
+        DIST_VALS[d] as i32
+    } else {
+        1
+    }
+}
+
+fn comp_distance_value(d1: &MinMaxLen, d2: &MinMaxLen, v1: i32, v2: i32) -> i32 {
+    if v2 <= 0 {
+        return -1;
+    }
+    if v1 <= 0 {
+        return 1;
+    }
+    let v1 = v1 * distance_value(d1);
+    let v2 = v2 * distance_value(d2);
+    if v2 > v1 {
+        return 1;
+    }
+    if v2 < v1 {
+        return -1;
+    }
+    if d2.min < d1.min {
+        return 1;
+    }
+    if d2.min > d1.min {
+        return -1;
+    }
+    0
+}
+
+fn concat_opt_anc_info(
+    to: &mut OptAnc,
+    left: &OptAnc,
+    right: &OptAnc,
+    left_len: OnigLen,
+    right_len: OnigLen,
+) {
+    to.clear();
+    to.left = left.left;
+    if left_len == 0 {
+        to.left |= right.left;
+    }
+    to.right = right.right;
+    if right_len == 0 {
+        to.right |= left.right;
+    } else {
+        to.right |= left.right & ANCR_PREC_READ_NOT;
+    }
+}
+
+fn is_left_anchor(a: i32) -> bool {
+    !(a == ANCR_END_BUF
+        || a == ANCR_SEMI_END_BUF
+        || a == ANCR_END_LINE
+        || a == ANCR_PREC_READ
+        || a == ANCR_PREC_READ_NOT)
+}
+
+fn is_set_opt_anc_info(to: &OptAnc, anc: i32) -> bool {
+    (to.left & anc) != 0 || (to.right & anc) != 0
+}
+
+fn add_opt_anc_info(to: &mut OptAnc, anc: i32) {
+    if is_left_anchor(anc) {
+        to.left |= anc;
+    } else {
+        to.right |= anc;
+    }
+}
+
+fn remove_opt_anc_info(to: &mut OptAnc, anc: i32) {
+    if is_left_anchor(anc) {
+        to.left &= !anc;
+    } else {
+        to.right &= !anc;
+    }
+}
+
+fn alt_merge_opt_anc_info(to: &mut OptAnc, add: &OptAnc) {
+    to.left &= add.left;
+    to.right &= add.right;
+}
+
+fn concat_opt_exact(to: &mut OptStr, add: &OptStr, enc: OnigEncoding) -> i32 {
+    let mut r = 0;
+    let mut i = to.len;
+    let mut p = 0usize; // index into add.s
+    let end = add.len;
+    while p < end {
+        let len = enclen(enc, &add.s[p..], p);
+        if i + len > OPT_EXACT_MAXLEN {
+            r = 1;
+            break;
+        }
+        for j in 0..len {
+            if p >= end {
+                break;
+            }
+            to.s[i] = add.s[p];
+            i += 1;
+            p += 1;
+            let _ = j;
+        }
+    }
+    to.len = i;
+    to.reach_end = if p == end { add.reach_end } else { 0 };
+    let mut tanc = OptAnc::new();
+    concat_opt_anc_info(&mut tanc, &to.anc, &add.anc, 1, 1);
+    if to.reach_end == 0 {
+        tanc.right = 0;
+    }
+    to.anc = tanc;
+    r
+}
+
+fn concat_opt_exact_str(to: &mut OptStr, s: &[u8], enc: OnigEncoding) {
+    let mut i = to.len;
+    let mut p = 0usize;
+    while p < s.len() && i < OPT_EXACT_MAXLEN {
+        let len = enclen(enc, &s[p..], p);
+        if i + len > OPT_EXACT_MAXLEN {
+            break;
+        }
+        for _ in 0..len {
+            if p >= s.len() {
+                break;
+            }
+            to.s[i] = s[p];
+            i += 1;
+            p += 1;
+        }
+    }
+    to.len = i;
+    if p >= s.len() {
+        to.reach_end = 1;
+    }
+}
+
+fn alt_merge_opt_exact(to: &mut OptStr, add: &OptStr, env_enc: OnigEncoding) {
+    if add.len == 0 || to.len == 0 {
+        to.clear();
+        return;
+    }
+    if !to.mm.is_equal(&add.mm) {
+        to.clear();
+        return;
+    }
+    let mut i = 0;
+    while i < to.len && i < add.len {
+        if to.s[i] != add.s[i] {
+            break;
+        }
+        let len = enclen(env_enc, &to.s[i..], i);
+        let mut ok = true;
+        for j in 1..len {
+            if i + j >= to.len || i + j >= add.len || to.s[i + j] != add.s[i + j] {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            break;
+        }
+        i += len;
+    }
+    if add.reach_end == 0 || i < add.len || i < to.len {
+        to.reach_end = 0;
+    }
+    to.len = i;
+    alt_merge_opt_anc_info(&mut to.anc, &add.anc);
+    if to.reach_end == 0 {
+        to.anc.right = 0;
+    }
+}
+
+fn select_opt_exact(enc: OnigEncoding, now: &mut OptStr, alt: &OptStr) {
+    let mut vn = now.len as i32;
+    let mut va = alt.len as i32;
+
+    if va == 0 {
+        return;
+    }
+    if vn == 0 {
+        *now = *alt;
+        return;
+    }
+    if vn <= 2 && va <= 2 {
+        va = map_position_value(enc, now.s[0] as usize);
+        vn = map_position_value(enc, alt.s[0] as usize);
+        if now.len > 1 {
+            vn += 5;
+        }
+        if alt.len > 1 {
+            va += 5;
+        }
+    }
+    vn *= 2;
+    va *= 2;
+    if comp_distance_value(&now.mm, &alt.mm, vn, va) > 0 {
+        *now = *alt;
+    }
+}
+
+fn add_char_opt_map(m: &mut OptMap, c: u8, enc: OnigEncoding) {
+    if m.map[c as usize] == 0 {
+        m.map[c as usize] = 1;
+        m.value += map_position_value(enc, c as usize);
+    }
+}
+
+fn select_opt_map(now: &mut OptMap, alt: &OptMap) {
+    let z: i32 = 1 << 15;
+    if alt.value == 0 {
+        return;
+    }
+    if now.value == 0 {
+        *now = *alt;
+        return;
+    }
+    let vn = z / now.value;
+    let va = z / alt.value;
+    if comp_distance_value(&now.mm, &alt.mm, vn, va) > 0 {
+        *now = *alt;
+    }
+}
+
+fn comp_opt_exact_or_map(e: &OptStr, m: &OptMap) -> i32 {
+    const COMP_EM_BASE: i32 = 20;
+    if m.value <= 0 {
+        return -1;
+    }
+    let case_value = 3;
+    let ae = COMP_EM_BASE * e.len as i32 * case_value;
+    let am = COMP_EM_BASE * 5 * 2 / m.value;
+    comp_distance_value(&e.mm, &m.mm, ae, am)
+}
+
+/// `add_char_opt_map` for every byte from 0x80 up, which all share one
+/// position value.
+fn add_high_bytes_opt_map(m: &mut OptMap, enc: OnigEncoding) {
+    let high = &mut m.map[0x80..];
+    let added = high.iter().filter(|&&set| set == 0).count() as i32;
+    high.fill(1);
+    m.value += added * map_position_value(enc, 0x80);
+}
+
+/// Whether the extra maps narrow multibyte class members to their lead bytes.
+#[cfg(test)]
+fn narrow_class_leads_enabled() -> bool {
+    !NARROW_CLASS_LEADS_DISABLED.with(|disabled| disabled.get())
+}
+
+#[cfg(not(test))]
+fn narrow_class_leads_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Keeps every byte from 0x80 up in the extra maps, as the reference for
+    /// `utf8_class_lead_bytes` in differential tests.
+    pub(crate) static NARROW_CLASS_LEADS_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Most multibyte code points whose lead bytes `utf8_class_lead_bytes` takes
+/// one by one.
+const MAX_NARROWED_CLASS_CODES: usize = 16;
+
+/// Rust-only (ADR-008): the lead bytes a UTF-8 character of a non-negated
+/// class can start with, when the class's multibyte part is a small set of
+/// single code points (at most `MAX_NARROWED_CLASS_CODES`). `CClassMix` reads
+/// a lead byte that makes a character of its own (`enclen` 1) against the
+/// bitset, and a longer character against the code ranges, at the code that
+/// `mbc_to_code` decodes (`first_bytes::utf8_lead_bytes`). `None` for any
+/// other class or encoding, where the caller keeps every byte from 0x80 up.
+fn utf8_class_lead_bytes(cc: &CClassNode, enc: OnigEncoding) -> Option<BitSet> {
+    if cc.is_not() || !std::ptr::addr_eq(enc, &crate::encodings::utf8::ONIG_ENCODING_UTF8) {
+        return None;
+    }
+    let mut leads: BitSet = [0; BITSET_REAL_SIZE];
+    for lead in 0x80..0x100 {
+        if bitset_at(&cc.bs, lead) {
+            bitset_set_bit(&mut leads, lead);
+        }
+    }
+    // The buffer holds the number of ranges, then each range's bounds.
+    let ranges = cc.mbuf.as_ref().map_or(&[][..], |mbuf| &mbuf.data[..]);
+    let words = bbuf_to_u32_vec(ranges);
+    let count = words.first().map_or(0, |&n| n as usize);
+    if count > MAX_NARROWED_CLASS_CODES || words.len() < 1 + 2 * count {
+        return None;
+    }
+    let codes = words[1..1 + 2 * count].as_chunks::<2>().0;
+    if codes.iter().any(|&[low, high]| low != high) {
+        return None;
+    }
+    let decodable = crate::first_bytes::utf8_lead_bytes(codes);
+    for (word, lead_word) in leads.iter_mut().zip(decodable) {
+        *word |= lead_word;
+    }
+    Some(leads)
+}
+
+/// The bytes of an optimizer map as a bitset. Rust-only: map bytes are 0 or
+/// 1 (every writer stores 1), so bit 0 of eight bytes at a time gathers into
+/// one byte of the result, and the map operations below visit only the
+/// members they change or sum instead of all 256 bytes. Grammars with many
+/// `(?i)` letters (two-member classes) call them tens of thousands of times.
+///
+/// The multiplication moves bit 0 of byte `k` to bit `56 + k`. Every other
+/// product term lands on its own bit below 56, so no carry reaches the top
+/// byte.
+fn map_bits(map: &[u8; CHAR_MAP_SIZE]) -> BitSet {
+    let mut bits: BitSet = [0; BITSET_REAL_SIZE];
+    for (word, bytes) in bits.iter_mut().zip(map.as_chunks::<BITS_IN_ROOM>().0) {
+        for (at, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+            let x = u64::from_le_bytes(*chunk);
+            debug_assert_eq!(x & !0x0101_0101_0101_0101, 0, "map bytes are 0 or 1");
+            *word |= ((x.wrapping_mul(0x0102_0408_1020_4080) >> 56) as Bits) << (at * 8);
+        }
+    }
+    bits
+}
+
+/// The members of `bits`, in increasing order.
+fn bit_members(bits: &BitSet) -> impl Iterator<Item = usize> + '_ {
+    bits.iter().enumerate().flat_map(|(word, &b)| {
+        std::iter::successors((b != 0).then_some(b), |&rest| {
+            let rest = rest & (rest - 1);
+            (rest != 0).then_some(rest)
+        })
+        .map(move |rest| word * BITS_IN_ROOM + rest.trailing_zeros() as usize)
+    })
+}
+
+fn alt_merge_opt_map(enc: OnigEncoding, to: &mut OptMap, add: &OptMap) {
+    if to.value == 0 {
+        return;
+    }
+    if add.value == 0 || to.mm.max < add.mm.min {
+        to.clear();
+        return;
+    }
+    to.mm.alt_merge(&add.mm);
+    let to_bits = map_bits(&to.map);
+    let add_bits = map_bits(&add.map);
+    let mut union: BitSet = [0; BITSET_REAL_SIZE];
+    let mut added: BitSet = [0; BITSET_REAL_SIZE];
+    for word in 0..BITSET_REAL_SIZE {
+        union[word] = to_bits[word] | add_bits[word];
+        added[word] = add_bits[word] & !to_bits[word];
+    }
+    for i in bit_members(&added) {
+        to.map[i] = 1;
+    }
+    // The table holds the position values; byte 0 is corrected for the
+    // encoding below.
+    let mut val: i32 = bit_members(&union).map(|i| MAP_POSITION_VALUES[i]).sum();
+    if to.map[0] != 0 {
+        val += map_position_value(enc, 0) - MAP_POSITION_VALUES[0];
+    }
+    to.value = val;
+    alt_merge_opt_anc_info(&mut to.anc, &add.anc);
+}
+
+/// `add_char_opt_map` for every byte below `limit` (a multiple of 32) that
+/// the class's bitset accepts: its set bits, or the clear ones when the
+/// class is negated.
+fn add_cclass_bitset_opt_map(m: &mut OptMap, cc: &CClassNode, enc: OnigEncoding, limit: usize) {
+    let mut bs = [0; BITSET_REAL_SIZE];
+    for (word, &class_word) in bs.iter_mut().zip(&cc.bs).take(limit / BITS_IN_ROOM) {
+        *word = if cc.is_not() { !class_word } else { class_word };
+    }
+    add_bitset_opt_map(m, &bs, enc);
+}
+
+/// `add_char_opt_map` for every member of `bs`, visiting only the members
+/// the map does not hold yet (`map_bits`).
+fn add_bitset_opt_map(m: &mut OptMap, bs: &BitSet, enc: OnigEncoding) {
+    let have = map_bits(&m.map);
+    let mut added: BitSet = [0; BITSET_REAL_SIZE];
+    for word in 0..BITSET_REAL_SIZE {
+        added[word] = bs[word] & !have[word];
+    }
+    // Rust-only: the position values from the table, byte 0 corrected for
+    // the encoding as in `alt_merge_opt_map`.
+    let mut value: i32 = bit_members(&added).map(|i| MAP_POSITION_VALUES[i]).sum();
+    if added[0] & 1 != 0 {
+        value += map_position_value(enc, 0) - MAP_POSITION_VALUES[0];
+    }
+    m.value += value;
+    // Rust-only: the map bytes of eight members at a time. Map bytes are 0
+    // or 1, and `added` holds only members the map lacks, so OR-ing in their
+    // bytes sets exactly those.
+    for (k, chunk) in m.map.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        let bits = (added[k / 4] >> ((k % 4) * 8)) as usize & 0xff;
+        *chunk = (u64::from_le_bytes(*chunk) | BIT_BYTES[bits]).to_le_bytes();
+    }
+}
+
+/// Rust-only: the byte `j` of `BIT_BYTES[b]` is bit `j` of `b`, so a map
+/// chunk takes the members of eight bits at once.
+const BIT_BYTES: [u64; 256] = {
+    let mut table = [0; 256];
+    let mut b = 0;
+    while b < 256 {
+        let mut j = 0;
+        while j < 8 {
+            table[b] |= (((b >> j) & 1) as u64) << (8 * j);
+            j += 1;
+        }
+        b += 1;
+    }
+    table
+};
+
+/// The codes below `range` (128 or 256) for which `enc.is_code_ctype` holds,
+/// as a bitset. Rust-only: `optimize_nodes` asks for the same few types
+/// (`\w`, `\s`, `\d`) in grammar after grammar, one `is_code_ctype` call per
+/// code each time, so the answers are kept per thread.
+pub(crate) fn code_ctype_bitset(enc: OnigEncoding, ctype: u32, range: usize) -> BitSet {
+    type Entry = (*const (), u32, usize, BitSet);
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let enc_id = enc as *const dyn Encoding as *const ();
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(&(.., bits)) = cache
+            .iter()
+            .find(|&&(id, t, r, _)| id == enc_id && t == ctype && r == range)
+        {
+            return bits;
+        }
+        let mut bits: BitSet = [0; BITSET_REAL_SIZE];
+        for code in 0..range {
+            if enc.is_code_ctype(code as OnigCodePoint, ctype) {
+                bitset_set_bit(&mut bits, code);
+            }
+        }
+        cache.push((enc_id, ctype, range, bits));
+        bits
+    })
+}
+
+fn set_bound_node_opt_info(opt: &mut OptNode, plen: &MinMaxLen) {
+    opt.sb.mm = *plen;
+    opt.spr.mm = *plen;
+    opt.map.mm = *plen;
+}
+
+fn concat_left_node_opt_info(enc: OnigEncoding, to: &mut OptNode, add: &mut OptNode) {
+    let mut tanc = OptAnc::new();
+    concat_opt_anc_info(&mut tanc, &to.anc, &add.anc, to.len.max, add.len.max);
+    to.anc = tanc;
+
+    if add.sb.len > 0 && to.len.max == 0 {
+        let mut tanc2 = OptAnc::new();
+        concat_opt_anc_info(&mut tanc2, &to.anc, &add.sb.anc, to.len.max, add.len.max);
+        add.sb.anc = tanc2;
+    }
+
+    if add.map.value > 0 && to.len.max == 0 && add.map.mm.max == 0 {
+        add.map.anc.left |= to.anc.left;
+    }
+
+    let sb_reach = to.sb.reach_end;
+    let sm_reach = to.sm.reach_end;
+
+    if add.len.max != 0 {
+        to.sb.reach_end = 0;
+        to.sm.reach_end = 0;
+    }
+
+    if add.sb.len > 0 {
+        if sb_reach != 0 {
+            concat_opt_exact(&mut to.sb, &add.sb, enc);
+            add.sb.clear();
+        } else if sm_reach != 0 {
+            concat_opt_exact(&mut to.sm, &add.sb, enc);
+            add.sb.clear();
+        }
+    }
+    select_opt_exact(enc, &mut to.sm, &add.sb);
+    select_opt_exact(enc, &mut to.sm, &add.sm);
+
+    if to.spr.len > 0 {
+        if add.len.max > 0 {
+            if to.spr.mm.max == 0 {
+                select_opt_exact(enc, &mut to.sb, &to.spr.clone());
+            } else {
+                select_opt_exact(enc, &mut to.sm, &to.spr.clone());
+            }
+        }
+    } else if add.spr.len > 0 {
+        to.spr = add.spr;
+    }
+
+    select_opt_map(&mut to.map, &add.map);
+    to.len.add(&add.len);
+}
+
+fn alt_merge_node_opt_info(to: &mut OptNode, add: &OptNode, env_enc: OnigEncoding) {
+    alt_merge_opt_anc_info(&mut to.anc, &add.anc);
+    alt_merge_opt_exact(&mut to.sb, &add.sb, env_enc);
+    alt_merge_opt_exact(&mut to.sm, &add.sm, env_enc);
+    alt_merge_opt_exact(&mut to.spr, &add.spr, env_enc);
+    alt_merge_opt_map(env_enc, &mut to.map, &add.map);
+    to.len.alt_merge(&add.len);
+}
+
+/// Rust-only (ADR-008): the most characters a fixed-length positive
+/// look-behind that can come before the first character a match of `node`
+/// reads steps back, or 0. A variable-length one checks that its body ends
+/// where it started (`CHECK_POSITION`), so it keeps the position.
+fn leading_look_behind_reach(node: &Node, env: &ParseEnv) -> u32 {
+    match &node.inner {
+        NodeInner::Anchor(an)
+            if an.anchor_type == ANCR_LOOK_BEHIND && an.char_min_len == an.char_max_len =>
+        {
+            an.char_max_len
+        }
+        NodeInner::List(_) => {
+            let mut reach = 0;
+            let mut cur = Some(node);
+            while let Some(NodeInner::List(cons)) = cur.map(|n| &n.inner) {
+                reach = reach.max(leading_look_behind_reach(&cons.car, env));
+                if node_min_byte_len(&cons.car, env) > 0 {
+                    break;
+                }
+                cur = cons.cdr.as_deref();
+            }
+            reach
+        }
+        NodeInner::Alt(_) => {
+            let mut reach = 0;
+            let mut cur = Some(node);
+            while let Some(NodeInner::Alt(cons)) = cur.map(|n| &n.inner) {
+                reach = reach.max(leading_look_behind_reach(&cons.car, env));
+                cur = cons.cdr.as_deref();
+            }
+            reach
+        }
+        NodeInner::Quant(QuantNode { body, .. }) | NodeInner::Bag(BagNode { body, .. }) => body
+            .as_deref()
+            .map_or(0, |body| leading_look_behind_reach(body, env)),
+        _ => 0,
+    }
+}
+
+/// Rust-only (ADR-008): whether `node` repeats `.` without an upper bound
+/// (`.*`, `.*?`, `(.)+`), outside or inside groups and look-arounds.
+fn has_anychar_run(node: &Node) -> bool {
+    tree_any(node, &|node| match &node.inner {
+        NodeInner::Quant(qn) if qn.upper == INFINITE_REPEAT => {
+            Some(qn.body.as_deref().is_some_and(|body| {
+                tree_any(body, &|node| match &node.inner {
+                    NodeInner::CType(ct) => Some(ct.ctype == CTYPE_ANYCHAR),
+                    _ => None,
+                })
+            }))
+        }
+        _ => None,
+    })
+}
+
+/// Whether `test` holds for a node of the tree under `node`, through lists,
+/// alternatives, quantifiers, groups and look-arounds. `test` decides a node
+/// (`Some`) or leaves it to its children (`None`).
+fn tree_any(node: &Node, test: &dyn Fn(&Node) -> Option<bool>) -> bool {
+    if let Some(found) = test(node) {
+        return found;
+    }
+    match &node.inner {
+        NodeInner::List(_) | NodeInner::Alt(_) => {
+            let mut cur = Some(node);
+            while let Some(NodeInner::List(cons) | NodeInner::Alt(cons)) = cur.map(|n| &n.inner) {
+                if tree_any(&cons.car, test) {
+                    return true;
+                }
+                cur = cons.cdr.as_deref();
+            }
+            false
+        }
+        NodeInner::Quant(QuantNode { body, .. })
+        | NodeInner::Bag(BagNode { body, .. })
+        | NodeInner::Anchor(AnchorNode { body, .. }) => {
+            body.as_deref().is_some_and(|body| tree_any(body, test))
+        }
+        _ => false,
+    }
+}
+
+fn node_max_byte_len(node: &Node, env: &ParseEnv) -> OnigLen {
+    match &node.inner {
+        NodeInner::List(_) => {
+            let mut len: OnigLen = 0;
+            let mut cur = node;
+            while let NodeInner::List(cons) = &cur.inner {
+                let tmax = node_max_byte_len(&cons.car, env);
+                len = distance_add(len, tmax);
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            len
+        }
+        NodeInner::Alt(_) => {
+            let mut len: OnigLen = 0;
+            let mut cur = node;
+            while let NodeInner::Alt(cons) = &cur.inner {
+                let tmax = node_max_byte_len(&cons.car, env);
+                if len < tmax {
+                    len = tmax;
+                }
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            len
+        }
+        // A literal alternation trie stores its index; the summary holds the
+        // longest byte length of the alternation it replaced.
+        NodeInner::String(sn) if node.has_status(ND_ST_LITERAL_ALT) => {
+            LiteralAltSummary::decode(&sn.s).max_len
+        }
+        NodeInner::String(sn) => sn.s.len() as OnigLen,
+        NodeInner::CType(_) | NodeInner::CClass(_) => env.enc.max_enc_len() as OnigLen,
+        // C: the maximum over the referenced groups of
+        // node_max_byte_len(mem_env[backs[i]].mem_node). Following a
+        // back-reference would leave the ownership tree through a raw capture
+        // pointer, so the port reads each group's length from
+        // env.group_max_len (see GroupMaxLen).
+        NodeInner::BackRef(br) => {
+            if node.has_status(ND_ST_CHECKER) {
+                0
+            } else if node.has_status(ND_ST_RECURSION) {
+                if node.has_status(ND_ST_NEST_LEVEL) {
+                    INFINITE_LEN
+                } else {
+                    0
+                }
+            } else {
+                br.back_refs()
+                    .iter()
+                    .map(|&back| {
+                        env.group_max_len
+                            .get(back as usize)
+                            .copied()
+                            .unwrap_or(INFINITE_LEN)
+                    })
+                    .max()
+                    .unwrap_or(0)
+            }
+        }
+        // Calls are self-referential AST edges. Staying inside the ownership tree
+        // avoids aliasing their raw targets; an infinite maximum is conservative.
+        NodeInner::Call(_) => INFINITE_LEN,
+        NodeInner::Quant(qn) => {
+            if qn.upper == 0 {
+                0
+            } else if let Some(ref body) = qn.body {
+                let len = node_max_byte_len(body, env);
+                if len != 0 {
+                    if !is_infinite_repeat(qn.upper) {
+                        distance_multiply(len, qn.upper)
+                    } else {
+                        INFINITE_LEN
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+        NodeInner::Bag(bn) => match bn.bag_type {
+            BagType::Memory => {
+                // Calls and backreferences above are conservative leaves, so this
+                // traversal cannot cycle and needs no mutation-based cache.
+                if let Some(ref body) = bn.body {
+                    node_max_byte_len(body, env)
+                } else {
+                    0
+                }
+            }
+            BagType::Option | BagType::StopBacktrack => {
+                if let Some(ref body) = bn.body {
+                    node_max_byte_len(body, env)
+                } else {
+                    0
+                }
+            }
+            BagType::IfElse => {
+                if let BagData::IfElse {
+                    ref then_node,
+                    ref else_node,
+                } = bn.bag_data
+                {
+                    let mut len = if let Some(ref body) = bn.body {
+                        node_max_byte_len(body, env)
+                    } else {
+                        0
+                    };
+                    if let Some(then_n) = then_node {
+                        let tlen = node_max_byte_len(then_n, env);
+                        len = distance_add(len, tlen);
+                    }
+                    let elen = if let Some(else_n) = else_node {
+                        node_max_byte_len(else_n, env)
+                    } else {
+                        0
+                    };
+                    if elen > len { elen } else { len }
+                } else {
+                    0
+                }
+            }
+        },
+        NodeInner::Anchor(_) | NodeInner::Gimmick(_) => 0,
+    }
+}
+
+/// C: the max_len that node_max_byte_len caches on each BAG_MEMORY node
+/// (ND_ST_FIXED_MAX) and returns for a back-reference to the group. A group
+/// reached again while its own length is being computed counts as
+/// INFINITE_LEN (C: MARK1).
+struct GroupMaxLen<'a> {
+    groups: Vec<Option<&'a Node>>,
+    fixed: Vec<Option<OnigLen>>,
+    mark1: Vec<bool>,
+}
+
+impl GroupMaxLen<'_> {
+    fn group(&mut self, regnum: usize, env: &ParseEnv) -> OnigLen {
+        if let Some(Some(len)) = self.fixed.get(regnum) {
+            return *len;
+        }
+        if self.mark1.get(regnum).copied().unwrap_or(true) {
+            return INFINITE_LEN; /* recursive */
+        }
+        let Some(Some(node)) = self.groups.get(regnum).copied() else {
+            return INFINITE_LEN;
+        };
+        self.mark1[regnum] = true;
+        let len = match &node.inner {
+            NodeInner::Bag(bn) => bn.body.as_deref().map_or(0, |body| self.len(body, env)),
+            _ => 0,
+        };
+        self.mark1[regnum] = false;
+        self.fixed[regnum] = Some(len);
+        len
+    }
+
+    /// node_max_byte_len with groups and back-references resolved through
+    /// the cache.
+    fn len(&mut self, node: &Node, env: &ParseEnv) -> OnigLen {
+        match &node.inner {
+            NodeInner::List(_) => {
+                let mut len: OnigLen = 0;
+                let mut cur = node;
+                while let NodeInner::List(cons) = &cur.inner {
+                    len = distance_add(len, self.len(&cons.car, env));
+                    match &cons.cdr {
+                        Some(next) => cur = next,
+                        None => break,
+                    }
+                }
+                len
+            }
+            NodeInner::Alt(_) => {
+                let mut len: OnigLen = 0;
+                let mut cur = node;
+                while let NodeInner::Alt(cons) = &cur.inner {
+                    let tmax = self.len(&cons.car, env);
+                    if len < tmax {
+                        len = tmax;
+                    }
+                    match &cons.cdr {
+                        Some(next) => cur = next,
+                        None => break,
+                    }
+                }
+                len
+            }
+            NodeInner::Quant(qn) => match &qn.body {
+                Some(body) if qn.upper != 0 => {
+                    let len = self.len(body, env);
+                    if len == 0 {
+                        0
+                    } else if !is_infinite_repeat(qn.upper) {
+                        distance_multiply(len, qn.upper)
+                    } else {
+                        INFINITE_LEN
+                    }
+                }
+                _ => 0,
+            },
+            NodeInner::Bag(bn) => match bn.bag_type {
+                BagType::Memory => self.group(bn.regnum() as usize, env),
+                BagType::Option | BagType::StopBacktrack => {
+                    bn.body.as_deref().map_or(0, |body| self.len(body, env))
+                }
+                BagType::IfElse => {
+                    let BagData::IfElse {
+                        then_node,
+                        else_node,
+                    } = &bn.bag_data
+                    else {
+                        return 0;
+                    };
+                    let mut len = bn.body.as_deref().map_or(0, |body| self.len(body, env));
+                    if let Some(then_node) = then_node {
+                        len = distance_add(len, self.len(then_node, env));
+                    }
+                    let elen = else_node.as_deref().map_or(0, |e| self.len(e, env));
+                    if elen > len { elen } else { len }
+                }
+            },
+            NodeInner::BackRef(br)
+                if !node.has_status(ND_ST_CHECKER) && !node.has_status(ND_ST_RECURSION) =>
+            {
+                let mut len: OnigLen = 0;
+                for &back in br.back_refs() {
+                    let tmax = self.group(back as usize, env);
+                    if len < tmax {
+                        len = tmax;
+                    }
+                }
+                len
+            }
+            _ => node_max_byte_len(node, env),
+        }
+    }
+}
+
+/// Fill `env.group_max_len` for every group of a pattern with
+/// back-references.
+fn compute_group_max_lens(root: &Node, env: &ParseEnv) -> Vec<OnigLen> {
+    let n = env.num_mem.max(0) as usize + 1;
+    let mut groups = vec![None; n];
+    collect_memory_groups(root, &mut groups);
+    let mut cache = GroupMaxLen {
+        groups,
+        fixed: vec![None; n],
+        mark1: vec![false; n],
+    };
+    (0..n).map(|regnum| cache.group(regnum, env)).collect()
+}
+
+/// Which byte maps `optimize_nodes` computes. With `extra` it adds the
+/// Rust-only maps C does not compute; without, `skipped` records whether
+/// there was one to add, that is, whether a pass with `extra` could differ.
+struct StartMaps {
+    extra: bool,
+    /// Whether the pattern begins with a look-behind, so the extra maps take
+    /// the exact lead bytes of multibyte class members (`utf8_class_lead_bytes`).
+    narrow_leads: bool,
+    skipped: std::cell::Cell<bool>,
+}
+
+impl StartMaps {
+    fn new(extra: bool) -> Self {
+        StartMaps {
+            extra,
+            narrow_leads: false,
+            skipped: std::cell::Cell::new(false),
+        }
+    }
+}
+
+/// Rust-only: the map of an alternation branch at its start, for the extra
+/// maps. C's merge drops an alternation's map where the branches' best maps
+/// sit at different distances, and a sequence often prefers the map of a
+/// later item: a class's multi-character case folds (`[aA]ʾ`, `[ἀἈ][ιΙ]`)
+/// are such sequences beside the class. Where that merge leaves no map, the
+/// branches' maps at their start, each the map of the branch's first item
+/// where that item reads a character, still give every byte a match can
+/// start with. `None` where a branch has no such map.
+fn branch_start_map(
+    node: &Node,
+    branch: &OptNode,
+    enc: OnigEncoding,
+    env_mm: &MinMaxLen,
+    scan_env: &ParseEnv,
+    start_maps: &StartMaps,
+) -> Option<OptMap> {
+    if branch.map.value > 0 && branch.map.mm.max == 0 {
+        return Some(branch.map);
+    }
+    let NodeInner::List(cons) = &node.inner else {
+        return None;
+    };
+    let mut first = OptNode::new();
+    let mut first_mm = *env_mm;
+    if optimize_nodes(
+        &cons.car,
+        &mut first,
+        enc,
+        &mut first_mm,
+        scan_env,
+        start_maps,
+    ) != 0
+    {
+        return None;
+    }
+    (first.len.min > 0 && first.map.value > 0 && first.map.mm.max == 0).then_some(first.map)
+}
+
+/// `start_maps` can add the Rust-only byte maps C does not compute: the
+/// ASCII half of a class with multibyte members or a negated class, and the
+/// `\w` / `\s` / `\d` types in a multibyte encoding. Only
+/// `set_optimize_info_from_tree` asks for them, for a pattern C gives no
+/// optimizer or one at an unbounded distance.
+fn optimize_nodes(
+    node: &Node,
+    opt: &mut OptNode,
+    env_enc: OnigEncoding,
+    env_mm: &mut MinMaxLen,
+    scan_env: &ParseEnv,
+    start_maps: &StartMaps,
+) -> i32 {
+    let enc = env_enc;
+    opt.clear();
+    set_bound_node_opt_info(opt, env_mm);
+
+    // Literal alternation trie: the length range and start bytes of the
+    // alternation it replaced, as an alternation of strings would merge
+    // them (no exact string).
+    // C's optimizer sees a case-insensitive trie as the alternation C
+    // unravels, whose map C may drop (a branch's best map sits behind the
+    // others'). The Rust-only start maps take every byte the trie can start
+    // with, as for a case-sensitive trie.
+    if node.has_status(ND_ST_LITERAL_ALT) {
+        if let NodeInner::String(sn) = &node.inner {
+            if !start_maps.extra {
+                if let Some(unravelled) = LiteralAltSummary::unravelled(&sn.s) {
+                    optimize_unravelled(unravelled, opt, enc, env_mm);
+                    if opt.map.value == 0 {
+                        start_maps.skipped.set(true);
+                    }
+                    return 0;
+                }
+            }
+            let summary = LiteralAltSummary::decode(&sn.s);
+            for byte in bitset_members(&summary.start_bytes) {
+                add_char_opt_map(&mut opt.map, byte as u8, enc);
+            }
+            opt.len.set(summary.min_len, summary.max_len);
+        }
+        return 0;
+    }
+
+    match &node.inner {
+        NodeInner::List(_) => {
+            let mut nenv_mm = *env_mm;
+            let mut cur = node;
+            while let NodeInner::List(cons) = &cur.inner {
+                let mut xo = OptNode::new();
+                let r = optimize_nodes(&cons.car, &mut xo, enc, &mut nenv_mm, scan_env, start_maps);
+                if r != 0 {
+                    return r;
+                }
+                nenv_mm.add(&xo.len);
+                concat_left_node_opt_info(enc, opt, &mut xo);
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+        }
+        NodeInner::Alt(_) => {
+            let mut first = true;
+            // Rust-only: with the extra maps, the branches' maps at their
+            // start (`branch_start_map`), merged from the branch at which
+            // C's merge drops the map; `None` while C's merge holds one.
+            let mut start_map: Option<OptMap> = None;
+            let mut start_maps_hold = start_maps.extra;
+            let mut cur = node;
+            while let NodeInner::Alt(cons) = &cur.inner {
+                let mut xo = OptNode::new();
+                let r = optimize_nodes(&cons.car, &mut xo, enc, env_mm, scan_env, start_maps);
+                if r != 0 {
+                    return r;
+                }
+                // `alt_merge_opt_map` keeps no map from here on.
+                let c_drops = if first {
+                    xo.map.value == 0
+                } else {
+                    start_map.is_some()
+                        || (opt.map.value > 0
+                            && (xo.map.value == 0 || opt.map.mm.max < xo.map.mm.min))
+                };
+                if start_maps_hold && c_drops {
+                    // C's map so far merges the branches' start maps where
+                    // it sits at the start.
+                    if start_map.is_none() && !first {
+                        start_map = (opt.map.mm.max == 0).then_some(opt.map);
+                        start_maps_hold = start_map.is_some();
+                    }
+                    match branch_start_map(&cons.car, &xo, enc, env_mm, scan_env, start_maps) {
+                        Some(map) if start_maps_hold => match &mut start_map {
+                            Some(to) => alt_merge_opt_map(enc, to, &map),
+                            None => start_map = Some(map),
+                        },
+                        _ => start_maps_hold = false,
+                    }
+                }
+                if first {
+                    *opt = xo;
+                    first = false;
+                } else {
+                    alt_merge_node_opt_info(opt, &xo, enc);
+                }
+                match &cons.cdr {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            if start_maps_hold && opt.map.value == 0 {
+                if let Some(map) = start_map.filter(|map| map.value > 0) {
+                    opt.map = map;
+                }
+            }
+        }
+        NodeInner::String(sn) => {
+            let slen = sn.s.len();
+            concat_opt_exact_str(&mut opt.sb, &sn.s, enc);
+            if slen > 0 {
+                add_char_opt_map(&mut opt.map, sn.s[0], enc);
+            }
+            opt.len.set(slen as OnigLen, slen as OnigLen);
+        }
+        NodeInner::CClass(cc) => {
+            if cc.mbuf.is_some() || cc.is_not() {
+                let min = enc.min_enc_len() as OnigLen;
+                let max = enc.max_enc_len() as OnigLen;
+                if start_maps.extra {
+                    // The ASCII part of the map from the bitset; any lead
+                    // byte from 0x80 up may start a multibyte member, unless
+                    // a leading look-behind asks for the exact lead bytes.
+                    add_cclass_bitset_opt_map(&mut opt.map, cc, enc, 0x80);
+                    match start_maps
+                        .narrow_leads
+                        .then(|| utf8_class_lead_bytes(cc, enc))
+                        .flatten()
+                    {
+                        Some(leads) => add_bitset_opt_map(&mut opt.map, &leads, enc),
+                        None => add_high_bytes_opt_map(&mut opt.map, enc),
+                    }
+                } else {
+                    start_maps.skipped.set(true);
+                }
+                opt.len.set(min, max);
+            } else {
+                add_cclass_bitset_opt_map(&mut opt.map, cc, enc, SINGLE_BYTE_SIZE);
+                opt.len.set(1, 1);
+            }
+        }
+        NodeInner::CType(ct) => {
+            let max = enc.max_enc_len() as OnigLen;
+            let min = if max == 1 {
+                1
+            } else {
+                enc.min_enc_len() as OnigLen
+            };
+            // Compute first-byte map for word, space, and digit types.
+            // For multi-byte encodings (UTF-8), limit positive matches to ASCII
+            // range (0-127) since those are the only single-byte characters.
+            // C maps `\w` in a single-byte encoding only.
+            let extra_mapped = ct.ctype == crate::oniguruma::ONIGENC_CTYPE_WORD as i32
+                || ct.ctype == crate::oniguruma::ONIGENC_CTYPE_SPACE as i32
+                || ct.ctype == crate::oniguruma::ONIGENC_CTYPE_DIGIT as i32;
+            let c_mapped = max == 1 && ct.ctype == crate::oniguruma::ONIGENC_CTYPE_WORD as i32;
+            let mapped = if start_maps.extra {
+                extra_mapped
+            } else {
+                if extra_mapped && !c_mapped {
+                    start_maps.skipped.set(true);
+                }
+                c_mapped
+            };
+            match ct.ctype {
+                CTYPE_ANYCHAR => { /* nothing to add to map */ }
+                _ if mapped => {
+                    let ctype_u32 = ct.ctype as u32;
+                    let range = if ct.ascii_mode || max > 1 {
+                        128
+                    } else {
+                        SINGLE_BYTE_SIZE
+                    };
+                    let mut members = code_ctype_bitset(enc, ctype_u32, range);
+                    if ct.not {
+                        for (word, room) in members.iter_mut().enumerate() {
+                            *room = if word * BITS_IN_ROOM < range {
+                                !*room
+                            } else {
+                                0
+                            };
+                        }
+                        add_bitset_opt_map(&mut opt.map, &members, enc);
+                        if range < SINGLE_BYTE_SIZE {
+                            add_high_bytes_opt_map(&mut opt.map, enc);
+                        }
+                    } else {
+                        add_bitset_opt_map(&mut opt.map, &members, enc);
+                        if max > 1 && !ct.ascii_mode {
+                            // Non-ASCII-mode: Unicode spaces/words/digits may
+                            // start with lead bytes >= 0x80
+                            add_high_bytes_opt_map(&mut opt.map, enc);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            opt.len.set(min, max);
+        }
+        NodeInner::Anchor(an) => {
+            match an.anchor_type {
+                ANCR_BEGIN_BUF | ANCR_BEGIN_POSITION | ANCR_BEGIN_LINE | ANCR_END_BUF
+                | ANCR_SEMI_END_BUF | ANCR_END_LINE | ANCR_PREC_READ_NOT | ANCR_LOOK_BEHIND => {
+                    add_opt_anc_info(&mut opt.anc, an.anchor_type);
+                }
+                ANCR_PREC_READ => {
+                    if let Some(ref body) = an.body {
+                        let mut xo = OptNode::new();
+                        let r = optimize_nodes(body, &mut xo, enc, env_mm, scan_env, start_maps);
+                        if r == 0 {
+                            if xo.sb.len > 0 {
+                                opt.spr = xo.sb;
+                            } else if xo.sm.len > 0 {
+                                opt.spr = xo.sm;
+                            }
+                            opt.spr.reach_end = 0;
+                            if xo.map.value > 0 {
+                                opt.map = xo.map;
+                            }
+                        }
+                    }
+                }
+                _ => { /* ANCR_LOOK_BEHIND_NOT etc. */ }
+            }
+        }
+        NodeInner::BackRef(_br) => {
+            if !node.has_status(ND_ST_CHECKER) {
+                let min = node_min_byte_len(node, scan_env);
+                let max = node_max_byte_len(node, scan_env);
+                opt.len.set(min, max);
+            }
+        }
+        // Calls are self-referential AST edges. Use conservative optimization
+        // bounds instead of following their raw target pointers.
+        NodeInner::Call(_) => opt.len.set(0, INFINITE_LEN),
+        NodeInner::Quant(qn) => {
+            if qn.upper == 0 {
+                opt.len.set(0, 0);
+            } else if let Some(ref body) = qn.body {
+                let mut xo = OptNode::new();
+                let r = optimize_nodes(body, &mut xo, enc, env_mm, scan_env, start_maps);
+                if r != 0 {
+                    return r;
+                }
+
+                if qn.lower > 0 {
+                    *opt = xo.clone();
+                    if xo.sb.len > 0 && xo.sb.reach_end != 0 {
+                        let mut i = 2;
+                        while i <= qn.lower && !opt.sb.is_full() {
+                            let rc = concat_opt_exact(&mut opt.sb, &xo.sb, enc);
+                            if rc > 0 {
+                                break;
+                            }
+                            i += 1;
+                        }
+                        if i < qn.lower {
+                            opt.sb.reach_end = 0;
+                        }
+                    }
+                    if qn.lower != qn.upper {
+                        opt.sb.reach_end = 0;
+                        opt.sm.reach_end = 0;
+                    }
+                    if qn.lower > 1 {
+                        opt.sm.reach_end = 0;
+                    }
+                }
+
+                let max = if is_infinite_repeat(qn.upper) {
+                    if env_mm.max == 0 && body.is_anychar() && qn.greedy {
+                        if body.has_status(ND_ST_MULTILINE) {
+                            add_opt_anc_info(&mut opt.anc, ANCR_ANYCHAR_INF_ML);
+                        } else {
+                            add_opt_anc_info(&mut opt.anc, ANCR_ANYCHAR_INF);
+                        }
+                    }
+                    if xo.len.max > 0 { INFINITE_LEN } else { 0 }
+                } else {
+                    distance_multiply(xo.len.max, qn.upper)
+                };
+                let min = distance_multiply(xo.len.min, qn.lower);
+                opt.len.set(min, max);
+            }
+        }
+        NodeInner::Bag(bn) => match bn.bag_type {
+            BagType::StopBacktrack | BagType::Option => {
+                if let Some(ref body) = bn.body {
+                    let r = optimize_nodes(body, opt, enc, env_mm, scan_env, start_maps);
+                    if r != 0 {
+                        return r;
+                    }
+                }
+            }
+            BagType::Memory => {
+                if let Some(ref body) = bn.body {
+                    let r = optimize_nodes(body, opt, enc, env_mm, scan_env, start_maps);
+                    if r != 0 {
+                        return r;
+                    }
+                    if is_set_opt_anc_info(&opt.anc, ANCR_ANYCHAR_INF_MASK)
+                        && mem_status_at(scan_env.backrefed_mem, bn.regnum() as usize)
+                    {
+                        remove_opt_anc_info(&mut opt.anc, ANCR_ANYCHAR_INF_MASK);
+                    }
+                }
+            }
+            BagType::IfElse => {
+                if let BagData::IfElse {
+                    ref then_node,
+                    ref else_node,
+                } = bn.bag_data
+                {
+                    if else_node.is_some() {
+                        let mut nenv_mm = *env_mm;
+                        if let Some(ref body) = bn.body {
+                            let mut xo = OptNode::new();
+                            let r = optimize_nodes(
+                                body,
+                                &mut xo,
+                                enc,
+                                &mut nenv_mm,
+                                scan_env,
+                                start_maps,
+                            );
+                            if r != 0 {
+                                return r;
+                            }
+                            nenv_mm.add(&xo.len);
+                            concat_left_node_opt_info(enc, opt, &mut xo);
+                        }
+                        if let Some(then_n) = then_node {
+                            let mut xo = OptNode::new();
+                            let r = optimize_nodes(
+                                then_n,
+                                &mut xo,
+                                enc,
+                                &mut nenv_mm,
+                                scan_env,
+                                start_maps,
+                            );
+                            if r != 0 {
+                                return r;
+                            }
+                            concat_left_node_opt_info(enc, opt, &mut xo);
+                        }
+                        if let Some(else_n) = else_node {
+                            let mut xo = OptNode::new();
+                            let r =
+                                optimize_nodes(else_n, &mut xo, enc, env_mm, scan_env, start_maps);
+                            if r != 0 {
+                                return r;
+                            }
+                            alt_merge_node_opt_info(opt, &xo, enc);
+                        }
+                    }
+                }
+            }
+        },
+        NodeInner::Gimmick(_) => {}
+    }
+    0
+}
+
+/// Build Sunday quick search / BMH skip table for exact string matching.
+/// Mirrors C's set_sunday_quick_search_or_bmh_skip_table.
+fn set_sunday_quick_search_or_bmh_skip_table(
+    enc: OnigEncoding,
+    s: &[u8],
+    skip: &mut [u8; CHAR_MAP_SIZE],
+    roffset: &mut i32,
+) -> i32 {
+    let mut offset = crate::regenc::enc_get_skip_offset(enc) as i32;
+    if offset == 7 {
+        // ENC_SKIP_OFFSET_1_OR_0
+        let mut p = 0;
+        loop {
+            let len = enclen(enc, &s[p..], p);
+            if p + len >= s.len() {
+                offset = if len == 1 { 1 } else { 0 };
+                break;
+            }
+            p += len;
+        }
+    }
+
+    let slen = s.len() as i32;
+    if slen + offset >= 255 {
+        return ONIGERR_PARSER_BUG;
+    }
+
+    *roffset = offset;
+
+    skip.fill((slen + offset) as u8);
+
+    let mut p = 0;
+    while p < s.len() {
+        let clen = {
+            let l = enclen(enc, &s[p..], p);
+            if p + l > s.len() { s.len() - p } else { l }
+        };
+        let remaining = (s.len() - p) as i32;
+        for j in 0..clen {
+            let z = remaining - j as i32 + (offset - 1);
+            if z <= 0 {
+                break;
+            }
+            skip[s[p + j] as usize] = z as u8;
+        }
+        p += clen;
+    }
+    0
+}
+
+fn set_optimize_exact(reg: &mut RegexType, e: &OptStr) -> i32 {
+    if e.len == 0 {
+        return 0;
+    }
+    reg.exact = e.s[..e.len].to_vec();
+
+    let allow_reverse = reg.enc.is_allowed_reverse_match(&reg.exact);
+
+    if e.len >= 2 || (e.len >= 1 && allow_reverse) {
+        let exact_copy = reg.exact.clone();
+        let r = set_sunday_quick_search_or_bmh_skip_table(
+            reg.enc,
+            &exact_copy,
+            &mut reg.map,
+            &mut reg.map_offset,
+        );
+        if r != 0 {
+            return r;
+        }
+        reg.optimize = if allow_reverse {
+            OptimizeType::StrFast
+        } else {
+            OptimizeType::StrFastStepForward
+        };
+    } else {
+        reg.optimize = OptimizeType::Str;
+    }
+
+    reg.exact_finder = (reg.optimize == OptimizeType::StrFast && reg.exact.len() > 1)
+        .then(|| Box::new(memchr::memmem::Finder::new(&reg.exact).into_owned()));
+
+    reg.dist_min = e.mm.min;
+    reg.dist_max = e.mm.max;
+
+    if reg.dist_min != INFINITE_LEN {
+        reg.threshold_len = (reg.dist_min as i32) + (reg.exact.len() as i32);
+    }
+    0
+}
+
+fn set_optimize_map(reg: &mut RegexType, m: &OptMap) {
+    reg.map = m.map;
+    reg.optimize = OptimizeType::Map;
+    reg.dist_min = m.mm.min;
+    reg.dist_max = m.mm.max;
+    if reg.dist_min != INFINITE_LEN {
+        reg.threshold_len = (reg.dist_min as i32) + (reg.enc.min_enc_len() as i32);
+    }
+
+    // Precompute distinct set bytes for SIMD-accelerated map_search.
+    // Only accelerate when all set bytes are ASCII (< 0x80) to avoid
+    // false positives from UTF-8 continuation bytes.
+    let mut bytes = [0u8; 3];
+    let mut count: u8 = 0;
+    for i in 0..CHAR_MAP_SIZE {
+        if m.map[i] != 0 {
+            if count >= 3 || i >= 0x80 {
+                count = 0;
+                break;
+            }
+            bytes[count as usize] = i as u8;
+            count += 1;
+        }
+    }
+    reg.map_bytes = bytes;
+    reg.map_byte_count = count;
+    reg.map_ascii_ranges = MapAsciiRanges::of(&m.map);
+}
+
+/// Rust-only: the share of the ASCII bytes' position value an extra start
+/// map has to leave out to be searched (`extra_start_map_filters`).
+const EXTRA_START_MAP_MIN_LEFT_OUT: i32 = 20;
+
+/// Rust-only: whether a start map from the extra class and type maps, for an
+/// expression C gives no optimizer, leaves out enough to be searched. A map
+/// at the match start is searched once per position it admits
+/// (`forward_search`), which costs a fair part of a failed attempt; a map
+/// that leaves out next to nothing, such as the one of `[^\\]`, makes every
+/// attempt dearer and skips almost none. C's position values
+/// (`map_position_value`) rate how often a byte occurs in text; the map is
+/// searched when the bytes it leaves out are worth at least 1/20 of the
+/// ASCII bytes' value. Over the grammar patterns this keeps every map whose
+/// search measured cheaper than trying every position; the break-even lies
+/// between 1/20 and 1/10.
+///
+/// Other maps are kept: one behind a line anchor, whose search also steps to
+/// line starts (`sub_anchor`), and one at a distance above 0. That one is
+/// searched once per window, which the bytecode start map then narrows
+/// (`window_start_map`), or once per search where the distance is
+/// unbounded; there it also keeps a RegSet entry a fallback entry with a
+/// start filter.
+fn extra_start_map_filters(enc: OnigEncoding, m: &OptMap) -> bool {
+    if (m.anc.left & ANCR_BEGIN_LINE) != 0 || m.mm.max != 0 {
+        return true;
+    }
+    let ascii: i32 = (0..0x80).map(|byte| map_position_value(enc, byte)).sum();
+    let left_out: i32 = (0..CHAR_MAP_SIZE)
+        .filter(|&byte| m.map[byte] == 0)
+        .map(|byte| map_position_value(enc, byte))
+        .sum();
+    left_out * EXTRA_START_MAP_MIN_LEFT_OUT >= ascii
+}
+
+/// The bytes a match can start with, when the string or map
+/// `set_optimize_info_from_tree` would choose from `opt` sits at the match
+/// start.
+fn optimizer_start_bytes(enc: OnigEncoding, opt: &OptNode) -> Option<[u8; CHAR_MAP_SIZE]> {
+    if optimizer_distance_max(enc, opt) != Some(0) {
+        return None;
+    }
+    let mut sb = opt.sb;
+    let map_chosen = if opt.sb.len > 0 || opt.sm.len > 0 {
+        select_opt_exact(enc, &mut sb, &opt.sm);
+        opt.map.value > 0 && comp_opt_exact_or_map(&sb, &opt.map) > 0
+    } else {
+        true
+    };
+    if map_chosen {
+        Some(opt.map.map)
+    } else {
+        let mut bytes = [0; CHAR_MAP_SIZE];
+        bytes[sb.s[0] as usize] = 1;
+        Some(bytes)
+    }
+}
+
+/// The largest distance of the string or map `set_optimize_info_from_tree`
+/// would choose from `opt`, or `None` without one.
+fn optimizer_distance_max(enc: OnigEncoding, opt: &OptNode) -> Option<OnigLen> {
+    if opt.sb.len > 0 || opt.sm.len > 0 {
+        let mut sb = opt.sb;
+        select_opt_exact(enc, &mut sb, &opt.sm);
+        if opt.map.value > 0 && comp_opt_exact_or_map(&sb, &opt.map) > 0 {
+            Some(opt.map.mm.max)
+        } else {
+            Some(sb.mm.max)
+        }
+    } else if opt.map.value > 0 {
+        Some(opt.map.mm.max)
+    } else {
+        None
+    }
+}
+
+fn set_sub_anchor(reg: &mut RegexType, anc: &OptAnc) {
+    reg.sub_anchor |= anc.left & ANCR_BEGIN_LINE;
+    reg.sub_anchor |= anc.right & ANCR_END_LINE;
+}
+
+fn set_optimize_info_from_tree(root: &Node, reg: &mut RegexType, scan_env: &ParseEnv) -> i32 {
+    let mut env_mm = MinMaxLen::new();
+    let mut opt = OptNode::new();
+    let c_maps = StartMaps::new(false);
+    let r = optimize_nodes(root, &mut opt, reg.enc, &mut env_mm, scan_env, &c_maps);
+    if r != 0 {
+        return r;
+    }
+    // Rust-only: where C finds neither a string nor a byte map, and so
+    // attempts a match at every position, a start map computed with the
+    // extra class and type maps lets the search skip positions no match can
+    // start at, where it leaves out enough to pay for its search
+    // (`extra_start_map_filters`). A map at the match start that does not
+    // still routes RegSet dispatch, whose table costs the same for any map.
+    // Where C has an optimizer it stays C's, so the search attempts exactly
+    // C's positions (which shows once an attempt hits a retry limit).
+    // Where C's optimizer sits at an unbounded distance but the extra maps
+    // would give a bounded one, that only steers the RegSet
+    // (`start_dispatch`); a bounded C optimizer is dispatched by start bytes
+    // anyway.
+    reg.start_dispatch = false;
+    reg.extra_map_optimizer = false;
+    let mut start_bytes = None;
+    let c_has_optimizer = opt.sb.len > 0 || opt.sm.len > 0 || opt.map.value > 0;
+    // Without a class or type the extra maps would cover, a second pass
+    // would compute the same.
+    if c_maps.skipped.get()
+        && (!c_has_optimizer || optimizer_distance_max(reg.enc, &opt) == Some(INFINITE_LEN))
+    {
+        let mut start_mm = MinMaxLen::new();
+        let mut start_opt = OptNode::new();
+        let mut extra_maps = StartMaps::new(true);
+        extra_maps.narrow_leads = reg.look_behind_reach > 0 && narrow_class_leads_enabled();
+        if optimize_nodes(
+            root,
+            &mut start_opt,
+            reg.enc,
+            &mut start_mm,
+            scan_env,
+            &extra_maps,
+        ) == 0
+        {
+            if !c_has_optimizer {
+                if !extra_start_map_filters(reg.enc, &start_opt.map) {
+                    // A map at the match start (see above).
+                    start_bytes = Some(start_opt.map.map);
+                } else {
+                    opt.map = start_opt.map;
+                    reg.extra_map_optimizer = start_opt.map.value > 0;
+                }
+            } else {
+                start_bytes = optimizer_start_bytes(reg.enc, &start_opt);
+                reg.start_dispatch = optimizer_distance_max(reg.enc, &start_opt)
+                    .is_some_and(|dist_max| dist_max != INFINITE_LEN);
+            }
+        }
+    }
+
+    reg.anchor = opt.anc.left
+        & (ANCR_BEGIN_BUF
+            | ANCR_BEGIN_POSITION
+            | ANCR_ANYCHAR_INF
+            | ANCR_ANYCHAR_INF_ML
+            | ANCR_LOOK_BEHIND);
+
+    if (opt.anc.left & (ANCR_LOOK_BEHIND | ANCR_PREC_READ_NOT)) != 0 {
+        reg.anchor &= !ANCR_ANYCHAR_INF_ML;
+    }
+
+    reg.anchor |= opt.anc.right & (ANCR_END_BUF | ANCR_SEMI_END_BUF | ANCR_PREC_READ_NOT);
+
+    if (reg.anchor & (ANCR_END_BUF | ANCR_SEMI_END_BUF)) != 0 {
+        reg.anc_dist_min = opt.len.min;
+        reg.anc_dist_max = opt.len.max;
+    }
+
+    // Save first-byte map for regset dispatch before the main optimization
+    // choice potentially overwrites reg.map with BMH skip table data.
+    // Only a map at distance 0 holds every byte a match can start with.
+    if opt.map.value > 0 && opt.map.mm.max == 0 {
+        reg.first_byte_map = opt.map.map;
+        reg.has_first_byte_map = true;
+    }
+    // A `start_dispatch` entry is dispatched by these bytes, and so is an
+    // entry whose extra start map was too weak to search.
+    if let Some(start_bytes) = start_bytes {
+        reg.first_byte_map = start_bytes;
+        reg.has_first_byte_map = true;
+    }
+
+    if opt.sb.len > 0 || opt.sm.len > 0 {
+        select_opt_exact(reg.enc, &mut opt.sb, &opt.sm);
+        if opt.map.value > 0 && comp_opt_exact_or_map(&opt.sb, &opt.map) > 0 {
+            set_optimize_map(reg, &opt.map);
+            set_sub_anchor(reg, &opt.map.anc);
+        } else {
+            let r = set_optimize_exact(reg, &opt.sb);
+            if r != 0 {
+                return r;
+            }
+            set_sub_anchor(reg, &opt.sb.anc);
+        }
+    } else if opt.map.value > 0 {
+        set_optimize_map(reg, &opt.map);
+        set_sub_anchor(reg, &opt.map.anc);
+    } else {
+        reg.sub_anchor |= opt.anc.left & ANCR_BEGIN_LINE;
+        if opt.len.max == 0 {
+            reg.sub_anchor |= opt.anc.right & ANCR_END_LINE;
+        }
+    }
+    0
+}
+
+/// Full compilation entry point - mirrors C's onig_compile() called with a
+/// NULL `einfo`. Parses pattern, compiles to bytecode, sets up mem status and
+/// stack_pop_level.
+pub(crate) fn onig_compile(reg: &mut RegexType, pattern: &[u8]) -> i32 {
+    onig_compile_einfo(reg, pattern, None)
+}
+
+/// Mirrors C's onig_compile() including its `einfo` out-parameter: on a
+/// failure that names a group or property, `einfo.par` receives that name.
+pub(crate) fn onig_compile_einfo(
+    reg: &mut RegexType,
+    pattern: &[u8],
+    einfo: Option<&mut OnigErrorInfo>,
+) -> i32 {
+    let (r, par) = compile_recording_name(reg, pattern);
+    if let Some(einfo) = einfo {
+        einfo.par = par.unwrap_or_default();
+    }
+    r
+}
+
+/// Compile `pattern` into `reg`. On failure, also returns the name the
+/// error refers to, or `None` when none was recorded (C's NULL `einfo->par`).
+fn compile_recording_name(reg: &mut RegexType, pattern: &[u8]) -> (i32, Option<Vec<u8>>) {
+    compile_recording_name_with_choices(
+        reg,
+        pattern,
+        RustOnlyCompile::default(),
+        &mut ScannerSeek::default(),
+        &mut AcceptSeek::default(),
+    )
+}
+
+/// The Rust-only compilation choices (ADR-008) a caller makes beside C's
+/// options. The C-compatible API makes none of them.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RustOnlyCompile {
+    /// The experimental AST rewrites of `crate::backtrack_rewrite`.
+    pub(crate) optimize_backtracking: bool,
+    /// Derive the seek approximation for the scanner's DFA pre-filter
+    /// (`crate::dfa_prefilter`). Only scanner patterns pay for it.
+    pub(crate) seek: bool,
+    /// With `seek`: derive the seek of a single `Regex` (ADR-008), which keeps
+    /// alternations exact where the scanner's seek shortcuts them.
+    pub(crate) precise_seek: bool,
+}
+
+/// What a scanner pattern's compilation hands back beside the regex: the
+/// seek approximation for the DFA pre-filter (ADR-008), read from the
+/// tuned tree, which is gone after compilation. The regex itself does not
+/// carry it: the scanner passes it to its set and the pattern cache keeps
+/// it per distinct pattern. Nothing without the feature.
+#[cfg(feature = "dfa-prefilter")]
+pub(crate) type ScannerSeek = Option<crate::dfa_prefilter::Seek>;
+/// See the definition with the `dfa-prefilter` feature.
+#[cfg(not(feature = "dfa-prefilter"))]
+pub(crate) type ScannerSeek = ();
+
+/// What a single `Regex`'s compilation hands back beside its seek: the
+/// accept seek, an under-approximation read from the same tuned tree
+/// (ADR-008, `crate::dfa_prefilter::derive_accept`), for an inexact seek.
+/// Nothing without the feature.
+#[cfg(feature = "dfa-prefilter")]
+pub(crate) type AcceptSeek = Option<crate::dfa_prefilter::AcceptCode>;
+/// See the definition with the `dfa-prefilter` feature.
+#[cfg(not(feature = "dfa-prefilter"))]
+pub(crate) type AcceptSeek = ();
+
+fn compile_recording_name_with_choices(
+    reg: &mut RegexType,
+    pattern: &[u8],
+    choices: RustOnlyCompile,
+    seek: &mut ScannerSeek,
+    accept: &mut AcceptSeek,
+) -> (i32, Option<Vec<u8>>) {
+    // Clear previous bytecode
+    reg.ops.clear();
+    reg.backtrack_rewrites.clear();
+    // Derived from the program emitted below, so it has to describe this
+    // compilation and not one a reused `reg` was carrying.
+    reg.keep_moves_match_start = false;
+
+    // Parse the pattern into AST
+    let mut env = ParseEnv {
+        options: reg.options,
+        case_fold_flag: reg.case_fold_flag,
+        enc: reg.enc,
+        syntax: reg.syntax.clone(),
+        cap_history: 0,
+        backtrack_mem: 0,
+        backrefed_mem: 0,
+        pattern: std::ptr::null(),
+        pattern_end: std::ptr::null(),
+        error: None,
+        reg: reg as *mut RegexType,
+        reg_state: RegexParseState::default(),
+        num_call: 0,
+        num_mem: 0,
+        num_named: 0,
+        mem_alloc: 0,
+        mem_env_static: Default::default(),
+        mem_env_dynamic: None,
+        backref_num: 0,
+        keep_num: 0,
+        id_num: 0,
+        save_alloc_num: 0,
+        saves: None,
+        unset_addr_list: None,
+        parse_depth: 0,
+        look_behind_depth: 0,
+        ast_node_count: 0,
+        flags: 0,
+        recursive_mem: Vec::new(),
+        group_min_len: Vec::new(),
+        group_max_len: Vec::new(),
+    };
+
+    let r = compile_parsed(reg, pattern, &mut env, choices, seek, accept);
+    // C's parse_and_tune() `err:` label
+    let par = if r != 0 { env.error.take() } else { None };
+    (r, par)
+}
+
+/// The part of `compile_recording_name` that runs on the prepared `ParseEnv`:
+/// parse, tune, and emit the bytecode.
+fn compile_parsed(
+    reg: &mut RegexType,
+    pattern: &[u8],
+    env: &mut ParseEnv,
+    choices: RustOnlyCompile,
+    seek: &mut ScannerSeek,
+    accept: &mut AcceptSeek,
+) -> i32 {
+    let mut root = match crate::regparse::onig_parse_tree(pattern, reg, env) {
+        Ok(node) => node,
+        Err(e) => return e,
+    };
+
+    // CAPTURE_ONLY_NAMED_GROUP: when named groups exist, disable unnamed captures
+    if env.num_named > 0
+        && is_syntax_bv(&env.syntax, ONIG_SYN_CAPTURE_ONLY_NAMED_GROUP)
+        && !opton_capture_group(reg.options)
+    {
+        let r = if env.num_named != env.num_mem {
+            disable_noname_group_capture(&mut root, reg, env)
+        } else {
+            numbered_ref_check(&root)
+        };
+        if r != 0 {
+            return r;
+        }
+    }
+
+    let r = check_backrefs(&mut root, env);
+    if r != 0 {
+        return r;
+    }
+
+    // Optimize: consolidate adjacent string nodes (mirrors C's reduce_string_list)
+    let r = reduce_string_list(&mut root, reg.enc);
+    if r != 0 {
+        return r;
+    }
+    refresh_node_references(&mut root, env);
+
+    // Rust-only: flag shapes that can backtrack catastrophically. Runs on the
+    // untuned tree, before tuning rewrites repeats.
+    let exhaustive = reg
+        .options
+        .intersects(ONIG_OPTION_FIND_LONGEST | ONIG_OPTION_FIND_NOT_EMPTY);
+    reg.backtrack_warnings = crate::backtrack_lint::check(&root, reg.enc, exhaustive);
+
+    // Rust-only, opt-in (ADR-008): preserve the original warning list and
+    // capture structure while removing retries whose exits cannot match.
+    if choices.optimize_backtracking
+        && std::ptr::addr_eq(reg.enc, &crate::encodings::utf8::ONIG_ENCODING_UTF8)
+    {
+        reg.backtrack_rewrites =
+            crate::backtrack_rewrite::apply(&mut root, reg.options, env.cap_history);
+        refresh_node_references(&mut root, env);
+    }
+
+    // Resolve subroutine call references before tune_tree
+    if env.num_call > 0 {
+        let r = resolve_call_references(&mut root, reg, env);
+        if r != 0 {
+            return r;
+        }
+        let mut called_groups = Vec::new();
+        collect_called_groups(&root, &mut called_groups);
+        mark_groups_status(&mut root, &called_groups, ND_ST_CALLED);
+        // Mark zero-repeat contexts and adjust entry counts
+        tune_call(&mut root, 0);
+        // Conservatively avoid single-entry optimizations for called groups.
+        // The historical transitive traversal followed self-referential raw
+        // pointers and was not alias-safe under Miri.
+        mark_called_groups_as_multi_entry(&mut root);
+        // Analyze subroutine-call cycles without re-entering the AST through
+        // self-referential raw pointers.
+        let recursive_groups = analyze_call_graph(&mut root, env);
+        // A zero-length recursive group cannot make progress and would recurse
+        // forever. This graph check avoids re-entering the AST through raw
+        // self-references while preserving the compiler's rejection behavior.
+        // C: infinite_recursive_call_check_trav. A recursive group whose body
+        // can reach itself again before consuming any input, or must recurse
+        // on every path, never terminates in the matcher, so the compiler
+        // rejects it.
+        let r = infinite_recursive_call_check_root(&root, env, &recursive_groups);
+        if r != 0 {
+            return r;
+        }
+        env.recursive_mem = recursive_groups;
+        // Propagate state flags (IN_ALT, IN_REAL_REPEAT, etc.) through called groups
+        tune_called_state(&mut root, 0);
+    }
+
+    // Detect literal alternations and replace with trie (before tune_tree
+    // so case-fold expansion hasn't rewritten the string nodes yet).
+    detect_literal_alternations(&mut root, reg, env.backrefed_mem);
+    refresh_node_references(&mut root, env);
+
+    // Minimum lengths of called and back-referenced groups for
+    // node_min_byte_len (C caches them on the group nodes while tune_tree
+    // asks for them).
+    if env.num_call > 0 || env.backref_num > 0 {
+        env.group_min_len = compute_group_min_lens(&root, env);
+    }
+
+    // Tune tree: detect empty loops, propagate state (mirrors C's tune_tree)
+    let r = tune_tree(&mut root, reg, 0, env);
+    if r != 0 {
+        return r;
+    }
+    refresh_node_references(&mut root, env);
+
+    // Rust-only (ADR-008): extend C's automatic possessification (tune_next)
+    // to stars whose next node is optional, an alternation or an end anchor.
+    crate::possessify::apply(&mut root, reg, env);
+
+    // Lengths of the tuned groups for the optimizer's back-references (C
+    // reads them from the group nodes, tuned by then, in optimize_nodes).
+    if env.backref_num > 0 {
+        env.group_min_len = compute_group_min_lens(&root, env);
+        env.group_max_len = compute_group_max_lens(&root, env);
+    }
+
+    // Compute empty_status_mem for quantifiers (determines EmptyCheckEnd vs EmptyCheckEndMemst)
+    setup_empty_status_mem(&mut root, env);
+
+    // C's tune_tree pushes the captures of every back-referenced group
+    // (backtrack_mem). Rust-only (ADR-008): push only those whose restore a
+    // read can observe.
+    env.backtrack_mem |= backref_groups_needing_push(&root, env);
+
+    // Set capture/mem tracking from parse env (mirrors C's onig_compile post-parse setup)
+    reg.capture_history = env.cap_history;
+    reg.push_mem_start = env.backtrack_mem | env.cap_history;
+    reg.num_mem = env.num_mem;
+
+    // Set push_mem_end
+    if mem_status_is_all_on(reg.push_mem_start) {
+        reg.push_mem_end = env.backrefed_mem | env.cap_history;
+    } else {
+        reg.push_mem_end = reg.push_mem_start & (env.backrefed_mem | env.cap_history);
+    }
+
+    // Initialize mark/save ID counter from parse env to avoid collisions
+    // (C uses ID_ENTRY(env, id) which shares env->id_num between parser and compiler)
+    reg.num_call = env.id_num;
+
+    // Compile the tree to bytecode
+    let r = compile_tree(&root, reg, env);
+    if r != 0 {
+        return r;
+    }
+
+    // Patch unresolved subroutine call addresses
+    if !reg.unset_call_addrs.is_empty() {
+        for &(op_idx, gnum) in &reg.unset_call_addrs.clone() {
+            let gnum = gnum as usize;
+            if gnum < reg.called_addrs.len() && reg.called_addrs[gnum] >= 0 {
+                let addr = reg.called_addrs[gnum];
+                reg.ops[op_idx].payload = OperationPayload::Call { addr };
+            }
+        }
+    }
+
+    // Emit UPDATE_VAR(KeepFromStackLast) before OP_END if \K was used
+    if env.keep_num > 0 {
+        // This is the only op that moves the match start away from the
+        // position a match attempt began at, so record it for the callers
+        // that would otherwise reconstruct the match from that position.
+        reg.keep_moves_match_start = true;
+        add_op(
+            reg,
+            OpCode::UpdateVar,
+            OperationPayload::UpdateVar {
+                var_type: UpdateVarType::KeepFromStackLast,
+                id: 0,
+                clear: false,
+            },
+        );
+    }
+
+    // Add OP_END
+    add_op(reg, OpCode::End, OperationPayload::None);
+
+    // If callouts exist, set push_mem_end (C: callout_num != 0 → push_mem_end = push_mem_start)
+    if let Some(ref ext) = reg.extp {
+        if ext.callout_num != 0 {
+            reg.push_mem_end = reg.push_mem_start;
+        }
+    }
+
+    // Set stack pop level based on what captures/features are used.
+    // C tests scan_env.num_call here; reg.num_call is reused as the mark/save
+    // id counter in Ferroni, so it does not say whether the pattern calls.
+    // Calls need STACK_POP_LEVEL_ALL so backtracking over CallFrame/Return
+    // entries keeps the subexp call nest counter right (C: POP_CALL).
+    let has_callouts = reg.extp.as_ref().is_some_and(|e| e.callout_num != 0);
+    if reg.push_mem_end != 0
+        || reg.num_repeat != 0
+        || reg.num_empty_check != 0
+        || env.num_call > 0
+        || has_callouts
+    {
+        reg.stack_pop_level = StackPopLevel::All;
+    } else if reg.push_mem_start != 0 {
+        reg.stack_pop_level = StackPopLevel::MemStart;
+    } else {
+        reg.stack_pop_level = StackPopLevel::Free;
+    }
+
+    // Set optimization info (exact string, char map, anchors) from parse tree
+    reg.look_behind_reach = leading_look_behind_reach(&root, env);
+    let r = set_optimize_info_from_tree(&root, reg, env);
+    if r != 0 {
+        return r;
+    }
+
+    // Build Aho-Corasick automaton for literal alternation patterns.
+    // This enables a single-pass scan instead of position-by-position matching.
+    // Supports both bare `alpha|beta` and captured `(alpha|beta)`.
+    if let Some((trie_idx, has_capture)) = detect_ac_eligible(reg) {
+        let trie = &reg.literal_tries[trie_idx];
+        let ac = aho_corasick::AhoCorasick::builder()
+            .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+            .ascii_case_insensitive(trie.is_case_insensitive())
+            .build(trie.literals());
+        if let Ok(ac) = ac {
+            reg.ac_alt = Some(ac);
+            reg.ac_alt_has_capture = has_capture;
+        }
+    }
+
+    refresh_capture_tracking_requirement(reg);
+    guard_backtrack_pushes(reg, &backref_literal_first_bytes(&root, env));
+    fuse_ascii_class_runs(reg);
+    crate::leading_run::plan(reg);
+    reg.literal_prefix = crate::leading_run::plan_literal_prefix(&root, reg).map(Box::new);
+    reg.anychar_run = has_anychar_run(&root);
+    // Rust-only (ADR-008): literals every match contains, for RegSet
+    // fallback searches. Read from the tuned tree, which is gone afterwards.
+    reg.required_literals = crate::required_literals::derive(&root, reg, env).map(Box::new);
+    // Rust-only (ADR-008): a program that is only its exact string answers
+    // the forward literal search (`pure_literal_first`).
+    reg.pure_literal = detect_pure_literal(reg);
+    // Rust-only (ADR-008): whether the iterators may step past an empty match
+    // without searching again from its end.
+    reg.skip_repeated_empty_search = detect_skip_repeated_empty_search(reg);
+    // Rust-only (ADR-008): the seek approximation for the scanner's DFA
+    // pre-filter, read from the same tuned tree, for scanner patterns only.
+    #[cfg(feature = "dfa-prefilter")]
+    if choices.seek {
+        *seek = crate::dfa_prefilter::derive(&root, reg, choices.precise_seek);
+        // A single regex's inexact seek also gets the accept seek, whose
+        // matches are the pattern's (ADR-008).
+        if choices.precise_seek
+            && matches!(seek, Some(crate::dfa_prefilter::Seek::Pattern(code)) if !code.exact())
+        {
+            *accept = crate::dfa_prefilter::derive_accept(&root, reg);
+        }
+    }
+    #[cfg(not(feature = "dfa-prefilter"))]
+    let _ = (seek, accept);
+
+    0
+}
+
+/// Rust-only (ADR-008): execute adjacent identical ASCII classes in one VM
+/// dispatch. Keep every original instruction and address: a branch into the
+/// middle still executes the corresponding suffix. Classes cannot capture,
+/// backtrack, or change the match stack, so this only batches byte checks.
+/// One byte of run metadata caps each dispatch at 255 checks; longer runs
+/// continue at the original suffix instruction.
+fn fuse_ascii_class_runs(reg: &mut RegexType) {
+    if !onigenc_is_ascii_compatible_encoding(reg.enc) {
+        return;
+    }
+    for pc in (0..reg.ops.len().saturating_sub(1)).rev() {
+        let (head, tail) = reg.ops.split_at_mut(pc + 1);
+        let op = &mut head[pc];
+        let next = &tail[0];
+        if op.opcode != OpCode::CClass {
+            continue;
+        }
+        let (next_bsp, next_len) = match (&next.opcode, &next.payload) {
+            (OpCode::CClass, OperationPayload::CClass { bsp, .. }) => (bsp, 1),
+            (OpCode::CClassRun, OperationPayload::CClassRun { bsp, len }) => (bsp, *len),
+            _ => continue,
+        };
+        // Equality/case-pair instructions already have their own byte path.
+        // Keeping them unchanged also preserves their raw-boundary behavior.
+        if let OperationPayload::CClass {
+            bsp,
+            ascii_fast: CClassAsciiFastKind::None,
+        } = &mut op.payload
+        {
+            if bsp[128 / BITS_IN_ROOM..].iter().all(|&bits| bits == 0) && bsp == next_bsp {
+                let OperationPayload::CClass { bsp, .. } =
+                    std::mem::replace(&mut op.payload, OperationPayload::None)
+                else {
+                    unreachable!("class payload checked above");
+                };
+                op.opcode = OpCode::CClassRun;
+                op.payload = OperationPayload::CClassRun {
+                    bsp,
+                    len: next_len.saturating_add(1),
+                };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Leaves every `Push` unguarded, as the reference for
+    /// `PushOrJumpByteSet` in differential tests.
+    pub(crate) static PUSH_GUARDS_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Rust-only (ADR-008): the byte that the path from `pc` must consume first,
+/// for the lazy dot loop of `PushLazyAnyChar`, which sits in front of `pc`.
+/// The path runs capture ends (`MemEnd`), then negative one-character
+/// look-behinds, and then a plain string, or a back reference to a literal
+/// group (`literal_first`). The capture ends come first: each position the
+/// loop visits then writes them, so the last write is the loop's stop, as in
+/// the instruction loop. A look-behind only rejects a position. `None` for
+/// anything else, including a back reference to the loop's own group.
+fn lazy_literal_byte(
+    reg: &RegexType,
+    mut pc: usize,
+    literal_first: &[Option<u8>; MEM_STATUS_BITS_NUM],
+) -> Option<u8> {
+    let mut look_behind = false;
+    loop {
+        let op = reg.ops.get(pc)?;
+        match (op.opcode, &op.payload) {
+            (OpCode::MemEnd, OperationPayload::MemoryEnd { .. }) if !look_behind => pc += 1,
+            (
+                OpCode::LookBehindOp,
+                OperationPayload::LookBehindOp {
+                    char_len: 1,
+                    not: true,
+                    ..
+                },
+            ) => {
+                look_behind = true;
+                pc += 2;
+            }
+            (
+                OpCode::Str1 | OpCode::Str2 | OpCode::Str3 | OpCode::Str4 | OpCode::Str5,
+                OperationPayload::Exact { s },
+            ) => return Some(s[0]),
+            (OpCode::StrN, OperationPayload::ExactN { s, .. }) => return s.first().copied(),
+            (OpCode::BackRef1, _) => return literal_first[1],
+            (OpCode::BackRef2, _) => return literal_first[2],
+            (OpCode::BackRefN, OperationPayload::BackRefN { n1 }) => {
+                return literal_first.get(*n1 as usize).copied().flatten();
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Rust-only (ADR-008): turn a `Push` whose main path can only start with
+/// some bytes into `PushOrJumpByteSet`, upstream's `PUSH_OR_JUMP_EXACT1`
+/// generalized to a byte set. When the current byte cannot start the main
+/// path, the VM goes straight to the alternative instead of pushing it,
+/// failing into the main path and popping it again. TextMate grammars put
+/// optional prefix groups such as
+/// `(?:(?<![$_[:alnum:]])(public|private|protected)\s+)?` in front of
+/// most patterns, so that round trip ran at nearly every attempt.
+///
+/// The jump still counts the backtracks the push would take against the
+/// retry and time limits (`guard_skipped_retries`); where that count depends
+/// on position checks, the guard counts the largest one, and only where that
+/// upper bound is good enough (see `guard_may_jump`). Those limits are what bounds
+/// a loop that grows the stack without consuming input, so a guard that
+/// skipped the count would let such a loop push several times as many
+/// entries as C before the limit trips.
+fn guard_backtrack_pushes(reg: &mut RegexType, literal_first: &[Option<u8>; MEM_STATUS_BITS_NUM]) {
+    use crate::first_bytes::GuardRetries;
+    #[cfg(test)]
+    if PUSH_GUARDS_DISABLED.with(|disabled| disabled.get()) {
+        return;
+    }
+    let mut walk = crate::first_bytes::GuardWalk::default();
+    for pc in 0..reg.ops.len() {
+        let (OpCode::Push, &OperationPayload::Push { addr }) =
+            (reg.ops[pc].opcode, &reg.ops[pc].payload)
+        else {
+            continue;
+        };
+        // A plain capture end keeps state after backtracking, so the generic
+        // guard cannot skip it. A lazy dot loop can still batch failed literal
+        // attempts: its next capture end overwrites the skipped values. Keep
+        // every original instruction and address for bounded fallback runs.
+        if addr == -1
+            && pc > 0
+            && matches!(reg.ops[pc - 1].opcode, OpCode::AnyChar | OpCode::AnyCharMl)
+            && reg
+                .ops
+                .get(pc + 1)
+                .is_some_and(|op| op.opcode == OpCode::MemEnd)
+            && (std::ptr::addr_eq(reg.enc, &crate::encodings::utf8::ONIG_ENCODING_UTF8)
+                || std::ptr::addr_eq(reg.enc, &crate::encodings::ascii::ONIG_ENCODING_ASCII))
+        {
+            if let Some(c) = lazy_literal_byte(reg, pc + 1, literal_first) {
+                reg.ops[pc] = Operation {
+                    opcode: OpCode::PushLazyAnyChar,
+                    payload: OperationPayload::PushLazyAnyChar { addr, c },
+                };
+                continue;
+            }
+        }
+        // Most branches start with a literal (only string instructions carry
+        // these payloads), whose first byte is the whole guard.
+        let head = match &reg.ops[pc + 1].payload {
+            OperationPayload::Exact { s } => Some(s[0]),
+            OperationPayload::ExactN { s, .. } | OperationPayload::ExactLenN { s, .. } => {
+                s.first().copied()
+            }
+            _ => None,
+        };
+        let (bits, skipped_retries) = match head {
+            // The string instruction fails: one backtrack.
+            Some(c) => {
+                let mut bits = [0; BITSET_REAL_SIZE];
+                bitset_set_bit(&mut bits, c as usize);
+                (bits, 1)
+            }
+            None => match crate::first_bytes::guard_byte_map(reg, pc + 1, &mut walk) {
+                Some(bits) if bits.iter().all(|&word| word == !0) => continue,
+                Some(bits) => {
+                    match crate::first_bytes::guard_skipped_retries(reg, pc + 1, &bits, &mut walk) {
+                        Some(GuardRetries::Fixed(retries)) => (bits, retries),
+                        Some(GuardRetries::ByChecks(max)) if max < GUARD_RETRIES_BY_CHECKS => {
+                            reg.check_dependent_guards = true;
+                            (bits, GUARD_RETRIES_BY_CHECKS | max)
+                        }
+                        Some(GuardRetries::ByChecks(_)) => continue,
+                        None => continue,
+                    }
+                }
+                None => continue,
+            },
+        };
+        let mut members = bitset_members(&bits);
+        reg.ops[pc] = match (members.next(), members.next()) {
+            // A single byte is upstream's own instruction.
+            (Some(c), None) => Operation {
+                opcode: OpCode::PushOrJumpExact1,
+                payload: OperationPayload::PushOrJumpExact1 {
+                    addr,
+                    c: c as u8,
+                    skipped_retries,
+                    skip_gate: None,
+                },
+            },
+            _ => Operation {
+                opcode: OpCode::PushOrJumpByteSet,
+                payload: OperationPayload::PushOrJumpByteSet {
+                    addr,
+                    bsp: Box::new(bits),
+                    skipped_retries,
+                    skip_gate: None,
+                },
+            },
+        };
+    }
+    attach_guard_skip_gates(reg);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Leaves the guard chains without `GuardSkipGate`s, as the reference for
+    /// the composed skip path in differential tests.
+    pub(crate) static SKIP_GATES_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Rust-only (ADR-008): compose the skip paths of guard chains. Every guard
+/// jumps to the next guard of its chain on a miss (`addr` is its push target
+/// and its skip target), so the VM walks a chain of guards that all miss one
+/// after another, one dispatch and one counted skip each. A case-fold class
+/// with multi-character folds turns into such a chain of about 45 string
+/// alternatives (`(?i)[[:word:]]` has 1795 instructions), and every backtrack
+/// into it walked that whole chain.
+///
+/// Each guard of a chain gets a `GuardSkipGate` over the guards from it on
+/// (see `GuardSkipGate`), and a gate is attached to the guards of chains of at
+/// least `MIN_GATED_LINKS` guards. The gate's jump is what the walk would do: a
+/// guard whose byte is outside the gate's set misses, and the walk counts
+/// each skip before the instruction at the end of the chain runs. The VM
+/// takes the gate only where that count cannot reach a retry limit (see
+/// `skip_gate_taken`); elsewhere it runs the guard as before. The gates use
+/// the guards' own bytes, counts and addresses, and no instruction changes.
+///
+/// Guards whose count depends on position checks (`GUARD_RETRIES_BY_CHECKS`)
+/// and guards with a non-forward address (lazy loops) end their chain.
+fn attach_guard_skip_gates(reg: &mut RegexType) {
+    #[cfg(test)]
+    if SKIP_GATES_DISABLED.with(|disabled| disabled.get()) {
+        return;
+    }
+    // A chain link's own byte set, count and address, if it is one.
+    let link = |op: &Operation| -> Option<(BitSet, u32, RelAddrType)> {
+        match &op.payload {
+            OperationPayload::PushOrJumpExact1 {
+                addr,
+                c,
+                skipped_retries,
+                ..
+            } if skipped_retries & GUARD_RETRIES_BY_CHECKS == 0 && *addr > 0 => {
+                let mut bits = [0; BITSET_REAL_SIZE];
+                bitset_set_bit(&mut bits, *c as usize);
+                Some((bits, *skipped_retries, *addr))
+            }
+            OperationPayload::PushOrJumpByteSet {
+                addr,
+                bsp,
+                skipped_retries,
+                ..
+            } if skipped_retries & GUARD_RETRIES_BY_CHECKS == 0 && *addr > 0 => {
+                Some((**bsp, *skipped_retries, *addr))
+            }
+            _ => None,
+        }
+    };
+    // The skip path from the link at `pc`, as far as it is composed: its
+    // gate if it has one, else the link alone.
+    let skip_path = |reg: &RegexType, pc: usize| -> Option<(BitSet, u32, usize, u32)> {
+        let (skip_gate, addr) = match &reg.ops[pc].payload {
+            OperationPayload::PushOrJumpExact1 {
+                skip_gate, addr, ..
+            }
+            | OperationPayload::PushOrJumpByteSet {
+                skip_gate, addr, ..
+            } => (*skip_gate, *addr),
+            _ => return None,
+        };
+        if let Some(gate) = skip_gate.and_then(|index| reg.skip_gates.get(index as usize)) {
+            return Some((
+                gate.bsp,
+                gate.skipped_retries,
+                (pc as i64 + i64::from(gate.addr)) as usize,
+                gate.links,
+            ));
+        }
+        let (bits, retries, _) = link(&reg.ops[pc])?;
+        Some((bits, retries, (pc as i64 + i64::from(addr)) as usize, 1))
+    };
+    // Filled from the end, since a chain runs forward: each link's gate
+    // extends the gate of the link its push and skip both lead to.
+    for pc in (0..reg.ops.len()).rev() {
+        let Some((bits, retries, addr)) = link(&reg.ops[pc]) else {
+            continue;
+        };
+        // Forward addresses only, and a successor that is itself a link.
+        let succ = pc + addr as usize;
+        if succ >= reg.ops.len() || link(&reg.ops[succ]).is_none() {
+            continue;
+        }
+        let Some((next_bits, next_retries, target, next_links)) = skip_path(reg, succ) else {
+            continue;
+        };
+        let Some(total) = next_retries.checked_add(retries) else {
+            continue;
+        };
+        let mut union = next_bits;
+        for (dst, src) in union.iter_mut().zip(bits.iter()) {
+            *dst |= *src;
+        }
+        let Ok(index) = u32::try_from(reg.skip_gates.len()) else {
+            return;
+        };
+        reg.skip_gates.push(GuardSkipGate {
+            bsp: union,
+            skipped_retries: total,
+            addr: (target as i64 - pc as i64) as RelAddrType,
+            links: next_links + 1,
+        });
+        if let OperationPayload::PushOrJumpExact1 { skip_gate, .. }
+        | OperationPayload::PushOrJumpByteSet { skip_gate, .. } = &mut reg.ops[pc].payload
+        {
+            *skip_gate = Some(index);
+        }
+    }
+    // Rust-only (ADR-008): a gate saves dispatches only on a long chain. On a
+    // short one its check costs about what the walk saves, so the guards keep
+    // the walk. Composition above used every gate; only the attached ones
+    // remain, and the table keeps just those.
+    let keep: Vec<bool> = reg
+        .skip_gates
+        .iter()
+        .map(|gate| gate.links >= MIN_GATED_LINKS)
+        .collect();
+    let mut remap = vec![0u32; keep.len()];
+    let mut kept = 0u32;
+    for (slot, &keep) in remap.iter_mut().zip(&keep) {
+        if keep {
+            *slot = kept;
+            kept += 1;
+        }
+    }
+    let mut flags = keep.iter();
+    reg.skip_gates.retain(|_| *flags.next().unwrap_or(&false));
+    for op in &mut reg.ops {
+        if let OperationPayload::PushOrJumpExact1 { skip_gate, .. }
+        | OperationPayload::PushOrJumpByteSet { skip_gate, .. } = &mut op.payload
+        {
+            if let Some(index) = *skip_gate {
+                *skip_gate = keep[index as usize].then(|| remap[index as usize]);
+            }
+        }
+    }
+}
+
+/// Rust-only (ADR-008): the fewest guards a skip gate covers. The gate is
+/// built for every chain (composition needs it), and attached only to
+/// chains of at least this many guards.
+const MIN_GATED_LINKS: u32 = 8;
+
+/// Detect if a compiled regex is eligible for Aho-Corasick fast path.
+/// Returns `(trie_idx, has_capture)` if eligible.
+///
+/// Accepted patterns (no anchors):
+/// - `AltLiterals, End` (bare alternation, no capture)
+/// - `MemStart, AltLiterals, MemEnd, End` (single capture group)
+/// - `MemStartPush, AltLiterals, MemEndPush, End` (single capture group, push variant)
+fn detect_ac_eligible(reg: &RegexType) -> Option<(usize, bool)> {
+    if reg.anchor != 0 || reg.sub_anchor != 0 {
+        return None;
+    }
+
+    let ops = &reg.ops;
+    let opcodes: Vec<OpCode> = ops.iter().map(|op| op.opcode).collect();
+
+    let (alt_idx, has_capture) = match opcodes.as_slice() {
+        [OpCode::AltLiterals, OpCode::End] if reg.num_mem == 0 => (0, false),
+        [
+            OpCode::MemStart,
+            OpCode::AltLiterals,
+            OpCode::MemEnd,
+            OpCode::End,
+        ] if reg.num_mem == 1 => (1, true),
+        [
+            OpCode::MemStartPush,
+            OpCode::AltLiterals,
+            OpCode::MemEndPush,
+            OpCode::End,
+        ] if reg.num_mem == 1 => (1, true),
+        _ => return None,
+    };
+
+    if let OperationPayload::AltLiterals { trie_idx } = ops[alt_idx].payload {
+        // Aho-Corasick folds ASCII only; a folded trie also matches
+        // non-ASCII input.
+        if reg.literal_tries[trie_idx as usize].is_case_insensitive() {
+            return None;
+        }
+        Some((trie_idx as usize, has_capture))
+    } else {
+        None
+    }
+}
+
+/// Rust-only (ADR-008): whether the program is exactly its optimizer string.
+/// The bytecode must be one string op and `End`, with no captures, anchors,
+/// distances or callouts, and the optimizer must search the same bytes with
+/// the forward literal search (`StrFast`). Then every occurrence of the string
+/// is a match, and an attempt at it never backtracks.
+fn detect_pure_literal(reg: &RegexType) -> bool {
+    if reg.anchor != 0
+        || reg.sub_anchor != 0
+        || reg.num_mem != 0
+        || reg.keep_moves_match_start
+        || reg.dist_min != 0
+        || reg.dist_max != 0
+        || reg.optimize != OptimizeType::StrFast
+        || reg.exact.is_empty()
+        || reg.extp.as_ref().is_some_and(|ext| ext.callout_num != 0)
+    {
+        return false;
+    }
+    let [literal, end] = reg.ops.as_slice() else {
+        return false;
+    };
+    if end.opcode != OpCode::End {
+        return false;
+    }
+    let bytes: &[u8] = match (&literal.opcode, &literal.payload) {
+        (
+            OpCode::Str1 | OpCode::Str2 | OpCode::Str3 | OpCode::Str4 | OpCode::Str5,
+            OperationPayload::Exact { s },
+        ) => &s[..literal.opcode as usize - OpCode::Str1 as usize + 1],
+        (OpCode::StrN, OperationPayload::ExactN { s, n }) => match s.get(..*n as usize) {
+            Some(bytes) => bytes,
+            None => return false,
+        },
+        _ => return false,
+    };
+    bytes == reg.exact.as_slice()
+}
+
+/// Rust-only (ADR-008): whether a search from the end of an empty match can
+/// only find that match again, so an iterator may step past it. The match
+/// attempt at a position depends on the text and not on where the search
+/// started, unless the program reads the search start (`\G`), keeps a
+/// different match start (`\K`) or runs callouts, which observe every search.
+fn detect_skip_repeated_empty_search(reg: &RegexType) -> bool {
+    !reg.keep_moves_match_start
+        && reg.extp.as_ref().is_none_or(|ext| ext.callout_num == 0)
+        && !reg.ops.iter().any(|op| {
+            matches!(
+                op.opcode,
+                OpCode::CheckPosition | OpCode::CalloutContents | OpCode::CalloutName
+            )
+        })
+}
+
+/// Rebuild process-local search accelerators only after the archive's program
+/// validator has accepted every instruction and table reference (ADR-018).
+#[cfg(feature = "precompiled")]
+pub(crate) fn rebuild_precompiled_search(reg: &mut RegexType) {
+    reg.exact_finder = (reg.optimize == OptimizeType::StrFast && reg.exact.len() > 1)
+        .then(|| Box::new(memchr::memmem::Finder::new(&reg.exact).into_owned()));
+    reg.map_ascii_ranges = MapAsciiRanges::of(&reg.map);
+    if let Some((trie_idx, has_capture)) = detect_ac_eligible(reg) {
+        let trie = &reg.literal_tries[trie_idx];
+        if let Ok(ac) = aho_corasick::AhoCorasick::builder()
+            .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+            .build(trie.literals())
+        {
+            reg.ac_alt = Some(ac);
+            reg.ac_alt_has_capture = has_capture;
+        }
+    }
+    crate::leading_run::plan(reg);
+    reg.pure_literal = detect_pure_literal(reg);
+    reg.skip_repeated_empty_search = detect_skip_repeated_empty_search(reg);
+}
+
+/// Create and compile a new regex - mirrors C's onig_new().
+/// This is the main public API entry point.
+pub fn onig_new(
+    pattern: &[u8],
+    option: OnigOptionType,
+    enc: OnigEncoding,
+    syntax: &OnigSyntaxType,
+) -> Result<RegexType, crate::error::RegexError> {
+    onig_new_with_backtracking_optimization(pattern, option, enc, syntax, false)
+}
+
+/// Additive compilation entry point; the C-compatible API keeps rewrites off.
+pub(crate) fn onig_new_with_backtracking_optimization(
+    pattern: &[u8],
+    option: OnigOptionType,
+    enc: OnigEncoding,
+    syntax: &OnigSyntaxType,
+    optimize_backtracking: bool,
+) -> Result<RegexType, crate::error::RegexError> {
+    let choices = RustOnlyCompile {
+        optimize_backtracking,
+        seek: false,
+        precise_seek: false,
+    };
+    onig_new_with_choices(pattern, option, enc, syntax, choices).map(|(reg, _, _)| reg)
+}
+
+/// [`onig_new_with_backtracking_optimization`] for a scanner pattern: with
+/// `prefilter`, it also hands back the seek approximation the scanner's DFA
+/// pre-filter reads (ADR-008, `crate::dfa_prefilter`).
+pub(crate) fn onig_new_for_scanner(
+    pattern: &[u8],
+    option: OnigOptionType,
+    enc: OnigEncoding,
+    syntax: &OnigSyntaxType,
+    optimize_backtracking: bool,
+    prefilter: bool,
+) -> Result<(RegexType, ScannerSeek), crate::error::RegexError> {
+    let choices = RustOnlyCompile {
+        optimize_backtracking,
+        seek: prefilter,
+        precise_seek: false,
+    };
+    onig_new_with_choices(pattern, option, enc, syntax, choices).map(|(reg, seek, _)| (reg, seek))
+}
+
+/// [`onig_new_with_backtracking_optimization`] for a single `Regex` (ADR-008),
+/// which with `seek` also derives the precise seek of the tuned tree in the
+/// same compilation, and the accept seek of an inexact one, for the automata
+/// of `api.rs`. Without `seek` it is the same compilation with no seek at all.
+pub(crate) fn onig_new_for_single_seek(
+    pattern: &[u8],
+    option: OnigOptionType,
+    enc: OnigEncoding,
+    syntax: &OnigSyntaxType,
+    optimize_backtracking: bool,
+    seek: bool,
+) -> Result<(RegexType, ScannerSeek, AcceptSeek), crate::error::RegexError> {
+    let choices = RustOnlyCompile {
+        optimize_backtracking,
+        seek,
+        precise_seek: true,
+    };
+    onig_new_with_choices(pattern, option, enc, syntax, choices)
+}
+
+/// `onig_new` with the Rust-only compilation choices.
+fn onig_new_with_choices(
+    pattern: &[u8],
+    option: OnigOptionType,
+    enc: OnigEncoding,
+    syntax: &OnigSyntaxType,
+    choices: RustOnlyCompile,
+) -> Result<(RegexType, ScannerSeek, AcceptSeek), crate::error::RegexError> {
+    // Validate options
+    if option.intersects(ONIG_OPTION_DONT_CAPTURE_GROUP)
+        && option.intersects(ONIG_OPTION_CAPTURE_GROUP)
+    {
+        return Err(ONIGERR_INVALID_COMBINATION_OF_OPTIONS.into());
+    }
+
+    // Apply syntax default options (mirrors onig_reg_init)
+    let mut effective_option = option;
+    let syn = syntax;
+    if option.intersects(ONIG_OPTION_NEGATE_SINGLELINE) {
+        effective_option |= syn.options;
+        effective_option &= !ONIG_OPTION_SINGLELINE;
+    } else {
+        effective_option |= syn.options;
+    }
+
+    // Case fold flag setup: C passes ONIGENC_CASE_FOLD_DEFAULT, the stored
+    // OnigDefaultCaseFoldFlag, to onig_reg_init
+    let mut case_fold_flag = DEFAULT_CASE_FOLD_FLAG.load(Ordering::Relaxed);
+    if effective_option.intersects(ONIG_OPTION_IGNORECASE_IS_ASCII) {
+        case_fold_flag &=
+            !(INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR | ONIGENC_CASE_FOLD_TURKISH_AZERI);
+        case_fold_flag |= ONIGENC_CASE_FOLD_ASCII_ONLY;
+    }
+
+    let mut reg = RegexType {
+        backtrack_warnings: Vec::new(),
+        backtrack_rewrites: Vec::new(),
+        ops: Vec::new(),
+        string_pool: Vec::new(),
+        num_mem: 0,
+        num_repeat: 0,
+        num_empty_check: 0,
+        num_call: 0,
+        capture_history: 0,
+        push_mem_start: 0,
+        push_mem_end: 0,
+        stack_pop_level: StackPopLevel::Free,
+        repeat_range: Vec::new(),
+        enc,
+        options: effective_option,
+        syntax: syntax.clone(),
+        case_fold_flag,
+        name_table: None,
+        optimize: OptimizeType::None,
+        threshold_len: 0,
+        anchor: 0,
+        anc_dist_min: 0,
+        anc_dist_max: 0,
+        sub_anchor: 0,
+        exact: Vec::new(),
+        exact_finder: None,
+        pure_literal: false,
+        skip_repeated_empty_search: false,
+        map: [0u8; CHAR_MAP_SIZE],
+        map_offset: 0,
+        map_bytes: [0u8; 3],
+        map_byte_count: 0,
+        map_ascii_ranges: MapAsciiRanges::default(),
+        dist_min: 0,
+        dist_max: 0,
+        needs_capture_tracking: false,
+        keep_moves_match_start: false,
+        first_byte_map: [0u8; CHAR_MAP_SIZE],
+        has_first_byte_map: false,
+        start_dispatch: false,
+        called_addrs: vec![],
+        unset_call_addrs: vec![],
+        extp: None,
+        literal_tries: Vec::new(),
+        check_dependent_guards: false,
+        skip_gates: Vec::new(),
+        ac_alt: None,
+        ac_alt_has_capture: false,
+        leading_run: None,
+        literal_prefix: None,
+        anychar_run: false,
+        look_behind_reach: 0,
+        extra_map_optimizer: false,
+        search_start_map: None,
+        search_jump: None,
+        required_literals: None,
+    };
+
+    // Without the `dfa-prefilter` feature the seek is `()`.
+    #[allow(clippy::let_unit_value)]
+    let mut seek = ScannerSeek::default();
+    #[allow(clippy::let_unit_value)]
+    let mut accept = AcceptSeek::default();
+    let (r, par) =
+        compile_recording_name_with_choices(&mut reg, pattern, choices, &mut seek, &mut accept);
+    if r != 0 {
+        return Err(crate::error::RegexError::from_error_name(r, par.as_deref()));
+    }
+
+    Ok((reg, seek, accept))
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where C finds an optimizer, Ferroni uses the same one; the extra class
+    /// and type byte maps only fill in where C has none. Expected values are
+    /// C's (`reg->optimize`, `dist_min`, `dist_max`, `map`).
+    /// C splices a list that a group or a split string yields into the
+    /// enclosing branch, so the optimizer joins the strings on both sides of
+    /// the group boundary. Expected exact strings and distances are C's.
+    #[test]
+    fn exact_strings_join_across_group_boundaries() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::ONIG_OPTION_NONE;
+        use crate::regsyntax::OnigSyntaxOniguruma;
+
+        let exact = |pattern: &[u8]| {
+            let reg = onig_new(
+                pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap();
+            (reg.exact.clone(), reg.dist_min, reg.dist_max)
+        };
+        assert_eq!(exact(b"k(?:b+c+)"), (b"kb".to_vec(), 0, 0));
+        assert_eq!(exact(br#" {2}"={2}"#), (br#"  "=="#.to_vec(), 0, 0));
+        assert_eq!(exact(br#"(?:s{0,2}")aa+"#), (br#""aa"#.to_vec(), 0, 2));
+        assert_eq!(exact(b"(?:,(?:s++a?k))+"), (b",s".to_vec(), 0, 0));
+        assert_eq!(
+            exact(b"(?:k(?:\xc3\xa9+?k+aa))+"),
+            (b"k\xc3\xa9".to_vec(), 0, 0)
+        );
+    }
+
+    #[test]
+    fn optimizer_is_c_s_wherever_c_has_one() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::ONIG_OPTION_NONE;
+        use crate::regsyntax::OnigSyntaxOniguruma;
+
+        let optimizer = |pattern: &[u8]| {
+            let reg = onig_new(
+                pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap();
+            let map: Vec<u8> = (0..=255u8)
+                .filter(|&b| reg.optimize == OptimizeType::Map && reg.map[b as usize] != 0)
+                .collect();
+            (reg.optimize, reg.dist_min, reg.dist_max, map)
+        };
+
+        // A negated class carries no map in C; the `x` after it decides.
+        assert_eq!(
+            optimizer(br"(?i)([^\s]+)+x"),
+            (OptimizeType::Map, 1, INFINITE_LEN, b"Xx".to_vec())
+        );
+        assert_eq!(
+            optimizer(br"(?:\d|.[ab]*)*[^\s]b+.|b*(?:=+) *"),
+            (OptimizeType::Map, 0, INFINITE_LEN, b"=b".to_vec())
+        );
+        // A case-insensitive trie keeps C's lengths and map of the
+        // alternation it replaced (checked against C): `s` and `k` fold to
+        // multibyte characters, so a branch starting with one gives no map,
+        // and `ss` also reads as `ß` and `ẞ`.
+        let abap = &br"(?i)(?<=\s)(align|alpha|case|country|currency|date|decimals|exponent|number|pad|sign|style|time|timestamp|timezone|width|xsd|zero)(?=\s=)"[..];
+        assert_eq!(optimizer(abap), (OptimizeType::Map, 4, 15, b"=".to_vec()));
+        for pattern in [
+            abap,
+            br"(?i)(?:kab|sab|dex|dey|dez)(?=\s=)",
+            br"(?i)(?:align|alpha|case|country|currency|date)(?=\s=)",
+            br"(?i)(?:ssa|ssb|ssc|ssd|sse)x",
+        ] {
+            let reg = onig_new(
+                pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap();
+            assert_eq!(reg.literal_tries.len(), 1, "{pattern:?}");
+        }
+        assert_eq!(
+            optimizer(br"(?i)(?:kab|sab|dex|dey|dez)(?=\s=)"),
+            (OptimizeType::Map, 4, 10, b"=".to_vec())
+        );
+        assert_eq!(
+            optimizer(br"(?i)(?:align|alpha|case|country|currency|date)(?=\s=)"),
+            (OptimizeType::Map, 0, 0, b"ACDacd".to_vec())
+        );
+        // Unicode 18.0 folds U+1DF95 (lead byte 0xF0) to "ss", so it joins the
+        // map. C's Unicode 16.0 data has no such fold; this is an intentional
+        // data-level divergence (ADR-015, compatibility guide).
+        assert_eq!(
+            optimizer(br"(?i)(?:ssa|ssb|ssc|ssd|sse)x"),
+            (
+                OptimizeType::Map,
+                0,
+                0,
+                vec![b'S', b's', 0xC3, 0xC5, 0xE1, 0xF0]
+            )
+        );
+        // C has no optimizer for these: a Rust-only start map fills in.
+        for pattern in [&br"\s+"[..], br"\S+", br"\d+"] {
+            let (optimize, dist_min, dist_max, _) = optimizer(pattern);
+            assert_eq!(
+                (optimize, dist_min, dist_max),
+                (OptimizeType::Map, 0, 0),
+                "{pattern:?}"
+            );
+        }
+    }
+
+    /// An extra start map that leaves out next to nothing is not searched:
+    /// the search attempts every position, as C's does, and the RegSet still
+    /// dispatches by the map.
+    #[test]
+    fn weak_extra_start_map_is_not_searched() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::ONIG_OPTION_NONE;
+        use crate::regsyntax::OnigSyntaxOniguruma;
+        let _limits = crate::regexec::shared_limits();
+
+        let compile = |pattern: &[u8]| {
+            onig_new(
+                pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        // Below 1/20 of the ASCII position value left out: `\` (5), `"`
+        // and `'` (7 + 4), tab and space (10 + 12), of 606.
+        for (pattern, left_out) in [
+            (&br"[^\\]$"[..], &b"\\"[..]),
+            (br"(?=[^\\])$", b"\\"),
+            (br#"[^"']+"#, b"\"'"),
+            (br"[^\t ]", b"\t "),
+        ] {
+            let reg = compile(pattern);
+            assert_eq!(reg.optimize, OptimizeType::None, "{pattern:?}");
+            assert!(reg.has_first_byte_map, "{pattern:?}");
+            let excluded: Vec<u8> = (0..=255u8)
+                .filter(|&b| reg.first_byte_map[b as usize] == 0)
+                .collect();
+            assert_eq!(excluded, left_out, "{pattern:?}");
+        }
+        // Whitespace (44), a line anchor, or a distance above 0 keep the map.
+        for pattern in [&br"\S"[..], br"(?=^[^\\])", br".?[^\\]", br"\s*(?=[^;{])"] {
+            assert_eq!(compile(pattern).optimize, OptimizeType::Map, "{pattern:?}");
+        }
+        let distance = |pattern: &[u8]| {
+            let reg = compile(pattern);
+            (reg.dist_min, reg.dist_max)
+        };
+        assert_eq!(distance(br".?[^\\]"), (0, 4));
+        assert_eq!(distance(br"\s*(?=[^;{])"), (0, INFINITE_LEN));
+
+        // The search still finds the right starts.
+        let reg = compile(br"[^\\]$");
+        let search = |text: &[u8]| {
+            let end = text.len();
+            crate::regexec::onig_search(&reg, text, end, 0, end, None, ONIG_OPTION_NONE).0
+        };
+        assert_eq!(search(b"a\\\nb\\"), ONIG_MISMATCH);
+        assert_eq!(search(b"a\\\nbc"), 4);
+    }
+
+    /// A call contributes its group's minimum length, so a loop over a body
+    /// that always consumes gets no empty check, as in C (compared against
+    /// C's compiled byte code).
+    #[test]
+    fn call_min_length_decides_empty_check() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::ONIG_OPTION_NONE;
+        use crate::regsyntax::OnigSyntaxOniguruma;
+
+        let empty_checks = |pattern: &[u8]| {
+            onig_new(
+                pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::EmptyCheckStart)
+            .count()
+        };
+        assert_eq!(empty_checks(br"\A(?<e>\((?:[^()]|\g<e>)*\))*\z"), 0);
+        assert_eq!(empty_checks(br"(?<e>\((?:[^()]|\g<e>)*\))"), 0);
+        assert_eq!(empty_checks(br"(?:\g<x>|b)*(?<x>a)"), 0);
+        assert_eq!(empty_checks(br"(?:\g<x>|b)*(?<x>a?)"), 1);
+    }
+
+    /// In a syntax where `++` is possessive, every further `+` wraps the
+    /// previous quantifier in an atomic group and quantifies it again. C
+    /// jumps into the loop body for a `+` whose body exceeds
+    /// `QUANTIFIER_EXPAND_LIMIT_SIZE`, so the bytecode grows by a constant
+    /// per level. Duplicating the body for the mandatory first pass instead
+    /// doubles it per level; 43 stacked `+` then ask for gigabytes.
+    #[test]
+    fn stacked_possessive_quantifiers_compile_to_linear_bytecode() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::ONIG_OPTION_NONE;
+        use crate::regsyntax::OnigSyntaxPerl_NG;
+
+        let ops_for = |stacked: usize| {
+            let mut pattern = b"un".to_vec();
+            pattern.extend(std::iter::repeat_n(b'+', stacked));
+            pattern.extend_from_slice(b"ct?");
+            onig_new(
+                &pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxPerl_NG,
+            )
+            .unwrap()
+            .ops
+            .len()
+        };
+
+        let small = ops_for(23);
+        let large = ops_for(43);
+        // Ten more levels add a fixed number of ops each, not a factor of
+        // two per level.
+        let per_level = (large - small) / 10;
+        assert!(
+            per_level <= 8,
+            "{per_level} ops per level ({small} -> {large})"
+        );
+        assert!(large < 256, "{large} ops for 43 stacked quantifiers");
+    }
+
+    /// A `{n,}` over a body that cannot be empty is written out inline only
+    /// up to `INFINITE_EXPAND_LIMIT_SIZE`; nested counts multiply the
+    /// expansion. Past the limit REPEAT matches the same strings.
+    #[test]
+    fn nested_counted_loops_compile_to_bounded_bytecode() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::{ONIG_OPTION_EXTEND, ONIG_OPTION_NONE};
+        use crate::regexec::onig_search;
+        use crate::regsyntax::OnigSyntaxJava;
+
+        // Found by the pattern-compile fuzzer: over three minutes and some
+        // 20 GB before the limit.
+        let reg = onig_new(
+            b",}{1,}{26666,}{1,}{26666,}.,}.",
+            ONIG_OPTION_EXTEND,
+            &ONIG_ENCODING_UTF8,
+            &OnigSyntaxJava,
+        )
+        .unwrap();
+        assert!(reg.ops.len() < 64, "{} ops", reg.ops.len());
+
+        let matches = |reg: &RegexType, text: &[u8]| {
+            let (r, _) = onig_search(reg, text, text.len(), 0, text.len(), None, ONIG_OPTION_NONE);
+            r
+        };
+        for (pattern, count) in [(&b"(?:ab){500,}"[..], 500), (b"(?:ab){2000,}", 2000)] {
+            let reg = compile_utf8(pattern);
+            assert!(reg.ops.len() < 1100, "{} ops", reg.ops.len());
+            assert_eq!(matches(&reg, &b"ab".repeat(count + 3)), 0);
+            assert_eq!(matches(&reg, &b"ab".repeat(count - 1)), ONIG_MISMATCH);
+        }
+        assert!(compile_utf8(b"(?:ab){2000,}").ops.len() < 16);
+    }
+
+    fn compile_utf8(pattern: &[u8]) -> RegexType {
+        onig_new(
+            pattern,
+            crate::oniguruma::ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap()
+    }
+
+    /// C's tune_look_behind() copies the body's trailing literal into
+    /// `lead_node`, and a variable-length look-behind matches it right
+    /// before the current position (MOVE -len, literal) ahead of the
+    /// step-back loop.
+    #[test]
+    fn variable_look_behind_checks_trailing_literal_first() {
+        for pattern in [&b"(?<=a*b)"[..], b"(?<!a*b)"] {
+            let reg = compile_utf8(pattern);
+            let opcodes: Vec<OpCode> = reg.ops.iter().map(|op| op.opcode).collect();
+            let pattern = String::from_utf8_lossy(pattern);
+            let mv = opcodes
+                .iter()
+                .position(|&op| op == OpCode::Move)
+                .unwrap_or_else(|| panic!("{pattern}: no lead_node check in {opcodes:?}"));
+            assert!(
+                matches!(reg.ops[mv].payload, OperationPayload::Move { n: -1 }),
+                "{pattern}: {opcodes:?}"
+            );
+            assert_eq!(opcodes[mv + 1], OpCode::Str1, "{pattern}: {opcodes:?}");
+            let step_back = opcodes
+                .iter()
+                .position(|&op| op == OpCode::StepBackStart)
+                .unwrap();
+            assert!(mv < step_back, "{pattern}: {opcodes:?}");
+        }
+    }
+
+    /// C reduces quantifiers in a look-behind body before node_char_len(),
+    /// so `(?<=\w*b[a])` becomes the fixed-length `(?<=\w{0}b[a])`.
+    #[test]
+    fn look_behind_char_len_follows_quantifier_reduction() {
+        let reg = compile_utf8(br"(?<=\w*b[a])");
+        let step_back = reg.ops.iter().find_map(|op| match op.payload {
+            OperationPayload::StepBackStart {
+                initial, remaining, ..
+            } => Some((initial, remaining)),
+            _ => None,
+        });
+        assert_eq!(step_back, Some((2, 0)));
+    }
+
+    /// C's tune_look_behind() drops a look-behind whose body can match the
+    /// empty string with nothing on that shortest path that it cannot
+    /// optimize: `(?<=a*)` becomes an empty node and `(?<!a*)` a FAIL. A
+    /// capture on the shortest path keeps the look-behind.
+    #[test]
+    fn look_behind_with_empty_shortest_body_is_reset() {
+        let has = |pattern: &[u8], opcode: OpCode| {
+            compile_utf8(pattern)
+                .ops
+                .iter()
+                .any(|op| op.opcode == opcode)
+        };
+        assert!(!has(b"(?<=a*)b", OpCode::StepBackStart));
+        assert!(!has(b"(?<=a|)b", OpCode::StepBackStart));
+        assert!(!has(b"(?<!a*)b", OpCode::StepBackStart));
+        assert!(has(b"(?<!a*)b", OpCode::Fail));
+        assert!(has(b"(?<=(a)*)b", OpCode::StepBackStart));
+        assert!(has(b"(?<=\\ba*)b", OpCode::StepBackStart));
+    }
+
+    /// C's node_char_len1() measures a back-reference by the groups it
+    /// refers to, so a look-behind over a fixed-length group steps back a
+    /// fixed distance instead of trying every start. A reference inside its
+    /// own group (RECURSION) counts as empty, or as any length with a level.
+    /// Expected (initial, remaining) are C's step-back-start operands.
+    #[test]
+    fn look_behind_back_reference_takes_group_char_len() {
+        let step_back = |pattern: &[u8]| {
+            let reg = compile_utf8(pattern);
+            reg.ops
+                .iter()
+                .filter_map(|op| match op.payload {
+                    OperationPayload::StepBackStart {
+                        initial, remaining, ..
+                    } => Some((initial, remaining)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let any = INFINITE_LEN as LengthType;
+        assert_eq!(step_back(br"((?<=\1)|^)x"), [(0, 0)]);
+        assert_eq!(step_back(br#"(["'])(`\1|.(?<!\1))*\1"#), [(1, 0)]);
+        assert_eq!(step_back(br"(a|bc)(?<=\1)"), [(1, 1)]);
+        assert_eq!(step_back(br"(?<n>a)(?<n>bc)(?<=\k<n>)"), [(1, 1)]);
+        assert_eq!(step_back(br"(?<n>a)(?<=\k<n+0>)"), [(1, 0)]);
+        assert_eq!(step_back(br"(?<n>a(?<=\k<n+0>))"), [(0, any)]);
+        assert_eq!(step_back(br"(?<=(a|bc)\1)x"), [(2, 2)]);
+        // CHAR_LEN_TOP_ALT_FIXED: one look-behind per branch.
+        assert_eq!(step_back(br"(a)(?<=\1|b\1)x"), [(1, 0), (2, 0)]);
+        // A call into a recursive group: the inner call is any length.
+        assert_eq!(step_back(br"(?<=\g<1>)(a\g<1>?b)"), [(2, any)]);
+    }
+
+    /// C's node_min_byte_len() and node_max_byte_len() take a
+    /// back-reference's length from the groups it refers to: a loop over a
+    /// reference to a group that cannot be empty gets no empty check, and
+    /// the optimizer bounds the distance to a literal behind it. Expected
+    /// values are C's.
+    #[test]
+    fn back_reference_byte_len_follows_group() {
+        let empty_checks = |pattern: &[u8]| {
+            compile_utf8(pattern)
+                .ops
+                .iter()
+                .filter(|op| op.opcode == OpCode::EmptyCheckStart)
+                .count()
+        };
+        assert_eq!(empty_checks(br"(a)(?:\1)*"), 0);
+        assert_eq!(empty_checks(br"(?<n>a)(?<n>bc)(?:\k<n>)*"), 0);
+        assert_eq!(empty_checks(br"(a?)(?:\1)*"), 1);
+        assert_eq!(empty_checks(br"(a(?:\1)*)"), 1);
+
+        let exact = |pattern: &[u8]| {
+            let reg = compile_utf8(pattern);
+            (reg.exact.clone(), reg.dist_min, reg.dist_max)
+        };
+        assert_eq!(exact(br"(a)\1xyz"), (b"xyz".to_vec(), 2, 2));
+        assert_eq!(exact(br"(a|bc)\1xyzw"), (b"xyzw".to_vec(), 2, 4));
+        assert_eq!(exact(br"(a|bc)(?:\1|x\1)xyzw"), (b"xyzw".to_vec(), 2, 5));
+        // Groups that refer to each other: the cycle counts as unbounded.
+        assert_eq!(exact(br"(\2)(\1)x"), (b"x".to_vec(), 0, INFINITE_LEN));
+    }
+
+    /// A variable-length look-behind that cannot end at a position must fail
+    /// there without stepping back over the subject: without the lead_node
+    /// check and the early quantifier reduction, each position scans back
+    /// over every earlier start and the search over "a" x n is O(n^3). The
+    /// retry limit turns that blowup into an error instead of a hang.
+    #[test]
+    fn variable_look_behind_search_stays_linear() {
+        use crate::regexec::{
+            onig_new_match_param, onig_search_with_param,
+            onig_set_retry_limit_in_search_of_match_param,
+        };
+        let _limits = crate::regexec::shared_limits();
+        let n = 4000;
+        let mut mp = onig_new_match_param();
+        onig_set_retry_limit_in_search_of_match_param(&mut mp, 4 * n as u64);
+        let search = |reg: &RegexType, subject: &[u8]| {
+            onig_search_with_param(
+                reg,
+                subject,
+                subject.len(),
+                0,
+                subject.len(),
+                None,
+                crate::oniguruma::ONIG_OPTION_NONE,
+                &mp,
+            )
+            .0
+        };
+        for (pattern, tail) in [
+            (&br"(?<=a*b)"[..], &b"b"[..]),
+            (br"(?<=a+b)", b"b"),
+            (br"(?<=(?:ab)*c)", b"c"),
+            (br"(?<=\w*x)", b"x"),
+            (br"(?<=\w*b[a])", b"ba"),
+        ] {
+            let reg = compile_utf8(pattern);
+            let mut subject = vec![b'a'; n];
+            let name = String::from_utf8_lossy(pattern);
+            assert_eq!(search(&reg, &subject), ONIG_MISMATCH, "{name}");
+            subject.extend_from_slice(tail);
+            assert_eq!(search(&reg, &subject), subject.len() as i32, "{name}");
+        }
+    }
+    use crate::regparse;
+    use crate::regsyntax::OnigSyntaxOniguruma;
+
+    fn make_test_context() -> (RegexType, ParseEnv) {
+        let reg = RegexType {
+            backtrack_warnings: Vec::new(),
+            backtrack_rewrites: Vec::new(),
+            ops: Vec::new(),
+            string_pool: Vec::new(),
+            num_mem: 0,
+            num_repeat: 0,
+            num_empty_check: 0,
+            num_call: 0,
+            capture_history: 0,
+            push_mem_start: 0,
+            push_mem_end: 0,
+            stack_pop_level: StackPopLevel::Free,
+            repeat_range: Vec::new(),
+            enc: &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            options: ONIG_OPTION_NONE,
+            syntax: OnigSyntaxOniguruma.clone(),
+            case_fold_flag: ONIGENC_CASE_FOLD_MIN,
+            name_table: None,
+            optimize: OptimizeType::None,
+            threshold_len: 0,
+            anchor: 0,
+            anc_dist_min: 0,
+            anc_dist_max: 0,
+            sub_anchor: 0,
+            exact: Vec::new(),
+            exact_finder: None,
+            pure_literal: false,
+            skip_repeated_empty_search: false,
+            map: [0u8; CHAR_MAP_SIZE],
+            map_offset: 0,
+            map_bytes: [0u8; 3],
+            map_byte_count: 0,
+            map_ascii_ranges: MapAsciiRanges::default(),
+            dist_min: 0,
+            dist_max: 0,
+            needs_capture_tracking: false,
+            keep_moves_match_start: false,
+            first_byte_map: [0u8; CHAR_MAP_SIZE],
+            has_first_byte_map: false,
+            start_dispatch: false,
+            called_addrs: vec![],
+            unset_call_addrs: vec![],
+            extp: None,
+            literal_tries: Vec::new(),
+            check_dependent_guards: false,
+            skip_gates: Vec::new(),
+            ac_alt: None,
+            ac_alt_has_capture: false,
+            leading_run: None,
+            literal_prefix: None,
+            anychar_run: false,
+            look_behind_reach: 0,
+            extra_map_optimizer: false,
+            search_start_map: None,
+            search_jump: None,
+            required_literals: None,
+        };
+        let env = ParseEnv {
+            options: OnigOptionType::empty(),
+            case_fold_flag: 0,
+            enc: &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            syntax: OnigSyntaxOniguruma.clone(),
+            cap_history: 0,
+            backtrack_mem: 0,
+            backrefed_mem: 0,
+            pattern: std::ptr::null(),
+            pattern_end: std::ptr::null(),
+            error: None,
+            reg: std::ptr::null_mut(),
+            reg_state: RegexParseState::default(),
+            num_call: 0,
+            num_mem: 0,
+            num_named: 0,
+            mem_alloc: 0,
+            mem_env_static: Default::default(),
+            mem_env_dynamic: None,
+            backref_num: 0,
+            keep_num: 0,
+            id_num: 0,
+            save_alloc_num: 0,
+            saves: None,
+            unset_addr_list: None,
+            parse_depth: 0,
+            look_behind_depth: 0,
+            ast_node_count: 0,
+            flags: 0,
+            recursive_mem: Vec::new(),
+            group_min_len: Vec::new(),
+            group_max_len: Vec::new(),
+        };
+        (reg, env)
+    }
+
+    fn parse_and_compile(pattern: &[u8]) -> Result<RegexType, i32> {
+        let (mut reg, mut env) = make_test_context();
+        let root = regparse::onig_parse_tree(pattern, &mut reg, &mut env)?;
+        let r = compile_from_tree(&root, &mut reg, &env);
+        if r != 0 {
+            return Err(r);
+        }
+        Ok(reg)
+    }
+
+    #[test]
+    fn compiled_regex_owns_caller_supplied_syntax() {
+        let mut reg = {
+            let mut syntax = OnigSyntaxOniguruma.clone();
+            syntax.op = 0;
+            onig_new(
+                b"literal",
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &syntax,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(reg.syntax.op, 0);
+        assert_eq!(onig_compile(&mut reg, b"literal"), 0);
+    }
+
+    /// A crude string compiles through add_compile_string like in C, so
+    /// lengths 6..=16 get the `StrN` opcode with the `ExactN` payload the VM
+    /// expects, not a fixed-size `Exact` buffer that never matches.
+    #[test]
+    fn compile_crude_string_uses_str_n_payload() {
+        for len in 1..=20usize {
+            let (mut reg, env) = make_test_context();
+            let bytes = vec![b'a'; len];
+            let node = crate::regparse_types::node_new_str_crude(&bytes, ONIG_OPTION_NONE);
+            assert_eq!(compile_tree(&node, &mut reg, &env), 0);
+            assert_eq!(reg.ops.len(), 1);
+            let op = &reg.ops[0];
+            assert_eq!(op.opcode, select_str_opcode(1, len as i32));
+            match &op.payload {
+                OperationPayload::Exact { s } => {
+                    assert!(len <= 5, "len {len} compiled to Exact");
+                    assert_eq!(&s[..len], &bytes[..]);
+                }
+                OperationPayload::ExactN { s, n } => {
+                    assert!(len > 5, "len {len} compiled to ExactN");
+                    assert_eq!(*n as usize, len);
+                    assert_eq!(s, &bytes);
+                }
+                _ => panic!("len {len} compiled to an unexpected payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn compile_literal_string() {
+        let reg = parse_and_compile(b"abc").unwrap();
+        assert!(!reg.ops.is_empty());
+        // Should have string op + END
+        let last = reg.ops.last().unwrap();
+        assert_eq!(last.opcode, OpCode::End);
+    }
+
+    #[test]
+    fn compile_alternation() {
+        let reg = parse_and_compile(b"a|b").unwrap();
+        // Should have PUSH + "a" + JUMP + "b" + END
+        assert!(reg.ops.len() >= 4);
+        assert_eq!(reg.ops[0].opcode, OpCode::Push);
+        assert_eq!(reg.ops.last().unwrap().opcode, OpCode::End);
+    }
+
+    #[test]
+    fn compile_star_quantifier() {
+        let reg = parse_and_compile(b"(?:ab)*").unwrap();
+        // Should have PUSH + Str2 + JUMP + END
+        assert!(reg.ops.len() >= 3);
+        assert_eq!(reg.ops.last().unwrap().opcode, OpCode::End);
+        // Check that a PUSH and JUMP are present
+        let has_push = reg.ops.iter().any(|op| op.opcode == OpCode::Push);
+        let has_jump = reg.ops.iter().any(|op| op.opcode == OpCode::Jump);
+        assert!(has_push, "expected PUSH for (?:ab)*");
+        assert!(has_jump, "expected JUMP for (?:ab)*");
+
+        // A star or plus over one ASCII byte runs as the class star opcode
+        // (Rust-only, ADR-008); other bodies keep the loop.
+        let opcodes = |pat: &[u8]| -> Vec<OpCode> {
+            let reg = parse_and_compile(pat).unwrap();
+            reg.ops.iter().map(|op| op.opcode).collect()
+        };
+        assert_eq!(opcodes(b"a*"), [OpCode::CClassStar, OpCode::End]);
+        assert_eq!(
+            opcodes(b"a+"),
+            [OpCode::Str1, OpCode::CClassStar, OpCode::End]
+        );
+        assert_eq!(
+            opcodes(b"a*b"),
+            [OpCode::CClassStar, OpCode::Str1, OpCode::End]
+        );
+        assert!(!opcodes(b"a*?").contains(&OpCode::CClassStar));
+        assert!(!opcodes("é*".as_bytes()).contains(&OpCode::CClassStar));
+    }
+
+    /// C decides between expanding `{n,}` and REPEAT by its own body
+    /// length, and only REPEAT sends the first iterations through the empty
+    /// check. The shorter Rust-only star opcodes must not change that
+    /// choice. Expected spans are C Oniguruma's.
+    #[test]
+    fn star_opcodes_keep_the_upstream_repeat_choice() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::onig_search;
+        let _limits = crate::regexec::shared_limits();
+
+        type Case = (&'static str, &'static str, i32, &'static [(i32, i32)]);
+        let cases: &[Case] = &[
+            (r"(\Ab*){2,}", "b", 0, &[(0, 0), (0, 0)]),
+            (r"(\A[b]*){2,}", "bb", 0, &[(0, 0), (0, 0)]),
+            (r"(\A[b]*){2,}?", "bbc", 0, &[(0, 0), (0, 0)]),
+            (r"(\A\w*){2,}", "b", 0, &[(0, 0), (0, 0)]),
+            (r"(\A\w*){2,}c", "bbc", ONIG_MISMATCH, &[]),
+            (r"(\A\w*){2,}c", "cbb", 0, &[(0, 1), (0, 0)]),
+        ];
+        for &(pattern, input, want, spans) in cases {
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap();
+            let input = input.as_bytes();
+            let (r, region) = onig_search(
+                &reg,
+                input,
+                input.len(),
+                0,
+                input.len(),
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            assert_eq!(r, want, "{pattern} on {input:?}");
+            if r >= 0 {
+                let region = region.unwrap();
+                let got: Vec<(i32, i32)> = (0..region.num_regs as usize)
+                    .map(|i| (region.beg[i], region.end[i]))
+                    .collect();
+                assert_eq!(got, spans, "{pattern} on {input:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn compile_plus_quantifier() {
+        let reg = parse_and_compile(b"a+").unwrap();
+        // a+ = body + PUSH + body + JUMP
+        assert!(reg.ops.len() >= 3);
+        assert_eq!(reg.ops.last().unwrap().opcode, OpCode::End);
+    }
+
+    #[test]
+    fn compile_capture_group() {
+        let reg = parse_and_compile(b"(a)").unwrap();
+        let has_mem_start = reg
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::MemStart || op.opcode == OpCode::MemStartPush);
+        let has_mem_end = reg
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::MemEnd || op.opcode == OpCode::MemEndPush);
+        assert!(has_mem_start, "expected MemStart for (a)");
+        assert!(has_mem_end, "expected MemEnd for (a)");
+    }
+
+    #[test]
+    fn compile_char_class() {
+        let reg = parse_and_compile(b"[abc]").unwrap();
+        let has_cclass = reg.ops.iter().any(|op| op.opcode == OpCode::CClass);
+        assert!(has_cclass, "expected CClass for [abc]");
+    }
+
+    #[test]
+    fn compile_anchor_begin() {
+        let reg = parse_and_compile(b"^a").unwrap();
+        assert_eq!(reg.ops[0].opcode, OpCode::BeginLine);
+    }
+
+    #[test]
+    fn compile_word_type() {
+        let reg = parse_and_compile(b"\\w").unwrap();
+        let has_word = reg
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Word || op.opcode == OpCode::WordAscii);
+        assert!(has_word, "expected Word for \\w");
+    }
+
+    #[test]
+    fn compile_interval_quantifier() {
+        // a{2,5} is compiled via greedy expansion: body*2 + 3*(PUSH+body)
+        let reg = parse_and_compile(b"a{2,5}").unwrap();
+        let has_push = reg.ops.iter().any(|op| op.opcode == OpCode::Push);
+        assert!(has_push, "expected Push for a{{2,5}} greedy expansion");
+        assert!(
+            !reg.ops.iter().any(|op| op.opcode == OpCode::Repeat),
+            "small interval should remain expanded"
+        );
+    }
+
+    #[test]
+    fn compile_over_limit_interval_quantifier_uses_repeat_bytecode() {
+        let _limits = crate::regexec::shared_limits();
+        // This is intentionally small enough to stay safe on the vulnerable
+        // compiler path, while exceeding the upstream 10-op expansion budget.
+        // A body of two characters is not one instruction, so it keeps the
+        // counter loop (see `compile_bounded_character_repeat_uses_counted_loop`).
+        let reg = parse_and_compile(b"(?:ab){6,7}").unwrap();
+        assert!(
+            reg.ops.iter().any(|op| op.opcode == OpCode::Repeat),
+            "over-limit interval should use bounded repeat bytecode"
+        );
+        assert_eq!(reg.repeat_range.len(), 1);
+        assert_eq!(reg.repeat_range[0].lower, 6);
+        assert_eq!(reg.repeat_range[0].upper, 7);
+
+        let re = crate::api::Regex::new("(?:ab){6,7}").unwrap();
+        assert!(re.is_match("abababababab"));
+        assert!(re.is_match("ababababababab"));
+        assert!(!re.is_match("ababababab"));
+    }
+
+    #[test]
+    fn compile_bounded_character_repeat_uses_counted_loop() {
+        let _limits = crate::regexec::shared_limits();
+        let reg = parse_and_compile(b"a{6,7}").unwrap();
+        assert!(
+            reg.ops.iter().any(|op| op.opcode == OpCode::CClassRepeat),
+            "over-limit interval of one character should use the counted loop"
+        );
+        assert!(!reg.ops.iter().any(|op| op.opcode == OpCode::Repeat));
+        assert!(reg.repeat_range.is_empty());
+
+        let re = crate::api::Regex::new("a{6,7}").unwrap();
+        assert!(re.is_match("aaaaaa"));
+        assert!(re.is_match("aaaaaaa"));
+        assert!(!re.is_match("aaaaa"));
+    }
+
+    #[test]
+    fn compile_over_limit_interval_with_unrelated_call_uses_repeat_bytecode() {
+        let _limits = crate::regexec::shared_limits();
+        let mut reg = make_test_context().0;
+        assert_eq!(
+            onig_compile(&mut reg, b"(?<digit>\\d)\\g<digit>(?:ab){6,7}"),
+            0
+        );
+
+        assert!(
+            reg.ops.iter().any(|op| op.opcode == OpCode::Repeat),
+            "an unrelated subexpression call must not bypass the expansion limit"
+        );
+        assert_eq!(reg.repeat_range.len(), 1);
+        assert_eq!(reg.repeat_range[0].lower, 6);
+        assert_eq!(reg.repeat_range[0].upper, 7);
+
+        let re = crate::api::Regex::new(r"(?<digit>\d)\g<digit>(?:ab){6,7}").unwrap();
+        assert!(re.is_match("11abababababab"));
+        assert!(re.is_match("11ababababababab"));
+        assert!(!re.is_match("11ababababa"));
+    }
+
+    #[test]
+    fn compile_complex_pattern() {
+        let reg = parse_and_compile(b"^[a-z]+\\d{2,4}$").unwrap();
+        assert_eq!(reg.ops.last().unwrap().opcode, OpCode::End);
+        // Just verify it compiles without error
+    }
+
+    #[test]
+    fn compile_empty_pattern() {
+        let reg = parse_and_compile(b"").unwrap();
+        assert_eq!(reg.ops.len(), 1); // Just END
+        assert_eq!(reg.ops[0].opcode, OpCode::End);
+    }
+
+    #[test]
+    fn compile_non_capturing_group() {
+        let reg = parse_and_compile(b"(?:abc)").unwrap();
+        // Non-capturing group should not emit MemStart/MemEnd
+        let has_mem_start = reg
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::MemStart || op.opcode == OpCode::MemStartPush);
+        assert!(
+            !has_mem_start,
+            "non-capturing group should not have MemStart"
+        );
+        assert_eq!(reg.ops.last().unwrap().opcode, OpCode::End);
+    }
+
+    #[test]
+    fn compile_lookahead() {
+        let reg = parse_and_compile(b"(?=abc)").unwrap();
+        let has_mark = reg.ops.iter().any(|op| op.opcode == OpCode::Mark);
+        let has_cut = reg.ops.iter().any(|op| op.opcode == OpCode::CutToMark);
+        assert!(has_mark, "expected Mark for lookahead");
+        assert!(has_cut, "expected CutToMark for lookahead");
+    }
+
+    #[test]
+    fn compile_negative_lookahead() {
+        let reg = parse_and_compile(b"(?!abc)").unwrap();
+        let has_fail = reg.ops.iter().any(|op| op.opcode == OpCode::Fail);
+        assert!(has_fail, "expected Fail for negative lookahead");
+    }
+
+    // ---- onig_new API tests ----
+
+    #[test]
+    fn onig_new_basic() {
+        let reg = onig_new(
+            b"abc",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert!(!reg.ops.is_empty());
+        assert_eq!(reg.ops.last().unwrap().opcode, OpCode::End);
+    }
+
+    #[test]
+    fn onig_new_with_captures() {
+        let reg = onig_new(
+            b"(a)(b)",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(reg.num_mem, 2);
+    }
+
+    #[test]
+    fn onig_new_stack_pop_level_free() {
+        // Simple pattern with no captures => StackPopLevel::Free
+        let reg = onig_new(
+            b"abc",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(reg.stack_pop_level, StackPopLevel::Free);
+    }
+
+    #[test]
+    fn backref_groups_push_only_when_a_restore_is_observable() {
+        let pushed = |pattern: &str| {
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap_or_else(|e| panic!("{pattern}: {e:?}"));
+            reg.push_mem_start
+        };
+        // Every read follows the group in a list, above it only lists,
+        // options, captures and atomic groups: no push.
+        for pattern in [
+            r"(?i)(\w)\1",
+            r"\b(\w+)\s+\1\b",
+            r#"(["'])(?:\\.|(?!\1).)*\1"#,
+            r"x*c((d))\2(?=\1)",
+            r"(?>a*(b))\1",
+            r"(?i:(a))(?(1)b|c)",
+            r"(a)(?:b|\1)*",
+        ] {
+            assert_eq!(pushed(pattern) & !1, 0, "{pattern}");
+        }
+        // A read before or inside the group, a group under a quantifier,
+        // look-around, condition or alternation, a level back reference, a
+        // subroutine call or `\K`: pushed as in C.
+        for (pattern, group) in [
+            (r"\1(a)", 1),
+            (r"\k<1>{,2}?(?>(?=(a)\z))", 1),
+            (r"(a\1)", 1),
+            (r"((?(1)a|b?){,2}?)", 1),
+            (r"(?:(a)){2}\1", 1),
+            (r"(?=(a))\1", 1),
+            (r"(b)(?(1)(a)|c)\2", 2),
+            (r"(?:(a)|b)\1", 1),
+            (r"(a)\k<1+0>", 1),
+            (r"(a)\g<1>\1", 1),
+            (r"(a)\K\1", 1),
+        ] {
+            assert_ne!(pushed(pattern) & (1 << group), 0, "{pattern}");
+        }
+    }
+
+    #[test]
+    fn onig_new_invalid_pattern() {
+        let result = onig_new(
+            b"(",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reduce_string_list_merges() {
+        // Parse "abc" - parser produces 3 single-char string nodes in a list
+        // reduce_string_list should merge them into one "abc" node
+        let (mut reg, mut env) = make_test_context();
+        let mut root = regparse::onig_parse_tree(b"abc", &mut reg, &mut env).unwrap();
+
+        // Before reduction, count the tree structure
+        let before_type = root.node_type();
+
+        // Apply reduction
+        let r = reduce_string_list(&mut root, env.enc);
+        assert_eq!(r, 0);
+
+        // After reduction, "abc" should be a single string node (not a list)
+        assert_eq!(root.node_type(), NodeType::String);
+        let s = root.as_str().unwrap();
+        assert_eq!(s.s, b"abc");
+    }
+
+    #[test]
+    fn reduce_string_list_preserves_non_strings() {
+        // "a.b" has string-dot-string, so strings cannot merge across the dot
+        let (mut reg, mut env) = make_test_context();
+        let mut root = regparse::onig_parse_tree(b"a.b", &mut reg, &mut env).unwrap();
+        let r = reduce_string_list(&mut root, env.enc);
+        assert_eq!(r, 0);
+        // Should still be a list with 3 elements
+        assert_eq!(root.node_type(), NodeType::List);
+    }
+
+    #[test]
+    fn test_never_ending_recursion_direct() {
+        let mut reg = make_test_context().0;
+        let r = onig_compile(&mut reg, b"(?<abc>\\g<abc>)");
+        assert_eq!(r, ONIGERR_NEVER_ENDING_RECURSION);
+    }
+
+    #[test]
+    fn test_never_ending_recursion_conditional() {
+        let mut reg = make_test_context().0;
+        let r = onig_compile(&mut reg, b"(()(?(2)\\g<1>))");
+        assert_eq!(r, ONIGERR_NEVER_ENDING_RECURSION);
+    }
+
+    #[test]
+    fn nullable_terminating_recursive_alternative_is_valid() {
+        let mut reg = make_test_context().0;
+        let r = onig_compile(&mut reg, b"(?<n>|a\\g<n>)+");
+        assert_eq!(r, ONIG_NORMAL);
+    }
+
+    /// Results of the C original through the `ffi` feature: every
+    /// left-recursive shape is ONIGERR_NEVER_ENDING_RECURSION, and a call
+    /// that follows consumed input is fine.
+    #[test]
+    fn left_recursive_calls_are_never_ending_recursion() {
+        let cases: [(&[u8], i32); 11] = [
+            (b"\\g<0>\x04T|0h|", ONIGERR_NEVER_ENDING_RECURSION),
+            (b"\\g<0>a|b|", ONIGERR_NEVER_ENDING_RECURSION),
+            (b"\\g<0>a|b", ONIGERR_NEVER_ENDING_RECURSION),
+            (b"(\\g<1>a|b|)", ONIGERR_NEVER_ENDING_RECURSION),
+            (b"\\g<0>|a", ONIGERR_NEVER_ENDING_RECURSION),
+            (b"a\\g<0>|b", ONIG_NORMAL),
+            (b"(?<n>a|b\\g<n>)", ONIG_NORMAL),
+            // Mutual recursion: the call to `m` consumes `a` or `b` before
+            // `n` is entered again (test_utf8.c `recursive_mutual`).
+            (
+                b"(?<n>|\\g<m>\\g<n>)\\z|\\zEND (?<m>a|(b)\\g<m>)",
+                ONIG_NORMAL,
+            ),
+            (b"(?<a>\\g<b>\\g<a>|x)(?<b>y)", ONIG_NORMAL),
+            (b"(?<a>\\g<b>|x)(?<b>y\\g<a>)", ONIG_NORMAL),
+            // Mutual left recursion: `b` calls back into `a` without consuming.
+            (
+                b"(?<a>\\g<b>|x)(?<b>\\g<a>)",
+                ONIGERR_NEVER_ENDING_RECURSION,
+            ),
+        ];
+        for (pattern, expected) in cases {
+            let mut reg = make_test_context().0;
+            let r = onig_compile(&mut reg, pattern);
+            assert_eq!(r, expected, "{}", String::from_utf8_lossy(pattern));
+        }
+    }
+
+    #[test]
+    fn mutually_recursive_group_with_nullable_exit_is_valid() {
+        let mut reg = make_test_context().0;
+        let r = onig_compile(&mut reg, b"\\A(?<n>|a\\g<m>)\\z|\\zEND (?<m>\\g<n>)");
+        assert_eq!(r, ONIG_NORMAL);
+    }
+
+    #[test]
+    fn zero_repeat_called_group_keeps_callable_bytecode() {
+        let reg = onig_new(
+            b"(?P<name>abc){0}(?P>name)",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxPython,
+        )
+        .unwrap();
+
+        assert!(
+            reg.called_addrs.get(1).is_some_and(|addr| *addr > 0),
+            "a group referenced outside a zero repeat must still be emitted"
+        );
+    }
+
+    #[test]
+    fn casefold_lookbehind_cclass_no_bloat() {
+        // Regression test: (?i) with [-\w] in a lookbehind must not generate
+        // hundreds of redundant multi-char case-fold lookbehind blocks.
+        // Without the optimization, (?i)(?<![-\w])x generates ~846 ops;
+        // with it, it should be ~9 ops (same as without (?i)).
+        let reg_ic = onig_new(
+            br"(?<![-\w])x",
+            ONIG_OPTION_IGNORECASE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        let reg_no_ic = onig_new(
+            br"(?<![-\w])x",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        // With optimization, both should produce the same number of ops
+        assert_eq!(
+            reg_ic.ops.len(),
+            reg_no_ic.ops.len(),
+            "(?i)(?<![-\\w])x should not bloat: got {} ops vs {} without (?i)",
+            reg_ic.ops.len(),
+            reg_no_ic.ops.len()
+        );
+    }
+
+    #[test]
+    fn literal_alt_trie_triggers() {
+        // 10 pure literal alternations — above threshold of 8
+        // Use onig_new (full pipeline) to include detect_literal_alternations
+        let reg = onig_new(
+            b"alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(
+            reg.literal_tries.len(),
+            1,
+            "expected 1 literal trie, got {}",
+            reg.literal_tries.len()
+        );
+        let has_alt_literals = reg.ops.iter().any(|op| op.opcode == OpCode::AltLiterals);
+        assert!(has_alt_literals, "expected AltLiterals opcode in bytecode");
+        // Should NOT have Push/Jump from normal Alt compilation
+        let has_push = reg.ops.iter().any(|op| op.opcode == OpCode::Push);
+        assert!(
+            !has_push,
+            "should not have Push opcode for trie-optimized alt"
+        );
+    }
+
+    #[test]
+    fn contiguous_literal_tries_preserve_mixed_branch_order_and_captures() {
+        use crate::regexec::{onig_search, shared_limits};
+        let _limits = shared_limits();
+        let literals = [
+            "foo",
+            "foobarbaz",
+            "a",
+            "ab",
+            "abc",
+            "b",
+            "ba",
+            "bc",
+            "c",
+            "ca",
+            "cb",
+            "x",
+            "xa",
+            "xb",
+            "s",
+            "ss",
+            "st",
+            "k",
+            "ffi",
+            "fl",
+        ];
+        let plain = literals.join("|");
+        // Block every literal individually, so both large runs stay on the
+        // original compiler path without changing captures or match choices.
+        let blocked = literals
+            .iter()
+            .map(|s| format!("{s}(?=)"))
+            .collect::<Vec<_>>()
+            .join("|");
+        let inputs: Vec<Vec<u8>> = [
+            "",
+            "foo",
+            "foobarbaz",
+            "foobarbazx",
+            "abc",
+            "ababc",
+            "aaab",
+            "xx",
+            "ss",
+            "ſ",
+            "ß",
+            "K",
+            "ﬃ",
+            "SS",
+            "FOOBARBAZ",
+            "afoox",
+            "foobarbazfoo",
+        ]
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .chain([
+            vec![0xC1, 0xAB],
+            vec![0x80, b'f', b'o', b'o'],
+            vec![0xE2, 0x84],
+        ])
+        .collect();
+        let compile = |pattern: &str, options| {
+            onig_new(
+                pattern.as_bytes(),
+                options,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        let search = |reg: &RegexType, input: &[u8], start, range| {
+            let (r, region) = onig_search(
+                reg,
+                input,
+                input.len(),
+                start,
+                range,
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            let region = region.unwrap();
+            let captures: Vec<_> = region
+                .beg
+                .iter()
+                .copied()
+                .zip(region.end.iter().copied())
+                .take(region.num_regs as usize)
+                .collect();
+            (r, captures)
+        };
+        let mut used = 0;
+        for (flags, options) in [
+            ("", ONIG_OPTION_NONE),
+            ("(?i)", ONIG_OPTION_NONE),
+            ("", ONIG_OPTION_IGNORECASE),
+        ] {
+            for middle in ["([a-c]+?)", "(f[o]+)", "(x?)"] {
+                for head in ["", "a*", "\\b"] {
+                    for quantifier in ["", "?", "+", "{2}", "*+", "*", "{3,}", "{1,3}"] {
+                        for tail in ["", "x", "$", "(?![a-z])", "\\1"] {
+                            let pattern = |run: &str| {
+                                format!("{flags}{head}({run}|{middle}|{run}){quantifier}{tail}")
+                            };
+                            let optimized = compile(&pattern(&plain), options);
+                            let reference = compile(&pattern(&blocked), options);
+                            assert!(reference.literal_tries.is_empty());
+                            used += usize::from(optimized.literal_tries.len() == 2);
+                            for input in &inputs {
+                                for (start, range) in [(0, input.len()), (input.len(), 0)] {
+                                    assert_eq!(
+                                        search(&optimized, input, start, range),
+                                        search(&reference, input, start, range),
+                                        "{} on {input:x?}, {start}..{range}",
+                                        pattern(&plain)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(used > 300, "only {used} contexts used both tries");
+    }
+
+    #[test]
+    fn contiguous_literal_tries_keep_lookarounds_and_option_boundaries() {
+        let literals = "a|bb|ccc|dddd|ee|ff|gg|hh|ii|jj|kk|ll|mm|nn|oo|pp";
+        let compile = |p: &str| {
+            onig_new(
+                p.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        assert!(
+            compile(&format!("(?={literals}|[xy])"))
+                .literal_tries
+                .is_empty()
+        );
+        assert!(
+            compile(&format!("(?<={literals}|[xy])"))
+                .literal_tries
+                .is_empty()
+        );
+        let pattern = format!("({literals}|([xy])|(?i:{literals}))\\2?");
+        let reg = compile(&pattern);
+        assert_eq!(reg.num_mem, 2);
+        assert_eq!(reg.literal_tries.len(), 2);
+    }
+
+    #[test]
+    fn negative_lookahead_tries_keep_other_anchor_and_mixed_run_guards() {
+        let literals = "a|bb|ccc|dddd|ee|ff|gg|hh|ii|jj|kk|ll|mm|nn|oo|pp";
+        let compile = |pattern: &str| {
+            onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        for pattern in [
+            format!("(?!{literals})[a-z]+"),
+            format!("(?!(?:{literals})\\b)[a-z]+"),
+            format!("(?i:(?!{literals})[a-z]+)"),
+        ] {
+            assert_eq!(compile(&pattern).literal_tries.len(), 1, "{pattern}");
+        }
+        for pattern in [
+            format!("(?={literals})"),
+            format!("(?<={literals})"),
+            format!("(?<!{literals})"),
+            format!("(?=(?!{literals}).)"),
+            format!("(?!(?={literals}).)"),
+            format!("(?!(?!{literals}).)"),
+            format!("(?![xy]|{literals}|[zw])"),
+        ] {
+            assert!(compile(&pattern).literal_tries.is_empty(), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn negative_lookahead_tries_preserve_assertion_backtracking_and_captures() {
+        use crate::oniguruma::{ONIG_OPTION_IGNORECASE, OnigRegion};
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let search = |reg: &RegexType, input: &[u8], start: usize, range: usize| {
+            let (result, region) = onig_search(
+                reg,
+                input,
+                input.len(),
+                start,
+                range,
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            let region = region.unwrap();
+            let captures: Vec<_> = region
+                .beg
+                .iter()
+                .zip(&region.end)
+                .take(region.num_regs as usize)
+                .map(|(&begin, &end)| (begin, end))
+                .collect();
+            (result, captures)
+        };
+        let sets: [&[&str]; 6] = [
+            &["a", "ab", "abc", "x"],
+            &["abc", "ab", "a", "ab"],
+            &["foo", "foob", "bar", "baz"],
+            &["ss", "st", "ff", "k"],
+            &["é", "α", "😀", "ß"],
+            &["a", "ab", "", "x"],
+        ];
+        let contexts = [
+            "(?!(?:{}))[a-z]+",
+            "(?!(?:{})c)([a-z]+)",
+            "(?!({})c)([a-z]+)",
+            "(?!(?:{})\\b)([a-z]+)",
+            "(?:(?!(?:{})c).){1,3}(x?)",
+            "(?!(?:{})c)([a-z]+)|([a-z]+)",
+            "(?!(?:{})c)([a-z]+)\\1?",
+            "(a*)(?!(?:{})c)([a-z]*)",
+        ];
+        let inputs: &[&[u8]] = &[
+            b"",
+            b"a",
+            b"ab",
+            b"abc",
+            b"abcc",
+            b"ax",
+            b"xabc",
+            b"foobc",
+            b"foo bar baz",
+            b"FOOBC",
+            b"sscx",
+            b"STk",
+            "ſsc".as_bytes(),
+            "ßc".as_bytes(),
+            "Kc".as_bytes(),
+            "éα😀ß".as_bytes(),
+            b"\x80abc",
+            b"a\xc1\xab",
+            b"\xe2\x84",
+            b"abc\xf0\x9f\x98\x80x",
+        ];
+        let mut optimized = 0;
+        for literals in sets {
+            let plain = literals.join("|");
+            // An empty positive assertion preserves the first branch's
+            // meaning and case folding while blocking the plain-string trie.
+            let blocked = format!("{}(?=)|{}", literals[0], literals[1..].join("|"));
+            for context in contexts {
+                for options in [ONIG_OPTION_NONE, ONIG_OPTION_IGNORECASE] {
+                    let compile = |alternation: &str| {
+                        onig_new(
+                            context.replace("{}", alternation).as_bytes(),
+                            options,
+                            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                            &OnigSyntaxOniguruma,
+                        )
+                        .unwrap()
+                    };
+                    let candidate = compile(&plain);
+                    let reference = compile(&blocked);
+                    assert!(reference.literal_tries.is_empty());
+                    optimized += usize::from(!candidate.literal_tries.is_empty());
+                    for input in inputs {
+                        for (start, range) in [
+                            (0, input.len()),
+                            (input.len().min(1), input.len()),
+                            (input.len(), 0),
+                        ] {
+                            assert_eq!(
+                                search(&candidate, input, start, range),
+                                search(&reference, input, start, range),
+                                "{} options={options:?} input={input:x?} start={start} range={range}",
+                                context.replace("{}", &plain)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            optimized >= 60,
+            "only {optimized} assertion contexts used a trie"
+        );
+    }
+
+    #[test]
+    fn literal_alt_trie_keeps_alternation_order_for_prefixes() {
+        let _limits = crate::regexec::shared_limits();
+        // The prefix pair is intentionally non-adjacent in source order. The
+        // trie must try `foobarbaz` before `foo` and backtrack into `foo`,
+        // as the ordered alternation does, rather than prefer either length.
+        use crate::api::Regex;
+        let re = Regex::new("(?:foobarbaz|a1|a2|a3|a4|a5|a6|a7|a8|foo)(.*)").unwrap();
+        assert_eq!(re.as_raw().literal_tries.len(), 1);
+        let caps = re.captures("foobarbazqux").unwrap();
+        assert_eq!(caps.get(1).unwrap().as_str(), "qux");
+        let re = Regex::new("(?:foo|a1|a2|a3|a4|a5|a6|a7|a8|foobarbaz)(.*)").unwrap();
+        assert_eq!(re.as_raw().literal_tries.len(), 1);
+        let caps = re.captures("foobarbazqux").unwrap();
+        assert_eq!(caps.get(1).unwrap().as_str(), "barbazqux");
+        // The shorter literal comes first but only the longer one lets the
+        // rest of the pattern match.
+        let re = Regex::new("(?:foo|a1|a2|a3|a4|a5|a6|a7|a8|foobarbaz)q").unwrap();
+        assert_eq!(re.find("foobarbazq").unwrap().as_str(), "foobarbazq");
+    }
+
+    #[test]
+    fn literal_alt_trie_below_threshold() {
+        // 3 alternations — below threshold, should NOT trigger
+        let reg = onig_new(
+            b"a|bb|ccc",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(reg.literal_tries.len(), 0);
+        let has_alt_literals = reg.ops.iter().any(|op| op.opcode == OpCode::AltLiterals);
+        assert!(!has_alt_literals);
+    }
+
+    #[test]
+    fn literal_alt_trie_match_works() {
+        use crate::api::Regex;
+        let _limits = crate::regexec::shared_limits();
+        let re = Regex::new("alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa").unwrap();
+        // Match "eta" in "the eta value"
+        let m = re.find("the eta value").unwrap();
+        assert_eq!(m.start(), 4);
+        assert_eq!(m.end(), 7);
+    }
+
+    #[test]
+    fn literal_alt_trie_no_match() {
+        use crate::api::Regex;
+        let _limits = crate::regexec::shared_limits();
+        let re = Regex::new("alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa").unwrap();
+        let result = re.find("no match here");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn literal_alt_trie_mixed_non_literal_no_trigger() {
+        // Partial trie rewrites would reorder literal and non-literal branches.
+        let reg = onig_new(
+            b"a|bb|ccc|dd|eee|ff|ggg|hh|\\d+",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert!(reg.literal_tries.is_empty());
+        let has_push = reg.ops.iter().any(|op| {
+            matches!(
+                op.opcode,
+                OpCode::Push | OpCode::PushOrJumpExact1 | OpCode::PushOrJumpByteSet
+            )
+        });
+        assert!(
+            has_push,
+            "partial trie should still have Push for non-literal branch"
+        );
+    }
+
+    #[test]
+    fn literal_alt_trie_partial_match() {
+        let _limits = crate::regexec::shared_limits();
+        // Mixed alternatives retain their original ordered branches.
+        use crate::api::Regex;
+        let re = Regex::new("alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|[xy]z").unwrap();
+        assert!(re.as_raw().literal_tries.is_empty());
+        // Match a literal branch
+        let m = re.find("the eta value").unwrap();
+        assert_eq!(m.as_str(), "eta");
+        // Match the non-literal branch
+        let m2 = re.find("the xz value").unwrap();
+        assert_eq!(m2.as_str(), "xz");
+    }
+
+    #[test]
+    fn literal_alt_trie_too_few_literals_with_non_literal() {
+        // Only 2 literal + 1 non-literal = below threshold
+        let reg = onig_new(
+            b"a|bb|\\d+",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(reg.literal_tries.len(), 0);
+    }
+
+    #[test]
+    fn literal_alt_trie_inside_group() {
+        // CSS-like pattern: alternation inside non-capturing group with lookbehind/lookahead
+        let reg = onig_new(
+            b"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(
+            reg.literal_tries.len(),
+            1,
+            "should detect alt inside non-capturing group, got {}",
+            reg.literal_tries.len()
+        );
+    }
+
+    #[test]
+    fn literal_alt_trie_case_insensitive() {
+        let _limits = crate::regexec::shared_limits();
+        // Case-insensitive ASCII alternatives compile to a folded trie.
+        let reg = onig_new(
+            b"(?i)(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert_eq!(reg.literal_tries.len(), 1);
+        assert!(reg.literal_tries[0].is_case_insensitive());
+        // Verify case-insensitive matching
+        use crate::api::Regex;
+        let re =
+            Regex::new("(?i)(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa)").unwrap();
+        let m = re.find("DELTA value").unwrap();
+        assert_eq!(m.as_str(), "DELTA");
+    }
+
+    #[test]
+    fn literal_alt_trie_css_like_pattern() {
+        let _limits = crate::regexec::shared_limits();
+        // Mimics CSS property-names: (?i)(?<![-\w])(?:prop1|prop2|...)(?![-\w])
+        use crate::api::Regex;
+        let re = Regex::new(
+            r"(?i)(?<![-\w])(?:color|content|cursor|display|direction|float|font|height|left|margin|padding|position|right|top|width|z-index)(?![-\w])",
+        )
+        .unwrap();
+        let has_alt_literals = re
+            .as_raw()
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::AltLiterals);
+        assert!(has_alt_literals);
+        let m = re.find("  display: none").unwrap();
+        assert_eq!(m.as_str(), "display");
+        // Case insensitive
+        let m2 = re.find("  DISPLAY: none").unwrap();
+        assert_eq!(m2.as_str(), "DISPLAY");
+        // Should not match partial words
+        assert!(re.find("displaying").is_none());
+    }
+
+    // --- Nested alternation trie tests ---
+
+    #[test]
+    fn nested_alt_trie_simple() {
+        let _limits = crate::regexec::shared_limits();
+        // a(b|c)d → should extract ["abd", "acd"] and trigger trie
+        // Need enough branches to exceed threshold, so use multiple nested alts
+        use crate::api::Regex;
+        let re = Regex::new("a(b|c|d|e|f)g").unwrap();
+        assert!(
+            !re.as_raw().literal_tries.is_empty(),
+            "nested alternation a(b|c|d|e|f)g should trigger trie"
+        );
+        let m = re.find("xaegx").unwrap();
+        assert_eq!(m.as_str(), "aeg");
+        let m2 = re.find("xacgx").unwrap();
+        assert_eq!(m2.as_str(), "acg");
+    }
+
+    #[test]
+    fn nested_alt_trie_optional() {
+        let _limits = crate::regexec::shared_limits();
+        // Optional paths stay on the general Alt path to retain branch order.
+        use crate::api::Regex;
+        let re = Regex::new("ab(cd)?ef|abgh|abij|abkl|abmn").unwrap();
+        assert!(re.as_raw().literal_tries.is_empty());
+        // With optional present
+        let m = re.find("xabcdefx").unwrap();
+        assert_eq!(m.as_str(), "abcdef");
+        // Without optional
+        let m2 = re.find("xabefx").unwrap();
+        assert_eq!(m2.as_str(), "abef");
+        // Plain branch
+        let m3 = re.find("xabghx").unwrap();
+        assert_eq!(m3.as_str(), "abgh");
+    }
+
+    #[test]
+    fn nested_alt_trie_partial_with_cclass() {
+        let _limits = crate::regexec::shared_limits();
+        // Mixed: nested structure with one CClass branch → partial optimization
+        use crate::api::Regex;
+        let re = Regex::new(r"a(b|c|d|e|f)g|[xy]z").unwrap();
+        assert!(
+            !re.as_raw().literal_tries.is_empty(),
+            "nested alt with partial non-literal should trigger partial trie"
+        );
+        // Match literal branch
+        let m = re.find("xabgx").unwrap();
+        assert_eq!(m.as_str(), "abg");
+        // Match non-literal branch
+        let m2 = re.find("xxzx").unwrap();
+        assert_eq!(m2.as_str(), "xz");
+    }
+
+    #[test]
+    fn nested_alt_trie_entity_like() {
+        let _limits = crate::regexec::shared_limits();
+        // Mimics HTML entity pattern structure: nested trie encoded as regex
+        use crate::api::Regex;
+        let re = Regex::new(
+            "a(s(ymp(eq)?|cr|t)|n(d(slope|and)?|g(le|st|msd)?|e))|b(a(ck(sim(eq)?|prime|cong|epsilon)|r(vee|wed))|o(x(times|plus|minus|dl|dr|ul|ur|v[lrhHV]|h[dDuU])|t)|u(ll(et)?|mp(e(q)?)?)|l(ock|k[34])|e(caus(e)?|rnou|tween|mptyv)|ig(c(ap|up|irc)|o(dot|plus|times)|tri(angle(down|up|left|right)|angle)|s(qcup|tar)|vee|wedge)|n(ot|e(quiv)?)|r(eve|vbar)|s(cr|ol(b|hsub)?|im(e)?)|(?:N|b)rk|f(r|isht)|karow|pf|scr)",
+        )
+        .unwrap();
+        assert!(
+            !re.as_raw().literal_tries.is_empty(),
+            "entity-like nested pattern should trigger trie"
+        );
+        // Match some entity names
+        let m = re.find("xasymp;").unwrap();
+        assert_eq!(m.as_str(), "asymp");
+        let m2 = re.find("xasympeq;").unwrap();
+        assert_eq!(m2.as_str(), "asympeq");
+        let m3 = re.find("xandslope;").unwrap();
+        assert_eq!(m3.as_str(), "andslope");
+        let m4 = re.find("xboxplus;").unwrap();
+        assert_eq!(m4.as_str(), "boxplus");
+    }
+
+    #[test]
+    fn nested_alt_trie_backreferenced_capture_skipped() {
+        let _limits = crate::regexec::shared_limits();
+        // Backreferenced capture group should NOT be optimized
+        use crate::api::Regex;
+        let re = Regex::new(r"(a|b|c|d|e)\1").unwrap();
+        // This should NOT trigger trie because the capture is backreferenced
+        // The alt itself has 5 branches but each is simple, so it might trigger
+        // for the inner alt. The key test is that it still works correctly.
+        let m = re.find("xaax").unwrap();
+        assert_eq!(m.as_str(), "aa");
+        assert!(re.find("xabx").is_none());
+    }
+
+    #[test]
+    fn nested_alt_trie_non_capturing_group() {
+        let _limits = crate::regexec::shared_limits();
+        // Non-capturing group should be transparent
+        use crate::api::Regex;
+        let re = Regex::new("(?:a(?:b|c|d|e|f)g)").unwrap();
+        assert!(
+            !re.as_raw().literal_tries.is_empty(),
+            "nested alt in non-capturing groups should trigger trie"
+        );
+        let m = re.find("xadgx").unwrap();
+        assert_eq!(m.as_str(), "adg");
+    }
+
+    #[test]
+    fn nested_alt_trie_entity_diagnostic() {
+        // Compile the full HTML entity pattern to verify nested extraction
+        let reg = onig_new(
+            b"a(s(ymp(eq)?|cr|t)|n(d(slope|and)?|g(s(t|ph)|zarr|e|le|rt(vb(d)?)?|msd(aa)?)?|e)|c(y|irc|d|ute)?|tilde|o(pf|gon)|uml|p(id|os|prox(eq)?|acir)?|elig|f(r)?|l(pha|e(ph|fsym))|acute|ring|grave|m(p|a(cr|lg))|breve)|b(s(cr|im(e)?|ol(hsub|b)?|emi)|c(y|ong)|ig(s(tar|qcup)|c(irc|up|ap)|triangle(down|up)|o(times|dot|plus)|uplus|vee|wedge)|o(t(tom)?|pf|wtie)|u(ll(et)?|mp(e(q)?)?)|prime|e(caus(e)?|t(h|ween|a)|psi|rnou|mptyv)|karow|fr|l(ock|a(nk|ck(square|triangle(down|left|right)?|lozenge)))|a(ck(sim(eq)?|cong|prime|epsilon)|r(vee|wed(ge)?))|r(eve|vbar)|brk(tbrk)?)|c(s(cr|u(p(e)?|b(e)?))|h(cy|i|eck(mark)?)|ylcty|c(irc|ups(sm)?|edil|a(ps|ron))|tdot|ir(scir|c(eq|le(d(circ|dash|ast)))?|e|fnint|mid)?|o(n(int|g(dot)?)|p(y(sr)?|f|rod)|lon(e(q)?)?|m(p(fn|le(xes|ment))?|ma(t)?))|dot|u(darr(l|r)|p(s|c(up|ap)|or|dot|brcap)?|e(sc|pr)|vee|wed|larr(p)?|r(vearrow(left|right)|ly(eq(succ|prec)|vee|wedge)|arr(m)?|ren))|e(nt(erdot)?|dil|mptyv)|fr|lubs(uit)?|a(cute|p(s|c(up|ap)|dot|and|brcup)?|r(on|et))|r(oss|arr))|d(s(cr|trok|ol)|c(y|aron)|t(dot|ri(f)?)|i(sin|e|v(ide(ontimes)?|onx)?|am(s|ond(suit)?)?|gamma)|o(t(square|plus|eq(dot)?|minus)?|ublebarwedge|pf|wn(harpoon(left|right)|downarrows|arrow)|llar)|d(otseq|a(rr|gger))?|u(har|arr)|jcy|e(lta|g|mptyv)|f(isht|r)|lc(orn|rop)|a(sh(v)?|leth|rr|gger)|r(c(orn|rop)|bkarow)|bkarow|blac)",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        eprintln!(
+            "Entity subset: {} literal tries, {} ops",
+            reg.literal_tries.len(),
+            reg.ops.len()
+        );
+        let alt_lit_count = reg
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::AltLiterals)
+            .count();
+        let push_count = reg
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.opcode,
+                    OpCode::Push | OpCode::PushOrJumpExact1 | OpCode::PushOrJumpByteSet
+                )
+            })
+            .count();
+        assert!(
+            !reg.literal_tries.is_empty(),
+            "entity pattern should produce at least 1 trie"
+        );
+        // Nested branches keep their normal ordered backtracking operations.
+        assert!(push_count > 0, "expected ordered Alt operations");
+    }
+
+    /// The bitset map operations against the byte loops they replace.
+    #[test]
+    fn map_bit_operations_match_byte_loops() {
+        fn reference_add(m: &mut OptMap, bs: &BitSet, enc: OnigEncoding) {
+            for i in 0..CHAR_MAP_SIZE {
+                if bitset_at(bs, i) {
+                    add_char_opt_map(m, i as u8, enc);
+                }
+            }
+        }
+        fn reference_merge(enc: OnigEncoding, to: &mut OptMap, add: &OptMap) {
+            if to.value == 0 {
+                return;
+            }
+            if add.value == 0 || to.mm.max < add.mm.min {
+                to.clear();
+                return;
+            }
+            to.mm.alt_merge(&add.mm);
+            let mut val = 0;
+            for i in 0..CHAR_MAP_SIZE {
+                if add.map[i] != 0 {
+                    to.map[i] = 1;
+                }
+                if to.map[i] != 0 {
+                    val += map_position_value(enc, i);
+                }
+            }
+            to.value = val;
+            alt_merge_opt_anc_info(&mut to.anc, &add.anc);
+        }
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let encodings: [OnigEncoding; 2] = [
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::encodings::ascii::ONIG_ENCODING_ASCII,
+        ];
+        for round in 0..3000 {
+            let enc = encodings[round % 2];
+            let mut random_bits = |density: u64| {
+                let mut bs: BitSet = [0; BITSET_REAL_SIZE];
+                for i in 0..CHAR_MAP_SIZE {
+                    if next() % 64 < density {
+                        bitset_set_bit(&mut bs, i);
+                    }
+                }
+                bs
+            };
+            let density = [1, 4, 32, 63][round % 4];
+            let (start, class, other) = (
+                random_bits(density),
+                random_bits(density),
+                random_bits(density),
+            );
+            let mut base = OptMap::new();
+            reference_add(&mut base, &start, enc);
+            let (mut fast, mut slow) = (base, base);
+            add_bitset_opt_map(&mut fast, &class, enc);
+            reference_add(&mut slow, &class, enc);
+            assert_eq!((fast.map, fast.value), (slow.map, slow.value));
+
+            let mut add = OptMap::new();
+            reference_add(&mut add, &other, enc);
+            add.mm.max = (next() % 4) as OnigLen;
+            let (mut fast, mut slow) = (base, base);
+            fast.mm.max = 3;
+            slow.mm.max = 3;
+            alt_merge_opt_map(enc, &mut fast, &add);
+            reference_merge(enc, &mut slow, &add);
+            assert_eq!((fast.map, fast.value), (slow.map, slow.value));
+        }
+    }
+
+    #[test]
+    fn dump_named_capture_bytecode() {
+        let pat = b"(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})";
+        let reg = onig_new(
+            pat,
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        eprintln!("Bytecode ({} ops):", reg.ops.len());
+        for (i, op) in reg.ops.iter().enumerate() {
+            eprintln!("  [{:3}] {:?}", i, op.opcode);
+        }
+        eprintln!("push_mem_start: {}", reg.push_mem_start);
+        eprintln!("push_mem_end: {}", reg.push_mem_end);
+    }
+
+    #[test]
+    fn option_only_group_mid_pattern_keeps_ignorecase_semantics() {
+        let _limits = crate::regexec::shared_limits();
+        let reg = onig_new(
+            b"a(?i)b|c",
+            ONIG_OPTION_NONE,
+            &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+            &crate::regsyntax::OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert!(
+            reg.ops.iter().any(|op| op.opcode == OpCode::CClass),
+            "expected case-folded branch bytecode"
+        );
+        let input_b = b"aB";
+        let input_c = b"aC";
+        let (result_b, _) = crate::regexec::onig_match(
+            &reg,
+            input_b,
+            input_b.len(),
+            0,
+            Some(OnigRegion::new()),
+            ONIG_OPTION_NONE,
+        );
+        let (result_c, _) = crate::regexec::onig_match(
+            &reg,
+            input_c,
+            input_c.len(),
+            0,
+            Some(OnigRegion::new()),
+            ONIG_OPTION_NONE,
+        );
+        assert_eq!(result_b, 2, "expected aB to match");
+        assert_eq!(result_c, 2, "expected aC to match");
+    }
+
+    #[test]
+    fn repeated_compile_absent_expr_backref_does_not_overflow() {
+        for _ in 0..2 {
+            let reg = onig_new(
+                br"(a)(?~|b|\1)",
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &crate::regsyntax::OnigSyntaxOniguruma,
+            )
+            .unwrap();
+            std::mem::forget(reg);
+        }
+    }
+
+    /// `keep_moves_match_start` describes the emitted program, so recompiling
+    /// a regex has to clear it again. A stale flag would keep the regset
+    /// populating a region the pattern no longer needs.
+    #[test]
+    fn recompiling_without_keep_clears_the_keep_flag() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+
+        let mut reg = onig_new(
+            br"a\Kb",
+            ONIG_OPTION_NONE,
+            &ONIG_ENCODING_UTF8,
+            &OnigSyntaxOniguruma,
+        )
+        .unwrap();
+        assert!(reg.keep_moves_match_start);
+
+        assert_eq!(onig_compile(&mut reg, br"ab"), 0);
+        assert!(!reg.keep_moves_match_start);
+
+        assert_eq!(onig_compile(&mut reg, br"a\Kb"), 0);
+        assert!(reg.keep_moves_match_start);
+    }
+
+    /// A literal alternation compiled to a trie must match exactly like the
+    /// same alternation compiled normally, in every surrounding context.
+    /// The reference variant writes one literal's last character as a class
+    /// (`ab[c]`), which keeps its meaning but blocks the trie.
+    #[test]
+    fn literal_tries_match_like_the_alternation_in_context() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{onig_search, shared_limits};
+
+        // Other tests lower the process-wide retry limits while holding it.
+        let _limits = shared_limits();
+
+        let compile = |pattern: &str| {
+            onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        let search = |reg: &RegexType, input: &[u8]| {
+            let (r, region) = onig_search(
+                reg,
+                input,
+                input.len(),
+                0,
+                input.len(),
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            let region = region.unwrap();
+            let spans: Vec<(i32, i32)> = region
+                .beg
+                .iter()
+                .zip(&region.end)
+                .take(region.num_regs as usize)
+                .map(|(&b, &e)| (b, e))
+                .collect();
+            (r, spans)
+        };
+
+        let literal_sets: [&[&str]; 9] = [
+            &["abc", "bcd", "cde", "xab"],
+            &["ab", "c", "", "xa"],
+            &["a", "bc", "cx", "xb", "cc"],
+            &["ab", "ba", "xx", "cab", "bcb"],
+            &["abca", "b", "xcx", "ca"],
+            // Prefixes before and after their extensions, and a repeat.
+            &["ab", "abc", "a", "bca"],
+            &["abc", "ab", "b", "ca"],
+            &["a", "ab", "abc", "abcx", "x"],
+            &["ab", "c", "ab", "xa"],
+        ];
+        let heads = [
+            "", "a*", "[a-c]*", "x*", "a+?", "(?:a|b)*", ".*", "(?<=a)", "a{2}", "\\b",
+        ];
+        let quantifiers = ["", "{2}", "*", "+", "?", "{1,2}", "*+", "{3}"];
+        let tails = ["", "x", "$", "a", "(?=c)", "(?!a)", "c*x"];
+        let inputs: Vec<Vec<u8>> = {
+            let mut state = 0x2545_F491_4F6C_DD1Du64;
+            (0..24)
+                .map(|i| {
+                    (0..(i % 9))
+                        .map(|_| {
+                            state ^= state << 13;
+                            state ^= state >> 7;
+                            state ^= state << 17;
+                            b"abcx"[(state % 4) as usize]
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+
+        let mut tries_used = 0;
+        for literals in literal_sets {
+            let alternation = literals.join("|");
+            let last = literals[0].len() - 1;
+            let blocked = format!(
+                "{}[{}]|{}",
+                &literals[0][..last],
+                &literals[0][last..],
+                literals[1..].join("|")
+            );
+            for head in heads {
+                for quantifier in quantifiers {
+                    for tail in tails {
+                        for group in ["(?:{})", "({})"] {
+                            let pattern = |alt: &str| {
+                                format!("{head}{}{quantifier}{tail}", group.replace("{}", alt))
+                            };
+                            let with_trie = compile(&pattern(&alternation));
+                            let reference = compile(&pattern(&blocked));
+                            assert!(reference.literal_tries.is_empty());
+                            tries_used += usize::from(!with_trie.literal_tries.is_empty());
+                            for input in &inputs {
+                                assert_eq!(
+                                    search(&with_trie, input),
+                                    search(&reference, input),
+                                    "{} on {:?}",
+                                    pattern(&alternation),
+                                    String::from_utf8_lossy(input)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(tries_used > 1000, "only {tries_used} patterns used a trie");
+    }
+
+    /// A case-insensitive literal alternation compiled to a folded trie must
+    /// match exactly like the unraveled alternation, including the non-ASCII
+    /// input Unicode case folding admits and malformed sequences that a
+    /// class decodes. The reference appends an empty look-ahead to one
+    /// literal, which keeps its case folding but blocks the trie.
+    #[test]
+    fn folded_literal_tries_match_like_the_unraveled_alternation() {
+        use crate::oniguruma::{ONIG_OPTION_IGNORECASE, OnigRegion};
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let compile = |pattern: &str, option| {
+            onig_new(
+                pattern.as_bytes(),
+                option,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        let search = |reg: &RegexType, input: &[u8]| {
+            let (r, region) = onig_search(
+                reg,
+                input,
+                input.len(),
+                0,
+                input.len(),
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            let region = region.unwrap();
+            let spans: Vec<(i32, i32)> = region
+                .beg
+                .iter()
+                .zip(&region.end)
+                .take(region.num_regs as usize)
+                .map(|(&b, &e)| (b, e))
+                .collect();
+            (r, spans)
+        };
+
+        let pieces: [&[u8]; 39] = [
+            b"s",
+            b"S",
+            "\u{17F}".as_bytes(),
+            b"t",
+            b"T",
+            b"f",
+            b"F",
+            b"i",
+            b"I",
+            b"l",
+            b"L",
+            b"k",
+            b"K",
+            "\u{212A}".as_bytes(),
+            "\u{DF}".as_bytes(),
+            "\u{1E9E}".as_bytes(),
+            "\u{FB00}".as_bytes(),
+            "\u{FB01}".as_bytes(),
+            "\u{FB02}".as_bytes(),
+            "\u{FB03}".as_bytes(),
+            "\u{FB04}".as_bytes(),
+            "\u{FB05}".as_bytes(),
+            "\u{FB06}".as_bytes(),
+            b"a",
+            b"A",
+            b"c",
+            b"-",
+            b"x",
+            // Overlong `k`, masked `\u{17F}` and `\u{212A}`, overlong
+            // 4-byte `\u{212A}`, a truncated sequence, a stray continuation.
+            b"\xC1\xAB",
+            b"\xC5\xFF",
+            b"\xE2\xC4\xAA",
+            b"\xF0\x82\x84\xAA",
+            b"\xE2\x84",
+            b"\x80",
+            b"\xC1\xA1",
+            b"ss",
+            // 3-byte overlong `k`, `s` and `K`, which decode to ASCII.
+            b"\xE0\x81\xAB",
+            b"\xE0\x81\xB3",
+            b"\xE0\x81\x8B",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let inputs: Vec<Vec<u8>> = (0..160)
+            .map(|_| {
+                let len = next(7);
+                (0..len)
+                    .flat_map(|_| pieces[next(pieces.len())].to_vec())
+                    .collect()
+            })
+            .collect();
+
+        let literal_sets: [&[&str]; 9] = [
+            &["class", "offer", "first", "kind", "office", "stop", "staff"],
+            &["ss", "st", "ff", "fi", "fl", "k"],
+            &["ffi", "ffl", "sts", "ask", "Kit", "fLs"],
+            &["a-ss", "a-st", "a-fi", "a-k", "x"],
+            &["sss", "ssf", "tss", "lk"],
+            // Prefixes before and after their extensions, and repeats that
+            // differ only in case.
+            &["s", "ss", "st", "sts", "a"],
+            &["ffi", "ff", "f", "fl", "fi"],
+            &["k", "kk", "K", "ks", "kit"],
+            &["animation", "animation-delay", "anim", "a-s"],
+        ];
+        let heads = ["", "a*", "(?<=a)", "[a-z]*", "\\b", "x?"];
+        let quantifiers = ["", "{2}", "+", "?"];
+        let tails = ["", "x", "$", "(?![a-z])", "s", "k"];
+
+        let mut tries_used = 0;
+        for literals in literal_sets {
+            let alternation = literals.join("|");
+            let blocked = format!("{}(?=)|{}", literals[0], literals[1..].join("|"));
+            for head in heads {
+                for quantifier in quantifiers {
+                    for tail in tails {
+                        for (prefix, option) in
+                            [("(?i)", ONIG_OPTION_NONE), ("", ONIG_OPTION_IGNORECASE)]
+                        {
+                            let pattern =
+                                |alt: &str| format!("{prefix}{head}(?:{alt}){quantifier}{tail}");
+                            let with_trie = compile(&pattern(&alternation), option);
+                            let reference = compile(&pattern(&blocked), option);
+                            assert!(reference.literal_tries.is_empty());
+                            tries_used += usize::from(!with_trie.literal_tries.is_empty());
+                            for input in &inputs {
+                                assert_eq!(
+                                    search(&with_trie, input),
+                                    search(&reference, input),
+                                    "{} on {:x?}",
+                                    pattern(&alternation),
+                                    input
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(tries_used > 500, "only {tries_used} patterns used a trie");
+    }
+
+    /// `\X` outside look-behinds compiles to one `GraphemeCluster`
+    /// instruction. It must match exactly like upstream's atomic
+    /// `\O(?:\Y\O)*` from every start and up to every range end: on CRLF,
+    /// combining marks, ZWJ emoji, regional indicators, Hangul, prepended and
+    /// variation-selector code points, and malformed UTF-8. Look-behinds,
+    /// the word variant and `\X` in other syntaxes keep the upstream sequence.
+    #[test]
+    fn grapheme_cluster_matches_the_upstream_sequence() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let compile = |pattern: &str, instruction: bool| {
+            GRAPHEME_CLUSTER_DISABLED.with(|disabled| disabled.set(!instruction));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            GRAPHEME_CLUSTER_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+        let uses_instruction = |reg: &RegexType| {
+            reg.ops
+                .iter()
+                .any(|op| op.opcode == OpCode::GraphemeCluster)
+        };
+
+        // The instruction is emitted where the sequence is outside look-behinds.
+        assert!(uses_instruction(&compile(r"\X", true)));
+        assert!(uses_instruction(&compile(r"(?:a|\X)+b", true)));
+        assert!(!uses_instruction(&compile(r"(?<=a\X)b", true)));
+        assert!(!uses_instruction(&compile(r"(?<!\X)b", true)));
+        assert!(!uses_instruction(&compile(r"(?y{w})\X", true)));
+
+        let patterns = [
+            r"\X",
+            r"\X+",
+            r"\X*?b",
+            r"\X{2}",
+            r"\X{1,3}\d",
+            r"(\X)",
+            r"(\X)\1",
+            r"(\X)+x",
+            r"(?:a|\X)+b",
+            r"(\X|x)\X",
+            r"(?>\X)\X",
+            r"\X\X$",
+            r"^\X",
+            r"\X$",
+            r"(?=\X)\X",
+            r"(?!\X)\X",
+            r"(?i)\X",
+            r"a\X(?<=\X)",
+            r"(?<=a)\X",
+            r"(?<=\r)\X",
+            r"\X\Z",
+            r"\X*",
+            r"(?y{w})\X",
+            r"(?y{w})\X\y",
+        ];
+        let subjects: [&[u8]; 15] = [
+            b"",
+            b"a",
+            b"\r\n",
+            b"a\r\nb\n\r\r\n",
+            b"e\xcc\x81x",
+            b"a\xcc\x88\xcc\x88b",
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x".as_bytes(),
+            "\u{1f1e9}\u{1f1ea}\u{1f1eb}\u{1f1f7}\u{1f1fa}".as_bytes(),
+            "\u{1100}\u{1161}\u{11a8}\u{ac00}\u{1100}".as_bytes(),
+            b"\xe3\x81",
+            b"a\x80\x80b\xcc",
+            b"\xff\xfe\xe3\x81\x82\xe3",
+            b"\xe0\xae\xa8\xe0\xae\xbf\xe0",
+            "\u{600}1\u{fe0f}\u{1f1e6}\u{1f1e8}\u{308}".as_bytes(),
+            "\u{e9}\u{200d}\u{1f600}\u{fe0f}\u{20e3}\u{ff3f}\u{3099}".as_bytes(),
+        ];
+        for pattern in patterns {
+            let with = compile(pattern, true);
+            let upstream = compile(pattern, false);
+            #[cfg(feature = "ffi")]
+            let c =
+                crate::ffi::CRegex::new(pattern.as_bytes(), crate::ffi::ONIG_OPTION_NONE).unwrap();
+            for subject in subjects {
+                for start in 0..=subject.len() {
+                    for range in start..=subject.len() {
+                        let search = |reg: &RegexType| {
+                            onig_search(
+                                reg,
+                                subject,
+                                subject.len(),
+                                start,
+                                range,
+                                Some(OnigRegion::new()),
+                                ONIG_OPTION_NONE,
+                            )
+                        };
+                        let (r, region) = search(&with);
+                        let (r_upstream, region_upstream) = search(&upstream);
+                        let context = format!("{pattern} on {subject:?} from {start} to {range}");
+                        assert_eq!(r, r_upstream, "{context}");
+                        if r >= 0 {
+                            let spans = |region: &OnigRegion| -> Vec<(i32, i32)> {
+                                region
+                                    .beg
+                                    .iter()
+                                    .zip(&region.end)
+                                    .take(region.num_regs as usize)
+                                    .map(|(&b, &e)| (b, e))
+                                    .collect()
+                            };
+                            assert_eq!(
+                                spans(&region.unwrap()),
+                                spans(&region_upstream.unwrap()),
+                                "{context}"
+                            );
+                        }
+                        // C matches a character past a zero-length range (its
+                        // match_at reads the subject end when range == start),
+                        // as `(?m).` does on malformed UTF-8 (#259 class). Both
+                        // paths agree there, so C is compared where range > start.
+                        #[cfg(feature = "ffi")]
+                        if range > start {
+                            let mut c_region = crate::ffi::CRegion::new();
+                            let c_r = c.search(subject, start, range, Some(&mut c_region), 0);
+                            assert_eq!(r, c_r, "C: {context}");
+                            if c_r >= 0 {
+                                let (_, region) = search(&with);
+                                let region = region.unwrap();
+                                let spans: Vec<(i32, i32)> = region
+                                    .beg
+                                    .iter()
+                                    .zip(&region.end)
+                                    .take(region.num_regs as usize)
+                                    .map(|(&b, &e)| (b, e))
+                                    .collect();
+                                assert_eq!(spans, c_region.capture_ranges(), "C: {context}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rust-only (ADR-008): the extra start map of a pattern that begins with a
+    /// look-behind takes the exact lead bytes of its multibyte class members.
+    /// From every start of mixed text, each search matches the search whose
+    /// map keeps every byte from 0x80 up, and C where the ffi feature is on.
+    #[test]
+    fn narrowed_class_leads_match_the_full_high_bytes() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let compile = |pattern: &str, narrow: bool| {
+            NARROW_CLASS_LEADS_DISABLED.with(|disabled| disabled.set(!narrow));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            NARROW_CLASS_LEADS_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+
+        // U+FF03 is reached from EF and, as the overlong `F0 8F BC 83`, from F0.
+        let narrowed = compile("(?<=a)[\u{ff03}]", true);
+        assert_eq!(narrowed.optimize, OptimizeType::Map);
+        let leads: Vec<usize> = (0x80..0x100).filter(|&b| narrowed.map[b] != 0).collect();
+        assert_eq!(leads, [0xEF, 0xF0]);
+
+        let patterns = [
+            "(?<=a)[\u{ff03}]",
+            "(?<=a)[\u{ff03}\u{e9}]",
+            "(?<=^|[[:space:]])[#\u{ff03}](([[:word:]_][[:word:]_\u{b7}\u{30fb}]*[[:alpha:]_\u{b7}\u{30fb}][[:word:]_\u{b7}\u{30fb}]*[[:word:]_])|([[:word:]_]*[[:alpha:]][[:word:]_]*))",
+            "(?<=\\s)[\u{ff21}\u{ff22}\u{65e5}\u{672c}\u{8a9e}]+",
+            "(?<!x)[\u{e9}#]",
+            "(?<=b)[\\x{80}\u{ff03}\u{1f600}]",
+            "(?<=b)[\u{ff03}\\x{85}]",
+            "(?<=b)[\\x{80}-\\x{ff}]",
+            "(?<=b)[^\u{ff03}]",
+            "(?<=b)[a\\x{10000}-\\x{10ffff}]",
+            "(?i)(?<=a)[\u{e9}\u{df}]",
+            "(?<=\\w)(?:[\u{ff03}]|x)",
+            "(?<=a)[\u{1f600}\u{ff03}]+",
+            "(?<=[ab])[\u{e9}\u{ff3f}]\\w*",
+        ];
+        let subjects: [&[u8]; 9] = [
+            "a\u{ff03}b #x \u{ff03}x  \u{e9}\u{ff03} \u{c9} \u{df} \u{65e5} \u{1f600} #y\u{ff03}\u{ff03}".as_bytes(),
+            b"a\xef\xbc\x83 b\xf0\x8f\xbc\x83x a\xf0\x0f\xbc\x83",
+            b"\xf0\x8f\xbc\x83\xef\xbc\x83\xef\xbc",
+            b"b\x80\x85\xff\xfe x\x85 b\xc2\x80 b\xe2\x80\x8d\xef\xbc\x83",
+            b"a\xf0\x9f\x98\x80b\xf0\x9f\x98\x80 a\xc3\xa9\xe9\x80\x83 b\xc3\xa9",
+            b"a\xef\xbc b\xef x\xf0\x8f\xbc",
+            "a\u{ff21}\u{ff22}\u{65e5}\u{672c}\u{8a9e} ab\u{ff3f}\u{e9}\u{301}x".as_bytes(),
+            "xa\u{1f600}\u{ff03}\u{1f600}\u{80}\u{ff}b\u{85}".as_bytes(),
+            b"ab\xc3\xa9\xe9\xc3\x89 ss\xc3\x9f b\xc2\xa0\xc2\x85",
+        ];
+        for pattern in patterns {
+            let with = compile(pattern, true);
+            let full = compile(pattern, false);
+            #[cfg(feature = "ffi")]
+            let c =
+                crate::ffi::CRegex::new(pattern.as_bytes(), crate::ffi::ONIG_OPTION_NONE).unwrap();
+            for subject in subjects {
+                for start in 0..=subject.len() {
+                    let search = |reg: &RegexType| {
+                        onig_search(
+                            reg,
+                            subject,
+                            subject.len(),
+                            start,
+                            subject.len(),
+                            Some(OnigRegion::new()),
+                            ONIG_OPTION_NONE,
+                        )
+                    };
+                    let (r, region) = search(&with);
+                    let (r_full, region_full) = search(&full);
+                    let context = format!("{pattern} on {subject:x?} from {start}");
+                    assert_eq!(r, r_full, "{context}");
+                    if r >= 0 {
+                        let spans = |region: &OnigRegion| -> Vec<(i32, i32)> {
+                            region
+                                .beg
+                                .iter()
+                                .zip(&region.end)
+                                .take(region.num_regs as usize)
+                                .map(|(&b, &e)| (b, e))
+                                .collect()
+                        };
+                        assert_eq!(
+                            spans(&region.unwrap()),
+                            spans(&region_full.unwrap()),
+                            "{context}"
+                        );
+                    }
+                    // C matches a character past a zero-length range, so C is
+                    // compared where the subject has a position left to start at.
+                    #[cfg(feature = "ffi")]
+                    if start < subject.len() {
+                        let mut c_region = crate::ffi::CRegion::new();
+                        let c_r = c.search(subject, start, subject.len(), Some(&mut c_region), 0);
+                        assert_eq!(r, c_r, "C: {context}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Over malformed UTF-8 a fixed-length positive look-behind steps back
+    /// over continuation bytes and goes on where its body ends, which can lie
+    /// before or after where it started (#257). Fused and upstream look-behinds
+    /// give C's results, its negative match lengths included.
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn look_behinds_continue_where_c_does_over_malformed_utf8() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let patterns = [
+            r"(?<=\()x",
+            r"(?<=\()x?",
+            r"(?<=\()",
+            r"(?<=\()..",
+            r"(?<=\()\W",
+            r"(?<=\()\W.*z",
+            r"(?<=[(\[])\W.*z",
+            r"(?<=[(\[])[^a-z0-9 ].*z",
+            r"(?<=[(\[])\W",
+            r"(?<=\(|\*/)\W?x",
+            r"(?:(?<=\()|y)\Wz",
+            r"\b(?<=\.)\w+",
+            r"(?<=ab)c?",
+            r"(?<=[^a-c]).?",
+            r"(?<=[^a-c])",
+            r"(?<!\()x",
+            r"(?<=é).?",
+            r"(?i)(?<=k).?",
+            r"(?<=\(|\[)x?",
+            r"(?<=(\())(.?)",
+            r"a(?<=\()",
+        ];
+        let subjects: [&[u8]; 12] = [
+            b"(\x80xz",
+            b"(\x80y",
+            b"(\x80x",
+            b"(\x80\x80x",
+            b"(\x80\x80\x80\x80x",
+            b".\x80\xe0\x81\xab\xf0\x9f\x98\x80",
+            b"ab\x80c",
+            "é\u{80}x".as_bytes(),
+            b"\xc3(\x80)",
+            b"\xc3\xa9\xa9x",
+            "a(é)b".as_bytes(),
+            b"K\x80\x80k",
+        ];
+        for fused in [true, false] {
+            for pattern in patterns {
+                FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(!fused));
+                let reg = onig_new(
+                    pattern.as_bytes(),
+                    ONIG_OPTION_NONE,
+                    &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                    &OnigSyntaxOniguruma,
+                );
+                FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(false));
+                let reg = reg.unwrap();
+                let c = crate::ffi::CRegex::new(pattern.as_bytes(), crate::ffi::ONIG_OPTION_NONE)
+                    .unwrap();
+                for subject in subjects {
+                    for start in 0..=subject.len() {
+                        let (r, region) = onig_search(
+                            &reg,
+                            subject,
+                            subject.len(),
+                            start,
+                            subject.len(),
+                            Some(OnigRegion::new()),
+                            ONIG_OPTION_NONE,
+                        );
+                        let mut c_region = crate::ffi::CRegion::new();
+                        let c_r = c.search(subject, start, subject.len(), Some(&mut c_region), 0);
+                        let context =
+                            format!("{pattern} on {subject:?} from {start} fused={fused}");
+                        assert_eq!(r, c_r, "{context}");
+                        if r >= 0 {
+                            let region = region.unwrap();
+                            let spans: Vec<(i32, i32)> = region
+                                .beg
+                                .iter()
+                                .zip(&region.end)
+                                .take(region.num_regs as usize)
+                                .map(|(&b, &e)| (b, e))
+                                .collect();
+                            assert_eq!(spans, c_region.capture_ranges(), "{context}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A look-behind compiled to `LookBehindOp` must match exactly like the
+    /// upstream MARK / STEP_BACK_START sequence, for every body instruction
+    /// kind, in any context, and on malformed UTF-8.
+    #[test]
+    fn fused_look_behinds_match_the_upstream_sequence() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let compile = |pattern: &str, fused: bool, option: OnigOptionType| {
+            FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(!fused));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                option,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+        let search = |reg: &RegexType, input: &[u8], start: usize, range: usize| {
+            let (r, region) = onig_search(
+                reg,
+                input,
+                input.len(),
+                start,
+                range,
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            let region = region.unwrap();
+            let spans: Vec<(i32, i32)> = region
+                .beg
+                .iter()
+                .zip(&region.end)
+                .take(region.num_regs as usize)
+                .map(|(&b, &e)| (b, e))
+                .collect();
+            (r, spans)
+        };
+
+        let bodies = [
+            "[a-c]",
+            "[^a]",
+            "a",
+            "ab",
+            "\\.",
+            "\\.\\.\\.",
+            "abcdef",
+            "\\x{e9}",
+            "[\\x{e9}-\\x{fc}]",
+            "[^\\x{e9}]",
+            "[\\x{100}-\\x{200}]",
+            "[^\\x{100}-\\x{200}]",
+            "[a\\x{100}]",
+            "[^a\\x{100}]",
+            "\\x{1F600}",
+            "[$_[:alnum:]]",
+            "(?i:k)",
+            "(?i:s)",
+            "\\x{100}b",
+            "\\w",
+            "\\W",
+        ];
+        let contexts = [
+            "{lb}x",
+            "{lb}",
+            "a{lb}b",
+            "(?:{lb}b)+",
+            "(?:{lb}a|b)c",
+            "\\b{lb}\\w+",
+            "({lb})",
+            "[a-c]*{lb}c",
+        ];
+        let pieces: [&[u8]; 15] = [
+            b"a",
+            b"b",
+            b"c",
+            b"x",
+            b".",
+            "\u{e9}".as_bytes(),
+            "\u{100}".as_bytes(),
+            "\u{1F600}".as_bytes(),
+            "\u{212A}".as_bytes(),
+            b"k",
+            b"\xC3",
+            b"\x80",
+            b"\xE2\x84",
+            b"\xE0\x81\xAB",
+            b"ab",
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let inputs: Vec<Vec<u8>> = (0..80)
+            .map(|_| {
+                let mut next = |bound: u64| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state % bound) as usize
+                };
+                let len = next(7);
+                (0..len)
+                    .flat_map(|_| pieces[next(pieces.len() as u64)].to_vec())
+                    .collect()
+            })
+            .collect();
+
+        let mut fused_count = 0;
+        // `\w` is ASCII-only under ONIG_OPTION_WORD_IS_ASCII, which gives
+        // the `WordAscii` and `NoWordAscii` bodies.
+        for (body, option) in bodies
+            .into_iter()
+            .map(|body| (body, ONIG_OPTION_NONE))
+            .chain(
+                ["\\w", "\\W"]
+                    .into_iter()
+                    .map(|body| (body, ONIG_OPTION_WORD_IS_ASCII)),
+            )
+        {
+            for lb in [format!("(?<={body})"), format!("(?<!{body})")] {
+                for context in contexts {
+                    let pattern = context.replace("{lb}", &lb);
+                    let fused = compile(&pattern, true, option);
+                    let reference = compile(&pattern, false, option);
+                    assert!(
+                        !reference
+                            .ops
+                            .iter()
+                            .any(|op| op.opcode == OpCode::LookBehindOp)
+                    );
+                    fused_count +=
+                        usize::from(fused.ops.iter().any(|op| op.opcode == OpCode::LookBehindOp));
+                    for input in &inputs {
+                        for start in [0, 1, input.len() / 2] {
+                            if start > input.len() {
+                                continue;
+                            }
+                            // A range before the end of the input bounds the
+                            // step back as well (right_range).
+                            for range in [input.len(), input.len() / 2, start] {
+                                assert_eq!(
+                                    search(&fused, input, start, range),
+                                    search(&reference, input, start, range),
+                                    "{pattern} on {input:x?} from {start} to {range}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(fused_count > 250, "only {fused_count} patterns fused");
+    }
+
+    /// Rust-only (ADR-008): the skip gates of guard chains (`GuardSkipGate`)
+    /// against the one-by-one walk they replace. For every start position of
+    /// every input, the gated and the ungated program agree on the result,
+    /// the region and the counted backtracks, and under retry limits in match
+    /// and in search near those counts.
+    #[test]
+    fn skip_gates_match_the_one_by_one_walk() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{MatchArg, onig_search_with_msa, shared_limits};
+
+        let _limits = shared_limits();
+        let compile = |pattern: &str, gated: bool| {
+            SKIP_GATES_DISABLED.with(|disabled| disabled.set(!gated));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            SKIP_GATES_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+        let gate_count = |reg: &RegexType| {
+            reg.ops
+                .iter()
+                .filter(|op| match &op.payload {
+                    OperationPayload::PushOrJumpExact1 { skip_gate, .. }
+                    | OperationPayload::PushOrJumpByteSet { skip_gate, .. } => skip_gate.is_some(),
+                    _ => false,
+                })
+                .count()
+        };
+        // The search from `start` under a match stack limit: the result.
+        let stack_run = |reg: &RegexType, input: &[u8], start: usize, stack: u32| {
+            let mut msa = MatchArg::new(reg, ONIG_OPTION_NONE, Some(OnigRegion::new()), start);
+            msa.match_stack_limit = stack;
+            onig_search_with_msa(reg, input, input.len(), start, input.len(), &mut msa).0
+        };
+        // The search from `start`: result, region and counted backtracks.
+        let run =
+            |reg: &RegexType, input: &[u8], start: usize, match_limit: u64, search_limit: u64| {
+                let mut msa = MatchArg::new(reg, ONIG_OPTION_NONE, Some(OnigRegion::new()), start);
+                msa.retry_limit_in_match = match_limit;
+                msa.retry_limit_in_search = search_limit;
+                let (r, region) =
+                    onig_search_with_msa(reg, input, input.len(), start, input.len(), &mut msa);
+                let spans: Vec<(i32, i32)> = region.map_or_else(Vec::new, |region| {
+                    region
+                        .beg
+                        .iter()
+                        .zip(&region.end)
+                        .take(region.num_regs as usize)
+                        .map(|(&b, &e)| (b, e))
+                        .collect()
+                });
+                (r, spans, msa.retry_limit_in_search_counter)
+            };
+
+        // Fold classes (several multi-character folds), classes in repeats
+        // with look-arounds around them, and the plain alternations the
+        // gates also apply to.
+        let patterns = [
+            "(?i)[[:word:]]",
+            "(?i)[¡-\\x{ffff}]",
+            "(?i)[a-zß]",
+            "(?i)[^a-z]",
+            "(?i)[a-zß]+s",
+            "(?i)[ß]+x",
+            "(?i)^[a-zß]{0,6}s",
+            "(?i)(?<=[a-zß])x",
+            "(?i)([\\w-]{0,4})(?<!s)\\.",
+            "(?i)(?:[ß]|x)y",
+            "(?i)[ﬀ-ﬃ]+",
+            "(?i)(a[ßi]{1,3}b)",
+            "(?i)[İi]+",
+            "(?i)[ͅι]",
+            "(?i)[ǰ]",
+            "(?i)[ß-ſ]+",
+            "(?i)[\\x{1F00}-\\x{1FFF}]",
+            "(?i)[k-s]",
+            "(?i)[ſ-ﬆ]",
+            "(?i)[[:alpha:]]",
+            "(?i)\\b[[:upper:]]+\\b",
+            "(?i)[a-zß]{0,61}[a-zß]",
+            "(?i)[a-z¡-\\x{ffff}0-9]{0,8}[a-z¡-\\x{ffff}0-9]",
+            "(?i)[^ßa-z]s",
+            "(?i)(?:x|[a-zß])\\z",
+            "(?i)[ß]\\s*(?=s)",
+            "(?i)[sß]{2,4}",
+            "(?i)(?<!-)[a-zß]{1,3}(?<!-)",
+            "(?i)[\\x{0370}-\\x{03FF}]+",
+            "(?i)[ΐ]",
+            "(?i)[ᾳ]",
+            "(?i)\\p{Lu}",
+            "(?i)[\\W]",
+            "(?i)[a-z]{3}[ß]?",
+            "(?i)(?>[a-zß]+)s",
+            "(?i)[a-zß]*?ss$",
+            "(?i)(?:ss|ß|ﬀ|x)+y",
+            "(?i)(?:[a-z]|ß){2,5}(?<=s)",
+            "(?i)(?<![\\w.])[a-zß.]{1,4}(?!\\w)",
+            "(?i)^[a-z¡-\\x{ffff}]{0,8}[a-z¡-\\x{ffff}-]{0,8}(?<!-)\\.",
+            "(?i)(?:a|ß|b|st|c)+d",
+            "[ab](?:x|y|z|w|v|u|t|s|r|q|p|o|n|m|l|k|j|i|h|g|f|e|d|c|b|a)",
+        ];
+        let inputs: [&[u8]; 14] = [
+            b"",
+            b"ss",
+            "SS ſs ẞ ß".as_bytes(),
+            "ﬀﬃ İi̇ İİ".as_bytes(),
+            "ι\u{0345}ᾳ ǰ".as_bytes(),
+            "Strasse, STRASSE; ssss".as_bytes(),
+            "aßb axxss-.ab.cd-".as_bytes(),
+            b"abcdefghijklmnopqrstuvwxyz",
+            b"zz zzzz -a.b-c..d AB CD",
+            "ΐΰ Ͱͱ ΑΒΓ x".as_bytes(),
+            b"abc.def.ghi-jkl",
+            b"0123456789 9876543210",
+            "xx x\u{00e9}\u{1ff3}".as_bytes(),
+            b"sssssssssssssssssss",
+        ];
+
+        let mut gated_patterns = 0;
+        for pattern in patterns {
+            let gated = compile(pattern, true);
+            let plain = compile(pattern, false);
+            assert_eq!(gate_count(&plain), 0, "{pattern}");
+            gated_patterns += usize::from(gate_count(&gated) > 0);
+            for input in inputs {
+                for start in 0..=input.len() {
+                    let reference = run(&plain, input, start, 0, 0);
+                    let counted = run(&gated, input, start, 0, 0);
+                    assert_eq!(counted, reference, "{pattern} on {input:x?} from {start}");
+                    // Under a match stack limit the gates push where the
+                    // walk pushes, so the limit trips at the same entry.
+                    for stack in 1..=24 {
+                        assert_eq!(
+                            stack_run(&gated, input, start, stack),
+                            stack_run(&plain, input, start, stack),
+                            "{pattern} on {input:x?} from {start} with stack limit {stack}"
+                        );
+                    }
+                    let total = reference.2;
+                    let limits = (1..=12).chain([total.saturating_sub(1), total, total + 1]);
+                    for limit in limits.filter(|&limit| limit > 0) {
+                        for (match_limit, search_limit) in [(limit, 0), (0, limit)] {
+                            let want = run(&plain, input, start, match_limit, search_limit);
+                            let got = run(&gated, input, start, match_limit, search_limit);
+                            assert_eq!(
+                                (got.0, got.1),
+                                (want.0, want.1),
+                                "{pattern} on {input:x?} from {start} with limits \
+                                 {match_limit}/{search_limit}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // The gates exist where the fold classes make chains of guards: a
+        // class with many multi-character folds (`[[:word:]]`, a Greek
+        // range). A class with a few has as many alternatives, too few to
+        // gate.
+        assert!(gated_patterns >= 12, "only {gated_patterns} patterns gated");
+    }
+
+    /// A fused look-behind must also give the upstream sequence's retry-limit
+    /// errors: the failing body of a negative look-behind counts the backtrack
+    /// the upstream instructions count (see ADR-008).
+    #[test]
+    fn fused_look_behinds_match_the_upstream_limits() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{exclusive_limits, onig_search, onig_set_retry_limit_in_match};
+
+        let _limits = exclusive_limits();
+        let compile = |pattern: &str, fused: bool| {
+            FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(!fused));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+        let patterns = [
+            r"(?<!\w)x",
+            r"(?<=\w)x",
+            r"(?<!\w)\w*",
+            r"(?:(?<!\w)a|b)+",
+            r"(?<![a-c])x",
+            r"(?<!\.)(?:x|y)*z",
+            r"(?<!\W)[a-z]+",
+        ];
+        let inputs: [&[u8]; 6] = [
+            b"aaaa x",
+            b"ab cd.x xx",
+            b"   ",
+            b"xxxxxxxxxxxxxxxxxxxxxxxxx",
+            b"zxyz.yx.z",
+            "\u{e9} a\u{e9}b x".as_bytes(),
+        ];
+        let search = |reg: &RegexType, input: &[u8]| {
+            let (r, _) = onig_search(
+                reg,
+                input,
+                input.len(),
+                0,
+                input.len(),
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            r
+        };
+        for pattern in patterns {
+            let fused = compile(pattern, true);
+            let reference = compile(pattern, false);
+            for input in inputs {
+                for retry in 1..=24 {
+                    onig_set_retry_limit_in_match(retry);
+                    assert_eq!(
+                        search(&fused, input),
+                        search(&reference, input),
+                        "{pattern} on {input:?} with retry limit {retry}"
+                    );
+                }
+                onig_set_retry_limit_in_match(0);
+            }
+        }
+    }
+
+    /// Under a match stack limit a fused look-behind errors where the upstream
+    /// sequence does, at every limit: in particular at the least limit that
+    /// lets a search succeed and at the one below it (ADR-008). Guards of
+    /// alternations push under a limit, so the alternation is covered too.
+    /// A limit below 320 allows 321 entries (`match_stack_cap`), so a run of
+    /// `-` in front of each subject fills the stack beyond that.
+    #[test]
+    fn fused_look_behinds_match_the_upstream_stack_limit_boundary() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{
+            exclusive_limits, onig_search, onig_set_match_stack_limit,
+            onig_set_retry_limit_in_match,
+        };
+
+        let _limits = exclusive_limits();
+        onig_set_retry_limit_in_match(0);
+        let compile = |pattern: &str, fused: bool| {
+            FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(!fused));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            FUSED_LOOK_BEHIND_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+        // The search from `start` under `limit`, as the caller's result.
+        let search = |reg: &RegexType, input: &[u8], start: usize, limit: u32| {
+            onig_set_match_stack_limit(limit);
+            let (r, _) = onig_search(
+                reg,
+                input,
+                input.len(),
+                start,
+                input.len(),
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            onig_set_match_stack_limit(0);
+            r
+        };
+        let patterns = [
+            r"(?<!\w)x",
+            r"(?<![a-c])x",
+            r"(?<=\w)x",
+            r"(?<!\W)x",
+            r"(?:(?<![a-c])a|b)+",
+        ];
+        let subjects: [&[u8]; 6] = [b"x", b"ax", b" x", b"abcx xb", b"aaaa bbb", b"cab a"];
+        // `(?:-|=)*?` holds one entry per `-`: the searches from the first
+        // positions reach the look-behind past the 321 entries.
+        const FILL: usize = 330;
+        let mut boundary_cases = 0;
+        for pattern in patterns {
+            let pattern = format!("(?:-|=)*?{pattern}");
+            let pattern = pattern.as_str();
+            let fused = compile(pattern, true);
+            let reference = compile(pattern, false);
+            for subject in subjects {
+                let subject = [&[b'-'; FILL][..], subject].concat();
+                let subject = subject.as_slice();
+                for start in (0..4).chain(FILL..=subject.len()) {
+                    let mut minimal = None;
+                    for limit in (1..4).chain(320..=360) {
+                        let want = search(&reference, subject, start, limit);
+                        assert_eq!(
+                            search(&fused, subject, start, limit),
+                            want,
+                            "{pattern} on {subject:?} from {start} with stack limit {limit}"
+                        );
+                        if want >= 0 && minimal.is_none() {
+                            minimal = Some(limit);
+                        }
+                    }
+                    // The limit below the least succeeding one is an error,
+                    // so the boundary is exercised.
+                    if let Some(m) = minimal.filter(|&m| m > 1) {
+                        if search(&reference, subject, start, m - 1) < 0 {
+                            boundary_cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(boundary_cases > 20, "only {boundary_cases} boundary cases");
+    }
+
+    #[test]
+    fn guarded_pushes_match_unguarded_pushes() {
+        use crate::oniguruma::OnigRegion;
+        use crate::regexec::{onig_search, shared_limits};
+
+        let _limits = shared_limits();
+        let compile = |pattern: &str, guarded: bool| {
+            PUSH_GUARDS_DISABLED.with(|disabled| disabled.set(!guarded));
+            let reg = onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &crate::encodings::utf8::ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            );
+            PUSH_GUARDS_DISABLED.with(|disabled| disabled.set(false));
+            reg.unwrap()
+        };
+        let search = |reg: &RegexType, input: &[u8], start: usize, range: usize| {
+            let (r, region) = onig_search(
+                reg,
+                input,
+                input.len(),
+                start,
+                range,
+                Some(OnigRegion::new()),
+                ONIG_OPTION_NONE,
+            );
+            let region = region.unwrap();
+            let spans: Vec<(i32, i32)> = region
+                .beg
+                .iter()
+                .zip(&region.end)
+                .take(region.num_regs as usize)
+                .map(|(&b, &e)| (b, e))
+                .collect();
+            (r, spans)
+        };
+        // Backtracks the whole search counts against the retry limits. A
+        // search budget (never reached here) makes every guard count exactly:
+        // the guards whose count depends on checks push instead of jumping.
+        let retries = |reg: &RegexType, input: &[u8], start: usize| {
+            let mut msa = crate::regexec::MatchArg::new(
+                reg,
+                ONIG_OPTION_NONE,
+                Some(OnigRegion::new()),
+                start,
+            );
+            msa.retry_limit_in_match = 0;
+            msa.retry_limit_in_search = u64::MAX;
+            crate::regexec::onig_search_with_msa(
+                reg,
+                input,
+                input.len(),
+                start,
+                input.len(),
+                &mut msa,
+            );
+            msa.retry_limit_in_search_counter
+        };
+        // The result under a retry limit in match alone, where guards that
+        // depend on checks first count an upper bound and rerun exactly
+        // when it trips.
+        let limited = |reg: &RegexType, input: &[u8], start: usize, limit: u64| {
+            let mut msa = crate::regexec::MatchArg::new(
+                reg,
+                ONIG_OPTION_NONE,
+                Some(OnigRegion::new()),
+                start,
+            );
+            msa.retry_limit_in_match = limit;
+            msa.retry_limit_in_search = 0;
+            crate::regexec::onig_search_with_msa(
+                reg,
+                input,
+                input.len(),
+                start,
+                input.len(),
+                &mut msa,
+            )
+            .0
+        };
+        let guards = |reg: &RegexType| {
+            reg.ops
+                .iter()
+                .filter(|op| {
+                    matches!(
+                        op.opcode,
+                        OpCode::PushOrJumpExact1 | OpCode::PushOrJumpByteSet
+                    )
+                })
+                .count()
+        };
+
+        // What the guarded branch starts with: consumers, loops that may
+        // consume nothing, fused look-behinds, look-arounds, captures and
+        // groups that the guard walk must pass or stop at.
+        let heads = [
+            "ab",
+            "[a-c]",
+            "[^a]",
+            "\\x{e9}",
+            "[\\x{100}-\\x{200}]",
+            "\\p{Greek}",
+            "(?i:k)",
+            "(?i:ss)",
+            "\\s*x",
+            "[ab]*c",
+            "\\w+",
+            "(?<![a-z])b",
+            "(?<=a)b",
+            "(?<!\\.)c",
+            "(?!a)b",
+            "(?!a?)b",
+            "(?!(a))b",
+            "(?![a-c]|x)\\w",
+            "(?=a)a",
+            // The inner push can reach the look-ahead's cut without
+            // consuming; the mark lies before it, so the walk must stop.
+            "(?=x(?:a?|c))x",
+            "(?>ab|a)",
+            "(?>a|)b",
+            "\\bab",
+            "^a",
+            "a|b",
+            "(a)b",
+            "(?:a|)b",
+            "(?:ab|ac|ad|ae)",
+            "(?i:ab|ac|ad|ae)",
+            "a{2}",
+            ".",
+            // Nested pushes: the unguarded branch fails once per path.
+            "a+|[ab]",
+            "(?:a|b)?c",
+            "(?:a|)(?:b|)c",
+            "(?:a|\\bb|c)",
+            // Counts that depend on the checks the branch starts with: the
+            // TextMate keyword prefix, anchors and word boundaries in front
+            // of a fork.
+            "(?<![a-z])(?:(?<=\\.\\.)|(?<!\\.))(?:ab|ac)",
+            "(?<![a-z])(?:a|b)c",
+            "\\b(?:a|b|)c",
+            "(?:^|\\b)(?:a|bc)",
+            "\\G(?:a|b)c|\\Bab",
+            "$(?:a|b)?",
+        ];
+        let contexts = [
+            "(?:{h})?z",
+            "(?:{h})??z",
+            "(?:{h}|y)z",
+            "(?:{h})*z",
+            "(?:{h})+z",
+            "({h})?(\\w)",
+            "x(?:{h}|[yz])",
+            "(?:y|{h})$",
+        ];
+        let pieces: [&[u8]; 17] = [
+            b"a",
+            b"b",
+            b"c",
+            b"x",
+            b"y",
+            b"z",
+            b".",
+            b" ",
+            "\u{e9}".as_bytes(),
+            "\u{100}".as_bytes(),
+            "\u{3b1}".as_bytes(),
+            "\u{212A}".as_bytes(),
+            "\u{df}".as_bytes(),
+            b"k",
+            b"\xC3",
+            b"\x80",
+            b"\xE0\x81\xAB",
+        ];
+        let mut state = 0x9E6C_63D0_676A_9A99u64;
+        let inputs: Vec<Vec<u8>> = (0..60)
+            .map(|_| {
+                let mut next = |bound: u64| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state % bound) as usize
+                };
+                let len = next(7);
+                (0..len)
+                    .flat_map(|_| pieces[next(pieces.len() as u64)].to_vec())
+                    .collect()
+            })
+            .collect();
+
+        let mut guarded_patterns = 0;
+        let mut check_dependent_guards = 0;
+        for head in heads {
+            for context in contexts {
+                let pattern = context.replace("{h}", head);
+                let guarded = compile(&pattern, true);
+                let reference = compile(&pattern, false);
+                let check_dependent = guarded.ops.iter().any(|op| {
+                    matches!(
+                        op.payload,
+                        OperationPayload::PushOrJumpExact1 { skipped_retries, .. }
+                            | OperationPayload::PushOrJumpByteSet { skipped_retries, .. }
+                            if skipped_retries & GUARD_RETRIES_BY_CHECKS != 0
+                    )
+                });
+                check_dependent_guards += usize::from(check_dependent);
+                assert!(
+                    !reference
+                        .ops
+                        .iter()
+                        .any(|op| op.opcode == OpCode::PushOrJumpByteSet)
+                );
+                guarded_patterns += usize::from(guards(&guarded) > guards(&reference));
+                for input in &inputs {
+                    for start in [0, 1, input.len() / 2] {
+                        if start > input.len() {
+                            continue;
+                        }
+                        assert_eq!(
+                            search(&guarded, input, start, input.len()),
+                            search(&reference, input, start, input.len()),
+                            "{pattern} on {input:x?} from {start}"
+                        );
+                        // A guard that jumps counts the backtracks the
+                        // unguarded push takes, so the retry limits trip at
+                        // the same point.
+                        assert_eq!(
+                            retries(&guarded, input, start),
+                            retries(&reference, input, start),
+                            "{pattern} on {input:x?} from {start}: retries"
+                        );
+                        if check_dependent {
+                            for limit in 1..=6 {
+                                assert_eq!(
+                                    limited(&guarded, input, start, limit),
+                                    limited(&reference, input, start, limit),
+                                    "{pattern} on {input:x?} from {start}: limit {limit}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            guarded_patterns > 170,
+            "only {guarded_patterns} patterns guarded"
+        );
+        assert!(
+            check_dependent_guards > 20,
+            "only {check_dependent_guards} guards count by their checks"
+        );
+    }
+
+    /// Bitsets from empty to full, including word-boundary bits, plus
+    /// pseudo-random ones of varying density.
+    fn sample_bitsets() -> Vec<BitSet> {
+        let mut sets = vec![[0; BITSET_REAL_SIZE], [u32::MAX; BITSET_REAL_SIZE]];
+        for pos in [0, 1, 31, 32, 63, 127, 128, 200, 255] {
+            let mut bs = [0; BITSET_REAL_SIZE];
+            bitset_set_bit(&mut bs, pos);
+            sets.push(bs);
+            bitset_set_bit(&mut bs, 255 - pos);
+            sets.push(bs);
+        }
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for density in [1, 2, 4, 8] {
+            for _ in 0..50 {
+                let mut bs = [0; BITSET_REAL_SIZE];
+                for word in &mut bs {
+                    for _ in 0..density {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        *word |= 1 << (state % 32);
+                    }
+                }
+                sets.push(bs);
+            }
+        }
+        sets
+    }
+
+    #[test]
+    fn bitset_word_scans_match_per_bit_loops() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+
+        for bs in sample_bitsets() {
+            let per_bit: Vec<usize> = (0..SINGLE_BYTE_SIZE)
+                .filter(|&pos| bitset_at(&bs, pos))
+                .collect();
+            assert_eq!(bitset_members(&bs).collect::<Vec<_>>(), per_bit);
+
+            let expected_fast = match per_bit.as_slice() {
+                [a] if *a < 0x80 => CClassAsciiFastKind::Eq(*a as u8),
+                [a, b]
+                    if *b < 0x80
+                        && (*a as u8).is_ascii_alphabetic()
+                        && (*b as u8).is_ascii_alphabetic()
+                        && (a ^ b) == 0x20 =>
+                {
+                    CClassAsciiFastKind::EqFoldLower((*a as u8).to_ascii_lowercase())
+                }
+                _ => CClassAsciiFastKind::None,
+            };
+            assert_eq!(detect_cclass_ascii_fast(&bs), expected_fast);
+
+            for flags in [0, FLAG_NCCLASS_NOT] {
+                let cc = CClassNode {
+                    flags,
+                    bs,
+                    mbuf: None,
+                };
+                let mut reference = OptMap::new();
+                for pos in 0..SINGLE_BYTE_SIZE {
+                    if bitset_at(&bs, pos) != cc.is_not() {
+                        add_char_opt_map(&mut reference, pos as u8, &ONIG_ENCODING_UTF8);
+                    }
+                }
+                let mut fast = OptMap::new();
+                add_cclass_bitset_opt_map(&mut fast, &cc, &ONIG_ENCODING_UTF8, SINGLE_BYTE_SIZE);
+                assert_eq!(fast.map, reference.map);
+                assert_eq!(fast.value, reference.value);
+
+                // The multibyte branch adds the ASCII half, then every high byte.
+                for pos in 0x80..SINGLE_BYTE_SIZE {
+                    add_char_opt_map(&mut reference, pos as u8, &ONIG_ENCODING_UTF8);
+                }
+                let mut fast = OptMap::new();
+                add_cclass_bitset_opt_map(&mut fast, &cc, &ONIG_ENCODING_UTF8, 0x80);
+                add_high_bytes_opt_map(&mut fast, &ONIG_ENCODING_UTF8);
+                assert_eq!(fast.map, reference.map);
+                assert_eq!(fast.value, reference.value);
+            }
+        }
+    }
+
+    /// `add_bitset_opt_map` against the per-byte rule it replaces, over
+    /// pseudo-random maps and sets under both encodings: byte 0 and the high
+    /// bytes take their own values, and members the map holds add nothing.
+    #[test]
+    fn add_bitset_opt_map_matches_per_byte_reference() {
+        use crate::encodings::ascii::ONIG_ENCODING_ASCII;
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..2000 {
+            let enc: OnigEncoding = if round % 2 == 0 {
+                &ONIG_ENCODING_UTF8
+            } else {
+                &ONIG_ENCODING_ASCII
+            };
+            let mut fast = OptMap::new();
+            let mut reference = OptMap::new();
+            for i in 0..CHAR_MAP_SIZE {
+                if next() % 3 == 0 {
+                    fast.map[i] = 1;
+                    reference.map[i] = 1;
+                }
+            }
+            fast.value = (next() % 1000) as i32;
+            reference.value = fast.value;
+            let mut bs: BitSet = [0; BITSET_REAL_SIZE];
+            for word in bs.iter_mut() {
+                *word = next() as Bits & next() as Bits;
+            }
+            add_bitset_opt_map(&mut fast, &bs, enc);
+            for i in 0..CHAR_MAP_SIZE {
+                if bitset_at(&bs, i) && reference.map[i] == 0 {
+                    reference.map[i] = 1;
+                    reference.value += map_position_value(enc, i);
+                }
+            }
+            assert_eq!(fast.map, reference.map, "round {round}");
+            assert_eq!(fast.value, reference.value, "round {round}");
+        }
+    }
+
+    /// A loop whose body starts with a quantifier that already has a head
+    /// literal takes that literal as its own, as `get_tree_head_literal` does
+    /// in C. The loop then compiles to C's `PUSH_OR_JUMP_EXACT1`, which
+    /// leaves the loop without a backtrack, rather than to a `Push` whose
+    /// guard counts the backtrack C's `Push` would take: at a retry limit in
+    /// match of 1, `a(?:x+@x)*` stopped on `a` where C matches (ADR-017).
+    #[test]
+    fn loop_takes_the_head_literal_of_a_leading_quantifier() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::ONIG_OPTION_NONE;
+        #[cfg(feature = "ffi")]
+        use crate::oniguruma::ONIGERR_RETRY_LIMIT_IN_MATCH_OVER;
+        use crate::regexec::{
+            onig_new_match_param, onig_search, onig_search_with_param,
+            onig_set_retry_limit_in_match_of_match_param,
+        };
+        use crate::regsyntax::OnigSyntaxOniguruma;
+        let _limits = crate::regexec::shared_limits();
+
+        let compile = |pattern: &str| {
+            onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        let reg = compile(r"a(?:x+@x)*");
+        assert!(reg.ops.iter().any(|op| matches!(
+            op.payload,
+            OperationPayload::PushOrJumpExact1 {
+                c: b'x',
+                skipped_retries: 0,
+                ..
+            }
+        )));
+
+        let search = |reg: &RegexType, subject: &[u8], limit: Option<u64>| {
+            let end = subject.len();
+            let (r, region) = match limit {
+                None => onig_search(
+                    reg,
+                    subject,
+                    end,
+                    0,
+                    end,
+                    Some(OnigRegion::new()),
+                    ONIG_OPTION_NONE,
+                ),
+                Some(limit) => {
+                    let mut mp = onig_new_match_param();
+                    onig_set_retry_limit_in_match_of_match_param(&mut mp, limit);
+                    onig_search_with_param(
+                        reg,
+                        subject,
+                        end,
+                        0,
+                        end,
+                        Some(OnigRegion::new()),
+                        ONIG_OPTION_NONE,
+                        &mp,
+                    )
+                }
+            };
+            let spans: Vec<(i32, i32)> = match region {
+                Some(region) if r >= 0 => region
+                    .beg
+                    .iter()
+                    .zip(&region.end)
+                    .take(region.num_regs as usize)
+                    .map(|(&b, &e)| (b, e))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (r, spans)
+        };
+        for pattern in [r"a(?:x+@x)*$", r"a(?:x+@x)*", r"(a)(?:x+@x)*$"] {
+            let reg = compile(pattern);
+            assert_eq!(search(&reg, b"a", Some(1)).0, 0, "{pattern}");
+            assert_eq!(search(&reg, b"ba", Some(1)).0, 1, "{pattern}");
+            #[cfg(feature = "ffi")]
+            {
+                let c = crate::ffi::CRegex::new(pattern.as_bytes(), 0).unwrap();
+                for subject in ["a", "ba", "ax@x", "axx@x", "ax@xx@x", "ax@", "axx", "bax@x"] {
+                    let subject = subject.as_bytes();
+                    let unlimited = search(&reg, subject, None);
+                    for limit in [1, 2, 3] {
+                        let limited = search(&reg, subject, Some(limit));
+                        let context = format!("{pattern} on {subject:?} at limit {limit}");
+                        let mut region = crate::ffi::CRegion::new();
+                        let r = c.search_with_retry_limit(
+                            subject,
+                            0,
+                            subject.len(),
+                            Some(&mut region),
+                            0,
+                            limit,
+                        );
+                        if r == ONIGERR_RETRY_LIMIT_IN_MATCH_OVER {
+                            assert!(
+                                limited.0 == r || limited == unlimited,
+                                "C stops, Ferroni gives a third answer: {context}"
+                            );
+                        } else {
+                            let spans = if r >= 0 {
+                                region.capture_ranges()
+                            } else {
+                                Vec::new()
+                            };
+                            assert_eq!(limited, (r, spans), "C completes: {context}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A loop whose body is a quantifier takes over that quantifier's head
+    /// literal, as `tune_tree` does in C (`tqn->head_exact = NULL`), and a
+    /// `{n,}` loop enters through C's `PUSH_OR_JUMP_EXACT1` or
+    /// `PUSH_IF_PEEK_NEXT` like `*` and `+`. Before, the inner loop of
+    /// `(?:(?:xy)+){2,}` left without a backtrack where C's `Push` takes one,
+    /// and every `{n,}` loop pushed where C does not: at a retry limit in
+    /// match of 4, `a(?:(?:xy){2,})*?$` stopped on `axyxy@` where C reports
+    /// no match (ADR-017).
+    #[test]
+    fn quantifier_loops_take_their_head_literal_as_in_c() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::{
+            ONIG_MISMATCH, ONIG_OPTION_NONE, ONIGERR_RETRY_LIMIT_IN_MATCH_OVER,
+        };
+        use crate::regexec::{
+            onig_new_match_param, onig_search, onig_search_with_param,
+            onig_set_retry_limit_in_match_of_match_param,
+        };
+        use crate::regsyntax::OnigSyntaxOniguruma;
+        let _limits = crate::regexec::shared_limits();
+
+        let compile = |pattern: &str| {
+            onig_new(
+                pattern.as_bytes(),
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        // The `skipped_retries` of each `PushOrJumpExact1` on `x`: 0 for C's
+        // own instruction, 1 for a guarded `Push`.
+        let exact1 = |pattern: &str| -> Vec<u32> {
+            compile(pattern)
+                .ops
+                .iter()
+                .filter_map(|op| match op.payload {
+                    OperationPayload::PushOrJumpExact1 {
+                        c: b'x',
+                        skipped_retries,
+                        ..
+                    } => Some(skipped_retries),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Two mandatory iterations, then the outer loop with the head literal;
+        // each inner `+` keeps C's `Push`.
+        assert_eq!(exact1(r"a(?:(?:xy)+){2,}$"), [1, 1, 0, 1]);
+        assert_eq!(exact1(r"a(?:x\d){2,}$"), [0]);
+        assert!(
+            compile(r"a(?:[xy]\d){2,}@")
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OperationPayload::PushIfPeekNext { c: b'@', .. }))
+        );
+
+        let search = |reg: &RegexType, subject: &[u8], limit: Option<u64>| {
+            let end = subject.len();
+            let (r, region) = match limit {
+                None => onig_search(
+                    reg,
+                    subject,
+                    end,
+                    0,
+                    end,
+                    Some(OnigRegion::new()),
+                    ONIG_OPTION_NONE,
+                ),
+                Some(limit) => {
+                    let mut mp = onig_new_match_param();
+                    onig_set_retry_limit_in_match_of_match_param(&mut mp, limit);
+                    onig_search_with_param(
+                        reg,
+                        subject,
+                        end,
+                        0,
+                        end,
+                        Some(OnigRegion::new()),
+                        ONIG_OPTION_NONE,
+                        &mp,
+                    )
+                }
+            };
+            let spans: Vec<(i32, i32)> = match region {
+                Some(region) if r >= 0 => region
+                    .beg
+                    .iter()
+                    .zip(&region.end)
+                    .take(region.num_regs as usize)
+                    .map(|(&b, &e)| (b, e))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (r, spans)
+        };
+        let reg = compile(r"a(?:(?:xy){2,})*?$");
+        assert_eq!(search(&reg, b"axyxy@", Some(4)).0, ONIG_MISMATCH);
+        let reg = compile(r"a(?:(?:xy)+){2,}$");
+        assert_eq!(
+            search(&reg, b"axy", Some(2)).0,
+            ONIGERR_RETRY_LIMIT_IN_MATCH_OVER
+        );
+
+        #[cfg(feature = "ffi")]
+        for pattern in [
+            r"a(?:(?:xy){2,})*$",
+            r"a(?:(?:xy){2,})*@",
+            r"a(?:(?:xy){2,})+$",
+            r"a(?:(?:xy)+){2,}$",
+            r"a(?:(?:xy)+){2,}?$",
+            r"a(?:(?:xy)+){3,}x",
+            r"a(?:(?:xy){2,}){2,}$",
+            r"(a)(?:(?:xy){2,})*$",
+            r"a(?:(?:xy){2,})*?$",
+            r"a(?:(?:xy){2,}){0,3}$",
+            r"a(?:(?:x[yz]){2,})*$",
+            r"a(?:x\d){2,}$",
+            r"a(?:[xy]\d){2,}@",
+            r"a(?:(x)y){2,}@",
+        ] {
+            let reg = compile(pattern);
+            let c = crate::ffi::CRegex::new(pattern.as_bytes(), 0).unwrap();
+            for subject in [
+                "a",
+                "axy",
+                "axyxy",
+                "axyxyxy",
+                "axyxy@",
+                "axyxyxy@",
+                "axyxyxyxy@x",
+                "ax1x2",
+                "ax1x2@",
+                "ay1x2y3@",
+                "ax@",
+                "baxyxy",
+            ] {
+                let subject = subject.as_bytes();
+                let unlimited = search(&reg, subject, None);
+                for limit in 1..=10 {
+                    let limited = search(&reg, subject, Some(limit));
+                    let context = format!("{pattern} on {subject:?} at limit {limit}");
+                    let mut region = crate::ffi::CRegion::new();
+                    let r = c.search_with_retry_limit(
+                        subject,
+                        0,
+                        subject.len(),
+                        Some(&mut region),
+                        0,
+                        limit,
+                    );
+                    if r == ONIGERR_RETRY_LIMIT_IN_MATCH_OVER {
+                        assert!(
+                            limited.0 == r || limited == unlimited,
+                            "C stops, Ferroni gives a third answer: {context}"
+                        );
+                    } else {
+                        let spans = if r >= 0 {
+                            region.capture_ranges()
+                        } else {
+                            Vec::new()
+                        };
+                        assert_eq!(limited, (r, spans), "C completes: {context}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// An empty string is not a strict real node, as in C: a possessive
+    /// repeat of an empty group keeps the mark and cut. As C's PUSH/POP loop
+    /// it never advanced, so `(?:)++` searched forever under every limit
+    /// (found by the `pattern_match` fuzz target).
+    #[test]
+    fn possessive_repeats_of_an_empty_body_end() {
+        use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+        use crate::oniguruma::{ONIG_MISMATCH, ONIG_OPTION_NONE};
+        use crate::regexec::{
+            onig_new_match_param, onig_search, onig_search_with_param,
+            onig_set_match_stack_limit_size_of_match_param,
+            onig_set_retry_limit_in_match_of_match_param,
+            onig_set_retry_limit_in_search_of_match_param,
+        };
+        use crate::regsyntax::OnigSyntaxOniguruma;
+        let _limits = crate::regexec::shared_limits();
+
+        let compile = |pattern: &[u8]| {
+            onig_new(
+                pattern,
+                ONIG_OPTION_NONE,
+                &ONIG_ENCODING_UTF8,
+                &OnigSyntaxOniguruma,
+            )
+            .unwrap()
+        };
+        for (pattern, expected) in [
+            (&b"a(?:)++b"[..], 1),
+            (b"(?:)*+", 0),
+            (b"a(?>(?:)+)b", 1),
+            (b"a(?>(?:)*)b", 1),
+            (b"(?:)++z", ONIG_MISMATCH),
+        ] {
+            let reg = compile(pattern);
+            let subject = b"xab";
+            let (r, _) = onig_search(
+                &reg,
+                subject,
+                subject.len(),
+                0,
+                subject.len(),
+                None,
+                ONIG_OPTION_NONE,
+            );
+            assert_eq!(r, expected, "{pattern:?}");
+            #[cfg(feature = "ffi")]
+            {
+                let c = crate::ffi::CRegex::new(pattern, 0).unwrap();
+                assert_eq!(
+                    c.search(subject, 0, subject.len(), None, 0),
+                    expected,
+                    "C: {pattern:?}"
+                );
+            }
+        }
+
+        // The fuzz input, with the fuzz target's limits.
+        let reg = compile(b"\0(?:)++\0");
+        let subject = b"\xea*\xbb\0\0*(;\xbb\0\0*";
+        let mut mp = onig_new_match_param();
+        onig_set_retry_limit_in_match_of_match_param(&mut mp, 100_000);
+        onig_set_retry_limit_in_search_of_match_param(&mut mp, 100_000);
+        onig_set_match_stack_limit_size_of_match_param(&mut mp, 8192);
+        let (r, _) = onig_search_with_param(
+            &reg,
+            subject,
+            subject.len(),
+            0,
+            subject.len(),
+            None,
+            ONIG_OPTION_NONE,
+            &mp,
+        );
+        assert_eq!(r, 3);
+    }
+}

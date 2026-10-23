@@ -1,0 +1,456 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, nightly, "1.94"]
+    # rust-toolchain.toml pins the local default toolchain; RUSTUP_TOOLCHAIN
+    # makes the matrix selection win over it.
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build
+        run: cargo build
+      - name: Test lib and api
+        run: cargo test --lib --test api_test
+      - name: Test doctests
+        run: cargo test --doc
+      - name: Test global_callouts
+        run: cargo test --test global_callouts
+      # These files fit the default thread stack (ADR-013 lists them as
+      # unaffected). The #[ignore]d tests in backtrack_rewrite and stack_cap
+      # stay skipped: stack_cap's grows the backtrack stack to about half a
+      # gigabyte.
+      - name: Test default_case_fold_flag
+        run: cargo test --test default_case_fold_flag
+      - name: Test parse_limits
+        run: cargo test --test parse_limits
+      - name: Test subexp_call_limits
+        run: cargo test --test subexp_call_limits
+      - name: Test backtrack_lint
+        run: cargo test --test backtrack_lint
+      - name: Test backtrack_rewrite
+        run: cargo test --test backtrack_rewrite
+      - name: Test stack_cap
+        run: cargo test --test stack_cap
+      - name: Test compat_syntax
+        run: cargo test --test compat_syntax
+      - name: Test compat_options
+        run: cargo test --test compat_options
+      - name: Test compat_regset
+        run: cargo test --test compat_regset
+      # The scanner's DFA pre-filter against the search without it: the
+      # review findings and the compat files' pattern/text pairs (ADR-008).
+      - name: Test scanner_prefilter_regressions
+        run: cargo test --test scanner_prefilter_regressions
+      - name: Test compat_prefilter_differential
+        run: cargo test --test compat_prefilter_differential
+      - name: Test compat_utf8
+        run: cargo test --test compat_utf8 -- --test-threads=1
+        env:
+          RUST_MIN_STACK: "536870912"
+      - name: Test compat_back
+        run: cargo test --test compat_back -- --test-threads=1
+        env:
+          RUST_MIN_STACK: "268435456"
+
+  precompiled:
+    name: Precompiled scanner patterns (MSRV)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.94"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: "1.94"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Round trips and captured calls with checked prefilter
+        run: cargo test --locked --features precompiled,prefilter-self-check --lib --test precompiled_scanner --test compat_prefilter_differential
+      - name: Round trips and captured calls without prefilter
+        run: cargo test --locked --no-default-features --features precompiled --lib --test precompiled_scanner --test compat_prefilter_differential
+      - name: Precompiled API examples
+        run: cargo test --locked --features precompiled --doc
+
+  fresh-resolution:
+    name: Fresh dependency resolution
+    runs-on: ubuntu-latest
+    # Library consumers resolve the dependency graph themselves instead of
+    # using our committed Cargo.lock, so one lane drops the lockfile and lets
+    # Cargo pick the newest compatible versions. This is a resolution lane, not
+    # the old edition-2024 manifest workaround the MSRV bump removed: it exists
+    # so a dependency release that breaks a fresh build is caught here rather
+    # than downstream.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Remove Cargo.lock for fresh resolution
+        run: rm -f Cargo.lock
+      - name: Build
+        run: cargo build --all-targets
+      - name: Test lib and api
+        run: cargo test --lib --test api_test
+      - name: Test doctests
+        run: cargo test --doc
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    # cargo-llvm-cov needs the nightly coverage attribute; override the
+    # rust-toolchain.toml default for this job.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov
+      # scripts/coverage.sh is the gate. It holds the threshold, the files
+      # excluded from the measurement and the stack-heavy tests that have to be
+      # skipped under instrumentation, it appends the measured number to the
+      # run summary, and it exits non-zero below the threshold. The same script
+      # runs locally, so CI and a developer machine cannot disagree.
+      - name: Measure coverage and enforce the gate
+        run: ./scripts/coverage.sh
+
+  ffi-smoke:
+    name: FFI feature smoke
+    runs-on: ubuntu-latest
+    # rust-toolchain.toml pins the local default toolchain; RUSTUP_TOOLCHAIN
+    # keeps the toolchain this job asks for in charge.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Prepare Oniguruma sources
+        run: ./scripts/prepare-oniguruma-sources.sh
+      # --all-targets also compiles the Criterion benches that need the ffi
+      # feature (battle_bench, battle_mem_onig).
+      - name: Check ffi feature
+        run: cargo check --features ffi --all-targets
+      - name: Check source-backed regex corpus and comparison rules
+        run: |
+          python3 scripts/check-production-corpus.py
+          python3 -m unittest discover -s scripts/tests -p 'test_production*.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_scanner*.py'
+      - name: Validate production regex tasks against source oracles
+        run: python3 scripts/compare-production.py validate "$RUNNER_TEMP/production-validation" --engines rust,rust_erroraware,c,pcre2_jit,pcre2,fancy_regex,fancy_regex_seek,regex
+      # The original breakage only showed in the published layout (benches/
+      # and scripts/ are excluded from the crate), so also check the packaged
+      # artifact with the sources supplied via FERRONI_ONIGURUMA_DIR.
+      - name: Check ffi feature from the packaged crate
+        run: |
+          cargo package --no-verify
+          crate=$(ls target/package/ferroni-*.crate)
+          tar -xzf "$crate" -C target/package
+          pkg_dir="${crate%.crate}"
+          FERRONI_ONIGURUMA_DIR="$GITHUB_WORKSPACE/.cache/upstream/oniguruma-orig" \
+            cargo check --features ffi --manifest-path "$pkg_dir/Cargo.toml"
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    # rust-toolchain.toml pins the local default toolchain; RUSTUP_TOOLCHAIN
+    # keeps the toolchain this job asks for in charge.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # --all-features includes ffi and onigmo, which compile the upstream C
+      # sources of Oniguruma and Ruby's Onigmo.
+      - name: Prepare Oniguruma and Onigmo sources
+        run: |
+          ./scripts/prepare-oniguruma-sources.sh
+          ./scripts/prepare-onigmo-sources.sh
+      # The allowed lints live in the [lints] table of Cargo.toml, never on the
+      # command line: command-line flags outrank the manifest, so a lint denied
+      # here would silently override the table.
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Verify public regex feature matrix
+        run: cargo test --all-features --locked --test regex_feature_matrix
+      # Without the default `dfa-prefilter` feature the scanner runs the
+      # position-lead search alone; its cfg-gated code has to stay clean too.
+      - run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
+
+  no-prefilter:
+    name: Test without the DFA pre-filter
+    runs-on: ubuntu-latest
+    # `default-features = false` drops regex-automata and regex-syntax and the
+    # scanner's pre-filter with them (ADR-008, ADR-009). The scanner has to
+    # answer the same without it, so the suites that exercise it run once
+    # more in that configuration.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Test lib, api and RegSet compat without the feature
+        run: cargo test --lib --test api_test --test compat_regset --test scanner_prefilter_regressions --test compat_prefilter_differential --no-default-features
+
+  prefilter-self-check:
+    name: Test with the pre-filter self-check
+    runs-on: ubuntu-latest
+    # `prefilter-self-check` (ADR-008) runs the position-lead search after
+    # every search the DFA pre-filter decides and panics on a different
+    # decision, captures included, so the suites that drive the scanner run
+    # once more with it.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Test lib, api and the pre-filter suites with the self-check
+        run: cargo test --features prefilter-self-check --lib --test api_test --test compat_prefilter_differential --test scanner_prefilter_regressions
+
+  wasm:
+    name: WebAssembly
+    runs-on: ubuntu-latest
+    # The library builds for wasm32-unknown-unknown, the browser target, with
+    # and without the default features. That target has no test runner
+    # without new dev-dependencies (ADR-009) and no clock, so a search with a
+    # time limit panics there (documented on SearchOptions::timeout). The tests
+    # run on wasm32-wasip1 under Wasmtime instead, which has a clock; the
+    # benches' Criterion and PCRE2 do not build for wasm, so Cargo.toml leaves
+    # them out on wasm targets.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      # The tests read benches/ fixtures by their absolute path, so Wasmtime
+      # maps the checkout to the same path inside the guest. Wasmtime lets
+      # wasm code use 512 KiB of native stack by default; the API tests expect
+      # the 2 MiB a std::thread gets (tests/api_test.rs), so it gets that.
+      # RUST_MIN_STACK (ADR-013) does not apply: the tests run on one thread.
+      CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime -W max-wasm-stack=2097152 --dir=${{ github.workspace }}::${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install Wasmtime
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: wasmtime
+      - name: Build for wasm32-unknown-unknown
+        run: cargo build --lib --locked --target wasm32-unknown-unknown
+      - name: Build for wasm32-unknown-unknown without the DFA pre-filter
+        run: cargo build --lib --locked --target wasm32-unknown-unknown --no-default-features
+      - name: Build archive loading for wasm32-unknown-unknown
+        run: cargo build --lib --locked --target wasm32-unknown-unknown --features precompiled
+      # wasm32-wasip1 cannot spawn threads, and a panic aborts the whole test
+      # binary there (libtest ignores the #[should_panic] tests by itself), so
+      # the tests that start a thread or catch a panic are skipped by name.
+      - name: Test lib and api on wasm32-wasip1
+        run: >-
+          cargo test --locked --target wasm32-wasip1 --lib --test api_test --
+          --exact
+          --skip api::tests::capture_gate_is_shared_and_thread_safe
+          --skip api::tests::seek_automaton_is_built_once_for_racing_threads
+          --skip api::tests::result_drop_during_thread_local_teardown_does_not_panic
+          --skip scanner::tests::scanners_sharing_a_pattern_cache_search_on_several_threads
+          --skip nested_groups_above_depth_limit_fail_cleanly_on_two_mib_stack
+          --skip nested_groups_at_depth_limit_compile_on_two_mib_stack
+          --skip nested_classes_above_depth_limit_fail_cleanly_on_two_mib_stack
+          --skip nested_classes_at_depth_limit_compile_on_two_mib_stack
+          --skip flat_alternation_above_ast_node_limit_fails_cleanly_on_two_mib_stack
+          --skip start_checks_panic_for_every_at_method
+
+  docs:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    # rust-toolchain.toml pins the local default toolchain; RUSTUP_TOOLCHAIN
+    # keeps the toolchain this job asks for in charge.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Mirrors the docs.rs build, which does not enable the ffi feature.
+      - run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  sample:
+    name: Home page sample
+    runs-on: ubuntu-latest
+    # The home page shows examples/website_sample.rs and its stdout from
+    # docs/app/data/regex-sample.json. The script reruns the example and fails
+    # when the committed artifact no longer matches its source or its output.
+    # It needs Rust for the example and Node for the script, so it is neither
+    # in the Rust matrix nor in the Node-only docs-format job. Regenerate the
+    # artifact with `pnpm sample:write` in docs/.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Check the committed sample against the example
+        run: node docs/scripts/render-regex-sample.mjs --check
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          arguments: --all-features --locked
+
+  readme-family:
+    name: README themes
+    runs-on: ubuntu-latest
+    # Native composition checks both shared frames and the project content.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          version: 2026.10.10
+          install_args: --locked
+      - name: Check the generated README
+        run: ./scripts/readme-family.sh check
+      - name: Check the README figures against the tree
+        run: ./scripts/check-readme-figures.sh
+
+  docs-format:
+    name: Docs format
+    runs-on: ubuntu-latest
+    # The documentation site is a declared Node workspace with the org's
+    # managed oxfmt configuration, so its formatting is checked here rather
+    # than only on the developer's machine. Node only -- it never builds the
+    # crate, which is why it stays outside the Rust matrix.
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: docs/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint documentation
+        run: pnpm lint
+      - name: Typecheck documentation
+        run: pnpm typecheck
+      - name: Check formatting
+        run: pnpm format:check
+      - name: Build documentation
+        run: pnpm build
+        # Ferriki retired the legacy asset CDN routes (ferriki#269) that the
+        # pinned ferromark still downloads from; its pinned GitHub files serve
+        # the same content until that dependency adopts immutable assets.
+        env:
+          FERRIKI_ASSETS_BASE_URL: https://raw.githubusercontent.com/sebastian-software/ferriki
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    # rust-toolchain.toml pins the local default toolchain; RUSTUP_TOOLCHAIN
+    # keeps the toolchain this job asks for in charge.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt -- --check
+      # The fuzz harness is its own workspace, so it needs its own invocation.
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+      - name: Check that workflow actions are pinned by SHA
+        run: ./scripts/check-workflow-pins.sh
+
+  standards:
+    name: standards drift
+    runs-on: ubuntu-latest
+    # Reports drift from @sebastian-software/standards. Node only -- it never
+    # builds the crate, which is why it stays outside the Rust matrix.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Guard: agent step not yet completed for this PR"
+        run: test ! -f .standards/pending.json
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          # This repository has no root package.json to read `packageManager`
+          # from, so the pnpm version is spelled out here.
+          version: 12.11.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      # A Rust-only repository has no lockfile to pin the CLI in, so the
+      # version is pinned here and Renovate's regex manager in renovate.json
+      # moves it. An unpinned `dlx` would execute whatever was published
+      # minutes ago, with the job's token.
+      #
+      # minimum-release-age=0 stays: pnpm 11 defaults minimumReleaseAge to 1440
+      # (24h), so without the bypass a pin that was raised on the day of a
+      # standards release cannot resolve at all.
+      - run: pnpm --config.minimum-release-age=0 dlx @sebastian-software/standards@0.13.0 check

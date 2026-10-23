@@ -1,0 +1,1897 @@
+//! Port of `unicode.c`: Unicode character properties, case folding, and related
+//! functions.
+
+// The data tables (case folding, code ranges, grapheme cluster and word
+// boundaries) are generated from the pinned Unicode Character Database by
+// scripts/gen_unicode_tables.py and live in the sibling *_data.rs modules.
+
+// The generated break classes are named after the Unicode property values (CR,
+// LF, ZWJ, LVT, ...), so the acronym lint does not apply to them.
+#[allow(clippy::upper_case_acronyms)]
+mod egcb_data;
+mod fold_data;
+mod property_data;
+#[allow(clippy::upper_case_acronyms)]
+mod wb_data;
+
+use crate::oniguruma::*;
+use crate::regenc::*;
+use egcb_data::{EGCB_RANGES, EgcbType};
+use fold_data::*;
+use property_data::{
+    CODE_RANGES, CODE_RANGES_NUM, PROP_INDEX_EXTENDEDPICTOGRAPHIC, PROPERTY_NAMES,
+};
+use std::collections::HashMap;
+use wb_data::{WB_RANGES, WbType};
+
+// === Unicode ISO 8859-1 Ctype Table ===
+// From unicode.c: EncUNICODE_ISO_8859_1_CtypeTable[256]
+// Used by onigenc_unicode_is_code_ctype for code < 256.
+
+pub(crate) static ENC_UNICODE_ISO_8859_1_CTYPE_TABLE: [u16; 256] = [
+    0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x428c, 0x4289, 0x4288,
+    0x4288, 0x4288, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008,
+    0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4008, 0x4284, 0x41a0, 0x41a0, 0x41a0,
+    0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0,
+    0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x78b0, 0x41a0, 0x41a0,
+    0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x7ca2, 0x7ca2, 0x7ca2, 0x7ca2, 0x7ca2, 0x7ca2, 0x74a2,
+    0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2,
+    0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x74a2, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x51a0,
+    0x41a0, 0x78e2, 0x78e2, 0x78e2, 0x78e2, 0x78e2, 0x78e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2,
+    0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2, 0x70e2,
+    0x70e2, 0x70e2, 0x70e2, 0x41a0, 0x41a0, 0x41a0, 0x41a0, 0x4008, 0x0008, 0x0008, 0x0008, 0x0008,
+    0x0008, 0x0288, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008,
+    0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008, 0x0008,
+    0x0008, 0x0008, 0x0008, 0x0008, 0x0284, 0x01a0, 0x01a0, 0x01a0, 0x01a0, 0x01a0, 0x01a0, 0x01a0,
+    0x01a0, 0x01a0, 0x30e2, 0x01a0, 0x01a0, 0x00a8, 0x01a0, 0x01a0, 0x01a0, 0x01a0, 0x10a0, 0x10a0,
+    0x01a0, 0x30e2, 0x01a0, 0x01a0, 0x01a0, 0x10a0, 0x30e2, 0x01a0, 0x10a0, 0x10a0, 0x10a0, 0x01a0,
+    0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2,
+    0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x01a0,
+    0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x34a2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2,
+    0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2,
+    0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x30e2, 0x01a0, 0x30e2, 0x30e2, 0x30e2, 0x30e2,
+    0x30e2, 0x30e2, 0x30e2, 0x30e2,
+];
+
+// === Unicode Case Fold Lookup Helpers ===
+
+/// Binary search on UNFOLD_KEY: code -> (index, fold_len) or None.
+/// Port of onigenc_unicode_unfold_key (gperf hash in C).
+fn unfold_key(code: OnigCodePoint) -> Option<(usize, usize)> {
+    UNFOLD_KEY
+        .binary_search_by_key(&code, |&(c, _, _)| c)
+        .ok()
+        .map(|i| (UNFOLD_KEY[i].1 as usize, UNFOLD_KEY[i].2 as usize))
+}
+
+/// Binary search on FOLD1_KEY: fold codepoint -> index into UNICODE_FOLDS1.
+fn fold1_key(code: OnigCodePoint) -> Option<usize> {
+    FOLD1_KEY
+        .binary_search_by_key(&code, |&(c, _)| c)
+        .ok()
+        .map(|i| FOLD1_KEY[i].1 as usize)
+}
+
+/// Binary search on FOLD2_KEY: (cp1, cp2) -> index into UNICODE_FOLDS2.
+fn fold2_key(codes: &[OnigCodePoint]) -> Option<usize> {
+    let key = [codes[0], codes[1]];
+    FOLD2_KEY
+        .binary_search_by_key(&key, |&(k, _)| k)
+        .ok()
+        .map(|i| FOLD2_KEY[i].1 as usize)
+}
+
+/// Binary search on FOLD3_KEY: (cp1, cp2, cp3) -> index into UNICODE_FOLDS3.
+fn fold3_key(codes: &[OnigCodePoint]) -> Option<usize> {
+    let key = [codes[0], codes[1], codes[2]];
+    FOLD3_KEY
+        .binary_search_by_key(&key, |&(k, _)| k)
+        .ok()
+        .map(|i| FOLD3_KEY[i].1 as usize)
+}
+
+// FOLDS accessor helpers (port of C macros from regenc.h)
+#[inline]
+fn folds1_fold(i: usize) -> OnigCodePoint {
+    UNICODE_FOLDS1[i]
+}
+#[inline]
+fn folds1_unfolds_num(i: usize) -> usize {
+    UNICODE_FOLDS1[i + 1] as usize
+}
+#[inline]
+fn folds1_unfolds(i: usize) -> &'static [u32] {
+    let n = folds1_unfolds_num(i);
+    &UNICODE_FOLDS1[i + 2..i + 2 + n]
+}
+#[inline]
+fn folds1_next(i: usize) -> usize {
+    i + 2 + folds1_unfolds_num(i)
+}
+
+#[inline]
+fn folds2_fold(i: usize) -> &'static [u32] {
+    &UNICODE_FOLDS2[i..i + 2]
+}
+#[inline]
+fn folds2_unfolds_num(i: usize) -> usize {
+    UNICODE_FOLDS2[i + 2] as usize
+}
+#[inline]
+fn folds2_unfolds(i: usize) -> &'static [u32] {
+    let n = folds2_unfolds_num(i);
+    &UNICODE_FOLDS2[i + 3..i + 3 + n]
+}
+#[inline]
+fn folds2_next(i: usize) -> usize {
+    i + 3 + folds2_unfolds_num(i)
+}
+
+#[inline]
+fn folds3_fold(i: usize) -> &'static [u32] {
+    &UNICODE_FOLDS3[i..i + 3]
+}
+#[inline]
+fn folds3_unfolds_num(i: usize) -> usize {
+    UNICODE_FOLDS3[i + 3] as usize
+}
+#[inline]
+fn folds3_unfolds(i: usize) -> &'static [u32] {
+    let n = folds3_unfolds_num(i);
+    &UNICODE_FOLDS3[i + 4..i + 4 + n]
+}
+#[inline]
+fn folds3_next(i: usize) -> usize {
+    i + 4 + folds3_unfolds_num(i)
+}
+
+/// Get the fold address for a given (index, fold_len) from unfold_key lookup.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn folds_fold_addr(index: usize, fold_len: usize) -> &'static [u32] {
+    match fold_len {
+        1 => &UNICODE_FOLDS1[index..index + 1],
+        2 => &UNICODE_FOLDS2[index..index + 2],
+        3 => &UNICODE_FOLDS3[index..index + 3],
+        _ => &[],
+    }
+}
+
+// === Inverted Case Fold Helpers ===
+// Used by regparse to iterate CClass members and look up their fold variants,
+// instead of iterating all 4299 fold entries via apply_all_case_fold.
+
+/// Look up the fold group for a single codepoint (fold_len=1 only).
+/// Returns (fold_target, unfolds_slice) regardless of whether `code` is
+/// the fold target or one of its unfolds.
+/// Returns None if the codepoint doesn't participate in any single-char fold.
+#[inline]
+pub(crate) fn case_fold_group_1(code: OnigCodePoint) -> Option<(OnigCodePoint, &'static [u32])> {
+    // Check if code is an unfold (e.g., 'A' → maps to the a/A group)
+    if let Some((index, fold_len)) = unfold_key(code) {
+        if fold_len == 1 {
+            return Some((folds1_fold(index), folds1_unfolds(index)));
+        }
+        // fold_len 2 or 3: multi-char fold, handled separately
+        return None;
+    }
+    // Check if code is a fold target (e.g., 'a' → maps to the a/A group)
+    if let Some(index) = fold1_key(code) {
+        return Some((folds1_fold(index), folds1_unfolds(index)));
+    }
+    None
+}
+
+/// The other members of the single-char fold group whose fold target is
+/// `code`, or None when `code` is not a fold target. C:
+/// `onigenc_unicode_fold1_key` and `FOLDS1_UNFOLDS`.
+#[inline]
+pub(crate) fn fold1_unfolds(code: OnigCodePoint) -> Option<&'static [u32]> {
+    fold1_key(code).map(folds1_unfolds)
+}
+
+/// Find UNFOLD_KEY entries with codepoints in [lo, hi].
+/// Returns a slice of (codepoint, folds1_index, fold_len) tuples.
+#[inline]
+pub(crate) fn unfold_key_range(lo: OnigCodePoint, hi: OnigCodePoint) -> &'static [(u32, i16, u8)] {
+    let start = UNFOLD_KEY.partition_point(|&(c, _, _)| c < lo);
+    let end = UNFOLD_KEY.partition_point(|&(c, _, _)| c <= hi);
+    &UNFOLD_KEY[start..end]
+}
+
+/// Find FOLD1_KEY entries with codepoints in [lo, hi].
+/// Returns a slice of (codepoint, folds1_index) tuples.
+#[inline]
+pub(crate) fn fold1_key_range(lo: OnigCodePoint, hi: OnigCodePoint) -> &'static [(u32, u16)] {
+    let start = FOLD1_KEY.partition_point(|&(c, _)| c < lo);
+    let end = FOLD1_KEY.partition_point(|&(c, _)| c <= hi);
+    &FOLD1_KEY[start..end]
+}
+
+/// Call `f(fold_target, unfolds)` once for every single-char fold group with
+/// at least one member (target or unfold) inside `ranges`, which must be
+/// sorted and disjoint like a character class's code range buffer.
+///
+/// Every group member is indexed by exactly one of FOLD1_KEY (fold targets)
+/// and UNFOLD_KEY (unfolds with a single-char fold); both are sorted by code
+/// point and point at the member's group. A range therefore yields its
+/// members with two binary searches, instead of testing every group against
+/// the class as `for_each_folds1_group` would require.
+pub(crate) fn for_each_folds1_group_in_ranges(
+    ranges: &[(OnigCodePoint, OnigCodePoint)],
+    mut f: impl FnMut(OnigCodePoint, &[u32]),
+) {
+    // Group indices are offsets below FOLDS1_END_INDEX. A bitset over them
+    // dedups and orders the groups without sorting what `\w`-sized classes
+    // collect (thousands of indices).
+    let mut groups = [0u64; FOLDS1_END_INDEX.div_ceil(64)];
+    let mut mark = |index: usize| groups[index / 64] |= 1 << (index % 64);
+    for &(lo, hi) in ranges {
+        for &(_, index, fold_len) in unfold_key_range(lo, hi) {
+            if fold_len == 1 {
+                mark(index as usize);
+            }
+        }
+        for &(_, index) in fold1_key_range(lo, hi) {
+            mark(index as usize);
+        }
+    }
+    for (word_at, &word) in groups.iter().enumerate() {
+        let mut bits = word;
+        while bits != 0 {
+            let index = word_at * 64 + bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            f(folds1_fold(index), folds1_unfolds(index));
+        }
+    }
+}
+
+/// Iterate all FOLDS1 entries, calling `f(fold_target, unfolds)` for each group.
+/// Respects the ascii_only flag by stopping early when fold >= 128.
+pub(crate) fn for_each_folds1_group(
+    flag: OnigCaseFoldType,
+    mut f: impl FnMut(OnigCodePoint, &[u32]),
+) {
+    let ascii_only = case_fold_is_ascii_only(flag);
+    let mut i = 0;
+    while i < FOLDS1_NORMAL_END_INDEX {
+        let fold = folds1_fold(i);
+        if ascii_only && fold >= 128 {
+            break;
+        }
+        let unfolds = folds1_unfolds(i);
+        f(fold, unfolds);
+        i = folds1_next(i);
+    }
+    // Locale entries (always processed for non-Turkish)
+    let mut i = FOLDS1_NORMAL_END_INDEX;
+    while i < FOLDS1_END_INDEX {
+        let fold = folds1_fold(i);
+        if ascii_only && fold >= 128 {
+            break;
+        }
+        let unfolds = folds1_unfolds(i);
+        f(fold, unfolds);
+        i = folds1_next(i);
+    }
+}
+
+/// Iterate all FOLDS2 entries, calling `f` for each group.
+/// `f` receives (fold: &[u32], unfolds: &[u32]).
+/// Only called when MULTI_CHAR flag is set in `flag`.
+pub(crate) fn for_each_folds2_group(flag: OnigCaseFoldType, mut f: impl FnMut(&[u32], &[u32])) {
+    if (flag & INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR) == 0 {
+        return;
+    }
+    let mut i = 0;
+    while i < FOLDS2_END_INDEX {
+        let fold = folds2_fold(i);
+        let unfolds = folds2_unfolds(i);
+        f(fold, unfolds);
+        i = folds2_next(i);
+    }
+}
+
+/// Iterate all FOLDS3 entries, calling `f` for each group.
+/// `f` receives (fold: &[u32], unfolds: &[u32]).
+/// Only called when MULTI_CHAR flag is set in `flag`.
+pub(crate) fn for_each_folds3_group(flag: OnigCaseFoldType, mut f: impl FnMut(&[u32], &[u32])) {
+    if (flag & INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR) == 0 {
+        return;
+    }
+    let mut i = 0;
+    while i < FOLDS3_END_INDEX {
+        let fold = folds3_fold(i);
+        let unfolds = folds3_unfolds(i);
+        f(fold, unfolds);
+        i = folds3_next(i);
+    }
+}
+
+// === Unicode Case Fold Functions ===
+
+/// Case fold a multibyte character using Unicode rules.
+/// Port of onigenc_unicode_mbc_case_fold from unicode.c lines 79-134
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn onigenc_unicode_mbc_case_fold(
+    enc: &dyn Encoding,
+    flag: OnigCaseFoldType,
+    pp: &mut usize,
+    end: usize,
+    data: &[u8],
+    fold: &mut [u8],
+) -> i32 {
+    // `end` is absolute while `mbc_to_code` takes a limit relative to the
+    // slice start. C decodes against `end` here, so a character straddling it
+    // (e.g. at the end of a backreference span) is truncated, not read whole.
+    let code = enc.mbc_to_code(&data[*pp..], end.saturating_sub(*pp));
+    // C advances by the declared character length even when a truncated
+    // character ends the buffer, and then reads past it; stop at the buffer.
+    let len = enc.mbc_enc_len(&data[*pp..]).min(data.len() - *pp);
+    let p_start = *pp;
+    *pp += len;
+
+    if case_fold_is_not_ascii_only(flag) || code < 128 {
+        if let Some((index, fold_len)) = unfold_key(code) {
+            if fold_len == 1 {
+                let fold_code = folds1_fold(index);
+                if case_fold_is_not_ascii_only(flag) || fold_code < 128 {
+                    return enc.code_to_mbc(fold_code, fold);
+                }
+            } else {
+                // Multi-char fold (fold_len == 2 or 3)
+                let addr = folds_fold_addr(index, fold_len);
+                let mut rlen = 0i32;
+                for code in addr.iter().take(fold_len) {
+                    let l = enc.code_to_mbc(*code, &mut fold[rlen as usize..]);
+                    rlen += l;
+                }
+                return rlen;
+            }
+        }
+    }
+
+    // No fold found: copy original bytes unchanged
+    fold[..len].copy_from_slice(&data[p_start..(len + p_start)]);
+    len as i32
+}
+
+/// Apply case fold pairs for FOLDS1 entries in range [from..to).
+/// Port of apply_case_fold1 from unicode.c lines 136-174
+fn apply_case_fold1(
+    flag: OnigCaseFoldType,
+    from: usize,
+    to: usize,
+    f: &mut dyn FnMut(OnigCodePoint, &[OnigCodePoint]) -> i32,
+) -> i32 {
+    let mut i = from;
+    while i < to {
+        let fold = folds1_fold(i);
+        if case_fold_is_ascii_only(flag) && fold >= 128 {
+            break;
+        }
+        let unfolds = folds1_unfolds(i);
+        for (j, &uf) in unfolds.iter().enumerate() {
+            if case_fold_is_ascii_only(flag) && uf >= 128 {
+                continue;
+            }
+            // fold -> unfold
+            let r = f(fold, &[uf]);
+            if r != 0 {
+                return r;
+            }
+            // unfold -> fold
+            let r = f(uf, &[fold]);
+            if r != 0 {
+                return r;
+            }
+            // pair each unfold with previously seen unfolds
+            for &uf2 in unfolds.iter().take(j) {
+                if case_fold_is_ascii_only(flag) && uf2 >= 128 {
+                    continue;
+                }
+                let r = f(uf, &[uf2]);
+                if r != 0 {
+                    return r;
+                }
+                let r = f(uf2, &[uf]);
+                if r != 0 {
+                    return r;
+                }
+            }
+        }
+        i = folds1_next(i);
+    }
+    0
+}
+
+/// Apply case fold pairs for FOLDS2 entries in range [from..to).
+/// Port of apply_case_fold2 from unicode.c lines 176-203
+fn apply_case_fold2(
+    from: usize,
+    to: usize,
+    f: &mut dyn FnMut(OnigCodePoint, &[OnigCodePoint]) -> i32,
+) -> i32 {
+    let mut i = from;
+    while i < to {
+        let fold = folds2_fold(i);
+        let unfolds = folds2_unfolds(i);
+        for (j, &uf) in unfolds.iter().enumerate() {
+            // unfold -> fold (multi-char)
+            let r = f(uf, fold);
+            if r != 0 {
+                return r;
+            }
+            // pair with previously seen unfolds
+            for &uf2 in unfolds.iter().take(j) {
+                let r = f(uf, &[uf2]);
+                if r != 0 {
+                    return r;
+                }
+                let r = f(uf2, &[uf]);
+                if r != 0 {
+                    return r;
+                }
+            }
+        }
+        i = folds2_next(i);
+    }
+    0
+}
+
+/// Apply case fold pairs for FOLDS3 entries in range [from..to).
+/// Port of apply_case_fold3 from unicode.c lines 205-232
+fn apply_case_fold3(
+    from: usize,
+    to: usize,
+    f: &mut dyn FnMut(OnigCodePoint, &[OnigCodePoint]) -> i32,
+) -> i32 {
+    let mut i = from;
+    while i < to {
+        let fold = folds3_fold(i);
+        let unfolds = folds3_unfolds(i);
+        for (j, &uf) in unfolds.iter().enumerate() {
+            let r = f(uf, fold);
+            if r != 0 {
+                return r;
+            }
+            for &uf2 in unfolds.iter().take(j) {
+                let r = f(uf, &[uf2]);
+                if r != 0 {
+                    return r;
+                }
+                let r = f(uf2, &[uf]);
+                if r != 0 {
+                    return r;
+                }
+            }
+        }
+        i = folds3_next(i);
+    }
+    0
+}
+
+/// Apply all Unicode case fold pairs.
+/// Port of onigenc_unicode_apply_all_case_fold from unicode.c lines 234-286
+pub(crate) fn onigenc_unicode_apply_all_case_fold(
+    flag: OnigCaseFoldType,
+    f: &mut dyn FnMut(OnigCodePoint, &[OnigCodePoint]) -> i32,
+) -> i32 {
+    // Normal FOLDS1 entries
+    let mut r = apply_case_fold1(flag, 0, FOLDS1_NORMAL_END_INDEX, f);
+    if r != 0 {
+        return r;
+    }
+
+    // Locale entries (non-Turkish: include all)
+    r = apply_case_fold1(flag, FOLDS1_NORMAL_END_INDEX, FOLDS1_END_INDEX, f);
+    if r != 0 {
+        return r;
+    }
+
+    // Multi-char folds only if MULTI_CHAR flag is set
+    if (flag & INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR) == 0 {
+        return 0;
+    }
+
+    r = apply_case_fold2(0, FOLDS2_NORMAL_END_INDEX, f);
+    if r != 0 {
+        return r;
+    }
+    r = apply_case_fold2(FOLDS2_NORMAL_END_INDEX, FOLDS2_END_INDEX, f);
+    if r != 0 {
+        return r;
+    }
+
+    r = apply_case_fold3(0, FOLDS3_NORMAL_END_INDEX, f);
+    if r != 0 {
+        return r;
+    }
+
+    0
+}
+
+/// Get case fold code items for a string.
+/// Port of onigenc_unicode_get_case_fold_codes_by_str from unicode.c lines 288-585
+pub(crate) fn onigenc_unicode_get_case_fold_codes_by_str(
+    enc: &dyn Encoding,
+    flag: OnigCaseFoldType,
+    p: &[u8],
+    _end: usize,
+    items: &mut [OnigCaseFoldCodeItem],
+) -> i32 {
+    let remaining = p.len(); // use slice length, not end parameter
+    let mut n = 0usize; // number of items accumulated
+
+    let code = enc.mbc_to_code(p, remaining);
+    if case_fold_is_ascii_only(flag) && code >= 128 {
+        return 0;
+    }
+    let len0 = enc.mbc_enc_len(p);
+    let mut orig_codes = [0u32; 3];
+    let mut codes = [0u32; 3];
+    let mut lens = [0usize; 3]; // cumulative byte lengths
+
+    orig_codes[0] = code;
+    lens[0] = len0;
+
+    // Get canonical form of first codepoint
+    let buk1 = unfold_key(orig_codes[0]);
+    if let Some((index, fold_len)) = buk1 {
+        if fold_len == 1 {
+            codes[0] = folds1_fold(index);
+        } else {
+            codes[0] = orig_codes[0];
+        }
+    } else {
+        codes[0] = orig_codes[0];
+    }
+
+    // Multi-char fold handling
+    if (flag & INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR) == 0 {
+        // Skip multi-char, go directly to fold1
+    } else if len0 < remaining {
+        let p1 = &p[len0..];
+        let code1 = enc.mbc_to_code(p1, p1.len());
+        orig_codes[1] = code1;
+        let len1 = enc.mbc_enc_len(p1);
+        lens[1] = lens[0] + len1;
+
+        if let Some((idx, fl)) = unfold_key(orig_codes[1]) {
+            if fl == 1 {
+                codes[1] = folds1_fold(idx);
+            } else {
+                codes[1] = orig_codes[1];
+            }
+        } else {
+            codes[1] = orig_codes[1];
+        }
+
+        // Try 3-char fold
+        if lens[1] < remaining {
+            let p2 = &p[lens[1]..];
+            let code2 = enc.mbc_to_code(p2, p2.len());
+            orig_codes[2] = code2;
+            let len2 = enc.mbc_enc_len(p2);
+            lens[2] = lens[1] + len2;
+
+            if let Some((idx, fl)) = unfold_key(orig_codes[2]) {
+                if fl == 1 {
+                    codes[2] = folds1_fold(idx);
+                } else {
+                    codes[2] = orig_codes[2];
+                }
+            } else {
+                codes[2] = orig_codes[2];
+            }
+
+            if let Some(index) = fold3_key(&codes) {
+                // Add single-codepoint unfolds
+                let unfolds = folds3_unfolds(index);
+                for uf in unfolds {
+                    items[n].byte_len = lens[2] as i32;
+                    items[n].code_len = 1;
+                    items[n].code[0] = *uf;
+                    n += 1;
+                }
+
+                // Build variant combinations at each position
+                let mut cs = [[0u32; 4]; 3];
+                let mut ncs = [0usize; 3];
+                let fold3 = folds3_fold(index);
+                for fn_idx in 0..3 {
+                    cs[fn_idx][0] = fold3[fn_idx];
+                    ncs[fn_idx] = 1;
+                    if let Some(sidx) = fold1_key(cs[fn_idx][0]) {
+                        let sunfolds = folds1_unfolds(sidx);
+                        for (si, &su) in sunfolds.iter().enumerate() {
+                            cs[fn_idx][si + 1] = su;
+                        }
+                        ncs[fn_idx] += sunfolds.len();
+                    }
+                }
+
+                for i in 0..ncs[0] {
+                    for j in 0..ncs[1] {
+                        for k in 0..ncs[2] {
+                            if cs[0][i] == orig_codes[0]
+                                && cs[1][j] == orig_codes[1]
+                                && cs[2][k] == orig_codes[2]
+                            {
+                                continue;
+                            }
+                            items[n].byte_len = lens[2] as i32;
+                            items[n].code_len = 3;
+                            items[n].code[0] = cs[0][i];
+                            items[n].code[1] = cs[1][j];
+                            items[n].code[2] = cs[2][k];
+                            n += 1;
+                        }
+                    }
+                }
+                return n as i32;
+            }
+        }
+
+        // Try 2-char fold
+        if let Some(index) = fold2_key(&codes) {
+            let unfolds = folds2_unfolds(index);
+            for uf in unfolds {
+                items[n].byte_len = lens[1] as i32;
+                items[n].code_len = 1;
+                items[n].code[0] = *uf;
+                n += 1;
+            }
+
+            let mut cs = [[0u32; 4]; 2];
+            let mut ncs = [0usize; 2];
+            let fold2 = folds2_fold(index);
+            for fn_idx in 0..2 {
+                cs[fn_idx][0] = fold2[fn_idx];
+                ncs[fn_idx] = 1;
+                if let Some(sidx) = fold1_key(cs[fn_idx][0]) {
+                    let sunfolds = folds1_unfolds(sidx);
+                    for (si, &su) in sunfolds.iter().enumerate() {
+                        cs[fn_idx][si + 1] = su;
+                    }
+                    ncs[fn_idx] += sunfolds.len();
+                }
+            }
+
+            for i in 0..ncs[0] {
+                for j in 0..ncs[1] {
+                    if cs[0][i] == orig_codes[0] && cs[1][j] == orig_codes[1] {
+                        continue;
+                    }
+                    items[n].byte_len = lens[1] as i32;
+                    items[n].code_len = 2;
+                    items[n].code[0] = cs[0][i];
+                    items[n].code[1] = cs[1][j];
+                    n += 1;
+                }
+            }
+            return n as i32;
+        }
+    }
+
+    // === Single-char fold handling (fold1) ===
+    if let Some((buk_index, buk_fold_len)) = buk1 {
+        if buk_fold_len == 1 {
+            // Input has a 1-to-1 fold
+            let fold_code = folds1_fold(buk_index);
+            if case_fold_is_not_ascii_only(flag) || fold_code < 128 {
+                items[n].byte_len = lens[0] as i32;
+                items[n].code_len = 1;
+                items[n].code[0] = fold_code;
+                n += 1;
+            }
+            // Add all unfold variants (excluding the original)
+            let unfolds = folds1_unfolds(buk_index);
+            for &uf in unfolds {
+                if uf != orig_codes[0] && (case_fold_is_not_ascii_only(flag) || uf < 128) {
+                    items[n].byte_len = lens[0] as i32;
+                    items[n].code_len = 1;
+                    items[n].code[0] = uf;
+                    n += 1;
+                }
+            }
+        } else if (flag & INTERNAL_ONIGENC_CASE_FOLD_MULTI_CHAR) != 0 {
+            // Input codepoint is itself a multi-char fold target (e.g., sharp-s -> "ss")
+            if buk_fold_len == 2 {
+                // Add other single-codepoint unfolds
+                let unfolds = folds2_unfolds(buk_index);
+                for &uf in unfolds {
+                    if uf == orig_codes[0] {
+                        continue;
+                    }
+                    items[n].byte_len = lens[0] as i32;
+                    items[n].code_len = 1;
+                    items[n].code[0] = uf;
+                    n += 1;
+                }
+                // Build 2-char variant combinations
+                let mut cs = [[0u32; 4]; 2];
+                let mut ncs = [0usize; 2];
+                let fold2 = folds2_fold(buk_index);
+                for fn_idx in 0..2 {
+                    cs[fn_idx][0] = fold2[fn_idx];
+                    ncs[fn_idx] = 1;
+                    if let Some(sidx) = fold1_key(cs[fn_idx][0]) {
+                        let sunfolds = folds1_unfolds(sidx);
+                        for (si, &su) in sunfolds.iter().enumerate() {
+                            cs[fn_idx][si + 1] = su;
+                        }
+                        ncs[fn_idx] += sunfolds.len();
+                    }
+                }
+                for i in 0..ncs[0] {
+                    for j in 0..ncs[1] {
+                        items[n].byte_len = lens[0] as i32;
+                        items[n].code_len = 2;
+                        items[n].code[0] = cs[0][i];
+                        items[n].code[1] = cs[1][j];
+                        n += 1;
+                    }
+                }
+            } else if buk_fold_len == 3 {
+                let unfolds = folds3_unfolds(buk_index);
+                for &uf in unfolds {
+                    if uf == orig_codes[0] {
+                        continue;
+                    }
+                    items[n].byte_len = lens[0] as i32;
+                    items[n].code_len = 1;
+                    items[n].code[0] = uf;
+                    n += 1;
+                }
+                let mut cs = [[0u32; 4]; 3];
+                let mut ncs = [0usize; 3];
+                let fold3 = folds3_fold(buk_index);
+                for fn_idx in 0..3 {
+                    cs[fn_idx][0] = fold3[fn_idx];
+                    ncs[fn_idx] = 1;
+                    if let Some(sidx) = fold1_key(cs[fn_idx][0]) {
+                        let sunfolds = folds1_unfolds(sidx);
+                        for (si, &su) in sunfolds.iter().enumerate() {
+                            cs[fn_idx][si + 1] = su;
+                        }
+                        ncs[fn_idx] += sunfolds.len();
+                    }
+                }
+                for i in 0..ncs[0] {
+                    for j in 0..ncs[1] {
+                        for k in 0..ncs[2] {
+                            items[n].byte_len = lens[0] as i32;
+                            items[n].code_len = 3;
+                            items[n].code[0] = cs[0][i];
+                            items[n].code[1] = cs[1][j];
+                            items[n].code[2] = cs[2][k];
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Input is already a canonical fold form — look it up as a fold1 key
+        if let Some(index) = fold1_key(orig_codes[0]) {
+            let unfolds = folds1_unfolds(index);
+            for &uf in unfolds {
+                if case_fold_is_not_ascii_only(flag) || uf < 128 {
+                    items[n].byte_len = lens[0] as i32;
+                    items[n].code_len = 1;
+                    items[n].code[0] = uf;
+                    n += 1;
+                }
+            }
+        }
+    }
+
+    n as i32
+}
+
+// === User-Defined Unicode Properties ===
+// Port of C's UserDefinedPropertyValue + onig_unicode_define_user_property
+
+use std::sync::Mutex;
+
+/// Maximum number of user-defined properties (matches C's USER_DEFINED_PROPERTY_MAX_NUM).
+const USER_DEFINED_PROPERTY_MAX_NUM: usize = 32;
+
+struct UserProperty {
+    /// Normalized name (lowercase, no spaces/hyphens/underscores).
+    name: Vec<u8>,
+    /// Code point ranges in [start, end, start, end, ...] pair format.
+    ranges: Vec<OnigCodePoint>,
+}
+
+static USER_DEFINED_PROPERTIES: Mutex<Vec<UserProperty>> = Mutex::new(Vec::new());
+
+#[cfg(feature = "precompiled")]
+pub(crate) fn precompiled_user_properties() -> Vec<(Vec<u8>, Vec<u32>)> {
+    USER_DEFINED_PROPERTIES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|p| (p.name.clone(), p.ranges.clone()))
+        .collect()
+}
+
+/// Normalize a property name: strip spaces/hyphens/underscores, lowercase.
+/// Returns None if the name contains non-ASCII bytes or exceeds buffer size.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn normalize_property_name(name: &[u8]) -> Option<Vec<u8>> {
+    let mut buf = Vec::with_capacity(name.len());
+    for &b in name {
+        if b == b' ' || b == b'-' || b == b'_' {
+            continue;
+        }
+        if b >= 0x80 {
+            return None;
+        }
+        buf.push(b.to_ascii_lowercase());
+    }
+    if buf.is_empty() {
+        return None;
+    }
+    Some(buf)
+}
+
+/// Register a user-defined Unicode property with associated code point ranges.
+/// Ranges should be in `[start, end, start, end, ...]` pair format.
+/// Returns `Ok(())` on success, or `Err(error_code)` on failure.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn onig_unicode_define_user_property(name: &[u8], ranges: &[OnigCodePoint]) -> Result<(), i32> {
+    let normalized = normalize_property_name(name).ok_or(ONIGERR_INVALID_CHAR_PROPERTY_NAME)?;
+
+    let mut props = USER_DEFINED_PROPERTIES.lock().unwrap();
+
+    // Check for duplicate
+    for prop in props.iter() {
+        if prop.name == normalized {
+            return Err(ONIGERR_INVALID_CHAR_PROPERTY_NAME);
+        }
+    }
+
+    if props.len() >= USER_DEFINED_PROPERTY_MAX_NUM {
+        return Err(ONIGERR_TOO_MANY_USER_DEFINED_OBJECTS);
+    }
+
+    props.push(UserProperty {
+        name: normalized,
+        ranges: ranges.to_vec(),
+    });
+
+    Ok(())
+}
+
+// === Unicode Property Functions ===
+
+/// Convert Unicode property name to ctype.
+/// Port of onigenc_unicode_property_name_to_ctype from unicode.c
+pub(crate) fn onigenc_unicode_property_name_to_ctype(p: &[u8]) -> i32 {
+    // Normalize: strip spaces/hyphens/underscores, lowercase
+    let mut buf = [0u8; 128];
+    let mut len = 0;
+    for &b in p {
+        if b == b' ' || b == b'-' || b == b'_' {
+            continue;
+        }
+        if b >= 0x80 {
+            return ONIGERR_INVALID_CHAR_PROPERTY_NAME;
+        }
+        if len >= buf.len() {
+            return ONIGERR_INVALID_CHAR_PROPERTY_NAME;
+        }
+        buf[len] = b.to_ascii_lowercase();
+        len += 1;
+    }
+    let key = &buf[..len];
+    // Binary search on sorted PROPERTY_NAMES
+    match PROPERTY_NAMES.binary_search_by_key(&key, |(name, _)| name.as_bytes()) {
+        Ok(idx) => PROPERTY_NAMES[idx].1 as i32,
+        Err(_) => {
+            // Check user-defined properties
+            if let Ok(props) = USER_DEFINED_PROPERTIES.lock() {
+                for (i, prop) in props.iter().enumerate() {
+                    if prop.name == key {
+                        return (CODE_RANGES_NUM + i) as i32;
+                    }
+                }
+            }
+            ONIGERR_INVALID_CHAR_PROPERTY_NAME
+        }
+    }
+}
+
+/// Check if code point is of the given Unicode ctype.
+/// Port of onigenc_unicode_is_code_ctype from unicode.c
+/// The end of the Basic Multilingual Plane.
+const BMP_END: OnigCodePoint = 0x1_0000;
+
+/// Tables with fewer ranges keep the binary search, which then takes at
+/// most four steps.
+const BMP_BITMAP_MIN_RANGES: usize = 16;
+
+/// A table's members below [`BMP_END`] as bits.
+type BmpBitmap = [u64; BMP_END as usize / 64];
+
+/// Rust-only (ADR-008): the BMP part of the code range table `ctype` as a
+/// bitmap, built on first use, for tables with at least
+/// [`BMP_BITMAP_MIN_RANGES`] ranges. `\w` over non-ASCII text asks this for
+/// every character, and its binary search over hundreds of ranges took
+/// about a quarter of such a search. Each bitmap takes 8 KiB, only for
+/// tables a process queries.
+fn bmp_bitmap(ctype: usize, ranges: &[u32]) -> Option<&'static BmpBitmap> {
+    static BITMAPS: [std::sync::OnceLock<Option<Box<BmpBitmap>>>; CODE_RANGES_NUM] =
+        [const { std::sync::OnceLock::new() }; CODE_RANGES_NUM];
+    BITMAPS[ctype]
+        .get_or_init(|| {
+            (ranges.len() / 2 >= BMP_BITMAP_MIN_RANGES).then(|| {
+                let mut bits: Box<BmpBitmap> = Box::new([0; BMP_END as usize / 64]);
+                for &[from, to] in ranges.as_chunks::<2>().0 {
+                    for code in from..=to.min(BMP_END - 1) {
+                        bits[code as usize / 64] |= 1 << (code % 64);
+                    }
+                }
+                bits
+            })
+        })
+        .as_deref()
+}
+
+pub(crate) fn onigenc_unicode_is_code_ctype(code: OnigCodePoint, ctype: u32) -> bool {
+    if ctype <= ONIGENC_MAX_STD_CTYPE && code < 256 {
+        return (ENC_UNICODE_ISO_8859_1_CTYPE_TABLE[code as usize] & ctype_to_bit(ctype) as u16)
+            != 0;
+    }
+
+    if (ctype as usize) >= CODE_RANGES_NUM {
+        // Check user-defined properties
+        let user_idx = (ctype as usize) - CODE_RANGES_NUM;
+        if let Ok(props) = USER_DEFINED_PROPERTIES.lock() {
+            if user_idx < props.len() {
+                let ranges = &props[user_idx].ranges;
+                let n = ranges.len() / 2;
+                let mut low = 0usize;
+                let mut high = n;
+                while low < high {
+                    let mid = (low + high) / 2;
+                    if code > ranges[mid * 2 + 1] {
+                        low = mid + 1;
+                    } else {
+                        high = mid;
+                    }
+                }
+                return low < n && code >= ranges[low * 2];
+            }
+        }
+        return false;
+    }
+
+    // Binary search on code range pairs
+    let ranges = CODE_RANGES[ctype as usize];
+    if code < BMP_END {
+        if let Some(bits) = bmp_bitmap(ctype as usize, ranges) {
+            return bits[code as usize / 64] >> (code % 64) & 1 != 0;
+        }
+    }
+    let n = ranges.len() / 2;
+    let mut low = 0usize;
+    let mut high = n;
+    while low < high {
+        let mid = (low + high) / 2;
+        if code > ranges[mid * 2 + 1] {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low < n && code >= ranges[low * 2]
+}
+
+/// Get Unicode ctype code range.
+/// Port of onigenc_unicode_ctype_code_range from unicode.c
+pub(crate) fn onigenc_unicode_ctype_code_range(ctype: u32) -> Option<&'static [OnigCodePoint]> {
+    if (ctype as usize) >= CODE_RANGES_NUM {
+        // User-defined properties cannot return &'static references since they
+        // are dynamically allocated. Callers should use is_code_ctype instead.
+        return None;
+    }
+    Some(CODE_RANGES[ctype as usize])
+}
+
+// ============================================================================
+// Extended Grapheme Cluster Break (EGCB) algorithm
+// Port of onigenc_egcb_is_break_position from unicode.c
+// ============================================================================
+
+/// EGCB break result from two-character rule table
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EgcbBreakType {
+    NotBreak,
+    Break,
+    BreakUndefGB11,
+    BreakUndefRiRi,
+}
+
+/// The EGCB property of a code point: the two-stage table below Basic
+/// Multilingual Plane, the binary search above it.
+#[inline]
+fn egcb_get_type(code: u32) -> EgcbType {
+    if code < BMP_END {
+        return egcb_bmp_type(code);
+    }
+    egcb_get_type_search(code)
+}
+
+/// Rust-only (ADR-008): the EGCB property of the BMP as a two-stage table,
+/// derived on first use from [`EGCB_RANGES`] (ADR-015). The table keeps one
+/// block of 256 properties for each high byte that occurs, and the blocks
+/// that are equal are stored once: 256 bytes per block and one byte per high
+/// byte. A lookup is two loads. The binary search takes about eleven steps
+/// over the 1,392 ranges.
+struct EgcbBmpTable {
+    /// The index into `blocks` of the block for each high byte.
+    block_of_high: [u8; 256],
+    /// The distinct blocks; each holds the property of the 256 codes of one
+    /// high byte, by low byte.
+    blocks: Vec<[EgcbType; 256]>,
+}
+
+/// Rust-only (ADR-008): the BMP table, built on first use. See
+/// [`EgcbBmpTable`].
+fn egcb_bmp_table() -> &'static EgcbBmpTable {
+    static TABLE: std::sync::OnceLock<EgcbBmpTable> = std::sync::OnceLock::new();
+    TABLE.get_or_init(build_egcb_bmp_table)
+}
+
+fn build_egcb_bmp_table() -> EgcbBmpTable {
+    let mut block_of_high = [0u8; 256];
+    let mut blocks: Vec<[EgcbType; 256]> = Vec::new();
+    // A block is keyed by its discriminants, so that equal blocks hash alike.
+    let mut ids: HashMap<[u8; 256], u8> = HashMap::new();
+    // The first range that may reach the current block. EGCB_RANGES is sorted
+    // and disjoint, so the ranges pass through the blocks in order.
+    let mut next = 0;
+    for (high, slot) in block_of_high.iter_mut().enumerate() {
+        let first = (high as u32) << 8;
+        let last = first | 0xFF;
+        let mut block = [EgcbType::Other; 256];
+        while let Some(range) = EGCB_RANGES.get(next).filter(|range| range.start <= last) {
+            let from = range.start.max(first) - first;
+            let to = range.end.min(last) - first;
+            block[from as usize..=to as usize].fill(range.prop);
+            if range.end > last {
+                // The range goes on into the next block, which reads it again.
+                break;
+            }
+            next += 1;
+        }
+        let key = block.map(|prop| prop as u8);
+        *slot = *ids.entry(key).or_insert_with(|| {
+            blocks.push(block);
+            (blocks.len() - 1) as u8
+        });
+    }
+    EgcbBmpTable {
+        block_of_high,
+        blocks,
+    }
+}
+
+/// The EGCB property of a code point below [`BMP_END`], from the table.
+#[inline]
+fn egcb_bmp_type(code: u32) -> EgcbType {
+    let table = egcb_bmp_table();
+    let block = table.block_of_high[(code >> 8) as usize] as usize;
+    table.blocks[block][(code & 0xFF) as usize]
+}
+
+/// Binary search EGCB_RANGES for the EGCB type of a codepoint.
+fn egcb_get_type_search(code: u32) -> EgcbType {
+    let mut low: usize = 0;
+    let mut high: usize = EGCB_RANGES.len();
+    while low < high {
+        let x = (low + high) >> 1;
+        if code > EGCB_RANGES[x].end {
+            low = x + 1;
+        } else {
+            high = x;
+        }
+    }
+    if low < EGCB_RANGES.len() && code >= EGCB_RANGES[low].start {
+        EGCB_RANGES[low].prop
+    } else {
+        EgcbType::Other
+    }
+}
+
+#[inline]
+fn is_control_cr_lf(t: EgcbType) -> bool {
+    matches!(t, EgcbType::CR | EgcbType::LF | EgcbType::Control)
+}
+
+#[inline]
+fn is_hangul(t: EgcbType) -> bool {
+    matches!(
+        t,
+        EgcbType::L | EgcbType::LV | EgcbType::LVT | EgcbType::T | EgcbType::V
+    )
+}
+
+/// GB1/GB2 are handled outside. This applies GB3-GB13 two-char rules.
+fn unicode_egcb_is_break_2code(from_code: u32, to_code: u32) -> EgcbBreakType {
+    let from = egcb_get_type(from_code);
+    let to = egcb_get_type(to_code);
+
+    // Short cut: both Other
+    if from == EgcbType::Other && to == EgcbType::Other {
+        return EgcbBreakType::Break; // GB999
+    }
+
+    // GB3: CR + LF
+    if from == EgcbType::CR && to == EgcbType::LF {
+        return EgcbBreakType::NotBreak;
+    }
+    // GB4: Break after Control/CR/LF
+    if is_control_cr_lf(from) {
+        return EgcbBreakType::Break;
+    }
+    // GB5: Break before Control/CR/LF
+    if is_control_cr_lf(to) {
+        return EgcbBreakType::Break;
+    }
+
+    // GB6-GB8: Hangul rules
+    if is_hangul(from) && is_hangul(to) {
+        // GB6: L x (L | V | LV | LVT)
+        if from == EgcbType::L && to != EgcbType::T {
+            return EgcbBreakType::NotBreak;
+        }
+        // GB7: (LV | V) x (V | T)
+        if (from == EgcbType::LV || from == EgcbType::V) && (to == EgcbType::V || to == EgcbType::T)
+        {
+            return EgcbBreakType::NotBreak;
+        }
+        // GB8: (LVT | T) x T
+        if to == EgcbType::T && (from == EgcbType::LVT || from == EgcbType::T) {
+            return EgcbBreakType::NotBreak;
+        }
+        return EgcbBreakType::Break; // GB999
+    }
+
+    // GB9: x (Extend | ZWJ)
+    if to == EgcbType::Extend || to == EgcbType::ZWJ {
+        return EgcbBreakType::NotBreak;
+    }
+    // GB9a: x SpacingMark
+    if to == EgcbType::SpacingMark {
+        return EgcbBreakType::NotBreak;
+    }
+    // GB9b: Prepend x
+    if from == EgcbType::Prepend {
+        return EgcbBreakType::NotBreak;
+    }
+
+    // GB11: ZWJ x Extended_Pictographic (needs backward context)
+    if from == EgcbType::ZWJ {
+        if onigenc_unicode_is_code_ctype(to_code, PROP_INDEX_EXTENDEDPICTOGRAPHIC) {
+            return EgcbBreakType::BreakUndefGB11;
+        }
+        return EgcbBreakType::Break; // GB999
+    }
+
+    // GB12/GB13: RI x RI (needs backward context)
+    if from == EgcbType::RegionalIndicator && to == EgcbType::RegionalIndicator {
+        return EgcbBreakType::BreakUndefRiRi;
+    }
+
+    // GB999
+    EgcbBreakType::Break
+}
+
+/// Decode the character at `pos`, bounded by the logical `end` like C's
+/// `ONIGENC_MBC_TO_CODE(enc, p, end)`: a character straddling `end` is
+/// truncated. `mbc_to_code` takes the limit relative to the slice start.
+#[inline]
+fn code_at(enc: OnigEncoding, str_data: &[u8], pos: usize, end: usize) -> u32 {
+    enc.mbc_to_code(&str_data[pos..], end.saturating_sub(pos))
+}
+
+/// Full EGCB break position check.
+/// Port of onigenc_egcb_is_break_position from unicode.c:998.
+pub(crate) fn onigenc_egcb_is_break_position(
+    enc: OnigEncoding,
+    str_data: &[u8],
+    s: usize,
+    start: usize,
+    end: usize,
+) -> bool {
+    // GB1: Break at start of text
+    if s <= start {
+        return true;
+    }
+    // GB2: Break at end of text. C tests `p == end`: a backward search may try a
+    // position past a logical end that splits a character, and C then keeps
+    // classifying. Only the physical end of the data stops early here, where
+    // C would read past the buffer.
+    if s == end || s >= str_data.len() {
+        return true;
+    }
+    // Rust-only (ADR-008): two ASCII bytes inside the logical end form two
+    // one-byte characters of the built-in UTF-8 or ASCII encoding. Of the rules
+    // below, only GB3 joins them (CR x LF): GB4 and GB5 break around the
+    // other Control, CR and LF pairs, and no ASCII code point has a class
+    // that GB6-GB13 act on (see the test `egcb_ascii_fast_path_matches`).
+    // The check is by address: a user-defined ASCII-compatible encoding can
+    // have ASCII-valued trail bytes (Shift_JIS), so its flag is not enough.
+    if s < end
+        && str_data[s - 1] < 0x80
+        && str_data[s] < 0x80
+        && (std::ptr::addr_eq(enc, &crate::encodings::utf8::ONIG_ENCODING_UTF8)
+            || std::ptr::addr_eq(enc, &crate::encodings::ascii::ONIG_ENCODING_ASCII))
+    {
+        return !(str_data[s - 1] == b'\r' && str_data[s] == b'\n');
+    }
+    egcb_is_break_position_general(enc, str_data, s, start, end)
+}
+
+/// The GB3-GB13 rules for a position past GB1 and GB2, for any character
+/// pair. [`onigenc_egcb_is_break_position`] answers ASCII pairs without it.
+fn egcb_is_break_position_general(
+    enc: OnigEncoding,
+    str_data: &[u8],
+    s: usize,
+    start: usize,
+    end: usize,
+) -> bool {
+    let mut prev = enc.left_adjust_char_head(start, s - 1, str_data);
+    if prev < start {
+        return true;
+    }
+
+    let from = code_at(enc, str_data, prev, end);
+    let to = code_at(enc, str_data, s, end);
+
+    let btype = unicode_egcb_is_break_2code(from, to);
+    match btype {
+        EgcbBreakType::NotBreak => false,
+        EgcbBreakType::Break => true,
+
+        EgcbBreakType::BreakUndefGB11 => {
+            // GB11: {ExtPict} Extend* ZWJ x {ExtPict}
+            // Scan backward past Extend characters looking for ExtPict
+            loop {
+                if prev <= start {
+                    break;
+                }
+                prev = enc.left_adjust_char_head(start, prev - 1, str_data);
+                if prev < start {
+                    break;
+                }
+                let code = code_at(enc, str_data, prev, end);
+                if onigenc_unicode_is_code_ctype(code, PROP_INDEX_EXTENDEDPICTOGRAPHIC) {
+                    return false; // Found ExtPict before ZWJ
+                }
+                let t = egcb_get_type(code);
+                if t != EgcbType::Extend {
+                    break; // Not Extend, stop scanning
+                }
+            }
+            true // Break (no ExtPict found)
+        }
+
+        EgcbBreakType::BreakUndefRiRi => {
+            // GB12/GB13: Count consecutive RI chars backward
+            let mut n: usize = 0;
+            loop {
+                if prev <= start {
+                    break;
+                }
+                prev = enc.left_adjust_char_head(start, prev - 1, str_data);
+                if prev < start {
+                    break;
+                }
+                let code = code_at(enc, str_data, prev, end);
+                let t = egcb_get_type(code);
+                if t != EgcbType::RegionalIndicator {
+                    break;
+                }
+                n += 1;
+            }
+            // Even count of preceding RI = no break, odd = break
+            !n.is_multiple_of(2)
+        }
+    }
+}
+
+// ============================================================================
+// Word Break (WB) algorithm
+// Port of onigenc_wb_is_break_position from unicode.c:675
+// ============================================================================
+
+/// Binary search WB_RANGES for the WB type of a codepoint.
+fn wb_get_type(code: u32) -> WbType {
+    let mut low: usize = 0;
+    let mut high: usize = WB_RANGES.len();
+    while low < high {
+        let x = (low + high) >> 1;
+        if code > WB_RANGES[x].end {
+            low = x + 1;
+        } else {
+            high = x;
+        }
+    }
+    if low < WB_RANGES.len() && code >= WB_RANGES[low].start {
+        WB_RANGES[low].prop
+    } else {
+        WbType::Any
+    }
+}
+
+#[inline]
+fn is_wb_ignore_tail(t: WbType) -> bool {
+    matches!(t, WbType::Extend | WbType::Format | WbType::ZWJ)
+}
+
+#[inline]
+fn is_wb_ahletter(t: WbType) -> bool {
+    matches!(t, WbType::ALetter | WbType::HebrewLetter)
+}
+
+#[inline]
+fn is_wb_midnumletq(t: WbType) -> bool {
+    matches!(t, WbType::MidNumLet | WbType::SingleQuote)
+}
+
+/// Skip forward past Extend/Format/ZWJ to find next "main" code.
+fn wb_get_next_main_code(
+    enc: OnigEncoding,
+    str_data: &[u8],
+    mut pos: usize,
+    end: usize,
+) -> Option<(u32, WbType)> {
+    loop {
+        pos += enc.mbc_enc_len(&str_data[pos..]);
+        if pos >= end {
+            break;
+        }
+        let code = code_at(enc, str_data, pos, end);
+        let t = wb_get_type(code);
+        if !is_wb_ignore_tail(t) {
+            return Some((code, t));
+        }
+    }
+    None
+}
+
+/// Full WB break position check.
+/// Port of onigenc_wb_is_break_position from unicode.c:675.
+pub(crate) fn onigenc_wb_is_break_position(
+    enc: OnigEncoding,
+    str_data: &[u8],
+    s: usize,
+    start: usize,
+    end: usize,
+) -> bool {
+    // WB1: sot / Any
+    if s <= start {
+        return true;
+    }
+    // WB2: Any / eot. C tests `p == end`: a backward search may try a
+    // position past a logical end that splits a character, and C then keeps
+    // classifying. Only the physical end of the data stops early here, where
+    // C would read past the buffer.
+    if s == end || s >= str_data.len() {
+        return true;
+    }
+
+    let mut prev = enc.left_adjust_char_head(start, s - 1, str_data);
+    if prev < start {
+        return true;
+    }
+
+    let cfrom = code_at(enc, str_data, prev, end);
+    let cto = code_at(enc, str_data, s, end);
+
+    let mut from = wb_get_type(cfrom);
+    let to = wb_get_type(cto);
+
+    // Short cut: both Any
+    if from == WbType::Any && to == WbType::Any {
+        return true; // WB999
+    }
+
+    // WB3: CR + LF
+    if from == WbType::CR && to == WbType::LF {
+        return false;
+    }
+
+    // WB3a: (Newline|CR|LF) /
+    if matches!(from, WbType::Newline | WbType::CR | WbType::LF) {
+        return true;
+    }
+    // WB3b: / (Newline|CR|LF)
+    if matches!(to, WbType::Newline | WbType::CR | WbType::LF) {
+        return true;
+    }
+
+    // WB3c: ZWJ x {Extended_Pictographic}
+    if from == WbType::ZWJ && onigenc_unicode_is_code_ctype(cto, PROP_INDEX_EXTENDEDPICTOGRAPHIC) {
+        return false;
+    }
+
+    // WB3d: WSegSpace x WSegSpace
+    if from == WbType::WSegSpace && to == WbType::WSegSpace {
+        return false;
+    }
+
+    // WB4: X (Extend|Format|ZWJ)* -> X
+    if is_wb_ignore_tail(to) {
+        return false;
+    }
+    if is_wb_ignore_tail(from) {
+        // Scan backward past Extend/Format/ZWJ
+        loop {
+            if prev <= start {
+                break;
+            }
+            let pp = enc.left_adjust_char_head(start, prev - 1, str_data);
+            if pp < start {
+                break;
+            }
+            prev = pp;
+            let cf = code_at(enc, str_data, prev, end);
+            from = wb_get_type(cf);
+            if !is_wb_ignore_tail(from) {
+                break;
+            }
+        }
+    }
+
+    // WB5: AHLetter x AHLetter
+    if is_wb_ahletter(from) {
+        if is_wb_ahletter(to) {
+            return false;
+        }
+
+        // WB6: AHLetter x (MidLetter | MidNumLetQ) AHLetter
+        if to == WbType::MidLetter || is_wb_midnumletq(to) {
+            if let Some((_cto2, to2)) = wb_get_next_main_code(enc, str_data, s, end) {
+                if is_wb_ahletter(to2) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // WB7: AHLetter (MidLetter | MidNumLetQ) x AHLetter
+    if (from == WbType::MidLetter || is_wb_midnumletq(from)) && is_wb_ahletter(to) {
+        let mut from2 = WbType::Any;
+        let mut pp = prev;
+        loop {
+            if pp <= start {
+                break;
+            }
+            pp = enc.left_adjust_char_head(start, pp - 1, str_data);
+            if pp < start {
+                break;
+            }
+            let cf2 = code_at(enc, str_data, pp, end);
+            from2 = wb_get_type(cf2);
+            if !is_wb_ignore_tail(from2) {
+                break;
+            }
+        }
+        if is_wb_ahletter(from2) {
+            return false;
+        }
+    }
+
+    if from == WbType::HebrewLetter {
+        // WB7a: Hebrew_Letter x Single_Quote
+        if to == WbType::SingleQuote {
+            return false;
+        }
+
+        // WB7b: Hebrew_Letter x Double_Quote Hebrew_Letter
+        if to == WbType::DoubleQuote {
+            if let Some((_cto2, to2)) = wb_get_next_main_code(enc, str_data, s, end) {
+                if to2 == WbType::HebrewLetter {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // WB7c: Hebrew_Letter Double_Quote x Hebrew_Letter
+    if from == WbType::DoubleQuote && to == WbType::HebrewLetter {
+        let mut from2 = WbType::Any;
+        let mut pp = prev;
+        loop {
+            if pp <= start {
+                break;
+            }
+            pp = enc.left_adjust_char_head(start, pp - 1, str_data);
+            if pp < start {
+                break;
+            }
+            let cf2 = code_at(enc, str_data, pp, end);
+            from2 = wb_get_type(cf2);
+            if !is_wb_ignore_tail(from2) {
+                break;
+            }
+        }
+        if from2 == WbType::HebrewLetter {
+            return false;
+        }
+    }
+
+    if to == WbType::Numeric {
+        // WB8: Numeric x Numeric
+        if from == WbType::Numeric {
+            return false;
+        }
+        // WB9: AHLetter x Numeric
+        if is_wb_ahletter(from) {
+            return false;
+        }
+
+        // WB11: Numeric (MidNum | MidNumLetQ) x Numeric
+        if from == WbType::MidNum || is_wb_midnumletq(from) {
+            let mut from2 = WbType::Any;
+            let mut pp = prev;
+            loop {
+                if pp <= start {
+                    break;
+                }
+                pp = enc.left_adjust_char_head(start, pp - 1, str_data);
+                if pp < start {
+                    break;
+                }
+                let cf2 = code_at(enc, str_data, pp, end);
+                from2 = wb_get_type(cf2);
+                if !is_wb_ignore_tail(from2) {
+                    break;
+                }
+            }
+            if from2 == WbType::Numeric {
+                return false;
+            }
+        }
+    }
+
+    if from == WbType::Numeric {
+        // WB10: Numeric x AHLetter
+        if is_wb_ahletter(to) {
+            return false;
+        }
+
+        // WB12: Numeric x (MidNum | MidNumLetQ) Numeric
+        if to == WbType::MidNum || is_wb_midnumletq(to) {
+            if let Some((_cto2, to2)) = wb_get_next_main_code(enc, str_data, s, end) {
+                if to2 == WbType::Numeric {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // WB13: Katakana x Katakana
+    if from == WbType::Katakana && to == WbType::Katakana {
+        return false;
+    }
+
+    // WB13a: (AHLetter | Numeric | Katakana | ExtendNumLet) x ExtendNumLet
+    if to == WbType::ExtendNumLet
+        && (is_wb_ahletter(from)
+            || from == WbType::Numeric
+            || from == WbType::Katakana
+            || from == WbType::ExtendNumLet)
+    {
+        return false;
+    }
+
+    // WB13b: ExtendNumLet x (AHLetter | Numeric | Katakana)
+    if from == WbType::ExtendNumLet
+        && (is_wb_ahletter(to) || to == WbType::Numeric || to == WbType::Katakana)
+    {
+        return false;
+    }
+
+    // WB15/WB16: RI x RI (count consecutive RI backward)
+    if from == WbType::RegionalIndicator && to == WbType::RegionalIndicator {
+        let mut n: usize = 0;
+        let mut pp = prev;
+        loop {
+            if pp <= start {
+                break;
+            }
+            pp = enc.left_adjust_char_head(start, pp - 1, str_data);
+            if pp < start {
+                break;
+            }
+            let cf2 = code_at(enc, str_data, pp, end);
+            let from2 = wb_get_type(cf2);
+            if from2 != WbType::RegionalIndicator {
+                break;
+            }
+            n += 1;
+        }
+        if n.is_multiple_of(2) {
+            return false;
+        }
+    }
+
+    // WB999: Any / Any
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folds1_groups() -> Vec<usize> {
+        let mut groups = Vec::new();
+        let mut i = 0;
+        while i < FOLDS1_END_INDEX {
+            groups.push(i);
+            i = folds1_next(i);
+        }
+        groups
+    }
+
+    #[test]
+    fn fold_keys_index_every_folds1_group_member_exactly() {
+        // `for_each_folds1_group_in_ranges` relies on this table shape.
+        for index in folds1_groups() {
+            let fold = folds1_fold(index);
+            let found = FOLD1_KEY.binary_search_by_key(&fold, |&(code, _)| code);
+            assert_eq!(found.map(|k| FOLD1_KEY[k].1 as usize), Ok(index));
+            assert!(
+                unfold_key(fold).is_none(),
+                "fold target {fold:#x} is an unfold"
+            );
+            for &unfold in folds1_unfolds(index) {
+                assert_eq!(unfold_key(unfold), Some((index, 1)), "unfold {unfold:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn code_ranges_are_sorted_and_disjoint() {
+        // The binary search in onigenc_unicode_is_code_ctype requires every
+        // generated property to be sorted, non-overlapping (start, end) pairs.
+        for (ctype, ranges) in CODE_RANGES.iter().enumerate() {
+            let (pairs, rest) = ranges.as_chunks::<2>();
+            assert!(rest.is_empty(), "ctype {ctype} has an odd length");
+            let mut previous_end: Option<u32> = None;
+            for &[start, end] in pairs {
+                assert!(start <= end, "ctype {ctype}: {start:#x} > {end:#x}");
+                assert!(end <= 0x10FFFF, "ctype {ctype}: {end:#x} out of range");
+                if let Some(previous_end) = previous_end {
+                    assert!(
+                        start > previous_end.saturating_add(1),
+                        "ctype {ctype}: {start:#x} follows {previous_end:#x} unmerged or out of order"
+                    );
+                }
+                previous_end = Some(end);
+            }
+        }
+    }
+
+    #[test]
+    fn folds1_groups_in_ranges_match_a_full_scan() {
+        let range_sets: [&[(u32, u32)]; 4] = [
+            &[(0x41, 0x5A)],
+            &[(0x80, 0xFF), (0x100, 0x17F)],
+            &[(0x390, 0x3FF), (0x1E00, 0x1EFF), (0x10400, 0x1044F)],
+            &[(0, 0x10FFFF)],
+        ];
+        for ranges in range_sets {
+            let inside = |code: u32| ranges.iter().any(|&(lo, hi)| lo <= code && code <= hi);
+            let mut expected = Vec::new();
+            for_each_folds1_group(ONIGENC_CASE_FOLD_MIN, |fold, unfolds| {
+                if inside(fold) || unfolds.iter().any(|&u| inside(u)) {
+                    expected.push(fold);
+                }
+            });
+            let mut actual = Vec::new();
+            for_each_folds1_group_in_ranges(ranges, |fold, _| actual.push(fold));
+            expected.sort_unstable();
+            actual.sort_unstable();
+            assert_eq!(actual, expected, "ranges {ranges:x?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod bmp_bitmap_tests {
+    use super::*;
+
+    /// Every table's bitmap holds exactly the BMP codes its ranges hold,
+    /// and the lookup answers as the binary search does.
+    #[test]
+    fn bmp_bitmaps_match_the_ranges() {
+        let mut bitmaps = 0;
+        for (ctype, ranges) in CODE_RANGES.iter().enumerate() {
+            let in_ranges = |code: u32| {
+                ranges
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|&[from, to]| from <= code && code <= to)
+            };
+            if let Some(bits) = bmp_bitmap(ctype, ranges) {
+                bitmaps += 1;
+                for code in 0..BMP_END {
+                    let bit = bits[code as usize / 64] >> (code % 64) & 1 != 0;
+                    assert_eq!(bit, in_ranges(code), "{ctype} {code:#x}");
+                }
+            }
+            if ctype > ONIGENC_MAX_STD_CTYPE as usize {
+                for code in (0..0x11_0000).step_by(97).chain([0xFFFF, 0x1_0000]) {
+                    assert_eq!(
+                        onigenc_unicode_is_code_ctype(code, ctype as u32),
+                        in_ranges(code),
+                        "{ctype} {code:#x}"
+                    );
+                }
+            }
+        }
+        assert!(bitmaps > 50, "{bitmaps}");
+    }
+}
+
+#[cfg(test)]
+mod egcb_ascii_tests {
+    use super::*;
+    use crate::encodings::utf8::ONIG_ENCODING_UTF8;
+
+    /// The public check with the ASCII fast path must answer as the general
+    /// GB3-GB13 rules do, for every `s`, `start` and logical `end`.
+    fn reference(enc: OnigEncoding, data: &[u8], s: usize, start: usize, end: usize) -> bool {
+        if s <= start || s == end || s >= data.len() {
+            return true;
+        }
+        egcb_is_break_position_general(enc, data, s, start, end)
+    }
+
+    fn assert_all_positions(enc: OnigEncoding, data: &[u8]) {
+        let len = data.len();
+        for start in 0..=len {
+            for end in start..=len {
+                for s in 0..=len {
+                    assert_eq!(
+                        onigenc_egcb_is_break_position(enc, data, s, start, end),
+                        reference(enc, data, s, start, end),
+                        "data {data:x?} s {s} start {start} end {end}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn egcb_ascii_fast_path_matches() {
+        let enc: OnigEncoding = &ONIG_ENCODING_UTF8;
+        let ascii: OnigEncoding = &crate::encodings::ascii::ONIG_ENCODING_ASCII;
+        // Among ASCII code points only CR, LF, Control and Other occur, so no
+        // ASCII pair can take part in the GB6-GB13 rules.
+        for code in 0..0x80 {
+            assert!(
+                matches!(
+                    egcb_get_type(code),
+                    EgcbType::CR | EgcbType::LF | EgcbType::Control | EgcbType::Other
+                ),
+                "{code:#x}"
+            );
+        }
+        // Every ASCII pair: a break except CR x LF.
+        for a in 0..0x80u8 {
+            for b in 0..0x80u8 {
+                let data = [a, b];
+                assert_eq!(
+                    onigenc_egcb_is_break_position(enc, &data, 1, 0, 2),
+                    !(a == b'\r' && b == b'\n'),
+                    "{a:#x} {b:#x}"
+                );
+                assert_eq!(
+                    onigenc_egcb_is_break_position(enc, &data, 1, 0, 2),
+                    reference(enc, &data, 1, 0, 2),
+                    "{a:#x} {b:#x}"
+                );
+                assert_eq!(
+                    onigenc_egcb_is_break_position(ascii, &data, 1, 0, 2),
+                    !(a == b'\r' && b == b'\n'),
+                    "ascii {a:#x} {b:#x}"
+                );
+            }
+        }
+        assert_all_positions(ascii, &[b'\r', b'\n', b'a', b'\r', 0x7F, b'\n', 0x80, 0xFF]);
+    }
+
+    #[test]
+    fn egcb_ascii_fast_path_matches_mixed_strings() {
+        let enc: OnigEncoding = &ONIG_ENCODING_UTF8;
+        let samples = [
+            "a\r\nb",
+            "\r\n\r\n",
+            "\r\r\n\n",
+            "e\u{301}\r\n",
+            "\r\u{301}\n",
+            "\u{1F468}\u{200D}\u{1F469}",
+            "\u{1F1FA}\u{1F1F8}\u{1F1E9}\u{1F1EA}",
+            "a\u{200D}b",
+            "x\u{903}y",
+            "\u{1100}\u{1161}\u{11A8}a",
+            "\u{0}\u{7F}\u{AD}\u{9F}",
+            "tab\there\x0c\x0b",
+        ];
+        for sample in samples {
+            assert_all_positions(enc, sample.as_bytes());
+        }
+        // Invalid UTF-8 keeps the same answers: the fast path only looks at
+        // ASCII bytes, and the general rules see what they always saw.
+        assert_all_positions(enc, &[0x80, b'\r', b'\n', 0xC3, b'\n', 0xFF, b'a']);
+        assert_all_positions(enc, &[0xE3, 0x81, b'\r', b'\n', 0xF0, b'\r']);
+        // The ASCII encoding takes the same fast path, and its bytes above
+        // 0x7F are single characters that the general rules see.
+        let ascii: OnigEncoding = &crate::encodings::ascii::ONIG_ENCODING_ASCII;
+        for sample in samples {
+            assert_all_positions(ascii, sample.as_bytes());
+        }
+        assert_all_positions(ascii, &[0x80, b'\r', b'\n', 0xC3, b'\n', 0xFF, b'a']);
+    }
+}
+
+#[cfg(test)]
+mod egcb_table_tests {
+    use super::*;
+
+    /// The ranges are sorted and disjoint, which the table build relies on.
+    #[test]
+    fn egcb_ranges_are_sorted_and_disjoint() {
+        for range in EGCB_RANGES.iter() {
+            assert!(range.start <= range.end, "{:#x}", range.start);
+        }
+        for pair in EGCB_RANGES.windows(2) {
+            assert!(pair[0].end < pair[1].start, "{:#x}", pair[1].start);
+        }
+    }
+
+    /// For every code point (surrogates excepted, as no encoding decodes
+    /// them), the table answers as the binary search does.
+    #[test]
+    fn egcb_table_matches_the_binary_search_for_every_code_point() {
+        for code in 0..=0x10_FFFFu32 {
+            if (0xD800..=0xDFFF).contains(&code) {
+                continue;
+            }
+            assert_eq!(
+                egcb_get_type(code),
+                egcb_get_type_search(code),
+                "code {code:#x}"
+            );
+        }
+    }
+
+    /// The table stores each distinct block once.
+    #[test]
+    fn egcb_table_blocks_are_distinct() {
+        let table = egcb_bmp_table();
+        for (i, block) in table.blocks.iter().enumerate() {
+            assert!(
+                !table.blocks[..i].contains(block),
+                "block {i} repeats an earlier block"
+            );
+        }
+        let used = table
+            .block_of_high
+            .iter()
+            .map(|&id| id as usize)
+            .max()
+            .unwrap_or(0);
+        assert!(used < table.blocks.len());
+    }
+}

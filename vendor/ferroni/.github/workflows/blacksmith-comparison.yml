@@ -1,0 +1,198 @@
+name: Source-backed regex comparison
+
+# Manual only: provider-managed runners cost money. Platforms retain separate
+# reports; there is no cross-host aggregate or automatic performance claim.
+# Each process repetition runs on its own VM. A Ferroni measurement and the
+# comparator it is divided by always share a repetition, and so a VM; the
+# merge job only joins the repetitions of one platform.
+#
+# The TextMate scanner replays are a separate lane on the same VMs, with
+# their own artifacts and reports (ADR-010); they never enter the regex
+# results that scripts/publish-production.py publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Runner profile
+        type: choice
+        options: [both, macos-arm64, linux-x86-64]
+        default: both
+      lanes:
+        description: Regex corpora, TextMate scanner replays, or both
+        type: choice
+        options: [all, regex, scanner]
+        default: all
+      cases:
+        description: Comma-separated regex case IDs (empty means complete corpus)
+        type: string
+        default: ""
+      scanner_cases:
+        description: Comma-separated scanner cases such as tsx_scanner/cold_document (empty means both lanes of every replay)
+        type: string
+        default: ""
+      measure_seconds:
+        description: Criterion seconds per case and engine for steady reuse (compile and first use take 1 s)
+        type: choice
+        options: ["3", "5"]
+        default: "3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-comparison-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+  PYTHONDONTWRITEBYTECODE: "1"
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  compare:
+    if: github.repository == 'sebastian-software/ferroni'
+    name: ${{ matrix.profile }} run ${{ matrix.run }}
+    runs-on: ${{ matrix.profile == 'macos-arm64' && 'blacksmith-6vcpu-macos-26' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    # One repetition of both corpora takes about half an hour at the
+    # three-second window, including the build and validation; the scanner
+    # lane adds about ten minutes.
+    timeout-minutes: ${{ inputs.measure_seconds == '5' && 120 || 90 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(inputs.platform == 'macos-arm64' && '["macos-arm64"]' || inputs.platform == 'linux-x86-64' && '["linux-x86-64"]' || '["macos-arm64","linux-x86-64"]') }}
+        run: [1, 2, 3]
+    env:
+      CASES: ${{ inputs.cases }}
+      SCANNER_CASES: ${{ inputs.scanner_cases }}
+      MEASURE_SECONDS: ${{ inputs.measure_seconds }}
+      RUN: ${{ matrix.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: production-regex-${{ matrix.profile }}
+      - name: Prepare native C inputs
+        run: |
+          ./scripts/prepare-oniguruma-sources.sh
+          ./scripts/prepare-onigmo-sources.sh
+      - name: Check corpus and reporting rules
+        run: |
+          python3 scripts/check-production-corpus.py
+          python3 -c 'import importlib.util,json,pathlib; s=importlib.util.spec_from_file_location("corpus","scripts/check-production-corpus.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); p=pathlib.Path("benches/tokenizer_regex/catalog.json"); m.check(json.loads(p.read_text()),p.parent)'
+          python3 -m unittest discover -s scripts/tests -p 'test_production*.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_scanner*.py'
+      - name: Validate and measure one repetition
+        if: inputs.lanes != 'scanner'
+        run: |
+          arguments=()
+          if [[ -n "$CASES" ]]; then arguments+=(--cases "$CASES"); fi
+          python3 scripts/compare-production.py run "$RUNNER_TEMP/production" \
+            --only-run "$RUN" --measure-seconds "$MEASURE_SECONDS" --timeout 120 \
+            --host-note "Dedicated Blacksmith VM per repetition; host power/thermal state unavailable. Workflow $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT." \
+            "${arguments[@]}"
+      - name: Validate and measure one tokenizer repetition
+        if: inputs.lanes != 'scanner'
+        run: |
+          python3 scripts/compare-production.py run "$RUNNER_TEMP/tokenizers" \
+            --corpus tokenizer --only-run "$RUN" --measure-seconds "$MEASURE_SECONDS" --timeout 120 \
+            --host-note "Dedicated Blacksmith VM per repetition; host power/thermal state unavailable. Workflow $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT. Separate LLM pre-tokenization corpus."
+      - name: Validate and measure one scanner replay repetition
+        if: inputs.lanes != 'regex'
+        run: |
+          arguments=()
+          if [[ -n "$SCANNER_CASES" ]]; then arguments+=(--cases "$SCANNER_CASES"); fi
+          python3 scripts/compare-scanner-replays.py run "$RUNNER_TEMP/scanner-replays" \
+            --only-run "$RUN" --measure-seconds "$MEASURE_SECONDS" --timeout 300 \
+            --host-note "Dedicated Blacksmith VM per repetition; host power/thermal state unavailable. Workflow $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT. Separate TextMate scanner replay lane." \
+            "${arguments[@]}"
+      - name: Retain the repetition's evidence, including unsuccessful calls
+        if: always() && inputs.lanes != 'scanner'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-production-${{ matrix.profile }}-run${{ matrix.run }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/production/
+          retention-days: 7
+      - name: Retain the repetition's tokenizer evidence
+        if: always() && inputs.lanes != 'scanner'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-tokenizers-${{ matrix.profile }}-run${{ matrix.run }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tokenizers/
+          retention-days: 7
+      - name: Retain the repetition's scanner replay evidence
+        if: always() && inputs.lanes != 'regex'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-scanner-replays-${{ matrix.profile }}-run${{ matrix.run }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scanner-replays/
+          retention-days: 7
+
+  merge:
+    if: github.repository == 'sebastian-software/ferroni'
+    name: merge ${{ matrix.profile }}
+    needs: compare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(inputs.platform == 'macos-arm64' && '["macos-arm64"]' || inputs.platform == 'linux-x86-64' && '["linux-x86-64"]' || '["macos-arm64","linux-x86-64"]') }}
+    env:
+      PROFILE: ${{ matrix.profile }}
+      SUFFIX: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shard-*-${{ matrix.profile }}-run*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/shards
+      - name: Merge the repetitions of this platform
+        if: inputs.lanes != 'scanner'
+        run: |
+          for corpus in production tokenizers; do
+            python3 scripts/compare-production.py merge "$RUNNER_TEMP/$corpus" \
+              "$RUNNER_TEMP/shards/shard-$corpus-$PROFILE-run1-$SUFFIX" \
+              "$RUNNER_TEMP/shards/shard-$corpus-$PROFILE-run2-$SUFFIX" \
+              "$RUNNER_TEMP/shards/shard-$corpus-$PROFILE-run3-$SUFFIX"
+          done
+      - name: Merge the scanner replay repetitions of this platform
+        if: inputs.lanes != 'regex'
+        run: |
+          python3 scripts/compare-scanner-replays.py merge "$RUNNER_TEMP/scanner-replays" \
+            "$RUNNER_TEMP/shards/shard-scanner-replays-$PROFILE-run1-$SUFFIX" \
+            "$RUNNER_TEMP/shards/shard-scanner-replays-$PROFILE-run2-$SUFFIX" \
+            "$RUNNER_TEMP/shards/shard-scanner-replays-$PROFILE-run3-$SUFFIX"
+          cat "$RUNNER_TEMP/scanner-replays/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain complete evidence
+        if: inputs.lanes != 'scanner'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: production-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/production/
+          retention-days: 30
+      - name: Retain separate tokenizer evidence
+        if: inputs.lanes != 'scanner'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tokenizers-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tokenizers/
+          retention-days: 30
+      - name: Retain separate scanner replay evidence
+        if: inputs.lanes != 'regex'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scanner-replays-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scanner-replays/
+          retention-days: 30

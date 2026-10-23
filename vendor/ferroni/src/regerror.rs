@@ -1,0 +1,376 @@
+//! Port of `regerror.c`: turns an error code into the message that C Oniguruma
+//! prints. The `message` fields of [`RegexError`](crate::error::RegexError) use
+//! the same text.
+
+// This is a 1:1 port of oniguruma's regerror.c.
+
+use crate::oniguruma::*;
+
+/// Get the format string for an error code.
+/// Corresponds to C's onig_error_code_to_format().
+pub(crate) fn onig_error_code_to_format(code: i32) -> &'static str {
+    match code {
+        ONIG_MISMATCH => "mismatch",
+        ONIG_NO_SUPPORT_CONFIG => "no support in this configuration",
+        ONIG_ABORT => "abort",
+        ONIGERR_MEMORY => "fail to memory allocation",
+        ONIGERR_MATCH_STACK_LIMIT_OVER => "match-stack limit over",
+        ONIGERR_PARSE_DEPTH_LIMIT_OVER => "parse depth limit over",
+        ONIGERR_RETRY_LIMIT_IN_MATCH_OVER => "retry-limit-in-match over",
+        ONIGERR_RETRY_LIMIT_IN_SEARCH_OVER => "retry-limit-in-search over",
+        ONIGERR_SUBEXP_CALL_LIMIT_IN_SEARCH_OVER => "subexp-call-limit-in-search over",
+        ONIGERR_TYPE_BUG => "undefined type (bug)",
+        ONIGERR_PARSER_BUG => "internal parser error (bug)",
+        ONIGERR_STACK_BUG => "stack error (bug)",
+        ONIGERR_UNDEFINED_BYTECODE => "undefined bytecode (bug)",
+        ONIGERR_UNEXPECTED_BYTECODE => "unexpected bytecode (bug)",
+        ONIGERR_DEFAULT_ENCODING_IS_NOT_SET => "default multibyte-encoding is not set",
+        ONIGERR_SPECIFIED_ENCODING_CANT_CONVERT_TO_WIDE_CHAR => {
+            "can't convert to wide-char on specified multibyte-encoding"
+        }
+        ONIGERR_FAIL_TO_INITIALIZE => "fail to initialize",
+        ONIGERR_INVALID_ARGUMENT => "invalid argument",
+        ONIGERR_END_PATTERN_AT_LEFT_BRACE => "end pattern at left brace",
+        ONIGERR_END_PATTERN_AT_LEFT_BRACKET => "end pattern at left bracket",
+        ONIGERR_EMPTY_CHAR_CLASS => "empty char-class",
+        ONIGERR_PREMATURE_END_OF_CHAR_CLASS => "premature end of char-class",
+        ONIGERR_END_PATTERN_AT_ESCAPE => "end pattern at escape",
+        ONIGERR_END_PATTERN_AT_META => "end pattern at meta",
+        ONIGERR_END_PATTERN_AT_CONTROL => "end pattern at control",
+        ONIGERR_META_CODE_SYNTAX => "invalid meta-code syntax",
+        ONIGERR_CONTROL_CODE_SYNTAX => "invalid control-code syntax",
+        ONIGERR_CHAR_CLASS_VALUE_AT_END_OF_RANGE => "char-class value at end of range",
+        ONIGERR_CHAR_CLASS_VALUE_AT_START_OF_RANGE => "char-class value at start of range",
+        ONIGERR_UNMATCHED_RANGE_SPECIFIER_IN_CHAR_CLASS => {
+            "unmatched range specifier in char-class"
+        }
+        ONIGERR_TARGET_OF_REPEAT_OPERATOR_NOT_SPECIFIED => {
+            "target of repeat operator is not specified"
+        }
+        ONIGERR_TARGET_OF_REPEAT_OPERATOR_INVALID => "target of repeat operator is invalid",
+        ONIGERR_NESTED_REPEAT_OPERATOR => "nested repeat operator",
+        ONIGERR_UNMATCHED_CLOSE_PARENTHESIS => "unmatched close parenthesis",
+        ONIGERR_END_PATTERN_WITH_UNMATCHED_PARENTHESIS => "end pattern with unmatched parenthesis",
+        ONIGERR_END_PATTERN_IN_GROUP => "end pattern in group",
+        ONIGERR_UNDEFINED_GROUP_OPTION => "undefined group option",
+        ONIGERR_INVALID_GROUP_OPTION => "invalid group option",
+        ONIGERR_INVALID_POSIX_BRACKET_TYPE => "invalid POSIX bracket type",
+        ONIGERR_INVALID_LOOK_BEHIND_PATTERN => "invalid pattern in look-behind",
+        ONIGERR_INVALID_REPEAT_RANGE_PATTERN => "invalid repeat range {lower,upper}",
+        ONIGERR_TOO_BIG_NUMBER => "too big number",
+        ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE => "too big number for repeat range",
+        ONIGERR_UPPER_SMALLER_THAN_LOWER_IN_REPEAT_RANGE => {
+            "upper is smaller than lower in repeat range"
+        }
+        ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS => "empty range in char class",
+        ONIGERR_MISMATCH_CODE_LENGTH_IN_CLASS_RANGE => {
+            "mismatch multibyte code length in char-class range"
+        }
+        ONIGERR_TOO_MANY_MULTI_BYTE_RANGES => "too many multibyte code ranges are specified",
+        ONIGERR_TOO_SHORT_MULTI_BYTE_STRING => "too short multibyte code string",
+        ONIGERR_TOO_BIG_BACKREF_NUMBER => "too big backref number",
+        ONIGERR_INVALID_BACKREF => "invalid backref number/name",
+        ONIGERR_NUMBERED_BACKREF_OR_CALL_NOT_ALLOWED => {
+            "numbered backref/call is not allowed. (use name)"
+        }
+        ONIGERR_TOO_MANY_CAPTURES => "too many captures",
+        ONIGERR_TOO_BIG_WIDE_CHAR_VALUE => "too big wide-char value",
+        ONIGERR_TOO_LONG_WIDE_CHAR_VALUE => "too long wide-char value",
+        ONIGERR_UNDEFINED_OPERATOR => "undefined operator",
+        ONIGERR_INVALID_CODE_POINT_VALUE => "invalid code point value",
+        ONIGERR_EMPTY_GROUP_NAME => "group name is empty",
+        ONIGERR_INVALID_GROUP_NAME => "invalid group name <%n>",
+        ONIGERR_INVALID_CHAR_IN_GROUP_NAME => "invalid char in group name <%n>",
+        ONIGERR_UNDEFINED_NAME_REFERENCE => "undefined name <%n> reference",
+        ONIGERR_UNDEFINED_GROUP_REFERENCE => "undefined group <%n> reference",
+        ONIGERR_MULTIPLEX_DEFINED_NAME => "multiplex defined name <%n>",
+        ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL => "multiplex definition name <%n> call",
+        ONIGERR_NEVER_ENDING_RECURSION => "never ending recursion",
+        ONIGERR_GROUP_NUMBER_OVER_FOR_CAPTURE_HISTORY => {
+            "group number is too big for capture history"
+        }
+        ONIGERR_INVALID_CHAR_PROPERTY_NAME => "invalid character property name {%n}",
+        ONIGERR_INVALID_IF_ELSE_SYNTAX => "invalid if-else syntax",
+        ONIGERR_INVALID_ABSENT_GROUP_PATTERN => "invalid absent group pattern",
+        ONIGERR_INVALID_ABSENT_GROUP_GENERATOR_PATTERN => "invalid absent group generator pattern",
+        ONIGERR_INVALID_CALLOUT_PATTERN => "invalid callout pattern",
+        ONIGERR_INVALID_CALLOUT_NAME => "invalid callout name",
+        ONIGERR_UNDEFINED_CALLOUT_NAME => "undefined callout name",
+        ONIGERR_INVALID_CALLOUT_BODY => "invalid callout body",
+        ONIGERR_INVALID_CALLOUT_TAG_NAME => "invalid callout tag name",
+        ONIGERR_INVALID_CALLOUT_ARG => "invalid callout arg",
+        ONIGERR_NOT_SUPPORTED_ENCODING_COMBINATION => "not supported encoding combination",
+        ONIGERR_INVALID_COMBINATION_OF_OPTIONS => "invalid combination of options",
+        ONIGERR_VERY_INEFFICIENT_PATTERN => "very inefficient pattern",
+        ONIGERR_LIBRARY_IS_NOT_INITIALIZED => "library is not initialized",
+        _ => "undefined error code",
+    }
+}
+
+/// Check if an error code requires a parameter (name/pattern text).
+pub fn onig_is_error_code_needs_param(code: i32) -> bool {
+    matches!(
+        code,
+        ONIGERR_UNDEFINED_NAME_REFERENCE
+            | ONIGERR_UNDEFINED_GROUP_REFERENCE
+            | ONIGERR_MULTIPLEX_DEFINED_NAME
+            | ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL
+            | ONIGERR_INVALID_GROUP_NAME
+            | ONIGERR_INVALID_CHAR_IN_GROUP_NAME
+            | ONIGERR_INVALID_CHAR_PROPERTY_NAME
+    )
+}
+
+/// for ONIG_MAX_ERROR_MESSAGE_LEN
+const MAX_ERROR_PAR_LEN: usize = 30;
+
+/// Copy at most `buf_size` bytes of the error parameter and report whether it
+/// was cut - mirrors C's to_ascii(). Only its branch for encodings whose
+/// minimum character length is one is ported: those are the only encodings
+/// Ferroni supports (ADR-003).
+fn to_ascii(s: &[u8], buf_size: usize) -> (&[u8], bool) {
+    let len = s.len().min(buf_size);
+    (&s[..len], buf_size < s.len())
+}
+
+/// Convert an error code to a human-readable string.
+/// For parameterized errors, pass the parameter text (C's
+/// `einfo->par`..`einfo->par_end`) in `param`; `None` stands for C's NULL
+/// `par` and substitutes an empty name.
+/// Corresponds to C's onig_error_code_to_str().
+pub fn onig_error_code_to_str(code: i32, param: Option<&[u8]>) -> String {
+    let fmt = onig_error_code_to_format(code);
+
+    if !onig_is_error_code_needs_param(code) {
+        return fmt.to_string();
+    }
+
+    let (parbuf, is_over) = to_ascii(param.unwrap_or_default(), MAX_ERROR_PAR_LEN - 3);
+    let mut s: Vec<u8> = Vec::with_capacity(fmt.len() + parbuf.len() + 3);
+    let q = fmt.as_bytes();
+    let mut i = 0;
+    while i < q.len() {
+        if q[i] == b'%' && q.get(i + 1) == Some(&b'n') {
+            // '%n': name
+            s.extend_from_slice(parbuf);
+            if is_over {
+                s.extend_from_slice(b"...");
+            }
+            i += 2;
+        } else {
+            s.push(q[i]);
+            i += 1;
+        }
+    }
+    // The name is copied byte for byte like C does; a cut through a
+    // multi-byte character becomes U+FFFD.
+    String::from_utf8_lossy(&s).into_owned()
+}
+
+/// Like `onig_error_code_to_str`, for when no parameter exists at all (a
+/// bare error code): the `%n` placeholder is dropped together with its
+/// brackets instead of printing an empty name.
+pub(crate) fn onig_error_code_to_str_without_param(code: i32) -> String {
+    let fmt = onig_error_code_to_format(code);
+    if onig_is_error_code_needs_param(code) {
+        fmt.replace(" <%n>", "").replace(" {%n}", "")
+    } else {
+        fmt.to_string()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mismatch() {
+        assert_eq!(onig_error_code_to_str(ONIG_MISMATCH, None), "mismatch");
+    }
+
+    #[test]
+    fn test_memory() {
+        assert_eq!(
+            onig_error_code_to_str(ONIGERR_MEMORY, None),
+            "fail to memory allocation"
+        );
+    }
+
+    #[test]
+    fn test_undefined_error() {
+        assert_eq!(onig_error_code_to_str(-9999, None), "undefined error code");
+    }
+
+    #[test]
+    fn test_parameterized_error() {
+        let msg = onig_error_code_to_str(ONIGERR_UNDEFINED_NAME_REFERENCE, Some(b"foo"));
+        assert_eq!(msg, "undefined name <foo> reference");
+    }
+
+    #[test]
+    fn test_parameterized_error_no_param() {
+        let msg = onig_error_code_to_str(ONIGERR_UNDEFINED_NAME_REFERENCE, None);
+        assert_eq!(msg, "undefined name <> reference");
+    }
+
+    /// C copies the name byte for byte and cuts it after 27 bytes.
+    #[test]
+    fn test_parameterized_error_copies_and_cuts_name() {
+        let msg =
+            onig_error_code_to_str(ONIGERR_INVALID_CHAR_PROPERTY_NAME, Some("Ñope".as_bytes()));
+        assert_eq!(msg, "invalid character property name {Ñope}");
+
+        let name = b"abcdefghijklmnopqrstuvwxyz0";
+        let msg = onig_error_code_to_str(ONIGERR_INVALID_GROUP_NAME, Some(name));
+        assert_eq!(msg, "invalid group name <abcdefghijklmnopqrstuvwxyz0>");
+        let msg = onig_error_code_to_str(
+            ONIGERR_INVALID_GROUP_NAME,
+            Some(b"abcdefghijklmnopqrstuvwxyz01"),
+        );
+        assert_eq!(msg, "invalid group name <abcdefghijklmnopqrstuvwxyz0...>");
+    }
+
+    #[test]
+    fn test_error_without_param() {
+        assert_eq!(
+            onig_error_code_to_str_without_param(ONIGERR_UNDEFINED_NAME_REFERENCE),
+            "undefined name reference"
+        );
+        assert_eq!(
+            onig_error_code_to_str_without_param(ONIGERR_INVALID_CHAR_PROPERTY_NAME),
+            "invalid character property name"
+        );
+        assert_eq!(
+            onig_error_code_to_str_without_param(ONIGERR_MEMORY),
+            "fail to memory allocation"
+        );
+    }
+
+    #[test]
+    fn test_needs_param() {
+        assert!(onig_is_error_code_needs_param(
+            ONIGERR_UNDEFINED_NAME_REFERENCE
+        ));
+        assert!(!onig_is_error_code_needs_param(ONIGERR_MEMORY));
+        assert!(!onig_is_error_code_needs_param(ONIG_MISMATCH));
+    }
+
+    /// Exercises every arm of `onig_error_code_to_format` to ensure full branch coverage.
+    #[test]
+    fn all_error_codes_have_format_strings() {
+        let codes = [
+            ONIG_MISMATCH,
+            ONIG_NO_SUPPORT_CONFIG,
+            ONIG_ABORT,
+            ONIGERR_MEMORY,
+            ONIGERR_MATCH_STACK_LIMIT_OVER,
+            ONIGERR_PARSE_DEPTH_LIMIT_OVER,
+            ONIGERR_RETRY_LIMIT_IN_MATCH_OVER,
+            ONIGERR_RETRY_LIMIT_IN_SEARCH_OVER,
+            ONIGERR_SUBEXP_CALL_LIMIT_IN_SEARCH_OVER,
+            ONIGERR_TYPE_BUG,
+            ONIGERR_PARSER_BUG,
+            ONIGERR_STACK_BUG,
+            ONIGERR_UNDEFINED_BYTECODE,
+            ONIGERR_UNEXPECTED_BYTECODE,
+            ONIGERR_DEFAULT_ENCODING_IS_NOT_SET,
+            ONIGERR_SPECIFIED_ENCODING_CANT_CONVERT_TO_WIDE_CHAR,
+            ONIGERR_FAIL_TO_INITIALIZE,
+            ONIGERR_INVALID_ARGUMENT,
+            ONIGERR_END_PATTERN_AT_LEFT_BRACE,
+            ONIGERR_END_PATTERN_AT_LEFT_BRACKET,
+            ONIGERR_EMPTY_CHAR_CLASS,
+            ONIGERR_PREMATURE_END_OF_CHAR_CLASS,
+            ONIGERR_END_PATTERN_AT_ESCAPE,
+            ONIGERR_END_PATTERN_AT_META,
+            ONIGERR_END_PATTERN_AT_CONTROL,
+            ONIGERR_META_CODE_SYNTAX,
+            ONIGERR_CONTROL_CODE_SYNTAX,
+            ONIGERR_CHAR_CLASS_VALUE_AT_END_OF_RANGE,
+            ONIGERR_CHAR_CLASS_VALUE_AT_START_OF_RANGE,
+            ONIGERR_UNMATCHED_RANGE_SPECIFIER_IN_CHAR_CLASS,
+            ONIGERR_TARGET_OF_REPEAT_OPERATOR_NOT_SPECIFIED,
+            ONIGERR_TARGET_OF_REPEAT_OPERATOR_INVALID,
+            ONIGERR_NESTED_REPEAT_OPERATOR,
+            ONIGERR_UNMATCHED_CLOSE_PARENTHESIS,
+            ONIGERR_END_PATTERN_WITH_UNMATCHED_PARENTHESIS,
+            ONIGERR_END_PATTERN_IN_GROUP,
+            ONIGERR_UNDEFINED_GROUP_OPTION,
+            ONIGERR_INVALID_GROUP_OPTION,
+            ONIGERR_INVALID_POSIX_BRACKET_TYPE,
+            ONIGERR_INVALID_LOOK_BEHIND_PATTERN,
+            ONIGERR_INVALID_REPEAT_RANGE_PATTERN,
+            ONIGERR_TOO_BIG_NUMBER,
+            ONIGERR_TOO_BIG_NUMBER_FOR_REPEAT_RANGE,
+            ONIGERR_UPPER_SMALLER_THAN_LOWER_IN_REPEAT_RANGE,
+            ONIGERR_EMPTY_RANGE_IN_CHAR_CLASS,
+            ONIGERR_MISMATCH_CODE_LENGTH_IN_CLASS_RANGE,
+            ONIGERR_TOO_MANY_MULTI_BYTE_RANGES,
+            ONIGERR_TOO_SHORT_MULTI_BYTE_STRING,
+            ONIGERR_TOO_BIG_BACKREF_NUMBER,
+            ONIGERR_INVALID_BACKREF,
+            ONIGERR_NUMBERED_BACKREF_OR_CALL_NOT_ALLOWED,
+            ONIGERR_TOO_MANY_CAPTURES,
+            ONIGERR_TOO_BIG_WIDE_CHAR_VALUE,
+            ONIGERR_TOO_LONG_WIDE_CHAR_VALUE,
+            ONIGERR_UNDEFINED_OPERATOR,
+            ONIGERR_INVALID_CODE_POINT_VALUE,
+            ONIGERR_EMPTY_GROUP_NAME,
+            ONIGERR_INVALID_GROUP_NAME,
+            ONIGERR_INVALID_CHAR_IN_GROUP_NAME,
+            ONIGERR_UNDEFINED_NAME_REFERENCE,
+            ONIGERR_UNDEFINED_GROUP_REFERENCE,
+            ONIGERR_MULTIPLEX_DEFINED_NAME,
+            ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL,
+            ONIGERR_NEVER_ENDING_RECURSION,
+            ONIGERR_GROUP_NUMBER_OVER_FOR_CAPTURE_HISTORY,
+            ONIGERR_INVALID_CHAR_PROPERTY_NAME,
+            ONIGERR_INVALID_IF_ELSE_SYNTAX,
+            ONIGERR_INVALID_ABSENT_GROUP_PATTERN,
+            ONIGERR_INVALID_ABSENT_GROUP_GENERATOR_PATTERN,
+            ONIGERR_INVALID_CALLOUT_PATTERN,
+            ONIGERR_INVALID_CALLOUT_NAME,
+            ONIGERR_UNDEFINED_CALLOUT_NAME,
+            ONIGERR_INVALID_CALLOUT_BODY,
+            ONIGERR_INVALID_CALLOUT_TAG_NAME,
+            ONIGERR_INVALID_CALLOUT_ARG,
+            ONIGERR_NOT_SUPPORTED_ENCODING_COMBINATION,
+            ONIGERR_INVALID_COMBINATION_OF_OPTIONS,
+            ONIGERR_VERY_INEFFICIENT_PATTERN,
+            ONIGERR_LIBRARY_IS_NOT_INITIALIZED,
+        ];
+        for code in codes {
+            let msg = onig_error_code_to_format(code);
+            assert_ne!(
+                msg, "undefined error code",
+                "code {} should have a message",
+                code
+            );
+            assert!(!msg.is_empty());
+        }
+    }
+
+    #[test]
+    fn all_param_codes_covered() {
+        let param_codes = [
+            ONIGERR_UNDEFINED_NAME_REFERENCE,
+            ONIGERR_UNDEFINED_GROUP_REFERENCE,
+            ONIGERR_MULTIPLEX_DEFINED_NAME,
+            ONIGERR_MULTIPLEX_DEFINITION_NAME_CALL,
+            ONIGERR_INVALID_GROUP_NAME,
+            ONIGERR_INVALID_CHAR_IN_GROUP_NAME,
+            ONIGERR_INVALID_CHAR_PROPERTY_NAME,
+        ];
+        for code in param_codes {
+            assert!(
+                onig_is_error_code_needs_param(code),
+                "code {} should need param",
+                code
+            );
+        }
+    }
+}
