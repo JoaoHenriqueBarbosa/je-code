@@ -20,19 +20,26 @@ targets=(
 )
 banned='^(cmake|openssl-sys|libsqlite3-sys|ring|aws-lc-sys|aws-lc-rs|onig_sys|libz-sys|zstd-sys|bzip2-sys|freetype-sys|fontconfig-sys|servo-fontconfig-sys|yeslogic-fontconfig-sys|libgit2-sys|libssh2-sys|curl-sys|lzma-sys|bindgen|nasm-rs|libffi-sys|sqlite3-src|brotli-sys|libwebp-sys|mozjpeg-sys|libmimalloc-sys|tikv-jemalloc-sys) '
 
+# Só o produto (crates/*) entra na régua. As sondas de testbench/ medem candidatos, inclusive os que
+# a régua reprova (o turso completo, o Bevy), e não são distribuídas.
+packages=()
+for manifest in crates/*/Cargo.toml; do
+  packages+=(-p "$(sed -n 's/^name = "\(.*\)"/\1/p' "$manifest" | head -1)")
+done
+
 status=0
 for target in "${targets[@]}"; do
-  if ! tree=$(cargo tree --workspace --target "$target" -e normal,build --prefix none --format '{p}' 2>&1 | sort -u); then
+  if ! tree=$(cargo tree "${packages[@]}" --target "$target" -e normal,build --prefix none --format '{p}' 2>&1 | sort -u); then
     echo "[$target] cargo tree falhou:"; sed 's/^/  /' <<<"$tree"; status=1; continue
   fi
   hits=$(grep -E "$banned" <<<"$tree" || true)
   if [[ -n "$hits" ]]; then
     echo "[$target] crates de fonte C no lockfile:"; sed 's/^/  /' <<<"$hits"; status=1
   fi
-  if ! cargo check --workspace --target "$target" -q 2>/tmp/pure-rust-check.err; then
+  if ! cargo check "${packages[@]}" --target "$target" -q --target-dir target/pure-rust-check 2>/tmp/pure-rust-check.err; then
     echo "[$target] cargo check falhou:"; tail -20 /tmp/pure-rust-check.err | sed 's/^/  /'; status=1; continue
   fi
-  linked=$(grep -lE '^cargo:(rustc-)?link-lib=' target/"$target"/debug/build/*/output 2>/dev/null || true)
+  linked=$(grep -lE '^cargo:(rustc-)?link-lib=' target/pure-rust-check/"$target"/debug/build/*/output 2>/dev/null || true)
   for out in $linked; do
     crate=$(basename "$(dirname "$out")")
     while IFS= read -r line; do
