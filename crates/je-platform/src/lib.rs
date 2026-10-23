@@ -43,3 +43,5 @@ pub mod user_data_sync;
 pub mod update;
 
 pub mod remote;
+
+pub mod opener;
