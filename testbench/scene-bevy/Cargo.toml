@@ -15,6 +15,8 @@ bevy = { version = "0.20", default-features = false, features = [
 ] }
 # O blake3 (via bevy_asset) compila C e assembly sem a feature `pure`.
 blake3 = { version = "1", features = ["pure"] }
+# O Bevy não reexporta o backend GL do wgpu; no WSLg a RTX só chega por GL sobre D3D12.
+wgpu = { version = "30", features = ["gles"] }
 
 [lints]
 workspace = true

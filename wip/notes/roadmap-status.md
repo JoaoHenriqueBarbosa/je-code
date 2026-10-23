@@ -9,8 +9,8 @@ Fase corrente: **0 (bancada e fundações)**.
 
 | Critério | Estado | Fonte |
 | --- | --- | --- |
-| H01 a H14, H23 a H27 com veredito | 6 de 19 (H02, H03, H24 confirmadas; H01, H04, H12 parciais); H05 em execução | eu, 2026-10-23 |
-| Substrato gráfico e de texto escolhido pela medida | NÃO MEDIDO | |
+| H01 a H14, H23 a H27 com veredito | 9 de 19 (H02, H03, H07, H24 confirmadas; H05 refutada; H01, H04, H12 parciais; H06 dispensada) | eu, 2026-10-23 |
+| Substrato gráfico e de texto escolhido pela medida | **Escolhido**: winit + vello (GPU) + vello_cpu (CPU) + parley + accesskit; Bevy refutado (H05) | eu, 2026-10-23 |
 | Harness do oráculo com um teste mocha portado e um screenshot comparado | NÃO MEDIDO | |
 | `scripts/pure-rust-check.sh` verde nos 4 alvos | NÃO MEDIDO | |
 
@@ -26,3 +26,4 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 - 2026-10-23: H12 parcial: turso lê e escreve o `state.vscdb` real igual ao oráculo; a crate `turso` compila C (simsimd), `turso_core` mínimo não.
 - 2026-10-23: H14 dimensionada (243 chamadas de subexpressão nas gramáticas: motor Oniguruma próprio); H25 dimensionada (2 209 testes em `vs/base`, 1 533 `common`).
 - 2026-10-23: escopo reduzido pelo user: agents view e sidebar do Copilot/chat (BYOK) saem; `inlineChat` e `mcp` a confirmar.
+- 2026-10-23: H05 refutada (Bevy: sem CPU, 34/27 fps em software, sem RTX no WSLg); H07 confirmada: substrato = winit + vello + vello_cpu + parley + accesskit.
