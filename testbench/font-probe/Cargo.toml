@@ -5,7 +5,10 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-parley = { version = "0.12", default-features = false, features = ["std"] }
+# `system` liga o fontique aos fontes do sistema; no Linux pelo fontconfig, aberto por dlopen.
+parley = { version = "0.12", default-features = false, features = ["std", "system"] }
+fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
+skrifa = "0.44"
 
 [lints]
 workspace = true

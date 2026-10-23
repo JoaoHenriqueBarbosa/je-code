@@ -5,9 +5,40 @@ use std::sync::Arc;
 
 use parley::fontique::Blob;
 use parley::{FontContext, LayoutContext, StyleProperty};
+use skrifa::MetadataProvider;
+
+/// Modo `system <lista de famílias CSS> <tamanho> <texto>`: resolve pelas fontes do sistema e diz qual
+/// fonte cobriu cada trecho (H09).
+fn system(families: &str, size: f32, text: &str) {
+    let mut fcx = FontContext::new();
+    let mut lcx: LayoutContext<[u8; 4]> = LayoutContext::new();
+    let mut builder = lcx.ranged_builder(&mut fcx, text, 1.0, true);
+    builder.push_default(StyleProperty::FontFamily(families.into()));
+    builder.push_default(StyleProperty::FontSize(size));
+    let mut layout = builder.build(text);
+    layout.break_all_lines(None);
+    for line in layout.lines() {
+        for item in line.items() {
+            if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                let r = run.run();
+                let font = r.font();
+                let name = skrifa::FontRef::from_index(font.data.as_ref(), font.index)
+                    .ok()
+                    .and_then(|f| f.localized_strings(skrifa::string::StringId::FAMILY_NAME).english_or_first().map(|s| s.chars().collect::<String>()))
+                    .unwrap_or_default();
+                let range = r.text_range();
+                println!("{:?}\t{}\tavanço {:.4}", &text[range], name, run.advance());
+            }
+        }
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("system") {
+        system(&args[1], args[2].parse().expect("tamanho"), &args[3]);
+        return;
+    }
     let data = std::fs::read(&args[0]).expect("fonte");
     let size: f32 = args[1].parse().expect("tamanho");
     let mut fcx = FontContext::new();
