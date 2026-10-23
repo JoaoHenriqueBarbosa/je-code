@@ -1,0 +1,17 @@
+[package]
+name = "je-render"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Lista de exibição neutra reproduzida em GPU (vello) e CPU (vello_cpu), e a apresentação na janela."
+
+[dependencies]
+vello = "0.11"
+vello_cpu = { version = "0.3", features = ["multithreading"] }
+softbuffer = "0.4"
+winit = "0.30"
+pollster = "0.4"
+
+[lints]
+workspace = true
