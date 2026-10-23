@@ -96,3 +96,6 @@ pub mod token_theme;
 pub mod inline_decorations;
 pub mod line_decorations;
 pub mod line_part;
+
+pub mod editor_common;
+pub mod sort_lines_command;

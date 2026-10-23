@@ -9,6 +9,7 @@ pub mod indentation_rules;
 pub mod modes_test_utils;
 pub mod on_enter_rules;
 pub mod random;
+pub mod test_command;
 pub mod test_language_configuration_service;
 pub mod test_line_token;
 pub mod test_text_model;
