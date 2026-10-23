@@ -21,3 +21,7 @@ harness = false
 [[bench]]
 name = "text_model_decorations"
 harness = false
+
+[[bench]]
+name = "bracket_pairs_tree"
+harness = false

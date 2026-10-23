@@ -15,8 +15,11 @@
 //! - `TextModel::tokenization()` é o `ITokenizationTextModelPart` (`tokenization_text_model_part.rs`):
 //!   `getLineTokens`, `forceTokenization`, `getLanguageId`/`setLanguageId`, tokens semânticos e eventos.
 //!
-//! Pendente, por depender de serviços ainda não portados: `bracketPairs`, `guides`, os provedores de
-//! decoração de colorização de pares de colchetes e de fontes por token, `getFormattingOptions`
+//! `bracketPairs`, `guides` e o provedor de decorações de colorização de pares de colchetes ligam-se ao
+//! modelo (`bracket_pairs()`, `guides()`, e as decorações somadas em `get_*_decorations`).
+//!
+//! Pendente, por depender de serviços ainda não portados: o provedor de decorações de fontes por token,
+//! `getFormattingOptions`
 //! (`languages.ts`), `edit(TextEdit)` (`edits/textEdit.ts`) e a criação do buffer a partir de stream
 //! (`createTextBufferFactoryFromStream`, depende de `stream.ts`).
 
@@ -31,6 +34,9 @@ use je_base::lifecycle::{Disposable, DisposableRef, IDisposable};
 use je_base::strings;
 use je_base::uri::URI;
 
+use crate::bracket_pairs_text_model_part::BracketPairsTextModelPart;
+use crate::bracket_pairs_text_model_part::colorized_bracket_pairs_decoration_provider::ColorizedBracketPairsDecorationProvider;
+use crate::guides_text_model_part::GuidesTextModelPart;
 use crate::attached_views::{AttachedView, AttachedViews};
 use crate::edit_operation::SingleEditOperation;
 use crate::edit_stack::EditStack;
@@ -1058,6 +1064,9 @@ pub struct TextModel {
     attached_views: Rc<AttachedViews>,
     on_did_change_attached: Rc<Emitter<()>>,
     tokenization: OnceCell<Rc<TokenizationTextModelPart>>,
+    bracket_pairs: Rc<BracketPairsTextModelPart>,
+    guides: GuidesTextModelPart,
+    decoration_provider: Rc<ColorizedBracketPairsDecorationProvider>,
 
     is_disposed: Cell<bool>,
     is_disposing: Cell<bool>,
@@ -1241,6 +1250,9 @@ impl TextModel {
             attached_views: attached_views.clone(),
             on_did_change_attached,
             tokenization: OnceCell::new(),
+            bracket_pairs: BracketPairsTextModelPart::new(me.clone(), language_configuration_service.clone()),
+            guides: GuidesTextModelPart::new(me.clone(), language_configuration_service.clone()),
+            decoration_provider: ColorizedBracketPairsDecorationProvider::new(me.clone(), options.bracket_pair_colorization_options),
             is_disposed: Cell::new(false),
             is_disposing: Cell::new(false),
             version_id: Cell::new(1),
@@ -1273,9 +1285,23 @@ impl TextModel {
         let _ = model.tokenization.set(part);
         language_service.request_rich_language_features(language_id);
 
+        model.base.register(model.bracket_pairs.clone());
+        model.base.register(model.decoration_provider.clone());
+        let provider = model.decoration_provider.clone();
+        model.base.register(model.bracket_pairs.on_did_change().listen(move |_| provider.fire_did_change()));
+        let weak = model.me.clone();
+        model.base.register(model.decoration_provider.on_did_change().listen(move |_| {
+            if let Some(model) = weak.upgrade() {
+                model.on_did_change_decorations.begin_deferred_emit();
+                model.on_did_change_decorations.fire(&model);
+                model.on_did_change_decorations.end_deferred_emit(&model);
+            }
+        }));
+
         let weak = model.me.clone();
         model.base.register(language_configuration_service.on_did_change().listen(move |e| {
             if let Some(model) = weak.upgrade() {
+                model.bracket_pairs.handle_language_configuration_service_change(e);
                 model.tokenization().handle_language_configuration_service_change(|language_id| e.affects(language_id));
             }
         }));
@@ -1403,6 +1429,7 @@ impl TextModel {
             return;
         }
         self.tokenization().handle_did_change_content(&change);
+        self.bracket_pairs.handle_did_change_content(&change);
         let mut content_change_event = InternalModelContentChangeEvent {
             raw_content_changed_event: raw_change,
             content_changed_event: change,
@@ -1645,6 +1672,8 @@ impl TextModel {
         let e = current.create_change_event(&new_opts);
         self.options.set(new_opts);
 
+        self.bracket_pairs.handle_did_change_options(&e);
+        self.decoration_provider.handle_did_change_options(&e);
         self.on_did_change_options.fire(e);
     }
 
@@ -2131,6 +2160,16 @@ impl TextModel {
     }
 
     /// `tokenization`: a parte de tokenização (`ITokenizationTextModelPart`).
+    /// `bracketPairs` (`IBracketPairsTextModelPart`).
+    pub fn bracket_pairs(&self) -> &Rc<BracketPairsTextModelPart> {
+        &self.bracket_pairs
+    }
+
+    /// `guides` (`IGuidesTextModelPart`).
+    pub fn guides(&self) -> &GuidesTextModelPart {
+        &self.guides
+    }
+
     pub fn tokenization(&self) -> &Rc<TokenizationTextModelPart> {
         self.tokenization.get().expect("a parte de tokenização é criada no construtor")
     }
@@ -3018,8 +3057,17 @@ impl TextModel {
         let end_column = self.get_line_max_column(end_line_number);
         let range = Range::new(start_line_number, 1, end_line_number, end_column);
 
-        // Os provedores de decoração de colchetes e de fontes por token ainda não existem.
-        self.get_decorations_in_range_impl(&range, owner_id, filter_out_validation, filter_font_decorations, only_margin_decorations)
+        // O provedor de decorações de fontes por token ainda não existe.
+        let mut decorations =
+            self.get_decorations_in_range_impl(&range, owner_id, filter_out_validation, filter_font_decorations, only_margin_decorations);
+        decorations.extend(self.decoration_provider.get_decorations_in_range(
+            &range,
+            Some(owner_id),
+            filter_out_validation,
+            filter_font_decorations,
+            false,
+        ));
+        decorations
     }
 
     /// `getDecorationsInRange(range, ownerId, filterOutValidation, filterFontDecorations, onlyMinimapDecorations, onlyMarginDecorations)`.
@@ -3032,7 +3080,16 @@ impl TextModel {
         only_margin_decorations: bool,
     ) -> Vec<ModelDecoration> {
         let validated_range = self.validate_range(range);
-        self.get_decorations_in_range_impl(&validated_range, owner_id, filter_out_validation, filter_font_decorations, only_margin_decorations)
+        let mut decorations =
+            self.get_decorations_in_range_impl(&validated_range, owner_id, filter_out_validation, filter_font_decorations, only_margin_decorations);
+        decorations.extend(self.decoration_provider.get_decorations_in_range(
+            &validated_range,
+            Some(owner_id),
+            filter_out_validation,
+            filter_font_decorations,
+            false,
+        ));
+        decorations
     }
 
     /// `getOverviewRulerDecorations(ownerId, filterOutValidation, filterFontDecorations)`.
@@ -3099,10 +3156,13 @@ impl TextModel {
 
     /// `getAllDecorations(ownerId, filterOutValidation, filterFontDecorations)`.
     pub fn get_all_decorations(&self, owner_id: i32, filter_out_validation: bool, filter_font_decorations: bool) -> Vec<ModelDecoration> {
-        self.decorations
+        let mut result = self
+            .decorations
             .borrow_mut()
             .trees
-            .get_all(self, owner_id, filter_out_validation, filter_font_decorations, false, false)
+            .get_all(self, owner_id, filter_out_validation, filter_font_decorations, false, false);
+        result.extend(self.decoration_provider.get_all_decorations(Some(owner_id), filter_out_validation, filter_font_decorations));
+        result
     }
 
     /// `getAllMarginDecorations(ownerId)`.
@@ -3358,4 +3418,22 @@ impl TextModel {
     }
 
     // #endregion
+}
+
+impl crate::bracket_pairs_text_model_part::bracket_pairs_tree::tokenizer::ITokenizerSource for TextModel {
+    fn get_value(&self) -> JsString {
+        TextModel::get_value(self)
+    }
+
+    fn get_line_count(&self) -> i32 {
+        TextModel::get_line_count(self)
+    }
+
+    fn get_line_length(&self, line_number: i32) -> usize {
+        TextModel::get_line_length(self, line_number)
+    }
+
+    fn get_line_tokens(&self, line_number: i32) -> crate::line_tokens::LineTokens {
+        self.tokenization().get_line_tokens(line_number)
+    }
 }

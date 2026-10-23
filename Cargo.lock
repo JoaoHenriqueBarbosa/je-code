@@ -4021,6 +4021,9 @@ name = "je-code"
 version = "0.0.0"
 dependencies = [
  "je-render",
+ "je-text",
+ "je-theme",
+ "je-ui",
  "winit",
 ]
 
@@ -4058,6 +4061,7 @@ name = "je-platform"
 version = "0.0.0"
 dependencies = [
  "je-base",
+ "je-storage",
  "libc",
  "notify",
  "tempfile",

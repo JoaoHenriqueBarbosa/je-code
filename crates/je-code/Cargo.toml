@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 je-render = { path = "../je-render" }
+je-theme = { path = "../je-theme" }
+je-ui = { path = "../je-ui" }
+je-text = { path = "../je-text" }
 winit = "0.30"
 
 [lints]

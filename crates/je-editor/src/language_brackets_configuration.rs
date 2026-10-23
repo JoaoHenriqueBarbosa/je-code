@@ -70,6 +70,24 @@ pub enum BracketKind {
     Closing(ClosingBracketKind),
 }
 
+impl BracketKind {
+    /// `bracketText`.
+    pub fn bracket_text(&self) -> &JsString {
+        match self {
+            BracketKind::Opening(b) => &b.bracket_text,
+            BracketKind::Closing(b) => &b.bracket_text,
+        }
+    }
+
+    /// `languageId`.
+    pub fn language_id(&self) -> &str {
+        match self {
+            BracketKind::Opening(b) => &b.language_id,
+            BracketKind::Closing(b) => &b.language_id,
+        }
+    }
+}
+
 fn filter_valid_brackets(bracket_pairs: &[CharacterPair]) -> Vec<CharacterPair> {
     bracket_pairs
         .iter()

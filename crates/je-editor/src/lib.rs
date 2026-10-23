@@ -13,6 +13,7 @@
 //! TextMate e a leitura das extensões ficam no crate `je-languages`.
 
 pub mod attached_views;
+pub mod bracket_pairs_text_model_part;
 pub mod character_classifier;
 pub mod character_pair;
 pub mod contiguous_multiline_tokens;
@@ -26,6 +27,7 @@ pub mod electric_character;
 pub mod encoded_token_attributes;
 pub mod eol_counter;
 pub mod fixed_array;
+pub mod guides_text_model_part;
 pub mod indent_rules;
 pub mod indentation;
 pub mod indentation_guesser;
@@ -62,8 +64,10 @@ pub mod string_builder;
 pub mod supports;
 pub mod text_change;
 pub mod text_model;
+pub mod text_model_bracket_pairs;
 pub mod text_model_edit_source;
 pub mod text_model_events;
+pub mod text_model_guides;
 pub mod text_model_search;
 pub mod text_model_tokens;
 pub mod tokenization_registry;

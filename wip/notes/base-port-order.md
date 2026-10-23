@@ -8,49 +8,49 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `decorators` (131 linhas)
 - [x] `envfile` (100 linhas)
 - [x] `errors` (357 linhas)
-- [ ] `functional` (32 linhas)
-- [ ] `hierarchicalKind` (31 linhas)
-- [ ] `idGenerator` (21 linhas)
+- [x] `functional` (32 linhas)
+- [x] `hierarchicalKind` (31 linhas)
+- [x] `idGenerator` (21 linhas)
 - [x] `json` (1344 linhas)
-- [ ] `jsonSchema` (330 linhas)
-- [ ] `jsonc` (64 linhas)
+- [x] `jsonSchema` (330 linhas)
+- [x] `jsonc` (64 linhas)
 - [x] `keyCodes` (838 linhas)
 - [x] `lazy` (57 linhas)
 - [x] `linkedList` (151 linhas)
 - [ ] `managedSettings` (82 linhas)
-- [ ] `markdownLinks` (200 linhas)
+- [x] `markdownLinks` (200 linhas)
 - [x] `marshallingIds` (33 linhas)
 - [x] `navigator` (50 linhas)
 - [ ] `observable` (8 linhas)
-- [ ] `parsers` (79 linhas)
+- [x] `parsers` (79 linhas)
 - [x] `platform` (284 linhas)
 - [ ] `ports` (13 linhas)
-- [ ] `range` (60 linhas)
-- [ ] `sseParser` (245 linhas)
-- [ ] `stopwatch` (41 linhas)
+- [x] `range` (60 linhas)
+- [x] `sseParser` (245 linhas)
+- [x] `stopwatch` (41 linhas)
 - [x] `symbols` (9 linhas)
-- [ ] `uint` (59 linhas)
+- [x] `uint` (59 linhas)
 - [x] `uriTemplate` (305 linhas)
 - [x] `uuid` (70 linhas)
-- [ ] `yaml` (1701 linhas)
+- [x] `yaml` (1701 linhas)
 
 ## Camada 1
 - [x] `assert` (89 linhas): errors
 - [ ] `color` (942 linhas): charCode
-- [ ] `controlFlow` (69 linhas): errors
+- [x] `controlFlow` (69 linhas): errors
 - [x] `date` (342 linhas): lazy, platform
 - [x] `jsonErrorMessages` (26 linhas): json
-- [ ] `jsonFormatter` (261 linhas): json
+- [x] `jsonFormatter` (261 linhas): json
 - [x] `keybindings` (284 linhas): errors, keyCodes, platform
-- [ ] `layout` (166 linhas): range
-- [ ] `linkedText` (55 linhas): decorators
+- [x] `layout` (166 linhas): range
+- [x] `linkedText` (55 linhas): decorators
 - [ ] `performance` (149 linhas): platform
 - [ ] `process` (76 linhas): platform
 - [ ] `processes` (151 linhas): platform
 
 ## Camada 2
 - [ ] `desktopEnvironmentInfo` (101 linhas): process
-- [ ] `jsonEdit` (183 linhas): json, jsonFormatter
+- [x] `jsonEdit` (183 linhas): json, jsonFormatter
 - [x] `keybindingLabels` (184 linhas): keybindings, platform
 - [x] `keybindingParser` (102 linhas): keyCodes, keybindings
 - [x] `numbers` (121 linhas): assert
@@ -74,7 +74,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `normalization` (63 linhas): map
 
 ## Camada 6
-- [ ] `actions` (303 linhas): event, lifecycle, platform
+- [x] `actions` (303 linhas): event, lifecycle, platform
 - [x] `arrays` (949 linhas): arraysFind, cancellation, errors, sequence
 - [x] `arraysFind` (226 linhas): arrays
 - [ ] `async` (2752 linhas): cancellation, errors, event, lazy, lifecycle, platform, resources, symbols, uri
@@ -84,11 +84,11 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [ ] `codicons` (66 linhas): codiconsLibrary, codiconsUtil, themables
 - [ ] `codiconsLibrary` (776 linhas): codiconsUtil
 - [ ] `codiconsUtil` (28 linhas): themables, types
-- [ ] `dataTransfer` (198 linhas): arrays, iterator, uri, uuid
+- [x] `dataTransfer` (198 linhas): arrays, iterator, uri, uuid
 - [ ] `defaultAccount` (102 linhas): policy
 - [ ] `editArcTracker` (365 linhas): errors, strings
-- [ ] `equals` (206 linhas): arrays
-- [ ] `errorMessage` (113 linhas): actions, arrays, types
+- [x] `equals` (206 linhas): arrays
+- [x] `errorMessage` (113 linhas): actions, arrays, types
 - [x] `event` (1991 linhas): async, cancellation, collections, errors, functional, lifecycle, linkedList, observable, process, stopwatch, symbols
 - [x] `extpath` (433 linhas): charCode, path, platform, strings, types
 - [x] `filters` (981 linhas): charCode, map, normalization, strings
@@ -102,7 +102,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `iconLabels` (116 linhas): filters, strings, themables
 - [ ] `image` (150 linhas): buffer
 - [ ] `ime` (36 linhas): event
-- [ ] `jsonRpcProtocol` (303 linhas): async, cancellation, errors, lifecycle, types
+- [x] `jsonRpcProtocol` (303 linhas): async, cancellation, errors, lifecycle, types
 - [x] `labels` (484 linhas): extpath, path, platform, resources, strings, uri
 - [x] `lifecycle` (974 linhas): arrays, collections, errors, functional, iterator, map, uri
 - [x] `marshalling` (84 linhas): buffer, marshallingIds, uri
@@ -111,18 +111,18 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `paging` (392 linhas): arrays, cancellation, errors, event
 - [ ] `policy` (161 linhas): defaultAccount
 - [ ] `product` (478 linhas): collections, platform, policy
-- [ ] `resourceTree` (187 linhas): decorators, path, resources, ternarySearchTree, uri
+- [x] `resourceTree` (187 linhas): decorators, path, resources, ternarySearchTree, uri
 - [x] `resources` (458 linhas): charCode, extpath, network, path, platform, strings, uri
-- [ ] `scrollable` (522 linhas): event, lifecycle
+- [x] `scrollable` (522 linhas): event, lifecycle
 - [ ] `search` (48 linhas): strings
-- [ ] `sequence` (34 linhas): event
-- [ ] `severity` (56 linhas): strings
+- [x] `sequence` (34 linhas): event
+- [x] `severity` (56 linhas): strings
 - [x] `stream` (790 linhas): cancellation, errors, lifecycle
 - [x] `strings` (1424 linhas): cache, charCode, lazy, uint
 - [x] `ternarySearchTree` (796 linhas): arrays, assert, charCode, strings, uri
-- [ ] `tfIdf` (240 linhas): cancellation
+- [x] `tfIdf` (240 linhas): cancellation
 - [x] `themables` (117 linhas): codicons
 - [ ] `uriIpc` (163 linhas): buffer, marshalling, marshallingIds, uri
 - [ ] `uriTransformer` (51 linhas): uriIpc
-- [ ] `validation` (396 linhas): arrays, jsonSchema
+- [x] `validation` (396 linhas): arrays, jsonSchema
 - [ ] `zip` (91 linhas): buffer, lazy

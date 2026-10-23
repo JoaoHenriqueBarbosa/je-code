@@ -3,8 +3,8 @@
 //! `setLanguageId`, `getWordAtPosition` e os eventos `onDidChangeTokens`/`onDidChangeLanguage`).
 //!
 //! Divergências:
-//! - O `BracketPairsTextModelPart` ainda não existe, então `handleDidChangeTokens`,
-//!   `handleDidChangeBackgroundTokenizationState` e `handleDidChangeLanguage` dele não são chamados.
+//! - O `BracketPairsTextModelPart` é o do modelo (`model.bracket_pairs()`), e não um parâmetro do
+//!   construtor: o modelo o cria antes desta parte e a partir dele as notificações seguem.
 //! - A definição de palavra de cada linguagem vem de um provedor ([`WordDefinitionProvider`]), que o
 //!   `TextModel` liga ao `ILanguageConfigurationService`.
 
@@ -98,6 +98,12 @@ impl TokenizationTextModelPart {
             }
         }));
         let weak = Rc::downgrade(&part);
+        part.base.register(part.tokens.on_did_change_background_tokenization_state().listen(move |_| {
+            if let Some(part) = weak.upgrade() {
+                part.model().bracket_pairs().handle_did_change_background_tokenization_state();
+            }
+        }));
+        let weak = Rc::downgrade(&part);
         part.base.register(part.tokens.on_did_change_font_tokens().listen(move |e| {
             if let Some(part) = weak.upgrade()
                 && !part.model().is_disposing()
@@ -173,7 +179,9 @@ impl TokenizationTextModelPart {
     }
 
     fn emit_model_tokens_changed_event(&self, e: &ModelTokensChangedEvent) {
-        if !self.model().is_disposing() {
+        let model = self.model();
+        if !model.is_disposing() {
+            model.bracket_pairs().handle_did_change_tokens(e);
             self.on_did_change_tokens.fire(e.clone());
         }
     }
@@ -373,6 +381,7 @@ impl TokenizationTextModelPart {
         *self.language_id.borrow_mut() = language_id.to_owned();
         // A troca de linguagem refaz a tokenização: no original o observável `_languageIdObs` recria os tokens.
         self.tokens.todo_reset_tokenization(true);
+        self.model().bracket_pairs().handle_did_change_language(&e);
 
         self.on_did_change_language.fire(e);
         self.on_did_change_language_configuration.fire(ModelLanguageConfigurationChangedEvent);
