@@ -130,3 +130,5 @@ pub mod text;
 pub mod cursor_common;
 pub mod input_mode;
 pub mod token_store;
+
+pub mod coordinates_converter;
