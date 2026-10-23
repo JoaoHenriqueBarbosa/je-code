@@ -49,3 +49,4 @@ pub mod opener;
 pub mod terminal;
 
 pub mod sandbox;
+pub mod network_filter;
