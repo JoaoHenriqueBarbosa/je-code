@@ -1,5 +1,5 @@
-//! Casos que NÃO são do original: o `actions.test.ts` do VS Code é o do `menuService`, que não foi portado
-//! (ver o topo de `src/actions/mod.rs`). Estes casos cobrem o que `actions.ts` faz sozinho: `MenuId`, `MenuRegistry`,
+//! Casos que NÃO são do original: o único teste de `actions/common` do VS Code é o `menuService.test.ts`, portado em
+//! `tests/menu_service.rs`; não há `actions.test.ts`. Estes casos cobrem o que `actions.ts` faz sozinho: `MenuId`, `MenuRegistry`,
 //! `MenuItemAction` e `registerAction2`. Os valores esperados seguem o código do original.
 
 mod common;

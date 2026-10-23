@@ -18,6 +18,14 @@ je-instantiation = { path = "../je-instantiation" }
 # O motor de `RegExp` ECMAScript (as regex do `when`, do scanner).
 zyarr = { path = "../zyarr" }
 
+# O parser de URL do padrão WHATWG (`new URL(...)` do navegador e do Node), com `idna` (UTS 46): o
+# `urlGlob.ts` e o `trustedDomains.ts` dependem de como o navegador resolve autoridade, `\\`, segmentos de ponto
+# e nomes IDN. Rust puro, sem C (`scripts/pure-rust-check.sh` confere).
+url = "2"
+
+# Os mapas na ordem em que o original os escreve (`IStringDictionary`).
+indexmap = "2"
+
 # Observação do sistema de arquivos (inotify, FSEvents, ReadDirectoryChangesW): o `notify` no lugar do
 # `@parcel/watcher` e do `fs.watch` do Node. Fora do alvo web, onde não há sistema de arquivos.
 # Linux usa inotify e Windows usa ReadDirectoryChangesW, sem feature nenhuma. No macOS o backend é o

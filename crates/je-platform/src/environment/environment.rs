@@ -100,6 +100,8 @@ pub trait EnvironmentService {
     fn policy_file(&self) -> Option<URI>;
 }
 
+je_instantiation::service_id!(pub I_ENVIRONMENT_SERVICE: dyn EnvironmentService = "environmentService");
+
 /// `INativeEnvironmentService`.
 pub trait NativeEnvironmentServiceApi: EnvironmentService {
     // --- CLI Arguments
@@ -126,3 +128,5 @@ pub trait NativeEnvironmentServiceApi: EnvironmentService {
     fn export_policy_data(&self) -> Option<String>;
     fn export_default_keybindings(&self) -> Option<String>;
 }
+
+je_instantiation::service_id!(pub I_NATIVE_ENVIRONMENT_SERVICE: dyn NativeEnvironmentServiceApi = "environmentService");

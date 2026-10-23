@@ -6,7 +6,11 @@
 
 #[allow(clippy::module_inception)] // `telemetry.rs` é o porte de `telemetry.ts`, como no original
 pub mod telemetry;
+pub mod telemetry_log_appender;
+pub mod telemetry_service;
 pub mod telemetry_utils;
 
 pub use telemetry::*;
+pub use telemetry_log_appender::*;
+pub use telemetry_service::*;
 pub use telemetry_utils::*;

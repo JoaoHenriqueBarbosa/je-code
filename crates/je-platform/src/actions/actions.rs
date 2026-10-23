@@ -328,7 +328,8 @@ impl MenuRegistry {
 /// `IMenuItemHide`.
 #[derive(Clone)]
 pub struct MenuItemHide {
-    pub is_hidden: bool,
+    /// `isHidden`: lido na hora da consulta (o original é um getter).
+    pub is_hidden: Rc<dyn Fn() -> bool>,
     pub hide: ActionRef,
     pub toggle: ActionRef,
 }

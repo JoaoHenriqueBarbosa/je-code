@@ -1,14 +1,13 @@
 //! Porte de `src/vs/platform/telemetry/common/telemetryUtils.ts`.
 //!
 //! Divergências:
-//! - `getTelemetryLevel(configurationService)` recebe a leitura de configuração (`&dyn Fn(&str) -> Dynamic`),
-//!   porque o `IConfigurationService` ainda não é um trait neste porte (TODO(integração)).
-//! - `supportsTelemetry`, `isLoggingOnly` e `isInternalTelemetry` recebem structs com só os campos que leem
-//!   do `IProductService` e do `IEnvironmentService` (também sem trait aqui).
+//! - `getTelemetryLevel` tem duas formas: [`get_telemetry_level_of`] (o `IConfigurationService`) e
+//!   [`get_telemetry_level`], sobre uma leitura de configuração qualquer (`&dyn Fn(&str) -> Dynamic`).
+//! - `supportsTelemetry` e `isLoggingOnly` recebem os traits [`IProductService`] e [`EnvironmentService`].
 //! - As regex de `cleanData` são [`zyarr::RegExp`] (a mesma semântica ECMAScript do V8); o `lastIndex` de
 //!   uma regex global é tratado como no laço `while (exec)` do original.
-//! - `TelemetryLogAppender` e `verifyMicrosoftInternalDomain` (de `commonProperties.ts`) não são portados: o
-//!   primeiro precisa do `ILoggerService`/`IEnvironmentService`/`IProductService` como traits.
+//! - `verifyMicrosoftInternalDomain` (de `commonProperties.ts`) não é portado: serve só à telemetria interna
+//!   da Microsoft. O `TelemetryLogAppender` está em `telemetry_log_appender.rs`.
 
 use std::rc::Rc;
 
@@ -23,13 +22,23 @@ use super::telemetry::{
     CommonPropertyValue, ICustomEndpointTelemetryService, ITelemetryData, ITelemetryService, TelemetryConfiguration, TelemetryEndpoint, TelemetryLevel,
     TELEMETRY_CRASH_REPORTER_SETTING_ID, TELEMETRY_OLD_SETTING_ID, TELEMETRY_SETTING_ID,
 };
+use crate::configuration::service::IConfigurationService;
+use crate::environment::environment::EnvironmentService;
 use crate::js::to_js_string;
+use crate::product::IProductService;
 
 /// `TelemetryTrustedValue`: um valor que não deve ser limpo, porque é confiável (sem caminhos nem dados pessoais).
 /// Na forma serializada (extension host) vira um objeto com `isTrustedTelemetryValue`.
 #[derive(Clone, Debug)]
 pub struct TelemetryTrustedValue {
     pub value: Dynamic,
+}
+
+impl TelemetryTrustedValue {
+    /// A forma de objeto que o `clean_data` reconhece (`{ isTrustedTelemetryValue: true, value }`).
+    pub fn to_dynamic(&self) -> Dynamic {
+        Dynamic::object([("isTrustedTelemetryValue", Dynamic::Bool(true)), ("value", self.value.clone())])
+    }
 }
 
 /// `NullTelemetryServiceShape`.
@@ -113,51 +122,40 @@ pub struct UriDescriptor {
     pub path: Option<String>,
 }
 
-/// O que `supportsTelemetry` e `isLoggingOnly` leem do `IProductService`.
-#[derive(Clone, Debug, Default)]
-pub struct TelemetryProductInfo {
-    pub enable_telemetry: bool,
-    pub ai_config_aria_key: Option<String>,
-    pub msft_internal_domains: Vec<String>,
-}
-
-/// O que `supportsTelemetry` e `isLoggingOnly` leem do `IEnvironmentService`.
-#[derive(Clone, Debug, Default)]
-pub struct TelemetryEnvironmentInfo {
-    pub is_built: bool,
-    pub disable_telemetry: bool,
-    pub extension_tests_location_uri: bool,
-}
-
 /// Se há suporte a registrar telemetria: o produto pode coletar, mas isso não diz se pode enviar.
-pub fn supports_telemetry(product: &TelemetryProductInfo, environment: &TelemetryEnvironmentInfo) -> bool {
+pub fn supports_telemetry(product_service: &dyn IProductService, environment_service: &dyn EnvironmentService) -> bool {
     // If it's OSS and telemetry isn't disabled via the CLI we will allow it for logging only purposes
-    if !environment.is_built && !environment.disable_telemetry {
+    if !environment_service.is_built() && !environment_service.disable_telemetry() {
         return true;
     }
-    !(environment.disable_telemetry || !product.enable_telemetry)
+    !(environment_service.disable_telemetry() || !product_service.enable_telemetry())
 }
 
 /// Se estamos no modo só de registro, para depurar a telemetria: nada é enviado, só registrado.
-pub fn is_logging_only(product: &TelemetryProductInfo, environment: &TelemetryEnvironmentInfo) -> bool {
+pub fn is_logging_only(product_service: &dyn IProductService, environment_service: &dyn EnvironmentService) -> bool {
     // If we're testing an extension, log telemetry for debug purposes
-    if environment.extension_tests_location_uri {
+    if environment_service.extension_tests_location_uri().is_some() {
         return true;
     }
     // Logging only mode is only for OSS
-    if environment.is_built {
+    if environment_service.is_built() {
         return false;
     }
-    if environment.disable_telemetry {
+    if environment_service.disable_telemetry() {
         return false;
     }
-    if product.enable_telemetry && product.ai_config_aria_key.as_deref().is_some_and(|key| !key.is_empty()) {
+    if product_service.enable_telemetry() && product_service.ai_config_aria_key().is_some_and(|key| !key.is_empty()) {
         return false;
     }
     true
 }
 
-/// Como a telemetria é tratada segundo a configuração do usuário.
+/// `getTelemetryLevel(configurationService)`: como a telemetria é tratada segundo a configuração do usuário.
+pub fn get_telemetry_level_of(configuration_service: &dyn IConfigurationService) -> TelemetryLevel {
+    get_telemetry_level(&|key| configuration_service.get_value(Some(key), None))
+}
+
+/// `getTelemetryLevel`, sobre uma leitura de configuração qualquer (`getValue(key)`).
 pub fn get_telemetry_level(get_value: &dyn Fn(&str) -> Dynamic) -> TelemetryLevel {
     let new_config = get_value(TELEMETRY_SETTING_ID);
     let crash_reporter_config = get_value(TELEMETRY_CRASH_REPORTER_SETTING_ID);
@@ -183,6 +181,16 @@ pub fn get_telemetry_level(get_value: &dyn Fn(&str) -> Dynamic) -> TelemetryLeve
 pub struct ValidatedTelemetryData {
     pub properties: Vec<(String, String)>,
     pub measurements: Vec<(String, f64)>,
+}
+
+impl ValidatedTelemetryData {
+    /// O objeto `{ properties, measurements }` que `validateTelemetryData` devolve.
+    pub fn to_dynamic(&self) -> Dynamic {
+        Dynamic::object([
+            ("properties", Dynamic::object(self.properties.iter().map(|(k, v)| (k.as_str(), Dynamic::string(v))))),
+            ("measurements", Dynamic::object(self.measurements.iter().map(|(k, v)| (k.as_str(), Dynamic::Number(*v))))),
+        ])
+    }
 }
 
 /// `validateTelemetryData`.

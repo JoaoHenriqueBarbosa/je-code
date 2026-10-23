@@ -70,6 +70,59 @@ pub struct ConfigurationService {
     queue: Queue<()>,
     formatting_options: Cell<Option<(bool, usize)>>,
     eol: RefCell<Option<String>>,
+    /// O próprio serviço, para os métodos do trait [`IConfigurationService`] (que recebem `&self`) chamarem os que
+    /// precisam do `Rc`.
+    this: std::rc::Weak<Self>,
+}
+
+/// `IConfigurationService` (de `configuration.ts`): o contrato do serviço de configuração, que os demais serviços
+/// recebem por injeção.
+///
+/// Decisões de tradução:
+/// - As sobrecargas de `getValue` e `updateValue` são a forma completa: seção e `overrides` opcionais.
+/// - `reloadConfiguration(target?)` não recebe o alvo (`ConfigurationTarget | IWorkspaceFolder`): o serviço
+///   desta camada lê só o `settings.json` do usuário e ignora o argumento, como o original.
+/// - `getConfigurationData()` devolve `Option` (o `IConfigurationData | null` do original).
+pub trait IConfigurationService {
+    fn on_did_change_configuration(&self) -> Event<Rc<ConfigurationChangeEvent>>;
+    fn get_configuration_data(&self) -> Option<ConfigurationData>;
+    fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic;
+    fn update_value(&self, key: &str, value: Dynamic, overrides: Option<ConfigurationUpdateOverrides>, target: Option<ConfigurationTarget>) -> Promise<()>;
+    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> ConfigurationInspectValue;
+    fn reload_configuration(&self) -> Promise<()>;
+    fn keys(&self) -> ConfigurationKeys;
+}
+
+je_instantiation::service_id!(pub I_CONFIGURATION_SERVICE: dyn IConfigurationService = "configurationService");
+
+impl IConfigurationService for ConfigurationService {
+    fn on_did_change_configuration(&self) -> Event<Rc<ConfigurationChangeEvent>> {
+        ConfigurationService::on_did_change_configuration(self)
+    }
+    fn get_configuration_data(&self) -> Option<ConfigurationData> {
+        Some(ConfigurationService::get_configuration_data(self))
+    }
+    fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic {
+        ConfigurationService::get_value(self, section, overrides)
+    }
+    fn update_value(&self, key: &str, value: Dynamic, overrides: Option<ConfigurationUpdateOverrides>, target: Option<ConfigurationTarget>) -> Promise<()> {
+        match self.this.upgrade() {
+            Some(this) => ConfigurationService::update_value(&this, key, value, overrides, target),
+            None => Promise::rejected(Error::new("ConfigurationService is disposed")),
+        }
+    }
+    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> ConfigurationInspectValue {
+        ConfigurationService::inspect(self, key, overrides)
+    }
+    fn reload_configuration(&self) -> Promise<()> {
+        match self.this.upgrade() {
+            Some(this) => ConfigurationService::reload_configuration(&this),
+            None => Promise::rejected(Error::new("ConfigurationService is disposed")),
+        }
+    }
+    fn keys(&self) -> ConfigurationKeys {
+        ConfigurationService::keys(self)
+    }
 }
 
 impl ConfigurationService {
@@ -104,6 +157,7 @@ impl ConfigurationService {
         base.register(on_did_change_configuration.clone());
 
         let service = Rc::new_cyclic(|weak: &std::rc::Weak<Self>| {
+            let weak_for_self = weak.clone();
             let weak = weak.clone();
             let reload_configuration_scheduler = RunOnceScheduler::new(
                 move || {
@@ -128,6 +182,7 @@ impl ConfigurationService {
                 queue: Queue::new(),
                 formatting_options: Cell::new(None),
                 eol: RefCell::new(None),
+                this: weak_for_self,
             }
         });
 
