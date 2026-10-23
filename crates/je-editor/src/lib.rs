@@ -100,3 +100,5 @@ pub mod edits;
 pub mod find;
 
 pub mod folding;
+
+pub mod annotations;
