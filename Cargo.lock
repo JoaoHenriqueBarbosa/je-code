@@ -3593,6 +3593,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-ui"
+version = "0.0.0"
+dependencies = [
+ "je-render",
+ "je-text",
+]
+
+[[package]]
 name = "jiff"
 version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5442,6 +5450,7 @@ version = "0.0.0"
 dependencies = [
  "je-render",
  "je-theme",
+ "je-ui",
  "png",
 ]
 

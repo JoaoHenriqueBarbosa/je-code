@@ -7,6 +7,7 @@
 use je_render::kurbo::{Rect, RoundedRect};
 use je_render::{DisplayList, Rgba, Shape, render_rgba};
 use je_theme::ColorTheme;
+use je_ui::{Content, Role, Tree};
 
 const W: u16 = 1200;
 const H: u16 = 800;
@@ -29,6 +30,20 @@ fn main() {
     let editor = RoundedRect::new(52.0, 35.0, 1196.0, 768.0, 8.0);
     list.fill(Shape::RoundedRect(editor), c("editor.background"));
     list.stroke(Shape::RoundedRect(RoundedRect::new(52.5, 35.5, 1195.5, 767.5, 7.5)), 1.0, c("editorGroup.border"));
+    // Ícones da activity bar pela árvore do je-ui: rótulo 36x36 em x=8, y=39 + 44*i (medido no oráculo),
+    // codicon de 24 px na cor `activityBar.inactiveForeground`. Os ids são os que o iconRegistry do
+    // oráculo resolve (explorer-view-icon = files, search-view-icon = search-large...).
+    let mut tree = Tree::new();
+    let root = tree.root();
+    tree.set_bounds(root, Rect::new(0.0, 0.0, w, h));
+    let inactive = c("activityBar.inactiveForeground");
+    let icons = [("files", 39.0), ("search-large", 83.0), ("source-control", 127.0), ("debug-alt", 171.0), ("extensions", 215.0), ("account", 684.0), ("settings-gear", 728.0)];
+    for (id, y) in icons {
+        let node = tree.create(root, Role::Button);
+        tree.set_bounds(node, Rect::new(8.0, y, 44.0, y + 36.0));
+        tree.style_mut(node).content = Content::Codicon { id: id.into(), size: 24.0, color: inactive };
+    }
+    tree.paint(&mut list, 1.0);
     let rgba = render_rgba(&list, c("titleBar.activeBackground"), W, H);
     let file = std::fs::File::create(&args[1]).expect("saída");
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), u32::from(W), u32::from(H));

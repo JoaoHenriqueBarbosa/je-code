@@ -9,7 +9,7 @@ Fase corrente: **0 (bancada e fundações)**.
 
 | Critério | Estado | Fonte |
 | --- | --- | --- |
-| H01 a H14, H23 a H27 com veredito | 17 de 19 (confirmadas: H02, H03, H07, H10, H14, H23 no Windows, H24, H26, H27; refutada: H05; parciais: H01, H04, H09, H12, H13 (só o JSON); dispensada: H06). Em medição: H11. NÃO MEDIDO: H08 (web), H25 além de `vs/base` | eu, 2026-10-23 |
+| H01 a H14, H23 a H27 com veredito | 18 de 19 (confirmadas: H02, H03, H07, H10, H11 (codicon), H14, H23 no Windows, H24, H26, H27; refutada: H05; parciais: H01, H04, H09, H12, H13 (só o JSON); dispensada: H06). Em medição: nenhuma. NÃO MEDIDO: H08 (web), H25 além de `vs/base` | eu, 2026-10-23 |
 | Substrato gráfico e de texto escolhido pela medida | **Escolhido**: winit + vello (GPU) + vello_cpu (CPU) + parley + accesskit; Bevy refutado (H05) | eu, 2026-10-23 |
 | Harness do oráculo com um teste mocha portado e um screenshot comparado | Testes mocha: 72+ casos portados passando. Screenshot de ponta a ponta: moldura do je-code contra o oráculo, fundos idênticos, 5,285% de pixels diferentes só no que falta portar (H26) | eu, 2026-10-23 |
 | `scripts/pure-rust-check.sh` verde nos 4 alvos | **Verde** para o produto (`crates/*`) nos 4 alvos; ligações só a libs do sistema (`libdl` no Linux, `libobjc` no macOS) | eu, 2026-10-23 |

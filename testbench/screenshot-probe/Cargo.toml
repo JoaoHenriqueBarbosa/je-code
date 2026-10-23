@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 je-render = { path = "../../crates/je-render" }
 je-theme = { path = "../../crates/je-theme" }
+je-ui = { path = "../../crates/je-ui" }
 png = "0.18"
 
 [lints]
