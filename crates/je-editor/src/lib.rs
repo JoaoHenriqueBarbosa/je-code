@@ -81,3 +81,4 @@ pub mod word_helper;
 
 pub mod position_to_offset;
 pub mod line_heights;
+pub mod find_section_headers;
