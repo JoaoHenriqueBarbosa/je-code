@@ -111,3 +111,7 @@ pub mod copy_lines_command;
 pub mod move_caret_command;
 
 pub mod config;
+pub mod core_2d;
+pub mod inline_completions;
+
+pub mod unicode_text_model_highlighter;
