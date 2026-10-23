@@ -811,6 +811,32 @@ pub fn number_to_js_string(x: f64) -> String {
 
 /// `JSON.stringify(string)`: aspas, escapes curtos, `\u00xx` para controle e `\udxxx` para
 /// surrogate isolado (o `JSON.stringify` bem-formado do ES2019).
+/// `JSON.stringify(value)`: `None` onde o JavaScript devolve `undefined` (valor `undefined` ou função).
+pub fn json_stringify(value: &Dynamic) -> Option<String> {
+    match value {
+        Dynamic::Undefined | Dynamic::Function(_) => None,
+        Dynamic::Null => Some("null".to_string()),
+        Dynamic::Bool(b) => Some(b.to_string()),
+        Dynamic::Number(n) => Some(if n.is_finite() { number_to_js_string(*n) } else { "null".to_string() }),
+        Dynamic::BigInt(_) => errors::throw(Error::type_error("Do not know how to serialize a BigInt".to_string())),
+        Dynamic::String(text) => Some(json_quote(text)),
+        Dynamic::Array(items) => {
+            let items: Vec<String> = items.to_vec().iter().map(|item| json_stringify(item).unwrap_or_else(|| "null".to_string())).collect();
+            Some(format!("[{}]", items.join(",")))
+        }
+        Dynamic::Date(date) => Some(date_to_iso_string(date.time_value()).map_or_else(|| "null".to_string(), |iso| json_quote(&JsString::from(iso)))),
+        Dynamic::RegExp(_) => Some("{}".to_string()),
+        Dynamic::Object(_) | Dynamic::TypedArray(_) => {
+            let properties: Vec<String> = value
+                .own_entries()
+                .iter()
+                .filter_map(|(key, item)| json_stringify(item).map(|item| format!("{}:{item}", json_quote(key))))
+                .collect();
+            Some(format!("{{{}}}", properties.join(",")))
+        }
+    }
+}
+
 pub fn json_quote(text: &JsString) -> String {
     let units = text.units();
     let mut out = String::with_capacity(units.len() + 2);
