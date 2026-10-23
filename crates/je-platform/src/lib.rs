@@ -47,3 +47,5 @@ pub mod remote;
 pub mod opener;
 
 pub mod terminal;
+
+pub mod web_content_extractor;
