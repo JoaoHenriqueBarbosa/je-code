@@ -98,3 +98,5 @@ pub mod line_decorations;
 pub mod line_part;
 pub mod edits;
 pub mod find;
+
+pub mod folding;
