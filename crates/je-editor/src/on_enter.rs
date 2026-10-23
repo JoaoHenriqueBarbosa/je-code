@@ -4,7 +4,7 @@
 use je_base::errors::on_unexpected_error;
 use je_base::strings::escape_reg_exp_characters;
 
-use crate::editor_auto_indent_strategy::EditorAutoIndentStrategy;
+use crate::config::editor_options::EditorAutoIndentStrategy;
 use je_base::js_regexp::JsRegExp;
 use crate::language_configuration::{
     CharacterPair, EnterAction, IndentAction, LanguageConfiguration, OnEnterRule, reg_exp_test,

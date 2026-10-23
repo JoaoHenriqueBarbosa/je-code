@@ -10,7 +10,7 @@ mod common;
 mod support;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
-use je_editor::editor_auto_indent_strategy::EditorAutoIndentStrategy;
+use je_editor::config::editor_options::EditorAutoIndentStrategy;
 use je_editor::language_configuration::{EnterAction, IndentAction, OnEnterRule};
 use je_editor::on_enter::{OnEnterSupport, OnEnterSupportOptions};
 use support::on_enter_rules::javascript_on_enter_rules;

@@ -23,7 +23,6 @@ pub mod cursor_atomic_move_operations;
 pub mod cursor_columns;
 pub mod edit_operation;
 pub mod edit_stack;
-pub mod editor_auto_indent_strategy;
 pub mod electric_character;
 pub mod encoded_token_attributes;
 pub mod eol_counter;
@@ -123,4 +122,6 @@ pub mod view_layer;
 pub mod diff;
 pub mod link_computer;
 
+pub mod cursor_common;
+pub mod input_mode;
 pub mod token_store;

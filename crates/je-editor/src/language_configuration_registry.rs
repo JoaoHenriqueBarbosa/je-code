@@ -27,7 +27,7 @@ use je_base::lifecycle::{
 use je_base::strings::get_leading_whitespace;
 
 use crate::character_pair::CharacterPairSupport;
-use crate::editor_auto_indent_strategy::EditorAutoIndentStrategy;
+use crate::config::editor_options::EditorAutoIndentStrategy;
 use crate::electric_character::BracketElectricCharacterSupport;
 use crate::indent_rules::IndentRulesSupport;
 use je_base::js_regexp::JsRegExp;

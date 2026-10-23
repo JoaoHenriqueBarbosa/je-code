@@ -997,8 +997,8 @@ impl<V: Clone + PartialEq + 'static> EditorOptionImpl for EditorEnumOption<V> {
 // ---------------------------------------------------------------------------------------------
 // autoIndent
 
-/// `EditorAutoIndentStrategy`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `EditorAutoIndentStrategy`: em ordem crescente, porque o original compara com `>=`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EditorAutoIndentStrategy {
     None = 0,
     Keep = 1,
