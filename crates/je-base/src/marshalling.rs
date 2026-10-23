@@ -32,6 +32,8 @@ use crate::uri::{UriComponents, UriState, URI};
 /// O valor que `stringify` escreve e `revive` devolve.
 #[derive(Debug, Clone)]
 pub enum Marshalled {
+    /// `undefined`: some de um objeto no `JSON.stringify` e vira `null` num array.
+    Undefined,
     Null,
     Bool(bool),
     Number(f64),
@@ -43,6 +45,8 @@ pub enum Marshalled {
     /// O valor de tempo em milissegundos, `NaN` se inválido.
     Date(f64),
     Buffer(VSBuffer),
+    /// Um `Uint8Array` ou `Buffer` nativo, que o `JSON.stringify` escreve como `{"0":..,"1":..}`.
+    Bytes(Vec<u8>),
 }
 
 /// Um `RegExp` compilado, com o texto e as flags que o criaram.
@@ -64,7 +68,7 @@ impl RegExpValue {
 }
 
 impl Marshalled {
-    fn key<'a>(&'a self, name: &str) -> Option<&'a Marshalled> {
+    pub(crate) fn key<'a>(&'a self, name: &str) -> Option<&'a Marshalled> {
         match self {
             Marshalled::Object(entries) => entries.iter().find(|(k, _)| k == name).map(|(_, v)| v),
             _ => None,
@@ -86,13 +90,26 @@ pub fn from_json(value: &Value) -> Marshalled {
 
 pub fn stringify(obj: &Marshalled) -> JsString {
     let mut out = String::new();
-    write_json(obj, &mut out);
+    write_json(obj, &mut out, false);
     JsString::from(out)
 }
 
-fn write_json(value: &Marshalled, out: &mut String) {
+/// `JSON.stringify(obj)` sem o `replacer` do `marshalling.ts`: um `RegExp` vira `{}` (o `source` e as flags
+/// não são enumeráveis). É a serialização do `Object` do protocolo do IPC. `None` é o `undefined` que o
+/// `JSON.stringify` devolve para um valor que não é JSON (`undefined` na raiz).
+pub fn json_stringify(obj: &Marshalled) -> Option<JsString> {
+    if matches!(obj, Marshalled::Undefined) {
+        return None;
+    }
+    let mut out = String::new();
+    write_json(obj, &mut out, true);
+    Some(JsString::from(out))
+}
+
+/// `plain`: sem o `replacer` do `marshalling.ts` (ver [`json_stringify`]).
+fn write_json(value: &Marshalled, out: &mut String, plain: bool) {
     match value {
-        Marshalled::Null => out.push_str("null"),
+        Marshalled::Undefined | Marshalled::Null => out.push_str("null"),
         Marshalled::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Marshalled::Number(n) => out.push_str(&if n.is_finite() { number_to_js_string(*n) } else { "null".to_string() }),
         Marshalled::String(s) => out.push_str(&json_quote(s)),
@@ -102,24 +119,27 @@ fn write_json(value: &Marshalled, out: &mut String) {
                 if i > 0 {
                     out.push(',');
                 }
-                write_json(item, out);
+                write_json(item, out, plain);
             }
             out.push(']');
         }
         Marshalled::Object(entries) => {
             out.push('{');
-            for (i, (key, item)) in entries.iter().enumerate() {
-                if i > 0 {
+            let mut first = true;
+            for (key, item) in entries.iter().filter(|(_, item)| !matches!(item, Marshalled::Undefined)) {
+                if !first {
                     out.push(',');
                 }
+                first = false;
                 out.push_str(&json_quote(key));
                 out.push(':');
-                write_json(item, out);
+                write_json(item, out, plain);
             }
             out.push('}');
         }
         // URI is done via toJSON-member
         Marshalled::Uri(uri) => write_uri(&uri.to_json(), out),
+        Marshalled::RegExp(_) if plain => out.push_str("{}"),
         Marshalled::RegExp(regexp) => {
             out.push_str(&format!(
                 "{{\"$mid\":{},\"source\":{},\"flags\":{}}}",
@@ -132,6 +152,10 @@ fn write_json(value: &Marshalled, out: &mut String) {
             Some(iso) => out.push_str(&json_quote(&JsString::from(iso))),
             None => out.push_str("null"),
         },
+        Marshalled::Bytes(bytes) => {
+            let entries: Vec<String> = bytes.iter().enumerate().map(|(i, b)| format!("\"{i}\":{b}")).collect();
+            out.push_str(&format!("{{{}}}", entries.join(",")));
+        }
         Marshalled::Buffer(buffer) => {
             let bytes: Vec<String> = buffer.to_vec().iter().enumerate().map(|(i, b)| format!("\"{i}\":{b}")).collect();
             out.push_str(&format!("{{\"buffer\":{{{}}},\"byteLength\":{}}}", bytes.join(","), buffer.byte_length()));
@@ -181,8 +205,13 @@ fn string_of(value: Option<&Marshalled>) -> Option<JsString> {
 }
 
 fn revive_uri(obj: &Marshalled, platform: Platform) -> URI {
+    URI::revive(&uri_state_of(obj), platform)
+}
+
+/// O [`UriState`] de um objeto `$mid: Uri` (a forma de `URI#toJSON`).
+pub(crate) fn uri_state_of(obj: &Marshalled) -> UriState {
     let text = |name: &str| string_of(obj.key(name));
-    let state = UriState {
+    UriState {
         mid: Some(MarshalledId::Uri as i32),
         external: text("external"),
         fs_path: text("fsPath"),
@@ -197,8 +226,33 @@ fn revive_uri(obj: &Marshalled, platform: Platform) -> URI {
             query: text("query"),
             fragment: text("fragment"),
         },
+    }
+}
+
+/// O objeto que `URI#toJSON` produz para o estado, com as chaves na ordem do original.
+pub(crate) fn uri_state_to_object(state: &UriState) -> Marshalled {
+    let mut entries: Vec<(JsString, Marshalled)> = vec![(JsString::from("$mid"), Marshalled::Number(f64::from(state.mid.unwrap_or(MarshalledId::Uri as i32))))];
+    let mut text = |name: &str, value: &Option<JsString>| {
+        if let Some(value) = value {
+            entries.push((JsString::from(name), Marshalled::String(value.clone())));
+        }
     };
-    URI::revive(&state, platform)
+    text("fsPath", &state.fs_path);
+    if let Some(sep) = state.sep {
+        entries.push((JsString::from("_sep"), Marshalled::Number(f64::from(sep))));
+    }
+    let mut text = |name: &str, value: &Option<JsString>| {
+        if let Some(value) = value {
+            entries.push((JsString::from(name), Marshalled::String(value.clone())));
+        }
+    };
+    text("external", &state.external);
+    text("path", &state.components.path);
+    text("scheme", &state.components.scheme);
+    text("authority", &state.components.authority);
+    text("query", &state.components.query);
+    text("fragment", &state.components.fragment);
+    Marshalled::Object(entries)
 }
 
 /// `new Date(value)` para o que o `revive` recebe em `source`.
@@ -215,7 +269,7 @@ fn date_from(value: Option<&Marshalled>) -> f64 {
 pub fn revive(obj: Marshalled, depth: usize, platform: Platform) -> Marshalled {
     // `!obj`: `null`, `0`, `''` e `false` passam como estão.
     let falsy = match &obj {
-        Marshalled::Null => true,
+        Marshalled::Undefined | Marshalled::Null => true,
         Marshalled::Bool(b) => !b,
         Marshalled::Number(n) => *n == 0.0 || n.is_nan(),
         Marshalled::String(s) => s.is_empty(),

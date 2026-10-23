@@ -104,15 +104,15 @@ fn sorted_diff() {
 fn delta_sorted_arrays() {
     let mut d = arrays::delta(&[1, 2, 4], &[], compare);
     assert_eq!(d.removed, [1, 2, 4]);
-    assert_eq!(d.added, []);
+    assert_eq!(d.added, Vec::<i32>::new());
 
     d = arrays::delta(&[], &[1, 2, 4], compare);
-    assert_eq!(d.removed, []);
+    assert_eq!(d.removed, Vec::<i32>::new());
     assert_eq!(d.added, [1, 2, 4]);
 
     d = arrays::delta(&[1, 2, 4], &[1, 2, 4], compare);
-    assert_eq!(d.removed, []);
-    assert_eq!(d.added, []);
+    assert_eq!(d.removed, Vec::<i32>::new());
+    assert_eq!(d.added, Vec::<i32>::new());
 
     d = arrays::delta(&[1, 2, 4], &[2, 3, 4, 5], compare);
     assert_eq!(d.removed, [1]);

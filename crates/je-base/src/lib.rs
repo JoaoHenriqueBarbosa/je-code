@@ -5,6 +5,8 @@
 //! mede posição. O tipo [`JsString`] guarda o texto nessa forma, inclusive surrogates isolados, que
 //! um `String` do Rust não representa.
 
+#[macro_use]
+mod record;
 pub mod json;
 pub mod json_error_messages;
 pub mod char_code;
@@ -109,3 +111,27 @@ pub mod equals;
 pub mod error_message;
 pub mod marked;
 pub mod markdown_links;
+pub mod process;
+pub mod processes;
+pub mod performance;
+pub mod desktop_environment_info;
+pub mod console;
+pub mod ports;
+pub mod ime;
+pub mod verifier;
+pub mod search;
+pub mod image;
+pub mod zip;
+pub mod policy;
+pub mod default_account;
+pub mod managed_settings;
+pub mod product;
+pub mod uri_ipc;
+pub mod uri_transformer;
+pub mod parts;
+pub mod node;
+pub mod edit_arc_tracker;
+pub mod hot_reload;
+pub mod hot_reload_helpers;
+pub mod oauth;
+pub mod worker;

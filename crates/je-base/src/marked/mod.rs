@@ -2,9 +2,8 @@
 //! gramáticas de bloco e de linha e os tipos de token, com as mesmas regexes (no motor ECMAScript do
 //! `zyarr`), na mesma ordem e com a mesma semântica de texto UTF-16.
 //!
-//! Fica de fora tudo que só serve para gerar HTML: `Parser`, `Renderer`, `TextRenderer`, `Marked`, `Hooks`,
-//! `walkTokens` e as extensões. O `markdownLinks.ts` só chama `marked.lexer(markdown)` e lê a árvore de
-//! tokens, então o `Parser`/`Renderer` não têm quem os use no VS Code que estamos portando.
+//! O `Parser`, o `Renderer` e o `TextRenderer` (o HTML que `marked.parse` gera) estão em [`html`]. Ficam de fora
+//! as classes que só servem para estender o `marked`: `Marked`, `Hooks`, `walkTokens` e as extensões.
 //!
 //! O `Tokenizer` do original é uma classe com referência de volta ao `Lexer`; aqui os métodos dele são
 //! `impl Lexer` no submódulo `tokenizer`, com os mesmos nomes (`space`, `code`, `fences`...).
@@ -17,6 +16,7 @@
 //!   [`MAX_NESTING_DEPTH`] (ver a constante).
 
 mod helpers;
+mod html;
 mod lexer;
 mod re;
 mod rules;
@@ -27,6 +27,7 @@ use std::fmt;
 
 use crate::JsString;
 
+pub use html::{InlineRenderer, Parser, Renderer, TextRenderer, escape, parse, parse_inline};
 pub use lexer::{Lexer, lex_inline, lexer, lexer_with};
 
 /// Profundidade máxima de aninhamento (citação em citação, lista em lista, ênfase em ênfase) antes de
@@ -68,6 +69,9 @@ pub enum MarkedError {
     TypeError(&'static str),
     /// `RangeError`: aninhamento além de [`MAX_NESTING_DEPTH`] (ver a constante).
     RangeError,
+    /// `Token with "<type>" type was not found.`: o `Parser` recebeu um token que não sabe renderizar (um
+    /// `def` ou um `list_item` solto).
+    UnknownToken(&'static str),
 }
 
 impl fmt::Display for MarkedError {
@@ -76,6 +80,7 @@ impl fmt::Display for MarkedError {
             MarkedError::InfiniteLoop { byte } => write!(f, "Infinite loop on byte: {byte}"),
             MarkedError::TypeError(message) => write!(f, "TypeError: {message}"),
             MarkedError::RangeError => f.write_str("RangeError: Maximum call stack size exceeded"),
+            MarkedError::UnknownToken(type_name) => write!(f, "Token with \"{type_name}\" type was not found."),
         }
     }
 }

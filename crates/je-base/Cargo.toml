@@ -21,6 +21,13 @@ icu_normalizer = "~2.3.0"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 # `RegExp` ECMAScript do `glob`: o glob do VS Code compila cada padrão para uma regex.
 zyarr = { path = "../zyarr" }
+# `product.json` (`IProductConfiguration`) e os dados de política e de conta: leitura e escrita sem perda, com as chaves
+# desconhecidas preservadas. `preserve_order` mantém a ordem das chaves do arquivo.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+# SHA-256 do `createStaticIPCHandle` e do `checksum` (RustCrypto, Rust puro).
+sha2 = "0.10"
 
 # Fonte de aleatoriedade do SO para `Math.random` e `crypto.randomUUID`. No alvo web
 # (wasm32-unknown-unknown) o `random` cai num fallback do std, ver `src/random.rs`.

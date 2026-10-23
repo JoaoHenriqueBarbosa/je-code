@@ -17,14 +17,14 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `keyCodes` (838 linhas)
 - [x] `lazy` (57 linhas)
 - [x] `linkedList` (151 linhas)
-- [ ] `managedSettings` (82 linhas)
+- [x] `managedSettings` (82 linhas)
 - [x] `markdownLinks` (200 linhas)
 - [x] `marshallingIds` (33 linhas)
 - [x] `navigator` (50 linhas)
-- [ ] `observable` (8 linhas)
+- [x] `observable` (8 linhas)
 - [x] `parsers` (79 linhas)
 - [x] `platform` (284 linhas)
-- [ ] `ports` (13 linhas)
+- [x] `ports` (13 linhas)
 - [x] `range` (60 linhas)
 - [x] `sseParser` (245 linhas)
 - [x] `stopwatch` (41 linhas)
@@ -36,7 +36,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 
 ## Camada 1
 - [x] `assert` (89 linhas): errors
-- [ ] `color` (942 linhas): charCode
+- [x] `color` (942 linhas): charCode
 - [x] `controlFlow` (69 linhas): errors
 - [x] `date` (342 linhas): lazy, platform
 - [x] `jsonErrorMessages` (26 linhas): json
@@ -44,12 +44,12 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `keybindings` (284 linhas): errors, keyCodes, platform
 - [x] `layout` (166 linhas): range
 - [x] `linkedText` (55 linhas): decorators
-- [ ] `performance` (149 linhas): platform
-- [ ] `process` (76 linhas): platform
-- [ ] `processes` (151 linhas): platform
+- [x] `performance` (149 linhas): platform
+- [x] `process` (76 linhas): platform
+- [x] `processes` (151 linhas): platform
 
 ## Camada 2
-- [ ] `desktopEnvironmentInfo` (101 linhas): process
+- [x] `desktopEnvironmentInfo` (101 linhas): process
 - [x] `jsonEdit` (183 linhas): json, jsonFormatter
 - [x] `keybindingLabels` (184 linhas): keybindings, platform
 - [x] `keybindingParser` (102 linhas): keyCodes, keybindings
@@ -63,10 +63,10 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `mime` (139 linhas): path
 - [x] `objects` (298 linhas): types
 - [x] `uri` (765 linhas): charCode, marshallingIds, path, platform
-- [ ] `verifier` (88 linhas): types
+- [x] `verifier` (88 linhas): types
 
 ## Camada 4
-- [ ] `console` (144 linhas): uri
+- [x] `console` (144 linhas): uri
 - [x] `map` (1020 linhas): uri
 - [x] `prefixTree` (259 linhas): iterator
 
@@ -77,16 +77,16 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `actions` (303 linhas): event, lifecycle, platform
 - [x] `arrays` (949 linhas): arraysFind, cancellation, errors, sequence
 - [x] `arraysFind` (226 linhas): arrays
-- [ ] `async` (2752 linhas): cancellation, errors, event, lazy, lifecycle, platform, resources, symbols, uri
+- [x] `async` (2752 linhas): cancellation, errors, event, lazy, lifecycle, platform, resources, symbols, uri
 - [x] `buffer` (499 linhas): lazy, stream
 - [x] `cache` (153 linhas): cancellation, lifecycle
 - [x] `cancellation` (239 linhas): errors, event, lifecycle
-- [ ] `codicons` (66 linhas): codiconsLibrary, codiconsUtil, themables
-- [ ] `codiconsLibrary` (776 linhas): codiconsUtil
-- [ ] `codiconsUtil` (28 linhas): themables, types
+- [x] `codicons` (66 linhas): codiconsLibrary, codiconsUtil, themables
+- [x] `codiconsLibrary` (776 linhas): codiconsUtil
+- [x] `codiconsUtil` (28 linhas): themables, types
 - [x] `dataTransfer` (198 linhas): arrays, iterator, uri, uuid
-- [ ] `defaultAccount` (102 linhas): policy
-- [ ] `editArcTracker` (365 linhas): errors, strings
+- [x] `defaultAccount` (102 linhas): policy
+- [x] `editArcTracker` (365 linhas): errors, strings
 - [x] `equals` (206 linhas): arrays
 - [x] `errorMessage` (113 linhas): actions, arrays, types
 - [x] `event` (1991 linhas): async, cancellation, collections, errors, functional, lifecycle, linkedList, observable, process, stopwatch, symbols
@@ -96,25 +96,25 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `glob` (861 linhas): arrays, async, charCode, extpath, map, path, platform, strings
 - [x] `hash` (361 linhas): assert, buffer, strings
 - [x] `history` (298 linhas): collections, event, lifecycle, navigator
-- [ ] `hotReload` (119 linhas): lifecycle
-- [ ] `hotReloadHelpers` (52 linhas): hotReload, observable
+- [x] `hotReload` (119 linhas): lifecycle
+- [x] `hotReloadHelpers` (52 linhas): hotReload, observable
 - [x] `htmlContent` (287 linhas): errors, iconLabels, network, resources, strings, uri
 - [x] `iconLabels` (116 linhas): filters, strings, themables
-- [ ] `image` (150 linhas): buffer
-- [ ] `ime` (36 linhas): event
+- [x] `image` (150 linhas): buffer
+- [x] `ime` (36 linhas): event
 - [x] `jsonRpcProtocol` (303 linhas): async, cancellation, errors, lifecycle, types
 - [x] `labels` (484 linhas): extpath, path, platform, resources, strings, uri
 - [x] `lifecycle` (974 linhas): arrays, collections, errors, functional, iterator, map, uri
 - [x] `marshalling` (84 linhas): buffer, marshallingIds, uri
 - [x] `network` (452 linhas): errors, path, platform, strings, uri
-- [ ] `oauth` (1423 linhas): buffer
+- [x] `oauth` (1423 linhas): buffer
 - [x] `paging` (392 linhas): arrays, cancellation, errors, event
-- [ ] `policy` (161 linhas): defaultAccount
-- [ ] `product` (478 linhas): collections, platform, policy
+- [x] `policy` (161 linhas): defaultAccount
+- [x] `product` (478 linhas): collections, platform, policy
 - [x] `resourceTree` (187 linhas): decorators, path, resources, ternarySearchTree, uri
 - [x] `resources` (458 linhas): charCode, extpath, network, path, platform, strings, uri
 - [x] `scrollable` (522 linhas): event, lifecycle
-- [ ] `search` (48 linhas): strings
+- [x] `search` (48 linhas): strings
 - [x] `sequence` (34 linhas): event
 - [x] `severity` (56 linhas): strings
 - [x] `stream` (790 linhas): cancellation, errors, lifecycle
@@ -122,7 +122,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `ternarySearchTree` (796 linhas): arrays, assert, charCode, strings, uri
 - [x] `tfIdf` (240 linhas): cancellation
 - [x] `themables` (117 linhas): codicons
-- [ ] `uriIpc` (163 linhas): buffer, marshalling, marshallingIds, uri
-- [ ] `uriTransformer` (51 linhas): uriIpc
+- [x] `uriIpc` (163 linhas): buffer, marshalling, marshallingIds, uri
+- [x] `uriTransformer` (51 linhas): uriIpc
 - [x] `validation` (396 linhas): arrays, jsonSchema
-- [ ] `zip` (91 linhas): buffer, lazy
+- [x] `zip` (91 linhas): buffer, lazy

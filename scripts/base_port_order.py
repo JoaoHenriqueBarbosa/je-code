@@ -11,6 +11,21 @@ SRC = ROOT / 'crates' / 'je-base' / 'src'
 IMPORT = re.compile(r"from '\./([A-Za-z0-9_]+)\.js'")
 
 
+# Módulos portados com outro nome ou em outra crate: o estado é conferido pelo arquivo indicado.
+ELSEWHERE = {
+    'async': SRC / 'async_.rs',
+    'observable': SRC / 'observable' / 'mod.rs',
+    'color': ROOT / 'crates' / 'je-theme' / 'src' / 'color.rs',
+    'codicons': ROOT / 'crates' / 'je-codicons' / 'src' / 'lib.rs',
+    'codiconsLibrary': ROOT / 'crates' / 'je-codicons' / 'src' / 'table.rs',
+    'codiconsUtil': ROOT / 'crates' / 'je-codicons' / 'src' / 'lib.rs',
+}
+
+
+def ported(m):
+    return (SRC / f'{snake(m)}.rs').exists() or (m in ELSEWHERE and ELSEWHERE[m].exists())
+
+
 def snake(name):
     return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
 
@@ -30,9 +45,9 @@ lines = ['# Ordem de porte de `vs/base/common`', '', 'Gerado por `scripts/base_p
 for i, layer in enumerate(layers):
     lines.append(f'## Camada {i}')
     for m in layer:
-        mark = 'x' if (SRC / f'{snake(m)}.rs').exists() else ' '
+        mark = 'x' if ported(m) else ' '
         n = sum(1 for _ in mods[m].open(encoding='utf-8'))
         lines.append(f'- [{mark}] `{m}` ({n} linhas){": " + ", ".join(deps[m]) if deps[m] else ""}')
     lines.append('')
 (ROOT / 'wip' / 'notes' / 'base-port-order.md').write_text('\n'.join(lines), encoding='utf-8')
-print(f'{len(mods)} módulos em {len(layers)} camadas; portados: {sum(1 for m in mods if (SRC / f"{snake(m)}.rs").exists())}')
+print(f'{len(mods)} módulos em {len(layers)} camadas; portados: {sum(1 for m in mods if ported(m))}')

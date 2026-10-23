@@ -213,6 +213,8 @@ fn lexer_matches_marked_js_on_golden_samples() {
                     MarkedError::InfiniteLoop { .. } => "Error",
                     MarkedError::TypeError(_) => "TypeError",
                     MarkedError::RangeError => "RangeError",
+                    // O lexer nunca devolve um token que o `Parser` não conhece.
+                    MarkedError::UnknownToken(_) => "Error",
                 };
                 (!expected.starts_with(kind) || (kind == "Error" && !expected.ends_with(&error.to_string())))
                     .then(|| format!("erro {error} no lugar de {expected}"))

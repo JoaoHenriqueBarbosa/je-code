@@ -1,5 +1,6 @@
 // Gera os goldens do lexer do `marked` rodando o marked.js real do VS Code (v14.0.0, `ref/vscode`) no Node.
-// Escreve crates/je-base/tests/golden/marked_lexer.jsonl (a árvore de tokens de cada amostra) e
+// Escreve crates/je-base/tests/golden/marked_lexer.jsonl (a árvore de tokens de cada amostra), marked_html.jsonl
+// (o HTML que `marked.parse` gera para cada amostra) e
 // crates/je-base/tests/golden/marked_rules.jsonl (o fonte e as flags de cada regex por modo).
 // Uso: node scripts/gen_marked_golden.mjs
 import fs from 'node:fs';
@@ -10,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'je-marked-'));
 fs.copyFileSync(path.join(root, 'ref/vscode/src/vs/base/common/marked/marked.js'), path.join(work, 'marked.mjs'));
-const { Lexer, lexer, getDefaults } = await import(path.join(work, 'marked.mjs'));
+const { Lexer, lexer, getDefaults, parse } = await import(path.join(work, 'marked.mjs'));
 
 const outDir = path.join(root, 'crates/je-base/tests/golden');
 fs.mkdirSync(outDir, { recursive: true });
@@ -145,6 +146,14 @@ for (let i = 0; i < FUZZ_COUNT; i++) {
 // ---- Escreve o golden dos tokens: o modo padrão em todas as amostras; os outros três nas amostras à mão
 // (e em um oitavo das sorteadas).
 const lines = [];
+const htmlLines = [];
+function html(src, mode) {
+	try {
+		return { html: parse(src, { ...MODES[mode] }) };
+	} catch (e) {
+		return { error: String(e.message) };
+	}
+}
 const seen = new Set();
 let errors = 0;
 let tokenCount = 0;
@@ -159,8 +168,10 @@ SAMPLES.forEach((src, index) => {
 		const result = lex(src, mode);
 		if (result.error) { errors++; } else { countTokens(Lexer.lex(src, { ...getDefaults(), ...MODES[mode] })); }
 		lines.push(JSON.stringify({ mode, src, ...result }));
+		htmlLines.push(JSON.stringify({ mode, src, ...html(src, mode) }));
 	}
 });
+fs.writeFileSync(path.join(outDir, 'marked_html.jsonl'), htmlLines.join('\n') + '\n');
 fs.writeFileSync(path.join(outDir, 'marked_lexer.jsonl'), lines.join('\n') + '\n');
 console.log(`marked_lexer.jsonl: ${lines.length} casos, ${errors} com erro, ${tokenCount} tokens (marked.js v14.0.0, Node ${process.version})`);
 

@@ -1,0 +1,125 @@
+// Gerador do golden do IPC (ver gen_ipc_golden.sh). Roda dentro de um diretório temporário com `vs/base` copiado.
+// Grava, em linhas `nome<TAB>hex`, os bytes que os módulos reais produzem.
+import { VSBuffer } from '../src/vs/base/common/buffer.ts';
+import { Emitter, Event } from '../src/vs/base/common/event.ts';
+import { CancellationToken } from '../src/vs/base/common/cancellation.ts';
+import { BufferReader, BufferWriter, ChannelClient, ChannelServer, IMessagePassingProtocol, IPCClient, serialize, deserialize } from '../src/vs/base/parts/ipc/common/ipc.ts';
+import { PersistentProtocol, Protocol, ISocket } from '../src/vs/base/parts/ipc/common/ipc.net.ts';
+import { encodeWebSocketFrame } from '../src/vs/base/parts/ipc/common/webSocketFraming.ts';
+
+const hex = (b: VSBuffer | Uint8Array) => Buffer.from(b instanceof VSBuffer ? b.buffer : b).toString('hex');
+const out: string[] = [];
+const emit = (name: string, b: VSBuffer | Uint8Array) => out.push(`${name}\t${hex(b)}`);
+
+// 1. serialize
+const values: [string, unknown][] = [
+	['undefined', undefined], ['empty_string', ''], ['string', 'héllo \u{1F600}'], ['zero', 0], ['one', 1], ['minus_one', -1], ['n12345', 12345], ['minus_12345', -12345],
+	['int_max', 2147483647], ['int_min', -2147483648], ['beyond_int', 2147483648], ['float', 42.6], ['big', 123412341234], ['true', true], ['false', false], ['null', null],
+	['empty_array', []], ['nested_array', [1, 'a', [undefined, null]]], ['object', { a: 1, b: [1, 2], c: undefined, d: 'x' }], ['nan', NaN],
+	['vsbuffer', VSBuffer.wrap(new Uint8Array([1, 2, 3]))], ['bytes', new Uint8Array([9, 8])], ['buffers_in_array', [VSBuffer.alloc(2), VSBuffer.alloc(3)]],
+	['long_string', 'x'.repeat(300)], ['object_with_date', { d: new Date(0) }], ['object_with_regexp', { r: /a+/gi }],
+];
+for (const [name, value] of values) {
+	const w = new BufferWriter();
+	serialize(w, value);
+	emit(`serialize.${name}`, w.buffer);
+}
+
+// 2. mensagens de canal
+class Stub implements IMessagePassingProtocol {
+	sent: VSBuffer[] = [];
+	readonly incoming = new Emitter<VSBuffer>();
+	readonly onMessage = this.incoming.event;
+	send(b: VSBuffer) { this.sent.push(b); }
+}
+function ser(...vals: unknown[]) { const w = new BufferWriter(); for (const v of vals) { serialize(w, v); } return w.buffer; }
+
+{
+	const p = new Stub();
+	const client = new ChannelClient(p);
+	p.incoming.fire(ser([200], undefined));
+	client.getChannel('testchannel').call('cmd', { x: 1 });
+	client.getChannel('testchannel').call('other', ['a', 2]);
+	client.getChannel('testchannel').listen('onSomething', 'arg')(() => { });
+	emit('client.init', ser([200], undefined));
+	emit('client.call1', p.sent[0]);
+	emit('client.call2', p.sent[1]);
+	emit('client.listen', p.sent[2]);
+}
+{
+	const p = new Stub();
+	const server = new ChannelServer(p, 'ctx');
+	emit('server.init', p.sent[0]);
+	const evt = new Emitter<string>();
+	server.registerChannel('chan', {
+		call(_: unknown, command: string, arg: any) {
+			if (command === 'ok') { return Promise.resolve({ echoed: arg }); }
+			if (command === 'fail') { const e = new Error('boom'); e.stack = 'Error: boom\n    at here (file.js:1:1)\n    at there (file.js:2:2)'; return Promise.reject(e); }
+			if (command === 'failobj') { return Promise.reject({ code: 7 }); }
+			return Promise.reject(new Error('nope'));
+		},
+		listen(_: unknown, event: string) { return evt.event; }
+	});
+	await new Promise(r => setTimeout(r, 5));
+	emit('server.request.ok', ser([100, 1, 'chan', 'ok'], 'hi'));
+	p.incoming.fire(ser([100, 1, 'chan', 'ok'], 'hi'));
+	p.incoming.fire(ser([100, 2, 'chan', 'fail'], undefined));
+	p.incoming.fire(ser([100, 3, 'chan', 'failobj'], undefined));
+	p.incoming.fire(ser([102, 4, 'chan', 'onEv'], undefined));
+	evt.fire('fired');
+	await new Promise(r => setTimeout(r, 5));
+	p.sent.slice(1).forEach((b, i) => emit(`server.response.${i}`, b));
+}
+{
+	const p = new Stub();
+	new IPCClient(p, 'client-context');
+	emit('ipcclient.ctx', p.sent[0]);
+}
+
+// 3. protocolo com cabeçalho
+class FakeSocket implements ISocket {
+	written: VSBuffer[] = [];
+	readonly data = new Emitter<VSBuffer>();
+	onData(l: (e: VSBuffer) => void) { return this.data.event(l); }
+	onClose() { return { dispose() { } }; }
+	onEnd() { return { dispose() { } }; }
+	write(b: VSBuffer) { this.written.push(b); }
+	end() { }
+	drain() { return Promise.resolve(); }
+	traceSocketEvent() { }
+	dispose() { }
+}
+{
+	const s = new FakeSocket();
+	const p = new Protocol(s);
+	p.send(VSBuffer.fromString('abc'));
+	p.send(VSBuffer.fromString('defg'));
+	await new Promise(r => setTimeout(r, 5));
+	emit('protocol.written', VSBuffer.concat(s.written));
+	p.dispose();
+}
+{
+	const s = new FakeSocket();
+	const p = new PersistentProtocol({ socket: s, sendKeepAlive: false });
+	p.send(VSBuffer.fromString('one'));
+	p.send(VSBuffer.fromString('two'));
+	p.sendControl(VSBuffer.fromString('ctl'));
+	p.sendPause();
+	p.sendResume();
+	p.sendDisconnect();
+	await new Promise(r => setTimeout(r, 5));
+	emit('persistent.written', VSBuffer.concat(s.written));
+	p.dispose();
+}
+
+// 4. frames de WebSocket
+const payloads: [string, Uint8Array][] = [['empty', new Uint8Array(0)], ['small', new Uint8Array([1, 2, 3])], ['len125', new Uint8Array(125).fill(7)], ['len126', new Uint8Array(126).fill(8)], ['len65535', new Uint8Array(65535).fill(9)], ['len65536', new Uint8Array(65536).fill(10)]];
+for (const [name, payload] of payloads) {
+	emit(`ws.unmasked.${name}`, encodeWebSocketFrame(VSBuffer.wrap(payload), { opcode: 2 }));
+	emit(`ws.masked.${name}`, encodeWebSocketFrame(VSBuffer.wrap(payload), { opcode: 2, mask: 0x12345678 }));
+}
+emit('ws.text.compressed.nonfinal', encodeWebSocketFrame(VSBuffer.fromString('hello'), { opcode: 1, final: false, compressed: true }));
+emit('ws.ping', encodeWebSocketFrame(VSBuffer.fromString('p'), { opcode: 9, mask: 0 }));
+
+console.log(out.join('\n'));
+process.exit(0);

@@ -42,6 +42,7 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 - 2026-10-23: H14 confirmada: ferriki-textmate + ferroni corrigido = 109 de 109 goldens de tokenização do VS Code, 100% dos tokens.
 - 2026-10-23: vs/base em 25,55% dos casos do oráculo (582); je-theme com as 450 cores registradas iguais ao oráculo.
 - 2026-10-23: vs/base em 40,78% (async 145/145, glob, filters, fuzzyScorer, comparers com ICU, keyCodes); je-theme com 998 cores iguais ao oráculo; je-storage com ida e volta no SQLite do oráculo; H14 confirmada (TextMate 109/109).
+- 2026-10-23: primeira tela de editor de verdade: `je-editor-view` (rolagem, linhas visíveis, números, tokens coloridos pelo tema, guias, realce, seleção com cantos arredondados, cursor piscando, colchetes colorizados e casando, entrada de mouse e teclado, desfazer e refazer, clipboard) ligado ao `je-code` (abre o arquivo, linguagem pela extensão, tokenização em fatias, Ctrl+S, `Ln x, Col y`). Contra o editor do oráculo: 2,614% dos pixels diferentes (H26). Arquivo de 1 milhão de linhas: CPU 130 fps rolando e 100 fps digitando, GPU 76 e 65 fps (H28), eu.
 
 ## Pendência antes do primeiro push
 
