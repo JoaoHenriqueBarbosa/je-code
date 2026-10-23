@@ -1,0 +1,13 @@
+[package]
+name = "win-probe"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+wgpu = "30"
+winit = "0.30"
+pollster = "0.4"
+
+[lints]
+workspace = true
