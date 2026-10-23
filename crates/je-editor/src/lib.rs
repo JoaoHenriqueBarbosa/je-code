@@ -164,3 +164,5 @@ pub mod comment;
 pub mod cursor_events;
 pub mod cursor;
 pub mod view_model_lines;
+
+pub mod view_layout;
