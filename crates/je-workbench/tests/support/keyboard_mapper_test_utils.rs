@@ -1,6 +1,10 @@
-//! Porte parcial de `src/vs/workbench/services/keybinding/test/node/keyboardMapperTestUtils.ts`: só
-//! `IResolvedKeybinding`, `assertResolveKeyboardEvent` e `assertResolveKeybinding`. `readRawMapping` e
-//! `assertMapping` leem arquivos de mapa de teclas que os testes do mapeador de reserva não usam.
+//! Porte de `src/vs/workbench/services/keybinding/test/node/keyboardMapperTestUtils.ts`:
+//! `IResolvedKeybinding`, `assertResolveKeyboardEvent`, `assertResolveKeybinding` e `assertMapping`.
+//! `readRawMapping` não tem porte aqui: ele executa o arquivo `.js` do mapa de teclas, e cada teste que o usa lê o
+//! formato (um literal de objeto) por conta própria.
+
+use std::fs;
+use std::path::PathBuf;
 
 use je_base::keybindings::{Keybinding, ResolvedKeybinding, SingleModifierChord};
 use je_platform::keybinding::keybinding::KeyboardEvent;
@@ -54,5 +58,26 @@ pub fn assert_resolve_keybinding(
         .iter()
         .map(|kb| to_resolved_keybinding_snapshot(kb.as_ref()))
         .collect();
+    assert_eq!(actual, expected);
+}
+
+/// O caminho de um arquivo de `vs/workbench/services/keybinding/test/node` no `ref/vscode`
+/// (`FileAccess.asFileUri(...)`).
+pub fn keybinding_test_file_path(file: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ref/vscode/src/vs/workbench/services/keybinding/test/node")
+        .join(file)
+}
+
+/// `assertMapping`: a saída de `dumpDebugInfo` tem de ser igual, byte a byte (com `\r\n` normalizado para `\n`), ao
+/// arquivo esperado. Com `write_file_if_different`, o arquivo é reescrito com a saída atual antes de a asserção falhar.
+pub fn assert_mapping(write_file_if_different: bool, mapper: &dyn IKeyboardMapper, file: &str) {
+    let file_path = keybinding_test_file_path(file);
+    let buff = fs::read(&file_path).unwrap_or_else(|error| panic!("não foi possível ler {}: {error}", file_path.display()));
+    let expected = String::from_utf8_lossy(&buff).replace("\r\n", "\n");
+    let actual = mapper.dump_debug_info().replace("\r\n", "\n");
+    if actual != expected && write_file_if_different {
+        fs::write(&file_path, &actual).unwrap_or_else(|error| panic!("não foi possível escrever {}: {error}", file_path.display()));
+    }
     assert_eq!(actual, expected);
 }
