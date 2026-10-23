@@ -4080,7 +4080,6 @@ dependencies = [
  "indexmap",
  "je-base",
  "je-platform",
- "rustls",
  "rustls-rustcrypto",
  "serde",
  "serde_json",
