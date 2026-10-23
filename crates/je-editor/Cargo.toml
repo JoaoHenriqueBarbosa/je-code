@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 je-base = { path = "../je-base" }
+# `Color`, `Srgba` e `Hsla` do `color.ts` (cores padrão do documento).
+je-theme = { path = "../je-theme" }
 # `RegExp` ECMAScript da busca no buffer (`findMatchesLineByLine`).
 zyarr = { path = "../zyarr" }
 
