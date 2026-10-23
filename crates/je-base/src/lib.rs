@@ -9,6 +9,7 @@ pub mod json;
 pub mod json_error_messages;
 pub mod char_code;
 pub mod errors;
+pub mod event;
 pub mod lifecycle;
 pub mod js_string;
 pub mod nls;
