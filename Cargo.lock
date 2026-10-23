@@ -3449,6 +3449,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-storage"
+version = "0.0.0"
+dependencies = [
+ "je-base",
+ "turso_core",
+]
+
+[[package]]
 name = "je-theme"
 version = "0.0.0"
 dependencies = [
