@@ -1287,8 +1287,20 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Classes de opção, uma por arquivo (lote w32)
+// Classes de opção, uma por arquivo em `config/editor_options/`.
 
+pub mod comments;
+pub mod cursor_style;
+pub mod editor_class_name;
+pub mod editor_font_info;
+pub mod effective_options;
+pub mod empty_selection_clipboard;
+pub mod find;
+pub mod font_ligatures;
+pub mod font_size;
+pub mod font_variations;
+pub mod font_weight;
+pub mod goto_location;
 pub mod inlay_hints;
 pub mod lightbulb;
 pub mod line_decorations_width;
