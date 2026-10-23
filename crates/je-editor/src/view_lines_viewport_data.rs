@@ -12,7 +12,6 @@
 
 use std::rc::Rc;
 
-use crate::cursor_common::CursorSimpleModel;
 use crate::range::Range;
 use crate::selection::Selection;
 use crate::view_model_decoration::ViewModelDecoration;

@@ -17,6 +17,7 @@ use std::hint::black_box;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use je_editor::cursor_common::CursorSimpleModel;
 use je_editor::edit_operation::EditOperation;
 use je_editor::model::{ModelDecorationOptionsInit, ModelDeltaDecoration};
 use je_editor::piece_tree_text_buffer_builder::PieceTreeTextBufferBuilder;

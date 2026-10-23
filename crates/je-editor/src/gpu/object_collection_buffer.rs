@@ -199,7 +199,7 @@ impl ObjectCollectionBuffer {
         let entries: Rc<LinkedList<Rc<ObjectCollectionBufferEntry>>> = Rc::new(LinkedList::new());
         let entries_to_dispose = entries.clone();
         base.register(to_disposable(move || {
-            dispose_iterator(entries_to_dispose.iter().map(|entry| entry as DisposableRef));
+            let _ = dispose_iterator(entries_to_dispose.iter().map(|entry| entry as DisposableRef));
         }));
         Rc::new(Self {
             base,

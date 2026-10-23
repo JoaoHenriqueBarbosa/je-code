@@ -28,7 +28,6 @@ use je_base::lifecycle::IDisposable;
 use je_base::scrollable::INewScrollPosition;
 
 use crate::coordinates_converter::ICoordinatesConverter;
-use crate::cursor_common::CursorSimpleModel;
 use crate::editor_common::ScrollType;
 use crate::model::TrackedRangeStickiness;
 use crate::position::Position;
