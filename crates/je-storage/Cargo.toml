@@ -1,0 +1,15 @@
+[package]
+name = "je-storage"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Porte de vs/base/parts/storage do VS Code: Storage e SQLiteStorageDatabase sobre turso_core."
+
+[lints]
+workspace = true
+
+[dependencies]
+je-base = { path = "../je-base" }
+# SQLite em Rust puro (H12). Sem as features padrão: `autovacuum` e `simd` ligam o simsimd, que compila C.
+turso_core = { version = "0.9.0-pre.1", default-features = false, features = ["pure-rust-crypto", "fs", "json"] }
