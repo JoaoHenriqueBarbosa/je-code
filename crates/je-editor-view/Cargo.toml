@@ -1,0 +1,29 @@
+[package]
+name = "je-editor-view"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Porte da View do Monaco (vs/editor/browser/viewParts e viewModel): rolagem, linhas visíveis, pintura, cursor, seleção e entrada do editor."
+
+[lints]
+workspace = true
+
+[dependencies]
+je-base = { path = "../je-base" }
+je-editor = { path = "../je-editor" }
+je-languages = { path = "../je-languages" }
+je-render = { path = "../je-render" }
+je-text = { path = "../je-text" }
+je-theme = { path = "../je-theme" }
+je-ui = { path = "../je-ui" }
+# `Instant` que também funciona no wasm (o winit usa o mesmo tipo no `ControlFlow::WaitUntil`).
+web-time = "1"
+
+
+# O `arboard` não compila para wasm: lá fica a cópia interna até a ponte com o `navigator.clipboard`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = { version = "3", default-features = false }
+
+[dev-dependencies]
+png = "0.18"

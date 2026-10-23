@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use je_render::{DisplayList, FontData, Glyph, Rgba};
 use parley::fontique::Blob;
-use parley::{FontContext, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};
+use parley::{FontContext, FontStyle, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};
 
 /// A família sob a qual o `codicon.ttf` é registrado (o `font-family: "codicon"` do `codicon.css`).
 pub const CODICON_FAMILY: &str = "codicon";
@@ -25,6 +25,9 @@ pub fn layout_unit_ceil(px: f32) -> f32 {
     (px * 64.0).ceil() / 64.0
 }
 
+/// O limite de linhas no cache de layout, para o texto de um arquivo enorme não crescer sem fim.
+const MAX_CACHED_LINES: usize = 100_000;
+
 /// Uma fonte de texto pedida: a lista de famílias no formato CSS do VS Code
 /// (`system-ui, "Ubuntu", "Droid Sans", sans-serif`), o tamanho em px e o peso.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -33,11 +36,19 @@ pub struct TextStyle {
     /// Tamanho em 1/64 px, para o estilo poder ser chave de cache.
     pub size_64: u32,
     pub weight: u16,
+    /// `font-style: italic` (estilo de token do tema, por exemplo comentários em itálico).
+    pub italic: bool,
 }
 
 impl TextStyle {
     pub fn new(families: impl Into<String>, size_px: f32, weight: u16) -> Self {
-        Self { families: families.into(), size_64: (size_px * 64.0).round() as u32, weight }
+        Self { families: families.into(), size_64: (size_px * 64.0).round() as u32, weight, italic: false }
+    }
+
+    /// O mesmo estilo em itálico.
+    pub fn italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
     }
 
     pub fn size(&self) -> f32 {
@@ -108,6 +119,10 @@ impl TextSystem {
             return line.clone();
         }
         let line = Rc::new(self.shape(text, style));
+        // O cache não tem despejo fino: passou do limite, recomeça (o editor repõe só o que está visível).
+        if self.cache.len() >= MAX_CACHED_LINES {
+            self.cache.clear();
+        }
         self.cache.insert(key, line.clone());
         line
     }
@@ -123,6 +138,9 @@ impl TextSystem {
         builder.push_default(StyleProperty::FontFamily(style.families.as_str().into()));
         builder.push_default(StyleProperty::FontSize(style.size()));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(style.weight))));
+        if style.italic {
+            builder.push_default(StyleProperty::FontStyle(FontStyle::Italic));
+        }
         let mut layout = builder.build(text);
         layout.break_all_lines(None);
         let mut runs = Vec::new();

@@ -5,14 +5,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 94 | 1651 | 72.48 |
-| `platform` | 192 | 2806 | 41 | 734 | 26.16 |
+| `platform` | 192 | 2806 | 46 | 800 | 28.51 |
 | `editor` | 182 | 3144 | 38 | 758 | 24.11 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
 | `workbench/contrib` | 370 | 4636 | 1 | 4 | 0.09 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 16410 | | 3147 | 19.18 |
+| **total** | | 16410 | | 3213 | 19.58 |
 
 ## Arquivos portados
 
@@ -129,6 +129,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/environment/test/node/userDataPath.test.ts` | 4 | `crates/je-platform/tests/user_data_path.rs` | 4 |
 | `src/vs/platform/extensionManagement/test/common/allowedExtensionsService.test.ts` | 29 | `crates/je-extensions/tests/allowed_extensions_service.rs` | 29 |
 | `src/vs/platform/extensionManagement/test/common/configRemotes.test.ts` | 11 | `crates/je-extensions/tests/config_remotes.rs` | 11 |
+| `src/vs/platform/extensionManagement/test/common/extensionGalleryService.test.ts` | 46 | `crates/je-extensions/tests/extension_gallery_service.rs` | 46 |
 | `src/vs/platform/extensionManagement/test/common/extensionManagement.test.ts` | 8 | `crates/je-extensions/tests/extension_management.rs` | 5 |
 | `src/vs/platform/extensionManagement/test/common/extensionNls.test.ts` | 4 | `crates/je-extensions/tests/extension_nls.rs` | 4 |
 | `src/vs/platform/extensionManagement/test/common/extensionsProfileScannerService.test.ts` | 25 | `crates/je-extensions/tests/extensions_profile_scanner_service.rs` | 25 |
@@ -153,6 +154,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/storage/test/common/storageService.test.ts` | 10 | `crates/je-platform/tests/storage_service.rs` | 10 |
 | `src/vs/platform/telemetry/test/common/telemetryUtils.test.ts` | 14 | `crates/je-platform/tests/telemetry_utils.rs` | 14 |
 | `src/vs/platform/undoRedo/test/common/undoRedoService.test.ts` | 4 | `crates/je-editor/tests/undo_redo_service.rs` | 4 |
+| `src/vs/platform/workspace/test/common/workspace.test.ts` | 14 | `crates/je-platform/tests/workspace.rs` | 14 |
+| `src/vs/platform/workspaces/test/common/workspaceIdentifier.test.ts` | 1 | `crates/je-platform/tests/workspace_identifier.rs` | 1 |
+| `src/vs/platform/workspaces/test/common/workspaces.test.ts` | 3 | `crates/je-platform/tests/workspaces.rs` | 3 |
+| `src/vs/platform/workspaces/test/node/workspaces.test.ts` | 2 | `crates/je-platform/tests/workspaces_node.rs` | 2 |
 | `src/vs/editor/test/common/core/characterClassifier.test.ts` | 1 | `crates/je-editor/tests/character_classifier.rs` | 1 |
 | `src/vs/editor/test/common/core/cursorColumns.test.ts` | 5 | `crates/je-editor/tests/cursor_columns.rs` | 7 |
 | `src/vs/editor/test/common/core/lineTokens.test.ts` | 7 | `crates/je-editor/tests/line_tokens.rs` | 7 |

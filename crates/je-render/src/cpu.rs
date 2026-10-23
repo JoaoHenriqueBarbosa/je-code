@@ -26,6 +26,7 @@ pub(crate) fn encode(list: &DisplayList, ctx: &mut vello_cpu::RenderContext, res
                 let _ = ctx
                     .glyph_run(resources, font)
                     .font_size(*size)
+                    .hint(true)
                     .fill_glyphs(glyphs.iter().map(|g| vello_cpu::Glyph { id: g.id, x: g.x + x, y: g.y + y }));
             }
             Command::PushClip(shape) => ctx.push_clip_layer(&shape.to_path()),

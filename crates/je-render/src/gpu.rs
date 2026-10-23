@@ -26,7 +26,7 @@ pub(crate) fn encode(list: &DisplayList, scene: &mut vello::Scene) {
                 }
             }
             Command::Glyphs { font, size, color, x, y, glyphs } => {
-                scene.draw_glyphs(font).font_size(*size).brush(color.to_peniko()).draw(
+                scene.draw_glyphs(font).font_size(*size).hint(true).brush(color.to_peniko()).draw(
                     Fill::NonZero,
                     glyphs.iter().map(|g| vello::Glyph { id: g.id, x: g.x + x, y: g.y + y }),
                 );
