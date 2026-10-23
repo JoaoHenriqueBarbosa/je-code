@@ -133,5 +133,7 @@ pub mod token_store;
 
 pub mod coordinates_converter;
 
+pub mod replace_command;
+pub mod cursor_delete_operations;
 pub mod cursor_move_operations;
 pub mod cursor_column_selection;

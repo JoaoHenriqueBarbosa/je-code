@@ -92,9 +92,52 @@ pub fn to_ordering(result: CompareResult) -> Ordering {
     }
 }
 
-/// `array.sort(compare)`.
+/// Abaixo deste tamanho o `Array.prototype.sort` do V8 (TimSort) não mescla corridas: acha a primeira corrida
+/// (`CountAndMakeRun`) e insere o resto por inserção binária (`BinaryInsertionSort`).
+const V8_MIN_MERGE: usize = 64;
+
+/// `array.sort(compare)`, com a sequência de chamadas ao comparador do V8. Isso importa quando o comparador
+/// não é uma ordem total: o resultado (e a ausência de pânico) segue o do JavaScript.
+///
+/// Pendente: a partir de 64 elementos o V8 mescla corridas (`MergeCollapse`, galope); aqui o vetor cai na
+/// ordenação estável do Rust, que dá o mesmo resultado só quando o comparador é uma ordem total.
 pub fn sort_by_compare<T>(array: &mut [T], compare: impl Fn(&T, &T) -> CompareResult) {
-    array.sort_by(|a, b| to_ordering(compare(a, b)));
+    let length = array.len();
+    if length < 2 {
+        return;
+    }
+    if length >= V8_MIN_MERGE {
+        array.sort_by(|a, b| to_ordering(compare(a, b)));
+        return;
+    }
+
+    // CountAndMakeRun(0, length)
+    let mut run_length = 2;
+    let is_descending = compare(&array[1], &array[0]) < 0.0;
+    for index in 2..length {
+        let order = compare(&array[index], &array[index - 1]);
+        if if is_descending { order >= 0.0 } else { order < 0.0 } {
+            break;
+        }
+        run_length += 1;
+    }
+    if is_descending {
+        array[..run_length].reverse();
+    }
+
+    // BinaryInsertionSort(0, run_length, length)
+    for start in run_length..length {
+        let (mut left, mut right) = (0, start);
+        while left < right {
+            let mid = left + ((right - left) >> 1);
+            if compare(&array[start], &array[mid]) < 0.0 {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+        array[left..=start].rotate_right(1);
+    }
 }
 
 /// Os índices de `slice(start, end)` do JavaScript (negativos contam do fim), já limitados.
