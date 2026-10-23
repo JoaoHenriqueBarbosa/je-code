@@ -278,3 +278,20 @@ pub trait CompletionItemProvider {
         je_base::promise::Promise::resolved(None)
     }
 }
+
+// `ILink` de `src/vs/editor/common/languages.ts` (linhas 1882 a 1889 do original).
+
+/// `URI | string`: o destino de um [`ILink`].
+#[derive(Clone)]
+pub enum LinkUrl {
+    Uri(je_base::uri::URI),
+    Text(JsString),
+}
+
+/// `ILink`: um link dentro do editor. `url` e `tooltip` são opcionais (`undefined` vira `None`).
+#[derive(Clone)]
+pub struct ILink {
+    pub range: crate::range::Range,
+    pub url: Option<LinkUrl>,
+    pub tooltip: Option<String>,
+}

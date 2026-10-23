@@ -119,3 +119,5 @@ pub mod unicode_text_model_highlighter;
 pub mod edit_context;
 
 pub mod view_layer;
+
+pub mod link_computer;
