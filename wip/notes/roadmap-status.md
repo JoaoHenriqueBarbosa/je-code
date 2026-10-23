@@ -11,7 +11,7 @@ Fase corrente: **0 (bancada e fundações)**.
 | --- | --- | --- |
 | H01 a H14, H23 a H27 com veredito | 11 de 19 (H02, H03, H07, H23 no Windows, H24, H27 confirmadas; H05 refutada; H01, H04, H12 parciais; H06 dispensada) | eu, 2026-10-23 |
 | Substrato gráfico e de texto escolhido pela medida | **Escolhido**: winit + vello (GPU) + vello_cpu (CPU) + parley + accesskit; Bevy refutado (H05) | eu, 2026-10-23 |
-| Harness do oráculo com um teste mocha portado e um screenshot comparado | NÃO MEDIDO | |
+| Harness do oráculo com um teste mocha portado e um screenshot comparado | Testes mocha: 72+ casos portados passando. Screenshot: captura do oráculo por CDP pronta e determinística (0 pixels de ruído); falta o lado do je-code | eu, 2026-10-23 |
 | `scripts/pure-rust-check.sh` verde nos 4 alvos | NÃO MEDIDO | |
 
 ## Fase 1 (adiantada em paralelo à Fase 0)

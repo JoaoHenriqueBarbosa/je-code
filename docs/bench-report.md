@@ -68,7 +68,7 @@ Máquina de medição: WSL2 (kernel 6.18) sobre Windows com RTX 5060 Ti via `/de
 | Id | Hipótese | Experimento | Veredito |
 | --- | --- | --- | --- |
 | H25 | A suíte mocha do VS Code (cerca de 50 mil `test(` em `src/vs`, eu, 2026-10-23, tag 1.143.1) porta caso a caso para Rust e serve de oráculo de comportamento das camadas `base`, `platform`, `editor` e `workbench` | portar os 2 306 de `vs/base` primeiro e medir a taxa de casos que dependem de DOM | a medir |
-| H26 | Para a UI, screenshot do oráculo (xvfb) contra o nosso, comparados por diferença perceptual, é um oráculo suficiente para layout e tema | montar o harness e medir o ruído entre duas capturas do próprio oráculo | a medir |
+| H26 | Para a UI, screenshot do oráculo (xvfb) contra o nosso, comparados por diferença perceptual, é um oráculo suficiente para layout e tema | `oracle-harness/cdp_screenshot.js` (o VS Code 1.143.1 sob `xvfb-run` com `--disable-gpu --remote-debugging-port`, `Page.captureScreenshot` no alvo do workbench) e `oracle-harness/imgdiff.py` | **Confirmada para o oráculo** (eu, 2026-10-23): duas capturas do workbench vazio (1200x800, dpr 1) com 5 s de intervalo diferem em 0 de 960 000 pixels: a pintura do oráculo em software é determinística, então qualquer diferença contra o nosso é sinal, não ruído. A comparação com o je-code exige o mesmo tamanho, dpr e fontes (Linux do oráculo usa `system-ui`, aqui DejaVu/Noto); pendente: o modo `--screenshot` do je-code e a métrica perceptual |
 
 ## Medições parciais (dimensionam hipóteses ainda sem veredito)
 
