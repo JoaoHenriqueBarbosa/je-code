@@ -92,3 +92,5 @@ pub mod overview_zone_manager;
 pub mod semantic_tokens_dto;
 pub mod language_selector;
 pub mod token_theme;
+
+pub mod find;
