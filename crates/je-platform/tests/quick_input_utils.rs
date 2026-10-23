@@ -19,7 +19,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
-use je_base::actions::IAction;
 use je_base::dynamic::Dynamic;
 use je_base::path::Platform;
 use je_base::uri::URI;

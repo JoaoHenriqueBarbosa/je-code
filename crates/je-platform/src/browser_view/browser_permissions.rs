@@ -493,16 +493,13 @@ impl BrowserPermissionStore {
         let changed = {
             let mut data = self.data.borrow_mut();
             match decision {
-                None => match data.get_mut(&key) {
-                    Some(categories) if categories.shift_remove(&category).is_some() => {
-                        if categories.is_empty() {
-                            data.shift_remove(&key);
-                        }
-                        true
+                None => {
+                    let removed = data.get_mut(&key).is_some_and(|categories| categories.shift_remove(&category).is_some());
+                    if removed && data.get(&key).is_some_and(|categories| categories.is_empty()) {
+                        data.shift_remove(&key);
                     }
-                    // nada mudou
-                    _ => false,
-                },
+                    removed
+                }
                 Some(decision) => {
                     let unchanged = data.get(&key).and_then(|categories| categories.get(&category)) == Some(&decision);
                     if !unchanged {

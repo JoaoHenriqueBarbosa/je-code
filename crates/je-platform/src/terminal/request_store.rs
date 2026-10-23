@@ -18,7 +18,7 @@ use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, dispose_all, to_disposable};
 use je_base::promise::{Promise, Resolver};
 
-use crate::log::{LogServiceRef, Logger};
+use crate::log::LogServiceRef;
 
 /// O `RequestArgs & { requestId: number }` do evento `onCreateRequest`.
 #[derive(Clone, Debug, PartialEq, Eq)]
