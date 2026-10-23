@@ -1,0 +1,12 @@
+[package]
+name = "exthost-probe"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+# O zjsc do pseudo-linus por caminho (ref/ fica fora do git): H15 e H16.
+zjsc = { path = "../../ref/pseudo-linus/crates/zjsc" }
+
+[lints]
+workspace = true

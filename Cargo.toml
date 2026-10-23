@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "testbench/*"]
+# ref/ (pseudo-linus, oráculo) fica fora do workspace: as crates dele herdam do workspace do próprio pseudo-linus.
+exclude = ["ref"]
 
 [workspace.package]
 edition = "2024"
@@ -18,3 +20,7 @@ panic = "unwind"
 
 [patch.crates-io]
 ferroni = { path = "vendor/ferroni" }
+
+# O zjsc tem cerca de 635 mil linhas numa crate só: sem debuginfo para o link e a memória caberem.
+[profile.release.package.zjsc]
+debug = 0
