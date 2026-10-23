@@ -2,3 +2,5 @@
 
 pub mod keybinding;
 pub mod search;
+
+pub mod policies;
