@@ -84,3 +84,9 @@ pub mod position_to_offset;
 pub mod lines_layout;
 pub mod view_model_types;
 pub mod line_heights;
+pub mod find_section_headers;
+
+pub mod default_document_colors_computer;
+
+pub mod overview_zone_manager;
+pub mod semantic_tokens_dto;
