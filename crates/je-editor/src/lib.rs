@@ -102,3 +102,6 @@ pub mod find;
 pub mod folding;
 
 pub mod annotations;
+
+pub mod editor_common;
+pub mod sort_lines_command;
