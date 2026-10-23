@@ -148,3 +148,5 @@ pub mod column_selection_paste_command;
 pub mod indentation_line_processor;
 pub mod auto_indent;
 pub mod enter_action;
+
+pub mod trim_trailing_whitespace_command;
