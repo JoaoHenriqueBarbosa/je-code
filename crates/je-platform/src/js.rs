@@ -138,3 +138,29 @@ pub fn dynamic_to_text(value: &Dynamic) -> String {
         other => format!("{other:?}"),
     }
 }
+
+/// `JSON.stringify` à moda do `setProperty`: o valor dinâmico como valor JSON, ou `None` quando o
+/// `stringify` devolveria `undefined` (`undefined` e função). Dentro de uma lista o que não tem forma em JSON
+/// vira `null`, e dentro de um objeto a propriedade some; `NaN` e infinitos viram `null`.
+pub fn to_json(value: &Dynamic) -> Option<Value> {
+    match value {
+        Dynamic::Undefined | Dynamic::Function(_) => None,
+        Dynamic::Null => Some(Value::Null),
+        Dynamic::Bool(b) => Some(Value::Bool(*b)),
+        Dynamic::Number(n) => Some(if n.is_finite() { Value::Number(*n) } else { Value::Null }),
+        Dynamic::BigInt(n) => Some(Value::String(JsString::from(n.to_string()))),
+        Dynamic::String(s) => Some(Value::String(s.clone())),
+        Dynamic::Date(date) => Some(je_base::dynamic::date_to_iso_string(date.time_value()).map_or(Value::Null, |iso| Value::String(JsString::from(iso)))),
+        Dynamic::Array(items) => Some(Value::Array(items.to_vec().iter().map(|item| to_json(item).unwrap_or(Value::Null)).collect())),
+        Dynamic::Object(object) => {
+            let mut result = je_base::json::Object::new();
+            for (key, item) in object.entries() {
+                if let Some(item) = to_json(&item) {
+                    result.insert(key, item);
+                }
+            }
+            Some(Value::Object(result))
+        }
+        Dynamic::RegExp(_) | Dynamic::TypedArray(_) => Some(Value::Object(je_base::json::Object::new())),
+    }
+}

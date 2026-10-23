@@ -4040,6 +4040,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-editor-view"
+version = "0.0.0"
+dependencies = [
+ "arboard",
+ "je-base",
+ "je-editor",
+ "je-languages",
+ "je-render",
+ "je-text",
+ "je-theme",
+ "je-ui",
+]
+
+[[package]]
 name = "je-instantiation"
 version = "0.0.0"
 dependencies = [

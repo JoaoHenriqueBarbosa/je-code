@@ -3,7 +3,7 @@
 //!
 //! `initialize` é `async` no original sem nenhum `await`: o corpo roda inteiro de forma síncrona, e
 //! aqui devolve o modelo direto, sem promessa. `PolicyConfiguration` e `NullPolicyConfiguration`
-//! dependem do `IPolicyService` (que ainda não existe) e não estão portados.
+//! estão em [`super::policy_configuration`].
 
 use std::cell::RefCell;
 use std::rc::Rc;

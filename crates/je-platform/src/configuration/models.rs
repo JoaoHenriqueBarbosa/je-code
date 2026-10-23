@@ -11,8 +11,8 @@
 //! - `IConfigurationValue` é o trait [`ConfigurationValue`]; o [`ConfigurationInspectValue`] o
 //!   implementa e expõe `default`, `user`, `workspace`... como métodos (`default` é `default_inspect`).
 //!   `policy` devolve só o valor (`{ value }` no original).
-//! - `UserSettings` (lê o `settings.json` pelo `IFileService` e observa mudanças) não está portado: o
-//!   serviço de arquivos ainda não existe.
+//! - `UserSettings` (lê o `settings.json` pelo `IFileService` e observa mudanças) está em
+//!   [`super::user_settings`].
 //! - `ConfigurationModelParser#doParseRaw` era `protected` (as subclasses do workbench o trocam); aqui
 //!   o parser é uma struct final.
 

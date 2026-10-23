@@ -1744,3 +1744,26 @@ async fn do_pipe_buffered_queued(source_provider: &FileSystemProviderRef, source
     result.map_err(|error| ensure_file_system_provider_error(Some(error)))
 }
 
+
+/// `whenProviderRegistered(file, fileService)`: resolve quando já há provider para o esquema do recurso,
+/// ou assim que um for registrado.
+pub fn when_provider_registered(file: &URI, file_service: &Rc<FileService>) -> Promise<()> {
+    let scheme = file.scheme().to_string_lossy();
+    if file_service.get_provider(&scheme).is_some() {
+        return Promise::resolved(());
+    }
+
+    let (promise, resolver) = Promise::new();
+    let listener: Rc<std::cell::RefCell<Option<DisposableRef>>> = Rc::new(std::cell::RefCell::new(None));
+    let slot = listener.clone();
+    let disposable = file_service.on_did_change_file_system_provider_registrations().listen(move |event| {
+        if event.scheme == scheme && event.added {
+            if let Some(disposable) = slot.borrow_mut().take() {
+                disposable.dispose();
+            }
+            resolver.resolve(());
+        }
+    });
+    *listener.borrow_mut() = Some(disposable);
+    promise
+}

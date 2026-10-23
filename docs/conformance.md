@@ -4,15 +4,15 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 73 | 1462 | 64.18 |
-| `platform` | 723 | 15868 | 18 | 352 | 2.22 |
-| `editor` | 182 | 3144 | 30 | 677 | 21.53 |
+| `base` | 150 | 2278 | 80 | 1502 | 65.94 |
+| `platform` | 723 | 15868 | 23 | 426 | 2.68 |
+| `editor` | 182 | 3144 | 38 | 758 | 24.11 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
 | `workbench/contrib` | 402 | 5033 | 0 | 0 | 0.00 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 29869 | | 2491 | 8.34 |
+| **total** | | 29869 | | 2686 | 8.99 |
 
 ## Arquivos portados
 
@@ -21,12 +21,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/browser/comparers.test.ts` | 10 | `crates/je-base/tests/comparers.rs` | 10 |
 | `src/vs/base/test/browser/ui/grid/grid.test.ts` | 38 | `crates/je-widgets/tests/grid.rs` | 38 |
 | `src/vs/base/test/browser/ui/grid/gridview.test.ts` | 9 | `crates/je-widgets/tests/gridview.rs` | 9 |
+| `src/vs/base/test/browser/ui/list/listWidget.test.ts` | 4 | `crates/je-widgets/tests/list_widget.rs` | 3 |
 | `src/vs/base/test/browser/ui/list/rangeMap.test.ts` | 28 | `crates/je-widgets/tests/range_map.rs` | 28 |
 | `src/vs/base/test/browser/ui/sash/sash.test.ts` | 1 | `crates/je-widgets/tests/sash.rs` | 1 |
 | `src/vs/base/test/browser/ui/scrollbar/scrollableElement.test.ts` | 9 | `crates/je-widgets/tests/scrollable_element.rs` | 9 |
 | `src/vs/base/test/browser/ui/scrollbar/scrollbarState.test.ts` | 2 | `crates/je-widgets/tests/scrollbar_state.rs` | 2 |
 | `src/vs/base/test/browser/ui/splitview/paneview.test.ts` | 2 | `crates/je-widgets/tests/paneview.rs` | 2 |
 | `src/vs/base/test/browser/ui/splitview/splitview.test.ts` | 18 | `crates/je-widgets/tests/splitview.rs` | 18 |
+| `src/vs/base/test/browser/ui/tree/indexTreeModel.test.ts` | 25 | `crates/je-widgets/tests/index_tree_model.rs` | 25 |
 | `src/vs/base/test/common/arrays.test.ts` | 29 | `crates/je-base/tests/arrays.rs` | 28 |
 | `src/vs/base/test/common/arraysFind.test.ts` | 3 | `crates/je-base/tests/arrays_find.rs` | 3 |
 | `src/vs/base/test/common/assert.test.ts` | 4 | `crates/je-base/tests/assert.rs` | 4 |
@@ -36,6 +38,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/cancellation.test.ts` | 22 | `crates/je-base/tests/cancellation.rs` | 22 |
 | `src/vs/base/test/common/collections.test.ts` | 12 | `crates/je-base/tests/collections.rs` | 12 |
 | `src/vs/base/test/common/color.test.ts` | 29 | `crates/je-theme/tests/color.rs` | 29 |
+| `src/vs/base/test/common/console.test.ts` | 1 | `crates/je-base/tests/console.rs` | 1 |
 | `src/vs/base/test/common/date.test.ts` | 13 | `crates/je-base/tests/date.rs` | 13 |
 | `src/vs/base/test/common/decorators.test.ts` | 5 | `crates/je-base/tests/decorators.rs` | 3 |
 | `src/vs/base/test/common/diff/diff.test.ts` | 2 | `crates/je-base/tests/diff.rs` | 2 |
@@ -48,6 +51,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/hash.test.ts` | 5 | `crates/je-base/tests/hash.rs` | 8 |
 | `src/vs/base/test/common/history.test.ts` | 27 | `crates/je-base/tests/history.rs` | 27 |
 | `src/vs/base/test/common/iconLabels.test.ts` | 5 | `crates/je-base/tests/icon_labels.rs` | 5 |
+| `src/vs/base/test/common/image.test.ts` | 1 | `crates/je-base/tests/image.rs` | 1 |
 | `src/vs/base/test/common/iterator.test.ts` | 3 | `crates/je-base/tests/iterator.rs` | 3 |
 | `src/vs/base/test/common/json.test.ts` | 17 | `crates/je-base/tests/json.rs` | 17 |
 | `src/vs/base/test/common/jsonEdit.test.ts` | 17 | `crates/je-base/tests/json_edit.rs` | 17 |
@@ -77,7 +81,9 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/observables/throttledObservable.test.ts` | 6 | `crates/je-base/tests/observable_throttled.rs` | 6 |
 | `src/vs/base/test/common/paging.test.ts` | 7 | `crates/je-base/tests/paging.rs` | 7 |
 | `src/vs/base/test/common/path.test.ts` | 9 | `crates/je-base/tests/path.rs` | 9 |
+| `src/vs/base/test/common/performance.test.ts` | 2 | `crates/je-base/tests/performance.rs` | 2 |
 | `src/vs/base/test/common/prefixTree.test.ts` | 13 | `crates/je-base/tests/prefix_tree.rs` | 13 |
+| `src/vs/base/test/common/processes.test.ts` | 2 | `crates/je-base/tests/processes.rs` | 2 |
 | `src/vs/base/test/common/resourceTree.test.ts` | 3 | `crates/je-base/tests/resource_tree.rs` | 3 |
 | `src/vs/base/test/common/resources.test.ts` | 16 | `crates/je-base/tests/resources.rs` | 31 |
 | `src/vs/base/test/common/scrollable.test.ts` | 5 | `crates/je-base/tests/scrollable.rs` | 5 |
@@ -91,13 +97,17 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/uriTemplate.test.ts` | 26 | `crates/je-base/tests/uri_template.rs` | 26 |
 | `src/vs/base/test/common/uuid.test.ts` | 3 | `crates/je-base/tests/uuid.rs` | 3 |
 | `src/vs/base/test/common/yaml.test.ts` | 107 | `crates/je-base/tests/yaml.rs` | 108 |
+| `src/vs/base/test/common/zip.test.ts` | 6 | `crates/je-base/tests/zip.rs` | 6 |
 | `src/vs/platform/configuration/test/common/configuration.test.ts` | 21 | `crates/je-platform/tests/configuration.rs` | 21 |
 | `src/vs/platform/configuration/test/common/configurationModels.test.ts` | 94 | `crates/je-platform/tests/configuration_models.rs` | 94 |
 | `src/vs/platform/configuration/test/common/configurationRegistry.test.ts` | 22 | `crates/je-platform/tests/configuration_registry.rs` | 22 |
-| `src/vs/platform/configuration/test/common/configurationService.test.ts` | 17 | `crates/je-platform/tests/configuration_service.rs` | 0 |
+| `src/vs/platform/configuration/test/common/configurationService.test.ts` | 17 | `crates/je-platform/tests/configuration_service.rs` | 17 |
 | `src/vs/platform/configuration/test/common/configurationVariables.test.ts` | 7 | `crates/je-platform/tests/configuration_variables.rs` | 8 |
 | `src/vs/platform/configuration/test/common/configurations.test.ts` | 15 | `crates/je-platform/tests/configurations.rs` | 15 |
-| `src/vs/platform/configuration/test/common/policyConfiguration.test.ts` | 24 | `crates/je-platform/tests/policy_configuration.rs` | 0 |
+| `src/vs/platform/configuration/test/common/policyConfiguration.test.ts` | 24 | `crates/je-platform/tests/policy_configuration.rs` | 24 |
+| `src/vs/platform/environment/test/node/argv.test.ts` | 8 | `crates/je-platform/tests/argv.rs` | 8 |
+| `src/vs/platform/environment/test/node/environmentService.test.ts` | 4 | `crates/je-platform/tests/environment_service.rs` | 4 |
+| `src/vs/platform/environment/test/node/userDataPath.test.ts` | 4 | `crates/je-platform/tests/user_data_path.rs` | 4 |
 | `src/vs/platform/files/test/browser/fileService.test.ts` | 16 | `crates/je-platform/tests/file_service.rs` | 22 |
 | `src/vs/platform/files/test/browser/inmemoryFileService.test.ts` | 20 | `crates/je-platform/tests/in_memory_file_service.rs` | 20 |
 | `src/vs/platform/files/test/common/files.test.ts` | 6 | `crates/je-platform/tests/files.rs` | 6 |
@@ -108,12 +118,22 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/instantiation/test/common/graph.test.ts` | 5 | `crates/je-instantiation/tests/graph.rs` | 5 |
 | `src/vs/platform/instantiation/test/common/instantiationService.test.ts` | 24 | `crates/je-instantiation/tests/instantiation_service.rs` | 24 |
 | `src/vs/platform/log/test/common/log.test.ts` | 10 | `crates/je-platform/tests/log.rs` | 10 |
+| `src/vs/platform/state/test/node/state.test.ts` | 7 | `crates/je-platform/tests/state.rs` | 7 |
+| `src/vs/platform/storage/test/common/storageService.test.ts` | 10 | `crates/je-platform/tests/storage_service.rs` | 10 |
 | `src/vs/platform/undoRedo/test/common/undoRedoService.test.ts` | 4 | `crates/je-editor/tests/undo_redo_service.rs` | 4 |
 | `src/vs/editor/test/common/core/characterClassifier.test.ts` | 1 | `crates/je-editor/tests/character_classifier.rs` | 1 |
 | `src/vs/editor/test/common/core/cursorColumns.test.ts` | 5 | `crates/je-editor/tests/cursor_columns.rs` | 7 |
 | `src/vs/editor/test/common/core/lineTokens.test.ts` | 7 | `crates/je-editor/tests/line_tokens.rs` | 7 |
 | `src/vs/editor/test/common/core/range.test.ts` | 9 | `crates/je-editor/tests/range.rs` | 9 |
 | `src/vs/editor/test/common/core/stringBuilder.test.ts` | 4 | `crates/je-editor/tests/string_builder.rs` | 4 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/beforeEditPositionMapper.test.ts` | 9 | `crates/je-editor/tests/bracket_pair_colorizer_before_edit_position_mapper.rs` | 9 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/brackets.test.ts` | 1 | `crates/je-editor/tests/bracket_pair_colorizer_brackets.rs` | 1 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/combineTextEditInfos.test.ts` | 1 | `crates/je-editor/tests/bracket_pair_colorizer_combine_text_edit_infos.rs` | 50 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/concat23Trees.test.ts` | 6 | `crates/je-editor/tests/bracket_pair_colorizer_concat23_trees.rs` | 6 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/getBracketPairsInRange.test.ts` | 10 | `crates/je-editor/tests/bracket_pair_colorizer_get_bracket_pairs_in_range.rs` | 10 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/length.test.ts` | 2 | `crates/je-editor/tests/bracket_pair_colorizer_length.rs` | 2 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/smallImmutableSet.test.ts` | 2 | `crates/je-editor/tests/bracket_pair_colorizer_small_immutable_set.rs` | 2 |
+| `src/vs/editor/test/common/model/bracketPairColorizer/tokenizer.test.ts` | 1 | `crates/je-editor/tests/bracket_pair_colorizer_tokenizer.rs` | 1 |
 | `src/vs/editor/test/common/model/editStack.test.ts` | 1 | `crates/je-editor/tests/edit_stack.rs` | 1 |
 | `src/vs/editor/test/common/model/editableTextModel.test.ts` | 62 | `crates/je-editor/tests/editable_text_model.rs` | 62 |
 | `src/vs/editor/test/common/model/editableTextModelAuto.test.ts` | 4 | `crates/je-editor/tests/editable_text_model_auto.rs` | 4 |

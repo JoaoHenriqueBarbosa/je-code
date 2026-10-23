@@ -26,6 +26,9 @@ use crate::js::{Key, delete_property, for_in_entries, is_non_null_object, object
 
 pub mod defaults;
 pub mod models;
+pub mod policy_configuration;
+pub mod service;
+pub mod user_settings;
 pub mod registry;
 pub mod variables;
 

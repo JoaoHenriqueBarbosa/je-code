@@ -27,7 +27,7 @@ use je_base::uri::URI;
 use je_platform::files::file_service::{FileContentSource, FileService};
 use je_platform::files::files::*;
 use je_platform::files::in_memory::InMemoryFileSystemProvider;
-use je_platform::log::{LogService, NullLogService};
+use je_platform::log::{LogArg, LogLevel, LogMessage, Logger, NullLogService};
 
 type Prov = Rc<dyn FileSystemProvider>;
 
@@ -64,14 +64,26 @@ struct TraceLog {
     traces: RefCell<Vec<String>>,
 }
 
-impl LogService for TraceLog {
-    fn trace(&self, message: &str) {
+impl Logger for TraceLog {
+    fn on_did_change_log_level(&self) -> Event<LogLevel> {
+        Event::none()
+    }
+    fn get_level(&self) -> LogLevel {
+        LogLevel::Info
+    }
+    fn set_level(&self, _level: LogLevel) {}
+    fn trace_args(&self, message: &str, _args: &[LogArg]) {
         self.traces.borrow_mut().push(message.to_string());
     }
-    fn debug(&self, _message: &str) {}
-    fn info(&self, _message: &str) {}
-    fn warn(&self, _message: &str) {}
-    fn error(&self, _message: &str) {}
+    fn debug_args(&self, _message: &str, _args: &[LogArg]) {}
+    fn info_args(&self, _message: &str, _args: &[LogArg]) {}
+    fn warn_args(&self, _message: &LogMessage, _args: &[LogArg]) {}
+    fn error_args(&self, _message: &LogMessage, _args: &[LogArg]) {}
+    fn flush(&self) {}
+}
+
+impl IDisposable for TraceLog {
+    fn dispose(&self) {}
 }
 
 #[test]
