@@ -16,7 +16,6 @@ pub mod manifest;
 pub mod management;
 pub mod nls;
 pub mod paths;
-pub mod semver;
 pub mod util;
 pub mod validator;
 

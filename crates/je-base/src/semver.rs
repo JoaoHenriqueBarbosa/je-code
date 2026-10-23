@@ -1,5 +1,6 @@
-//! Porte do subconjunto de `src/vs/base/common/semver/semver.js` (node-semver) que o gerenciamento de
-//! extensões usa: `valid`, `parse`, `compare`, `gt`, `lt`, `eq`, `lte`, `rcompare` e `satisfies`.
+//! Porte do subconjunto de `src/vs/base/common/semver/semver.js` (node-semver) que o VS Code usa (o
+//! gerenciamento de extensões e a sincronização): `valid`, `parse`, `compare`, `gt`, `lt`, `eq`, `lte`, `rcompare` e
+//! `satisfies`.
 //!
 //! Modo estrito (`loose` falso), como o VS Code chama. O número de cada componente cabe em `u64` (o original
 //! limita a `Number.MAX_SAFE_INTEGER`).

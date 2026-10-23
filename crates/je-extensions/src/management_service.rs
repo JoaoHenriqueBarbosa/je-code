@@ -616,7 +616,7 @@ impl ExtensionManagementService {
                     ExtensionManagementErrorCode::Unsupported,
                 ));
             }
-            if crate::semver::gt(&existing_system.manifest.version, &manifest.version) {
+            if je_base::semver::gt(&existing_system.manifest.version, &manifest.version) {
                 return Err(error(
                     format!(
                         "Extension '{}' is a built-in extension with version '{}' and cannot be downgraded to version '{}'.",
@@ -1126,7 +1126,7 @@ impl ExtensionManagementService {
                 if !self.product.built_in_extensions_enabled_with_auto_updates.iter().any(|id| id.to_lowercase() == user_extension.identifier.id.to_lowercase()) {
                     return false;
                 }
-                builtin.iter().find(|e| are_same_extensions(&e.identifier, &user_extension.identifier)).is_some_and(|b| crate::semver::lt(&user_extension.manifest.version, &b.manifest.version))
+                builtin.iter().find(|e| are_same_extensions(&e.identifier, &user_extension.identifier)).is_some_and(|b| je_base::semver::lt(&user_extension.manifest.version, &b.manifest.version))
             })
             .collect();
         if stale.is_empty() {
@@ -1157,7 +1157,7 @@ impl ExtensionManagementService {
             extensions.iter().filter(|e| !removed.contains_key(&key_of(e))).map(|e| e.identifier.id.to_lowercase()).collect();
         // running post uninstall tasks for extensions that are not installed anymore
         for mut group in group_by_extension(extensions.clone(), |e| &e.identifier) {
-            group.sort_by(|a, b| crate::semver::rcompare(&a.manifest.version, &b.manifest.version));
+            group.sort_by(|a, b| je_base::semver::rcompare(&a.manifest.version, &b.manifest.version));
             let latest = &group[0];
             if !installed.contains(&latest.identifier.id.to_lowercase()) {
                 lifecycle::post_uninstall(latest, &self.global_storage_home, self.fs.as_ref(), self.logger.as_ref());

@@ -8,7 +8,8 @@
 use je_base::severity::Severity;
 use serde_json::Value;
 
-use crate::{paths, semver};
+use crate::paths;
+use je_base::semver;
 
 /// `IParsedVersion`.
 #[derive(Clone, Debug, PartialEq, Eq)]

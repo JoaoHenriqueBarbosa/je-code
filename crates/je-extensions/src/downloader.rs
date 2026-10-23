@@ -237,7 +237,7 @@ impl ExtensionsDownloader {
             }
             let mut distinct: Vec<(String, u64)> = Vec::new();
             for mut group in group_by_extension(vsixs, |(key, _, _)| &key.identifier) {
-                group.sort_by(|a, b| crate::semver::rcompare(&a.0.version, &b.0.version));
+                group.sort_by(|a, b| je_base::semver::rcompare(&a.0.version, &b.0.version));
                 to_delete.extend(group.iter().skip(1).map(|(_, resource, _)| resource.clone())); // Delete outdated extensions
                 distinct.push((group[0].1.clone(), group[0].2));
             }

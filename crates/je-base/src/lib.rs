@@ -120,6 +120,7 @@ pub mod ports;
 pub mod ime;
 pub mod verifier;
 pub mod search;
+pub mod semver;
 pub mod image;
 pub mod zip;
 pub mod policy;

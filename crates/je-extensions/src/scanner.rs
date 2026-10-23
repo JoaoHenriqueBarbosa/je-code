@@ -34,7 +34,7 @@ use crate::profile_scanner::{
 };
 use crate::util::{are_same_extensions, compute_target_platform, get_extension_id, get_gallery_extension_id};
 use crate::validator::validate_extension_manifest;
-use crate::semver;
+use je_base::semver;
 
 /// `ManifestMetadata`: o `__metadata` que o instalador escreve no `package.json`.
 #[derive(Clone, Debug, Default, PartialEq)]

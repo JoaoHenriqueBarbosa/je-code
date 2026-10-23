@@ -28,7 +28,7 @@ use crate::management::{
 use crate::manifest::{ExtensionIdentifierInfo, TargetPlatform};
 use crate::util::{adopt_to_gallery_extension_id, are_same_extensions, get_gallery_extension_id};
 use crate::validator::{is_engine_valid, parse_date_ms};
-use crate::semver;
+use je_base::semver;
 
 // ---- manifesto do marketplace ----
 
