@@ -152,3 +152,9 @@ pub fn query_all(tree: &Tree, root: NodeId, chain: &[&str]) -> Vec<NodeId> {
 pub fn assert_throws(f: impl FnOnce()) {
     assert!(je_base::errors::catch(f).is_err(), "deveria lançar");
 }
+
+/// O tema 2026 Dark ou Light do oráculo (para os testes que conferem os estilos padrão contra o tema real).
+pub fn load_theme(name: &str) -> je_theme::ColorTheme {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("raiz do repositório");
+    je_theme::ColorTheme::load(&root.join(format!("ref/vscode/extensions/theme-defaults/themes/2026-{name}.json"))).expect("tema")
+}

@@ -297,3 +297,34 @@ fn cursor_override_wins_over_the_node_cursor_and_the_last_wins() {
     assert_eq!(ui.cursor_at(30.0, 30.0), Cursor::Pointer);
     let _ = (c, Phase::Target);
 }
+
+#[test]
+fn default_action_runs_after_the_listeners_unless_prevented() {
+    let (ui, _root, a, _b, c) = nested();
+    let log: Log = Rc::default();
+    record(&ui, &log, a, "a-bubble", EventKind::KeyDown, false);
+    {
+        let log = log.clone();
+        std::mem::forget(ui.listen_default(a, EventKind::KeyDown, move |_| log.borrow_mut().push("a-default".to_owned())));
+    }
+    ui.dispatch(&mut Event::new(EventKind::KeyDown, c));
+    assert_eq!(*log.borrow(), ["a-bubble:Bubble", "a-default"]);
+
+    // `preventDefault` num ouvinte cancela a ação; `stopPropagation` não.
+    log.borrow_mut().clear();
+    std::mem::forget(ui.listen(c, EventKind::KeyDown, false, |e: &mut Event| e.prevent_default()));
+    ui.dispatch(&mut Event::new(EventKind::KeyDown, c));
+    assert_eq!(*log.borrow(), ["a-bubble:Bubble"]);
+}
+
+#[test]
+fn only_the_closest_default_action_runs() {
+    let (ui, root, a, _b, c) = nested();
+    let log: Log = Rc::default();
+    for (node, name) in [(root, "root"), (a, "a")] {
+        let log = log.clone();
+        std::mem::forget(ui.listen_default(node, EventKind::Click, move |_| log.borrow_mut().push(name.to_owned())));
+    }
+    ui.dispatch(&mut Event::new(EventKind::Click, c));
+    assert_eq!(*log.borrow(), ["a"]);
+}

@@ -8,11 +8,14 @@ description = "Porte de vs/base/browser/ui do VS Code: widgets nativos em cima d
 
 [dependencies]
 je-base = { path = "../je-base" }
+je-codicons = { path = "../je-codicons" }
 je-render = { path = "../je-render" }
+je-text = { path = "../je-text" }
+je-theme = { path = "../je-theme" }
 je-ui = { path = "../je-ui" }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-je-text = { path = "../je-text" }
+png = "0.18"

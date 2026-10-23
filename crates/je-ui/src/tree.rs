@@ -1,6 +1,6 @@
 //! A árvore de nós, numa arena.
 
-use je_render::kurbo::{Rect, RoundedRect, Vec2};
+use je_render::kurbo::{BezPath, Rect, RoundedRect, RoundedRectRadii, Shape as _, Vec2};
 use je_render::{DisplayList, Rgba, Shape};
 use je_text::{TextStyle, with_text_system};
 
@@ -12,9 +12,10 @@ fn fade(color: Rgba, opacity: f32) -> Rgba {
     Rgba { a: (f32::from(color.a) * opacity).round() as u8, ..color }
 }
 
-/// O índice de um nó na arena.
+/// O índice de um nó na arena, com a geração do espaço: um `NodeId` de um nó removido não vale para o nó
+/// que depois reutiliza o espaço (o elemento removido do DOM continua sendo outro objeto).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct NodeId(u32);
+pub struct NodeId(u32, u32);
 
 /// Borda de largura uniforme (o caso de todas as bordas do workbench).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,6 +44,25 @@ pub enum Role {
     Status,
     Region,
     Separator,
+    Checkbox,
+    Radio,
+    RadioGroup,
+    Switch,
+    Dialog,
+    AlertDialog,
+    ProgressBar,
+    ComboBox,
+    ListBox,
+    Option,
+    Link,
+    Image,
+    Group,
+    Heading,
+    Presentation,
+    MenuItemCheckbox,
+    MenuItemRadio,
+    Tooltip,
+    Alert,
 }
 
 /// O `pointer-events` do CSS. É herdado: `None` num nó vale para os descendentes, até um que declare
@@ -107,11 +127,17 @@ pub struct NodeStyle {
     /// rolagem sem sobreposição interna.
     pub opacity: f32,
     pub content: Content,
+    /// Raio por canto (superior esquerdo, superior direito, inferior direito, inferior esquerdo), no
+    /// lugar de `radius` (o `border-radius` com quatro valores).
+    pub corner_radii: Option<[f64; 4]>,
+    /// Largura da borda por lado (cima, direita, baixo, esquerda), no lugar de `Border::width` (o
+    /// `border-width` com quatro valores; `Border::color` continua valendo para todos).
+    pub border_widths: Option<[f64; 4]>,
 }
 
 impl Default for NodeStyle {
     fn default() -> Self {
-        Self { background: None, border: None, radius: 0.0, clip: false, visible: true, pointer_events: PointerEvents::Inherit, z_index: 0, cursor: None, opacity: 1.0, content: Content::None }
+        Self { background: None, border: None, radius: 0.0, clip: false, visible: true, pointer_events: PointerEvents::Inherit, z_index: 0, cursor: None, opacity: 1.0, content: Content::None, corner_radii: None, border_widths: None }
     }
 }
 
@@ -133,6 +159,8 @@ struct Node {
     /// código do VS Code lê e escreve classes como estado e como marcador de estrutura.
     classes: Vec<String>,
     alive: bool,
+    /// Quantas vezes o espaço da arena já foi reutilizado.
+    generation: u32,
 }
 
 /// A árvore de UI de uma janela.
@@ -144,7 +172,7 @@ pub struct Tree {
 
 impl Node {
     fn new(parent: Option<NodeId>, role: Role) -> Self {
-        Self { parent, children: Vec::new(), bounds: Rect::ZERO, fill: (false, false), right: None, bottom: None, style: NodeStyle::default(), role, label: None, classes: Vec::new(), alive: true }
+        Self { parent, children: Vec::new(), bounds: Rect::ZERO, fill: (false, false), right: None, bottom: None, style: NodeStyle::default(), role, label: None, classes: Vec::new(), alive: true, generation: 0 }
     }
 }
 
@@ -157,7 +185,7 @@ impl Default for Tree {
 impl Tree {
     pub fn new() -> Self {
         let root = Node::new(None, Role::Region);
-        Self { nodes: vec![root], free: Vec::new(), root: NodeId(0) }
+        Self { nodes: vec![root], free: Vec::new(), root: NodeId(0, 0) }
     }
 
     pub fn root(&self) -> NodeId {
@@ -188,19 +216,20 @@ impl Tree {
     fn alloc(&mut self, node: Node) -> NodeId {
         match self.free.pop() {
             Some(slot) => {
-                self.nodes[slot as usize] = node;
-                NodeId(slot)
+                let generation = self.nodes[slot as usize].generation + 1;
+                self.nodes[slot as usize] = Node { generation, ..node };
+                NodeId(slot, generation)
             }
             None => {
                 self.nodes.push(node);
-                NodeId(u32::try_from(self.nodes.len() - 1).expect("mais de 4 bilhões de nós"))
+                NodeId(u32::try_from(self.nodes.len() - 1).expect("mais de 4 bilhões de nós"), 0)
             }
         }
     }
 
     /// Tira o nó do pai sem destruí-lo (o `element.remove()`): a subárvore continua viva e pode voltar.
     pub fn detach(&mut self, id: NodeId) {
-        if !self.node(id).alive {
+        if !self.is_alive(id) {
             return;
         }
         if let Some(parent) = self.node_mut(id).parent.take() {
@@ -239,7 +268,7 @@ impl Tree {
     }
 
     pub fn is_alive(&self, id: NodeId) -> bool {
-        self.nodes.get(id.0 as usize).is_some_and(|n| n.alive)
+        self.nodes.get(id.0 as usize).is_some_and(|n| n.alive && n.generation == id.1)
     }
 
     /// O nó e todos os descendentes, em pré-ordem.
@@ -255,7 +284,7 @@ impl Tree {
 
     /// Remove o nó e a subárvore dele (o `remove` do DOM).
     pub fn remove(&mut self, id: NodeId) {
-        if id == self.root || !self.node(id).alive {
+        if id == self.root || !self.is_alive(id) {
             return;
         }
         if let Some(parent) = self.node_mut(id).parent.take() {
@@ -383,6 +412,11 @@ impl Tree {
         }
     }
 
+    /// `classList`: as classes do nó, na ordem em que entraram (o `className.split(' ')`).
+    pub fn classes(&self, id: NodeId) -> &[String] {
+        &self.node(id).classes
+    }
+
     /// `classList.contains`.
     pub fn has_class(&self, id: NodeId, class: &str) -> bool {
         self.node(id).classes.iter().any(|c| c == class)
@@ -457,10 +491,10 @@ impl Tree {
         }
         let rect = own + origin;
         let device = Rect::new(rect.x0 * scale, rect.y0 * scale, rect.x1 * scale, rect.y1 * scale);
-        let radius = style.radius * scale;
+        let radii = style.corner_radii.map_or([style.radius * scale; 4], |r| r.map(|v| v * scale));
         if let Some(bg) = style.background {
-            if radius > 0.0 {
-                list.fill(Shape::RoundedRect(RoundedRect::from_rect(device, radius)), fade(bg, opacity));
+            if radii.iter().any(|r| *r > 0.0) {
+                list.fill(rounded_shape(device, radii), fade(bg, opacity));
             } else {
                 list.fill_rect(device, fade(bg, opacity));
             }
@@ -489,7 +523,7 @@ impl Tree {
             }
         }
         if style.clip {
-            list.push_clip(if radius > 0.0 { Shape::RoundedRect(RoundedRect::from_rect(device, radius)) } else { Shape::Rect(device) });
+            list.push_clip(rounded_shape(device, radii));
         }
         let child_origin = Vec2::new(rect.x0, rect.y0);
         for child in self.paint_order(id) {
@@ -500,13 +534,50 @@ impl Tree {
             list.pop_clip();
         }
         if let Some(border) = style.border {
-            // A borda do CSS fica dentro da caixa (box-sizing: border-box): o traço de largura w é
-            // centrado a w/2 da borda externa.
-            let w = border.width * scale;
-            let inset = device.inset(-w / 2.0);
-            let shape = if radius > 0.0 { Shape::RoundedRect(RoundedRect::from_rect(inset, (radius - w / 2.0).max(0.0))) } else { Shape::Rect(inset) };
-            list.stroke(shape, w, fade(border.color, opacity));
+            if let Some(widths) = style.border_widths {
+                // Larguras diferentes por lado: o anel entre a caixa externa e a caixa interna.
+                let w = widths.map(|v| v * scale);
+                list.fill(border_ring(device, radii, w), fade(border.color, opacity));
+            } else {
+                // A borda do CSS fica dentro da caixa (box-sizing: border-box): o traço de largura w é
+                // centrado a w/2 da borda externa.
+                let w = border.width * scale;
+                let inset = device.inset(-w / 2.0);
+                list.stroke(rounded_shape(inset, radii.map(|r| (r - w / 2.0).max(0.0))), w, fade(border.color, opacity));
+            }
         }
+    }
+}
+
+/// O retângulo com o raio de cada canto (superior esquerdo, superior direito, inferior direito, inferior
+/// esquerdo); sem raio nenhum é um retângulo simples.
+fn rounded_shape(rect: Rect, radii: [f64; 4]) -> Shape {
+    if radii.iter().all(|r| *r <= 0.0) {
+        Shape::Rect(rect)
+    } else {
+        Shape::RoundedRect(RoundedRect::from_rect(rect, RoundedRectRadii::new(radii[0], radii[1], radii[2], radii[3])))
+    }
+}
+
+/// A borda com largura por lado (cima, direita, baixo, esquerda): a caixa externa menos a interna, com o
+/// raio interno de cada canto reduzido pela maior das duas larguras que o tocam.
+fn border_ring(outer: Rect, radii: [f64; 4], widths: [f64; 4]) -> Shape {
+    let [top, right, bottom, left] = widths;
+    let inner = Rect::new(outer.x0 + left, outer.y0 + top, outer.x1 - right, outer.y1 - bottom);
+    let mut path = shape_path(&rounded_shape(outer, radii));
+    if inner.width() > 0.0 && inner.height() > 0.0 {
+        let inner_radii = [radii[0] - left.max(top), radii[1] - right.max(top), radii[2] - right.max(bottom), radii[3] - left.max(bottom)].map(|r| r.max(0.0));
+        let hole = shape_path(&rounded_shape(inner, inner_radii)).reverse_subpaths();
+        path.extend(hole);
+    }
+    Shape::Path(path)
+}
+
+fn shape_path(shape: &Shape) -> BezPath {
+    match shape {
+        Shape::Rect(r) => r.to_path(0.1),
+        Shape::RoundedRect(r) => r.to_path(0.1),
+        Shape::Path(p) => p.clone(),
     }
 }
 

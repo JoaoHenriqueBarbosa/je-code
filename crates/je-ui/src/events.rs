@@ -29,8 +29,11 @@
 //!   ponteiro, com os deltas em pixels ou em linhas e o `deltaMode` ([`crate::wheel`]). O
 //!   [`crate::StandardWheelEvent`] faz a normalização do `mouseEvent.ts` do VS Code (entalhes da roda).
 //!
+//! - **Texto digitado.** [`Ui::text_input`] entrega um [`EventKind::TextInput`] ao nó com foco (o `input` de um
+//!   `<input>`); a edição do campo é do widget.
+//!
 //! Fica de fora, por enquanto: toque e gesto (`Gesture`, `EventType.Tap`), arrastar e soltar do DOM,
-//! entrada de texto/IME e `PointerEvent` com vários ponteiros.
+//! composição de IME e `PointerEvent` com vários ponteiros.
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
@@ -69,6 +72,9 @@ pub enum EventKind {
     Focus,
     /// `blur`: não borbulha.
     Blur,
+    /// `input`/`beforeinput` de um campo de texto: o texto digitado (ou colado pelo IME) em
+    /// [`Event::text`]. Vai ao nó com foco, borbulha.
+    TextInput,
 }
 
 impl EventKind {
@@ -139,13 +145,15 @@ pub struct Event {
     pub key: Option<KeyData>,
     /// Os dados da roda do mouse, num evento [`EventKind::Wheel`].
     pub wheel: Option<WheelData>,
+    /// O texto de um evento [`EventKind::TextInput`].
+    pub text: Option<String>,
     default_prevented: bool,
     propagation_stopped: bool,
 }
 
 impl Event {
     pub fn new(kind: EventKind, target: NodeId) -> Self {
-        Self { kind, target, current_target: target, phase: Phase::Target, pointer: None, key: None, wheel: None, default_prevented: false, propagation_stopped: false }
+        Self { kind, target, current_target: target, phase: Phase::Target, pointer: None, key: None, wheel: None, text: None, default_prevented: false, propagation_stopped: false }
     }
 
     pub fn with_pointer(mut self, pointer: PointerData) -> Self {
@@ -155,6 +163,11 @@ impl Event {
 
     pub fn with_wheel(mut self, wheel: WheelData) -> Self {
         self.wheel = Some(wheel);
+        self
+    }
+
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = Some(text.into());
         self
     }
 
@@ -199,6 +212,8 @@ struct Listener {
     kind: EventKind,
     capture: bool,
     handler: Handler,
+    /// Ação padrão do elemento (ver [`Ui::listen_default`]): roda depois de todo o despacho.
+    default_action: bool,
     /// Falso depois de removido, para o despacho em andamento não chamá-lo.
     active: Rc<Cell<bool>>,
 }
@@ -324,10 +339,22 @@ impl Ui {
 
     /// `addEventListener(kind, handler, capture)`. Descartar o resultado remove o ouvinte.
     pub fn listen(&self, node: NodeId, kind: EventKind, capture: bool, handler: impl Fn(&mut Event) + 'static) -> DisposableRef {
+        self.add_listener(node, kind, capture, false, handler)
+    }
+
+    /// A ação padrão de um elemento para o evento (o que o navegador faz com um `keydown` num `<input>`
+    /// depois que os ouvintes rodaram): roda no fim do despacho, só se nenhum ouvinte chamou
+    /// `preventDefault`, e só a do nó mais próximo do alvo (o próprio alvo ou o antepassado mais baixo
+    /// que tem uma). `stopPropagation` não a impede, como no DOM.
+    pub fn listen_default(&self, node: NodeId, kind: EventKind, handler: impl Fn(&mut Event) + 'static) -> DisposableRef {
+        self.add_listener(node, kind, false, true, handler)
+    }
+
+    fn add_listener(&self, node: NodeId, kind: EventKind, capture: bool, default_action: bool, handler: impl Fn(&mut Event) + 'static) -> DisposableRef {
         let id = self.0.next_listener.get();
         self.0.next_listener.set(id + 1);
         let active = Rc::new(Cell::new(true));
-        let listener = Listener { id, kind, capture, handler: Rc::new(handler), active: active.clone() };
+        let listener = Listener { id, kind, capture, handler: Rc::new(handler), default_action, active: active.clone() };
         self.0.input.borrow_mut().listeners.entry(node).or_default().push(listener);
         let ui = Rc::downgrade(&self.0);
         to_disposable(move || {
@@ -441,12 +468,33 @@ impl Ui {
                 self.invoke(*node, event, |l| !l.capture);
             }
         }
+        if !event.default_prevented {
+            self.run_default_action(&path, event);
+        }
         !event.default_prevented
+    }
+
+    /// A ação padrão do nó mais próximo do alvo que tem uma para o tipo do evento.
+    fn run_default_action(&self, path: &[NodeId], event: &mut Event) {
+        for node in path.iter().rev() {
+            let actions: Vec<Listener> = self.0.input.borrow().listeners.get(node).map(|l| l.iter().filter(|l| l.default_action && l.kind == event.kind).cloned().collect()).unwrap_or_default();
+            if actions.is_empty() {
+                continue;
+            }
+            event.current_target = *node;
+            event.phase = Phase::Target;
+            for action in actions {
+                if action.active.get() {
+                    (action.handler)(event);
+                }
+            }
+            return;
+        }
     }
 
     fn invoke(&self, node: NodeId, event: &mut Event, accept: impl Fn(&Listener) -> bool) {
         event.current_target = node;
-        let snapshot: Vec<Listener> = self.0.input.borrow().listeners.get(&node).map(|l| l.iter().filter(|l| l.kind == event.kind && accept(l)).cloned().collect()).unwrap_or_default();
+        let snapshot: Vec<Listener> = self.0.input.borrow().listeners.get(&node).map(|l| l.iter().filter(|l| !l.default_action && l.kind == event.kind && accept(l)).cloned().collect()).unwrap_or_default();
         for listener in snapshot {
             if listener.active.get() {
                 (listener.handler)(event);
@@ -556,6 +604,13 @@ impl Ui {
         let target = self.focused().unwrap_or_else(|| self.root());
         let kind = if down { EventKind::KeyDown } else { EventKind::KeyUp };
         self.dispatch(&mut Event::new(kind, target).with_key(key))
+    }
+
+    /// Entrega texto digitado (teclado, IME, colar do sistema) ao nó com foco (ou à raiz). Devolve falso
+    /// se `preventDefault` foi chamado.
+    pub fn text_input(&self, text: &str) -> bool {
+        let target = self.focused().unwrap_or_else(|| self.root());
+        self.dispatch(&mut Event::new(EventKind::TextInput, target).with_text(text))
     }
 
     pub fn focused(&self) -> Option<NodeId> {
