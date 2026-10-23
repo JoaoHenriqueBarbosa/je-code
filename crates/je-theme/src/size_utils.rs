@@ -28,7 +28,8 @@
 //!   (`SizeUnit::Px`); [`SizeUnit::default`] é `px`.
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
+
+use je_base::collator::locale_compare;
 use std::fmt;
 use std::rc::Rc;
 
@@ -207,32 +208,6 @@ fn is_unitless(defaults: Option<&SizeDefaultsOrValue>) -> bool {
     }
 }
 
-/// `localeCompare` para ASCII: pontuação, depois dígitos, depois letras sem diferenciar caixa; no empate,
-/// a minúscula vem antes da maiúscula.
-fn locale_compare(a: &str, b: &str) -> Ordering {
-    fn primary_weight(c: char) -> (u8, u32) {
-        if c.is_ascii_digit() {
-            (1, u32::from(c))
-        } else if c.is_alphabetic() {
-            (2, c.to_lowercase().next().map_or(u32::from(c), u32::from))
-        } else {
-            (0, u32::from(c))
-        }
-    }
-    let primary = a.chars().map(primary_weight).cmp(b.chars().map(primary_weight));
-    primary.then_with(|| {
-        a.chars()
-            .zip(b.chars())
-            .find(|(x, y)| x != y)
-            .map_or(Ordering::Equal, |(x, _)| {
-                if x.is_lowercase() {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                }
-            })
-    })
-}
 
 /// `SizeRegistry` (e `ISizeRegistry`): os tamanhos registrados, na ordem de registro.
 pub struct SizeRegistry {

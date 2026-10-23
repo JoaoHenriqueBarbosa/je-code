@@ -146,3 +146,13 @@ impl Collator {
         &self.locale
     }
 }
+
+thread_local! {
+    static DEFAULT_COLLATOR: Collator = Collator::new(None, CollatorOptions::default());
+}
+
+/// `a.localeCompare(b)`: a comparação do `String.prototype.localeCompare` sem locale nem opções.
+pub fn locale_compare(a: &str, b: &str) -> Ordering {
+    let (a, b): (Vec<u16>, Vec<u16>) = (a.encode_utf16().collect(), b.encode_utf16().collect());
+    DEFAULT_COLLATOR.with(|collator| collator.compare(&a, &b).cmp(&0))
+}

@@ -19,7 +19,7 @@ use std::rc::Rc;
 use je_base::actions::{ActionRef, IAction, Separator, ToActionProps, to_action};
 use je_base::arrays::remove_fast_without_keeping_order;
 use je_base::async_::RunOnceScheduler;
-use je_base::collator::{Collator, CollatorOptions};
+use je_base::collator::locale_compare;
 use je_base::dynamic::Dynamic;
 use je_base::event::{DebounceEmitter, Emitter, EmitterOptions, Event};
 use je_base::json::{self, Value};
@@ -56,16 +56,6 @@ fn title_original(title: &Title) -> String {
         Title::Plain(text) => text.clone(),
         Title::Localized(localized) => localized.original.clone(),
     }
-}
-
-thread_local! {
-    static COLLATOR: Collator = Collator::new(None, CollatorOptions::default());
-}
-
-/// `a.localeCompare(b)`.
-fn locale_compare(a: &str, b: &str) -> Ordering {
-    let (a, b): (Vec<u16>, Vec<u16>) = (a.encode_utf16().collect(), b.encode_utf16().collect());
-    COLLATOR.with(|collator| collator.compare(&a, &b).cmp(&0))
 }
 
 /// `MenuService`.
