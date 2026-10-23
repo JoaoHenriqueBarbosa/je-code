@@ -149,6 +149,8 @@ pub mod indentation_line_processor;
 pub mod auto_indent;
 pub mod enter_action;
 
+pub mod cursor_type_edit_operations;
+pub mod cursor_type_operations;
 pub mod trim_trailing_whitespace_command;
 
 pub mod model_line_projection;
