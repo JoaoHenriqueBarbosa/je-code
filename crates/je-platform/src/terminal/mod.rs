@@ -11,3 +11,7 @@ pub mod environment_variable_shared;
 
 pub mod auto_approve;
 pub mod terminal_recorder;
+pub mod request_store;
+pub mod terminal;
+pub mod terminal_environment;
+pub mod terminal_profiles;
