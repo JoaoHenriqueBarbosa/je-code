@@ -14,7 +14,7 @@ je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
 # Tipos do editor (`Position`, `Range`, `TextLength`) que o workbench usa, como no original.
 je-editor = { path = "../je-editor" }
-# `RegExp` ECMAScript do `terminalLinkParsing`: o comportamento depende dos grupos nomeados e do `lastIndex`.
+# `RegExp` ECMAScript do `terminalLinkParsing` e do padrão de busca do usuário (`ReplacePattern`).
 zyarr = { path = "../zyarr" }
 # `Date.parse` e `toLocaleDateString` de `updateUtils` (mesmo `jiff` do je-base, fuso do sistema).
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }

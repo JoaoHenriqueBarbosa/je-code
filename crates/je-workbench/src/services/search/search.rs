@@ -1,11 +1,13 @@
-//! Porte parcial de `src/vs/workbench/services/search/common/search.ts`: o que a prévia de resultados de texto
-//! e o casamento de padrão de arquivo usam (`ITextSearchPreviewOptions`, `ISearchRange`, `SearchRange`,
-//! `OneLineRange`, `SearchRangeSetPairing`, `ITextSearchMatch`, `TextSearchMatch`, `IRawFileMatch` e
-//! `isFilePatternMatch`).
+//! Porte parcial de `src/vs/workbench/services/search/common/search.ts`: o que a prévia de resultados de texto,
+//! o casamento de padrão de arquivo e o `ReplacePattern` usam (`IPatternInfo`, `INotebookPatternInfo`,
+//! `ITextSearchPreviewOptions`, `ISearchRange`, `SearchRange`, `OneLineRange`, `SearchRangeSetPairing`,
+//! `ITextSearchMatch`, `TextSearchMatch`, `IRawFileMatch` e `isFilePatternMatch`).
 //!
 //! Diferenças de forma em relação ao original, nenhuma de comportamento:
 //! - os números do JavaScript (linhas, colunas, contagens) são `i64`, e o texto é [`JsString`]: colunas e
-//!   comprimentos contam unidades UTF-16, como no JS.
+//!   comprimentos contam unidades UTF-16, como no JS (o padrão de busca do usuário pode carregar surrogates
+//!   isolados).
+//! - os campos opcionais do TypeScript (`?:`) viram `Option`.
 //! - `ISearchRange` (interface) é o próprio [`SearchRange`]: só a classe o implementa aqui.
 //! - `OneLineRange extends SearchRange` vira [`OneLineRange::new`], que devolve um [`SearchRange`] com as
 //!   duas linhas iguais (a subclasse não acrescenta campo nem método).
@@ -19,6 +21,36 @@
 use je_base::glob::{self, GlobOptions};
 use je_base::js_string::JsString;
 use je_base::strings::{fuzzy_contains, get_n_lines};
+
+/// `IPatternInfo`: o padrão de busca e as opções que a caixa de busca do usuário liga e desliga.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PatternInfo {
+    pub pattern: JsString,
+    pub is_reg_exp: Option<bool>,
+    pub is_word_match: Option<bool>,
+    pub word_separators: Option<JsString>,
+    pub is_multiline: Option<bool>,
+    pub is_unicode: Option<bool>,
+    pub is_case_sensitive: Option<bool>,
+    pub notebook_info: Option<NotebookPatternInfo>,
+}
+
+impl PatternInfo {
+    /// Um `{ pattern }` sem nenhuma opção.
+    pub fn new(pattern: impl Into<JsString>) -> Self {
+        Self { pattern: pattern.into(), ..Self::default() }
+    }
+}
+
+/// `INotebookPatternInfo`: onde, dentro de um notebook, a busca vale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NotebookPatternInfo {
+    pub is_in_notebook_markdown_input: Option<bool>,
+    pub is_in_notebook_markdown_preview: Option<bool>,
+    pub is_in_notebook_cell_input: Option<bool>,
+    pub is_in_notebook_cell_output: Option<bool>,
+}
+
 
 // Warning do original: este padrão é usado no editor de busca para detectar offsets. Se mudar, mude também a
 // extensão embutida `search-result`.
