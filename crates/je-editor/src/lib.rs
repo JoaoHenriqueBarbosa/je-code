@@ -109,3 +109,5 @@ pub mod sort_lines_command;
 pub mod snippet;
 pub mod copy_lines_command;
 pub mod move_caret_command;
+
+pub mod inline_completions;
