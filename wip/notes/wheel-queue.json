@@ -1,0 +1,2962 @@
+[
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/commands/shiftCommand.test.ts",
+  "cases": 25,
+  "test_lines": 999,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/commands/shiftCommand.ts",
+    "lines": 278
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/editOperation.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/languageConfigurationRegistry.ts",
+    "lines": 480
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/common/instantiation.ts",
+    "lines": 130
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCommand.ts",
+    "lines": 82
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/modes/supports/onEnterRules.ts",
+    "lines": 152
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/modes/testLanguageConfigurationService.ts",
+    "lines": 31
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/shift_command.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 9819
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/commands/sideEditing.test.ts",
+  "cases": 69,
+  "test_lines": 881,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/editOperation.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/side_editing.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 984
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/commands/trimTrailingWhitespaceCommand.test.ts",
+  "cases": 2,
+  "test_lines": 189,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/commands/trimTrailingWhitespaceCommand.ts",
+    "lines": 126
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/editOperation.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/nullTokenize.ts",
+    "lines": 34
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCommand.ts",
+    "lines": 82
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/trim_trailing_whitespace_command.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5127
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/config/editorConfiguration.test.ts",
+  "cases": 36,
+  "test_lines": 414,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/config/editorConfiguration.ts",
+    "lines": 358
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/config/migrateOptions.ts",
+    "lines": 260
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorZoom.ts",
+    "lines": 34
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/accessibility/common/accessibility.ts",
+    "lines": 57
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/config/testConfiguration.ts",
+    "lines": 53
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/editor_configuration.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 7698
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/config/editorLayoutProvider.test.ts",
+  "cases": 20,
+  "test_lines": 1502,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/config/editorConfiguration.ts",
+    "lines": 358
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/editor_layout_provider.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 7347
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/config/fontMeasurements.test.ts",
+  "cases": 25,
+  "test_lines": 262,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/browser/dom.ts",
+    "lines": 3024
+   },
+   {
+    "path": "ref/vscode/src/vs/base/browser/window.ts",
+    "lines": 31
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/async.ts",
+    "lines": 2752
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/config/charWidthReader.ts",
+    "lines": 143
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/config/fontMeasurements.ts",
+    "lines": 316
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/fontInfo.ts",
+    "lines": 244
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/font_measurements.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 14473
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/controller/columnSelectionPaste.test.ts",
+  "cases": 57,
+  "test_lines": 684,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/platform.ts",
+    "lines": 284
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/strings.ts",
+    "lines": 1424
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/log/common/log.ts",
+    "lines": 952
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/controller/editContext/clipboardUtils.ts",
+    "lines": 335
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/coreCommands.ts",
+    "lines": 2178
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/editorBrowser.ts",
+    "lines": 1545
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/editorCommon.ts",
+    "lines": 783
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/inputMode.ts",
+    "lines": 27
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewContext.ts",
+    "lines": 37
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts",
+    "lines": 1479
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/mock.ts",
+    "lines": 47
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/column_selection_paste.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 18585
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/controller/cursor.test.ts",
+  "cases": 263,
+  "test_lines": 7084,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/coreCommands.ts",
+    "lines": 2178
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/editOperation.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/cursorEvents.ts",
+    "lines": 95
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/editorCommon.ts",
+    "lines": 783
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/languageConfiguration.ts",
+    "lines": 430
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/languageConfigurationRegistry.ts",
+    "lines": 480
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/nullTokenize.ts",
+    "lines": 34
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts",
+    "lines": 1479
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModelEventDispatcher.ts",
+    "lines": 591
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/inputMode.ts",
+    "lines": 27
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/textModelEditSource.ts",
+    "lines": 304
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/test/common/instantiationServiceMock.ts",
+    "lines": 198
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/cursor.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 23495
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/controller/cursorMoveCommand.test.ts",
+  "cases": 55,
+  "test_lines": 736,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/coreCommands.ts",
+    "lines": 2178
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/cursor/cursorMoveCommands.ts",
+    "lines": 980
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts",
+    "lines": 1479
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/cursor_move_command.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5561
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/controller/nativeEditContextUtils.test.ts",
+  "cases": 1,
+  "test_lines": 39,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/log/common/log.ts",
+    "lines": 952
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/controller/editContext/native/nativeEditContextUtils.ts",
+    "lines": 89
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/native_edit_context_utils.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2015
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/controller/textAreaInput.test.ts",
+  "cases": 19,
+  "test_lines": 1430,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/event.ts",
+    "lines": 1991
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/platform.ts",
+    "lines": 284
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/log/common/log.ts",
+    "lines": 952
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/controller/editContext/textArea/textAreaEditContextInput.ts",
+    "lines": 796
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/controller/editContext/textArea/textAreaEditContextState.ts",
+    "lines": 251
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/controller/imeRecordedTypes.ts",
+    "lines": 59
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/accessibility/test/common/testAccessibilityService.ts",
+    "lines": 25
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/text_area_input.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5432
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/controller/textAreaState.test.ts",
+  "cases": 26,
+  "test_lines": 456,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/controller/editContext/textArea/textAreaEditContextState.ts",
+    "lines": 251
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/controller/editContext/screenReaderUtils.ts",
+    "lines": 149
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/text_area_state.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2114
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/gpu/atlas/textureAtlas.test.ts",
+  "cases": 6,
+  "test_lines": 138,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/raster/raster.ts",
+    "lines": 83
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/gpuUtils.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/common/instantiation.ts",
+    "lines": 130
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/atlas/textureAtlas.ts",
+    "lines": 207
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/atlas/textureAtlasSlabAllocator.ts",
+    "lines": 435
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/css/decorationStyleCache.ts",
+    "lines": 99
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/gpu/atlas/testUtil.ts",
+    "lines": 55
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/texture_atlas.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1014
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/gpu/atlas/textureAtlasAllocator.test.ts",
+  "cases": 11,
+  "test_lines": 205,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/raster/raster.ts",
+    "lines": 83
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/gpuUtils.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/atlas/atlas.ts",
+    "lines": 114
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/atlas/textureAtlasShelfAllocator.ts",
+    "lines": 164
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/atlas/textureAtlasSlabAllocator.ts",
+    "lines": 435
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/errors.ts",
+    "lines": 357
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/gpu/atlas/testUtil.ts",
+    "lines": 55
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/texture_atlas_allocator.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1213
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/gpu/bufferDirtyTracker.test.ts",
+  "cases": 2,
+  "test_lines": 46,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/bufferDirtyTracker.ts",
+    "lines": 72
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/buffer_dirty_tracker.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 72
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/gpu/decorationCssRulerExtractor.test.ts",
+  "cases": 8,
+  "test_lines": 116,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/css/decorationCssRuleExtractor.ts",
+    "lines": 124
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uuid.ts",
+    "lines": 70
+   },
+   {
+    "path": "ref/vscode/src/vs/base/browser/dom.ts",
+    "lines": 3024
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/decoration_css_ruler_extractor.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 3218
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/gpu/objectCollectionBuffer.test.ts",
+  "cases": 6,
+  "test_lines": 108,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/gpu/objectCollectionBuffer.ts",
+    "lines": 207
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/object_collection_buffer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 207
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/services/decorationRenderOptions.test.ts",
+  "cases": 6,
+  "test_lines": 151,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/platform.ts",
+    "lines": 284
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/editorCommon.ts",
+    "lines": 783
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/editorTestServices.ts",
+    "lines": 88
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/theme/test/common/testThemeService.ts",
+    "lines": 112
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/decoration_render_options.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1832
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/services/openerService.test.ts",
+  "cases": 20,
+  "test_lines": 549,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/services/openerService.ts",
+    "lines": 310
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/commands/common/commands.ts",
+    "lines": 149
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/editor/common/editor.ts",
+    "lines": 581
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/network.ts",
+    "lines": 452
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/opener/common/opener.ts",
+    "lines": 160
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/editorTestServices.ts",
+    "lines": 88
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/commands/test/common/nullCommandService.ts",
+    "lines": 16
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/theme/test/common/testThemeService.ts",
+    "lines": 112
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/opener_service.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 3391
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/view/domLineBreaksComputer.test.ts",
+  "cases": 1,
+  "test_lines": 66,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/browser/window.ts",
+    "lines": 31
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/view/domLineBreaksComputer.ts",
+    "lines": 459
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/fontInfo.ts",
+    "lines": 244
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/modelLineProjectionData.ts",
+    "lines": 346
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/dom_line_breaks_computer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 8069
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/view/minimapCharRenderer.test.ts",
+  "cases": 2,
+  "test_lines": 128,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/viewParts/minimap/minimapCharRendererFactory.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/viewParts/minimap/minimapCharSheet.ts",
+    "lines": 43
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/misc/rgba.ts",
+    "lines": 57
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/minimap_char_renderer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 268
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/view/viewController.test.ts",
+  "cases": 17,
+  "test_lines": 394,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/coreCommands.ts",
+    "lines": 2178
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/view/viewController.ts",
+    "lines": 441
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/view/viewUserInputEvents.ts",
+    "lines": 119
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/languageConfigurationRegistry.ts",
+    "lines": 480
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/nullTokenize.ts",
+    "lines": 34
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/monospaceLineBreaksComputer.ts",
+    "lines": 643
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts",
+    "lines": 1479
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/test/common/instantiationServiceMock.ts",
+    "lines": 198
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/theme/test/common/testThemeService.ts",
+    "lines": 112
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/modes/testLanguageConfigurationService.ts",
+    "lines": 31
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/config/testConfiguration.ts",
+    "lines": 53
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/view_controller.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 9541
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/view/viewLayer.test.ts",
+  "cases": 80,
+  "test_lines": 761,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/view/viewLayer.ts",
+    "lines": 630
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/view_layer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 630
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/view/whitespace.test.ts",
+  "cases": 8,
+  "test_lines": 134,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/browser/view/renderingContext.ts",
+    "lines": 217
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/viewParts/whitespace/whitespace.ts",
+    "lines": 330
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/cursorColumns.ts",
+    "lines": 149
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/cursorEvents.ts",
+    "lines": 95
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewEvents.ts",
+    "lines": 325
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/viewLinesViewportData.ts",
+    "lines": 87
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewContext.ts",
+    "lines": 37
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/theme/test/common/testThemeService.ts",
+    "lines": 112
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/viewModel/testViewModel.ts",
+    "lines": 35
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/whitespace.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 8449
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/view/wordWrapIndicator.test.ts",
+  "cases": 18,
+  "test_lines": 442,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/scrollable.ts",
+    "lines": 522
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/view/renderingContext.ts",
+    "lines": 217
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/viewParts/wordWrapIndicator/wordWrapIndicator.ts",
+    "lines": 148
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/editorCommon.ts",
+    "lines": 783
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewEvents.ts",
+    "lines": 325
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/viewLinesViewportData.ts",
+    "lines": 87
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewContext.ts",
+    "lines": 37
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts",
+    "lines": 1479
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/theme/test/common/testThemeService.ts",
+    "lines": 112
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/config/testConfiguration.ts",
+    "lines": 53
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/viewModel/testViewModel.ts",
+    "lines": 35
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/word_wrap_indicator.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 14072
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/viewModel/modelLineProjection.test.ts",
+  "cases": 6,
+  "test_lines": 1025,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/nullTokenize.ts",
+    "lines": 34
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/modelLineProjectionData.ts",
+    "lines": 346
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/tokens/lineTokens.ts",
+    "lines": 527
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel.ts",
+    "lines": 448
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/modelLineProjection.ts",
+    "lines": 438
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/monospaceLineBreaksComputer.ts",
+    "lines": 643
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelLines.ts",
+    "lines": 1287
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/config/testConfiguration.ts",
+    "lines": 53
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/model_line_projection.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 19604
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/viewModel/viewModelDecorations.test.ts",
+  "cases": 3,
+  "test_lines": 246,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/inlineDecorations.ts",
+    "lines": 290
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/viewModel/testViewModel.ts",
+    "lines": 35
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/view_model_decorations.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 7799
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/viewModel/viewModelImpl.test.ts",
+  "cases": 29,
+  "test_lines": 652,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewEventHandler.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewEvents.ts",
+    "lines": 325
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/viewModel/testViewModel.ts",
+    "lines": 35
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/view_model_impl.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 3851
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/widget/codeEditorWidget.test.ts",
+  "cases": 12,
+  "test_lines": 319,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts",
+    "lines": 2564
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/languageConfigurationRegistry.ts",
+    "lines": 480
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/common/serviceCollection.ts",
+    "lines": 32
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/notification/common/notification.ts",
+    "lines": 508
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/notification/common/notificationMessage.ts",
+    "lines": 52
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/notification/test/common/testNotificationService.ts",
+    "lines": 54
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/code_editor_widget.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 7146
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/widget/compressedVirtualizedScrollLayout.test.ts",
+  "cases": 13,
+  "test_lines": 617,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/browser/dom.ts",
+    "lines": 3024
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/async.ts",
+    "lines": 2752
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/observable.ts",
+    "lines": 8
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/compressedVirtualizedScrollLayout.ts",
+    "lines": 231
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/compressedVirtualizedScrollView.ts",
+    "lines": 390
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/core/random.ts",
+    "lines": 228
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/compressed_virtualized_scroll_layout.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 7669
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/widget/diffEditorWidget.test.ts",
+  "cases": 7,
+  "test_lines": 221,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/browser/dom.ts",
+    "lines": 3024
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/accessibilitySignal/browser/accessibilitySignalService.ts",
+    "lines": 724
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/common/serviceCollection.ts",
+    "lines": 32
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/progress/common/progress.ts",
+    "lines": 236
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/diffProviderFactoryService.ts",
+    "lines": 185
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/diffEditorOptions.ts",
+    "lines": 238
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/diffEditorWidget.ts",
+    "lines": 896
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/diffEditorViewModel.ts",
+    "lines": 772
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/utils.ts",
+    "lines": 541
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/lineRange.ts",
+    "lines": 414
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+    "lines": 416
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/mock.ts",
+    "lines": 47
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/accessibility/test/common/testAccessibilityService.ts",
+    "lines": 25
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/diff/testDiffProviderFactoryService.ts",
+    "lines": 33
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/diff_editor_widget.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 8452
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/widget/multiDiffEditorWidget.test.ts",
+  "cases": 10,
+  "test_lines": 777,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/browser/dom.ts",
+    "lines": 3024
+   },
+   {
+    "path": "ref/vscode/src/vs/base/browser/ui/button/button.ts",
+    "lines": 754
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/event.ts",
+    "lines": 1991
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/observable.ts",
+    "lines": 8
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/accessibility/common/accessibility.ts",
+    "lines": 57
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/accessibilitySignal/browser/accessibilitySignalService.ts",
+    "lines": 724
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/actions/browser/actionViewItemService.ts",
+    "lines": 89
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/actions/common/actions.ts",
+    "lines": 783
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/common/serviceCollection.ts",
+    "lines": 32
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/progress/common/progress.ts",
+    "lines": 236
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/storage/common/storage.ts",
+    "lines": 899
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/userInteraction/browser/userInteractionService.ts",
+    "lines": 88
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/diffProviderFactoryService.ts",
+    "lines": 185
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/diffEditorWidget.ts",
+    "lines": 896
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/diffEditor/utils.ts",
+    "lines": 541
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/model.ts",
+    "lines": 41
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorOptions.ts",
+    "lines": 59
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidget.ts",
+    "lines": 285
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/workbenchUIElementFactory.ts",
+    "lines": 51
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/documentDiffProvider.ts",
+    "lines": 85
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/editorContextKeys.ts",
+    "lines": 101
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/mock.ts",
+    "lines": 47
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/virtualScheduling/index.ts",
+    "lines": 35
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/diff/testDiffProviderFactoryService.ts",
+    "lines": 33
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/multi_diff_editor_widget.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 19657
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/widget/observableCodeEditor.test.ts",
+  "cases": 5,
+  "test_lines": 229,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/observable.ts",
+    "lines": 8
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/editorBrowser.ts",
+    "lines": 1545
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/observableCodeEditor.ts",
+    "lines": 587
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts",
+    "lines": 1479
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/browser/testCodeEditor.ts",
+    "lines": 300
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/observable_code_editor.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5297
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/browser/widget/virtualizedItemManager.test.ts",
+  "cases": 6,
+  "test_lines": 289,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/async.ts",
+    "lines": 2752
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/errors.ts",
+    "lines": 357
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/observable.ts",
+    "lines": 8
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/compressedVirtualizedScrollView.ts",
+    "lines": 390
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/browser/widget/multiDiffEditor/virtualizedItemManager.ts",
+    "lines": 296
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/virtualized_item_manager.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 4093
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/controller/cursorAtomicMoveOperations.test.ts",
+  "cases": 2,
+  "test_lines": 155,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/cursor/cursorAtomicMoveOperations.ts",
+    "lines": 160
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/cursor_atomic_move_operations.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 160
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/core/lineRange.test.ts",
+  "cases": 4,
+  "test_lines": 65,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/lineRange.ts",
+    "lines": 414
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/line_range.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 414
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/core/positionOffsetTransformer.test.ts",
+  "cases": 2,
+  "test_lines": 59,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/text/positionToOffset.ts",
+    "lines": 24
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/position_offset_transformer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 314
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/core/stringEdit.test.ts",
+  "cases": 15,
+  "test_lines": 344,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/edits/arrayEdit.ts",
+    "lines": 90
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/edits/stringEdit.ts",
+    "lines": 613
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/core/random.ts",
+    "lines": 228
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/string_edit.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 993
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/core/textEdit.test.ts",
+  "cases": 2,
+  "test_lines": 69,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/text/abstractText.ts",
+    "lines": 130
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/core/random.ts",
+    "lines": 228
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/text_edit.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 420
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/diff/diffComputer.test.ts",
+  "cases": 49,
+  "test_lines": 1091,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/uint.ts",
+    "lines": 59
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/legacyLinesDiffComputer.ts",
+    "lines": 691
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/diff_computer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2898
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/languages/defaultDocumentColorsComputer.test.ts",
+  "cases": 12,
+  "test_lines": 191,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/defaultDocumentColorsComputer.ts",
+    "lines": 152
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/default_document_colors_computer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 152
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/model/annotations.test.ts",
+  "cases": 23,
+  "test_lines": 514,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/tokens/annotations.ts",
+    "lines": 291
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/edits/stringEdit.ts",
+    "lines": 613
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/annotations.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1194
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/model/linesTextBuffer/linesTextBuffer.test.ts",
+  "cases": 29,
+  "test_lines": 525,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.ts",
+    "lines": 629
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/lines_text_buffer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5522
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/model/linesTextBuffer/linesTextBufferBuilder.test.ts",
+  "cases": 12,
+  "test_lines": 71,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/strings.ts",
+    "lines": 1424
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/lines_text_buffer_builder.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5797
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/model/modelInjectedText.test.ts",
+  "cases": 1,
+  "test_lines": 183,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/editOperation.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/textModelEvents.ts",
+    "lines": 638
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel.ts",
+    "lines": 448
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/mock.ts",
+    "lines": 47
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/model_injected_text.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1666
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/model/tokenStore.test.ts",
+  "cases": 25,
+  "test_lines": 730,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/tokens/treeSitter/tokenStore.ts",
+    "lines": 517
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/token_store.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 3262
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/modes/languageSelector.test.ts",
+  "cases": 12,
+  "test_lines": 199,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languageSelector.ts",
+    "lines": 159
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/language_selector.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 924
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/modes/linkComputer.test.ts",
+  "cases": 14,
+  "test_lines": 286,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/linkComputer.ts",
+    "lines": 351
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/link_computer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2999
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/modes/supports/tokenization.test.ts",
+  "cases": 16,
+  "test_lines": 358,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/supports/tokenization.ts",
+    "lines": 468
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/tokenization.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 661
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/modes/textToHtmlTokenizer.test.ts",
+  "cases": 5,
+  "test_lines": 400,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/textToHtmlTokenizer.ts",
+    "lines": 170
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/languagesRegistry.ts",
+    "lines": 367
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/core/testLineToken.ts",
+    "lines": 156
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/test/common/instantiationServiceMock.ts",
+    "lines": 198
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/text_to_html_tokenizer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 4520
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/editorWebWorker.test.ts",
+  "cases": 16,
+  "test_lines": 355,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/position.ts",
+    "lines": 184
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages.ts",
+    "lines": 2648
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/editorWebWorker.ts",
+    "lines": 567
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/editor_web_worker.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 3919
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/findSectionHeaders.test.ts",
+  "cases": 14,
+  "test_lines": 408,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/findSectionHeaders.ts",
+    "lines": 181
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/find_section_headers.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 181
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/markerDecorationsService.test.ts",
+  "cases": 8,
+  "test_lines": 241,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/event.ts",
+    "lines": 1991
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/network.ts",
+    "lines": 452
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/markers/common/markers.ts",
+    "lines": 219
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/markers/common/markerService.ts",
+    "lines": 423
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/markerDecorations.ts",
+    "lines": 47
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/markerDecorationsService.ts",
+    "lines": 343
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/model.ts",
+    "lines": 38
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/marker_decorations_service.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 7400
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/modelService.test.ts",
+  "cases": 20,
+  "test_lines": 472,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/charCode.ts",
+    "lines": 450
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/platform.ts",
+    "lines": 284
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/editOperation.ts",
+    "lines": 60
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/selection.ts",
+    "lines": 220
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/stringBuilder.ts",
+    "lines": 146
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/modelService.ts",
+    "lines": 591
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/model.ts",
+    "lines": 38
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/configuration/common/configuration.ts",
+    "lines": 360
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/platform/configuration/test/common/testConfigurationService.ts",
+    "lines": 91
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/test/common/instantiationServiceMock.ts",
+    "lines": 198
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/model_service.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 8781
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/semanticTokensDto.test.ts",
+  "cases": 4,
+  "test_lines": 139,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/semanticTokensDto.ts",
+    "lines": 152
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/buffer.ts",
+    "lines": 499
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/semantic_tokens_dto.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 651
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/semanticTokensProviderStyling.test.ts",
+  "cases": 3,
+  "test_lines": 175,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/lifecycle.ts",
+    "lines": 974
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/tokens/sparseMultilineTokens.ts",
+    "lines": 617
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/semanticTokensProviderStyling.ts",
+    "lines": 336
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/theme/common/themeService.ts",
+    "lines": 287
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/test/common/instantiationServiceMock.ts",
+    "lines": 198
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/semantic_tokens_provider_styling.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2575
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/textResourceConfigurationService.test.ts",
+  "cases": 22,
+  "test_lines": 329,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/model.ts",
+    "lines": 38
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/languages/language.ts",
+    "lines": 168
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/configuration/common/configuration.ts",
+    "lines": 360
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/textResourceConfigurationService.ts",
+    "lines": 120
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/uri.ts",
+    "lines": 765
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/platform/configuration/test/common/testConfigurationService.ts",
+    "lines": 91
+   },
+   {
+    "path": "ref/vscode/src/vs/platform/instantiation/test/common/instantiationServiceMock.ts",
+    "lines": 198
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/text_resource_configuration_service.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1451
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/services/unicodeTextModelHighlighter.test.ts",
+  "cases": 1,
+  "test_lines": 53,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/services/unicodeTextModelHighlighter.ts",
+    "lines": 264
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/unicode_text_model_highlighter.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 784
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/view/overviewZoneManager.test.ts",
+  "cases": 3,
+  "test_lines": 91,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/overviewZoneManager.ts",
+    "lines": 247
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/overview_zone_manager.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 247
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/lineDecorations.test.ts",
+  "cases": 8,
+  "test_lines": 168,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/lineDecorations.ts",
+    "lines": 267
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/inlineDecorations.ts",
+    "lines": 290
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/line_decorations.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1077
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/lineHeights.test.ts",
+  "cases": 38,
+  "test_lines": 535,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/lineHeights.ts",
+    "lines": 493
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/line_heights.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 493
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/linesLayout.test.ts",
+  "cases": 12,
+  "test_lines": 1244,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/linesLayout.ts",
+    "lines": 912
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/lines_layout.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 912
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewLayout/viewLineRenderer.test.ts",
+  "cases": 97,
+  "test_lines": 1878,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/charCode.ts",
+    "lines": 450
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/strings.ts",
+    "lines": 1424
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/encodedTokenAttributes.ts",
+    "lines": 193
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/tokens/lineTokens.ts",
+    "lines": 527
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/lineDecorations.ts",
+    "lines": 267
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts",
+    "lines": 1267
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/inlineDecorations.ts",
+    "lines": 290
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/snapshot.ts",
+    "lines": 188
+   },
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/core/testLineToken.ts",
+    "lines": 156
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/view_line_renderer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 4708
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewModel/glyphLanesModel.test.ts",
+  "cases": 4,
+  "test_lines": 75,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/glyphLanesModel.ts",
+    "lines": 70
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/glyph_lanes_model.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2218
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewModel/inlineDecorations.test.ts",
+  "cases": 31,
+  "test_lines": 642,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/inlineDecorations.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/coordinatesConverter.ts",
+    "lines": 105
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/test/common/testTextModel.ts",
+    "lines": 113
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/inline_decorations.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 2543
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewModel/lineBreakData.test.ts",
+  "cases": 9,
+  "test_lines": 232,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/model.ts",
+    "lines": 1628
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/model/textModel.ts",
+    "lines": 2745
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/modelLineProjectionData.ts",
+    "lines": 346
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/line_break_data.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 4719
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/common/viewModel/monospaceLineBreaksComputer.test.ts",
+  "cases": 37,
+  "test_lines": 692,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/editorOptions.ts",
+    "lines": 6989
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/config/fontInfo.ts",
+    "lines": 244
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/modelLineProjectionData.ts",
+    "lines": 346
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/textModelEvents.ts",
+    "lines": 638
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/viewModel/monospaceLineBreaksComputer.ts",
+    "lines": 643
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/monospace_line_breaks_computer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 8860
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/node/diffing/defaultLinesDiffComputer.test.ts",
+  "cases": 5,
+  "test_lines": 118,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+    "lines": 416
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+    "lines": 290
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+    "lines": 246
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/myersDiffAlgorithm.ts",
+    "lines": 176
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/dynamicProgrammingDiffing.ts",
+    "lines": 107
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/text/abstractText.ts",
+    "lines": 130
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/default_lines_diff_computer.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 1885
+ },
+ {
+  "test": "ref/vscode/src/vs/editor/test/node/diffing/fixtures.test.ts",
+  "cases": 2,
+  "test_lines": 190,
+  "sources": [
+   {
+    "path": "ref/vscode/src/vs/base/common/path.ts",
+    "lines": 1589
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/errors.ts",
+    "lines": 357
+   },
+   {
+    "path": "ref/vscode/src/vs/base/common/network.ts",
+    "lines": 452
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+    "lines": 416
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/legacyLinesDiffComputer.ts",
+    "lines": 691
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+    "lines": 271
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/range.ts",
+    "lines": 520
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/edits/textEdit.ts",
+    "lines": 784
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/core/text/abstractText.ts",
+    "lines": 130
+   },
+   {
+    "path": "ref/vscode/src/vs/editor/common/diff/linesDiffComputer.ts",
+    "lines": 59
+   }
+  ],
+  "helpers": [
+   {
+    "path": "ref/vscode/src/vs/base/test/common/utils.ts",
+    "lines": 107
+   }
+  ],
+  "dest_test": "crates/je-editor/tests/fixtures.rs",
+  "dest_crate": "je-editor",
+  "source_lines": 5269
+ }
+]
