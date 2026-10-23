@@ -8,6 +8,7 @@ use std::fs;
 use std::time::Instant;
 
 use je_base::JsString;
+use je_editor::cursor_common::CursorSimpleModel;
 use je_editor::model::{DefaultEndOfLine, ValidAnnotatedEditOperation};
 use je_editor::piece_tree_text_buffer::PieceTreeTextBuffer;
 use je_editor::piece_tree_text_buffer_builder::PieceTreeTextBufferBuilder;

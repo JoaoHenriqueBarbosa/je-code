@@ -20,6 +20,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use je_base::JsString;
+use je_editor::cursor_common::CursorSimpleModel;
 use je_editor::edit_operation::SingleEditOperation;
 use je_editor::encoded_token_attributes::{metadata_consts as mc, standard_token_type};
 use je_editor::language_configuration::LanguageConfiguration;
