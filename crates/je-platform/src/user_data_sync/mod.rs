@@ -5,5 +5,6 @@
 
 pub mod content;
 pub mod keybindings_merge;
+pub mod snippets_merge;
 #[allow(clippy::module_inception)] // `user_data_sync.rs` é o porte de `userDataSync.ts`, como no original
 pub mod user_data_sync;
