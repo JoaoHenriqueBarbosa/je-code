@@ -58,3 +58,10 @@ pub trait Command {
     /// `computeCursorState(model, helper)`.
     fn compute_cursor_state(&mut self, model: &TextModel, helper: &dyn CursorStateComputerData) -> Selection;
 }
+
+/// `ScrollType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollType {
+    Smooth = 0,
+    Immediate = 1,
+}
