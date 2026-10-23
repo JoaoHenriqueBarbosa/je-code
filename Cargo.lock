@@ -4197,6 +4197,7 @@ dependencies = [
  "je-base",
  "je-platform",
  "jiff",
+ "zyarr",
 ]
 
 [[package]]

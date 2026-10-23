@@ -426,7 +426,7 @@ fn list_unix(root_pid: f64, file_access: &FileAccess, platform: &Platform) -> Re
     let is_linux = cfg!(any(target_os = "linux", target_os = "android"));
     let mut tree = Tree::new(root_pid);
     let total_memory = totalmem();
-    let mut add = |tree: &mut Tree, stdout: &str| {
+    let add = |tree: &mut Tree, stdout: &str| {
         parse_ps_output(stdout, |pid, ppid, cmd, load, mem| tree.add_to_tree(total_memory, platform.is_windows, pid, ppid, cmd, load, mem));
     };
 
