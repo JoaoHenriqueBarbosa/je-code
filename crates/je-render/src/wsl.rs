@@ -42,3 +42,10 @@ pub fn relaunch_with_gpu() -> Option<std::io::Error> {
 pub fn relaunch_with_gpu() -> Option<std::io::Error> {
     None
 }
+
+/// No WSLg, o X11 (XWayland) entrega 60 fps com vsync onde o Wayland do compositor RDP fica em 53 a 59
+/// (H04, H02: o próprio clear sem pintura fica em 58,9 fps no Wayland). Dentro do WSL, com `DISPLAY`
+/// definido, a janela vai pelo X11, salvo `JE_WSL_WAYLAND=1`.
+pub fn prefer_x11() -> bool {
+    Path::new(DXG).exists() && std::env::var_os("DISPLAY").is_some() && std::env::var_os("JE_WSL_WAYLAND").is_none()
+}

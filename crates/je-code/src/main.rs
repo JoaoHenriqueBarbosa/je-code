@@ -88,12 +88,27 @@ impl ApplicationHandler for App {
     }
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
+fn build_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
+    use winit::platform::x11::EventLoopBuilderExtX11;
+    let mut builder = EventLoop::builder();
+    if je_render::wsl::prefer_x11() {
+        builder.with_x11();
+    }
+    builder.build()
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn build_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
+    EventLoop::new()
+}
+
 fn main() {
     // No WSL a GPU só aparece com o driver d3d12 do Mesa; relança com o ambiente certo (H27).
     if let Some(e) = je_render::wsl::relaunch_with_gpu() {
         eprintln!("je-code: relançamento com a GPU do WSL falhou ({e}); seguindo sem ele");
     }
-    let event_loop = match EventLoop::new() {
+    let event_loop = match build_event_loop() {
         Ok(l) => l,
         Err(e) => {
             eprintln!("je-code: sem event loop: {e}");
