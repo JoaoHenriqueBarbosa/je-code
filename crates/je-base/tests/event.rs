@@ -1,9 +1,5 @@
 //! Porte de `src/vs/base/test/common/event.test.ts` (suíte `Event`), caso a caso e na mesma ordem.
 //!
-//! Pendente (depende de `observable.ts`, ainda não portado, sem aproximação):
-//! - `Event utils - ensureNoDisposablesAreLeakedInTestSuite` / `fromObservable`: usa `observableValue`,
-//!   `obs.set` e `transaction`, e `Event.fromObservable` (que implementa `IObserver` sobre `IObservable`).
-//!
 //! Notas de tradução:
 //! - Os testes `async` rodam em `common::run_with_faked_timers` (o `runWithFakedTimers` do original, com
 //!   `await` sobre as `Promise` do `je_base::promise`); os que esperavam `setTimeout` real também, o que só
@@ -1185,6 +1181,37 @@ mod pausable_emitter {
         emitter.pause();
         emitter.resume();
         assert_eq!(snapshot(&data), Vec::<i32>::new());
+    }
+}
+
+mod event_utils_leak {
+    use super::*;
+    use je_base::observable::{Observable, SettableExt, observable_value, transaction};
+
+    #[test]
+    fn from_observable() {
+        let _ds = ensure_no_disposables_are_leaked_in_test_suite();
+
+        let obs = observable_value::<i32, ()>("test", 12);
+        let event = Event::from_observable(obs.to_observable(), None);
+
+        let values = shared::<i32>();
+        let sink = values.clone();
+        let d = event.listen(move |n| sink.borrow_mut().push(*n));
+
+        obs.set(3, None);
+        obs.set(13, None);
+        obs.set(3, None);
+        obs.set(33, None);
+        obs.set(1, None);
+
+        transaction(|tx| {
+            obs.set(334, Some(tx));
+            obs.set(99, Some(tx));
+        });
+
+        assert_eq!(snapshot(&values), vec![3, 13, 3, 33, 1, 99]);
+        d.dispose();
     }
 }
 

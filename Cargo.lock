@@ -3575,6 +3575,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-text"
+version = "0.0.0"
+dependencies = [
+ "fontique 0.12.0",
+ "je-codicons",
+ "je-render",
+ "parley 0.12.0",
+]
+
+[[package]]
 name = "je-theme"
 version = "0.0.0"
 dependencies = [

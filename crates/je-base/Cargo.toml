@@ -16,6 +16,9 @@ workspace = true
 icu_collator = { path = "../../vendor/icu_collator" }
 icu_locale_core = "2"
 icu_normalizer = "~2.3.0"
+# Fuso local do `Date` (`fromNowByDay`, `toLocalISOString`): o fuso do sistema (`TZ`, `/etc/localtime`) e o banco
+# de fusos embutido para onde o sistema não tem um (Windows, web). Mesmo `jiff` que o `zjsc` do pseudo-linus usa.
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 # `RegExp` ECMAScript do `glob`: o glob do VS Code compila cada padrão para uma regex.
 zyarr = { path = "../zyarr" }
 

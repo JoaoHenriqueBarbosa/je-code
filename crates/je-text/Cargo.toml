@@ -1,0 +1,17 @@
+[package]
+name = "je-text"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Texto do je-code: fontes do sistema, shaping pelo parley e cache de layout com as métricas do Chromium."
+
+[dependencies]
+je-render = { path = "../je-render" }
+je-codicons = { path = "../je-codicons" }
+# `system` liga o fontique às fontes do sistema (fontconfig por dlopen no Linux, DirectWrite, CoreText).
+parley = { version = "0.12", default-features = false, features = ["std", "system"] }
+fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
+
+[lints]
+workspace = true

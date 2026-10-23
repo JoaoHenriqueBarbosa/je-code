@@ -15,8 +15,8 @@
 //!   termina primeiro a entrega pendente; listener adicionado durante uma entrega não a recebe; listener
 //!   removido durante uma entrega deixa de recebê-la.
 //!
-//! Pendente (depende de `observable.ts`, ainda não portado): `Event.fromObservable` e
-//! `Event.fromObservableLight`. Ficam de fora de propósito: o `EventProfiling` (`_profName`, só para
+//! `Event.fromObservable` e `Event.fromObservableLight` ficam no fim do arquivo (usam o módulo
+//! `observable`). Ficam de fora de propósito: o `EventProfiling` (`_profName`, só para
 //! desenvolvimento), `_enableDisposeWithListenerWarning` e `_enableSnapshotPotentialLeakWarning` (constantes
 //! `false` no original).
 
@@ -2164,3 +2164,119 @@ pub fn track_set_changes<T: Eq + Hash + Clone + 'static, D: 'static>(
     store.add(map);
     store
 }
+
+// #region Event.fromObservable / Event.fromObservableLight
+
+/// `EmitterObserver<T>` do `event.ts`: o observador que dispara o emitter quando o observável muda.
+struct EmitterObserver<T: Clone + 'static> {
+    observable: crate::observable::base::IObservable<T>,
+    emitter: RefCell<Weak<Emitter<T>>>,
+    counter: Cell<i64>,
+    has_changed: Cell<bool>,
+}
+
+impl<T: Clone + 'static> crate::observable::base::IObserver for EmitterObserver<T> {
+    fn begin_update(&self, _observable: &dyn crate::observable::base::AnyObservable) {
+        self.counter.set(self.counter.get() + 1);
+    }
+
+    fn handle_possible_change(&self, _observable: &dyn crate::observable::base::AnyObservable) {}
+
+    fn handle_change(&self, _observable: &dyn crate::observable::base::AnyObservable, _change: &dyn Any) {
+        self.has_changed.set(true);
+    }
+
+    fn end_update(&self, _observable: &dyn crate::observable::base::AnyObservable) {
+        self.counter.set(self.counter.get() - 1);
+        if self.counter.get() == 0 {
+            crate::observable::base::AnyObservable::report_changes(&*self.observable);
+            if self.has_changed.get() {
+                self.has_changed.set(false);
+                let emitter = self.emitter.borrow().upgrade();
+                if let Some(emitter) = emitter {
+                    emitter.fire(self.observable.get());
+                }
+            }
+        }
+    }
+}
+
+impl<T: Clone + 'static> Event<T> {
+    /// `Event.fromObservable(obs, store)`: um emitter que dispara quando o observável muda, e cada
+    /// listener se inscreve no emitter. O `_addLeakageTraceLogic` do original (`false` na constante
+    /// `_enableSnapshotPotentialLeakWarning`) não existe.
+    pub fn from_observable(obs: crate::observable::base::IObservable<T>, store: Option<&DisposableStore>) -> Event<T> {
+        use crate::observable::base::ObserverRef;
+        let observer = Rc::new(EmitterObserver {
+            observable: obs.clone(),
+            emitter: RefCell::new(Weak::new()),
+            counter: Cell::new(0),
+            has_changed: Cell::new(false),
+        });
+        let (on_add, on_remove) = (observer.clone(), observer.clone());
+        let options = EmitterOptions {
+            on_will_add_first_listener: Some(Rc::new(move |_: &Emitter<T>| {
+                on_add.observable.add_observer(on_add.clone() as ObserverRef);
+                // Avisa o observável de que recebemos o valor atual e queremos as mudanças futuras.
+                on_add.observable.report_changes();
+            })),
+            on_did_remove_last_listener: Some(Rc::new(move |_: &Emitter<T>| {
+                on_remove.observable.remove_observer(&(on_remove.clone() as ObserverRef));
+            })),
+            ..EmitterOptions::default()
+        };
+        let emitter = Emitter::with_options(options);
+        *observer.emitter.borrow_mut() = Rc::downgrade(&emitter);
+        if let Some(store) = store {
+            store.add(emitter.clone());
+        }
+        emitter.event()
+    }
+}
+
+/// O observador de `Event.fromObservableLight`.
+struct LightObserver {
+    observable: crate::observable::base::ObservableRef,
+    count: Cell<i64>,
+    did_change: Cell<bool>,
+    listener: Listener<()>,
+}
+
+impl crate::observable::base::IObserver for LightObserver {
+    fn begin_update(&self, _observable: &dyn crate::observable::base::AnyObservable) {
+        self.count.set(self.count.get() + 1);
+    }
+
+    fn end_update(&self, _observable: &dyn crate::observable::base::AnyObservable) {
+        self.count.set(self.count.get() - 1);
+        if self.count.get() == 0 {
+            self.observable.report_changes();
+            if self.did_change.get() {
+                self.did_change.set(false);
+                (self.listener)(&());
+            }
+        }
+    }
+
+    fn handle_possible_change(&self, _observable: &dyn crate::observable::base::AnyObservable) {}
+
+    fn handle_change(&self, _observable: &dyn crate::observable::base::AnyObservable, _change: &dyn Any) {
+        self.did_change.set(true);
+    }
+}
+
+impl Event<()> {
+    /// `Event.fromObservableLight(observable)`: cada listener se inscreve direto no observável.
+    pub fn from_observable_light(observable: crate::observable::base::ObservableRef) -> Event<()> {
+        Event::new(move |listener: Listener<()>| {
+            use crate::observable::base::ObserverRef;
+            let observer: ObserverRef = Rc::new(LightObserver { observable: observable.clone(), count: Cell::new(0), did_change: Cell::new(false), listener });
+            observable.add_observer(observer.clone());
+            observable.report_changes();
+            let observable = observable.clone();
+            lifecycle::plain_disposable(move || observable.remove_observer(&observer))
+        })
+    }
+}
+
+// #endregion
