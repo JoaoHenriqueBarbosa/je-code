@@ -80,3 +80,5 @@ pub mod word_character_classifier;
 pub mod word_helper;
 
 pub mod position_to_offset;
+
+pub mod default_document_colors_computer;
