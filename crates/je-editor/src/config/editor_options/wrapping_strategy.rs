@@ -1,56 +1,46 @@
 //! Porte de `WrappingStrategy` (`editorOptions.ts`, linhas 3073 a 3107).
 
+use je_base::dynamic::Dynamic;
+
 use crate::config::editor_options::{
-    string_set, AccessibilitySupport, ComputedEditorOptions, ConfigurationPropertySchema, EditorOption, EditorOptionImpl, EnvironmentalOptions, Opt,
-    OptionInput, OptionSchema, SchemaValue,
+    strings_array, AccessibilitySupport, ComputedEditorOptions, EditorOption, EditorOptionImpl, EnvironmentalOptions, Opt,
 };
 
 /// Chave tipada de `wrappingStrategy`.
 pub const WRAPPING_STRATEGY: Opt<WrappingStrategyValue> = Opt::new(EditorOption::WrappingStrategy);
 
-/// `'simple' | 'advanced'`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WrappingStrategyValue {
-    Simple,
-    Advanced,
-}
-
-impl WrappingStrategyValue {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            WrappingStrategyValue::Simple => "simple",
-            WrappingStrategyValue::Advanced => "advanced",
-        }
-    }
-
-    fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "simple" => Some(WrappingStrategyValue::Simple),
-            "advanced" => Some(WrappingStrategyValue::Advanced),
-            _ => None,
-        }
+string_enum! {
+    /// `'simple' | 'advanced'`.
+    pub enum WrappingStrategyValue {
+        Simple => "simple",
+        Advanced => "advanced",
     }
 }
 
-/// `WrappingStrategy`. `enumDescriptions` do esquema ainda não existe em
-/// [`ConfigurationPropertySchema`] (`// TODO(config)`).
+/// `WrappingStrategy`.
 pub struct WrappingStrategy {
-    schema: OptionSchema,
+    schema: Dynamic,
 }
 
 impl WrappingStrategy {
     pub fn new() -> Self {
-        let property = ConfigurationPropertySchema {
-            type_: Some("string".to_string()),
-            enum_values: Some(vec!["simple".to_string(), "advanced".to_string()]),
-            default: Some(SchemaValue::String("simple".to_string())),
-            description: Some(
-                "Controls the algorithm that computes wrapping points. Note that when in accessibility mode, advanced will be used for the best experience."
-                    .to_string(),
+        let property = Dynamic::object([
+            (
+                "enumDescriptions",
+                Dynamic::array([
+                    Dynamic::string("Assumes that all characters are of the same width. This is a fast algorithm that works correctly for monospace fonts and certain scripts (like Latin characters) where glyphs are of equal width."),
+                    Dynamic::string("Delegates wrapping points computation to the browser. This is a slow algorithm, that might cause freezes for large files, but it works correctly in all cases."),
+                ]),
             ),
-            ..Default::default()
-        };
-        Self { schema: OptionSchema::Map(vec![("editor.wrappingStrategy".to_string(), property)]) }
+            ("type", Dynamic::string("string")),
+            ("enum", strings_array(WrappingStrategyValue::ALLOWED)),
+            ("default", Dynamic::string("simple")),
+            (
+                "description",
+                Dynamic::string("Controls the algorithm that computes wrapping points. Note that when in accessibility mode, advanced will be used for the best experience."),
+            ),
+        ]);
+        Self { schema: Dynamic::object([("editor.wrappingStrategy", property)]) }
     }
 }
 
@@ -75,13 +65,12 @@ impl EditorOptionImpl for WrappingStrategy {
         WrappingStrategyValue::Simple
     }
 
-    fn schema(&self) -> Option<&OptionSchema> {
+    fn schema(&self) -> Option<&Dynamic> {
         Some(&self.schema)
     }
 
-    fn validate(&self, input: &OptionInput) -> WrappingStrategyValue {
-        let value = string_set(input, "simple", &["simple", "advanced"], None);
-        WrappingStrategyValue::from_str(&value).unwrap_or(WrappingStrategyValue::Simple)
+    fn validate(&self, input: &Dynamic) -> WrappingStrategyValue {
+        WrappingStrategyValue::validate(input, WrappingStrategyValue::Simple)
     }
 
     fn compute(&self, _env: &EnvironmentalOptions, options: &ComputedEditorOptions, value: &WrappingStrategyValue) -> WrappingStrategyValue {
@@ -98,41 +87,49 @@ impl EditorOptionImpl for WrappingStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::editor_options::option_support::{test_env, test_options};
+    use crate::config::editor_options::option_support::testing::{environment, font_info, options_with, value};
+
+    fn text(s: &str) -> Dynamic {
+        Dynamic::string(s)
+    }
 
     #[test]
     fn validate_accepts_only_the_two_values() {
         let option = WrappingStrategy::new();
-        assert_eq!(option.validate(&OptionInput::string("advanced")), WrappingStrategyValue::Advanced);
-        assert_eq!(option.validate(&OptionInput::string("simple")), WrappingStrategyValue::Simple);
-        assert_eq!(option.validate(&OptionInput::string("Advanced")), WrappingStrategyValue::Simple);
-        assert_eq!(option.validate(&OptionInput::Number(1.0)), WrappingStrategyValue::Simple);
-        assert_eq!(option.validate(&OptionInput::Undefined), WrappingStrategyValue::Simple);
-        assert_eq!(option.validate(&OptionInput::Bool(true)), WrappingStrategyValue::Simple);
+        assert_eq!(option.validate(&text("advanced")), WrappingStrategyValue::Advanced);
+        assert_eq!(option.validate(&text("simple")), WrappingStrategyValue::Simple);
+        assert_eq!(option.validate(&text("Advanced")), WrappingStrategyValue::Simple);
+        assert_eq!(option.validate(&Dynamic::Number(1.0)), WrappingStrategyValue::Simple);
+        assert_eq!(option.validate(&Dynamic::Undefined), WrappingStrategyValue::Simple);
+        assert_eq!(option.validate(&Dynamic::Bool(true)), WrappingStrategyValue::Simple);
+        assert_eq!(option.validate(&Dynamic::array([text("advanced")])), WrappingStrategyValue::Simple);
     }
 
     #[test]
     fn compute_forces_advanced_only_with_a_screen_reader() {
         let option = WrappingStrategy::new();
-        let env = test_env(1.0);
+        let env = environment(font_info(true, 14.0, "normal"));
         for (support, expected) in [
             (AccessibilitySupport::Enabled, WrappingStrategyValue::Advanced),
             (AccessibilitySupport::Disabled, WrappingStrategyValue::Simple),
             (AccessibilitySupport::Unknown, WrappingStrategyValue::Simple),
         ] {
-            let options = test_options(support);
+            let options = options_with(vec![(EditorOption::AccessibilitySupport, value(support))]);
             assert_eq!(option.compute(&env, &options, &WrappingStrategyValue::Simple), expected);
         }
-        let options = test_options(AccessibilitySupport::Disabled);
+        let options = options_with(vec![(EditorOption::AccessibilitySupport, value(AccessibilitySupport::Disabled))]);
         assert_eq!(option.compute(&env, &options, &WrappingStrategyValue::Advanced), WrappingStrategyValue::Advanced);
     }
 
     #[test]
-    fn schema_lists_the_enum() {
+    fn schema_keeps_the_original_keys_and_order() {
         let option = WrappingStrategy::new();
-        let Some(OptionSchema::Map(entries)) = option.schema() else { panic!("sem esquema") };
-        assert_eq!(entries[0].0, "editor.wrappingStrategy");
-        assert_eq!(entries[0].1.enum_values.as_deref(), Some(&["simple".to_string(), "advanced".to_string()][..]));
-        assert_eq!(entries[0].1.default, Some(SchemaValue::String("simple".to_string())));
+        let schema = option.schema().expect("sem esquema");
+        assert_eq!(schema.own_keys(), vec!["editor.wrappingStrategy"]);
+        let property = schema.get_str("editor.wrappingStrategy");
+        assert_eq!(property.own_keys(), vec!["enumDescriptions", "type", "enum", "default", "description"]);
+        assert_eq!(property.get_str("enum").get_str("length"), Dynamic::Number(2.0));
+        assert_eq!(property.get_str("default"), text("simple"));
+        assert_eq!(property.get_str("enumDescriptions").get_str("length"), Dynamic::Number(2.0));
     }
 }

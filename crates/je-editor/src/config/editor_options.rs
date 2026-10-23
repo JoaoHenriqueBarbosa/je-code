@@ -1285,3 +1285,20 @@ mod tests {
         assert!(did_change);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Classes de opção, uma por arquivo (lote w32)
+
+pub mod inlay_hints;
+pub mod lightbulb;
+pub mod line_decorations_width;
+pub mod line_height;
+pub mod line_numbers;
+pub mod padding;
+pub mod parameter_hints;
+pub mod pixel_ratio;
+pub mod placeholder;
+pub mod quick_suggestions;
+pub mod rulers;
+pub mod sticky_scroll;
+pub mod wrapping_strategy;

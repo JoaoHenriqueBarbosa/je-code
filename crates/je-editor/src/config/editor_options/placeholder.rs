@@ -1,6 +1,8 @@
 //! Porte de `PlaceholderOption` (`editorOptions.ts`, linhas 3773 a 3790).
 
-use crate::config::editor_options::{EditorOption, EditorOptionImpl, Opt, OptionInput};
+use je_base::dynamic::Dynamic;
+
+use crate::config::editor_options::{EditorOption, EditorOptionImpl, Opt};
 
 /// Chave tipada de `placeholder`.
 pub const PLACEHOLDER: Opt<Option<String>> = Opt::new(EditorOption::Placeholder);
@@ -35,9 +37,9 @@ impl EditorOptionImpl for PlaceholderOption {
         None
     }
 
-    fn validate(&self, input: &OptionInput) -> Option<String> {
+    fn validate(&self, input: &Dynamic) -> Option<String> {
         match input {
-            OptionInput::String(text) => Some(text.clone()),
+            Dynamic::String(text) => Some(text.to_string_lossy()),
             // `undefined` e qualquer outro tipo dão o padrão.
             _ => self.default_value(),
         }
@@ -51,14 +53,14 @@ mod tests {
     #[test]
     fn strings_pass_through() {
         let option = PlaceholderOption::new();
-        assert_eq!(option.validate(&OptionInput::string("Digite aqui")), Some("Digite aqui".to_string()));
-        assert_eq!(option.validate(&OptionInput::string("")), Some(String::new()));
+        assert_eq!(option.validate(&Dynamic::string("Digite aqui")), Some("Digite aqui".to_string()));
+        assert_eq!(option.validate(&Dynamic::string("")), Some(String::new()));
     }
 
     #[test]
     fn everything_else_is_undefined() {
         let option = PlaceholderOption::new();
-        for input in [OptionInput::Undefined, OptionInput::Null, OptionInput::Bool(true), OptionInput::Number(1.0), OptionInput::Other] {
+        for input in [Dynamic::Undefined, Dynamic::Null, Dynamic::Bool(true), Dynamic::Number(1.0), Dynamic::array([]), Dynamic::object::<&str>([])] {
             assert_eq!(option.validate(&input), None);
         }
     }
