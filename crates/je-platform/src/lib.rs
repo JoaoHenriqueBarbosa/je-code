@@ -40,3 +40,4 @@ pub use je_base::event as __je_event;
 pub use je_base::lifecycle as __je_lifecycle;
 
 pub mod user_data_sync;
+pub mod update;
