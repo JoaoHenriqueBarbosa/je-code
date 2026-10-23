@@ -3436,6 +3436,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-codicons"
+version = "0.0.0"
+
+[[package]]
 name = "je-render"
 version = "0.0.0"
 dependencies = [
