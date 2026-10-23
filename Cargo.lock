@@ -6835,6 +6835,9 @@ name = "textmate-probe"
 version = "0.0.0"
 dependencies = [
  "ferriki-textmate",
+ "je-base",
+ "je-editor",
+ "je-languages",
  "serde_json",
 ]
 

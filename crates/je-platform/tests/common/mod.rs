@@ -25,7 +25,7 @@ use je_platform::workspace::{Workspace, WorkspaceFolder, to_workspace_folder};
 mod base;
 
 #[allow(unused_imports)]
-pub use base::ensure_no_disposables_are_leaked_in_test_suite;
+pub use base::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 
 /// Um literal no estilo do TypeScript: JSON com aspas simples. Não tem `undefined`: quem precisa monta
 /// o valor na mão.
@@ -351,3 +351,8 @@ pub const U: Dynamic = Dynamic::Undefined;
 pub fn inspect_dynamic(value: Option<je_platform::configuration::models::InspectValue>) -> Dynamic {
     value.map_or(Dynamic::Undefined, |v| v.to_dynamic())
 }
+
+pub mod files;
+pub mod disk;
+
+pub mod watcher;

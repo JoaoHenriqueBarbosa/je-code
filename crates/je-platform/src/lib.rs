@@ -5,6 +5,7 @@
 //! de configuração é [`je_base::JsString`] (UTF-16, como no JavaScript).
 
 pub mod configuration;
+pub mod files;
 pub mod js;
 pub mod log;
 pub mod workspace;

@@ -11,3 +11,26 @@ workspace = true
 
 [dependencies]
 je-base = { path = "../je-base" }
+
+# Observação do sistema de arquivos (inotify, FSEvents, ReadDirectoryChangesW): o `notify` no lugar do
+# `@parcel/watcher` e do `fs.watch` do Node. Fora do alvo web, onde não há sistema de arquivos.
+# Linux usa inotify e Windows usa ReadDirectoryChangesW, sem feature nenhuma. No macOS o backend é o
+# FSEvents (`macos_fsevent`), o mesmo `fs-events` que o `@parcel/watcher` usa no VS Code: observa a árvore
+# inteira com um fluxo só, enquanto o `macos_kqueue` abriria um descritor por arquivo (EMFILE numa árvore
+# grande, inviável para o watcher recursivo). O `fsevent-sys` é só declaração de FFI (`#[link]`) para o
+# framework CoreServices, sem build script nem fonte C: `scripts/pure-rust-check.sh` passa nos 4 alvos.
+# Nota: o comportamento do FSEvents não pôde ser medido neste host (Linux); a escolha segue o backend que
+# o `@parcel/watcher` usa no VS Code para macOS.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+notify = { version = "8", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+# Só as constantes (`O_NONBLOCK`) da abertura de leitura do `DiskFileSystemProvider`: nenhuma chamada da libc,
+# então nada de `unsafe` e nada de C compilado.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

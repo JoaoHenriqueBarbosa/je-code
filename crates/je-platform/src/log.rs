@@ -6,6 +6,19 @@
 
 use std::rc::Rc;
 
+use je_base::event::Event;
+
+/// `LogLevel` de `log.ts`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Off,
+    Trace,
+    Debug,
+    Info,
+    Warning,
+    Error,
+}
+
 /// `ILogService`, reduzido a mensagens de texto.
 pub trait LogService {
     fn trace(&self, message: &str);
@@ -13,6 +26,16 @@ pub trait LogService {
     fn info(&self, message: &str);
     fn warn(&self, message: &str);
     fn error(&self, message: &str);
+
+    /// `getLevel()`.
+    fn get_level(&self) -> LogLevel {
+        LogLevel::Info
+    }
+
+    /// `onDidChangeLogLevel`.
+    fn on_did_change_log_level(&self) -> Event<LogLevel> {
+        Event::none()
+    }
 }
 
 /// O handle compartilhado do serviço.

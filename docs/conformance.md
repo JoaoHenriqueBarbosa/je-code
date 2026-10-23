@@ -6,13 +6,13 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 69 | 1420 | 62.34 |
 | `platform` | 723 | 15868 | 17 | 342 | 2.16 |
-| `editor` | 182 | 3144 | 22 | 574 | 18.26 |
+| `editor` | 182 | 3144 | 25 | 595 | 18.92 |
 | `workbench/services` | 137 | 2491 | 0 | 0 | 0.00 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
 | `workbench/contrib` | 402 | 5033 | 0 | 0 | 0.00 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 29869 | | 2336 | 7.82 |
+| **total** | | 29869 | | 2357 | 7.89 |
 
 ## Arquivos portados
 
@@ -106,13 +106,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/undoRedo/test/common/undoRedoService.test.ts` | 4 | `crates/je-editor/tests/undo_redo_service.rs` | 4 |
 | `src/vs/editor/test/common/core/characterClassifier.test.ts` | 1 | `crates/je-editor/tests/character_classifier.rs` | 1 |
 | `src/vs/editor/test/common/core/cursorColumns.test.ts` | 5 | `crates/je-editor/tests/cursor_columns.rs` | 7 |
+| `src/vs/editor/test/common/core/lineTokens.test.ts` | 7 | `crates/je-editor/tests/line_tokens.rs` | 7 |
 | `src/vs/editor/test/common/core/range.test.ts` | 9 | `crates/je-editor/tests/range.rs` | 9 |
 | `src/vs/editor/test/common/core/stringBuilder.test.ts` | 4 | `crates/je-editor/tests/string_builder.rs` | 4 |
 | `src/vs/editor/test/common/model/editStack.test.ts` | 1 | `crates/je-editor/tests/edit_stack.rs` | 1 |
 | `src/vs/editor/test/common/model/editableTextModel.test.ts` | 62 | `crates/je-editor/tests/editable_text_model.rs` | 62 |
 | `src/vs/editor/test/common/model/editableTextModelAuto.test.ts` | 4 | `crates/je-editor/tests/editable_text_model_auto.rs` | 4 |
 | `src/vs/editor/test/common/model/intervalTree.test.ts` | 25 | `crates/je-editor/tests/interval_tree.rs` | 25 |
-| `src/vs/editor/test/common/model/model.line.test.ts` | 53 | `crates/je-editor/tests/model_line.rs` | 53 |
+| `src/vs/editor/test/common/model/model.line.test.ts` | 53 | `crates/je-editor/tests/model_line.rs` | 54 |
 | `src/vs/editor/test/common/model/model.test.ts` | 32 | `crates/je-editor/tests/model.rs` | 32 |
 | `src/vs/editor/test/common/model/modelDecorations.test.ts` | 101 | `crates/je-editor/tests/model_decorations.rs` | 101 |
 | `src/vs/editor/test/common/model/modelEditOperation.test.ts` | 8 | `crates/je-editor/tests/model_edit_operation.rs` | 8 |
@@ -120,9 +121,11 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/model/textChange.test.ts` | 10 | `crates/je-editor/tests/text_change.rs` | 10 |
 | `src/vs/editor/test/common/model/textModel.test.ts` | 40 | `crates/je-editor/tests/text_model.rs` | 40 |
 | `src/vs/editor/test/common/model/textModelSearch.test.ts` | 42 | `crates/je-editor/tests/text_model_search.rs` | 42 |
+| `src/vs/editor/test/common/model/textModelTokens.test.ts` | 2 | `crates/je-editor/tests/text_model_tokens.rs` | 2 |
 | `src/vs/editor/test/common/modes/languageConfiguration.test.ts` | 11 | `crates/je-editor/tests/language_configuration.rs` | 11 |
 | `src/vs/editor/test/common/modes/supports/characterPair.test.ts` | 13 | `crates/je-editor/tests/character_pair.rs` | 13 |
 | `src/vs/editor/test/common/modes/supports/electricCharacter.test.ts` | 2 | `crates/je-editor/tests/electric_character.rs` | 2 |
 | `src/vs/editor/test/common/modes/supports/onEnter.test.ts` | 4 | `crates/je-editor/tests/on_enter.rs` | 4 |
 | `src/vs/editor/test/common/modes/supports/richEditBrackets.test.ts` | 10 | `crates/je-editor/tests/rich_edit_brackets.rs` | 10 |
+| `src/vs/editor/test/common/services/languagesAssociations.test.ts` | 10 | `crates/je-editor/tests/languages_associations.rs` | 11 |
 | `src/vs/editor/test/common/viewModel/prefixSumComputer.test.ts` | 48 | `crates/je-editor/tests/prefix_sum_computer.rs` | 48 |
