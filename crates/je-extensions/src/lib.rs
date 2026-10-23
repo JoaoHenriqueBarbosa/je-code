@@ -38,3 +38,6 @@ pub mod management_service;
 pub mod vsix;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod watcher;
+
+// Merge de extensões da sincronização de dados do usuário.
+pub mod extensions_merge;
