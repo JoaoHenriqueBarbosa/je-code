@@ -38,3 +38,24 @@ O comportamento do VS Code depende da ordem do event loop: microtarefas (`Promis
 macrotarefa, timers ordenados por (vencimento, ordem de criação), e um relógio injetável para os
 testes que no original usam `runWithFakedTimers`. As promessas do porte (`je_base::async`) agendam as
 continuações como microtarefas no momento em que se resolvem, como as do JavaScript.
+
+## Injeção de dependência sem decorators (`je-instantiation`)
+
+O VS Code monta tudo por `IInstantiationService`: serviços identificados por `createDecorator`, injetados
+nos parâmetros decorados de um construtor, lidos por reflexão. Rust não tem nenhum dos dois. O porte
+preserva a semântica observável (ordem de criação, criação preguiçosa, mensagem do erro de ciclo e do
+serviço ausente, filhos que herdam e sobrescrevem, `dispose` na ordem do original) e troca o mecanismo:
+
+- `ServiceId<dyn Trait>`: nome do `createDecorator` mais `TypeId`; serviço é `Rc<dyn Trait>`.
+- Os parâmetros decorados viram o trait `Injectable`: `Args` (argumentos estáticos) e `Deps`, uma tupla de
+  `Rc<dyn Trait>` na ordem dos parâmetros. A tupla é a única declaração das dependências e alimenta a
+  resolução, o grafo de criação e a detecção de ciclo.
+- Argumentos estáticos tipados: o descompasso que o original corrige com `console.trace` (e que o
+  `StrictServiceCollection` rejeita) é erro de compilação.
+- O `Proxy` da instanciação atrasada vira um tipo gerado por `delayed_proxy!` para cada trait atrasável,
+  com as inscrições em eventos `onDid*`/`onWill*` guardadas até o serviço nascer.
+- Serviço que guarda `IInstantiationService` aponta de volta para a coleção que o guarda, um ciclo de `Rc`
+  que o coletor do JavaScript desfaz sozinho. `dispose` solta da coleção as instâncias que o serviço de
+  instanciação criou, e filho precisa de `dispose`, como o original já pede.
+
+Detalhes e divergências no topo de `crates/je-instantiation/src/lib.rs`.
