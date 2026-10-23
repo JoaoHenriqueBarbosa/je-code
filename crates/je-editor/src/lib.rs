@@ -141,3 +141,7 @@ pub mod replace_command;
 pub mod cursor_delete_operations;
 pub mod cursor_move_operations;
 pub mod cursor_column_selection;
+
+pub mod indentation_line_processor;
+pub mod auto_indent;
+pub mod enter_action;
