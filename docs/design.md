@@ -59,3 +59,16 @@ serviço ausente, filhos que herdam e sobrescrevem, `dispose` na ordem do origin
   instanciação criou, e filho precisa de `dispose`, como o original já pede.
 
 Detalhes e divergências no topo de `crates/je-instantiation/src/lib.rs`.
+
+## Opções do editor: chaves tipadas
+
+`editorOptions.ts` (6 989 linhas, 53 classes de opção) guarda cada opção como um valor dinâmico indexado por
+`EditorOption`. O porte troca o índice solto por uma **chave tipada**: `Opt<T>` carrega o id da opção e o tipo do
+valor calculado (`pub const READ_ONLY: Opt<bool>`, `pub const MINIMAP: Opt<InternalMinimapOptions>`), e
+`ComputedEditorOptions::get(Opt<T>) -> &T` devolve o valor já com o tipo, guardado como `Rc<dyn Any>`
+(`downcast_ref`, sem `unsafe`). Cada opção é uma struct que implementa `EditorOptionImpl` (`id`, `name`,
+`default_value`, `validate`, `compute`, `schema`) como as classes `SimpleEditorOption`, `BaseEditorOption` e
+`ComputedEditorOption` do original; a tabela `EDITOR_OPTIONS_REGISTRY` mantém a ordem do enum `EditorOption`.
+Os `IEditorOptions` (entrada, todos os campos opcionais) viram structs com `Option<T>` por campo. O esquema JSON
+de configuração (`editorConfigurationSchema.ts`) sai da mesma tabela, para `settings.json` aceitar exatamente as
+mesmas chaves e os mesmos valores do VS Code.
