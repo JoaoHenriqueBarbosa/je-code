@@ -171,6 +171,16 @@ pub fn index_of(haystack: &[u16], needle: &[u16], from: usize) -> Option<usize> 
     haystack[from..].windows(needle.len()).position(|window| window == needle).map(|i| i + from)
 }
 
+/// `str.lastIndexOf(needle, from)`: procura de trás para frente a partir de `from` (limitado ao tamanho
+/// do texto); com agulha vazia devolve `from` limitado ao tamanho do texto.
+pub fn last_index_of(haystack: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    let start = from.min(haystack.len() - needle.len());
+    (0..=start).rev().find(|&i| haystack[i..i + needle.len()] == *needle)
+}
+
 /// `str.startsWith(needle, position)`.
 pub fn starts_with_at(haystack: &[u16], needle: &[u16], position: usize) -> bool {
     haystack.get(position..).is_some_and(|rest| rest.starts_with(needle))
