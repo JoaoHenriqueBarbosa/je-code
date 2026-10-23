@@ -49,7 +49,7 @@ tema se medem por screenshot do oráculo sob xvfb contra o nosso, por diferença
 - **Agents view e sidebar do Copilot/chat com BYOK** (decisão do user, 2026-10-23). Sai: `vs/sessions`
   (181 195 linhas, 6 208 testes), `workbench/contrib/chat` (359 163 linhas, 10 802 testes),
   `contrib/welcomeAgentSessions`, `contrib/remoteCodingAgents`, `contrib/agentsVoice` e a extensão embutida
-  `copilot` (eu, tag 1.143.1). A confirmar com o user, sem portar até lá: `contrib/inlineChat` (4 182 linhas)
+  `copilot` (eu, tag 1.143.1). A confirmar com o user, sem portar até lá: `vs/platform/agentHost` (289 182 linhas e 12 108 dos 15 868 casos de `vs/platform`, medido em 2026-10-23; é o backend dos agentes de IA, na mesma família do que o user cortou), `vs/platform/github` e `mcp`; `contrib/inlineChat` (4 182 linhas)
   e `contrib/mcp` (22 148 linhas), que dependem do chat. Os contadores de paridade das fases 6 e 8
   descontam essas pastas.
 - Reproduzir o Electron, o Chromium ou o DOM. Os `.css` são lidos como especificação.
