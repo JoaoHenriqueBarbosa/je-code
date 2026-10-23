@@ -112,10 +112,10 @@ Dark Modern e Light Modern; 2 543 testes de `workbench/services` portados.
 ## Fase 5: extension host
 
 Protocolo RPC do extension host, `vscode.d.ts` inteiro, ativação por eventos, extension host local
-sobre o zjsc com compat Node, web extension host, as 106 extensões embutidas rodando, instalação do
+sobre o zjsc com compat Node, web extension host, as 96 extensões embutidas do build oficial rodando (a pasta da fonte tem 106, com extensões de teste e de desenvolvimento), instalação do
 marketplace, e o `tsserver` com latência aceitável (H16).
 
-Critério de saída: as 106 embutidas ativam sem erro; as extensões instaladas na máquina do user
+Critério de saída: as 96 embutidas do build oficial (a pasta `extensions` da fonte tem 106, com extensões de teste e de desenvolvimento que não vão no build) ativam sem erro; as extensões instaladas na máquina do user
 ativam e os comandos delas respondem; 1 008 testes de `workbench/api` portados.
 
 ## Fase 6: contribuições
