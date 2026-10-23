@@ -4,8 +4,9 @@
 //! registradas; resolver ou rejeitar uma promessa já assentada não faz nada. `Promise<T>` também é um
 //! `Future`, para o `await` dentro de [`runtime::spawn_local`](crate::runtime::spawn_local).
 
-use std::cell::RefCell;
-use std::future::Future;
+use std::cell::{Cell, RefCell};
+use std::future::{Future, IntoFuture};
+use std::ops::Deref;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
@@ -14,6 +15,7 @@ use crate::errors::{self, Error};
 use crate::runtime::queue_microtask;
 
 type Reaction<T> = Box<dyn FnOnce(Result<T, Error>)>;
+type Settled<T> = Option<Result<T, Error>>;
 
 enum State<T> {
     Pending { reactions: Vec<Reaction<T>> },
@@ -156,6 +158,29 @@ impl<T: Clone + 'static> Promise<T> {
         derived
     }
 
+    /// `Promise.allSettled(promises)`: cada promessa registra a sua reação (uma microtarefa depois de
+    /// assentar) e a última a assentar resolve o resultado, como na especificação; lista vazia resolve já.
+    pub fn all_settled(promises: Vec<Promise<T>>) -> Promise<Vec<Result<T, Error>>> {
+        let (all, resolver) = Promise::new();
+        if promises.is_empty() {
+            resolver.resolve(Vec::new());
+            return all;
+        }
+        let results: Rc<RefCell<Vec<Settled<T>>>> = Rc::new(RefCell::new(vec![None; promises.len()]));
+        let remaining = Rc::new(Cell::new(promises.len()));
+        for (index, promise) in promises.iter().enumerate() {
+            let (results, remaining, resolver) = (results.clone(), remaining.clone(), resolver.clone());
+            promise.react(move |result| {
+                results.borrow_mut()[index] = Some(result);
+                remaining.set(remaining.get() - 1);
+                if remaining.get() == 0 {
+                    resolver.resolve(results.borrow_mut().drain(..).flatten().collect());
+                }
+            });
+        }
+        all
+    }
+
     /// `catch(onRejected)`.
     pub fn catch(&self, on_rejected: impl FnOnce(Error) -> T + 'static) -> Promise<T> {
         self.then_result(move |r| Ok(r.unwrap_or_else(on_rejected)))
@@ -201,6 +226,40 @@ impl<T: Clone + 'static> Future for PromiseFuture<T> {
             self.promise.react(move |_| waker.wake());
         }
         Poll::Pending
+    }
+}
+
+/// `CancelablePromise<T>` (de `async.ts`): a promessa com o `cancel()` pendurado. Deref para a promessa,
+/// então `then`, `catch` e `result` valem direto, e o `await` também.
+pub struct CancelablePromise<T: Clone + 'static> {
+    pub promise: Promise<T>,
+    cancel: Rc<dyn Fn()>,
+}
+
+impl<T: Clone + 'static> CancelablePromise<T> {
+    pub fn new(promise: Promise<T>, cancel: impl Fn() + 'static) -> Self {
+        Self { promise, cancel: Rc::new(cancel) }
+    }
+
+    pub fn cancel(&self) {
+        (self.cancel)();
+    }
+}
+
+impl<T: Clone + 'static> Deref for CancelablePromise<T> {
+    type Target = Promise<T>;
+
+    fn deref(&self) -> &Promise<T> {
+        &self.promise
+    }
+}
+
+impl<T: Clone + 'static> IntoFuture for CancelablePromise<T> {
+    type Output = Result<T, Error>;
+    type IntoFuture = PromiseFuture<T>;
+
+    fn into_future(self) -> PromiseFuture<T> {
+        self.promise.into_future()
     }
 }
 

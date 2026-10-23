@@ -8,3 +8,8 @@ description = "Porte de vs/base/common do VS Code: utilitários sem UI."
 
 [lints]
 workspace = true
+
+# Fonte de aleatoriedade do SO para `Math.random` e `crypto.randomUUID`. No alvo web
+# (wasm32-unknown-unknown) o `random` cai num fallback do std, ver `src/random.rs`.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+getrandom = "0.3"

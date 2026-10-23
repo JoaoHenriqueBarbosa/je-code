@@ -13,26 +13,47 @@ use std::rc::Rc;
 /// O nome do `CancellationError` (`canceledName` do original).
 pub const CANCELED_NAME: &str = "Canceled";
 
-/// Um erro com a forma do `Error` do JavaScript. `errors` é preenchido no `AggregateError`.
+/// Um erro com a forma do `Error` do JavaScript. `errors` é preenchido no `AggregateError`; `stack` é o
+/// `error.stack`; `props` são as propriedades extras que o JS pendura num erro (o `ListenerLeakError`
+/// leva `kind`, `listenerCount` e `details` aqui).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Error {
     pub name: String,
     pub message: String,
     pub errors: Vec<Error>,
+    pub stack: Option<String>,
+    pub props: Vec<(String, String)>,
 }
 
 impl Error {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { name: "Error".into(), message: message.into(), errors: Vec::new() }
+        Self::named("Error", message)
     }
 
     pub fn named(name: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { name: name.into(), message: message.into(), errors: Vec::new() }
+        Self { name: name.into(), message: message.into(), errors: Vec::new(), stack: None, props: Vec::new() }
+    }
+
+    /// `error.stack = stack`.
+    pub fn with_stack(mut self, stack: impl Into<String>) -> Self {
+        self.stack = Some(stack.into());
+        self
+    }
+
+    /// `error.<name> = value`.
+    pub fn with_prop(mut self, name: impl Into<String>, value: impl ToString) -> Self {
+        self.props.push((name.into(), value.to_string()));
+        self
+    }
+
+    /// `error.<name>`.
+    pub fn prop(&self, name: &str) -> Option<&str> {
+        self.props.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
     }
 
     /// `new AggregateError(errors, message)`.
     pub fn aggregate(errors: Vec<Error>, message: impl Into<String>) -> Self {
-        Self { name: "AggregateError".into(), message: message.into(), errors }
+        Self { errors, ..Self::named("AggregateError", message) }
     }
 
     /// `new CancellationError()`.
@@ -172,4 +193,28 @@ pub fn on_unexpected_external_error(error: &Error) {
 /// `onBugIndicatingError`.
 pub fn on_bug_indicating_error(error: &Error) {
     dispatch(error, true);
+}
+
+impl Error {
+    /// `new TypeError(message)`.
+    pub fn type_error(message: impl Into<String>) -> Self {
+        Self::named("TypeError", message)
+    }
+
+    /// `new BugIndicatingError(message)`. O original não muda `name` (continua `Error`) e a
+    /// distinção é só por classe (`instanceof`); aqui a mensagem padrão é a mesma.
+    pub fn bug_indicating(message: Option<&str>) -> Self {
+        match message {
+            Some(m) if !m.is_empty() => Self::new(m),
+            _ => Self::new("An unexpected bug occurred."),
+        }
+    }
+
+    /// `new ReadonlyError(name)`, um `TypeError`.
+    pub fn readonly(name: Option<&str>) -> Self {
+        match name {
+            Some(n) if !n.is_empty() => Self::type_error(format!("{n} is read-only and cannot be changed")),
+            _ => Self::type_error("Cannot change read-only property"),
+        }
+    }
 }

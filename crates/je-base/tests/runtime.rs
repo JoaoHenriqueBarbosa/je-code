@@ -45,3 +45,35 @@ fn ordem_igual_ao_node() {
     });
     assert_eq!(log.borrow().join(" "), "a0 sync p1 m1 a1 p2 t1 t2 t2p a2");
 }
+
+#[test]
+fn all_settled_igual_ao_node() {
+    // (async()=>{ await Promise.allSettled([Promise.resolve(1),Promise.reject(2)]).then(()=>log('then')); log('after') })();
+    // Promise.resolve().then(()=>log('m1')).then(()=>log('m2')) ... .then(()=>log('m6'));
+    // (async()=>{ await Promise.allSettled([]).then(()=>log('e-then')); log('e-after') })();
+    // Node: m1 e-then then m2 e-after after m3 m4 m5 m6
+    let log = Rc::new(RefCell::new(Vec::<&str>::new()));
+    let push = |l: &Rc<RefCell<Vec<&'static str>>>, s: &'static str| l.borrow_mut().push(s);
+    runtime::with_faked_timers(|| {
+        let l = log.clone();
+        runtime::spawn_local(async move {
+            let l2 = l.clone();
+            let settled = Promise::all_settled(vec![Promise::resolved(1), Promise::rejected(je_base::errors::Error::new("2"))]).then(move |_| push(&l2, "then"));
+            let _ = settled.await;
+            push(&l, "after");
+        });
+        let mut chain = Promise::resolved(());
+        for name in ["m1", "m2", "m3", "m4", "m5", "m6"] {
+            let l = log.clone();
+            chain = chain.then(move |_| push(&l, name));
+        }
+        let l = log.clone();
+        runtime::spawn_local(async move {
+            let l2 = l.clone();
+            let settled = Promise::<i32>::all_settled(vec![]).then(move |_| push(&l2, "e-then"));
+            let _ = settled.await;
+            push(&l, "e-after");
+        });
+    });
+    assert_eq!(log.borrow().join(" "), "m1 e-then then m2 e-after after m3 m4 m5 m6");
+}

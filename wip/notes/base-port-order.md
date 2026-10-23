@@ -15,7 +15,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [ ] `jsonSchema` (330 linhas)
 - [ ] `jsonc` (64 linhas)
 - [ ] `keyCodes` (838 linhas)
-- [ ] `lazy` (57 linhas)
+- [x] `lazy` (57 linhas)
 - [x] `linkedList` (151 linhas)
 - [ ] `managedSettings` (82 linhas)
 - [ ] `markdownLinks` (200 linhas)
@@ -31,7 +31,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `symbols` (9 linhas)
 - [ ] `uint` (59 linhas)
 - [ ] `uriTemplate` (305 linhas)
-- [ ] `uuid` (70 linhas)
+- [x] `uuid` (70 linhas)
 - [ ] `yaml` (1701 linhas)
 
 ## Camada 1
@@ -55,13 +55,13 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [ ] `keybindingParser` (102 linhas): keyCodes, keybindings
 - [x] `numbers` (121 linhas): assert
 - [x] `path` (1589 linhas): process
-- [ ] `types` (410 linhas): assert
+- [x] `types` (410 linhas): assert
 
 ## Camada 3
 - [ ] `comparers` (356 linhas): date, lazy, path
 - [x] `iterator` (194 linhas): types
 - [ ] `mime` (139 linhas): path
-- [ ] `objects` (298 linhas): types
+- [x] `objects` (298 linhas): types
 - [x] `uri` (765 linhas): charCode, marshallingIds, path, platform
 - [ ] `verifier` (88 linhas): types
 
@@ -79,8 +79,8 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [x] `arraysFind` (226 linhas): arrays
 - [ ] `async` (2752 linhas): cancellation, errors, event, lazy, lifecycle, platform, resources, symbols, uri
 - [ ] `buffer` (499 linhas): lazy, stream
-- [ ] `cache` (153 linhas): cancellation, lifecycle
-- [ ] `cancellation` (239 linhas): errors, event, lifecycle
+- [x] `cache` (153 linhas): cancellation, lifecycle
+- [x] `cancellation` (239 linhas): errors, event, lifecycle
 - [ ] `codicons` (66 linhas): codiconsLibrary, codiconsUtil, themables
 - [ ] `codiconsLibrary` (776 linhas): codiconsUtil
 - [ ] `codiconsUtil` (28 linhas): themables, types
@@ -94,7 +94,7 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [ ] `filters` (981 linhas): charCode, map, normalization, strings
 - [ ] `fuzzyScorer` (953 linhas): charCode, comparers, filters, hash, path, platform, strings
 - [ ] `glob` (861 linhas): arrays, async, charCode, extpath, map, path, platform, strings
-- [ ] `hash` (361 linhas): assert, buffer, strings
+- [x] `hash` (361 linhas): assert, buffer, strings
 - [ ] `history` (298 linhas): collections, event, lifecycle, navigator
 - [ ] `hotReload` (119 linhas): lifecycle
 - [ ] `hotReloadHelpers` (52 linhas): hotReload, observable
@@ -106,20 +106,20 @@ Gerado por `scripts/base_port_order.py`. [x] = portado em `crates/je-base`.
 - [ ] `labels` (484 linhas): extpath, path, platform, resources, strings, uri
 - [x] `lifecycle` (974 linhas): arrays, collections, errors, functional, iterator, map, uri
 - [ ] `marshalling` (84 linhas): buffer, marshallingIds, uri
-- [ ] `network` (452 linhas): errors, path, platform, strings, uri
+- [x] `network` (452 linhas): errors, path, platform, strings, uri
 - [ ] `oauth` (1423 linhas): buffer
 - [ ] `paging` (392 linhas): arrays, cancellation, errors, event
 - [ ] `policy` (161 linhas): defaultAccount
 - [ ] `product` (478 linhas): collections, platform, policy
 - [ ] `resourceTree` (187 linhas): decorators, path, resources, ternarySearchTree, uri
-- [ ] `resources` (458 linhas): charCode, extpath, network, path, platform, strings, uri
+- [x] `resources` (458 linhas): charCode, extpath, network, path, platform, strings, uri
 - [ ] `scrollable` (522 linhas): event, lifecycle
 - [ ] `search` (48 linhas): strings
 - [ ] `sequence` (34 linhas): event
 - [ ] `severity` (56 linhas): strings
 - [ ] `stream` (790 linhas): cancellation, errors, lifecycle
 - [x] `strings` (1424 linhas): cache, charCode, lazy, uint
-- [ ] `ternarySearchTree` (796 linhas): arrays, assert, charCode, strings, uri
+- [x] `ternarySearchTree` (796 linhas): arrays, assert, charCode, strings, uri
 - [ ] `tfIdf` (240 linhas): cancellation
 - [ ] `themables` (117 linhas): codicons
 - [ ] `uriIpc` (163 linhas): buffer, marshalling, marshallingIds, uri
