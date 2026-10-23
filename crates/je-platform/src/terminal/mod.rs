@@ -10,3 +10,4 @@ pub mod environment_variable_collection;
 pub mod environment_variable_shared;
 
 pub mod auto_approve;
+pub mod terminal_recorder;

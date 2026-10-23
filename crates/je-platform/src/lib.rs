@@ -52,3 +52,4 @@ pub mod sandbox;
 pub mod network_filter;
 pub mod browser_view;
 pub mod quickinput;
+pub mod remote_tunnel;
