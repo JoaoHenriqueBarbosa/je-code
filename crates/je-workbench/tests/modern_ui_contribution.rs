@@ -181,9 +181,9 @@ fn layout_density_parent() -> Option<je_platform::actions::actions::SubmenuItem>
     })
 }
 
-fn setup_registrations() {
-    register_layout_density_menu();
-    register_layout_density_actions();
+fn setup_registrations(guard: &common::LeakGuard) {
+    guard.add(register_layout_density_menu());
+    guard.add(register_layout_density_actions());
 }
 
 /// `getToggledExpression`.
@@ -197,8 +197,8 @@ fn toggled_expression(toggled: &Option<je_platform::action::Toggled>) -> Option<
 
 #[test]
 fn shows_layout_density_options_in_the_settings_menu_only_when_modern_ui_is_enabled() {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    setup_registrations();
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    setup_registrations(&guard);
     let parent = layout_density_parent();
     let options: Vec<_> = if parent.is_some() {
         menu_registry()
@@ -291,11 +291,11 @@ impl IConfigurationService for PendingUpdateConfigurationService {
 #[test]
 fn updates_the_layout_density_from_the_settings_menu() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    setup_registrations();
+    setup_registrations(&guard);
     let (update_complete, resolver) = Promise::<()>::new();
     let configuration_service =
         Rc::new(PendingUpdateConfigurationService { inner: TestConfigurationService::new(None), update_complete: update_complete.clone(), updates: RefCell::new(Vec::new()) });
-    let environment_service = TestEnvironmentService::new();
+    let environment_service: Rc<dyn je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService> = TestEnvironmentService::new();
     let configuration: Rc<dyn IConfigurationService> = configuration_service.clone();
     let instantiation_service = guard.add_rc(InstantiationService::new(
         ServiceCollection::new().with(I_CONFIGURATION_SERVICE, configuration).with(I_WORKBENCH_ENVIRONMENT_SERVICE, environment_service.clone()),
