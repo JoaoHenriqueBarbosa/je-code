@@ -156,7 +156,7 @@ fn to_untyped() {
     let input = disposables.add_rc(MyEditorInput::new(Some(uri_file("foo/bar1")), None));
     let other_input = disposables.add_rc(MyEditorInput::new(Some(uri_file("foo/bar2")), None));
 
-    let diff_input = DiffEditorInput::new(Some("name"), Some("description"), input.clone(), other_input.clone(), None, editor_service);
+    let diff_input = disposables.add_rc(DiffEditorInput::new(Some("name"), Some("description"), input.clone(), other_input.clone(), None, editor_service));
 
     let untyped_diff_input = diff_input.to_untyped(None).map(EditorInputOrUntyped::Untyped);
     assert!(is_resource_diff_editor_input(untyped_diff_input.as_ref()));

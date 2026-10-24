@@ -26,6 +26,7 @@ use std::rc::{Rc, Weak};
 use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, DisposableStore, id_of, id_of_ref};
+use je_base::lifecycle::IDisposable as _;
 use je_base::promise::Promise;
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;

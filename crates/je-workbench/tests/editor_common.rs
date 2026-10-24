@@ -335,8 +335,8 @@ fn editor_resource_accessor_typed_inputs() {
     let file = disposables.add_rc(TestEditorInput::new(file_resource.clone(), "editorResourceFileTest"));
     assert_simple_editor(&typed(&file), &file_resource, schemas::FILE, schemas::UNTITLED);
 
-    let diff_input = DiffEditorInput::new(Some("name"), Some("description"), untitled.clone(), file.clone(), None, editor_service.clone());
-    let side_by_side_input = SideBySideEditorInput::new(Some("name"), Some("description"), untitled.clone(), file.clone(), editor_service);
+    let diff_input = disposables.add_rc(DiffEditorInput::new(Some("name"), Some("description"), untitled.clone(), file.clone(), None, editor_service.clone()));
+    let side_by_side_input = disposables.add_rc(SideBySideEditorInput::new(Some("name"), Some("description"), untitled.clone(), file.clone(), editor_service));
     assert_compound_editor(&typed(&diff_input), &file_resource, &untitled_resource);
     assert_compound_editor(&typed(&side_by_side_input), &file_resource, &untitled_resource);
 
