@@ -754,6 +754,13 @@ pub trait IEditorGroup {
         not_implemented()
     }
 
+    /// `openEditor(editor, options)` com as opções como `ITextEditorOptions`: a seleção do editor de texto chega ao painel. O
+    /// padrão descarta a seleção e abre pelo [`IEditorGroup::open_editor`] (quem não tem painéis a ignora); o
+    /// `EditorGroupView` a entrega ao painel.
+    fn open_editor_with_text_options(&self, editor: &EditorInputRef, options: Option<TextEditorOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {
+        self.open_editor(editor, options.map(|options| options.base))
+    }
+
     /// `openEditors(editors)`: opens editors in this group. Since a group can only ever have one active editor, the result
     /// is only one pane.
     fn open_editors(&self, _editors: Vec<EditorInputWithOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {

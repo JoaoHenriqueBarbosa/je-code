@@ -21,6 +21,9 @@ use std::rc::Rc;
 
 use je_base::event::Event;
 use je_base::js_string::JsString;
+use je_base::lifecycle::DisposableRef;
+
+use super::capabilities::capabilities::IMarker;
 
 /// `IBufferCell`: uma célula de uma linha do buffer.
 pub trait IBufferCell {
@@ -101,10 +104,79 @@ pub trait IBuffer {
     fn get_line(&self, y: i32) -> Option<Rc<dyn IBufferLine>>;
 }
 
+/// Um elemento de `params` de um tratador de CSI do xterm: `number | number[]` (um número, ou os subparâmetros
+/// separados por `:`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CsiParam {
+    Number(i32),
+    SubParams(Vec<i32>),
+}
+
+impl CsiParam {
+    /// `param === value` (um array de subparâmetros nunca é igual a um número).
+    pub fn is(&self, value: i32) -> bool {
+        matches!(self, Self::Number(number) if *number == value)
+    }
+}
+
+/// O tratador de uma sequência OSC (`(data: string) => boolean | Promise<boolean>`): recebe o texto depois do
+/// `Ps;` e devolve `true` se tratou a sequência.
+pub type OscHandler = Rc<dyn Fn(&str) -> bool>;
+
+/// O tratador de uma sequência CSI (`(params: (number | number[])[]) => boolean | Promise<boolean>`).
+pub type CsiHandler = Rc<dyn Fn(&[CsiParam]) -> bool>;
+
+/// `IParser` do `@xterm/headless` (`terminal.parser`): só os registros de tratadores que o código lê. Os
+/// tratadores rodam do último registrado para o primeiro, até um devolver `true`, e o descarte do disposable
+/// devolvido remove o registro.
+pub trait IParser {
+    /// `registerOscHandler(ident, callback)`.
+    fn register_osc_handler(&self, ident: i32, callback: OscHandler) -> DisposableRef;
+
+    /// `registerCsiHandler({ final }, callback)`.
+    fn register_csi_handler(&self, final_byte: char, callback: CsiHandler) -> DisposableRef;
+}
+
+/// O `{ cols, rows }` do `onResize` do xterm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalResize {
+    pub cols: i32,
+    pub rows: i32,
+}
+
 /// `Terminal` do `@xterm/headless`, só com o que a camada de plataforma lê.
 pub trait IHeadlessTerminal {
     /// `terminal.buffer.active`.
     fn buffer_active(&self) -> Rc<dyn IBuffer>;
+
+    /// `terminal.buffer.normal`.
+    fn buffer_normal(&self) -> Rc<dyn IBuffer>;
+
+    /// `terminal.buffer.active === terminal.buffer.normal`: a identidade dos dois buffers (o buffer ativo é o
+    /// normal, e não o alternativo).
+    fn is_active_buffer_normal(&self) -> bool;
+
+    /// `terminal.cols`.
+    fn cols(&self) -> i32;
+
+    /// `terminal.parser`.
+    fn parser(&self) -> Rc<dyn IParser>;
+
+    /// `terminal.registerMarker(cursorYOffset)`: um marcador na linha do cursor mais o deslocamento (o original
+    /// aceita o deslocamento ausente, que vale 0). `None` quando o buffer não permite registrar.
+    fn register_marker(&self, cursor_y_offset: i32) -> Option<Rc<dyn IMarker>>;
+
+    /// `terminal.options.scrollOnEraseInDisplay`.
+    fn scroll_on_erase_in_display(&self) -> bool;
+
+    /// `terminal.onResize`.
+    fn on_resize(&self) -> Event<TerminalResize>;
+
+    /// O `terminal._core._bufferService.buffer.lines.onDeleteEmitter.fire({ index, amount })` que a heurística do
+    /// Windows dispara no xterm.js para mover os marcadores depois que o conpty reimprime a tela. O xterm.js não
+    /// expõe isso de propósito (é uma função interna do núcleo), então o contrato do emulador o oferece como
+    /// operação própria.
+    fn fire_lines_deleted(&self, index: i32, amount: i32);
 
     /// `terminal.rows`.
     fn rows(&self) -> i32;

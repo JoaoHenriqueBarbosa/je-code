@@ -18,10 +18,15 @@
 //! - Ficam de fora `IPtyHostProcessReplayEvent` (depende de `ReplayEntry`, de `terminalProcess.ts`) e o
 //!   bloco comentado do `IMarker` do original.
 //!
-//! Os tipos que o original importa de outros arquivos ainda não portados ([`IPromptInputModel`],
-//! [`ICurrentPartialCommand`], [`ITerminalOutputMatcher`], [`ITerminalOutputMatch`], o
-//! [`ISerializedPromptInputModel`]) aparecem como traits sem membros no fim deste arquivo, só para fechar as
-//! assinaturas; o corpo deles vem com o porte dos arquivos de origem.
+//! Os tipos que o original importa de outros arquivos ([`IPromptInputModel`], [`ISerializedPromptInputModel`],
+//! [`ICurrentPartialCommand`], [`ITerminalOutputMatcher`], [`ITerminalOutputMatch`]) são reexportados dos
+//! arquivos portados que os definem.
+//! - `onCommandStarted` e `onCommandExecuted` disparam, no original, objetos que só fingem ser um
+//!   `ITerminalCommand` (um literal `{ marker, markProperties } as ITerminalCommand` e o próprio
+//!   `PartialTerminalCommand`). O trait [`ITerminalCommand`] tem o `is_full_terminal_command`, que é o
+//!   `!!command.hasOutput` do `isFullTerminalCommand`, para distinguir esses dois dos comandos completos.
+//! - `command` e `commandLineConfidence` do `IBaseTerminalCommand` e o `endMarker` do `ITerminalCommand` são
+//!   mutáveis no original; aqui são lidos pelo getter e trocados por `set_*` (o estado vive no implementador).
 
 use std::rc::Rc;
 
@@ -346,7 +351,9 @@ pub trait IPartialCommandDetectionCapability {
 pub trait IBaseTerminalCommand {
     // Obrigatórios
     fn command(&self) -> String;
+    fn set_command(&self, command: &str);
     fn command_line_confidence(&self) -> TerminalCommandConfidence;
+    fn set_command_line_confidence(&self, confidence: TerminalCommandConfidence);
     fn is_trusted(&self) -> bool;
     fn timestamp(&self) -> f64;
     fn duration(&self) -> f64;
@@ -366,13 +373,27 @@ pub trait ITerminalCommand: IBaseTerminalCommand {
     fn prompt_start_marker(&self) -> Option<Rc<dyn IMarker>>;
     fn marker(&self) -> Option<Rc<dyn IMarker>>;
     fn end_marker(&self) -> Option<Rc<dyn IMarker>>;
+    fn set_end_marker(&self, marker: Option<Rc<dyn IMarker>>);
     fn executed_marker(&self) -> Option<Rc<dyn IMarker>>;
     fn aliases(&self) -> Option<Vec<Vec<String>>>;
     fn was_replayed(&self) -> Option<bool>;
 
+    /// `isFullTerminalCommand(command)`: `!!command.hasOutput`. Só os comandos completos (o
+    /// `TerminalCommand`) têm o método `hasOutput`; o `PartialTerminalCommand` e o literal que
+    /// `onCommandStarted` dispara não têm.
+    fn is_full_terminal_command(&self) -> bool {
+        true
+    }
+
+    /// O `PartialTerminalCommand`, quando este objeto é o comando em andamento que o `onCommandExecuted` dispara
+    /// como se fosse um `ITerminalCommand` (o `HACK` do original, que lê as propriedades do parcial).
+    fn as_partial_terminal_command(&self) -> Option<&super::command_detection::terminal_command::PartialTerminalCommand> {
+        None
+    }
+
     fn extract_command_line(&self) -> String;
     fn get_output(&self) -> Option<String>;
-    fn get_output_match(&self, output_matcher: &dyn ITerminalOutputMatcher) -> Option<Rc<dyn ITerminalOutputMatch>>;
+    fn get_output_match(&self, output_matcher: &ITerminalOutputMatcher) -> Option<ITerminalOutputMatch>;
     fn has_output(&self) -> bool;
     fn get_prompt_row_count(&self) -> f64;
     fn get_command_row_count(&self) -> f64;
@@ -418,7 +439,7 @@ pub struct ISerializedCommandDetectionCapability {
     pub is_windows_pty: bool,
     pub has_rich_command_detection: bool,
     pub commands: Vec<ISerializedTerminalCommand>,
-    pub prompt_input_model: Option<Rc<dyn ISerializedPromptInputModel>>,
+    pub prompt_input_model: Option<ISerializedPromptInputModel>,
 }
 
 // #region Tipos de outros arquivos do original
@@ -433,16 +454,10 @@ pub trait IMarker: IDisposable {
 
 pub use super::command_detection::prompt_input_model::IPromptInputModel;
 
-/// `ISerializedPromptInputModel` de `commandDetection/promptInputModel.ts` (ainda não portado).
-pub trait ISerializedPromptInputModel {}
+pub use super::command_detection::prompt_input_model::ISerializedPromptInputModel;
 
-/// `ICurrentPartialCommand` de `commandDetection/terminalCommand.ts` (ainda não portado).
-pub trait ICurrentPartialCommand {}
+pub use super::command_detection::terminal_command::ICurrentPartialCommand;
 
-/// `ITerminalOutputMatcher` de `terminal.ts` (ainda não portado).
-pub trait ITerminalOutputMatcher {}
-
-/// `ITerminalOutputMatch` de `terminal.ts` (ainda não portado).
-pub trait ITerminalOutputMatch {}
+pub use crate::terminal::terminal::{ITerminalOutputMatch, ITerminalOutputMatcher};
 
 // #endregion

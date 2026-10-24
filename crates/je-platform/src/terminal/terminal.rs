@@ -542,3 +542,75 @@ pub struct ITerminalLaunchError {
     pub message: String,
     pub code: Option<i32>,
 }
+
+/// `ShellIntegrationStatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellIntegrationStatus {
+    /// No shell integration sequences have been encountered.
+    Off,
+    /// Final term shell integration sequences have been encountered.
+    FinalTerm,
+    /// VS Code shell integration sequences have been encountered. Supercedes FinalTerm.
+    VSCode,
+}
+
+/// `IShellIntegration`: o que o addon de integração com o shell oferece a quem o consome. `seenSequences` é um
+/// retrato do conjunto (o `ReadonlySet<string>` do original, na ordem de inserção).
+pub trait IShellIntegration {
+    fn capabilities(&self) -> Rc<dyn crate::terminal::capabilities::capabilities::ITerminalCapabilityStore>;
+    fn seen_sequences(&self) -> Vec<String>;
+    fn status(&self) -> ShellIntegrationStatus;
+
+    fn on_did_change_status(&self) -> je_base::event::Event<ShellIntegrationStatus>;
+    fn on_did_change_seen_sequences(&self) -> je_base::event::Event<Vec<String>>;
+
+    fn deserialize(&self, serialized: &crate::terminal::capabilities::capabilities::ISerializedCommandDetectionCapability);
+
+    fn set_next_command_id(&self, command: &str, command_id: &str);
+}
+
+/// `RegExpMatchArray`: o texto casado e o casamento (o resultado de `String#match` sem a flag `g`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegExpMatchArray {
+    pub input: JsString,
+    pub matched: zyarr::Match,
+}
+
+/// `ITerminalOutputMatch`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITerminalOutputMatch {
+    pub regex_match: RegExpMatchArray,
+    pub output_lines: Vec<String>,
+}
+
+/// `lineMatcher: string | RegExp`.
+#[derive(Clone)]
+pub enum LineMatcher {
+    Text(String),
+    RegExp(Rc<je_base::js_regexp::JsRegExp>),
+}
+
+/// `anchor: 'top' | 'bottom'`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputMatcherAnchor {
+    Top,
+    Bottom,
+}
+
+/// `ITerminalOutputMatcher`: um casador que roda numa subseção da saída de um comando do terminal.
+#[derive(Clone)]
+pub struct ITerminalOutputMatcher {
+    /// A string or regex to match against the unwrapped line. If this is a regex with the multiline
+    /// flag, it will scan an amount of lines equal to `\n` instances in the regex + 1.
+    pub line_matcher: LineMatcher,
+    /// Which side of the output to anchor the `offset` and `length` against.
+    pub anchor: OutputMatcherAnchor,
+    /// The number of rows above or below the `anchor` to start matching against.
+    pub offset: f64,
+    /// The number of rows to match against, this should be as small as possible for performance
+    /// reasons. This is capped at 40.
+    pub length: f64,
+    /// If multiple matches are expected - this will result in `outputLines` being returned when there's a
+    /// `regexMatch` from `offset` to `length`.
+    pub multiple_matches: Option<bool>,
+}

@@ -6,6 +6,7 @@ pub mod keyboard_mapper_test_utils;
 
 pub mod ext_host_workspace_support;
 pub mod mock_command_service;
+pub mod notebook_services_support;
 pub mod test_notebook_editor;
 pub mod test_rpc_protocol;
 pub mod test_stubs;
@@ -19,6 +20,12 @@ pub mod keybinding_editing_support;
 
 // Porte de `terminalCompletionService.test.ts`.
 pub mod terminal_completion_support;
+
+// O emulador de terminal dos testes de `contrib/terminal` e `contrib/terminalContrib` (no lugar do `Terminal` do xterm).
+pub mod fake_xterm;
+
+// Porte de `terminalLinkOpeners.test.ts` e `terminalLocalLinkDetector.test.ts`: os dublês dos serviços.
+pub mod terminal_link_support;
 
 // Porte de `textFileEditorModelManager.test.ts`.
 pub mod text_file_support;
@@ -43,3 +50,9 @@ pub mod test_main_thread_notebook_kernels;
 
 // Porte dos testes de `contrib/extensions` (`extension.test.ts` e seguintes): os serviços de uma `Extension`.
 pub mod extension_services_support;
+
+// Porte de `extensionEnablementService.test.ts`: o `TestExtensionEnablementService` e os dublês que outros testes reaproveitam.
+pub mod extension_enablement_support;
+
+// Porte de `extensionsWorkbenchService.test.ts`: os serviços do `setup` da suíte `ExtensionsWorkbenchServiceTest`.
+pub mod extensions_workbench_service_support;

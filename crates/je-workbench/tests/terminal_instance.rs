@@ -1,7 +1,8 @@
 //! Porte de `src/vs/workbench/contrib/terminal/test/browser/terminalInstance.test.ts` (suíte `Workbench - TerminalInstance`), caso a caso e na mesma ordem.
 //!
-//! Casos de fora (os 23 do `TerminalInstance` e os 7 do `getCwdResource`), que dependem do `TerminalInstance` real (o
-//! emulador de terminal da Fase 6, o DOM, o processo e o `workbenchInstantiationService` inteiro), ainda não portados:
+//! Casos de fora (os 23 do `TerminalInstance`), que dependem da classe `TerminalInstance` real: o processo
+//! (`ITerminalProcessManager`, `ITerminalChildProcess`, `ITerminalBackend`, `ITerminalInstanceService`), o emulador de
+//! terminal da Fase 6, o DOM e o `workbenchInstantiationService` inteiro, que ainda não existem no porte:
 //! - `TerminalInstance`: `removed`/`active horizontal scrollbars are released ...` (2), `repeated horizontal scrollbar toggles
 //!   ...`, `horizontal scrollbar removal does not affect another terminal`, `should create an instance of TerminalInstance
 //!   with env from default profile`, `marked remote resolver terminal bypasses workspace trust request`, `unmarked terminal
@@ -11,12 +12,14 @@
 //!   process title updates` (variações do laço) e `... restores shell title sequence updates`, `should preserve agent shell
 //!   type ...`, `should detect Command Code agent shell type ...`, `runCommand should wait for prompt input ...`, `should fire
 //!   onWillDispose ...`, `should dispose contribution-owned xterm addons ...`, `should stop handling file drops ...`,
-//!   `should not start handling file drops ...` e os 2 `custom key event handler ...`;
-//! - `getCwdResource` (7 casos): é um método do `TerminalInstance`.
+//!   `should not start handling file drops ...` e os 2 `custom key event handler ...`.
 //!
-//! Portados: `DEFAULT_COMMANDS_TO_SKIP_SHELL` (1), `parseExitResult` (11) e `TerminalLabelComputer` (21).
+//! Portados: `DEFAULT_COMMANDS_TO_SKIP_SHELL` (1), `parseExitResult` (11), `TerminalLabelComputer` (21) e `getCwdResource` (8).
 //!
 //! Divergências:
+//! - **`getCwdResource`.** O original monta um objeto que reimplementa o método com um `mockFileService` e um
+//!   `mockPathService`; aqui os dois mocks são o [`MockCwdServices`] (que implementa [`ICwdResourceServices`]) e o método
+//!   chamado é o [`get_cwd_resource`] real, sobre o store de capacidades com o `{ getCwd }` do original.
 //! - **`workbenchInstantiationService(undefined, store)`.** O `TerminalLabelComputer` só lê o `IFileService`, o
 //!   `ITerminalConfigurationService` e o `IWorkspaceContextService`; o `InstantiationService` do caso tem esses três (o
 //!   `TestFileService`, o `TerminalConfigurationService` sobre o `TestConfigurationService(configuration)` e o
@@ -36,7 +39,7 @@ mod common;
 
 use std::rc::Rc;
 
-use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers};
 use je_base::arrays::OneOrMany;
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
@@ -47,13 +50,17 @@ use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::files::i_file_service::{I_FILE_SERVICE, IFileService};
-use je_platform::terminal::capabilities::capabilities::{INaiveCwdDetectionCapability, NaiveCwdDetection, TerminalCapability};
+use je_platform::terminal::capabilities::capabilities::{
+    CwdDetection, ICwdDetectionCapability, INaiveCwdDetectionCapability, NaiveCwdDetection, TerminalCapability,
+};
 use je_platform::terminal::capabilities::terminal_capability_store::TerminalCapabilityStore;
 use je_platform::terminal::terminal::{GeneralShellType, IShellLaunchConfig, ITerminalLaunchError, ShellType, TerminalType};
 use je_platform::workspace::{I_WORKSPACE_CONTEXT_SERVICE, IWorkspaceContextService, WorkspaceFolder};
 use je_workbench::contrib::terminal::browser::terminal::{I_TERMINAL_CONFIGURATION_SERVICE, ITerminalConfigurationService};
 use je_workbench::contrib::terminal::browser::terminal_configuration_service::TerminalConfigurationService;
-use je_workbench::contrib::terminal::browser::terminal_instance::{ExitCodeOrError, ExitResult, LabelInstance, TerminalLabelComputer, parse_exit_result};
+use je_workbench::contrib::terminal::browser::terminal_instance::{
+    ExitCodeOrError, ExitResult, ICwdResourceServices, LabelInstance, TerminalLabelComputer, get_cwd_resource, parse_exit_result,
+};
 use je_workbench::contrib::terminal::common::terminal::{ProcessState, default_commands_to_skip_shell};
 use je_workbench::test::common::workbench_test_services::{TestContextService, TestFileService};
 
@@ -681,4 +688,200 @@ fn terminal_label_computer_should_hide_cwd_folder_in_single_folder_workspaces_wh
         assert_eq!(computer.title(), "process ~ root2");
         assert_eq!(computer.description(), "root2");
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// suite('getCwdResource')
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// O `mockFileService` (`canHandleResource` e `exists`) e o `mockPathService` (`fileURI`) do original.
+struct MockCwdServices {
+    remote_authority: Option<String>,
+    file_exists: bool,
+    file_service_can_handle: bool,
+}
+
+impl ICwdResourceServices for MockCwdServices {
+    fn file_uri(&self, path: &str) -> Promise<URI> {
+        match &self.remote_authority {
+            Some(remote_authority) => Promise::resolved(URI::parse(format!("vscode-remote://{remote_authority}{path}").as_str(), false)),
+            None => Promise::resolved(URI::file(path, je_platform::resources::host_platform())),
+        }
+    }
+
+    fn can_handle_resource(&self, _resource: &URI) -> Promise<bool> {
+        Promise::resolved(self.file_service_can_handle)
+    }
+
+    fn exists(&self, _resource: &URI) -> Promise<bool> {
+        Promise::resolved(self.file_exists)
+    }
+}
+
+/// A capacidade `{ getCwd: () => options.cwd }` do original.
+struct MockCwdDetection {
+    cwd: String,
+}
+
+impl ICwdDetectionCapability for MockCwdDetection {
+    fn capability_type(&self) -> TerminalCapability {
+        TerminalCapability::CwdDetection
+    }
+
+    fn on_did_change_cwd(&self) -> Event<String> {
+        Event::none()
+    }
+
+    fn cwds(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn is_trusted(&self) -> bool {
+        false
+    }
+
+    fn get_cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    fn update_cwd(&self, _cwd: &str, _is_trusted: Option<bool>) {}
+}
+
+/// As `options` de `createMockTerminalInstance`.
+#[derive(Default)]
+struct CwdOptions {
+    cwd: Option<&'static str>,
+    remote_authority: Option<&'static str>,
+    file_exists: Option<bool>,
+    file_service_can_handle: Option<bool>,
+}
+
+/// O que `createMockTerminalInstance` devolve (`Pick<ITerminalInstance, 'getCwdResource' | 'capabilities' | 'remoteAuthority'>`).
+struct MockTerminalInstance {
+    capabilities: Rc<TerminalCapabilityStore>,
+    remote_authority: Option<String>,
+    services: Rc<MockCwdServices>,
+}
+
+impl MockTerminalInstance {
+    /// `getCwdResource()`.
+    fn get_cwd_resource(&self) -> Promise<Option<URI>> {
+        get_cwd_resource(&*self.capabilities, self.remote_authority.as_deref(), self.services.clone())
+    }
+}
+
+fn create_mock_terminal_instance(store: &LeakGuard, options: CwdOptions) -> MockTerminalInstance {
+    let capabilities = store.add_rc(TerminalCapabilityStore::new());
+    if let Some(cwd) = options.cwd.filter(|cwd| !cwd.is_empty()) {
+        capabilities.add::<CwdDetection>(Rc::new(MockCwdDetection { cwd: cwd.to_owned() }));
+    }
+    let remote_authority = options.remote_authority.map(str::to_owned);
+    MockTerminalInstance {
+        capabilities,
+        services: Rc::new(MockCwdServices {
+            remote_authority: remote_authority.clone(),
+            file_exists: options.file_exists != Some(false),
+            file_service_can_handle: options.file_service_can_handle != Some(false),
+        }),
+        remote_authority,
+    }
+}
+
+#[test]
+fn get_cwd_resource_should_return_undefined_when_no_cwd_detection_capability() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instance = create_mock_terminal_instance(&store, CwdOptions::default());
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap();
+        assert_eq!(result, None);
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_return_undefined_when_cwd_detection_capability_returns_no_cwd() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instance = create_mock_terminal_instance(&store, CwdOptions { cwd: None, ..CwdOptions::default() });
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap();
+        assert_eq!(result, None);
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_return_uri_file_for_local_terminal_when_file_exists() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let test_cwd = "/test/path";
+    let instance = create_mock_terminal_instance(&store, CwdOptions { cwd: Some(test_cwd), file_exists: Some(true), ..CwdOptions::default() });
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap().unwrap();
+        assert_eq!(result.scheme().to_string_lossy(), "file");
+        assert_eq!(result.path().to_string_lossy(), test_cwd);
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_return_undefined_when_file_does_not_exist() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let test_cwd = "/test/nonexistent";
+    let instance = create_mock_terminal_instance(&store, CwdOptions { cwd: Some(test_cwd), file_exists: Some(false), ..CwdOptions::default() });
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap();
+        assert_eq!(result, None);
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_use_path_service_file_uri_for_remote_terminal() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let test_cwd = "/test/remote/path";
+    let instance =
+        create_mock_terminal_instance(&store, CwdOptions { cwd: Some(test_cwd), remote_authority: Some("test-remote"), file_exists: Some(true), ..CwdOptions::default() });
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap().unwrap();
+        assert_eq!(result.scheme().to_string_lossy(), "vscode-remote");
+        assert_eq!(result.authority().to_string_lossy(), "test-remote");
+        assert_eq!(result.path().to_string_lossy(), test_cwd);
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_handle_windows_paths_correctly() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let test_cwd = if is_windows() { "C:\\test\\path" } else { "/test/path" };
+    let instance = create_mock_terminal_instance(&store, CwdOptions { cwd: Some(test_cwd), file_exists: Some(true), ..CwdOptions::default() });
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap().unwrap();
+        assert_eq!(result.scheme().to_string_lossy(), "file");
+        if is_windows() {
+            assert_eq!(result.path().to_string_lossy(), "/C:/test/path");
+        } else {
+            assert_eq!(result.path().to_string_lossy(), test_cwd);
+        }
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_handle_empty_cwd_string() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instance = create_mock_terminal_instance(&store, CwdOptions { cwd: Some(""), ..CwdOptions::default() });
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap();
+        assert_eq!(result, None);
+    });
+}
+
+#[test]
+fn get_cwd_resource_should_return_undefined_when_file_service_cannot_handle_the_resource_vs_code_web_enopro_scenario() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    // Simulates server-linux-x64-web where remoteAuthority is falsy from the terminal's perspective, so URI.file() is
+    // produced but the browser FileService has no file:// provider registered.
+    let test_cwd = "/workspace/my-project";
+    let instance = create_mock_terminal_instance(
+        &store,
+        CwdOptions { cwd: Some(test_cwd), file_exists: Some(true), file_service_can_handle: Some(false), ..CwdOptions::default() },
+    );
+    run_with_real_timers(async move {
+        let result = instance.get_cwd_resource().await.unwrap();
+        assert_eq!(result, None);
+    });
 }

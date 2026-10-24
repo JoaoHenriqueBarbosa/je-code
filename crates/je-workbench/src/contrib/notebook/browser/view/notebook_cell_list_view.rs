@@ -48,6 +48,11 @@ impl NotebookCellsLayout {
         &self.whitespace
     }
 
+    /// `this.items[index].size` do `ListView` (o tamanho do item, sem o espaço dos view zones depois dele).
+    pub fn item_size(&self, index: usize) -> f64 {
+        self.items[index].size
+    }
+
     pub fn restore_whitespace(&mut self, items: Vec<IWhitespace>) {
         self.whitespace = items;
         self.size = self.total_size();

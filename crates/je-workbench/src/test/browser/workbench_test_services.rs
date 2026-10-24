@@ -30,6 +30,7 @@ use je_base::JsString;
 use je_platform::environment::environment::{DisableExtensions, EnvironmentService, ExtensionHostDebugParams, ExtensionKind, SyncMode};
 use je_platform::product::ProductService;
 use je_platform::remote::remote_agent_environment::RemoteAgentEnvironment;
+use je_platform::window::IPath;
 use je_platform::resources::{ext_uri, host_platform, join_path, uri_file};
 
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
@@ -127,12 +128,17 @@ impl IRemoteAgentService for TestRemoteAgentService {
 }
 
 /// Os valores do ambiente que um teste troca (`instantiationService.stub(IWorkbenchEnvironmentService, { ... })`):
-/// `disableExtensions`, `enableExtensions` e `isSessionsWindow`. O que fica no padrão é o do `TestEnvironmentService`.
+/// `disableExtensions`, `enableExtensions`, `isSessionsWindow`, `disableWorkspaceTrust` (`None` é o padrão do
+/// `TestEnvironmentService`, verdadeiro), `remoteAuthority` e `filesToOpenOrCreate`. O que fica no padrão é o do
+/// `TestEnvironmentService`.
 #[derive(Clone, Debug, Default)]
 pub struct EnvironmentOverrides {
     pub disable_extensions: Option<DisableExtensions>,
     pub enable_extensions: Option<Vec<String>>,
     pub is_sessions_window: bool,
+    pub disable_workspace_trust: Option<bool>,
+    pub remote_authority: Option<String>,
+    pub files_to_open_or_create: Option<Vec<IPath>>,
 }
 
 /// `TestEnvironmentService`.
@@ -320,7 +326,7 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
     }
 
     fn remote_authority(&self) -> Option<String> {
-        None
+        self.overrides.remote_authority.clone()
     }
 
     fn skip_release_notes(&self) -> bool {
@@ -333,7 +339,11 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
 
     /// `!this.options.enableWorkspaceTrust`.
     fn disable_workspace_trust(&self) -> bool {
-        true
+        self.overrides.disable_workspace_trust.unwrap_or(true)
+    }
+
+    fn files_to_open_or_create(&self) -> Option<Vec<IPath>> {
+        self.overrides.files_to_open_or_create.clone()
     }
 
     fn is_sessions_window(&self) -> bool {
@@ -538,6 +548,9 @@ mod editor_inputs {
         /// `disableToUntyped`.
         pub disable_to_untyped: Cell<bool>,
 
+        /// O `toUntyped()` de uma subclasse do original que o sobrescreve (por exemplo `TestFileEditorInputWithUntyped` de
+        /// `historyService.test.ts`): quando definido, é o que `to_untyped` devolve.
+        untyped_override: RefCell<Option<UntypedEditorInput>>,
         capabilities: Cell<EditorInputCapabilities>,
 
         /// `movedEditor`.
@@ -572,6 +585,7 @@ mod editor_inputs {
                 modified: Cell::new(None),
                 fails: Cell::new(false),
                 disable_to_untyped: Cell::new(false),
+                untyped_override: RefCell::new(None),
                 capabilities: Cell::new(EditorInputCapabilities::NONE),
                 moved_editor: RefCell::new(None),
                 move_disabled_reason: RefCell::new(None),
@@ -597,6 +611,12 @@ mod editor_inputs {
         /// O contador de chamadas do `rename` que uma subclasse do original incrementa (`renameCalls++`).
         pub fn rename_calls(&self) -> usize {
             self.rename_calls.get()
+        }
+
+        /// A subclasse do original que sobrescreve o `toUntyped()`: a entrada passa a devolver `untyped` no lugar do
+        /// `{ resource }` padrão.
+        pub fn set_untyped_override(&self, untyped: UntypedEditorInput) {
+            *self.untyped_override.borrow_mut() = Some(untyped);
         }
 
         pub fn set_encoding(&self, _encoding: &str) {}
@@ -721,6 +741,10 @@ mod editor_inputs {
         fn to_untyped(&self, _options: Option<&crate::common::editor::editor_input::UntypedEditorOptions>) -> Option<UntypedEditorInput> {
             if self.disable_to_untyped.get() {
                 return None;
+            }
+
+            if let Some(untyped) = &*self.untyped_override.borrow() {
+                return Some(untyped.clone());
             }
 
             Some(UntypedEditorInput::from_resource(self.resource.clone()))

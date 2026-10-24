@@ -18,13 +18,17 @@
 //!   uma `TestCell` onde se espera um `ICellDto2` (a forma estrutural é a mesma), [`TestCell::cell_dto`] monta o DTO com o
 //!   que a `NotebookCellTextModel` expõe (`source` é o texto do `TestCell`).
 //! - `public source: string` do `TestCell` é o campo `source` (texto); o `source` do `ICellDto2` é o mesmo texto.
-//! - `withTestNotebook` e `createTestNotebookEditor`: o `NotebookEditorTestModel` (só guarda o notebook e marca sujo), o
-//!   `NotebookOptions`, o `NotebookEventDispatcher`, a lista de células (`NotebookCellList`) e o editor com
-//!   `mock<IActiveNotebookEditorDelegate>` não entram: nenhum caso lê algo deles. O que os casos leem é
-//!   `editor.textModel` ([`ActiveTestNotebookEditorDelegate::text_model`]) e o `NotebookViewModel`, de que só
-//!   `notebookDocument`, `undo` e `redo` são usados; [`NotebookViewModel`] tem esses três. Sem células de view model e sem
-//!   `ITextModelService`, o `_withElement` do original (que abre referências aos modelos das células de view) só chama o
-//!   callback; o ramo `MultiModelEditStackElement` não existe no porte do editor.
+//! - `withTestNotebook` e `createTestNotebookEditor`: o `NotebookEditorTestModel` (só guarda o notebook e marca sujo) não entra
+//!   (nenhum caso lê algo dele). O `NotebookOptions`, o `NotebookEventDispatcher`, o `ViewContext`, o `NotebookViewModel` real,
+//!   a lista de células lógica (`NotebookCellList`, `createNotebookCellList`) e o `ListViewInfoAccessor` são os do porte, e o
+//!   `mock<IActiveNotebookEditorDelegate>` é o [`ActiveTestNotebookEditorDelegate`], que implementa o trait
+//!   `IActiveNotebookEditor` com os membros que os casos leem (`getViewIndexByModelIndex`, `setHiddenAreas`, `getActiveCell`,
+//!   `focusNotebookCell`...). `setupInstantiationService` guarda a configuração no [`NotebookTestServices`]; os serviços
+//!   que o original registra e nenhum caso lê (tema, contexto, lista, layout, log, área de transferência, armazenamento,
+//!   confiança, teclado, barra de status, outline, `ICodeEditorService`) não existem no porte. O ramo
+//!   `MultiModelEditStackElement` do desfazer não existe no porte do editor. `withTestNotebookDiffModel` e o editor de diff
+//!   (`NotebookDiffViewModel`, `diffElementViewModel`) não foram portados. O `ITextModelService` não existe aqui, então o
+//!   `_withElement` do `NotebookViewModel` só chama o callback.
 //! - `runWithFakedTimers({ useFakeTimers: true }, ...)` é `runtime::with_faked_timers`; o `try`/`finally` do original é
 //!   um `catch_unwind` com a limpeza e o novo lançamento do pânico. Os callbacks `async` do original são síncronos (o
 //!   `UndoRedoService` do porte é síncrono).
@@ -48,20 +52,27 @@ use je_base::mime::mimes;
 use je_base::promise::Promise;
 use je_base::runtime;
 use je_base::uri::URI;
-use je_editor::edit_stack::SingleModelEditStackElement;
+use je_base::uuid::generate_uuid;
 use je_editor::language_service::{ILanguageService, I_LANGUAGE_SERVICE, LanguageService};
 use je_editor::model::DefaultEndOfLine;
 use je_editor::model_service::ModelService;
-use je_editor::undo_redo::UndoRedoElement;
-use je_editor::undo_redo_service::{IUndoRedoService, UndoRedoService, UndoRedoTarget};
+use je_editor::undo_redo_service::{IUndoRedoService, UndoRedoService};
 use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
+use je_workbench::contrib::notebook::browser::controller::IActiveNotebookEditor;
+use je_workbench::contrib::notebook::browser::notebook_options::NotebookOptions;
+use je_workbench::contrib::notebook::browser::view::notebook_cell_list::{ListViewInfoAccessor, NotebookCellList};
+use je_workbench::contrib::notebook::browser::view_model::cell_view_model_types::CellFocusMode;
+use je_workbench::contrib::notebook::browser::view_model::event_dispatcher::NotebookEventDispatcher;
+use je_workbench::contrib::notebook::browser::view_model::notebook_view_model_impl::{CellViewModel, NotebookViewModel, NotebookViewModelOptions};
+use je_workbench::contrib::notebook::browser::view_model::view_context::{IBaseCellEditorOptions, ViewContext};
 use je_workbench::contrib::notebook::common::model::notebook_cell_text_model::NotebookCellTextModel;
 use je_workbench::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
 use je_workbench::contrib::notebook::common::notebook_common::{
-    CellKind, CellUri, ICell, ICellDto2, IOutputDto, NotebookCellExecutionState, NotebookCellMetadata, TransientOptions,
+    CellKind, CellUri, ICell, ICellDto2, IOutputDto, ISelectionIndexState, ISelectionState, NotebookCellExecutionState, NotebookCellMetadata, TransientOptions,
 };
+use je_workbench::contrib::notebook::common::notebook_range::ICellRange;
 use je_workbench::contrib::notebook::common::notebook_execution_state_service::{
     ExecutionStateChange, ICellExecuteUpdate, ICellExecutionComplete, INotebookCellExecution, INotebookExecution, INotebookExecutionStateService,
     INotebookFailStateChangedEvent, I_NOTEBOOK_EXECUTION_STATE_SERVICE,
@@ -298,6 +309,7 @@ pub struct NotebookTestServices {
     pub instantiation_service: Rc<InstantiationService>,
     pub undo_redo_service: Rc<UndoRedoService>,
     pub model_service: Rc<ModelService>,
+    pub configuration_service: Rc<dyn IConfigurationService>,
 }
 
 impl NotebookTestServices {
@@ -327,10 +339,10 @@ pub fn setup_notebook_services(disposables: &DisposableStore) -> NotebookTestSer
     let configuration_service: Rc<dyn IConfigurationService> = test_configuration_service;
     let model_service = disposables.add_rc(ModelService::new(
         configuration_service.clone(),
-        TestTextResourcePropertiesService::new(configuration_service),
+        TestTextResourcePropertiesService::new(configuration_service.clone()),
         undo_redo_service.clone(),
     ));
-    NotebookTestServices { instantiation_service, undo_redo_service, model_service }
+    NotebookTestServices { instantiation_service, undo_redo_service, model_service, configuration_service }
 }
 
 /// `valueBytesFromString(value)`.
@@ -346,74 +358,158 @@ pub fn empty_metadata() -> NotebookCellMetadata {
     Dynamic::Object(ObjectRef::new())
 }
 
-/// O `NotebookViewModel` do original, só com o que os casos usam: `notebookDocument`, `undo` e `redo` (ver as
-/// divergências).
-pub struct NotebookViewModel {
-    notebook: Rc<NotebookTextModel>,
-    undo_service: Rc<UndoRedoService>,
+/// `const baseCellEditorOptions = new class extends mock<IBaseCellEditorOptions>() { }`: `value` é `undefined`, então ler o
+/// `wordWrap` lança (nenhum caso chega lá: o `fontInfo` das células de teste é nulo).
+pub struct MockBaseCellEditorOptions;
+
+impl IBaseCellEditorOptions for MockBaseCellEditorOptions {
+    fn word_wrap(&self) -> String {
+        errors::throw(errors::Error::new("Cannot read properties of undefined (reading 'wordWrap')"))
+    }
 }
 
-impl NotebookViewModel {
-    pub fn notebook_document(&self) -> Rc<NotebookTextModel> {
-        self.notebook.clone()
-    }
-
-    pub fn uri(&self) -> URI {
-        self.notebook.uri()
-    }
-
-    pub fn undo(&self) -> Vec<URI> {
-        let edit_stack = self.undo_service.get_elements(&self.uri());
-        let element = edit_stack.past.last().cloned();
-
-        if let Some(element) = element
-            && let Some(element) = element.as_resource()
-            && element.as_any().is::<SingleModelEditStackElement>()
-        {
-            self.undo_service.undo(UndoRedoTarget::Resource(&self.uri()));
-
-            return vec![element.resource()];
-        }
-
-        self.undo_service.undo(UndoRedoTarget::Resource(&self.uri()));
-        Vec::new()
-    }
-
-    pub fn redo(&self) -> Vec<URI> {
-        let edit_stack = self.undo_service.get_elements(&self.uri());
-        let element = edit_stack.future.first().cloned();
-
-        if let Some(element) = element
-            && let Some(element) = element.as_resource()
-            && element.as_any().is::<SingleModelEditStackElement>()
-        {
-            self.undo_service.redo(UndoRedoTarget::Resource(&self.uri()));
-
-            return vec![element.resource()];
-        }
-
-        self.undo_service.redo(UndoRedoTarget::Resource(&self.uri()));
-
-        Vec::new()
-    }
-
-    pub fn dispose(&self) {}
+/// `new NotebookOptions(mainWindow, false, undefined, configurationService, executionStateService, codeEditorService)`.
+pub fn create_notebook_options(services: &NotebookTestServices, disposables: &DisposableStore) -> Rc<NotebookOptions> {
+    disposables.add_rc(NotebookOptions::new(false, None, services.configuration_service.clone(), services.notebook_execution_state_service()))
 }
 
-/// `IActiveTestNotebookEditorDelegate`, só com o `textModel`.
+/// `createNotebookCellList(instantiationService, disposables, viewContext?)`.
+pub fn create_notebook_cell_list(services: &NotebookTestServices, disposables: &DisposableStore, view_context: Option<&Rc<ViewContext>>) -> Rc<NotebookCellList> {
+    create_notebook_cell_list_with_configuration(services, disposables, view_context, services.configuration_service.clone())
+}
+
+/// `createNotebookCellList` com o `IConfigurationService` que o `instantiationService.stub(IConfigurationService, config)` de
+/// `notebookCellList.test.ts` registra: é o que o `NotebookOptions` e o `NotebookCellAnchor` da lista leem.
+pub fn create_notebook_cell_list_with_configuration(
+    services: &NotebookTestServices,
+    disposables: &DisposableStore,
+    view_context: Option<&Rc<ViewContext>>,
+    configuration_service: Rc<dyn IConfigurationService>,
+) -> Rc<NotebookCellList> {
+    let notebook_options = match view_context {
+        Some(view_context) => view_context.notebook_options.clone(),
+        None => disposables.add_rc(NotebookOptions::new(false, None, configuration_service.clone(), services.notebook_execution_state_service())),
+    };
+    disposables.add_rc(NotebookCellList::new(
+        "NotebookCellList",
+        notebook_options,
+        |element| element.get_height(17.0),
+        configuration_service,
+        services.notebook_execution_state_service(),
+    ))
+}
+
+/// `IActiveTestNotebookEditorDelegate`: o `mock<IActiveNotebookEditorDelegate>` de `_createTestNotebookEditor` com o que os
+/// casos leem.
 pub struct ActiveTestNotebookEditorDelegate {
     pub text_model: Rc<NotebookTextModel>,
+    pub notebook_options: Rc<NotebookOptions>,
     view_model: Rc<NotebookViewModel>,
+    pub cell_list: Rc<NotebookCellList>,
+    pub list_view_info_accessor: ListViewInfoAccessor,
+    visible_ranges: RefCell<Vec<ICellRange>>,
+    id: String,
 }
 
 impl ActiveTestNotebookEditorDelegate {
     pub fn dispose(&self) {
         self.view_model.dispose();
     }
+
+    pub fn get_id(&self) -> String {
+        self.id.clone()
+    }
+
+    pub fn visible_ranges(&self) -> Vec<ICellRange> {
+        self.visible_ranges.borrow().clone()
+    }
+
+    pub fn set_visible_ranges(&self, ranges: Vec<ICellRange>) {
+        *self.visible_ranges.borrow_mut() = ranges;
+    }
+
+    pub fn set_focus(&self, focus: ICellRange) {
+        self.view_model.update_selections_state(&ISelectionState::Index(ISelectionIndexState { focus, selections: self.view_model.get_selections() }), "model");
+    }
+
+    pub fn set_selections(&self, selections: Vec<ICellRange>) {
+        self.view_model.update_selections_state(&ISelectionState::Index(ISelectionIndexState { focus: self.view_model.get_focus(), selections }), "model");
+    }
+
+    pub fn set_hidden_areas(&self, ranges: &[ICellRange]) -> bool {
+        self.cell_list.set_hidden_areas(ranges, true)
+    }
+
+    pub fn get_active_cell(&self) -> Option<CellViewModel> {
+        self.cell_list.get_focused_elements().first().cloned()
+    }
+}
+
+impl IActiveNotebookEditor for ActiveTestNotebookEditorDelegate {
+    fn text_model(&self) -> Rc<NotebookTextModel> {
+        self.text_model.clone()
+    }
+
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
+    fn get_selections(&self) -> Vec<ICellRange> {
+        self.view_model.get_selections()
+    }
+
+    fn get_focus(&self) -> ICellRange {
+        self.view_model.get_focus()
+    }
+
+    fn get_length(&self) -> usize {
+        self.view_model.length()
+    }
+
+    fn cell_at(&self, index: i64) -> Option<CellViewModel> {
+        self.view_model.cell_at(index)
+    }
+
+    fn get_cell_index(&self, cell: &CellViewModel) -> i64 {
+        self.view_model.get_cell_index(cell)
+    }
+
+    fn get_cells_in_range(&self, range: Option<ICellRange>) -> Vec<CellViewModel> {
+        self.view_model.get_cells_in_range(range)
+    }
+
+    fn get_view_model(&self) -> Rc<NotebookViewModel> {
+        self.view_model.clone()
+    }
+
+    fn get_view_index_by_model_index(&self, index: i64) -> i64 {
+        match self.view_model.cell_at(index) {
+            Some(cell) => self.list_view_info_accessor.get_view_index(&cell),
+            None => -1,
+        }
+    }
+
+    fn get_cell_range_from_view_range(&self, start_index: i64, end_index: i64) -> Option<ICellRange> {
+        self.list_view_info_accessor.get_cell_range_from_view_range(start_index, end_index)
+    }
+
+    fn reveal_cell_range_in_view(&self, _range: ICellRange) {}
+
+    fn focus_notebook_cell(&self, cell: &CellViewModel, focus_item: &str) {
+        cell.base().set_focus_mode(match focus_item {
+            "editor" => CellFocusMode::Editor,
+            "output" => CellFocusMode::Output,
+            _ => CellFocusMode::Container,
+        });
+    }
+
+    fn active_kernel_supported_languages(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 pub struct TestNotebookEditor {
-    pub editor: ActiveTestNotebookEditorDelegate,
+    pub editor: Rc<ActiveTestNotebookEditorDelegate>,
     pub view_model: Rc<NotebookViewModel>,
 }
 
@@ -447,8 +543,34 @@ pub fn create_test_notebook_editor(services: &NotebookTestServices, disposables:
         services.notebook_logging_service(),
     ));
 
-    let view_model = Rc::new(NotebookViewModel { notebook: notebook.clone(), undo_service: services.undo_redo_service.clone() });
-    let editor = ActiveTestNotebookEditorDelegate { text_model: notebook, view_model: view_model.clone() };
+    let notebook_options = create_notebook_options(services, disposables);
+    let base_cell_editor_options: Rc<dyn IBaseCellEditorOptions> = Rc::new(MockBaseCellEditorOptions);
+    let view_context = ViewContext::new(notebook_options.clone(), disposables.add_rc(NotebookEventDispatcher::new()), move |_language| base_cell_editor_options.clone());
+    let undo_redo_service: Rc<dyn IUndoRedoService> = services.undo_redo_service.clone();
+    let view_model = disposables.add_rc(NotebookViewModel::new(
+        view_type,
+        notebook.clone(),
+        view_context.clone(),
+        None,
+        NotebookViewModelOptions { is_read_only: false },
+        services.configuration_service.clone(),
+        undo_redo_service,
+        services.notebook_execution_state_service(),
+    ));
+
+    let cell_list = create_notebook_cell_list(services, disposables, Some(&view_context));
+    cell_list.attach_view_model(view_model.clone());
+    let list_view_info_accessor = ListViewInfoAccessor::new(cell_list.clone());
+
+    let editor = Rc::new(ActiveTestNotebookEditorDelegate {
+        text_model: notebook,
+        notebook_options,
+        view_model: view_model.clone(),
+        cell_list,
+        list_view_info_accessor,
+        visible_ranges: RefCell::new(vec![ICellRange { start: 0, end: 100 }]),
+        id: generate_uuid(),
+    });
 
     TestNotebookEditor { editor, view_model }
 }
@@ -456,7 +578,7 @@ pub fn create_test_notebook_editor(services: &NotebookTestServices, disposables:
 /// `withTestNotebook(cells, callback)`.
 pub fn with_test_notebook<R>(
     cells: Vec<MockNotebookCell>,
-    callback: impl FnOnce(&ActiveTestNotebookEditorDelegate, &NotebookViewModel, &Rc<DisposableStore>, &NotebookTestServices) -> R,
+    callback: impl FnOnce(&Rc<ActiveTestNotebookEditorDelegate>, &Rc<NotebookViewModel>, &Rc<DisposableStore>, &NotebookTestServices) -> R,
 ) -> R {
     let disposables = DisposableStore::new();
     let services = setup_notebook_services(&disposables);
