@@ -126,11 +126,24 @@ pub struct TestEnvironmentService {
     workspace_id: String,
     logs_home: URI,
     is_built: bool,
+    /// `policyFile`: no original é uma propriedade atribuível da constante compartilhada (os testes de configuração a
+    /// ajustam antes de criar o `FilePolicyService`).
+    policy_file: RefCell<Option<URI>>,
 }
 
 impl TestEnvironmentService {
     pub fn new() -> Rc<Self> {
-        Rc::new(Self { workspace_id: String::new(), logs_home: vscode_tests_resource(), is_built: ProductService::default().commit.is_some_and(|commit| !commit.is_empty()) })
+        Rc::new(Self {
+            workspace_id: String::new(),
+            logs_home: vscode_tests_resource(),
+            is_built: ProductService::default().commit.is_some_and(|commit| !commit.is_empty()),
+            policy_file: RefCell::new(None),
+        })
+    }
+
+    /// `environmentService.policyFile = policyFile`.
+    pub fn set_policy_file(&self, policy_file: Option<URI>) {
+        *self.policy_file.borrow_mut() = policy_file;
     }
 
     /// `joinPath(this.userRoamingDataHome, ...fragments)`.
@@ -260,7 +273,7 @@ impl EnvironmentService for TestEnvironmentService {
     }
 
     fn policy_file(&self) -> Option<URI> {
-        None
+        self.policy_file.borrow().clone()
     }
 }
 
@@ -657,5 +670,504 @@ impl TestEditorGroupsService {
 impl IEditorGroupsService for TestEditorGroupsService {
     fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
         self.groups.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Dublês de escrita de configuração: o recorte injetável dos serviços de texto que o `ConfigurationEditing` e o
+// `JSONEditingService` usam.
+//
+// O teste de configuração monta, no `instantiationService`, o `TestTextFileService` (herdeiro do `TextFileService`
+// completo) e o `TextModelResolverService` (que resolve o modelo de texto de um arquivo pelo `ModelService`), e deixa o
+// `WorkspaceService` criar o `ConfigurationEditing` por ele. Nenhum dos dois (nem o `ITextModelService`, nem o
+// `ITextFileService`) foi portado; a produção os lê pelo trait `ConfigurationEditingServices`, e este módulo o
+// implementa sobre o `FileService` real, observando só o que o teste observa:
+// - **Modelo de texto.** [`TestTextModel`] guarda o conteúdo lido do arquivo e aplica as edições em offsets UTF-16, como o
+//   `pushEditOperations` do original. As opções de indentação são as do `detectIndentation` do editor (padrão do
+//   `ModelService`: `insertSpaces` verdadeiro e `tabSize` 4, trocados pelo que o conteúdo usa quando há linhas
+//   indentadas).
+// - **Referência.** Cada `createModelReference` lê o arquivo de novo (o modelo do original é descartado quando a
+//   última referência é liberada, e as escritas do teste passam pela fila, uma por vez).
+// - **Salvar.** `save` grava o conteúdo do modelo com `FileService::write_file` (o `TextFileService.save` do original
+//   grava o modelo; a conferência de `etag` fica com o serviço de arquivos).
+// - **Notificações.** `notifyError` e `prompt` guardam as mensagens (`notifications`), `open*` guardam o que o usuário
+//   abriria (`opened`), e `enableAutoSaveAfterShortDelay` não tem efeito (é só uma dica de interface).
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use configuration_editing_doubles::{TestConfigurationEditingServices, TestTextModel, TestWorkspaceInstantiation};
+
+mod configuration_editing_doubles {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+    use std::rc::{Rc, Weak};
+
+    use je_base::async_::async_fn;
+    use je_base::buffer::VSBuffer;
+    use je_base::json_formatter::Edit;
+    use je_base::lifecycle::{self, DisposableRef};
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_platform::files::file_service::FileService;
+    use je_platform::uri_identity::uri_identity::IUriIdentityService;
+    use je_platform::user_data_profile::user_data_profile::IUserDataProfilesService;
+    use je_platform::workspace::IWorkspaceContextService;
+
+    use crate::services::configuration::browser::configuration_service::{WorkspaceInstantiation, WorkspaceService};
+    use crate::services::configuration::common::configuration::IWorkbenchConfigurationService;
+    use crate::services::configuration::common::configuration_editing::{
+        ConfigurationEditing, ConfigurationEditingModel, ConfigurationEditingServices, PromptAction,
+    };
+    use crate::services::configuration::common::json_editing::IJsonEditingService;
+    use crate::services::configuration::common::json_editing_service::JsonEditingService;
+    use crate::services::user_data_profile::user_data_profile::IUserDataProfileService;
+
+    /// A chave de um recurso no mapa de modelos vivos.
+    fn key_of(resource: &URI) -> String {
+        resource.to_string(false).to_string_lossy()
+    }
+
+    /// `detectIndentation` do editor, reduzido ao que muda `insertSpaces` e `tabSize`: o conteúdo indentado só com tabs
+    /// usa tabs, o indentado com espaços usa o menor recuo como `tabSize`, e sem recuo valem os padrões (espaços, 4).
+    fn detect_indentation(content: &str) -> (bool, usize) {
+        let (mut tabs, mut spaces, mut smallest_indent) = (0usize, 0usize, usize::MAX);
+        for line in content.lines() {
+            if line.starts_with('\t') {
+                tabs += 1;
+            } else if line.starts_with(' ') {
+                let indent = line.len() - line.trim_start_matches(' ').len();
+                if !line.trim().is_empty() {
+                    spaces += 1;
+                    smallest_indent = smallest_indent.min(indent);
+                }
+            }
+        }
+        if tabs > spaces {
+            (false, 4)
+        } else if spaces > 0 && smallest_indent != usize::MAX {
+            (true, smallest_indent)
+        } else {
+            (true, 4)
+        }
+    }
+
+    /// O modelo de texto resolvido de um arquivo (`IResolvedTextEditorModel.textEditorModel`).
+    pub struct TestTextModel {
+        uri: URI,
+        value: RefCell<String>,
+        insert_spaces: bool,
+        tab_size: usize,
+        dirty: Cell<bool>,
+        services: Weak<TestConfigurationEditingServices>,
+    }
+
+    impl ConfigurationEditingModel for TestTextModel {
+        fn uri(&self) -> URI {
+            self.uri.clone()
+        }
+
+        fn get_value(&self) -> String {
+            self.value.borrow().clone()
+        }
+
+        fn insert_spaces(&self) -> bool {
+            self.insert_spaces
+        }
+
+        fn tab_size(&self) -> usize {
+            self.tab_size
+        }
+
+        fn get_eol(&self) -> String {
+            "\n".to_owned()
+        }
+
+        fn apply_edit(&self, edit: &Edit) -> bool {
+            let units: Vec<u16> = self.value.borrow().encode_utf16().collect();
+            let start = edit.offset.min(units.len());
+            let end = (edit.offset + edit.length).min(units.len());
+            if edit.content.units() == &units[start..end] {
+                return false;
+            }
+            let mut edited: Vec<u16> = units[..start].to_vec();
+            edited.extend_from_slice(edit.content.units());
+            edited.extend_from_slice(&units[end..]);
+            *self.value.borrow_mut() = String::from_utf16_lossy(&edited);
+            self.dirty.set(true);
+            true
+        }
+
+        fn dispose(&self) {
+            if let Some(services) = self.services.upgrade() {
+                services.models.borrow_mut().remove(&key_of(&self.uri));
+            }
+        }
+    }
+
+    /// O `TestTextFileService` + `TextModelResolverService` + `INotificationService` + `IPreferencesService` +
+    /// `IEditorService` + `IFilesConfigurationService` que a escrita de configuração usa (ver a nota do módulo).
+    pub struct TestConfigurationEditingServices {
+        this: Weak<Self>,
+        file_service: Rc<FileService>,
+        models: RefCell<HashMap<String, Rc<TestTextModel>>>,
+        /// As mensagens de `notificationService.error` e `notificationService.prompt`.
+        pub notifications: RefCell<Vec<String>>,
+        /// O que o usuário abriria: `openUserSettings`, `openRemoteSettings`, `openWorkspaceSettings`, `openFolderSettings`
+        /// (com a pasta) e `openEditor` (com o recurso).
+        pub opened: RefCell<Vec<String>>,
+    }
+
+    impl TestConfigurationEditingServices {
+        pub fn new(file_service: Rc<FileService>) -> Rc<Self> {
+            Rc::new_cyclic(|this| Self {
+                this: this.clone(),
+                file_service,
+                models: RefCell::new(HashMap::new()),
+                notifications: RefCell::new(Vec::new()),
+                opened: RefCell::new(Vec::new()),
+            })
+        }
+
+        fn rc(&self) -> Rc<Self> {
+            self.this.upgrade().expect("o serviço está vivo enquanto é usado")
+        }
+    }
+
+    impl ConfigurationEditingServices for TestConfigurationEditingServices {
+        fn create_model_reference(&self, resource: &URI) -> Promise<Rc<dyn ConfigurationEditingModel>> {
+            let (this, resource) = (self.rc(), resource.clone());
+            async_fn(async move {
+                let content = this.file_service.read_file(&resource, None, None).await?.value.to_string();
+                let (insert_spaces, tab_size) = detect_indentation(&content);
+                let model = Rc::new(TestTextModel {
+                    uri: resource.clone(),
+                    value: RefCell::new(content),
+                    insert_spaces,
+                    tab_size,
+                    dirty: Cell::new(false),
+                    services: Rc::downgrade(&this),
+                });
+                this.models.borrow_mut().insert(key_of(&resource), model.clone());
+                Ok(model as Rc<dyn ConfigurationEditingModel>)
+            })
+        }
+
+        fn is_dirty(&self, resource: &URI) -> bool {
+            self.models.borrow().get(&key_of(resource)).is_some_and(|model| model.dirty.get())
+        }
+
+        fn save(&self, resource: &URI) -> Promise<()> {
+            let (this, resource) = (self.rc(), resource.clone());
+            async_fn(async move {
+                let model = this.models.borrow().get(&key_of(&resource)).cloned();
+                if let Some(model) = model {
+                    let content = model.get_value();
+                    this.file_service.write_file(&resource, VSBuffer::from_string(&content).into(), None).await?;
+                    model.dirty.set(false);
+                }
+                Ok(())
+            })
+        }
+
+        fn revert(&self, resource: &URI) -> Promise<()> {
+            let (this, resource) = (self.rc(), resource.clone());
+            async_fn(async move {
+                let model = this.models.borrow().get(&key_of(&resource)).cloned();
+                if let Some(model) = model {
+                    let content = this.file_service.read_file(&resource, None, None).await?.value.to_string();
+                    *model.value.borrow_mut() = content;
+                    model.dirty.set(false);
+                }
+                Ok(())
+            })
+        }
+
+        fn write(&self, resource: &URI, content: &str) -> Promise<()> {
+            let (this, resource, content) = (self.rc(), resource.clone(), content.to_owned());
+            async_fn(async move {
+                this.file_service.write_file(&resource, VSBuffer::from_string(&content).into(), None).await?;
+                Ok(())
+            })
+        }
+
+        fn notify_error(&self, message: &str) {
+            self.notifications.borrow_mut().push(message.to_owned());
+        }
+
+        fn prompt_error(&self, message: &str, _actions: Vec<PromptAction>) {
+            self.notifications.borrow_mut().push(message.to_owned());
+        }
+
+        fn open_user_settings(&self) {
+            self.opened.borrow_mut().push("user".to_owned());
+        }
+
+        fn open_remote_settings(&self) {
+            self.opened.borrow_mut().push("remote".to_owned());
+        }
+
+        fn open_workspace_settings(&self) {
+            self.opened.borrow_mut().push("workspace".to_owned());
+        }
+
+        fn open_folder_settings(&self, folder_uri: &URI) {
+            self.opened.borrow_mut().push(format!("folder:{}", key_of(folder_uri)));
+        }
+
+        fn open_file(&self, resource: &URI) {
+            self.opened.borrow_mut().push(format!("file:{}", key_of(resource)));
+        }
+
+        fn enable_auto_save_after_short_delay(&self, _resource: &URI) -> DisposableRef {
+            lifecycle::none()
+        }
+    }
+
+    /// O `IInstantiationService` que o teste entrega ao `WorkspaceService.acquireInstantiationService`: cria o
+    /// `ConfigurationEditing` e entrega o `IJSONEditingService`, ambos sobre os mesmos [`TestConfigurationEditingServices`].
+    pub struct TestWorkspaceInstantiation {
+        workspace_service: Weak<WorkspaceService>,
+        user_data_profile_service: Rc<dyn IUserDataProfileService>,
+        user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
+        file_service: Rc<FileService>,
+        uri_identity_service: Rc<dyn IUriIdentityService>,
+        services: Rc<TestConfigurationEditingServices>,
+        json_editing_service: Rc<JsonEditingService>,
+    }
+
+    impl TestWorkspaceInstantiation {
+        /// `testObject.acquireInstantiationService(instantiationService)`: monta os dublês de texto sobre o `file_service`,
+        /// entrega-os ao serviço e devolve o [`TestConfigurationEditingServices`] (para o teste ler as notificações).
+        pub fn acquire(
+            workspace_service: &Rc<WorkspaceService>,
+            user_data_profile_service: Rc<dyn IUserDataProfileService>,
+            user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
+            file_service: Rc<FileService>,
+            uri_identity_service: Rc<dyn IUriIdentityService>,
+        ) -> Rc<TestConfigurationEditingServices> {
+            let services = TestConfigurationEditingServices::new(file_service.clone());
+            let json_editing_service = JsonEditingService::new(file_service.clone(), services.clone());
+            workspace_service.acquire_instantiation_service(Rc::new(Self {
+                workspace_service: Rc::downgrade(workspace_service),
+                user_data_profile_service,
+                user_data_profiles_service,
+                file_service,
+                uri_identity_service,
+                services: services.clone(),
+                json_editing_service,
+            }));
+            services
+        }
+    }
+
+    impl WorkspaceInstantiation for TestWorkspaceInstantiation {
+        fn create_configuration_editing(&self, remote_settings_resource: Option<URI>) -> Rc<ConfigurationEditing> {
+            let workspace_service = self.workspace_service.upgrade().expect("o serviço está vivo enquanto é usado");
+            let configuration_service: Rc<dyn IWorkbenchConfigurationService> = workspace_service.clone();
+            let context_service: Rc<dyn IWorkspaceContextService> = workspace_service;
+            ConfigurationEditing::new(
+                remote_settings_resource,
+                configuration_service,
+                context_service,
+                self.user_data_profile_service.clone(),
+                self.user_data_profiles_service.clone(),
+                self.file_service.clone(),
+                self.services.clone(),
+                self.uri_identity_service.clone(),
+            )
+        }
+
+        fn json_editing_service(&self) -> Rc<dyn IJsonEditingService> {
+            self.json_editing_service.clone()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `RemoteFileSystemProvider` e o `IRemoteAgentService` que os testes de configuração remota controlam.
+//
+// - **`RemoteFileSystemProvider`** (`workbenchTestServices.ts`) embrulha o provider em memória e troca o esquema e a
+//   autoridade das URIs: `vscode-remote://<autoridade>/...` vira `file:///...` na ida, e as mudanças voltam como
+//   `vscode-remote`. O trait [`FileSystemProvider`] do porte é um só (sem as interfaces de capacidade do original), então
+//   os métodos que o original chama com `!` (`copy`, `readFile`, `writeFile`, `open`, `close`, `read`, `write`,
+//   `readFileStream`) são repassados direto e o embrulhado decide se os suporta.
+// - **`getEnvironment: () => remoteEnvironmentPromise`.** O teste entrega ao serviço um `IRemoteAgentService` parcial cujo
+//   `getEnvironment` devolve uma promessa que ele resolve depois com `{ settingsPath }`. O [`TestDeferredRemoteAgentService`]
+//   é essa promessa. O `Partial<IRemoteAgentEnvironment>` do original só tem `settingsPath`: os outros campos do
+//   [`RemoteAgentEnvironment`] completo (que ninguém lê aqui) valem o `settingsPath` (os URIs) e valores neutros.
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use remote_doubles::{TestDeferredRemoteAgentService, TestRemoteFileSystemProvider};
+
+mod remote_doubles {
+    use std::rc::Rc;
+
+    use je_base::JsString;
+    use je_base::buffer::{VSBuffer, VSBufferReadableStream};
+    use je_base::cancellation::CancellationToken;
+    use je_base::event::Event;
+    use je_base::lifecycle::DisposableRef;
+    use je_base::network::schemas;
+    use je_base::platform::OperatingSystem;
+    use je_base::promise::{DeferredPromise, Promise};
+    use je_base::uri::{Field, URI, UriChange};
+    use je_platform::files::files::{
+        FileChange, FileDeleteOptions, FileOpenOptions, FileOverwriteOptions, FileReadStreamOptions, FileSystemProvider, FileSystemProviderCapabilities,
+        FileSystemProviderRef, FileType, FileWriteOptions, Stat, WatchOptions,
+    };
+    use je_platform::remote::remote_agent_environment::{RemoteAgentEnvironment, RemoteAgentProfiles};
+
+    use crate::services::remote::remote_agent_service::IRemoteAgentService;
+
+    /// `RemoteFileSystemProvider`.
+    pub struct TestRemoteFileSystemProvider {
+        wrapped_fsp: FileSystemProviderRef,
+        on_did_change_file: Event<Vec<FileChange>>,
+    }
+
+    impl TestRemoteFileSystemProvider {
+        /// `constructor(wrappedFsp, remoteAuthority)`.
+        pub fn new(wrapped_fsp: FileSystemProviderRef, remote_authority: &str) -> Rc<Self> {
+            let remote_authority = remote_authority.to_owned();
+            let on_did_change_file = wrapped_fsp.on_did_change_file().map(
+                move |changes| {
+                    changes
+                        .iter()
+                        .map(|change| FileChange {
+                            change_type: change.change_type,
+                            resource: change.resource.with(&UriChange {
+                                scheme: Field::Set(JsString::from(schemas::VSCODE_REMOTE)),
+                                authority: Field::Set(JsString::from(remote_authority.as_str())),
+                                ..UriChange::default()
+                            }),
+                            c_id: None,
+                        })
+                        .collect()
+                },
+                None,
+            );
+            Rc::new(Self { wrapped_fsp, on_did_change_file })
+        }
+
+        /// `resource.with({ scheme: Schemas.file, authority: '' })`.
+        fn to_file_resource(resource: &URI) -> URI {
+            resource.with(&UriChange { scheme: Field::Set(JsString::from(schemas::FILE)), authority: Field::Set(JsString::from("")), ..UriChange::default() })
+        }
+    }
+
+    impl FileSystemProvider for TestRemoteFileSystemProvider {
+        fn capabilities(&self) -> FileSystemProviderCapabilities {
+            self.wrapped_fsp.capabilities()
+        }
+
+        fn on_did_change_capabilities(&self) -> Event<()> {
+            self.wrapped_fsp.on_did_change_capabilities()
+        }
+
+        fn on_did_change_file(&self) -> Event<Vec<FileChange>> {
+            self.on_did_change_file.clone()
+        }
+
+        fn watch(&self, resource: &URI, opts: &WatchOptions) -> DisposableRef {
+            self.wrapped_fsp.watch(&Self::to_file_resource(resource), opts)
+        }
+
+        fn stat(&self, resource: &URI) -> Promise<Stat> {
+            self.wrapped_fsp.stat(&Self::to_file_resource(resource))
+        }
+
+        fn mkdir(&self, resource: &URI) -> Promise<()> {
+            self.wrapped_fsp.mkdir(&Self::to_file_resource(resource))
+        }
+
+        fn readdir(&self, resource: &URI) -> Promise<Vec<(String, FileType)>> {
+            self.wrapped_fsp.readdir(&Self::to_file_resource(resource))
+        }
+
+        fn delete(&self, resource: &URI, opts: &FileDeleteOptions) -> Promise<()> {
+            self.wrapped_fsp.delete(&Self::to_file_resource(resource), opts)
+        }
+
+        fn rename(&self, from: &URI, to: &URI, opts: &FileOverwriteOptions) -> Promise<()> {
+            self.wrapped_fsp.rename(&Self::to_file_resource(from), &Self::to_file_resource(to), opts)
+        }
+
+        fn copy(&self, from: &URI, to: &URI, opts: &FileOverwriteOptions) -> Promise<()> {
+            self.wrapped_fsp.copy(&Self::to_file_resource(from), &Self::to_file_resource(to), opts)
+        }
+
+        fn read_file(&self, resource: &URI, atomic: bool) -> Promise<VSBuffer> {
+            self.wrapped_fsp.read_file(&Self::to_file_resource(resource), atomic)
+        }
+
+        fn write_file(&self, resource: &URI, content: VSBuffer, opts: &FileWriteOptions) -> Promise<()> {
+            self.wrapped_fsp.write_file(&Self::to_file_resource(resource), content, opts)
+        }
+
+        fn open(&self, resource: &URI, opts: &FileOpenOptions) -> Promise<i64> {
+            self.wrapped_fsp.open(&Self::to_file_resource(resource), opts)
+        }
+
+        fn close(&self, fd: i64) -> Promise<()> {
+            self.wrapped_fsp.close(fd)
+        }
+
+        fn read(&self, fd: i64, pos: u64, data: &VSBuffer, offset: usize, length: usize) -> Promise<usize> {
+            self.wrapped_fsp.read(fd, pos, data, offset, length)
+        }
+
+        fn write(&self, fd: i64, pos: u64, data: &VSBuffer, offset: usize, length: usize) -> Promise<usize> {
+            self.wrapped_fsp.write(fd, pos, data, offset, length)
+        }
+
+        fn read_file_stream(&self, resource: &URI, opts: &FileReadStreamOptions, token: &CancellationToken) -> VSBufferReadableStream {
+            self.wrapped_fsp.read_file_stream(&Self::to_file_resource(resource), opts, token)
+        }
+    }
+
+    /// O `IRemoteAgentService` parcial `{ getEnvironment: () => remoteEnvironmentPromise }`.
+    pub struct TestDeferredRemoteAgentService {
+        environment: DeferredPromise<Option<RemoteAgentEnvironment>>,
+    }
+
+    impl TestDeferredRemoteAgentService {
+        pub fn new() -> Rc<Self> {
+            Rc::new(Self { environment: DeferredPromise::new() })
+        }
+
+        /// `resolveRemoteEnvironment()`: resolve a promessa com `{ settingsPath }`.
+        pub fn resolve(&self, settings_path: &URI) {
+            let _ = self.environment.complete(Some(RemoteAgentEnvironment {
+                pid: 0,
+                connection_token: String::new(),
+                app_root: settings_path.clone(),
+                exec_path: String::new(),
+                tmp_dir: settings_path.clone(),
+                settings_path: settings_path.clone(),
+                mcp_resource: settings_path.clone(),
+                logs_path: settings_path.clone(),
+                extension_host_logs_path: settings_path.clone(),
+                global_storage_home: settings_path.clone(),
+                workspace_storage_home: settings_path.clone(),
+                local_history_home: settings_path.clone(),
+                user_home: settings_path.clone(),
+                os: OperatingSystem::Linux,
+                arch: String::new(),
+                marks: Vec::new(),
+                use_host_proxy: false,
+                profiles: RemoteAgentProfiles { all: Vec::new(), home: settings_path.clone() },
+                is_unsupported_glibc: false,
+                reconnection_grace_time: None,
+            }));
+        }
+    }
+
+    impl IRemoteAgentService for TestDeferredRemoteAgentService {
+        fn get_environment(&self) -> Promise<Option<RemoteAgentEnvironment>> {
+            self.environment.promise.clone()
+        }
+
+        fn get_raw_environment(&self) -> Promise<Option<RemoteAgentEnvironment>> {
+            self.environment.promise.clone()
+        }
     }
 }
