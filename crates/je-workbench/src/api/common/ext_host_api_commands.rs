@@ -4,21 +4,21 @@
 //!
 //! Registrados aqui (cada um com o argumento, o resultado e a descrição do original):
 //! `vscode.executeDocumentHighlights`, `vscode.executeDocumentSymbolProvider`, `vscode.executeFormatDocumentProvider`,
-//! `vscode.executeFormatRangeProvider`, `vscode.executeFormatOnTypeProvider`, as oito consultas de localização
+//! `vscode.executeFormatRangeProvider`, `vscode.executeFormatOnTypeProvider`, `vscode.executeHoverProvider` e a experimental,
+//! `vscode.executeLinkProvider`, `vscode.executeCodeLensProvider`, `vscode.executeDocumentColorProvider`,
+//! `vscode.executeColorPresentationProvider`, as oito consultas de localização
 //! (`vscode.executeDefinitionProvider`, `TypeDefinition`, `Declaration`, `Implementation` e as quatro
 //! `vscode.experimental.execute*Provider_recursive`), `vscode.executeReferenceProvider` e a experimental,
 //! `vscode.executeSelectionRangeProvider`, `vscode.prepareRename`, `vscode.executeWorkspaceSymbolProvider`, `setContext` e
 //! `vscode.experimental.editSession.continue`.
 //!
 //! NÃO PORTADO (cada item pede um conversor ou um recurso que ainda não existe no porte; ficam por nome do comando do original):
-//! - `vscode.executeHoverProvider` e a experimental (`typeConverters.Hover.to`),
-//!   `vscode.executeDocumentRenameProvider` (o
+//! - `vscode.executeDocumentRenameProvider` (o
 //!   `WorkspaceEdit.to` recebe o `IWorkspaceEditDto` tipado e o resultado do comando é o `WorkspaceEdit` do editor),
-//!   `vscode.executeLinkProvider`, `vscode.provideDocumentSemanticTokensLegend`, `vscode.provideDocumentSemanticTokens`,
+//!   `vscode.provideDocumentSemanticTokensLegend`, `vscode.provideDocumentSemanticTokens`,
 //!   `vscode.provideDocumentRangeSemanticTokensLegend`, `vscode.provideDocumentRangeSemanticTokens`,
-//!   `vscode.executeCompletionItemProvider`, `vscode.executeSignatureHelpProvider`, `vscode.executeCodeLensProvider`,
-//!   `vscode.executeCodeActionProvider`, `vscode.executeDocumentColorProvider`, `vscode.executeColorPresentationProvider`,
-//!   `vscode.executeInlayHintProvider`, `vscode.executeFoldingRangeProvider`, `vscode.resolveNotebookContentProviders`,
+//!   `vscode.executeCompletionItemProvider`, `vscode.executeSignatureHelpProvider`,
+//!   `vscode.executeCodeActionProvider`, `vscode.executeInlayHintProvider`, `vscode.executeFoldingRangeProvider`, `vscode.resolveNotebookContentProviders`,
 //!   `vscode.executeInlineValueProvider`, `vscode.open`, `vscode.openWith`, `vscode.diff` (os três pedem
 //!   `typeConverters.TextEditorOpenOptions`), `vscode.changes`, as seis de hierarquia de chamadas e de tipos
 //!   (`prepareCallHierarchy`, `provideIncomingCalls`, `provideOutgoingCalls`, `prepareTypeHierarchy`, `provideSupertypes`,
@@ -40,7 +40,7 @@
 //!   DTO vira o `SymbolKind` da API por [`SymbolKind::from_value`](types::SymbolKind::from_value).
 //! - `ExtHostApiCommands.register` devolve [`Result`], porque `registerApiCommand` lança no original quando o id já existe.
 
-use je_base::dynamic::Dynamic;
+use je_base::dynamic::{Dynamic, Truthy};
 use je_base::errors::Error;
 use je_base::uri::URI;
 use je_editor::code_action::languages::TextEdit as EditorTextEdit;
@@ -48,7 +48,9 @@ use je_editor::language_providers::{DocumentHighlight as EditorDocumentHighlight
 use je_editor::model::EndOfLineSequence;
 
 use super::ext_host_commands::{ApiCommand, ApiCommandArgument, ApiCommandResult, CommandsConverter, ExtHostCommands};
-use super::ext_host_type_converters::{self as type_converters, Location, LocationDto};
+use super::ext_host_language_features_converters::{Color as ColorConverter, ColorPresentation as ColorPresentationConverter, Hover as HoverConverter};
+use super::ext_host_protocol::{ICommandDto, IColorPresentationDto};
+use super::ext_host_type_converters::{self as type_converters, ICommandsConverter, Location, LocationDto};
 use super::ext_host_types as types;
 use super::ext_host_values::{ApiValue, is_instance_of, tag};
 
@@ -124,8 +126,8 @@ fn document_highlight_to(value: &Dynamic) -> Result<Dynamic, Error> {
     Ok(tag(Dynamic::object([("range", highlight.range.to_dynamic()), ("kind", Dynamic::from(highlight.kind.value()))]), "DocumentHighlight"))
 }
 
-/// `typeConverters.TextEdit.to(edit)`.
-fn text_edit_to(value: &Dynamic) -> Result<Dynamic, Error> {
+/// A leitura do `languages.TextEdit` do RPC (`{ range, text, eol? }`).
+fn text_edit_from_dto(value: &Dynamic) -> Result<EditorTextEdit, Error> {
     let range = type_converters::Range::from_dto(&value.get_str("range")).ok_or_else(|| Error::type_error("expected an IRange"))?;
     let text = match value.get_str("text") {
         Dynamic::String(text) => text.to_string_lossy(),
@@ -135,8 +137,70 @@ fn text_edit_to(value: &Dynamic) -> Result<Dynamic, Error> {
         Dynamic::Number(eol) => Some(if eol as i32 == 1 { EndOfLineSequence::CrLf } else { EndOfLineSequence::Lf }),
         _ => None,
     };
-    let edit = EditorTextEdit { range, text, eol, insert_as_snippet: None, keep_whitespace: None };
-    Ok(type_converters::TextEdit::to(&edit)?.to_dynamic())
+    Ok(EditorTextEdit { range, text, eol, insert_as_snippet: None, keep_whitespace: None })
+}
+
+/// `typeConverters.TextEdit.to(edit)`.
+fn text_edit_to(value: &Dynamic) -> Result<Dynamic, Error> {
+    Ok(type_converters::TextEdit::to(&text_edit_from_dto(value)?)?.to_dynamic())
+}
+
+/// `new types.ColorInformation(typeConverters.Range.to(ci.range), typeConverters.Color.to(ci.color))` como valor (objeto marcado
+/// `ColorInformation`).
+fn color_information_to(value: &Dynamic) -> Result<Dynamic, Error> {
+    let range = range_to_api(&value.get_str("range"))?;
+    let channels = match value.get_str("color") {
+        Dynamic::Array(channels) if channels.len() == 4 => channels.to_vec(),
+        _ => return Err(Error::type_error("expected a color of four channels")),
+    };
+    let channel = |index: usize| match &channels[index] {
+        Dynamic::Number(channel) => *channel,
+        _ => f64::NAN,
+    };
+    let color = ColorConverter::to([channel(0), channel(1), channel(2), channel(3)]);
+    let information = types::ColorInformation::new(range, color)?;
+    Ok(tag(Dynamic::object([("range", information.range.to_dynamic()), ("color", information.color.to_dynamic())]), "ColorInformation"))
+}
+
+/// O resultado de `vscode.executeDocumentColorProvider`: `if (result) { return result.map(...); } return [];`.
+fn color_informations_to(value: &Dynamic, _api_args: &[Dynamic], _converter: &CommandsConverter) -> Result<Dynamic, Error> {
+    match value {
+        Dynamic::Array(items) => items.to_vec().iter().map(color_information_to).collect::<Result<Vec<_>, _>>().map(|colors| Dynamic::array(colors)),
+        value if !value.is_truthy() => Ok(Dynamic::array(Vec::<Dynamic>::new())),
+        _ => Err(Error::type_error("result.map is not a function")),
+    }
+}
+
+/// `typeConverters.ColorPresentation.to(presentation)` como valor (objeto marcado `ColorPresentation`).
+fn color_presentation_to(value: &Dynamic) -> Result<Dynamic, Error> {
+    let label = match value.get_str("label") {
+        Dynamic::String(label) => label.to_string_lossy(),
+        _ => String::new(),
+    };
+    let text_edit = match value.get_str("textEdit") {
+        edit if edit.is_truthy() => Some(text_edit_from_dto(&edit)?),
+        _ => None,
+    };
+    let additional_text_edits = match value.get_str("additionalTextEdits") {
+        Dynamic::Array(edits) => Some(edits.to_vec().iter().map(text_edit_from_dto).collect::<Result<Vec<_>, _>>()?),
+        _ => None,
+    };
+    let presentation = ColorPresentationConverter::to(&IColorPresentationDto { label, text_edit, additional_text_edits })?;
+    let entries = [
+        ("label", Some(Dynamic::string(&presentation.label))),
+        ("textEdit", presentation.text_edit.as_ref().map(ApiValue::to_dynamic)),
+        ("additionalTextEdits", presentation.additional_text_edits.as_ref().map(|edits| Dynamic::array(edits.iter().map(ApiValue::to_dynamic)))),
+    ];
+    Ok(tag(Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item)))), "ColorPresentation"))
+}
+
+/// O resultado de `vscode.executeColorPresentationProvider`: `if (result) { return result.map(...); } return [];`.
+fn color_presentations_to(value: &Dynamic, _api_args: &[Dynamic], _converter: &CommandsConverter) -> Result<Dynamic, Error> {
+    match value {
+        Dynamic::Array(items) => items.to_vec().iter().map(color_presentation_to).collect::<Result<Vec<_>, _>>().map(|presentations| Dynamic::array(presentations)),
+        value if !value.is_truthy() => Ok(Dynamic::array(Vec::<Dynamic>::new())),
+        _ => Err(Error::type_error("result.map is not a function")),
+    }
 }
 
 /// `MergedInfo.to(symbol)`: o `SymbolInformation` que também é um `DocumentSymbol` (ver as divergências do módulo).
@@ -258,6 +322,67 @@ fn workspace_symbols_to(value: &Dynamic, _api_args: &[Dynamic], _converter: &Com
     }
 }
 
+/// `typeConverters.Hover.to(info)`: o `vscode.VerboseHover` como valor (objeto marcado `VerboseHover`, só com as propriedades
+/// definidas).
+fn hover_to(value: &Dynamic) -> Result<Dynamic, Error> {
+    let info = type_converters::Hover::from_dto(value).ok_or_else(|| Error::type_error("expected a languages.Hover"))?;
+    let hover = HoverConverter::to(&info)?;
+    let contents = hover.hover.contents.iter().map(|content| match content {
+        types::MarkedString::Text(text) => Dynamic::string(text),
+        types::MarkedString::Markdown(markdown) => markdown.to_dynamic(),
+        types::MarkedString::Code { language, value } => Dynamic::object([("language", Dynamic::string(language)), ("value", Dynamic::string(value))]),
+    });
+    let entries = [
+        ("contents", Some(Dynamic::array(contents))),
+        ("range", hover.hover.range.as_ref().map(ApiValue::to_dynamic)),
+        ("canIncreaseVerbosity", hover.can_increase_verbosity.map(Dynamic::Bool)),
+        ("canDecreaseVerbosity", hover.can_decrease_verbosity.map(Dynamic::Bool)),
+    ];
+    Ok(tag(Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item)))), "VerboseHover"))
+}
+
+/// `typeConverters.DocumentLink.to(link)`: o `vscode.DocumentLink` como valor (objeto marcado `DocumentLink`, só com as
+/// propriedades definidas).
+fn document_link_to(value: &Dynamic) -> Result<Dynamic, Error> {
+    let info = type_converters::DocumentLink::from_dto(value).ok_or_else(|| Error::type_error("expected a languages.ILink"))?;
+    let link = type_converters::DocumentLink::to(&info)?;
+    let entries = [
+        ("range", Some(link.range.to_dynamic())),
+        ("target", link.target.as_ref().map(ApiValue::to_dynamic)),
+        ("tooltip", link.tooltip.as_deref().map(Dynamic::string)),
+    ];
+    Ok(tag(Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item)))), "DocumentLink"))
+}
+
+/// O resultado de `vscode.executeLinkProvider`: `value.map(typeConverters.DocumentLink.to)`.
+fn document_links_to(value: &Dynamic, _api_args: &[Dynamic], _converter: &CommandsConverter) -> Result<Dynamic, Error> {
+    match value {
+        Dynamic::Array(items) => items.to_vec().iter().map(document_link_to).collect::<Result<Vec<_>, _>>().map(|links| Dynamic::array(links)),
+        _ => Err(Error::type_error("value.map is not a function")),
+    }
+}
+
+/// `new types.CodeLens(typeConverters.Range.to(item.range), item.command && converter.fromInternal(item.command))` como valor
+/// (objeto marcado `CodeLens`, só com as propriedades definidas).
+fn code_lens_to(value: &Dynamic, converter: &CommandsConverter) -> Result<Dynamic, Error> {
+    let item = type_converters::CodeLens::from_dto(value).ok_or_else(|| Error::type_error("expected a languages.CodeLens"))?;
+    let range = type_converters::Range::to(&item.range)?;
+    let command = item.command.and_then(|command| {
+        converter.from_internal(&ICommandDto { ident: None, id: command.id, title: command.title, tooltip: command.tooltip, arguments: command.arguments })
+    });
+    let lens = types::CodeLens::new(range, command);
+    let entries = [("range", Some(lens.range.to_dynamic())), ("command", lens.command.as_ref().map(types::Command::to_dynamic))];
+    Ok(tag(Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item)))), "CodeLens"))
+}
+
+/// O resultado de `vscode.executeCodeLensProvider`: `tryMapWith(item => new types.CodeLens(...))(value)`.
+fn code_lenses_to(value: &Dynamic, _api_args: &[Dynamic], converter: &CommandsConverter) -> Result<Dynamic, Error> {
+    match value {
+        Dynamic::Array(items) => items.to_vec().iter().map(|item| code_lens_to(item, converter)).collect::<Result<Vec<_>, _>>().map(|lenses| Dynamic::array(lenses)),
+        _ => Ok(Dynamic::Undefined),
+    }
+}
+
 /// `new ApiCommandArgument('options', 'Formatting options', _ => true, v => v)`.
 fn formatting_options_argument() -> ApiCommandArgument {
     ApiCommandArgument::new("options", "Formatting options", |_| true, |value| Ok(value.clone()))
@@ -354,6 +479,17 @@ fn new_commands() -> Vec<ApiCommand> {
         references_result(),
     ));
 
+    // -- hover
+    let hover_result = || ApiCommandResult::new("A promise that resolves to an array of Hover-instances.", try_map_with(hover_to));
+    commands.push(ApiCommand::new("vscode.executeHoverProvider", "_executeHoverProvider", "Execute all hover providers.", uri_and_position(), hover_result()));
+    commands.push(ApiCommand::new(
+        "vscode.experimental.executeHoverProvider_recursive",
+        "_executeHoverProvider_recursive",
+        "Execute all hover providers.",
+        uri_and_position(),
+        hover_result(),
+    ));
+
     // -- selection range
     commands.push(ApiCommand::new(
         "vscode.executeSelectionRangeProvider",
@@ -373,6 +509,59 @@ fn new_commands() -> Vec<ApiCommand> {
         "Execute the prepareRename of rename provider.",
         uri_and_position(),
         ApiCommandResult::new("A promise that resolves to a range and placeholder text.", prepare_rename_to),
+    ));
+
+    // -- code lens
+    commands.push(ApiCommand::new(
+        "vscode.executeCodeLensProvider",
+        "_executeCodeLensProvider",
+        "Execute code lens provider.",
+        vec![
+            ApiCommandArgument::uri(),
+            ApiCommandArgument::number()
+                .with(Some("itemResolveCount"), Some("Number of lenses that should be resolved and returned. Will only return resolved lenses, will impact performance)"))
+                .optional(),
+        ],
+        ApiCommandResult::new("A promise that resolves to an array of CodeLens-instances.", code_lenses_to),
+    ));
+
+    // -- links
+    commands.push(ApiCommand::new(
+        "vscode.executeLinkProvider",
+        "_executeLinkProvider",
+        "Execute document link provider.",
+        vec![
+            ApiCommandArgument::uri(),
+            ApiCommandArgument::number().with(Some("linkResolveCount"), Some("Number of links that should be resolved, only when links are unresolved.")).optional(),
+        ],
+        ApiCommandResult::new("A promise that resolves to an array of DocumentLink-instances.", document_links_to),
+    ));
+
+    // -- colors
+    commands.push(ApiCommand::new(
+        "vscode.executeDocumentColorProvider",
+        "_executeDocumentColorProvider",
+        "Execute document color provider.",
+        vec![ApiCommandArgument::uri()],
+        ApiCommandResult::new("A promise that resolves to an array of ColorInformation objects.", color_informations_to),
+    ));
+    commands.push(ApiCommand::new(
+        "vscode.executeColorPresentationProvider",
+        "_executeColorPresentationProvider",
+        "Execute color presentation provider.",
+        vec![
+            ApiCommandArgument::new(
+                "color",
+                "The color to show and insert",
+                |value| is_instance_of(value, "Color"),
+                |value| Ok(Dynamic::array(ColorConverter::from(&types::Color::from_dynamic(value)?).map(Dynamic::Number))),
+            ),
+            ApiCommandArgument::new("context", "Context object with uri and range", |_| true, |value| {
+                let range = type_converters::Range::from(&types::Range::from_dynamic(&value.get_str("range"))?);
+                Ok(Dynamic::object([("uri", value.get_str("uri")), ("range", type_converters::Range::to_dto(&range))]))
+            }),
+        ],
+        ApiCommandResult::new("A promise that resolves to an array of ColorPresentation objects.", color_presentations_to),
     ));
 
     // -- symbol search

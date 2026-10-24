@@ -4,7 +4,10 @@
 //!
 //! - [`geometry`]: `Selection`, `Range`, `Position`, `Location`/`location` e `NotebookRange`.
 //! - [`markers`]: `DiagnosticTag`, `DiagnosticSeverity`, `DiagnosticRelatedInformation`, `Diagnostic`.
+//! - [`hover`]: `Hover` (só o DTO do comando; o `to` mora em `ext_host_language_features_converters`).
 //! - [`markup`]: `MarkdownString`.
+//! - [`code_lens`]: `CodeLens` (só o DTO; a conversão para a API mora no comando `vscode.executeCodeLensProvider`).
+//! - [`document_link`]: `DocumentLink` (só `to`).
 //! - [`edits`]: `EndOfLine`, `TextEdit`.
 //! - [`symbols`]: `SymbolKind`, `SymbolTag`, `DocumentSymbol`, `DocumentHighlight`, `CallHierarchyItem`,
 //!   `CallHierarchyIncomingCall`, `CallHierarchyOutgoingCall`, `TypeHierarchyItem`.
@@ -28,7 +31,7 @@
 //! [`geometry`]).
 //!
 //! AINDA NÃO PORTADO (cada item pede classes ou DTOs que ainda não existem no porte; ficam por nome do
-//! `namespace` do original): `TokenType`, `TabSelector`, `WorkspaceSymbol`, `DefinitionLink`, `Hover`,
+//! `namespace` do original): `TokenType`, `TabSelector`, `WorkspaceSymbol`, `DefinitionLink`,
 //! `EvaluatableExpression`, `InlineValue`, `InlineValueContext`, `MultiDocumentHighlight`,
 //! `CompletionTriggerKind`, `CompletionContext`, `CompletionItemTag`, `CompletionCommand`,
 //! `CompletionItemKind`, `CompletionItem`, as demais famílias de linguagem (assinatura, lente, ação de
@@ -49,8 +52,11 @@ use super::ext_host_protocol::ICommandDto;
 use super::ext_host_types::{Command, ViewColumn as ApiViewColumn};
 
 pub mod chat;
+pub mod code_lens;
+pub mod document_link;
 pub mod edits;
 pub mod geometry;
+pub mod hover;
 pub mod icon_path;
 pub mod language_selector;
 pub mod markdown_links;
@@ -68,8 +74,11 @@ pub use chat::{
     ChatAgentResult, ChatLanguageModelToolReference, ChatRequestModeInstructions, ChatResponseVoiceProgressPart, ExtHostChatResponseVoiceProgressPart,
     IChatAgentResult, IChatRequestModeInstructions,
 };
+pub use code_lens::CodeLens;
+pub use document_link::DocumentLink;
 pub use edits::{EndOfLine, TextEdit};
 pub use geometry::{CellRange, Location, LocationDto, NotebookRange, Position, Range, Selection};
+pub use hover::Hover;
 pub use icon_path::{IconPath, IconPathInput, UriOrPath};
 pub use language_selector::{DocumentFilterInput, DocumentSelectorInput, LanguageSelector};
 pub use markers::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag};

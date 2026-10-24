@@ -10,14 +10,17 @@
 //! - `_executeDocumentSymbolProvider` (`documentSymbols/browser/documentSymbols.ts`).
 //! - `_executeFormatDocumentProvider`, `_executeFormatRangeProvider` e `_executeFormatOnTypeProvider`
 //!   (`format/browser/format.ts`).
+//! - `_executeHoverProvider` e `_executeHoverProvider_recursive` (`hover/browser/getHover.ts`).
+//! - `_executeLinkProvider` (`links/browser/getLinks.ts`).
+//! - `_executeCodeLensProvider` (`codelens/browser/codelens.ts`).
+//! - `_executeDocumentColorProvider` e `_executeColorPresentationProvider` (`colorPicker/browser/colorPickerContribution.ts`).
 //! - `_executePrepareRename` (`rename/browser/rename.ts`).
 //! - `_executeSelectionRangeProvider` (`smartSelect/browser/smartSelect.ts`).
 //! - `_executeWorkspaceSymbolProvider` (`workbench/contrib/search/common/search.ts`).
 //!
-//! NÃO portados (ver a lista de `vscode.execute*` não portados em `ext_host_api_commands`): `_executeHoverProvider`, as
-//! variantes `_recursive` de hover, `_executeDocumentRenameProvider`,
-//! `_executeLinkProvider`, `_executeCompletionItemProvider`, `_executeSignatureHelpProvider`, `_executeCodeLensProvider`,
-//! `_executeCodeActionProvider`, `_executeDocumentColorProvider`, `_executeColorPresentationProvider`,
+//! NÃO portados (ver a lista de `vscode.execute*` não portados em `ext_host_api_commands`): `_executeDocumentRenameProvider`,
+//! `_executeCompletionItemProvider`, `_executeSignatureHelpProvider`,
+//! `_executeCodeActionProvider`,
 //! `_executeInlayHintProvider`, `_executeFoldingRangeProvider`, `_executeInlineValueProvider`, `_executePrepareCallHierarchy`
 //! e as demais.
 //!
@@ -38,29 +41,40 @@
 //! - `ensureFormattingOptions(options, reference)` lê as opções do modelo quando `options` não tem `tabSize` numérico e
 //!   `insertSpaces` booleano (`isFormattingOptions`).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::async_::async_fn;
 use je_base::cancellation::CancellationToken;
-use je_base::dynamic::Dynamic;
-use je_base::errors::Error;
+use je_base::dynamic::{Dynamic, Truthy};
+use je_base::errors::{self, Error};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::promise::Promise;
+use je_base::runtime::set_timeout;
 use je_base::types::assert_type;
 use je_base::uri::URI;
 use je_editor::code_action::languages::TextEdit as EditorTextEdit;
-use je_editor::editor_extensions::{I_TEXT_MODEL_SERVICE, position_from_dynamic, register_model_and_position_command};
+use je_editor::codelens::get_code_lens_model;
+use je_editor::color::{ColorPresentationsCollector, DefaultColorDecoratorsEnablement, ExtColorDataCollector, find_color_data};
+use je_editor::editor_extensions::{I_TEXT_MODEL_SERVICE, ServicesAccessor, position_from_dynamic, register_model_and_position_command};
 use je_editor::editor_worker::{I_EDITOR_WORKER_SERVICE, IEditorWorkerService};
 use je_editor::format::{
     get_document_formatting_edits_until_result, get_document_range_formatting_edits_until_result, get_on_type_formatting_edits,
 };
+use je_editor::get_links::get_links;
 use je_editor::goto_symbol::{get_location_links_at_position, get_references_at_position};
-use je_editor::language_features_service::{FormattingOptions, LanguageFeaturesService, LocationLink, LocationLinkProvider, Registry, RenameLocation};
+use je_editor::hover::get_hover::get_hovers_promise;
+use je_editor::language_features_service::{
+    CodeLens, FormattingOptions, IColor, IColorInformation, IColorPresentation, LanguageFeaturesService, LocationLink, LocationLinkProvider, Registry,
+    RenameLocation,
+};
 use je_editor::language_providers::{DocumentHighlight, DocumentSymbol};
 use je_editor::outline_model::I_OUTLINE_MODEL_SERVICE;
 use je_editor::position::Position;
 use je_editor::range::Range;
 use je_editor::rename::prepare_rename;
+use je_editor::services_model::I_MODEL_SERVICE;
 use je_editor::smart_select::{SelectionRangesOptions, provide_selection_ranges};
 use je_editor::text_model::TextModel;
 use je_editor::word_highlighter::get_occurrences_at_position;
@@ -72,8 +86,11 @@ use je_platform::resources::ext_uri;
 
 use crate::api::browser::main_thread_commands::promise_to_dynamic;
 use crate::api::browser::main_thread_language_features::registries::{IWorkspaceSymbol, get_workspace_symbols};
-use crate::api::common::ext_host_type_converters::{Location as LocationConverter, Range as RangeConverter};
-use crate::api::common::ext_host_values::ApiValue;
+use crate::api::common::ext_host_type_converters::{
+    CodeLens as CodeLensConverter, DocumentLink as DocumentLinkConverter, Hover as HoverConverter, Location as LocationConverter, Range as RangeConverter,
+};
+use crate::api::common::ext_host_types::illegal_argument;
+use crate::api::common::ext_host_values::{ApiValue, is_instance_of};
 
 /// `ILanguageFeaturesService`.
 pub const I_LANGUAGE_FEATURES_SERVICE: ServiceId<LanguageFeaturesService> = ServiceId::new("languageFeaturesService");
@@ -237,6 +254,200 @@ fn register_document_highlights_command() {
             }))
         }),
     );
+}
+
+// ---- getHover.ts --------------------------------------------------------------------------------------------
+
+/// `registerModelAndPositionCommand('_executeHoverProvider' | '_executeHoverProvider_recursive', ...)`.
+fn register_hover_commands() {
+    for recursive in [false, true] {
+        let id = format!("_executeHoverProvider{}", if recursive { "_recursive" } else { "" });
+        register_model_and_position_command(
+            &id,
+            Rc::new(move |accessor, model, position, _args| {
+                let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+                let hovers = get_hovers_promise(&language_features_service.hover_provider, model, position, &CancellationToken::None, recursive);
+                promise_to_dynamic(hovers.then(|hovers| Dynamic::array(hovers.iter().map(HoverConverter::to_dto))))
+            }),
+        );
+    }
+}
+
+// ---- getLinks.ts --------------------------------------------------------------------------------------------
+
+/// `CommandsRegistry.registerCommand('_executeLinkProvider', ...)`.
+fn register_link_provider_command() {
+    let handler: CommandHandler = Rc::new(|accessor, args| {
+        let resource = resource_argument(args);
+        // `if (typeof resolveCount !== 'number') resolveCount = 0`
+        let resolve_count = match args.get(1) {
+            Some(Dynamic::Number(count)) => *count,
+            _ => 0.0,
+        };
+
+        let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+        let Some(model) = accessor.get(I_MODEL_SERVICE).get_model(&resource) else {
+            return promise_to_dynamic(Promise::resolved(Dynamic::array(Vec::<Dynamic>::new())));
+        };
+        promise_to_dynamic(async_fn(async move {
+            let list = get_links(&language_features_service.link_provider, &model, &CancellationToken::None).await?;
+
+            // resolve links
+            let links = list.links();
+            for link in links.iter().take(resolve_count.min(links.len() as f64).max(0.0).ceil() as usize) {
+                link.resolve(&CancellationToken::None).await?;
+            }
+
+            let result = Dynamic::array(links.iter().map(|link| DocumentLinkConverter::to_dto(&link.to_json())));
+            list.dispose();
+            Ok(result)
+        }))
+    });
+    commands_registry().register_command_handler("_executeLinkProvider", Some(handler));
+}
+
+// ---- codelens.ts --------------------------------------------------------------------------------------------
+
+/// `CommandsRegistry.registerCommand('_executeCodeLensProvider', ...)`.
+fn register_code_lens_command() {
+    let handler: CommandHandler = Rc::new(|accessor, args| {
+        let resource = resource_argument(args);
+        let item_resolve_count = args.get(1).cloned().unwrap_or(Dynamic::Undefined);
+        assert_type(&(matches!(item_resolve_count, Dynamic::Number(_)) || !item_resolve_count.is_truthy()), None);
+        // `itemResolveCount === undefined || itemResolveCount === null` é `None`; o resto é o número (um falso que não é
+        // número, como `false` ou `''`, vale `0` no `itemResolveCount-- > 0`)
+        let mut item_resolve_count = match item_resolve_count {
+            Dynamic::Undefined | Dynamic::Null => None,
+            Dynamic::Number(count) => Some(count),
+            _ => Some(0.0),
+        };
+
+        let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+        let Some(model) = accessor.get(I_MODEL_SERVICE).get_model(&resource) else {
+            errors::throw(illegal_argument(None));
+        };
+
+        let result: Rc<RefCell<Vec<CodeLens>>> = Rc::default();
+        let disposables = DisposableStore::new();
+        let disposables_later = Rc::clone(&disposables);
+        let promise = async_fn(async move {
+            let value = get_code_lens_model(&language_features_service.code_lens_provider, &model, &CancellationToken::None).await?;
+
+            disposables.add(Rc::clone(&value) as DisposableRef);
+            let mut resolve: Vec<Promise<()>> = Vec::new();
+
+            for item in &value.lenses {
+                if item_resolve_count.is_none() || item.symbol.command.is_some() {
+                    result.borrow_mut().push(item.symbol.clone());
+                } else {
+                    let remaining = item_resolve_count.unwrap_or_default();
+                    item_resolve_count = Some(remaining - 1.0);
+                    if remaining > 0.0 && item.provider.has_resolve_code_lens() {
+                        let (result, symbol) = (Rc::clone(&result), item.symbol.clone());
+                        resolve.push(
+                            item.provider
+                                .resolve_code_lens(&model, &item.symbol, &CancellationToken::None)
+                                .then(move |resolved| result.borrow_mut().push(resolved.unwrap_or(symbol))),
+                        );
+                    }
+                }
+            }
+
+            Promise::all(resolve).await?;
+            let lenses = result.borrow();
+            Ok(Dynamic::array(lenses.iter().map(CodeLensConverter::to_dto)))
+        })
+        .finally(move || {
+            // make sure to return results, then (on next tick) dispose the results
+            set_timeout(move || disposables_later.dispose(), 100);
+        });
+        promise_to_dynamic(promise)
+    });
+    commands_registry().register_command_handler("_executeCodeLensProvider", Some(handler));
+}
+
+// ---- colorPickerContribution.ts e color.ts ------------------------------------------------------------------
+
+/// `_setupColorCommand(accessor, resource)`: o modelo, o registro de provedores e o `editor.defaultColorDecorators` do recurso.
+fn setup_color_command(accessor: &ServicesAccessor, resource: &URI) -> (Rc<TextModel>, Rc<LanguageFeaturesService>, DefaultColorDecoratorsEnablement) {
+    let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+    let Some(model) = accessor.get(I_MODEL_SERVICE).get_model(resource) else {
+        errors::throw(illegal_argument(None));
+    };
+    let overrides = ConfigurationOverrides { override_identifier: None, resource: Some(resource.clone()) };
+    // um valor ausente ou desconhecido não é `'always'` nem `'never'`: vale como `'auto'` nas duas comparações de `_findColorData`
+    let enablement = match accessor.get(I_CONFIGURATION_SERVICE).get_value(Some("editor.defaultColorDecorators"), Some(&overrides)) {
+        Dynamic::String(value) if value.to_string_lossy() == "always" => DefaultColorDecoratorsEnablement::Always,
+        Dynamic::String(value) if value.to_string_lossy() == "never" => DefaultColorDecoratorsEnablement::Never,
+        _ => DefaultColorDecoratorsEnablement::Auto,
+    };
+    (model, language_features_service, enablement)
+}
+
+/// `languages.IColorPresentation` como o DTO do RPC.
+fn color_presentation_to_dynamic(presentation: &IColorPresentation) -> Dynamic {
+    let entries = [
+        ("label", Some(Dynamic::string(&presentation.label))),
+        ("textEdit", presentation.text_edit.as_ref().map(text_edit_to_dynamic)),
+        ("additionalTextEdits", presentation.additional_text_edits.as_ref().map(|edits| Dynamic::array(edits.iter().map(text_edit_to_dynamic)))),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+}
+
+/// `CommandsRegistry.registerCommand('_executeDocumentColorProvider' | '_executeColorPresentationProvider', ...)`.
+fn register_color_commands() {
+    let document_color_handler: CommandHandler = Rc::new(|accessor, args| {
+        // `if (!(resource instanceof URI)) throw illegalArgument()`
+        let resource = args.first().filter(|resource| is_instance_of(resource, "Uri")).and_then(|resource| URI::from_dynamic(resource).ok());
+        let Some(resource) = resource else {
+            errors::throw(illegal_argument(None));
+        };
+        let (model, language_features_service, enablement) = setup_color_command(accessor, &resource);
+        let colors = find_color_data(Rc::new(ExtColorDataCollector), &language_features_service.color_provider, &model, &CancellationToken::None, enablement);
+        promise_to_dynamic(colors.then(|colors| {
+            Dynamic::array(colors.iter().map(|data| {
+                let [red, green, blue, alpha] = data.color;
+                Dynamic::object([
+                    ("range", RangeConverter::to_dto(&data.range)),
+                    ("color", Dynamic::array([red, green, blue, alpha].map(Dynamic::Number))),
+                ])
+            }))
+        }))
+    });
+    commands_registry().register_command_handler("_executeDocumentColorProvider", Some(document_color_handler));
+
+    let color_presentation_handler: CommandHandler = Rc::new(|accessor, args| {
+        let context = args.get(1).cloned().unwrap_or(Dynamic::Undefined);
+        if !context.is_truthy() {
+            return Dynamic::Undefined;
+        }
+
+        let (uri, range) = (context.get_str("uri"), context.get_str("range"));
+        let color = match args.first() {
+            Some(Dynamic::Array(color)) if color.len() == 4 => Some(color.to_vec()),
+            _ => None,
+        };
+        let range = RangeConverter::from_dto(&range);
+        let (Some(color), Some(range), true) = (color, range, is_instance_of(&uri, "Uri")) else {
+            errors::throw(illegal_argument(None));
+        };
+        let uri = URI::from_dynamic(&uri).unwrap_or_else(|error| errors::throw(error));
+        let (model, language_features_service, enablement) = setup_color_command(accessor, &uri);
+        let channel = |value: &Dynamic| match value {
+            Dynamic::Number(value) => *value,
+            _ => f64::NAN,
+        };
+        let color_info = IColorInformation { range, color: IColor { red: channel(&color[0]), green: channel(&color[1]), blue: channel(&color[2]), alpha: channel(&color[3]) } };
+        let presentations = find_color_data(
+            Rc::new(ColorPresentationsCollector::new(color_info)),
+            &language_features_service.color_provider,
+            &model,
+            &CancellationToken::None,
+            enablement,
+        );
+        promise_to_dynamic(presentations.then(|presentations| Dynamic::array(presentations.iter().map(color_presentation_to_dynamic))))
+    });
+    commands_registry().register_command_handler("_executeColorPresentationProvider", Some(color_presentation_handler));
 }
 
 // ---- argumentos ---------------------------------------------------------------------------------------------
@@ -476,6 +687,10 @@ fn register_workspace_symbol_command() {
 pub fn register_editor_execute_commands() {
     register_go_to_symbol_commands();
     register_document_highlights_command();
+    register_hover_commands();
+    register_code_lens_command();
+    register_color_commands();
+    register_link_provider_command();
     register_document_symbol_command();
     register_format_commands();
     register_prepare_rename_command();

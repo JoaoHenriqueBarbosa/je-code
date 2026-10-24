@@ -1,11 +1,14 @@
 //! Porte de `src/vs/workbench/api/test/browser/extHostApiCommands.test.ts` (suíte `ExtHostLanguageFeatureCommands`), caso a caso e na mesma ordem.
 //!
-//! PORTADOS (24 dos 51 `test(` e `testApiCmd(` do original): `WorkspaceSymbols, invalid arguments`, `WorkspaceSymbols, back and forth`,
+//! PORTADOS (31 dos 51 `test(` e `testApiCmd(` do original): `WorkspaceSymbols, invalid arguments`, `WorkspaceSymbols, back and forth`,
 //! `executeWorkspaceSymbolProvider should accept empty string, #39522`, `executeFormatDocumentProvider, back and forth`,
 //! `vscode.prepareRename`, `Definition` x4, `Declaration` x2, `Type Definition` x3, `Implementation` x3, `reference search, back and
 //! forth`, `"vscode.executeDocumentHighlights" API has stopped returning DocumentHighlight[]#200056`, `Outline, back and forth`,
 //! `vscode.executeDocumentSymbolProvider command only returns SymbolInformation[] rather than DocumentSymbol[] #57984` e os três de
-//! `Selection Range` (`back and forth` e os dois `#91852`).
+//! `Selection Range` (`back and forth` e os dois `#91852`), `"TypeError: e.onCancellationRequested is not a function" calling hover
+//! provider in Insiders #54174` e os três de links (`Links, back and forth`, `What's the condition for DocumentLink target to be
+//! undefined? #106308` e `DocumentLink[] vscode.executeLinkProvider returns lack tooltip #213970`) e os dois de `CodeLens` (`back and
+//! forth` e `resolve`) e `Color provider`.
 //!
 //! FORA, e por quê (nenhum vira `#[test]` enquanto não puder ser fiel; o inventário completo do que falta na produção está no topo de
 //! `ext_host_api_commands.rs` e de `editor_execute_commands.rs`):
@@ -18,12 +21,6 @@
 //! - `Parameter Hints, back and forth`: `typeConverters.SignatureHelp.to` não existe.
 //! - `QuickFix, back and forth`, os três `vscode.executeCodeActionProvider ...` e `resolving code action`: `typeConverters.CodeAction`
 //!   e o `_executeCodeActionProvider` registrado (só o corpo existe, em `code_action.rs`) não existem.
-//! - `CodeLens, back and forth` e `CodeLens, resolve`: `_executeCodeLensProvider` e o `CodeLens` convertido não existem.
-//! - `Links, back and forth`, `What's the condition for DocumentLink target to be undefined? #106308` e `DocumentLink[]
-//!   vscode.executeLinkProvider returns lack tooltip #213970`: `_executeLinkProvider` e `typeConverters.DocumentLink.to` não existem.
-//! - `Color provider`: `_executeDocumentColorProvider`, `_executeColorPresentationProvider` e `typeConverters.Color` não existem.
-//! - `"TypeError: e.onCancellationRequested is not a function" calling hover provider in Insiders #54174`: `_executeHoverProvider`
-//!   e `typeConverters.Hover.to` não existem.
 //! - `Inlay Hints, back and forth`, `Inline Hints, merge` e `Inline Hints, bad provider`: `_executeInlayHintProvider` e
 //!   `typeConverters.InlayHint.to` não existem.
 //! - `CallHierarchy, back and forth`, `prepareCallHierarchy throws TypeError if clangd returns empty result #137415` e `TypeHierarchy,
@@ -60,13 +57,14 @@ mod support;
 #[path = "../../je-editor/tests/support/test_text_model.rs"]
 mod test_text_model;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use je_base::JsString;
+use je_base::async_::timeout_with_token;
 use je_base::cancellation::CancellationToken;
-use je_base::dynamic::Dynamic;
+use je_base::dynamic::{Dynamic, FunctionRef};
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, IDisposable};
@@ -104,7 +102,8 @@ use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsA
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiDocumentFormattingEditProvider, ApiDocumentHighlightProvider, ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiLocationLinkProvider, ApiLocationResult,
+    ApiCodeLensProvider, ApiColorPresentationContext, ApiDocumentColorProvider, ApiDocumentFormattingEditProvider, ApiDocumentHighlightProvider, ApiDocumentLinkProvider,
+    ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiHoverContext, ApiHoverProvider, ApiLocationLinkProvider, ApiLocationResult, CodeLensRef, DocumentLinkRef,
     ApiPrepareRename, ApiProviderResult, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider, ApiWorkspaceSymbolProvider, DefinitionLink,
     IExtHostApiDeprecationService, LocationOrLink,
 };
@@ -527,6 +526,9 @@ impl Env {
             disposable.dispose();
         }
         self.sync().await;
+        // O `suiteTeardown` roda depois de todos os casos: os timers de 100 ms que descartam os resultados de
+        // `_executeCodeLensProvider` já dispararam.
+        timeout_with_token(100, &CancellationToken::None).await.expect("timeout");
         // `suiteTeardown`
         self.model.dispose();
         self.main_thread.dispose();
@@ -1173,6 +1175,313 @@ fn execute_document_symbol_provider_command_only_returns_symbol_information_arra
         assert_eq!(text(&first.get_str("name")), "DocumentSymbol");
         assert_eq!(items(&first.get_str("children")).len(), 1);
         assert_eq!(text(&second.get_str("name")), "SymbolInformation");
+        env.teardown().await;
+    });
+}
+
+// ---- code lens ------------------------------------------------------------------------------------------
+
+/// `provideCodeLenses(): any { return [...]; }` e, quando existe, `resolveCodeLens(codeLens) { ...; return codeLens; }`.
+struct LensesProvider {
+    lenses: Box<dyn Fn() -> Vec<CodeLensRef>>,
+    resolve: Option<Box<dyn Fn(&CodeLensRef)>>,
+}
+
+impl ApiCodeLensProvider for LensesProvider {
+    fn provide_code_lenses(&self, _document: &TextDocument, _token: CancellationToken) -> ApiProviderResult<Vec<CodeLensRef>> {
+        found((self.lenses)())
+    }
+
+    fn has_resolve_code_lens(&self) -> bool {
+        self.resolve.is_some()
+    }
+
+    fn resolve_code_lens(&self, code_lens: &CodeLensRef, _token: CancellationToken) -> ApiProviderResult<CodeLensRef> {
+        if let Some(resolve) = &self.resolve {
+            resolve(code_lens);
+        }
+        found(Rc::clone(code_lens))
+    }
+}
+
+/// `new types.CodeLens(new types.Range(0, 0, 1, 1), command)`.
+fn code_lens(command: Option<types::Command>) -> CodeLensRef {
+    Rc::new(RefCell::new(types::CodeLens::new(range(0.0, 0.0, 1.0, 1.0), command)))
+}
+
+#[test]
+fn code_lens_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        // `{ foo() { }, bar() { }, big: extHost }`: o `extHost` não é um `Dynamic`, `big` é um objeto aninhado qualquer.
+        let complex_arg = Dynamic::object([
+            ("foo", Dynamic::from(FunctionRef::native("foo", 0, |_| Dynamic::Undefined))),
+            ("bar", Dynamic::from(FunctionRef::native("bar", 0, |_| Dynamic::Undefined))),
+            ("big", Dynamic::object([("name", Dynamic::string("extHost"))])),
+        ]);
+        let argument = complex_arg.clone();
+
+        let registration = env.ext_host.register_code_lens_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(LensesProvider {
+                lenses: Box::new(move || {
+                    let mut command = types::Command::new("Title", "cmd");
+                    command.arguments = Some(vec![Dynamic::from(1.0), Dynamic::Bool(true), argument.clone()]);
+                    vec![code_lens(Some(command))]
+                }),
+                resolve: None,
+            }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+        let value = env.execute("vscode.executeCodeLensProvider", vec![env.model.uri().to_dynamic()]).await.expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let command = value[0].get_str("command");
+
+        assert_eq!(text(&command.get_str("title")), "Title");
+        assert_eq!(text(&command.get_str("command")), "cmd");
+        let arguments = items(&command.get_str("arguments"));
+        assert_eq!(number(&arguments[0]), 1.0);
+        assert!(matches!(arguments[1], Dynamic::Bool(true)));
+        assert!(arguments[2].strict_equals(&complex_arg));
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn code_lens_resolve() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let resolve_count = Rc::new(Cell::new(0_u32));
+        let counter = Rc::clone(&resolve_count);
+        let registration = env.ext_host.register_code_lens_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(LensesProvider {
+                lenses: Box::new(|| {
+                    vec![code_lens(None), code_lens(None), code_lens(None), code_lens(Some(types::Command::new("Already resolved", "fff")))]
+                }),
+                resolve: Some(Box::new(move |lens| {
+                    lens.borrow_mut().command = Some(types::Command::new(counter.get().to_string(), "resolved"));
+                    counter.set(counter.get() + 1);
+                })),
+            }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let value = env.execute("vscode.executeCodeLensProvider", vec![env.model.uri().to_dynamic(), Dynamic::Number(2.0)]).await.expect("executeCommand");
+        assert_eq!(items(&value).len(), 3); // the resolve argument defines the number of results being returned
+        assert_eq!(resolve_count.get(), 2);
+
+        resolve_count.set(0);
+        let value = env.execute("vscode.executeCodeLensProvider", vec![env.model.uri().to_dynamic()]).await.expect("executeCommand");
+        assert_eq!(items(&value).len(), 4);
+        assert_eq!(resolve_count.get(), 0);
+        env.teardown().await;
+    });
+}
+
+// ---- links ----------------------------------------------------------------------------------------------
+
+/// `provideDocumentLinks(): any { return [...]; }` e, quando existe, `resolveDocumentLink(link) { ...; return link; }`.
+struct LinksProvider {
+    links: Box<dyn Fn() -> Vec<DocumentLinkRef>>,
+    resolve: Option<Box<dyn Fn(&DocumentLinkRef)>>,
+}
+
+impl ApiDocumentLinkProvider for LinksProvider {
+    fn provide_document_links(&self, _document: &TextDocument, _token: CancellationToken) -> ApiProviderResult<Vec<DocumentLinkRef>> {
+        found((self.links)())
+    }
+
+    fn has_resolve_document_link(&self) -> bool {
+        self.resolve.is_some()
+    }
+
+    fn resolve_document_link(&self, link: &DocumentLinkRef, _token: CancellationToken) -> ApiProviderResult<DocumentLinkRef> {
+        if let Some(resolve) = &self.resolve {
+            resolve(link);
+        }
+        found(Rc::clone(link))
+    }
+}
+
+/// `new types.DocumentLink(new types.Range(0, 0, 0, 20), target)`.
+fn document_link(target: Option<&str>, tooltip: Option<&str>) -> DocumentLinkRef {
+    let mut link = types::DocumentLink::new(range(0.0, 0.0, 0.0, 20.0), target.map(|target| URI::parse(target, false))).expect("DocumentLink");
+    link.tooltip = tooltip.map(str::to_owned);
+    Rc::new(RefCell::new(link))
+}
+
+/// `uri + ''` e `uri.toString()`.
+fn uri_text(value: &Dynamic) -> String {
+    URI::from_dynamic(value).expect("Uri").to_string(false).to_string_lossy()
+}
+
+#[test]
+fn links_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_document_link_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(LinksProvider { links: Box::new(|| vec![document_link(Some("foo:bar"), None)]), resolve: None }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+        let value = env.execute("vscode.executeLinkProvider", vec![env.model.uri().to_dynamic()]).await.expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let first = &value[0];
+
+        assert_eq!(uri_text(&first.get_str("target")), "foo:bar");
+        assert_range(&first.get_str("range"), 0.0, 0.0, 0.0, 20.0);
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn what_is_the_condition_for_document_link_target_to_be_undefined_106308() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_document_link_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(LinksProvider {
+                links: Box::new(|| vec![document_link(None, None)]),
+                resolve: Some(Box::new(|link| link.borrow_mut().target = Some(URI::parse("foo:bar", false)))),
+            }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let links1 = env.execute("vscode.executeLinkProvider", vec![env.model.uri().to_dynamic()]).await.expect("executeCommand");
+        let links1 = items(&links1);
+        assert_eq!(links1.len(), 1);
+        assert!(links1[0].get_str("target").is_undefined());
+
+        let links2 = env.execute("vscode.executeLinkProvider", vec![env.model.uri().to_dynamic(), Dynamic::Number(1000.0)]).await.expect("executeCommand");
+        let links2 = items(&links2);
+        assert_eq!(links2.len(), 1);
+        assert_eq!(uri_text(&links2[0].get_str("target")), URI::parse("foo:bar", false).to_string(false).to_string_lossy());
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn document_link_array_execute_link_provider_returns_lack_tooltip_213970() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_document_link_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(LinksProvider { links: Box::new(|| vec![document_link(Some("foo:bar"), Some("Link Tooltip"))]), resolve: None }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let links1 = env.execute("vscode.executeLinkProvider", vec![env.model.uri().to_dynamic()]).await.expect("executeCommand");
+        let links1 = items(&links1);
+        assert_eq!(links1.len(), 1);
+        assert_eq!(text(&links1[0].get_str("tooltip")), "Link Tooltip");
+        env.teardown().await;
+    });
+}
+
+// ---- color provider -------------------------------------------------------------------------------------
+
+/// `provideDocumentColors()` e `provideColorPresentations()` do caso `Color provider`.
+struct ColorProvider;
+
+impl ApiDocumentColorProvider for ColorProvider {
+    fn provide_document_colors(&self, _document: &TextDocument, _token: CancellationToken) -> ApiProviderResult<Vec<types::ColorInformation>> {
+        found(vec![types::ColorInformation::new(range(0.0, 0.0, 0.0, 20.0), types::Color::new(0.1, 0.2, 0.3, 0.4)).expect("ColorInformation")])
+    }
+
+    fn provide_color_presentations(&self, _color: &types::Color, _context: &ApiColorPresentationContext, _token: CancellationToken) -> ApiProviderResult<Vec<types::ColorPresentation>> {
+        let mut presentation = types::ColorPresentation::new("#ABC").expect("ColorPresentation");
+        presentation.text_edit = Some(types::TextEdit::replace(range(1.0, 0.0, 1.0, 20.0), "#ABC"));
+        presentation.additional_text_edits = Some(vec![types::TextEdit::insert(types::Position::new(2.0, 20.0).expect("Position"), "*")]);
+        found(vec![presentation])
+    }
+}
+
+#[test]
+fn color_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_color_provider(&null_extension_description(), &default_selector(), Rc::new(ColorProvider));
+        env.add(registration);
+
+        env.sync().await;
+        let value = env.execute("vscode.executeDocumentColorProvider", vec![env.model.uri().to_dynamic()]).await.expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let first = &value[0];
+
+        let color = first.get_str("color");
+        assert_eq!(number(&color.get_str("red")), 0.1);
+        assert_eq!(number(&color.get_str("green")), 0.2);
+        assert_eq!(number(&color.get_str("blue")), 0.3);
+        assert_eq!(number(&color.get_str("alpha")), 0.4);
+        assert_range(&first.get_str("range"), 0.0, 0.0, 0.0, 20.0);
+
+        let color = types::Color::new(0.5, 0.6, 0.7, 0.8);
+        let context = Dynamic::object([("uri", env.model.uri().to_dynamic()), ("range", range(0.0, 0.0, 0.0, 20.0).to_dynamic())]);
+        let value = env.execute("vscode.executeColorPresentationProvider", vec![color.to_dynamic(), context]).await.expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let first = &value[0];
+
+        assert_eq!(text(&first.get_str("label")), "#ABC");
+        let text_edit = first.get_str("textEdit");
+        assert_eq!(text(&text_edit.get_str("newText")), "#ABC");
+        assert_range(&text_edit.get_str("range"), 1.0, 0.0, 1.0, 20.0);
+        let additional_text_edits = items(&first.get_str("additionalTextEdits"));
+        assert_eq!(additional_text_edits.len(), 1);
+        assert_range(&additional_text_edits[0].get_str("range"), 2.0, 20.0, 2.0, 20.0);
+        env.teardown().await;
+    });
+}
+
+// ---- hover ----------------------------------------------------------------------------------------------
+
+/// `provideHover(): any { return new types.Hover('fofofofo'); }`.
+struct StringHoverProvider;
+
+impl ApiHoverProvider for StringHoverProvider {
+    fn provide_hover(&self, _document: &TextDocument, _position: &types::Position, _token: CancellationToken, _context: Option<&ApiHoverContext>) -> ApiProviderResult<types::VerboseHover> {
+        found(types::VerboseHover::new(vec![types::MarkedString::Text("fofofofo".to_owned())], None, None, None))
+    }
+}
+
+#[test]
+fn type_error_on_cancellation_requested_is_not_a_function_calling_hover_provider_in_insiders_54174() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_hover_provider(&null_extension_description(), &default_selector(), Rc::new(StringHoverProvider));
+        env.add(registration);
+
+        env.sync().await;
+        let value = env.execute("vscode.executeHoverProvider", vec![env.model.uri().to_dynamic(), position(1.0, 1.0)]).await.expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        assert_eq!(items(&value[0].get_str("contents")).len(), 1);
         env.teardown().await;
     });
 }
