@@ -4628,3 +4628,87 @@ mod authentication_region {
 }
 
 // #endregion
+
+// #region Notebook (editores, renderizadores e participante de salvamento)
+
+pub use self::notebook_editors_region::*;
+
+/// As formas de `extHost.protocol.ts` que `extHostNotebookEditors.ts`, `extHostNotebookRenderers.ts` e
+/// `extHostNotebookDocumentSaveParticipant.ts` usam: `INotebookEditorPropertiesChangeData`, `INotebookEditorViewColumnInfo`,
+/// `ExtHostNotebookEditorsShape`, `MainThreadNotebookRenderersShape`, `ExtHostNotebookRenderersShape` e
+/// `ExtHostNotebookDocumentSaveParticipantShape`, com os identificadores.
+///
+/// Divergências:
+/// - `UriComponents` é [`URI`]; `ICellRange` é o [`CellRange`] dos conversores (par `{ start, end }`).
+/// - `INotebookEditorViewColumnInfo` (`Record<string, number>`) é um `BTreeMap`: o `equals` de objetos do original compara as
+///   chaves sem olhar a ordem, que é o que o mapa ordenado dá.
+/// - `$postMessage(editorId: string | undefined, ...)` recebe `Option<&str>`, e o `message: unknown` é [`Dynamic`].
+mod notebook_editors_region {
+    use std::collections::BTreeMap;
+
+    use je_base::cancellation::CancellationToken;
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_type_converters::CellRange;
+    use crate::common::editor::SaveReason;
+
+    /// `INotebookVisibleRangesEvent`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct INotebookVisibleRangesEvent {
+        pub ranges: Vec<CellRange>,
+    }
+
+    /// `INotebookSelectionChangeEvent`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct INotebookSelectionChangeEvent {
+        pub selections: Vec<CellRange>,
+    }
+
+    /// `INotebookEditorPropertiesChangeData`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct INotebookEditorPropertiesChangeData {
+        pub visible_ranges: Option<INotebookVisibleRangesEvent>,
+        pub selections: Option<INotebookSelectionChangeEvent>,
+    }
+
+    /// `INotebookEditorViewColumnInfo`: o id do editor e a coluna dele.
+    pub type INotebookEditorViewColumnInfo = BTreeMap<String, f64>;
+
+    /// `ExtHostNotebookEditorsShape`.
+    pub trait ExtHostNotebookEditorsShape {
+        fn rpc_accept_editor_properties_changed(&self, id: &str, data: INotebookEditorPropertiesChangeData);
+        fn rpc_accept_editor_view_columns(&self, data: INotebookEditorViewColumnInfo);
+    }
+
+    /// `MainThreadNotebookRenderersShape`.
+    pub trait MainThreadNotebookRenderersShape: IDisposable {
+        fn rpc_post_message(&self, editor_id: Option<&str>, renderer_id: &str, message: Dynamic) -> Promise<bool>;
+    }
+
+    /// `ExtHostNotebookRenderersShape`.
+    pub trait ExtHostNotebookRenderersShape {
+        fn rpc_post_renderer_message(&self, editor_id: &str, renderer_id: &str, message: Dynamic);
+    }
+
+    /// `ExtHostNotebookDocumentSaveParticipantShape`.
+    pub trait ExtHostNotebookDocumentSaveParticipantShape {
+        fn rpc_participate_in_save(&self, resource: &URI, reason: SaveReason, token: CancellationToken) -> Promise<bool>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_NOTEBOOK_RENDERERS: ProxyIdentifier<dyn MainThreadNotebookRenderersShape> = ProxyIdentifier::new("MainThreadNotebookRenderers");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_NOTEBOOK_EDITORS: ProxyIdentifier<dyn ExtHostNotebookEditorsShape> = ProxyIdentifier::new("ExtHostNotebookEditors");
+        pub const EXT_HOST_NOTEBOOK_RENDERERS: ProxyIdentifier<dyn ExtHostNotebookRenderersShape> = ProxyIdentifier::new("ExtHostNotebookRenderers");
+        pub const EXT_HOST_NOTEBOOK_DOCUMENT_SAVE_PARTICIPANT: ProxyIdentifier<dyn ExtHostNotebookDocumentSaveParticipantShape> =
+            ProxyIdentifier::new("ExtHostNotebookDocumentSaveParticipant");
+    }
+}
+
+// #endregion

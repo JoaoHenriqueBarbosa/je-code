@@ -6,9 +6,10 @@
 //! - `ExtHostSearch` e `$searchInNotebooks` NÃO estão portados: o método depende de `ExtHostSearch`
 //!   (`doInternalFileSearchWithCustomCallback`), de `CellSearchModel` e de `searchNotebookHelpers`, que não existem no porte. O
 //!   construtor perde o parâmetro `_extHostSearch` (só o método de busca o usava) e [`ExtHostNotebookShape`] não declara o método.
-//! - `_registerApiCommands` (`vscode.executeDataToNotebook` e `vscode.executeNotebookToData`) NÃO está portado: os argumentos e
-//!   o resultado desses comandos são `NotebookData`/`NotebookDataDto` como valor [`Dynamic`], e essa representação não existe no
-//!   porte (os conversores trabalham sobre os tipos tipados).
+//! - `_registerApiCommands` (`vscode.executeDataToNotebook` e `vscode.executeNotebookToData`) é o
+//!   [`register_api_commands`](super::ext_host_notebook_api_commands::register_api_commands), chamado no construtor. Os
+//!   argumentos e o resultado desses comandos (o `NotebookData` e o `NotebookDataDto`) cruzam como objetos [`Dynamic`] com carga
+//!   nativa (ver o módulo `ext_host_notebook_api_commands`).
 //! - `IExtHostConsumerFileSystem` (`extHostFileSystemConsumer.ts`) é o trait [`IExtHostConsumerFileSystem`], só com o que o
 //!   controlador usa; o indireto `.value` do original some (os métodos de `FileSystemExt` são os do próprio trait).
 //!   `isWritableFileSystem` devolve `Option<bool>` (`boolean | undefined`: `None` conta como não gravável).
@@ -59,6 +60,7 @@ use super::cache::Cache;
 use super::ext_host_commands::{ArgumentProcessor, CommandsConverter, ExtHostCommands};
 use super::ext_host_documents::ExtHostDocuments;
 use super::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
+use super::ext_host_notebook_api_commands::register_api_commands;
 use super::ext_host_notebook_document::{ExtHostCell, ExtHostNotebookDocument, NotebookDocument};
 use super::ext_host_notebook_editor::{ExtHostNotebookEditor, NotebookEditor};
 use super::ext_host_protocol::{ExtHostDocumentsAndEditorsShape,
@@ -267,6 +269,8 @@ impl ExtHostNotebookController {
         });
 
         commands.register_argument_processor(Rc::new(NotebookArgumentProcessor { controller: Rc::downgrade(&controller) }));
+
+        register_api_commands(commands).unwrap_or_else(|error| errors::throw(error));
         controller
     }
 

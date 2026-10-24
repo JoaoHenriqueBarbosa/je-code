@@ -42,4 +42,11 @@ pub trait NotebookEditorWidget {
         search_instance_id: &str,
     ) -> Promise<Vec<CellFindMatchWithIndex>>;
     fn create_find_match_decoration_model(&self, search_instance_id: &str) -> Rc<dyn FindMatchDecorationModel>;
+
+    /// O widget como `INotebookEditor` (`NotebookEditorWidget implements INotebookEditor`): quem implementa o contrato
+    /// completo devolve a si mesmo. O padrão é `None`, o widget que só serve à leitura da busca. É o que permite ao
+    /// `INotebookEditorService`, que entrega widgets, alimentar o lado do workbench do host de extensões.
+    fn as_notebook_editor(self: Rc<Self>) -> Option<Rc<dyn crate::contrib::notebook::browser::notebook_browser::INotebookEditor>> {
+        None
+    }
 }

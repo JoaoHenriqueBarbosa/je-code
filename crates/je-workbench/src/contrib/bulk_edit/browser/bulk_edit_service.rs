@@ -10,18 +10,17 @@
 //!   [`BulkEditService::apply_resource_edits`], e o `apply` do trait apenas converte os itens e a chama.
 //! - **`liftEdits`.** `ResourceTextEdit.is/lift`, `ResourceFileEdit.is/lift`, `ResourceNotebookCellEdit.is/lift` e
 //!   `ResourceAttachmentEdit.is/lift` viram o `match` sobre o item do `WorkspaceEdit`; um [`WorkspaceEditItem::Custom`] é
-//!   a [`ResourceEdit::Custom`] (a edição de célula de notebook chega assim, e o `BulkCellEdits` não foi portado: ela é
-//!   tratada como `OpaqueEdits`, e o `redo` dela rejeita, ver `NotebookCellEditCarrier`). O `throw new Error('Unsupported
-//!   edit')` não tem caso aqui.
-//! - **`Object.getPrototypeOf(a) === Object.getPrototypeOf(b)`.** É a igualdade do discriminante de [`ResourceEdit`].
+//!   a [`ResourceEdit::Custom`], e a [`ResourceNotebookCellEdit`] (a edição de célula de notebook) se reconhece dentre elas pelo
+//!   [`ICustomEdit::as_any`]: o `BulkEdit` a aplica pelo [`BulkCellEdits`], e as demais pelo `OpaqueEdits`. O `throw new
+//!   Error('Unsupported edit')` não tem caso aqui.
+//! - **`Object.getPrototypeOf(a) === Object.getPrototypeOf(b)`.** É a igualdade do discriminante de [`ResourceEdit`], com a
+//!   [`ResourceNotebookCellEdit`] separada das demais edições customizadas ([`same_prototype`]).
 //! - **`this._logEdits`.** O `JSON.stringify(edits)` é um resumo em JSON com os recursos de cada edição (as edições do
 //!   porte não têm serialização completa).
 //! - **`options.undoRedoGroupId`.** É o `id` (`u64`) do [`UndoRedoGroup`]; `undoRedoSource` é um `Rc`.
 //! - **Estado compartilhado.** O serviço guarda um `Weak` de si (`Rc::new_cyclic`), porque o corpo `async` do `apply`
 //!   precisa de um dono `'static`; o `_previewHandler` e a lista de grupos ativos moram em `Rc`.
 //! - **`ILifecycleService.onBeforeShutdown`.** O `e.veto(promessa, id)` recebe a promessa do `_shouldVeto`.
-//! - **`BulkCellEdits`** (`bulkCellEdits.ts`) não foi portado: depende do `INotebookEditorModelResolverService` e do
-//!   `NotebookTextModel.applyEdits`, que não têm porte.
 
 use std::cell::RefCell;
 use std::mem::discriminant;
@@ -52,6 +51,7 @@ use je_platform::dialogs::dialogs::{BaseDialogOptions, Confirmation, DialogDetai
 use je_platform::log::{LogArg, LogLevel, LogMessage, LogService, Logger, can_log};
 use je_platform::progress::progress::{IProgress, Progress, ProgressStep};
 
+use super::bulk_cell_edits::{BulkCellEdits, BulkCellEditsArgs, ResourceNotebookCellEdit};
 use super::bulk_file_edits::{BulkFileEdits, BulkFileEditsArgs};
 use super::bulk_text_edits::{BulkTextEdits, BulkTextEditsArgs};
 use super::opaque_edits::{OpaqueEdits, OpaqueEditsArgs};
@@ -72,6 +72,15 @@ fn lift_edits(edits: &[WorkspaceEditItem]) -> Vec<ResourceEdit> {
             WorkspaceEditItem::Custom(edit) => ResourceEdit::Custom(edit.clone()),
         })
         .collect()
+}
+
+/// `Object.getPrototypeOf(a) === Object.getPrototypeOf(b)`: as edições de texto e de arquivo têm o discriminante da variante, e as
+/// [`ResourceEdit::Custom`] se dividem entre a [`ResourceNotebookCellEdit`] e as demais (`ResourceAttachmentEdit`).
+fn same_prototype(a: &ResourceEdit, b: &ResourceEdit) -> bool {
+    match (a, b) {
+        (ResourceEdit::Custom(a), ResourceEdit::Custom(b)) => ResourceNotebookCellEdit::is(&**a) == ResourceNotebookCellEdit::is(&**b),
+        _ => discriminant(a) == discriminant(b),
+    }
 }
 
 /// O resumo em JSON de uma edição, para o `_logEdits`.
@@ -186,7 +195,7 @@ impl BulkEdit {
 
         let mut ranges: Vec<usize> = vec![1];
         for i in 1..edits.len() {
-            if discriminant(&edits[i - 1]) == discriminant(&edits[i]) {
+            if same_prototype(&edits[i - 1], &edits[i]) {
                 if let Some(last) = ranges.last_mut() {
                     *last += 1;
                 }
@@ -218,6 +227,11 @@ impl BulkEdit {
                     self.log_edits("_performTextEdits", group);
                     let edits = group.iter().filter_map(|edit| if let ResourceEdit::Text(edit) = edit { Some(edit.clone()) } else { None }).collect();
                     resources.push(self.perform_text_edits(edits, progress.clone(), reason.clone()).await?);
+                }
+                ResourceEdit::Custom(custom) if ResourceNotebookCellEdit::is(&**custom) => {
+                    self.log_edits("_performCellEdits", group);
+                    let edits = group.iter().filter_map(|edit| if let ResourceEdit::Custom(edit) = edit { ResourceNotebookCellEdit::downcast(&**edit).cloned() } else { None }).collect();
+                    resources.push(self.perform_cell_edits(edits, progress.clone()).await?);
                 }
                 ResourceEdit::Custom(_) => {
                     self.log_edits("_performOpaqueEdits", group);
@@ -267,6 +281,18 @@ impl BulkEdit {
             edits,
         });
         model.apply(reason).await
+    }
+
+    /// `_performCellEdits(edits, undoRedoGroup, undoRedoSource, progress)`.
+    async fn perform_cell_edits(&self, edits: Vec<ResourceNotebookCellEdit>, progress: Rc<dyn IProgress<()>>) -> Result<Vec<URI>, Error> {
+        let model = self.instantiation_service.create_instance::<BulkCellEdits>(BulkCellEditsArgs {
+            undo_redo_group: self.args.undo_redo_group.clone(),
+            undo_redo_source: self.args.undo_redo_source.clone(),
+            progress,
+            token: self.args.token.clone(),
+            edits,
+        });
+        model.apply().await
     }
 
     /// `_performOpaqueEdits(edits, undoRedoGroup, undoRedoSource, progress)`.

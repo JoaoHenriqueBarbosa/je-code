@@ -176,6 +176,13 @@ pub trait ICustomEdit {
     }
     fn undo(&self) -> Promise<()>;
     fn redo(&self) -> Promise<()>;
+
+    /// Para o `instanceof` que o `BulkEditService` faz sobre as subclasses de `ResourceEdit` definidas fora do editor
+    /// (`ResourceNotebookCellEdit`): a edição que se reconhece por tipo devolve a si mesma. O padrão é um valor que nenhuma
+    /// subclasse reconhece.
+    fn as_any(&self) -> &dyn std::any::Any {
+        &()
+    }
 }
 
 /// Um item de `WorkspaceEdit.edits`: `IWorkspaceTextEdit | IWorkspaceFileEdit | ICustomEdit`.
