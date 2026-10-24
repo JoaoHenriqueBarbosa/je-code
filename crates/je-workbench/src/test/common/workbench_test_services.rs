@@ -1071,6 +1071,8 @@ pub struct TestFileService {
     pub write_operations: Rc<RefCell<Vec<(URI, String)>>>,
     /// `readOperations`: `{ resource }` de cada leitura.
     pub read_operations: RefCell<Vec<URI>>,
+    /// O que `sinon.spy(fileService, 'readFileStream')` registra: o recurso de cada chamada de `read_file_stream`.
+    pub read_file_stream_operations: RefCell<Vec<URI>>,
     /// `watches`.
     pub watches: Rc<RefCell<Vec<URI>>>,
 }
@@ -1101,6 +1103,7 @@ impl TestFileService {
             write_should_throw_error: RefCell::new(None),
             write_operations: Rc::default(),
             read_operations: RefCell::new(Vec::new()),
+            read_file_stream_operations: RefCell::new(Vec::new()),
             watches: Rc::default(),
         })
     }
@@ -1250,6 +1253,7 @@ impl IFileService for TestFileService {
         }
 
         *self.last_read_file_uri.borrow_mut() = Some(resource.clone());
+        self.read_file_stream_operations.borrow_mut().push(resource.clone());
 
         let value: je_base::buffer::VSBufferReadableStream = je_base::buffer::buffer_to_stream(je_base::buffer::VSBuffer::from_string(&self.content.borrow()));
         Promise::resolved(je_platform::files::files::FileStreamContent { stat: self.file_stat(resource), value })
