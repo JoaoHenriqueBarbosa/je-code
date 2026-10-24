@@ -234,6 +234,67 @@ impl Drop for WarnSpy {
     }
 }
 
+/// Os argumentos de uma chamada de `console.error(message, detail)`: o texto e o valor que o acompanha (o erro lançado,
+/// em texto).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsoleErrorCall {
+    pub message: String,
+    pub detail: String,
+}
+
+type ErrorSpyCalls = std::rc::Rc<std::cell::RefCell<Vec<ConsoleErrorCall>>>;
+
+thread_local! {
+    /// As chamadas que o espião instalado por [`ErrorSpy::install`] guarda; `None` quando nenhum teste o instalou.
+    static ERROR_SPY: std::cell::RefCell<Option<ErrorSpyCalls>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `console.error(message, detail)` do código portado: vai para o stderr, a não ser que um teste tenha instalado o
+/// espião ([`ErrorSpy`], o `sinon.stub(console, 'error')`), que guarda a chamada em vez de escrever.
+pub fn error(message: &str, detail: &str) {
+    let spied = ERROR_SPY.with(|spy| match &*spy.borrow() {
+        Some(calls) => {
+            calls.borrow_mut().push(ConsoleErrorCall { message: message.to_owned(), detail: detail.to_owned() });
+            true
+        }
+        None => false,
+    });
+    if !spied {
+        let _ = writeln!(std::io::stderr(), "{message} {detail}");
+    }
+}
+
+/// `sinon.stub(console, 'error')`: guarda as chamadas de [`error`] do thread. `restore` (ou o `Drop`) devolve o
+/// `console.error` ao comportamento normal.
+pub struct ErrorSpy {
+    calls: ErrorSpyCalls,
+}
+
+impl ErrorSpy {
+    /// `stub(console, 'error')`.
+    pub fn install() -> Self {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        ERROR_SPY.with(|spy| *spy.borrow_mut() = Some(calls.clone()));
+        Self { calls }
+    }
+
+    /// `consoleError.args`: as chamadas, na ordem.
+    pub fn calls(&self) -> Vec<ConsoleErrorCall> {
+        self.calls.borrow().clone()
+    }
+
+    /// `consoleError.restore()`.
+    pub fn restore(&self) {
+        ERROR_SPY.with(|spy| *spy.borrow_mut() = None);
+    }
+}
+
+impl Drop for ErrorSpy {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
 /// O console do processo: `warn` e `error` vão para stderr, o resto para stdout, sem os `%c` nem os estilos.
 pub struct StdConsole;
 

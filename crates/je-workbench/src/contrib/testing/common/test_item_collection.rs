@@ -22,7 +22,8 @@
 //!   markdown é objeto no original e compara por identidade).
 //! - **`createTestItemChildren(api, getApi, checkCtor)`** não recebe o `checkCtor` (o `instanceof` do original confere o
 //!   tipo do item; o tipo `T` já o garante). O `InvalidTestItemError` fica como função para quem cria itens por fora.
-//! - **`console.error`** é `eprintln!`.
+//! - **`console.error`** é [`je_base::console::error`] (o texto e o erro em texto), que um teste captura com o
+//!   `ErrorSpy` (o `sinon.stub(console, 'error')`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -780,7 +781,7 @@ impl<T: ITestItemLike> TestItemCollection<T> {
             let internal = internal.clone();
             let is_current = is_current.clone();
             move |err: Error| {
-                eprintln!("Unhandled error in resolveHandler of test controller \"{}\": {err}", this.options.controller_id);
+                je_base::console::error(&format!("Unhandled error in resolveHandler of test controller \"{}\"", this.options.controller_id), &err.to_string());
                 if is_current() {
                     this.set_resolve_error(&internal, Some(to_error_message(&error_to_dynamic(&err), false)));
                 }

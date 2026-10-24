@@ -2300,3 +2300,143 @@ mod notebook_data_dto_region {
 }
 
 // #endregion
+
+// #region Testing
+
+pub use self::testing_region::*;
+
+/// `ITestControllerPatch`, `MainThreadTestingShape`, `ExtHostTestingShape` e os identificadores
+/// `MainContext.MainThreadTesting` e `ExtHostContext.ExtHostTesting` (de `extHost.protocol.ts`, usados por
+/// `extHostTesting.ts`).
+///
+/// Divergências:
+/// - `Partial<ITestRunProfile>` é o [`PartialTestRunProfile`] e `TestControllerCapability` é o `u32` de bits do
+///   `testTypes`. `Record<string, number[]>` de `$setDefaultRunProfiles` é uma lista de pares na ordem de inserção.
+/// - As formas `Serialized` do original são os tipos `*Serialized` do `testTypes` (`TestsDiffOpSerialized`,
+///   `ITestItemSerialized`, `ITestMessageSerialized`, `IFileCoverageSerialized`). `CoverageDetails.Serialized` é o
+///   mesmo dado de [`CoverageDetails`], e `ILocationDto` é o [`LocationDto`]. Os `UriComponents` são [`URI`].
+/// - `$markTestRetired(testIds: string[] | undefined)` é `Option<Vec<String>>`; `$appendOutputToRun` e os
+///   `$runTests` seguem o `rpc_` do resto do protocolo.
+mod testing_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::cancellation::CancellationToken;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::position::Position;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_type_converters::LocationDto;
+    use crate::contrib::testing::common::test_types::{
+        CoverageDetails, ExtensionRunTestsRequest, ICallProfileRunHandler, IFileCoverageSerialized, IStartControllerTests, IStartControllerTestsResult,
+        ISerializedTestResults, ITestItemSerialized, ITestMessageSerialized, ITestRunProfile, ITestRunTask, PartialTestRunProfile,
+        ResolvedTestRunRequest, TestControllerCapability, TestMessageFollowupRequest, TestMessageFollowupResponse, TestResultState, TestsDiffOpSerialized,
+    };
+
+    /// `ITestControllerPatch`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct ITestControllerPatch {
+        pub label: Option<String>,
+        pub capabilities: Option<TestControllerCapability>,
+    }
+
+    /// `MainThreadTestingShape`.
+    pub trait MainThreadTestingShape {
+        // --- test lifecycle:
+
+        /// Registers that there's a test controller with the given ID
+        fn rpc_register_test_controller(&self, controller_id: &str, label: &str, capability: TestControllerCapability);
+        /// Updates the label of an existing test controller.
+        fn rpc_update_controller(&self, controller_id: &str, patch: ITestControllerPatch);
+        /// Diposes of the test controller with the given ID
+        fn rpc_unregister_test_controller(&self, controller_id: &str);
+        /// Requests tests published to VS Code.
+        fn rpc_subscribe_to_diffs(&self);
+        /// Stops requesting tests published to VS Code.
+        fn rpc_unsubscribe_from_diffs(&self);
+        /// Publishes that new tests were available on the given source.
+        fn rpc_publish_diff(&self, controller_id: &str, diff: Vec<TestsDiffOpSerialized>);
+        /// Gets coverage details from a test result.
+        fn rpc_get_coverage_details(&self, result_id: &str, task_index: usize, uri: &URI, token: CancellationToken) -> Promise<Vec<CoverageDetails>>;
+
+        // --- test run configurations:
+
+        /// Called when a new test run configuration is available
+        fn rpc_publish_test_run_profile(&self, config: ITestRunProfile);
+        /// Updates an existing test run configuration
+        fn rpc_update_test_run_config(&self, controller_id: &str, config_id: u32, update: PartialTestRunProfile);
+        /// Removes a previously-published test run config
+        fn rpc_remove_test_profile(&self, controller_id: &str, config_id: u32);
+
+        // --- test run handling:
+
+        /// Request by an extension to run tests.
+        fn rpc_run_tests(&self, req: ResolvedTestRunRequest, token: CancellationToken) -> Promise<String>;
+        /// Adds tests to the run. The tests are given in descending depth. The first
+        /// item will be a previously-known test, or a test root.
+        fn rpc_add_tests_to_run(&self, controller_id: &str, run_id: &str, tests: Vec<ITestItemSerialized>);
+        /// Updates the state of a test run in the given run.
+        fn rpc_update_test_state_in_run(&self, run_id: &str, task_id: &str, test_id: &str, state: TestResultState, duration: Option<f64>);
+        /// Appends a message to a test in the run.
+        fn rpc_append_test_messages_in_run(&self, run_id: &str, task_id: &str, test_id: &str, messages: Vec<ITestMessageSerialized>);
+        /// Appends raw output to the test run..
+        fn rpc_append_output_to_run(&self, run_id: &str, task_id: &str, output: VSBuffer, location: Option<LocationDto>, test_id: Option<String>);
+        /// Triggered when coverage is added to test results.
+        fn rpc_append_coverage(&self, run_id: &str, task_id: &str, coverage: IFileCoverageSerialized);
+        /// Signals a task in a test run started.
+        fn rpc_started_test_run_task(&self, run_id: &str, task: ITestRunTask);
+        /// Signals a task in a test run ended.
+        fn rpc_finished_test_run_task(&self, run_id: &str, task_id: &str);
+        /// Start a new extension-provided test run.
+        fn rpc_started_extension_test_run(&self, req: ExtensionRunTestsRequest);
+        /// Signals that an extension-provided test run finished.
+        fn rpc_finished_extension_test_run(&self, run_id: &str);
+        /// Marks a test (or controller) as retired in all results.
+        fn rpc_mark_test_retired(&self, test_ids: Option<Vec<String>>);
+    }
+
+    /// `ExtHostTestingShape`.
+    pub trait ExtHostTestingShape {
+        fn rpc_run_controller_tests(&self, req: Vec<IStartControllerTests>, token: CancellationToken) -> Promise<Vec<IStartControllerTestsResult>>;
+        fn rpc_start_continuous_run(&self, req: Vec<ICallProfileRunHandler>, token: CancellationToken) -> Promise<Vec<IStartControllerTestsResult>>;
+        fn rpc_cancel_extension_test_run(&self, run_id: Option<&str>, task_id: Option<&str>);
+        /// Handles a diff of tests, as a result of a subscribeToDiffs() call
+        fn rpc_accept_diff(&self, diff: Vec<TestsDiffOpSerialized>);
+        /// Expands a test item's children, by the given number of levels.
+        fn rpc_expand_test(&self, test_id: &str, levels: f64) -> Promise<()>;
+        /// Requests coverage details for a test run. Errors if not available.
+        fn rpc_get_coverage_details(&self, coverage_id: &str, test_id: Option<&str>, token: CancellationToken) -> Promise<Vec<CoverageDetails>>;
+        /// Disposes resources associated with a test run.
+        fn rpc_dispose_run(&self, run_id: &str);
+        /// Configures a test run config.
+        fn rpc_configure_run_profile(&self, controller_id: &str, config_id: u32);
+        /// Asks the controller to refresh its tests
+        fn rpc_refresh_tests(&self, controller_id: &str, token: CancellationToken) -> Promise<()>;
+        /// Ensures any pending test diffs are flushed
+        fn rpc_sync_tests(&self) -> Promise<()>;
+        /// Sets the active test run profiles
+        fn rpc_set_default_run_profiles(&self, profiles: Vec<(String, Vec<u32>)>);
+        fn rpc_get_tests_related_to_code(&self, uri: &URI, position: Position, token: CancellationToken) -> Promise<Vec<String>>;
+        fn rpc_get_code_related_to_test(&self, test_id: &str, token: CancellationToken) -> Promise<Vec<LocationDto>>;
+
+        // --- test results:
+
+        /// Publishes that a test run finished.
+        fn rpc_publish_test_results(&self, results: Vec<ISerializedTestResults>);
+        /// Requests followup actions for a test (failure) message
+        fn rpc_provide_test_followups(&self, req: TestMessageFollowupRequest, token: CancellationToken) -> Promise<Vec<TestMessageFollowupResponse>>;
+        /// Actions a followup actions for a test (failure) message
+        fn rpc_execute_test_followup(&self, id: u32) -> Promise<()>;
+        /// Disposes followup actions for a test (failure) message
+        fn rpc_dispose_test_followups(&self, id: Vec<u32>);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_TESTING: ProxyIdentifier<dyn MainThreadTestingShape> = ProxyIdentifier::new("MainThreadTesting");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_TESTING: ProxyIdentifier<dyn ExtHostTestingShape> = ProxyIdentifier::new("ExtHostTesting");
+    }
+}
+
+// #endregion

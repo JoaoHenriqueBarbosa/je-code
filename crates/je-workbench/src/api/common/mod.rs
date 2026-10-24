@@ -28,3 +28,9 @@ pub mod ext_host_editor_tabs;
 pub mod ext_host_telemetry;
 pub mod ext_host_status_bar;
 pub mod ext_host_diagnostics;
+
+// Testing: `extHostTesting.ts`, `extHostTestItem.ts` e os tipos e conversores de teste.
+pub mod ext_host_test_item;
+pub mod ext_host_testing;
+pub mod ext_host_testing_converters;
+pub mod ext_host_testing_types;
