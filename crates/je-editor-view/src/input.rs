@@ -165,6 +165,19 @@ impl EditorView {
         });
     }
 
+    /// Troca cada intervalo pelo texto dele numa edição só (o `Replace All` da busca), num passo de desfazer.
+    pub fn replace_ranges(&mut self, edits: Vec<(Range, String)>) {
+        if edits.is_empty() {
+            return;
+        }
+        self.run_command(|core| {
+            core.widget.push_undo_stop();
+            let ops = edits.into_iter().map(|(range, text)| je_editor::edit_operation::EditOperation::replace(range, Some(JsString::from(text.as_str())))).collect();
+            core.widget.execute_edits(je_editor::code_editor_widget::ExecuteEditsSource::Name(Some("find")), ops, None);
+            core.widget.push_undo_stop();
+        });
+    }
+
     pub fn set_cursor(&mut self, position: Position) {
         let p = self.model.validate_position(position);
         self.run_command(|core| core.widget.set_position(p, Some("keyboard")));

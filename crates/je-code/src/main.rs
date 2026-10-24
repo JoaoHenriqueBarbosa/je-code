@@ -1205,6 +1205,43 @@ mod tests {
     }
 
     #[test]
+    fn find_and_replace_replaces_one_and_all() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("replace.txt", "foo bar foo\nfoo-1 foo-22\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, mods: Modifiers, text: Option<&str>| shell.key(true, KeyCode::Unknown, mods, text, key);
+        let type_text = |shell: &mut Shell, text: &str| {
+            for c in text.chars() {
+                key(shell, None, Modifiers::default(), Some(&c.to_string()));
+            }
+        };
+        let line = |shell: &Shell, n: i32| shell.active_editor().expect("aba").view.model().get_line_content(n).to_string_lossy();
+        // Ctrl+H com a palavra sob o cursor (`foo`) já semeada: o teclado vai direto para a substituição.
+        shell.run(shell::Command::FindAndReplace);
+        type_text(&mut shell, "baz");
+        snapshot(&mut shell, "r0-replace.png");
+        // Enter na substituição troca a ocorrência atual (a primeira) e vai para a próxima.
+        key(&mut shell, Some(EditorKey::Enter), Modifiers::default(), None);
+        assert_eq!(line(&shell, 1), "baz bar foo");
+        // Ctrl+Alt+Enter troca todas as que sobraram.
+        key(&mut shell, Some(EditorKey::Enter), Modifiers { ctrl: true, alt: true, ..Modifiers::default() }, None);
+        assert_eq!((line(&shell, 1), line(&shell, 2)), ("baz bar baz".to_owned(), "baz-1 baz-22".to_owned()));
+        // Regex com grupo: `baz-(\d+)` vira `n$1`.
+        shell.run(shell::Command::FindClose);
+        shell.run(shell::Command::Find);
+        shell.run(shell::Command::FindToggleRegex);
+        type_text(&mut shell, "baz-(\\d+)");
+        shell.run(shell::Command::FindToggleReplace);
+        for _ in 0..3 {
+            key(&mut shell, Some(EditorKey::Backspace), Modifiers::default(), None);
+        }
+        type_text(&mut shell, "n$1");
+        shell.run(shell::Command::FindReplaceAll);
+        assert_eq!(line(&shell, 2), "n1 n22");
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

@@ -279,6 +279,11 @@ pub enum Command {
     FindToggleWord,
     FindToggleRegex,
     FindToggleReplace,
+    /// Ctrl+H: abre a busca com a linha de substituição.
+    FindAndReplace,
+    FindFocusReplace,
+    FindReplace,
+    FindReplaceAll,
     FindInSelection,
     /// Aceita a linha de índice dado do Quick Open ou da paleta.
     QuickPickAccept(usize),
@@ -1617,7 +1622,35 @@ impl Shell {
                 self.find_changed(true);
             }
             // A substituição e a busca na seleção ainda não existem: o botão não faz nada.
-            Command::FindToggleReplace | Command::FindInSelection => {}
+            Command::FindToggleReplace => {
+                if let Some(find) = &mut self.find {
+                    find.replace_visible = !find.replace_visible;
+                    find.in_replace = find.replace_visible;
+                }
+            }
+            Command::FindAndReplace => {
+                if self.find.is_none() {
+                    self.open_find();
+                }
+                if let Some(find) = &mut self.find {
+                    find.replace_visible = true;
+                    find.in_replace = !find.value.is_empty();
+                }
+                self.find_focused = true;
+            }
+            Command::FindFocusReplace => {
+                if let Some(find) = &mut self.find {
+                    find.in_replace = true;
+                }
+                self.find_focused = true;
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(false);
+                }
+            }
+            Command::FindReplace => self.find_replace(false),
+            Command::FindReplaceAll => self.find_replace(true),
+            // A busca na seleção ainda não existe: o botão não faz nada.
+            Command::FindInSelection => {}
             Command::Exit => {
                 self.exiting = true;
                 self.continue_exit();
@@ -2321,9 +2354,82 @@ impl Shell {
         self.needs_render = true;
     }
 
+    /// `Replace` troca a ocorrência atual e vai à próxima; `Replace All` troca todas numa edição só.
+    fn find_replace(&mut self, all: bool) {
+        let (Some(find), Some(active)) = (self.find.as_mut(), self.active) else { return };
+        let editor = &mut self.editors[active];
+        if find.version != editor.view.model().get_version_id() {
+            find.search(editor.view.model());
+        }
+        let model = editor.view.model().clone();
+        let text_of = |r: &je_editor::range::Range| model.get_value_in_range(r).to_string_lossy();
+        if all {
+            let edits: Vec<_> = find.matches.iter().map(|r| (*r, find.replacement_for(&text_of(r)))).collect();
+            let count = edits.len();
+            editor.view.replace_ranges(edits);
+            find.search(editor.view.model());
+            find.current = None;
+            editor.view.set_find_matches(find.matches.clone(), None);
+            if count > 0 {
+                self.notify(Severity::Info, format!("Replaced {count} occurrence{}.", if count == 1 { "" } else { "s" }));
+            }
+        } else {
+            // Sem ocorrência atual, a primeira a partir do cursor vira a atual antes de trocar.
+            let current = find.current.and_then(|i| find.matches.get(i)).copied().or_else(|| find.select_from(editor.view.cursor_position()));
+            if let Some(range) = current {
+                let replacement = find.replacement_for(&text_of(&range));
+                editor.view.replace_ranges(vec![(range, replacement)]);
+                find.search(editor.view.model());
+                let next = find.select_from(range.get_start_position());
+                editor.view.set_find_matches(find.matches.clone(), find.current);
+                if let Some(next) = next {
+                    editor.view.select_range(next);
+                }
+            }
+        }
+        self.needs_render = true;
+    }
+
     /// Trata uma tecla com o campo da busca focado. Devolve se consumiu.
     fn find_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let Some(find) = self.find.as_mut() else { return false };
+        // Tab alterna entre os campos da busca e da substituição.
+        if key == Some(EditorKey::Tab) && find.replace_visible {
+            find.in_replace = !find.in_replace;
+            self.needs_render = true;
+            return true;
+        }
+        if find.in_replace {
+            let ctrl = mods.ctrl || mods.meta;
+            match key {
+                Some(EditorKey::Escape) => self.close_find(),
+                Some(EditorKey::Enter) => self.find_replace(ctrl && mods.alt),
+                Some(EditorKey::Left) => find.replace_cursor = find.replace_cursor.saturating_sub(1),
+                Some(EditorKey::Right) => find.replace_cursor = (find.replace_cursor + 1).min(find.replace_value.len()),
+                Some(EditorKey::Home) => find.replace_cursor = 0,
+                Some(EditorKey::End) => find.replace_cursor = find.replace_value.len(),
+                Some(EditorKey::Backspace) if find.replace_cursor > 0 => {
+                    find.replace_value.remove(find.replace_cursor - 1);
+                    find.replace_cursor -= 1;
+                }
+                Some(EditorKey::Delete) if find.replace_cursor < find.replace_value.len() => {
+                    find.replace_value.remove(find.replace_cursor);
+                }
+                Some(_) => {}
+                None => {
+                    if (!ctrl || mods.alt)
+                        && let Some(text) = text
+                    {
+                        let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                        let at = find.replace_cursor;
+                        find.replace_cursor += inserted.len();
+                        find.replace_value.splice(at..at, inserted);
+                    }
+                }
+            }
+            self.needs_render = true;
+            return true;
+        }
         let ctrl = mods.ctrl || mods.meta;
         let mut changed = false;
         // Com a semente selecionada, digitar ou apagar começa de um valor vazio; as setas só tiram a seleção.
@@ -2396,7 +2502,7 @@ impl Shell {
 
     fn render_find(&self, chrome: NodeId) {
         let (Some(find), Some(editor)) = (&self.find, self.active_editor()) else { return };
-        let rect = FindWidget::rect(self.editor_rect(), editor.view.layout().minimap_width());
+        let rect = find.rect(self.editor_rect(), editor.view.layout().minimap_width());
         for (node, command) in find.render(&mut self.ui.tree_mut(), chrome, rect, self.find_focused, &self.theme) {
             self.listen_command(node, command);
         }
@@ -3787,6 +3893,7 @@ impl Shell {
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
             (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
             (true, false, false, KeyCode::KeyF) => Command::Find,
+            (true, false, false, KeyCode::KeyH) => Command::FindAndReplace,
             (true, false, false, KeyCode::KeyJ) => Command::TogglePanel,
             (true, false, false, KeyCode::Backslash) => Command::SplitEditor,
             (true, false, false, KeyCode::Digit1) => Command::FocusGroup(0),
@@ -3926,7 +4033,7 @@ impl Shell {
                 (true, KeyCode::KeyR) => Some(Command::FindToggleRegex),
                 _ => None,
             };
-            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::QuickOpen | Command::ShowCommands | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
+            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::FindAndReplace | Command::QuickOpen | Command::ShowCommands | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
             if let Some(command) = toggles.or(shortcut) {
                 self.run(command);
                 return;

@@ -20,6 +20,8 @@ use super::Command;
 
 pub const WIDTH: f64 = 419.0;
 pub const HEIGHT: f64 = 33.0;
+/// A altura com a linha de substituição.
+pub const HEIGHT_WITH_REPLACE: f64 = 62.0;
 /// A distância do topo da área do editor.
 pub const TOP: f64 = 4.0;
 /// O que fica à direita do widget: a barra de rolagem (14), o minimapa e mais 14 px de folga.
@@ -40,12 +42,17 @@ pub struct FindWidget {
     pub origin: Position,
     /// O valor inteiro está selecionado (a semente ao abrir): digitar o substitui.
     pub select_all: bool,
+    /// A linha de substituição aberta, o texto dela e se o teclado está nela (e não no campo da busca).
+    pub replace_visible: bool,
+    pub replace_value: Vec<char>,
+    pub replace_cursor: usize,
+    pub in_replace: bool,
 }
 
 impl FindWidget {
     pub fn new(seed: &str, origin: Position) -> Self {
         let value: Vec<char> = seed.chars().collect();
-        Self { cursor: value.len(), value, match_case: false, whole_word: false, regex: false, matches: Vec::new(), current: None, version: -1, origin, select_all: !seed.is_empty() }
+        Self { cursor: value.len(), value, match_case: false, whole_word: false, regex: false, matches: Vec::new(), current: None, version: -1, origin, select_all: !seed.is_empty(), replace_visible: false, replace_value: Vec::new(), replace_cursor: 0, in_replace: false }
     }
 
     pub fn text(&self) -> String {
@@ -86,6 +93,39 @@ impl FindWidget {
         Some(self.matches[next])
     }
 
+    /// O texto que troca a ocorrência `matched` (a busca com regex expande `$&`, `$1`...`$9` e `$$`).
+    pub fn replacement_for(&self, matched: &str) -> String {
+        let template: String = self.replace_value.iter().collect();
+        if !self.regex {
+            return template;
+        }
+        let flags = if self.match_case { "u" } else { "iu" };
+        let Ok(regexp) = je_base::js_regexp::JsRegExp::from_str(&self.text(), flags) else { return template };
+        let units: Vec<u16> = matched.encode_utf16().collect();
+        let Some(found) = regexp.exec(&units) else { return template };
+        let group = |n: usize| found.captures.get(n).cloned().flatten().map(|r| String::from_utf16_lossy(&units[r])).unwrap_or_default();
+        let mut out = String::new();
+        let mut chars = template.chars().peekable();
+        while let Some(c) = chars.next() {
+            match (c, chars.peek().copied()) {
+                ('$', Some('$')) => {
+                    chars.next();
+                    out.push('$');
+                }
+                ('$', Some('&')) => {
+                    chars.next();
+                    out.push_str(&group(0));
+                }
+                ('$', Some(d)) if d.is_ascii_digit() && d != '0' => {
+                    chars.next();
+                    out.push_str(&group(d as usize - '0' as usize));
+                }
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
     /// O texto do contador.
     pub fn count_label(&self) -> String {
         if self.value.is_empty() {
@@ -99,9 +139,10 @@ impl FindWidget {
     }
 
     /// O retângulo do widget numa área de editor de `editor` (coordenadas da janela) e do minimapa de `minimap_width`.
-    pub fn rect(editor: Rect, minimap_width: f64) -> Rect {
+    pub fn rect(&self, editor: Rect, minimap_width: f64) -> Rect {
         let right = editor.x1 - 14.0 - minimap_width - 14.0;
-        Rect::new(right - WIDTH, editor.y0 + TOP, right, editor.y0 + TOP + HEIGHT)
+        let height = if self.replace_visible { HEIGHT_WITH_REPLACE } else { HEIGHT };
+        Rect::new(right - WIDTH, editor.y0 + TOP, right, editor.y0 + TOP + height)
     }
 
     /// Monta o widget como filho de `parent` na posição `rect` e devolve os nós clicáveis.
@@ -127,14 +168,16 @@ impl FindWidget {
             hits.push((node, command));
         };
         // O botão de expandir a substituição.
-        button(tree, &mut hits, Rect::new(5.0, 4.0, 23.0, 27.0), "chevron-right", 16.0, color("icon.foreground"), Command::FindToggleReplace, 4.0);
+        let toggle_bottom = if self.replace_visible { 56.0 } else { 27.0 };
+        button(tree, &mut hits, Rect::new(5.0, 4.0, 23.0, toggle_bottom), if self.replace_visible { "chevron-down" } else { "chevron-right" }, 16.0, color("icon.foreground"), Command::FindToggleReplace, 4.0);
         // O campo.
         let input = tree.create(widget, Role::TextInput);
         tree.set_bounds(input, Rect::new(26.0, 3.0, 242.0, 28.0));
         let style = tree.style_mut(input);
         style.background = Some(color("input.background"));
         let no_results = !self.value.is_empty() && self.matches.is_empty();
-        let border = if no_results { color("inputValidation.errorBorder") } else if focused { color("focusBorder") } else { color("input.border") };
+        let find_focused = focused && !self.in_replace;
+        let border = if no_results { color("inputValidation.errorBorder") } else if find_focused { color("focusBorder") } else { color("input.border") };
         style.border = Some(Border { width: 1.0, color: border });
         style.radius = 4.0;
         let text = tree.create(input, Role::Generic);
@@ -145,7 +188,7 @@ impl FindWidget {
         } else {
             tree.style_mut(text).content = Content::Text { text: shown, style: font.clone(), color: foreground, line_height: 23.0 };
         }
-        if focused && self.select_all && !self.value.is_empty() {
+        if find_focused && self.select_all && !self.value.is_empty() {
             let width = measure_text(&self.text(), &font);
             let selection = tree.create(input, Role::Generic);
             tree.set_bounds(selection, Rect::new(6.0, 3.0, 6.0 + width, 20.0));
@@ -153,7 +196,7 @@ impl FindWidget {
             // O texto fica por cima da seleção.
             tree.insert_before(input, text, None);
         }
-        if focused {
+        if find_focused {
             let before: String = self.value[..self.cursor].iter().collect();
             let x = 6.0 + measure_text(&before, &font);
             let caret = tree.create(input, Role::Generic);
@@ -187,6 +230,33 @@ impl FindWidget {
         button(tree, &mut hits, Rect::new(342.0, 4.5, 364.0, 26.5), "arrow-down", 16.0, enabled, Command::FindNext, 5.0);
         button(tree, &mut hits, Rect::new(366.0, 4.5, 388.0, 26.5), "selection", 16.0, icon_color, Command::FindInSelection, 5.0);
         button(tree, &mut hits, Rect::new(391.0, 5.0, 413.0, 27.0), "close", 16.0, icon_color, Command::FindClose, 5.0);
+        if self.replace_visible {
+            // A linha de substituição (`.replace-part`): o campo e os botões Replace e Replace All.
+            let input = tree.create(widget, Role::TextInput);
+            tree.set_bounds(input, Rect::new(26.0, 32.0, 242.0, 57.0));
+            hits.push((input, Command::FindFocusReplace));
+            let style = tree.style_mut(input);
+            style.background = Some(color("input.background"));
+            style.border = Some(Border { width: 1.0, color: if focused && self.in_replace { color("focusBorder") } else { color("input.border") } });
+            style.radius = 4.0;
+            let text = tree.create(input, Role::Generic);
+            tree.set_bounds(text, Rect::new(6.0, 0.0, 180.0, 23.0));
+            let value: String = self.replace_value.iter().collect();
+            if value.is_empty() {
+                tree.style_mut(text).content = Content::Text { text: "Replace".to_owned(), style: ui_font(12.0, 400), color: color("input.placeholderForeground"), line_height: 23.0 };
+            } else {
+                tree.style_mut(text).content = Content::Text { text: value, style: ui_font(12.0, 400), color: foreground, line_height: 23.0 };
+            }
+            if focused && self.in_replace {
+                let before: String = self.replace_value[..self.replace_cursor].iter().collect();
+                let x = 6.0 + measure_text(&before, &ui_font(12.0, 400));
+                let caret = tree.create(input, Role::Generic);
+                tree.set_bounds(caret, Rect::new(x, 4.0, x + 1.0, 18.0));
+                tree.style_mut(caret).background = Some(foreground);
+            }
+            button(tree, &mut hits, Rect::new(246.0, 33.5, 268.0, 55.5), "replace", 16.0, enabled, Command::FindReplace, 5.0);
+            button(tree, &mut hits, Rect::new(271.0, 33.5, 293.0, 55.5), "replace-all", 16.0, enabled, Command::FindReplaceAll, 5.0);
+        }
         hits
     }
 }
