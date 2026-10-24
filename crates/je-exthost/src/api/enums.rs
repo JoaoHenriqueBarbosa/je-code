@@ -92,5 +92,30 @@ pub fn enums() -> Vec<(String, JsData)> {
             "QuickInputButtons".to_owned(),
             JsData::Object(vec![("Back".to_owned(), JsData::Object(vec![("iconPath".to_owned(), api_to_js(&ThemeIcon::from_id("arrow-left")))]))]),
         ),
+        // Os valores do `vscode.d.ts` e de `extHostTypes.ts` (`ViewColumn`, `EndOfLine`, `TextEditorRevealType`,
+        // `TextEditorSelectionChangeKind`, `TextDocumentChangeReason`).
+        (
+            "ViewColumn".to_owned(),
+            enum_object(&[
+                ("Active", -1),
+                ("Beside", -2),
+                ("One", 1),
+                ("Two", 2),
+                ("Three", 3),
+                ("Four", 4),
+                ("Five", 5),
+                ("Six", 6),
+                ("Seven", 7),
+                ("Eight", 8),
+                ("Nine", 9),
+            ]),
+        ),
+        ("EndOfLine".to_owned(), enum_object(&[("LF", 1), ("CRLF", 2)])),
+        (
+            "TextEditorRevealType".to_owned(),
+            enum_object(&[("Default", 0), ("InCenter", 1), ("InCenterIfOutsideViewport", 2), ("AtTop", 3)]),
+        ),
+        ("TextEditorSelectionChangeKind".to_owned(), enum_object(&[("Keyboard", 1), ("Mouse", 2), ("Command", 3)])),
+        ("TextDocumentChangeReason".to_owned(), enum_object(&[("Undo", 1), ("Redo", 2)])),
     ]
 }

@@ -3,13 +3,15 @@
 //!
 //! Entregue: `name`, `rootPath`, `workspaceFolders`, `workspaceFile`, `isTrusted`, `getWorkspaceFolder`, `asRelativePath`,
 //! `getConfiguration` (`get`, `has`, `update`, `inspect` e os valores como propriedades), `findFiles`,
-//! `onDidChangeConfiguration`, `onDidChangeWorkspaceFolders`, `onDidGrantWorkspaceTrust`.
+//! `onDidChangeConfiguration`, `onDidChangeWorkspaceFolders`, `onDidGrantWorkspaceTrust`, e, quando o binder registrou
+//! `MainThreadDocuments` e `MainThreadTextEditors`, `textDocuments`, `openTextDocument`, `onDidOpenTextDocument`,
+//! `onDidCloseTextDocument`, `onDidChangeTextDocument` e `onDidSaveTextDocument` (módulo `text_editors`).
 //!
 //! Falta (cada um depende de um serviço do host ainda não portado, e não é preenchido com fachada):
 //! - `fs`, `createFileSystemWatcher`, `onDid/WillCreate/Delete/RenameFiles`, `registerFileSystemProvider`, `applyEdit`: pedem o
 //!   `ExtHostConsumerFileSystem`, o `ExtHostFileSystemEventService` ligado e o `MainThreadFileSystem`/`MainThreadBulkEdits`;
-//! - `openTextDocument`, `textDocuments`, `onDidOpen/Close/Change/SaveTextDocument`, `registerTextDocumentContentProvider`: pedem o
-//!   `ExtHostDocumentsAndEditors` com o `MainThreadDocumentsAndEditors` (modelo, editores e arquivos de texto) montados em processo;
+//! - `onWillSaveTextDocument`, `registerTextDocumentContentProvider`: pedem o `ExtHostDocumentSaveParticipant` e o
+//!   `ExtHostDocumentContentProvider` ligados;
 //! - `updateWorkspaceFolders`, `findTextInFiles`, `save`, `saveAll`, `requestWorkspaceTrust`, `getCanonicalUri`, `decode`/`encode`,
 //!   `registerTaskProvider` e as propostas: o serviço do host os tem, falta só a ponte.
 //!
@@ -41,6 +43,7 @@ use crate::api::commands::promise_to_js;
 use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::accessor_namespace;
+use crate::api::text_editors::{self, TextEditorApi};
 use crate::api::HOST_EXTENSION;
 use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
 
@@ -48,6 +51,9 @@ use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic
 pub struct WorkspaceServices {
     pub workspace: Rc<ExtHostWorkspace>,
     pub configuration: Rc<ExtHostConfiguration>,
+    /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `textDocuments`, `openTextDocument` nem os eventos de
+    /// documento.
+    pub text_editors: Option<TextEditorApi>,
 }
 
 /// Uma pasta como o objeto `vscode.WorkspaceFolder` (ver as divergências do módulo).
@@ -311,6 +317,11 @@ pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<D
                 }))
             }),
         ));
+    }
+    if let Some(text_editors) = &services.text_editors {
+        let (document_methods, document_getters) = text_editors::workspace_members(runner, text_editors, table);
+        methods.extend(document_methods);
+        getters.extend(document_getters);
     }
     accessor_namespace(runner, "workspace", methods, getters)
 }

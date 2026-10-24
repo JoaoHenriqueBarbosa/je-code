@@ -7,11 +7,14 @@
 //! proxy `MainThreadMessageService`; a barra de status liga o `ExtHostStatusBar` portado; os seletores ligam o `ExtHostQuickOpen`
 //! (módulo `quick_input`), os canais de saída o `ExtHostOutputService` (módulo `output_channel`) e o progresso o `ExtHostProgress`
 //! (módulo `progress`). Cada grupo só entra em `vscode.window` se o binder registrou o cliente `MainThread*` de que ele depende.
+//! Os editores de texto (`activeTextEditor`, `visibleTextEditors`, `showTextDocument` e os eventos `onDidChange*TextEditor*`) são o
+//! módulo `text_editors`, sobre o `ExtHostDocumentsAndEditors` e o `ExtHostEditors`; como eles têm acessores, o namespace é uma
+//! instância de classe nativa (`accessor_namespace`) com as funções no protótipo.
 //!
 //! Falta (depende de serviços do host ainda não ligados, sem fachada): `createQuickPick` e `createInputBox` (o `ExtHostQuickOpen` os
-//! tem, falta expor os objetos de sessão); `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`,
-//! `showTextDocument` (o `ExtHostDocumentsAndEditors`, ver o cabeçalho de `workspace.rs`); `tabGroups`, `createTreeView`,
-//! `createWebviewPanel`, `createTerminal` e os registros de provedores.
+//! tem, falta expor os objetos de sessão); `createTextEditorDecorationType` e `TextEditor#insertSnippet`/`setDecorations` (ver o
+//! cabeçalho de `text_editors.rs`); `tabGroups`, `createTreeView`, `createWebviewPanel`, `createTerminal` e os registros de
+//! provedores.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões: a `source` da notificação (`{ identifier, label }`) não é preenchida, porque o host
@@ -50,6 +53,8 @@ use crate::api::events::EventTables;
 use crate::api::output_channel::{self, OutputChannels};
 use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
+use crate::api::text_editors::{self, TextEditorApi, TextObjects};
+use crate::api::accessor_namespace;
 use crate::convert::{api_to_js, dynamic_to_js, field, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg};
 
 /// Os serviços do host que o namespace usa. Cada grupo de membros de `vscode.window` só existe quando o serviço dele existe: o
@@ -66,6 +71,9 @@ pub struct WindowServices {
     pub output: Option<Rc<ExtHostOutputService>>,
     /// Sem o cliente `MainThreadProgress` não há `withProgress`.
     pub progress: Option<Rc<ExtHostProgress>>,
+    /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `activeTextEditor`, `visibleTextEditors`,
+    /// `showTextDocument` nem os eventos de editor.
+    pub text_editors: Option<TextEditorApi>,
 }
 
 /// `isMessageItem(item)`: um objeto com `title` não vazio.
@@ -322,12 +330,17 @@ pub struct WindowState {
     pub status_items: Rc<StatusBarItems>,
     pub output_channels: Rc<OutputChannels>,
     pub progress_reporters: Rc<ProgressReporters>,
+    /// Os documentos, editores e construtores de edição de texto (compartilhados com `workspace`).
+    pub text_objects: Rc<TextObjects>,
 }
 
 /// O namespace `window`.
 pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<DisposableTable>, events: &Rc<EventTables>, state: &WindowState) -> JsData {
-    let mut members: Vec<(String, JsData)> = Vec::new();
-    let mut add = |name: &str, length: u32, body: NativeCallback| members.push((name.to_owned(), JsData::Handle(Rc::new(runner.make_function(name, length, body)))));
+    // Os acessores (`activeTextEditor`, `onDidChangeActiveTextEditor`...) pedem o protótipo de uma classe nativa: o namespace é a
+    // instância dela (ver `accessor_namespace`), e as funções moram no protótipo.
+    let mut methods: Vec<(String, u32, MethodCallback)> = Vec::new();
+    let mut getters: Vec<(String, MethodCallback)> = Vec::new();
+    let mut add = |name: &str, length: u32, body: NativeCallback| methods.push((name.to_owned(), length, Rc::new(move |_: &JsData, args: &[JsData]| body(args))));
 
     if let Some(message_service) = services.message_service.clone() {
         for (name, severity) in [("showInformationMessage", Severity::Info), ("showWarningMessage", Severity::Warning), ("showErrorMessage", Severity::Error)] {
@@ -389,14 +402,21 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
             }),
         );
     }
-    JsData::Object(members)
+    if let Some(text_editors) = &services.text_editors {
+        let (editor_methods, editor_getters) = text_editors::window_members(runner, text_editors, table);
+        methods.extend(editor_methods);
+        getters.extend(editor_getters);
+    }
+    accessor_namespace(runner, "window", methods, getters)
 }
 
-/// As classes deste módulo: `ThemeColor`, o protótipo de `StatusBarItem`, os de `OutputChannel` e `LogOutputChannel` e o de `Progress`.
+/// As classes deste módulo: `ThemeColor`, o protótipo de `StatusBarItem`, os de `OutputChannel` e `LogOutputChannel`, o de `Progress` e
+/// os de `TextDocument`, `TextEditor` e `TextEditorEdit`.
 pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTable>) -> Vec<(String, JsData)> {
     let _status_bar_item = define_status_bar_item(runner, &state.status_items, table);
     output_channel::define_classes(runner, &state.output_channels, table);
     progress::define_class(runner, &state.progress_reporters);
+    text_editors::define_classes(runner, &state.text_objects);
     let theme_color = runner.define_class(ClassSpec {
         name: "ThemeColor".to_owned(),
         length: 1,

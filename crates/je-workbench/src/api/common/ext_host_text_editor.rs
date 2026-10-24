@@ -771,6 +771,12 @@ impl EditorState {
 }
 
 impl TextEditor {
+    /// O identificador do editor (`ExtHostTextEditor#id`). O original compara editores pela identidade do objeto; quem não pode
+    /// guardar o objeto (a ponte do host de extensões para o motor JavaScript) os identifica por ele.
+    pub fn id(&self) -> &str {
+        &self.0.id
+    }
+
     pub fn document(&self) -> TextDocument {
         self.0.document.value()
     }

@@ -140,8 +140,38 @@ Fonte: **eu** (leitura de `crates/je-exthost/src/api/window.rs` e dos módulos c
 | `withProgress` (`ProgressLocation`, `{ viewId }`, `title`, `cancellable`, `progress.report`, token) | entregue | `api/progress.rs`, sobre `ExtHostProgress` |
 | `QuickPickItemKind`, `InputBoxValidationSeverity`, `QuickInputButtons`, `ProgressLocation`, `LogLevel` | entregue | `api/enums.rs` |
 | `createQuickPick`, `createInputBox` | falta | o `ExtHostQuickOpen` os tem; faltam os objetos de sessão com acessores de leitura e escrita |
-| `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`, `showTextDocument` | falta | pedem o `ExtHostDocumentsAndEditors` montado em processo |
+| `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`, `onDidChangeVisibleTextEditors`, `showTextDocument` | entregue | `api/text_editors.rs`, sobre `ExtHostDocumentsAndEditors`, `ExtHostEditors` e `MainThreadDocumentsAndEditors` |
+| `onDidChangeTextEditorSelection`, `onDidChangeTextEditorOptions`, `onDidChangeTextEditorVisibleRanges`, `onDidChangeTextEditorViewColumn` | entregue | `api/text_editors.rs` |
+| `TextEditor` (`document`, `selection`, `selections`, `options`, `visibleRanges`, `viewColumn`, `edit` com `TextEditorEdit`, `revealRange`, `show`, `hide`) | entregue | `api/text_editors.rs` |
+| `TextEditor#insertSnippet`, `setDecorations`, `createTextEditorDecorationType` | falta | pedem `SnippetString` e as decorações de ponta a ponta |
 | `tabGroups`, `createTreeView`, `createWebviewPanel`, `createTerminal` e os provedores | falta | |
+
+Em `workspace` (mesmo módulo de ponte): `textDocuments`, `openTextDocument` (`Uri`, caminho e opções `{ language, content, encoding }`), `onDidOpenTextDocument`,
+`onDidCloseTextDocument`, `onDidChangeTextDocument` e `onDidSaveTextDocument` entregues; `onWillSaveTextDocument` e `registerTextDocumentContentProvider` faltam.
+
+## Estado da entrega de `env` e `extensions` (2026-10-24, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `api/env.rs`, `api/extensions.rs` e do oráculo `extHost.api.impl.ts`). Nenhum número de ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `env.appName`, `appRoot`, `language`, `machineId`, `sessionId`, `uriScheme`, `shell`, `uiKind` | entregue (valores do `HostEnvironment` que o binder entrega, no lugar do `initData`) | `api/env.rs` |
+| `env.clipboard.readText`, `writeText` | entregue (direto no `IClipboardService`: `ExtHostClipboard` e `MainThreadClipboard` não estão portados) | `api/env.rs` |
+| `env.openExternal` | entregue, sem teste (sobre `ExtHostWindow`; pede o cliente `MainThreadWindow`, ainda não portado) | `api/env.rs` |
+| `env.asExternalUri`, `remoteName`, `isTelemetryEnabled`, `logLevel`, `createTelemetryLogger` e as propostas | falta | |
+| `extensions.all`, `getExtension(id)` | entregue | `api/extensions.rs`, sobre os registros do `ExtHostExtensionService` |
+| `Extension` (`id`, `extensionUri`, `extensionPath`, `packageJSON`, `extensionKind`, `isFromDifferentExtensionHost`, `isActive`, `exports`, `activate()`) | entregue | `api/extensions.rs` |
+| `extensions.onDidChange`, `allAcrossExtensionHosts` | falta | o registro do porte não expõe o evento; a segunda é proposta |
+
+Os testes de ponta a ponta estão em `crates/je-workbench/tests/extension_host_api_text_editors.rs` (monta o `MainThreadDocumentsAndEditors` real sobre o
+`ModelService` e um `TestCodeEditorService`) e `extension_host_api_env_extensions.rs` (binder com ambiente e área de transferência, e o registro de
+extensões real). O `showTextDocument` que resolve um editor e o `openTextDocument` de um recurso sem modelo não têm teste (pedem um `IEditorPane` e um
+`ITextModelService` completos).
+
+Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): `TextDocument`, `TextEditor` e `Extension` são instâncias de classes
+nativas com um `_id` (a identidade `a.document === b.document` falha, comparar por `uri.toString()` funciona); documentos e editores que já atravessaram a
+fronteira ficam guardados até o host parar; `TextEditor#options` devolve cópia (só `editor.options = {...}` tem efeito); `getWordRangeAtPosition` não aceita
+`regexp`; `packageJSON` e `exports` são cópias novas a cada leitura.
 
 Como cada grupo entra em `vscode.window`: o `IMainThreadBinder` registra o cliente `MainThread*` correspondente (`MainThreadQuickOpen`,
 `MainThreadOutputService`, `MainThreadProgress`, além de `MainThreadMessageService` e `MainThreadStatusBar` que já existiam). Para os canais
