@@ -16,7 +16,7 @@ pub enum TextMateScope {
 
 impl TextMateScope {
     /// A veracidade (`!rule.scope`) em JavaScript: a string vazia é falsa, o vetor (mesmo vazio) é verdadeiro.
-    fn is_truthy(&self) -> bool {
+    pub(crate) fn is_truthy(&self) -> bool {
         match self {
             TextMateScope::One(scope) => !scope.is_empty(),
             TextMateScope::Many(_) => true,
