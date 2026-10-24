@@ -32,6 +32,7 @@ use je_base::uri::URI;
 use je_instantiation::service_id;
 use je_platform::files::files::{FileStatWithMetadata, WriteFileOptions};
 
+use super::model::notebook_cell_text_model::NotebookCellTextModel;
 use super::model::notebook_text_model::NotebookTextModel;
 use crate::services::working_copy::file_working_copy::SnapshotContext;
 use super::notebook_common::{
@@ -98,7 +99,26 @@ pub trait INotebookService {
     fn register_contributed_notebook_type(&self, view_type: &str, data: INotebookContributionData) -> DisposableRef;
     fn has_supported_notebooks(&self, resource: &URI) -> bool;
     fn get_notebook_provider_resource_roots(&self) -> Vec<URI>;
+
+    /// `setToCopy(items, isCopy)`. O padrão lança `TypeError`, como o membro ausente do `mock<INotebookService>()` do original; quem
+    /// guarda a área de transferência de células sobrescreve (o serviço de notebook).
+    fn set_to_copy(&self, _items: Vec<Rc<NotebookCellTextModel>>, _is_copy: bool) {
+        je_base::errors::throw(Error::type_error("setToCopy is not a function"))
+    }
+
+    /// `getToCopy()`. O padrão lança `TypeError` (ver [`INotebookService::set_to_copy`]).
+    fn get_to_copy(&self) -> Option<NotebookCellsToCopy> {
+        je_base::errors::throw(Error::type_error("getToCopy is not a function"))
+    }
+
     fn clear_editor_cache(&self);
+}
+
+/// `{ items: NotebookCellTextModel[]; isCopy: boolean }`.
+#[derive(Clone)]
+pub struct NotebookCellsToCopy {
+    pub items: Vec<Rc<NotebookCellTextModel>>,
+    pub is_copy: bool,
 }
 
 service_id!(pub I_NOTEBOOK_SERVICE: dyn INotebookService = "notebookService");
