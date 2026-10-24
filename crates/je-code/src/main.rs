@@ -863,6 +863,16 @@ mod tests {
         let editor = shell.active_editor().expect("aba");
         assert_eq!(editor.view.model().get_language_id(), "rust");
         assert_eq!(editor.language_name, "Rust");
+        // Indentação pela barra de status: tabulações de tamanho 2.
+        shell.run(shell::Command::PickIndentation);
+        key(&mut shell, Some(EditorKey::Down), None);
+        key(&mut shell, Some(EditorKey::Enter), None);
+        for _ in 0..2 {
+            key(&mut shell, Some(EditorKey::Up), None);
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let options = shell.active_editor().expect("aba").view.model().get_options();
+        assert_eq!((options.insert_spaces, options.tab_size), (false, 2));
         shell.run(shell::Command::PickEol);
         key(&mut shell, Some(EditorKey::Down), None);
         key(&mut shell, Some(EditorKey::Enter), None);

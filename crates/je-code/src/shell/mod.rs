@@ -205,6 +205,12 @@ pub enum Command {
     OpenSettingsJson,
     OpenKeybindingsJson,
     PickEol,
+    PickIndentation,
+    /// `Indent Using Spaces` (true) ou `Tabs` (false): pede o tamanho em seguida.
+    PickIndentSize(bool),
+    SetIndentation(bool, i32),
+    DetectIndentation,
+    ToggleMaximizedPanel,
     SetEol(bool),
     PickLanguage,
     SetLanguage(String),
@@ -415,6 +421,8 @@ pub struct Shell {
     panel_visible: bool,
     panel_tab: PanelTab,
     panel_height: f64,
+    /// A altura de antes de maximizar o painel.
+    panel_restore_height: Option<f64>,
     terminal: Option<je_terminal::Terminal>,
     terminal_focused: bool,
     /// A pasta em que o próximo terminal abre (`Open in Integrated Terminal`).
@@ -560,6 +568,7 @@ impl Shell {
             panel_visible: false,
             panel_tab: PanelTab::Terminal,
             panel_height: DEFAULT_PANEL_HEIGHT,
+            panel_restore_height: None,
             terminal: None,
             terminal_focused: false,
             workspace_for_terminal: None,
@@ -1431,6 +1440,49 @@ impl Shell {
                     }
                     None => self.notify(Severity::Error, "Não achei a pasta de dados do usuário.".to_owned()),
                 }
+            }
+            Command::PickIndentation => {
+                let items = vec![
+                    PickItem { label: "Indent Using Spaces".to_owned(), description: Some("change view".to_owned()), keybinding: None, command: Command::PickIndentSize(true), recent: false },
+                    PickItem { label: "Indent Using Tabs".to_owned(), description: Some("change view".to_owned()), keybinding: None, command: Command::PickIndentSize(false), recent: false },
+                    PickItem { label: "Detect Indentation from Content".to_owned(), description: Some("change view".to_owned()), keybinding: None, command: Command::DetectIndentation, recent: false },
+                ];
+                self.quick_pick = Some(QuickPick::list(items, "Select Action"));
+                self.ui.blur();
+            }
+            Command::PickIndentSize(spaces) => {
+                let current = self.active_editor().map_or(4, |e| e.view.model().get_options().tab_size);
+                let mut items: Vec<PickItem> = (1..=8).map(|n| PickItem { label: n.to_string(), description: (n == current).then(|| "Configured Tab Size".to_owned()), keybinding: None, command: Command::SetIndentation(spaces, n), recent: false }).collect();
+                let at = items.iter().position(|i| i.description.is_some()).unwrap_or(3);
+                let mut pick = QuickPick::list(items, "Select Tab Size for the current file");
+                pick.move_focus(at as isize);
+                self.quick_pick = Some(pick);
+                self.ui.blur();
+            }
+            Command::SetIndentation(spaces, size) => {
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.model().update_options(je_editor::model::TextModelUpdateOptions { tab_size: Some(size), indent_size: Some(je_editor::model::IndentSize::Size(size)), insert_spaces: Some(spaces), ..Default::default() });
+                    editor.view.mark_dirty();
+                }
+            }
+            Command::DetectIndentation => {
+                if let Some(editor) = self.active_editor_mut() {
+                    let options = editor.view.model().get_options();
+                    editor.view.model().detect_indentation(options.insert_spaces, options.tab_size);
+                    editor.view.mark_dirty();
+                }
+            }
+            Command::ToggleMaximizedPanel => {
+                // Maximizar o painel é dar a ele a altura toda das partes, menos o mínimo do grupo de editores.
+                let full = (self.parts_bottom() - TITLE_HEIGHT - SASH - 80.0).max(80.0);
+                if self.panel_height >= full - 1.0 {
+                    self.panel_height = self.panel_restore_height.unwrap_or(DEFAULT_PANEL_HEIGHT);
+                } else {
+                    self.panel_restore_height = Some(self.panel_height);
+                    self.panel_height = full;
+                }
+                self.panel_visible = true;
+                self.resize_editors();
             }
             Command::PickEol => {
                 let items = [("LF", false), ("CRLF", true)].map(|(label, crlf)| PickItem { label: label.to_owned(), description: None, keybinding: None, command: Command::SetEol(crlf), recent: false }).to_vec();
@@ -2896,7 +2948,7 @@ impl Shell {
         // À direita: maximizar e fechar sempre; o terminal ativo e as ações dele só na aba Terminal.
         let inner = rect.width() - 2.0;
         let terminal_tab = self.panel_tab == PanelTab::Terminal;
-        let mut icons: Vec<(&str, f64, Option<Command>)> = vec![("close", inner - 28.0, Some(Command::TogglePanel)), ("screen-full", inner - 54.0, None)];
+        let mut icons: Vec<(&str, f64, Option<Command>)> = vec![("close", inner - 28.0, Some(Command::TogglePanel)), ("screen-full", inner - 54.0, Some(Command::ToggleMaximizedPanel))];
         if terminal_tab {
             icons.extend([("ellipsis", inner - 80.0, None), ("trash", inner - 106.0, Some(Command::KillTerminal)), ("split-horizontal", inner - 132.0, None)]);
         }
@@ -3472,7 +3524,7 @@ impl Shell {
             let eol = if model.get_eol() == je_editor::model::Eol::CrLf { "CRLF" } else { "LF" };
             let indent = if options.insert_spaces { format!("Spaces: {}", options.indent_size) } else { format!("Tab Size: {}", options.tab_size) };
             items.push((vec![Piece::Text(editor.view.status_text())], Some(Command::PromptGoToLine)));
-            items.push((vec![Piece::Text(indent)], None));
+            items.push((vec![Piece::Text(indent)], Some(Command::PickIndentation)));
             items.push((vec![Piece::Text("UTF-8".to_owned())], None));
             items.push((vec![Piece::Text(eol.to_owned())], Some(Command::PickEol)));
             items.push((vec![Piece::Icon("json")], Some(Command::PickLanguage)));
