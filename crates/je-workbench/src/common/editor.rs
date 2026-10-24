@@ -128,6 +128,12 @@ pub trait IEditorPane {
 
     /// `onDidChangeControl`: an event to notify whenever the control of the pane changes.
     fn on_did_change_control(&self) -> je_base::event::Event<()>;
+
+    /// `getId()`: the identifier of the editor pane (`IComposite.getId`). Tem implementação padrão para não quebrar quem
+    /// implementa só o recorte acima: lança o erro `Method not implemented.` do dublê do original.
+    fn get_id(&self) -> String {
+        je_base::errors::throw(je_base::errors::Error::new("Method not implemented."))
+    }
 }
 
 /// `EditorPaneSelectionChangeReason`.

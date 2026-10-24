@@ -19,11 +19,14 @@
 //!   `IContextKeyService` escopado) é o próprio `InstantiationService`, porque o modelo do grupo só lê a configuração.
 //! - **Context keys.** `handleContextKeys` (`editorAreaFocus`, `multipleEditorGroups`, `editorPartMaximizedEditorGroup`,
 //!   `editorTabsVisible`, `isTopRightEditorGroup`) depende de `common/contextkeys.ts`, ainda não portado. O provider de
-//!   context key e os conjuntos de trabalho (`applyState`, `createState` entra) esperam a `closeAllEditors` e a `openEditors`
-//!   do grupo (fatia 3), assim como `sideGroup`, que precisa de `openEditor`: ficam com o padrão que lança `Method not
+//!   context key e os conjuntos de trabalho (`applyState`; `createState` entra) ficam com o padrão que lança `Method not
 //!   implemented.` do contrato.
-//! - **`whenRestored`.** O original espera o `whenRestored` de cada grupo (a restauração dos editores); nesta fatia os grupos
-//!   não abrem editores, então `whenRestored` completa junto com `whenReady`.
+//! - **`groupsView` dos grupos.** Cada [`EditorGroupView`] recebe o [`EditorGroupsView`] da parte (`PartGroupsView`, que
+//!   delega aos métodos privados daqui), que faz o papel do `IEditorGroupsView` e do `IEditorPartsView` do original.
+//! - **`sideGroup`.** `findGroup(accessor, { editor, options }, SIDE_GROUP)` roda no `InstantiationService` da parte, que
+//!   precisa ter o `IEditorGroupsService` (no original o `scopedInstantiationService` tem o serviço de grupos).
+//! - **`whenRestored`.** O original espera o `whenRestored` de cada grupo (a restauração dos editores); aqui `whenRestored`
+//!   completa junto com `whenReady` (a restauração dos editores de cada grupo é a promessa [`EditorGroupView::when_restored`]).
 //! - **Eventos de tamanho.** `onDidChange`, `onDidChangeSizeConstraints` e `minimumWidth` (o `Part`) não existem; `onDidScroll`
 //!   existe. `onDidChangeEditorPartOptions` e a comparação `assert.strictEqual(oldOptions, currentOptions)` do original são
 //!   por valor ([`EditorPartOptions`] é `PartialEq`).
@@ -38,11 +41,12 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use je_base::JsString;
+use je_base::async_::async_fn;
 use je_base::dynamic::{Dynamic, ObjectRef, Truthy};
 use je_base::errors::{self, Error, throw};
 use je_base::event::{Emitter, Event, PauseableEmitter, Relay, any};
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, to_disposable};
-use je_base::promise::{DeferredPromise, Promise};
+use je_base::promise::{DeferredPromise, MaybePromise, Promise};
 use je_editor::core_2d::dimension::Dimension;
 use je_instantiation::InstantiationService;
 use je_platform::configuration::service::IConfigurationService;
@@ -57,16 +61,17 @@ use je_widgets::gridview::{GridNode, GridViewRef, GridViewView, SerializedNode, 
 use je_widgets::sash::BoundarySashes;
 
 use crate::browser::parts::editor::editor::{EditorPartCreationOptions, assign_part_options, get_editor_part_options, impacts_editor_part_options};
-use crate::browser::parts::editor::editor_group_view::{ContextKeyTarget, EditorGroupSource, EditorGroupView};
+use crate::browser::parts::editor::editor_group_view::{ContextKeyTarget, EditorGroupSource, EditorGroupView, EditorGroupsView};
 use crate::common::editor::editor_group_model::{
     EditorOrIndex, SerializedEditorGroupModel, SerializedEditorInput, is_serialized_editor_group_model,
 };
-use crate::common::editor::{EditorInputOrUntyped, EditorInputWithOptions, GroupIdentifier, GroupModelChangeKind, TextEditorOptions};
+use crate::common::editor::{EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, GroupIdentifier, GroupModelChangeKind, IEditorPane, TextEditorOptions};
 use crate::common::memento::Memento;
+use crate::services::editor::editor_group_finder::{FindGroupEditor, find_group};
 use crate::services::editor::editor_groups_service::{
     EditorGroupActivationEvent, EditorGroupLayout, EditorPartOptions, EditorPartOptionsChangeEvent, FindGroupScope, GroupActivationReason, GroupDirection,
-    GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder, IEditorGroup, IEditorPart, MergeGroupMode, MergeGroupOptions,
-    SplitSizing,
+    GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder, IEditorGroup, IEditorPart, IEditorSideGroup, MergeGroupMode,
+    MergeGroupOptions, PreferredGroup, SplitSizing,
 };
 use crate::services::layout::layout_service::WindowId;
 use je_platform::opener::editor_types::EditorOptions;
@@ -194,6 +199,8 @@ pub struct EditorPart {
     container: NodeId,
     scoped_context_key_service: Rc<dyn IScopedContextKeyService>,
     grid_widget_view: Rc<GridWidgetView>,
+    /// O [`EditorGroupsView`] que cada grupo recebe (em `Weak`): a parte vista pelos grupos.
+    groups_view: Rc<PartGroupsView>,
     has_file_icons: Cell<bool>,
     state: RefCell<PartState>,
     store: Rc<DisposableStore>,
@@ -220,6 +227,79 @@ pub struct EditorPart {
 
 fn invalid_group() -> ! {
     throw(Error::new("Invalid editor group provided!"))
+}
+
+/// O [`EditorGroupsView`] da parte: delega aos métodos privados do [`EditorPart`] (o `IEditorGroupsView` e o
+/// `IEditorPartsView` do original, que o `EditorPart` implementa direto).
+struct PartGroupsView {
+    part: Weak<EditorPart>,
+}
+
+impl PartGroupsView {
+    fn part(&self) -> Rc<EditorPart> {
+        self.part.upgrade().expect("a parte está viva enquanto os grupos dela são usados")
+    }
+}
+
+impl EditorGroupsView for PartGroupsView {
+    fn part_options(&self) -> EditorPartOptions {
+        self.part().state.borrow().part_options.clone()
+    }
+
+    fn on_did_change_editor_part_options(&self) -> Event<EditorPartOptionsChangeEvent> {
+        self.part().on_did_change_editor_part_options.event()
+    }
+
+    fn active_group(&self) -> Rc<EditorGroupView> {
+        self.part().active_view()
+    }
+
+    fn activate_group(&self, group: &Rc<EditorGroupView>) {
+        self.part().activate_group_with_reason(&GroupRef::Group(group.as_group()), GroupActivationReason::Default);
+    }
+
+    fn restore_group(&self, group: &Rc<EditorGroupView>) {
+        self.part().restore_group(&GroupRef::Group(group.as_group()));
+    }
+
+    fn remove_group(&self, group: &Rc<EditorGroupView>) {
+        self.part().remove_group_view(group);
+    }
+
+    fn get_groups(&self, order: GroupsOrder) -> Vec<Rc<EditorGroupView>> {
+        self.part().get_group_views(order)
+    }
+
+    fn groups(&self) -> Vec<Rc<EditorGroupView>> {
+        self.part().group_views()
+    }
+
+    fn get_group(&self, identifier: GroupIdentifier) -> Option<Rc<EditorGroupView>> {
+        self.part().get_group_view(identifier)
+    }
+}
+
+/// `sideGroup: IEditorSideGroup`.
+struct PartSideGroup {
+    part: Weak<EditorPart>,
+}
+
+impl IEditorSideGroup for PartSideGroup {
+    fn open_editor(&self, editor: &EditorInputRef, options: Option<EditorOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {
+        let part = self.part.upgrade().expect("a parte está viva enquanto o grupo ao lado é usado");
+        let editor = editor.clone();
+
+        async_fn(async move {
+            let find_group_editor = FindGroupEditor::WithOptions(EditorInputWithOptions { editor: editor.clone(), options: options.clone().map(TextEditorOptions::from) });
+            let find_group_result = part.instantiation_service.invoke_function(|accessor| find_group(accessor, &find_group_editor, Some(&PreferredGroup::Side)));
+            let group = match find_group_result {
+                MaybePromise::Value((group, _)) => group,
+                MaybePromise::Promise(promise) => promise.await?.0,
+            };
+
+            group.open_editor(&editor, options).await
+        })
+    }
 }
 
 fn to_grid_direction(direction: GroupDirection) -> Direction {
@@ -499,6 +579,7 @@ impl EditorPart {
             container,
             scoped_context_key_service,
             grid_widget_view,
+            groups_view: Rc::new(PartGroupsView { part: this.clone() }),
             has_file_icons: Cell::new(true),
             state: RefCell::new(PartState {
                 group_views: Vec::new(),
@@ -855,11 +936,13 @@ impl EditorPart {
     /// `doCreateGroupView(from)`.
     fn do_create_group_view(&self, from: EditorGroupSource) -> Rc<EditorGroupView> {
         // Create group view
+        let groups_view: Weak<dyn EditorGroupsView> = Rc::downgrade(&self.groups_view);
         let group_view = EditorGroupView::new(
             from,
             &self.ui,
             &self.instantiation_service,
             self.scoped_context_key_service.as_ref(),
+            groups_view,
             self.window_id,
             &self.groups_label,
             self.group_count(),
@@ -1489,6 +1572,10 @@ impl IEditorPart for EditorPart {
         self.load_state().is_some()
     }
 
+    fn side_group(&self) -> Rc<dyn IEditorSideGroup> {
+        Rc::new(PartSideGroup { part: self.this.clone() })
+    }
+
     fn orientation(&self) -> GroupOrientation {
         match self.grid_widget() {
             Some(grid) if grid.orientation() == Orientation::Vertical => GroupOrientation::Vertical,
@@ -1587,7 +1674,14 @@ impl IEditorPart for EditorPart {
     }
 
     fn remove_group(&self, group: GroupRef) {
-        let group_view = self.assert_group_view(&group);
+        // O `assertGroupView` do original devolve a própria instância sem conferir se a parte ainda a tem, e `removeGroup` sai
+        // sem fazer nada quando só resta um grupo (`count === 1`): um grupo que a parte já removeu (por exemplo, pela
+        // configuração `closeEmptyGroups`) passa por esse caminho. Aqui, sem como converter o `Rc<dyn IEditorGroup>` na
+        // vista, só esse caso é aceito.
+        let group_view = match &group {
+            GroupRef::Group(candidate) if !self.has_group(candidate.id()) && self.group_count() == 1 => return,
+            _ => self.assert_group_view(&group),
+        };
 
         self.remove_group_view(&group_view);
     }

@@ -58,7 +58,7 @@ use je_platform::opener::editor_types::{AuxiliaryEditorOptions, EditorOptions, E
 use crate::common::editor::editor_group_model::{EditorOrIndex, GetEditorsOptions, GroupModelChangeEvent};
 use crate::common::editor::{
     ActiveEditorChangeEvent, CloseDirection, EditorCloseEvent, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions,
-    EditorWillMoveEvent, EditorsOrder, FindEditorOptions, GroupIdentifier, IEditorPane, MatchEditorOptions,
+    EditorWillMoveEvent, EditorWillOpenEvent, EditorsOrder, FindEditorOptions, GroupIdentifier, IEditorPane, MatchEditorOptions,
     PreventPinnedEditorClose, TextEditorOptions,
 };
 use crate::services::layout::layout_service::WindowId;
@@ -647,6 +647,11 @@ pub trait IEditorGroup {
 
     /// `onWillMoveEditor`: an event that is fired when an editor is about to move to a different group.
     fn on_will_move_editor(&self) -> Event<EditorWillMoveEvent> {
+        Event::none()
+    }
+
+    /// `onWillOpenEditor`: an event that is fired when an editor is about to open in the group.
+    fn on_will_open_editor(&self) -> Event<EditorWillOpenEvent> {
         Event::none()
     }
 

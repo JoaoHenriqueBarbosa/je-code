@@ -19,12 +19,13 @@ use je_base::dynamic::Dynamic;
 use je_editor::core_2d::dimension::Dimension;
 use je_platform::configuration::models::ConfigurationChangeEvent;
 use je_platform::configuration::service::IConfigurationService;
+use je_platform::opener::editor_types::EditorOptions;
 
-use crate::common::editor::PreventPinnedEditorClose;
+use crate::common::editor::{EditorInputOrUntyped, EditorInputRef, PreventPinnedEditorClose};
 use crate::services::editor::editor_groups_service::{
-    DoubleClickTabAction, EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartLimitOptions, EditorPartOptions, OpenPositioning,
-    OpenSideBySideDirection, PinnedTabSizing, ShowTabs, SplitInGroupLayout, SplitSizing, TabActionLocation, TabHeight, TabSizing, TitleScrollbarSizing,
-    TitleScrollbarVisibility,
+    DoubleClickTabAction, EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartLimitOptions, EditorPartOptions, IEditorGroup,
+    OpenPositioning, OpenSideBySideDirection, PinnedTabSizing, ShowTabs, SplitInGroupLayout, SplitSizing, TabActionLocation, TabHeight, TabSizing,
+    TitleScrollbarSizing, TitleScrollbarVisibility,
 };
 
 /// `IEditorPartCreationOptions`.
@@ -234,6 +235,23 @@ pub fn get_editor_part_options(configuration_service: &dyn IConfigurationService
         && let Some(tab_height) = TabHeight::parse(&editor_tab_height.to_string_lossy())
     {
         options.tab_height = tab_height;
+    }
+
+    options
+}
+
+/// `fillActiveEditorViewState(group, expectedActiveEditor, presetOptions)`: when moving/copying an editor, try to preserve as
+/// much view state as possible by checking for the editor to be the active one of the group and reading the view state of its
+/// pane. O `{ ...presetOptions, viewState }` do original é o `EditorOptions` com o `view_state` trocado.
+pub fn fill_active_editor_view_state(group: &dyn IEditorGroup, expected_active_editor: Option<&EditorInputRef>, preset_options: Option<EditorOptions>) -> EditorOptions {
+    let matches_active_editor = match (expected_active_editor, group.active_editor()) {
+        (Some(expected), Some(active)) => expected.matches(&EditorInputOrUntyped::Typed(active)),
+        _ => true,
+    };
+
+    let mut options = preset_options.unwrap_or_default();
+    if matches_active_editor {
+        options.view_state = group.active_editor_pane().and_then(|pane| pane.get_view_state());
     }
 
     options
