@@ -31,3 +31,6 @@ pub mod editor_service_support;
 
 // Porte de `extHostNotebook.test.ts`, `extHostNotebookSerializer.test.ts` e `extHostNotebookStatusCommands.test.ts`.
 pub mod ext_host_notebook_support;
+
+// Porte de `extHostSignatureHelp.test.ts`, `extHostWorkspaceSymbols.test.ts`, `extHostSemanticTokens.test.ts` e `extHostHierarchy.test.ts`.
+pub mod ext_host_language_features_support;
