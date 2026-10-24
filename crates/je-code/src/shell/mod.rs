@@ -1452,7 +1452,7 @@ impl Shell {
             }
             Command::PickIndentSize(spaces) => {
                 let current = self.active_editor().map_or(4, |e| e.view.model().get_options().tab_size);
-                let mut items: Vec<PickItem> = (1..=8).map(|n| PickItem { label: n.to_string(), description: (n == current).then(|| "Configured Tab Size".to_owned()), keybinding: None, command: Command::SetIndentation(spaces, n), recent: false }).collect();
+                let items: Vec<PickItem> = (1..=8).map(|n| PickItem { label: n.to_string(), description: (n == current).then(|| "Configured Tab Size".to_owned()), keybinding: None, command: Command::SetIndentation(spaces, n), recent: false }).collect();
                 let at = items.iter().position(|i| i.description.is_some()).unwrap_or(3);
                 let mut pick = QuickPick::list(items, "Select Tab Size for the current file");
                 pick.move_focus(at as isize);
