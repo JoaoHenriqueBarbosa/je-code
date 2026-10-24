@@ -902,7 +902,7 @@ pub mod cases {
 /// (um [`AccessorFactory`]). A raiz que a usa declara este arquivo como o módulo `io_suite`.
 macro_rules! text_file_service_io_cases {
     ($accessor_factory:expr) => {
-        text_file_service_io_cases!(@each $accessor_factory;
+        $crate::io_suite::text_file_service_io_cases!(@each $accessor_factory;
             create_no_encoding_content_empty
             create_no_encoding_content_provided_string
             create_no_encoding_content_provided_snapshot

@@ -26,6 +26,7 @@
 mod common;
 mod support;
 
+use je_workbench::common::editor::editor_model::IEditorModel;
 use std::cell::Cell;
 use std::rc::Rc;
 
