@@ -1300,7 +1300,7 @@ mod quick_input_and_extension {
     use je_base::promise::Promise;
     use je_platform::quickinput::quick_input::{IInputOptions, IPickOptions, IQuickInputService, IQuickItem, IQuickPickItem};
 
-    use crate::services::extensions::extensions::{IExtensionDescription, IExtensionService};
+    use crate::services::extensions::extensions::{ActivationKind, IExtensionDescription, IExtensionService};
 
     /// `TestQuickInputService`.
     pub struct TestQuickInputService {
@@ -1357,6 +1357,16 @@ mod quick_input_and_extension {
     }
 
     impl IExtensionService for TestExtensionService {
+        /// `activateByEvent(_activationEvent) { return Promise.resolve(undefined); }`.
+        fn activate_by_event(&self, _activation_event: &str, _activation_kind: Option<ActivationKind>) -> Promise<()> {
+            Promise::resolved(())
+        }
+
+        /// `activationEventIsDone(_activationEvent) { return false; }`.
+        fn activation_event_is_done(&self, _activation_event: &str) -> bool {
+            false
+        }
+
         fn get_extension(&self, id: &str) -> Promise<Option<IExtensionDescription>> {
             let stubbed = self.extensions.borrow().iter().rfind(|(stubbed_id, _)| stubbed_id == id).map(|(_, description)| description.clone());
             Promise::resolved(stubbed)

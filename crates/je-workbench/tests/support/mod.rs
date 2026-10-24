@@ -5,6 +5,7 @@ pub mod js_literal;
 pub mod keyboard_mapper_test_utils;
 
 pub mod ext_host_workspace_support;
+pub mod mock_command_service;
 pub mod test_notebook_editor;
 pub mod test_rpc_protocol;
 pub mod test_stubs;

@@ -25,6 +25,7 @@ pub mod log;
 pub mod markers;
 pub mod notification;
 pub mod policy;
+pub mod progress;
 pub mod request;
 pub mod product;
 pub mod resources;

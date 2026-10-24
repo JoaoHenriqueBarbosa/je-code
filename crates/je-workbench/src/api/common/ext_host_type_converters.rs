@@ -47,6 +47,7 @@ pub mod edits;
 pub mod geometry;
 pub mod markers;
 pub mod markup;
+pub mod progress;
 pub mod save;
 pub mod symbols;
 pub mod text_editor;
@@ -56,6 +57,7 @@ pub use edits::{EndOfLine, TextEdit};
 pub use geometry::{CellRange, Location, LocationDto, NotebookRange, Position, Range, Selection};
 pub use markers::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag};
 pub use markup::MarkdownString;
+pub use progress::{ProgressLocation, ProgressLocationArg};
 pub use save::TextDocumentSaveReason;
 pub use tree_view::{DataTransfer, DataTransferItem, ResolveFileData, ViewBadge};
 pub use symbols::{
