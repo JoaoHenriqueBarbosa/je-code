@@ -58,6 +58,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: sétimo lote: testes do ViewModel (viewModelImpl 29, viewModelDecorations 3), Settings Sync (keybindingsSync 10, tasksSync 15), networkFilterService (33), telemetryService (38), 1dsAppender (6), errorTelemetry, externalTerminalService (11), Registry (4), secrets (14). `ref/` reconstruído depois do acidente do symlink (fonte 1.143.1, oráculo 1.143.1, pseudo-linus `9e3d0767`). Suíte: 7 665 passando, 0 falhas. Placar: 6 026 de 18 391 (32,77%) (eu).
 
+- 2026-10-24: oitavo lote: comandos centrais do editor (`editorExtensions`, `coreCommands` completo; cursorMoveCommand 55), snippetSession (47) e snippetVariables (17), workbenchTestServices comum como módulo público, autenticação (uso, MCP, query: 92), Settings Sync (settings 18, estado global 10), terminal (environmentVariableShared, terminalLinkHelpers). Suíte: 7 920 passando, 0 falhas. Placar: 6 281 de 18 391 (34,15%); editor 60,62%, platform 61,55% (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
