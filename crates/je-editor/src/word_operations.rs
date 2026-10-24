@@ -50,7 +50,7 @@ use crate::config::editor_options::registry::{
 use crate::config::editor_options::word_segmenter_locales::WORD_SEGMENTER_LOCALES;
 use crate::core_commands::{key, platform_keybindings, text_input_focus, writable};
 use crate::cursor_common::{CursorSimpleModel, CursorState, PartialCursorState};
-use crate::cursor_word_operations::{DeleteWordContext, WordNavigationType, WordOperations};
+use crate::cursor_word_operations::{DeleteWordContext, WordNavigationType, WordOperations, WordPartOperations};
 use crate::editor_common::{Command as EditCommand, ScrollType};
 use crate::editor_extensions::{
     ActionLabel, ActionOptions, Command, CommandKeybindingsOptions, CommandOptions, EditorAction, EditorActionBase,
@@ -89,6 +89,8 @@ pub struct MoveWordOptions {
     pub direction: WordDirection,
     /// As `CursorWordAccessibility...`: usam os separadores padrão da opção `wordSeparators`.
     pub accessibility: bool,
+    /// As `WordPartLeftCommand`/`WordPartRightCommand` de `wordPartOperations.ts`: movem pelo `WordPartOperations`.
+    pub part: bool,
 }
 
 impl MoveWordOptions {
@@ -105,6 +107,7 @@ impl MoveWordOptions {
             word_navigation_type,
             direction,
             accessibility: false,
+            part: false,
         }
     }
 }
@@ -116,6 +119,7 @@ pub struct MoveWordCommand {
     word_navigation_type: WordNavigationType,
     direction: WordDirection,
     accessibility: bool,
+    part: bool,
 }
 
 impl MoveWordCommand {
@@ -126,6 +130,7 @@ impl MoveWordCommand {
             word_navigation_type: opts.word_navigation_type,
             direction: opts.direction,
             accessibility: opts.accessibility,
+            part: opts.part,
         }
     }
 
@@ -157,13 +162,17 @@ impl MoveWordCommand {
         } else {
             word_separators
         };
-        match self.direction {
-            WordDirection::Left => {
+        match (self.direction, self.part) {
+            (WordDirection::Left, false) => {
                 WordOperations::move_word_left(word_separators, model, position, self.word_navigation_type, has_multicursor)
             }
-            WordDirection::Right => {
+            (WordDirection::Right, false) => {
                 WordOperations::move_word_right(word_separators, model, position, self.word_navigation_type)
             }
+            (WordDirection::Left, true) => {
+                WordPartOperations::move_word_part_left(word_separators, model, position, has_multicursor)
+            }
+            (WordDirection::Right, true) => WordPartOperations::move_word_part_right(word_separators, model, position),
         }
     }
 }
@@ -420,6 +429,8 @@ pub struct DeleteWordOptions {
     pub whitespace_heuristics: bool,
     pub word_navigation_type: WordNavigationType,
     pub direction: WordDirection,
+    /// `DeleteWordPartLeft`/`DeleteWordPartRight` de `wordPartOperations.ts`: apagam pelo `WordPartOperations`.
+    pub part: bool,
 }
 
 impl DeleteWordOptions {
@@ -440,6 +451,7 @@ impl DeleteWordOptions {
             whitespace_heuristics,
             word_navigation_type,
             direction,
+            part: false,
         }
     }
 }
@@ -450,6 +462,7 @@ pub struct DeleteWordCommand {
     whitespace_heuristics: bool,
     word_navigation_type: WordNavigationType,
     direction: WordDirection,
+    part: bool,
 }
 
 impl DeleteWordCommand {
@@ -459,21 +472,29 @@ impl DeleteWordCommand {
             whitespace_heuristics: opts.whitespace_heuristics,
             word_navigation_type: opts.word_navigation_type,
             direction: opts.direction,
+            part: opts.part,
         }
     }
 
-    /// `_delete(ctx, wordNavigationType)` de `DeleteWordLeftCommand` e de `DeleteWordRightCommand`.
+    /// `_delete(ctx, wordNavigationType)` de `DeleteWordLeftCommand` e de `DeleteWordRightCommand` (e, com `part`, de
+    /// `DeleteWordPartLeft` e `DeleteWordPartRight`, cujo `deleteWordPartRight` já devolve sempre um intervalo).
     fn delete_range(&self, ctx: &DeleteWordContext) -> Range {
-        match self.direction {
-            WordDirection::Left => {
+        match (self.direction, self.part) {
+            (WordDirection::Left, false) => {
                 WordOperations::delete_word_left(ctx, self.word_navigation_type).unwrap_or_else(|| Range::new(1, 1, 1, 1))
             }
-            WordDirection::Right => WordOperations::delete_word_right(ctx, self.word_navigation_type).unwrap_or_else(|| {
-                let model: &dyn CursorSimpleModel = ctx.model;
-                let line_count = model.get_line_count();
-                let max_column = model.get_line_max_column(line_count);
-                Range::new(line_count, max_column, line_count, max_column)
-            }),
+            (WordDirection::Left, true) => {
+                WordPartOperations::delete_word_part_left(ctx).unwrap_or_else(|| Range::new(1, 1, 1, 1))
+            }
+            (WordDirection::Right, false) => {
+                WordOperations::delete_word_right(ctx, self.word_navigation_type).unwrap_or_else(|| {
+                    let model: &dyn CursorSimpleModel = ctx.model;
+                    let line_count = model.get_line_count();
+                    let max_column = model.get_line_max_column(line_count);
+                    Range::new(line_count, max_column, line_count, max_column)
+                })
+            }
+            (WordDirection::Right, true) => WordPartOperations::delete_word_part_right(ctx),
         }
     }
 }

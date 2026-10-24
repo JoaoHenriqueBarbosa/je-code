@@ -7,8 +7,8 @@
 //! - `new CursorWordStartLeft()` e os demais comandos da suíte são as funções de `je_editor::word_operations`
 //!   (`ops::cursor_word_start_left()`...), que criam o comando sem registrá-lo. Elas são criadas a cada chamada, o que
 //!   não muda nada, porque o comando não guarda estado.
-//! - `runEditorCommand(editor, command)` é `editor.run_command(...)` com o comando embrulhado em
-//!   [`EditorCommandAdapter`], que faz o papel de `ITestEditorCommand` (o `runEditorCommand(accessor, editor, null)` do
+//! - `runEditorCommand(editor, command)` é `run_editor_command` de `tests/support/test_code_editor.rs`, que embrulha o
+//!   comando em `EditorCommandAdapter`, o papel de `ITestEditorCommand` (o `runEditorCommand(accessor, editor, null)` do
 //!   original; o `null` chega ao comando como `Dynamic::Null`). `editor.runCommand(CoreEditingCommands.Undo, null)` usa
 //!   o `ITestEditorCommand` de `UndoRedoCommand` abaixo.
 //! - O auxiliar `cursorWordAccessibilityLeft` do original escolhe os comandos ao contrário (com `inSelectionMode` roda
@@ -34,7 +34,7 @@ use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::{DisposableStore, IDisposable, to_disposable};
 use je_base::promise::MaybePromise;
-use je_editor::code_editor_widget::{CodeEditorWidget, ICodeEditor, IEditorCommand};
+use je_editor::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use je_editor::core_commands::core_editing_commands::{self, UndoRedoCommand};
 use je_editor::core_commands::EditorOrNativeTextInputCommand;
 use je_editor::cursor_common::CursorSimpleModel;
@@ -51,7 +51,7 @@ use je_editor::word_operations::{self as ops, DeleteInsideWord};
 use je_instantiation::ServicesAccessor;
 use support::test_code_editor::{
     CodeEditorServices, ITestEditorCommand, TestCodeEditor, TestCodeEditorInstantiationOptions,
-    create_code_editor_services, instantiate_test_code_editor, with_test_code_editor,
+    create_code_editor_services, instantiate_test_code_editor, run_editor_command, with_test_code_editor,
 };
 use support::test_language_configuration_service::TestLanguageConfigurationService;
 use support::test_text_model::resolve_options;
@@ -82,22 +82,6 @@ fn run_test(body: impl FnOnce(&Suite)) {
     suite.disposables.dispose();
 }
 
-/// `ITestEditorCommand` de um `IEditorCommand` (os comandos de palavra): o `command.runEditorCommand(accessor, editor,
-/// null)` do `runEditorCommand` da suíte.
-struct EditorCommandAdapter<'a, C: IEditorCommand>(&'a C);
-
-impl<C: IEditorCommand> ITestEditorCommand for EditorCommandAdapter<'_, C> {
-    fn run_editor_command(
-        &self,
-        accessor: &ServicesAccessor,
-        editor: &Rc<CodeEditorWidget>,
-        args: Option<&Dynamic>,
-    ) -> MaybePromise<()> {
-        let args = args.cloned().unwrap_or(Dynamic::Null);
-        MaybePromise::Promise(IEditorCommand::run_editor_command(self.0, Some(accessor), editor, &args))
-    }
-}
-
 /// `CoreEditingCommands.Undo` como argumento de `editor.runCommand(command, args)`: o `runEditorCommand` do
 /// `EditorOrNativeTextInputCommand`.
 impl ITestEditorCommand for UndoRedoCommand {
@@ -110,11 +94,6 @@ impl ITestEditorCommand for UndoRedoCommand {
         let args = args.cloned().unwrap_or(Dynamic::Null);
         EditorOrNativeTextInputCommand::run_editor_command(self, Some(accessor), editor, &args)
     }
-}
-
-/// `runEditorCommand(editor, command)`.
-fn run_editor_command(editor: &TestCodeEditor, command: &impl IEditorCommand) {
-    editor.run_command(&EditorCommandAdapter(command), None);
 }
 
 fn cursor_word_left(editor: &TestCodeEditor, in_selection_mode: bool) {
