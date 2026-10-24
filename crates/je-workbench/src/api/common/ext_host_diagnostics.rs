@@ -41,8 +41,9 @@ use super::ext_host_protocol::{ExtHostDiagnosticsShape, IMainContext, IMarkerCha
 use super::ext_host_type_converters as converter;
 use super::ext_host_types::{Diagnostic, DiagnosticSeverity};
 
-/// `Number.MAX_SAFE_INTEGER`, o limite "sem limite" da coleção espelho.
-const MAX_SAFE_INTEGER: usize = 9_007_199_254_740_991;
+/// `Number.MAX_SAFE_INTEGER`, o limite "sem limite" da coleção espelho. Em alvos de 32 bits (wasm32) o valor não cabe em `usize`
+/// e satura em `usize::MAX`, que continua maior do que qualquer contagem de diagnósticos que a memória do alvo comporte.
+const MAX_SAFE_INTEGER: usize = if usize::BITS >= 64 { 9_007_199_254_740_991_u64 as usize } else { usize::MAX };
 
 /// O `Emitter<readonly vscode.Uri[]>` que a coleção dispara a cada mudança.
 pub trait UriChangeEmitter {
