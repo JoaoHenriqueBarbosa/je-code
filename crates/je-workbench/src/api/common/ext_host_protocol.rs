@@ -1869,3 +1869,329 @@ mod quick_open_region {
 }
 
 // #endregion
+
+// #region EditorTabs
+
+pub use self::editor_tabs_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostEditorTabs.ts` usa: `TabInputKind`, `TabModelOperationKind`, os DTOs de
+/// entrada de aba (`AnyInputDto` e seus membros), `IEditorTabDto`, `IEditorTabGroupDto`, `TabOperation`,
+/// `MainThreadEditorTabsShape`, `IExtHostEditorTabsShape` e os identificadores `MainContext.MainThreadEditorTabs` e
+/// `ExtHostContext.ExtHostEditorTabs`.
+///
+/// Divergências:
+/// - Os `UriComponents` são [`URI`] (já revividos); `AnyInputDto` é um enum com um struct por membro do original
+///   (`UnknownInputDto` é a variante [`AnyInputDto::Unknown`] e o `TabInputDto` do terminal, [`AnyInputDto::Terminal`]);
+///   [`AnyInputDto::kind`] devolve o `kind` do original.
+/// - `groupId` é `u32` e os índices de `TabOperation` são `usize`; `viewColumn` é [`EditorGroupColumn`].
+/// - `ExtHostEditorTabsShape` é o `IExtHostEditorTabsShape`; os métodos síncronos que lançam erro (`throw`) levantam
+///   pânico com o [`Error`](je_base::errors::Error), como o resto do porte.
+mod editor_tabs_region {
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+
+    use super::{EditorGroupColumn, ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// `TabInputKind`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum TabInputKind {
+        UnknownInput,
+        TextInput,
+        TextDiffInput,
+        TextMergeInput,
+        NotebookInput,
+        NotebookDiffInput,
+        CustomEditorInput,
+        WebviewEditorInput,
+        TerminalEditorInput,
+        InteractiveEditorInput,
+        ChatEditorInput,
+        MultiDiffEditorInput,
+    }
+
+    /// `TabModelOperationKind`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum TabModelOperationKind {
+        TabOpen,
+        TabClose,
+        TabUpdate,
+        TabMove,
+    }
+
+    /// `TextInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct TextInputDto {
+        pub uri: URI,
+    }
+
+    /// `TextDiffInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct TextDiffInputDto {
+        pub original: URI,
+        pub modified: URI,
+    }
+
+    /// `TextMergeInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct TextMergeInputDto {
+        pub base: URI,
+        pub input1: URI,
+        pub input2: URI,
+        pub result: URI,
+    }
+
+    /// `NotebookInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookInputDto {
+        pub notebook_type: String,
+        pub uri: URI,
+    }
+
+    /// `NotebookDiffInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookDiffInputDto {
+        pub notebook_type: String,
+        pub original: URI,
+        pub modified: URI,
+    }
+
+    /// `CustomInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct CustomInputDto {
+        pub view_type: String,
+        pub uri: URI,
+    }
+
+    /// `WebviewInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct WebviewInputDto {
+        pub view_type: String,
+    }
+
+    /// `InteractiveEditorInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct InteractiveEditorInputDto {
+        pub uri: URI,
+        pub input_box_uri: URI,
+    }
+
+    /// `MultiDiffEditorInputDto`.
+    #[derive(Clone, Debug)]
+    pub struct MultiDiffEditorInputDto {
+        pub diff_editors: Vec<TextDiffInputDto>,
+    }
+
+    /// `AnyInputDto`.
+    #[derive(Clone, Debug)]
+    pub enum AnyInputDto {
+        Unknown,
+        Text(TextInputDto),
+        TextDiff(TextDiffInputDto),
+        MultiDiff(MultiDiffEditorInputDto),
+        TextMerge(TextMergeInputDto),
+        Notebook(NotebookInputDto),
+        NotebookDiff(NotebookDiffInputDto),
+        Custom(CustomInputDto),
+        Webview(WebviewInputDto),
+        Interactive(InteractiveEditorInputDto),
+        Chat,
+        Terminal,
+    }
+
+    impl AnyInputDto {
+        /// O `kind` do DTO.
+        pub fn kind(&self) -> TabInputKind {
+            match self {
+                Self::Unknown => TabInputKind::UnknownInput,
+                Self::Text(_) => TabInputKind::TextInput,
+                Self::TextDiff(_) => TabInputKind::TextDiffInput,
+                Self::MultiDiff(_) => TabInputKind::MultiDiffEditorInput,
+                Self::TextMerge(_) => TabInputKind::TextMergeInput,
+                Self::Notebook(_) => TabInputKind::NotebookInput,
+                Self::NotebookDiff(_) => TabInputKind::NotebookDiffInput,
+                Self::Custom(_) => TabInputKind::CustomEditorInput,
+                Self::Webview(_) => TabInputKind::WebviewEditorInput,
+                Self::Interactive(_) => TabInputKind::InteractiveEditorInput,
+                Self::Chat => TabInputKind::ChatEditorInput,
+                Self::Terminal => TabInputKind::TerminalEditorInput,
+            }
+        }
+    }
+
+    /// `IEditorTabDto`.
+    #[derive(Clone, Debug)]
+    pub struct EditorTabDto {
+        pub id: String,
+        pub label: String,
+        pub input: AnyInputDto,
+        pub editor_id: Option<String>,
+        pub is_active: bool,
+        pub is_pinned: bool,
+        pub is_preview: bool,
+        pub is_dirty: bool,
+    }
+
+    /// `IEditorTabGroupDto`.
+    #[derive(Clone, Debug)]
+    pub struct EditorTabGroupDto {
+        pub is_active: bool,
+        pub view_column: EditorGroupColumn,
+        pub tabs: Vec<EditorTabDto>,
+        pub group_id: u32,
+    }
+
+    /// `TabOperation`.
+    #[derive(Clone, Debug)]
+    pub struct TabOperation {
+        pub kind: TabModelOperationKind,
+        pub index: usize,
+        pub tab_dto: EditorTabDto,
+        pub group_id: u32,
+        pub old_index: Option<usize>,
+    }
+
+    /// `MainThreadEditorTabsShape`.
+    pub trait MainThreadEditorTabsShape: IDisposable {
+        fn rpc_move_tab(&self, tab_id: &str, index: usize, view_column: EditorGroupColumn, preserve_focus: Option<bool>);
+        fn rpc_close_tab(&self, tab_ids: Vec<String>, preserve_focus: Option<bool>) -> Promise<bool>;
+        fn rpc_close_group(&self, group_ids: Vec<u32>, preserve_focus: Option<bool>) -> Promise<bool>;
+    }
+
+    /// `IExtHostEditorTabsShape`.
+    pub trait ExtHostEditorTabsShape {
+        /// Aceita um modelo novo inteiro.
+        fn rpc_accept_editor_tab_model(&self, tab_groups: Vec<EditorTabGroupDto>);
+        /// Só quando uma propriedade do grupo muda (não as abas dentro dele).
+        fn rpc_accept_tab_group_update(&self, group_dto: EditorTabGroupDto);
+        /// Quando uma aba é adicionada, removida ou atualizada.
+        fn rpc_accept_tab_operation(&self, operation: TabOperation);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_EDITOR_TABS: ProxyIdentifier<dyn MainThreadEditorTabsShape> = ProxyIdentifier::new("MainThreadEditorTabs");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_EDITOR_TABS: ProxyIdentifier<dyn ExtHostEditorTabsShape> = ProxyIdentifier::new("ExtHostEditorTabs");
+    }
+}
+
+// #endregion
+
+// #region ExtHostTelemetry
+
+pub use self::ext_host_telemetry_region::*;
+
+/// `ExtHostTelemetryShape` e `ExtHostContext.ExtHostTelemetry` (de `extHost.protocol.ts`, usados por
+/// `extHostTelemetry.ts`).
+///
+/// Divergências: o `TelemetryLevel` é o da plataforma; o `productConfig?: { usage, error }` de
+/// `$initializeTelemetryLevel` é [`TelemetryProductConfig`] dentro de `Option`.
+mod ext_host_telemetry_region {
+    use je_platform::telemetry::TelemetryLevel;
+
+    use super::{ExtHostContext, ProxyIdentifier};
+
+    /// O `{ usage: boolean; error: boolean }` de `productConfig`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct TelemetryProductConfig {
+        pub usage: bool,
+        pub error: bool,
+    }
+
+    /// `ExtHostTelemetryShape`.
+    pub trait ExtHostTelemetryShape {
+        fn rpc_initialize_telemetry_level(&self, level: TelemetryLevel, supports_telemetry: bool, product_config: Option<TelemetryProductConfig>);
+        fn rpc_on_did_change_telemetry_level(&self, level: TelemetryLevel);
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_TELEMETRY: ProxyIdentifier<dyn ExtHostTelemetryShape> = ProxyIdentifier::new("ExtHostTelemetry");
+    }
+}
+
+// #endregion
+
+// #region StatusBar
+
+pub use self::status_bar_region::*;
+
+/// `MainThreadStatusBarShape`, `ExtHostStatusBarShape`, `StatusBarItemDto` e os identificadores
+/// `MainContext.MainThreadStatusBar` e `ExtHostContext.ExtHostStatusBar` (de `extHost.protocol.ts`, usados por
+/// `extHostStatusBar.ts` e `mainThreadStatusBar.ts`).
+///
+/// Divergências:
+/// - `color: string | ThemeColor` é [`StatusBarColor`]. O `backgroundColor` do `$setEntry` (`string | ThemeColor` no
+///   protocolo, sempre `ThemeColor` no host de extensões e no `MainThreadStatusBar`) é `Option<ThemeColor>`.
+/// - `tooltip: IMarkdownString | string | undefined` é `Option<StringOrMarkdown>`; o `StatusBarItemDto.tooltip` é só
+///   `string`. `$provideTooltip` devolve `Option<StringOrMarkdown>`.
+/// - `priority` é `Option<f64>` (o host troca `Infinity` por `Number.MAX_VALUE` porque o JSON não o carrega).
+mod status_bar_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::themables::ThemeColor;
+    use je_editor::languages::StringOrMarkdown;
+    use je_platform::accessibility::IAccessibilityInformation;
+
+    use super::{ExtHostContext, ICommandDto, MainContext, ProxyIdentifier};
+
+    /// `string | ThemeColor`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum StatusBarColor {
+        String(String),
+        ThemeColor(ThemeColor),
+    }
+
+    /// `StatusBarItemDto`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct StatusBarItemDto {
+        pub entry_id: String,
+        pub align_left: bool,
+        pub priority: Option<f64>,
+        pub name: String,
+        pub text: String,
+        pub tooltip: Option<String>,
+        pub command: Option<String>,
+        pub accessibility_information: Option<IAccessibilityInformation>,
+    }
+
+    /// `MainThreadStatusBarShape`.
+    pub trait MainThreadStatusBarShape: IDisposable {
+        #[allow(clippy::too_many_arguments)]
+        fn rpc_set_entry(
+            &self,
+            id: &str,
+            status_id: &str,
+            extension_id: Option<&str>,
+            status_name: &str,
+            text: &str,
+            tooltip: Option<StringOrMarkdown>,
+            has_tooltip_provider: bool,
+            command: Option<ICommandDto>,
+            color: Option<StatusBarColor>,
+            background_color: Option<ThemeColor>,
+            align_left: bool,
+            priority: Option<f64>,
+            accessibility_information: Option<IAccessibilityInformation>,
+        );
+        fn rpc_dispose_entry(&self, id: &str);
+    }
+
+    /// `ExtHostStatusBarShape`.
+    pub trait ExtHostStatusBarShape {
+        fn rpc_accept_static_entries(&self, added: Vec<StatusBarItemDto>);
+        fn rpc_provide_tooltip(&self, entry_id: &str, cancellation: CancellationToken) -> Promise<Option<StringOrMarkdown>>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_STATUS_BAR: ProxyIdentifier<dyn MainThreadStatusBarShape> = ProxyIdentifier::new("MainThreadStatusBar");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_STATUS_BAR: ProxyIdentifier<dyn ExtHostStatusBarShape> = ProxyIdentifier::new("ExtHostStatusBar");
+    }
+}
+
+// #endregion

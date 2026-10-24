@@ -24,3 +24,6 @@ pub mod cache;
 pub mod ext_host_custom_editors;
 pub mod ext_host_file_system_event_service;
 pub mod ext_host_file_system_info;
+pub mod ext_host_editor_tabs;
+pub mod ext_host_telemetry;
+pub mod ext_host_status_bar;
