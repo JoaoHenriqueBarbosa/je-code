@@ -1351,6 +1351,11 @@ mod quick_input_and_extension {
         fn when_installed_extensions_registered(&self) -> Promise<bool> {
             Promise::resolved(true)
         }
+
+        /// `extensions = []`.
+        fn extensions(&self) -> Vec<je_extensions::scanner::ExtensionDescription> {
+            Vec::new()
+        }
     }
 }
 

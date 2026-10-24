@@ -9,10 +9,15 @@
 //! - **`IExtensionDescription`** devolve só o `extensionLocation`, que é o campo que esses serviços leem; o descritor
 //!   inteiro (manifesto, identificador, `isBuiltin`...) é o `ExtensionDescription` do `je-extensions`, que guarda o local
 //!   como texto e exige o manifesto.
+//! - **`extensions`** (o `readonly extensions: IExtensionDescription[]` do original, lido pelo `KeybindingsEditorModel`)
+//!   devolve o `ExtensionDescription` do `je-extensions`, o descritor inteiro, e não o `IExtensionDescription` reduzido
+//!   acima. Quem implementa [`IExtensionService`] precisa implementá-lo (o dublê `TestExtensionService` devolve a lista
+//!   vazia, como o `extensions = []` do original).
 
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_extensions::scanner::ExtensionDescription;
 use je_instantiation::service_id;
 
 /// `IExtensionDescription`, reduzido ao `extensionLocation`.
@@ -31,6 +36,9 @@ pub trait IExtensionService {
 
     /// `whenInstalledExtensionsRegistered()`: a promise that resolves when all installed extensions are registered.
     fn when_installed_extensions_registered(&self) -> Promise<bool>;
+
+    /// `extensions`: the descriptions of the extensions registered so far.
+    fn extensions(&self) -> Vec<ExtensionDescription>;
 }
 
 service_id!(pub I_EXTENSION_SERVICE: dyn IExtensionService = "extensionService");
