@@ -34,3 +34,9 @@ pub mod ext_host_notebook_support;
 
 // Porte de `extHostSignatureHelp.test.ts`, `extHostWorkspaceSymbols.test.ts`, `extHostSemanticTokens.test.ts` e `extHostHierarchy.test.ts`.
 pub mod ext_host_language_features_support;
+
+// Porte de `extHostDebugAdapters.test.ts`, `extHostDebugTreeSessions.test.ts` e `extHostDebugVisualization.test.ts`.
+pub mod ext_host_debug_support;
+
+// Porte de `TestMainThreadNotebookKernels.ts`, usado por `mainThreadVariableProvider.test.ts`.
+pub mod test_main_thread_notebook_kernels;

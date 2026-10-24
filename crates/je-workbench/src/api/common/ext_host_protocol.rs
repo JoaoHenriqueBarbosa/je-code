@@ -4594,3 +4594,9 @@ mod extension_host_errors_region {
 }
 
 // #endregion
+
+// #region Debug
+
+pub use super::ext_host_debug_protocol::*;
+
+// #endregion

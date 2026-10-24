@@ -64,3 +64,8 @@ pub mod ext_host_decorations;
 // Ativação de extensões: `extHostExtensionActivator.ts` e `extensionHostMain.ts` (o tratador de erros do host).
 pub mod ext_host_extension_activator;
 pub mod extension_host_main;
+
+// Depuração: `extHostDebugService.ts` e a região de debug de `extHost.protocol.ts`.
+pub mod ext_host_debug_protocol;
+pub mod ext_host_debug_service;
+pub mod ext_host_debug_types;

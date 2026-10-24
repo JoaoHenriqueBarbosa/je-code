@@ -12,6 +12,7 @@
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
+use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_editor::range::Range;
@@ -20,11 +21,26 @@ use super::contrib::find::find_match_decoration_model::FindMatchDecorationModel;
 use super::notebook_browser::{CellFindMatchWithIndex, ICellViewModel, INotebookFindOptions};
 use crate::contrib::notebook::common::notebook_common::INotebookTextModel;
 
-/// `NotebookEditorWidget`, só com os membros que a busca lê.
+/// `{ message: unknown }` de `INotebookEditor.onDidReceiveMessage` (o `forRenderer?` não é lido pelo `MainThreadNotebookKernels`).
+#[derive(Clone, Debug)]
+pub struct INotebookWebviewMessage {
+    pub message: Dynamic,
+}
+
+/// `NotebookEditorWidget`, só com os membros que a busca e o `MainThreadNotebookKernels` leem.
 pub trait NotebookEditorWidget {
     fn get_id(&self) -> String;
     fn text_model(&self) -> Option<Rc<dyn INotebookTextModel>>;
     fn has_model(&self) -> bool;
+
+    /// `onDidReceiveMessage`: a mensagem que um renderizador mandou. Corpo padrão: um editor sem webview não recebe.
+    fn on_did_receive_message(&self) -> Event<INotebookWebviewMessage> {
+        Event::none()
+    }
+
+    /// `postMessage(message)`: manda a mensagem aos renderizadores. Corpo padrão: um editor sem webview a descarta.
+    fn post_message(&self, _message: Dynamic) {}
+
     fn on_will_change_model(&self) -> Event<Option<Rc<dyn INotebookTextModel>>>;
     fn on_did_attach_view_model(&self) -> Event<()>;
     fn get_cell_index(&self, cell: &Rc<dyn ICellViewModel>) -> Option<usize>;

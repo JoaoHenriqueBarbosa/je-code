@@ -1,4 +1,29 @@
-//! Porte parcial de `src/vs/workbench/contrib/debug/common/debugUtils.ts`: só o `isUriString`, que `debugSource` usa.
+//! Porte parcial de `src/vs/workbench/contrib/debug/common/debugUtils.ts`: o `isUriString` (que `debugSource` usa),
+//! o `isDebuggerMainContribution` e a conversão dos caminhos das mensagens do protocolo (`convertToDAPaths` e
+//! `convertToVSCPaths`), que o host de extensões e a thread principal do `debug` usam.
+//!
+//! Notas de tradução:
+//! - As mensagens do protocolo trazem `arguments` e `body` como [`serde_json::Value`]. O `source.path` que vira URI no
+//!   original (`<string><unknown>uri.parse(...)`, um objeto `URI` no lugar do texto) é o objeto JSON do `URI#toJSON`
+//!   (`$mid`, `scheme`, `path`...), e o `uriToString` o revive, como o `typeof source.path === 'object'` do original.
+//! - O `deepClone` da mensagem é o `clone`. Um campo que o original lê sem checar (`body.source` de um evento sem `body`,
+//!   `forEach` de uma lista ausente) lança `TypeError` no JavaScript; aqui lança o mesmo erro (pânico).
+//! - `source.path = fixPath(source)` com resultado `undefined` remove a chave `path` (no JSON os dois são iguais).
+//! - O `IDebuggerContribution` é o `DebuggerContribution` do manifesto; o `program` que ele não declara fica em `extra`.
+
+use std::rc::Rc;
+
+use je_base::JsString;
+use je_base::errors::{self, Error};
+use je_base::network::schemas;
+use je_base::path::{PathModule, ProcessEnvironment};
+use je_base::uri::{URI, UriComponents, UriState};
+use je_extensions::manifest::DebuggerContribution;
+use je_platform::resources::host_platform;
+use serde_json::{Map, Value};
+
+use super::debug::IDebugSession;
+use super::debug_protocol::ProtocolMessage;
 
 /// `isUriString`: heuristics: a valid uri starts with a scheme and the scheme has at least 2 characters so that it
 /// doesn't look like a drive letter (`/^[a-zA-Z][a-zA-Z0-9\+\-\.]+:/`). O `undefined` do original é a ausência do texto,
@@ -17,4 +42,249 @@ pub fn is_uri_string(s: &str) -> bool {
         }
     }
     false
+}
+
+/// `isSessionAttach(session)`.
+pub fn is_session_attach(session: &Rc<dyn IDebugSession>) -> bool {
+    session.configuration().get("request").and_then(Value::as_str) == Some("attach")
+        && get_extension_host_debug_session(session).is_none()
+        && session.parent_session().is_none_or(|parent| is_session_attach(&parent))
+}
+
+/// `getExtensionHostDebugSession(session)`: returns the session or any parent which is an extension host debug session.
+/// Returns `None` if there's none.
+pub fn get_extension_host_debug_session(session: &Rc<dyn IDebugSession>) -> Option<Rc<dyn IDebugSession>> {
+    let configuration = session.configuration();
+    let mut r#type = configuration.get("type").and_then(Value::as_str).filter(|r#type| !r#type.is_empty())?.to_owned();
+
+    if r#type == "vslsShare" {
+        let proxied = configuration.get("adapterProxy").and_then(|proxy| proxy.get("configuration")).and_then(|configuration| configuration.get("type")).and_then(Value::as_str);
+        if let Some(proxied) = proxied.filter(|proxied| !proxied.is_empty()) {
+            r#type = proxied.to_owned();
+        }
+    }
+
+    if equals_ignore_case(&r#type, "extensionhost") || equals_ignore_case(&r#type, "pwa-extensionhost") {
+        return Some(session.clone());
+    }
+
+    session.parent_session().and_then(|parent| get_extension_host_debug_session(&parent))
+}
+
+/// `equalsIgnoreCase(a, b)` sobre texto.
+fn equals_ignore_case(a: &str, b: &str) -> bool {
+    je_base::strings::equals_ignore_case(&a.encode_utf16().collect::<Vec<u16>>(), &b.encode_utf16().collect::<Vec<u16>>())
+}
+
+/// `isDebuggerMainContribution`: only a debugger contributions with a label, program, or runtime attribute is considered
+/// a "defining" or "main" debugger contribution.
+pub fn is_debugger_main_contribution(dbg: &DebuggerContribution) -> bool {
+    let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|text| !text.is_empty());
+    let has_program = matches!(dbg.extra.get("program"), Some(Value::String(program)) if !program.is_empty());
+    non_empty(&dbg.r#type) && (non_empty(&dbg.label) || has_program || non_empty(&dbg.runtime))
+}
+
+// ---- conversão de caminhos
+
+/// O `URI#toJSON` como objeto JSON (só os campos definidos, como o `JSON.stringify`).
+fn uri_to_value(uri: &URI) -> Value {
+    let state = uri.to_json();
+    let components = &state.components;
+    let mut object = Map::new();
+    let mut put = |key: &str, value: Option<Value>| {
+        if let Some(value) = value {
+            object.insert(key.to_owned(), value);
+        }
+    };
+    let text = |field: &Option<JsString>| field.as_ref().map(|text| Value::String(text.to_string_lossy()));
+    put("$mid", state.mid.map(Value::from));
+    put("fsPath", text(&state.fs_path));
+    put("external", text(&state.external));
+    put("path", text(&components.path));
+    put("scheme", text(&components.scheme));
+    put("authority", text(&components.authority));
+    put("query", text(&components.query));
+    put("fragment", text(&components.fragment));
+    put("_sep", state.sep.map(Value::from));
+    Value::Object(object)
+}
+
+/// `uri.revive(value)` de um objeto JSON no formato do `URI#toJSON`.
+fn uri_from_value(object: &Map<String, Value>) -> URI {
+    let text = |key: &str| object.get(key).and_then(Value::as_str).map(JsString::from);
+    let state = UriState {
+        mid: object.get("$mid").and_then(Value::as_i64).map(|mid| mid as i32),
+        external: text("external"),
+        fs_path: text("fsPath"),
+        sep: object.get("_sep").and_then(Value::as_u64).map(|sep| sep as u8),
+        components: UriComponents {
+            scheme: text("scheme"),
+            authority: text("authority"),
+            path: text("path"),
+            query: text("query"),
+            fragment: text("fragment"),
+        },
+    };
+    URI::revive(&state, host_platform())
+}
+
+/// `stringToUri(source)`: o novo `path` da fonte.
+fn string_to_uri(source: &Value) -> Option<Value> {
+    let path = source.get("path");
+    if let Some(Value::String(text)) = path {
+        let has_source_reference = source.get("sourceReference").and_then(Value::as_f64).is_some_and(|reference| reference > 0.0);
+        if has_source_reference {
+            // if there is a source reference, don't touch path
+        } else if is_uri_string(text) {
+            return Some(uri_to_value(&URI::parse(text.as_str(), false)));
+        } else if PathModule::native(&ProcessEnvironment).is_absolute(text) {
+            // assume path
+            return Some(uri_to_value(&URI::file(text.as_str(), host_platform())));
+        }
+        // leave relative path as is
+    }
+    path.cloned()
+}
+
+/// `uriToString(source)`: o novo `path` da fonte.
+fn uri_to_string(source: &Value) -> Option<Value> {
+    let path = source.get("path");
+    if let Some(Value::Object(object)) = path {
+        let uri = uri_from_value(object);
+        return Some(Value::String(if uri.scheme().to_string_lossy() == schemas::FILE {
+            uri.fs_path(host_platform()).to_string_lossy()
+        } else {
+            uri.to_string(false).to_string_lossy()
+        }));
+    }
+    path.cloned()
+}
+
+/// O `TypeError` do JavaScript ao ler uma propriedade de `undefined`.
+fn read_of_undefined() -> ! {
+    errors::throw(Error::type_error("Cannot read properties of undefined"))
+}
+
+/// `value.key`, com o `undefined` (e o `null`) como `None`.
+fn child<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
+    value.get_mut(key).filter(|child| !child.is_null())
+}
+
+/// O operando que o original lê sem checar: ausente lança `TypeError`.
+fn required(value: Option<&mut Value>) -> &mut Value {
+    value.unwrap_or_else(|| read_of_undefined())
+}
+
+/// `list.forEach(callback)` de uma lista que o original assume existir.
+fn for_each(list: Option<&mut Value>, mut callback: impl FnMut(&mut Value)) {
+    match required(list) {
+        Value::Array(items) => items.iter_mut().for_each(&mut callback),
+        _ => read_of_undefined(),
+    }
+}
+
+/// `PathContainer` do protocolo: o `fixSourcePath(toDA, source)` só roda para uma fonte presente.
+type FixSourcePath<'a> = &'a dyn Fn(bool, &mut Value);
+
+fn fix_source(fix: FixSourcePath, to_da: bool, source: Option<&mut Value>) {
+    if let Some(source) = source
+        && source.is_object()
+    {
+        fix(to_da, source);
+    }
+}
+
+/// `convertPaths(msg, fixSourcePath)`.
+fn convert_paths(msg: &mut ProtocolMessage, fix: FixSourcePath) {
+    match msg {
+        ProtocolMessage::Event(event) => {
+            let name = event.event.as_str();
+            if matches!(name, "output" | "loadedSource" | "breakpoint") {
+                let body = required(event.body.as_mut().filter(|body| !body.is_null()));
+                match name {
+                    "output" | "loadedSource" => fix_source(fix, false, child(body, "source")),
+                    _ => {
+                        let breakpoint = required(child(body, "breakpoint"));
+                        fix_source(fix, false, child(breakpoint, "source"));
+                    }
+                }
+            }
+        }
+        ProtocolMessage::Request(request) => {
+            let command = request.command.as_str();
+            match command {
+                "setBreakpoints" | "breakpointLocations" | "source" | "gotoTargets" => {
+                    let arguments = required(request.arguments.as_mut().filter(|arguments| !arguments.is_null()));
+                    fix_source(fix, true, child(arguments, "source"));
+                }
+                "launchVSCode" => {
+                    let arguments = required(request.arguments.as_mut().filter(|arguments| !arguments.is_null()));
+                    for_each(child(arguments, "args"), |arg| fix_source(fix, false, Some(arg)));
+                }
+                _ => {}
+            }
+        }
+        ProtocolMessage::Response(response) => {
+            let truthy_body = response.body.as_mut().filter(|body| !body.is_null());
+            if let Some(body) = truthy_body.filter(|_| response.success) {
+                match response.command.as_str() {
+                    "stackTrace" => for_each(child(body, "stackFrames"), |frame| fix_source(fix, false, child(frame, "source"))),
+                    "loadedSources" => for_each(child(body, "sources"), |source| fix_source(fix, false, Some(source))),
+                    "scopes" => for_each(child(body, "scopes"), |scope| fix_source(fix, false, child(scope, "source"))),
+                    "setFunctionBreakpoints" | "setBreakpoints" => {
+                        for_each(child(body, "breakpoints"), |breakpoint| fix_source(fix, false, child(breakpoint, "source")))
+                    }
+                    "disassemble" => for_each(child(body, "instructions"), |instruction| fix_source(fix, false, child(instruction, "location"))),
+                    "locations" => fix_source(fix, false, child(body, "source")),
+                    _ => {}
+                }
+            }
+        }
+        ProtocolMessage::Other(_) => {}
+    }
+}
+
+/// O `fixPath` escolhido por `toUri`: `stringToUri` ou `uriToString`.
+fn fix_path(to_uri: bool, source: &Value) -> Option<Value> {
+    if to_uri { string_to_uri(source) } else { uri_to_string(source) }
+}
+
+/// `source.path = fixPath(source)`.
+fn assign_path(source: &mut Value, path: Option<Value>) {
+    if let Value::Object(object) = source {
+        match path {
+            Some(path) => {
+                object.insert("path".to_owned(), path);
+            }
+            None => {
+                object.remove("path");
+            }
+        }
+    }
+}
+
+/// `convertToDAPaths(message, toUri)`: since we modify Source.paths in the message in place, we need to make a copy of it
+/// (see #61129).
+pub fn convert_to_da_paths(message: &ProtocolMessage, to_uri: bool) -> ProtocolMessage {
+    let mut msg = message.clone();
+    convert_paths(&mut msg, &|to_da, source| {
+        if to_da {
+            let path = fix_path(to_uri, source);
+            assign_path(source, path);
+        }
+    });
+    msg
+}
+
+/// `convertToVSCPaths(message, toUri)`: since we modify Source.paths in the message in place, we need to make a copy of it
+/// (see #61129).
+pub fn convert_to_vsc_paths(message: &ProtocolMessage, to_uri: bool) -> ProtocolMessage {
+    let mut msg = message.clone();
+    convert_paths(&mut msg, &|to_da, source| {
+        if !to_da {
+            let path = fix_path(to_uri, source);
+            assign_path(source, path);
+        }
+    });
+    msg
 }
