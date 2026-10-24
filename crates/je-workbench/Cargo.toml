@@ -45,6 +45,8 @@ indexmap = "2"
 # usam `indexmap` (já nas dependências) e `tempfile`.
 [dev-dependencies]
 tempfile = "3"
+# O `crypto.createHash('sha256')` do `workspaceTags.test.ts` (o mesmo `sha2` do je-base).
+sha2 = "0.10"
 # O medidor de caractere do terminal nos testes (`terminalConfigurationService.test.ts`) mede com o mesmo sistema de texto
 # nativo que desenha a UI, no lugar do `getBoundingClientRect` do DOM.
 je-text = { path = "../je-text" }
