@@ -8,7 +8,7 @@
 //! ([`user_data_sync_local_store_service`]), a conta ([`user_data_sync_account`]) e o serviço de sincronização
 //! ([`user_data_sync_service`], sem a sincronização manual), a base dos sincronizadores de arquivo JSON
 //! ([`abstract_json_synchronizer`]) e os sincronizadores de `keybindings` ([`keybindings_sync`]) e de `tasks`
-//! ([`tasks_sync`]).
+//! ([`tasks_sync`]), mais os de `settings` ([`settings_sync`]) e de estado global ([`global_state_sync`]).
 
 pub mod content;
 pub mod global_state_merge;
@@ -31,3 +31,6 @@ pub mod user_data_sync_store_service;
 pub mod abstract_json_synchronizer;
 pub mod keybindings_sync;
 pub mod tasks_sync;
+
+pub mod global_state_sync;
+pub mod settings_sync;

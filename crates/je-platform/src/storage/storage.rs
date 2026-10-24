@@ -677,11 +677,14 @@ struct InMemoryBackend {
     application_shared_storage: Rc<Storage>,
     profile_storage: Rc<Storage>,
     workspace_storage: Rc<Storage>,
+    /// O perfil que `hasScope` aceita (o `TestStorageService` da sincronização, que só aceita o perfil padrão);
+    /// `None` é o `InMemoryStorageService` comum, que não tem escopo de perfil.
+    scoped_profile_id: Option<String>,
 }
 
 impl StorageBackend for InMemoryBackend {
-    fn has_scope(&self, _scope: &StorageSwitchTarget) -> bool {
-        false
+    fn has_scope(&self, scope: &StorageSwitchTarget) -> bool {
+        matches!(scope, StorageSwitchTarget::Profile(profile) if self.scoped_profile_id.as_deref() == Some(profile.id.as_str()))
     }
 
     fn do_initialize(&self) -> Promise<()> {
@@ -730,11 +733,23 @@ pub struct InMemoryStorageService;
 impl InMemoryStorageService {
     #[allow(clippy::new_ret_no_self)] // o construtor devolve o núcleo compartilhado, como `new InMemoryStorageService()` no original
     pub fn new() -> Rc<AbstractStorageService> {
+        Self::build(None)
+    }
+
+    /// O `InMemoryStorageService` cujo `hasScope` aceita só o perfil de id `profile_id`: o `TestStorageService` de
+    /// `userDataSyncClient.ts`, que o `IUserDataProfileStorageService` consulta para ler o perfil padrão
+    /// direto do armazenamento do cliente.
+    pub fn with_profile_scope(profile_id: &str) -> Rc<AbstractStorageService> {
+        Self::build(Some(profile_id.to_owned()))
+    }
+
+    fn build(scoped_profile_id: Option<String>) -> Rc<AbstractStorageService> {
         let backend = InMemoryBackend {
             application_storage: in_memory_storage(),
             application_shared_storage: in_memory_storage(),
             profile_storage: in_memory_storage(),
             workspace_storage: in_memory_storage(),
+            scoped_profile_id,
         };
         let storages = [
             (StorageScope::Workspace, backend.workspace_storage.clone()),

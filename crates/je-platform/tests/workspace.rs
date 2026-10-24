@@ -12,7 +12,7 @@ use je_base::path::PathModule;
 use je_base::platform::Platform;
 use je_base::uri::{Field, URI, UriChange};
 use je_platform::resources::{ext_uri_biased_ignore_path_case, host_environment, uri_file};
-use je_platform::workspace::{RawWorkspaceFolder, Workspace, WorkspaceFolder};
+use je_platform::workspace::{RawWorkspaceFolder, Workspace, WorkspaceFolder, new_test_workspace};
 use je_platform::workspaces::to_workspace_folders;
 
 fn join(a: &str, b: &str) -> String {
@@ -41,8 +41,7 @@ impl Fixture {
     }
 
     fn workspace(&self, folders: Vec<WorkspaceFolder>) -> Rc<Workspace> {
-        let is_linux = Platform::detect().is_linux;
-        Workspace::new("", folders, false, None, Rc::new(move |_: &URI| !is_linux), None)
+        new_test_workspace("", folders, None, None)
     }
 
     fn workspace_config_uri(&self) -> URI {

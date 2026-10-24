@@ -10,11 +10,13 @@
 //!   ignoradas) não é chamado: o registro de contribuições JSON não foi portado e o teste de perfis não lê
 //!   essas chaves.
 //! - O `TestStorageService` (um `InMemoryStorageService` com `hasScope` que só aceita o perfil padrão) é o
-//!   `InMemoryStorageService` comum: `hasScope` só é lido pelo `IUserDataProfileStorageService`, que o
-//!   cliente não monta porque os sincronizadores de estado global não foram portados. Também ficam de fora o
-//!   `IMeteredConnectionService`, o `IExtensionManagementService`, o `IGlobalExtensionEnablementService`, o
-//!   `IExtensionStorageService`, o `IIgnoredExtensionsManagementService`, o `IExtensionGalleryService` e o
-//!   `IUserDataSyncMachinesService`, que só os sincronizadores não portados e o serviço de máquinas leem.
+//!   [`InMemoryStorageService::with_profile_scope`] do perfil padrão, e o `TestUserDataProfileStorageService`
+//!   é o [`AbstractUserDataProfileStorageService`] sobre o [`TestUserDataProfileStorageBackend`] (que guarda um
+//!   `TestStorageDatabase` por perfil). Ficam de fora o
+//!   `IMeteredConnectionService`, o `IGlobalExtensionEnablementService`, o `IExtensionStorageService`, o
+//!   `IIgnoredExtensionsManagementService`, o `IExtensionGalleryService` e o `IUserDataSyncMachinesService`, que
+//!   só os sincronizadores não portados e o serviço de máquinas leem. O `IExtensionManagementService` é o recorte
+//!   [`TestExtensionManagementService`]: `getInstalled` devolve `[]` e os eventos nunca disparam.
 //! - O stub de `IEnvironmentService` do original declara quatro campos e deixa o resto `undefined`;
 //!   [`TestEnvironmentService`] tem os quatro e valores neutros (caminhos sob `userRoamingDataHome`) para o
 //!   resto. O `serviceMachineIdResource`, `undefined` no original (a leitura e a gravação falham e são
@@ -32,10 +34,11 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 use je_base::JsString;
+use je_base::async_::async_fn;
 use je_base::buffer::{VSBuffer, buffer_to_stream};
 use je_base::cancellation::CancellationToken;
 use je_base::errors::Error;
-use je_base::event::Event;
+use je_base::event::{Emitter, Event};
 use je_base::json::{Object, Value};
 use je_base::json_formatter::FormattingOptions;
 use je_base::lifecycle::{Disposable, IDisposable};
@@ -57,8 +60,10 @@ use je_platform::request::{AuthInfo, Credentials, IRequestService, RequestComple
 use je_platform::resources::{host_environment, uri_file};
 use je_platform::storage::{InMemoryStorageService, StorageService};
 use je_platform::telemetry::null_telemetry_service;
-use je_platform::user_data_profile::{IUserDataProfilesService, InMemoryProfilesStore, UserDataProfilesEnvironment, UserDataProfilesService};
+use je_platform::user_data_profile::user_data_profile_storage_service::{AbstractUserDataProfileStorageService, ProfileStorageChanges, UserDataProfileStorageBackend};
+use je_platform::user_data_profile::{IUserDataProfilesService, InMemoryProfilesStore, UserDataProfile, UserDataProfilesEnvironment, UserDataProfilesService};
 use je_platform::user_data_sync::abstract_synchronizer::{SynchroniserServices, stringify_json};
+use je_platform::user_data_sync::settings_sync::{ExtensionType, IExtensionManagementService};
 use je_platform::user_data_sync::user_data_sync::{
     ALL_SYNC_RESOURCES, IUserData, IUserDataResourceManifest, IUserDataSyncEnablementService, IUserDataSyncStoreService, IUserDataSyncUtilService, ServerResource, SyncResource,
     USER_DATA_SYNC_SCHEME, get_default_ignored_settings,
@@ -66,8 +71,9 @@ use je_platform::user_data_sync::user_data_sync::{
 use je_platform::user_data_sync::user_data_sync_account::{IUserDataSyncAccount, IUserDataSyncAccountService, UserDataSyncAccountService};
 use je_platform::user_data_sync::user_data_sync_enablement_service::UserDataSyncEnablementService;
 use je_platform::user_data_sync::user_data_sync_local_store_service::UserDataSyncLocalStoreService;
-use je_platform::user_data_sync::user_data_sync_service::{Synchroniser, UserDataSyncService};
+use je_platform::user_data_sync::user_data_sync_service::{Synchroniser, SynchroniserExtraServices, UserDataSyncService};
 use je_platform::user_data_sync::user_data_sync_store_service::{UserDataSyncStoreClientServices, UserDataSyncStoreManagementService, UserDataSyncStoreService};
+use je_storage::{InMemoryStorageDatabase, ItemMap, Recovery, StorageDatabase, StorageItemsChangeEvent, UpdateRequest};
 
 // region: servidor de teste
 
@@ -363,6 +369,91 @@ impl IUserDataSyncUtilService for TestUserDataSyncUtilService {
     }
 }
 
+/// O stub de `IExtensionManagementService` do `setUp`: `getInstalled` devolve `[]` e os eventos nunca disparam.
+pub struct TestExtensionManagementService;
+
+impl IExtensionManagementService for TestExtensionManagementService {
+    fn get_installed_ignored_settings(&self, _extension_type: ExtensionType, _extensions_profile_location: Option<&URI>) -> Promise<Vec<Vec<JsString>>> {
+        Promise::resolved(Vec::new())
+    }
+
+    fn on_did_install_extensions(&self) -> Event<Vec<bool>> {
+        Event::none()
+    }
+
+    fn on_did_uninstall_extension(&self) -> Event<bool> {
+        Event::none()
+    }
+}
+
+/// `TestStorageDatabase` de `userDataProfileStorageService.test.ts`: um banco em memória que emite
+/// `onDidChangeItemsExternal` a cada atualização que insere ou remove itens.
+pub struct TestStorageDatabase {
+    inner: Rc<InMemoryStorageDatabase>,
+    on_did_change_items_external: Rc<Emitter<StorageItemsChangeEvent>>,
+}
+
+impl TestStorageDatabase {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self { inner: InMemoryStorageDatabase::new(), on_did_change_items_external: Emitter::new() })
+    }
+}
+
+impl StorageDatabase for TestStorageDatabase {
+    fn on_did_change_items_external(&self) -> Event<StorageItemsChangeEvent> {
+        self.on_did_change_items_external.event()
+    }
+
+    fn get_items(&self) -> Promise<ItemMap> {
+        self.inner.get_items()
+    }
+
+    fn update_items(&self, request: UpdateRequest) -> Promise<()> {
+        let updated = self.inner.update_items(request.clone());
+        let emitter = self.on_did_change_items_external.clone();
+        async_fn(async move {
+            updated.await?;
+            if request.insert.is_some() || request.delete.is_some() {
+                emitter.fire(StorageItemsChangeEvent { changed: request.insert, deleted: request.delete });
+            }
+            Ok(())
+        })
+    }
+
+    fn optimize(&self) -> Promise<()> {
+        self.inner.optimize()
+    }
+
+    fn close(&self, recovery: Option<Recovery>) -> Promise<()> {
+        self.inner.close(recovery)
+    }
+}
+
+/// `TestUserDataProfileStorageService` de `userDataProfileStorageService.test.ts`, no que ele dá a
+/// `AbstractUserDataProfileStorageService`: `onDidChange` é `Event.None` e há um [`TestStorageDatabase`] por perfil.
+#[derive(Default)]
+pub struct TestUserDataProfileStorageBackend {
+    databases: RefCell<HashMap<String, Rc<TestStorageDatabase>>>,
+}
+
+impl TestUserDataProfileStorageBackend {
+    /// `setupStorageDatabase(profile)`.
+    pub fn setup_storage_database(&self, profile: &UserDataProfile) -> Rc<TestStorageDatabase> {
+        self.databases.borrow_mut().entry(profile.id.clone()).or_insert_with(TestStorageDatabase::new).clone()
+    }
+}
+
+impl UserDataProfileStorageBackend for TestUserDataProfileStorageBackend {
+    fn on_did_change(&self) -> Event<ProfileStorageChanges> {
+        Event::none()
+    }
+
+    fn create_storage_database(&self, profile: &UserDataProfile) -> Promise<Rc<dyn StorageDatabase>> {
+        let database: Rc<dyn StorageDatabase> = self.setup_storage_database(profile);
+        Promise::resolved(database)
+    }
+}
+
 /// O stub de `IEnvironmentService` do `setUp`: `userDataSyncHome`, `userRoamingDataHome`, `cacheHome`,
 /// `argvResource` e `sync: 'on'`.
 pub struct TestEnvironmentService {
@@ -485,6 +576,7 @@ pub struct UserDataSyncClient {
     pub file_service: Rc<FileService>,
     pub user_data_profiles_service: Rc<UserDataProfilesService>,
     pub storage_service: Rc<dyn StorageService>,
+    pub user_data_profile_storage_service: Rc<AbstractUserDataProfileStorageService>,
     pub configuration_service: Rc<ConfigurationService>,
     pub user_data_sync_store_management_service: Rc<UserDataSyncStoreManagementService>,
     pub user_data_sync_store_service: Rc<UserDataSyncStoreService>,
@@ -548,9 +640,11 @@ impl UserDataSyncClient {
         );
         base.register(user_data_profiles_service.clone());
 
-        let in_memory_storage_service = InMemoryStorageService::new();
+        let in_memory_storage_service = InMemoryStorageService::with_profile_scope(&user_data_profiles_service.default_profile().id);
         base.register(in_memory_storage_service.clone());
         let storage_service: Rc<dyn StorageService> = Rc::new(in_memory_storage_service);
+        let user_data_profile_storage_service = AbstractUserDataProfileStorageService::new(false, storage_service.clone(), Rc::new(TestUserDataProfileStorageBackend::default()));
+        base.register(user_data_profile_storage_service.clone());
 
         let configuration_service = ConfigurationService::new(user_data_profiles_service.default_profile().settings_resource, file_service.clone(), Rc::new(NullPolicyService), log_service.clone());
         base.register(configuration_service.clone());
@@ -605,6 +699,10 @@ impl UserDataSyncClient {
             user_data_sync_store_management_service.clone(),
             user_data_profiles_service.clone(),
             user_data_sync_util_service.clone(),
+            SynchroniserExtraServices {
+                user_data_profile_storage_service: user_data_profile_storage_service.clone(),
+                extension_management_service: Rc::new(TestExtensionManagementService),
+            },
         );
         base.register(user_data_sync_service.clone());
 
@@ -633,6 +731,7 @@ impl UserDataSyncClient {
             file_service,
             user_data_profiles_service,
             storage_service,
+            user_data_profile_storage_service,
             configuration_service,
             user_data_sync_store_management_service,
             user_data_sync_store_service,

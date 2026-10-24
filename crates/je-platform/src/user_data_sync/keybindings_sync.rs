@@ -68,7 +68,7 @@ pub fn get_keybindings_content_from_sync_content(sync_content: &str, platform_sp
 }
 
 /// `str.trim()` do JavaScript.
-fn js_trim(text: &str) -> String {
+pub(super) fn js_trim(text: &str) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
     JsString::from(js_string::trim(&units)).to_string_lossy()
 }
