@@ -166,6 +166,7 @@ impl IProductService for ProductService {
     }
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
         self.trusted_extension_auth_access.borrow().clone()
+    }
     fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
         self.extension_kind.as_ref()
     }
@@ -222,6 +223,7 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
         self.trusted_extension_auth_access.clone()
+    }
     fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
         self.extension_kind.as_ref()
     }

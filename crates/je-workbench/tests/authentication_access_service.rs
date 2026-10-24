@@ -8,8 +8,8 @@
 //!   `InstantiationService` sobre um `ServiceCollection` com os dois serviços; `createInstance` é o
 //!   `create_instance` real.
 //! - `TestStorageService` é o `InMemoryStorageService` (o `testEmitWillSaveState` não é usado aqui) e
-//!   `TestProductService` está em `support::workbench_test_services`, com `trustedExtensionAuthAccess`
-//!   mutável. O `teardown` (que zera essa propriedade) não existe: cada caso cria o seu produto.
+//!   `TestProductService` é o `ProductService` de `support::workbench_test_services`, com
+//!   `trustedExtensionAuthAccess` mutável por dentro. O `teardown` (que zera essa propriedade) não existe: cada caso cria o seu produto.
 //! - `AllowedExtension` sem `allowed` (`allowed property is undefined`) é `allowed: None`.
 //! - `JSON.parse(storedData)` é `json_parse`, e `parsedData.length` e `.id` leem o [`Value`] resultante.
 //! - `assert.ok(x)` sobre um `find` é `is_some()`, e `strictEqual(x, undefined)` sobre `trusted` é `None`.
