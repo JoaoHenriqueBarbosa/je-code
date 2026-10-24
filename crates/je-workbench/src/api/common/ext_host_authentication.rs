@@ -64,7 +64,7 @@ type Tokens = Rc<Vec<IAuthorizationToken>>;
 type Sessions = Rc<Vec<AuthenticationSession>>;
 
 /// `token[name]` quando é um texto não vazio (o `||` do JavaScript).
-fn non_empty_claim(claims: &Option<Value>, name: &str) -> Option<String> {
+pub(crate) fn non_empty_claim(claims: &Option<Value>, name: &str) -> Option<String> {
     let Some(Value::Object(object)) = claims else {
         return None;
     };

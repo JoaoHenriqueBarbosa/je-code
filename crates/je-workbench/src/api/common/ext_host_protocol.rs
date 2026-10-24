@@ -4628,3 +4628,45 @@ mod authentication_region {
 }
 
 // #endregion
+
+// #region Share
+
+pub use self::share_region::*;
+
+/// `MainThreadShareShape`, `ExtHostShareShape` e os identificadores `MainContext.MainThreadShare` e `ExtHostContext.ExtHostShare` (de
+/// `extHost.protocol.ts`, usados por `mainThreadShare.ts`).
+///
+/// Divergências:
+/// - `IShareableItemDto` (`{ resourceUri: UriComponents, selection?: IRange }`) é o [`IShareableItem`] do serviço: o `UriComponents`
+///   é a [`URI`] (os dois lados dividem o processo e o `revive` é a identidade) e o `Selection` do original já é um `Range`.
+/// - O `Promise<UriComponents | string | undefined>` de `$provideShare` é `Promise<Option<ShareResult>>`.
+/// - `IDocumentFilterDto[]` é o `Vec<`[`IDocumentFilterDto`]`>` já portado para os provedores de linguagem.
+mod share_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+
+    use super::{ExtHostContext, IDocumentFilterDto, MainContext, ProxyIdentifier};
+    use crate::contrib::share::common::share::{IShareableItem, ShareResult};
+
+    /// `MainThreadShareShape`.
+    pub trait MainThreadShareShape: IDisposable {
+        fn rpc_register_share_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, id: &str, label: &str, priority: i32);
+        fn rpc_unregister_share_provider(&self, handle: u32);
+    }
+
+    /// `ExtHostShareShape`.
+    pub trait ExtHostShareShape {
+        fn rpc_provide_share(&self, handle: u32, item: IShareableItem, token: CancellationToken) -> Promise<Option<ShareResult>>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_SHARE: ProxyIdentifier<dyn MainThreadShareShape> = ProxyIdentifier::new("MainThreadShare");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_SHARE: ProxyIdentifier<dyn ExtHostShareShape> = ProxyIdentifier::new("ExtHostShare");
+    }
+}
+
+// #endregion

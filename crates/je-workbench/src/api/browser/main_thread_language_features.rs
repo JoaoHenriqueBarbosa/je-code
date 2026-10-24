@@ -99,7 +99,7 @@ pub struct MainThreadLanguageFeatures {
 }
 
 /// O `selector: IDocumentFilterDto[]` como o seletor que o registro entende (ver as divergências).
-fn to_selector(selector: &[IDocumentFilterDto]) -> LanguageSelector {
+pub(crate) fn to_selector(selector: &[IDocumentFilterDto]) -> LanguageSelector {
     LanguageSelector::Array(
         selector
             .iter()

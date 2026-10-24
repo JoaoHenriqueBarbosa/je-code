@@ -40,5 +40,8 @@ pub mod webview;
 // Painéis de webview (`contrib/webviewPanel`): a entrada de editor e o contrato do serviço.
 pub mod webview_panel;
 
+// Compartilhamento (`contrib/share`): o contrato do serviço.
+pub mod share;
+
 // Telemetria de edições (`contrib/editTelemetry`): a base do rastreamento da origem de cada trecho.
 pub mod edit_telemetry;
