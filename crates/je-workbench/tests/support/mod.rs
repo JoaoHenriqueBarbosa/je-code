@@ -100,3 +100,6 @@ pub mod search_support;
 
 // Porte de `openWithEditorPicker.test.ts`: o `TestQuickPick` e o `IQuickInputService` parcial.
 pub mod open_with_editor_picker_support;
+
+// Porte de `contrib/testing/test/browser/testObjectTree.ts`: o `TestObjectTree` e o `TestTreeTestHarness`.
+pub mod test_object_tree;
