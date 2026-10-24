@@ -103,6 +103,19 @@ pub trait IProductService {
     fn built_in_extensions_enabled_with_auto_updates(&self) -> Vec<String> {
         Vec::new()
     }
+    /// `date`: a data de build do produto (ISO 8601). Padrão: ausente.
+    fn date(&self) -> Option<&str> {
+        None
+    }
+    /// `trustedExtensionPublishers`: os publishers (em minúsculas) cujas extensões se atualizam sem a espera da
+    /// quarentena. Padrão: nenhum.
+    fn trusted_extension_publishers(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// `extensionKeywords`: as palavras-chave de busca por extensão de arquivo (`ext:py`). Padrão: nenhuma.
+    fn extension_keywords(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        None
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -155,6 +168,12 @@ pub struct ProductService {
     pub extensions_gallery: Option<IExtensionsGallery>,
     /// `copilotVersions`: as versões do runtime e do SDK do Copilot empacotados.
     pub copilot_versions: Option<ICopilotVersions>,
+    /// `date`.
+    pub date: Option<String>,
+    /// `trustedExtensionPublishers`.
+    pub trusted_extension_publishers: Vec<String>,
+    /// `extensionKeywords`.
+    pub extension_keywords: Option<IStringDictionary<Vec<String>>>,
 }
 
 impl Default for ProductService {
@@ -185,6 +204,9 @@ impl Default for ProductService {
             sessions_window_allowed_extensions: Vec::new(),
             extensions_gallery: None,
             copilot_versions: None,
+            date: None,
+            trusted_extension_publishers: Vec::new(),
+            extension_keywords: None,
         }
     }
 }
@@ -276,6 +298,15 @@ impl IProductService for ProductService {
     }
     fn copilot_versions(&self) -> Option<&ICopilotVersions> {
         self.copilot_versions.as_ref()
+    }
+    fn date(&self) -> Option<&str> {
+        self.date.as_deref()
+    }
+    fn trusted_extension_publishers(&self) -> Vec<String> {
+        self.trusted_extension_publishers.clone()
+    }
+    fn extension_keywords(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_keywords.as_ref()
     }
 }
 

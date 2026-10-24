@@ -50,7 +50,7 @@ use je_base::runtime;
 use je_base::uri::{Field, URI, UriChange};
 use je_extensions::allowed::AllowedExtensionsService;
 use je_extensions::management::{
-    ALLOWED_EXTENSIONS_CONFIG_KEY, ExtensionOrPublisher, ExtensionsControlManifest, InstallOperation, MaliciousExtensionInfo,
+    ALLOWED_EXTENSIONS_CONFIG_KEY, ExtensionOrPublisher, ExtensionsControlManifest, InstallOperation, InstallSource, MaliciousExtensionInfo,
 };
 use je_extensions::manifest::{EXTENSIONS_ENABLE_AGENTS_WINDOW_CAPABILITY, ExtensionIdentifierInfo, ExtensionManifest, ExtensionType, TargetPlatform};
 use je_platform::configuration::service::IConfigurationService;
@@ -74,7 +74,7 @@ use je_workbench::services::extension_management::extension_enablement_service::
 use je_workbench::services::extension_management::extension_management::{
     DidChangeProfileEvent, DidUninstallExtensionEvent, EnablementState, ExtensionInstallLocation, ExtensionRef, IExtension, IExtensionManagementServer,
     IExtensionManagementServerService, IExtensionManagementService, IProfileAwareExtensionManagementService, IWorkbenchExtensionEnablementService,
-    IWorkbenchExtensionManagementService, InstallExtensionResult, WorkspaceTypeOverrides,
+    IWorkbenchExtensionManagementService, InstallExtensionResult, InstallExtensionSource, WorkspaceTypeOverrides, local_extension_uri,
 };
 use je_workbench::services::extension_management::global_extension_enablement_service::GlobalExtensionEnablementService;
 use je_workbench::services::extension_management::service_contracts::{ChatEntitlementContext, ChatEntitlementContextState, IChatEntitlementService};
@@ -174,16 +174,34 @@ fn a_local_extension2(id: &str, manifest: Value, properties: Properties) -> Exte
     manifest_properties.insert("publisher".to_owned(), json!(publisher));
     manifest_properties.extend(manifest);
     let extension_type = properties.extension_type.unwrap_or(ExtensionType::User);
+    let location = properties.location.unwrap_or_else(|| uri_file(&format!("pub.{name}")));
+    let location = if location.scheme().to_string_lossy() == schemas::FILE { location.path().to_string_lossy() } else { location.to_string(true).to_string_lossy() };
     Rc::new(IExtension {
         extension_type,
         is_builtin: extension_type == ExtensionType::System,
         identifier: identifier(id),
         manifest: ExtensionManifest::from_value(Value::Object(manifest_properties)),
-        location: properties.location.unwrap_or_else(|| uri_file(&format!("pub.{name}"))),
+        location,
         target_platform: TargetPlatform::Undefined,
-        is_valid: properties.is_valid.unwrap_or(true),
-        pre_release: false,
         publisher_display_name: None,
+        readme_url: None,
+        changelog_url: None,
+        is_valid: properties.is_valid.unwrap_or(true),
+        validations: Vec::new(),
+        pre_release: false,
+        is_workspace_scoped: false,
+        is_machine_scoped: false,
+        is_application_scoped: false,
+        publisher_id: None,
+        installed_timestamp: None,
+        is_pre_release_version: false,
+        has_pre_release_version: false,
+        private: false,
+        updated: false,
+        pinned: false,
+        force_auto_update: false,
+        source: InstallSource::Vsix,
+        size: 0.0,
     })
 }
 
@@ -217,7 +235,7 @@ impl IExtensionManagementServerService for TestExtensionManagementServerService 
     }
 
     fn get_extension_management_server(&self, extension: &IExtension) -> Option<Rc<IExtensionManagementServer>> {
-        let scheme = extension.location.scheme().to_string_lossy();
+        let scheme = local_extension_uri(extension).scheme().to_string_lossy();
         if scheme == schemas::FILE {
             return self.local.clone();
         }
@@ -1259,7 +1277,7 @@ fn test_remove_an_extension_from_disablement_list_when_uninstalled() {
 
         set(&t, &[&extension], E::DisabledWorkspace).await;
         set(&t, &[&extension], E::DisabledGlobally).await;
-        f.did_uninstall_event.fire(DidUninstallExtensionEvent { identifier: identifier("pub.a"), profile_location: None, error: None, server: None });
+        f.did_uninstall_event.fire(DidUninstallExtensionEvent { identifier: identifier("pub.a"), profile_location: None, error: None, workspace_scoped: None, server: None });
 
         assert!(t.is_enabled(&extension));
         assert_eq!(t.get_enablement_state(&extension), E::EnabledGlobally);
@@ -2164,12 +2182,14 @@ fn test_extension_is_enabled_when_its_dependency_becomes_valid() {
         let target = Spy::on(&f, &t);
 
         let valid_extension = a_local_extension2("pub.a", json!({}), Properties::default());
+        let valid_location = local_extension_uri(&valid_extension);
         f.did_install_event.fire(vec![InstallExtensionResult {
             identifier: valid_extension.identifier.clone(),
             operation: InstallOperation::Install,
-            source: Some(valid_extension.location.clone()),
-            profile_location: Some(valid_extension.location.clone()),
+            source: Some(InstallExtensionSource::Location(valid_location.clone())),
+            profile_location: Some(valid_location),
             local: Some(valid_extension.clone()),
+            workspace_scoped: None,
         }]);
 
         assert_eq!(t.get_enablement_state(&extension), E::EnabledGlobally);
