@@ -247,15 +247,17 @@ pub struct AnythingQuickAccessProvider {
     services: AnythingQuickAccessServices,
     pick_state: PickState,
     link_source_group: Cell<Option<i64>>,
-    file_query_builder: QueryBuilder,
+    file_query_builder: Rc<QueryBuilder>,
     file_query_delayer: ThrottledDelayer<Vec<URI>>,
     label_only_editor_history_pick_accessor: QuickPickItemScorerAccessor,
+    /// O `_getPicks` sobrescrito por uma subclasse (`protected override _getPicks`), quando houver.
+    picks_override: RefCell<Option<Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>>>>,
 }
 
 impl AnythingQuickAccessProvider {
     pub const PREFIX: &'static str = "";
 
-    pub fn new(services: AnythingQuickAccessServices, file_query_builder: QueryBuilder) -> Rc<Self> {
+    pub fn new(services: AnythingQuickAccessServices, file_query_builder: Rc<QueryBuilder>) -> Rc<Self> {
         Rc::new_cyclic(|this| Self {
             this: this.clone(),
             picker_base: PickerQuickAccessProvider::new(
@@ -281,6 +283,7 @@ impl AnythingQuickAccessProvider {
             file_query_builder,
             file_query_delayer: ThrottledDelayer::new(TYPING_SEARCH_DELAY),
             label_only_editor_history_pick_accessor: QuickPickItemScorerAccessor::new(true, false),
+            picks_override: RefCell::new(None),
         })
     }
 
@@ -404,7 +407,8 @@ impl AnythingQuickAccessProvider {
         }));
 
         // Start picker
-        let source: Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>> = self.self_rc();
+        let default_source: Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>> = self.self_rc();
+        let source = self.picks_override.borrow().clone().unwrap_or(default_source);
         disposables.add(self.picker_base.provide(source, picker, token, run_options));
 
         disposables
@@ -1173,12 +1177,16 @@ impl AnythingQuickAccessProvider {
                 Some(model) => model,
                 None => match this.services.text_model_service.create_model_reference(&active_global_resource).await {
                     Ok(model_reference) => {
+                        disposables.add_rc(Rc::new(model_reference.clone()));
                         if token.is_cancellation_requested() {
                             return Ok(Picks::Items(Vec::new()));
                         }
-                        let text_model = model_reference.object.text_editor_model().expect("o modelo de texto resolvido");
+                        let text_model = model_reference.object.text_editor_model();
                         disposables.add(Rc::new(model_reference));
-                        text_model
+                        match text_model {
+                            Some(model) => model,
+                            None => return Ok(Picks::Items(Vec::new())),
+                        }
                     }
                     Err(_) => return Ok(Picks::Items(Vec::new())), // return if model cannot be resolved
                 },
@@ -1583,6 +1591,11 @@ impl IDisposable for AnythingQuickAccessProvider {
 
 /// O `Disposable` base, para quem registra o provedor num `DisposableStore`.
 impl AnythingQuickAccessProvider {
+    /// Faz o papel de uma subclasse que sobrescreve `_getPicks`.
+    pub fn override_get_picks(&self, source: Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>>) {
+        *self.picks_override.borrow_mut() = Some(source);
+    }
+
     pub fn disposable(&self) -> &Rc<Disposable> {
         self.picker_base.disposable()
     }
