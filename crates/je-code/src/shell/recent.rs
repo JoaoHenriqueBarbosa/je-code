@@ -40,9 +40,7 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     // Um caminho do Windows (`/c:/x`) lido de dentro do WSL é o `/mnt/c/x`; fora do WSL não existe aqui.
     let bytes = path.as_bytes();
     if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-        if std::env::var_os("WSL_DISTRO_NAME").is_none() {
-            return None;
-        }
+        std::env::var_os("WSL_DISTRO_NAME")?;
         return Some(PathBuf::from(format!("/mnt/{}{}", (bytes[1] as char).to_ascii_lowercase(), &path[3..])));
     }
     Some(PathBuf::from(path))

@@ -88,6 +88,9 @@ impl SideView {
     }
 }
 
+/// O pedido de dica pendente: geração, nó alvo, texto e posição.
+type HoverRequest = Rc<RefCell<Option<(u64, NodeId, String, je_widgets::hover_api::HoverPosition)>>>;
+
 /// A gravidade de uma notificação (`Severity`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // `Info` e `Warning` são as gravidades que o serviço de notificações do workbench vai usar (extensões, git).
@@ -366,7 +369,7 @@ pub struct Shell {
     /// A dica (hover) na tela e o pedido pendente: geração, nó alvo, texto e posição.
     hover: Option<Rc<je_widgets::hover_widget::WorkbenchHoverWidget>>,
     context_view: Option<Rc<je_widgets::context_view::ContextView>>,
-    hover_request: Rc<RefCell<Option<(u64, NodeId, String, je_widgets::hover_api::HoverPosition)>>>,
+    hover_request: HoverRequest,
     /// O diálogo modal aberto: enquanto existe, teclado e ponteiro vão só para ele.
     dialog: Option<Rc<je_widgets::dialog::Dialog>>,
     fullscreen_requested: bool,
