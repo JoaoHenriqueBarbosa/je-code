@@ -345,6 +345,18 @@ fn assign_completion(target: &mut languages::CompletionItem, value: languages::C
     if value.commit_characters.is_some() {
         target.commit_characters = value.commit_characters;
     }
+    if value.additional_text_edits.is_some() {
+        target.additional_text_edits = value.additional_text_edits;
+    }
+    if value.command.is_some() {
+        target.command = value.command;
+    }
+    if value.action.is_some() {
+        target.action = value.action;
+    }
+    if value.extension_id.is_some() {
+        target.extension_id = value.extension_id;
+    }
 }
 
 impl CompletionItem {
