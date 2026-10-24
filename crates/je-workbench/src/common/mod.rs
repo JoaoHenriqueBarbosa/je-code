@@ -8,3 +8,5 @@ pub mod editor;
 pub mod memento;
 
 pub mod resources;
+
+pub mod views;

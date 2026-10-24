@@ -11,6 +11,7 @@
 //! - [`text_editor`]: `TextEditorLineNumbersStyle`, `ThemableDecorationAttachmentRenderOptions`,
 //!   `ThemableDecorationRenderOptions`, `DecorationRangeBehavior`, `DecorationRenderOptions`,
 //!   `fromRangeOrRangeWithMessage` e `pathOrURIToURI`.
+//! - [`tree_view`]: `ViewBadge`, `DataTransferItem` e `DataTransfer`.
 //!
 //! Este arquivo tem o resto: [`ICommandsConverter`] (o `Command.ICommandsConverter`), `ViewColumn` e o
 //! `EditorGroupColumn`.
@@ -48,11 +49,13 @@ pub mod markers;
 pub mod markup;
 pub mod symbols;
 pub mod text_editor;
+pub mod tree_view;
 
 pub use edits::{EndOfLine, TextEdit};
 pub use geometry::{CellRange, Location, LocationDto, NotebookRange, Position, Range, Selection};
 pub use markers::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag};
 pub use markup::MarkdownString;
+pub use tree_view::{DataTransfer, DataTransferItem, ResolveFileData, ViewBadge};
 pub use symbols::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentHighlight, DocumentSymbol, HierarchyItemDto, IncomingCallDto,
     OutgoingCallDto, SymbolKind, SymbolTag, TypeHierarchyItem,

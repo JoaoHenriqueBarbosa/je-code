@@ -8,6 +8,7 @@
 //! - [`completion`]: `CompletionItem`, `DocumentLink`, `Color`, `InlineSuggestion`...
 //! - [`semantic_tokens`]: `SemanticTokensBuilder` e companhia.
 //! - [`text_editor`]: as opções de decoração (`DecorationRenderOptions`...) e `TextEditorDiffInformation`.
+//! - [`tree_view`]: `ViewBadge`, `TreeItem.isTreeItem` e `DataTransfer`, `DataTransferItem`, `DataTransferFile`.
 //! - [`markdown_string`]: `MarkdownString`.
 //! - [`language_model`]: `LanguageModel*` e `Mcp*`.
 //! - [`enums`]: as enumerações soltas.
@@ -26,7 +27,7 @@
 //!   campos `undefined`, como o `JSON.stringify` do original.
 //! - `@es5ClassCompat` (compatibilidade de herança ES5) não tem equivalente nem necessidade.
 //! - Ainda não portado: a família `Task*`/`ProcessExecution`/`ShellExecution`, `Breakpoint*`/`DebugAdapter*`,
-//!   `DataTransfer*`/`DocumentDropEdit`/`DocumentPasteEdit`, `Test*`/`*Coverage`, `Tab*Input`, as peças de
+//!   `DocumentDropEdit`/`DocumentPasteEdit`, `Test*`/`*Coverage`, `Tab*Input`, as peças de
 //!   resposta e depuração de chat (`ChatResponse*`, `ChatDebug*`...), `RelativePattern`,
 //!   `RemoteAuthorityResolverError`/`ManagedResolvedAuthority`, `CustomExecution`, `QuickInputButtons`,
 //!   `PortAttributes`, `TimelineItem`, `ColorTheme`, `DebugVisualization`, `NotebookRendererScript`,
@@ -47,6 +48,7 @@ pub mod position_range;
 pub mod semantic_tokens;
 pub mod symbols;
 pub mod text_editor;
+pub mod tree_view;
 
 pub use completion::*;
 pub use edits::*;
@@ -58,6 +60,7 @@ pub use position_range::*;
 pub use semantic_tokens::*;
 pub use symbols::*;
 pub use text_editor::*;
+pub use tree_view::{DataTransfer, DataTransferFile, DataTransferItem, ViewBadge};
 
 use std::cell::RefCell;
 use std::rc::Rc;

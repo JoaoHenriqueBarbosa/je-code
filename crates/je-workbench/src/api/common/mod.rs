@@ -13,4 +13,5 @@ pub mod ext_host_commands;
 pub mod ext_host_values;
 
 pub mod ext_host_configuration;
+pub mod ext_host_tree_views;
 pub mod ext_host_workspace;
