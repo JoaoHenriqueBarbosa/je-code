@@ -47,3 +47,4 @@ pub mod ext_host_notebook;
 pub mod ext_host_notebook_document;
 pub mod ext_host_notebook_documents;
 pub mod ext_host_notebook_editor;
+pub mod ext_host_notebook_kernels;
