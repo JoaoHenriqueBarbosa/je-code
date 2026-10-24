@@ -1,20 +1,23 @@
 //! Porte de `src/vs/platform/sandbox/node/sandboxHelper.ts`: verifica se o `bubblewrap` e o `socat` estão
 //! instalados, se o `bubblewrap` consegue criar o sandbox e, quando falta algo, qual comando instala.
 //!
-//! Divergências: as `Promise` viram chamadas síncronas (o `Promise.all` do original roda as consultas em
-//! sequência); os parâmetros opcionais de `checkSandboxDependenciesWith` (`linux`, a sonda, os resolvedores)
-//! são `Option` e valem o mesmo padrão do original quando `None`; o `slice(0, 1000)` do erro conta unidades
-//! UTF-16 e nunca parte um par substituto ao meio.
+//! Divergências: só o `findCommand` é assíncrono (o `FindCommand` devolve um futuro local), como no original;
+//! a sonda, os resolvedores e as leituras de `os-release` e do `AppArmor` são chamadas síncronas (o `Promise.all`
+//! do original roda as consultas em sequência); os parâmetros opcionais de `checkSandboxDependenciesWith`
+//! (`linux`, a sonda, os resolvedores) são `Option` e valem o mesmo padrão do original quando `None`; o
+//! `slice(0, 1000)` do erro conta unidades UTF-16 e nunca parte um par substituto ao meio.
 
 use std::time::Duration;
 
+use je_base::node::pfs::LocalFuture;
+use je_base::node::processes::find_executable;
 use je_base::platform::Platform;
 
-use super::node_support::{exec_file, find_executable, get_os_release_info, process_is_root};
+use super::node_support::{exec_file, get_os_release_info, process_is_root};
 use super::sandbox_helper_service::{ISandboxHelperService, SandboxDependencyStatus};
 
-/// `FindCommand`.
-pub type FindCommand<'a> = dyn Fn(&str) -> Option<String> + 'a;
+/// `FindCommand`: `(command: string) => Promise<string | undefined>`.
+pub type FindCommand<'a> = dyn Fn(&str) -> LocalFuture<'static, Option<String>> + 'a;
 /// `BubblewrapProbe`.
 pub type BubblewrapProbe<'a> = dyn Fn(&str) -> BubblewrapProbeResult + 'a;
 /// `ResolveLinuxInstallEnvironment`.
@@ -54,8 +57,8 @@ const LINUX_DEPENDENCY_INSTALL_COMMANDS: &[LinuxDependencyInstaller] = &[
 ];
 
 /// `findCommand(...)` e o teste de verdade do JavaScript sobre `string | undefined` (`""` é falso).
-fn found(find_command: &FindCommand<'_>, command: &str) -> Option<String> {
-    find_command(command).filter(|path| !path.is_empty())
+async fn found(find_command: &FindCommand<'_>, command: &str) -> Option<String> {
+    find_command(command).await.filter(|path| !path.is_empty())
 }
 
 /// Os primeiros 1000 caracteres UTF-16 (`detail.slice(0, 1000)`).
@@ -75,7 +78,7 @@ impl SandboxHelperService {
     /// `checkSandboxDependenciesWith`. `linux`, `probe_bubblewrap`, `resolve_install_environment` e
     /// `resolve_app_armor_restriction` valem, quando `None`, o `isLinux`, a sonda real do `bwrap`, a leitura
     /// do `os-release` e a do `apparmor_restrict_unprivileged_userns`.
-    pub fn check_sandbox_dependencies_with(
+    pub async fn check_sandbox_dependencies_with(
         find_command: &FindCommand<'_>,
         linux: Option<bool>,
         probe_bubblewrap: Option<&BubblewrapProbe<'_>>,
@@ -86,14 +89,14 @@ impl SandboxHelperService {
             return None;
         }
 
-        let bubblewrap_path = found(find_command, "bwrap");
-        let socat_path = found(find_command, "socat");
+        let bubblewrap_path = found(find_command, "bwrap").await;
+        let socat_path = found(find_command, "socat").await;
         let bubblewrap_probe = match &bubblewrap_path {
             Some(path) => probe_bubblewrap.map_or_else(|| Self::probe_bubblewrap(path), |probe| probe(path)),
             None => BubblewrapProbeResult::default(),
         };
         let dependency_install_command = if bubblewrap_path.is_none() || socat_path.is_none() {
-            Self::find_dependency_install_command(find_command, resolve_install_environment)
+            Self::find_dependency_install_command(find_command, resolve_install_environment).await
         } else {
             None
         };
@@ -118,23 +121,24 @@ impl SandboxHelperService {
         apparmor_restriction.map(|restriction| restriction.trim() == "1")
     }
 
-    fn find_dependency_install_command(find_command: &FindCommand<'_>, resolve_install_environment: Option<&ResolveLinuxInstallEnvironment<'_>>) -> Option<String> {
+    async fn find_dependency_install_command(find_command: &FindCommand<'_>, resolve_install_environment: Option<&ResolveLinuxInstallEnvironment<'_>>) -> Option<String> {
         let environment = resolve_install_environment.map_or_else(Self::resolve_linux_install_environment, |resolve| resolve());
         let installer = LINUX_DEPENDENCY_INSTALL_COMMANDS
             .iter()
             .find(|candidate| candidate.distribution_ids.iter().any(|id| environment.distribution_ids.iter().any(|distribution_id| distribution_id == *id)))?;
         let elevation = if environment.is_root {
             ""
-        } else if found(find_command, "sudo").is_some() {
+        } else if found(find_command, "sudo").await.is_some() {
             "sudo "
         } else {
             return None;
         };
-        installer
-            .commands
-            .iter()
-            .find(|(executable, _)| found(find_command, executable).is_some())
-            .map(|(_, command)| command.split(" && ").map(|command| format!("{elevation}{command}")).collect::<Vec<_>>().join(" && "))
+        for (executable, command) in installer.commands {
+            if found(find_command, executable).await.is_some() {
+                return Some(command.split(" && ").map(|command| format!("{elevation}{command}")).collect::<Vec<_>>().join(" && "));
+            }
+        }
+        None
     }
 
     fn resolve_linux_install_environment() -> LinuxInstallEnvironment {
@@ -167,7 +171,16 @@ impl SandboxHelperService {
 }
 
 impl ISandboxHelperService for SandboxHelperService {
-    fn check_sandbox_dependencies(&self) -> Option<SandboxDependencyStatus> {
-        Self::check_sandbox_dependencies_with(&|command| find_executable(command, None, None, None, None), None, None, None, None)
+    fn check_sandbox_dependencies(&self) -> LocalFuture<'_, Option<SandboxDependencyStatus>> {
+        Box::pin(Self::check_sandbox_dependencies_with(
+            &|command| {
+                let command = command.to_owned();
+                Box::pin(async move { find_executable(&command, None, None, None, None).await })
+            },
+            None,
+            None,
+            None,
+            None,
+        ))
     }
 }
