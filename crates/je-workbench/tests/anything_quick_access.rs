@@ -1,6 +1,17 @@
 //! Porte de `src/vs/workbench/contrib/search/test/browser/anythingQuickAccess.test.ts` (suíte `AnythingQuickAccess - links`), caso a caso e na mesma ordem.
 //!
-//! NENHUM caso foi portado (sem `#[test]`), todos de fora pelo mesmo motivo: o `AnythingQuickAccessProvider`
+//! ESTADO: nenhum caso portado ainda (sem `#[test]`). A produção já existe: `PickerQuickAccessProvider`
+//! (`je-platform/src/quickinput/picker_quick_access.rs`) e `AnythingQuickAccessProvider`
+//! (`contrib/search/browser/anything_quick_access.rs`). Falta só a bancada de dublês que o `workbenchInstantiationService` do
+//! original monta, que o porte ainda não tem: um `IQuickPick` concreto (`createQuickPick` do `QuickInputService` real; os
+//! contratos do porte só têm o trait), e dublês de `IEditorService`, `IEditorGroupsService` (com `activeGroup`, `getGroup` e
+//! `activateGroup` do caso), `IHistoryService`, `IWorkingCopyService`, `ITextModelService`, `ISearchService`
+//! (`fileSearch` e `clearCache`), `ICustomEditorLabelService`, `IOpenerService` (com o `OpenerService` real no caso do abridor
+//! externo) e `INotificationService`, mais os três contratos do módulo (`ISymbolsQuickAccess`, `IGotoSymbolQuickAccess`,
+//! `IPickerEditorState`) e `IHelpPicks`.
+//!
+//! Antigo motivo (resolvido): o `PickerQuickAccessProvider` não existia no porte.
+
 //! (`contrib/search/browser/anythingQuickAccess.ts`, 1267 linhas) estende o `PickerQuickAccessProvider` de
 //! `platform/quickinput/browser/pickerQuickAccess.ts`, que não existe no porte (`je-platform/src/quickinput` só tem os tipos
 //! de `quickInput.ts`, sem `IQuickAccessProvider`, `TriggerAction`, `Picks`/`FastAndSlowPicks` nem o `provide` que liga o
