@@ -85,3 +85,7 @@ pub mod configuration_models_support;
 
 // Porte de `workbench/services/textfile/test/browser/textEditorService.test.ts`: o `NullFileSystemProvider` e o `FileServiceProvider`.
 pub mod text_editor_service_support;
+// Porte de `lineDataEventAddon.test.ts`, `markNavigationAddon.test.ts` e `decorationAddon.test.ts`: a decoração e o elemento do
+// `registerDecoration` do `TestTerminal`, e os dublês do `DecorationAddon`.
+pub mod fake_xterm_decoration;
+pub mod terminal_decoration_support;
