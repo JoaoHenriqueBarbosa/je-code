@@ -3,7 +3,7 @@
 //!
 //! Comportamentos do `iconv-lite` mantidos: o nome é canonizado (minúsculas, só `[0-9a-z]`); o decoder
 //! descarta um U+FEFF inicial (`stripBOM`); o encoder com `addBOM` antepõe U+FEFF ao primeiro texto
-//! não vazio; o caractere sem mapeamento sai como `?` (o `encoding_rs` emitiria uma referência numérica).
+//! escrito (mesmo vazio, como o `PrependBOMWrapper`); o caractere sem mapeamento sai como `?` (o `encoding_rs` emitiria uma referência numérica).
 //!
 //! Diferenças e pendências:
 //! - o `encoding_rs` segue o WHATWG: `gb2312` e `iso885911` valem `gbk` e `windows874`, `big5hkscs` vale
@@ -24,6 +24,8 @@ const BOM: char = '\u{FEFF}';
 const ALIASES: &[(&str, &str)] = &[
     ("ucs2", "utf16le"),
     ("latin1", "iso88591"),
+    ("binary", "iso88591"),
+    ("big5", "big5hkscs"),
     ("ibm866", "cp866"),
     ("macintosh", "macroman"),
     ("cp1250", "windows1250"),
@@ -88,7 +90,55 @@ const WHATWG_LABELS: &[(&str, &str)] = &[
 enum Codec {
     Whatwg(&'static Encoding),
     Latin1,
+    Base64,
     CodePage(&'static CodePage),
+}
+
+const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// O `buffer.toString('base64')` (com `=` de preenchimento).
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let (b0, b1, b2) = (group[0], group.get(1).copied(), group.get(2).copied());
+        let triple = (u32::from(b0) << 16) | (u32::from(b1.unwrap_or(0)) << 8) | u32::from(b2.unwrap_or(0));
+        let sextet = |shift: u32| char::from(BASE64_ALPHABET[usize::try_from((triple >> shift) & 0x3F).unwrap_or(0)]);
+        out.push(sextet(18));
+        out.push(sextet(12));
+        out.push(if b1.is_some() { sextet(6) } else { '=' });
+        out.push(if b2.is_some() { sextet(0) } else { '=' });
+    }
+    out
+}
+
+/// O `Buffer.from(text, 'base64')` para um pedaço: devolve os bytes dos grupos completos de 4 caracteres do
+/// alfabeto (o resto fica em `pending`); o que não é do alfabeto (inclusive `-` e `_` da variante URL) é
+/// ignorado, e `=` encerra o grupo.
+fn base64_decode(pending: &mut Vec<u8>, text: &str, last: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        let value = match ch {
+            'A'..='Z' => u32::from(ch) - u32::from('A'),
+            'a'..='z' => u32::from(ch) - u32::from('a') + 26,
+            '0'..='9' => u32::from(ch) - u32::from('0') + 52,
+            '+' | '-' => 62,
+            '/' | '_' => 63,
+            _ => continue,
+        };
+        pending.push(u8::try_from(value).unwrap_or(0));
+        if pending.len() == 4 {
+            let triple = pending.iter().fold(0u32, |acc, &sextet| (acc << 6) | u32::from(sextet));
+            out.extend_from_slice(&triple.to_be_bytes()[1..]);
+            pending.clear();
+        }
+    }
+    if last {
+        let triple = pending.iter().fold(0u32, |acc, &sextet| (acc << 6) | u32::from(sextet)) << (6 * (4 - pending.len()));
+        let produced = pending.len().saturating_sub(1);
+        out.extend_from_slice(&triple.to_be_bytes()[1..=produced]);
+        pending.clear();
+    }
+    out
 }
 
 /// `iconv._canonicalizeEncoding`.
@@ -105,6 +155,7 @@ fn resolve_codec(canonical: &str) -> Option<Codec> {
     let name = ALIASES.iter().find(|(alias, _)| *alias == canonical).map_or(canonical, |(_, target)| target);
     match name {
         "iso88591" => Some(Codec::Latin1),
+        "base64" => Some(Codec::Base64),
         "cp437" => Some(Codec::CodePage(&code_pages::CP437)),
         "cp850" => Some(Codec::CodePage(&code_pages::CP850)),
         "cp852" => Some(Codec::CodePage(&code_pages::CP852)),
@@ -130,6 +181,8 @@ pub fn encoding_exists(encoding: &str) -> bool {
 enum DecoderKind {
     Whatwg(RsDecoder),
     Latin1,
+    /// Os bytes que sobraram de um grupo de 3 (o `StringDecoder` do `base64`).
+    Base64(Vec<u8>),
     CodePage(&'static CodePage),
 }
 
@@ -170,6 +223,14 @@ impl Decoder {
         let text = match &mut self.kind {
             DecoderKind::Whatwg(decoder) => decode_chunk(decoder, buffer, false),
             DecoderKind::Latin1 => buffer.iter().map(|&b| char::from(b)).collect(),
+            DecoderKind::Base64(pending) => {
+                pending.extend_from_slice(buffer);
+                let complete = pending.len() - pending.len() % 3;
+                let rest = pending.split_off(complete);
+                let text = base64_encode(pending);
+                *pending = rest;
+                text
+            }
             DecoderKind::CodePage(page) => buffer.iter().map(|&b| page.decode(b)).collect(),
         };
         self.strip_leading_bom(text)
@@ -178,6 +239,7 @@ impl Decoder {
     pub fn end(&mut self) -> Option<String> {
         let text = match &mut self.kind {
             DecoderKind::Whatwg(decoder) => decode_chunk(decoder, &[], true),
+            DecoderKind::Base64(pending) => base64_encode(&std::mem::take(pending)),
             DecoderKind::Latin1 | DecoderKind::CodePage(_) => String::new(),
         };
         let text = self.strip_leading_bom(text);
@@ -191,6 +253,7 @@ pub fn get_decoder(encoding: &str) -> Result<Decoder, Error> {
     let (kind, always_text_on_end) = match codec {
         Codec::Whatwg(enc) => (DecoderKind::Whatwg(enc.new_decoder_without_bom_handling()), enc == UTF_8),
         Codec::Latin1 => (DecoderKind::Latin1, false),
+        Codec::Base64 => (DecoderKind::Base64(Vec::new()), false),
         Codec::CodePage(page) => (DecoderKind::CodePage(page), false),
     };
     Ok(Decoder { kind, strip_bom: true, always_text_on_end })
@@ -214,6 +277,8 @@ enum EncoderKind {
     Whatwg(RsEncoder),
     Utf16 { big_endian: bool },
     Latin1,
+    /// Os caracteres que sobraram de um grupo de 4.
+    Base64(Vec<u8>),
     CodePage(&'static CodePage),
 }
 
@@ -242,7 +307,7 @@ fn encode_chunk(encoder: &mut RsEncoder, text: &str, last: bool) -> Vec<u8> {
 impl Encoder {
     pub fn write(&mut self, text: &str) -> Vec<u8> {
         let prefixed: String;
-        let text = if self.prepend_bom && !text.is_empty() {
+        let text = if self.prepend_bom {
             self.prepend_bom = false;
             prefixed = format!("{BOM}{text}");
             prefixed.as_str()
@@ -256,6 +321,7 @@ impl Encoder {
                 .flat_map(|unit| if *big_endian { unit.to_be_bytes() } else { unit.to_le_bytes() })
                 .collect(),
             EncoderKind::Latin1 => text.chars().map(|ch| u8::try_from(u32::from(ch)).unwrap_or(b'?')).collect(),
+            EncoderKind::Base64(pending) => base64_decode(pending, text, false),
             EncoderKind::CodePage(page) => text.chars().map(|ch| page.encode(ch).unwrap_or(b'?')).collect(),
         }
     }
@@ -264,6 +330,7 @@ impl Encoder {
     pub fn end(&mut self) -> Option<Vec<u8>> {
         match &mut self.kind {
             EncoderKind::Whatwg(encoder) => Some(encode_chunk(encoder, "", true)).filter(|bytes| !bytes.is_empty()),
+            EncoderKind::Base64(pending) => Some(base64_decode(pending, "", true)).filter(|bytes| !bytes.is_empty()),
             _ => None,
         }
     }
@@ -275,6 +342,7 @@ pub fn get_encoder(encoding: &str, options: Option<EncoderOptions>) -> Result<En
         Codec::Whatwg(enc) if enc == UTF_16LE || enc == UTF_16BE => EncoderKind::Utf16 { big_endian: enc == UTF_16BE },
         Codec::Whatwg(enc) => EncoderKind::Whatwg(enc.new_encoder()),
         Codec::Latin1 => EncoderKind::Latin1,
+        Codec::Base64 => EncoderKind::Base64(Vec::new()),
         Codec::CodePage(page) => EncoderKind::CodePage(page),
     };
     Ok(Encoder { kind, prepend_bom: options.is_some_and(|o| o.add_bom) })

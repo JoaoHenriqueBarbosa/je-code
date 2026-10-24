@@ -22,6 +22,7 @@
 //!   (o `jschardet` o reportava por sequências ESC).
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use chardetng::EncodingDetector;
@@ -113,7 +114,18 @@ impl From<DecodeStreamError> for Error {
     }
 }
 
+/// Evento da fonte, enfileirado para ser tratado em ordem (no JS o `onChunk` pausa a fonte de forma
+/// síncrona antes do primeiro `await`; aqui cada tarefa só roda depois, então a fila garante que nenhum
+/// pedaço nem o fim passe na frente da criação do decoder).
+enum DecodeEvent {
+    Chunk(VSBuffer),
+    End,
+}
+
 struct DecodeContext {
+    queue: RefCell<VecDeque<DecodeEvent>>,
+    draining: Cell<bool>,
+    failed: Cell<bool>,
     source: VSBufferReadableStream,
     target: Rc<WriteableStreamImpl<String>>,
     options: DecodeStreamOptions,
@@ -161,6 +173,7 @@ async fn try_create_decoder(ctx: &Rc<DecodeContext>) -> Result<(), Error> {
 async fn create_decoder(ctx: &Rc<DecodeContext>) {
     if let Err(error) = try_create_decoder(ctx).await {
         // Stop handling anything from the source and target
+        ctx.failed.set(true);
         ctx.cancellation.cancel();
         ctx.target.destroy();
 
@@ -205,6 +218,31 @@ async fn on_end(ctx: &Rc<DecodeContext>) {
     ctx.target.end(remainder);
 }
 
+/// Enfileira o evento e, se ninguém está esvaziando a fila, esvazia em ordem, um por vez.
+fn dispatch(ctx: &Rc<DecodeContext>, event: DecodeEvent) {
+    ctx.queue.borrow_mut().push_back(event);
+    if ctx.draining.replace(true) {
+        return;
+    }
+
+    let ctx = ctx.clone();
+    runtime::spawn_local(async move {
+        loop {
+            let Some(event) = ctx.queue.borrow_mut().pop_front() else {
+                ctx.draining.set(false);
+                return;
+            };
+            if ctx.failed.get() {
+                continue;
+            }
+            match event {
+                DecodeEvent::Chunk(chunk) => on_chunk(&ctx, chunk).await,
+                DecodeEvent::End => on_end(&ctx).await,
+            }
+        }
+    });
+}
+
 pub fn to_decode_stream(source: VSBufferReadableStream, options: DecodeStreamOptions) -> Promise<DecodeStreamResult> {
     let min_bytes_required_for_detection = options
         .min_bytes_required_for_detection
@@ -214,6 +252,9 @@ pub fn to_decode_stream(source: VSBufferReadableStream, options: DecodeStreamOpt
     let cancellation = CancellationTokenSource::new(None);
     let token = cancellation.token();
     let ctx = Rc::new(DecodeContext {
+        queue: RefCell::new(VecDeque::new()),
+        draining: Cell::new(false),
+        failed: Cell::new(false),
         source,
         target: new_writeable_stream::<String>(Some(Rc::new(|strings: Vec<String>| strings.concat())), None),
         options,
@@ -229,15 +270,9 @@ pub fn to_decode_stream(source: VSBufferReadableStream, options: DecodeStreamOpt
     listen_stream(
         &*ctx.source,
         IStreamListener {
-            on_data: Rc::new(move |chunk: &VSBuffer| {
-                let (ctx, chunk) = (data_ctx.clone(), chunk.clone());
-                runtime::spawn_local(async move { on_chunk(&ctx, chunk).await });
-            }),
+            on_data: Rc::new(move |chunk: &VSBuffer| dispatch(&data_ctx, DecodeEvent::Chunk(chunk.clone()))),
             on_error: Rc::new(move |error: &Error| error_ctx.target.error(error.clone())), // simply forward to target
-            on_end: Rc::new(move || {
-                let ctx = end_ctx.clone();
-                runtime::spawn_local(async move { on_end(&ctx).await });
-            }),
+            on_end: Rc::new(move || dispatch(&end_ctx, DecodeEvent::End)),
         },
         Some(&token),
     );
@@ -352,7 +387,7 @@ fn detect_with_chardet(bytes: &[u8], candidates: Option<&[&'static str]>) -> Opt
     }
 
     let mut detector = EncodingDetector::new();
-    detector.feed(bytes, false);
+    detector.feed(bytes, true);
     let (encoding, confident) = detector.guess_assess(None, true);
 
     if confident || encoding == UTF_8 {
