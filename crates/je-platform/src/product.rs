@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 
 use je_base::product::{
-    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IExtensionsGallery, IStringDictionary,
+    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IExtensionRecommendations, IExtensionsGallery, IStringDictionary,
     StringsOrDictionary,
 };
 use je_instantiation::service_id;
@@ -73,6 +73,10 @@ pub trait IProductService {
     }
     /// `extensionsGallery`: a galeria de extensões do produto, quando ele declara. Padrão: nenhuma.
     fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
+        None
+    }
+    /// `extensionRecommendations`: as extensões que o produto recomenda por evento, quando ele declara. Padrão: nenhuma.
+    fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
         None
     }
 }
@@ -309,5 +313,8 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
         self.extensions_gallery.as_ref()
+    }
+    fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
+        self.extension_recommendations.as_ref()
     }
 }

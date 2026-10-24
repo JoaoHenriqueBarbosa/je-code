@@ -35,6 +35,21 @@ use crate::log::{LogArg, LogMessage, LogServiceRef};
 /// entrar em ciclo).
 pub const NO_FETCH_TELEMETRY: &str = "NO_FETCH_TELEMETRY";
 
+/// `USER_LOCAL_AND_REMOTE_SETTINGS`: as configurações `http.*` que valem nas configurações do usuário local e do remoto.
+pub const USER_LOCAL_AND_REMOTE_SETTINGS: [&str; 11] = [
+    "http.proxy",
+    "http.proxyStrictSSL",
+    "http.proxyKerberosServicePrincipal",
+    "http.noProxy",
+    "http.proxyAuthorization",
+    "http.proxySupport",
+    "http.systemCertificates",
+    "http.systemCertificatesNode",
+    "http.experimental.systemCertificatesV2",
+    "http.fetchAdditionalSupport",
+    "http.experimental.networkInterfaceCheckInterval",
+];
+
 /// `IRequestCompleteEvent`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestCompleteEvent {

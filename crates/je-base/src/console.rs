@@ -178,6 +178,62 @@ pub fn log(entry: &IRemoteConsoleLog, label: &str, console: &dyn ConsoleSink) {
     }
 }
 
+thread_local! {
+    /// As chamadas que o espião instalado por [`WarnSpy::install`] guarda; `None` quando nenhum teste o instalou.
+    static WARN_SPY: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<Vec<String>>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `console.warn(message)` do código portado: vai para o stderr, a não ser que um teste tenha instalado o espião
+/// ([`WarnSpy`], o `sinon.stub(console, 'warn')`), que guarda a chamada em vez de escrever.
+pub fn warn(message: &str) {
+    let spied = WARN_SPY.with(|spy| match &*spy.borrow() {
+        Some(calls) => {
+            calls.borrow_mut().push(message.to_owned());
+            true
+        }
+        None => false,
+    });
+    if !spied {
+        let _ = writeln!(std::io::stderr(), "{message}");
+    }
+}
+
+/// `sinon.stub(console, 'warn')`: conta as chamadas de [`warn`] do thread. `restore` (ou o `Drop`) devolve o
+/// `console.warn` ao comportamento normal, como o `consoleWarn.restore()` do original.
+pub struct WarnSpy {
+    calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl WarnSpy {
+    /// `stub(console, 'warn')`.
+    pub fn install() -> Self {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        WARN_SPY.with(|spy| *spy.borrow_mut() = Some(calls.clone()));
+        Self { calls }
+    }
+
+    /// `consoleWarn.callCount`.
+    pub fn call_count(&self) -> usize {
+        self.calls.borrow().len()
+    }
+
+    /// Os textos das chamadas, na ordem.
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.borrow().clone()
+    }
+
+    /// `consoleWarn.restore()`.
+    pub fn restore(&self) {
+        WARN_SPY.with(|spy| *spy.borrow_mut() = None);
+    }
+}
+
+impl Drop for WarnSpy {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
 /// O console do processo: `warn` e `error` vão para stderr, o resto para stdout, sem os `%c` nem os estilos.
 pub struct StdConsole;
 
