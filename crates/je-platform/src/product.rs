@@ -10,6 +10,7 @@
 //! e cresce quando um serviço novo precisar de mais um. [`je_base::product::IProductConfiguration`], o
 //! `product.json` completo, também o implementa.
 
+use je_base::product::ConfigurationSyncStore;
 use je_instantiation::service_id;
 
 /// `IProductService`, reduzido aos campos que os serviços portados leem.
@@ -40,6 +41,8 @@ pub trait IProductService {
     fn msft_internal_domains(&self) -> &[String];
     /// `enabledTelemetryLevels`, quando o produto declara.
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels>;
+    /// `configurationSync.store`: o servidor do Settings Sync, quando o produto declara.
+    fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore>;
 }
 
 /// `IEnabledTelemetryLevels`: o que o produto permite coletar.
@@ -52,7 +55,7 @@ pub struct EnabledTelemetryLevels {
 service_id!(pub I_PRODUCT_SERVICE: dyn IProductService = "productService");
 
 /// Uma implementação de [`IProductService`] com os valores do `product.json` do VS Code estável 1.143.1.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProductService {
     pub version: String,
     pub name_short: String,
@@ -67,6 +70,7 @@ pub struct ProductService {
     pub ai_config_aria_key: Option<String>,
     pub msft_internal_domains: Vec<String>,
     pub enabled_telemetry_levels: Option<EnabledTelemetryLevels>,
+    pub configuration_sync_store: Option<ConfigurationSyncStore>,
 }
 
 impl Default for ProductService {
@@ -85,6 +89,7 @@ impl Default for ProductService {
             ai_config_aria_key: None,
             msft_internal_domains: Vec::new(),
             enabled_telemetry_levels: Some(EnabledTelemetryLevels { error: true, usage: true }),
+            configuration_sync_store: None,
         }
     }
 }
@@ -129,6 +134,9 @@ impl IProductService for ProductService {
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels> {
         self.enabled_telemetry_levels
     }
+    fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
+        self.configuration_sync_store.as_ref()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
@@ -170,5 +178,8 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels> {
         self.enabled_telemetry_levels.as_ref().map(|levels| EnabledTelemetryLevels { error: levels.error, usage: levels.usage })
+    }
+    fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
+        self.configuration_sync_store.as_ref()
     }
 }

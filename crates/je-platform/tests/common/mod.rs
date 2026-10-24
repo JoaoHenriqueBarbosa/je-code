@@ -359,3 +359,5 @@ pub mod files;
 pub mod disk;
 
 pub mod watcher;
+
+pub mod user_data_sync_client;
