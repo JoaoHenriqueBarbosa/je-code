@@ -90,6 +90,15 @@ pub fn set_disposable_tracker(tracker: Option<Rc<dyn IDisposableTracker>>) {
     TRACKER.with(|t| *t.borrow_mut() = tracker);
 }
 
+/// Roda `f` sem rastreador de descartáveis e o restaura depois: o que `f` cria fica fora da conferência de vazamentos, como o
+/// que o JavaScript cria no carregamento do módulo (constantes de módulo) antes de `setDisposableTracker` entrar nos testes.
+pub fn without_disposable_tracker<R>(f: impl FnOnce() -> R) -> R {
+    let previous = TRACKER.with(|t| t.borrow_mut().take());
+    let result = f();
+    TRACKER.with(|t| *t.borrow_mut() = previous);
+    result
+}
+
 fn with_tracker(f: impl FnOnce(&dyn IDisposableTracker)) {
     let tracker = TRACKER.with(|t| t.borrow().clone());
     if let Some(tracker) = tracker {

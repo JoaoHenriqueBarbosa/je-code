@@ -967,7 +967,7 @@ pub fn uri_to_value(uri: &URI) -> Value {
 /// `URI.revive(value)`: o objeto do `toJSON` ou o texto da URI.
 pub fn uri_from_value(value: &Value) -> Option<URI> {
     match value {
-        Value::String(text) => Some(URI::parse(text, false)),
+        Value::String(text) => Some(URI::parse(text.as_str(), false)),
         Value::Object(object) => {
             let part = |key: &str| object.get(key).and_then(Value::as_str).map(je_base::JsString::from);
             Some(URI::from(

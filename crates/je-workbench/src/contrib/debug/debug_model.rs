@@ -1977,7 +1977,8 @@ impl DebugModel {
         let mut i = 1;
         while self.sessions.borrow().iter().any(|s| s.get_label() == session.get_label()) {
             i += 1;
-            session.set_name(&format!("{} {}", config_name(&session.configuration()), i));
+            // `${session.configuration.name} ${i}`: sem nome o JavaScript escreve "undefined".
+            session.set_name(&format!("{} {}", config_name(&session.configuration()).unwrap_or_else(|| "undefined".to_owned()), i));
         }
 
         let mut index: Option<usize> = None;

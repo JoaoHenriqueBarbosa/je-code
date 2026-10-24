@@ -884,7 +884,8 @@ impl DebugSession {
                 Promise::resolved(this.thread_ids.borrow().clone())
             };
 
-            this.status_queue.cancel(if all_threads { None } else { Some(&[thread_id][..]) });
+            let single_thread = [thread_id];
+            this.status_queue.cancel(if all_threads { None } else { Some(&single_thread[..]) });
             let operation_this = this.clone();
             this.status_queue
                 .run(
@@ -1250,7 +1251,7 @@ impl DebugSession {
         }
 
         let results: Vec<Promise<()>> =
-            uris_to_resend.iter().map(|uri| self.services.send_breakpoints(URI::parse(uri, false), None, self.this_full())).collect();
+            uris_to_resend.iter().map(|uri| self.services.send_breakpoints(URI::parse(uri.as_str(), false), None, self.this_full())).collect();
         Promise::all(results).then(|_| ())
     }
 
@@ -1905,7 +1906,7 @@ impl IDebugSessionFull for DebugSession {
             }
             // Normalize all drive letters going out from vscode to debug adapters so we are consistent with our resolving #43959
             if let Some(path) = raw_source.path.clone() {
-                raw_source.path = Some(je_base::labels::normalize_drive_letter(&path, je_platform::resources::host_platform().is_windows));
+                raw_source.path = Some(je_base::labels::normalize_drive_letter(&path, matches!(je_platform::resources::host_platform(), je_base::path::Platform::Win32)));
             }
 
             let response = raw

@@ -32,7 +32,7 @@ use std::rc::Rc;
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::uri::URI;
-use je_platform::label::label::UriLabelOptions;
+use je_platform::label::label::{ILabelService, UriLabelOptions};
 use je_platform::log::NullLogService;
 use je_platform::resources::uri_file;
 use je_platform::storage::storage::{StorageScope, StorageService};

@@ -34,7 +34,8 @@ use je_base::uuid::generate_uuid;
 use je_instantiation::Injectable;
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::log::{LogService, NullLogService};
-use je_platform::storage::storage::{StorageService, StorageValue};
+use je_platform::storage::storage::StorageService;
+use je_storage::StorageValue;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::uri_identity::uri_identity_service::UriIdentityService;
 use je_platform::workspace::WorkspaceFolder;
@@ -58,9 +59,16 @@ use je_workbench::contrib::debug::repl_model::{DebugConsoleConfiguration, NewRep
 use je_workbench::test::common::workbench_test_services::{TestFileService, TestStorageService};
 use serde_json::{Value, json};
 
+thread_local! {
+    // No original é uma constante do módulo (`export const mockUriIdentityService = new UriIdentityService(fileService)`), criada
+    // antes do rastreador de vazamentos: aqui nasce no primeiro uso, fora do rastreador.
+    static MOCK_URI_IDENTITY_SERVICE: Rc<UriIdentityService> =
+        je_base::lifecycle::without_disposable_tracker(|| UriIdentityService::create((), (TestFileService::new(),)));
+}
+
 /// `mockUriIdentityService`: um `UriIdentityService` sobre o `TestFileService`.
 pub fn mock_uri_identity_service() -> Rc<UriIdentityService> {
-    UriIdentityService::create((), (TestFileService::new(),))
+    MOCK_URI_IDENTITY_SERVICE.with(Rc::clone)
 }
 
 /// `upcastPartial<ITextFileService>({ isDirty: (e) => false })`.

@@ -412,7 +412,7 @@ impl RawDebugSession {
                 .filter(|l| !l.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| localize("moreInfo", "More Info", &[]));
-            let uri = URI::parse(&url, false);
+            let uri = URI::parse(url.as_str(), false);
             // Use a suffixed id if uri invokes a command, so default 'Open launch.json' command is suppressed on dialog
             let action_id = if *uri.scheme() == je_base::network::schemas::COMMAND { "debug.moreInfo.command" } else { "debug.moreInfo" };
             let mut result = Error::new(user_message);
@@ -657,7 +657,7 @@ impl RawDebugSession {
             });
             if let Some((key, mut value)) = matched {
                 if (key == "file-uri" || key == "folder-uri") && !path.is_some_and(is_uri_string) {
-                    value = if is_uri_string(&value) { value } else { URI::file(&value, je_platform::resources::host_platform()).to_string(false).to_string_lossy() };
+                    value = if is_uri_string(&value) { value } else { URI::file(value.as_str(), je_platform::resources::host_platform()).to_string(false).to_string_lossy() };
                 }
                 args.push(format!("--{key}={value}"));
             } else {
