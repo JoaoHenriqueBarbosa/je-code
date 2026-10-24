@@ -48,10 +48,9 @@
 //!   `None` para o `undefined`.
 //!
 //! Divergências (dependências sem porte, com o trait mínimo necessário aqui):
-//! - `IEditorConfiguration` (`config/editorConfiguration.ts`): só existe o [`EditorConfiguration`] de
-//!   `cursor_common` (as opções). [`IEditorConfiguration`] acrescenta o que o `ViewModel` usa dele:
-//!   `onDidChangeFast`, `setModelLineCount` e `setViewLineCount`. É um subtrait, então um `Rc<dyn
-//!   IEditorConfiguration>` vira `Rc<dyn EditorConfiguration>` (coerção) para o `ViewLayout`, o
+//! - `IEditorConfiguration` (`config/editorConfiguration.ts`) é o trait completo de
+//!   `config/editor_configuration.rs`. Ele estende o [`EditorConfiguration`] de `cursor_common` (as opções), então um
+//!   `Rc<dyn IEditorConfiguration>` vira `Rc<dyn EditorConfiguration>` (coerção) para o `ViewLayout`, o
 //!   `ViewModelDecorations` e o `CursorConfiguration`.
 //! - `IThemeService` (`platform/theme/common/themeService.ts`): [`IThemeService`] traz só
 //!   `onDidColorThemeChange`, com o `je_theme::ColorTheme` em `Rc`, como `ViewThemeChangedEvent`.
@@ -78,6 +77,7 @@ use je_base::scrollable::{INewScrollPosition, ScheduleAtNextAnimationFrame};
 use je_theme::ColorTheme;
 
 use crate::attached_views::AttachedView;
+use crate::config::editor_configuration::IEditorConfiguration;
 use crate::config::editor_options::effective_options::{
     EFFECTIVE_ALLOW_VARIABLE_FONTS, EFFECTIVE_FULLWIDTH_CHARACTER_WIDTH, FullwidthCharacterWidth,
 };
@@ -127,18 +127,6 @@ use crate::view_model_types::{ContentOrInjectedTextChangeEvent, IViewLayout};
 
 /// `USE_IDENTITY_LINES_COLLECTION`.
 const USE_IDENTITY_LINES_COLLECTION: bool = true;
-
-/// `IEditorConfiguration`, o que o `ViewModel` lê além das opções (ver "Divergências" no topo do módulo).
-pub trait IEditorConfiguration: EditorConfiguration {
-    /// `onDidChangeFast`.
-    fn on_did_change_fast(&self) -> Event<ConfigurationChangedEvent>;
-
-    /// `setModelLineCount`: o número de linhas do modelo.
-    fn set_model_line_count(&self, model_line_count: i32);
-
-    /// `setViewLineCount`: o número de linhas da visão.
-    fn set_view_line_count(&self, view_line_count: i32);
-}
 
 /// `IThemeService`, só o que o `ViewModel` lê (ver "Divergências" no topo do módulo).
 pub trait IThemeService {

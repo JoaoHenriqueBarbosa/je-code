@@ -373,6 +373,19 @@ impl ComputedEditorOptions {
     pub fn get_any(&self, id: EditorOption) -> &Rc<dyn Any> {
         &self.values[id as usize]
     }
+
+    /// `new ComputedEditorOptions()` do `EditorConfiguration`: todos os valores ainda por escrever. Ler um
+    /// valor antes de [`ComputedEditorOptions::write`] (o "Cannot read uninitialized value" do original) dá
+    /// pânico em [`ComputedEditorOptions::get`], porque o marcador é `()`.
+    pub fn uninitialized() -> Self {
+        let placeholder: Rc<dyn Any> = Rc::new(());
+        Self { values: vec![placeholder; EditorOption::COUNT] }
+    }
+
+    /// `_write(id, value)`.
+    pub fn write(&mut self, id: EditorOption, value: Rc<dyn Any>) {
+        self.values[id as usize] = value;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -428,6 +441,8 @@ pub trait ErasedEditorOption {
     fn compute(&self, env: &EnvironmentalOptions, options: &ComputedEditorOptions, value: &dyn Any) -> Rc<dyn Any>;
     /// Devolve o novo valor e se mudou.
     fn apply_update(&self, value: Option<&dyn Any>, update: &dyn Any) -> (Rc<dyn Any>, bool);
+    /// A igualdade estrutural de `EditorOptionsUtil._deepEquals` sobre dois valores calculados desta opção.
+    fn values_equal(&self, a: &dyn Any, b: &dyn Any) -> bool;
 }
 
 fn downcast<T: 'static>(value: &dyn Any) -> &T {
@@ -462,6 +477,10 @@ impl<O: EditorOptionImpl> ErasedEditorOption for O {
     fn apply_update(&self, value: Option<&dyn Any>, update: &dyn Any) -> (Rc<dyn Any>, bool) {
         let result = EditorOptionImpl::apply_update(self, value.map(downcast::<O::Value>), downcast::<O::Value>(update).clone());
         (Rc::new(result.new_value), result.did_change)
+    }
+
+    fn values_equal(&self, a: &dyn Any, b: &dyn Any) -> bool {
+        downcast::<O::Value>(a) == downcast::<O::Value>(b)
     }
 }
 

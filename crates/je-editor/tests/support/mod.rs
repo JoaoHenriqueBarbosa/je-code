@@ -21,6 +21,8 @@ pub mod tokenized_document;
 pub mod null_command_service;
 pub mod test_code_editor_service;
 
+pub mod test_configuration;
+
 use std::rc::Rc;
 
 use je_base::JsString;
