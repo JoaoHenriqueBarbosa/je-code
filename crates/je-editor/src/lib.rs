@@ -181,3 +181,7 @@ pub mod gpu;
 pub mod services_model;
 pub mod text_resource_configuration_service;
 pub mod opener_service;
+pub mod minimap_char_sheet;
+pub mod minimap_char_renderer;
+pub mod minimap_pre_baked;
+pub mod minimap_char_renderer_factory;

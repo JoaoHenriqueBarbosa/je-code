@@ -25,7 +25,7 @@ use crate::range::Range;
 use crate::text_change::TextChange;
 
 /// `IValidatedEditOperation`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedEditOperation {
     pub sort_index: usize,
     pub identifier: Option<SingleEditOperationIdentifier>,
