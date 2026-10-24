@@ -127,7 +127,7 @@ thread_local! {
     static HAS_SCHEME: LazyCell<RegExp> = LazyCell::new(|| RegExp::from_str("^[a-z][a-z0-9.+-]*:", "i").expect("regex válida"));
 }
 
-fn test(regex: &'static std::thread::LocalKey<LazyCell<RegExp>>, text: &[u16]) -> bool {
+pub(crate) fn test(regex: &'static std::thread::LocalKey<LazyCell<RegExp>>, text: &[u16]) -> bool {
     regex.with(|regex| regex.exec(text, 0).is_some())
 }
 
