@@ -197,11 +197,22 @@ impl MainThreadDiagnosticsShape for UnusedMainThreadDiagnostics {
 #[derive(Default)]
 struct LateMainThreadCommands {
     inner: RefCell<Option<Rc<MainThreadCommands>>>,
+    /// Os `$registerCommand` que o construtor do `ExtHostCommands` dispara antes de o `MainThreadCommands` existir: no
+    /// `TestRPCProtocol` do original a chamada é adiada para uma microtarefa, já com o objeto registrado.
+    pending_registrations: RefCell<Vec<String>>,
 }
 
 impl LateMainThreadCommands {
     fn get(&self) -> Rc<MainThreadCommands> {
         Rc::clone(self.inner.borrow().as_ref().expect("MainThreadCommands ainda não foi criado"))
+    }
+
+    /// Liga o `MainThreadCommands` real e entrega o que ficou adiado.
+    fn bind(&self, main_thread_commands: Rc<MainThreadCommands>) {
+        *self.inner.borrow_mut() = Some(Rc::clone(&main_thread_commands));
+        for id in self.pending_registrations.take() {
+            main_thread_commands.rpc_register_command(&id);
+        }
     }
 }
 
@@ -211,6 +222,10 @@ impl IDisposable for LateMainThreadCommands {
 
 impl MainThreadCommandsShape for LateMainThreadCommands {
     fn rpc_register_command(&self, id: &str) {
+        if self.inner.borrow().is_none() {
+            self.pending_registrations.borrow_mut().push(id.to_owned());
+            return;
+        }
         self.get().rpc_register_command(id);
     }
 
@@ -449,7 +464,7 @@ impl Env {
         let commands = ExtHostCommands::new(rpc_protocol.as_ref(), NullLogService::shared(), Rc::new(TestExtHostTelemetry));
         rpc_protocol.set(&ExtHostContext::EXT_HOST_COMMANDS, commands.clone() as Rc<dyn ExtHostCommandsShape>);
         let main_thread_commands = MainThreadCommands::new(rpc_protocol.as_ref(), command_service, Rc::new(TestExtensionService));
-        *late_main_thread_commands.inner.borrow_mut() = Some(Rc::clone(&main_thread_commands));
+        late_main_thread_commands.bind(Rc::clone(&main_thread_commands));
         register_editor_execute_commands();
         ApiCommands::register(&commands).expect("ExtHostApiCommands.register");
 
