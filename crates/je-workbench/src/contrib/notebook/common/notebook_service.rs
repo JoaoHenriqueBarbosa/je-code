@@ -9,7 +9,8 @@
 //!   `getRendererInfo`, `getRenderers`, `getStaticPreloads`, `createNotebookTextModel`, `getNotebookTextModel`,
 //!   `getNotebookTextModels`, `listNotebookDocuments`, `registerContributedNotebookType`, `hasSupportedNotebooks`,
 //!   `getNotebookProviderResourceRoots` e `clearEditorCache`. `createNotebookTextDocumentSnapshot` entra como contrato com corpo
-//!   padrão que rejeita (para o `NotebookFileWorkingCopyModel`). Ficam de fora `getOutputMimeTypeInfo`, `updateMimePreferredRenderer`,
+//!   padrão que rejeita (para o `NotebookFileWorkingCopyModel`). `getOutputMimeTypeInfo` e `updateMimePreferredRenderer` entram
+//!   como contrato com corpo padrão que lança `TypeError` (para o `CellOutputViewModel` e o `CellOutputElement`). Ficam de fora
 //!   `saveMimeDisplayOrder`, `restoreNotebookTextModelFromSnapshot`,
 //!   `getContributedNotebookType(s)` (dependem do `NotebookProviderInfo` de `notebookProvider.ts`, que não tem porte),
 //!   `setToCopy` e `getToCopy`.
@@ -36,7 +37,8 @@ use super::model::notebook_cell_text_model::NotebookCellTextModel;
 use super::model::notebook_text_model::NotebookTextModel;
 use crate::services::working_copy::file_working_copy::SnapshotContext;
 use super::notebook_common::{
-    INotebookContributionData, INotebookRendererInfo, INotebookStaticPreloadInfo, NotebookData, NotebookExtensionDescription, TransientOptions,
+    ICellOutput, INotebookContributionData, INotebookRendererInfo, INotebookStaticPreloadInfo, IOrderedMimeType, NotebookData, NotebookExtensionDescription,
+    TransientOptions,
 };
 
 /// `INotebookSerializer`.
@@ -80,6 +82,19 @@ pub trait INotebookService {
     fn get_renderer_info(&self, id: &str) -> Option<Rc<dyn INotebookRendererInfo>>;
     fn get_renderers(&self) -> Vec<Rc<dyn INotebookRendererInfo>>;
     fn get_static_preloads(&self, view_type: &str) -> Vec<INotebookStaticPreloadInfo>;
+
+    /// `getOutputMimeTypeInfo(textModel, kernelProvides, output)`: os tipos de mídia da saída na ordem de preferência, cada um com o
+    /// renderizador escolhido. A implementação do serviço (`notebookServiceImpl.ts`) fica para a fatia dos serviços; o corpo padrão
+    /// lança `TypeError`, como o membro ausente do `mock<INotebookService>()` do original, e quem o usa sobrescreve.
+    fn get_output_mime_type_info(&self, _text_model: &NotebookTextModel, _kernel_provides: Option<&[String]>, _output: &dyn ICellOutput) -> Vec<IOrderedMimeType> {
+        je_base::errors::throw(Error::type_error("getOutputMimeTypeInfo is not a function"))
+    }
+
+    /// `updateMimePreferredRenderer(viewType, mimeType, rendererId, otherMimetypes)`. O padrão lança `TypeError` (ver
+    /// [`INotebookService::get_output_mime_type_info`]).
+    fn update_mime_preferred_renderer(&self, _view_type: &str, _mime_type: &str, _renderer_id: &str, _other_mime_types: &[String]) {
+        je_base::errors::throw(Error::type_error("updateMimePreferredRenderer is not a function"))
+    }
 
     fn create_notebook_text_model(&self, view_type: &str, uri: &URI, stream: Option<VSBufferReadableStream>) -> Promise<Rc<NotebookTextModel>>;
     fn get_notebook_text_model(&self, uri: &URI) -> Option<Rc<NotebookTextModel>>;
