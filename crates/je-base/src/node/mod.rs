@@ -10,3 +10,4 @@ pub mod mac_address;
 pub mod network_interfaces;
 
 pub mod zip;
+pub mod windows_version;

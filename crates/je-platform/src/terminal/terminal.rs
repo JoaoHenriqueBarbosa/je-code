@@ -24,10 +24,9 @@
 //! e `IHeartbeatService`; os estados de serialização (`ISerializedTerminalState`...); `ITerminalChildProcess` e
 //! os eventos de processo, e por isso o campo `customPtyImplementation` de `IShellLaunchConfig` não existe
 //! aqui; `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`, `TerminalLocation` e
-//! `TerminalLocationConfigValue`; `ITerminalProcessOptions`; `ITerminalLaunchError`; `ProfileSource`,
+//! `TerminalLocationConfigValue`; `ITerminalLaunchError`; `ProfileSource`,
 //! `IBaseUnresolvedTerminalProfile`, `ITerminalExecutable`, `ITerminalProfileSource`, `ITerminalProfileObject`;
-//! `IShellIntegration` e `ShellIntegrationStatus`; `ShellIntegrationInjectionFailureReason`;
-//! `TerminalExitReason`; os seletores e casadores de saída; `ITerminalBackend`, o registro de backends
+//! `IShellIntegration` e `ShellIntegrationStatus`; `TerminalExitReason`; os seletores e casadores de saída; `ITerminalBackend`, o registro de backends
 //! (`TerminalExtensions`, `ITerminalBackendRegistry`) e `ITerminalLogService`.
 //!
 //! Outra divergência: `ThemeIcon.color` é comparado por valor (o id da cor), enquanto o `terminalIconsEqual`
@@ -44,6 +43,7 @@ use je_base::themables::ThemeIcon;
 use je_base::uri::{URI, UriComponents, is_uri_components};
 
 use super::environment_variable::ISerializableEnvironmentVariableCollections;
+use crate::workspace::WorkspaceFolder;
 
 /// Declara um `const enum` de string do original: as variantes e o `as_str()` com o valor.
 macro_rules! string_enum {
@@ -420,6 +420,50 @@ pub struct IShellLaunchConfig {
     /// `terminal.integrated.tabs.title` setting. When set, this overrides the config-based
     /// title template for this terminal instance.
     pub title_template: Option<String>,
+}
+
+/// O `shellIntegration` de `ITerminalProcessOptions`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ITerminalProcessShellIntegrationOptions {
+    pub enabled: bool,
+    pub suggest_enabled: bool,
+    pub nonce: String,
+}
+
+/// `ITerminalProcessOptions`.
+#[derive(Clone, Debug, Default)]
+pub struct ITerminalProcessOptions {
+    pub shell_integration: ITerminalProcessShellIntegrationOptions,
+    pub windows_use_conpty_dll: bool,
+    pub environment_variable_collections: Option<ISerializableEnvironmentVariableCollections>,
+    pub workspace_folder: Option<WorkspaceFolder>,
+    pub is_screen_reader_optimized: bool,
+}
+
+string_enum! {
+    /// `ShellIntegrationInjectionFailureReason`.
+    ShellIntegrationInjectionFailureReason {
+        /// The setting is disabled.
+        InjectionSettingDisabled = "injectionSettingDisabled",
+        /// There is no executable (so there's no way to determine how to inject).
+        NoExecutable = "noExecutable",
+        /// It's a feature terminal (tasks, debug), unless it's explicitly being forced.
+        FeatureTerminal = "featureTerminal",
+        /// The ignoreShellIntegration flag is passed (eg. relaunching without shell integration).
+        IgnoreShellIntegrationFlag = "ignoreShellIntegrationFlag",
+        /// Shell integration doesn't work on older Windows builds that don't support ConPTY.
+        UnsupportedWindowsBuild = "unsupportedWindowsBuild",
+        /// We're conservative whether we inject when we don't recognize the arguments used for the
+        /// shell as we would prefer launching one without shell integration than breaking their profile.
+        UnsupportedArgs = "unsupportedArgs",
+        /// The shell doesn't have built-in shell integration. Note that this doesn't mean the shell
+        /// won't have shell integration in the end.
+        UnsupportedShell = "unsupportedShell",
+        /// For zsh, we failed to set the sticky bit on the shell integration script folder.
+        FailedToSetStickyBit = "failedToSetStickyBit",
+        /// For zsh, we failed to create a temp directory for the shell integration script.
+        FailedToCreateTmpDir = "failedToCreateTmpDir",
+    }
 }
 
 /// `ITerminalProfile`.
