@@ -941,7 +941,7 @@ pub fn resolve_resources_for_search_includes(resources: &[URI], context_service:
 }
 
 /// O objeto que `JSON.stringify(uri)` serializa (`Uri#toJSON`), na ordem de propriedades do original.
-fn uri_to_dynamic(uri: &URI) -> Dynamic {
+pub(crate) fn uri_to_dynamic(uri: &URI) -> Dynamic {
     let state = uri.to_json();
     let mut entries: Vec<(&str, Dynamic)> = Vec::new();
     if let Some(mid) = state.mid {

@@ -59,6 +59,7 @@ use je_workbench::services::textfile::textfiles::{
     snapshot_to_string,
 };
 use je_workbench::services::textmodel_resolver::resolver_service::{ITextEditorModel, ITextModelService, TextModelReference};
+use je_workbench::services::untitled::untitled_text_editor_service::IUntitledTextEditorModelManager;
 use je_workbench::test::browser::workbench_test_services::TestEditorService;
 use je_workbench::test::common::workbench_test_services::TestTextResourcePropertiesService;
 
@@ -70,6 +71,10 @@ struct TestTextFileService;
 impl ITextFileService for TestTextFileService {
     fn files(&self) -> Rc<dyn ITextFileEditorModelManager> {
         unreachable!("TestTextFileService.files não é exercitado por esta suíte")
+    }
+
+    fn untitled(&self) -> Rc<dyn IUntitledTextEditorModelManager> {
+        unreachable!("TestTextFileService.untitled não é exercitado por esta suíte")
     }
 
     fn encoding(&self) -> Rc<dyn IResourceEncodings> {

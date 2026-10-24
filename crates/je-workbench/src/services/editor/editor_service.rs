@@ -53,6 +53,10 @@ pub trait IEditorService {
     /// editor control can be active.
     fn active_text_editor_control(&self) -> Option<ActiveTextEditorControl>;
 
+    /// The currently active text editor language id or `None` (o `activeTextEditorLanguageId`, que o `EditorService`
+    /// lê do modelo do controle de texto ativo).
+    fn active_text_editor_language_id(&self) -> Option<String>;
+
     /// `openEditor(editor: IUntypedEditorInput, group?: PreferredGroup)` sem o grupo preferido (o grupo ativo): opens an
     /// editor in a group and resolves with the editor pane that is showing it, or `None` when it was not opened.
     fn open_editor(&self, editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>>;

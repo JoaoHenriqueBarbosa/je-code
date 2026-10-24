@@ -1481,13 +1481,7 @@ impl IWorkingCopy for TextFileEditorModel {
         );
 
         async_fn(async move {
-            let content = content.await?.map(|content| match content {
-                crate::services::textfile::textfiles::EncodedContent::Readable(readable) => WorkingCopyBackupContent::Readable(readable),
-                crate::services::textfile::textfiles::EncodedContent::Buffer(buffer) => {
-                    let readable: Box<dyn je_base::stream::Readable<je_base::buffer::VSBuffer>> = Box::new(je_base::stream::to_readable(buffer));
-                    WorkingCopyBackupContent::Readable(Rc::new(RefCell::new(readable)))
-                }
-            });
+            let content = content.await?.map(WorkingCopyBackupContent::from);
 
             Ok(WorkingCopyBackup { meta, content })
         })

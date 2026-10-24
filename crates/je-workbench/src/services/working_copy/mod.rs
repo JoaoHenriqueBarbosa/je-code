@@ -8,3 +8,6 @@ pub mod working_copy;
 pub mod working_copy_backup;
 pub mod working_copy_backup_service;
 pub mod working_copy_service;
+
+// Contratos de `workingCopyEditorService.ts` (o handler que reabre o editor de uma working copy e o serviço que o registra).
+pub mod working_copy_editor_service;

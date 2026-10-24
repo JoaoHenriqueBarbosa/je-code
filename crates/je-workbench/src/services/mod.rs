@@ -51,3 +51,7 @@ pub mod workspaces;
 
 // URIs de célula, de metadados e de saída dos notebooks (`notebookDocumentService.ts`).
 pub mod notebook;
+
+// Editores de texto sem título (`untitledTextEditorModel.ts`, `untitledTextEditorService.ts`, `untitledTextEditorInput.ts` e
+// `untitledTextEditorHandler.ts`).
+pub mod untitled;
