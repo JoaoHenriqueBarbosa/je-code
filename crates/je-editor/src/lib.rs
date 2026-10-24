@@ -202,3 +202,5 @@ pub mod indent_utils;
 pub mod move_lines_command;
 
 pub mod lines_operations;
+pub mod view_user_input_events;
+pub mod view_controller;
