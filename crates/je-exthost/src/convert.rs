@@ -9,6 +9,8 @@ use std::rc::Rc;
 
 use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::errors::Error;
+use je_base::uri::URI;
+use je_workbench::api::common::ext_host_values::ApiValue;
 use zjsc::api::embed_node::{JsData, JsHandle, CLASS_KEY};
 
 /// `Dynamic` para o motor. `Function`, `RegExp`, `Date` e arrays tipados ainda não atravessam: viram `undefined`.
@@ -60,6 +62,50 @@ pub fn field<'a>(value: &'a JsData, name: &str) -> Option<&'a JsData> {
         JsData::Object(fields) => fields.iter().find(|(key, _)| key == name).map(|(_, item)| item),
         _ => None,
     }
+}
+
+/// O argumento `index` como texto, ou o erro que descreve `what`.
+pub fn string_arg(args: &[JsData], index: usize, what: &str) -> Result<String, String> {
+    match args.get(index) {
+        Some(JsData::Str(text)) => Ok(text.clone()),
+        _ => Err(format!("{what} precisa ser texto")),
+    }
+}
+
+/// O texto de um valor que é texto; `None` para `undefined`, `null` e qualquer outro tipo.
+pub fn opt_string(value: Option<&JsData>) -> Option<String> {
+    match value {
+        Some(JsData::Str(text)) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// O número de um valor que é número.
+pub fn opt_number(value: Option<&JsData>) -> Option<f64> {
+    match value {
+        Some(JsData::Num(number)) => Some(*number),
+        _ => None,
+    }
+}
+
+/// `value === undefined || value === null` (um argumento ausente conta como `undefined`).
+pub fn is_nullish(value: Option<&JsData>) -> bool {
+    matches!(value, None | Some(JsData::Undefined) | Some(JsData::Null))
+}
+
+/// O valor da API (`ApiValue`, com `$$class`) como dado do motor.
+pub fn api_to_js<T: ApiValue>(value: &T) -> JsData {
+    dynamic_to_js(&value.to_dynamic())
+}
+
+/// O `vscode.Uri` do motor como [`URI`]; `Err` com a mensagem do `TypeError` se o valor não é um `Uri`.
+pub fn uri_from_js(value: &JsData) -> Result<URI, String> {
+    URI::from_dynamic(&js_to_dynamic(value)).map_err(|error| error.message)
+}
+
+/// O [`URI`] como o `vscode.Uri` que o motor entrega (a instância carrega o protótipo da classe `Uri`).
+pub fn uri_to_js(uri: &URI) -> JsData {
+    api_to_js(uri)
 }
 
 /// Um erro do Rust como o objeto que o JavaScript lê de um `catch` (`name`, `message`).

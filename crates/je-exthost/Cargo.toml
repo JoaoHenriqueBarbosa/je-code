@@ -10,6 +10,7 @@ description = "Host de extensões do je-code: o Host do zjsc sobre o sistema ope
 [dependencies]
 zjsc = { path = "../zjsc" }
 je-base = { path = "../je-base" }
+je-editor = { path = "../je-editor" }
 je-platform = { path = "../je-platform" }
 je-extensions = { path = "../je-extensions" }
 je-workbench = { path = "../je-workbench" }

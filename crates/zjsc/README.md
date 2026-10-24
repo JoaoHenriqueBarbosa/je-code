@@ -31,6 +31,10 @@ extensões do VS Code no host de extensões do je-code (Fase 5, `wip/notes/extho
    host de extensões usa (`crates/je-exthost`); o `evaluate_main_script` original, que roda até o fim, não serve a um
    processo de vida longa dirigido de fora.
 
+4. `src/api/embed_node.rs`: `NodeRunner::define_accessor_class` (a `define_class` com acessores de escrita, `set text(value)` no
+   protótipo; `define_class` passou a chamá-la sem setters). É o que o `StatusBarItem` e os demais objetos da API `vscode` com
+   propriedades graváveis pedem.
+
 ## Pendência de DRY
 
 `crates/zyarr` é o YARR extraído deste `src/yarr`: o código existe nas duas crates. Fundir (o zjsc dependendo do

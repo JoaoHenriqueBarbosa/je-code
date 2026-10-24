@@ -460,6 +460,13 @@ impl NodeRunner {
     /// Define a classe `spec` e devolve o construtor (quem a quiser global usa [`NodeRunner::set_global`]; a API `vscode` a põe no módulo). As instâncias nascem pelo `new` do JavaScript (o
     /// construtor devolve os campos próprios) ou quando um [`JsData::Object`] com [`CLASS_KEY`] atravessa a fronteira.
     pub fn define_class(&self, spec: ClassSpec) -> JsHandle {
+        self.define_accessor_class(spec, Vec::new())
+    }
+
+    /// Como [`NodeRunner::define_class`], com `setters`: acessores de escrita no protótipo (`set text(value)`). O corpo recebe o
+    /// `this` copiado e o valor atribuído como único argumento. Um nome que está em `spec.getters` e em `setters` vira um
+    /// acessor único (leitura e escrita); um nome só em `setters` é um acessor só de escrita.
+    pub fn define_accessor_class(&self, spec: ClassSpec, setters: Vec<(String, MethodCallback)>) -> JsHandle {
         let vm = &self.vm;
         let global = &self.global_object;
         let constructor = JSFunction::create_native(
@@ -505,22 +512,32 @@ impl NodeRunner {
             }
             prototype.put_direct(vm, &key(name), function.as_value(), DONT_ENUM);
         }
-        for (name, callback) in &spec.getters {
-            let getter = JSFunction::create_native(
-                vm,
-                global,
-                0,
-                &WtfString::from_utf8(format!("get {name}").as_bytes()),
-                native_method,
-                ImplementationVisibility::Public,
-                crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
-                crate::runtime::js_function::call_host_function_as_constructor,
-            );
-            if let JSValue::Cell(id) = getter.as_value() {
+        // Um acessor por nome, com o getter e o setter que houver (a união dos dois conjuntos).
+        let mut accessor_names: Vec<&String> = spec.getters.iter().map(|(name, _)| name).collect();
+        accessor_names.extend(setters.iter().map(|(name, _)| name).filter(|name| !spec.getters.iter().any(|(getter, _)| getter == *name)));
+        for name in accessor_names {
+            let native_accessor = |label: &str, body: MethodCallback| {
+                let function = JSFunction::create_native(
+                    vm,
+                    global,
+                    0,
+                    &WtfString::from_utf8(format!("{label} {name}").as_bytes()),
+                    native_method,
+                    ImplementationVisibility::Public,
+                    crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+                    crate::runtime::js_function::call_host_function_as_constructor,
+                );
+                if let JSValue::Cell(id) = function.as_value() {
+                    METHODS.with(|methods| methods.borrow_mut().insert(id, body));
+                }
+                function.as_value()
+            };
+            let getter = spec.getters.iter().find(|(getter, _)| getter == name).map(|(_, callback)| {
                 let callback = callback.clone();
-                METHODS.with(|methods| methods.borrow_mut().insert(id, Rc::new(move |this: &JsData, _: &[JsData]| callback(this, &[]))));
-            }
-            let accessor = GetterSetter::create_from_values(vm, getter.as_value(), JSValue::undefined());
+                native_accessor("get", Rc::new(move |this: &JsData, _: &[JsData]| callback(this, &[])))
+            });
+            let setter = setters.iter().find(|(setter, _)| setter == name).map(|(_, callback)| native_accessor("set", callback.clone()));
+            let accessor = GetterSetter::create_from_values(vm, getter.unwrap_or_else(JSValue::undefined), setter.unwrap_or_else(JSValue::undefined));
             let _ = prototype.put_direct_accessor(vm, &key(name), accessor, DONT_ENUM | ACCESSOR);
         }
         for (name, length, callback) in &spec.statics {
