@@ -23,3 +23,6 @@ pub mod notebook;
 pub mod onboarding;
 
 pub mod tasks;
+
+// O que o editor de configurações usa do chat (configurações de rede do agente e descrição do modelo padrão sob política).
+pub mod chat;
