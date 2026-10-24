@@ -39,7 +39,7 @@ use std::rc::{Rc, Weak};
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::errors::Error;
 use je_base::event::Event;
-use je_base::lifecycle::IDisposable;
+use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::parts::ipc::IMessagePassingProtocol;
 use je_base::promise::Promise;
 use je_base::runtime;
@@ -527,57 +527,61 @@ impl IDialogService for TestDialogService {
 
 /// O `setup` da suíte `ExtensionService`: o `disposables`/guarda e o `extService`.
 struct Fixture {
+    disposables: Rc<DisposableStore>,
     guard: LeakGuard,
     ext_service: Rc<MyTestExtensionService>,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        // O `setup` do original roda antes do `setup` de `ensureNoDisposablesAreLeakedInTestSuite` (registrado depois dele): o que ele
+        // cria fica fora do rastreador e é descartado pelo `teardown` da suíte, que também roda antes da conferência.
+        let disposables = DisposableStore::new();
         let log_service = NullLogService::shared();
         let product_service = ProductService::default();
         let environment_service = TestEnvironmentService::new();
         let configuration_service = TestConfigurationService::new(None);
 
         let extensions_proposed_api = Rc::new(ExtensionsProposedApi::new(log_service.clone(), environment_service.clone(), &product_service));
-        let extension_manifest_properties_service = guard.add_rc(ExtensionManifestPropertiesService::new(
+        let extension_manifest_properties_service = disposables.add_rc(ExtensionManifestPropertiesService::new(
             Rc::new(product_service),
             configuration_service.clone(),
             TestWorkspaceTrustEnablementService::new(true),
             log_service.clone(),
         ));
 
-        let base = guard.add_rc(AbstractExtensionService::new(
+        let base = disposables.add_rc(AbstractExtensionService::new(
             AbstractExtensionServiceOptions { allow_remote_extensions_in_local_web_worker: false, has_local_process: true },
             extensions_proposed_api,
             Rc::new(TestExtensionHostFactory),
             Rc::new(NullExtensionHostKindPicker),
             AbstractExtensionServiceServices {
-                instantiation_service: guard.add_rc(InstantiationService::new(ServiceCollection::new())),
+                instantiation_service: disposables.add_rc(InstantiationService::new(ServiceCollection::new())),
                 notification_service: Rc::new(TestNotificationService),
                 environment_service,
                 telemetry_service: Rc::new(NullTelemetryServiceShape),
                 extension_enablement_service: Rc::new(TestWorkbenchExtensionEnablementService),
-                file_service: guard.add_rc(TestFileService::new()),
+                file_service: { let concrete = disposables.add_rc(TestFileService::new()); concrete },
                 extension_management_service: Rc::new(TestWorkbenchExtensionManagementService),
                 context_service: TestContextService::new(None, None),
                 configuration_service,
                 extension_manifest_properties_service,
                 log_service,
                 remote_agent_service: Rc::new(TestRemoteAgentService),
-                lifecycle_service: guard.add_rc(TestLifecycleService::new()),
+                lifecycle_service: { let concrete = disposables.add_rc(TestLifecycleService::new()); concrete },
                 remote_authority_resolver_service: Rc::new(TestRemoteAuthorityResolverService),
                 dialog_service: Rc::new(TestDialogService),
             },
         ));
         let ext_service = MyTestExtensionService::new(base);
-        Self { guard, ext_service }
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        Self { disposables, guard, ext_service }
     }
 }
 
 /// Roda o caso: o `setup`, o corpo e o `teardown` (o `Drop` do [`Fixture`]).
 fn run<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<MyTestExtensionService>, Rc<LeakGuard>) -> F) {
-    let Fixture { guard, ext_service } = Fixture::new();
+    let Fixture { disposables, guard, ext_service } = Fixture::new();
     let guard = Rc::new(guard);
     let done = Rc::new(Cell::new(false));
     let finished = done.clone();
@@ -588,6 +592,9 @@ fn run<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<MyTestExtensionSer
     });
     runtime::run_microtasks();
     assert!(done.get(), "o teste assíncrono não terminou");
+    // `teardown(() => disposables.dispose())` antes da conferência de vazamentos.
+    disposables.dispose();
+    drop(guard);
 }
 
 mod extension_service {
