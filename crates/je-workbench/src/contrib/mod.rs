@@ -31,3 +31,6 @@ pub mod chat;
 
 // Canvases do chat de agentes (`contrib/canvases`).
 pub mod canvases;
+
+// Webviews (`contrib/webview`): a leitura de recursos locais.
+pub mod webview;
