@@ -181,8 +181,8 @@ impl Extension {
         }
     }
 
-    fn platform() -> Platform {
-        Platform::detect()
+    fn platform() -> je_base::path::Platform {
+        je_platform::resources::host_platform()
     }
 
     /// Um caminho de pasta ou arquivo local, como o recurso que o original guarda.
@@ -225,10 +225,10 @@ impl Extension {
             return None;
         }
         let contributes = local.manifest.contributes.as_ref()?;
-        if !contributes.themes.is_empty() {
+        if contributes.themes.as_ref().is_some_and(|themes| !themes.is_empty()) {
             return Some(self.services.file_access.as_browser_uri("vs/workbench/contrib/extensions/browser/media/theme-icon.png").to_string(true).to_string_lossy());
         }
-        if !contributes.grammars.is_empty() {
+        if contributes.grammars.as_ref().is_some_and(|grammars| !grammars.is_empty()) {
             return Some(self.services.file_access.as_browser_uri("vs/workbench/contrib/extensions/browser/media/language-icon.svg").to_string(true).to_string_lossy());
         }
         None
