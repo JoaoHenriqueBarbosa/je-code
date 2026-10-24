@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 use super::host_color_scheme_service::{IColorScheme, IHostColorSchemeService};
 use super::workbench_theme_service::{IWorkbenchTheme, ThemeSettingTarget, ThemeSettings};
 use crate::api::common::ext_host_types::dynamic_to_json;
+use super::color_theme_data::to_serde;
 
 /// `colorSchemeToPreferred`: a configuração do tema preferido de cada esquema de cores.
 fn color_scheme_to_preferred(scheme: ThemeType) -> ThemeSettings {
@@ -53,7 +54,7 @@ fn as_text(value: &Dynamic) -> Option<String> {
 
 /// O objeto JSON de um valor da configuração (`getValue(...) || {}`).
 fn as_object(value: &Dynamic) -> Map<String, Value> {
-    match dynamic_to_json(value) {
+    match dynamic_to_json(value).map(|json| to_serde(&json)) {
         Some(Value::Object(object)) => object,
         _ => Map::new(),
     }
@@ -124,7 +125,7 @@ impl ThemeConfiguration {
 
     /// `semanticTokenColorCustomizations`.
     pub fn semantic_token_color_customizations(&self) -> Option<Map<String, Value>> {
-        match dynamic_to_json(&self.get_value(ThemeSettings::SemanticTokenColorCustomizations)) {
+        match dynamic_to_json(&self.get_value(ThemeSettings::SemanticTokenColorCustomizations)).map(|json| to_serde(&json)) {
             Some(Value::Object(object)) => Some(object),
             _ => None,
         }

@@ -4189,6 +4189,7 @@ dependencies = [
  "ferriki-textmate",
  "je-base",
  "je-editor",
+ "je-theme",
  "serde_json",
 ]
 
@@ -4262,6 +4263,7 @@ version = "0.0.0"
 dependencies = [
  "je-base",
  "je-render",
+ "serde_json",
 ]
 
 [[package]]
