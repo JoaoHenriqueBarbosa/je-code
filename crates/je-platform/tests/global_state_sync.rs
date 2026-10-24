@@ -20,7 +20,7 @@ use common::{if_match_headers, read_text, sync_synchroniser, write_text};
 use indexmap::IndexMap;
 use je_base::JsString;
 use je_base::lifecycle::DisposableStore;
-use je_platform::storage::{StorageScope, StorageService, StorageTarget};
+use je_platform::storage::{StorageScope, StorageTarget};
 use je_platform::user_data_profile::user_data_profile_storage_service::IUserDataProfileStorageService;
 use je_platform::user_data_profile::{IUserDataProfilesService, UserDataProfile};
 use je_platform::user_data_sync::abstract_synchronizer::parse_json;
