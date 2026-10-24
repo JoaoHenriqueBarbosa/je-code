@@ -65,3 +65,6 @@ pub mod assignment;
 pub mod files;
 // Serviço de views (`views/common/viewContainerModel.ts` e `views/browser/viewDescriptorService.ts`).
 pub mod views;
+
+// `NotificationService` (`notification/common/notificationService.ts`).
+pub mod notification;
