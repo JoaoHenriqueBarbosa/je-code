@@ -207,6 +207,12 @@ impl TestContextService {
         *self.workspace.borrow_mut() = workspace;
     }
 
+    /// `Reflect.get(service, '_onDidChangeWorkspaceFolders') as Emitter<IWorkspaceFoldersChangeEvent>`: o emissor privado
+    /// que os testes disparam depois de `setWorkspace` para simular a mudança de pastas.
+    pub fn on_did_change_workspace_folders_emitter(&self) -> Rc<Emitter<WorkspaceFoldersChangeEvent>> {
+        self.on_did_change_workspace_folders.clone()
+    }
+
     pub fn get_options(&self) -> Dynamic {
         self.options.clone()
     }

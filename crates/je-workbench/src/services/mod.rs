@@ -39,3 +39,7 @@ pub mod configuration;
 
 // Resolvedor de variáveis de configuração (`${workspaceFolder}`, `${env:X}`, `${config:X}`, `${command:X}`, `${input:X}`).
 pub mod configuration_resolver;
+
+// Estrutura de tópicos (`IOutlineService`) e rótulo das pastas do workspace, que as migalhas leem.
+pub mod outline;
+pub mod workspaces;
