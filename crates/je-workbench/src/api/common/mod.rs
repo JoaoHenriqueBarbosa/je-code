@@ -8,3 +8,6 @@ pub mod ext_host_types;
 pub mod ext_host_document_data;
 pub mod ext_host_commands;
 pub mod ext_host_values;
+
+pub mod ext_host_configuration;
+pub mod ext_host_workspace;
