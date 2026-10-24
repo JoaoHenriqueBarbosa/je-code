@@ -45,6 +45,8 @@ impl IDisposable for FakeMarker {
         if !self.disposed.replace(true) {
             self.line.set(-1.0);
             self.on_dispose.fire(());
+            // O `Marker` do xterm descarta o emissor junto com o marcador: as inscrições de `onDispose` saem.
+            self.on_dispose.dispose();
         }
     }
 }
@@ -63,7 +65,10 @@ impl IMarker for FakeMarker {
     }
 
     fn on_dispose(&self) -> Event<()> {
-        self.on_dispose.event()
+        // O `onDispose` do xterm é um `EventEmitter` do próprio xterm, fora do rastreador de descartáveis do VS Code: a inscrição
+        // não conta como vazamento.
+        let event = self.on_dispose.event();
+        Event::new(move |listener| je_base::lifecycle::mark_as_singleton(event.listen_rc(listener)))
     }
 }
 
@@ -400,9 +405,18 @@ pub struct FakeXterm {
     on_resize: Rc<Emitter<platform::TerminalResize>>,
     next_marker_id: Cell<u64>,
     deleted_lines: RefCell<Vec<(i32, i32)>>,
+    /// Os marcadores registrados, descartados com o terminal (`Terminal.dispose()` descarta o buffer e os marcadores dele).
+    markers: RefCell<Vec<Rc<FakeMarker>>>,
 }
 
 impl FakeXterm {
+    /// `terminal.dispose()`: descarta os marcadores registrados.
+    pub fn dispose(&self) {
+        for marker in self.markers.take() {
+            marker.dispose();
+        }
+    }
+
     pub fn new(cols: i32, rows: i32) -> Rc<Self> {
         let screen = Rc::new(Screen {
             cols,
@@ -421,6 +435,7 @@ impl FakeXterm {
             on_write_parsed: Emitter::new(),
             on_resize: Emitter::new(),
             next_marker_id: Cell::new(0),
+            markers: RefCell::new(Vec::new()),
             deleted_lines: RefCell::new(Vec::new()),
         })
     }
@@ -555,7 +570,9 @@ impl platform::IHeadlessTerminal for FakeXterm {
             return None;
         }
         self.next_marker_id.set(self.next_marker_id.get() + 1);
-        Some(FakeMarker::new(self.next_marker_id.get() as f64, f64::from(line)))
+        let marker = FakeMarker::new(self.next_marker_id.get() as f64, f64::from(line));
+        self.markers.borrow_mut().push(marker.clone());
+        Some(marker)
     }
 
     fn scroll_on_erase_in_display(&self) -> bool {

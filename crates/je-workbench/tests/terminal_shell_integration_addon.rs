@@ -258,6 +258,13 @@ struct Fixture {
     _guard: LeakGuard,
 }
 
+/// O `teardown` do original descarta o `xterm`, que descarta os marcadores registrados; o guarda confere os vazamentos depois.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.xterm.dispose();
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
