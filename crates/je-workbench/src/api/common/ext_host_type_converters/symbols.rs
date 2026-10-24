@@ -156,6 +156,83 @@ impl HierarchyItemDto {
         ];
         Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
     }
+
+    /// A leitura do objeto de [`HierarchyItemDto::to_dynamic`] (ou do item que a extensão devolveu pelo RPC); `None` se faltar o
+    /// `_sessionId`, o `_itemId`, o `name`, o `kind`, o `uri` ou um dos dois intervalos.
+    pub fn from_dynamic(value: &Dynamic) -> Option<HierarchyItemDto> {
+        let text = |key: &str| match value.get_str(key) {
+            Dynamic::String(text) => Some(text.to_string_lossy()),
+            _ => None,
+        };
+        let kind = match value.get_str("kind") {
+            Dynamic::Number(kind) => SymbolKind::from(types::SymbolKind::from_value(kind as i32)?),
+            _ => return None,
+        };
+        let tags = match value.get_str("tags") {
+            Dynamic::Array(tags) => Some(
+                tags.to_vec()
+                    .iter()
+                    .filter_map(|tag| match tag {
+                        Dynamic::Number(tag) if *tag as i32 == 1 => Some(EditorSymbolTag::Deprecated),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        Some(HierarchyItemDto {
+            session_id: text("_sessionId")?,
+            item_id: text("_itemId")?,
+            kind,
+            name: text("name")?,
+            detail: text("detail"),
+            uri: URI::from_dynamic(&value.get_str("uri")).ok()?,
+            range: Range::from_dto(&value.get_str("range"))?,
+            selection_range: Range::from_dto(&value.get_str("selectionRange"))?,
+            tags,
+        })
+    }
+}
+
+/// As chamadas de [`IncomingCallDto`] e [`OutgoingCallDto`] como objeto: `{ from | to, fromRanges }`.
+fn call_to_dynamic(key: &str, item: &HierarchyItemDto, from_ranges: &[EditorRange]) -> Dynamic {
+    Dynamic::object([(key, item.to_dynamic()), ("fromRanges", Dynamic::array(from_ranges.iter().map(Range::to_dto)))])
+}
+
+impl IncomingCallDto {
+    /// O DTO como objeto (`from`, `fromRanges`).
+    pub fn to_dynamic(&self) -> Dynamic {
+        call_to_dynamic("from", &self.from, &self.from_ranges)
+    }
+
+    /// A leitura do objeto de [`IncomingCallDto::to_dynamic`].
+    pub fn from_dynamic(value: &Dynamic) -> Option<IncomingCallDto> {
+        let Dynamic::Array(ranges) = value.get_str("fromRanges") else {
+            return None;
+        };
+        Some(IncomingCallDto {
+            from: HierarchyItemDto::from_dynamic(&value.get_str("from"))?,
+            from_ranges: ranges.to_vec().iter().map(Range::from_dto).collect::<Option<Vec<_>>>()?,
+        })
+    }
+}
+
+impl OutgoingCallDto {
+    /// O DTO como objeto (`to`, `fromRanges`).
+    pub fn to_dynamic(&self) -> Dynamic {
+        call_to_dynamic("to", &self.to, &self.from_ranges)
+    }
+
+    /// A leitura do objeto de [`OutgoingCallDto::to_dynamic`].
+    pub fn from_dynamic(value: &Dynamic) -> Option<OutgoingCallDto> {
+        let Dynamic::Array(ranges) = value.get_str("fromRanges") else {
+            return None;
+        };
+        Some(OutgoingCallDto {
+            to: HierarchyItemDto::from_dynamic(&value.get_str("to"))?,
+            from_ranges: ranges.to_vec().iter().map(Range::from_dto).collect::<Option<Vec<_>>>()?,
+        })
+    }
 }
 
 /// O conversor de um dos dois itens de hierarquia. `$detail_defaults_to_empty` é o `item.detail ?? ''` do
