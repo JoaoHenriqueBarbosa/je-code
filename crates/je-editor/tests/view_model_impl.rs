@@ -30,6 +30,7 @@ use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::{DisposableStore, to_disposable};
+use je_base::lifecycle::IDisposable as _;
 use je_editor::cursor_common::CursorSimpleModel;
 use je_editor::edit_operation::SingleEditOperation;
 use je_editor::model::{
