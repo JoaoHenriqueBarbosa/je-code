@@ -188,3 +188,5 @@ pub mod minimap_char_renderer_factory;
 pub mod view_model_impl;
 
 pub mod view_model_impl_api;
+pub mod editor_browser;
+pub mod hover;

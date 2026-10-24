@@ -4063,6 +4063,8 @@ name = "je-editor"
 version = "0.0.0"
 dependencies = [
  "je-base",
+ "je-instantiation",
+ "je-platform",
  "je-theme",
  "zyarr",
 ]
@@ -4196,8 +4198,14 @@ version = "0.0.0"
 dependencies = [
  "je-base",
  "je-editor",
+ "je-extensions",
+ "je-instantiation",
  "je-platform",
+ "je-storage",
+ "je-theme",
+ "je-widgets",
  "jiff",
+ "serde_json",
  "zyarr",
 ]
 

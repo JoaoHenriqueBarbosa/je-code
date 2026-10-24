@@ -37,7 +37,7 @@ use je_base::observable::observables::observable_value::{ObservableValue, observ
 use je_base::observable::{autorun, derived, observable_from_event};
 use je_base::runtime::{self, TimerId};
 use je_instantiation::{Injectable, InstantiationType, register_singleton, service_id, service_impl};
-use je_platform::log::{LogLevel, LogService, Logger};
+use je_platform::log::{LogLevel, LogService};
 
 use super::user_attention_service::{I_USER_ATTENTION_SERVICE, IUserAttentionService};
 
