@@ -7,14 +7,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `base` | 150 | 2278 | 127 | 1879 | 82.48 |
 | `platform` | 192 | 2806 | 110 | 1886 | 67.21 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
-| `workbench/services` | 137 | 2491 | 70 | 1835 | 73.67 |
+| `workbench/services` | 137 | 2491 | 73 | 1891 | 75.91 |
 | `workbench/api` | 94 | 965 | 75 | 740 | 76.68 |
 | `workbench/contrib` | 370 | 4636 | 66 | 1120 | 24.16 |
 | `workbench (shell)` | 69 | 621 | 20 | 223 | 35.91 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 10568 | 57.46 |
+| **total** | | 18391 | | 10624 | 57.77 |
 
 ## Arquivos portados
 
@@ -408,8 +408,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/configuration/test/browser/configurationService.test.ts` | 186 | `crates/je-workbench/tests/configuration_service.rs` | 175 |
 | `src/vs/workbench/services/configuration/test/common/managedSettingsPresentation.test.ts` | 6 | `crates/je-workbench/tests/managed_settings_presentation.rs` | 6 |
 | `src/vs/workbench/services/configurationResolver/test/electron-browser/configurationResolverService.test.ts` | 59 | `crates/je-workbench/tests/configuration_resolver_service.rs` | 59 |
+| `src/vs/workbench/services/decorations/test/browser/decorationsService.test.ts` | 11 | `crates/je-workbench/tests/decorations_service.rs` | 10 |
 | `src/vs/workbench/services/editor/test/browser/customEditorLabelService.test.ts` | 5 | `crates/je-workbench/tests/custom_editor_label_service.rs` | 5 |
 | `src/vs/workbench/services/editor/test/browser/editorGroupsService.test.ts` | 69 | `crates/je-workbench/tests/editor_groups_service.rs` | 68 |
+| `src/vs/workbench/services/editor/test/browser/editorResolverService.test.ts` | 32 | `crates/je-workbench/tests/editor_resolver_service.rs` | 32 |
 | `src/vs/workbench/services/editor/test/browser/editorService.test.ts` | 53 | `crates/je-workbench/tests/editor_service.rs` | 50 |
 | `src/vs/workbench/services/editor/test/browser/modalEditorGroup.test.ts` | 44 | `crates/je-workbench/tests/modal_editor_group.rs` | 40 |
 | `src/vs/workbench/services/extensionManagement/test/browser/extensionEnablementService.test.ts` | 129 | `crates/je-workbench/tests/extension_enablement_service.rs` | 129 |
@@ -451,6 +453,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/userAttention/test/browser/userAttentionService.test.ts` | 11 | `crates/je-workbench/tests/user_attention_service.rs` | 11 |
 | `src/vs/workbench/services/userDataProfile/test/browser/snippetsResource.test.ts` | 4 | `crates/je-workbench/tests/snippets_resource.rs` | 4 |
 | `src/vs/workbench/services/views/test/browser/viewContainerModel.test.ts` | 22 | `crates/je-workbench/tests/view_container_model.rs` | 22 |
+| `src/vs/workbench/services/views/test/browser/viewDescriptorService.test.ts` | 14 | `crates/je-workbench/tests/view_descriptor_service.rs` | 14 |
 | `src/vs/workbench/services/workingCopy/test/browser/fileWorkingCopyManager.test.ts` | 17 | `crates/je-workbench/tests/file_working_copy_manager.rs` | 17 |
 | `src/vs/workbench/services/workingCopy/test/browser/resourceWorkingCopy.test.ts` | 2 | `crates/je-workbench/tests/resource_working_copy.rs` | 2 |
 | `src/vs/workbench/services/workingCopy/test/browser/storedFileWorkingCopy.test.ts` | 34 | `crates/je-workbench/tests/stored_file_working_copy.rs` | 34 |
