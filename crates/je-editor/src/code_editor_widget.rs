@@ -119,10 +119,9 @@ use crate::config::editor_options::registry::{MULTI_CURSOR_LIMIT, READ_ONLY, WOR
 use crate::config::editor_options::word_segmenter_locales::WORD_SEGMENTER_LOCALES;
 use crate::config::editor_options::{ComputedEditorOptions, ConfigurationChangedEvent, Opt};
 use crate::config::editor_configuration::IEditorConfiguration;
-use crate::coordinates_converter::ICoordinatesConverter;
 use crate::cursor::SavedCursorState;
 use crate::cursor_columns;
-use crate::cursor_common::{CursorSimpleModel, EditorConfiguration as ConfigurationOptions};
+use crate::cursor_common::CursorSimpleModel;
 use crate::cursor_events::{CursorChangeReason, ICursorPositionChangedEvent, ICursorSelectionChangedEvent};
 use crate::cursor_word_operations::WordOperations;
 use crate::edit_operation::SingleEditOperation;
