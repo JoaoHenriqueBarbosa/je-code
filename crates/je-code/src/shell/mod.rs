@@ -138,6 +138,7 @@ pub enum Command {
     ToggleStatusBar,
     ToggleFullScreen,
     ShowExplorer,
+    ShowManageMenu,
     PickTheme,
     SetTheme(usize),
     OpenSettingsJson,
@@ -902,6 +903,28 @@ impl Shell {
             Command::ToggleFullScreen => self.fullscreen_requested = true,
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
+            Command::ShowManageMenu => {
+                // O menu da engrenagem (`Manage`): comandos, configurações, atalhos e temas.
+                use je_base::actions::{Action, ActionCallback, ActionRef, Separator};
+                let queue = self.queue.clone();
+                let item = |label: &str, command: Command| -> ActionRef {
+                    let queue = queue.clone();
+                    let callback: ActionCallback = Rc::new(move |_| {
+                        queue.borrow_mut().push(command.clone());
+                        je_base::dynamic::Dynamic::Undefined.into()
+                    });
+                    Action::new(label, label, "", true, Some(callback)) as ActionRef
+                };
+                let actions = vec![
+                    item("Command Palette...", Command::ShowCommands),
+                    Separator::new() as ActionRef,
+                    item("Settings (JSON)", Command::OpenSettingsJson),
+                    item("Keyboard Shortcuts (JSON)", Command::OpenKeybindingsJson),
+                    Separator::new() as ActionRef,
+                    item("Themes: Color Theme", Command::PickTheme),
+                ];
+                self.open_menu(actions);
+            }
             Command::PickTheme => self.open_theme_picker(),
             Command::OpenSettingsJson | Command::OpenKeybindingsJson => {
                 let file = if command == Command::OpenSettingsJson { "settings.json" } else { "keybindings.json" };
@@ -1048,6 +1071,11 @@ impl Shell {
     #[cfg(test)]
     pub fn git_status(&self) -> git::Status {
         self.scm.status.borrow().clone()
+    }
+
+    #[cfg(test)]
+    pub fn panel_is_visible(&self) -> bool {
+        self.panel_visible
     }
 
     #[cfg(test)]
@@ -1901,7 +1929,7 @@ impl Shell {
         tree.style_mut(label).content = Content::Text { text, style: ui_font(13.0, 400), color: self.color("commandCenter.foreground"), line_height: 24.0 };
         // À direita: os botões de layout (`.titlebar-right .action-item`, 22 x 22 a cada 26 px), antes dos 100 px
         // dos controles da janela.
-        let ids = ["layout", if self.sidebar_visible { "layout-sidebar-left" } else { "layout-sidebar-left-off" }, "layout-panel-off", "layout-sidebar-right-off"];
+        let ids = ["layout", if self.sidebar_visible { "layout-sidebar-left" } else { "layout-sidebar-left-off" }, if self.panel_visible { "layout-panel" } else { "layout-panel-off" }, "layout-sidebar-right-off"];
         let right = width - 100.0 - 26.0 * ids.len() as f64 + 4.0;
         for (i, id) in ids.iter().enumerate() {
             let button = tree.create(title, Role::Button);
@@ -1911,9 +1939,9 @@ impl Shell {
             style.content = Content::Codicon { id: (*id).into(), size: 16.0, color: fg };
             style.radius = 5.0;
             style.cursor = Some(Cursor::Pointer);
-            if i == 1 {
+            if i == 1 || i == 2 {
                 drop(tree);
-                self.listen_command(button, Command::ToggleSidebar);
+                self.listen_command(button, if i == 1 { Command::ToggleSidebar } else { Command::TogglePanel });
                 tree = self.ui.tree_mut();
             }
         }
@@ -1968,13 +1996,22 @@ impl Shell {
             view_buttons.push((button, view));
         }
         let height = bottom - TITLE_HEIGHT;
+        let mut manage_button = None;
         for (i, id) in ["account", "settings-gear"].iter().enumerate() {
             let button = tree.create(bar, Role::Button);
             let y = height - 4.0 - 44.0 * (2 - i) as f64 + 4.0;
             tree.set_bounds(button, Rect::new(4.0, y, 40.0, y + 36.0));
-            tree.style_mut(button).content = Content::Codicon { id: (*id).into(), size: 24.0, color: inactive };
+            let style = tree.style_mut(button);
+            style.content = Content::Codicon { id: (*id).into(), size: 24.0, color: inactive };
+            style.cursor = Some(Cursor::Pointer);
+            if i == 1 {
+                manage_button = Some(button);
+            }
         }
         drop(tree);
+        if let Some(button) = manage_button {
+            self.listen_command(button, Command::ShowManageMenu);
+        }
         for (button, view) in view_buttons {
             self.listen_command(button, Command::ShowView(view));
         }

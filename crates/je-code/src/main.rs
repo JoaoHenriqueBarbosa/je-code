@@ -961,6 +961,23 @@ mod tests {
     }
 
     #[test]
+    fn manage_menu_and_layout_buttons_respond() {
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+        // A engrenagem da activity bar abre o menu Manage, com o clique primário.
+        click(&mut shell, 26.0, 742.0);
+        assert!(shell.has_context_menu());
+        snapshot(&mut shell, "m0-manage.png");
+        shell.key(true, KeyCode::Escape, Modifiers::default(), None, Some(EditorKey::Escape));
+        assert!(!shell.has_context_menu());
+        // O botão de layout do painel (terceiro à direita) mostra e esconde o painel.
+        let toggle = |shell: &mut Shell| click(shell, 1063.0, 17.0);
+        toggle(&mut shell);
+        assert!(shell.panel_is_visible());
+        toggle(&mut shell);
+        assert!(!shell.panel_is_visible());
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");
