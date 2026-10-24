@@ -55,3 +55,6 @@ pub mod notebook;
 // Editores de texto sem título (`untitledTextEditorModel.ts`, `untitledTextEditorService.ts`, `untitledTextEditorInput.ts` e
 // `untitledTextEditorHandler.ts`).
 pub mod untitled;
+
+// Filtros do contexto de atribuição de experimentos (`assignmentContextFilter.ts` e o contrato `IAssignmentFilter`).
+pub mod assignment;
