@@ -16,11 +16,14 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS
 pub mod commands;
 pub mod disposable;
 pub mod enums;
+pub mod env;
 pub mod events;
+pub mod extensions;
 pub mod l10n;
 pub mod output_channel;
 pub mod progress;
 pub mod quick_input;
+pub mod text_editors;
 pub mod types;
 pub mod uri;
 pub mod window;

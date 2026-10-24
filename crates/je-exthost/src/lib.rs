@@ -21,8 +21,8 @@ pub mod host;
 pub mod in_process;
 pub mod local_context;
 // O host de extensões em processo ligado ao workbench por um protocolo de mensagens em memória (só com o motor e o carregador
-// de módulos em disco, que não existem no alvo web).
-#[cfg(not(target_family = "wasm"))]
+// de módulos em disco, que não existem no alvo web). O `ext_host_extension_service` não depende deles (só do `NodeRunner` e do
+// `require` publicado em `globalThis.__jeRequire`) e `vscode.extensions` o lê, então fica fora do filtro do alvo web.
 pub mod ext_host_extension_service;
 #[cfg(not(target_family = "wasm"))]
 pub mod local_extension_host;
