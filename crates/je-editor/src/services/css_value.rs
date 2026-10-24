@@ -36,6 +36,44 @@ pub fn css_escape(value: &str) -> String {
     result
 }
 
+/// `sizeValue(value)`: só `[\w.%+-]` sobrevive (o `console.warn` do original não existe).
+pub fn size_value(value: &str) -> String {
+    value.chars().filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '%' | '+' | '-')).collect()
+}
+
+/// `hexColorValue(value)`: o original usa `/[^[0-9a-fA-F#]]/gi`, que é a classe negada `[^[0-9a-fA-F#]` seguida de um
+/// `]` literal, então só remove os pares "caractere fora da classe + `]`" (um valor sem `]` passa intacto).
+pub fn hex_color_value(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let in_class = |ch: char| ch.is_ascii_hexdigit() || matches!(ch, '[' | '#');
+    let mut result = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if !in_class(chars[index]) && chars.get(index + 1) == Some(&']') {
+            index += 2;
+        } else {
+            result.push(chars[index]);
+            index += 1;
+        }
+    }
+    result
+}
+
+/// `identValue(value)`: só `[_\-a-z0-9]` sobrevive.
+pub fn ident_value(value: &str) -> String {
+    value.chars().filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')).collect()
+}
+
+/// `stringValue(value)`: `'...'` com a aspa simples escapada.
+pub fn string_value(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "\\000027"))
+}
+
+/// `className(value, escapingExpected)`: o `CSS.escape` do valor.
+pub fn class_name(value: &str) -> String {
+    css_escape(value)
+}
+
 /// `asCSSUrl(uri)`: `url('...')`.
 pub fn as_css_url(uri: Option<&URI>, uri_to_browser_uri: &dyn Fn(&URI) -> URI) -> String {
     let Some(uri) = uri else {
