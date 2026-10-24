@@ -71,3 +71,5 @@ pub mod views;
 
 // `NotificationService` (`notification/common/notificationService.ts`).
 pub mod notification;
+// Contrato de `panecomposite/browser/panecomposite.ts` (`IPaneCompositePartService`).
+pub mod panecomposite;

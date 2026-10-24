@@ -371,11 +371,23 @@ const LONG_LINE_BOUNDARY: usize = 10_000;
 const LARGE_FILE_SIZE_THRESHOLD: usize = 20 * 1024 * 1024; // 20 MB
 const LARGE_FILE_LINE_COUNT_THRESHOLD: usize = 300 * 1000; // 300 mil linhas
 const LARGE_FILE_HEAP_OPERATION_THRESHOLD: usize = 256 * 1024 * 1024; // 256 M caracteres, em geral mais de 512 MB de memória
-/// `TextModel._MODEL_SYNC_LIMIT`: 50 MB (usado em testes).
+/// `TextModel._MODEL_SYNC_LIMIT`: 50 MB (o valor inicial; os testes o trocam com [`set_model_sync_limit`]).
 pub const MODEL_SYNC_LIMIT: usize = 50 * 1024 * 1024;
 
 thread_local! {
     static MODEL_ID: Cell<u64> = const { Cell::new(0) };
+    /// O valor atual do campo estático `TextModel._MODEL_SYNC_LIMIT`.
+    static MODEL_SYNC_LIMIT_CURRENT: Cell<usize> = const { Cell::new(MODEL_SYNC_LIMIT) };
+}
+
+/// Lê `TextModel._MODEL_SYNC_LIMIT`.
+pub fn model_sync_limit() -> usize {
+    MODEL_SYNC_LIMIT_CURRENT.with(Cell::get)
+}
+
+/// Atribui `TextModel._MODEL_SYNC_LIMIT` (o original o torna um campo estático mutável para os testes).
+pub fn set_model_sync_limit(limit: usize) {
+    MODEL_SYNC_LIMIT_CURRENT.with(|current| current.set(limit));
 }
 
 /// `TextModelSnapshot`: junta os pedaços do snapshot do buffer em blocos de ao menos 64 KB.
@@ -1255,7 +1267,7 @@ impl TextModel {
             version_id: Cell::new(1),
             alternative_version_id: Cell::new(1),
             initial_undo_redo_snapshot: RefCell::new(None),
-            is_too_large_for_syncing: buffer_text_length > MODEL_SYNC_LIMIT,
+            is_too_large_for_syncing: buffer_text_length > model_sync_limit(),
             is_too_large_for_tokenization,
             is_too_large_for_heap_operation,
             command_manager: EditStack::new(me.clone(), undo_redo_service.clone()),

@@ -3746,3 +3746,76 @@ mod language_features_region {
 }
 
 // #endregion
+
+// #region ExtHostEditors (propriedades, posição e diff dos editores de texto)
+
+pub use self::editors_region::*;
+
+/// Região de `extHost.protocol.ts` que `mainThreadEditor.ts` e `mainThreadEditors.ts` usam do lado do host:
+/// `ExtHostEditorsShape`, `IEditorPropertiesChangeData`, `ISelectionChangeEvent`, `ITextEditorPositionData`,
+/// `ITextEditorChange`, `ITextEditorDiffInformation` (de `platform/editor/common/editor.ts`) e o identificador
+/// `ExtHostContext.ExtHostEditors`.
+///
+/// Divergências:
+/// - `ITextEditorPositionData` (`{ [id: string]: EditorGroupColumn }`) é um [`BTreeMap`] por id: a comparação do
+///   `objects.equals` do original não depende da ordem das chaves, e o mapa ordenado também não.
+/// - `ITextEditorChange` (uma tupla de quatro números) é `[i32; 4]`, e o `documentVersion` é `i64`, como o
+///   `versionId` do modelo.
+/// - `ISelectionChangeEvent.source?` é `Option<String>`. `IEditorPropertiesChangeData` guarda cada campo
+///   `null` do original como `None`.
+/// - `original: UriComponents | undefined` do DTO e `original: URI | undefined` do `ITextEditorDiffInformation` da
+///   plataforma são o mesmo [`ITextEditorDiffInformation`], com [`URI`] já revivida.
+mod editors_region {
+    use std::collections::BTreeMap;
+
+    use je_base::uri::URI;
+    use je_editor::range::Range as EditorRange;
+    use je_editor::selection::Selection as EditorSelection;
+
+    use super::documents_and_editors_region::ResolvedTextEditorConfiguration;
+    use super::{EditorGroupColumn, ExtHostContext, ProxyIdentifier};
+
+    /// `ISelectionChangeEvent`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct SelectionChangeEvent {
+        pub selections: Vec<EditorSelection>,
+        pub source: Option<String>,
+    }
+
+    /// `IEditorPropertiesChangeData`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct EditorPropertiesChangeData {
+        pub options: Option<ResolvedTextEditorConfiguration>,
+        pub selections: Option<SelectionChangeEvent>,
+        pub visible_ranges: Option<Vec<EditorRange>>,
+    }
+
+    /// `ITextEditorPositionData`.
+    pub type TextEditorPositionData = BTreeMap<String, EditorGroupColumn>;
+
+    /// `ITextEditorChange`: `[originalStartLineNumber, originalEndLineNumberExclusive, modifiedStartLineNumber,
+    /// modifiedEndLineNumberExclusive]`.
+    pub type TextEditorChange = [i32; 4];
+
+    /// `ITextEditorDiffInformation`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ITextEditorDiffInformation {
+        pub document_version: i64,
+        pub original: Option<URI>,
+        pub modified: URI,
+        pub changes: Vec<TextEditorChange>,
+    }
+
+    /// `ExtHostEditorsShape`.
+    pub trait ExtHostEditorsShape {
+        fn rpc_accept_editor_properties_changed(&self, id: &str, props: EditorPropertiesChangeData);
+        fn rpc_accept_editor_position_data(&self, data: TextEditorPositionData);
+        fn rpc_accept_editor_diff_information(&self, id: &str, diff_information: Option<Vec<ITextEditorDiffInformation>>);
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_EDITORS: ProxyIdentifier<dyn ExtHostEditorsShape> = ProxyIdentifier::new("ExtHostEditors");
+    }
+}
+
+// #endregion

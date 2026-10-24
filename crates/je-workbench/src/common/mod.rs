@@ -14,3 +14,6 @@ pub mod memento;
 pub mod resources;
 
 pub mod views;
+
+// `ITreeView`, `ITreeViewDataProvider` e `ITreeViewDragAndDropController` (`common/views.ts`).
+pub mod tree_view_contracts;
