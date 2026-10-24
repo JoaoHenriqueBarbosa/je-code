@@ -30,6 +30,9 @@
 //! - `SnippetString` perde o contador interno de tabstops (`_tabstop`), que a extensão não vê; um
 //!   `from_dynamic` recomeça em 1.
 //! - `Command` é objeto literal no original, sem classe: [`Command::to_dynamic`] não grava `$$class`.
+//! - `TreeItem` está em [`CLASSES`] só para o `instanceof TreeItem` de `TreeItem.isTreeItem`: o host de árvores lê
+//!   o item que o provedor devolve como [`Dynamic`] (a interface `vscode.TreeItem`, com ou sem a classe), então
+//!   `TreeItem` não implementa [`ApiValue`].
 
 use je_base::buffer::VSBuffer;
 use je_base::dynamic::Dynamic;
@@ -69,6 +72,7 @@ pub const CLASSES: &[&str] = &[
     "TypeHierarchyItem",
     "VSBuffer",
     "ArrayBuffer",
+    "TreeItem",
 ];
 
 /// `class extends`: a classe da qual `class` herda, se houver.

@@ -32,18 +32,24 @@
 //!   (struct com `data`); `IRawFileMatch2`, `ITextSearchComplete` e `IRelativePatternDto` (que moram em `search.ts`
 //!   e em `extHost.protocol.ts`) ficam aqui, junto de quem os usa; `ITextSearchComplete.message` é sempre lista; o
 //!   `$requestResourceTrust(ResourceTrustRequestOptionsDto)` usa o [`ResourceTrustRequestOptions`] da plataforma.
+//! - Região `TreeViews` (de `extHostTreeViews.ts`): `ITreeItem`, `IRevealOptions` e `IViewBadge` são de
+//!   `common::views`. O objeto `{ [treeItemHandle]: ITreeItem }` de `$refresh` é uma lista de pares na ordem de
+//!   inserção ([`ItemsToRefresh`]); o `(number | ITreeItem)[]` de `$getChildren` é o struct [`TreeChildrenBatch`]
+//!   (índice mais filhos); `DataTransferDTO.items` é uma lista de pares; os `UriComponents` são [`URI`].
 
 use std::any::Any;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
+use je_base::buffer::VSBuffer;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::severity::Severity;
 use je_base::uri::URI;
+use je_editor::languages::StringOrMarkdown;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_platform::commands::commands::CommandDescription;
 use je_platform::configuration::registry::ConfigurationScope;
@@ -52,6 +58,7 @@ use je_platform::opener::editor_types::EditorOptions;
 use je_platform::request::request::{AuthInfo, Credentials};
 use je_platform::workspace_trust::{ResourceTrustRequestOptions, WorkspaceTrustRequestOptions};
 
+use crate::common::views::{IRevealOptions, ITreeItem, IViewBadge};
 use crate::services::search::query_builder::{IFileQueryBuilderOptions, ITextQueryBuilderOptions};
 use crate::services::search::search::{ITextSearchResult, PatternInfo};
 use crate::services::search::search_ext_types::TextSearchCompleteMessage2;
@@ -786,6 +793,117 @@ pub trait MainThreadMessageServiceShape: IDisposable {
 
 // #endregion
 
+// #region TreeViews
+
+/// As opções de `$registerTreeViewDataProvider`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeViewRegistrationOptions {
+    pub show_collapse_all: bool,
+    pub can_select_many: bool,
+    pub drop_mime_types: Vec<String>,
+    pub drag_mime_types: Vec<String>,
+    pub has_handle_drag: bool,
+    pub has_handle_drop: bool,
+    pub manually_manage_checkboxes: bool,
+}
+
+/// `{ [treeItemHandle: string]: ITreeItem }` de `$refresh`: as entradas na ordem em que o objeto as recebeu.
+pub type ItemsToRefresh = Vec<(String, ITreeItem)>;
+
+/// `{ item: ITreeItem; parentChain: ITreeItem[] }` de `$reveal`.
+#[derive(Clone, Debug)]
+pub struct RevealItemInfo {
+    pub item: ITreeItem,
+    pub parent_chain: Vec<ITreeItem>,
+}
+
+/// `MainThreadTreeViewsShape`. O `message: string | IMarkdownString` de `$setMessage` é [`StringOrMarkdown`] e o
+/// `VSBuffer` de `$resolveDropFileData` é o de `je-base`.
+pub trait MainThreadTreeViewsShape: IDisposable {
+    fn rpc_register_tree_view_data_provider(&self, tree_view_id: &str, options: TreeViewRegistrationOptions) -> Promise<()>;
+    fn rpc_refresh(&self, tree_view_id: &str, items_to_refresh: Option<ItemsToRefresh>) -> Promise<()>;
+    fn rpc_reveal(&self, tree_view_id: &str, item_info: Option<RevealItemInfo>, options: IRevealOptions) -> Promise<()>;
+    fn rpc_set_message(&self, tree_view_id: &str, message: StringOrMarkdown);
+    fn rpc_set_title(&self, tree_view_id: &str, title: &str, description: Option<&str>);
+    fn rpc_set_badge(&self, tree_view_id: &str, badge: Option<IViewBadge>);
+    fn rpc_resolve_drop_file_data(&self, destination_view_id: &str, request_id: f64, data_item_id: &str) -> Promise<VSBuffer>;
+    fn rpc_dispose_tree(&self, tree_view_id: &str) -> Promise<()>;
+    fn rpc_log_resolve_tree_node_failure(&self, extension_id: &str);
+}
+
+/// `IDataTransferFileDTO`.
+#[derive(Clone, Debug)]
+pub struct DataTransferFileDto {
+    pub id: String,
+    pub name: String,
+    pub uri: Option<URI>,
+}
+
+/// Um elemento de `DataTransferItemDTO.uriListData`: `string | UriComponents`.
+#[derive(Clone, Debug)]
+pub enum UriListPart {
+    Text(String),
+    Uri(URI),
+}
+
+/// `DataTransferItemDTO`.
+#[derive(Clone, Debug)]
+pub struct DataTransferItemDto {
+    pub id: String,
+    pub as_string: String,
+    pub file_data: Option<DataTransferFileDto>,
+    pub uri_list_data: Option<Vec<UriListPart>>,
+}
+
+/// `DataTransferDTO`: o `Array<readonly [type, DataTransferItemDTO]>` é uma lista de pares.
+#[derive(Clone, Debug, Default)]
+pub struct DataTransferDto {
+    pub items: Vec<(String, DataTransferItemDto)>,
+}
+
+/// `CheckboxUpdate`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckboxUpdate {
+    pub tree_item_handle: String,
+    pub new_state: bool,
+}
+
+/// Um elemento de `$getChildren`: o `[index, ...children]` do original (`(number | ITreeItem)[]`, onde o primeiro
+/// elemento é o índice do pai na lista pedida e o resto são os filhos dele).
+#[derive(Clone, Debug)]
+pub struct TreeChildrenBatch {
+    pub index: usize,
+    pub children: Vec<ITreeItem>,
+}
+
+/// `ExtHostTreeViewsShape`. Os métodos que lançam no original (`NoTreeViewError`) e não devolvem promessa lançam como
+/// pânico com o [`Error`] (ver `ext_host_commands`); os que devolvem promessa a rejeitam.
+pub trait ExtHostTreeViewsShape {
+    fn rpc_get_children(&self, tree_view_id: &str, tree_item_handles: Option<Vec<String>>) -> Promise<Option<Vec<TreeChildrenBatch>>>;
+    #[allow(clippy::too_many_arguments)]
+    fn rpc_handle_drop(
+        &self,
+        destination_view_id: &str,
+        request_id: f64,
+        tree_data_transfer: DataTransferDto,
+        target_handle: Option<String>,
+        token: CancellationToken,
+        operation_uuid: Option<String>,
+        source_view_id: Option<String>,
+        source_tree_item_handles: Option<Vec<String>>,
+    ) -> Promise<()>;
+    fn rpc_handle_drag(&self, source_view_id: &str, source_tree_item_handles: Vec<String>, operation_uuid: &str, token: CancellationToken) -> Promise<Option<DataTransferDto>>;
+    fn rpc_release_drag_operation(&self, operation_uuid: &str);
+    fn rpc_set_expanded(&self, tree_view_id: &str, tree_item_handle: &str, expanded: bool);
+    fn rpc_set_selection_and_focus(&self, tree_view_id: &str, selection_handles: Vec<String>, focus_handle: &str);
+    fn rpc_set_visible(&self, tree_view_id: &str, visible: bool);
+    fn rpc_change_checkbox_state(&self, tree_view_id: &str, checkbox_updates: Vec<CheckboxUpdate>);
+    fn rpc_has_resolve(&self, tree_view_id: &str) -> Promise<bool>;
+    fn rpc_resolve(&self, tree_view_id: &str, tree_item_handle: &str, token: CancellationToken) -> Promise<Option<ITreeItem>>;
+}
+
+// #endregion
+
 /// `MainContext`: os identificadores dos proxies da thread principal.
 pub struct MainContext;
 
@@ -795,6 +913,7 @@ impl MainContext {
     pub const MAIN_THREAD_CONFIGURATION: ProxyIdentifier<dyn MainThreadConfigurationShape> = ProxyIdentifier::new("MainThreadConfiguration");
     pub const MAIN_THREAD_MESSAGE_SERVICE: ProxyIdentifier<dyn MainThreadMessageServiceShape> = ProxyIdentifier::new("MainThreadMessageService");
     pub const MAIN_THREAD_TELEMETRY: ProxyIdentifier<dyn MainThreadTelemetryShape> = ProxyIdentifier::new("MainThreadTelemetry");
+    pub const MAIN_THREAD_TREE_VIEWS: ProxyIdentifier<dyn MainThreadTreeViewsShape> = ProxyIdentifier::new("MainThreadTreeViews");
     pub const MAIN_THREAD_WORKSPACE: ProxyIdentifier<dyn MainThreadWorkspaceShape> = ProxyIdentifier::new("MainThreadWorkspace");
 }
 
@@ -804,5 +923,6 @@ pub struct ExtHostContext;
 impl ExtHostContext {
     pub const EXT_HOST_COMMANDS: ProxyIdentifier<dyn ExtHostCommandsShape> = ProxyIdentifier::new("ExtHostCommands");
     pub const EXT_HOST_CONFIGURATION: ProxyIdentifier<dyn ExtHostConfigurationShape> = ProxyIdentifier::new("ExtHostConfiguration");
+    pub const EXT_HOST_TREE_VIEWS: ProxyIdentifier<dyn ExtHostTreeViewsShape> = ProxyIdentifier::new("ExtHostTreeViews");
     pub const EXT_HOST_WORKSPACE: ProxyIdentifier<dyn ExtHostWorkspaceShape> = ProxyIdentifier::new("ExtHostWorkspace");
 }

@@ -13,12 +13,60 @@
 //!   devolve o `ExtensionDescription` do `je-extensions`, o descritor inteiro, e não o `IExtensionDescription` reduzido
 //!   acima. Quem implementa [`IExtensionService`] precisa implementá-lo (o dublê `TestExtensionService` devolve a lista
 //!   vazia, como o `extensions = []` do original).
+//! - `nullExtensionDescription`, `isProposedApiEnabled` e `checkProposedApiEnabled` trabalham sobre o
+//!   `ExtensionDescription` do `je-extensions` ([`null_extension_description`], [`is_proposed_api_enabled`],
+//!   [`check_proposed_api_enabled`]); a proposta é o nome como texto (`ApiProposalName` do original), e o erro que o
+//!   original lança é o `Err`.
 
 use je_base::event::Event;
+use je_base::errors::Error;
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_extensions::manifest::{ExtensionIdentifier, ExtensionManifest, TargetPlatform};
 use je_extensions::scanner::ExtensionDescription;
 use je_instantiation::service_id;
+
+/// `nullExtensionDescription`: a descrição de extensão que os testes e o código sem extensão de origem usam.
+pub fn null_extension_description() -> ExtensionDescription {
+    ExtensionDescription {
+        id: "nullExtensionDescription".to_owned(),
+        identifier: ExtensionIdentifier::new("nullExtensionDescription"),
+        is_builtin: false,
+        is_user_builtin: false,
+        is_under_development: false,
+        extension_location: "void:location".to_owned(),
+        uuid: None,
+        target_platform: TargetPlatform::Undefined,
+        publisher_display_name: None,
+        pre_release: false,
+        manifest: ExtensionManifest {
+            name: "Null Extension Description".to_owned(),
+            version: "0.0.0".to_owned(),
+            publisher: "vscode".to_owned(),
+            ..ExtensionManifest::default()
+        },
+    }
+}
+
+/// `isProposedApiEnabled(extension, proposal)`. O `ApiProposalName` do original é o nome da proposta como texto.
+pub fn is_proposed_api_enabled(extension: &ExtensionDescription, proposal: &str) -> bool {
+    match &extension.manifest.enabled_api_proposals {
+        Some(proposals) => proposals.iter().any(|enabled| enabled == proposal),
+        None => false,
+    }
+}
+
+/// `checkProposedApiEnabled(extension, proposal)`: o erro do original quando a extensão não declara a proposta.
+pub fn check_proposed_api_enabled(extension: &ExtensionDescription, proposal: &str) -> Result<(), Error> {
+    if is_proposed_api_enabled(extension, proposal) {
+        return Ok(());
+    }
+    let declared = extension.manifest.enabled_api_proposals.as_ref().map_or_else(|| "[]".to_owned(), |proposals| proposals.join(", "));
+    Err(Error::new(format!(
+        "Extension '{id}' CANNOT use API proposal: {proposal}.\nIts package.json#enabledApiProposals-property declares: {declared} but NOT {proposal}.\n The missing proposal MUST be added and you must start in extension development mode or use the following command line switch: --enable-proposed-api {id}",
+        id = extension.identifier.value,
+    )))
+}
 
 /// `IExtensionDescription`, reduzido ao `extensionLocation`.
 #[derive(Clone, Debug)]
