@@ -144,10 +144,13 @@ pub struct TokenizationSupportChangedEvent {
 // - `CompletionItem` tem o `range` ([`CompletionItemRange`]), mas não tem `additionalTextEdits`, `command`,
 //   `action`, `extensionId` nem `_id` (dependem de `ISingleEditOperation`, `Command` e `ExtensionIdentifier`,
 //   que nenhum consumidor atual lê); os demais campos estão todos.
-// - `CompletionItemProvider` só traz `_debugDisplayName`, `triggerCharacters` e `resolveCompletionItem`;
-//   `provideCompletionItems` precisa de `ITextModel` e de `ProviderResult`, e fica para quando o consumidor
-//   chegar. O `ProviderResult<CompletionItem>` do `resolveCompletionItem` é uma `Promise<Option<_>>`
-//   (`null` e `undefined` viram `None`).
+// - `CompletionItemProvider` traz `_debugDisplayName`, `triggerCharacters`, `provideCompletionItems` e
+//   `resolveCompletionItem`. `provideCompletionItems` devolve a `ProviderResult<Rc<CompletionList>>` (a lista é
+//   compartilhada com os itens de sugestão, que guardam o contêiner) e tem um corpo padrão que não sugere nada. O
+//   `ProviderResult<CompletionItem>` do `resolveCompletionItem` é uma `Promise<Option<_>>`
+//   (`null` e `undefined` viram `None`). O `range` de um `CompletionItem` é obrigatório (o tipo do original também
+//   o exige), então o preenchimento do `range` ausente que `provideSuggestionItems` faz para os provedores do host
+//   de extensões não tem o que preencher.
 // - `resolveCompletionItem?` opcional vira [`CompletionItemProvider::has_resolve_completion_item`].
 // - `CompletionItemKinds` só traz o `fromString` ([`CompletionItemKind::from_string`]): o ícone e o rótulo
 //   traduzido dependem de `Codicon` e de `localize`, e nenhum consumidor os lê.
@@ -326,12 +329,38 @@ pub enum CompletionItemRange {
     InsertReplace { insert: crate::range::Range, replace: crate::range::Range },
 }
 
+/// `CompletionTriggerKind`: como a lista de sugestões foi pedida.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionTriggerKind {
+    Invoke = 0,
+    TriggerCharacter = 1,
+    TriggerForIncompleteCompletions = 2,
+}
+
+/// `CompletionContext`: o contexto de um pedido de sugestões ao provedor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionContext {
+    /// Como o pedido foi disparado.
+    pub trigger_kind: CompletionTriggerKind,
+    /// O caractere que disparou o pedido, quando `trigger_kind` é [`CompletionTriggerKind::TriggerCharacter`].
+    pub trigger_character: Option<String>,
+}
+
+impl Default for CompletionContext {
+    /// O `{ triggerKind: CompletionTriggerKind.Invoke }` que `provideSuggestionItems` usa sem contexto.
+    fn default() -> Self {
+        Self { trigger_kind: CompletionTriggerKind::Invoke, trigger_character: None }
+    }
+}
+
 /// `CompletionList`: o resultado de um provedor. O `dispose?()` opcional é o `dispose` com `Option`.
 #[derive(Clone)]
 pub struct CompletionList {
     pub suggestions: Vec<CompletionItem>,
     pub incomplete: Option<bool>,
     pub dispose: Option<std::rc::Rc<dyn Fn()>>,
+    /// `duration?`: o tempo, em milissegundos, que o provedor levou para montar a lista.
+    pub duration: Option<f64>,
 }
 
 /// `CompletionItem`.
@@ -363,6 +392,18 @@ pub trait CompletionItemProvider {
     /// `triggerCharacters`.
     fn trigger_characters(&self) -> Option<&[String]> {
         None
+    }
+
+    /// `provideCompletionItems(model, position, context, token)`: a lista de sugestões na posição, ou `None` (o
+    /// `undefined`/`null`). O padrão é "nenhuma sugestão", como um provedor que não implementa o método.
+    fn provide_completion_items(
+        &self,
+        _model: &std::rc::Rc<crate::text_model::TextModel>,
+        _position: crate::position::Position,
+        _context: &CompletionContext,
+        _token: &je_base::cancellation::CancellationToken,
+    ) -> crate::language_providers::ProviderResult<std::rc::Rc<CompletionList>> {
+        je_base::promise::Promise::resolved(None)
     }
 
     /// Se o provedor implementa o `resolveCompletionItem?` opcional.

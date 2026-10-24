@@ -137,7 +137,7 @@ fn editor_suggest_selection_recently_used_should_be_a_little_more_sticky_78571()
 
     let item1 = create_suggest_item("gamma", 0);
     let item2 = create_suggest_item("game", 0);
-    let mut items = vec![item1, item2];
+    let items = vec![item1, item2];
 
     let mut mem = LruMemory::new();
     buffer.set_value("    foo.".into());
@@ -151,7 +151,7 @@ fn editor_suggest_selection_recently_used_should_be_a_little_more_sticky_78571()
     buffer.set_value("    foo.g".into());
     assert_eq!(mem.select(&buffer, Position::new(1, 10), &items), 1); // foo.g, 'gamma' and 'game' have the same score
 
-    items[0].score = vec![10, 0, 0];
+    *items[0].score.borrow_mut() = vec![10, 0, 0];
     assert_eq!(mem.select(&buffer, Position::new(1, 10), &items), 0); // foo.g, 'gamma' has higher score
     buffer.dispose();
 }
