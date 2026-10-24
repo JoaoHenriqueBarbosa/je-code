@@ -148,7 +148,7 @@ pub trait IViewModelLines: IDisposable {
 }
 
 /// `ComparerRangesUsingStarts` para ordenar: `Range.compareRangesUsingStarts` como [`Ordering`].
-fn compare_ranges_using_starts(a: &Range, b: &Range) -> Ordering {
+pub(crate) fn compare_ranges_using_starts(a: &Range, b: &Range) -> Ordering {
     Range::compare_ranges_using_starts(Some(a), Some(b)).cmp(&0)
 }
 

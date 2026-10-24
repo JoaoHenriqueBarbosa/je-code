@@ -35,7 +35,7 @@ use crate::view_model_decoration::ViewModelDecoration;
 use crate::view_model_lines::IViewModelLines;
 
 /// `filterValidationDecorations(options)`.
-fn filter_validation_decorations(options: &ComputedEditorOptions) -> bool {
+pub(crate) fn filter_validation_decorations(options: &ComputedEditorOptions) -> bool {
     let render_validation_decorations = options.get(RENDER_VALIDATION_DECORATIONS);
     if render_validation_decorations == "editable" {
         return *options.get(READ_ONLY);
@@ -44,7 +44,7 @@ fn filter_validation_decorations(options: &ComputedEditorOptions) -> bool {
 }
 
 /// `filterFontDecorations(options)`.
-fn filter_font_decorations(options: &ComputedEditorOptions) -> bool {
+pub(crate) fn filter_font_decorations(options: &ComputedEditorOptions) -> bool {
     !*options.get(EFFECTIVE_ALLOW_VARIABLE_FONTS)
 }
 

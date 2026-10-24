@@ -37,8 +37,12 @@
 //! - O argumento `domLineBreaksComputerFactory`/`monospaceLineBreaksComputerFactory` é `Rc<dyn LineBreaksComputerFactory>`;
 //!   `scheduleAtNextAnimationFrame` é o [`ScheduleAtNextAnimationFrame`] de `je_base::scrollable`.
 //! - `createLineBreaksComputer(context?)` tem o ciclo de vida das linhas: o computador empresta o contexto e o
-//!   `ViewModel` (ver `IViewModelLines::create_line_breaks_computer`). Por isso o método não devolve `Box<dyn
-//!   LineBreaksComputer>` `'static` como o `IViewModel` de `view_model_types.rs` declara.
+//!   `ViewModel` (ver `IViewModelLines::create_line_breaks_computer`). O `IViewModel` de `view_model_types.rs` foi
+//!   ajustado para a mesma assinatura (o método vive no `impl IViewModel`, em `view_model_impl_api.rs`, assim como
+//!   `addViewEventHandler`, `removeViewEventHandler`, `setHasFocus`, `setHasWidgetFocus`, `onCompositionStart`,
+//!   `onCompositionEnd` e `visibleLinesStabilized`, que a parte A não repete como métodos próprios).
+//! - `previousHiddenAreas` é `Option<Vec<Range>>`: `None` é o `[]` inicial do original, que é outra instância (e
+//!   por isso nunca `===`) do `[]` do `HiddenAreasModel`.
 //! - `getEditorOption<T>(id)` é [`ViewModel::get_editor_option`], com a chave tipada `Opt<V>` do registro.
 //! - A fonte (`source: unknown`) do `HiddenAreasModel` é [`HiddenAreasSource`], o id (identidade) do dono, ou
 //!   `None` para o `undefined`.
@@ -95,25 +99,25 @@ use crate::line_heights::CustomLineHeightData;
 use crate::minimap_tokens_color_tracker::MinimapTokensColorTracker;
 use crate::model::{ModelDecoration, PositionAffinity};
 use crate::model_line_projection_data::{
-    LineBreaksComputer, LineBreaksComputerContext, LineBreaksComputerFactory, WordBreak,
+    LineBreaksComputerFactory, WordBreak,
 };
 use crate::position::Position;
 use crate::range::Range;
 use crate::text_model::{ContentOrInjectedTextEvent, TextModel, ViewModel as TextModelViewModel};
 use crate::text_model_events::{self as model_events, ModelLineHeightChanged, ModelRawChange};
 use crate::view_events::{
-    ViewCompositionEndEvent, ViewCompositionStartEvent, ViewConfigurationChangedEvent, ViewDecorationsChangedEvent,
-    ViewEvent, ViewEventHandler, ViewFlushedEvent, ViewFocusChangedEvent, ViewLanguageConfigurationEvent,
+    ViewConfigurationChangedEvent, ViewDecorationsChangedEvent, ViewEvent, ViewFlushedEvent,
+    ViewLanguageConfigurationEvent,
     ViewLineMappingChangedEvent, ViewScrollChangedEvent, ViewThemeChangedEvent, ViewTokensChangedEvent,
     ViewTokensChangedRange, ViewTokensColorsChangedEvent,
 };
 use crate::view_layout::ViewLayout;
 use crate::view_model_decorations::ViewModelDecorations;
 use crate::view_model_event_dispatcher::{
-    FocusChangedEvent, ModelContentChangedEvent, ModelDecorationsChangedEvent, ModelFontChangedEvent,
+    ModelContentChangedEvent, ModelDecorationsChangedEvent, ModelFontChangedEvent,
     ModelLanguageChangedEvent, ModelLanguageConfigurationChangedEvent, ModelLineHeightChangedEvent,
     ModelOptionsChangedEvent, ModelTokensChangedEvent, OutgoingViewModelEvent, ScrollChangedEvent,
-    ViewModelEventDispatcher, ViewModelEventsCollector, WidgetFocusChangedEvent,
+    ViewModelEventDispatcher, ViewModelEventsCollector,
 };
 use crate::view_model_impl_support::{HiddenAreasModel, IBatchableTarget, StableViewport, ViewportStart};
 use crate::view_model_lines::{
@@ -243,7 +247,9 @@ pub struct ViewModel<T: IBatchableTarget + 'static> {
 
     // Os campos declarados depois do construtor (linhas 571 e 572).
     pub(crate) hidden_areas_model: RefCell<HiddenAreasModel<HiddenAreasSource>>,
-    pub(crate) previous_hidden_areas: RefCell<Vec<Range>>,
+    /// `previousHiddenAreas`: `None` é o `[]` inicial do original, que não é a mesma instância do `[]` do
+    /// `HiddenAreasModel` (então a primeira chamada de `setHiddenAreas` nunca sai cedo).
+    pub(crate) previous_hidden_areas: RefCell<Option<Vec<Range>>>,
 }
 
 /// O que o `CursorsController` enxerga do view model: um `Weak`, para o controlador (que o view model possui) não
@@ -372,7 +378,7 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
                 attached_view,
                 transactional_target,
                 hidden_areas_model: RefCell::new(HiddenAreasModel::default()),
-                previous_hidden_areas: RefCell::new(Vec::new()),
+                previous_hidden_areas: RefCell::new(None),
             }
         });
         this.base.register(this.update_configuration_view_line_count.clone());
@@ -496,21 +502,6 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
         self.configuration.options().get(id)
     }
 
-    pub fn create_line_breaks_computer<'a>(
-        &'a self,
-        context: Option<&'a dyn LineBreaksComputerContext>,
-    ) -> Box<dyn LineBreaksComputer + 'a> {
-        self.lines.create_line_breaks_computer(context)
-    }
-
-    pub fn add_view_event_handler(&self, event_handler: Rc<dyn ViewEventHandler>) {
-        self.event_dispatcher.add_view_event_handler(event_handler);
-    }
-
-    pub fn remove_view_event_handler(&self, event_handler: &Rc<dyn ViewEventHandler>) {
-        self.event_dispatcher.remove_view_event_handler(event_handler);
-    }
-
     /// `CustomLineHeightData.fromDecorations(decorations, coordinatesConverter, configuration)`.
     fn custom_line_heights_from_decorations(&self, decorations: &[ModelDecoration]) -> Vec<CustomLineHeightData> {
         let default_line_height = *self.configuration.options().get(LINE_HEIGHT);
@@ -553,7 +544,7 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
 
     /// `getModelVisibleRanges` seguido de `this._attachedView.setVisibleLines(modelVisibleRanges, stabilized)`: as
     /// duas únicas chamadas do original diferem só no `stabilized`.
-    fn set_attached_view_visible_lines(&self, stabilized: bool) {
+    pub(crate) fn set_attached_view_visible_lines(&self, stabilized: bool) {
         let lines_viewport_data = self.layout().get_lines_viewport_data();
         let view_visible_range = Range::new(
             lines_viewport_data.start_line_number,
@@ -569,36 +560,9 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
         self.attached_view.set_visible_lines(&model_visible_ranges, stabilized);
     }
 
-    pub fn visible_lines_stabilized(&self) {
-        self.set_attached_view_visible_lines(true);
-    }
-
     /// `_handleVisibleLinesChanged`.
     pub(crate) fn handle_visible_lines_changed(&self) {
         self.set_attached_view_visible_lines(false);
-    }
-
-    pub fn set_has_focus(&self, has_focus: bool) {
-        self.has_focus.set(has_focus);
-        self.cursor().set_has_focus(has_focus);
-        self.event_dispatcher.emit_single_view_event(ViewEvent::FocusChanged(ViewFocusChangedEvent::new(has_focus)));
-        self.event_dispatcher.emit_outgoing_event(OutgoingViewModelEvent::FocusChanged(FocusChangedEvent::new(
-            !has_focus, has_focus,
-        )));
-    }
-
-    pub fn set_has_widget_focus(&self, has_widget_focus: bool) {
-        self.event_dispatcher.emit_outgoing_event(OutgoingViewModelEvent::WidgetFocusChanged(
-            WidgetFocusChangedEvent::new(!has_widget_focus, has_widget_focus),
-        ));
-    }
-
-    pub fn on_composition_start(&self) {
-        self.event_dispatcher.emit_single_view_event(ViewEvent::CompositionStart(ViewCompositionStartEvent));
-    }
-
-    pub fn on_composition_end(&self) {
-        self.event_dispatcher.emit_single_view_event(ViewEvent::CompositionEnd(ViewCompositionEndEvent));
     }
 
     /// `_captureStableViewport`.
@@ -630,7 +594,7 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
 
     /// `ViewFlushedEvent` mais o mapeamento de linhas e o `viewLayout.onFlushed`: a sequência de uma mudança de
     /// quebra de linha ou de tamanho do tab.
-    fn emit_flushed_and_line_mapping_changed(&self, events_collector: &ViewModelEventsCollector) {
+    pub(crate) fn emit_flushed_and_line_mapping_changed(&self, events_collector: &ViewModelEventsCollector) {
         events_collector.emit_view_event(ViewEvent::Flushed(ViewFlushedEvent));
         self.emit_line_mapping_changed(events_collector);
         self.layout().on_flushed(self.get_line_count(), &self.get_custom_line_heights());

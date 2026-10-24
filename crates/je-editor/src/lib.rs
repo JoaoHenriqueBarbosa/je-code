@@ -179,3 +179,5 @@ pub mod view_model_impl_support;
 pub mod gpu;
 
 pub mod view_model_impl;
+
+pub mod view_model_impl_api;
