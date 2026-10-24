@@ -19,3 +19,6 @@ pub mod keybinding_editing_support;
 
 // Porte de `terminalCompletionService.test.ts`.
 pub mod terminal_completion_support;
+
+// Porte de `textFileEditorModelManager.test.ts`.
+pub mod text_file_support;
