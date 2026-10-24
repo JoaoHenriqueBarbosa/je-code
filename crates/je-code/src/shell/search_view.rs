@@ -151,7 +151,6 @@ impl ITreeRenderer<Model> for Renderer {
 }
 
 pub struct SearchView {
-    ui: Ui,
     tree: Rc<ObjectTree<Entry>>,
     results: Results,
     order: Vec<PathBuf>,
@@ -218,7 +217,7 @@ impl SearchView {
                 }
             }
         }));
-        Self { ui: ui.clone(), tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, _listeners: listeners }
+        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, _listeners: listeners }
     }
 
     pub fn restyle(&self, theme: &ColorTheme) {
@@ -303,10 +302,6 @@ impl SearchView {
             self.collapsed.borrow_mut().insert(path.clone());
         }
         self.rebuild();
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.running.is_some()
     }
 
     /// `4 results in 1 file` (ou a mensagem de nada achado).

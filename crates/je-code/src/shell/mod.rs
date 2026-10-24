@@ -1845,6 +1845,74 @@ impl Shell {
         self.needs_render = true;
     }
 
+    /// O fundo do grupo sem editores (`editorGroupWatermark`): o logotipo apagado e os atalhos principais.
+    fn render_watermark(tree: &mut Tree, frame: NodeId, part: Rect, theme: &ColorTheme) {
+        let color = |id: &str| theme.get_color(id).unwrap_or(Rgba::opaque(0xff, 0, 0xff));
+        let background = color("editor.background");
+        // O logotipo é um tom mais escuro que o fundo (`letterpress`).
+        let logo_color = Rgba { r: background.r.saturating_sub(1), g: background.g.saturating_sub(1), b: background.b.saturating_sub(1), ..background };
+        let center_x = part.width() / 2.0;
+        let top = part.height() / 2.0 - 200.0;
+        let logo = tree.create(frame, Role::Image);
+        tree.set_bounds(logo, Rect::new(center_x - 128.0, top, center_x + 128.0, top + 256.0));
+        tree.style_mut(logo).content = Content::Codicon { id: "vscode".into(), size: 256.0, color: logo_color };
+        let label_font = ui_font(13.0, 400);
+        let key_font = ui_font(11.0, 400);
+        let muted = color("descriptionForeground");
+        let chip_bg = color("keybindingLabel.background");
+        let chip_border = color("keybindingLabel.bottomBorder");
+        let chip_fg = color("keybindingLabel.foreground");
+        let rows: [(&str, Vec<Vec<&str>>); 4] = [
+            ("Show All Commands", vec![vec!["Ctrl", "Shift", "P"]]),
+            ("Open Recent", vec![vec!["Ctrl", "R"]]),
+            ("Open File", vec![vec!["Ctrl", "O"]]),
+            ("Open Folder", vec![vec!["Ctrl", "K"], vec!["Ctrl", "O"]]),
+        ];
+        let left = center_x - 136.0;
+        let mut y = top + 286.0;
+        for (label, chords) in rows {
+            // Largura dos atalhos: cada tecla é um chip com 6 px de respiro, separados por `+`.
+            let chip_width = |key: &str| measure_text(key, &key_font) + 12.0;
+            let chord_width = |chord: &Vec<&str>| chord.iter().map(|k| chip_width(k)).sum::<f64>() + 14.0 * (chord.len() as f64 - 1.0);
+            let keys_width: f64 = chords.iter().map(chord_width).sum::<f64>() + 10.0 * (chords.len() as f64 - 1.0);
+            let wraps = measure_text(label, &label_font) + 12.0 > 272.0 - keys_width - 12.0;
+            let lines: Vec<&str> = if wraps { label.split_once(' ').map_or(vec![label], |_| vec!["Show All", "Commands"]) } else { vec![label] };
+            for (i, line) in lines.iter().enumerate() {
+                let node = tree.create(frame, Role::Generic);
+                let w = measure_text(line, &label_font);
+                tree.set_bounds(node, Rect::new(left, y + 18.0 * i as f64, left + w, y + 18.0 * (i + 1) as f64));
+                tree.style_mut(node).content = Content::Text { text: (*line).to_owned(), style: label_font.clone(), color: muted, line_height: 18.0 };
+            }
+            let mut x = left + 272.0 - keys_width;
+            for (c, chord) in chords.iter().enumerate() {
+                if c > 0 {
+                    x += 10.0;
+                }
+                for (k, key) in chord.iter().enumerate() {
+                    if k > 0 {
+                        let plus = tree.create(frame, Role::Generic);
+                        tree.set_bounds(plus, Rect::new(x + 3.0, y, x + 11.0, y + 18.0));
+                        tree.style_mut(plus).content = Content::Text { text: "+".to_owned(), style: label_font.clone(), color: muted, line_height: 18.0 };
+                        x += 14.0;
+                    }
+                    let w = chip_width(key);
+                    let chip = tree.create(frame, Role::Generic);
+                    tree.set_bounds(chip, Rect::new(x, y, x + w, y + 17.0));
+                    let style = tree.style_mut(chip);
+                    style.background = Some(chip_bg);
+                    style.radius = 3.0;
+                    style.border_widths = Some([0.0, 0.0, 1.0, 0.0]);
+                    style.border = Some(Border { width: 1.0, color: chip_border });
+                    let text = tree.create(chip, Role::Generic);
+                    tree.set_bounds(text, Rect::new(6.0, 0.0, w - 6.0, 16.0));
+                    tree.style_mut(text).content = Content::Text { text: (*key).to_owned(), style: key_font.clone(), color: chip_fg, line_height: 16.0 };
+                    x += w;
+                }
+            }
+            y += 18.0 * lines.len() as f64 + 9.0;
+        }
+    }
+
     fn render_editor_part(&mut self, chrome: NodeId) {
         let part = self.editor_part_rect();
         let tab_font = ui_font(13.0, 400);
@@ -1862,6 +1930,7 @@ impl Shell {
         let inner_width = part.width() - 2.0;
         if self.editors.is_empty() {
             self.nodes.editor_host = None;
+            Self::render_watermark(&mut tree, frame, part, &self.theme);
             return;
         }
         // A faixa das abas (`.tabs-and-actions-container`).
@@ -2225,10 +2294,12 @@ impl Shell {
 
     /// A roda do mouse: rola o editor se o ponteiro estiver nele.
     pub fn wheel(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
-        if let Some(explorer) = &self.explorer
-            && self.sidebar_rect().is_some_and(|r| r.contains(je_render::kurbo::Point::new(x, y)))
-        {
-            explorer.scroll_by(dy);
+        if self.sidebar_rect().is_some_and(|r| r.contains(je_render::kurbo::Point::new(x, y))) {
+            match (self.side_view, &self.explorer) {
+                (SideView::Explorer, Some(explorer)) => explorer.scroll_by(dy),
+                (SideView::Search, _) => self.search.scroll_by(dy),
+                _ => {}
+            }
             return;
         }
         if self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y))) {
@@ -2282,10 +2353,8 @@ impl Shell {
             self.run_commands();
             return;
         }
-        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) {
-            if self.quick_pick_key(down, text, editor_key, mods) {
-                return;
-            }
+        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) && self.quick_pick_key(down, text, editor_key, mods) {
+            return;
         }
         if self.terminal_focused && self.panel_visible && self.terminal.is_some() && self.quick_pick.is_none() {
             if down {
