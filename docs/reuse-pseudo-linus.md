@@ -29,3 +29,7 @@ licença) no README dela, como o `zbun` faz com o bun; mudança local fica lista
 - Oniguruma do TextMate: o pseudo-linus já usava o `ferroni` (crates.io) no `ul-jq`; o je-code usa o mesmo, vendorizado com uma correção (`vendor/ferroni`).
 - `regex-posix`: semântica POSIX; o VS Code usa ECMAScript (YARR) e Oniguruma (TextMate).
 - `ul-textproc` (grep do GNU): a busca do VS Code é o ripgrep; a paridade vem das crates do ripgrep.
+
+## Montagem local do `ref/pseudo-linus`
+
+`git clone` do pseudo-linus no commit `9e3d0767` e uma mudança local, fora do git: em `crates/zjsc/Cargo.toml`, `icu_collator` aponta para `../../../../vendor/icu_collator` (o vendor do je-code, cópia do mesmo código), para o `je-base` e o zjsc usarem o mesmo pacote; com o vendor próprio do zjsc o Cargo acusa colisão de `icu_collator` 2.3.1 no lockfile.
