@@ -61,6 +61,11 @@ impl EditSources {
         Self::simple("applyEdits")
     }
 
+    /// `EditSources.reloadFromDisk()`.
+    pub fn reload_from_disk() -> TextModelEditSource {
+        Self::simple("reloadFromDisk")
+    }
+
     /// `EditSources.cursor({ kind, detailedSource })`: `kind` fica em `name` (é o que `getType()` devolve para
     /// a origem `cursor`). O `detailedSource` não tem campo nesta representação simplificada e não é guardado.
     pub fn cursor(kind: &str, _detailed_source: Option<&str>) -> TextModelEditSource {

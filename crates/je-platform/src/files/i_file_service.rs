@@ -36,6 +36,11 @@ pub trait IFileService {
     /// the metadata filled in.
     fn resolve_with_metadata(&self, resource: &URI, options: Option<ResolveFileOptions>) -> Promise<FileStatWithMetadata>;
 
+    /// `stat(resource)`: `resolve(resource, { resolveMetadata: true })` sem os filhos.
+    fn stat(&self, resource: &URI) -> Promise<FileStatWithMetadata> {
+        self.resolve_with_metadata(resource, None)
+    }
+
     /// Checks if a resource exists.
     fn exists(&self, resource: &URI) -> Promise<bool>;
 
