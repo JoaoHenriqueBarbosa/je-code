@@ -5,8 +5,9 @@
 //!   [`AsLineRangeMapping`], que dá acesso ao `LineRangeMapping` base.
 //! - `toString()` vira `Display`.
 //! - O `sort` do original é estável, como o `sort_by_key` do Rust.
-//! - Fora, por dependerem de `ITextModel` e de `LineRangeEdit`: `DetailedLineRangeMapping` e, com ela,
-//!   `getLineEdit`, `getReverseLineEdit` e as importações de `editing.ts`.
+//! - `DetailedLineRangeMapping extends LineRangeMapping` vira um tipo que contém o [`LineRangeMapping`] (o trait
+//!   [`AsLineRangeMapping`] o expõe) e guarda o `TextModel` (`ITextModel`) de entrada e de saída em `Rc`; o
+//!   `join` de instância é `join_with` e o estático é `join`, como no tipo base.
 
 use std::fmt;
 
@@ -16,6 +17,12 @@ use je_editor::position::Position;
 use je_editor::position_to_offset::TextLength;
 use je_editor::range::Range;
 
+use std::rc::Rc;
+
+use je_base::JsString;
+use je_editor::text_model::TextModel;
+
+use super::editing::LineRangeEdit;
 use super::line_range::MergeEditorLineRange;
 use super::range_utils::{range_contains_position, range_is_before_or_touching};
 
@@ -238,6 +245,108 @@ impl<T: AsLineRangeMapping + Clone> MappingAlignment<T> {
 impl<T: AsLineRangeMapping> fmt::Display for MappingAlignment<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} <- {} -> {}", self.output1_range, self.input_range, self.output2_range)
+    }
+}
+
+/// Um mapeamento de intervalos de linhas com os mapeamentos de intervalo internos.
+#[derive(Clone)]
+pub struct DetailedLineRangeMapping {
+    pub mapping: LineRangeMapping,
+    pub input_text_model: Rc<TextModel>,
+    pub output_text_model: Rc<TextModel>,
+    pub range_mappings: Vec<RangeMapping>,
+}
+
+impl std::fmt::Debug for DetailedLineRangeMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DetailedLineRangeMapping")
+            .field("mapping", &self.mapping)
+            .field("range_mappings", &self.range_mappings)
+            .finish()
+    }
+}
+
+impl AsLineRangeMapping for DetailedLineRangeMapping {
+    fn as_line_range_mapping(&self) -> &LineRangeMapping {
+        &self.mapping
+    }
+}
+
+impl DetailedLineRangeMapping {
+    pub fn join_all(mappings: &[DetailedLineRangeMapping]) -> Option<DetailedLineRangeMapping> {
+        mappings.iter().fold(None, |acc, cur| {
+            Some(match acc {
+                Some(acc) => acc.join_with(cur),
+                None => cur.clone(),
+            })
+        })
+    }
+
+    pub fn new(
+        input_range: MergeEditorLineRange,
+        input_text_model: Rc<TextModel>,
+        output_range: MergeEditorLineRange,
+        output_text_model: Rc<TextModel>,
+        range_mappings: Option<Vec<RangeMapping>>,
+    ) -> Self {
+        let range_mappings = range_mappings
+            .unwrap_or_else(|| vec![RangeMapping::new(input_range.to_exclusive_range(), output_range.to_exclusive_range())]);
+        Self { mapping: LineRangeMapping::new(input_range, output_range), input_text_model, output_text_model, range_mappings }
+    }
+
+    pub fn input_range(&self) -> MergeEditorLineRange {
+        self.mapping.input_range
+    }
+
+    pub fn output_range(&self) -> MergeEditorLineRange {
+        self.mapping.output_range
+    }
+
+    pub fn add_output_line_delta(&self, delta: i32) -> DetailedLineRangeMapping {
+        DetailedLineRangeMapping::new(
+            self.input_range(),
+            self.input_text_model.clone(),
+            self.output_range().delta(delta),
+            self.output_text_model.clone(),
+            Some(self.range_mappings.iter().map(|d| d.add_output_line_delta(delta)).collect()),
+        )
+    }
+
+    pub fn add_input_line_delta(&self, delta: i32) -> DetailedLineRangeMapping {
+        DetailedLineRangeMapping::new(
+            self.input_range().delta(delta),
+            self.input_text_model.clone(),
+            self.output_range(),
+            self.output_text_model.clone(),
+            Some(self.range_mappings.iter().map(|d| d.add_input_line_delta(delta)).collect()),
+        )
+    }
+
+    /// O `join` de instância do original: os `rangeMappings` do resultado são o padrão (um só, do intervalo inteiro).
+    pub fn join_with(&self, other: &DetailedLineRangeMapping) -> DetailedLineRangeMapping {
+        DetailedLineRangeMapping::new(
+            self.input_range().join(&other.input_range()),
+            self.input_text_model.clone(),
+            self.output_range().join(&other.output_range()),
+            self.output_text_model.clone(),
+            None,
+        )
+    }
+
+    pub fn get_line_edit(&self) -> LineRangeEdit {
+        LineRangeEdit::new(self.input_range(), self.get_output_lines())
+    }
+
+    pub fn get_reverse_line_edit(&self) -> LineRangeEdit {
+        LineRangeEdit::new(self.output_range(), self.get_input_lines())
+    }
+
+    fn get_output_lines(&self) -> Vec<JsString> {
+        self.output_range().get_lines(&self.output_text_model)
+    }
+
+    fn get_input_lines(&self) -> Vec<JsString> {
+        self.input_range().get_lines(&self.input_text_model)
     }
 }
 
