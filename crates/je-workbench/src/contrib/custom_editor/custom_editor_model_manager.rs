@@ -6,7 +6,7 @@
 //!   (`Rc<RefCell<...>>`) com os descartes das referências. As entradas são `Rc` (a identidade `this._references.get(key)
 //!   === entry` é `Rc::ptr_eq`) e o contador é um `Cell`.
 //! - `IReference<ICustomEditorModel>` é a [`Reference`]; o `dispose` de chamada única (`createSingleCallFunction`) é o
-//!   `to_disposable`.
+//!   `plain_disposable` (o original é um objeto literal que o rastreador de vazamentos não vê).
 //! - `getAllModels` percorre uma foto das entradas do começo da chamada (o original percorre o mapa vivo enquanto espera
 //!   cada modelo).
 //! - `add` com a chave já registrada lança (`Model already exists`) pelo [`errors::throw`], e o `catch` do modelo que falha é a
@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use je_base::async_::async_fn;
 use je_base::errors::{self, Error};
-use je_base::lifecycle::{IDisposable, Reference, to_disposable};
+use je_base::lifecycle::{IDisposable, Reference, plain_disposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 
@@ -103,7 +103,7 @@ impl ICustomEditorModelManager for CustomEditorModelManager {
         Some(retained.model.then(move |model| {
             Reference::new(
                 model,
-                to_disposable(move || {
+                plain_disposable(move || {
                     // The model may already be disposed and replaced, for example after its resource was deleted
                     entry.counter.set(entry.counter.get() - 1);
                     if entry.counter.get() <= 0 && Self::is_current(&references, &key, &entry) {
