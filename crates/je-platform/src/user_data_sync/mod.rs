@@ -11,3 +11,6 @@ pub mod snippets_merge;
 pub mod user_data_profiles_manifest_merge;
 #[allow(clippy::module_inception)] // `user_data_sync.rs` é o porte de `userDataSync.ts`, como no original
 pub mod user_data_sync;
+
+pub mod abstract_synchronizer;
+pub mod user_data_profiles_manifest_sync;
