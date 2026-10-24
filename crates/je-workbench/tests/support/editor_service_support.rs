@@ -33,6 +33,11 @@
 //!   expõe (`editor_pane_service`, `editor_resolver_service`, `text_editor_service`, `workspace_trust_request_service`), como
 //!   os membros do `TestServiceAccessor` do original; [`EditorServiceAccessor::with_default_backup_service`] é o
 //!   `workbenchInstantiationService(undefined, disposables)` sem trocar o serviço de backup.
+//!
+//! Acrescentado para `editorResolverService.test.ts`:
+//! - **`workbenchInstantiationService({ configurationService: () => ... }, disposables)`.**
+//!   [`EditorServiceAccessor::with_configuration_service`] troca o `IConfigurationService` na coleção e na parte antes de o
+//!   resolvedor ser criado, que é quando ele lê as associações do usuário.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -48,7 +53,7 @@ use je_base::runtime;
 use je_base::uri::URI;
 use je_instantiation::{InstantiationService, ServiceEntry};
 use je_platform::commands::commands::{ICommandService, I_COMMAND_SERVICE};
-use je_platform::configuration::service::IConfigurationService;
+use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::dialogs::{I_DIALOG_SERVICE, I_FILE_DIALOG_SERVICE, IDialogService, IFileDialogService};
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::log::I_LOG_SERVICE;
@@ -471,7 +476,23 @@ impl Deref for EditorServiceAccessor {
 
 impl EditorServiceAccessor {
     pub fn new(disposables: &Rc<DisposableStore>, working_copy_backup_service: Rc<dyn IWorkingCopyBackupService>) -> Self {
-        Self::from_base(disposables, TextFileTestAccessor::new(disposables), working_copy_backup_service)
+        Self::from_base(disposables, TextFileTestAccessor::new(disposables), working_copy_backup_service, None)
+    }
+
+    /// `workbenchInstantiationService({ configurationService: () => configurationService }, disposables)`: o
+    /// `IConfigurationService` que `make_configuration_service` devolve substitui o `TestConfigurationService` do acessor do
+    /// arquivo de texto na coleção e na parte de editores, antes de o resolvedor, o `TextEditorService` e o `EditorService`
+    /// serem criados (eles leem a configuração no construtor). Os serviços do acessor do arquivo de texto (o `ModelService`,
+    /// o `UntitledTextEditorService`...) continuam sobre o serviço de configuração dele.
+    pub fn with_configuration_service(
+        disposables: &Rc<DisposableStore>,
+        make_configuration_service: impl FnOnce(&TextFileTestAccessor) -> Rc<dyn IConfigurationService>,
+    ) -> Self {
+        let base = TextFileTestAccessor::new(disposables);
+        let working_copy_backup_service: Rc<dyn IWorkingCopyBackupService> = base.working_copy_backup_service.clone();
+        let configuration_service = make_configuration_service(&base);
+
+        Self::from_base(disposables, base, working_copy_backup_service, Some(configuration_service))
     }
 
     /// `workbenchInstantiationService(undefined, disposables)` sem trocar o `IWorkingCopyBackupService`: vale o dublê do
@@ -480,13 +501,19 @@ impl EditorServiceAccessor {
         let base = TextFileTestAccessor::new(disposables);
         let working_copy_backup_service: Rc<dyn IWorkingCopyBackupService> = base.working_copy_backup_service.clone();
 
-        Self::from_base(disposables, base, working_copy_backup_service)
+        Self::from_base(disposables, base, working_copy_backup_service, None)
     }
 
-    fn from_base(disposables: &Rc<DisposableStore>, base: TextFileTestAccessor, working_copy_backup_service: Rc<dyn IWorkingCopyBackupService>) -> Self {
+    fn from_base(
+        disposables: &Rc<DisposableStore>,
+        base: TextFileTestAccessor,
+        working_copy_backup_service: Rc<dyn IWorkingCopyBackupService>,
+        configuration_service_override: Option<Rc<dyn IConfigurationService>>,
+    ) -> Self {
         let collection = base.collection.clone();
         let instantiation_service = base.instantiation_service.clone();
-        let configuration_service: Rc<dyn IConfigurationService> = base.test_configuration_service.clone();
+        let configuration_service: Rc<dyn IConfigurationService> = configuration_service_override.unwrap_or_else(|| base.test_configuration_service.clone());
+        collection.set(I_CONFIGURATION_SERVICE, configuration_service.clone());
 
         // `instantiationService.stub(IWorkingCopyBackupService, workingCopyBackupService)`
         collection.set(I_WORKING_COPY_BACKUP_SERVICE, working_copy_backup_service);

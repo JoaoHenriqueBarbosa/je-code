@@ -36,6 +36,8 @@ pub mod remote;
 pub mod textfile;
 // Contrato do serviço de decorações de recursos (`decorations/common/decorations.ts`), que o `TextFileService` lê.
 pub mod decorations;
+// Contrato do serviço de histórico de editores (`history/common/history.ts`).
+pub mod history;
 
 // `ILanguageDetectionService` e o `ITextEditorModel`/`ITextModelService` que os modelos de texto do workbench leem.
 pub mod language_detection;
