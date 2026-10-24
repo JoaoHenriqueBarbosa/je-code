@@ -127,12 +127,14 @@ impl IRemoteAgentService for TestRemoteAgentService {
 }
 
 /// Os valores do ambiente que um teste troca (`instantiationService.stub(IWorkbenchEnvironmentService, { ... })`):
-/// `disableExtensions`, `enableExtensions` e `isSessionsWindow`. O que fica no padrão é o do `TestEnvironmentService`.
+/// `disableExtensions`, `enableExtensions`, `isSessionsWindow` e `isExtensionDevelopment`. O que fica no padrão é o do
+/// `TestEnvironmentService`.
 #[derive(Clone, Debug, Default)]
 pub struct EnvironmentOverrides {
     pub disable_extensions: Option<DisableExtensions>,
     pub enable_extensions: Option<Vec<String>>,
     pub is_sessions_window: bool,
+    pub is_extension_development: bool,
 }
 
 /// `TestEnvironmentService`.
@@ -234,7 +236,7 @@ impl EnvironmentService for TestEnvironmentService {
     }
 
     fn is_extension_development(&self) -> bool {
-        false
+        self.overrides.is_extension_development
     }
 
     fn disable_extensions(&self) -> DisableExtensions {
