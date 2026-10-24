@@ -52,3 +52,6 @@ pub mod edit_telemetry;
 
 // Openers externos de URI (`contrib/externalUriOpener`): a configuração, o armazém de openers contribuídos e o serviço.
 pub mod external_uri_opener;
+
+// Links externos (`contrib/url`): o validador que pede confiança no workspace e nos domínios antes de abrir um link.
+pub mod url;
