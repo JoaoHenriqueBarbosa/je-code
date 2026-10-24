@@ -6,6 +6,7 @@ pub mod smart_snippet_inserter;
 // os trechos de `browser/preferencesWidgets.ts`, `browser/preferencesSearch.ts` e
 // `browser/settingsEditorSettingIndicators.ts` de que o modelo depende.
 pub mod common;
+pub mod keybindings_editor_contribution;
 pub mod preferences_search;
 pub mod preferences_widgets;
 pub mod settings_editor2;

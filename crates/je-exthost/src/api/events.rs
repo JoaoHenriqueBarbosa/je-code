@@ -8,8 +8,10 @@
 //!   isso `thisArgs` só vale quando é um [`JsData::Handle`] (uma função, por exemplo); um objeto comum como `thisArgs` é ignorado e
 //!   o listener roda sem `this`. O argumento `disposables` (a lista onde o original empurra o `Disposable`) também chegaria copiado,
 //!   então não é preenchido: o chamador guarda o `Disposable` devolvido.
-//! - O valor de `EventEmitter#fire(data)` chega ao listener como a mesma cópia que atravessou a fronteira (objeto comum e array
-//!   perdem a identidade; função e instância de classe nativa ficam).
+//! - O valor de `EventEmitter#fire(data)` chega ao listener com a identidade que a extensão deu: `fire` é uma função por referência
+//!   (própria de cada instância, sombreando a do protótipo), então um objeto ou array passado a ela é o mesmo do lado do listener.
+//!   Um valor que um namespace do host dispara por um `Event` do Rust (`onDidX`) segue como cópia (objeto comum e array perdem a
+//!   identidade; função e instância de classe nativa ficam).
 //! - `emitter.event` devolve uma função nova a cada leitura (no original é uma só por emitter, mas ela é só um atalho para o
 //!   `Emitter`, então escutar por qualquer das duas é o mesmo).
 //! - `CancellationToken` não é exportada em `vscode` (é uma interface no `vscode.d.ts`): a classe nativa existe para o protótipo
@@ -82,8 +84,21 @@ fn id_of(value: &JsData) -> Option<u64> {
 
 /// A função de evento `(listener, thisArgs?, disposables?) => Disposable` sobre `event`; `to_js` converte o valor do evento.
 pub fn event_function<T: 'static>(runner: &NodeRunner, table: &Rc<DisposableTable>, name: &str, event: Event<T>, to_js: impl Fn(&T) -> JsData + 'static) -> JsData {
+    event_function_with_epilogue(runner, table, name, event, move |value| (to_js(value), |_: &T| {}))
+}
+
+/// Como [`event_function`], mas `prepare` devolve também um epílogo que roda com o valor do evento logo depois que o listener
+/// retorna (ou lança). É o gancho dos eventos `waitUntil`: o listener só pode chamar `waitUntil` durante o despacho, e quem
+/// entrega as promessas ao evento precisa do `&T` vivo, que o objeto copiado para o JavaScript não pode guardar.
+pub fn event_function_with_epilogue<T: 'static, E: FnOnce(&T) + 'static>(
+    runner: &NodeRunner,
+    table: &Rc<DisposableTable>,
+    name: &str,
+    event: Event<T>,
+    prepare: impl Fn(&T) -> (JsData, E) + 'static,
+) -> JsData {
     let (call_runner, table) = (runner.clone(), table.clone());
-    let to_js = Rc::new(to_js);
+    let to_js = Rc::new(prepare);
     let label = name.to_owned();
     let function = runner.make_function(
         name,
@@ -98,11 +113,12 @@ pub fn event_function<T: 'static>(runner: &NodeRunner, table: &Rc<DisposableTabl
             };
             let (runner, convert) = (call_runner.clone(), to_js.clone());
             let subscription = event.listen(move |value| {
-                let payload = convert(value);
+                let (payload, epilogue) = convert(value);
                 let outcome = match &this_arg {
                     Some(this_arg) => runner.call_method(&listener, "call", &[this_arg.clone(), payload]).map(|_| ()).map_err(Error::new),
                     None => runner.call_data_throwing(&listener, &[payload]).map(|_| ()).map_err(|thrown| js_to_error(&thrown)),
                 };
+                epilogue(value);
                 if let Err(error) = outcome {
                     on_unexpected_error(&error);
                 }
@@ -122,6 +138,7 @@ fn define_event_emitter(runner: &NodeRunner, table: &Rc<DisposableTable>, tables
         }
     };
     let construct_tables = tables.clone();
+    let construct_runner = runner.clone();
     let fire_of = emitter_of.clone();
     let dispose_of = emitter_of.clone();
     let dispose_tables = tables.clone();
@@ -156,8 +173,19 @@ fn define_event_emitter(runner: &NodeRunner, table: &Rc<DisposableTable>, tables
         length: 0,
         construct: Rc::new(move |_| {
             let id = construct_tables.next_id();
-            construct_tables.emitters.borrow_mut().insert(id, Emitter::new());
-            Ok(JsData::Object(vec![("_id".to_owned(), JsData::Num(id as f64))]))
+            let emitter: Rc<Emitter<JsData>> = Emitter::new();
+            construct_tables.emitters.borrow_mut().insert(id, emitter.clone());
+            // `fire` é uma função por referência, própria da instância: um objeto passado a `fire(data)` chega ao listener com a
+            // identidade que a extensão deu (o elemento de uma árvore, por exemplo), não como cópia.
+            let fire = construct_runner.make_function_by_reference(
+                "fire",
+                1,
+                Rc::new(move |args| {
+                    emitter.fire(args.first().cloned().unwrap_or(JsData::Undefined));
+                    Ok(JsData::Undefined)
+                }),
+            );
+            Ok(JsData::Object(vec![("_id".to_owned(), JsData::Num(id as f64)), ("fire".to_owned(), JsData::Handle(Rc::new(fire)))]))
         }),
         methods,
         getters,

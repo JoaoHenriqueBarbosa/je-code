@@ -2,4 +2,5 @@
 //! agente e a descrição do modelo padrão sob política). O chat em si está fora do escopo do porte.
 
 pub mod chat_network_configuration;
+pub mod common;
 pub mod model_selection;

@@ -468,15 +468,34 @@ pub fn wait_until_edit<F: Clone + 'static>(event: &WaitUntilEvent<FileWillEvent<
 
 type WillListener<F> = Listener<WaitUntilEvent<FileWillEvent<F>>>;
 
-/// Um `AsyncEmitter` de `onWill*File` e os ouvintes registrados com a extensão de cada um (`IExtensionListener`).
+/// A extensão do listener que está sendo despachado. No original o `IExtensionListener` carrega a `extension` como propriedade da
+/// própria função, e o `promiseJoin` a lê do listener que o `AsyncEmitter` entrega. Aqui o `Emitter` guarda cada inscrição num
+/// contêiner novo (o listener que o `PromiseJoin` recebe não é o que o `Event` registrou), então a identidade do listener não serve
+/// de chave: o listener embrulhado marca a extensão enquanto roda, e o `waitUntil` (síncrono, dentro do listener) a lê no mesmo
+/// instante em que o `PromiseJoin` é chamado.
+type CurrentExtension = Rc<RefCell<Option<Rc<ExtensionDescription>>>>;
+
+/// Restaura a extensão anterior ao fim do listener (mesmo se ele lançar).
+struct CurrentExtensionGuard {
+    slot: CurrentExtension,
+    previous: Option<Rc<ExtensionDescription>>,
+}
+
+impl Drop for CurrentExtensionGuard {
+    fn drop(&mut self) {
+        *self.slot.borrow_mut() = self.previous.take();
+    }
+}
+
+/// Um `AsyncEmitter` de `onWill*File` e a extensão do listener em despacho (`IExtensionListener`).
 struct WillEmitter<F: Clone + 'static> {
     emitter: Rc<AsyncEmitter<FileWillEvent<F>>>,
-    listeners: RefCell<Vec<(WillListener<F>, Rc<ExtensionDescription>)>>,
+    current: CurrentExtension,
 }
 
 impl<F: Clone + 'static> WillEmitter<F> {
     fn new() -> Rc<WillEmitter<F>> {
-        Rc::new(WillEmitter { emitter: AsyncEmitter::new(), listeners: RefCell::new(Vec::new()) })
+        Rc::new(WillEmitter { emitter: AsyncEmitter::new(), current: Rc::new(RefCell::new(None)) })
     }
 
     /// `_createWillExecuteEvent(extension, emitter)`.
@@ -484,19 +503,19 @@ impl<F: Clone + 'static> WillEmitter<F> {
         let this = self.clone();
         let extension = Rc::new(extension.clone());
         Event::new(move |listener: WillListener<F>| {
-            let wrapped: WillListener<F> = Rc::new(move |event: &WaitUntilEvent<FileWillEvent<F>>| listener(event));
-            this.listeners.borrow_mut().push((wrapped.clone(), extension.clone()));
-            let subscription = this.emitter.event().listen_rc(wrapped.clone());
-            let this = this.clone();
-            to_disposable(move || {
-                subscription.dispose();
-                this.listeners.borrow_mut().retain(|(candidate, _)| !Rc::ptr_eq(candidate, &wrapped));
-            })
+            let (slot, extension) = (this.current.clone(), extension.clone());
+            let wrapped: WillListener<F> = Rc::new(move |event: &WaitUntilEvent<FileWillEvent<F>>| {
+                let previous = slot.borrow_mut().replace(extension.clone());
+                let _guard = CurrentExtensionGuard { slot: slot.clone(), previous };
+                listener(event)
+            });
+            this.emitter.event().listen_rc(wrapped)
         })
     }
 
-    fn extension_of(&self, listener: &WillListener<F>) -> Option<Rc<ExtensionDescription>> {
-        self.listeners.borrow().iter().find(|(candidate, _)| Rc::ptr_eq(candidate, listener)).map(|(_, extension)| extension.clone())
+    /// A extensão cujo listener está em despacho (a do `waitUntil` que chama o `PromiseJoin`).
+    fn current_extension(&self) -> Option<Rc<ExtensionDescription>> {
+        self.current.borrow().clone()
     }
 }
 
@@ -600,9 +619,9 @@ impl ExtHostFileSystemEventService {
             let pending = data.pending.clone();
 
             let (join_emitter, join_names, join_edits) = (emitter.clone(), extension_names.clone(), edits.clone());
-            let promise_join: PromiseJoin<FileWillEvent<F>> = Rc::new(move |thenable: Promise<()>, listener: &WillListener<F>| {
+            let promise_join: PromiseJoin<FileWillEvent<F>> = Rc::new(move |thenable: Promise<()>, _listener: &WillListener<F>| {
                 let slot = pending.borrow_mut().take();
-                let extension = join_emitter.extension_of(listener);
+                let extension = join_emitter.current_extension();
                 let (log_service, names, edits) = (log_service.clone(), join_names.clone(), join_edits.clone());
                 async_fn(async move {
                     // ignore all results except for WorkspaceEdits. Those are stored in an array.

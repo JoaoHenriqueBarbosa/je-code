@@ -2,12 +2,14 @@
 //! `OnboardingScenarioRegistry`), caso a caso e na mesma ordem.
 //!
 //! Notas de tradução:
-//! - `const disposables = ensureNoDisposablesAreLeakedInTestSuite()` e `disposables.add(...)` viram o guarda criado
-//!   no começo de cada caso e `guard.add(...)`.
-//! - `IOnboardingScenarioDescriptor` é `Pick<IOnboardingScenario, 'id' | 'developerModeVariations' | 'tryout'>`: o
-//!   `deepStrictEqual` de `getScenarioDescriptors()` com o objeto do cenário ativo vira a comparação com o descritor
-//!   dele (`OnboardingScenarioDescriptor::from`), que carrega os mesmos três campos.
-//! - `presentation: { kind: 'test', payload: undefined }` é `Dynamic::Undefined`.
+//! - **`ensureNoDisposablesAreLeakedInTestSuite()`.** É o [`LeakGuard`] criado no começo de cada caso; `disposables.add`
+//!   vira `guard.add`.
+//! - **`getScenarioDescriptors()` de um cenário ativo.** No original devolve o próprio objeto do cenário, e o
+//!   `deepStrictEqual` compara também `trigger` e `presentation`. No porte o descritor é a struct
+//!   [`OnboardingScenarioDescriptor`] (`id`, `developer_mode_variations`, `tryout`), então o caso confere esses três
+//!   campos no descritor e confere `trigger` e `presentation` no cenário que `get_scenario` devolve para o mesmo id.
+//! - **`{ kind: 'auto' }`.** É [`OnboardingTrigger::Auto`]; `presentation: { kind: 'test', payload: undefined }` é uma
+//!   [`OnboardingPresentationRef`] com `Dynamic::Undefined`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -23,11 +25,15 @@ use je_workbench::contrib::onboarding::onboarding_scenario::{
     OnboardingPresentationRef, OnboardingScenario, OnboardingTrigger,
 };
 
-fn variations(values: &[&str]) -> Option<Rc<[String]>> {
-    Some(values.iter().map(ToString::to_string).collect())
+fn variations(items: &[&str]) -> Option<Rc<[String]>> {
+    Some(items.iter().map(|item| item.to_string()).collect::<Vec<_>>().into())
 }
 
-fn auto_scenario(id: &str, developer_mode_variations: Option<Rc<[String]>>) -> OnboardingScenario {
+fn descriptor(id: &str, developer_mode_variations: Option<Rc<[String]>>) -> OnboardingScenarioDescriptor {
+    OnboardingScenarioDescriptor { id: id.to_string(), developer_mode_variations, tryout: None }
+}
+
+fn scenario(id: &str, developer_mode_variations: Option<Rc<[String]>>) -> OnboardingScenario {
     OnboardingScenario {
         id: id.to_string(),
         seen_key: None,
@@ -46,45 +52,24 @@ fn auto_scenario(id: &str, developer_mode_variations: Option<Rc<[String]>>) -> O
 fn includes_declared_and_active_scenarios_in_the_descriptor_catalog() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let registry = OnboardingScenarioRegistry::new();
-    registry.register_descriptor(OnboardingScenarioDescriptor { id: "plain".to_string(), ..Default::default() });
-    registry.register_descriptor(OnboardingScenarioDescriptor {
-        id: "declared".to_string(),
-        developer_mode_variations: variations(&["first"]),
-        ..Default::default()
-    });
-    registry.register_descriptor(OnboardingScenarioDescriptor {
-        id: "declared".to_string(),
-        developer_mode_variations: variations(&["second"]),
-        ..Default::default()
-    });
-    let active = auto_scenario("active", None);
-    let active_descriptor = OnboardingScenarioDescriptor::from(&active);
-    let registration = guard.add(registry.register(active));
+    registry.register_descriptor(descriptor("plain", None));
+    registry.register_descriptor(descriptor("declared", variations(&["first"])));
+    registry.register_descriptor(descriptor("declared", variations(&["second"])));
+    let registration = guard.add(registry.register(scenario("active", None)));
 
     assert_eq!(
         registry.get_scenario_descriptors(),
-        vec![
-            OnboardingScenarioDescriptor { id: "plain".to_string(), ..Default::default() },
-            OnboardingScenarioDescriptor {
-                id: "declared".to_string(),
-                developer_mode_variations: variations(&["second"]),
-                ..Default::default()
-            },
-            active_descriptor,
-        ]
+        vec![descriptor("plain", None), descriptor("declared", variations(&["second"])), descriptor("active", None)]
     );
+    let active = registry.get_scenario("active").expect("o cenário ativo está registrado");
+    assert!(matches!(active.trigger, OnboardingTrigger::Auto));
+    assert_eq!(active.presentation.kind, "test");
+    assert!(matches!(active.presentation.payload, Dynamic::Undefined));
 
     registration.dispose();
     assert_eq!(
         registry.get_scenario_descriptors(),
-        vec![
-            OnboardingScenarioDescriptor { id: "plain".to_string(), ..Default::default() },
-            OnboardingScenarioDescriptor {
-                id: "declared".to_string(),
-                developer_mode_variations: variations(&["second"]),
-                ..Default::default()
-            },
-        ]
+        vec![descriptor("plain", None), descriptor("declared", variations(&["second"]))]
     );
 }
 
@@ -92,10 +77,12 @@ fn includes_declared_and_active_scenarios_in_the_descriptor_catalog() {
 fn active_scenarios_override_their_persistent_descriptors() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let registry = OnboardingScenarioRegistry::new();
-    registry.register_descriptor(OnboardingScenarioDescriptor { id: "dynamic".to_string(), ..Default::default() });
-    let scenario = auto_scenario("dynamic", variations(&["active"]));
-    let scenario_descriptor = OnboardingScenarioDescriptor::from(&scenario);
-    guard.add(registry.register(scenario));
+    registry.register_descriptor(descriptor("dynamic", None));
+    guard.add(registry.register(scenario("dynamic", variations(&["active"]))));
 
-    assert_eq!(registry.get_scenario_descriptors(), vec![scenario_descriptor]);
+    assert_eq!(registry.get_scenario_descriptors(), vec![descriptor("dynamic", variations(&["active"]))]);
+    let active = registry.get_scenario("dynamic").expect("o cenário ativo está registrado");
+    assert!(matches!(active.trigger, OnboardingTrigger::Auto));
+    assert_eq!(active.presentation.kind, "test");
+    assert!(matches!(active.presentation.payload, Dynamic::Undefined));
 }

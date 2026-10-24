@@ -22,11 +22,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use je_base::promise::{Promise, Resolver};
 use je_base::uri::URI;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_extensions::scanner::ExtensionDescription;
 use je_workbench::services::extensions::extension_activation::ExtensionActivationReason;
-use je_workbench::services::extensions::extension_description_registry::{IReadOnlyExtensionDescriptionRegistry, SharedExtensionDescription};
+use je_workbench::services::extensions::extension_description_registry::{ExtensionDescriptionRegistry, IReadOnlyExtensionDescriptionRegistry, SharedExtensionDescription};
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS_KEY};
 
 use crate::api::accessor_namespace;
@@ -40,18 +41,33 @@ const EXTENSION_KIND_UI: f64 = 1.0;
 
 /// Onde o host guarda o `ExtHostExtensionService` depois de criá-lo: o objeto `vscode` é montado antes do serviço (o serviço usa a tabela
 /// de descartáveis do host), e `vscode.extensions` o lê aqui a cada chamada.
-#[derive(Default)]
 pub struct ExtensionServiceSlot {
     service: RefCell<Option<Rc<ExtHostExtensionService>>>,
+    /// O registro das extensões deste host, que assenta quando o serviço é ligado (o `getExtensionRegistry()` do original espera o
+    /// host estar pronto; o serviço de depuração o pede ao nascer, antes de o serviço de extensões existir).
+    registry: Promise<Rc<ExtensionDescriptionRegistry>>,
+    registry_resolver: Resolver<Rc<ExtensionDescriptionRegistry>>,
 }
 
 impl ExtensionServiceSlot {
     pub fn new() -> Rc<Self> {
-        Rc::new(Self::default())
+        let (registry, registry_resolver) = Promise::new();
+        Rc::new(Self { service: RefCell::new(None), registry, registry_resolver })
     }
 
     pub fn bind(&self, service: Rc<ExtHostExtensionService>) {
+        self.registry_resolver.resolve(service.my_registry().clone());
         *self.service.borrow_mut() = Some(service);
+    }
+
+    /// `getExtensionRegistry()`: o registro das extensões do host, quando o serviço for ligado.
+    pub fn extension_registry(&self) -> Promise<Rc<ExtensionDescriptionRegistry>> {
+        self.registry.clone()
+    }
+
+    /// As extensões deste host (vazio enquanto o serviço não foi ligado).
+    pub(crate) fn extensions(&self) -> Vec<SharedExtensionDescription> {
+        self.service.borrow().as_ref().map_or_else(Vec::new, |service| service.my_registry().get_all_extension_descriptions())
     }
 
     fn service(&self) -> Result<Rc<ExtHostExtensionService>, String> {
@@ -60,7 +76,7 @@ impl ExtensionServiceSlot {
 }
 
 /// O valor JSON como dado do motor, na ordem das chaves.
-fn json_to_js(value: &serde_json::Value) -> JsData {
+pub(crate) fn json_to_js(value: &serde_json::Value) -> JsData {
     match value {
         serde_json::Value::Null => JsData::Null,
         serde_json::Value::Bool(flag) => JsData::Bool(*flag),

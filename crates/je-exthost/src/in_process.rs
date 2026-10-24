@@ -50,11 +50,27 @@ use je_workbench::api::common::ext_host_protocol::{
     RenameLocationDto, ResolvedCodeActionDto, ResolvedDropEditDto, ResolvedPasteEditDto,
 };
 use je_workbench::services::inline_completions::inline_completions_unification::IInlineCompletionsUnificationState;
+use je_base::arrays::OneOrMany;
+use je_platform::terminal::environment_variable::ISerializableEnvironmentVariableCollection;
+use je_platform::terminal::terminal::{ITerminalLaunchError, ITerminalProfile, TerminalExitReason as PlatformExitReason, TerminalShellType};
+use je_workbench::api::common::ext_host_protocol::{
+    CheckboxUpdate, ExtHostSCMShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ICreateContributedTerminalProfileOptions, ISCMHistoryOptions, ITerminalCommandDto,
+    ITerminalCompletionContextDto, ITerminalDimensionsDto, ITerminalLinkDto, IShellLaunchConfigDto, SCMArtifactDto, SCMArtifactGroupDto, SCMHistoryItemChangeDto, SCMHistoryItemDto,
+    SCMHistoryItemRefDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
+};
+use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
+use je_workbench::common::views::ITreeItem;
+use je_workbench::contrib::debug::debug::{
+    IAdapterDescriptor, IConfig, IDebugVisualization, IDebugVisualizationContext, IDebugVisualizationTreeItem, MainThreadDebugVisualization,
+};
+use je_workbench::contrib::debug::debug_protocol::ProtocolMessage;
 use je_workbench::api::common::ext_host_protocol::{
     DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
-    IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWorkspaceData, SerializedModelContentChangedEvent, StatusBarItemDto, TextEditorPositionData,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
+    FileSystemEvents, IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWillRunFileOperationParticipation, IWorkspaceData, SerializedModelContentChangedEvent,
+    SourceTargetPair, StatusBarItemDto, TextEditorPositionData,
 };
+use je_platform::files::files::FileOperation;
 
 use crate::api::env::HostEnvironment;
 use crate::local_context::LocalContext;
@@ -267,6 +283,30 @@ pub struct LateExtHostProgress(pub Late<dyn ExtHostProgressShape>);
 impl ExtHostProgressShape for LateExtHostProgress {
     fn rpc_accept_progress_canceled(&self, handle: u32) {
         self.0.call_void(move |target| target.rpc_accept_progress_canceled(handle));
+    }
+}
+
+/// O `ExtHostFileSystemEventServiceShape` que ainda não existe quando `MainThreadFileSystemEventService` nasce.
+#[derive(Default)]
+pub struct LateExtHostFileSystemEventService(pub Late<dyn ExtHostFileSystemEventServiceShape>);
+
+impl ExtHostFileSystemEventServiceShape for LateExtHostFileSystemEventService {
+    fn rpc_on_file_event(&self, events: FileSystemEvents) {
+        self.0.call_void(move |target| target.rpc_on_file_event(events));
+    }
+
+    fn rpc_on_will_run_file_operation(
+        &self,
+        operation: FileOperation,
+        files: Vec<SourceTargetPair>,
+        timeout: f64,
+        token: CancellationToken,
+    ) -> Promise<Option<IWillRunFileOperationParticipation>> {
+        self.0.bound().rpc_on_will_run_file_operation(operation, files, timeout, token)
+    }
+
+    fn rpc_on_did_run_file_operation(&self, operation: FileOperation, files: Vec<SourceTargetPair>) {
+        self.0.call_void(move |target| target.rpc_on_did_run_file_operation(operation, files));
     }
 }
 
@@ -529,14 +569,424 @@ impl ExtHostLanguageFeaturesShape for LateExtHostLanguageFeatures {
     }
 }
 
+/// O `ExtHostTerminalServiceShape` que ainda não existe quando `MainThreadTerminalService` nasce (o construtor dele já entrega os
+/// terminais abertos, o ativo e o perfil padrão). As chamadas com retorno de uma promessa vazia que chegam antes do `bind` ficam na
+/// fila e devolvem a promessa já resolvida.
+#[derive(Default)]
+pub struct LateExtHostTerminalService(pub Late<dyn ExtHostTerminalServiceShape>);
+
+impl LateExtHostTerminalService {
+    /// Uma chamada que devolve `Promise<()>`: entrega já se o serviço existe, senão guarda para o `bind` e devolve a promessa resolvida.
+    fn deferred(&self, call: impl FnOnce(&dyn ExtHostTerminalServiceShape) -> Promise<()> + 'static) -> Promise<()> {
+        let target = self.0.target.borrow().clone();
+        match target {
+            Some(target) => call(&*target),
+            None => {
+                self.0.call_void(move |target| drop(call(target)));
+                Promise::resolved(())
+            }
+        }
+    }
+}
+
+impl IDisposable for LateExtHostTerminalService {
+    fn dispose(&self) {}
+}
+
+impl ExtHostTerminalServiceShape for LateExtHostTerminalService {
+    fn rpc_accept_active_terminal_changed(&self, id: Option<u32>) -> Promise<()> {
+        self.deferred(move |target| target.rpc_accept_active_terminal_changed(id))
+    }
+
+    fn rpc_accept_terminal_process_data(&self, id: u32, data: &str) -> Promise<()> {
+        let data = data.to_owned();
+        self.deferred(move |target| target.rpc_accept_terminal_process_data(id, &data))
+    }
+
+    fn rpc_accept_terminal_dimensions(&self, id: u32, cols: i32, rows: i32) -> Promise<()> {
+        self.deferred(move |target| target.rpc_accept_terminal_dimensions(id, cols, rows))
+    }
+
+    fn rpc_accept_did_execute_command(&self, id: u32, command: ITerminalCommandDto) -> Promise<()> {
+        self.deferred(move |target| target.rpc_accept_did_execute_command(id, command))
+    }
+
+    fn rpc_accept_terminal_maximum_dimensions(&self, id: u32, cols: i32, rows: i32) -> Promise<()> {
+        self.deferred(move |target| target.rpc_accept_terminal_maximum_dimensions(id, cols, rows))
+    }
+
+    fn rpc_accept_terminal_title_change(&self, id: u32, name: &str) -> Promise<()> {
+        let name = name.to_owned();
+        self.deferred(move |target| target.rpc_accept_terminal_title_change(id, &name))
+    }
+
+    fn rpc_accept_terminal_closed(&self, id: u32, exit_code: Option<i32>, exit_reason: PlatformExitReason) -> Promise<()> {
+        self.deferred(move |target| target.rpc_accept_terminal_closed(id, exit_code, exit_reason))
+    }
+
+    fn rpc_accept_terminal_opened(&self, id: u32, ext_host_terminal_id: Option<&str>, name: &str, shell_launch_config: IShellLaunchConfigDto) {
+        let (ext_host_terminal_id, name) = (ext_host_terminal_id.map(str::to_owned), name.to_owned());
+        self.0.call_void(move |target| target.rpc_accept_terminal_opened(id, ext_host_terminal_id.as_deref(), &name, shell_launch_config));
+    }
+
+    fn rpc_accept_terminal_process_id(&self, id: u32, process_id: i32) -> Promise<()> {
+        self.deferred(move |target| target.rpc_accept_terminal_process_id(id, process_id))
+    }
+
+    fn rpc_start_extension_terminal(&self, id: u32, initial_dimensions: Option<ITerminalDimensionsDto>) -> Promise<Option<ITerminalLaunchError>> {
+        self.0.bound().rpc_start_extension_terminal(id, initial_dimensions)
+    }
+
+    fn rpc_accept_process_ack_data_event(&self, id: u32, char_count: usize) {
+        self.0.call_void(move |target| target.rpc_accept_process_ack_data_event(id, char_count));
+    }
+
+    fn rpc_accept_process_input(&self, id: u32, data: &str) {
+        let data = data.to_owned();
+        self.0.call_void(move |target| target.rpc_accept_process_input(id, &data));
+    }
+
+    fn rpc_accept_terminal_interaction(&self, id: u32) {
+        self.0.call_void(move |target| target.rpc_accept_terminal_interaction(id));
+    }
+
+    fn rpc_accept_terminal_selection(&self, id: u32, selection: Option<&str>) {
+        let selection = selection.map(str::to_owned);
+        self.0.call_void(move |target| target.rpc_accept_terminal_selection(id, selection.as_deref()));
+    }
+
+    fn rpc_accept_process_resize(&self, id: u32, cols: i32, rows: i32) {
+        self.0.call_void(move |target| target.rpc_accept_process_resize(id, cols, rows));
+    }
+
+    fn rpc_accept_process_shutdown(&self, id: u32, immediate: bool) {
+        self.0.call_void(move |target| target.rpc_accept_process_shutdown(id, immediate));
+    }
+
+    fn rpc_accept_process_request_initial_cwd(&self, id: u32) {
+        self.0.call_void(move |target| target.rpc_accept_process_request_initial_cwd(id));
+    }
+
+    fn rpc_accept_process_request_cwd(&self, id: u32) {
+        self.0.call_void(move |target| target.rpc_accept_process_request_cwd(id));
+    }
+
+    fn rpc_accept_process_request_latency(&self, id: u32) -> Promise<u32> {
+        self.0.bound().rpc_accept_process_request_latency(id)
+    }
+
+    fn rpc_accept_terminal_shell_type(&self, id: u32, shell_type: TerminalShellType) {
+        self.0.call_void(move |target| target.rpc_accept_terminal_shell_type(id, shell_type));
+    }
+
+    fn rpc_provide_terminal_completions(&self, id: &str, options: ITerminalCompletionContextDto, token: CancellationToken) -> Promise<Option<TerminalCompletionListDto>> {
+        self.0.bound().rpc_provide_terminal_completions(id, options, token)
+    }
+
+    fn rpc_provide_terminal_quick_fixes(&self, id: &str, match_result: TerminalCommandMatchResultDto, token: CancellationToken) -> Promise<Option<OneOrMany<TerminalQuickFix>>> {
+        self.0.bound().rpc_provide_terminal_quick_fixes(id, match_result, token)
+    }
+
+    fn rpc_create_contributed_profile_terminal(&self, id: &str, options: ICreateContributedTerminalProfileOptions) -> Promise<()> {
+        self.0.bound().rpc_create_contributed_profile_terminal(id, options)
+    }
+
+    fn rpc_provide_links(&self, terminal_id: u32, line: &str) -> Promise<Vec<ITerminalLinkDto>> {
+        self.0.bound().rpc_provide_links(terminal_id, line)
+    }
+
+    fn rpc_activate_link(&self, terminal_id: u32, link_id: u32) {
+        self.0.call_void(move |target| target.rpc_activate_link(terminal_id, link_id));
+    }
+
+    fn rpc_init_environment_variable_collections(&self, collections: Vec<(String, ISerializableEnvironmentVariableCollection)>) {
+        self.0.call_void(move |target| target.rpc_init_environment_variable_collections(collections));
+    }
+
+    fn rpc_accept_default_profile(&self, profile: ITerminalProfile, automation_profile: ITerminalProfile) {
+        self.0.call_void(move |target| target.rpc_accept_default_profile(profile, automation_profile));
+    }
+}
+
+/// O `ExtHostTreeViewsShape` que ainda não existe quando `MainThreadTreeViews` nasce.
+#[derive(Default)]
+pub struct LateExtHostTreeViews(pub Late<dyn ExtHostTreeViewsShape>);
+
+impl IDisposable for LateExtHostTreeViews {
+    fn dispose(&self) {}
+}
+
+impl ExtHostTreeViewsShape for LateExtHostTreeViews {
+    fn rpc_get_children(&self, tree_view_id: &str, tree_item_handles: Option<Vec<String>>) -> Promise<Option<Vec<TreeChildrenBatch>>> {
+        self.0.bound().rpc_get_children(tree_view_id, tree_item_handles)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rpc_handle_drop(
+        &self,
+        destination_view_id: &str,
+        request_id: f64,
+        tree_data_transfer_dto: DataTransferDto,
+        target_item_handle: Option<String>,
+        token: CancellationToken,
+        operation_uuid: Option<String>,
+        source_view_id: Option<String>,
+        source_tree_item_handles: Option<Vec<String>>,
+    ) -> Promise<()> {
+        self.0.bound().rpc_handle_drop(
+            destination_view_id,
+            request_id,
+            tree_data_transfer_dto,
+            target_item_handle,
+            token,
+            operation_uuid,
+            source_view_id,
+            source_tree_item_handles,
+        )
+    }
+
+    fn rpc_handle_drag(&self, source_view_id: &str, source_tree_item_handles: Vec<String>, operation_uuid: &str, token: CancellationToken) -> Promise<Option<DataTransferDto>> {
+        self.0.bound().rpc_handle_drag(source_view_id, source_tree_item_handles, operation_uuid, token)
+    }
+
+    fn rpc_release_drag_operation(&self, operation_uuid: &str) {
+        let operation_uuid = operation_uuid.to_owned();
+        self.0.call_void(move |target| target.rpc_release_drag_operation(&operation_uuid));
+    }
+
+    fn rpc_has_resolve(&self, tree_view_id: &str) -> Promise<bool> {
+        self.0.bound().rpc_has_resolve(tree_view_id)
+    }
+
+    fn rpc_resolve(&self, tree_view_id: &str, tree_item_handle: &str, token: CancellationToken) -> Promise<Option<ITreeItem>> {
+        self.0.bound().rpc_resolve(tree_view_id, tree_item_handle, token)
+    }
+
+    fn rpc_set_expanded(&self, tree_view_id: &str, tree_item_handle: &str, expanded: bool) {
+        let (tree_view_id, tree_item_handle) = (tree_view_id.to_owned(), tree_item_handle.to_owned());
+        self.0.call_void(move |target| target.rpc_set_expanded(&tree_view_id, &tree_item_handle, expanded));
+    }
+
+    fn rpc_set_selection_and_focus(&self, tree_view_id: &str, selected_handles: Vec<String>, focused_handle: &str) {
+        let (tree_view_id, focused_handle) = (tree_view_id.to_owned(), focused_handle.to_owned());
+        self.0.call_void(move |target| target.rpc_set_selection_and_focus(&tree_view_id, selected_handles, &focused_handle));
+    }
+
+    fn rpc_set_visible(&self, tree_view_id: &str, is_visible: bool) {
+        let tree_view_id = tree_view_id.to_owned();
+        self.0.call_void(move |target| target.rpc_set_visible(&tree_view_id, is_visible));
+    }
+
+    fn rpc_change_checkbox_state(&self, tree_view_id: &str, checkbox_update: Vec<CheckboxUpdate>) {
+        let tree_view_id = tree_view_id.to_owned();
+        self.0.call_void(move |target| target.rpc_change_checkbox_state(&tree_view_id, checkbox_update));
+    }
+}
+
+/// O `ExtHostSCMShape` que ainda não existe quando o cliente `MainThreadSCM` do workbench nasce. Todas as chamadas dele têm retorno (a
+/// thread principal só as faz depois de montado o host), exceto o valor da caixa de entrada, que fica na fila se chegar antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostSCM(pub Late<dyn ExtHostSCMShape>);
+
+impl ExtHostSCMShape for LateExtHostSCM {
+    fn rpc_provide_original_resource(&self, source_control_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<URI>> {
+        self.0.bound().rpc_provide_original_resource(source_control_handle, uri, token)
+    }
+
+    fn rpc_provide_secondary_original_resource(&self, source_control_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<URI>> {
+        self.0.bound().rpc_provide_secondary_original_resource(source_control_handle, uri, token)
+    }
+
+    fn rpc_on_input_box_value_change(&self, source_control_handle: u32, value: &str) {
+        let value = value.to_owned();
+        self.0.call_void(move |target| target.rpc_on_input_box_value_change(source_control_handle, &value));
+    }
+
+    fn rpc_execute_resource_command(&self, source_control_handle: u32, group_handle: u32, handle: u32, preserve_focus: bool) -> Promise<()> {
+        self.0.bound().rpc_execute_resource_command(source_control_handle, group_handle, handle, preserve_focus)
+    }
+
+    fn rpc_validate_input(&self, source_control_handle: u32, value: &str, cursor_position: f64) -> Promise<Option<(StringOrMarkdown, f64)>> {
+        self.0.bound().rpc_validate_input(source_control_handle, value, cursor_position)
+    }
+
+    fn rpc_set_selected_source_control(&self, selected_source_control_handle: Option<u32>) -> Promise<()> {
+        self.0.bound().rpc_set_selected_source_control(selected_source_control_handle)
+    }
+
+    fn rpc_provide_history_item_refs(&self, source_control_handle: u32, history_item_refs: Option<Vec<String>>, token: CancellationToken) -> Promise<Option<Vec<SCMHistoryItemRefDto>>> {
+        self.0.bound().rpc_provide_history_item_refs(source_control_handle, history_item_refs, token)
+    }
+
+    fn rpc_provide_history_items(&self, source_control_handle: u32, options: ISCMHistoryOptions, token: CancellationToken) -> Promise<Option<Vec<SCMHistoryItemDto>>> {
+        self.0.bound().rpc_provide_history_items(source_control_handle, options, token)
+    }
+
+    fn rpc_provide_history_item_changes(
+        &self,
+        source_control_handle: u32,
+        history_item_id: &str,
+        history_item_parent_id: Option<&str>,
+        token: CancellationToken,
+    ) -> Promise<Option<Vec<SCMHistoryItemChangeDto>>> {
+        self.0.bound().rpc_provide_history_item_changes(source_control_handle, history_item_id, history_item_parent_id, token)
+    }
+
+    fn rpc_resolve_history_item(&self, source_control_handle: u32, history_item_id: &str, token: CancellationToken) -> Promise<Option<SCMHistoryItemDto>> {
+        self.0.bound().rpc_resolve_history_item(source_control_handle, history_item_id, token)
+    }
+
+    fn rpc_resolve_history_item_chat_context(&self, source_control_handle: u32, history_item_id: &str, token: CancellationToken) -> Promise<Option<String>> {
+        self.0.bound().rpc_resolve_history_item_chat_context(source_control_handle, history_item_id, token)
+    }
+
+    fn rpc_resolve_history_item_change_range_chat_context(
+        &self,
+        source_control_handle: u32,
+        history_item_id: &str,
+        history_item_parent_id: &str,
+        path: &str,
+        token: CancellationToken,
+    ) -> Promise<Option<String>> {
+        self.0.bound().rpc_resolve_history_item_change_range_chat_context(source_control_handle, history_item_id, history_item_parent_id, path, token)
+    }
+
+    fn rpc_resolve_history_item_refs_common_ancestor(&self, source_control_handle: u32, history_item_refs: Vec<String>, token: CancellationToken) -> Promise<Option<String>> {
+        self.0.bound().rpc_resolve_history_item_refs_common_ancestor(source_control_handle, history_item_refs, token)
+    }
+
+    fn rpc_provide_artifact_groups(&self, source_control_handle: u32, token: CancellationToken) -> Promise<Option<Vec<SCMArtifactGroupDto>>> {
+        self.0.bound().rpc_provide_artifact_groups(source_control_handle, token)
+    }
+
+    fn rpc_provide_artifacts(&self, source_control_handle: u32, group: &str, token: CancellationToken) -> Promise<Option<Vec<SCMArtifactDto>>> {
+        self.0.bound().rpc_provide_artifacts(source_control_handle, group, token)
+    }
+}
+
+/// O `ExtHostDebugServiceShape` que ainda não existe quando o cliente `MainThreadDebugService` do workbench nasce. As chamadas sem
+/// retorno (`$sendDAMessage`, `$acceptBreakpointsDelta`, `$disposeDebugVisualizers`, `$disposeVisualizedTree`) ficam na fila se chegarem
+/// antes do `bind`; as com retorno só acontecem depois de montado o host.
+#[derive(Default)]
+pub struct LateExtHostDebugService(pub Late<dyn ExtHostDebugServiceShape>);
+
+impl ExtHostDebugServiceShape for LateExtHostDebugService {
+    fn rpc_substitute_variables(&self, folder: Option<URI>, config: IConfig) -> Promise<IConfig> {
+        self.0.bound().rpc_substitute_variables(folder, config)
+    }
+
+    fn rpc_run_in_terminal(&self, args: serde_json::Value, session_id: &str) -> Promise<Option<i64>> {
+        self.0.bound().rpc_run_in_terminal(args, session_id)
+    }
+
+    fn rpc_start_da_session(&self, handle: u32, session: IDebugSessionDto) -> Promise<()> {
+        self.0.bound().rpc_start_da_session(handle, session)
+    }
+
+    fn rpc_stop_da_session(&self, handle: u32) -> Promise<()> {
+        self.0.bound().rpc_stop_da_session(handle)
+    }
+
+    fn rpc_send_da_message(&self, handle: u32, message: ProtocolMessage) {
+        self.0.call_void(move |target| target.rpc_send_da_message(handle, message));
+    }
+
+    fn rpc_resolve_debug_configuration(&self, handle: u32, folder: Option<URI>, debug_configuration: IConfig, token: CancellationToken) -> Promise<Option<IConfig>> {
+        self.0.bound().rpc_resolve_debug_configuration(handle, folder, debug_configuration, token)
+    }
+
+    fn rpc_resolve_debug_configuration_with_substituted_variables(
+        &self,
+        handle: u32,
+        folder: Option<URI>,
+        debug_configuration: IConfig,
+        token: CancellationToken,
+    ) -> Promise<Option<IConfig>> {
+        self.0.bound().rpc_resolve_debug_configuration_with_substituted_variables(handle, folder, debug_configuration, token)
+    }
+
+    fn rpc_provide_debug_configurations(&self, handle: u32, folder: Option<URI>, token: CancellationToken) -> Promise<Vec<IConfig>> {
+        self.0.bound().rpc_provide_debug_configurations(handle, folder, token)
+    }
+
+    fn rpc_provide_debug_adapter(&self, handle: u32, session: IDebugSessionDto) -> Promise<IAdapterDescriptor> {
+        self.0.bound().rpc_provide_debug_adapter(handle, session)
+    }
+
+    fn rpc_accept_debug_session_started(&self, session: IDebugSessionDto) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_started(session)
+    }
+
+    fn rpc_accept_debug_session_terminated(&self, session: IDebugSessionDto) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_terminated(session)
+    }
+
+    fn rpc_accept_debug_session_active_changed(&self, session: Option<IDebugSessionDto>) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_active_changed(session)
+    }
+
+    fn rpc_accept_debug_session_custom_event(&self, session: IDebugSessionDto, event: serde_json::Value) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_custom_event(session, event)
+    }
+
+    fn rpc_accept_breakpoints_delta(&self, delta: IBreakpointsDeltaDto) {
+        self.0.call_void(move |target| target.rpc_accept_breakpoints_delta(delta));
+    }
+
+    fn rpc_accept_debug_session_name_changed(&self, session: IDebugSessionDto, name: &str) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_name_changed(session, name)
+    }
+
+    fn rpc_accept_stack_frame_focus(&self, focus: Option<StackFocusDto>) -> Promise<()> {
+        self.0.bound().rpc_accept_stack_frame_focus(focus)
+    }
+
+    fn rpc_provide_debug_visualizers(&self, extension_id: &str, id: &str, context: IDebugVisualizationContext, token: CancellationToken) -> Promise<Vec<IDebugVisualization>> {
+        self.0.bound().rpc_provide_debug_visualizers(extension_id, id, context, token)
+    }
+
+    fn rpc_resolve_debug_visualizer(&self, id: u64, token: CancellationToken) -> Promise<MainThreadDebugVisualization> {
+        self.0.bound().rpc_resolve_debug_visualizer(id, token)
+    }
+
+    fn rpc_execute_debug_visualizer_command(&self, id: u64) -> Promise<()> {
+        self.0.bound().rpc_execute_debug_visualizer_command(id)
+    }
+
+    fn rpc_dispose_debug_visualizers(&self, ids: Vec<u64>) {
+        self.0.call_void(move |target| target.rpc_dispose_debug_visualizers(ids));
+    }
+
+    fn rpc_get_visualizer_tree_item(&self, tree_id: &str, element: IDebugVisualizationContext) -> Promise<Option<IDebugVisualizationTreeItem>> {
+        self.0.bound().rpc_get_visualizer_tree_item(tree_id, element)
+    }
+
+    fn rpc_get_visualizer_tree_item_children(&self, tree_id: &str, element: u64) -> Promise<Vec<IDebugVisualizationTreeItem>> {
+        self.0.bound().rpc_get_visualizer_tree_item_children(tree_id, element)
+    }
+
+    fn rpc_edit_visualizer_tree_item(&self, element: u64, value: &str) -> Promise<Option<IDebugVisualizationTreeItem>> {
+        self.0.bound().rpc_edit_visualizer_tree_item(element, value)
+    }
+
+    fn rpc_dispose_visualized_tree(&self, element: u64) {
+        self.0.call_void(move |target| target.rpc_dispose_visualized_tree(element));
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
+    pub scm: Rc<LateExtHostSCM>,
+    pub debug_service: Rc<LateExtHostDebugService>,
+    pub terminal_service: Rc<LateExtHostTerminalService>,
+    pub tree_views: Rc<LateExtHostTreeViews>,
     pub workspace: Rc<LateExtHostWorkspace>,
     pub configuration: Rc<LateExtHostConfiguration>,
     pub status_bar: Rc<LateExtHostStatusBar>,
     pub quick_open: Rc<LateExtHostQuickOpen>,
     pub output: Rc<LateExtHostOutputService>,
     pub progress: Rc<LateExtHostProgress>,
+    pub file_system_events: Rc<LateExtHostFileSystemEventService>,
     pub documents_and_editors: Rc<LateExtHostDocumentsAndEditors>,
     pub documents: Rc<LateExtHostDocuments>,
     pub editors: Rc<LateExtHostEditors>,
@@ -554,18 +1004,32 @@ impl LateForwarders {
         let quick_open = Rc::new(LateExtHostQuickOpen::default());
         let output = Rc::new(LateExtHostOutputService::default());
         let progress = Rc::new(LateExtHostProgress::default());
+        let file_system_events = Rc::new(LateExtHostFileSystemEventService::default());
         let documents_and_editors = Rc::new(LateExtHostDocumentsAndEditors::default());
         let documents = Rc::new(LateExtHostDocuments::default());
         let editors = Rc::new(LateExtHostEditors::default());
         let diagnostics = Rc::new(LateExtHostDiagnostics::default());
         let languages = Rc::new(LateExtHostLanguages::default());
         let language_features = Rc::new(LateExtHostLanguageFeatures::default());
+        let terminal_service = Rc::new(LateExtHostTerminalService::default());
+        let tree_views = Rc::new(LateExtHostTreeViews::default());
+        let debug_service = Rc::new(LateExtHostDebugService::default());
+        let as_debug_service: Rc<dyn ExtHostDebugServiceShape> = debug_service.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_DEBUG_SERVICE.sid, Rc::new(as_debug_service));
+        let scm = Rc::new(LateExtHostSCM::default());
+        let as_scm: Rc<dyn ExtHostSCMShape> = scm.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_SCM.sid, Rc::new(as_scm));
+        let as_terminal_service: Rc<dyn ExtHostTerminalServiceShape> = terminal_service.clone();
+        let as_tree_views: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SERVICE.sid, Rc::new(as_terminal_service));
+        local.set_erased(ExtHostContext::EXT_HOST_TREE_VIEWS.sid, Rc::new(as_tree_views));
         let as_workspace: Rc<dyn ExtHostWorkspaceShape> = workspace.clone();
         let as_configuration: Rc<dyn ExtHostConfigurationShape> = configuration.clone();
         let as_status_bar: Rc<dyn ExtHostStatusBarShape> = status_bar.clone();
         let as_quick_open: Rc<dyn ExtHostQuickOpenShape> = quick_open.clone();
         let as_output: Rc<dyn ExtHostOutputServiceShape> = output.clone();
         let as_progress: Rc<dyn ExtHostProgressShape> = progress.clone();
+        let as_file_system_events: Rc<dyn ExtHostFileSystemEventServiceShape> = file_system_events.clone();
         let as_documents_and_editors: Rc<dyn ExtHostDocumentsAndEditorsShape> = documents_and_editors.clone();
         let as_documents: Rc<dyn ExtHostDocumentsShape> = documents.clone();
         let as_editors: Rc<dyn ExtHostEditorsShape> = editors.clone();
@@ -578,13 +1042,14 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_QUICK_OPEN.sid, Rc::new(as_quick_open));
         local.set_erased(ExtHostContext::EXT_HOST_OUTPUT_SERVICE.sid, Rc::new(as_output));
         local.set_erased(ExtHostContext::EXT_HOST_PROGRESS.sid, Rc::new(as_progress));
+        local.set_erased(ExtHostContext::EXT_HOST_FILE_SYSTEM_EVENT_SERVICE.sid, Rc::new(as_file_system_events));
         local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS_AND_EDITORS.sid, Rc::new(as_documents_and_editors));
         local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS.sid, Rc::new(as_documents));
         local.set_erased(ExtHostContext::EXT_HOST_EDITORS.sid, Rc::new(as_editors));
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors, diagnostics, languages, language_features }
+        LateForwarders { scm, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

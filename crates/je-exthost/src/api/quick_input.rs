@@ -9,8 +9,8 @@
 //!   comuns, então `chosen === items[1]` falha para itens objeto (comparar por `label` funciona). Para itens de texto não muda nada.
 //! - `QuickPickItem#tooltip` aceita só texto (a `MarkdownString` ainda não é classe do `vscode`) e `buttons` não é lido (o
 //!   `showQuickPick` do original também não os envia; só o `createQuickPick` usa botões de item).
-//! - `createQuickPick` e `createInputBox` não estão expostos (os objetos de sessão pedem acessores de leitura e escrita para as quase
-//!   trinta propriedades deles, uma entrega à parte).
+//! - `createQuickPick` e `createInputBox` (os objetos de sessão, com os botões de item) estão no módulo `quick_session`, que reusa as
+//!   conversões deste.
 //! - O `validateInput` que lança, ou cuja promessa rejeita, rejeita a validação no lado do workbench (como o `$validateInput`
 //!   `async` do original). Um resultado falso (`undefined`, `null`, `''`, `false`) é "sem mensagem".
 
@@ -56,7 +56,7 @@ fn uri_or_path(value: Option<&JsData>) -> Result<Option<UriOrPath>, String> {
 }
 
 /// O `iconPath` de um item: `ThemeIcon`, `Uri`, texto ou `{ light, dark }`.
-fn icon_path_of(value: &JsData) -> Result<Option<IconPathInput>, String> {
+pub(crate) fn icon_path_of(value: &JsData) -> Result<Option<IconPathInput>, String> {
     match value {
         JsData::Undefined | JsData::Null => Ok(None),
         JsData::Str(path) => Ok(Some(IconPathInput::Path(path.clone()))),
@@ -70,7 +70,7 @@ fn icon_path_of(value: &JsData) -> Result<Option<IconPathInput>, String> {
 }
 
 /// `string | QuickPickItem`: o item de texto ou o objeto (com `kind` separador ou não).
-fn quick_pick_entry_of(item: &JsData) -> Result<QuickPickEntry, String> {
+pub(crate) fn quick_pick_entry_of(item: &JsData) -> Result<QuickPickEntry, String> {
     match item {
         JsData::Str(label) => Ok(QuickPickEntry::Text(label.clone())),
         JsData::Object(_) => {
@@ -169,7 +169,7 @@ pub fn show_quick_pick(runner: &NodeRunner, quick_open: &ExtHostQuickOpen, event
 }
 
 /// O que `validateInput` devolveu (`string | InputBoxValidationMessage | undefined | null`).
-fn validation_of(value: &JsData) -> InputBoxValidation {
+pub(crate) fn validation_of(value: &JsData) -> InputBoxValidation {
     match value {
         JsData::Str(text) if !text.is_empty() => InputBoxValidation::Text(text.clone()),
         JsData::Object(_) => InputBoxValidation::Message {

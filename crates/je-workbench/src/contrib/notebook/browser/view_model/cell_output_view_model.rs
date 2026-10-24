@@ -2,10 +2,12 @@
 //! de código (`CellOutputViewModel`).
 //!
 //! Divergências:
-//! - `resolveMimeTypes(textModel, kernelProvides)` (que consulta o `INotebookService.getOutputMimeTypeInfo`, o resolvedor de
-//!   renderizadores, Fase 6) não é portado, e por isso o construtor não recebe o `INotebookService`.
-//! - `visible = observableValue(...)` é um `Cell<bool>` com [`CellOutputViewModel::visible`] (o `.get()`); nenhum leitor portado
-//!   observa a mudança.
+//! - `INotebookService` (o terceiro argumento do construtor original) não existe na camada lógica das células, então o construtor
+//!   não o recebe: [`CellOutputViewModel::resolve_mime_types`] recebe o serviço como primeiro argumento (quem o chama, como o
+//!   `CellOutputElement` e o `getAllOutputsText`, já o tem). O corpo é o do original: `getOutputMimeTypeInfo` e o primeiro tipo
+//!   confiável com renderizador disponível (ou o índice 0).
+//! - `visible = observableValue('outputVisible', false)` é o observável [`CellOutputViewModel::visible_observable`], e
+//!   [`CellOutputViewModel::visible`] é o `.get()`.
 //! - `outputHandle = handle++` usa um contador do módulo (`thread_local`, o `let handle = 0` do módulo original).
 //! - `cellViewModel: IGenericCellViewModel` é o `id` da célula dona (o único membro que o resto do porte lê).
 
@@ -14,8 +16,11 @@ use std::rc::Rc;
 
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::observable::{ISettableObservable, Observable, SettableExt, observable_value};
 
-use crate::contrib::notebook::common::notebook_common::{ICellOutput, IOrderedMimeType, IOutputItemDto};
+use crate::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
+use crate::contrib::notebook::common::notebook_common::{ICellOutput, IOrderedMimeType, IOutputItemDto, RENDERER_NOT_AVAILABLE};
+use crate::contrib::notebook::common::notebook_service::INotebookService;
 
 thread_local! {
     static HANDLE: Cell<i64> = const { Cell::new(0) };
@@ -26,7 +31,7 @@ pub struct CellOutputViewModel {
     base: Rc<Disposable>,
     on_did_reset_renderer: Rc<Emitter<()>>,
     always_show: Cell<bool>,
-    visible: Cell<bool>,
+    visible: ISettableObservable<bool>,
     pub output_handle: i64,
     pub cell_view_model_id: String,
     output_raw_data: Rc<dyn ICellOutput>,
@@ -47,7 +52,7 @@ impl CellOutputViewModel {
             base,
             on_did_reset_renderer,
             always_show: Cell::new(false),
-            visible: Cell::new(false),
+            visible: observable_value::<bool, ()>("outputVisible", false),
             output_handle,
             cell_view_model_id: cell_view_model_id.to_string(),
             output_raw_data,
@@ -59,8 +64,14 @@ impl CellOutputViewModel {
         self.on_did_reset_renderer.event()
     }
 
+    /// `visible.get()`.
     pub fn visible(&self) -> bool {
         self.visible.get()
+    }
+
+    /// `visible`: o observável, que quem reage (`autorun`) lê com `read(reader)`.
+    pub fn visible_observable(&self) -> ISettableObservable<bool> {
+        self.visible.clone()
     }
 
     /// `setVisible(visible = true, force = false)`.
@@ -74,7 +85,7 @@ impl CellOutputViewModel {
             self.always_show.set(true);
         }
 
-        self.visible.set(visible);
+        self.visible.set(visible, None);
     }
 
     pub fn model(&self) -> Rc<dyn ICellOutput> {
@@ -97,6 +108,19 @@ impl CellOutputViewModel {
 
         let first_mime_type = outputs[0].mime.clone();
         outputs.iter().any(|output| output.mime != first_mime_type)
+    }
+
+    /// `resolveMimeTypes(textModel, kernelProvides)`: os tipos de mídia na ordem de preferência e o índice do escolhido.
+    pub fn resolve_mime_types(
+        &self,
+        notebook_service: &dyn INotebookService,
+        text_model: &NotebookTextModel,
+        kernel_provides: Option<&[String]>,
+    ) -> (Vec<IOrderedMimeType>, usize) {
+        let mime_types = notebook_service.get_output_mime_type_info(text_model, kernel_provides, self.output_raw_data.as_ref());
+        let index = mime_types.iter().position(|mime_type| mime_type.renderer_id != RENDERER_NOT_AVAILABLE && mime_type.is_trusted);
+
+        (mime_types, index.unwrap_or(0))
     }
 
     pub fn reset_renderer(&self) {
