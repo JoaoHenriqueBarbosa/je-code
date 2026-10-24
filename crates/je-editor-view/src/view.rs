@@ -24,7 +24,6 @@ use je_editor::line_tokens::IViewLineTokens;
 use je_editor::encoded_token_attributes::{TokenMetadata, font_style};
 use je_editor::position::Position;
 use je_editor::range::Range;
-use je_editor::selection::Selection;
 use je_editor::text_model::TextModel;
 use je_render::kurbo::{Rect, RoundedRect, RoundedRectRadii};
 use je_render::{DisplayList, Rgba};
@@ -33,7 +32,8 @@ use web_time::{Duration, Instant};
 
 use crate::clipboard::Clipboard;
 use crate::colors::EditorColors;
-use crate::cursor::CursorState;
+use crate::core::EditorCore;
+use crate::shortcuts::Shortcuts;
 use crate::layout::{DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FontMetrics, ViewLayout};
 use crate::text;
 
@@ -73,7 +73,6 @@ pub(crate) struct LineLayout {
 pub(crate) struct Shared {
     pub invalid_all: Cell<bool>,
     pub invalid_lines: RefCell<Vec<(i32, i32)>>,
-    pub resulting_selection: RefCell<Option<Selection>>,
     pub dirty: Cell<bool>,
 }
 
@@ -84,8 +83,12 @@ type BracketMatchCache = ((Position, i64), Option<(Range, Range)>);
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DragMode {
     Chars,
-    Words(Range),
-    Lines(Range),
+    Words,
+    Lines,
+    /// Os mesmos três, estendendo o último cursor criado (arrasto com Alt).
+    LastCursorChars,
+    LastCursorWords,
+    LastCursorLines,
     /// Arrastando o botão da barra de rolagem; guarda o deslocamento do ponteiro dentro do botão.
     Scrollbar(f64),
     /// Arrastando no minimapa.
@@ -101,7 +104,11 @@ pub struct EditorView {
     token_colors: Vec<Option<Rgba>>,
     pub(crate) scrollable: Rc<Scrollable>,
     attached: Rc<AttachedView>,
-    pub(crate) cursor: CursorState,
+    /// O widget de edição: modelo, cursores, comandos e desfazer.
+    pub(crate) core: EditorCore,
+    pub(crate) shortcuts: Shortcuts,
+    /// O que a última cópia levou (`ClipboardStoredMetadata`), para o colar saber se veio de seleção vazia.
+    pub(crate) copied: Option<crate::input::CopiedText>,
     pub(crate) shared: Rc<Shared>,
     lines: HashMap<i32, Rc<LineLayout>>,
     layout_scale: f64,
@@ -109,8 +116,6 @@ pub struct EditorView {
     blink_epoch: Instant,
     pub(crate) drag: Option<DragMode>,
     pub(crate) clipboard: Clipboard,
-    pub(crate) last_edit: Option<crate::input::EditKind>,
-    pub(crate) moved_since_edit: bool,
     max_line_width: f64,
     last_visible: Option<(i32, i32)>,
     bracket_match: RefCell<Option<BracketMatchCache>>,
@@ -165,9 +170,6 @@ impl EditorView {
                 s.invalid_all.set(true);
             }
             s.dirty.set(true);
-            if let Some(selection) = e.raw_content_changed_event.resulting_selection.as_ref().and_then(|v| v.first()) {
-                *s.resulting_selection.borrow_mut() = Some(*selection);
-            }
         }));
         let s = shared.clone();
         subscriptions.push(model.on_did_change_tokens().listen(move |e| {
@@ -185,6 +187,7 @@ impl EditorView {
             s.dirty.set(true);
         }));
 
+        let core = EditorCore::new(model.clone(), &metrics, width, height);
         Self {
             model,
             metrics,
@@ -193,7 +196,9 @@ impl EditorView {
             token_colors: Vec::new(),
             scrollable,
             attached,
-            cursor: CursorState::at(Position::new(1, 1)),
+            core,
+            shortcuts: Shortcuts::default(),
+            copied: None,
             shared,
             lines: HashMap::new(),
             layout_scale: 1.0,
@@ -201,8 +206,6 @@ impl EditorView {
             blink_epoch: Instant::now(),
             drag: None,
             clipboard: Clipboard::new(),
-            last_edit: None,
-            moved_since_edit: true,
             max_line_width: 0.0,
             last_visible: None,
             bracket_match: RefCell::new(None),
@@ -254,6 +257,7 @@ impl EditorView {
         if (self.layout.width, self.layout.height) != (width, height) {
             self.layout.width = width;
             self.layout.height = height;
+            self.core.resize(width, height);
             self.shared.dirty.set(true);
         }
     }
@@ -270,6 +274,7 @@ impl EditorView {
     pub fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
             self.focused = focused;
+            self.core.set_focus(focused);
             self.reset_blink();
             self.mark_dirty();
         }
@@ -498,7 +503,7 @@ impl EditorView {
 
     /// O retângulo do cursor em px lógicos relativos à view (para testes e para o reveal).
     pub fn cursor_rect(&mut self) -> Rect {
-        let p = self.cursor.position();
+        let p = self.core.primary().get_position();
         let x = self.layout.content_left() + self.column_x(p.line_number, p.column) - self.scroll_left();
         let y = self.layout.line_top(p.line_number, self.scroll_top());
         Rect::new(x, y, x + 2.0, y + self.layout.line_height())
@@ -506,17 +511,10 @@ impl EditorView {
 
     // #endregion
 
-    pub(crate) fn selection(&self) -> Selection {
-        self.cursor.selection
-    }
-
-    /// A seleção que o último evento de conteúdo do modelo trouxe (desfazer e refazer), se houve.
-    pub(crate) fn take_resulting_selection(&mut self) -> Option<Selection> {
-        self.shared.resulting_selection.borrow_mut().take()
-    }
-
     fn bracket_match(&self) -> Option<(Range, Range)> {
-        if !self.cursor.is_empty() {
+        let selections = self.core.selections();
+        let primary = self.core.primary();
+        if selections.len() != 1 || !primary.is_empty() {
             return None;
         }
         // Em arquivo grande o porte só tem a busca antiga de colchetes (linha a linha, sem árvore), que custa
@@ -524,7 +522,7 @@ impl EditorView {
         if self.model.is_too_large_for_tokenization() && !self.bracket_adjacent() {
             return None;
         }
-        let key = (self.cursor.position(), self.model.get_version_id());
+        let key = (primary.get_position(), self.model.get_version_id());
         let mut cache = self.bracket_match.borrow_mut();
         if let Some((k, v)) = cache.as_ref()
             && *k == key
@@ -539,7 +537,7 @@ impl EditorView {
     }
 
     fn bracket_adjacent(&self) -> bool {
-        let p = self.cursor.position();
+        let p = self.core.primary().get_position();
         let line = self.model.get_line_content(p.line_number);
         let at = |i: i32| usize::try_from(i).ok().and_then(|i| line.units().get(i)).copied();
         [at(p.column - 2), at(p.column - 1)].into_iter().flatten().any(|u| matches!(u, 0x28 | 0x29 | 0x5B | 0x5D | 0x7B | 0x7D))
@@ -590,8 +588,10 @@ impl EditorView {
         };
 
         let colors = self.colors.clone();
-        let selection = self.selection();
-        let cursor_line = selection.position_line_number;
+        let selections = self.core.selections();
+        let primary = self.core.primary();
+        let cursor_line = primary.position_line_number;
+        let all_empty = selections.iter().all(|s| s.is_empty());
 
         let laid_out: Vec<(i32, Rc<LineLayout>)> = (first..=last).map(|l| (l, self.line_layout(l))).collect();
         self.sync_scroll_dimensions();
@@ -603,21 +603,26 @@ impl EditorView {
         // Área de conteúdo, recortada (a rolagem horizontal não pode invadir a margem).
         list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, text_right, view_height)));
 
-        // 1. Realce da linha do cursor (só com a seleção vazia).
-        if selection.is_empty() && (first..=last).contains(&cursor_line) {
-            let top = self.layout.line_top(cursor_line, scroll_top);
-            if let Some(bg) = colors.line_highlight {
-                list.fill_rect(rect(content_left, top, text_right, top + lh), bg);
-            }
-            if let Some(border) = colors.line_highlight_border {
-                list.stroke(je_render::Shape::Rect(rect(content_left + 1.0, top + 1.0, text_right - 1.0, top + lh - 1.0)), 2.0 * scale, border);
+        // 1. Realce da linha de cada cursor (só com todas as seleções vazias, como o `CurrentLineHighlightOverlay`).
+        if all_empty {
+            let mut lines: Vec<i32> = selections.iter().map(|s| s.position_line_number).filter(|l| (first..=last).contains(l)).collect();
+            lines.sort_unstable();
+            lines.dedup();
+            for line in lines {
+                let top = self.layout.line_top(line, scroll_top);
+                if let Some(bg) = colors.line_highlight {
+                    list.fill_rect(rect(content_left, top, text_right, top + lh), bg);
+                }
+                if let Some(border) = colors.line_highlight_border {
+                    list.stroke(je_render::Shape::Rect(rect(content_left + 1.0, top + 1.0, text_right - 1.0, top + lh - 1.0)), 2.0 * scale, border);
+                }
             }
         }
 
         // 2. Seleção: um retângulo por linha, com os cantos externos arredondados (`roundedSelection`), e as
         // colunas selecionadas guardadas para desenhar os espaços e tabulações (`renderWhitespace: selection`).
         let mut selected: Vec<(i32, i32, i32)> = Vec::new();
-        if !selection.is_empty() {
+        for selection in selections.iter().filter(|s| !s.is_empty()) {
             let color = if self.focused { colors.selection } else { colors.selection_inactive };
             let mut spans: Vec<(i32, f64, f64)> = Vec::new();
             for (line_number, layout) in &laid_out {
@@ -751,14 +756,19 @@ impl EditorView {
             }
         }
 
-        // 6. Cursor.
-        if self.focused && self.cursor_visible_at(now) && (first..=last).contains(&cursor_line) {
-            let p = self.cursor.position();
-            let layout = &laid_out[(p.line_number - first) as usize].1;
-            let x = content_left + self.column_x_in(layout, p.column) - scroll_left;
-            let top = self.layout.line_top(p.line_number, scroll_top);
-            let r = rect(x, top, x + 2.0, top + lh);
-            list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + 2.0 * scale, r.y1), colors.cursor);
+        // 6. Cursores (um por seleção).
+        if self.focused && self.cursor_visible_at(now) {
+            for selection in &selections {
+                let p = selection.get_position();
+                if !(first..=last).contains(&p.line_number) {
+                    continue;
+                }
+                let layout = &laid_out[(p.line_number - first) as usize].1;
+                let x = content_left + self.column_x_in(layout, p.column) - scroll_left;
+                let top = self.layout.line_top(p.line_number, scroll_top);
+                let r = rect(x, top, x + 2.0, top + lh);
+                list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + 2.0 * scale, r.y1), colors.cursor);
+            }
         }
         list.pop_clip();
 

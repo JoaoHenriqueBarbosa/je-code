@@ -52,9 +52,10 @@ fn ctrl_arrows_move_by_word_and_shift_selects() {
     let mut v = plain_view("foo.bar baz");
     v.key_down(EditorKey::Right, CTRL);
     assert_eq!(v.cursor_position(), Position::new(1, 4));
+    // `cursorWordEndRightSelect` do núcleo: a pontuação não é parada, o fim da palavra seguinte é.
     v.key_down(EditorKey::Right, CTRL_SHIFT);
-    assert_eq!(v.cursor_position(), Position::new(1, 5));
-    assert_eq!(v.model().get_value_in_range(&v.cursor_selection_range()).to_string_lossy(), ".");
+    assert_eq!(v.cursor_position(), Position::new(1, 8));
+    assert_eq!(v.model().get_value_in_range(&v.cursor_selection_range()).to_string_lossy(), ".bar");
     v.key_down(EditorKey::Left, NONE);
     assert_eq!(v.cursor_position(), Position::new(1, 4), "a seta sem Shift colapsa na ponta esquerda");
 }
@@ -83,6 +84,8 @@ fn backspace_in_indentation_goes_back_one_stop() {
 #[test]
 fn enter_keeps_line_indentation() {
     let mut v = plain_view("\t\tfoo");
+    // Um arquivo indentado com tabulações (`editor.detectIndentation`): o Enter mantém a indentação como está.
+    v.model().update_options(je_editor::model::TextModelUpdateOptions { insert_spaces: Some(false), ..Default::default() });
     v.set_cursor(Position::new(1, 6));
     v.key_down(EditorKey::Enter, NONE);
     assert_eq!(text(&v), "\t\tfoo\n\t\t");

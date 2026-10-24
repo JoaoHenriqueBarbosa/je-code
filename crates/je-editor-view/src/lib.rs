@@ -12,9 +12,11 @@
 
 pub mod clipboard;
 pub mod colors;
-pub mod cursor;
+mod core;
 pub mod environment;
 pub mod input;
+mod shortcuts;
+pub mod services;
 pub mod layout;
 mod minimap;
 pub mod text;
@@ -22,6 +24,6 @@ pub mod view;
 
 pub use colors::EditorColors;
 pub use environment::EditorEnvironment;
-pub use input::{EditKind, EditorKey};
+pub use input::{CopiedText, EditorKey};
 pub use layout::{FontMetrics, ViewLayout};
 pub use view::EditorView;
