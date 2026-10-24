@@ -58,6 +58,7 @@ fn top_level_names(dts: &str) -> Vec<String> {
 
 fn main() {
     let ext_dir = std::env::args().nth(1).expect("uso: api_usage <diretório da extensão> [vscode.d.ts]");
+    let ext_dir = std::fs::canonicalize(&ext_dir).expect("diretório da extensão").to_string_lossy().into_owned();
     let dts_path = std::env::args().nth(2).unwrap_or_else(|| "ref/vscode/src/vscode-dts/vscode.d.ts".to_owned());
     let names = top_level_names(&std::fs::read_to_string(dts_path).expect("vscode.d.ts"));
     let report = with_runtime_thread(move || {
@@ -73,19 +74,16 @@ fn main() {
             let names = JsData::Array(names.into_iter().map(JsData::Str).collect());
             let recording = runner.call_data(&factory, &[names]).unwrap();
             runner.register_module("vscode", &recording);
-            let load = runner.eval("__extension", "load.js").unwrap();
-            let outcome = match runner.call(&load, &[]) {
-                Ok(_) => runner
-                    .eval(
-                        "(function () { const e = __extension(); const context = { subscriptions: [], extensionPath: '/x', globalState: { get() {}, update() {} }, workspaceState: { get() {}, update() {} } }; return Promise.resolve(e.activate && e.activate(context)).then(() => 'ativou', (err) => 'falhou: ' + (err && err.message)); })()",
-                        "activate.js",
-                    )
-                    .map(|_| ()),
-                Err(message) => Err(message),
-            };
+            let outcome = runner
+                .eval(
+                    "(function () { try { const e = __extension(); const context = { subscriptions: [], extensionPath: '/x', globalState: { get() {}, update() {} }, workspaceState: { get() {}, update() {} } }; globalThis.__result = 'carregou'; return Promise.resolve(e.activate && e.activate(context)).then(() => { globalThis.__result = 'ativou'; }, (err) => { globalThis.__result = 'ativação falhou: ' + (err && err.stack || err); }); } catch (err) { globalThis.__result = 'carga falhou: ' + (err && err.stack || err); } })()",
+                    "activate.js",
+                )
+                .map(|_| ());
             runner.run_event_loop_for(50.0);
             let touched = runner.eval("globalThis.__touched.join('\\n')", "report.js").unwrap().as_text().unwrap_or_default();
-            format!("carga: {outcome:?}\n{touched}")
+            let result = runner.eval("String(globalThis.__result)", "result.js").unwrap().as_text().unwrap_or_default();
+            format!("{result} ({outcome:?})\n{touched}")
         })
         .unwrap()
     });

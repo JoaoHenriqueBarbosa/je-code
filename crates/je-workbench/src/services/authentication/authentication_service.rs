@@ -690,6 +690,22 @@ impl Inner {
 }
 
 impl IAuthenticationService for AuthenticationService {
+    fn on_did_unregister_authentication_provider(&self) -> Event<AuthenticationProviderInformation> {
+        self.inner.on_did_unregister_authentication_provider.event()
+    }
+
+    fn on_did_change_declared_providers(&self) -> Event<()> {
+        self.inner.on_did_change_declared_providers.event()
+    }
+
+    fn declared_providers(&self) -> Vec<AuthenticationProviderInformation> {
+        self.inner.declared_providers.borrow().clone()
+    }
+
+    fn is_authentication_provider_registered(&self, id: &str) -> bool {
+        self.inner.provider(id).is_some()
+    }
+
     fn on_did_register_authentication_provider(&self) -> Event<AuthenticationProviderInformation> {
         self.inner.on_did_register_authentication_provider.event()
     }
@@ -727,28 +743,12 @@ impl IAuthenticationService for AuthenticationService {
 }
 
 impl IAuthenticationServiceProviders for AuthenticationService {
-    fn on_did_unregister_authentication_provider(&self) -> Event<AuthenticationProviderInformation> {
-        self.inner.on_did_unregister_authentication_provider.event()
-    }
-
-    fn on_did_change_declared_providers(&self) -> Event<()> {
-        self.inner.on_did_change_declared_providers.event()
-    }
-
-    fn declared_providers(&self) -> Vec<AuthenticationProviderInformation> {
-        self.inner.declared_providers.borrow().clone()
-    }
-
     fn register_declared_authentication_provider(&self, provider: AuthenticationProviderInformation) {
         self.inner.register_declared_authentication_provider(provider);
     }
 
     fn unregister_declared_authentication_provider(&self, id: &str) {
         self.inner.unregister_declared_authentication_provider(id);
-    }
-
-    fn is_authentication_provider_registered(&self, id: &str) -> bool {
-        self.inner.provider(id).is_some()
     }
 
     fn is_dynamic_authentication_provider(&self, id: &str) -> bool {

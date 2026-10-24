@@ -4,5 +4,6 @@
 //! de `platform/defaultAccount/common/defaultAccount.ts`).
 
 pub mod default_account;
+pub mod default_account_provider;
 pub mod github_enterprise;
 pub mod managed_settings;

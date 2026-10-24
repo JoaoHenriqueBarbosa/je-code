@@ -217,6 +217,29 @@ pub trait IAuthenticationService {
         scope_list_or_request: AuthenticationScopeListOrRequest,
         options: Option<IAuthenticationCreateSessionOptions>,
     ) -> Promise<AuthenticationSession>;
+
+    /// `declaredProviders`: the providers that extensions declare in their manifests, registered or not. O padrão
+    /// (nenhum declarado) é o dos dublês que só conhecem os provedores registrados.
+    fn declared_providers(&self) -> Vec<AuthenticationProviderInformation> {
+        Vec::new()
+    }
+
+    /// `onDidChangeDeclaredProviders`: fires when the list of declared providers changes. O padrão nunca dispara.
+    fn on_did_change_declared_providers(&self) -> Event<()> {
+        Event::none()
+    }
+
+    /// `onDidUnregisterAuthenticationProvider`: fires when an authentication provider has been unregistered. O
+    /// padrão nunca dispara.
+    fn on_did_unregister_authentication_provider(&self) -> Event<AuthenticationProviderInformation> {
+        Event::none()
+    }
+
+    /// `isAuthenticationProviderRegistered(id)`: whether a provider with that id is registered. O padrão consulta
+    /// [`get_provider_ids`](Self::get_provider_ids), que é o que o serviço real faz.
+    fn is_authentication_provider_registered(&self, id: &str) -> bool {
+        self.get_provider_ids().iter().any(|provider_id| provider_id == id)
+    }
 }
 
 service_id!(pub I_AUTHENTICATION_SERVICE: dyn IAuthenticationService = "IAuthenticationService");
@@ -348,25 +371,12 @@ pub trait IAuthenticationProvider {
 /// outros serviços, que implementam só o trait reduzido, continuarem valendo; o `AuthenticationService`
 /// implementa os dois, e juntos são o `IAuthenticationService` do original.
 pub trait IAuthenticationServiceProviders: IAuthenticationService {
-    /// Fires when an authentication provider has been unregistered.
-    fn on_did_unregister_authentication_provider(&self) -> Event<AuthenticationProviderInformation>;
-
-    /// Fires when the list of declaredProviders has changed.
-    fn on_did_change_declared_providers(&self) -> Event<()>;
-
-    /// All providers that have been statically declared by extensions. These may not actually be registered or
-    /// active yet (uma cópia da lista).
-    fn declared_providers(&self) -> Vec<AuthenticationProviderInformation>;
-
     /// Registers that an extension has declared an authentication provider in their package.json. Lança se o id ou
     /// o rótulo são vazios, ou se o id já foi declarado.
     fn register_declared_authentication_provider(&self, provider: AuthenticationProviderInformation);
 
     /// Unregisters a declared authentication provider.
     fn unregister_declared_authentication_provider(&self, id: &str);
-
-    /// Checks if an authentication provider has been registered.
-    fn is_authentication_provider_registered(&self, id: &str) -> bool;
 
     /// Checks if an authentication provider is dynamic.
     fn is_dynamic_authentication_provider(&self, id: &str) -> bool;
