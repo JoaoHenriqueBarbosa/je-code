@@ -2,6 +2,8 @@
 
 pub mod links;
 
+pub mod quick_fix;
+
 pub mod suggest;
 
 pub mod history;

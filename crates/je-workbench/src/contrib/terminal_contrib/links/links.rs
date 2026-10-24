@@ -11,20 +11,41 @@
 //!   com o de uma extensão) é o enum [`TerminalLinkType`]. `activate?(text)` é um `Rc<dyn Fn(&str)>`.
 //! - `ITextEditorSelection` é o [`TextEditorSelection`] de `je_platform::opener::editor_types`.
 //! - `ResolvedLink` (`IResolvedValidLink | null`) é `Option<IResolvedValidLink>`.
-//! - Fora do porte: `ITerminalLinkProviderService` e `ITerminalExternalLinkProvider`, que dependem do
-//!   `ITerminalInstance` e do `ITerminalLink` do `terminal.ts` (ainda não portados), e `OmitFirstArg` (um tipo
-//!   do TypeScript sem forma em Rust).
+//! - O `ITerminalLinkProviderService` é o trait [`ITerminalLinkProviderService`], com o `ITerminalExternalLinkProvider` e o
+//!   `ITerminalLink` de `contrib::terminal::browser::terminal`; `linkProviders: ReadonlySet` é um `Vec` na ordem de registro.
+//! - Fora do porte: `OmitFirstArg` (um tipo do TypeScript sem forma em Rust).
 
 use std::rc::Rc;
 
+use je_base::event::Event;
+use je_base::lifecycle::DisposableRef;
 use je_base::platform::OperatingSystem;
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_instantiation::service_id;
 use je_platform::opener::editor_types::TextEditorSelection;
 use je_widgets::hover_api::IHoverAction;
 
 use super::terminal_link_parsing::ParsedLink;
+use crate::contrib::terminal::browser::terminal::ITerminalExternalLinkProvider;
 use crate::contrib::terminal::xterm_buffer::{IBufferLine, IBufferRange, ITerminal};
+
+/// `ITerminalLinkProviderService`.
+pub trait ITerminalLinkProviderService {
+    /// `linkProviders`.
+    fn link_providers(&self) -> Vec<Rc<dyn ITerminalExternalLinkProvider>>;
+
+    /// `onDidAddLinkProvider`.
+    fn on_did_add_link_provider(&self) -> Event<Rc<dyn ITerminalExternalLinkProvider>>;
+    /// `onDidRemoveLinkProvider`.
+    fn on_did_remove_link_provider(&self) -> Event<Rc<dyn ITerminalExternalLinkProvider>>;
+
+    // Currently only a single link provider is supported; the one registered by the ext host
+    /// `registerLinkProvider(provider)`.
+    fn register_link_provider(&self, provider: Rc<dyn ITerminalExternalLinkProvider>) -> DisposableRef;
+}
+
+service_id!(pub I_TERMINAL_LINK_PROVIDER_SERVICE: dyn ITerminalLinkProviderService = "terminalLinkProviderService");
 
 /// `direction` do `getWslPath` do backend: `'unix-to-win' | 'win-to-unix'`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

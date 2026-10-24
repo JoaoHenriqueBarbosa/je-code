@@ -13,6 +13,7 @@ pub mod auto_approve;
 pub mod terminal_recorder;
 pub mod request_store;
 pub mod terminal;
+pub mod terminal_data_buffering;
 pub mod terminal_environment;
 pub mod terminal_profiles;
 pub mod terminal_strings;
