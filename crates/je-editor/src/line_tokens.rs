@@ -292,7 +292,9 @@ impl IViewLineTokens for LineTokens {
     }
 
     fn get_metadata(&self, token_index: usize) -> u32 {
-        self.tokens[(token_index << 1) + 1]
+        // `this._tokens[(tokenIndex << 1) + 1]`: fora do vetor o JS lê `undefined`, que as operações de bits de
+        // `TokenMetadata` tratam como 0 (linha ainda não tokenizada depois de uma edição).
+        self.tokens.get((token_index << 1) + 1).copied().unwrap_or(0)
     }
 
     fn get_language_id(&self, token_index: usize) -> String {
