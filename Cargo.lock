@@ -4138,7 +4138,9 @@ dependencies = [
  "je-text",
  "je-theme",
  "je-ui",
+ "je-workbench",
  "png",
+ "serde_json",
  "web-time",
 ]
 

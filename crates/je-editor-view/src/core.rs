@@ -44,7 +44,8 @@ use crate::services::{FindController, FindControllers, NoCommands, NoHighlightPr
 
 /// As medidas da fonte da view como o `FontInfo` do editor (no VS Code o `FontMeasurements` as mede no DOM).
 struct ViewEnvironment {
-    metrics: FontMetrics,
+    /// Compartilhadas com o [`EditorCore`]: a troca de fonte (`editor.fontSize`...) atualiza antes do `updateOptions`.
+    metrics: Rc<std::cell::RefCell<FontMetrics>>,
 }
 
 impl ConfigurationEnvironment for ViewEnvironment {
@@ -61,7 +62,7 @@ impl ConfigurationEnvironment for ViewEnvironment {
     }
 
     fn read_font_info(&self, styling: &BareFontInfo) -> FontInfo {
-        let m = &self.metrics;
+        let m = self.metrics.borrow();
         FontInfo::new(
             FontInfoOptions {
                 bare: BareFontInfoOptions {
@@ -183,6 +184,7 @@ pub(crate) struct EditorCore {
     pub widget: Rc<CodeEditorWidget>,
     pub view_model: Rc<EditorViewModel>,
     configuration: Rc<EditorConfiguration>,
+    metrics: Rc<std::cell::RefCell<FontMetrics>>,
 }
 
 impl EditorCore {
@@ -190,7 +192,8 @@ impl EditorCore {
         register_editor_modules();
         let options = editor_options(metrics);
         let observer = ElementSizeObserver::new(None, Some(Dimension { width, height }));
-        let configuration = EditorConfiguration::new(false, editor_context(), &options, observer, Rc::new(ViewEnvironment { metrics: metrics.clone() }));
+        let shared_metrics = Rc::new(std::cell::RefCell::new(metrics.clone()));
+        let configuration = EditorConfiguration::new(false, editor_context(), &options, observer, Rc::new(ViewEnvironment { metrics: shared_metrics.clone() }));
         let dom_line_breaks: Rc<dyn LineBreaksComputerFactory> = Rc::new(MonospaceLineBreaksComputerFactory::create(ConfigurationOptions::options(&*configuration)));
         let registry = EditorExtensionsRegistry::instance();
         let mut contributions = registry.get_some_editor_contributions(&[MultiCursorSelectionController::ID]);
@@ -219,7 +222,13 @@ impl EditorCore {
         widget.set_has_text_focus(true);
         let view_model = widget.get_view_model().expect("o widget tem o modelo ligado");
         view_model.set_has_focus(true);
-        Self { widget, view_model, configuration }
+        Self { widget, view_model, configuration, metrics: shared_metrics }
+    }
+
+    /// Aplica as opções do usuário (`updateOptions`), com as medidas da fonte nova já valendo para o `FontInfo`.
+    pub fn update_options(&self, metrics: &FontMetrics, options: &Dynamic) {
+        *self.metrics.borrow_mut() = metrics.clone();
+        self.widget.update_options(Some(options));
     }
 
     /// O tamanho da área de edição mudou (a opção de layout, de onde saem o tamanho da página e a quebra de linha).
@@ -252,6 +261,14 @@ impl EditorCore {
     /// `editor.trigger(source, handlerId, payload)` com a origem `keyboard`.
     pub fn trigger(&self, handler_id: &str, payload: Option<Dynamic>) {
         self.widget.trigger(Some("keyboard"), handler_id, payload);
+    }
+
+    /// O `trigger` do widget sabe rodar `id`: um handler embutido, uma ação do editor ou um comando de editor.
+    pub fn knows_command(&self, id: &str) -> bool {
+        use je_editor::code_editor_widget::{Handler, IEditorExtensionsRegistry};
+        matches!(id, Handler::COMPOSITION_START | Handler::COMPOSITION_END | Handler::TYPE | Handler::REPLACE_PREVIOUS_CHAR | Handler::COMPOSITION_TYPE | Handler::PASTE | Handler::CUT)
+            || self.widget.get_action(id).is_some()
+            || EditorExtensionsRegistry::instance().get_editor_command(id).is_some()
     }
 
     /// Digita `text` nos cursores (o handler `type`).
