@@ -52,8 +52,15 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: oráculo melhorado: o placar passou a contar `vs/workbench/test` e o resto do shell (`workbench (shell)`, 621 casos) e os testes das extensões embutidas (161 arquivos, 1 360 casos, sem a `copilot`), e cada arquivo portado conta no máximo os casos do original (laços expandidos em vários `#[test]` inflavam `base` em 101 casos). Quarto lote: modelo de notificações, editorConfiguration (36), TestConfigurationService único (cinco cópias unificadas; `IConfigurationService::inspect` devolve `Rc<dyn ConfigurationValue>` como o original). Suíte: 7 277 passando, 0 falhas. Placar: 5 639 de 18 391 (30,66%) (eu, `scripts/conformance.py`).
 
+- 2026-10-24: quinto lote: pfs (30), zip do node (10), terminalEnvironment do node (33), núcleo do `CodeEditorWidget` (modelo, ViewModel, cursor, edições, `trigger`, `ICodeEditor`; sem a View de DOM). Suíte verde (eu, `cargo test`).
+
+- 2026-10-24: sexto lote: harness `withTestCodeEditor` (sideEditing 69 de 69 de primeira), Settings Sync (store, enablement, serviço, cliente e servidor de teste, manifesto de perfis 12), virtualScheduling (22), htmlToMarkdown (32, parser de HTML próprio: entidades nomeadas só do HTML 4, falta a tabela do HTML5), htmlContent, cancelPreviousCalls, charCode, nodeStreams. Suíte: 7 502 passando, 0 falhas (eu).
+
+- 2026-10-24: sétimo lote: testes do ViewModel (viewModelImpl 29, viewModelDecorations 3), Settings Sync (keybindingsSync 10, tasksSync 15), networkFilterService (33), telemetryService (38), 1dsAppender (6), errorTelemetry, externalTerminalService (11), Registry (4), secrets (14). `ref/` reconstruído depois do acidente do symlink (fonte 1.143.1, oráculo 1.143.1, pseudo-linus `9e3d0767`). Suíte: 7 665 passando, 0 falhas. Placar: 6 026 de 18 391 (32,77%) (eu).
+
 ## Pendência antes do primeiro push
 
+- O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
 - O histórico local tem caminho da máquina em dois commits já corrigidos (`oracle-harness/zyarr-gen/gen.js` no c468a64 e `crates/je-platform/tests/settings_compat.rs` no 55c6335). Reescrever esses dois commits (ou fazer squash do histórico) antes de publicar o repositório.
 - 2026-10-23: H08 parcial: WebGPU 60 fps (vsync) e vello_cpu com simd128 56 a 60 fps no Chrome; WebGPU indisponível no Chromium do WSL (Mesa sem dzn).
 - 2026-10-23: tokenização no editor: `je-editor` com `TokenizationRegistry`, `LineTokens`, armazenamentos de tokens, `TextModel.tokenization()` (fatias em segundo plano com orçamento de tempo), serviço e registro de linguagens, configuração de linguagem; `je-languages` com a ponte TextMate (109 de 109 fixtures pelo `TextModel`, 10 temas) e o carregamento dos `language-configuration.json` (69 arquivos). Tokenização inicial de 50 814 linhas TypeScript em 901 ms (56 413 linhas/s), eu.

@@ -27,6 +27,8 @@ pub mod test_code_editor;
 pub mod test_notification_service;
 pub mod test_theme_service;
 
+pub mod test_view_model;
+
 use std::rc::Rc;
 
 use je_base::JsString;

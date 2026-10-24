@@ -1466,6 +1466,11 @@ impl<I: SynchroniserImpl> AbstractFileSynchroniser<I> {
         Self { base, file }
     }
 
+    /// A base compartilhada, o `IUserDataSynchroniser` que o serviço de sincronização guarda.
+    pub fn base(&self) -> Rc<AbstractSynchroniser<I>> {
+        self.base.clone()
+    }
+
     /// `getLocalFileContent`: `None` se o arquivo não pode ser lido.
     pub fn get_local_file_content(&self) -> Promise<Option<FileContent>> {
         let (file_service, file) = (self.services.file_service.clone(), self.file.clone());

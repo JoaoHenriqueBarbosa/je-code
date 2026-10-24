@@ -604,6 +604,7 @@ impl UserDataSyncClient {
             },
             user_data_sync_store_management_service.clone(),
             user_data_profiles_service.clone(),
+            user_data_sync_util_service.clone(),
         );
         base.register(user_data_sync_service.clone());
 

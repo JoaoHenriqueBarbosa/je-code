@@ -61,3 +61,8 @@ pub mod web_content_extractor;
 
 pub mod agent_host;
 pub mod external_services;
+
+pub mod encryption;
+pub mod external_terminal;
+pub mod registry;
+pub mod secrets;
