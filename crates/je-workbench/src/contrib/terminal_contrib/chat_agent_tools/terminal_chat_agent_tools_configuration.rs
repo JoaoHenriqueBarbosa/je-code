@@ -29,6 +29,13 @@ use je_platform::policy::copilot_managed_settings::{
 use je_platform::sandbox::sandbox_settings_resolution_helper::SandboxSettingsResolutionHelper;
 use je_platform::sandbox::settings::{AgentSandboxEnabledValue, AgentSandboxSettingId, AgentSandboxUserConfiguredPaths};
 
+/// `TerminalChatAgentToolsSettingId.TerminalProfileLinux`: o perfil de terminal do agente no Linux (lido pela telemetria de perfis).
+pub const TERMINAL_PROFILE_LINUX_SETTING_ID: &str = "chat.tools.terminal.terminalProfile.linux";
+/// `TerminalChatAgentToolsSettingId.TerminalProfileMacOs`.
+pub const TERMINAL_PROFILE_MAC_OS_SETTING_ID: &str = "chat.tools.terminal.terminalProfile.osx";
+/// `TerminalChatAgentToolsSettingId.TerminalProfileWindows`.
+pub const TERMINAL_PROFILE_WINDOWS_SETTING_ID: &str = "chat.tools.terminal.terminalProfile.windows";
+
 use crate::contrib::chat::chat_network_configuration::policy_schema;
 use crate::services::configuration::common::managed_settings_presentation::{read_managed_setting, read_managed_string_array};
 

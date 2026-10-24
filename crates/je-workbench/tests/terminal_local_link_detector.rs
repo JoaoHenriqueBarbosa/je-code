@@ -36,15 +36,14 @@ use je_platform::files::i_file_service::IFileService;
 use je_platform::resources::uri_file;
 use je_platform::terminal::capabilities::terminal_capability_store::TerminalCapabilityStore;
 use je_platform::uri_identity::uri_identity_service::UriIdentityService;
-use je_workbench::contrib::terminal::xterm_buffer::{IBufferCellPosition, IBufferLine, IBufferRange};
 use je_workbench::contrib::terminal_contrib::links::links::{
-    ITerminalLinkDetector, IWslPathBackend, TerminalBuiltinLinkType, TerminalLinkProcessManager, WslPathDirection,
+    IWslPathBackend, TerminalBuiltinLinkType, TerminalLinkProcessManager, WslPathDirection,
 };
 use je_workbench::contrib::terminal_contrib::links::terminal_link_resolver::TerminalLinkResolver;
 use je_workbench::contrib::terminal_contrib::links::terminal_local_link_detector::TerminalLocalLinkDetector;
 use je_workbench::test::common::workbench_test_services::TestContextService;
 use support::fake_xterm::FakeXterm;
-use support::terminal_link_support::LinkTestFileService;
+use support::terminal_link_support::{LinkTestFileService, assert_link_helper};
 
 /// `unixLinks`: `string | { link, resource }`; `None` é o `string` (o recurso é o `URI.file` do próprio texto).
 const UNIX_LINKS: [(&str, Option<&str>); 15] = [
@@ -283,38 +282,7 @@ impl Fixture {
 
     /// `assertLinks(type, text, expected)` com o `assertLinkHelper`.
     async fn assert_links(&self, type_: TerminalBuiltinLinkType, text: &str, expected: &[(String, [(i32, i32); 2])]) {
-        self.xterm.reset();
-
-        // Write the text and wait for the parser to finish
-        self.xterm.write(text);
-        let text_split: Vec<&str> = text.split("\r\n").collect();
-        let last_line_index: i32 = text_split[..text_split.len() - 1].iter().map(|c| ((c.encode_utf16().count() as f64 / 80.0).ceil() as i32).max(1)).sum();
-
-        // Ensure all links are provided
-        let cursor_y = self.xterm.cursor_y();
-        let buffer = self.xterm.buffer();
-        let lines: Vec<Rc<dyn IBufferLine>> = (0..=cursor_y).map(|i| je_workbench::contrib::terminal::xterm_buffer::IBuffer::get_line(&buffer, i).expect("a linha existe")).collect();
-
-        // Detect links always on the last line with content
-        let actual_links: Vec<(String, TerminalBuiltinLinkType, IBufferRange)> = self
-            .detector
-            .detect(&lines, last_line_index, cursor_y)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|e| (e.uri.as_ref().map_or_else(|| e.text.clone(), |uri| uri.to_string(false).to_string_lossy()), type_, e.buffer_range))
-            .collect();
-        let expected_links: Vec<(String, TerminalBuiltinLinkType, IBufferRange)> = expected
-            .iter()
-            .map(|(link, range)| {
-                (
-                    link.clone(),
-                    type_,
-                    IBufferRange { start: IBufferCellPosition { x: range[0].0, y: range[0].1 }, end: IBufferCellPosition { x: range[1].0, y: range[1].1 } },
-                )
-            })
-            .collect();
-        assert_eq!(actual_links, expected_links, "links de \"{text}\"");
+        assert_link_helper(&self.xterm, self.detector.as_ref(), text, expected, type_).await;
     }
 
     /// `assertLinks(LocalFile, text, [{ uri, range }])`.

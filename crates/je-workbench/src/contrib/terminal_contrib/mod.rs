@@ -2,6 +2,15 @@
 
 pub mod links;
 
+// A decisão de colar texto de várias linhas no terminal.
+pub mod clipboard;
+
+// O cache do conteúdo do buffer do terminal.
+pub mod accessibility;
+
+// A telemetria das configurações de perfil do terminal.
+pub mod telemetry;
+
 pub mod quick_fix;
 
 pub mod suggest;
