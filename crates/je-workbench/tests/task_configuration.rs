@@ -10,11 +10,11 @@
 //!   `Rc<RefCell<..>>`, porque o original os encadeia por referência (`.parent`); cada método devolve um novo
 //!   manipulador do mesmo estado. `parent` é o método `parent()`. O padrão `pattern(regExp)` só liga ao casador o
 //!   primeiro construtor, como no original.
-//! - `TasksMockContextKeyService` é o `ContextKeyService` de `je-platform` (sobre o `TestConfigurationService`) com
-//!   `getContext` sobrescrito para devolver sempre `true`.
+//! - `TasksMockContextKeyService` é o `MockContextKeyService` de `je-platform` com `getContext` sobrescrito para
+//!   devolver sempre `true`.
 //! - `ProblemReporter` do teste só registra a mensagem; o estado de validação nunca sobe, como no original.
-//! - `Platform.platform` é `host_platform().kind`; `Platform.isWindows` e companhia são os campos de
-//!   `host_platform()`.
+//! - `Platform.platform` é `Platform::detect().kind`; `Platform.isWindows` e companhia são os campos de
+//!   `Platform::detect()`.
 //! - `(Platform.isLinux ? test.skip : test)('Bug 19548')` é `#[cfg_attr(target_os = "linux", ignore)]`; os
 //!   `test.skip` são `#[ignore]`. `taskGroup.isDefault = true` (nos casos ignorados) altera no original a constante
 //!   compartilhada, o que o porte não permite: nesses casos o grupo esperado é uma cópia com `isDefault` verdadeiro.
@@ -36,17 +36,16 @@ use common::ensure_no_disposables_are_leaked_in_test_suite;
 use indexmap::IndexMap;
 use je_base::arrays::OneOrMany;
 use je_base::dynamic::Dynamic;
-use je_base::event::Event;
 use je_base::js_regexp::JsRegExp;
 use je_base::parsers::{ProblemReporter, ValidationStatus};
 use je_base::severity::Severity;
 use je_base::uuid::{generate_uuid, is_uuid};
-use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::contextkey::service::ContextKeyService;
 use je_platform::contextkey::{
-    ContextKeyExpression, IContext, IContextKey, IContextKeyChangeEvent, IContextKeyService, IContextKeyServiceTarget, IScopedContextKeyService,
+    IContext, IContextKey, IContextKeyService,
 };
-use je_platform::resources::{host_platform, uri_file};
+use je_base::platform::Platform;
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
+use je_platform::resources::uri_file;
 use je_platform::workspace::{IWorkspace, WorkspaceFolder, new_test_workspace};
 use je_workbench::contrib::tasks::problem_matcher::{ApplyToKind, FileLocationKind, FilePrefix, ProblemMatcher, ProblemPattern};
 use je_workbench::contrib::tasks::task_configuration::{
@@ -470,60 +469,21 @@ impl IContext for AlwaysTrueContext {
     }
 }
 
-struct TasksMockContextKeyService {
-    inner: Rc<dyn IContextKeyService>,
+/// O `getContext` sobrescrito do `TasksMockContextKeyService`: `getValue` devolve `true` para qualquer chave.
+struct TasksMockContext;
+
+impl IContext for TasksMockContext {
+    fn get_value(&self, _key: &str) -> Dynamic {
+        Dynamic::Bool(true)
+    }
 }
+
+/// `TasksMockContextKeyService`: o `MockContextKeyService` com o `getContext` acima.
+struct TasksMockContextKeyService;
 
 impl TasksMockContextKeyService {
-    fn new() -> Rc<Self> {
-        let inner: Rc<dyn IContextKeyService> = ContextKeyService::new(TestConfigurationService::new(None));
-        Rc::new(Self { inner })
-    }
-}
-
-impl IContextKeyService for TasksMockContextKeyService {
-    fn on_did_change_context(&self) -> Event<Rc<dyn IContextKeyChangeEvent>> {
-        self.inner.on_did_change_context()
-    }
-
-    fn buffer_change_events(&self, callback: &dyn Fn()) {
-        self.inner.buffer_change_events(callback)
-    }
-
-    fn create_key(&self, key: &str, default_value: Dynamic) -> Rc<dyn IContextKey> {
-        self.inner.create_key(key, default_value)
-    }
-
-    fn context_matches_rules(&self, rules: Option<&ContextKeyExpression>) -> bool {
-        self.inner.context_matches_rules(rules)
-    }
-
-    fn get_context_key_value(&self, key: &str) -> Dynamic {
-        self.inner.get_context_key_value(key)
-    }
-
-    fn create_scoped(&self, target: Rc<dyn IContextKeyServiceTarget>) -> Rc<dyn IScopedContextKeyService> {
-        self.inner.create_scoped(target)
-    }
-
-    fn create_overlay(&self, overlay: Vec<(String, Dynamic)>) -> Rc<dyn IContextKeyService> {
-        self.inner.create_overlay(overlay)
-    }
-
-    fn get_context(&self, _target: Option<Rc<dyn IContextKeyServiceTarget>>) -> Rc<dyn IContext> {
-        Rc::new(AlwaysTrueContext)
-    }
-
-    fn update_parent(&self, parent_context_key_service: Rc<dyn IContextKeyService>) {
-        self.inner.update_parent(parent_context_key_service)
-    }
-
-    fn context_id(&self) -> i64 {
-        self.inner.context_id()
-    }
-
-    fn get_context_values_container(&self, context_id: i64) -> Rc<dyn IContext> {
-        self.inner.get_context_values_container(context_id)
+    fn new() -> Rc<MockContextKeyService> {
+        MockContextKeyService::with_context(Rc::new(TasksMockContext))
     }
 }
 
@@ -536,7 +496,7 @@ fn parse_external(external: &Value, reporter: &Rc<ProblemReporterDouble>) -> Par
     parse(
         &workspace_folder(),
         Some(workspace()),
-        host_platform().kind,
+        Platform::detect().kind,
         external,
         logger,
         TaskConfigSource::TasksJson,
@@ -854,7 +814,7 @@ fn tasks_options_env() {
 #[test]
 fn tasks_os_windows() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let name = if host_platform().is_windows { "tsc.win" } else { "tsc" };
+    let name = if Platform::detect().is_windows { "tsc.win" } else { "tsc" };
     let mut builder = ConfigurationBuilder::new();
     builder.task(name, name).group(build()).command().suppress_task_name(true);
     let external = json!({ "version": "0.1.0", "command": "tsc", "windows": { "command": "tsc.win" } });
@@ -864,7 +824,7 @@ fn tasks_os_windows() {
 #[test]
 fn tasks_os_windows_and_global_is_shell_command() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let name = if host_platform().is_windows { "tsc.win" } else { "tsc" };
+    let name = if Platform::detect().is_windows { "tsc.win" } else { "tsc" };
     let mut builder = ConfigurationBuilder::new();
     builder.task(name, name).group(build()).command().suppress_task_name(true).runtime(RuntimeType::Shell);
     let external = json!({ "version": "0.1.0", "command": "tsc", "isShellCommand": true, "windows": { "command": "tsc.win" } });
@@ -874,7 +834,7 @@ fn tasks_os_windows_and_global_is_shell_command() {
 #[test]
 fn tasks_os_mac() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let name = if host_platform().is_macintosh { "tsc.osx" } else { "tsc" };
+    let name = if Platform::detect().is_macintosh { "tsc.osx" } else { "tsc" };
     let mut builder = ConfigurationBuilder::new();
     builder.task(name, name).group(build()).command().suppress_task_name(true);
     let external = json!({ "version": "0.1.0", "command": "tsc", "osx": { "command": "tsc.osx" } });
@@ -884,7 +844,7 @@ fn tasks_os_mac() {
 #[test]
 fn tasks_os_linux() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let name = if host_platform().is_linux { "tsc.linux" } else { "tsc" };
+    let name = if Platform::detect().is_linux { "tsc.linux" } else { "tsc" };
     let mut builder = ConfigurationBuilder::new();
     builder.task(name, name).group(build()).command().suppress_task_name(true);
     let external = json!({ "version": "0.1.0", "command": "tsc", "linux": { "command": "tsc.linux" } });
@@ -901,7 +861,7 @@ fn tasks_overwrite_show_output() {
         .command()
         .suppress_task_name(true)
         .presentation()
-        .reveal(if host_platform().is_windows { RevealKind::Always } else { RevealKind::Never });
+        .reveal(if Platform::detect().is_windows { RevealKind::Always } else { RevealKind::Never });
     let external = json!({ "version": "0.1.0", "command": "tsc", "showOutput": "never", "windows": { "showOutput": "always" } });
     test_configuration(external, &builder);
 }
@@ -910,7 +870,7 @@ fn tasks_overwrite_show_output() {
 fn tasks_overwrite_echo_command() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     let mut builder = ConfigurationBuilder::new();
-    builder.task("tsc", "tsc").group(build()).command().suppress_task_name(true).presentation().echo(!host_platform().is_windows);
+    builder.task("tsc", "tsc").group(build()).command().suppress_task_name(true).presentation().echo(!Platform::detect().is_windows);
     let external = json!({ "version": "0.1.0", "command": "tsc", "echoCommand": true, "windows": { "echoCommand": false } });
     test_configuration(external, &builder);
 }
@@ -1265,7 +1225,7 @@ fn tasks_with_command_and_args() {
 #[test]
 fn tasks_with_command_os_specific() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let name = if host_platform().is_windows { "tsc.win" } else { "tsc" };
+    let name = if Platform::detect().is_windows { "tsc.win" } else { "tsc" };
     let external = json!({
         "version": "0.1.0",
         "tasks": [{ "taskName": "taskNameOne", "command": "tsc", "windows": { "command": "tsc.win" } }]
@@ -1278,7 +1238,7 @@ fn tasks_with_command_os_specific() {
 #[test]
 fn tasks_with_windows_specific_args() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let args: Vec<&str> = if host_platform().is_windows { vec!["arg1", "arg2"] } else { vec!["arg1"] };
+    let args: Vec<&str> = if Platform::detect().is_windows { vec!["arg1", "arg2"] } else { vec!["arg1"] };
     let external = json!({
         "version": "0.1.0",
         "tasks": [{ "taskName": "tsc", "command": "tsc", "args": ["arg1"], "windows": { "args": ["arg2"] } }]
@@ -1291,7 +1251,7 @@ fn tasks_with_windows_specific_args() {
 #[test]
 fn tasks_with_linux_specific_args() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let args: Vec<&str> = if host_platform().is_linux { vec!["arg1", "arg2"] } else { vec!["arg1"] };
+    let args: Vec<&str> = if Platform::detect().is_linux { vec!["arg1", "arg2"] } else { vec!["arg1"] };
     let external = json!({
         "version": "0.1.0",
         "tasks": [{ "taskName": "tsc", "command": "tsc", "args": ["arg1"], "linux": { "args": ["arg2"] } }]
@@ -1432,7 +1392,7 @@ fn arg_overwrite() {
         }]
     });
     let mut builder = ConfigurationBuilder::new();
-    let platform = host_platform();
+    let platform = Platform::detect();
     let args: Option<&str> = if platform.is_windows {
         Some("windows")
     } else if platform.is_linux {
@@ -1481,7 +1441,7 @@ fn bug_19548() {
         }
     });
     let mut builder = ConfigurationBuilder::new();
-    let platform = host_platform();
+    let platform = Platform::detect();
     if platform.is_windows {
         builder
             .task("composeForDebug", "powershell")

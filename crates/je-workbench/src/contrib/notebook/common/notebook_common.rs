@@ -86,7 +86,7 @@ use crate::services::notebook::common::notebook_document_service::{
     self as notebook_document_service, CellOutputUriDetails, ParsedCellUri,
 };
 use crate::services::search::replace::replace_first;
-use crate::services::textfile::textfiles::FileReadLimits;
+use je_platform::files::files::FileReadLimits;
 use crate::services::working_copy::file_working_copy::SnapshotContext;
 use crate::services::working_copy::working_copy::WorkingCopySaveEvent;
 

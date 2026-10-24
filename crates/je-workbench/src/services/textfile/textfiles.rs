@@ -40,9 +40,7 @@ use je_base::uri::URI;
 use je_editor::model::TextSnapshot;
 use je_editor::piece_tree_text_buffer_builder::PieceTreeTextBufferFactory;
 use je_editor::text_model::TextModel;
-// `IFileReadLimits` é de `platform/files/common/files.ts`; o re-export mantém o caminho que os usos do workbench já têm.
-pub use je_platform::files::files::FileReadLimits;
-use je_platform::files::files::{FileOperationError,FileOperationResult, FileStatWithMetadata, ReadFileOptions, WriteFileOptions};
+use je_platform::files::files::{FileOperationError, FileOperationResult, FileReadLimits, FileStatWithMetadata, ReadFileOptions, WriteFileOptions};
 
 use crate::common::editor::editor_model::IEditorModel;
 use crate::common::editor::{RevertOptions, SaveOptions, SaveReason, SaveSource};

@@ -8,6 +8,7 @@ pub mod base_resolved_keybinding;
 pub mod keybinding;
 pub mod keybinding_resolver;
 pub mod keybindings_registry;
+pub mod mock_keybinding_service;
 pub mod resolved_keybinding_item;
 pub mod us_layout_resolved_keybinding;
 
