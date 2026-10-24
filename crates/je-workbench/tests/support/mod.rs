@@ -77,3 +77,9 @@ pub mod mock_debug;
 // Porte de `baseDebugView.test.ts`, `watchExpressionView.test.ts` e `variablesView.test.ts`: o `LinkDetector` e o
 // `DebugExpressionRenderer` de teste, o `IDebugService` com o `getViewModel` trocado, o escopo e a variável do `setup`.
 pub mod debug_view_support;
+
+// Porte de `workbench/services/configuration/test/common/configurationModels.test.ts`: literais, nós de registro e `toConfigurationModel`.
+pub mod configuration_models_support;
+
+// Porte de `workbench/services/textfile/test/browser/textEditorService.test.ts`: o `NullFileSystemProvider` e o `FileServiceProvider`.
+pub mod text_editor_service_support;
