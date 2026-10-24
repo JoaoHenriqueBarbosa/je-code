@@ -8,3 +8,5 @@ pub mod unc;
 pub mod id;
 pub mod mac_address;
 pub mod network_interfaces;
+
+pub mod windows_version;
