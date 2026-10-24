@@ -52,6 +52,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: oráculo melhorado: o placar passou a contar `vs/workbench/test` e o resto do shell (`workbench (shell)`, 621 casos) e os testes das extensões embutidas (161 arquivos, 1 360 casos, sem a `copilot`), e cada arquivo portado conta no máximo os casos do original (laços expandidos em vários `#[test]` inflavam `base` em 101 casos). Quarto lote: modelo de notificações, editorConfiguration (36), TestConfigurationService único (cinco cópias unificadas; `IConfigurationService::inspect` devolve `Rc<dyn ConfigurationValue>` como o original). Suíte: 7 277 passando, 0 falhas. Placar: 5 639 de 18 391 (30,66%) (eu, `scripts/conformance.py`).
 
+- 2026-10-24: quinto lote: pfs (30), zip do node (10), terminalEnvironment do node (33), núcleo do `CodeEditorWidget` (modelo, ViewModel, cursor, edições, `trigger`, `ICodeEditor`; sem a View de DOM). Suíte verde (eu, `cargo test`).
+
 ## Pendência antes do primeiro push
 
 - O histórico local tem caminho da máquina em dois commits já corrigidos (`oracle-harness/zyarr-gen/gen.js` no c468a64 e `crates/je-platform/tests/settings_compat.rs` no 55c6335). Reescrever esses dois commits (ou fazer squash do histórico) antes de publicar o repositório.
