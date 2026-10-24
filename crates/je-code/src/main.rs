@@ -733,6 +733,88 @@ mod tests {
     }
 
     #[test]
+    fn explorer_context_menu_renames_and_creates() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-ctx", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "alpha").expect("a");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, code: KeyCode, text: Option<&str>| shell.key(true, code, Modifiers::default(), text, key);
+        let right_click = |shell: &mut Shell, x: f64, y: f64| {
+            for kind in [PointerInputKind::Move, PointerInputKind::Down, PointerInputKind::Up] {
+                let mut input = PointerInput::new(kind, x, y);
+                input.button = PointerButton::Secondary;
+                shell.pointer(input);
+            }
+        };
+        snapshot(&mut shell, "c0-tree.png");
+        // Botão direito na linha de a.txt abre o menu de contexto; Esc o fecha sem abrir o arquivo.
+        right_click(&mut shell, 120.0, 96.0 + 11.0);
+        snapshot(&mut shell, "c1-menu.png");
+        assert!(shell.has_context_menu(), "o menu de contexto abriu");
+        assert!(shell.active_editor().is_none(), "o botão direito não abre o arquivo");
+        key(&mut shell, Some(EditorKey::Escape), KeyCode::Escape, None);
+        assert!(!shell.has_context_menu(), "Esc fecha o menu");
+        // Renomear: a quinta opção (Open Containing Folder já vem em foco; mais quatro Down).
+        right_click(&mut shell, 120.0, 96.0 + 11.0);
+        for _ in 0..4 {
+            key(&mut shell, Some(EditorKey::Down), KeyCode::DownArrow, None);
+        }
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter, None);
+        assert!(!shell.has_context_menu(), "o item rodou e o menu fechou");
+        snapshot(&mut shell, "c2-prompt.png");
+        for _ in 0..5 {
+            key(&mut shell, Some(EditorKey::Backspace), KeyCode::Backspace, None);
+        }
+        for c in "b.txt".chars() {
+            key(&mut shell, None, KeyCode::Unknown, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter, None);
+        assert!(dir.join("b.txt").is_file() && !dir.join("a.txt").exists(), "o arquivo foi renomeado");
+        snapshot(&mut shell, "c3-renamed.png");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_folder_and_save_as_prompts_work() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-open", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).expect("pasta");
+        std::fs::write(dir.join("sub/x.ts"), "export {}").expect("x");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        let type_text = |shell: &mut Shell, text: &str| {
+            for c in text.chars() {
+                key(shell, None, Some(&c.to_string()));
+            }
+        };
+        // Open Folder: o explorador passa a mostrar a pasta digitada.
+        shell.run(shell::Command::PromptOpenFolder);
+        type_text(&mut shell, &dir.display().to_string());
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.workspace_path(), Some(dir.clone()));
+        snapshot(&mut shell, "o0-folder.png");
+        // Open File: relativo à pasta aberta.
+        shell.run(shell::Command::PromptOpenFile);
+        for _ in 0..dir.display().to_string().len() + 1 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        type_text(&mut shell, "sub/x.ts");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("sub/x.ts")));
+        // Save As de um arquivo novo: o texto vai para o disco e a aba segue o caminho.
+        shell.run(shell::Command::NewUntitled);
+        shell.active_editor_mut().expect("aba").view.type_text("hello");
+        shell.run(shell::Command::Save);
+        for _ in 0..200 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        type_text(&mut shell, &dir.join("novo.txt").display().to_string());
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(std::fs::read_to_string(dir.join("novo.txt")).expect("gravou"), "hello");
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("novo.txt")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

@@ -11,6 +11,7 @@ mod explorer;
 mod file_icons;
 mod find;
 mod menus;
+mod file_ops;
 mod quick_pick;
 mod terminal_panel;
 pub mod themes;
@@ -44,6 +45,17 @@ use quick_pick::{PickItem, QuickPick};
 /// O tema padrão relativo à pasta de extensões embutidas.
 pub const BUILTIN_DEFAULT_THEME: &str = "theme-defaults/themes/2026-dark.json";
 
+/// O que um prompt de nome faz com o texto digitado.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PromptAction {
+    NewFile(PathBuf),
+    NewFolder(PathBuf),
+    Rename(PathBuf),
+    OpenFile,
+    OpenFolder,
+    SaveAs(usize),
+}
+
 /// O que os menus, botões e atalhos pedem ao shell. Roda depois do evento que o gerou, fora dos callbacks.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -69,6 +81,22 @@ pub enum Command {
     ShowExplorer,
     PickTheme,
     SetTheme(usize),
+    /// O botão direito num item do explorador.
+    ExplorerContextMenu(PathBuf),
+    /// Um nome digitado no prompt (Enter) para a ação dele.
+    Prompt(PromptAction, String),
+    DeletePath(PathBuf),
+    RevealInFileManager(PathBuf),
+    OpenInTerminal(PathBuf),
+    CopyPath(PathBuf, bool),
+    CloseContextMenu,
+    PromptOpenFile,
+    PromptOpenFolder,
+    PromptSaveAs,
+    PromptNewFile(PathBuf),
+    PromptNewFolder(PathBuf),
+    PromptRename(PathBuf),
+    ConfirmDelete(PathBuf),
     QuickOpen,
     ShowCommands,
     TogglePanel,
@@ -164,11 +192,17 @@ pub struct Shell {
     fullscreen_requested: bool,
     needs_render: bool,
     quick_pick: Option<QuickPick>,
+    /// O menu de contexto aberto (o widget `Menu`) e o nó onde ele pinta.
+    context_menu: Option<(Rc<je_widgets::menu::Menu>, NodeId)>,
+    /// A última posição do ponteiro (onde o menu de contexto abre).
+    last_pointer: (f64, f64),
     find: Option<FindWidget>,
     panel_visible: bool,
     panel_height: f64,
     terminal: Option<je_terminal::Terminal>,
     terminal_focused: bool,
+    /// A pasta em que o próximo terminal abre (`Open in Integrated Terminal`).
+    workspace_for_terminal: Option<PathBuf>,
     terminal_palette: je_terminal::Palette,
     /// Acorda o laço de eventos da janela (o pty do terminal chama quando há saída).
     wake: je_terminal::Wake,
@@ -268,11 +302,14 @@ impl Shell {
             fullscreen_requested: false,
             needs_render: true,
             quick_pick: None,
+            context_menu: None,
+            last_pointer: (0.0, 0.0),
             find: None,
             panel_visible: false,
             panel_height: DEFAULT_PANEL_HEIGHT,
             terminal: None,
             terminal_focused: false,
+            workspace_for_terminal: None,
             terminal_palette,
             wake: std::sync::Arc::new(|| {}),
             sash_panel_drag: None,
@@ -508,7 +545,8 @@ impl Shell {
     fn save(&mut self, index: usize) {
         let editor = &mut self.editors[index];
         let Some(path) = editor.path.clone() else {
-            self.notice = Some("Save As ainda não existe: o arquivo sem título não foi salvo".to_owned());
+            // Sem arquivo ainda: o Save vira o Save As.
+            self.open_prompt(PromptAction::SaveAs(index));
             return;
         };
         let model = editor.view.model().clone();
@@ -549,8 +587,13 @@ impl Shell {
             if commands.is_empty() {
                 return;
             }
+            let from_menu = self.context_menu.is_some();
             for command in commands {
                 self.run(command);
+            }
+            // Um item do menu de contexto rodou: o menu se fecha.
+            if from_menu {
+                self.close_context_menu();
             }
         }
     }
@@ -622,6 +665,48 @@ impl Shell {
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
             Command::PickTheme => self.open_theme_picker(),
+            Command::ExplorerContextMenu(path) => self.open_explorer_menu(&path),
+            Command::CloseContextMenu => self.close_context_menu(),
+            Command::PromptSaveAs => {
+                if let Some(i) = self.active {
+                    self.open_prompt(PromptAction::SaveAs(i));
+                }
+            }
+            Command::PromptOpenFile => self.open_prompt(PromptAction::OpenFile),
+            Command::PromptOpenFolder => self.open_prompt(PromptAction::OpenFolder),
+            Command::PromptNewFile(dir) => self.open_prompt(PromptAction::NewFile(dir)),
+            Command::PromptNewFolder(dir) => self.open_prompt(PromptAction::NewFolder(dir)),
+            Command::PromptRename(path) => self.open_prompt(PromptAction::Rename(path)),
+            Command::ConfirmDelete(path) => self.confirm_delete(path),
+            Command::Prompt(action, text) => self.run_prompt(action, &text),
+            Command::DeletePath(path) => match file_ops::trash(&path) {
+                Ok(()) => {
+                    // Fecha as abas dos arquivos apagados.
+                    while let Some(i) = self.editors.iter().position(|e| e.path.as_deref().is_some_and(|p| p.starts_with(&path))) {
+                        self.close_editor(i);
+                    }
+                    self.refresh_explorer();
+                }
+                Err(e) => self.notice = Some(e),
+            },
+            Command::RevealInFileManager(path) => {
+                if let Err(e) = file_ops::reveal(&path) {
+                    self.notice = Some(e);
+                }
+            }
+            Command::OpenInTerminal(path) => {
+                let dir = if path.is_dir() { path } else { path.parent().map(Path::to_path_buf).unwrap_or(path) };
+                self.terminal = None;
+                self.workspace_for_terminal = Some(dir);
+                self.panel_visible = true;
+                self.set_terminal_focus(true);
+                self.ensure_terminal();
+                self.resize_editors();
+            }
+            Command::CopyPath(path, relative) => {
+                let text = if relative { self.workspace.as_deref().and_then(|w| path.strip_prefix(w).ok()).unwrap_or(&path).to_string_lossy().into_owned() } else { path.to_string_lossy().into_owned() };
+                je_editor_view::clipboard::Clipboard::new().set_text(&text);
+            }
             Command::SetTheme(index) => {
                 self.apply_theme(index);
                 self.theme_before_preview = None;
@@ -674,6 +759,205 @@ impl Shell {
         self.needs_render = true;
     }
 
+    #[cfg(test)]
+    pub fn workspace_path(&self) -> Option<PathBuf> {
+        self.workspace.clone()
+    }
+
+    #[cfg(test)]
+    pub fn has_context_menu(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    /// Troca a pasta do workspace: o explorador, o Quick Open e o terminal passam a usá-la.
+    fn set_workspace(&mut self, path: PathBuf) {
+        let node = self.nodes.explorer;
+        let children = self.ui.tree().children(node).to_vec();
+        for child in children {
+            self.ui.remove(child);
+        }
+        let language_of = self.language_of.clone();
+        self.explorer = Some(Explorer::new(&self.ui, node, &path, &self.theme, self.icons.clone(), language_of, self.queue.clone()));
+        self.workspace = Some(path);
+        self.workspace_files = None;
+        self.sidebar_visible = true;
+        let selected = self.active_editor().and_then(|e| e.path.clone());
+        if let Some(explorer) = &self.explorer {
+            explorer.reveal(selected.as_deref());
+        }
+        self.resize_editors();
+    }
+
+    fn refresh_explorer(&mut self) {
+        if let Some(explorer) = &self.explorer {
+            explorer.refresh();
+        }
+        let selected = self.active_editor().and_then(|e| e.path.clone());
+        if let Some(explorer) = &self.explorer {
+            explorer.reveal(selected.as_deref());
+        }
+        self.workspace_files = None;
+        self.needs_render = true;
+    }
+
+    /// A confirmação de apagar (`explorer.confirmDelete`): uma lista de duas opções.
+    fn confirm_delete(&mut self, path: PathBuf) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let trash = if cfg!(windows) { "Move to Recycle Bin" } else { "Move to Trash" };
+        let items = vec![
+            PickItem { label: trash.to_owned(), description: Some(format!("Delete '{name}'")), keybinding: None, command: Command::DeletePath(path), recent: false },
+            PickItem { label: "Cancel".to_owned(), description: None, keybinding: None, command: Command::CloseContextMenu, recent: false },
+        ];
+        self.quick_pick = Some(QuickPick::list(items, &format!("Are you sure you want to delete '{name}'?")));
+        self.ui.blur();
+    }
+
+    fn close_context_menu(&mut self) {
+        if let Some((menu, slot)) = self.context_menu.take() {
+            IDisposable::dispose(&*menu);
+            self.ui.remove(slot);
+            self.needs_render = true;
+        }
+    }
+
+    /// O menu de contexto de um item do explorador (`explorer/context`): os comandos que o shell já tem.
+    fn open_explorer_menu(&mut self, path: &Path) {
+        use je_base::actions::{Action, ActionCallback, ActionRef, Separator};
+        let queue = self.queue.clone();
+        let item = |label: &str, command: Command| -> ActionRef {
+            let queue = queue.clone();
+            let callback: ActionCallback = Rc::new(move |_| {
+                queue.borrow_mut().push(command.clone());
+                je_base::dynamic::Dynamic::Undefined.into()
+            });
+            Action::new(label, label, "", true, Some(callback)) as ActionRef
+        };
+        let is_dir = path.is_dir();
+        let parent = if is_dir { path.to_path_buf() } else { path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()) };
+        let mut actions: Vec<ActionRef> = Vec::new();
+        if is_dir {
+            actions.push(item("New File...", Command::PromptNewFile(parent.clone())));
+            actions.push(item("New Folder...", Command::PromptNewFolder(parent.clone())));
+            actions.push(Separator::new() as ActionRef);
+        }
+        actions.push(item(if cfg!(windows) { "Reveal in File Explorer" } else if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Open Containing Folder" }, Command::RevealInFileManager(path.to_path_buf())));
+        actions.push(item("Open in Integrated Terminal", Command::OpenInTerminal(path.to_path_buf())));
+        actions.push(Separator::new() as ActionRef);
+        actions.push(item("Copy Path", Command::CopyPath(path.to_path_buf(), false)));
+        actions.push(item("Copy Relative Path", Command::CopyPath(path.to_path_buf(), true)));
+        actions.push(Separator::new() as ActionRef);
+        actions.push(item("Rename...", Command::PromptRename(path.to_path_buf())));
+        actions.push(item("Delete", Command::ConfirmDelete(path.to_path_buf())));
+        self.close_context_menu();
+        let (x, y) = self.last_pointer;
+        let slot = {
+            let mut tree = self.ui.tree_mut();
+            let root = tree.root();
+            let slot = tree.create(root, Role::Generic);
+            tree.set_bounds(slot, Rect::new(x, y, x, y));
+            slot
+        };
+        let queue = self.queue.clone();
+        let menu = je_widgets::menu::Menu::new(&self.ui, slot, &actions, je_widgets::menu::IMenuOptions::default(), Rc::new(default_menu_styles(&self.theme)));
+        let _ = menu.on_did_cancel().listen(move |_| queue.borrow_mut().push(Command::CloseContextMenu));
+        // Cabe na janela: sobe ou recua o que passar da borda.
+        let (width, height) = self.size;
+        let bounds = self.ui.tree().children(slot).first().map(|c| self.ui.tree().absolute_bounds(*c));
+        if let Some(b) = bounds {
+            let (dx, dy) = ((width - 4.0 - b.x1).min(0.0), (height - 4.0 - b.y1).min(0.0));
+            if dx < 0.0 || dy < 0.0 {
+                self.ui.tree_mut().set_bounds(slot, Rect::new(x + dx, y + dy, x + dx, y + dy));
+            }
+        }
+        menu.focus(true);
+        self.context_menu = Some((menu, slot));
+        self.needs_render = true;
+    }
+
+    /// O prompt de nome do explorador (novo arquivo, nova pasta, renomear).
+    fn open_prompt(&mut self, action: PromptAction) {
+        let (placeholder, initial) = match &action {
+            PromptAction::NewFile(_) => ("Type file name. Press Enter to confirm or Escape to cancel.".to_owned(), String::new()),
+            PromptAction::NewFolder(_) => ("Type folder name. Press Enter to confirm or Escape to cancel.".to_owned(), String::new()),
+            PromptAction::Rename(path) => ("Type file name. Press Enter to confirm or Escape to cancel.".to_owned(), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            PromptAction::SaveAs(index) => {
+                let base = self.workspace.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+                let suggestion = self.editors.get(*index).map(|e| e.path.clone().unwrap_or_else(|| base.join(&e.name))).unwrap_or(base);
+                ("Type the path to save the file as. Press Enter to confirm or Escape to cancel.".to_owned(), suggestion.display().to_string())
+            }
+            PromptAction::OpenFile => ("Type the path of a file to open. Press Enter to confirm or Escape to cancel.".to_owned(), self.workspace.as_deref().map(|w| format!("{}{}", w.display(), std::path::MAIN_SEPARATOR)).unwrap_or_default()),
+            PromptAction::OpenFolder => ("Type the path of a folder to open. Press Enter to confirm or Escape to cancel.".to_owned(), self.workspace.as_deref().and_then(Path::parent).map(|w| format!("{}{}", w.display(), std::path::MAIN_SEPARATOR)).unwrap_or_default()),
+        };
+        self.quick_pick = Some(QuickPick::prompt(&placeholder, &initial, action));
+        self.ui.blur();
+    }
+
+    fn run_prompt(&mut self, action: PromptAction, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let result = match &action {
+            PromptAction::SaveAs(index) => match file_ops::resolve(text, self.workspace.as_deref()) {
+                Ok(path) if path.is_dir() => Err(format!("'{}' é uma pasta.", path.display())),
+                Ok(path) => {
+                    let model_text = self.editors.get(*index).map(|e| e.view.model().get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy());
+                    match model_text {
+                        Some(content) => file_ops::write_new(&path, &content).map(|()| {
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            self.editors[*index].path = Some(path.clone());
+                            self.editors[*index].name = name;
+                            // Relê do disco: a linguagem e os ícones seguem o nome novo.
+                            self.revert(*index);
+                            None
+                        }),
+                        None => Ok(None),
+                    }
+                }
+                Err(e) => Err(e),
+            },
+            PromptAction::OpenFile => match file_ops::resolve(text, self.workspace.as_deref()) {
+                Ok(path) if path.is_file() => Ok(Some(path)),
+                Ok(path) => Err(format!("O arquivo '{}' não existe.", path.display())),
+                Err(e) => Err(e),
+            },
+            PromptAction::OpenFolder => match file_ops::resolve(text, self.workspace.as_deref()) {
+                Ok(path) if path.is_dir() => {
+                    self.set_workspace(path);
+                    Ok(None)
+                }
+                Ok(path) => Err(format!("A pasta '{}' não existe.", path.display())),
+                Err(e) => Err(e),
+            },
+            PromptAction::NewFile(dir) => file_ops::create_file(dir, text).map(Some),
+            PromptAction::NewFolder(dir) => file_ops::create_folder(dir, text).map(|_| None),
+            PromptAction::Rename(path) => file_ops::rename(path, text).map(|new| {
+                // As abas dos arquivos renomeados seguem o novo caminho.
+                for editor in &mut self.editors {
+                    if let Some(old) = editor.path.clone()
+                        && let Ok(rest) = old.strip_prefix(path)
+                    {
+                        let moved = new.join(rest);
+                        editor.name = moved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        editor.path = Some(moved);
+                    }
+                }
+                None
+            }),
+        };
+        match result {
+            Ok(opened) => {
+                self.notice = None;
+                self.refresh_explorer();
+                if let Some(path) = opened {
+                    let _ = self.open_file(&path);
+                }
+            }
+            Err(e) => self.notice = Some(e),
+        }
+        self.needs_render = true;
+    }
+
     /// Abre o Quick Open (`initial` vazio) ou a paleta (`>`).
     fn open_quick_pick(&mut self, initial: &str) {
         let files = match &self.workspace_files {
@@ -705,7 +989,7 @@ impl Shell {
                 }
             }
             Some(EditorKey::Enter) => {
-                let command = pick.accept(None);
+                let command = pick.prompt_result().map(|(action, text)| Command::Prompt(action, text)).or_else(|| pick.accept(None));
                 self.quick_pick = None;
                 if let Some(command) = command {
                     self.run(command);
@@ -1208,7 +1492,7 @@ impl Shell {
         let cw = terminal_panel::cell_width();
         match &mut self.terminal {
             Some(terminal) => terminal.resize(columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16),
-            None => match je_terminal::Terminal::new(self.workspace.clone(), None, columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16, self.wake.clone()) {
+            None => match je_terminal::Terminal::new(self.workspace_for_terminal.take().or_else(|| self.workspace.clone()), None, columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16, self.wake.clone()) {
                 Ok(terminal) => self.terminal = Some(terminal),
                 Err(e) => self.notice = Some(format!("não foi possível abrir o terminal: {e}")),
             },
@@ -1513,6 +1797,17 @@ impl Shell {
     /// do `Ui` sempre (menus fecham no clique fora, abas reagem).
     pub fn pointer(&mut self, input: PointerInput) {
         let (x, y) = (input.x, input.y);
+        self.last_pointer = (x, y);
+        // O menu de contexto aberto: o clique fora dele só o fecha.
+        if input.kind == PointerInputKind::Down
+            && let Some((_, slot)) = &self.context_menu
+        {
+            let inside = self.ui.tree().children(*slot).first().is_some_and(|c| self.ui.tree().absolute_bounds(*c).contains(je_render::kurbo::Point::new(x, y)));
+            if !inside {
+                self.close_context_menu();
+                return;
+            }
+        }
         if let Some((start_height, start_y)) = self.sash_panel_drag {
             // O painel: do mínimo de 80 px até deixar 80 px ao grupo de editores.
             let max = (self.parts_bottom() - TITLE_HEIGHT - SASH - 80.0).max(80.0);
@@ -1625,6 +1920,8 @@ impl Shell {
         Some(match (ctrl, mods.shift, mods.alt, key) {
             (true, false, false, KeyCode::KeyN) => Command::NewUntitled,
             (true, false, false, KeyCode::KeyS) => Command::Save,
+            (true, true, false, KeyCode::KeyS) => Command::PromptSaveAs,
+            (true, false, false, KeyCode::KeyO) => Command::PromptOpenFile,
             (true, false, false, KeyCode::KeyW) | (true, false, false, KeyCode::F4) => Command::CloseActiveEditor,
             (true, false, false, KeyCode::KeyQ) => Command::Exit,
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
@@ -1647,6 +1944,12 @@ impl Shell {
     /// Entrega uma tecla: primeiro à árvore do `Ui` (a barra de menus escuta Alt e os mnemônicos na raiz); se nenhum
     /// widget tem o foco e ninguém consumiu, aos atalhos do workbench e então ao editor.
     pub fn key(&mut self, down: bool, key_code: KeyCode, mods: Modifiers, text: Option<&str>, editor_key: Option<EditorKey>) {
+        if self.context_menu.is_some() {
+            // O `Menu` escuta o teclado pelo `Ui` (setas, Enter, Esc, mnemônicos).
+            self.ui.key_input(down, KeyData { key_code, modifiers: mods });
+            self.run_commands();
+            return;
+        }
         if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) {
             if self.quick_pick_key(down, text, editor_key, mods) {
                 return;

@@ -62,6 +62,8 @@ pub enum EventKind {
     Click,
     /// `dblclick`.
     DoubleClick,
+    /// `contextmenu`: o botão secundário solto (no Windows o Chromium dispara no `mouseup`).
+    ContextMenu,
     /// `wheel`.
     Wheel,
     /// `keydown`.
@@ -553,6 +555,9 @@ impl Ui {
                 self.dispatch(&mut Event::new(EventKind::PointerUp, target).with_pointer(data));
                 let pressed = self.0.input.borrow_mut().pressed.take();
                 self.release_pointer_capture();
+                if input.button == PointerButton::Secondary {
+                    self.dispatch(&mut Event::new(EventKind::ContextMenu, target).with_pointer(data));
+                }
                 if let (Some(pressed), PointerButton::Primary) = (pressed, input.button)
                     && let Some(common) = self.common_ancestor(pressed, target) {
                         self.dispatch(&mut Event::new(EventKind::Click, common).with_pointer(data));

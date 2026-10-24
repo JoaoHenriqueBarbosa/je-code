@@ -12,7 +12,7 @@ use std::rc::Rc;
 use je_base::lifecycle::DisposableRef;
 use je_render::kurbo::Rect;
 use je_theme::ColorTheme;
-use je_ui::{Content, NodeId, Role, Ui};
+use je_ui::{Content, NodeId, PointerButton, Role, Ui};
 use je_widgets::list::list_styles::default_list_styles;
 use je_widgets::list::list_types::{IListVirtualDelegate, TemplateData};
 use je_widgets::text::ui_font;
@@ -103,15 +103,19 @@ impl ITreeRenderer<Model> for Renderer {
 
 pub struct Explorer {
     tree: Rc<ObjectTree<PathBuf>>,
+    root: PathBuf,
     /// As pastas cujos filhos já foram lidos do disco.
     loaded: Rc<RefCell<HashSet<PathBuf>>>,
+    /// As pastas abertas (o estado sobrevive ao `refresh`).
+    expanded: Rc<RefCell<HashSet<PathBuf>>>,
     /// Os caminhos que estão na árvore (o `ObjectTreeModel` não expõe `has`).
     known: Rc<RefCell<HashSet<PathBuf>>>,
     _listeners: Vec<DisposableRef>,
 }
 
-/// As entradas de `dir` como elementos da árvore: pastas recolhidas primeiro, depois arquivos, por nome.
-fn read_children(dir: &Path, known: &RefCell<HashSet<PathBuf>>) -> Vec<IObjectTreeElement<PathBuf>> {
+/// As entradas de `dir` como elementos da árvore: pastas primeiro, depois arquivos, por nome sem caixa. As pastas
+/// em `expanded` já vêm abertas com os filhos lidos (recursivamente).
+fn read_children(dir: &Path, known: &RefCell<HashSet<PathBuf>>, expanded: &RefCell<HashSet<PathBuf>>, loaded: &RefCell<HashSet<PathBuf>>) -> Vec<IObjectTreeElement<PathBuf>> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut entries: Vec<(bool, String, PathBuf)> = entries
         .filter_map(Result::ok)
@@ -121,15 +125,20 @@ fn read_children(dir: &Path, known: &RefCell<HashSet<PathBuf>>) -> Vec<IObjectTr
         })
         .collect();
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-    let mut known = known.borrow_mut();
     entries
         .into_iter()
         .map(|(is_dir, _, path)| {
-            known.insert(path.clone());
-            let mut element = IObjectTreeElement::new(path);
+            known.borrow_mut().insert(path.clone());
+            let mut element = IObjectTreeElement::new(path.clone());
             if is_dir {
                 element.collapsible = Some(true);
-                element.collapsed = Some(CollapsedValue::Bool(true));
+                if expanded.borrow().contains(&path) {
+                    loaded.borrow_mut().insert(path.clone());
+                    element.collapsed = Some(CollapsedValue::Bool(false));
+                    element.children = Some(read_children(&path, known, expanded, loaded));
+                } else {
+                    element.collapsed = Some(CollapsedValue::Bool(true));
+                }
             }
             element
         })
@@ -155,31 +164,78 @@ impl Explorer {
         styles.row_radius = 4.0;
         tree.style(&styles);
         let loaded = Rc::new(RefCell::new(HashSet::from([root.to_path_buf()])));
+        let expanded = Rc::new(RefCell::new(HashSet::new()));
         let known = Rc::new(RefCell::new(HashSet::new()));
-        tree.set_children(&None, read_children(root, &known), ObjectTreeModelSetChildrenOptions::default());
+        tree.set_children(&None, read_children(root, &known, &expanded, &loaded), ObjectTreeModelSetChildrenOptions::default());
         let mut listeners = Vec::new();
-        // Abrir uma pasta lê os filhos dela na primeira vez.
+        // Abrir uma pasta lê os filhos dela na primeira vez; o estado aberto fica guardado.
         listeners.push(tree.on_did_change_collapse_state().listen({
-            let (weak, loaded, known) = (Rc::downgrade(&tree), loaded.clone(), known.clone());
+            let (weak, loaded, known, expanded) = (Rc::downgrade(&tree), loaded.clone(), known.clone(), expanded.clone());
             move |event| {
                 let node = &event.node;
                 let (Some(tree), Some(path)) = (weak.upgrade(), node.element.clone()) else { return };
-                if node.collapsed.get() || !loaded.borrow_mut().insert(path.clone()) {
+                if node.collapsed.get() {
+                    expanded.borrow_mut().remove(&path);
                     return;
                 }
-                let children = read_children(&path, &known);
+                expanded.borrow_mut().insert(path.clone());
+                if !loaded.borrow_mut().insert(path.clone()) {
+                    return;
+                }
+                let children = read_children(&path, &known, &expanded, &loaded);
                 tree.set_children(&Some(path), children, ObjectTreeModelSetChildrenOptions::default());
             }
         }));
-        // Selecionar um arquivo abre ele.
-        listeners.push(tree.on_did_change_selection().listen(move |event| {
-            for path in event.elements.iter().flatten() {
-                if path.is_file() {
-                    queue.borrow_mut().push(Command::OpenFile(path.clone()));
+        // Selecionar um arquivo abre ele; o botão direito pede o menu de contexto do item.
+        listeners.push(tree.on_did_change_selection().listen({
+            let queue = queue.clone();
+            move |event| {
+                // A seleção por clique direito não abre o arquivo: quem pede o menu cuida do resto.
+                let secondary = event.browser_event.as_ref().is_some_and(|b| b.button == PointerButton::Secondary);
+                if secondary {
+                    return;
+                }
+                for path in event.elements.iter().flatten() {
+                    if path.is_file() {
+                        queue.borrow_mut().push(Command::OpenFile(path.clone()));
+                    }
                 }
             }
         }));
-        Self { tree, loaded, known, _listeners: listeners }
+        listeners.push(tree.on_context_menu().listen({
+            let weak = Rc::downgrade(&tree);
+            move |event| {
+                if let Some(Some(path)) = &event.element {
+                    // O botão direito põe o foco na linha (sem abrir o arquivo) e pede o menu.
+                    if let Some(tree) = weak.upgrade() {
+                        tree.set_focus(&[Some(path.clone())], None);
+                    }
+                    queue.borrow_mut().push(Command::ExplorerContextMenu(path.clone()));
+                }
+            }
+        }));
+        Self { tree, root: root.to_path_buf(), loaded, expanded, known, _listeners: listeners }
+    }
+
+    /// Relê o disco mantendo as pastas abertas (depois de criar, renomear ou apagar).
+    pub fn refresh(&self) {
+        self.loaded.borrow_mut().clear();
+        self.loaded.borrow_mut().insert(self.root.clone());
+        self.known.borrow_mut().clear();
+        self.tree.set_children(&None, read_children(&self.root, &self.known, &self.expanded, &self.loaded), ObjectTreeModelSetChildrenOptions::default());
+    }
+
+    /// Abre a pasta (e as de cima) para o caminho aparecer, relendo o que faltar.
+    pub fn expand_to(&self, path: &Path) {
+        let mut parents: Vec<PathBuf> = path.ancestors().skip(1).take_while(|p| *p != self.root.as_path() && p.starts_with(&self.root)).map(Path::to_path_buf).collect();
+        parents.reverse();
+        let mut changed = false;
+        for dir in parents {
+            changed |= self.expanded.borrow_mut().insert(dir);
+        }
+        if changed {
+            self.refresh();
+        }
     }
 
     /// Os arquivos selecionados na árvore.
@@ -206,6 +262,12 @@ impl Explorer {
     /// Mostra o arquivo do editor ativo selecionado (o `explorer.autoReveal`), se ele já está na árvore.
     pub fn reveal(&self, path: Option<&Path>) {
         let Some(path) = path else { return };
+        if !path.starts_with(&self.root) {
+            return;
+        }
+        if !self.known.borrow().contains(path) {
+            self.expand_to(path);
+        }
         if !self.known.borrow().contains(path) {
             return;
         }
