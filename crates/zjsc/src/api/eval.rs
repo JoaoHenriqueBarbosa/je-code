@@ -458,7 +458,7 @@ pub fn evaluate_main_script_reporting_signal(
 /// de módulos, ou CommonJS no wrapper. `Err` é a exceção (ou a rejeição da avaliação do módulo) que escapou do topo; um
 /// módulo com `await` no topo ainda pendente segue no laço de eventos, e uma rejeição tardia dele chega ao relato como
 /// rejeição sem tratador, como no bun.
-fn run_main_program(global_object: &JSGlobalObjectRef, source: &str, url: &str) -> Result<(), JSValue> {
+pub(crate) fn run_main_program(global_object: &JSGlobalObjectRef, source: &str, url: &str) -> Result<(), JSValue> {
     // Com transpilador instalado o arquivo principal roda reimpresso, como no bun, e quem decide ESM ou CJS é o
     // parser dele (`exports_kind`); sem ele vale a medição de `main_module_kind` sobre o fonte cru.
     let attempt = crate::api::source_transpiler::attempt_transpile(url, source, false);
@@ -945,6 +945,11 @@ thread_local! {
     static CJS_FILENAME: RefCell<String> = const { RefCell::new(String::new()) };
     /// O estado de `module` e `require` (`None` fora de um programa CJS).
     static CJS_STATE: RefCell<Option<CjsState>> = const { RefCell::new(None) };
+}
+
+/// O sistema de arquivos do programa CJS em curso (o que `evaluate_main_script` faz com o `MAIN_FS` ao começar).
+pub(crate) fn install_cjs_fs(fs: Option<Rc<dyn ModuleFs>>) {
+    CJS_FS.with(|slot| *slot.borrow_mut() = fs);
 }
 
 /// As raízes do coletor: tudo o que o estado de `module` e `require` guarda (o `CjsState` é a parte do objeto

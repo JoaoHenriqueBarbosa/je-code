@@ -24,6 +24,13 @@ extensões do VS Code no host de extensões do je-code (Fase 5, `wip/notes/extho
    do pseudo-linus) em vez de um caminho fora da crate. `Cargo.toml` de `sysabi` e `ul-common`: `publish = false`
    e `sysabi` por caminho, no lugar de `workspace = true`.
 
+3. `src/api/embed_node.rs` (arquivo novo, `pub mod embed_node` em `src/api/mod.rs`) e dois ajustes de visibilidade em
+   `src/api/eval.rs` (`run_main_program` passa a `pub(crate)` e nasce `install_cjs_fs`): o `NodeRunner`, um programa no
+   estilo Node que devolve o controle ao hospedeiro (avaliar, guardar e chamar funções JavaScript, avançar o laço de
+   eventos em fatias com o tempo real que o hospedeiro mede) e a ponte textual `__je_call(nome, json)`. É o que o
+   host de extensões usa (`crates/je-exthost`); o `evaluate_main_script` original, que roda até o fim, não serve a um
+   processo de vida longa dirigido de fora.
+
 ## Pendência de DRY
 
 `crates/zyarr` é o YARR extraído deste `src/yarr`: o código existe nas duas crates. Fundir (o zjsc dependendo do

@@ -4,6 +4,7 @@ pub mod builtin_source_texts;
 pub mod browser_modules;
 pub mod bun_options;
 pub mod embed;
+pub mod embed_node;
 pub mod eval;
 pub mod fs_module_host;
 pub mod main_module_kind;
