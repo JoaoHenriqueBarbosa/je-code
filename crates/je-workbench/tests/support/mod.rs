@@ -6,6 +6,7 @@ pub mod keyboard_mapper_test_utils;
 
 pub mod ext_host_workspace_support;
 pub mod mock_command_service;
+pub mod notebook_outline_support;
 pub mod notebook_services_support;
 pub mod test_notebook_editor;
 pub mod test_rpc_protocol;
