@@ -9,12 +9,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
 | `workbench/services` | 137 | 2491 | 40 | 1197 | 48.05 |
 | `workbench/api` | 94 | 965 | 11 | 248 | 25.70 |
-| `workbench/contrib` | 370 | 4636 | 39 | 730 | 15.75 |
+| `workbench/contrib` | 370 | 4636 | 41 | 738 | 15.92 |
 | `workbench (shell)` | 69 | 621 | 19 | 213 | 34.30 |
-| `server` | 8 | 75 | 0 | 0 | 0.00 |
-| `code` | 5 | 15 | 0 | 0 | 0.00 |
+| `server` | 8 | 75 | 4 | 24 | 32.00 |
+| `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 9000 | 48.94 |
+| **total** | | 18391 | | 9036 | 49.13 |
 
 ## Arquivos portados
 
@@ -476,7 +476,9 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/terminalContrib/links/test/browser/terminalLinkHelpers.test.ts` | 14 | `crates/je-workbench/tests/terminal_link_helpers.rs` | 14 |
 | `src/vs/workbench/contrib/terminalContrib/links/test/browser/terminalLinkParsing.test.ts` | 27 | `crates/je-workbench/tests/terminal_link_parsing.rs` | 27 |
 | `src/vs/workbench/contrib/terminalContrib/suggest/test/browser/terminalCompletionModel.test.ts` | 22 | `crates/je-workbench/tests/terminal_completion_model.rs` | 22 |
+| `src/vs/workbench/contrib/testing/test/common/testCoverage.test.ts` | 4 | `crates/je-workbench/tests/test_coverage.rs` | 4 |
 | `src/vs/workbench/contrib/testing/test/common/testExplorerFilterState.test.ts` | 9 | `crates/je-workbench/tests/test_explorer_filter_state.rs` | 9 |
+| `src/vs/workbench/contrib/testing/test/common/testProfileService.test.ts` | 4 | `crates/je-workbench/tests/test_profile_service.rs` | 4 |
 | `src/vs/workbench/contrib/testing/test/common/testResultService.test.ts` | 19 | `crates/je-workbench/tests/test_result_service.rs` | 19 |
 | `src/vs/workbench/contrib/testing/test/common/testResultStorage.test.ts` | 6 | `crates/je-workbench/tests/test_result_storage.rs` | 6 |
 | `src/vs/workbench/contrib/testing/test/common/testService.test.ts` | 14 | `crates/je-workbench/tests/test_service.rs` | 14 |
@@ -504,3 +506,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/test/browser/parts/statusbar/statusbarModel.test.ts` | 10 | `crates/je-workbench/tests/statusbar_model.rs` | 10 |
 | `src/vs/workbench/test/common/memento.test.ts` | 4 | `crates/je-workbench/tests/memento.rs` | 4 |
 | `src/vs/workbench/test/common/notifications.test.ts` | 15 | `crates/je-workbench/tests/notifications.rs` | 15 |
+| `src/vs/server/test/node/remoteResourceResponse.test.ts` | 1 | `crates/je-server/tests/remote_resource_response.rs` | 1 |
+| `src/vs/server/test/node/serverConnectionToken.test.ts` | 13 | `crates/je-server/tests/server_connection_token.rs` | 13 |
+| `src/vs/server/test/node/serverLifetimeService.test.ts` | 7 | `crates/je-server/tests/server_lifetime_service.rs` | 7 |
+| `src/vs/server/test/node/serverMain.test.ts` | 3 | `crates/je-server/tests/server_main.rs` | 3 |
+| `src/vs/code/test/node/cliArgs.test.ts` | 4 | `crates/je-code/tests/cli_args.rs` | 4 |
