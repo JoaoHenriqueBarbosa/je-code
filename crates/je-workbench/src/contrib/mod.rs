@@ -56,3 +56,6 @@ pub mod external_uri_opener;
 
 // Links externos (`contrib/url`): o validador que pede confiança no workspace e nos domínios antes de abrir um link.
 pub mod url;
+
+// Acesso remoto (`contrib/remote`): o detector de URLs de servidores locais na saída dos terminais e das sessões de depuração.
+pub mod remote;
