@@ -4,8 +4,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 118 | 1759 | 77.22 |
-| `platform` | 192 | 2806 | 92 | 1524 | 54.31 |
+| `base` | 150 | 2278 | 120 | 1799 | 78.97 |
+| `platform` | 192 | 2806 | 93 | 1556 | 55.45 |
 | `editor` | 182 | 3144 | 91 | 1686 | 53.63 |
 | `workbench/services` | 137 | 2491 | 19 | 360 | 14.45 |
 | `workbench/api` | 94 | 965 | 1 | 28 | 2.90 |
@@ -14,7 +14,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 5639 | 30.66 |
+| **total** | | 18391 | | 5711 | 31.05 |
 
 ## Arquivos portados
 
@@ -136,8 +136,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/zip.test.ts` | 6 | `crates/je-base/tests/zip.rs` | 6 |
 | `src/vs/base/test/node/crypto.test.ts` | 2 | `crates/je-base/tests/crypto.rs` | 2 |
 | `src/vs/base/test/node/id.test.ts` | 4 | `crates/je-base/tests/id.rs` | 4 |
+| `src/vs/base/test/node/pfs/pfs.test.ts` | 30 | `crates/je-platform/tests/pfs.rs` | 30 |
 | `src/vs/base/test/node/ps.test.ts` | 9 | `crates/je-base/tests/ps.rs` | 9 |
 | `src/vs/base/test/node/unc.test.ts` | 1 | `crates/je-base/tests/unc.rs` | 1 |
+| `src/vs/base/test/node/zip/zip.test.ts` | 10 | `crates/je-base/tests/zip_node.rs` | 10 |
 | `src/vs/platform/actions/test/common/menuService.test.ts` | 19 | `crates/je-platform/tests/menu_service.rs` | 14 |
 | `src/vs/platform/browserView/test/common/browserHistory.test.ts` | 26 | `crates/je-platform/tests/browser_history.rs` | 26 |
 | `src/vs/platform/browserView/test/common/browserPermissions.test.ts` | 10 | `crates/je-platform/tests/browser_permissions.rs` | 10 |
@@ -210,6 +212,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/terminal/test/common/terminalEnvironment.test.ts` | 14 | `crates/je-platform/tests/terminal_environment_common.rs` | 14 |
 | `src/vs/platform/terminal/test/common/terminalProfiles.test.ts` | 4 | `crates/je-platform/tests/terminal_profiles.rs` | 4 |
 | `src/vs/platform/terminal/test/common/terminalRecorder.test.ts` | 3 | `crates/je-platform/tests/terminal_recorder.rs` | 3 |
+| `src/vs/platform/terminal/test/node/terminalEnvironment.test.ts` | 32 | `crates/je-platform/tests/terminal_environment_node.rs` | 32 |
 | `src/vs/platform/theme/test/common/sizeRegistry.test.ts` | 8 | `crates/je-theme/tests/size_registry.rs` | 8 |
 | `src/vs/platform/undoRedo/test/common/undoRedoService.test.ts` | 4 | `crates/je-editor/tests/undo_redo_service.rs` | 4 |
 | `src/vs/platform/update/test/electron-main/updateRelaunchArguments.test.ts` | 10 | `crates/je-platform/tests/update_relaunch_arguments.rs` | 10 |
