@@ -217,14 +217,15 @@ struct Setup {
     webviews: Rc<ExtHostWebviews>,
 }
 
-fn setup_editors() -> Setup {
+fn setup_editors(store: &Rc<DisposableStore>) -> Setup {
     let rpc: Rc<dyn IMainContext> = Rc::new(MapMainContext::default());
     let proxy = Rc::new(MainThreadCustomEditors::default());
     let proxy_shape: Rc<dyn MainThreadCustomEditorsShape> = proxy.clone();
     rpc.set(&MainContext::MAIN_THREAD_CUSTOM_EDITORS, proxy_shape);
     let documents_proxy: Rc<dyn MainThreadDocumentsShape> = Rc::new(UnusedMainThreadDocuments);
     rpc.set(&MainContext::MAIN_THREAD_DOCUMENTS, documents_proxy);
-    MockMainThreadWebviewManager::noop().register_in(&*rpc);
+    // O `ExtHostWebviewPanels` real chama `$setOptions` onde o original usa um painel `mock`: o dublê aceita e ignora.
+    Rc::new(MockMainThreadWebviewManager { capture_set_options: true, noop_panels: true, ..MockMainThreadWebviewManager::default() }).register_in(&*rpc);
 
     let documents_and_editors = Rc::new(ExtHostDocumentsAndEditors::new(rpc.clone(), NullLogService::shared()));
     documents_and_editors.rpc_accept_documents_and_editors_delta(DocumentsAndEditorsDelta {
@@ -240,6 +241,8 @@ fn setup_editors() -> Setup {
         ..DocumentsAndEditorsDelta::default()
     });
     let documents = ExtHostDocuments::new(&*rpc, documents_and_editors);
+    // O original usa um `ExtHostDocuments` `mock`; o real é descartado no fim do caso.
+    store.add_rc(documents.clone());
     let webviews = ExtHostWebviews::new(&*rpc, WebviewRemoteInfo { is_remote: false, authority: None }, None, NullLogService::shared(), Rc::new(NullApiDeprecationService));
     let panels = ExtHostWebviewPanels::new(&*rpc, webviews.clone(), None);
     let editors = Rc::new(ExtHostCustomEditors::new(&*rpc, documents, None, webviews.clone(), panels.clone()));
@@ -311,7 +314,7 @@ impl Fixture {
 /// O `setupNavigation(resolve?)`. `resolve` é o `resolveCustomTextEditorNavigation` alternativo; sem ele, o provedor confere
 /// que `resolveCustomTextEditor` já rodou e devolve o controlador.
 fn setup_navigation(store: &Rc<DisposableStore>, resolve: Option<ResolveNavigation>) -> Fixture {
-    let setup = setup_editors();
+    let setup = setup_editors(store);
     store.add_rc(setup.webviews.clone());
     store.add_rc(setup.panels.clone());
     let selection_changed = Emitter::<Option<Selection>>::new();
@@ -483,9 +486,9 @@ fn provider_disposal_while_resolving_disposes_the_late_controller() {
 #[test]
 fn navigation_requires_the_proposal_before_registering_a_provider() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let _store = guard.store();
+    let store = guard.store();
 
-    let setup = setup_editors();
+    let setup = setup_editors(&store);
     let provider = Rc::new(NavigationProvider {
         resolved: Rc::new(Cell::new(false)),
         resolve_navigation: Box::new(|| MaybePromise::Promise(Promise::rejected(Error::new("not reached")))),

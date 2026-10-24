@@ -112,13 +112,11 @@ impl IDisposable for MockMainThreadCommands {
 }
 
 impl MainThreadCommandsShape for MockMainThreadCommands {
-    fn rpc_register_command(&self, _id: &str) {
-        panic!("$registerCommand is not a function")
-    }
+    // O original usa um `ExtHostCommands` `mock`, que não registra nada; o real registra o comando delegante na construção, e o
+    // `SingleProxyRPCProtocol(null)` do original aceita qualquer chamada: o dublê ignora as duas.
+    fn rpc_register_command(&self, _id: &str) {}
 
-    fn rpc_unregister_command(&self, _id: &str) {
-        panic!("$unregisterCommand is not a function")
-    }
+    fn rpc_unregister_command(&self, _id: &str) {}
 
     fn rpc_fire_command_activation_event(&self, _id: &str) {
         panic!("$fireCommandActivationEvent is not a function")
@@ -189,7 +187,7 @@ fn disposed_comment_controllers_are_removed_from_extension_host_bookkeeping() {
         extension.identifier = ExtensionIdentifier::new("test.comments");
         extension.manifest.name = "comments".to_owned();
         extension.manifest.display_name = Some("Comments".to_owned());
-        extension.extension_location = URI::file("/extension", Platform::Posix).to_string(false);
+        extension.extension_location = URI::file("/extension", Platform::Posix).to_string(false).to_string_lossy();
         let ext_host_comments = create_ext_host_comments(&*rpc, &commands, documents);
         let controller = ext_host_comments.create_comment_controller(&extension, "comments", "Comments");
 
