@@ -5,6 +5,7 @@
 //! - [`edits`]: `TextEdit`, `SnippetString`, `SnippetTextEdit`, `WorkspaceEdit`, `EndOfLine`.
 //! - [`notebook`]: `NotebookRange`, `NotebookCellData`, `NotebookEdit`, `NotebookCellOutput(Item)`.
 //! - [`symbols`]: `Diagnostic`, `SymbolInformation`, `CodeActionKind`, `Hover`, `CodeLens`, hierarquias...
+//! - [`comments`]: `Comment`, `CommentReaction`, `CommentThreadRevealOptions`, `CommentingRangeProvider`...
 //! - [`completion`]: `CompletionItem`, `DocumentLink`, `Color`, `InlineSuggestion`...
 //! - [`semantic_tokens`]: `SemanticTokensBuilder` e companhia.
 //! - [`text_editor`]: as opções de decoração (`DecorationRenderOptions`...) e `TextEditorDiffInformation`.
@@ -38,6 +39,7 @@
 #[macro_use]
 mod macros;
 
+pub mod comments;
 pub mod completion;
 pub mod edits;
 pub mod enums;
@@ -50,6 +52,7 @@ pub mod symbols;
 pub mod text_editor;
 pub mod tree_view;
 
+pub use comments::*;
 pub use completion::*;
 pub use edits::*;
 pub use enums::*;

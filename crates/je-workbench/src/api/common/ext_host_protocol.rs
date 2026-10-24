@@ -1465,3 +1465,200 @@ mod managed_sockets_region {
 }
 
 // #endregion
+
+// #region Comments
+
+pub use self::comments_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostComments.ts` usa: `CommentProviderFeatures`, `CommentChanges`,
+/// `CommentThreadChanges`, `MainThreadCommentsShape`, `ExtHostCommentsShape` e os identificadores
+/// `MainContext.MainThreadComments` e `ExtHostContext.ExtHostComments`. Entram junto os tipos de `languages.ts` que
+/// esses DTOs citam (`CommentReaction`, `CommentAuthorInformation`, `CommentOptions`, `CommentThreadRevealOptions`,
+/// `CommentingRangeResourceHint`).
+///
+/// Divergências:
+/// - Os handles (`number`) são `u32`, como o de `ExtHostProgress`; os `UriComponents` são [`URI`] e o `IRange` é o
+///   [`EditorRange`] do editor. O `IRange | ICellRange | undefined` de `$createCommentThread` é só `IRange`: o host
+///   de extensões nunca produz `ICellRange`.
+/// - Os enums `languages.CommentMode`, `CommentState`, `CommentThreadCollapsibleState`, `CommentThreadState` e
+///   `CommentThreadApplicability` têm os mesmos valores dos da API (`types.*`), e o original só os converte por um
+///   `switch` identidade; aqui o DTO usa os enums de [`ext_host_types`](crate::api::common::ext_host_types).
+/// - `languages.Comment` (o `comments: languages.Comment[]` de `$createCommentThread` e o `comment` de
+///   `$toggleReaction`) e `CommentChanges` têm a mesma forma e são o struct [`CommentChanges`]. O retorno
+///   `languages.CommentThread | undefined` de `$createCommentThread` é o modelo da thread principal e o host nunca o
+///   lê: é `()`.
+/// - `CommentThreadChanges` é o `Partial<...>` do original: cada campo é um `Option` (a chave existe ou não). Onde o
+///   valor também pode ser `undefined` (`range`, `label`) ou `null` (`contextValue`), o campo é `Option<Option<_>>`:
+///   o `Some(None)` é a chave presente sem valor, e o `contextValue` com `Some(None)` é o `null` (limpar).
+/// - O `canReply: boolean | CommentAuthorInformation` é [`CommentCanReply`], com o `Rc` para a comparação de identidade
+///   que o original faz (`this._canReply !== state`).
+/// - `$provideCommentingRanges` devolve `{ ranges, fileComments } | undefined`, o struct [`CommentingRangesDto`]; o
+///   `{ commentThreadHandle; uniqueIdInThread? }` de `$setActiveComment` é [`ActiveCommentInfo`].
+mod comments_region {
+    use std::rc::Rc;
+
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::languages::StringOrMarkdown;
+    use je_editor::range::Range as EditorRange;
+    use je_extensions::manifest::ExtensionIdentifier;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_types::{CommentMode, CommentState, CommentThreadApplicability, CommentThreadCollapsibleState, CommentThreadState};
+
+    /// `languages.CommentAuthorInformation` (e o `vscode.CommentAuthorInformation`, que tem a mesma forma).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct CommentAuthorInformation {
+        pub name: String,
+        pub icon_path: Option<URI>,
+    }
+
+    /// `languages.CommentReaction`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct CommentReaction {
+        pub label: Option<String>,
+        pub icon_path: Option<URI>,
+        pub count: Option<f64>,
+        pub has_reacted: Option<bool>,
+        pub can_edit: Option<bool>,
+        pub reactors: Option<Vec<String>>,
+    }
+
+    /// `languages.CommentOptions`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct CommentOptions {
+        pub prompt: Option<String>,
+        pub place_holder: Option<String>,
+    }
+
+    /// `languages.CommentThreadRevealOptions`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct CommentThreadRevealOptions {
+        pub preserve_focus: bool,
+        pub focus_reply: bool,
+    }
+
+    /// `languages.CommentingRangeResourceHint`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct CommentingRangeResourceHint {
+        pub schemes: Vec<String>,
+    }
+
+    /// `boolean | languages.CommentAuthorInformation`.
+    #[derive(Clone, Debug)]
+    pub enum CommentCanReply {
+        Bool(bool),
+        Author(Rc<CommentAuthorInformation>),
+    }
+
+    impl CommentCanReply {
+        /// O `===` do original: os booleanos por valor, os objetos por identidade.
+        pub fn same(&self, other: &CommentCanReply) -> bool {
+            match (self, other) {
+                (Self::Bool(a), Self::Bool(b)) => a == b,
+                (Self::Author(a), Self::Author(b)) => Rc::ptr_eq(a, b),
+                _ => false,
+            }
+        }
+    }
+
+    /// `CommentProviderFeatures`.
+    #[derive(Clone, Debug, Default)]
+    pub struct CommentProviderFeatures {
+        pub reaction_group: Option<Vec<CommentReaction>>,
+        pub reaction_handler: Option<bool>,
+        pub options: Option<CommentOptions>,
+    }
+
+    /// `CommentChanges` (e `languages.Comment`).
+    #[derive(Clone, Debug)]
+    pub struct CommentChanges {
+        pub unique_id_in_thread: u32,
+        pub body: StringOrMarkdown,
+        pub user_name: String,
+        pub user_icon_path: Option<URI>,
+        pub context_value: Option<String>,
+        pub comment_reactions: Option<Vec<CommentReaction>>,
+        pub label: Option<String>,
+        pub mode: Option<CommentMode>,
+        pub state: Option<CommentState>,
+        pub timestamp: Option<String>,
+    }
+
+    /// `CommentThreadChanges`.
+    #[derive(Clone, Debug, Default)]
+    pub struct CommentThreadChanges {
+        pub range: Option<Option<EditorRange>>,
+        pub label: Option<Option<String>>,
+        pub context_value: Option<Option<String>>,
+        pub comments: Option<Vec<CommentChanges>>,
+        pub collapse_state: Option<CommentThreadCollapsibleState>,
+        pub can_reply: Option<CommentCanReply>,
+        pub state: Option<CommentThreadState>,
+        pub applicability: Option<CommentThreadApplicability>,
+        pub is_template: Option<bool>,
+    }
+
+    /// O `{ ranges: IRange[]; fileComments: boolean }` de `$provideCommentingRanges`.
+    #[derive(Clone, Debug)]
+    pub struct CommentingRangesDto {
+        pub ranges: Vec<EditorRange>,
+        pub file_comments: bool,
+    }
+
+    /// O `{ commentThreadHandle: number; uniqueIdInThread?: number }` de `$setActiveComment`.
+    #[derive(Clone, Copy, Debug)]
+    pub struct ActiveCommentInfo {
+        pub comment_thread_handle: u32,
+        pub unique_id_in_thread: Option<u32>,
+    }
+
+    /// `MainThreadCommentsShape`.
+    pub trait MainThreadCommentsShape: IDisposable {
+        fn rpc_register_comment_controller(&self, handle: u32, id: &str, label: &str, extension_id: &str);
+        fn rpc_unregister_comment_controller(&self, handle: u32);
+        fn rpc_update_comment_controller_features(&self, handle: u32, features: CommentProviderFeatures);
+        #[allow(clippy::too_many_arguments)]
+        fn rpc_create_comment_thread(
+            &self,
+            handle: u32,
+            comment_thread_handle: u32,
+            thread_id: &str,
+            resource: &URI,
+            range: Option<EditorRange>,
+            comments: Vec<CommentChanges>,
+            extension_id: &ExtensionIdentifier,
+            is_template: bool,
+            editor_id: Option<&str>,
+        );
+        fn rpc_update_comment_thread(&self, handle: u32, comment_thread_handle: u32, thread_id: &str, resource: &URI, changes: CommentThreadChanges);
+        fn rpc_delete_comment_thread(&self, handle: u32, comment_thread_handle: u32);
+        fn rpc_update_commenting_ranges(&self, handle: u32, resource_hints: Option<CommentingRangeResourceHint>);
+        fn rpc_reveal_comment_thread(&self, handle: u32, comment_thread_handle: u32, comment_unique_id_in_thread: u32, options: CommentThreadRevealOptions) -> Promise<()>;
+        fn rpc_hide_comment_thread(&self, handle: u32, comment_thread_handle: u32);
+    }
+
+    /// `ExtHostCommentsShape`. `$deleteCommentThread` é o único método síncrono; os demais são `async` no original e
+    /// rejeitam em vez de lançar.
+    pub trait ExtHostCommentsShape {
+        fn rpc_create_comment_thread_template(&self, comment_controller_handle: u32, uri: &URI, range: Option<EditorRange>, editor_id: Option<&str>) -> Promise<()>;
+        fn rpc_update_comment_thread_template(&self, comment_controller_handle: u32, thread_handle: u32, range: EditorRange) -> Promise<()>;
+        fn rpc_update_comment_thread(&self, comment_controller_handle: u32, thread_handle: u32, changes: CommentThreadChanges) -> Promise<()>;
+        fn rpc_delete_comment_thread(&self, comment_controller_handle: u32, comment_thread_handle: u32);
+        fn rpc_provide_commenting_ranges(&self, comment_controller_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<CommentingRangesDto>>;
+        fn rpc_toggle_reaction(&self, comment_controller_handle: u32, thread_handle: u32, uri: &URI, comment: CommentChanges, reaction: CommentReaction) -> Promise<()>;
+        fn rpc_set_active_comment(&self, controller_handle: u32, comment_info: Option<ActiveCommentInfo>) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_COMMENTS: ProxyIdentifier<dyn MainThreadCommentsShape> = ProxyIdentifier::new("MainThreadComments");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_COMMENTS: ProxyIdentifier<dyn ExtHostCommentsShape> = ProxyIdentifier::new("ExtHostComments");
+    }
+}
+
+// #endregion
