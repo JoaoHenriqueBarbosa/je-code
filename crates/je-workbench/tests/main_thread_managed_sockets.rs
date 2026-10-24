@@ -27,7 +27,7 @@ use je_base::async_::disposable_timeout;
 use je_base::buffer::VSBuffer;
 use je_base::errors::{self, Error};
 use je_base::event::Emitter;
-use je_base::lifecycle::DisposableStore;
+use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::parts::ipc::net::ISocket;
 use je_base::promise::Promise;
 use je_platform::remote::managed_socket::{ManagedSocket, RemoteSocketHalf};

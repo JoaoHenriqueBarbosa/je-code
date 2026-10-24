@@ -155,8 +155,8 @@ fn build_service(disposables: &LeakGuard, extension_service: Rc<dyn IExtensionSe
     let product: Rc<dyn IProductService> = Rc::new(TestProductService::default());
     let instantiation_service =
         disposables.add_rc(InstantiationService::new(ServiceCollection::new().with(I_STORAGE_SERVICE, storage).with(I_PRODUCT_SERVICE, product)));
-    let authentication_access_service: Rc<dyn IAuthenticationAccessService> =
-        disposables.add_rc(instantiation_service.create_instance::<AuthenticationAccessService>(()));
+    let concrete_access_service = disposables.add_rc(instantiation_service.create_instance::<AuthenticationAccessService>(()));
+    let authentication_access_service: Rc<dyn IAuthenticationAccessService> = concrete_access_service;
     disposables.add_rc(AuthenticationService::create(Vec::new(), (extension_service, authentication_access_service, NullLogService::shared())))
 }
 
