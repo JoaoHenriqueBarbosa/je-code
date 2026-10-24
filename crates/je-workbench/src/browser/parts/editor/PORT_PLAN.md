@@ -129,7 +129,32 @@ helper em `test/browser/workbench_test_services.rs`, com a `EditorPart` de teste
    `copyEditor with context`, `locked groups` (3) e `transient editors` (3)). Fora: `save & restore state` (`TestEditorPart` e
    o serializador do editor de teste, fatia 4), `closeAllGroups action` (`CloseAllEditorGroupsAction` de `editorActions.ts`),
    `working sets` (3) e `context key provider` (4) (`applyState`, `EditorParts` e `common/contextkeys.ts`).
-4. `EditorParts` e `TestEditorParts` (D), e o `ModalEditorPart` passa a estender a `EditorPart`.
+4. **FEITA (escrita sem compilar, o integrador confere).** `EditorParts` e `TestEditorParts` (D), mais o `common/contextkeys.ts`:
+   - `common/contextkeys.rs`: todas as `RawContextKey` do original (registro preguiçoso, uma função por chave), as expressões
+     `MenuBarVisibleContext` e `CustomMenuBarVisibleContext` e `getVisbileViewContextKey`. Ficam fora `ResourceContextKey`,
+     `StaticResourceContextKey` e `applyAvailableEditorIds` (dependem do `ILanguageService`, do `IModelService`, do
+     `IFileService` e do `IEditorResolverService`; só o título e os context keys do grupo as usam).
+   - `editor_parts.rs`: o `EditorParts`, o `IEditorGroupsService` real. Delega à parte do grupo (ou à ativa), junta os eventos,
+     guarda a lista de partes mais recentemente ativas, o estado persistido (`editorparts.state`, `editorparts.modalState`),
+     `restoreParts` e `whenReady`/`whenRestored`, `applyState` das partes, os conjuntos de trabalho (`saveWorkingSet`,
+     `getWorkingSets`, `applyWorkingSet`, `deleteWorkingSet`, gravados em `editor.workingSets`), `findGroup` sobre várias partes
+     e as chaves de contexto por grupo (`bind`, `registerContextKeyProvider`, `updateGlobalContextKeys`). O trait
+     `EditorPartsView` (em `editor.rs`) é o `IEditorPartsView` que a parte e o grupo leem.
+   - `editor_part.rs`: `applyState` (estado e `'empty'`, com o `onDidAddGroup`/`onDidRemoveGroup` pausados e a volta dos editores
+     que não puderam fechar), o ouvinte de mudança externa do memento, `handleContextKeys` (`editorAreaFocus`,
+     `editorPartMultipleEditorGroups`, `editorPartMaximizedEditorGroup`, `editorTabsVisible`, `isTopRightEditorGroup`) e a
+     identidade por objeto em `doSetGroupActive` (os grupos restaurados nascem com o `id` dos descartados).
+   - `test/browser/workbench_test_services.rs`: `registerTestEditor` (painel e `EditorsObserverTestEditorInputSerializer`),
+     `TestEditorPart` (`testSaveState`, `clearState`), `TestEditorParts` e `createEditorParts`. O registro de serializadores
+     ganhou `register_editor_serializer_with` (o construtor fecha sobre o `serializerInputId`).
+   - Placar: 68 dos 69 casos de `tests/editor_groups_service.rs` (o original tem 69, não 71): entram `save & restore state`,
+     `working sets` (2) e `context key provider` (3). Fora: `closeAllGroups action - cannot close editor handling`
+     (`CloseAllEditorGroupsAction`, que lê `IEditorService.getEditors` com `excludeSticky`, `revert` e `save` com razão, o
+     `IProgressService` e o `ILogService`, ainda sem `EditorService` real nem `IProgressService`).
+   - Ainda fora, com o motivo no cabeçalho de `editor_parts.rs`: `AuxiliaryEditorPart`, `ModalEditorPart` (o `ModalEditorPartImpl`
+     de `modal_editor_part.rs` ainda não estende a `EditorPart`) e o `IAuxiliaryWindowService`; `createAuxiliaryEditorPart` e
+     `createModalEditorPart` devolvem promessa rejeitada. O `handleGroupContextKeys` do `EditorGroupView`
+     (`activeEditorIsDirty` e companhia) segue fora, junto com o `ResourceContextKey`.
 5. Placar: ligar o teste em `crates/je-workbench/tests/editor_groups_service.rs` e acrescentar a linha em
    `docs/conformance.md`.
 

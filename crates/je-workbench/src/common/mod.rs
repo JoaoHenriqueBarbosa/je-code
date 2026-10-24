@@ -2,6 +2,8 @@
 
 pub mod comments;
 
+pub mod contextkeys;
+
 pub mod notification_telemetry;
 pub mod notifications;
 
