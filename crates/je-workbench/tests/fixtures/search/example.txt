@@ -1,0 +1,1 @@
+Pasta de fixture dos testes de `file_search.rs`: os casos só precisam de um diretório existente para usar como pasta de busca e como diretório de trabalho do processo filho.
