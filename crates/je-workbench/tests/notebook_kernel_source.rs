@@ -104,7 +104,7 @@ impl Suite {
     fn create_notebook(&self, path: &str) -> Rc<NotebookTextModel> {
         NotebookTextModel::new(
             "test-notebook",
-            URI::parse(&format!("test:///{path}"), false),
+            URI::parse(format!("test:///{path}").as_str(), false),
             Vec::new(),
             empty_metadata(),
             TransientOptions::default(),

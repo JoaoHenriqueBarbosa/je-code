@@ -361,7 +361,7 @@ impl NotebookCellOutline {
             let Some(this) = weak.upgrade() else { return };
             if content_changes.raw_events.iter().any(|change| {
                 matches!(
-                    change.kind(),
+                    change.event.kind(),
                     NotebookCellsChangeType::ChangeCellContent
                         | NotebookCellsChangeType::ChangeCellInternalMetadata
                         | NotebookCellsChangeType::Move
