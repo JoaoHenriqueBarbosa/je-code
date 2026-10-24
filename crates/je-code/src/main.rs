@@ -1047,6 +1047,32 @@ mod tests {
     }
 
     #[test]
+    fn external_changes_reload_clean_files_and_refresh_the_explorer() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let dir = std::env::temp_dir().join(format!("je-code-{}-watch", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "antes").expect("a");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[dir.join("a.txt")], 1200.0, 800.0).expect("abre");
+        // Outro programa grava o arquivo (com a data mudada) e cria um novo na pasta.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(dir.join("a.txt"), "depois").expect("muda");
+        std::fs::write(dir.join("b.txt"), "novo").expect("novo");
+        shell.run(shell::Command::CheckDisk);
+        let editor = shell.active_editor().expect("aba");
+        assert_eq!(editor.view.model().get_line_content(1).to_string_lossy(), "depois", "o arquivo limpo foi relido");
+        assert!(!editor.is_modified(), "o recarregar não deixa a aba suja");
+        snapshot(&mut shell, "w0-reloaded.png");
+        assert!(shell.explorer_lists(&dir.join("b.txt")), "o explorador mostra o arquivo novo");
+        // Com edição pendente, a mudança de fora não sobrescreve.
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(dir.join("a.txt"), "de novo").expect("muda");
+        shell.run(shell::Command::CheckDisk);
+        assert!(shell.active_editor().expect("aba").view.model().get_line_content(1).to_string_lossy().starts_with('X'));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

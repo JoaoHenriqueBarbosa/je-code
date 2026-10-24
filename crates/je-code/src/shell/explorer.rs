@@ -110,6 +110,7 @@ pub struct Explorer {
     expanded: Rc<RefCell<HashSet<PathBuf>>>,
     /// Os caminhos que estão na árvore (o `ObjectTreeModel` não expõe `has`).
     known: Rc<RefCell<HashSet<PathBuf>>>,
+    last_listing: RefCell<Vec<(PathBuf, Vec<String>)>>,
     _listeners: Vec<DisposableRef>,
 }
 
@@ -214,7 +215,36 @@ impl Explorer {
                 }
             }
         }));
-        Self { tree, root: root.to_path_buf(), loaded, expanded, known, _listeners: listeners }
+        let explorer = Self { tree, root: root.to_path_buf(), loaded, expanded, known, last_listing: RefCell::new(Vec::new()), _listeners: listeners };
+        *explorer.last_listing.borrow_mut() = explorer.listing();
+        explorer
+    }
+
+    #[cfg(test)]
+    pub fn contains(&self, path: &Path) -> bool {
+        self.known.borrow().contains(path)
+    }
+
+    /// Relê a árvore se alguma pasta aberta mudou no disco (entrada criada, apagada ou renomeada).
+    pub fn refresh_if_changed(&self) {
+        let snapshot = self.listing();
+        if *self.last_listing.borrow() != snapshot {
+            *self.last_listing.borrow_mut() = snapshot;
+            self.refresh();
+        }
+    }
+
+    /// Os nomes das entradas de cada pasta visível (a raiz e as abertas), para notar mudanças.
+    fn listing(&self) -> Vec<(PathBuf, Vec<String>)> {
+        let mut dirs: Vec<PathBuf> = std::iter::once(self.root.clone()).chain(self.expanded.borrow().iter().cloned()).collect();
+        dirs.sort();
+        dirs.into_iter()
+            .map(|dir| {
+                let mut names: Vec<String> = std::fs::read_dir(&dir).map(|r| r.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+                names.sort();
+                (dir, names)
+            })
+            .collect()
     }
 
     /// Relê o disco mantendo as pastas abertas (depois de criar, renomear ou apagar).

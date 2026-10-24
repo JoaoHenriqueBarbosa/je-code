@@ -165,6 +165,8 @@ pub enum Command {
     CloseToTheRight(usize),
     CloseSaved,
     CloseAll,
+    /// Confere o disco: arquivos abertos mudados por fora e a árvore do explorador.
+    CheckDisk,
     RevealInExplorer(PathBuf),
     SaveAndClose(usize),
     DiscardAndClose(usize),
@@ -281,6 +283,8 @@ pub struct OpenEditor {
     /// As linhas do arquivo no HEAD do git (para as barras de diff da margem) e a versão do modelo calculada.
     head: Option<Vec<je_base::JsString>>,
     diff_version: i64,
+    /// A data de modificação do arquivo no disco quando foi lido ou gravado (para notar mudanças de fora).
+    disk_mtime: Option<std::time::SystemTime>,
 }
 
 impl OpenEditor {
@@ -505,6 +509,7 @@ impl Shell {
             shell.theme_file.1 = entry.ui_theme.clone();
         }
         shell.detect_git();
+        shell.schedule_disk_check();
         for file in files {
             shell.open_file(file)?;
         }
@@ -664,7 +669,7 @@ impl Shell {
         let saved_version = model.get_alternative_version_id();
         let index = self.active.map_or(self.editors.len(), |i| i + 1);
         let needs_head = path.is_some();
-        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1 });
+        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None });
         if needs_head {
             self.reload_heads();
         }
@@ -680,6 +685,9 @@ impl Shell {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         self.push_editor(Some(path.to_path_buf()), name, &String::from_utf8_lossy(&bytes));
+        if let Some(editor) = self.active_editor_mut() {
+            editor.disk_mtime = Self::mtime(path);
+        }
         Ok(())
     }
 
@@ -708,6 +716,43 @@ impl Shell {
                 self.editors[index].view.set_focus(false);
             }
         }
+    }
+
+    fn mtime(path: &Path) -> Option<std::time::SystemTime> {
+        std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    }
+
+    /// Relê os arquivos abertos que mudaram no disco e não têm edição pendente (o `TextFileEditorModel` faz o
+    /// mesmo ao receber o evento do watcher); os com edição ficam como estão até salvar.
+    fn check_disk(&mut self) {
+        for index in 0..self.editors.len() {
+            let editor = &self.editors[index];
+            let Some(path) = editor.path.clone() else { continue };
+            let now = Self::mtime(&path);
+            if now.is_none() || now == editor.disk_mtime || editor.is_modified() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let model = self.editors[index].view.model().clone();
+            if model.get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy() != text {
+                // Troca o conteúdo como uma edição (o desfazer volta ao texto anterior), mantendo o cursor.
+                self.editors[index].view.replace_all(&text);
+                self.editors[index].saved_version = model.get_alternative_version_id();
+                self.editors[index].diff_version = -1;
+            }
+            self.editors[index].disk_mtime = now;
+            self.needs_render = true;
+        }
+        if let Some(explorer) = &self.explorer {
+            explorer.refresh_if_changed();
+        }
+    }
+
+    /// A próxima conferência do disco em 2 s (o watcher do VS Code avisa na hora; aqui é por consulta).
+    fn schedule_disk_check(&self) {
+        let queue = self.queue.clone();
+        je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::CheckDisk), 2000);
     }
 
     /// Fecha as abas `targets` (em ordem decrescente): as salvas fecham já; a primeira modificada pergunta.
@@ -849,6 +894,7 @@ impl Shell {
         let result = std::fs::write(&path, text.as_bytes());
         if result.is_ok() {
             editor.saved_version = model.get_alternative_version_id();
+            editor.disk_mtime = Self::mtime(&path);
         }
         editor.view.mark_dirty();
         if result.is_ok() {
@@ -874,7 +920,7 @@ impl Shell {
                 if let Some(env) = &self.environment {
                     view.set_token_colors(&env.color_map());
                 }
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1 };
+                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None };
                 self.activate(index);
             }
             Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
@@ -941,6 +987,10 @@ impl Shell {
             Command::CloseSaved => {
                 let targets: Vec<usize> = (0..self.editors.len()).filter(|i| !self.editors[*i].is_modified()).rev().collect();
                 self.close_many(targets);
+            }
+            Command::CheckDisk => {
+                self.check_disk();
+                self.schedule_disk_check();
             }
             Command::CloseAll => {
                 let targets: Vec<usize> = (0..self.editors.len()).rev().collect();
@@ -1320,6 +1370,11 @@ impl Shell {
     #[cfg(test)]
     pub fn tab_paths(&self) -> Vec<PathBuf> {
         self.editors.iter().filter_map(|e| e.path.clone()).collect()
+    }
+
+    #[cfg(test)]
+    pub fn explorer_lists(&self, path: &Path) -> bool {
+        self.explorer.as_ref().is_some_and(|e| e.contains(path))
     }
 
     #[cfg(test)]
@@ -3233,6 +3288,9 @@ impl Shell {
     }
 
     pub fn set_window_focus(&mut self, focused: bool) {
+        if focused {
+            self.check_disk();
+        }
         if focused && self.git_root.is_some() {
             // Ao voltar para a janela o estado do git pode ter mudado fora dela.
             self.git_op(git::Operation::Refresh);

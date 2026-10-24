@@ -140,6 +140,19 @@ impl EditorView {
         });
     }
 
+    /// Troca o documento inteiro por `text` numa edição só (o recarregar do disco: o desfazer volta ao anterior),
+    /// mantendo o cursor onde dá.
+    pub fn replace_all(&mut self, text: &str) {
+        let range = self.model.get_full_model_range();
+        let keep = self.core.selections();
+        self.run_command(|core| {
+            core.widget.push_undo_stop();
+            let edits = vec![je_editor::edit_operation::EditOperation::replace(range, Some(JsString::from(text)))];
+            core.widget.execute_edits(je_editor::code_editor_widget::ExecuteEditsSource::Name(Some("reload")), edits, Some(je_editor::code_editor_widget::EndCursorState::Selections(keep)));
+            core.widget.push_undo_stop();
+        });
+    }
+
     pub fn set_cursor(&mut self, position: Position) {
         let p = self.model.validate_position(position);
         self.run_command(|core| core.widget.set_position(p, Some("keyboard")));
