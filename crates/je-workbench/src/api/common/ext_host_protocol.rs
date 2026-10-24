@@ -2300,3 +2300,52 @@ mod notebook_data_dto_region {
 }
 
 // #endregion
+
+// #region Timeline
+
+pub use self::timeline_region::*;
+
+/// `MainThreadTimelineShape`, `ExtHostTimelineShape` e os identificadores `MainContext.MainThreadTimeline` e
+/// `ExtHostContext.ExtHostTimeline` (de `extHost.protocol.ts`, usados por `extHostTimeline.ts` e
+/// `mainThreadTimeline.ts`).
+///
+/// Divergências:
+/// - Os `UriComponents` são [`URI`] (os dois lados dividem o processo e o `revive` é a identidade), e o
+///   `Promise<Dto<Timeline> | undefined>` de `$getTimeline` é `Promise<Option<Timeline>>`.
+mod timeline_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::contrib::timeline::common::timeline::{Timeline, TimelineOptions, TimelineProviderDescriptor, WorkspaceTimelineProviderDescriptor};
+
+    /// `MainThreadTimelineShape`.
+    pub trait MainThreadTimelineShape: IDisposable {
+        fn rpc_register_timeline_provider(&self, provider: TimelineProviderDescriptor);
+        fn rpc_unregister_timeline_provider(&self, source: &str);
+        fn rpc_register_workspace_timeline_provider(&self, provider: WorkspaceTimelineProviderDescriptor);
+        fn rpc_unregister_workspace_timeline_provider(&self, source: &str);
+
+        /// `uris`: the files or folders whose timelines changed, or `None` if all of them changed.
+        fn rpc_emit_timeline_change_event(&self, source: &str, uris: Option<Vec<URI>>);
+        fn rpc_emit_workspace_timeline_change_event(&self, source: &str);
+    }
+
+    /// `ExtHostTimelineShape`.
+    pub trait ExtHostTimelineShape {
+        /// `uri`: the file or folder to get the timeline for, or `None` for the workspace timeline.
+        fn rpc_get_timeline(&self, source: &str, uri: Option<URI>, options: TimelineOptions, token: CancellationToken) -> Promise<Option<Timeline>>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_TIMELINE: ProxyIdentifier<dyn MainThreadTimelineShape> = ProxyIdentifier::new("MainThreadTimeline");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_TIMELINE: ProxyIdentifier<dyn ExtHostTimelineShape> = ProxyIdentifier::new("ExtHostTimeline");
+    }
+}
+
+// #endregion

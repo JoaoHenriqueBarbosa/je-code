@@ -73,6 +73,7 @@ pub const CLASSES: &[&str] = &[
     "VSBuffer",
     "ArrayBuffer",
     "TreeItem",
+    "TimelineItem",
 ];
 
 /// `class extends`: a classe da qual `class` herda, se houver.

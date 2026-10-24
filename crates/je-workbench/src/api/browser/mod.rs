@@ -8,6 +8,7 @@ pub mod main_thread_documents;
 pub mod main_thread_managed_sockets;
 pub mod main_thread_progress;
 pub mod main_thread_status_bar;
+pub mod main_thread_timeline;
 pub mod main_thread_quick_open;
 pub mod main_thread_workspace;
 pub mod main_thread_message_service;
