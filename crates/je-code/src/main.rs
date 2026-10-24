@@ -1022,6 +1022,31 @@ mod tests {
     }
 
     #[test]
+    fn tab_context_menu_closes_others_and_to_the_right() {
+        let files: Vec<PathBuf> = ["t1.txt", "t2.txt", "t3.txt", "t4.txt"].iter().map(|n| temp_file(n, n)).collect();
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &files, 1200.0, 800.0).expect("abre");
+        let names = |shell: &Shell| shell.tab_paths();
+        assert_eq!(names(&shell).len(), 4);
+        // Botão direito na segunda aba abre o menu.
+        let mut input = PointerInput::new(PointerInputKind::Down, 200.0, 51.0);
+        input.button = PointerButton::Secondary;
+        shell.pointer(PointerInput::new(PointerInputKind::Move, 200.0, 51.0));
+        shell.pointer(input);
+        input.kind = PointerInputKind::Up;
+        shell.pointer(input);
+        assert!(shell.has_context_menu());
+        snapshot(&mut shell, "tab0-menu.png");
+        shell.key(true, KeyCode::Escape, Modifiers::default(), None, Some(EditorKey::Escape));
+        shell.run(shell::Command::CloseToTheRight(1));
+        assert_eq!(names(&shell), files[..2].to_vec());
+        shell.run(shell::Command::CloseOthers(0));
+        assert_eq!(names(&shell), files[..1].to_vec());
+        for f in files {
+            std::fs::remove_file(f).ok();
+        }
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

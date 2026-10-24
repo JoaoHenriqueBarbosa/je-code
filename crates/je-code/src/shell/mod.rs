@@ -160,6 +160,12 @@ pub enum Command {
     Revert,
     CloseActiveEditor,
     CloseEditor(usize),
+    TabContextMenu(usize),
+    CloseOthers(usize),
+    CloseToTheRight(usize),
+    CloseSaved,
+    CloseAll,
+    RevealInExplorer(PathBuf),
     SaveAndClose(usize),
     DiscardAndClose(usize),
     CancelExit,
@@ -704,6 +710,53 @@ impl Shell {
         }
     }
 
+    /// Fecha as abas `targets` (em ordem decrescente): as salvas fecham já; a primeira modificada pergunta.
+    fn close_many(&mut self, targets: Vec<usize>) {
+        for index in targets {
+            if index >= self.editors.len() {
+                continue;
+            }
+            if self.editors[index].is_modified() {
+                self.request_close(index);
+                return;
+            }
+            self.close_editor(index);
+        }
+    }
+
+    /// O menu de contexto de uma aba (`editor/title/context`).
+    fn tab_menu(&mut self, index: usize) {
+        use je_base::actions::{Action, ActionCallback, ActionRef, Separator};
+        let Some(editor) = self.editors.get(index) else { return };
+        let path = editor.path.clone();
+        let queue = self.queue.clone();
+        let item = |label: &str, command: Command, enabled: bool| -> ActionRef {
+            let queue = queue.clone();
+            let callback: ActionCallback = Rc::new(move |_| {
+                queue.borrow_mut().push(command.clone());
+                je_base::dynamic::Dynamic::Undefined.into()
+            });
+            Action::new(label, label, "", enabled, Some(callback)) as ActionRef
+        };
+        let count = self.editors.len();
+        let mut actions = vec![
+            item("Close", Command::CloseEditor(index), true),
+            item("Close Others", Command::CloseOthers(index), count > 1),
+            item("Close to the Right", Command::CloseToTheRight(index), index + 1 < count),
+            item("Close Saved", Command::CloseSaved, true),
+            item("Close All", Command::CloseAll, true),
+        ];
+        if let Some(path) = path {
+            actions.push(Separator::new() as ActionRef);
+            actions.push(item("Copy Path", Command::CopyPath(path.clone(), false), true));
+            actions.push(item("Copy Relative Path", Command::CopyPath(path.clone(), true), self.workspace.is_some()));
+            actions.push(Separator::new() as ActionRef);
+            actions.push(item("Reveal in Explorer View", Command::RevealInExplorer(path.clone()), self.explorer.is_some()));
+            actions.push(item(if cfg!(windows) { "Reveal in File Explorer" } else if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Open Containing Folder" }, Command::RevealInFileManager(path), true));
+        }
+        self.open_menu(actions);
+    }
+
     /// Fechar uma aba modificada pergunta antes (`Do you want to save the changes you made to X?`).
     fn request_close(&mut self, index: usize) {
         let Some(editor) = self.editors.get(index) else { return };
@@ -878,6 +931,29 @@ impl Shell {
                 }
             }
             Command::CloseEditor(i) => self.request_close(i),
+            Command::TabContextMenu(index) => self.tab_menu(index),
+            Command::CloseOthers(index) | Command::CloseToTheRight(index) => {
+                // Fecha de trás para a frente para os índices não andarem; as modificadas perguntam uma por vez.
+                let others = matches!(command, Command::CloseOthers(_));
+                let targets: Vec<usize> = (0..self.editors.len()).filter(|i| if others { *i != index } else { *i > index }).rev().collect();
+                self.close_many(targets);
+            }
+            Command::CloseSaved => {
+                let targets: Vec<usize> = (0..self.editors.len()).filter(|i| !self.editors[*i].is_modified()).rev().collect();
+                self.close_many(targets);
+            }
+            Command::CloseAll => {
+                let targets: Vec<usize> = (0..self.editors.len()).rev().collect();
+                self.close_many(targets);
+            }
+            Command::RevealInExplorer(path) => {
+                self.sidebar_visible = true;
+                self.side_view = SideView::Explorer;
+                if let Some(explorer) = &self.explorer {
+                    explorer.reveal(Some(&path));
+                }
+                self.resize_editors();
+            }
             Command::SaveAndClose(i) => {
                 if i < self.editors.len() {
                     if self.editors[i].path.is_none() {
@@ -1239,6 +1315,11 @@ impl Shell {
     #[cfg(test)]
     pub fn panel_is_visible(&self) -> bool {
         self.panel_visible
+    }
+
+    #[cfg(test)]
+    pub fn tab_paths(&self) -> Vec<PathBuf> {
+        self.editors.iter().filter_map(|e| e.path.clone()).collect()
     }
 
     #[cfg(test)]
@@ -2608,10 +2689,10 @@ impl Shell {
         for (index, tab, close) in tab_nodes {
             let queue = self.queue.clone();
             let _ = self.ui.listen(tab, EventKind::PointerDown, false, move |e| {
-                if e.pointer.is_some_and(|p| p.button == PointerButton::Auxiliary) {
-                    queue.borrow_mut().push(Command::CloseEditor(index));
-                } else {
-                    queue.borrow_mut().push(Command::ActivateEditor(index));
+                match e.pointer.map(|p| p.button) {
+                    Some(PointerButton::Auxiliary) => queue.borrow_mut().push(Command::CloseEditor(index)),
+                    Some(PointerButton::Secondary) => queue.borrow_mut().push(Command::TabContextMenu(index)),
+                    _ => queue.borrow_mut().push(Command::ActivateEditor(index)),
                 }
             });
             let queue = self.queue.clone();
