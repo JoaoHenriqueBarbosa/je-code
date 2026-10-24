@@ -24,8 +24,11 @@ pub trait ISharedProcessService {
 
 service_id!(pub I_SHARED_PROCESS_SERVICE: dyn ISharedProcessService = "sharedProcessService");
 
-/// `IRemoteAgentConnection`, reduzido a `getChannel`.
+/// `IRemoteAgentConnection`, reduzido a `remoteAuthority` e `getChannel`.
 pub trait IRemoteAgentConnection {
+    /// `remoteAuthority`: a autoridade do servidor remoto (por exemplo `ssh-remote+host`).
+    fn remote_authority(&self) -> String;
+
     /// `getChannel(channelName)`: o canal de nome dado, no servidor remoto.
     fn get_channel(&self, channel_name: &str) -> Rc<dyn IChannel>;
 }

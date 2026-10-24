@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use je_base::cancellation::CancellationToken;
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
@@ -25,8 +26,8 @@ use je_base::promise::Promise;
 use je_base::uri::{Field, URI, UriChange};
 use je_instantiation::Injectable;
 use je_platform::files::files::{
-    FileChangesEvent, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
-    FileSystemProviderRegistrationEvent, ResolveFileOptions,
+    FileChangesEvent, FileContent, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
+    FileSystemProviderRegistrationEvent, ReadFileOptions, ResolveFileOptions,
 };
 use je_platform::files::i_file_service::IFileService;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
@@ -75,6 +76,10 @@ impl IFileService for FakeFileService {
     fn has_capability(&self, uri: &URI, flag: FileSystemProviderCapabilities) -> bool {
         let mask = self.data.get(&uri.scheme().to_string_lossy()).copied().unwrap_or(FileSystemProviderCapabilities::NONE);
         mask.intersects(flag)
+    }
+
+    fn read_file(&self, _resource: &URI, _options: Option<ReadFileOptions>, _token: Option<CancellationToken>) -> Promise<FileContent> {
+        Self::not_mocked("readFile")
     }
 }
 

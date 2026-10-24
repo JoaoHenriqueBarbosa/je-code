@@ -1140,6 +1140,16 @@ impl IFileService for TestFileService {
         }
         self.get_provider(&resource.scheme().to_string_lossy()).is_some_and(|provider| provider.capabilities().intersects(capability))
     }
+
+    /// `readFile(resource, options?)` do original sem o `readShouldThrowError` e sem o rastreio de leituras (`content`,
+    /// `lastReadFileUri`, `readOperations`), que o porte do `TestFileService` ainda não tem: devolve o stat do
+    /// `createFileStat(resource, readonly)` e o conteúdo padrão `'Hello Html'` da classe.
+    fn read_file(&self, resource: &URI, _options: Option<je_platform::files::files::ReadFileOptions>, _token: Option<CancellationToken>) -> Promise<je_platform::files::files::FileContent> {
+        Promise::resolved(je_platform::files::files::FileContent {
+            stat: create_file_stat(resource, &FileStatOptions { readonly: self.readonly.get(), ..FileStatOptions::default() }),
+            value: je_base::buffer::VSBuffer::from_string("Hello Html"),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -119,6 +119,10 @@ impl IRemoteAgentService for TestRemoteAgentService {
     fn get_raw_environment(&self) -> Promise<Option<RemoteAgentEnvironment>> {
         Promise::resolved(None)
     }
+
+    fn get_connection(&self) -> Option<Rc<dyn crate::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection>> {
+        None
+    }
 }
 
 /// Os valores do ambiente que um teste troca (`instantiationService.stub(IWorkbenchEnvironmentService, { ... })`):
@@ -1252,6 +1256,10 @@ mod remote_doubles {
 
         fn get_raw_environment(&self) -> Promise<Option<RemoteAgentEnvironment>> {
             self.environment.promise.clone()
+        }
+
+        fn get_connection(&self) -> Option<Rc<dyn crate::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection>> {
+            None
         }
     }
 }

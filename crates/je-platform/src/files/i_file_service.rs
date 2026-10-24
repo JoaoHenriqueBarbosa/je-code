@@ -3,7 +3,7 @@
 //!
 //! O porte do serviço de arquivos é a struct concreta [`FileService`], sem trait. Este módulo define o `IFileService`
 //! reduzido ao que os serviços portados até aqui leem dele (`getProvider`, `resolve` com `resolveMetadata`,
-//! `onDidFilesChange`, `exists`, `hasProvider`, `hasCapability` e os eventos de registro e de capacidades dos
+//! `onDidFilesChange`, `exists`, `hasProvider`, `hasCapability`, `readFile` e os eventos de registro e de capacidades dos
 //! providers), com a assinatura de cada método igual à do original, e cresce junto com os
 //! consumidores. O `FileService` o implementa por [`Rc<FileService>`], porque os métodos dele recebem `self: &Rc<Self>`.
 //!
@@ -13,6 +13,7 @@
 
 use std::rc::Rc;
 
+use je_base::cancellation::CancellationToken;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
@@ -20,8 +21,8 @@ use je_instantiation::service_id;
 
 use super::file_service::FileService;
 use super::files::{
-    FileChangesEvent, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
-    FileSystemProviderRegistrationEvent, ResolveFileOptions,
+    FileChangesEvent, FileContent, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
+    FileSystemProviderRegistrationEvent, ReadFileOptions, ResolveFileOptions,
 };
 
 /// `IFileService`.
@@ -57,6 +58,10 @@ pub trait IFileService {
 
     /// Checks if the provider for the provided resource has the provided file system capability.
     fn has_capability(&self, resource: &URI, capability: FileSystemProviderCapabilities) -> bool;
+
+    /// `readFile(resource, options?, token?)`: reads the file at the given resource. A missing file rejects with a
+    /// [`super::files::FileOperationError`] whose result is `FileNotFound`.
+    fn read_file(&self, resource: &URI, options: Option<ReadFileOptions>, token: Option<CancellationToken>) -> Promise<FileContent>;
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
@@ -92,5 +97,9 @@ impl IFileService for Rc<FileService> {
 
     fn has_capability(&self, resource: &URI, capability: FileSystemProviderCapabilities) -> bool {
         FileService::has_capability(self, resource, capability)
+    }
+
+    fn read_file(&self, resource: &URI, options: Option<ReadFileOptions>, token: Option<CancellationToken>) -> Promise<FileContent> {
+        FileService::read_file(self, resource, options, token)
     }
 }
