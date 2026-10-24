@@ -12,6 +12,12 @@
 //!   `ThemableDecorationRenderOptions`, `DecorationRangeBehavior`, `DecorationRenderOptions`,
 //!   `fromRangeOrRangeWithMessage` e `pathOrURIToURI`.
 //! - [`tree_view`]: `ViewBadge`, `DataTransferItem` e `DataTransfer`.
+//! - [`chat`]: `ChatResponseVoiceProgressPart`, `ChatLanguageModelToolReference` e `ChatRequestModeInstructions`.
+//! - [`icon_path`]: `IconPath`.
+//! - [`language_selector`]: `LanguageSelector`.
+//! - [`notebook`]: `NotebookCellKind`, `NotebookCellExecutionSummary`, `NotebookCellOutputItem`, `NotebookCellOutput`,
+//!   `NotebookCellData` e `NotebookData`.
+//! - [`workspace_edit`]: `WorkspaceEdit` (`from` e `to`).
 //!
 //! Este arquivo tem o resto: [`ICommandsConverter`] (o `Command.ICommandsConverter`), `ViewColumn` e o
 //! `EditorGroupColumn`.
@@ -22,15 +28,14 @@
 //! [`geometry`]).
 //!
 //! AINDA NÃO PORTADO (cada item pede classes ou DTOs que ainda não existem no porte; ficam por nome do
-//! `namespace` do original): `TokenType`, `DocumentSelector`, `TabSelector`, `WorkspaceEdit`
-//! (depende de `IWorkspaceEditDto` e de `NotebookCellData`), `WorkspaceSymbol`, `DefinitionLink`, `Hover`,
+//! `namespace` do original): `TokenType`, `TabSelector`, `WorkspaceSymbol`, `DefinitionLink`, `Hover`,
 //! `EvaluatableExpression`, `InlineValue`, `InlineValueContext`, `MultiDocumentHighlight`,
 //! `CompletionTriggerKind`, `CompletionContext`, `CompletionItemTag`, `CompletionCommand`,
 //! `CompletionItemKind`, `CompletionItem`, as demais famílias de linguagem (assinatura, lente, ação de
-//! código, dicas embutidas, cor, dobra, intervalos de seleção, links, semântica), `ThemeIcon`/`IconPath`,
-//! os de notebook (`NotebookCellData`, `NotebookData`, `NotebookCellOutput`, `NotebookKernel*`,
-//! `NotebookCellStatusBarItem`...), depuração, tarefas, testes (`TestItem`, `TestRunProfile`,
-//! `TestMessage`, cobertura), terminal, SCM, comentários, chat (`Chat*`, `LanguageModel*`), `Mcp*`, e os
+//! código, dicas embutidas, cor, dobra, intervalos de seleção, links, semântica), `ThemeIcon`,
+//! os de notebook (`NotebookKernel*`, `NotebookCellStatusBarItem`...), depuração, tarefas, testes (`TestItem`, `TestRunProfile`,
+//! `TestMessage`, cobertura), terminal, SCM, comentários, chat (os `Chat*` além de `ChatRequestModeInstructions` e
+//! `ChatResponseVoiceProgressPart`, e `LanguageModel*`), `Mcp*`, e os
 //! de timeline, speech e configurações de IA. Entram junto do primeiro arquivo `extHost*.ts` que os pedir.
 //!
 //! Divergências: `EditorGroupColumn` (`workbench/services/editor/common/editorGroupColumn.ts`) e as constantes
@@ -43,23 +48,37 @@ use je_base::lifecycle::DisposableStore;
 use super::ext_host_protocol::ICommandDto;
 use super::ext_host_types::{Command, ViewColumn as ApiViewColumn};
 
+pub mod chat;
 pub mod edits;
 pub mod geometry;
+pub mod icon_path;
+pub mod language_selector;
+pub mod markdown_links;
 pub mod markers;
 pub mod markup;
+pub mod notebook;
 pub mod progress;
 pub mod save;
 pub mod symbols;
 pub mod text_editor;
 pub mod tree_view;
+pub mod workspace_edit;
 
+pub use chat::{
+    ChatAgentResult, ChatLanguageModelToolReference, ChatRequestModeInstructions, ChatResponseVoiceProgressPart, ExtHostChatResponseVoiceProgressPart,
+    IChatAgentResult, IChatRequestModeInstructions,
+};
 pub use edits::{EndOfLine, TextEdit};
 pub use geometry::{CellRange, Location, LocationDto, NotebookRange, Position, Range, Selection};
+pub use icon_path::{IconPath, IconPathInput, UriOrPath};
+pub use language_selector::{DocumentFilterInput, DocumentSelectorInput, LanguageSelector};
 pub use markers::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag};
 pub use markup::MarkdownString;
+pub use notebook::{NotebookCellData, NotebookCellExecutionSummary, NotebookCellKind, NotebookCellOutput, NotebookCellOutputItem, NotebookData};
 pub use progress::{ProgressLocation, ProgressLocationArg};
 pub use save::TextDocumentSaveReason;
 pub use tree_view::{DataTransfer, DataTransferItem, ResolveFileData, ViewBadge};
+pub use workspace_edit::{IVersionInformationProvider, WorkspaceEdit};
 pub use symbols::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentHighlight, DocumentSymbol, HierarchyItemDto, IncomingCallDto,
     OutgoingCallDto, SymbolKind, SymbolTag, TypeHierarchyItem,
