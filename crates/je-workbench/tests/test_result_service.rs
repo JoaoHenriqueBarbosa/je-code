@@ -48,7 +48,7 @@ use je_platform::telemetry::telemetry_utils::null_telemetry_service;
 use je_workbench::contrib::testing::common::test_id::TestId;
 use je_workbench::contrib::testing::common::test_profile_service::{ITestProfileService, TestProfileService};
 use je_workbench::contrib::testing::common::test_result::{
-    HydratedTestResult, ITestResult, LiveTestResult, TaskRawOutput, TestResultItemChange, TestResultItemChangeReason, result_item_parents,
+    HydratedTestResult, ITestResult, LiveTestResult, TaskRawOutput, TestResultItemChange, TestResultItemChangeReason, result_item_parents as get_result_item_parents,
 };
 use je_workbench::contrib::testing::common::test_result_service::{ITestResultService, TestResultService};
 use je_workbench::contrib::testing::common::test_result_storage::{ITestResultStorage, InMemoryResultStorage};
@@ -337,7 +337,8 @@ fn test_storage_service(ds: &LeakGuard) -> Rc<dyn StorageService> {
 
 fn test_profile_service(ds: &LeakGuard) -> Rc<dyn ITestProfileService> {
     let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
-    ds.add_rc(TestProfileService::new(context_key_service, test_storage_service(ds)))
+    let service = ds.add_rc(TestProfileService::new(context_key_service, test_storage_service(ds)));
+    service
 }
 
 fn service_setup(ds: &LeakGuard) -> Services {
@@ -544,11 +545,11 @@ fn result_item_parents() {
         let item_addr = |id: &str| Rc::as_ptr(&r.get_state_by_id(id).unwrap()) as usize;
 
         let aa = r.get_state_by_id(&id_of(&["ctrlId", "id-a", "id-aa"])).unwrap();
-        let parents: Vec<usize> = result_item_parents(r.as_ref(), &aa).iter().map(|item| Rc::as_ptr(item) as usize).collect();
+        let parents: Vec<usize> = get_result_item_parents(r.as_ref(), &aa).iter().map(|item| Rc::as_ptr(item) as usize).collect();
         assert_eq!(parents, vec![item_addr(&id_of(&["ctrlId", "id-a", "id-aa"])), item_addr(&id_of(&["ctrlId", "id-a"])), item_addr(&id_of(&["ctrlId"]))]);
 
         let root = r.get_state_by_id(&fixture.tests.root().id()).unwrap();
-        let parents: Vec<usize> = result_item_parents(r.as_ref(), &root).iter().map(|item| Rc::as_ptr(item) as usize).collect();
+        let parents: Vec<usize> = get_result_item_parents(r.as_ref(), &root).iter().map(|item| Rc::as_ptr(item) as usize).collect();
         assert_eq!(parents, vec![item_addr(&fixture.tests.root().id())]);
     });
 }
