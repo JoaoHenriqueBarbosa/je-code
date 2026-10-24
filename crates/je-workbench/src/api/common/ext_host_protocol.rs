@@ -3982,6 +3982,10 @@ mod notebook_region {
     impl ExtHostContext {
         pub const EXT_HOST_NOTEBOOK: ProxyIdentifier<dyn ExtHostNotebookShape> = ProxyIdentifier::new("ExtHostNotebook");
         pub const EXT_HOST_NOTEBOOK_DOCUMENTS: ProxyIdentifier<dyn ExtHostNotebookDocumentsShape> = ProxyIdentifier::new("ExtHostNotebookDocuments");
+    }
+}
+
+// #endregion
 
 // #region Webviews (painéis, views e mensagens)
 
