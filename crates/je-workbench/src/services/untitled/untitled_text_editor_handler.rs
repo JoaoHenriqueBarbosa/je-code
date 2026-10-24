@@ -50,7 +50,7 @@ fn optional_string(value: Option<String>) -> Dynamic {
 }
 
 /// `URI.revive(resourceJSON)`: a reconstrução do que `resource.toJSON()` serializou.
-fn revive_uri(resource_json: &serde_json::Value) -> URI {
+pub(crate) fn revive_uri(resource_json: &serde_json::Value) -> URI {
     let component = |key: &str| resource_json.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty()).map(JsString::from);
 
     let state = UriState {

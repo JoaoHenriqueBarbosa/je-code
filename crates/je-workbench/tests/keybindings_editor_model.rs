@@ -231,6 +231,10 @@ impl IExtensionService for StubExtensionService {
     fn extensions(&self) -> Vec<ExtensionDescription> {
         self.extensions.borrow().clone()
     }
+
+    fn activate_by_event(&self, _activation_event: &str, _activation_kind: Option<ActivationKind>) -> Promise<()> {
+        not_stubbed("activateByEvent")
+    }
 }
 
 /// O `setup` da suíte: o guarda de vazamentos, os dublês, o modelo e o comando `command_without_keybinding`.
