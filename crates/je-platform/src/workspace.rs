@@ -79,6 +79,11 @@ impl Workspace {
         self.configuration.borrow().clone()
     }
 
+    /// `set configuration(...)`: troca o arquivo de configuração do workspace.
+    pub fn set_configuration(&self, configuration: Option<URI>) {
+        *self.configuration.borrow_mut() = configuration;
+    }
+
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }

@@ -10,3 +10,4 @@ pub mod folder_query_search_tree;
 pub mod ripgrep_text_search_engine;
 pub mod search_ext_types_internal;
 pub mod search_helpers;
+pub mod query_builder;

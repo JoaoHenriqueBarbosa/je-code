@@ -2,6 +2,7 @@
 
 pub mod keybinding;
 pub mod search;
+pub mod editor;
 
 pub mod suggest;
 pub mod policies;

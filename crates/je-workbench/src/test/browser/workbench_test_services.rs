@@ -318,3 +318,28 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
         None
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `TestEditorGroupsService`, reduzido ao contrato `IEditorGroupsService` do porte (só os `groups`). A classe do original
+// recebe os `IEditorGroupView[]` e acrescenta dezenas de membros de layout, que entram junto com o contrato.
+// ---------------------------------------------------------------------------------------------------------------------
+
+use crate::services::editor::editor_groups_service::{IEditorGroup, IEditorGroupsService};
+
+/// `TestEditorGroupsService`.
+pub struct TestEditorGroupsService {
+    groups: Vec<Rc<dyn IEditorGroup>>,
+}
+
+impl TestEditorGroupsService {
+    /// `constructor(public groups: IEditorGroupView[] = [])`.
+    pub fn new(groups: Option<Vec<Rc<dyn IEditorGroup>>>) -> Rc<Self> {
+        Rc::new(Self { groups: groups.unwrap_or_default() })
+    }
+}
+
+impl IEditorGroupsService for TestEditorGroupsService {
+    fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
+        self.groups.clone()
+    }
+}

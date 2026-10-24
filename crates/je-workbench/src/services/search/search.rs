@@ -4,7 +4,9 @@
 //! `ITextSearchMatch`, `TextSearchMatch`, `IRawFileMatch` e `isFilePatternMatch`), mais as consultas que o
 //! `searchHelpers` e o motor do ripgrep leem (`IFolderQuery`, `ExcludeGlobPattern`, `ICommonQueryProps`,
 //! `ITextQueryProps`, `IAITextQueryProps`, `QueryType`, `ITextSearchQuery`, `ITextSearchContext` e
-//! `ITextSearchResult`).
+//! `ITextSearchResult`), mais o que o `QueryBuilder` produz e lê (`IFileQueryProps`, `getExcludes` e
+//! `pathIncludedInQuery`). A configuração (`ISearchConfiguration`) é o objeto [`Dynamic`] que o serviço de
+//! configuração devolve.
 //!
 //! Diferenças de forma em relação ao original, nenhuma de comportamento:
 //! - os números do JavaScript (linhas, colunas, contagens) são `i64`, e o texto é [`JsString`]: colunas e
@@ -26,10 +28,15 @@
 //! - os argumentos opcionais viram `Option` (`previewOptions`, `webviewIndex`) ou `bool` (`ignoreCase`, onde
 //!   `undefined` e `false` são equivalentes).
 
+use je_base::dynamic::{Dynamic, Truthy};
+use je_base::extpath;
 use je_base::glob::{self, Expression, GlobOptions};
 use je_base::js_string::JsString;
+use je_base::objects;
+use je_base::path::PathModule;
 use je_base::strings::{fuzzy_contains, get_n_lines};
 use je_base::uri::URI;
+use je_platform::resources::{fs_path, host_environment};
 
 /// `IPatternInfo`: o padrão de busca e as opções que a caixa de busca do usuário liga e desliga.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -380,6 +387,37 @@ pub struct IAITextQueryProps<U = URI> {
 pub type ITextQuery = ITextQueryProps<URI>;
 pub type IAITextQuery = IAITextQueryProps<URI>;
 
+/// `IFileQueryProps` (`type: QueryType.File`): `IFileQuery` é `IFileQueryProps<URI>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IFileQueryProps<U = URI> {
+    pub common: ICommonQueryProps<U>,
+    pub file_pattern: Option<String>,
+    /// When walking through the tree to find the result, don't use the filePattern to fuzzy match. Instead, should use
+    /// glob matching.
+    pub should_glob_match_file_pattern: Option<bool>,
+    /// If true no results will be returned. Instead `limitHit` will indicate if at least one result exists or not.
+    /// Currently does not work with queries including a 'siblings clause'.
+    pub exists: Option<bool>,
+    pub sort_by_score: Option<bool>,
+    pub cache_key: Option<String>,
+}
+
+impl<U> IFileQueryProps<U> {
+    /// Um `{ folderQueries }` sem nenhuma opção.
+    pub fn new(folder_queries: Vec<IFolderQuery<U>>) -> Self {
+        Self {
+            common: ICommonQueryProps::new(folder_queries),
+            file_pattern: None,
+            should_glob_match_file_pattern: None,
+            exists: None,
+            sort_by_score: None,
+            cache_key: None,
+        }
+    }
+}
+
+pub type IFileQuery = IFileQueryProps<URI>;
+
 /// `QueryType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueryType {
@@ -424,4 +462,78 @@ impl ITextSearchResult {
     pub fn is_match(&self) -> bool {
         matches!(self, ITextSearchResult::Match(_))
     }
+}
+
+/// O `configuration && configuration.a && configuration.a.b` do original: o valor no caminho dado, ou `None` se algum
+/// passo (ou o próprio valor) é falso no sentido do JavaScript.
+fn truthy_property(configuration: &Dynamic, path: &[&str]) -> Option<Dynamic> {
+    let mut current = configuration.clone();
+    if !current.is_truthy() {
+        return None;
+    }
+    for key in path {
+        current = current.get_str(key);
+        if !current.is_truthy() {
+            return None;
+        }
+    }
+    Some(current)
+}
+
+/// `getExcludes`: os `files.exclude` e, com `include_search_excludes`, os `search.exclude`, mesclados (os do `search`
+/// vencem). `configuration` é o objeto `ISearchConfiguration` que o serviço de configuração devolve.
+pub fn get_excludes(configuration: &Dynamic, include_search_excludes: bool) -> Option<Expression> {
+    let file_excludes = truthy_property(configuration, &["files", "exclude"]);
+    let search_excludes = if include_search_excludes { truthy_property(configuration, &["search", "exclude"]) } else { None };
+
+    match (file_excludes, search_excludes) {
+        (None, None) => None,
+        (Some(excludes), None) | (None, Some(excludes)) => Some(Expression::from_dynamic(&excludes)),
+        (Some(file_excludes), Some(search_excludes)) => {
+            // clone the config as it could be frozen
+            let all_excludes = Dynamic::object(Vec::<(&str, Dynamic)>::new());
+            let all_excludes = objects::mixin(&all_excludes, &objects::deep_clone(&file_excludes), true);
+            let all_excludes = objects::mixin(&all_excludes, &objects::deep_clone(&search_excludes), true);
+            Some(Expression::from_dynamic(&all_excludes))
+        }
+    }
+}
+
+/// `pathIncludedInQuery`.
+pub fn path_included_in_query(query_props: &ICommonQueryProps<URI>, path_to_check: &str) -> bool {
+    let ignore_glob_case = query_props.ignore_glob_case.is_truthy();
+    let glob_options = if ignore_glob_case { GlobOptions { ignore_case: Some(true), ..GlobOptions::default() } } else { GlobOptions::default() };
+    let expression_matches = |expression: &Expression, path: &str| {
+        // O resultado de `glob.match` é o padrão que casou: verdadeiro se é um texto não vazio.
+        glob::match_expression(expression, path, &glob_options).matched().is_some_and(|pattern| !pattern.is_empty())
+    };
+
+    if query_props.exclude_pattern.as_ref().is_some_and(|exclude| expression_matches(exclude, path_to_check)) {
+        return false;
+    }
+
+    let using_search_paths = query_props.using_search_paths.is_truthy();
+    if query_props.include_pattern.is_some() || using_search_paths {
+        if query_props.include_pattern.as_ref().is_some_and(|include| expression_matches(include, path_to_check)) {
+            return true;
+        }
+
+        // If searchPaths are being used, the extra file must be in a subfolder and match the pattern, if present
+        if using_search_paths {
+            let env = host_environment();
+            return query_props.folder_queries.iter().any(|folder_query| {
+                let search_path = fs_path(&folder_query.folder);
+                if extpath::is_equal_or_parent(path_to_check, &search_path, ignore_glob_case, false, env.as_ref()) {
+                    let rel_path = PathModule::native(env.as_ref()).relative(&search_path, path_to_check);
+                    folder_query.include_pattern.as_ref().is_none_or(|include| expression_matches(include, &rel_path))
+                } else {
+                    false
+                }
+            });
+        }
+
+        return false;
+    }
+
+    true
 }
