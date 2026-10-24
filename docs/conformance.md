@@ -7,14 +7,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `base` | 150 | 2278 | 127 | 1879 | 82.48 |
 | `platform` | 192 | 2806 | 110 | 1886 | 67.21 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
-| `workbench/services` | 137 | 2491 | 96 | 2066 | 82.94 |
+| `workbench/services` | 137 | 2491 | 101 | 2089 | 83.86 |
 | `workbench/api` | 94 | 965 | 77 | 747 | 77.41 |
-| `workbench/contrib` | 370 | 4636 | 176 | 2074 | 44.74 |
+| `workbench/contrib` | 370 | 4636 | 188 | 2132 | 45.99 |
 | `workbench (shell)` | 69 | 621 | 20 | 223 | 35.91 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 11760 | 63.94 |
+| **total** | | 18391 | | 11841 | 64.38 |
 
 ## Arquivos portados
 
@@ -419,10 +419,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/editor/test/browser/editorService.test.ts` | 53 | `crates/je-workbench/tests/editor_service.rs` | 50 |
 | `src/vs/workbench/services/editor/test/browser/editorsObserver.test.ts` | 14 | `crates/je-workbench/tests/editors_observer.rs` | 14 |
 | `src/vs/workbench/services/editor/test/browser/modalEditorGroup.test.ts` | 44 | `crates/je-workbench/tests/modal_editor_group.rs` | 40 |
+| `src/vs/workbench/services/editor/test/browser/openWithEditorPicker.test.ts` | 5 | `crates/je-workbench/tests/open_with_editor_picker.rs` | 5 |
 | `src/vs/workbench/services/environment/test/browser/environmentService.test.ts` | 4 | `crates/je-workbench/tests/browser_environment_service.rs` | 4 |
 | `src/vs/workbench/services/extensionManagement/test/browser/extensionEnablementService.test.ts` | 129 | `crates/je-workbench/tests/extension_enablement_service.rs` | 129 |
 | `src/vs/workbench/services/extensionManagement/test/electron-browser/extensionGalleryManifestService.test.ts` | 42 | `crates/je-workbench/tests/extension_gallery_manifest_service.rs` | 42 |
 | `src/vs/workbench/services/extensions/test/browser/extensionService.test.ts` | 11 | `crates/je-workbench/tests/extension_service.rs` | 11 |
+| `src/vs/workbench/services/extensions/test/browser/extensionStorageMigration.test.ts` | 2 | `crates/je-workbench/tests/extension_storage_migration.rs` | 2 |
 | `src/vs/workbench/services/extensions/test/browser/extensionUrlHandler.test.ts` | 4 | `crates/je-workbench/tests/extension_url_handler.rs` | 4 |
 | `src/vs/workbench/services/extensions/test/common/extensionDescriptionRegistry.test.ts` | 1 | `crates/je-workbench/tests/extension_description_registry.rs` | 1 |
 | `src/vs/workbench/services/extensions/test/common/extensionManifestPropertiesService.test.ts` | 35 | `crates/je-workbench/tests/extension_manifest_properties_service.rs` | 35 |
@@ -431,6 +433,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/extensions/test/common/rpcProtocol.test.ts` | 16 | `crates/je-workbench/tests/rpc_protocol.rs` | 16 |
 | `src/vs/workbench/services/filesConfiguration/test/browser/filesConfigurationService.test.ts` | 12 | `crates/je-workbench/tests/files_configuration_service.rs` | 12 |
 | `src/vs/workbench/services/history/test/browser/historyService.test.ts` | 23 | `crates/je-workbench/tests/history_service.rs` | 23 |
+| `src/vs/workbench/services/keybinding/test/browser/browserKeyboardMapper.test.ts` | 4 | `crates/je-workbench/tests/browser_keyboard_mapper.rs` | 4 |
 | `src/vs/workbench/services/keybinding/test/browser/keybindingEditing.test.ts` | 24 | `crates/je-workbench/tests/keybinding_editing.rs` | 24 |
 | `src/vs/workbench/services/keybinding/test/browser/keybindingIO.test.ts` | 10 | `crates/je-workbench/tests/keybinding_io.rs` | 10 |
 | `src/vs/workbench/services/keybinding/test/node/fallbackKeyboardMapper.test.ts` | 16 | `crates/je-workbench/tests/fallback_keyboard_mapper.rs` | 16 |
@@ -460,6 +463,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/search/test/node/ripgrepSearchUtils.test.ts` | 1 | `crates/je-workbench/tests/ripgrep_search_utils.rs` | 1 |
 | `src/vs/workbench/services/search/test/node/ripgrepTextSearchEngineUtils.test.ts` | 12 | `crates/je-workbench/tests/ripgrep_text_search_engine_utils.rs` | 12 |
 | `src/vs/workbench/services/search/test/node/textSearchManager.test.ts` | 2 | `crates/je-workbench/tests/text_search_manager.rs` | 2 |
+| `src/vs/workbench/services/storage/test/browser/storageService.test.ts` | 9 | `crates/je-workbench/tests/browser_storage_service.rs` | 9 |
 | `src/vs/workbench/services/telemetry/test/browser/commonProperties.test.ts` | 2 | `crates/je-workbench/tests/common_properties.rs` | 2 |
 | `src/vs/workbench/services/textMate/test/browser/arrayOperation.test.ts` | 1 | `crates/je-workbench/tests/array_operation.rs` | 1 |
 | `src/vs/workbench/services/textfile/test/browser/textEditorService.test.ts` | 2 | `crates/je-workbench/tests/text_editor_service.rs` | 2 |
@@ -470,6 +474,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/textfile/test/node/encoding/encoding.test.ts` | 36 | `crates/je-workbench/tests/encoding.rs` | 36 |
 | `src/vs/workbench/services/textmodelResolver/test/browser/textModelResolverService.test.ts` | 20 | `crates/je-workbench/tests/text_model_resolver_service.rs` | 18 |
 | `src/vs/workbench/services/untitled/test/browser/untitledTextEditor.test.ts` | 28 | `crates/je-workbench/tests/untitled_text_editor.rs` | 28 |
+| `src/vs/workbench/services/userActivity/test/browser/domActivityTracker.test.ts` | 3 | `crates/je-workbench/tests/dom_activity_tracker.rs` | 3 |
 | `src/vs/workbench/services/userActivity/test/common/userActivityService.test.ts` | 5 | `crates/je-workbench/tests/user_activity_service.rs` | 5 |
 | `src/vs/workbench/services/userAttention/test/browser/userAttentionService.test.ts` | 11 | `crates/je-workbench/tests/user_attention_service.rs` | 11 |
 | `src/vs/workbench/services/userDataProfile/test/browser/snippetsResource.test.ts` | 4 | `crates/je-workbench/tests/snippets_resource.rs` | 4 |
@@ -574,6 +579,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/bulkEdit/test/browser/bulkFileEdits.test.ts` | 6 | `crates/je-workbench/tests/bulk_file_edits.rs` | 6 |
 | `src/vs/workbench/contrib/canvases/test/common/canvas.test.ts` | 3 | `crates/je-workbench/tests/canvas.rs` | 3 |
 | `src/vs/workbench/contrib/codeEditor/test/browser/largeFileOptimizations.test.ts` | 1 | `crates/je-workbench/tests/large_file_optimizations.rs` | 1 |
+| `src/vs/workbench/contrib/codeEditor/test/browser/saveParticipant.test.ts` | 5 | `crates/je-workbench/tests/save_participant.rs` | 5 |
+| `src/vs/workbench/contrib/codeEditor/test/browser/suggestEnabledInput.test.ts` | 1 | `crates/je-workbench/tests/suggest_enabled_input.rs` | 1 |
 | `src/vs/workbench/contrib/customEditor/test/common/customEditorModelManager.test.ts` | 11 | `crates/je-workbench/tests/custom_editor_model_manager.rs` | 11 |
 | `src/vs/workbench/contrib/debug/test/browser/baseDebugView.test.ts` | 5 | `crates/je-workbench/tests/debug_base_debug_view.rs` | 5 |
 | `src/vs/workbench/contrib/debug/test/browser/breakpoints.test.ts` | 13 | `crates/je-workbench/tests/debug_breakpoints.rs` | 13 |
@@ -598,7 +605,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/debug/test/node/debugger.test.ts` | 4 | `crates/je-workbench/tests/debug_debugger.rs` | 3 |
 | `src/vs/workbench/contrib/debug/test/node/streamDebugAdapter.test.ts` | 2 | `crates/je-workbench/tests/debug_stream_adapter.rs` | 2 |
 | `src/vs/workbench/contrib/debug/test/node/terminals.test.ts` | 7 | `crates/je-workbench/tests/debug_terminals.rs` | 7 |
+| `src/vs/workbench/contrib/editTelemetry/test/browser/aiContributionFeature.test.ts` | 10 | `crates/je-workbench/tests/ai_contribution_feature.rs` | 10 |
+| `src/vs/workbench/contrib/editTelemetry/test/browser/documentWithAnnotatedEdits.test.ts` | 3 | `crates/je-workbench/tests/document_with_annotated_edits.rs` | 3 |
+| `src/vs/workbench/contrib/editTelemetry/test/browser/editSourceCategories.test.ts` | 1 | `crates/je-workbench/tests/edit_source_categories.rs` | 1 |
 | `src/vs/workbench/contrib/editTelemetry/test/browser/editSourceTrackingImpl.test.ts` | 24 | `crates/je-workbench/tests/edit_source_tracking_impl.rs` | 24 |
+| `src/vs/workbench/contrib/editTelemetry/test/browser/editTelemetry.test.ts` | 2 | `crates/je-workbench/tests/edit_telemetry.rs` | 2 |
+| `src/vs/workbench/contrib/editTelemetry/test/browser/editTracker.test.ts` | 8 | `crates/je-workbench/tests/edit_tracker.rs` | 8 |
 | `src/vs/workbench/contrib/editTelemetry/test/node/arcTracker.test.ts` | 4 | `crates/je-base/tests/edit_arc_tracker.rs` | 4 |
 | `src/vs/workbench/contrib/extensions/test/common/extensionQuery.test.ts` | 5 | `crates/je-workbench/tests/extension_query.rs` | 5 |
 | `src/vs/workbench/contrib/extensions/test/electron-browser/extension.test.ts` | 15 | `crates/je-workbench/tests/extensions_extension.rs` | 15 |
@@ -662,6 +674,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/output/test/browser/outputLinkProvider.test.ts` | 2 | `crates/je-workbench/tests/output_link_provider.rs` | 2 |
 | `src/vs/workbench/contrib/policyExport/test/common/policyReference.test.ts` | 2 | `crates/je-workbench/tests/policy_reference.rs` | 2 |
 | `src/vs/workbench/contrib/preferences/test/browser/settingsEditor2.test.ts` | 17 | `crates/je-workbench/tests/settings_editor2.rs` | 5 |
+| `src/vs/workbench/contrib/preferences/test/browser/settingsEditorSettingIndicators.test.ts` | 2 | `crates/je-workbench/tests/settings_editor_setting_indicators.rs` | 2 |
+| `src/vs/workbench/contrib/preferences/test/browser/settingsSearchMenu.test.ts` | 1 | `crates/je-workbench/tests/settings_search_menu.rs` | 1 |
 | `src/vs/workbench/contrib/preferences/test/browser/settingsTreeModels.test.ts` | 37 | `crates/je-workbench/tests/settings_tree_models.rs` | 37 |
 | `src/vs/workbench/contrib/preferences/test/common/smartSnippetInserter.test.ts` | 7 | `crates/je-workbench/tests/smart_snippet_inserter.rs` | 7 |
 | `src/vs/workbench/contrib/scm/test/browser/scmHistory.test.ts` | 11 | `crates/je-workbench/tests/scm_history.rs` | 11 |
@@ -706,6 +720,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/terminal/test/common/terminalConfiguration.test.ts` | 3 | `crates/je-workbench/tests/terminal_configuration.rs` | 3 |
 | `src/vs/workbench/contrib/terminal/test/common/terminalDataBuffering.test.ts` | 5 | `crates/je-platform/tests/terminal_data_buffering.rs` | 5 |
 | `src/vs/workbench/contrib/terminal/test/common/terminalEnvironment.test.ts` | 44 | `crates/je-workbench/tests/terminal_environment_workbench.rs` | 44 |
+| `src/vs/workbench/contrib/terminal/test/node/terminalProfiles.test.ts` | 9 | `crates/je-platform/tests/terminal_profiles_workbench.rs` | 9 |
 | `src/vs/workbench/contrib/terminalContrib/accessibility/test/browser/bufferContentTracker.test.ts` | 7 | `crates/je-workbench/tests/terminal_buffer_content_tracker.rs` | 7 |
 | `src/vs/workbench/contrib/terminalContrib/clipboard/test/browser/terminalClipboard.test.ts` | 10 | `crates/je-workbench/tests/terminal_clipboard.rs` | 10 |
 | `src/vs/workbench/contrib/terminalContrib/history/test/common/history.test.ts` | 26 | `crates/je-workbench/tests/terminal_history.rs` | 26 |
@@ -732,6 +747,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/terminalContrib/telemetry/test/browser/terminalTelemetry.test.ts` | 1 | `crates/je-workbench/tests/terminal_telemetry.rs` | 1 |
 | `src/vs/workbench/contrib/terminalContrib/typeAhead/test/browser/terminalTypeAhead.test.ts` | 22 | `crates/je-workbench/tests/terminal_type_ahead.rs` | 22 |
 | `src/vs/workbench/contrib/terminalContrib/zoom/test/browser/terminal.zoom.test.ts` | 5 | `crates/je-workbench/tests/terminal_zoom.rs` | 5 |
+| `src/vs/workbench/contrib/testing/test/browser/explorerProjections/nameProjection.test.ts` | 5 | `crates/je-workbench/tests/name_projection.rs` | 5 |
+| `src/vs/workbench/contrib/testing/test/browser/explorerProjections/treeProjection.test.ts` | 11 | `crates/je-workbench/tests/tree_projection.rs` | 11 |
 | `src/vs/workbench/contrib/testing/test/common/testCoverage.test.ts` | 4 | `crates/je-workbench/tests/test_coverage.rs` | 4 |
 | `src/vs/workbench/contrib/testing/test/common/testExplorerFilterState.test.ts` | 9 | `crates/je-workbench/tests/test_explorer_filter_state.rs` | 9 |
 | `src/vs/workbench/contrib/testing/test/common/testProfileService.test.ts` | 4 | `crates/je-workbench/tests/test_profile_service.rs` | 4 |
