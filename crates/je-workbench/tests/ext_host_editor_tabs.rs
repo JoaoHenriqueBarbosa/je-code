@@ -86,7 +86,7 @@ fn default_tab_dto() -> EditorTabDto {
 }
 
 fn text_input(path: &str) -> AnyInputDto {
-    AnyInputDto::Text(TextInputDto { uri: URI::parse(&format!("file://abc/{path}"), false) })
+    AnyInputDto::Text(TextInputDto { uri: URI::parse(format!("file://abc/{path}").as_str(), false) })
 }
 
 fn test_uri(path: &str) -> URI {

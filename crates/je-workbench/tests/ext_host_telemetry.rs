@@ -233,7 +233,7 @@ fn mock_extension() -> ExtensionDescription {
             name: "test-extension".to_owned(),
             publisher: "vscode".to_owned(),
             version: "1.0.0".to_owned(),
-            engines: Engines { vscode: "*".to_owned() },
+            engines: Engines { vscode: Some("*".to_owned()), ..Engines::default() },
             ..ExtensionManifest::default()
         },
     }

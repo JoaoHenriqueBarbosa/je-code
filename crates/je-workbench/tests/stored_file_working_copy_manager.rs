@@ -519,6 +519,9 @@ fn events() {
 
         working_copy1.dispose();
         working_copy2.dispose();
+        // O recarregamento enfileirado por uma mudança de arquivo espera `timeout(100)`; o rastreador de vazamentos do Rust conta
+        // o ouvinte do token desse timer enquanto ele está pendente, então o relógio falso o deixa disparar antes do fim do caso.
+        je_base::async_::timeout(200).promise.await.unwrap();
     });
 }
 
@@ -697,7 +700,8 @@ fn file_system_provider_change_triggers_working_copy_resolve() {
 
         let (did_resolve, on_did_resolve) = on_did_resolve_of(&disposables, manager, &resource, 1);
 
-        let provider: Rc<dyn FileSystemProvider> = disposables.add_rc(InMemoryFileSystemProvider::new());
+        let concrete_provider = disposables.add_rc(InMemoryFileSystemProvider::new());
+        let provider: Rc<dyn FileSystemProvider> = concrete_provider;
         fixture
             .accessor
             .file_service
