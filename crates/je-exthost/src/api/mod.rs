@@ -29,6 +29,7 @@ pub mod l10n;
 pub mod js_object;
 pub mod language_types;
 pub mod languages;
+pub mod notebooks;
 pub mod output_channel;
 pub mod progress;
 pub mod quick_input;

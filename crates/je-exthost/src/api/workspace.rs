@@ -12,6 +12,8 @@
 //! - `createFileSystemWatcher` e `onDid/WillCreate/Delete/RenameFiles` existem (módulo `file_system_events`) quando o host tem o
 //!   cliente `MainThreadFileSystemEventService` (o watcher pede também os clientes de workspace e configuração);
 //! - `applyEdit` existe (módulo `workspace_edit`, com a classe `WorkspaceEdit`) quando o host tem o cliente `MainThreadBulkEdits`;
+//! - `notebookDocuments`, `openNotebookDocument`, `onDidOpenNotebookDocument` e `onDidCloseNotebookDocument` existem (módulo `notebooks`)
+//!   quando o host tem os clientes `MainThreadNotebook`, `MainThreadNotebookDocuments` e `MainThreadNotebookEditors`;
 //! - `onWillSaveTextDocument`, `registerTextDocumentContentProvider`: pedem o `ExtHostDocumentSaveParticipant` e o
 //!   `ExtHostDocumentContentProvider` ligados;
 //! - `updateWorkspaceFolders`, `findTextInFiles`, `save`, `saveAll`, `requestWorkspaceTrust`, `getCanonicalUri`, `decode`/`encode`,
@@ -50,6 +52,7 @@ use crate::api::events::{event_function, EventTables};
 use crate::api::accessor_namespace;
 use crate::api::text_editors::{self, TextEditorApi};
 use crate::api::file_system_events::{self, FileSystemEventsApi};
+use crate::api::notebooks::{self, NotebookApi};
 use crate::api::workspace_edit::{self, WorkspaceEditObjects};
 use je_workbench::api::common::ext_host_bulk_edits::ExtHostBulkEdits;
 use crate::api::HOST_EXTENSION;
@@ -68,6 +71,8 @@ pub struct WorkspaceServices {
     pub bulk_edits: Option<(Rc<ExtHostBulkEdits>, Rc<WorkspaceEditObjects>)>,
     /// Sem o cliente `MainThreadFileSystemEventService` não há os eventos de arquivo nem o `createFileSystemWatcher`.
     pub file_system_events: Option<FileSystemEventsApi>,
+    /// Sem os clientes `MainThreadNotebook*` não há `notebookDocuments`, `openNotebookDocument` nem os eventos de notebook.
+    pub notebooks: Option<NotebookApi>,
 }
 
 /// Uma pasta como o objeto `vscode.WorkspaceFolder` (ver as divergências do módulo).
@@ -345,6 +350,11 @@ pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<D
         let (file_methods, file_getters) = file_system_events::workspace_members(runner, api, table);
         methods.extend(file_methods);
         getters.extend(file_getters);
+    }
+    if let Some(api) = &services.notebooks {
+        let (notebook_methods, notebook_getters) = notebooks::workspace_members(runner, api, table);
+        methods.extend(notebook_methods);
+        getters.extend(notebook_getters);
     }
     accessor_namespace(runner, "workspace", methods, getters)
 }

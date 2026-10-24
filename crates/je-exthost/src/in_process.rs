@@ -61,6 +61,12 @@ use je_workbench::api::common::ext_host_protocol::{
 };
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
+use je_workbench::api::common::ext_host_protocol::{
+    ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
+    INotebookDocumentsAndEditorsDelta, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
+};
+use je_workbench::contrib::notebook::common::notebook_common::INotebookKernelSourceAction;
+use je_platform::files::files::WriteFileOptions;
 use je_workbench::services::authentication::authentication::{
     AuthenticationSession, IAuthenticationConstraint, IAuthenticationCreateSessionOptions, IAuthenticationGetSessionsOptions,
 };
@@ -939,6 +945,104 @@ impl ExtHostAuthenticationShape for LateExtHostAuthentication {
     }
 }
 
+/// O `ExtHostNotebookShape` que ainda não existe quando o cliente `MainThreadNotebookDocumentsAndEditors` do workbench nasce (o construtor
+/// dele já entrega o delta inicial de documentos e editores). As chamadas sem retorno (o delta e a liberação dos itens da barra de status)
+/// ficam na fila se chegarem antes do `bind`; as com retorno só acontecem depois de montado o host.
+#[derive(Default)]
+pub struct LateExtHostNotebook(pub Late<dyn ExtHostNotebookShape>);
+
+impl ExtHostNotebookDocumentsAndEditorsShape for LateExtHostNotebook {
+    fn rpc_accept_document_and_editors_delta(&self, delta: SerializableObjectWithBuffers<INotebookDocumentsAndEditorsDelta>) {
+        self.0.call_void(move |target| target.rpc_accept_document_and_editors_delta(delta));
+    }
+}
+
+impl ExtHostNotebookShape for LateExtHostNotebook {
+    fn rpc_provide_notebook_cell_status_bar_items(&self, handle: u32, uri: &URI, index: usize, token: CancellationToken) -> Promise<Option<INotebookCellStatusBarListDto>> {
+        self.0.bound().rpc_provide_notebook_cell_status_bar_items(handle, uri, index, token)
+    }
+
+    fn rpc_release_notebook_cell_status_bar_items(&self, id: u32) {
+        self.0.call_void(move |target| target.rpc_release_notebook_cell_status_bar_items(id));
+    }
+
+    fn rpc_data_to_notebook(&self, handle: u32, data: VSBuffer, token: CancellationToken) -> Promise<SerializableObjectWithBuffers<NotebookDataDto>> {
+        self.0.bound().rpc_data_to_notebook(handle, data, token)
+    }
+
+    fn rpc_notebook_to_data(&self, handle: u32, data: SerializableObjectWithBuffers<NotebookDataDto>, token: CancellationToken) -> Promise<VSBuffer> {
+        self.0.bound().rpc_notebook_to_data(handle, data, token)
+    }
+
+    fn rpc_save_notebook(&self, handle: u32, uri: &URI, version_id: i64, options: WriteFileOptions, token: CancellationToken) -> Promise<NotebookSaveResult> {
+        self.0.bound().rpc_save_notebook(handle, uri, version_id, options, token)
+    }
+}
+
+/// O `ExtHostNotebookDocumentsShape` que ainda não existe quando o cliente `MainThreadNotebookDocuments` do workbench nasce. As três chamadas
+/// são sem retorno e ficam na fila se chegarem antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostNotebookDocuments(pub Late<dyn ExtHostNotebookDocumentsShape>);
+
+impl ExtHostNotebookDocumentsShape for LateExtHostNotebookDocuments {
+    fn rpc_accept_model_changed(&self, uri: &URI, event: SerializableObjectWithBuffers<NotebookCellsChangedEventDto>, is_dirty: bool, new_metadata: Option<je_base::dynamic::Dynamic>) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_model_changed(&uri, event, is_dirty, new_metadata));
+    }
+
+    fn rpc_accept_dirty_state_changed(&self, uri: &URI, is_dirty: bool) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_dirty_state_changed(&uri, is_dirty));
+    }
+
+    fn rpc_accept_model_saved(&self, uri: &URI) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_model_saved(&uri));
+    }
+}
+
+/// O `ExtHostNotebookKernelsShape` que ainda não existe quando o cliente `MainThreadNotebookKernels` do workbench nasce. A associação de
+/// notebook e a mensagem do renderizador são sem retorno e ficam na fila se chegarem antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostNotebookKernels(pub Late<dyn ExtHostNotebookKernelsShape>);
+
+impl ExtHostNotebookKernelsShape for LateExtHostNotebookKernels {
+    fn rpc_accept_notebook_association(&self, handle: u32, uri: &URI, value: bool) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_notebook_association(handle, &uri, value));
+    }
+
+    fn rpc_execute_cells(&self, handle: u32, uri: &URI, handles: Vec<i64>) -> Promise<()> {
+        self.0.bound().rpc_execute_cells(handle, uri, handles)
+    }
+
+    fn rpc_cancel_cells(&self, handle: u32, uri: &URI, handles: Vec<i64>) -> Promise<()> {
+        self.0.bound().rpc_cancel_cells(handle, uri, handles)
+    }
+
+    fn rpc_accept_kernel_message_from_renderer(&self, handle: u32, editor_id: &str, message: je_base::dynamic::Dynamic) {
+        let editor_id = editor_id.to_owned();
+        self.0.call_void(move |target| target.rpc_accept_kernel_message_from_renderer(handle, &editor_id, message));
+    }
+
+    fn rpc_provide_kernel_source_actions(&self, handle: u32, token: CancellationToken) -> Promise<Vec<INotebookKernelSourceAction>> {
+        self.0.bound().rpc_provide_kernel_source_actions(handle, token)
+    }
+
+    fn rpc_provide_variables(
+        &self,
+        handle: u32,
+        request_id: &str,
+        notebook_uri: &URI,
+        parent_id: Option<u32>,
+        kind: VariablesRequestKindDto,
+        start: usize,
+        token: CancellationToken,
+    ) -> Promise<()> {
+        self.0.bound().rpc_provide_variables(handle, request_id, notebook_uri, parent_id, kind, start, token)
+    }
+}
+
 /// O `ExtHostDebugServiceShape` que ainda não existe quando o cliente `MainThreadDebugService` do workbench nasce. As chamadas sem
 /// retorno (`$sendDAMessage`, `$acceptBreakpointsDelta`, `$disposeDebugVisualizers`, `$disposeVisualizedTree`) ficam na fila se chegarem
 /// antes do `bind`; as com retorno só acontecem depois de montado o host.
@@ -1054,6 +1158,9 @@ pub struct LateForwarders {
     pub scm: Rc<LateExtHostSCM>,
     pub comments: Rc<LateExtHostComments>,
     pub authentication: Rc<LateExtHostAuthentication>,
+    pub notebook: Rc<LateExtHostNotebook>,
+    pub notebook_documents: Rc<LateExtHostNotebookDocuments>,
+    pub notebook_kernels: Rc<LateExtHostNotebookKernels>,
     pub debug_service: Rc<LateExtHostDebugService>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
     pub tree_views: Rc<LateExtHostTreeViews>,
@@ -1102,6 +1209,15 @@ impl LateForwarders {
         let authentication = Rc::new(LateExtHostAuthentication::default());
         let as_authentication: Rc<dyn ExtHostAuthenticationShape> = authentication.clone();
         local.set_erased(ExtHostContext::EXT_HOST_AUTHENTICATION.sid, Rc::new(as_authentication));
+        let notebook = Rc::new(LateExtHostNotebook::default());
+        let as_notebook: Rc<dyn ExtHostNotebookShape> = notebook.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK.sid, Rc::new(as_notebook));
+        let notebook_documents = Rc::new(LateExtHostNotebookDocuments::default());
+        let as_notebook_documents: Rc<dyn ExtHostNotebookDocumentsShape> = notebook_documents.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENTS.sid, Rc::new(as_notebook_documents));
+        let notebook_kernels = Rc::new(LateExtHostNotebookKernels::default());
+        let as_notebook_kernels: Rc<dyn ExtHostNotebookKernelsShape> = notebook_kernels.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_KERNELS.sid, Rc::new(as_notebook_kernels));
         let as_terminal_service: Rc<dyn ExtHostTerminalServiceShape> = terminal_service.clone();
         let as_tree_views: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
         local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SERVICE.sid, Rc::new(as_terminal_service));
@@ -1132,7 +1248,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, comments, authentication, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

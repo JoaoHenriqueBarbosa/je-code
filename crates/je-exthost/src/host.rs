@@ -6,10 +6,16 @@ use je_base::event::Event;
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
+use je_base::resources::ExtUri;
 use je_base::uri::URI;
 use je_extensions::scanner::ExtensionDescription;
+use je_platform::files::files::Stat;
 use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::request::request::{AuthInfo, Credentials};
+use je_platform::resources::ext_uri;
+use je_workbench::api::common::ext_host_notebook::{ExtHostNotebookController, IExtHostConsumerFileSystem};
+use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
+use je_workbench::api::common::ext_host_notebook_kernels::ExtHostNotebookKernels;
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
 use je_workbench::api::common::ext_host_authentication::ExtHostAuthentication;
@@ -32,7 +38,8 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
+    ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
 };
@@ -50,11 +57,12 @@ use crate::api::env::EnvServices;
 use crate::api::events::EventTables;
 use crate::api::extensions::ExtensionServiceSlot;
 use crate::api::languages::{LanguagesServices, LanguagesState};
+use crate::api::notebooks::NotebookApi;
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
 use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
-use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, l10n, languages, notebooks, scm, types, uri, window, workspace, workspace_edit};
 use crate::api::js_object::JsObjects;
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -182,6 +190,31 @@ impl MainThreadDocumentsShape for NoDocuments {
     }
 }
 
+/// O `IExtHostConsumerFileSystem` de um host sem o `ExtHostConsumerFileSystem` (`extHostFileSystemConsumer.ts`, ainda sem porte): nenhum
+/// esquema é gravável, então o `$saveNotebook` responde com o erro de arquivo somente leitura que o original dá a um esquema sem provedor
+/// gravável, e a gravação e a consulta rejeitam com a explicação.
+struct NoConsumerFileSystem;
+
+const NO_CONSUMER_FILE_SYSTEM: &str = "o host não tem o ExtHostConsumerFileSystem: o sistema de arquivos não está disponível para os notebooks";
+
+impl IExtHostConsumerFileSystem for NoConsumerFileSystem {
+    fn is_writable_file_system(&self, _scheme: &str) -> Option<bool> {
+        None
+    }
+
+    fn write_file(&self, _uri: &URI, _content: Vec<u8>) -> Promise<()> {
+        Promise::rejected(Error::new(NO_CONSUMER_FILE_SYSTEM))
+    }
+
+    fn stat(&self, _uri: &URI) -> Promise<Stat> {
+        Promise::rejected(Error::new(NO_CONSUMER_FILE_SYSTEM))
+    }
+
+    fn get_file_system_provider_ext_uri(&self, _scheme: &str) -> ExtUri {
+        ext_uri()
+    }
+}
+
 /// O `ExtHostDocuments` de um host sem os clientes de documentos e de editores (ver [`NoDocuments`]).
 fn detached_documents(log_service: &LogServiceRef) -> Rc<ExtHostDocuments> {
     let context: Rc<dyn IMainContext> = LocalContext::new();
@@ -294,6 +327,9 @@ impl ExtensionHost {
         comments::define_classes(runner, &comment_objects, &event_tables, &window_state.text_objects);
         let debug_objects = Rc::new(debug::DebugObjects::default());
         members.extend(debug::classes(runner, &debug_objects));
+        let notebook_objects = Rc::new(notebooks::NotebookObjects::default());
+        notebooks::define_classes(runner, &notebook_objects, &window_state.text_objects, &table, &event_tables);
+        members.extend(notebooks::classes(runner));
         let extension_slot = ExtensionServiceSlot::new();
         extensions::define_class(runner, &extension_slot);
 
@@ -372,16 +408,58 @@ impl ExtensionHost {
                     events: event_tables.clone(),
                 }
             });
-            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() || file_system_events.is_some() {
+            // `vscode.notebooks` e os membros de notebook de `vscode.workspace` pedem os clientes `MainThreadNotebook`, `MainThreadNotebookDocuments` e
+            // `MainThreadNotebookEditors` e os documentos de texto (cada célula é um documento de texto); o `createNotebookController` pede também
+            // `MainThreadNotebookKernels`. O host não tem o `ExtHostConsumerFileSystem` (ver `NoConsumerFileSystem`).
+            let notebook_api = match &text_editor_api {
+                Some(api)
+                    if provided(MainContext::MAIN_THREAD_NOTEBOOK.sid)
+                        && provided(MainContext::MAIN_THREAD_NOTEBOOK_DOCUMENTS.sid)
+                        && provided(MainContext::MAIN_THREAD_NOTEBOOK_EDITORS.sid) =>
+                {
+                    let controller = ExtHostNotebookController::new(
+                        bridged_ref,
+                        &commands,
+                        api.services.documents_and_editors.clone(),
+                        api.services.documents.clone(),
+                        Rc::new(NoConsumerFileSystem),
+                        log_service.clone(),
+                    );
+                    let controller_shape: Rc<dyn ExtHostNotebookShape> = controller.clone();
+                    late.notebook.0.bind(controller_shape);
+                    let documents_shape: Rc<dyn ExtHostNotebookDocumentsShape> = ExtHostNotebookDocuments::new(controller.clone());
+                    late.notebook_documents.0.bind(documents_shape);
+                    let kernels = provided(MainContext::MAIN_THREAD_NOTEBOOK_KERNELS.sid)
+                        .then(|| ExtHostNotebookKernels::new(bridged_ref, controller.clone(), &commands, log_service.clone()))
+                        .and_then(|kernels| match kernels {
+                            Ok(kernels) => {
+                                let kernels_shape: Rc<dyn ExtHostNotebookKernelsShape> = kernels.clone();
+                                late.notebook_kernels.0.bind(kernels_shape);
+                                Some(kernels)
+                            }
+                            Err(error) => {
+                                log_service.error(&format!("vscode.notebooks: o ExtHostNotebookKernels não subiu: {}", error.message));
+                                None
+                            }
+                        });
+                    Some(NotebookApi { notebooks: controller, kernels, objects: notebook_objects.clone(), events: event_tables.clone() })
+                }
+                _ => None,
+            };
+
+            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() || file_system_events.is_some() || notebook_api.is_some() {
                 members.push((
                     "workspace".to_owned(),
                     workspace::namespace(
                         runner,
-                        &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone(), bulk_edits, file_system_events },
+                        &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone(), bulk_edits, file_system_events, notebooks: notebook_api.clone() },
                         &table,
                         &event_tables,
                     ),
                 ));
+            }
+            if let Some(api) = &notebook_api {
+                members.push(("notebooks".to_owned(), notebooks::namespace(runner, &JsObjects::new(runner), api, &table)));
             }
 
             if provided(MainContext::MAIN_THREAD_STATUS_BAR.sid) {
