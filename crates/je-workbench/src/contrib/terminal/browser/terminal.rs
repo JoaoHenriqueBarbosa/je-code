@@ -48,7 +48,8 @@ use je_base::uri::URI;
 use je_instantiation::service_id;
 use je_platform::terminal::capabilities::capabilities::ITerminalCapabilityStore;
 use je_platform::terminal::terminal::{
-    IShellLaunchConfig, ITerminalLaunchError, ITerminalProfile, ShellCwd, TerminalExitReason, TerminalLocation, TerminalShellType,
+    IShellLaunchConfig, ITerminalLaunchError, ITerminalProfile, ShellCwd, ShellIntegrationInjectionFailureReason, TerminalExitReason, TerminalLocation,
+    TerminalShellType,
 };
 
 use crate::contrib::terminal::common::terminal::{IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, SharedShellLaunchConfig, TerminalFont};
@@ -152,6 +153,42 @@ pub trait ITerminalInstance {
     fn rename(&self, title: Option<&str>);
     /// `dispose(reason?)`.
     fn dispose_with_reason(&self, reason: Option<TerminalExitReason>);
+
+    // Os membros que as contribuições do terminal e a telemetria leem. O padrão é o de um `mock<ITerminalInstance>()` (o membro
+    // não definido lança), menos os de seleção e foco, que o frontend nativo (dono do foco e da seleção) sobrescreve.
+
+    /// `resource`.
+    fn resource(&self) -> URI {
+        je_base::errors::throw(je_base::errors::Error::new("resource is not a function"))
+    }
+    /// `hasRemoteAuthority`.
+    fn has_remote_authority(&self) -> bool {
+        je_base::errors::throw(je_base::errors::Error::new("hasRemoteAuthority is not a function"))
+    }
+    /// `usedShellIntegrationInjection`.
+    fn used_shell_integration_injection(&self) -> bool {
+        je_base::errors::throw(je_base::errors::Error::new("usedShellIntegrationInjection is not a function"))
+    }
+    /// `shellIntegrationInjectionFailureReason`.
+    fn shell_integration_injection_failure_reason(&self) -> Option<ShellIntegrationInjectionFailureReason> {
+        je_base::errors::throw(je_base::errors::Error::new("shellIntegrationInjectionFailureReason is not a function"))
+    }
+    /// `sessionId`.
+    fn session_id(&self) -> String {
+        je_base::errors::throw(je_base::errors::Error::new("sessionId is not a function"))
+    }
+    /// `xterm?.isImageAddonLoaded ?? false`.
+    fn is_image_addon_loaded(&self) -> bool {
+        false
+    }
+    /// `focus()`: quem tem o foco é o frontend nativo.
+    fn focus(&self) {}
+    /// `hasSelection()`: o contrato do emulador do porte não tem seleção.
+    fn has_selection(&self) -> bool {
+        false
+    }
+    /// `clearSelection()`.
+    fn clear_selection(&self) {}
 }
 
 /// `ITerminalLink`.
@@ -183,6 +220,19 @@ service_id!(pub I_TERMINAL_GROUP_SERVICE: dyn ITerminalGroupService = "terminalG
 pub trait ITerminalEditorService {
     /// `revealActiveEditor(preserveFocus?)`.
     fn reveal_active_editor(&self, preserve_focus: bool) -> Promise<()>;
+
+    /// `getInputFromResource(resource)`: a entrada de editor do terminal, ou o erro de um recurso que não é de um terminal de
+    /// editor. O padrão é o de um `mock<ITerminalEditorService>()` (o membro não definido lança).
+    fn get_input_from_resource(&self, _resource: &URI) -> Result<TerminalEditorInput, je_base::errors::Error> {
+        Err(je_base::errors::Error::new("getInputFromResource is not a function"))
+    }
+}
+
+/// O que se lê da entrada de editor do terminal: `!!(input.group?.windowId && isAuxiliaryWindow(getWindowById(windowId, true).window))`,
+/// isto é, se o editor está numa janela auxiliar (a janela é do frontend, que resolve o `windowId`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalEditorInput {
+    pub is_in_auxiliary_window: bool,
 }
 
 service_id!(pub I_TERMINAL_EDITOR_SERVICE: dyn ITerminalEditorService = "terminalEditorService");
