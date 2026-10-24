@@ -27,6 +27,7 @@ use je_instantiation::service_id;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::opener::editor_types::{AuxiliaryEditorOptions, ModalEditorPartOptions};
 
+use crate::services::layout::layout_service::WindowId;
 use crate::common::editor::{EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, GroupIdentifier, TextEditorOptions};
 
 // region: editorService.ts
@@ -195,6 +196,9 @@ pub trait IEditorGroup {
     /// `id`: A unique identifier of this group that remains identical even if the group is moved to different locations.
     fn id(&self) -> GroupIdentifier;
 
+    /// `windowId`: the identifier of the window this group is in.
+    fn window_id(&self) -> WindowId;
+
     /// `activeEditor`: the active editor of the group or `None` if none.
     fn active_editor(&self) -> Option<EditorInputRef>;
 
@@ -218,6 +222,9 @@ pub trait IEditorGroup {
 
 /// `IEditorPart` (via `IEditorGroupsContainer`), reduzido aos grupos.
 pub trait IEditorPart {
+    /// `windowId`: the identifier of the window of this part.
+    fn window_id(&self) -> WindowId;
+
     /// `activeGroup`: an active group is the default location for new editors to open.
     fn active_group(&self) -> Rc<dyn IEditorGroup>;
 

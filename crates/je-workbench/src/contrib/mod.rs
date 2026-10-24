@@ -27,3 +27,6 @@ pub mod tasks;
 pub mod snippets;
 // O que o editor de configurações usa do chat (configurações de rede do agente e descrição do modelo padrão sob política).
 pub mod chat;
+
+// Canvases do chat de agentes (`contrib/canvases`).
+pub mod canvases;
