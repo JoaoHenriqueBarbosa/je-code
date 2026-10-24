@@ -102,3 +102,59 @@ impl WorkbenchServices {
         }
     }
 }
+
+/// `TestLanguageDetectionService`: a detecção desligada.
+pub struct TestLanguageDetectionService;
+
+impl je_workbench::services::language_detection::language_detection_worker_service::ILanguageDetectionService for TestLanguageDetectionService {
+    fn is_enabled_for_language(&self, _language_id: &str) -> bool {
+        false
+    }
+
+    fn detect_language(&self, _resource: &URI, _supported_langs: Option<&[String]>) -> je_base::promise::Promise<Option<String>> {
+        je_base::promise::Promise::resolved(None)
+    }
+}
+
+/// `TestAccessibilityService`.
+pub struct TestAccessibilityService;
+
+impl je_platform::accessibility::IAccessibilityService for TestAccessibilityService {
+    fn on_did_change_screen_reader_optimized(&self) -> je_base::event::Event<()> {
+        je_base::event::Event::none()
+    }
+
+    fn on_did_change_reduced_motion(&self) -> je_base::event::Event<()> {
+        je_base::event::Event::none()
+    }
+
+    fn on_did_change_reduced_transparency(&self) -> je_base::event::Event<()> {
+        je_base::event::Event::none()
+    }
+
+    fn always_underline_access_keys(&self) -> je_base::promise::Promise<bool> {
+        je_base::promise::Promise::resolved(false)
+    }
+
+    fn is_screen_reader_optimized(&self) -> bool {
+        false
+    }
+
+    fn is_motion_reduced(&self) -> bool {
+        false
+    }
+
+    fn is_transparency_reduced(&self) -> bool {
+        false
+    }
+
+    fn get_accessibility_support(&self) -> je_platform::accessibility::AccessibilitySupport {
+        je_platform::accessibility::AccessibilitySupport::Unknown
+    }
+
+    fn set_accessibility_support(&self, _accessibility_support: je_platform::accessibility::AccessibilitySupport) {}
+
+    fn alert(&self, _message: &str) {}
+
+    fn status(&self, _message: &str) {}
+}
