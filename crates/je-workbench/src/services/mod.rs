@@ -15,3 +15,5 @@ pub mod extensions;
 pub mod statusbar;
 pub mod layout;
 pub mod accounts;
+
+pub mod extension_management;
