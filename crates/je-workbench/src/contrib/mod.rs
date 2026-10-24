@@ -8,3 +8,9 @@ pub mod update;
 pub mod terminal;
 
 pub mod debug;
+
+pub mod extensions;
+pub mod policy_export;
+pub mod preferences;
+pub mod search;
+pub mod testing;
