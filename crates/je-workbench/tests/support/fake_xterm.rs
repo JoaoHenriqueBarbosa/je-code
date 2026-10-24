@@ -29,8 +29,22 @@ use je_platform::terminal::xterm_headless as platform;
 use je_workbench::contrib::terminal::browser::terminal::ClientRect;
 use je_workbench::contrib::terminal::browser::terminal_extensions::{ILinkProvider, IXtermRawTerminal, LinkHandler, RenderedRange};
 use je_workbench::contrib::terminal::browser::terminal_input_events::{ITerminalDocumentEvents, TerminalKeyEvent, TerminalMouseEvent};
+use je_workbench::contrib::terminal::browser::xterm::decoration_addon::IDecorationAddonTerminal;
+use je_workbench::contrib::terminal::browser::xterm::line_data_event_addon::ILineFeedTerminal;
+use je_workbench::contrib::terminal::browser::xterm::mark_navigation_addon::IMarkNavigationTerminal;
+use je_workbench::contrib::terminal::browser::xterm::xterm_decoration::{IDecorationElement, IDecorationHost, IDecorationOptions, IXtermDecoration};
 use je_workbench::contrib::terminal::browser::xterm::xterm_terminal::{IXtermRaw, XtermOptions};
 use je_workbench::contrib::terminal::xterm_buffer as workbench;
+
+use super::fake_xterm_decoration::FakeDecoration;
+
+/// Uma rolagem pedida ao emulador (`scrollToTop`, `scrollToBottom` e `scrollToLine`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FakeScroll {
+    Top,
+    Bottom,
+    Line(i32),
+}
 
 /// O marcador de uma linha do buffer (`IMarker` do xterm).
 pub struct FakeMarker {
@@ -373,6 +387,12 @@ impl Screen {
         self.cursor_y.set((self.cursor_y.get() - count).max(0));
     }
 
+    /// `CSI row ; col H` (`CUP`): leva o cursor à linha e à coluna dadas (começando em 1), dentro da área visível.
+    fn cursor_position(&self, row: i32, col: i32) {
+        self.cursor_y.set((row - 1).clamp(0, self.rows - 1));
+        self.cursor_x.set((col - 1).clamp(0, self.cols - 1));
+    }
+
     fn line(&self, y: i32) -> Option<FakeLine> {
         let index = usize::try_from(y).ok()?;
         self.lines.borrow().get(index).map(|data| FakeLine { data: data.clone() })
@@ -467,6 +487,11 @@ pub struct FakeXterm {
     on_data: Rc<Emitter<JsString>>,
     on_cursor_move: Rc<Emitter<()>>,
     on_write_parsed: Rc<Emitter<()>>,
+    on_line_feed: Rc<Emitter<()>>,
+    scroll_calls: RefCell<Vec<FakeScroll>>,
+    selected_lines: RefCell<Vec<(i32, i32)>>,
+    /// Os tipos de evento de que as decorações tiraram ouvintes (o `removeEventListener` do elemento do teste).
+    removed_event_listeners: Rc<RefCell<Vec<String>>>,
     on_resize: Rc<Emitter<platform::TerminalResize>>,
     on_title_change: Rc<Emitter<JsString>>,
     on_scroll: Rc<Emitter<i32>>,
@@ -525,6 +550,10 @@ impl FakeXterm {
             on_data: Emitter::new(),
             on_cursor_move: Emitter::new(),
             on_write_parsed: Emitter::new(),
+            on_line_feed: Emitter::new(),
+            scroll_calls: RefCell::new(Vec::new()),
+            selected_lines: RefCell::new(Vec::new()),
+            removed_event_listeners: Rc::default(),
             on_resize: Emitter::new(),
             on_title_change: Emitter::new(),
             on_scroll: Emitter::new(),
@@ -580,7 +609,10 @@ impl FakeXterm {
                 '\u{1b}' if chars.get(index + 1) == Some(&']') => index = self.handle_osc(&chars, index),
                 '\u{1b}' if chars.get(index + 1) == Some(&'[') => index = self.handle_csi(&chars, index),
                 '\r' => self.screen.cursor_x.set(0),
-                '\n' => self.screen.line_feed(false),
+                '\n' => {
+                    self.screen.line_feed(false);
+                    self.on_line_feed.fire(());
+                }
                 c => self.screen.put_char(c),
             }
             index += 1;
@@ -677,6 +709,13 @@ impl FakeXterm {
                 _ => 1,
             };
             self.screen.cursor_up(count);
+        }
+        if !handled && final_byte == 'H' {
+            let position = |index: usize| match params.get(index) {
+                Some(platform::CsiParam::Number(value)) if *value > 0 => *value,
+                _ => 1,
+            };
+            self.screen.cursor_position(position(0), position(1));
         }
         end
     }
@@ -897,5 +936,65 @@ impl IXtermRawTerminal for FakeXterm {
 
     fn document_events(&self) -> Rc<dyn ITerminalDocumentEvents> {
         self.document.clone()
+    }
+}
+
+impl FakeXterm {
+    /// As rolagens pedidas ao emulador, na ordem.
+    pub fn scroll_calls(&self) -> Vec<FakeScroll> {
+        self.scroll_calls.borrow().clone()
+    }
+
+    /// Os pares `(start, end)` de `selectLines`, na ordem.
+    pub fn selected_lines(&self) -> Vec<(i32, i32)> {
+        self.selected_lines.borrow().clone()
+    }
+
+    /// Os tipos de evento de que as decorações tiraram ouvintes, na ordem.
+    pub fn removed_event_listeners(&self) -> Vec<String> {
+        self.removed_event_listeners.borrow().clone()
+    }
+}
+
+impl ILineFeedTerminal for FakeXterm {
+    fn on_line_feed(&self) -> Event<()> {
+        self.on_line_feed.event()
+    }
+}
+
+impl IDecorationHost for FakeXterm {
+    /// O `registerDecoration` do `TestTerminal` do teste do `DecorationAddon`: sem decoração para marcador descartado.
+    fn register_decoration(&self, options: IDecorationOptions) -> Option<Rc<dyn IXtermDecoration>> {
+        FakeDecoration::create(options, self.removed_event_listeners.clone())
+    }
+}
+
+impl IMarkNavigationTerminal for FakeXterm {
+    /// O dublê não rola a área visível sozinho: o topo dela é o `baseY`.
+    fn viewport_y(&self) -> i32 {
+        self.screen.base_y.get()
+    }
+
+    fn scroll_to_top(&self) {
+        self.scroll_calls.borrow_mut().push(FakeScroll::Top);
+    }
+
+    fn scroll_to_bottom(&self) {
+        self.scroll_calls.borrow_mut().push(FakeScroll::Bottom);
+    }
+
+    fn scroll_to_line(&self, line: i32) {
+        self.scroll_calls.borrow_mut().push(FakeScroll::Line(line));
+    }
+
+    fn select_lines(&self, start: i32, end: i32) {
+        self.selected_lines.borrow_mut().push((start, end));
+    }
+}
+
+impl IDecorationAddonTerminal for FakeXterm {
+    /// `terminal.element` é `undefined` num terminal que nunca foi aberto (o caso dos testes).
+    fn command_decoration_elements(&self) -> Vec<Rc<dyn IDecorationElement>> {
+        Vec::new()
     }
 }
