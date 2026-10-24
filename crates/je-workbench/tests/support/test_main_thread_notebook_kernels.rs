@@ -32,15 +32,17 @@ use je_workbench::api::common::ext_host_protocol::{IMainContext, INotebookKernel
 use je_workbench::contrib::notebook::browser::notebook_editor_widget::NotebookEditorWidget;
 use je_workbench::contrib::notebook::browser::services::notebook_editor_service::{IBorrowValue, INotebookEditorService};
 use je_workbench::contrib::notebook::common::notebook_common::{
-    INotebookContributionData, INotebookRendererInfo, INotebookStaticPreloadInfo, INotebookTextModel, NotebookCellExecutionState, NotebookExecutionState, NotebookExtensionDescription,
+    INotebookContributionData, INotebookKernelSourceAction, INotebookRendererInfo, INotebookStaticPreloadInfo, INotebookTextModel, NotebookCellExecutionState,
+    NotebookExecutionState, NotebookExtensionDescription,
 };
 use je_workbench::contrib::notebook::common::notebook_execution_state_service::{
     ExecutionStateChange, ICellExecuteUpdate, ICellExecutionComplete, INotebookCellExecution, INotebookExecution, INotebookExecutionStateService, INotebookFailStateChangedEvent,
 };
 use je_workbench::contrib::notebook::common::notebook_kernel_service::{
-    INotebookKernel, INotebookKernelDetectionTask, INotebookKernelMatchResult, INotebookKernelService, INotebookTextModelLike, IKernelSourceActionProvider,
-    ISelectedNotebooksChangeEvent,
+    INotebookKernel, INotebookKernelDetectionTask, INotebookKernelMatchResult, INotebookKernelService, INotebookSourceActionChangeEvent, INotebookTextModelLike,
+    IKernelSourceActionProvider, ISelectedNotebooksChangeEvent, ISourceAction,
 };
+use je_platform::contextkey::contextkey::IContextKeyService;
 use je_workbench::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
 use je_workbench::contrib::notebook::common::notebook_service::{INotebookSerializer, INotebookService, SimpleNotebookProviderInfo};
 
@@ -132,6 +134,58 @@ struct StubKernelService {
 }
 
 impl INotebookKernelService for StubKernelService {
+    fn on_did_add_kernel(&self) -> Event<Rc<dyn INotebookKernel>> {
+        absent("onDidAddKernel")
+    }
+
+    fn on_did_remove_kernel(&self) -> Event<Rc<dyn INotebookKernel>> {
+        absent("onDidRemoveKernel")
+    }
+
+    fn on_did_change_notebook_affinity(&self) -> Event<()> {
+        absent("onDidChangeNotebookAffinity")
+    }
+
+    fn on_did_notebook_variables_update(&self) -> Event<URI> {
+        absent("onDidNotebookVariablesUpdate")
+    }
+
+    fn get_selected_or_suggested_kernel(&self, _notebook: &dyn INotebookTextModelLike) -> Option<Rc<dyn INotebookKernel>> {
+        absent("getSelectedOrSuggestedKernel")
+    }
+
+    fn select_kernel_for_notebook(&self, _kernel: Option<&Rc<dyn INotebookKernel>>, _notebook: &dyn INotebookTextModelLike) {
+        absent("selectKernelForNotebook")
+    }
+
+    fn preselect_kernel_for_notebook(&self, _kernel: &Rc<dyn INotebookKernel>, _notebook: &dyn INotebookTextModelLike) {
+        absent("preselectKernelForNotebook")
+    }
+
+    fn on_did_change_kernel_detection_tasks(&self) -> Event<String> {
+        absent("onDidChangeKernelDetectionTasks")
+    }
+
+    fn get_kernel_detection_tasks(&self, _notebook: &dyn INotebookTextModelLike) -> Vec<Rc<dyn INotebookKernelDetectionTask>> {
+        absent("getKernelDetectionTasks")
+    }
+
+    fn on_did_change_source_actions(&self) -> Event<INotebookSourceActionChangeEvent> {
+        absent("onDidChangeSourceActions")
+    }
+
+    fn get_source_actions(&self, _notebook: &dyn INotebookTextModelLike, _context_key_service: Option<Rc<dyn IContextKeyService>>) -> Vec<Rc<dyn ISourceAction>> {
+        absent("getSourceActions")
+    }
+
+    fn get_running_source_actions(&self, _notebook: &dyn INotebookTextModelLike) -> Vec<Rc<dyn ISourceAction>> {
+        absent("getRunningSourceActions")
+    }
+
+    fn get_kernel_source_actions2(&self, _notebook: &dyn INotebookTextModelLike) -> Promise<Vec<INotebookKernelSourceAction>> {
+        absent("getKernelSourceActions2")
+    }
+
     fn on_did_change_selected_notebooks(&self) -> Event<ISelectedNotebooksChangeEvent> {
         Event::none()
     }

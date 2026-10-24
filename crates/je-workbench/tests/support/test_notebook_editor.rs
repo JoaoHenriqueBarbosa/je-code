@@ -360,7 +360,7 @@ pub fn empty_metadata() -> NotebookCellMetadata {
 
 /// `const baseCellEditorOptions = new class extends mock<IBaseCellEditorOptions>() { }`: `value` é `undefined`, então ler o
 /// `wordWrap` lança (nenhum caso chega lá: o `fontInfo` das células de teste é nulo).
-struct MockBaseCellEditorOptions;
+pub struct MockBaseCellEditorOptions;
 
 impl IBaseCellEditorOptions for MockBaseCellEditorOptions {
     fn word_wrap(&self) -> String {
@@ -375,12 +375,28 @@ pub fn create_notebook_options(services: &NotebookTestServices, disposables: &Di
 
 /// `createNotebookCellList(instantiationService, disposables, viewContext?)`.
 pub fn create_notebook_cell_list(services: &NotebookTestServices, disposables: &DisposableStore, view_context: Option<&Rc<ViewContext>>) -> Rc<NotebookCellList> {
-    // `notebookOptions` só é lido pelos `reveal*` da lista (Fase 6), mas é criado como no original.
-    let _notebook_options = match view_context {
+    create_notebook_cell_list_with_configuration(services, disposables, view_context, services.configuration_service.clone())
+}
+
+/// `createNotebookCellList` com o `IConfigurationService` que o `instantiationService.stub(IConfigurationService, config)` de
+/// `notebookCellList.test.ts` registra: é o que o `NotebookOptions` e o `NotebookCellAnchor` da lista leem.
+pub fn create_notebook_cell_list_with_configuration(
+    services: &NotebookTestServices,
+    disposables: &DisposableStore,
+    view_context: Option<&Rc<ViewContext>>,
+    configuration_service: Rc<dyn IConfigurationService>,
+) -> Rc<NotebookCellList> {
+    let notebook_options = match view_context {
         Some(view_context) => view_context.notebook_options.clone(),
-        None => create_notebook_options(services, disposables),
+        None => disposables.add_rc(NotebookOptions::new(false, None, configuration_service.clone(), services.notebook_execution_state_service())),
     };
-    disposables.add_rc(NotebookCellList::new("NotebookCellList", |element| element.get_height(17.0)))
+    disposables.add_rc(NotebookCellList::new(
+        "NotebookCellList",
+        notebook_options,
+        |element| element.get_height(17.0),
+        configuration_service,
+        services.notebook_execution_state_service(),
+    ))
 }
 
 /// `IActiveTestNotebookEditorDelegate`: o `mock<IActiveNotebookEditorDelegate>` de `_createTestNotebookEditor` com o que os
