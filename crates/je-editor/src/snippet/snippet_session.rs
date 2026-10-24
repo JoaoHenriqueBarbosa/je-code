@@ -494,7 +494,7 @@ impl OneSnippet {
         let idx = usize::try_from(self.placeholder_groups_idx.get()).ok()?;
         let placeholder = self.placeholder_groups.borrow().get(idx)?.first()?.clone();
         let choice = placeholder.choice()?;
-        let range = self.decoration_range(&self.editor.get_model()?, &placeholder)?;
+        let range = self.decoration_range(&*self.editor.get_model()?, &placeholder)?;
         Some(ActiveChoice { range, choice })
     }
 
