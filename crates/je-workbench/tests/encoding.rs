@@ -10,8 +10,6 @@
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` não tem o que conferir: nada aqui cria descartáveis;
 //! - o `length` de uma string JS conta unidades UTF-16 (`encode_utf16().count()`);
 //! - o `for` dos casos de candidatos e o `forEach` das BOM geram um teste por caso (macros);
-//! - o caso `encodingExists` é dividido: os codecs presentes, e `encoding_exists_pending` (ignorado)
-//!   com cp1125, koi8ru e koi8t, que ainda não têm tabela.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -468,23 +466,12 @@ empty_readable_with_bom!(to_encode_readable_empty_readable_to_utf8bom_with_bom, 
 empty_readable_with_bom!(to_encode_readable_empty_readable_to_utf16be_with_bom, UTF16BE, UTF16BE_BOM);
 empty_readable_with_bom!(to_encode_readable_empty_readable_to_utf16le_with_bom, UTF16LE, UTF16LE_BOM);
 
-/// As codificações que ainda não têm tabela em `iconv_lite`.
-const PENDING_ENCODINGS: [&str; 3] = ["cp1125", "koi8ru", "koi8t"];
-
 #[test]
 fn encoding_exists() {
     for supported in SUPPORTED_ENCODINGS {
-        if supported.key == UTF8_WITH_BOM || PENDING_ENCODINGS.contains(&supported.key) {
+        if supported.key == UTF8_WITH_BOM {
             continue; // skip over encodings from us
         }
         assert!(iconv_lite::encoding_exists(supported.key), "{}", supported.key);
-    }
-}
-
-#[test]
-#[ignore = "pendentes: cp1125, koi8ru e koi8t ainda não têm tabela em iconv_lite"]
-fn encoding_exists_pending() {
-    for key in PENDING_ENCODINGS {
-        assert!(iconv_lite::encoding_exists(key), "{key}");
     }
 }
