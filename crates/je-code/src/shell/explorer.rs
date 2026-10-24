@@ -188,6 +188,13 @@ impl Explorer {
         self.tree.get_selection().into_iter().flatten().collect()
     }
 
+    /// Reaplica as cores do tema às linhas.
+    pub fn restyle(&self, theme: &ColorTheme) {
+        let mut styles = default_list_styles(theme);
+        styles.row_radius = 4.0;
+        self.tree.style(&styles);
+    }
+
     pub fn layout(&self, width: f64, height: f64) {
         self.tree.layout(Some(height), Some(width));
     }

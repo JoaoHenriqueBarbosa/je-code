@@ -449,7 +449,12 @@ fn main() {
     let theme_path = match std::env::var_os("JE_THEME") {
         Some(path) => PathBuf::from(path),
         None => match find_builtin_extensions() {
-            Some(dir) => dir.join(BUILTIN_DEFAULT_THEME),
+            Some(dir) => {
+                // `workbench.colorTheme` do `settings.json` do usuário (o do VS Code), se houver; senão o padrão.
+                let settings = shell::themes::user_settings();
+                let themes = shell::themes::catalog(&dir);
+                shell::themes::resolve(&themes, settings.get("workbench.colorTheme").and_then(|v| v.as_str())).map_or_else(|| dir.join(BUILTIN_DEFAULT_THEME), |i| themes[i].path.clone())
+            }
             None => {
                 eprintln!("je-code: pasta de extensões não encontrada (defina JE_BUILTIN_EXTENSIONS ou JE_THEME)");
                 std::process::exit(1);
@@ -689,6 +694,33 @@ mod tests {
         // Ctrl+J fecha o painel e devolve o teclado ao editor.
         shell.run(shell::Command::TogglePanel);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn theme_picker_previews_applies_and_reverts() {
+        let path = temp_file("theme.ts", "const answer = 42;\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        let dark = snapshot(&mut shell, "th0-dark.png");
+        shell.run(shell::Command::PickTheme);
+        for c in "light modern".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        // Pré-visualiza o tema em foco sem aplicar de vez.
+        let preview = snapshot(&mut shell, "th1-preview.png");
+        assert!(dark != preview, "o tema em foco já aparece na janela");
+        key(&mut shell, Some(EditorKey::Escape), None);
+        assert!(snapshot(&mut shell, "th2-reverted.png") == dark, "Esc volta ao tema de antes");
+        shell.run(shell::Command::PickTheme);
+        for c in "light modern".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let applied = snapshot(&mut shell, "th3-applied.png");
+        assert!(applied != dark, "Enter aplica o tema escolhido");
+        let at = (400 * 1200 + 900) * 4;
+        assert_eq!(&applied[at..at + 3], &[0xff, 0xff, 0xff], "o fundo do editor é o do Light Modern");
+        std::fs::remove_file(&path).expect("remove");
     }
 
     #[test]

@@ -99,9 +99,10 @@ impl EditorEnvironment {
     }
 
     /// Troca o tema de cores de token (as gramáticas são reaplicadas e o mapa de cores muda).
-    pub fn set_theme(&self, theme_path: &Path, kind: ThemeType) -> Result<(), String> {
+    /// Troca o tema das cores de token; `ui_theme` é o `uiTheme` do `package.json` (`vs`, `vs-dark`, `hc-black`...).
+    pub fn set_theme(&self, theme_path: &Path, ui_theme: &str) -> Result<(), String> {
         let stem = theme_path.file_stem().and_then(|s| s.to_str()).unwrap_or("theme");
-        self.feature.set_theme(&TokenTheme::load_file(theme_path, kind, stem)?);
+        self.feature.set_theme(&TokenTheme::load_file(theme_path, ThemeType::from_ui_theme(ui_theme), stem)?);
         Ok(())
     }
 

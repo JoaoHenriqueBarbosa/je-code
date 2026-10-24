@@ -74,6 +74,8 @@ pub struct QuickPick {
     results: Vec<(PickItem, Rc<ItemScore>)>,
     focus: usize,
     scroll: usize,
+    /// Uma lista fixa de itens (o seletor de tema): o valor só filtra, sem prefixo `>` e sem ícones de arquivo.
+    list_placeholder: Option<String>,
 }
 
 /// Os arquivos do workspace (caminho relativo como descrição, nome como rótulo), até um limite.
@@ -113,17 +115,34 @@ pub fn scan_workspace(root: &Path) -> Vec<PickItem> {
 impl QuickPick {
     pub fn new(files: Vec<PickItem>, recents: Vec<PickItem>, commands: Vec<PickItem>, initial: &str) -> Self {
         let value: Vec<char> = initial.chars().collect();
-        let mut pick = Self { files, recents, commands, cursor: value.len(), value, results: Vec::new(), focus: 0, scroll: 0 };
+        let mut pick = Self { files, recents, commands, cursor: value.len(), value, results: Vec::new(), focus: 0, scroll: 0, list_placeholder: None };
+        pick.refresh();
+        pick
+    }
+
+    /// Uma lista fixa de `items` com `placeholder` no campo (o seletor de tema e afins).
+    pub fn list(items: Vec<PickItem>, placeholder: &str) -> Self {
+        let mut pick = Self::new(Vec::new(), Vec::new(), items, "");
+        pick.list_placeholder = Some(placeholder.to_owned());
         pick.refresh();
         pick
     }
 
     pub fn is_commands(&self) -> bool {
-        self.value.first() == Some(&'>')
+        self.list_placeholder.is_some() || self.value.first() == Some(&'>')
+    }
+
+    fn query_start(&self) -> usize {
+        usize::from(self.list_placeholder.is_none() && self.is_commands())
+    }
+
+    /// O comando do item em foco, para a pré-visualização.
+    pub fn focused_command(&self) -> Option<Command> {
+        self.accept(None)
     }
 
     fn query(&self) -> String {
-        let start = usize::from(self.is_commands());
+        let start = self.query_start();
         self.value[start..].iter().collect::<String>().trim().to_owned()
     }
 
@@ -254,7 +273,7 @@ impl QuickPick {
         let text_node = tree.create(input, Role::Generic);
         let shown: String = self.value.iter().collect();
         if shown.is_empty() {
-            let placeholder = if self.is_commands() { PLACEHOLDER_COMMANDS } else { PLACEHOLDER_FILES };
+            let placeholder = self.list_placeholder.as_deref().unwrap_or(if self.is_commands() { PLACEHOLDER_COMMANDS } else { PLACEHOLDER_FILES });
             tree.set_bounds(text_node, Rect::new(7.0, 1.0, 586.0, 24.0));
             tree.style_mut(text_node).content = Content::Text { text: placeholder.to_owned(), style: font.clone(), color: color("input.placeholderForeground"), line_height: 23.0 };
         } else {

@@ -13,12 +13,14 @@ mod find;
 mod menus;
 mod quick_pick;
 mod terminal_panel;
+pub mod themes;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use je_base::key_codes::KeyCode;
+use je_base::lifecycle::IDisposable;
 use je_editor::model::EndOfLinePreference;
 use je_editor::text_model::{TextModel, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
@@ -65,6 +67,8 @@ pub enum Command {
     ToggleStatusBar,
     ToggleFullScreen,
     ShowExplorer,
+    PickTheme,
+    SetTheme(usize),
     QuickOpen,
     ShowCommands,
     TogglePanel,
@@ -174,6 +178,12 @@ pub struct Shell {
     /// O último valor da busca, para reabrir o widget com ele.
     last_find: Option<String>,
     palette_items: Vec<PickItem>,
+    themes: Vec<themes::ThemeEntry>,
+    theme_index: Option<usize>,
+    /// O arquivo e o `uiTheme` do tema em uso.
+    theme_file: (PathBuf, String),
+    /// O tema de antes da pré-visualização do seletor (Esc volta a ele).
+    theme_before_preview: Option<(PathBuf, String, Option<usize>)>,
     /// Os arquivos do workspace, lidos na primeira abertura do Quick Open.
     workspace_files: Option<Vec<PickItem>>,
     language_of: explorer::LanguageOf,
@@ -220,17 +230,10 @@ impl Shell {
             (chrome, menubar, explorer)
         };
         let queue: CommandQueue = Rc::new(RefCell::new(Vec::new()));
-        let (menus, get_keybinding, palette_items) = menus::menubar_menus(&queue);
-        let menu_styles = default_menu_styles(&theme);
-        let bar_options = IMenuBarOptions {
-            enable_mnemonics: true,
-            visibility: Some("classic".to_owned()),
-            get_keybinding: Some(get_keybinding),
-            styles: Some(Rc::new(default_menu_bar_styles(&theme))),
-            ..Default::default()
-        };
-        let menubar = MenuBar::new(&ui, menubar_node, bar_options, menu_styles);
-        menubar.push(&menus);
+        let (menubar, mut palette_items) = Self::build_menubar(&ui, menubar_node, &theme, &queue);
+        palette_items.push(PickItem { label: "Preferences: Color Theme".to_owned(), description: None, keybinding: Some("Ctrl+K Ctrl+T".to_owned()), command: Command::PickTheme, recent: false });
+        let themes = extensions.as_deref().map(themes::catalog).unwrap_or_default();
+        let theme_index = themes.iter().position(|t| t.path == theme_path);
         let language_of: explorer::LanguageOf = match &environment {
             Some(env) => {
                 let env = env.clone();
@@ -276,9 +279,16 @@ impl Shell {
             find_focused: false,
             last_find: None,
             palette_items,
+            themes,
+            theme_index,
+            theme_file: (theme_path.to_path_buf(), "vs-dark".to_owned()),
+            theme_before_preview: None,
             workspace_files: None,
             language_of,
         };
+        if let Some(entry) = shell.theme_index.and_then(|i| shell.themes.get(i)) {
+            shell.theme_file.1 = entry.ui_theme.clone();
+        }
         for file in files {
             shell.open_file(file)?;
         }
@@ -287,6 +297,88 @@ impl Shell {
         }
         shell.render();
         Ok(shell)
+    }
+
+    /// A barra de menus do tema dado (e as entradas da paleta que vêm dos itens).
+    fn build_menubar(ui: &Ui, node: NodeId, theme: &ColorTheme, queue: &CommandQueue) -> (Rc<MenuBar>, Vec<PickItem>) {
+        let (menus, get_keybinding, palette_items) = menus::menubar_menus(queue);
+        let bar_options = IMenuBarOptions {
+            enable_mnemonics: true,
+            visibility: Some("classic".to_owned()),
+            get_keybinding: Some(get_keybinding),
+            styles: Some(Rc::new(default_menu_bar_styles(theme))),
+            ..Default::default()
+        };
+        let menubar = MenuBar::new(ui, node, bar_options, default_menu_styles(theme));
+        menubar.push(&menus);
+        (menubar, palette_items)
+    }
+
+    /// Troca o tema de cor: o editor, os tokens, o terminal, o explorador e a barra de menus.
+    fn apply_theme(&mut self, index: usize) {
+        let Some(entry) = self.themes.get(index).cloned() else { return };
+        self.apply_theme_file(&entry.path, &entry.ui_theme, Some(index));
+    }
+
+    fn apply_theme_file(&mut self, path: &Path, ui_theme: &str, index: Option<usize>) {
+        let theme = match ColorTheme::load(path) {
+            Ok(theme) => theme,
+            Err(e) => {
+                self.notice = Some(format!("tema inválido: {e}"));
+                return;
+            }
+        };
+        if let Some(env) = &self.environment
+            && let Err(e) = env.set_theme(path, ui_theme)
+        {
+            self.notice = Some(format!("tema de tokens inválido: {e}"));
+        }
+        self.theme = theme;
+        self.theme_index = index;
+        self.theme_file = (path.to_path_buf(), ui_theme.to_owned());
+        let colors = EditorColors::from_theme(&self.theme);
+        let token_colors = self.environment.as_ref().map(|env| env.color_map());
+        for editor in &mut self.editors {
+            editor.view.set_colors(colors.clone());
+            if let Some(map) = &token_colors {
+                editor.view.set_token_colors(map);
+            }
+        }
+        self.terminal_palette = terminal_panel::palette(&self.theme);
+        if let Some(explorer) = &self.explorer {
+            explorer.restyle(&self.theme);
+        }
+        // A barra de menus guarda as cores na criação: recria no mesmo nó.
+        IDisposable::dispose(&*self.menubar);
+        let children = self.ui.tree().children(self.nodes.menubar).to_vec();
+        for child in children {
+            self.ui.remove(child);
+        }
+        let (menubar, _) = Self::build_menubar(&self.ui, self.nodes.menubar, &self.theme, &self.queue);
+        self.menubar = menubar;
+        self.needs_render = true;
+    }
+
+    /// Abre o seletor de tema (`Preferences: Color Theme`) com a pré-visualização ao navegar.
+    fn open_theme_picker(&mut self) {
+        let items = self.themes.iter().enumerate().map(|(i, t)| PickItem { label: t.label.clone(), description: None, keybinding: None, command: Command::SetTheme(i), recent: false }).collect();
+        let mut pick = QuickPick::list(items, "Select Color Theme (Up/Down Keys to Preview)");
+        // Começa no tema atual.
+        if let Some(current) = self.theme_index {
+            pick.move_focus(current as isize);
+        }
+        self.theme_before_preview = Some((self.theme_file.0.clone(), self.theme_file.1.clone(), self.theme_index));
+        self.quick_pick = Some(pick);
+        self.ui.blur();
+    }
+
+    /// Com o seletor de tema aberto, mostra o tema do item em foco.
+    fn preview_theme(&mut self) {
+        if let Some(Command::SetTheme(index)) = self.quick_pick.as_ref().and_then(QuickPick::focused_command)
+            && self.theme_index != Some(index)
+        {
+            self.apply_theme(index);
+        }
     }
 
     fn color(&self, id: &str) -> Rgba {
@@ -529,6 +621,11 @@ impl Shell {
             Command::ToggleFullScreen => self.fullscreen_requested = true,
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
+            Command::PickTheme => self.open_theme_picker(),
+            Command::SetTheme(index) => {
+                self.apply_theme(index);
+                self.theme_before_preview = None;
+            }
             Command::QuickPickAccept(index) => {
                 let command = self.quick_pick.as_ref().and_then(|pick| pick.accept(Some(index)));
                 self.quick_pick = None;
@@ -601,7 +698,12 @@ impl Shell {
         }
         let ctrl = mods.ctrl || mods.meta;
         match key {
-            Some(EditorKey::Escape) => self.quick_pick = None,
+            Some(EditorKey::Escape) => {
+                self.quick_pick = None;
+                if let Some((path, ui_theme, index)) = self.theme_before_preview.take() {
+                    self.apply_theme_file(&path, &ui_theme, index);
+                }
+            }
             Some(EditorKey::Enter) => {
                 let command = pick.accept(None);
                 self.quick_pick = None;
@@ -1354,6 +1456,8 @@ impl Shell {
         self.ui.run_animation_frame();
         if self.needs_render {
             self.render();
+            // Os widgets retidos (a barra de menus) agendam o layout para o próximo quadro de animação: roda já.
+            self.ui.run_animation_frame();
         }
         let rect = self.editor_rect();
         let host = self.nodes.editor_host;
