@@ -65,3 +65,5 @@ pub mod modern_ui;
 
 // Arquivos de workspace (`contrib/workspaces`): a contribuição que sugere abrir um `.code-workspace` da raiz da pasta.
 pub mod workspaces;
+// Reinício por configuração (`contrib/relauncher`): o `SettingsChangeRelauncher`, que pergunta se reinicia quando uma configuração que só vale após o reinício muda.
+pub mod relauncher;
