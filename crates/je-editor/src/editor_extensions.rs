@@ -85,6 +85,7 @@ use je_platform::action::{CommandAction, Icon, LocalizedString, Title};
 use je_platform::actions::{Action2, Action2Options, AnyMenuItem, MenuId, MenuItem, menu_ids, menu_registry};
 use je_platform::commands::{Command as RegisteredCommand, CommandHandler, CommandMetadata, commands_registry};
 use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression, I_CONTEXT_KEY_SERVICE};
+use je_platform::log::{I_LOG_SERVICE, LogService};
 use je_platform::keybinding::keybindings_registry::{
     KeybindingRule, KeybindingWeight, Keybindings, PlatformKeybindings, keybindings_registry,
 };
@@ -395,6 +396,8 @@ impl ICommand for MultiCommand {
     fn run_command(&self, accessor: &ServicesAccessor, args: &Dynamic) -> Promise<()> {
         // O `for...of` do original vê a lista viva; a cópia evita o empréstimo durante a chamada.
         let implementations: Vec<CommandImplementationRegistration> = self.implementations.borrow().clone();
+        let log_service = accessor.get(I_LOG_SERVICE);
+        log_service.trace(&format!("Executing Command '{}' which has {} bound.", self.base.id, implementations.len()));
         for registration in implementations {
             if let Some(when) = &registration.when {
                 let context = accessor.get(I_CONTEXT_KEY_SERVICE).get_context(None);
@@ -402,12 +405,22 @@ impl ICommand for MultiCommand {
                     continue;
                 }
             }
+            let handled = |log_service: &dyn LogService| {
+                log_service.trace(&format!("Command '{}' was handled by '{}'.", self.base.id, registration.name));
+            };
             match (registration.implementation)(accessor, args) {
-                CommandImplementationResult::Bool(true) => return Promise::resolved(()),
+                CommandImplementationResult::Bool(true) => {
+                    handled(&*log_service);
+                    return Promise::resolved(());
+                }
                 CommandImplementationResult::Bool(false) => {}
-                CommandImplementationResult::Promise(promise) => return promise,
+                CommandImplementationResult::Promise(promise) => {
+                    handled(&*log_service);
+                    return promise;
+                }
             }
         }
+        log_service.trace(&format!("The Command '{}' was not handled by any implementation.", self.base.id));
         Promise::resolved(())
     }
 }

@@ -797,7 +797,7 @@ pub mod core_navigation_commands {
 
     /// `BaseMoveToCommand`: o `_moveTo` e o `_moveToSelect`.
     fn base_move_to_command(id: &str, in_selection_mode: bool) -> CoreEditorCommand<MoveCommandOptions> {
-        CoreEditorCommand::new(CommandOptions::new(id), move |view_model, args| {
+        CoreEditorCommand::new(CommandOptions::new(id), move |view_model: &EditorViewModel, args: &MoveCommandOptions| {
             let Some(position) = args.position else {
                 return;
             };
@@ -896,7 +896,7 @@ pub mod core_navigation_commands {
     ) -> CoreEditorCommand<CursorMoveCommandOptions> {
         CoreEditorCommand::new(
             CommandOptions { kb_opts: text_input_keybindings(keybindings), ..CommandOptions::new(id) },
-            move |view_model, dynamic_args| {
+            move |view_model: &EditorViewModel, dynamic_args: &CursorMoveCommandOptions| {
                 let mut args = static_args;
                 if static_args.value == PAGE_SIZE_MARKER {
                     // -1 is a marker for page size: `dynamicArgs.pageSize || viewModel.cursorConfig.pageSize`
