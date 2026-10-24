@@ -13,11 +13,11 @@ use super::policy_dto::PolicyTypes;
 /// Configurações anuláveis aceitam os mesmos valores gerenciados; `null` representa uma preferência pessoal não
 /// definida.
 pub fn are_policy_reference_types_compatible(policy_type: Option<&PolicyTypes>, reference_type: &PolicyTypes) -> bool {
-    let non_null_sorted = |types: &PolicyTypes| {
+    fn non_null_sorted(types: &PolicyTypes) -> Vec<&String> {
         let mut list: Vec<&String> = types.as_list().iter().filter(|single| *single != "null").collect();
         list.sort();
         list
-    };
+    }
     // `[policyType]` com `policyType` ausente é `[undefined]`, que nunca iguala a lista de uma referência: `None`
     // guarda esse caso à parte.
     let Some(policy_type) = policy_type else {
