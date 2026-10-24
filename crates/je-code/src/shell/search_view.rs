@@ -164,6 +164,8 @@ pub struct SearchView {
     pub whole_word: bool,
     pub regex: bool,
     pub select_all: bool,
+    /// O `files.exclude` mais o `search.exclude` em vigor.
+    pub excludes: super::excludes::Excludes,
     _listeners: Vec<DisposableRef>,
 }
 
@@ -217,7 +219,7 @@ impl SearchView {
                 }
             }
         }));
-        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, _listeners: listeners }
+        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, excludes: super::excludes::Excludes::search(&serde_json::Map::new()), _listeners: listeners }
     }
 
     pub fn restyle(&self, theme: &ColorTheme) {
@@ -231,7 +233,7 @@ impl SearchView {
     }
 
     pub fn query(&self) -> Query {
-        Query { text: self.text(), match_case: self.match_case, whole_word: self.whole_word, regex: self.regex }
+        Query { text: self.text(), match_case: self.match_case, whole_word: self.whole_word, regex: self.regex, excludes: self.excludes.clone() }
     }
 
     /// Começa (ou recomeça) a busca em `root` com o campo atual e esvazia os resultados.

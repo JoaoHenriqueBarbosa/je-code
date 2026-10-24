@@ -7,7 +7,7 @@
 //!
 //! O valor começando em `>` é a paleta, como no original; sem ele, é a busca de arquivos do workspace (mais os
 //! editores abertos como `recently opened`). O arquivo `.gitignore` da raiz entra só como nomes simples de
-//! pastas; `node_modules` e `.git` ficam de fora como no `search.exclude` e `files.exclude` padrão.
+//! pastas; o `files.exclude` e o `search.exclude` do usuário (com os padrões do VS Code) ficam de fora.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -81,7 +81,8 @@ pub struct QuickPick {
 }
 
 /// Os arquivos do workspace (caminho relativo como descrição, nome como rótulo), até um limite.
-pub fn scan_workspace(root: &Path) -> Vec<PickItem> {
+pub fn scan_workspace(root: &Path, excludes: &super::excludes::Excludes) -> Vec<PickItem> {
+    let exclude = excludes.matcher();
     const LIMIT: usize = 50_000;
     let ignored: Vec<String> = std::fs::read_to_string(root.join(".gitignore"))
         .map(|text| {
@@ -98,10 +99,10 @@ pub fn scan_workspace(root: &Path) -> Vec<PickItem> {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.filter_map(Result::ok) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if matches!(name.as_str(), ".git" | "node_modules" | ".svn" | ".hg" | "CVS" | ".DS_Store" | "Thumbs.db") || ignored.contains(&name) {
+            let path = entry.path();
+            if exclude.excludes(root, &path) || ignored.contains(&name) {
                 continue;
             }
-            let path = entry.path();
             if path.is_dir() {
                 pending.push(path);
             } else if items.len() < LIMIT {

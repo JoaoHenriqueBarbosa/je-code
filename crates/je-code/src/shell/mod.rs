@@ -14,6 +14,7 @@ mod menus;
 mod search_backend;
 mod scm_view;
 mod search_view;
+mod excludes;
 mod extensions_view;
 mod file_ops;
 pub mod git;
@@ -476,7 +477,8 @@ impl Shell {
             }
             None => Rc::new(|_: &str| None),
         };
-        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
+        let user_settings = themes::user_settings();
+        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone(), excludes::Excludes::files(&user_settings).matcher()));
         let search = SearchView::new(&ui, search_node, &theme, icons.clone(), language_of.clone(), queue.clone());
         let scm = ScmView::new(&ui, scm_node, &theme, icons.clone(), language_of.clone(), queue.clone());
         let terminal_palette = terminal_panel::palette(&theme);
@@ -1540,7 +1542,7 @@ impl Shell {
             self.ui.remove(child);
         }
         let language_of = self.language_of.clone();
-        self.explorer = Some(Explorer::new(&self.ui, node, &path, &self.theme, self.icons.clone(), language_of, self.queue.clone()));
+        self.explorer = Some(Explorer::new(&self.ui, node, &path, &self.theme, self.icons.clone(), language_of, self.queue.clone(), excludes::Excludes::files(&themes::user_settings()).matcher()));
         self.workspace = Some(path);
         self.workspace_files = None;
         self.sidebar_visible = true;
@@ -1606,6 +1608,11 @@ impl Shell {
     /// Reaplica o `settings.json` do usuário: o tema de cor, o zoom e o salvamento automático.
     fn apply_user_settings(&mut self) {
         let settings = themes::user_settings();
+        if let Some(explorer) = &self.explorer {
+            explorer.set_exclude(excludes::Excludes::files(&settings).matcher());
+        }
+        self.search.excludes = excludes::Excludes::search(&settings);
+        self.workspace_files = None;
         self.auto_save = (
             settings.get("files.autoSave").and_then(|v| v.as_str()).unwrap_or("off").to_owned(),
             settings.get("files.autoSaveDelay").and_then(serde_json::Value::as_u64).unwrap_or(1000),
@@ -2025,7 +2032,8 @@ impl Shell {
         let files = match &self.workspace_files {
             Some(files) => files.clone(),
             None => {
-                let files = self.workspace.as_deref().map(quick_pick::scan_workspace).unwrap_or_default();
+                let excludes = excludes::Excludes::search(&themes::user_settings());
+                let files = self.workspace.as_deref().map(|w| quick_pick::scan_workspace(w, &excludes)).unwrap_or_default();
                 self.workspace_files = Some(files.clone());
                 files
             }

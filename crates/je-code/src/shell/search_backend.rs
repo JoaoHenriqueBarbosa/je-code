@@ -14,8 +14,6 @@ use je_editor::text_model::{FindScope, TextModel, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
 use je_terminal::Wake;
 
-/// O `search.exclude` e o `files.exclude` padrão, por nome.
-const EXCLUDED_DIRS: [&str; 7] = [".git", ".svn", ".hg", "CVS", "node_modules", "bower_components", ".DS_Store"];
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_MATCHES_PER_FILE: usize = 10_000;
 const MAX_TOTAL_MATCHES: usize = 20_000;
@@ -27,6 +25,8 @@ pub struct Query {
     pub match_case: bool,
     pub whole_word: bool,
     pub regex: bool,
+    /// O `files.exclude` mais o `search.exclude`.
+    pub excludes: super::excludes::Excludes,
 }
 
 /// Uma linha com ocorrências: o texto (com o recuo cortado, como o `previewText` do VS Code) e as colunas dos
@@ -103,6 +103,7 @@ fn run(root: &Path, query: &Query, tx: &Sender<FileResult>, cancelled: &AtomicBo
         return;
     }
     let ignored = ignored_names(root);
+    let exclude = query.excludes.matcher();
     let mut pending = vec![root.to_path_buf()];
     let mut total = 0usize;
     let mut files: Vec<PathBuf> = Vec::new();
@@ -113,10 +114,10 @@ fn run(root: &Path, query: &Query, tx: &Sender<FileResult>, cancelled: &AtomicBo
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.filter_map(Result::ok) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if EXCLUDED_DIRS.contains(&name.as_str()) || ignored.contains(&name) {
+            let path = entry.path();
+            if exclude.excludes(root, &path) || ignored.contains(&name) {
                 continue;
             }
-            let path = entry.path();
             if path.is_dir() {
                 pending.push(path);
             } else {
@@ -188,7 +189,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn query(text: &str) -> Query {
-        Query { text: text.to_owned(), match_case: false, whole_word: false, regex: false }
+        Query { text: text.to_owned(), match_case: false, whole_word: false, regex: false, excludes: super::super::excludes::Excludes::search(&serde_json::Map::new()) }
     }
 
     #[test]
