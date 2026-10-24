@@ -467,7 +467,7 @@ impl CustomTreeViewDragAndDrop {
 
         // The only custom data transfer we set from the explorer is a file transfer
         // to be able to DND between multiple code file explorers across windows
-        let file_resources: Vec<String> = resources.iter().filter(|resource| resource.scheme().to_string_lossy() == "file").map(|resource| resource.fs_path().to_string_lossy()).collect();
+        let file_resources: Vec<String> = resources.iter().filter(|resource| resource.scheme().to_string_lossy() == "file").map(|resource| je_platform::resources::fs_path(resource)).collect();
         if !file_resources.is_empty() {
             data_transfer.set_data(CODE_DATA_TRANSFERS_FILES, &serde_json::json!(file_resources).to_string());
         }

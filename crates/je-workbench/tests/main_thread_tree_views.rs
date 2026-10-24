@@ -324,6 +324,9 @@ fn default_registration_options() -> TreeViewRegistrationOptions {
 
 /// O `setup` do `suite`.
 async fn setup() -> Fixture {
+    // No original os registros são singletons de módulo, criados antes do rastreador de vazamentos; aqui são por thread e nascem no
+    // primeiro uso, então são criados antes do guarda.
+    let _ = (view_containers_registry(), views_registry());
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let drag_service: Rc<TreeViewsDnDService<Rc<VSDataTransfer>>> = Rc::new(TreeViewsDnDService::new());
     let test_extension_service = Rc::new(TestExtensionService);
