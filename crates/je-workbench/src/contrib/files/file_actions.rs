@@ -3,8 +3,9 @@
 //! chamam (`findValidPasteFileTarget`, `askForOverwrite`, `getFilesToPaste`).
 //!
 //! As ações e comandos (`GlobalCompareResourcesAction`, `ToggleAutoSaveAction`, `BaseSaveAllAction`, `FocusFilesExplorer`,
-//! `validateFileName`, `openExplorerAndCreate`, `renameHandler`, `deleteFileHandler`, `downloadFileHandler`...) entram com
-//! os serviços que eles leem (vistas, palavras-chave de contexto, `IWorkingCopyFileService`, `IPathService`...).
+//! `openExplorerAndCreate`, `renameHandler`, `deleteFileHandler`, `downloadFileHandler`...) entram com
+//! os serviços que eles leem (vistas, palavras-chave de contexto, `IWorkingCopyFileService`...). O `validateFileName`
+//! (e o `trimLongName` e o `getWellFormedFileName` que ele chama) já está aqui.
 //!
 //! Notas de tradução:
 //! - **`ServicesAccessor`.** Os handlers recebem o [`ServicesAccessor`] e leem os serviços de forma síncrona, antes do
@@ -32,8 +33,10 @@ use je_base::buffer::VSBuffer;
 use je_base::dynamic::{Dynamic, Truthy};
 use je_base::error_message::to_error_message_of;
 use je_base::errors::Error;
+use je_base::js_string::is_js_whitespace;
 use je_base::nls::localize;
 use je_base::path::PathModule;
+use je_base::platform::OperatingSystem;
 use je_base::promise::Promise;
 use je_base::resources::distinct_parents;
 use je_base::severity::Severity;
@@ -52,10 +55,11 @@ use je_platform::resources::{ext_uri, fs_path, host_environment, join_path, uri_
 use je_platform::uri_identity::uri_identity::{I_URI_IDENTITY_SERVICE, IUriIdentityService};
 use zyarr::RegExp;
 
-use super::browser_files::{ExplorerBulkEditOptions, I_EXPLORER_SERVICE, IExplorerService};
+use super::browser_files::{ExplorerBulkEditOptions, I_EXPLORER_SERVICE, IExplorerService, ValidationMessage};
 use super::common_files::{IncrementalNaming, IncrementalNamingSetting, UndoConfirmLevel};
 use super::explorer_model::ExplorerItem;
 use crate::services::editor::editor_service::{I_EDITOR_SERVICE, IEditorService};
+use crate::services::path::path_service::IPathService;
 
 /// `Constants.MAX_SAFE_SMALL_INTEGER` de `src/vs/base/common/uint.ts` (`1 << 30`).
 const MAX_SAFE_SMALL_INTEGER: f64 = (1u32 << 30) as f64;
@@ -762,4 +766,94 @@ async fn get_files_to_paste(file_list: Option<FileList>, clipboard_service: Rc<d
             Ok(FilesToPaste::Paths(distinct))
         }
     }
+}
+
+/// `validateFileName(pathService, item, name, os)`: `name` é `None` para o `null!` dos testes.
+pub fn validate_file_name(path_service: &dyn IPathService, item: &Rc<ExplorerItem>, name: Option<&str>, os: OperatingSystem) -> Option<ValidationMessage> {
+    // Produce a well formed file name
+    let name = name.map(get_well_formed_file_name);
+
+    // Name not provided
+    let Some(name) = name.filter(|name| !name.is_empty() && !name.chars().all(is_js_whitespace_char)) else {
+        return Some(ValidationMessage { content: localize("emptyFileNameError", "A file or folder name must be provided.", &[]), severity: Severity::Error });
+    };
+
+    // Relative paths only
+    if name.starts_with('/') || name.starts_with('\\') {
+        return Some(ValidationMessage {
+            content: localize("fileNameStartsWithSlashError", "A file or folder name cannot start with a slash.", &[]),
+            severity: Severity::Error,
+        });
+    }
+
+    let names: Vec<&str> = name.split(['\\', '/']).filter(|part| !part.is_empty()).collect();
+    let parent = item.parent();
+
+    if name != item.name() {
+        // Do not allow to overwrite existing file
+        if let Some(child) = parent.and_then(|parent| parent.get_child(&name))
+            && !Rc::ptr_eq(&child, item)
+        {
+            return Some(ValidationMessage {
+                content: localize(
+                    "fileNameExistsError",
+                    "A file or folder **{0}** already exists at this location. Please choose a different name.",
+                    &[&name],
+                ),
+                severity: Severity::Error,
+            });
+        }
+    }
+
+    // Check for invalid file name.
+    if names.iter().any(|folder_name| !path_service.has_valid_basename_for_os(&item.resource(), os, Some(*folder_name))) {
+        // Escape * characters
+        let escaped_name = name.replace('*', "\\*");
+        return Some(ValidationMessage {
+            content: localize(
+                "invalidFileNameError",
+                "The name **{0}** is not valid as a file or folder name. Please choose a different name.",
+                &[&trim_long_name(&escaped_name)],
+            ),
+            severity: Severity::Error,
+        });
+    }
+
+    if names.iter().any(|name| name.chars().next().is_some_and(is_js_whitespace_char) || name.chars().next_back().is_some_and(is_js_whitespace_char)) {
+        return Some(ValidationMessage {
+            content: localize("fileNameWhitespaceWarning", "Leading or trailing whitespace detected in file or folder name.", &[]),
+            severity: Severity::Warning,
+        });
+    }
+
+    None
+}
+
+/// O `\s` das expressões regulares do JavaScript.
+fn is_js_whitespace_char(character: char) -> bool {
+    u16::try_from(u32::from(character)).is_ok_and(is_js_whitespace)
+}
+
+/// `trimLongName(name)`: `name.length > 255` conta unidades UTF-16 e o `substr(0, 255)` corta nelas.
+fn trim_long_name(name: &str) -> String {
+    let units: Vec<u16> = name.encode_utf16().collect();
+    if units.len() > 255 {
+        return format!("{}...", from_utf16(&units[..255]));
+    }
+
+    name.to_string()
+}
+
+/// `getWellFormedFileName(filename)`.
+fn get_well_formed_file_name(filename: &str) -> String {
+    if filename.is_empty() {
+        return filename.to_string();
+    }
+
+    // Trim tabs
+    let filename = filename.trim_matches('\t');
+
+    // Remove trailing slashes
+    let filename = filename.trim_end_matches('/');
+    filename.trim_end_matches('\\').to_string()
 }
