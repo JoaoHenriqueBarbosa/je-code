@@ -31,7 +31,7 @@ use je_base::JsString;
 use je_base::async_::ThrottledDelayer;
 use je_base::errors::{Error, throw};
 use je_base::event::Event;
-use je_base::lifecycle::{DisposableRef, IDisposable, MutableDisposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, MutableDisposable};
 use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::uri::URI;
@@ -180,6 +180,11 @@ impl BaseTextEditorModel {
                 outer.dispose();
             }
         })));
+    }
+
+    /// O `_store` do `Disposable` base (protected).
+    pub fn store(&self) -> Rc<DisposableStore> {
+        self.editor_model.store()
     }
 
     /// `textEditorModelHandle`: o recurso do modelo de texto que este modelo guarda (protected).

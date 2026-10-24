@@ -107,13 +107,12 @@ impl AbstractTextResourceEditorInput {
         // Save / Save As
         let target = if save_as {
             let options = TextFileSaveAsOptions {
-                text_file_save: options.map(TextFileSaveOptions::from).unwrap_or_default(),
                 suggested_target: Some(self.preferred_resource()),
-                ..TextFileSaveAsOptions::default()
+                ..TextFileSaveAsOptions::from_save_options(options.unwrap_or_default())
             };
-            self.text_file_service.save_as(&self.resource, None, Some(&options))
+            self.text_file_service.save_as(&self.resource, None, Some(options))
         } else {
-            self.text_file_service.save(&self.resource, options.map(TextFileSaveOptions::from).as_ref())
+            self.text_file_service.save(&self.resource, options.map(|base| TextFileSaveOptions { base, ..TextFileSaveOptions::default() }))
         };
 
         target.then(|target| {

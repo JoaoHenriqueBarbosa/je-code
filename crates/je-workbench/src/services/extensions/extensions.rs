@@ -23,6 +23,12 @@ pub struct IExtensionDescription {
 pub trait IExtensionService {
     /// Returns the description of the extension with the given id, or `None` when it is not installed.
     fn get_extension(&self, id: &str) -> Promise<Option<IExtensionDescription>>;
+
+    /// `whenInstalledExtensionsRegistered()`: resolves once the installed extensions are registered. Sem o registro de
+    /// extensões no porte, o padrão é já resolvido.
+    fn when_installed_extensions_registered(&self) -> Promise<bool> {
+        Promise::resolved(true)
+    }
 }
 
 service_id!(pub I_EXTENSION_SERVICE: dyn IExtensionService = "extensionService");

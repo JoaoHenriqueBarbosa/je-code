@@ -49,25 +49,87 @@ use je_workbench::common::editor::text_resource_editor_model::TextResourceEditor
 use je_workbench::common::editor::RevertOptions;
 use je_workbench::services::editor::custom_editor_label_service::CustomEditorLabelService;
 use je_workbench::services::language_detection::language_detection_worker_service::ILanguageDetectionService;
-use je_workbench::services::textfile::textfiles::{ILanguageSupport, ITextFileService, TextFileSaveAsOptions, TextFileSaveOptions, snapshot_to_string};
+use je_base::buffer::VSBufferReadableStream;
+use je_base::stream::ReadableStream;
+use je_platform::files::files::FileStatWithMetadata;
+use je_workbench::services::textfile::collaborators::FileOperationUndoRedoInfo;
+use je_workbench::services::textfile::textfiles::{
+    EncodedContent, ILanguageSupport, IResourceEncodings, ITextFileEditorModelManager, ITextFileService, ReadTextFileEncodingOptions, ReadTextFileOptions, ResolvedDecoding,
+    ResolvedEncoding, TextFileContent, TextFileCreateOperation, TextFileSaveAsOptions, TextFileSaveOptions, TextFileStreamContent, TextOrSnapshot, WriteTextFileOptions,
+    snapshot_to_string,
+};
 use je_workbench::services::textmodel_resolver::resolver_service::{ITextEditorModel, ITextModelService, TextModelReference};
 use je_workbench::test::browser::workbench_test_services::TestEditorService;
 use je_workbench::test::common::workbench_test_services::TestTextResourcePropertiesService;
 
-/// `TestTextFileService`: o `ITextFileService` que os casos não exercitam (nenhum salva ou reverte).
+/// `TestTextFileService`: o `ITextFileService` que os casos não exercitam. Os casos desta suíte só montam a entrada e
+/// resolvem o modelo em memória, então nenhuma operação do serviço de arquivos de texto é chamada (um chamada reprova o
+/// caso com o nome da operação). O `TestTextFileService` completo entra com o `TextFileService` abstrato.
 struct TestTextFileService;
 
 impl ITextFileService for TestTextFileService {
-    fn save(&self, resource: &URI, _options: Option<&TextFileSaveOptions>) -> Promise<Option<URI>> {
-        Promise::resolved(Some(resource.clone()))
+    fn files(&self) -> Rc<dyn ITextFileEditorModelManager> {
+        unreachable!("TestTextFileService.files não é exercitado por esta suíte")
     }
 
-    fn save_as(&self, resource: &URI, target_resource: Option<&URI>, _options: Option<&TextFileSaveAsOptions>) -> Promise<Option<URI>> {
-        Promise::resolved(Some(target_resource.unwrap_or(resource).clone()))
+    fn encoding(&self) -> Rc<dyn IResourceEncodings> {
+        unreachable!("TestTextFileService.encoding não é exercitado por esta suíte")
+    }
+
+    fn is_dirty(&self, _resource: &URI) -> bool {
+        unreachable!("TestTextFileService.isDirty não é exercitado por esta suíte")
+    }
+
+    fn save(&self, _resource: &URI, _options: Option<TextFileSaveOptions>) -> Promise<Option<URI>> {
+        unreachable!("TestTextFileService.save não é exercitado por esta suíte")
+    }
+
+    fn save_as(&self, _resource: &URI, _target_resource: Option<&URI>, _options: Option<TextFileSaveAsOptions>) -> Promise<Option<URI>> {
+        unreachable!("TestTextFileService.saveAs não é exercitado por esta suíte")
     }
 
     fn revert(&self, _resource: &URI, _options: Option<RevertOptions>) -> Promise<()> {
-        Promise::resolved(())
+        unreachable!("TestTextFileService.revert não é exercitado por esta suíte")
+    }
+
+    fn read(&self, _resource: &URI, _options: Option<ReadTextFileOptions>) -> Promise<TextFileContent> {
+        unreachable!("TestTextFileService.read não é exercitado por esta suíte")
+    }
+
+    fn read_stream(&self, _resource: &URI, _options: Option<ReadTextFileOptions>) -> Promise<TextFileStreamContent> {
+        unreachable!("TestTextFileService.readStream não é exercitado por esta suíte")
+    }
+
+    fn write(&self, _resource: &URI, _value: TextOrSnapshot, _options: Option<WriteTextFileOptions>) -> Promise<FileStatWithMetadata> {
+        unreachable!("TestTextFileService.write não é exercitado por esta suíte")
+    }
+
+    fn create(&self, _operations: Vec<TextFileCreateOperation>, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        unreachable!("TestTextFileService.create não é exercitado por esta suíte")
+    }
+
+    fn get_encoded_readable(&self, _resource: Option<&URI>, _value: Option<TextOrSnapshot>, _options: Option<WriteTextFileOptions>) -> Promise<Option<EncodedContent>> {
+        unreachable!("TestTextFileService.getEncodedReadable não é exercitado por esta suíte")
+    }
+
+    fn get_decoded_stream(&self, _resource: Option<&URI>, _value: VSBufferReadableStream, _options: Option<ReadTextFileEncodingOptions>) -> Promise<Rc<dyn ReadableStream<String>>> {
+        unreachable!("TestTextFileService.getDecodedStream não é exercitado por esta suíte")
+    }
+
+    fn get_encoding(&self, _resource: &URI) -> String {
+        unreachable!("TestTextFileService.getEncoding não é exercitado por esta suíte")
+    }
+
+    fn resolve_decoding(&self, _resource: Option<&URI>, _options: Option<ReadTextFileEncodingOptions>) -> Promise<ResolvedDecoding> {
+        unreachable!("TestTextFileService.resolveDecoding não é exercitado por esta suíte")
+    }
+
+    fn resolve_encoding(&self, _resource: Option<&URI>, _options: Option<WriteTextFileOptions>) -> Promise<ResolvedEncoding> {
+        unreachable!("TestTextFileService.resolveEncoding não é exercitado por esta suíte")
+    }
+
+    fn validate_detected_encoding(&self, _resource: Option<&URI>, _detected_encoding: &str, _options: Option<ReadTextFileEncodingOptions>) -> Promise<String> {
+        unreachable!("TestTextFileService.validateDetectedEncoding não é exercitado por esta suíte")
     }
 }
 
@@ -245,7 +307,7 @@ fn basics() {
         disposables.add(model.clone());
 
         let mut snapshot = as_text_resource_model(&model).create_snapshot().expect("o snapshot");
-        assert_eq!(snapshot_to_string(snapshot.as_mut()).to_string_lossy(), "function test() {}");
+        assert_eq!(snapshot_to_string(snapshot.as_mut()), "function test() {}");
     });
 }
 

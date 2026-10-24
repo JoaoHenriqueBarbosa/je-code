@@ -56,6 +56,11 @@ impl EditorModel {
         Self { store, on_will_dispose, resolved: Cell::new(false) }
     }
 
+    /// O `_store` do `Disposable` base (protected): o que a subclasse registra nele é descartado com o modelo.
+    pub fn store(&self) -> Rc<DisposableStore> {
+        self.store.clone()
+    }
+
     /// `_register(o)`: o que a subclasse registra é descartado junto com o modelo.
     pub fn register(&self, o: DisposableRef) -> DisposableRef {
         self.store.add(o)
