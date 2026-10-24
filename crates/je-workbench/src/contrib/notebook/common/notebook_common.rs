@@ -16,9 +16,10 @@
 //! - **Metadados abertos** (`NotebookDocumentMetadata`, `NotebookCellMetadata`, o `metadata` de uma saída e os
 //!   `NullablePartial...`) são o [`Dynamic`], o valor JavaScript sem tipo do porte; `null` é `Dynamic::Null`. Os mapas
 //!   de booleanos (`TransientCellMetadata`, `TransientDocumentMetadata`, `CellContentMetadata`) são `HashMap<String, bool>`.
-//! - **`NotebookTextModel`** (`model/notebookTextModel.ts`, a classe) ainda não foi portada; o que o original tipa como
-//!   `NotebookTextModel` (`INotebookDiffEditorModel`, `IResolvedNotebookEditorModel`) é `Rc<dyn INotebookTextModel>`, e
-//!   a classe o implementará. `IResolvedNotebookEditorModel.notebook` (que estreita o `notebook` do pai) é
+//! - **`NotebookTextModel`** (`model/notebookTextModel.ts`, a classe) está em
+//!   [`super::model::notebook_text_model`]; o que o original tipa como `NotebookTextModel` (`INotebookDiffEditorModel`,
+//!   `IResolvedNotebookEditorModel`) é `Rc<NotebookTextModel>`, e a classe implementa [`INotebookTextModel`].
+//!   `IResolvedNotebookEditorModel.notebook` (que estreita o `notebook` do pai) é
 //!   [`IResolvedNotebookEditorModel::resolved_notebook`], porque um trait não estreita o tipo de retorno de um método.
 //! - **`ITextModel` e `IReadonlyTextBuffer`**: o porte do editor não tem as interfaces; o modelo é o `Rc<TextModel>` e o
 //!   buffer é o [`PieceTreeTextBuffer`] concreto, compartilhado como [`TextBufferRef`] (`Rc<RefCell<...>>`), porque o
@@ -78,6 +79,7 @@ use je_platform::contextkey::{ContextKeyMeta, RawContextKey};
 
 use super::notebook_execution_state_service::ICellExecutionError;
 use super::notebook_kernel_service::INotebookTextModelLike;
+use super::model::notebook_text_model::NotebookTextModel;
 use super::notebook_range::ICellRange;
 use crate::common::editor::{RevertOptions, SaveOptions, UntypedEditorInput};
 use crate::services::editor::editor_resolver_service::RegisteredEditorPriority;
@@ -1230,13 +1232,13 @@ pub trait INotebookEditorModel: IDisposable {
 /// `IResolvedNotebookEditorModel`.
 pub trait IResolvedNotebookEditorModel: INotebookEditorModel {
     /// O `notebook: NotebookTextModel` do original, que estreita o `notebook` do pai.
-    fn resolved_notebook(&self) -> Rc<dyn INotebookTextModel>;
+    fn resolved_notebook(&self) -> Rc<NotebookTextModel>;
 }
 
 /// Um dos lados (`original` ou `modified`) de `INotebookDiffEditorModel`.
 #[derive(Clone)]
 pub struct NotebookDiffEditorModelSide {
-    pub notebook: Rc<dyn INotebookTextModel>,
+    pub notebook: Rc<NotebookTextModel>,
     pub resource: URI,
     pub view_type: String,
 }

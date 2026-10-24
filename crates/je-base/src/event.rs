@@ -1619,6 +1619,16 @@ impl<T: 'static> PauseableEmitter<T> {
         self.is_paused.get() != 0
     }
 
+    /// `_eventQueue.isEmpty()`: o `_eventQueue` é `protected` no original e as subclasses (`NotebookEventEmitter`) o leem.
+    pub fn is_event_queue_empty(&self) -> bool {
+        self.event_queue.is_empty()
+    }
+
+    /// Visita, em ordem e sem consumir, os eventos da `_eventQueue` (o `for (const e of this._eventQueue)` das subclasses).
+    pub fn for_each_queued_event(&self, f: impl FnMut(&T)) {
+        self.event_queue.for_each_ref(f);
+    }
+
     pub fn pause(&self) {
         self.is_paused.set(self.is_paused.get() + 1);
     }
