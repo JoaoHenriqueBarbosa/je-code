@@ -7,3 +7,5 @@ pub mod snippet_parser;
 
 pub mod snippet_session;
 pub mod snippet_variables;
+
+pub mod snippet_controller2;
