@@ -15,10 +15,8 @@
 //!   `WorkspaceEdit`s; aqui o participante usa [`wait_until_edit`] com uma promessa de `Option<WorkspaceEdit>` (o `None`
 //!   é "qualquer outro valor", que o original ignora). `IExtensionListener.extension` é o registro de ouvintes de
 //!   [`WillEmitter`], e `Object.freeze` dos eventos é o `Clone` dos dados.
-//! - `typeConverter.WorkspaceEdit.from` ainda não existe no porte de `extHostTypeConverters` e o seu ramo de notebook
-//!   precisa de `NotebookCellData.from`, também ausente: [`workspace_edit_from`] converte as edições de arquivo, de
-//!   texto e de snippet, e as edições de célula de notebook (`Cell` e `CellReplace`) falham com erro explícito em vez de
-//!   sumir em silêncio. O `contents` de uma operação de arquivo só aceita bytes (o ramo `DataTransferFile` do original
+//! - `typeConverter.WorkspaceEdit.from` é o de `ext_host_type_converters` (que converte as edições de arquivo, de texto, de
+//!   snippet e de célula de notebook). O `contents` de uma operação de arquivo só aceita bytes (o ramo `DataTransferFile` do original
 //!   não existe em `FileOperationOptions`).
 
 use std::cell::RefCell;
@@ -29,16 +27,13 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use je_base::async_::async_fn;
-use je_base::buffer::{VSBuffer, encode_base64};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::{Dynamic, Truthy};
-use je_base::errors::Error;
 use je_base::event::{AsyncEmitter, Emitter, Event, Listener, PromiseJoin, WaitUntilEvent};
 use je_base::glob::{self, GLOB_SPLIT, GLOBSTAR, GlobOptions, ParsedPattern, PatternItem};
 use je_base::lazy::Lazy;
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::network::schemas;
-use je_base::map::ResourceSet;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_extensions::scanner::ExtensionDescription;
@@ -51,13 +46,11 @@ use super::ext_host_configuration::{ConfigurationScopeArg, ExtHostConfigProvider
 use super::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use super::ext_host_file_system_info::ExtHostFileSystemInfo;
 use super::ext_host_protocol::{
-    ExtHostFileSystemEventServiceShape, FileSystemEvents, IMainContext, IWillRunFileOperationParticipation, IWorkspaceEditDto, IWorkspaceFileEditDto, MainContext,
-    SourceTargetPair, WorkspaceEditEntryDto, WorkspaceFileEditContentsDto, WorkspaceFileEditOptionsDto,
+    ExtHostFileSystemEventServiceShape, FileSystemEvents, IMainContext, IWillRunFileOperationParticipation, IWorkspaceEditDto, MainContext, SourceTargetPair,
 };
-use super::ext_host_type_converters::{Range as RangeConverter, TextEdit as TextEditConverter};
-use super::ext_host_types::{IconPath, WorkspaceEdit, WorkspaceEditEntry, WorkspaceEditEntryMetadata};
+use super::ext_host_type_converters::{IVersionInformationProvider, WorkspaceEdit as WorkspaceEditConverter};
+use super::ext_host_types::WorkspaceEdit;
 use super::ext_host_workspace::{ExtHostWorkspace, GlobPattern, GlobPatternDto, IExtHostFileSystemInfo, WorkspaceFolder, glob_pattern_from};
-use je_editor::code_action::languages::{IWorkspaceTextEdit, IconPath as EditorIconPath, TextEdit as EditorTextEdit, WorkspaceEditMetadata};
 
 // ---- o que o observador usa do workspace e da configuração ------------------------------------------------
 
@@ -646,7 +639,7 @@ impl ExtHostFileSystemEventService {
             let mut dto = IWorkspaceEditDto { edits: Vec::new() };
             let versions = DocumentVersions { documents };
             for edit in edits.borrow().iter() {
-                dto.edits.extend(workspace_edit_from(edit, &versions)?.edits);
+                dto.edits.extend(WorkspaceEditConverter::from(edit, Some(&versions)).edits);
             }
             Ok(Some(IWillRunFileOperationParticipation { edit: dto, extension_names: extension_names.borrow().clone() }))
         })
@@ -686,102 +679,19 @@ impl ExtHostFileSystemEventServiceShape for ExtHostFileSystemEventService {
 
 // ---- WorkspaceEdit -> IWorkspaceEditDto ------------------------------------------------------------------------
 
-/// `typeConverters.WorkspaceEdit.IVersionInformationProvider`.
-pub trait VersionInformationProvider {
-    fn get_text_document_version(&self, uri: &URI) -> Option<i64>;
-}
-
 /// `{ getTextDocumentVersion: uri => this._extHostDocumentsAndEditors.getDocument(uri)?.version, ... }`: o
-/// `getNotebookDocumentVersion` (sempre `undefined`) só serve às edições de notebook, que [`workspace_edit_from`] não converte.
+/// `getNotebookDocumentVersion` é sempre `undefined` (o host não guarda notebooks).
 struct DocumentVersions {
     documents: Rc<ExtHostDocumentsAndEditors>,
 }
 
-impl VersionInformationProvider for DocumentVersions {
+impl IVersionInformationProvider for DocumentVersions {
     fn get_text_document_version(&self, uri: &URI) -> Option<i64> {
         self.documents.get_document(uri).map(|document| document.document().version() as i64)
     }
-}
 
-fn metadata_from(metadata: &Option<WorkspaceEditEntryMetadata>) -> Option<WorkspaceEditMetadata> {
-    metadata.as_ref().map(|metadata| WorkspaceEditMetadata {
-        needs_confirmation: metadata.needs_confirmation,
-        label: metadata.label.clone(),
-        description: metadata.description.clone(),
-        icon_path: metadata.icon_path.as_ref().map(|icon_path| match icon_path {
-            IconPath::Uri(uri) => EditorIconPath::Uri(uri.clone()),
-            IconPath::LightDark { light, dark } => EditorIconPath::LightDark { light: light.clone(), dark: dark.clone() },
-            IconPath::ThemeIcon(icon) => EditorIconPath::ThemeIcon(icon.clone()),
-        }),
-    })
-}
-
-/// `typeConverters.WorkspaceEdit.from(value, versionInfo)`. As edições de célula de notebook falham (ver o módulo).
-pub fn workspace_edit_from(value: &WorkspaceEdit, version_info: &dyn VersionInformationProvider) -> Result<IWorkspaceEditDto, Error> {
-    let mut result = IWorkspaceEditDto { edits: Vec::new() };
-
-    // collect all files that are to be created so that their version
-    // information (in case they exist as text model already) can be ignored
-    let mut to_create = ResourceSet::new(None);
-    for entry in value.all_entries() {
-        if let WorkspaceEditEntry::File(file) = entry
-            && let (Some(to), None) = (&file.to, &file.from)
-        {
-            to_create.add(to.clone());
-        }
+    fn get_notebook_document_version(&self, _uri: &URI) -> Option<i64> {
+        None
     }
-
-    for entry in value.all_entries() {
-        match entry {
-            WorkspaceEditEntry::File(file) => {
-                let options = file.options.clone().unwrap_or_default();
-                let contents = options.contents.map(|bytes| WorkspaceFileEditContentsDto::Base64(encode_base64(&VSBuffer::wrap(bytes), true, false)));
-
-                // file operation
-                result.edits.push(WorkspaceEditEntryDto::File(IWorkspaceFileEditDto {
-                    old_resource: file.from.clone(),
-                    new_resource: file.to.clone(),
-                    options: Some(WorkspaceFileEditOptionsDto {
-                        overwrite: options.overwrite,
-                        ignore_if_not_exists: options.ignore_if_not_exists,
-                        ignore_if_exists: options.ignore_if_exists,
-                        recursive: options.recursive,
-                        contents,
-                        ..WorkspaceFileEditOptionsDto::default()
-                    }),
-                    metadata: metadata_from(&file.metadata),
-                }));
-            }
-            WorkspaceEditEntry::Text(text) => {
-                // text edits
-                result.edits.push(WorkspaceEditEntryDto::Text(IWorkspaceTextEdit {
-                    resource: text.uri.clone(),
-                    text_edit: TextEditConverter::from(&text.edit),
-                    version_id: if to_create.has(&text.uri) { None } else { version_info.get_text_document_version(&text.uri) },
-                    metadata: metadata_from(&text.metadata),
-                }));
-            }
-            WorkspaceEditEntry::Snippet(snippet) => {
-                result.edits.push(WorkspaceEditEntryDto::Text(IWorkspaceTextEdit {
-                    resource: snippet.uri.clone(),
-                    text_edit: EditorTextEdit {
-                        range: RangeConverter::from(&snippet.range),
-                        text: snippet.edit.value.clone(),
-                        eol: None,
-                        insert_as_snippet: Some(true),
-                        keep_whitespace: snippet.keep_whitespace,
-                    },
-                    version_id: if to_create.has(&snippet.uri) { None } else { version_info.get_text_document_version(&snippet.uri) },
-                    metadata: metadata_from(&snippet.metadata),
-                }));
-            }
-            WorkspaceEditEntry::Cell(_) | WorkspaceEditEntry::CellReplace(_) => {
-                return Err(Error::new(format!(
-                    "WorkspaceEdit.from: a conversão das edições de notebook (FileEditType {}) ainda não foi portada",
-                    entry.edit_type().value()
-                )));
-            }
-        }
-    }
-    Ok(result)
 }
+

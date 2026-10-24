@@ -2079,6 +2079,56 @@ mod editor_tabs_region {
 
 // #endregion
 
+// #region Diagnostics
+
+pub use self::diagnostics_region::*;
+
+/// `IMarkerChange`, `MainThreadDiagnosticsShape`, `ExtHostDiagnosticsShape` e os identificadores
+/// `MainContext.MainThreadDiagnostics` e `ExtHostContext.ExtHostDiagnostics` (de `extHost.protocol.ts`, usados por
+/// `extHostDiagnostics.ts`).
+///
+/// Divergências:
+/// - `IMarkerChange` é uma tupla `[uri, markers | undefined, isTruncated?]` no original: aqui é um struct com
+///   os três campos, `markers` ausente (`None`) sendo o `undefined` que `delete` envia. Os `UriComponents` são [`URI`] e
+///   o `IMarkerData` é o [`MarkerData`] da plataforma.
+/// - `$acceptMarkersChange(data: [UriComponents, IMarkerData[]][])` recebe uma lista de pares.
+mod diagnostics_region {
+    use je_base::lifecycle::IDisposable;
+    use je_base::uri::URI;
+    use je_platform::markers::markers::MarkerData;
+
+    use super::ProxyIdentifier;
+
+    /// `IMarkerChange`.
+    #[derive(Clone, Debug)]
+    pub struct IMarkerChange {
+        pub resource: URI,
+        pub markers: Option<Vec<MarkerData>>,
+        pub is_truncated: Option<bool>,
+    }
+
+    /// `MainThreadDiagnosticsShape`.
+    pub trait MainThreadDiagnosticsShape: IDisposable {
+        fn rpc_change_many(&self, owner: &str, entries: Vec<IMarkerChange>);
+        fn rpc_clear(&self, owner: &str);
+    }
+
+    /// `ExtHostDiagnosticsShape`.
+    pub trait ExtHostDiagnosticsShape {
+        fn rpc_accept_markers_change(&self, data: Vec<(URI, Vec<MarkerData>)>);
+    }
+
+    impl super::MainContext {
+        pub const MAIN_THREAD_DIAGNOSTICS: ProxyIdentifier<dyn MainThreadDiagnosticsShape> = ProxyIdentifier::new("MainThreadDiagnostics");
+    }
+
+    impl super::ExtHostContext {
+        pub const EXT_HOST_DIAGNOSTICS: ProxyIdentifier<dyn ExtHostDiagnosticsShape> = ProxyIdentifier::new("ExtHostDiagnostics");
+    }
+}
+
+// #endregion
+
 // #region ExtHostTelemetry
 
 pub use self::ext_host_telemetry_region::*;
@@ -2191,6 +2241,61 @@ mod status_bar_region {
 
     impl ExtHostContext {
         pub const EXT_HOST_STATUS_BAR: ProxyIdentifier<dyn ExtHostStatusBarShape> = ProxyIdentifier::new("ExtHostStatusBar");
+    }
+}
+
+// #endregion
+
+// #region Notebook (DTOs de dados dos conversores)
+
+pub use self::notebook_data_dto_region::*;
+
+/// `NotebookOutputItemDto`, `NotebookOutputDto`, `NotebookCellDataDto` e `NotebookDataDto` (de `extHost.protocol.ts`,
+/// usados por `NotebookData`, `NotebookCellData` e `NotebookCellOutput` de `extHostTypeConverters.ts`).
+///
+/// Divergências:
+/// - `metadata?: Record<string, any>` e os metadados do notebook são [`Dynamic`] (o `NotebookCellMetadata` e o
+///   `NotebookDocumentMetadata` de `notebook_common`). O `valueBytes: VSBuffer` é o [`VSBuffer`].
+/// - `NotebookDataDto.metadata` é obrigatório no original (`Object.create(null)` quando a extensão não tem): é um
+///   [`Dynamic`] objeto, vazio nesse caso.
+mod notebook_data_dto_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::dynamic::Dynamic;
+
+    use crate::contrib::notebook::common::notebook_common::{CellKind, NotebookCellInternalMetadata, NotebookCellMetadata, NotebookDocumentMetadata};
+
+    /// `NotebookOutputItemDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookOutputItemDto {
+        pub mime: String,
+        pub value_bytes: VSBuffer,
+    }
+
+    /// `NotebookOutputDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookOutputDto {
+        pub items: Vec<NotebookOutputItemDto>,
+        pub output_id: String,
+        pub metadata: Option<Dynamic>,
+    }
+
+    /// `NotebookCellDataDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookCellDataDto {
+        pub source: String,
+        pub language: String,
+        pub mime: Option<String>,
+        pub cell_kind: CellKind,
+        pub outputs: Vec<NotebookOutputDto>,
+        pub metadata: Option<NotebookCellMetadata>,
+        pub internal_metadata: Option<NotebookCellInternalMetadata>,
+    }
+
+    /// `NotebookDataDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookDataDto {
+        pub cells: Vec<NotebookCellDataDto>,
+        pub metadata: NotebookDocumentMetadata,
     }
 }
 
