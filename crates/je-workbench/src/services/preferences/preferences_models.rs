@@ -1,13 +1,22 @@
 //! Porte parcial de `src/vs/workbench/services/preferences/common/preferencesModels.ts`: o `nullRange`, o `isNullRange`,
-//! o `fixSettingLinks` e o `DefaultSettings` (os grupos de configurações do registro, com o conteúdo textual das
-//! configurações padrão e as posições de cada uma nele), com o `SettingsContentBuilder` que o monta.
+//! o `fixSettingLinks`, o `DefaultSettings` (os grupos de configurações do registro, com o conteúdo textual das
+//! configurações padrão e as posições de cada uma nele) com o `SettingsContentBuilder` que o monta, e os modelos
+//! `AbstractSettingsModel`, `SettingsEditorModel`, `Settings2EditorModel`, `WorkspaceConfigurationEditorModel` e o `parse`.
 //!
-//! Fora do porte (dependem do `ITextModel`, do `EditorModel` e dos editores de preferências, que entram com o porte das
-//! telas de preferências): `AbstractSettingsModel`, `SettingsEditorModel`, `Settings2EditorModel`, o `parse` de modelo,
-//! `WorkspaceConfigurationEditorModel`, `DefaultSettingsEditorModel`, `RawSettingsContentBuilder`,
+//! Fora do porte (dependem do `IKeybindingService` e do conteúdo de `DefaultSettings` com `ITextModel` sintético, e entram
+//! com o porte do editor de configurações padrão): `DefaultSettingsEditorModel`, `RawSettingsContentBuilder`,
 //! `DefaultRawSettingsEditorModel`, `defaultKeybindingsContents` e `DefaultKeybindingsEditorModel`.
 //!
 //! Divergências:
+//! - **Modelos de configurações.** `AbstractSettingsModel` é uma struct de estado (os grupos de resultado da busca)
+//!   guardada por cada modelo, que implementa o trait [`ISettingsEditorModel`] e o contrato de `IEditorModel` (a herança
+//!   de `EditorModel`, como no `DiffEditorModel`). `WorkspaceConfigurationEditorModel` envolve um `SettingsEditorModel` do
+//!   sabor `WorkspaceConfiguration` (o que sobrescreve `isSettingsProperty` e `parse`) e o expõe por `Deref`.
+//! - **`overrideOf`** do `parse` é uma cópia da configuração de sobrescrita no momento da criação (o original guarda o
+//!   próprio objeto, que ganha depois os `overrides`): o campo [`ISetting::override_of`] é um `Box`, sem ciclo.
+//! - `Settings2EditorModel.update()` lança `Error('Not supported')` (`updateResultGroup` o chama depois de atualizar os grupos).
+//! - **`ISearchResultGroup.result`** é um `Rc<RefCell<ISearchResult>>`, porque `removeDuplicateResults` reatribui
+//!   `filterMatches` no objeto do chamador.
 //! - `IRange` é o [`Range`] do `je-editor` (o mesmo tipo), que aqui se escreve como literal, porque `Range::new` reordena
 //!   início e fim e o sentinela não é um intervalo válido.
 //! - **Objetos compartilhados.** As seções guardam `Rc<ISetting>`: o `SettingsContentBuilder` do original atribui
@@ -23,7 +32,8 @@
 //!   total, e o resultado segue o do JavaScript.
 //! - `onDidChangeConfiguration(e => ...)`: o `DefaultSettings` segura-se por referência fraca no ouvinte.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::ops::ControlFlow;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
@@ -32,19 +42,26 @@ use je_base::arrays::sort_by_compare;
 use je_base::collator::locale_compare;
 use je_base::dynamic::{Dynamic, Truthy, json_stringify_indented};
 use je_base::event::{Emitter, Event};
-use je_base::json::Value;
+use je_base::json::{ParseErrorCode, ParseOptions, Value, Visitor, visit};
 use je_base::json_formatter::json_stringify;
-use je_base::lifecycle::{Disposable, DisposableStore, IDisposable};
+use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, Reference};
+use je_base::uri::URI;
 use je_base::nls::localize;
 use je_editor::range::Range;
+use je_editor::text_model::TextModel;
 use je_platform::configuration::ConfigurationTarget;
 use je_platform::configuration::registry::{ConfigurationDefaultSource, ConfigurationScope, PropertySchema, configuration_registry, is_override_property};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::js::{object_keys, to_js_string, to_json};
 
-use super::preferences::{ISetting, ISettingsGroup, ISettingsSection, SettingSchemaType, SettingValidator};
+use super::preferences::{
+    IFilterResult, IGroupFilter, ISearchResultGroup, ISetting, ISettingMatch, ISettingMatcher, ISettingsEditorModel, ISettingsGroup, ISettingsSection, SettingMatchType,
+    SettingSchemaType, SettingValidator,
+};
 use super::preferences_validation::create_validator;
+use crate::common::editor::editor_model::{EditorModel, IEditorModel};
 use crate::services::configuration::common::configuration::{FOLDER_SCOPES, WORKSPACE_SCOPES};
+use crate::services::textmodel_resolver::resolver_service::ITextEditorModel;
 
 /// `nullRange`.
 pub const NULL_RANGE: Range = Range { start_line_number: -1, start_column: -1, end_line_number: -1, end_column: -1 };
@@ -777,4 +794,595 @@ impl IDisposable for DefaultSettings {
     fn dispose(&self) {
         self.base.dispose();
     }
+}
+
+// ---- Modelos de configurações -----------------------------------------------------------------------------------------
+
+/// `AbstractSettingsModel`: o estado e o comportamento comuns aos modelos (os grupos de resultado da busca). Os modelos o
+/// guardam e passam a ele o que o original lê dos membros virtuais (`settingsGroups`, `filterGroups` e `update`).
+#[derive(Default)]
+struct AbstractSettingsModel {
+    /// `_currentResultGroups` (um `Map`: a ordem é a de inserção, e reatribuir uma chave mantém a posição).
+    current_result_groups: RefCell<Vec<(String, ISearchResultGroup)>>,
+}
+
+impl AbstractSettingsModel {
+    /// `updateResultGroup(id, resultGroup)`; `update` é o `this.update()` da subclasse.
+    fn update_result_group(&self, id: &str, result_group: Option<ISearchResultGroup>, update: impl FnOnce() -> Option<IFilterResult>) -> Option<IFilterResult> {
+        {
+            let mut groups = self.current_result_groups.borrow_mut();
+            match result_group {
+                Some(result_group) => match groups.iter_mut().find(|(key, _)| key == id) {
+                    Some(entry) => entry.1 = result_group,
+                    None => groups.push((id.to_owned(), result_group)),
+                },
+                None => groups.retain(|(key, _)| key != id),
+            }
+        }
+
+        self.remove_duplicate_results();
+        update()
+    }
+
+    /// `removeDuplicateResults`: remove duplicates between result groups, preferring results in earlier groups.
+    fn remove_duplicate_results(&self) {
+        let mut ordered: Vec<ISearchResultGroup> = self.current_result_groups.borrow().iter().map(|(_, group)| group.clone()).collect();
+        // `Array.prototype.sort` com `a.order - b.order`: estável.
+        ordered.sort_by(|a, b| a.order.partial_cmp(&b.order).unwrap_or(std::cmp::Ordering::Equal));
+        let mut setting_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for group in ordered {
+            let mut result = group.result.borrow_mut();
+            result.filter_matches.retain(|s| !setting_keys.contains(&s.setting.key));
+            for s in &result.filter_matches {
+                setting_keys.insert(s.setting.key.clone());
+            }
+        }
+    }
+
+    /// `filterSettings(filter, groupFilter, settingMatcher)`, sobre os `filterGroups` do modelo.
+    fn filter_settings(&self, all_groups: &[ISettingsGroup], group_filter: IGroupFilter, setting_matcher: ISettingMatcher) -> Vec<ISettingMatch> {
+        let mut filter_matches = Vec::new();
+        for group in all_groups {
+            let group_matched = group_filter(group);
+            for section in &group.sections {
+                for setting in &section.settings {
+                    let setting_match_result = setting_matcher(setting, group);
+
+                    if group_matched || setting_match_result.is_some() {
+                        filter_matches.push(ISettingMatch {
+                            setting: setting.clone(),
+                            matches: setting_match_result.as_ref().map(|result| result.matches.clone()),
+                            match_type: setting_match_result.as_ref().map_or(SettingMatchType::None, |result| result.match_type),
+                            key_match_score: setting_match_result.as_ref().map_or(0.0, |result| result.key_match_score),
+                            score: setting_match_result.as_ref().map_or(0.0, |result| result.score),
+                            provider_name: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        filter_matches
+    }
+
+    /// `getPreference(key)`, sobre os `settingsGroups` do modelo.
+    fn get_preference(settings_groups: &[ISettingsGroup], key: &str) -> Option<Rc<ISetting>> {
+        settings_groups
+            .iter()
+            .flat_map(|group| group.sections.iter())
+            .flat_map(|section| section.settings.iter())
+            .find(|setting| setting.key == key)
+            .cloned()
+    }
+}
+
+/// Delega o contrato de `IEditorModel` ao `EditorModel` base de um modelo de configurações.
+macro_rules! impl_editor_model {
+    ($model:ty) => {
+        impl IDisposable for $model {
+            fn dispose(&self) {
+                self.base.dispose();
+            }
+        }
+
+        impl IEditorModel for $model {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn on_will_dispose(&self) -> Event<()> {
+                self.base.on_will_dispose()
+            }
+
+            fn resolve(&self) -> je_base::promise::Promise<()> {
+                self.base.resolve()
+            }
+
+            fn is_resolved(&self) -> bool {
+                self.base.is_resolved()
+            }
+
+            fn is_disposed(&self) -> bool {
+                self.base.is_disposed()
+            }
+        }
+    };
+}
+
+/// `Settings2EditorModel`: o modelo do editor de configurações (a interface gráfica), sobre os grupos do registro.
+pub struct Settings2EditorModel {
+    base: EditorModel,
+    abstract_model: AbstractSettingsModel,
+    on_did_change_groups: Rc<Emitter<()>>,
+    additional_groups: RefCell<Vec<ISettingsGroup>>,
+    dirty: Cell<bool>,
+    default_settings: Rc<DefaultSettings>,
+}
+
+impl Settings2EditorModel {
+    pub fn new(default_settings: Rc<DefaultSettings>, configuration_service: Rc<dyn IConfigurationService>) -> Rc<Self> {
+        let base = EditorModel::new_inner();
+        let on_did_change_groups = Emitter::new();
+        base.register(on_did_change_groups.clone());
+        let this = Rc::new(Self {
+            base,
+            abstract_model: AbstractSettingsModel::default(),
+            on_did_change_groups,
+            additional_groups: RefCell::new(Vec::new()),
+            dirty: Cell::new(false),
+            default_settings,
+        });
+
+        let store = this.base.store();
+        let weak: Weak<Self> = Rc::downgrade(&this);
+        configuration_service.on_did_change_configuration().listen_in(
+            {
+                let weak = weak.clone();
+                move |event| {
+                    if event.source.get() == Some(ConfigurationTarget::Default)
+                        && let Some(this) = weak.upgrade()
+                    {
+                        this.dirty.set(true);
+                        this.on_did_change_groups.fire(());
+                    }
+                }
+            },
+            &store,
+        );
+        configuration_registry().on_did_schema_change().listen_in(
+            move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.dirty.set(true);
+                    this.on_did_change_groups.fire(());
+                }
+            },
+            &store,
+        );
+        this
+    }
+
+    /// `filterGroups`: doesn't include the "Commonly Used" group.
+    fn filter_groups(&self) -> Vec<ISettingsGroup> {
+        self.settings_groups().into_iter().skip(1).collect()
+    }
+
+    /// `setAdditionalGroups(groups)`: for programmatically added groups outside of registered configurations.
+    pub fn set_additional_groups(&self, groups: Vec<ISettingsGroup>) {
+        *self.additional_groups.borrow_mut() = groups;
+    }
+}
+
+impl_editor_model!(Settings2EditorModel);
+
+impl ISettingsEditorModel for Settings2EditorModel {
+    fn on_did_change_groups(&self) -> Event<()> {
+        self.on_did_change_groups.event()
+    }
+
+    fn settings_groups(&self) -> Vec<ISettingsGroup> {
+        let mut groups = self.default_settings.get_settings_groups(self.dirty.get());
+        self.dirty.set(false);
+        groups.extend(self.additional_groups.borrow().iter().cloned());
+        groups
+    }
+
+    fn filter_settings(&self, _filter: &str, group_filter: IGroupFilter, setting_matcher: ISettingMatcher) -> Vec<ISettingMatch> {
+        self.abstract_model.filter_settings(&self.filter_groups(), group_filter, setting_matcher)
+    }
+
+    /// O `update()` do original lança `Error('Not supported')`, e a exceção sai depois de atualizar os grupos.
+    fn update_result_group(&self, id: &str, result_group: Option<ISearchResultGroup>) -> Option<IFilterResult> {
+        self.abstract_model.update_result_group(id, result_group, || je_base::errors::throw(je_base::errors::Error::new("Not supported")))
+    }
+
+    fn get_preference(&self, key: &str) -> Option<Rc<ISetting>> {
+        AbstractSettingsModel::get_preference(&self.settings_groups(), key)
+    }
+}
+
+/// O que distingue o `SettingsEditorModel` do `WorkspaceConfigurationEditorModel` (que o estende e sobrescreve
+/// `isSettingsProperty` e `parse`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsFlavor {
+    /// `SettingsEditorModel`: as configurações são a raiz do arquivo.
+    Settings,
+    /// `WorkspaceConfigurationEditorModel`: as configurações estão na propriedade `settings` da raiz.
+    WorkspaceConfiguration,
+}
+
+/// `SettingsEditorModel`: o modelo do editor JSON de configurações, sobre um modelo de texto.
+pub struct SettingsEditorModel {
+    base: EditorModel,
+    abstract_model: AbstractSettingsModel,
+    flavor: SettingsFlavor,
+    settings_groups: RefCell<Option<Vec<ISettingsGroup>>>,
+    configuration_groups: RefCell<Vec<ISettingsGroup>>,
+    settings_model: Rc<TextModel>,
+    on_did_change_groups: Rc<Emitter<()>>,
+    configuration_target: ConfigurationTarget,
+}
+
+impl SettingsEditorModel {
+    pub fn new(reference: Reference<Rc<dyn ITextEditorModel>>, configuration_target: ConfigurationTarget) -> Rc<Self> {
+        Self::new_with_flavor(reference, configuration_target, SettingsFlavor::Settings)
+    }
+
+    fn new_with_flavor(reference: Reference<Rc<dyn ITextEditorModel>>, configuration_target: ConfigurationTarget, flavor: SettingsFlavor) -> Rc<Self> {
+        let base = EditorModel::new_inner();
+        let on_did_change_groups = Emitter::new();
+        base.register(on_did_change_groups.clone());
+        // `reference.object.textEditorModel!`
+        let settings_model = reference.object.text_editor_model().expect("o modelo de configurações precisa estar resolvido");
+        let this = Rc::new(Self {
+            base,
+            abstract_model: AbstractSettingsModel::default(),
+            flavor,
+            settings_groups: RefCell::new(None),
+            configuration_groups: RefCell::new(Vec::new()),
+            settings_model,
+            on_did_change_groups,
+            configuration_target,
+        });
+
+        let store = this.base.store();
+        this.base.on_will_dispose().listen_in(move |_| reference.dispose(), &store);
+        let weak: Weak<Self> = Rc::downgrade(&this);
+        this.settings_model.on_did_change_content().listen_in(
+            move |_| {
+                if let Some(this) = weak.upgrade() {
+                    *this.settings_groups.borrow_mut() = None;
+                    this.on_did_change_groups.fire(());
+                }
+            },
+            &store,
+        );
+        this
+    }
+
+    /// `uri`.
+    pub fn uri(&self) -> URI {
+        self.settings_model.uri()
+    }
+
+    /// `configurationTarget`.
+    pub fn configuration_target(&self) -> ConfigurationTarget {
+        self.configuration_target
+    }
+
+    /// `content`.
+    pub fn content(&self) -> String {
+        self.settings_model.get_value().to_string_lossy()
+    }
+
+    /// `isSettingsProperty(property, previousParents)`.
+    fn is_settings_property(&self, property: Option<&str>, previous_parents: usize) -> bool {
+        match self.flavor {
+            SettingsFlavor::Settings => previous_parents == 0, // Settings is root
+            SettingsFlavor::WorkspaceConfiguration => property == Some("settings") && previous_parents == 1,
+        }
+    }
+
+    /// `parse()`.
+    fn parse(&self) {
+        let groups = parse(&self.settings_model, &|property, previous_parents| self.is_settings_property(property, previous_parents));
+        *self.settings_groups.borrow_mut() = Some(groups);
+        if self.flavor == SettingsFlavor::WorkspaceConfiguration {
+            *self.configuration_groups.borrow_mut() = parse(&self.settings_model, &|_, previous_parents| previous_parents == 0);
+        }
+    }
+
+    /// `update()`.
+    fn update(&self) -> Option<IFilterResult> {
+        let result_groups: Vec<ISearchResultGroup> = self.abstract_model.current_result_groups.borrow().iter().map(|(_, group)| group.clone()).collect();
+        if result_groups.is_empty() {
+            return None;
+        }
+
+        // Transform resultGroups into IFilterResult - ISetting ranges are already correct here
+        let mut filtered_settings: Vec<Rc<ISetting>> = Vec::new();
+        let mut matches: Vec<Range> = Vec::new();
+        for group in &result_groups {
+            for filter_match in &group.result.borrow().filter_matches {
+                filtered_settings.push(filter_match.setting.clone());
+                if let Some(filter_matches) = &filter_match.matches {
+                    matches.extend(filter_matches.iter().copied());
+                }
+            }
+        }
+
+        let all_groups = self.settings_groups();
+        // Editable model has one or zero groups
+        let filtered_group = all_groups.first().map(|model_group| ISettingsGroup {
+            id: model_group.id.clone(),
+            range: model_group.range,
+            sections: vec![ISettingsSection { title: None, settings: filtered_settings }],
+            title: model_group.title.clone(),
+            title_range: model_group.title_range,
+            order: model_group.order,
+            extension_info: model_group.extension_info.clone(),
+        });
+
+        Some(IFilterResult { query: None, filtered_groups: filtered_group.into_iter().collect(), all_groups, matches, exact_match: None })
+    }
+}
+
+impl_editor_model!(SettingsEditorModel);
+
+impl ISettingsEditorModel for SettingsEditorModel {
+    fn on_did_change_groups(&self) -> Event<()> {
+        self.on_did_change_groups.event()
+    }
+
+    fn settings_groups(&self) -> Vec<ISettingsGroup> {
+        if self.settings_groups.borrow().is_none() {
+            self.parse();
+        }
+        self.settings_groups.borrow().clone().unwrap_or_default()
+    }
+
+    fn filter_settings(&self, _filter: &str, group_filter: IGroupFilter, setting_matcher: ISettingMatcher) -> Vec<ISettingMatch> {
+        self.abstract_model.filter_settings(&self.settings_groups(), group_filter, setting_matcher)
+    }
+
+    fn update_result_group(&self, id: &str, result_group: Option<ISearchResultGroup>) -> Option<IFilterResult> {
+        self.abstract_model.update_result_group(id, result_group, || self.update())
+    }
+
+    fn get_preference(&self, key: &str) -> Option<Rc<ISetting>> {
+        AbstractSettingsModel::get_preference(&self.settings_groups(), key)
+    }
+}
+
+/// `WorkspaceConfigurationEditorModel`: o modelo do arquivo `.code-workspace` (as configurações ficam em `settings`).
+pub struct WorkspaceConfigurationEditorModel {
+    inner: Rc<SettingsEditorModel>,
+}
+
+impl WorkspaceConfigurationEditorModel {
+    pub fn new(reference: Reference<Rc<dyn ITextEditorModel>>, configuration_target: ConfigurationTarget) -> Self {
+        Self { inner: SettingsEditorModel::new_with_flavor(reference, configuration_target, SettingsFlavor::WorkspaceConfiguration) }
+    }
+
+    /// `configurationGroups`: o que `parse()` achou tratando a raiz como as configurações.
+    pub fn configuration_groups(&self) -> Vec<ISettingsGroup> {
+        self.inner.configuration_groups.borrow().clone()
+    }
+}
+
+impl std::ops::Deref for WorkspaceConfigurationEditorModel {
+    type Target = SettingsEditorModel;
+
+    /// `extends SettingsEditorModel`.
+    fn deref(&self) -> &SettingsEditorModel {
+        &self.inner
+    }
+}
+
+/// O estado do `parse` (as variáveis locais e os callbacks do `JSONVisitor` do original).
+struct ParseState<'a> {
+    model: &'a TextModel,
+    is_settings_property: &'a dyn Fn(Option<&str>, usize) -> bool,
+    settings: Vec<ISetting>,
+    /// `overrideSetting`: o índice em `settings` (`usize::MAX` quando a configuração foi descartada por erro).
+    override_setting: Option<usize>,
+    current_property: Option<String>,
+    current_parent: Dynamic,
+    previous_parents: Vec<Dynamic>,
+    settings_property_index: i64,
+    range: Range,
+}
+
+impl ParseState<'_> {
+    /// A condição repetida do original: `previousParents.length === settingsPropertyIndex + 1 || (previousParents.length
+    /// === settingsPropertyIndex + 2 && overrideSetting !== null)`.
+    fn in_setting(&self) -> bool {
+        let depth = self.previous_parents.len() as i64;
+        depth == self.settings_property_index + 1 || (depth == self.settings_property_index + 2 && self.override_setting.is_some())
+    }
+
+    /// `previousParents.length === settingsPropertyIndex + 1 ? settings[settings.length - 1] : overrideSetting!.overrides![...length - 1]`.
+    fn current_setting(&mut self) -> Option<&mut ISetting> {
+        if self.previous_parents.len() as i64 == self.settings_property_index + 1 {
+            self.settings.last_mut()
+        } else {
+            let index = self.override_setting?;
+            self.settings.get_mut(index)?.overrides.as_mut()?.last_mut()
+        }
+    }
+
+    fn position_at(&self, offset: usize) -> (i32, i32) {
+        let position = self.model.get_position_at(offset as i64);
+        (position.line_number, position.column)
+    }
+
+    /// `onValue`.
+    fn on_value(&mut self, value: Dynamic, offset: usize, length: usize) {
+        match &self.current_parent {
+            Dynamic::Array(array) => array.push(value.clone()),
+            Dynamic::Object(object) => {
+                if let Some(property) = self.current_property.as_ref().filter(|property| !property.is_empty()) {
+                    object.set(&JsString::from(property.as_str()), value.clone());
+                }
+            }
+            _ => {}
+        }
+        if self.in_setting() {
+            // settings value started
+            let value_start = self.position_at(offset);
+            let value_end = self.position_at(offset + length);
+            if let Some(setting) = self.current_setting() {
+                setting.value = value;
+                setting.value_range = Range { start_line_number: value_start.0, start_column: value_start.1, end_line_number: value_end.0, end_column: value_end.1 };
+                setting.range.end_line_number = value_end.0;
+                setting.range.end_column = value_end.1;
+            }
+        }
+    }
+
+    /// Fecha os intervalos da configuração atual no fim do valor (`onObjectEnd` e `onArrayEnd`).
+    fn end_value_range(&mut self, offset: usize, length: usize) {
+        let value_end = self.position_at(offset + length);
+        if let Some(setting) = self.current_setting() {
+            setting.value_range.end_line_number = value_end.0;
+            setting.value_range.end_column = value_end.1;
+            setting.range.end_line_number = value_end.0;
+            setting.range.end_column = value_end.1;
+        }
+    }
+}
+
+impl Visitor for ParseState<'_> {
+    fn on_object_begin(&mut self, offset: usize, length: usize) -> ControlFlow<()> {
+        if (self.is_settings_property)(self.current_property.as_deref(), self.previous_parents.len()) {
+            // Settings started
+            self.settings_property_index = self.previous_parents.len() as i64;
+            let position = self.position_at(offset);
+            self.range.start_line_number = position.0;
+            self.range.start_column = position.1;
+        }
+        let object = Dynamic::object(Vec::<(JsString, Dynamic)>::new());
+        self.on_value(object.clone(), offset, length);
+        self.current_parent = object;
+        self.current_property = None;
+        self.previous_parents.push(self.current_parent.clone());
+        ControlFlow::Continue(())
+    }
+
+    fn on_object_property(&mut self, name: &JsString, offset: usize, length: usize) -> ControlFlow<()> {
+        let name = name.to_string_lossy();
+        self.current_property = Some(name.clone());
+        if self.in_setting() {
+            // setting started
+            let (line, column) = self.position_at(offset);
+            let setting = ISetting {
+                description: Vec::new(),
+                description_is_markdown: Some(false),
+                key: name.clone(),
+                key_range: Range { start_line_number: line, start_column: column + 1, end_line_number: line, end_column: column + length as i32 },
+                range: Range { start_line_number: line, start_column: column, end_line_number: 0, end_column: 0 },
+                value: Dynamic::Null,
+                value_range: NULL_RANGE,
+                description_ranges: Vec::new(),
+                overrides: Some(Vec::new()),
+                // `overrideOf: overrideSetting ?? undefined`: aqui uma cópia da configuração no momento (ver a divergência).
+                override_of: self.override_setting.and_then(|index| self.settings.get(index)).map(|setting| Box::new(setting.clone())),
+                ..ISetting::default()
+            };
+            if self.previous_parents.len() as i64 == self.settings_property_index + 1 {
+                self.settings.push(setting);
+                if is_override_property(&JsString::from(name.as_str())) {
+                    self.override_setting = Some(self.settings.len() - 1);
+                }
+            } else if let Some(overrides) = self.override_setting.and_then(|index| self.settings.get_mut(index)).and_then(|setting| setting.overrides.as_mut()) {
+                overrides.push(setting);
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn on_object_end(&mut self, offset: usize, length: usize) -> ControlFlow<()> {
+        self.current_parent = self.previous_parents.pop().unwrap_or(Dynamic::Undefined);
+        if self.settings_property_index != -1 && self.in_setting() {
+            // setting ended
+            self.end_value_range(offset, length);
+
+            if self.previous_parents.len() as i64 == self.settings_property_index + 1 {
+                self.override_setting = None;
+            }
+        }
+        if self.previous_parents.len() as i64 == self.settings_property_index {
+            // settings ended
+            let position = self.position_at(offset);
+            self.range.end_line_number = position.0;
+            self.range.end_column = position.1;
+            self.settings_property_index = -1;
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn on_array_begin(&mut self, offset: usize, length: usize) -> ControlFlow<()> {
+        let array = Dynamic::array(Vec::new());
+        self.on_value(array.clone(), offset, length);
+        self.previous_parents.push(self.current_parent.clone());
+        self.current_parent = array;
+        self.current_property = None;
+        ControlFlow::Continue(())
+    }
+
+    fn on_array_end(&mut self, offset: usize, length: usize) -> ControlFlow<()> {
+        self.current_parent = self.previous_parents.pop().unwrap_or(Dynamic::Undefined);
+        if self.in_setting() {
+            // setting value ended
+            self.end_value_range(offset, length);
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn on_literal_value(&mut self, value: &Value, offset: usize, length: usize) -> ControlFlow<()> {
+        self.on_value(Dynamic::from_json(value), offset, length);
+        ControlFlow::Continue(())
+    }
+
+    fn on_error(&mut self, _error: ParseErrorCode, _offset: usize, _length: usize) -> ControlFlow<()> {
+        if self.settings.last().is_some_and(|setting| is_null_range(&setting.range) || is_null_range(&setting.key_range) || is_null_range(&setting.value_range)) {
+            self.settings.pop();
+            // A configuração descartada continua viva como `overrideSetting` no original, só que fora da lista.
+            if self.override_setting == Some(self.settings.len()) {
+                self.override_setting = Some(usize::MAX);
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// `parse(model, isSettingsProperty)`.
+fn parse(model: &TextModel, is_settings_property: &dyn Fn(Option<&str>, usize) -> bool) -> Vec<ISettingsGroup> {
+    let mut state = ParseState {
+        model,
+        is_settings_property,
+        settings: Vec::new(),
+        override_setting: None,
+        current_property: None,
+        current_parent: Dynamic::array(Vec::new()),
+        previous_parents: Vec::new(),
+        settings_property_index: -1,
+        range: Range { start_line_number: 0, start_column: 0, end_line_number: 0, end_column: 0 },
+    };
+    if !model.is_disposed() {
+        let text = model.get_value();
+        visit(text.units(), &mut state, ParseOptions::default());
+    }
+    if state.settings.is_empty() {
+        return Vec::new();
+    }
+    let ParseState { settings, range, .. } = state;
+    vec![ISettingsGroup {
+        id: if model.is_disposed() { String::new() } else { model.id().to_owned() },
+        sections: vec![ISettingsSection { title: None, settings: settings.into_iter().map(Rc::new).collect() }],
+        title: String::new(),
+        title_range: NULL_RANGE,
+        range,
+        order: None,
+        extension_info: None,
+    }]
 }
