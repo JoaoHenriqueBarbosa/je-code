@@ -61,9 +61,11 @@ use je_workbench::api::common::ext_host_protocol::{
 use je_workbench::common::views::ITreeItem;
 use je_workbench::api::common::ext_host_protocol::{
     DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
-    IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWorkspaceData, SerializedModelContentChangedEvent, StatusBarItemDto, TextEditorPositionData,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
+    FileSystemEvents, IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWillRunFileOperationParticipation, IWorkspaceData, SerializedModelContentChangedEvent,
+    SourceTargetPair, StatusBarItemDto, TextEditorPositionData,
 };
+use je_platform::files::files::FileOperation;
 
 use crate::api::env::HostEnvironment;
 use crate::local_context::LocalContext;
@@ -276,6 +278,30 @@ pub struct LateExtHostProgress(pub Late<dyn ExtHostProgressShape>);
 impl ExtHostProgressShape for LateExtHostProgress {
     fn rpc_accept_progress_canceled(&self, handle: u32) {
         self.0.call_void(move |target| target.rpc_accept_progress_canceled(handle));
+    }
+}
+
+/// O `ExtHostFileSystemEventServiceShape` que ainda não existe quando `MainThreadFileSystemEventService` nasce.
+#[derive(Default)]
+pub struct LateExtHostFileSystemEventService(pub Late<dyn ExtHostFileSystemEventServiceShape>);
+
+impl ExtHostFileSystemEventServiceShape for LateExtHostFileSystemEventService {
+    fn rpc_on_file_event(&self, events: FileSystemEvents) {
+        self.0.call_void(move |target| target.rpc_on_file_event(events));
+    }
+
+    fn rpc_on_will_run_file_operation(
+        &self,
+        operation: FileOperation,
+        files: Vec<SourceTargetPair>,
+        timeout: f64,
+        token: CancellationToken,
+    ) -> Promise<Option<IWillRunFileOperationParticipation>> {
+        self.0.bound().rpc_on_will_run_file_operation(operation, files, timeout, token)
+    }
+
+    fn rpc_on_did_run_file_operation(&self, operation: FileOperation, files: Vec<SourceTargetPair>) {
+        self.0.call_void(move |target| target.rpc_on_did_run_file_operation(operation, files));
     }
 }
 
@@ -844,6 +870,7 @@ pub struct LateForwarders {
     pub quick_open: Rc<LateExtHostQuickOpen>,
     pub output: Rc<LateExtHostOutputService>,
     pub progress: Rc<LateExtHostProgress>,
+    pub file_system_events: Rc<LateExtHostFileSystemEventService>,
     pub documents_and_editors: Rc<LateExtHostDocumentsAndEditors>,
     pub documents: Rc<LateExtHostDocuments>,
     pub editors: Rc<LateExtHostEditors>,
@@ -861,6 +888,7 @@ impl LateForwarders {
         let quick_open = Rc::new(LateExtHostQuickOpen::default());
         let output = Rc::new(LateExtHostOutputService::default());
         let progress = Rc::new(LateExtHostProgress::default());
+        let file_system_events = Rc::new(LateExtHostFileSystemEventService::default());
         let documents_and_editors = Rc::new(LateExtHostDocumentsAndEditors::default());
         let documents = Rc::new(LateExtHostDocuments::default());
         let editors = Rc::new(LateExtHostEditors::default());
@@ -882,6 +910,7 @@ impl LateForwarders {
         let as_quick_open: Rc<dyn ExtHostQuickOpenShape> = quick_open.clone();
         let as_output: Rc<dyn ExtHostOutputServiceShape> = output.clone();
         let as_progress: Rc<dyn ExtHostProgressShape> = progress.clone();
+        let as_file_system_events: Rc<dyn ExtHostFileSystemEventServiceShape> = file_system_events.clone();
         let as_documents_and_editors: Rc<dyn ExtHostDocumentsAndEditorsShape> = documents_and_editors.clone();
         let as_documents: Rc<dyn ExtHostDocumentsShape> = documents.clone();
         let as_editors: Rc<dyn ExtHostEditorsShape> = editors.clone();
@@ -894,13 +923,14 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_QUICK_OPEN.sid, Rc::new(as_quick_open));
         local.set_erased(ExtHostContext::EXT_HOST_OUTPUT_SERVICE.sid, Rc::new(as_output));
         local.set_erased(ExtHostContext::EXT_HOST_PROGRESS.sid, Rc::new(as_progress));
+        local.set_erased(ExtHostContext::EXT_HOST_FILE_SYSTEM_EVENT_SERVICE.sid, Rc::new(as_file_system_events));
         local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS_AND_EDITORS.sid, Rc::new(as_documents_and_editors));
         local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS.sid, Rc::new(as_documents));
         local.set_erased(ExtHostContext::EXT_HOST_EDITORS.sid, Rc::new(as_editors));
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

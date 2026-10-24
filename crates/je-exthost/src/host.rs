@@ -19,6 +19,7 @@ use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
 use je_workbench::api::common::ext_host_bulk_edits::ExtHostBulkEdits;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_editors::ExtHostEditors;
+use je_workbench::api::common::ext_host_file_system_event_service::ExtHostFileSystemEventService;
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::IExtHostApiDeprecationService;
@@ -27,7 +28,7 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
 };
@@ -48,6 +49,7 @@ use crate::api::languages::{LanguagesServices, LanguagesState};
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
+use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
 use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -295,6 +297,8 @@ impl ExtensionHost {
             let bridged_context = BridgedContext::new(context, local.clone());
             let bridged_ref: &dyn IMainContext = &bridged_context;
             let provided = |sid: &'static str| local.contains(sid);
+            // As capacidades dos provedores de arquivo: o workspace e o `createFileSystemWatcher` leem o mesmo registro.
+            let file_system_info = Rc::new(ExtHostFileSystemInfo::new());
 
             if provided(MainContext::MAIN_THREAD_DOCUMENTS.sid) && provided(MainContext::MAIN_THREAD_TEXT_EDITORS.sid) {
                 let documents_and_editors = Rc::new(ExtHostDocumentsAndEditors::new(local_context.clone(), log_service.clone()));
@@ -321,7 +325,7 @@ impl ExtensionHost {
                 let workspace_service = ExtHostWorkspace::new(
                     bridged_ref,
                     &NoInitialWorkspace,
-                    Rc::new(ExtHostFileSystemInfo::new()),
+                    file_system_info.clone(),
                     log_service.clone(),
                     Rc::new(IdentityUriTransformer),
                 );
@@ -337,19 +341,33 @@ impl ExtensionHost {
             // `vscode.workspace` existe se houver os clientes de workspace ou os de documentos e editores (o original sempre o tem).
             let workspace_pair = bridged.workspace.clone().zip(bridged.configuration.clone());
             // `applyEdit` pede o cliente `MainThreadBulkEdits` e o `ExtHostDocumentsAndEditors` (a versão de cada documento aberto).
-            let bulk_edits = provided(MainContext::MAIN_THREAD_BULK_EDITS.sid).then(|| {
-                let documents_and_editors = match &text_editor_api {
-                    Some(api) => api.services.documents_and_editors.clone(),
-                    None => Rc::new(ExtHostDocumentsAndEditors::new(LocalContext::new(), log_service.clone())),
-                };
-                (Rc::new(ExtHostBulkEdits::new(bridged_ref, documents_and_editors)), workspace_edit_objects.clone())
+            // Sem os clientes de documento não há documentos abertos: o serviço enxerga um conjunto vazio, e toda edição vai sem versão.
+            let documents_and_editors = match &text_editor_api {
+                Some(api) => api.services.documents_and_editors.clone(),
+                None => Rc::new(ExtHostDocumentsAndEditors::new(LocalContext::new(), log_service.clone())),
+            };
+            let bulk_edits = provided(MainContext::MAIN_THREAD_BULK_EDITS.sid)
+                .then(|| (Rc::new(ExtHostBulkEdits::new(bridged_ref, documents_and_editors.clone())), workspace_edit_objects.clone()));
+            // Os eventos de arquivo pedem o cliente `MainThreadFileSystemEventService`; o `createFileSystemWatcher` pede também o workspace.
+            let file_system_events = provided(MainContext::MAIN_THREAD_FILE_SYSTEM_EVENT_SERVICE.sid).then(|| {
+                let service = ExtHostFileSystemEventService::new(local_context.clone(), log_service.clone(), documents_and_editors.clone());
+                let service_shape: Rc<dyn ExtHostFileSystemEventServiceShape> = service.clone();
+                late.file_system_events.0.bind(service_shape);
+                FileSystemEventsApi {
+                    service,
+                    watcher: workspace_pair
+                        .clone()
+                        .map(|(workspace, configuration)| Rc::new(WatcherServices { workspace, configuration, file_system_info: file_system_info.clone() })),
+                    edits: workspace_edit_objects.clone(),
+                    events: event_tables.clone(),
+                }
             });
-            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() {
+            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() || file_system_events.is_some() {
                 members.push((
                     "workspace".to_owned(),
                     workspace::namespace(
                         runner,
-                        &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone(), bulk_edits },
+                        &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone(), bulk_edits, file_system_events },
                         &table,
                         &event_tables,
                     ),

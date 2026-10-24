@@ -8,8 +8,9 @@
 //! `onDidCloseTextDocument`, `onDidChangeTextDocument` e `onDidSaveTextDocument` (módulo `text_editors`).
 //!
 //! Falta (cada um depende de um serviço do host ainda não portado, e não é preenchido com fachada):
-//! - `fs`, `createFileSystemWatcher`, `onDid/WillCreate/Delete/RenameFiles`, `registerFileSystemProvider`: pedem o
-//!   `ExtHostConsumerFileSystem`, o `ExtHostFileSystemEventService` ligado e o `MainThreadFileSystem`;
+//! - `fs` e `registerFileSystemProvider`: pedem o `ExtHostConsumerFileSystem` e o `MainThreadFileSystem`;
+//! - `createFileSystemWatcher` e `onDid/WillCreate/Delete/RenameFiles` existem (módulo `file_system_events`) quando o host tem o
+//!   cliente `MainThreadFileSystemEventService` (o watcher pede também os clientes de workspace e configuração);
 //! - `applyEdit` existe (módulo `workspace_edit`, com a classe `WorkspaceEdit`) quando o host tem o cliente `MainThreadBulkEdits`;
 //! - `onWillSaveTextDocument`, `registerTextDocumentContentProvider`: pedem o `ExtHostDocumentSaveParticipant` e o
 //!   `ExtHostDocumentContentProvider` ligados;
@@ -48,6 +49,7 @@ use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::accessor_namespace;
 use crate::api::text_editors::{self, TextEditorApi};
+use crate::api::file_system_events::{self, FileSystemEventsApi};
 use crate::api::workspace_edit::{self, WorkspaceEditObjects};
 use je_workbench::api::common::ext_host_bulk_edits::ExtHostBulkEdits;
 use crate::api::HOST_EXTENSION;
@@ -64,6 +66,8 @@ pub struct WorkspaceServices {
     pub text_editors: Option<TextEditorApi>,
     /// Sem o cliente `MainThreadBulkEdits` não há `applyEdit` (a classe `WorkspaceEdit` existe sempre).
     pub bulk_edits: Option<(Rc<ExtHostBulkEdits>, Rc<WorkspaceEditObjects>)>,
+    /// Sem o cliente `MainThreadFileSystemEventService` não há os eventos de arquivo nem o `createFileSystemWatcher`.
+    pub file_system_events: Option<FileSystemEventsApi>,
 }
 
 /// Uma pasta como o objeto `vscode.WorkspaceFolder` (ver as divergências do módulo).
@@ -336,6 +340,11 @@ pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<D
     }
     if let Some((bulk_edits, objects)) = &services.bulk_edits {
         methods.extend(workspace_edit::workspace_members(runner, bulk_edits, objects));
+    }
+    if let Some(api) = &services.file_system_events {
+        let (file_methods, file_getters) = file_system_events::workspace_members(runner, api, table);
+        methods.extend(file_methods);
+        getters.extend(file_getters);
     }
     accessor_namespace(runner, "workspace", methods, getters)
 }
