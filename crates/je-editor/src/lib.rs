@@ -190,3 +190,5 @@ pub mod view_model_impl;
 pub mod view_model_impl_api;
 pub mod editor_browser;
 pub mod hover;
+
+pub mod code_editor_widget;
