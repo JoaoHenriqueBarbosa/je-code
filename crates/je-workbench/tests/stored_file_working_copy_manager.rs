@@ -519,9 +519,6 @@ fn events() {
 
         working_copy1.dispose();
         working_copy2.dispose();
-        // O recarregamento enfileirado por uma mudança de arquivo espera `timeout(100)`; o rastreador de vazamentos do Rust conta
-        // o ouvinte do token desse timer enquanto ele está pendente, então o relógio falso o deixa disparar antes do fim do caso.
-        je_base::async_::timeout(200).promise.await.unwrap();
     });
 }
 

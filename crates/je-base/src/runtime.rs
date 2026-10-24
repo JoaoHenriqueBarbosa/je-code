@@ -379,6 +379,19 @@ pub fn with_faked_timers<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// Com o relógio virtual ligado, dispara todos os timers pendentes (e as microtarefas que eles gerarem); com o real, não faz
+/// nada. É o dreno que o `runWithFakedTimers` do original faz quando o corpo termina, para quem precisa dele antes de sair do
+/// [`with_faked_timers`] (o guarda de vazamentos dos testes, que no mocha confere no `teardown`, depois desse dreno).
+pub fn drain_fake_timers() {
+    if !LOOP.with(|l| matches!(&*l.clock.borrow(), Clock::Fake(_))) {
+        return;
+    }
+    run_microtasks();
+    while run_next_timer(true) {
+        run_microtasks();
+    }
+}
+
 /// Avança o relógio virtual em `ms`, disparando os timers que vencem no caminho.
 pub fn advance_fake_time(ms: u64) {
     let target = now().saturating_add(ms);

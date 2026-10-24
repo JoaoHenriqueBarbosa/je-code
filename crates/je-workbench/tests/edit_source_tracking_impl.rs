@@ -665,7 +665,7 @@ fn setup(visible: Rc<ObservableValue<bool, ()>>, marker_service: Option<Marker>,
     let imp = disposables.add_rc(instantiation_service.create_instance::<EditSourceTrackingImpl>((const_observable(true), annotated, marker_service)));
     let document = disposables.add_rc(workspace.create_document(
         CreateDocumentOptions {
-            uri: Some(URI::file("C:\\repo\\file.ts", Platform::Windows)),
+            uri: Some(URI::file("C:\\repo\\file.ts", Platform::Win32)),
             initial_value: Some("hello".to_owned()),
             language_id: Some("typescript".to_owned()),
             ..Default::default()

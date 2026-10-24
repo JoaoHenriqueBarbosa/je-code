@@ -52,7 +52,7 @@ pub use utils::promise::{ObservableLazy, ObservableLazyPromise, ObservablePromis
 pub use utils::run_on_change::{run_on_change, run_on_change_with_cancellation_token, run_on_change_with_store};
 pub use utils::utils::{
     debounced_observable, debounced_observable2, derived_observable_with_cache, derived_observable_with_writable_cache, keep_observed,
-    map_observable_array_cached, observable_from_promise, recompute_initially_and_on_change, signal_from_observable, throttled_observable,
+    map_observable_array_cached, map_observable_array_cached_by, observable_from_promise, recompute_initially_and_on_change, signal_from_observable, throttled_observable,
     was_event_triggered_recently,
 };
 pub use utils::utils_cancellation::{derived_with_cancellation_token, wait_for_state};

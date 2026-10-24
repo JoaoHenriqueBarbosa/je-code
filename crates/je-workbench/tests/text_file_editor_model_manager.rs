@@ -520,9 +520,6 @@ fn events() {
         model2.dispose();
         assert!(accessor.model_service.get_model(&resource1).is_none());
         assert!(accessor.model_service.get_model(&resource2).is_none());
-        // O recarregamento enfileirado por uma mudança de arquivo espera `timeout(100)`; o rastreador de vazamentos conta o
-        // ouvinte do token desse timer enquanto ele está pendente, então o relógio falso o deixa disparar antes do fim do caso.
-        je_base::async_::timeout(200).promise.await.unwrap();
     });
 }
 

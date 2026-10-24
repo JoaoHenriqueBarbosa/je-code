@@ -76,6 +76,9 @@ impl Drop for LeakGuard {
         // (`modelReference.then(ref => ref.dispose())`), então elas esvaziam antes da conferência.
         if !std::thread::panicking() {
             runtime::run_microtasks();
+            // O `teardown` do mocha roda depois de o `runWithFakedTimers` drenar os timers virtuais pendentes; aqui o guarda
+            // costuma viver dentro do corpo, então o dreno vem antes da conferência (sem relógio virtual, não faz nada).
+            runtime::drain_fake_timers();
         }
         set_disposable_tracker(None);
         if std::thread::panicking() {
