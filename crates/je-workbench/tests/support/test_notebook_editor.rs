@@ -106,7 +106,8 @@ impl fmt::Debug for TestCell {
 
 /// `setupInstantiationService(disposables)`.
 pub fn setup_instantiation_service(disposables: &DisposableStore) -> Rc<InstantiationService> {
-    let language_service: Rc<dyn ILanguageService> = disposables.add_rc(LanguageService::new(false));
+    let language_service = disposables.add_rc(LanguageService::new(false));
+    let language_service: Rc<dyn ILanguageService> = language_service;
     disposables.add_rc(InstantiationService::new(ServiceCollection::new().with(I_LANGUAGE_SERVICE, language_service)))
 }
 
