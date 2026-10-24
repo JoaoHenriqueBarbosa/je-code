@@ -4290,3 +4290,178 @@ mod editors_region {
 }
 
 // #endregion
+
+// #region NotebookKernels
+
+pub use self::notebook_kernels_region::*;
+
+/// Os DTOs e as formas de `extHost.protocol.ts` que `extHostNotebookKernels.ts` usa (`INotebookKernelDto2`,
+/// `ICellExecuteUpdateDto`, `ICellExecutionCompleteDto`, `VariablesResult`, `MainThreadNotebookKernelsShape` e
+/// `ExtHostNotebookKernelsShape`).
+///
+/// Divergências:
+/// - Os `UriComponents` são [`URI`]; os handles de kernel e de execução (`number`) são `u32`, o de célula é `i64`, como em
+///   [`NotebookCellDto`].
+/// - `$updateKernel(handle, data: Partial<INotebookKernelDto2>)` recebe o [`INotebookKernelDto2`] inteiro: o controlador
+///   sempre manda o objeto completo (um `Partial` com todos os campos).
+/// - `ICellExecuteUpdateDto` (`ICellExecuteOutputEditDto | ICellExecuteOutputItemEditDto | ICellExecutionStateUpdateDto`,
+///   união discriminada por `editType`) é o `enum` [`ICellExecuteUpdateDto`]; o `editType` de cada variante é
+///   [`ICellExecuteUpdateDto::edit_type`] e os structs não o repetem. `ICellExecutionStateUpdateDto` é o
+///   [`ICellExecutionStateUpdate`] e `ICellExecutionCompleteDto` é o [`ICellExecutionComplete`] (os dois `extends` vazios).
+/// - O `$updateNotebookPriority(handle, uri, value: number | undefined)` recebe o `NotebookControllerAffinity2`.
+/// - `VariablesResult` leva também `interfaces`: o tipo declarado no original não tem o campo, mas o `$provideVariables`
+///   o manda (o objeto não é checado contra o tipo).
+/// - O `'named' | 'indexed'` de `$provideVariables` é [`VariablesRequestKindDto`]; o `message: any` é [`Dynamic`].
+mod notebook_kernels_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_extensions::manifest::ExtensionIdentifier;
+
+    use super::{ExtHostContext, MainContext, NotebookOutputDto, NotebookOutputItemDto, ProxyIdentifier, SerializableObjectWithBuffers};
+    use crate::api::common::ext_host_types::NotebookControllerAffinity2;
+    use crate::contrib::notebook::common::notebook_common::INotebookKernelSourceAction;
+    use crate::contrib::notebook::common::notebook_execution_service::CellExecutionUpdateType;
+    use crate::contrib::notebook::common::notebook_execution_state_service::{ICellExecutionComplete, ICellExecutionStateUpdate};
+
+    /// `{ uri: UriComponents; provides: readonly string[] }`: um item de `INotebookKernelDto2.preloads`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookRendererScriptDto {
+        pub uri: URI,
+        pub provides: Vec<String>,
+    }
+
+    /// `INotebookKernelDto2`.
+    #[derive(Clone, Debug)]
+    pub struct INotebookKernelDto2 {
+        pub id: String,
+        pub notebook_type: String,
+        pub extension_id: ExtensionIdentifier,
+        pub extension_location: URI,
+        pub label: String,
+        pub detail: Option<String>,
+        pub description: Option<String>,
+        pub supported_languages: Option<Vec<String>>,
+        pub supports_interrupt: Option<bool>,
+        pub supports_execution_order: Option<bool>,
+        pub preloads: Option<Vec<NotebookRendererScriptDto>>,
+        pub has_variable_provider: Option<bool>,
+    }
+
+    /// `ICellExecuteOutputEditDto`: o `editType` é [`CellExecutionUpdateType::Output`].
+    #[derive(Clone, Debug)]
+    pub struct ICellExecuteOutputEditDto {
+        pub cell_handle: i64,
+        pub append: Option<bool>,
+        pub outputs: Vec<NotebookOutputDto>,
+    }
+
+    /// `ICellExecuteOutputItemEditDto`: o `editType` é [`CellExecutionUpdateType::OutputItems`].
+    #[derive(Clone, Debug)]
+    pub struct ICellExecuteOutputItemEditDto {
+        pub append: Option<bool>,
+        pub output_id: String,
+        pub items: Vec<NotebookOutputItemDto>,
+    }
+
+    /// `ICellExecuteUpdateDto`.
+    #[derive(Clone, Debug)]
+    pub enum ICellExecuteUpdateDto {
+        Output(ICellExecuteOutputEditDto),
+        OutputItems(ICellExecuteOutputItemEditDto),
+        ExecutionState(ICellExecutionStateUpdate),
+    }
+
+    impl ICellExecuteUpdateDto {
+        /// O `editType` da atualização.
+        pub fn edit_type(&self) -> CellExecutionUpdateType {
+            match self {
+                Self::Output(_) => CellExecutionUpdateType::Output,
+                Self::OutputItems(_) => CellExecutionUpdateType::OutputItems,
+                Self::ExecutionState(_) => CellExecutionUpdateType::ExecutionState,
+            }
+        }
+    }
+
+    /// `ICellExecutionCompleteDto`.
+    pub type ICellExecutionCompleteDto = ICellExecutionComplete;
+
+    /// `VariablesResult`.
+    #[derive(Clone, Debug)]
+    pub struct VariablesResult {
+        pub id: u32,
+        pub name: String,
+        pub value: String,
+        pub r#type: Option<String>,
+        pub interfaces: Option<Vec<String>>,
+        pub language: Option<String>,
+        pub expression: Option<String>,
+        pub has_named_children: bool,
+        pub indexed_children_count: usize,
+        pub extension_id: String,
+    }
+
+    /// `'named' | 'indexed'`: o `kind` de `$provideVariables`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum VariablesRequestKindDto {
+        Named,
+        Indexed,
+    }
+
+    /// `MainThreadNotebookKernelsShape`.
+    pub trait MainThreadNotebookKernelsShape: IDisposable {
+        fn rpc_post_message(&self, handle: u32, editor_id: Option<&str>, message: Dynamic) -> Promise<bool>;
+        fn rpc_add_kernel(&self, handle: u32, data: INotebookKernelDto2) -> Promise<()>;
+        fn rpc_update_kernel(&self, handle: u32, data: INotebookKernelDto2);
+        fn rpc_remove_kernel(&self, handle: u32);
+        fn rpc_update_notebook_priority(&self, handle: u32, uri: &URI, value: Option<NotebookControllerAffinity2>);
+
+        fn rpc_create_execution(&self, handle: u32, controller_id: &str, uri: &URI, cell_handle: i64);
+        fn rpc_update_execution(&self, handle: u32, data: SerializableObjectWithBuffers<Vec<ICellExecuteUpdateDto>>);
+        fn rpc_complete_execution(&self, handle: u32, data: SerializableObjectWithBuffers<ICellExecutionCompleteDto>);
+
+        fn rpc_create_notebook_execution(&self, handle: u32, controller_id: &str, uri: &URI);
+        fn rpc_begin_notebook_execution(&self, handle: u32);
+        fn rpc_complete_notebook_execution(&self, handle: u32);
+
+        fn rpc_add_kernel_detection_task(&self, handle: u32, notebook_type: &str) -> Promise<()>;
+        fn rpc_remove_kernel_detection_task(&self, handle: u32);
+
+        fn rpc_add_kernel_source_action_provider(&self, handle: u32, event_handle: u32, notebook_type: &str) -> Promise<()>;
+        fn rpc_remove_kernel_source_action_provider(&self, handle: u32, event_handle: u32);
+        fn rpc_emit_notebook_kernel_source_actions_change_event(&self, event_handle: u32);
+        fn rpc_receive_variable(&self, request_id: &str, variable: VariablesResult);
+        fn rpc_variables_updated(&self, notebook_uri: &URI);
+    }
+
+    /// `ExtHostNotebookKernelsShape`.
+    pub trait ExtHostNotebookKernelsShape {
+        fn rpc_accept_notebook_association(&self, handle: u32, uri: &URI, value: bool);
+        fn rpc_execute_cells(&self, handle: u32, uri: &URI, handles: Vec<i64>) -> Promise<()>;
+        fn rpc_cancel_cells(&self, handle: u32, uri: &URI, handles: Vec<i64>) -> Promise<()>;
+        fn rpc_accept_kernel_message_from_renderer(&self, handle: u32, editor_id: &str, message: Dynamic);
+        fn rpc_provide_kernel_source_actions(&self, handle: u32, token: CancellationToken) -> Promise<Vec<INotebookKernelSourceAction>>;
+        fn rpc_provide_variables(
+            &self,
+            handle: u32,
+            request_id: &str,
+            notebook_uri: &URI,
+            parent_id: Option<u32>,
+            kind: VariablesRequestKindDto,
+            start: usize,
+            token: CancellationToken,
+        ) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_NOTEBOOK_KERNELS: ProxyIdentifier<dyn MainThreadNotebookKernelsShape> = ProxyIdentifier::new("MainThreadNotebookKernels");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_NOTEBOOK_KERNELS: ProxyIdentifier<dyn ExtHostNotebookKernelsShape> = ProxyIdentifier::new("ExtHostNotebookKernels");
+    }
+}
+
+// #endregion
