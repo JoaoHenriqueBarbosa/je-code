@@ -57,3 +57,7 @@ pub mod ext_host_notebook_editor;
 pub mod editor_execute_commands;
 pub mod ext_host_api_commands;
 pub mod ext_host_notebook_kernels;
+
+// BulkEdits e Decorations: `extHostBulkEdits.ts` e `extHostDecorations.ts`.
+pub mod ext_host_bulk_edits;
+pub mod ext_host_decorations;

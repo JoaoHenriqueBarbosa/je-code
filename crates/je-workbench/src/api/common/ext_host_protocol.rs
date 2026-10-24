@@ -4465,3 +4465,72 @@ mod notebook_kernels_region {
 }
 
 // #endregion
+
+// #region Decorations
+
+pub use self::decorations_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostDecorations.ts` usa: `MainThreadDecorationsShape`, `ExtHostDecorationsShape`,
+/// `DecorationRequest`, `DecorationData`, `DecorationReply` e os identificadores `MainContext.MainThreadDecorations` e
+/// `ExtHostContext.ExtHostDecorations`.
+///
+/// Divergências:
+/// - `UriComponents` é a [`URI`] e o `handle` (`number`) é `u32`.
+/// - `DecorationData` (`[boolean, string, string | ThemeIcon, ThemeColor]`, a tupla `[propagate, tooltip, badge, color]`) é um
+///   struct com os quatro campos na mesma ordem, todos opcionais como os da `FileDecoration` de que vêm; o `badge`
+///   (`string | ThemeIcon`) é o [`FileDecorationBadge`].
+/// - `DecorationReply` (`{ [id: number]: DecorationData }`) é um [`BTreeMap`] por `id`.
+/// - `$onDidChange(handle, resources: UriComponents[] | null)` recebe `None` no lugar de `null`.
+mod decorations_region {
+    use std::collections::BTreeMap;
+
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::themables::ThemeColor;
+    use je_base::uri::URI;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_types::FileDecorationBadge;
+
+    /// `DecorationRequest`.
+    #[derive(Clone, Debug)]
+    pub struct DecorationRequest {
+        pub id: u32,
+        pub uri: URI,
+    }
+
+    /// `DecorationData`: `[propagate, tooltip, badge, color]`.
+    #[derive(Clone)]
+    pub struct DecorationData {
+        pub propagate: Option<bool>,
+        pub tooltip: Option<String>,
+        pub badge: Option<FileDecorationBadge>,
+        pub color: Option<ThemeColor>,
+    }
+
+    /// `DecorationReply`.
+    pub type DecorationReply = BTreeMap<u32, DecorationData>;
+
+    /// `MainThreadDecorationsShape`.
+    pub trait MainThreadDecorationsShape: IDisposable {
+        fn rpc_register_decoration_provider(&self, handle: u32, label: &str);
+        fn rpc_unregister_decoration_provider(&self, handle: u32);
+        fn rpc_on_did_change(&self, handle: u32, resources: Option<Vec<URI>>);
+    }
+
+    /// `ExtHostDecorationsShape`.
+    pub trait ExtHostDecorationsShape {
+        fn rpc_provide_decorations(&self, handle: u32, requests: Vec<DecorationRequest>, token: CancellationToken) -> Promise<DecorationReply>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_DECORATIONS: ProxyIdentifier<dyn MainThreadDecorationsShape> = ProxyIdentifier::new("MainThreadDecorations");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_DECORATIONS: ProxyIdentifier<dyn ExtHostDecorationsShape> = ProxyIdentifier::new("ExtHostDecorations");
+    }
+}
+
+// #endregion
