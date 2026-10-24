@@ -120,3 +120,23 @@ sobram, em ordem de custo:
 3. Servidor de TypeScript nativo em Rust: não existe um maduro (o `tsgo` da Microsoft é Go).
 4. Rodar o `tsserver` fora do produto (processo do Node do sistema, quando existir), perdendo a regra de só Rust
    nesse processo; decisão do user, não minha.
+
+## Decisão de arquitetura (integrador, 2026-10-24): o extension host é Rust, a API `vscode` é exposta ao zjsc
+
+O `extensionHostProcess.js` (o bundle do oráculo) NÃO entra no produto: é JavaScript da Microsoft e a regra do
+projeto é só Rust. O host de extensões é portado para Rust (`crates/je-workbench/src/api/`: `ext_host_*.rs`, o porte
+dos `extHost*.ts` e dos conversores) e o zjsc roda apenas o código das EXTENSÕES, que enxerga um objeto `vscode`
+construído em Rust. Consequências já decididas para o porte:
+
+- **Valores que cruzam a fronteira** (argumentos de comando, resultados de provedores, opções) são `Dynamic`. As
+  classes da API (`Position`, `Range`, `Selection`, `Location`, `Uri`, `TextEdit`, `ThemeColor`...) cruzam como
+  `Dynamic::Object` com a propriedade reservada `$$class` com o nome da classe, que é o equivalente de `instanceof`
+  (`class_of(&Dynamic) == Some("Position")`). `ext_host_values.rs` guarda os auxiliares (`tag`, `class_of`,
+  `is_instance_of`) e cada tipo de `ext_host_types` ganha `to_dynamic`/`from_dynamic`. A ponte com o zjsc, quando
+  existir, cria o objeto JS com o protótipo do registro de classes e preserva `$$class`.
+- **`cloneAndChange`/`revive`/`MarshalledId`** do original operam sobre esse `Dynamic` (não sobre structs), como o
+  original opera sobre `any`.
+- **RPC**: o protocolo `MainThreadXxx`/`ExtHostXxx` é o trait por proxy de `ext_host_protocol.rs`; o transporte (socket
+  ou pipe, `net`/`fs` do `Host` do zjsc) vem na Fase 5, depois dos testes do núcleo.
+- **Ponte JS**: cada membro do `vscode.d.ts` (202 de primeiro nível) é um binding do zjsc para a função Rust
+  correspondente; a lista de nomes que as extensões embutidas pediram e faltaram (seção acima) é a fila.
