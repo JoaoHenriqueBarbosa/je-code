@@ -44,7 +44,7 @@ use je_extensions::util::get_gallery_extension_id;
 use je_instantiation::service_id;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationValue};
-use je_platform::log::{LogArg, LogMessage, LogServiceRef, Logger};
+use je_platform::log::{LogArg, LogMessage, LogServiceRef};
 use je_platform::product::IProductService;
 use je_platform::workspace_trust::IWorkspaceTrustEnablementService;
 use serde_json::Value;
