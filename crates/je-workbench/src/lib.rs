@@ -5,3 +5,5 @@
 pub mod contrib;
 
 pub mod services;
+
+pub mod browser;
