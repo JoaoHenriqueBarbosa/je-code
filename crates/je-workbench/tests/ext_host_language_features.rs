@@ -1,8 +1,10 @@
 //! Porte de `src/vs/workbench/api/test/browser/extHostLanguageFeatures.test.ts` (suíte `ExtHostLanguageFeatures`), caso a caso e na mesma ordem.
 //!
-//! PORTADOS (5 de 65 `test(` do original, contando cada caso dos laços `for (const declinedRequests of [0, 2])` como dois):
-//! `DocumentDropEdits does not cache an empty edit array without release IDs`, `DocumentSymbols, register/deregister`,
-//! `DocumentSymbols, evil provider`, `DocumentSymbols, data conversion` e `Quick Outline uses a not ideal sorting, #138502`.
+//! PORTADOS (22 de 65 `test(` do original, contando cada caso dos laços `for (const declinedRequests of [0, 2])` como dois):
+//! `DocumentDropEdits does not cache an empty edit array without release IDs`, `DocumentSymbols` x4 (incluindo `Quick Outline ... #138502`),
+//! `Occurrences` x4, `Quick Fix` x3 e `#29469`, `Parameter Hints` x2, `Suggest` x5 e `Selection Ranges` x2.
+//! Divergência de tradução: o `#29469` devolve `[undefined, null, comando]` e o `Vec` não tem elementos ausentes, então o caso
+//! devolve só o comando (o `if (!candidate) continue` do adaptador não existe no porte).
 //!
 //! FORA, e por quê (nenhum vira `#[test]` enquanto não puder ser fiel):
 //! - Função do editor ainda sem porte: `getCodeLensModel` (CodeLens x3), `getDefinitionsAtPosition`,
@@ -11,9 +13,6 @@
 //!   `getWorkspaceSymbols` (Navigate types x2), `rename` (Rename x5 e os dois #98352), `getDocumentFormattingEditsUntilResult`,
 //!   `getDocumentRangeFormattingEditsUntilResult` e `getOnTypeFormattingEdits` (Format Doc x3, Format Range x3, Format on
 //!   Type), `getLinks` (Links x2) e `getColors` (Document colors).
-//! - Função do editor que existe, mas cujo caso não coube nesta fatia (pendentes de porte, não de editor): `getOccurrencesAtPosition`
-//!   (Occurrences x4), `getCodeActions` (Quick Fix x4 e #29469), `provideSignatureHelp` (Parameter Hints x2),
-//!   `provideSuggestionItems` (Suggest x5) e `provideSelectionRanges` (Selection Ranges x2).
 //! - `AutoClosingPair.beforeText requires proposed API`: depende de `$setLanguageConfiguration` do `MainThreadLanguageFeatures` e de
 //!   `setLanguageConfiguration` do host, que ainda não têm porte (ver a lista de pendentes dos dois arquivos).
 //! - Os casos `DocumentDropEdits releases cache IDs after N declined requests` e `DocumentPasteEdits releases cache IDs after N
@@ -41,6 +40,7 @@ mod support;
 #[path = "../../je-editor/tests/support/test_text_model.rs"]
 mod test_text_model;
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
@@ -52,11 +52,25 @@ use je_base::errors::Error;
 use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
+use je_editor::code_action::code_action::get_code_actions;
+use je_editor::code_action::languages::CodeActionTriggerType;
+use je_editor::code_action::platform::{ActionSet, ProgressNone};
+use je_editor::code_action::types::{CodeActionTrigger, CodeActionTriggerSource};
+use je_editor::config::editor_options::smart_select::SmartSelectOptions;
 use je_editor::language_features_service::{DocumentDropEditProvider, LanguageFeaturesService};
+use je_editor::language_providers::DocumentHighlightKind;
+use je_editor::languages::{CompletionContext, CompletionItemKind};
 use je_editor::model::Eol;
 use je_editor::outline_model::OutlineModel;
+use je_editor::parameter_hints::languages::{
+    SignatureHelpContext as EditorSignatureHelpContext, SignatureHelpTriggerKind as EditorSignatureHelpTriggerKind,
+};
+use je_editor::parameter_hints::provide_signature_help::provide_signature_help;
 use je_editor::position::Position;
+use je_editor::smart_select::provide_selection_ranges;
+use je_editor::suggest::suggest::{CompletionOptions, provide_suggestion_items};
 use je_editor::text_model::TextModel;
+use je_editor::word_highlighter::get_occurrences_at_position;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_platform::log::NullLogService;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
@@ -69,7 +83,10 @@ use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsA
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiDocumentDropEditProvider, ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiProviderResult, DocumentEditRef, IExtHostApiDeprecationService, OneOrMany,
+    ApiCodeActionContext, ApiCodeActionProvider, ApiCompletionItemProvider, ApiCompletionList, ApiCompletionResult, ApiDocumentDropEditProvider,
+    ApiDocumentHighlightProvider, ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiProviderResult, ApiRangeOrSelection, ApiSelectionRangeProvider,
+    ApiSignatureHelpContext, ApiSignatureHelpProvider, ApiSignatureHelpRef, CommandOrCodeAction, CompletionItemRef, DocumentEditRef,
+    IExtHostApiDeprecationService, OneOrMany, SignatureHelpMetadataOrTriggerChars,
 };
 use je_workbench::api::common::ext_host_protocol::{
     CommandArgs, DocumentsAndEditorsDelta, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostLanguageFeaturesShape, IExtHostTelemetry, IMarkerChange,
@@ -459,6 +476,638 @@ fn quick_outline_uses_a_not_ideal_sorting_138502() {
         assert_eq!(value.len(), 6);
         let names: Vec<&str> = value.iter().map(|symbol| symbol.name.as_str()).collect();
         assert_eq!(names, ["containers", "container 0", "name", "ports", "ports 0", "containerPort"]);
+        env.teardown().await;
+    });
+}
+
+// ---- provedores dos casos seguintes -------------------------------------------------------------------
+
+/// `'*'`, o seletor mais fraco.
+fn wildcard_selector() -> DocumentSelectorInput {
+    DocumentSelectorInput::Language("*".to_owned())
+}
+
+/// Os `DocumentHighlightProvider` do original são classes anônimas que devolvem um valor fixo ou lançam.
+struct HighlightProvider(Box<dyn Fn() -> ApiProviderResult<Vec<types::DocumentHighlight>>>);
+
+impl ApiDocumentHighlightProvider for HighlightProvider {
+    fn provide_document_highlights(
+        &self,
+        _document: &je_workbench::api::common::ext_host_document_data::TextDocument,
+        _position: &types::Position,
+        _token: CancellationToken,
+    ) -> ApiProviderResult<Vec<types::DocumentHighlight>> {
+        (self.0)()
+    }
+}
+
+/// `provideDocumentHighlights() { return [new types.DocumentHighlight(new types.Range(0, 0, 0, end))]; }`.
+fn highlight_provider_until(end_character: f64) -> Rc<HighlightProvider> {
+    Rc::new(HighlightProvider(Box::new(move || {
+        MaybePromise::Value(Some(vec![types::DocumentHighlight::new(range(0.0, 0.0, 0.0, end_character), None)]))
+    })))
+}
+
+/// Os `CodeActionProvider` do original: um valor fixo ou uma falha.
+struct CodeActionsProvider(Box<dyn Fn() -> ApiProviderResult<Vec<CommandOrCodeAction>>>);
+
+impl ApiCodeActionProvider for CodeActionsProvider {
+    fn provide_code_actions(
+        &self,
+        _document: &je_workbench::api::common::ext_host_document_data::TextDocument,
+        _range_or_selection: &ApiRangeOrSelection,
+        _context: &ApiCodeActionContext,
+        _token: CancellationToken,
+    ) -> ApiProviderResult<Vec<CommandOrCodeAction>> {
+        (self.0)()
+    }
+}
+
+/// Os `SignatureHelpProvider` do original: um valor fixo ou uma falha.
+struct SignatureProvider(Box<dyn Fn() -> ApiProviderResult<ApiSignatureHelpRef>>);
+
+impl ApiSignatureHelpProvider for SignatureProvider {
+    fn provide_signature_help(
+        &self,
+        _document: &je_workbench::api::common::ext_host_document_data::TextDocument,
+        _position: &types::Position,
+        _token: CancellationToken,
+        _context: &ApiSignatureHelpContext,
+    ) -> ApiProviderResult<ApiSignatureHelpRef> {
+        (self.0)()
+    }
+}
+
+/// Os `CompletionItemProvider` do original: um valor fixo ou uma falha.
+struct CompletionProvider(Box<dyn Fn() -> ApiProviderResult<ApiCompletionResult>>);
+
+impl ApiCompletionItemProvider for CompletionProvider {
+    fn provide_completion_items(
+        &self,
+        _document: &je_workbench::api::common::ext_host_document_data::TextDocument,
+        _position: &types::Position,
+        _token: CancellationToken,
+        _context: &types::CompletionContext,
+    ) -> ApiProviderResult<ApiCompletionResult> {
+        (self.0)()
+    }
+}
+
+/// `[new types.CompletionItem(label)]`.
+fn completion_items(labels: &[&str]) -> ApiProviderResult<ApiCompletionResult> {
+    MaybePromise::Value(Some(ApiCompletionResult::Items(labels.iter().map(|label| completion_item(label)).collect())))
+}
+
+/// `new types.CompletionItem(label)`.
+fn completion_item(label: &str) -> CompletionItemRef {
+    Rc::new(RefCell::new(types::CompletionItem::new(types::CompletionLabel::Text(label.to_owned()), None)))
+}
+
+/// `new CompletionOptions(undefined, new Set().add(CompletionItemKind.Snippet))`.
+fn snippet_filter_options() -> CompletionOptions {
+    CompletionOptions { kind_filter: [CompletionItemKind::Snippet].into_iter().collect(), ..CompletionOptions::default() }
+}
+
+struct SelectionRangesProvider(Box<dyn Fn() -> ApiProviderResult<Vec<types::SelectionRange>>>);
+
+impl ApiSelectionRangeProvider for SelectionRangesProvider {
+    fn provide_selection_ranges(
+        &self,
+        _document: &je_workbench::api::common::ext_host_document_data::TextDocument,
+        _positions: &[types::Position],
+        _token: CancellationToken,
+    ) -> ApiProviderResult<Vec<types::SelectionRange>> {
+        (self.0)()
+    }
+}
+
+/// `{ type: CodeActionTriggerType.Invoke, triggerAction }`.
+fn invoke_trigger(trigger_action: CodeActionTriggerSource) -> CodeActionTrigger {
+    CodeActionTrigger::new(CodeActionTriggerType::Invoke, trigger_action)
+}
+
+/// `{ triggerKind: SignatureHelpTriggerKind.Invoke, isRetrigger: false }`.
+fn invoke_signature_help_context() -> EditorSignatureHelpContext {
+    EditorSignatureHelpContext {
+        trigger_kind: EditorSignatureHelpTriggerKind::Invoke,
+        trigger_character: None,
+        is_retrigger: false,
+        active_signature_help: None,
+    }
+}
+
+// ---- Occurrences --------------------------------------------------------------------------------------
+
+/// O corpo comum dos casos `Occurrences`: o único destaque do modelo, que o caso confere.
+async fn single_highlight(env: &Env, end_column: i32) {
+    let value = get_occurrences_at_position(&env.language_features_service.document_highlight_provider, &env.model, Position::new(1, 2), &CancellationToken::None, false)
+        .await
+        .expect("getOccurrencesAtPosition");
+    assert_eq!(value.size(), 1);
+    let entry = &value.values().next().expect("um recurso")[0];
+    assert_eq!(entry.range, je_editor::range::Range::new(1, 1, 1, end_column));
+    assert_eq!(entry.kind, Some(DocumentHighlightKind::Text));
+}
+
+#[test]
+fn occurrences_data_conversion() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let registration = env.ext_host.register_document_highlight_provider(&null_extension_description(), &default_selector(), highlight_provider_until(4.0));
+        env.add(registration);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        single_highlight(&env, 5).await;
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn occurrences_order_1_2() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let first = env.ext_host.register_document_highlight_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(HighlightProvider(Box::new(|| MaybePromise::Value(None)))),
+        );
+        env.add(first);
+        let second = env.ext_host.register_document_highlight_provider(&null_extension_description(), &wildcard_selector(), highlight_provider_until(4.0));
+        env.add(second);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        single_highlight(&env, 5).await;
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn occurrences_order_2_2() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let first = env.ext_host.register_document_highlight_provider(&null_extension_description(), &default_selector(), highlight_provider_until(2.0));
+        env.add(first);
+        let second = env.ext_host.register_document_highlight_provider(&null_extension_description(), &wildcard_selector(), highlight_provider_until(4.0));
+        env.add(second);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        single_highlight(&env, 3).await;
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn occurrences_evil_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let evil = env.ext_host.register_document_highlight_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(HighlightProvider(Box::new(|| MaybePromise::Promise(Promise::rejected(Error::new("evil")))))),
+        );
+        env.add(evil);
+        let good = env.ext_host.register_document_highlight_provider(&null_extension_description(), &default_selector(), highlight_provider_until(4.0));
+        env.add(good);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = get_occurrences_at_position(&env.language_features_service.document_highlight_provider, &env.model, Position::new(1, 2), &CancellationToken::None, false)
+            .await
+            .expect("getOccurrencesAtPosition");
+        assert_eq!(value.size(), 1);
+        env.teardown().await;
+    });
+}
+
+// ---- Quick Fix ----------------------------------------------------------------------------------------
+
+#[test]
+fn quick_fix_command_data_conversion() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CodeActionsProvider(Box::new(|| {
+                MaybePromise::Value(Some(vec![
+                    CommandOrCodeAction::Command(types::Command::new("Testing1", "test1")),
+                    CommandOrCodeAction::Command(types::Command::new("Testing2", "test2")),
+                ]))
+            }))),
+            None,
+        );
+        env.add(registration);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = get_code_actions(
+            &env.language_features_service.code_action_provider,
+            &env.model,
+            env.model.get_full_model_range().into(),
+            &invoke_trigger(CodeActionTriggerSource::QuickFix),
+            Rc::new(ProgressNone),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("getCodeActions");
+        let actions = value.valid_actions();
+        assert_eq!(actions.len(), 2);
+        let (first, second) = (&actions[0], &actions[1]);
+        assert_eq!(first.action.borrow().title, "Testing1");
+        assert_eq!(first.action.borrow().command.as_ref().expect("command").id, "test1");
+        assert_eq!(second.action.borrow().title, "Testing2");
+        assert_eq!(second.action.borrow().command.as_ref().expect("command").id, "test2");
+        value.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn quick_fix_code_action_data_conversion() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CodeActionsProvider(Box::new(|| {
+                let mut action = types::CodeAction::new("Testing1", Some(types::CodeActionKind::empty().append("test.scope")));
+                action.command = Some(types::Command::new("Testing1Command", "test1"));
+                MaybePromise::Value(Some(vec![CommandOrCodeAction::CodeAction(Rc::new(RefCell::new(action)))]))
+            }))),
+            None,
+        );
+        env.add(registration);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = get_code_actions(
+            &env.language_features_service.code_action_provider,
+            &env.model,
+            env.model.get_full_model_range().into(),
+            &invoke_trigger(CodeActionTriggerSource::Default),
+            Rc::new(ProgressNone),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("getCodeActions");
+        let actions = value.valid_actions();
+        assert_eq!(actions.len(), 1);
+        let action = actions[0].action.borrow();
+        assert_eq!(action.title, "Testing1");
+        let command = action.command.as_ref().expect("command");
+        assert_eq!(command.title, "Testing1Command");
+        assert_eq!(command.id, "test1");
+        assert_eq!(action.kind.as_deref(), Some("test.scope"));
+        drop(action);
+        value.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn cannot_read_property_id_of_undefined_29469() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        // `[undefined, null, { command: 'test', title: 'Testing' }]`: o `Vec` não tem elementos ausentes (ver a nota do
+        // `CodeActionAdapter`), então só o terceiro elemento existe.
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CodeActionsProvider(Box::new(|| MaybePromise::Value(Some(vec![CommandOrCodeAction::Command(types::Command::new("Testing", "test"))]))))),
+            None,
+        );
+        env.add(registration);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = get_code_actions(
+            &env.language_features_service.code_action_provider,
+            &env.model,
+            env.model.get_full_model_range().into(),
+            &invoke_trigger(CodeActionTriggerSource::Default),
+            Rc::new(ProgressNone),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("getCodeActions");
+        assert_eq!(value.valid_actions().len(), 1);
+        value.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn quick_fix_evil_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let evil = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CodeActionsProvider(Box::new(|| MaybePromise::Promise(Promise::rejected(Error::new("evil")))))),
+            None,
+        );
+        env.add(evil);
+        let good = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CodeActionsProvider(Box::new(|| MaybePromise::Value(Some(vec![CommandOrCodeAction::Command(types::Command::new("Testing", "test"))]))))),
+            None,
+        );
+        env.add(good);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = get_code_actions(
+            &env.language_features_service.code_action_provider,
+            &env.model,
+            env.model.get_full_model_range().into(),
+            &invoke_trigger(CodeActionTriggerSource::QuickFix),
+            Rc::new(ProgressNone),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("getCodeActions");
+        assert_eq!(value.valid_actions().len(), 1);
+        value.dispose();
+        env.teardown().await;
+    });
+}
+
+// ---- Parameter Hints ----------------------------------------------------------------------------------
+
+#[test]
+fn parameter_hints_order() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let first = env.ext_host.register_signature_help_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(SignatureProvider(Box::new(|| MaybePromise::Value(None)))),
+            SignatureHelpMetadataOrTriggerChars::TriggerCharacters(Vec::new()),
+        );
+        env.add(first);
+        let second = env.ext_host.register_signature_help_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(SignatureProvider(Box::new(|| MaybePromise::Value(Some(Rc::new(RefCell::new(types::SignatureHelp::default()))))))),
+            SignatureHelpMetadataOrTriggerChars::TriggerCharacters(Vec::new()),
+        );
+        env.add(second);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = provide_signature_help(
+            &env.language_features_service.signature_help_provider,
+            &env.model,
+            Position::new(1, 1),
+            invoke_signature_help_context(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSignatureHelp");
+        assert!(value.is_some());
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn parameter_hints_evil_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let evil = env.ext_host.register_signature_help_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(SignatureProvider(Box::new(|| MaybePromise::Promise(Promise::rejected(Error::new("evil")))))),
+            SignatureHelpMetadataOrTriggerChars::TriggerCharacters(Vec::new()),
+        );
+        env.add(evil);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = provide_signature_help(
+            &env.language_features_service.signature_help_provider,
+            &env.model,
+            Position::new(1, 1),
+            invoke_signature_help_context(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSignatureHelp");
+        assert!(value.is_none());
+        env.teardown().await;
+    });
+}
+
+// ---- Suggest ------------------------------------------------------------------------------------------
+
+#[test]
+fn suggest_order_1_3() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let weak = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &wildcard_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&["testing1"])))),
+            Vec::new(),
+        );
+        env.add(weak);
+        let strong = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&["testing2"])))),
+            Vec::new(),
+        );
+        env.add(strong);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = provide_suggestion_items(
+            &env.language_features_service.completion_provider,
+            &env.model,
+            Position::new(1, 1),
+            snippet_filter_options(),
+            CompletionContext::default(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSuggestionItems");
+        assert_eq!(value.items.len(), 1);
+        assert_eq!(value.items[0].completion.borrow().insert_text, "testing2");
+        value.disposable.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_order_2_3() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        // weaker selector but result
+        let weak = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &wildcard_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&["weak-selector"])))),
+            Vec::new(),
+        );
+        env.add(weak);
+        // stronger selector but not a good result
+        let strong = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&[])))),
+            Vec::new(),
+        );
+        env.add(strong);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = provide_suggestion_items(
+            &env.language_features_service.completion_provider,
+            &env.model,
+            Position::new(1, 1),
+            snippet_filter_options(),
+            CompletionContext::default(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSuggestionItems");
+        assert_eq!(value.items.len(), 1);
+        assert_eq!(value.items[0].completion.borrow().insert_text, "weak-selector");
+        value.disposable.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_order_3_3() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let first = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&["strong-1"])))),
+            Vec::new(),
+        );
+        env.add(first);
+        let second = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&["strong-2"])))),
+            Vec::new(),
+        );
+        env.add(second);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = provide_suggestion_items(
+            &env.language_features_service.completion_provider,
+            &env.model,
+            Position::new(1, 1),
+            snippet_filter_options(),
+            CompletionContext::default(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSuggestionItems");
+        assert_eq!(value.items.len(), 2);
+        assert_eq!(value.items[0].completion.borrow().insert_text, "strong-1"); // sort by label
+        assert_eq!(value.items[1].completion.borrow().insert_text, "strong-2");
+        value.disposable.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_evil_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let evil = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| MaybePromise::Promise(Promise::rejected(Error::new("evil")))))),
+            Vec::new(),
+        );
+        env.add(evil);
+        let good = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| completion_items(&["testing"])))),
+            Vec::new(),
+        );
+        env.add(good);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let value = provide_suggestion_items(
+            &env.language_features_service.completion_provider,
+            &env.model,
+            Position::new(1, 1),
+            snippet_filter_options(),
+            CompletionContext::default(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSuggestionItems");
+        assert_eq!(value.items[0].container.incomplete, Some(false));
+        value.disposable.dispose();
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_completion_list() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionProvider(Box::new(|| {
+                MaybePromise::Value(Some(ApiCompletionResult::List(ApiCompletionList { is_incomplete: Some(true), items: vec![completion_item("hello")] })))
+            }))),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let model = provide_suggestion_items(
+            &env.language_features_service.completion_provider,
+            &env.model,
+            Position::new(1, 1),
+            snippet_filter_options(),
+            CompletionContext::default(),
+            &CancellationToken::None,
+        )
+        .await
+        .expect("provideSuggestionItems");
+        assert_eq!(model.items[0].container.incomplete, Some(true));
+        model.disposable.dispose();
+        env.teardown().await;
+    });
+}
+
+// ---- Selection Ranges ---------------------------------------------------------------------------------
+
+#[test]
+fn selection_ranges_data_conversion() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let registration = env.ext_host.register_selection_range_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(SelectionRangesProvider(Box::new(|| {
+                let parent = types::SelectionRange::new(range(0.0, 2.0, 0.0, 20.0), None).expect("SelectionRange");
+                MaybePromise::Value(Some(vec![types::SelectionRange::new(range(0.0, 10.0, 0.0, 18.0), Some(parent)).expect("SelectionRange")]))
+            }))),
+        );
+        env.add(registration);
+
+        env.rpc_protocol.sync().await.expect("sync");
+        let options = SmartSelectOptions { select_leading_and_trailing_whitespace: true, select_subwords: true };
+        let ranges = provide_selection_ranges(&env.language_features_service.selection_range_provider, &env.model, &[Position::new(1, 17)], options, &CancellationToken::None)
+            .await
+            .expect("provideSelectionRanges");
+        assert_eq!(ranges.len(), 1);
+        assert!(ranges[0].len() >= 2);
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn selection_ranges_bad_data() {
+    run_with_faked_timers(async move {
+        let env = Env::new();
+        // O pai (0,11 a 0,18) não contém o filho (0,10 a 0,18): o construtor rejeita.
+        let parent = types::SelectionRange::new(range(0.0, 11.0, 0.0, 18.0), None).expect("SelectionRange");
+        assert!(types::SelectionRange::new(range(0.0, 10.0, 0.0, 18.0), Some(parent)).is_err());
         env.teardown().await;
     });
 }
