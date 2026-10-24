@@ -4,3 +4,4 @@
 
 pub mod view_container_model;
 pub mod view_descriptor_service;
+pub mod views_service;

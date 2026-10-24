@@ -31,7 +31,7 @@
 //!   `DocumentDropEdit`/`DocumentPasteEdit`, `Test*`/`*Coverage`, `Tab*Input`, as peças de
 //!   resposta e depuração de chat (`ChatResponse*`, `ChatDebug*`...), `RelativePattern`,
 //!   `RemoteAuthorityResolverError`/`ManagedResolvedAuthority`, `CustomExecution`, `QuickInputButtons`,
-//!   `PortAttributes`, `TimelineItem`, `ColorTheme`, `DebugVisualization`, `NotebookRendererScript`,
+//!   `PortAttributes`, `ColorTheme`, `DebugVisualization`, `NotebookRendererScript`,
 //!   `NotebookKernelSourceAction`, `NotebookCellStatusBarItem`, `CellErrorStackFrame`,
 //!   `ChatSessionCustomizationType` e `TestMessage`. São dependentes de tipos de outros módulos (`vscode.*`
 //!   de debug, tarefas, testes, chat) que ainda não existem no porte.
@@ -50,6 +50,7 @@ pub mod position_range;
 pub mod semantic_tokens;
 pub mod symbols;
 pub mod text_editor;
+pub mod timeline;
 pub mod tree_view;
 
 pub use comments::*;
@@ -63,6 +64,7 @@ pub use position_range::*;
 pub use semantic_tokens::*;
 pub use symbols::*;
 pub use text_editor::*;
+pub use timeline::new_timeline_item;
 pub use tree_view::{DataTransfer, DataTransferFile, DataTransferItem, ViewBadge};
 
 use std::cell::RefCell;
