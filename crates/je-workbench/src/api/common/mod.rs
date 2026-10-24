@@ -20,3 +20,5 @@ pub mod ext_host_workspace;
 
 pub mod cache;
 pub mod ext_host_custom_editors;
+pub mod ext_host_file_system_event_service;
+pub mod ext_host_file_system_info;

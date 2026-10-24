@@ -1273,3 +1273,81 @@ impl ExtHostContext {
     pub const EXT_HOST_TREE_VIEWS: ProxyIdentifier<dyn ExtHostTreeViewsShape> = ProxyIdentifier::new("ExtHostTreeViews");
     pub const EXT_HOST_WORKSPACE: ProxyIdentifier<dyn ExtHostWorkspaceShape> = ProxyIdentifier::new("ExtHostWorkspace");
 }
+
+// #region File system events
+
+pub use self::file_system_event_region::*;
+
+/// `FileSystemEvents`, `SourceTargetPair`, `IWillRunFileOperationParticipation`, `MainThreadFileSystemEventServiceShape`,
+/// `ExtHostFileSystemEventServiceShape` e `ExtHostFileSystemInfoShape`.
+///
+/// Divergências: as `UriComponents` já chegam revividas como [`URI`]; o `session: number | undefined` de
+/// `FileSystemEvents` é `Option<f64>`; o `capabilities: number | null` de `$acceptProviderInfos` é `Option` das capacidades.
+mod file_system_event_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_platform::files::files::{FileOperation, FileSystemProviderCapabilities, WatchOptions};
+
+    use super::{ExtHostContext, IWorkspaceEditDto, MainContext, ProxyIdentifier};
+
+    /// `FileSystemEvents`.
+    #[derive(Clone, Debug, Default)]
+    pub struct FileSystemEvents {
+        pub session: Option<f64>,
+        pub created: Vec<URI>,
+        pub changed: Vec<URI>,
+        pub deleted: Vec<URI>,
+    }
+
+    /// `SourceTargetPair`.
+    #[derive(Clone, Debug)]
+    pub struct SourceTargetPair {
+        pub source: Option<URI>,
+        pub target: URI,
+    }
+
+    /// `IWillRunFileOperationParticipation`.
+    #[derive(Clone)]
+    pub struct IWillRunFileOperationParticipation {
+        pub edit: IWorkspaceEditDto,
+        pub extension_names: Vec<String>,
+    }
+
+    /// `MainThreadFileSystemEventServiceShape`.
+    pub trait MainThreadFileSystemEventServiceShape: IDisposable {
+        fn rpc_watch(&self, extension_id: &str, session: f64, resource: &URI, opts: WatchOptions, correlate: bool);
+        fn rpc_unwatch(&self, session: f64);
+    }
+
+    /// `ExtHostFileSystemEventServiceShape`.
+    pub trait ExtHostFileSystemEventServiceShape {
+        fn rpc_on_file_event(&self, events: FileSystemEvents);
+        fn rpc_on_will_run_file_operation(
+            &self,
+            operation: FileOperation,
+            files: Vec<SourceTargetPair>,
+            timeout: f64,
+            token: CancellationToken,
+        ) -> Promise<Option<IWillRunFileOperationParticipation>>;
+        fn rpc_on_did_run_file_operation(&self, operation: FileOperation, files: Vec<SourceTargetPair>);
+    }
+
+    /// `ExtHostFileSystemInfoShape`.
+    pub trait ExtHostFileSystemInfoShape {
+        fn rpc_accept_provider_infos(&self, uri: &URI, capabilities: Option<FileSystemProviderCapabilities>);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_FILE_SYSTEM_EVENT_SERVICE: ProxyIdentifier<dyn MainThreadFileSystemEventServiceShape> =
+            ProxyIdentifier::new("MainThreadFileSystemEventService");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_FILE_SYSTEM_EVENT_SERVICE: ProxyIdentifier<dyn ExtHostFileSystemEventServiceShape> = ProxyIdentifier::new("ExtHostFileSystemEventService");
+        pub const EXT_HOST_FILE_SYSTEM_INFO: ProxyIdentifier<dyn ExtHostFileSystemInfoShape> = ProxyIdentifier::new("ExtHostFileSystemInfo");
+    }
+}
+
+// #endregion
