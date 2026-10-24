@@ -1208,12 +1208,10 @@ impl Shell {
                 let seed = self.active_editor().map(|e| e.view.seed_search_string()).unwrap_or_default();
                 self.show_view(SideView::Search);
                 if !seed.is_empty() {
-                    self.search.value = seed.chars().collect();
-                    self.search.cursor = self.search.value.len();
-                    self.search.select_all = true;
+                    self.search.field = input::seeded(&seed);
                     self.start_search();
                 } else {
-                    self.search.select_all = !self.search.value.is_empty();
+                    self.search.field.select_all();
                 }
                 self.search_focused = true;
                 self.set_terminal_focus_off();
@@ -2026,7 +2024,7 @@ impl Shell {
         if query.text.is_empty() {
             return;
         }
-        let template: String = self.search.replace_value.iter().collect();
+        let template = self.search.replace.value().to_owned();
         let separators = query.whole_word.then_some("`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?");
         let edits_for = |model: &TextModel| -> Vec<(je_editor::range::Range, String)> {
             model
@@ -2073,7 +2071,7 @@ impl Shell {
     }
 
     /// Trata uma tecla com o campo da vista Search focado. Devolve se consumiu.
-    fn search_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+    fn search_key(&mut self, key_code: KeyCode, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let ctrl = mods.ctrl || mods.meta;
         let view = &mut self.search;
         if key == Some(EditorKey::Tab) && view.replace_visible {
@@ -2081,86 +2079,28 @@ impl Shell {
             self.needs_render = true;
             return true;
         }
-        if view.in_replace {
-            match key {
-                Some(EditorKey::Escape) => {
-                    self.search_focused = false;
-                    if let Some(editor) = self.active_editor_mut() {
-                        editor.view.set_focus(true);
-                    }
-                }
-                Some(EditorKey::Enter) if ctrl && mods.alt => self.search_replace_all(),
-                Some(EditorKey::Left) => view.replace_cursor = view.replace_cursor.saturating_sub(1),
-                Some(EditorKey::Right) => view.replace_cursor = (view.replace_cursor + 1).min(view.replace_value.len()),
-                Some(EditorKey::Backspace) if view.replace_cursor > 0 => {
-                    view.replace_value.remove(view.replace_cursor - 1);
-                    view.replace_cursor -= 1;
-                }
-                Some(_) => {}
-                None => {
-                    if (!ctrl || mods.alt)
-                        && let Some(text) = text
-                    {
-                        let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
-                        let at = view.replace_cursor;
-                        view.replace_cursor += inserted.len();
-                        view.replace_value.splice(at..at, inserted);
-                    }
-                }
-            }
-            self.needs_render = true;
-            return true;
-        }
-        let edits = matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) || (key.is_none() || matches!(key, Some(EditorKey::Char(_)))) && (!ctrl || mods.alt) && text.is_some();
-        let mut changed = false;
-        if view.select_all && edits {
-            view.value.clear();
-            view.cursor = 0;
-            view.select_all = false;
-            changed = true;
-            if matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) {
-                self.schedule_search();
-                self.needs_render = true;
-                return true;
-            }
-        } else if !matches!(key, Some(EditorKey::Enter | EditorKey::Escape)) {
-            view.select_all = false;
-        }
         match key {
             Some(EditorKey::Escape) => {
                 self.search_focused = false;
                 if let Some(editor) = self.active_editor_mut() {
                     editor.view.set_focus(true);
                 }
+                self.needs_render = true;
+                return true;
             }
-            Some(EditorKey::Enter) => self.start_search(),
-            Some(EditorKey::Left) => view.cursor = view.cursor.saturating_sub(1),
-            Some(EditorKey::Right) => view.cursor = (view.cursor + 1).min(view.value.len()),
-            Some(EditorKey::Home) => view.cursor = 0,
-            Some(EditorKey::End) => view.cursor = view.value.len(),
-            Some(EditorKey::Backspace) if view.cursor > 0 => {
-                view.value.remove(view.cursor - 1);
-                view.cursor -= 1;
-                changed = true;
+            Some(EditorKey::Enter) if view.in_replace && ctrl && mods.alt => {
+                self.search_replace_all();
+                return true;
             }
-            Some(EditorKey::Delete) if view.cursor < view.value.len() => {
-                view.value.remove(view.cursor);
-                changed = true;
+            Some(EditorKey::Enter) if !view.in_replace => {
+                self.start_search();
+                return true;
             }
-            Some(EditorKey::Up | EditorKey::Down | EditorKey::PageUp | EditorKey::PageDown | EditorKey::Tab | EditorKey::Backspace | EditorKey::Delete) => {}
-            _ => {
-                if (!ctrl || mods.alt)
-                    && let Some(text) = text
-                {
-                    let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
-                    let at = view.cursor;
-                    view.cursor += inserted.len();
-                    view.value.splice(at..at, inserted);
-                    changed = true;
-                }
-            }
+            _ => {}
         }
-        if changed {
+        let in_replace = view.in_replace;
+        let field = if in_replace { &mut view.replace } else { &mut view.field };
+        if input::edit(field, key_code, key, mods, text, &input::SystemClipboard::new()) == Some(true) && !in_replace {
             self.schedule_search();
         }
         self.needs_render = true;
@@ -4148,7 +4088,7 @@ impl Shell {
                 self.run(command);
                 return;
             }
-            if self.search_key(text, editor_key, mods) {
+            if self.search_key(key_code, text, editor_key, mods) {
                 return;
             }
         }

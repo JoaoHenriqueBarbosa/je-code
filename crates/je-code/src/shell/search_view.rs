@@ -17,6 +17,9 @@ use je_ui::{Border, Content, Cursor, NodeId, Role, Tree, Ui};
 use je_widgets::list::list_styles::default_list_styles;
 use je_widgets::list::list_types::{IListVirtualDelegate, TemplateData};
 use je_widgets::text::{measure_text, ui_font};
+use je_widgets::text_field::TextField;
+
+use super::input::InputColors;
 use je_widgets::tree::abstract_tree::ExpandOnlyOnTwistieClick;
 use je_widgets::tree::index_tree_model::TreeNode;
 use je_widgets::tree::object_tree::{ObjectTree, ObjectTreeOptions};
@@ -158,16 +161,14 @@ pub struct SearchView {
     width: Rc<RefCell<f64>>,
     running: Option<Search>,
     last_query: Option<Query>,
-    pub value: Vec<char>,
-    pub cursor: usize,
+    /// O campo da busca.
+    pub field: TextField,
     pub match_case: bool,
     pub whole_word: bool,
     pub regex: bool,
-    pub select_all: bool,
     /// A linha de substituição aberta, o texto dela e se o teclado está nela.
     pub replace_visible: bool,
-    pub replace_value: Vec<char>,
-    pub replace_cursor: usize,
+    pub replace: TextField,
     pub in_replace: bool,
     /// O `files.exclude` mais o `search.exclude` em vigor.
     pub excludes: super::excludes::Excludes,
@@ -224,7 +225,7 @@ impl SearchView {
                 }
             }
         }));
-        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, replace_visible: false, replace_value: Vec::new(), replace_cursor: 0, in_replace: false, excludes: super::excludes::Excludes::search(&serde_json::Map::new()), _listeners: listeners }
+        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, field: TextField::new(), match_case: false, whole_word: false, regex: false, replace_visible: false, replace: TextField::new(), in_replace: false, excludes: super::excludes::Excludes::search(&serde_json::Map::new()), _listeners: listeners }
     }
 
     /// Os arquivos com resultado e as ocorrências de cada um, na ordem mostrada.
@@ -239,7 +240,7 @@ impl SearchView {
     }
 
     pub fn text(&self) -> String {
-        self.value.iter().collect()
+        self.field.value().to_owned()
     }
 
     pub fn query(&self) -> Query {
@@ -264,8 +265,7 @@ impl SearchView {
     }
 
     pub fn clear(&mut self) {
-        self.value.clear();
-        self.cursor = 0;
+        self.field.set_value("");
         self.run(None, std::sync::Arc::new(|| {}));
     }
 
@@ -338,7 +338,7 @@ impl SearchView {
 
     /// O cabeçalho (campo e mensagem) como filhos de `parent`, na largura `width`; devolve os alvos de clique e a
     /// altura ocupada (onde a árvore começa).
-    pub fn render_header(&self, tree: &mut Tree, parent: NodeId, width: f64, focused: bool, theme: &ColorTheme) -> (Vec<(NodeId, Command)>, f64) {
+    pub fn render_header(&mut self, tree: &mut Tree, parent: NodeId, width: f64, focused: bool, theme: &ColorTheme) -> (Vec<(NodeId, Command)>, f64) {
         let color = |id: &str| theme.get_color(id).unwrap_or(Rgba::opaque(0xff, 0, 0xff));
         let font = ui_font(13.0, 400);
         let foreground = color("sideBar.foreground");
@@ -359,28 +359,9 @@ impl SearchView {
         style.background = Some(color("input.background"));
         style.border = Some(Border { width: 1.0, color: if find_focused { color("focusBorder") } else { color("input.border") } });
         style.radius = 4.0;
-        let text = tree.create(input, Role::Generic);
         let inner = width - 10.0 - 21.0;
-        tree.set_bounds(text, Rect::new(7.0, 1.0, inner - 70.0, 24.0));
-        if self.value.is_empty() {
-            tree.style_mut(text).content = Content::Text { text: "Search".to_owned(), style: font.clone(), color: color("input.placeholderForeground"), line_height: 24.0 };
-        } else {
-            tree.style_mut(text).content = Content::Text { text: self.text(), style: font.clone(), color: foreground, line_height: 24.0 };
-        }
-        if find_focused {
-            if self.select_all && !self.value.is_empty() {
-                let w = measure_text(&self.text(), &font).min(inner - 77.0);
-                let selection = tree.create(input, Role::Generic);
-                tree.set_bounds(selection, Rect::new(7.0, 4.0, 7.0 + w, 21.0));
-                tree.style_mut(selection).background = Some(color("editor.selectionBackground"));
-                tree.insert_before(input, text, None);
-            }
-            let before: String = self.value[..self.cursor].iter().collect();
-            let x = 7.0 + measure_text(&before, &font).min(inner - 77.0);
-            let caret = tree.create(input, Role::Generic);
-            tree.set_bounds(caret, Rect::new(x, 5.0, x + 1.0, 20.0));
-            tree.style_mut(caret).background = Some(foreground);
-        }
+        let colors = InputColors { foreground, placeholder: color("input.placeholderForeground"), selection: color("editor.selectionBackground") };
+        super::input::paint(tree, input, Rect::new(7.0, 1.0, inner - 70.0, 24.0), &mut self.field, "Search", find_focused, &font, &colors);
         let toggles = [("case-sensitive", self.match_case, Command::SearchToggleCase), ("whole-word", self.whole_word, Command::SearchToggleWord), ("regex", self.regex, Command::SearchToggleRegex)];
         for (i, (icon, on, command)) in toggles.into_iter().enumerate() {
             let x = inner - 66.0 + 22.0 * i as f64;
@@ -406,21 +387,7 @@ impl SearchView {
             style.background = Some(color("input.background"));
             style.border = Some(Border { width: 1.0, color: if focused && self.in_replace { color("focusBorder") } else { color("input.border") } });
             style.radius = 4.0;
-            let text = tree.create(input, Role::Generic);
-            tree.set_bounds(text, Rect::new(7.0, 1.0, width - 64.0, 24.0));
-            let value: String = self.replace_value.iter().collect();
-            if value.is_empty() {
-                tree.style_mut(text).content = Content::Text { text: "Replace".to_owned(), style: font.clone(), color: color("input.placeholderForeground"), line_height: 24.0 };
-            } else {
-                tree.style_mut(text).content = Content::Text { text: value, style: font.clone(), color: foreground, line_height: 24.0 };
-            }
-            if focused && self.in_replace {
-                let before: String = self.replace_value[..self.replace_cursor].iter().collect();
-                let x = 7.0 + measure_text(&before, &font);
-                let caret = tree.create(input, Role::Generic);
-                tree.set_bounds(caret, Rect::new(x, 5.0, x + 1.0, 20.0));
-                tree.style_mut(caret).background = Some(foreground);
-            }
+            super::input::paint(tree, input, Rect::new(7.0, 1.0, width - 64.0, 24.0), &mut self.replace, "Replace", focused && self.in_replace, &font, &colors);
             let all = tree.create(parent, Role::Button);
             tree.set_bounds(all, Rect::new(width - 32.0, 71.0, width - 10.0, 93.0));
             let style = tree.style_mut(all);
