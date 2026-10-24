@@ -372,6 +372,14 @@ impl EditorView {
         }
     }
 
+    /// O comando que o `keybindings.json` do usuário liga a esta tecla (sem os atalhos de fábrica), se ligar: o shell
+    /// o usa para a tecla religada vencer a tabela dele.
+    pub fn user_keybinding(&self, key: EditorKey, mods: Modifiers) -> Option<(String, Dynamic)> {
+        let selections = self.core.selections();
+        let context = EditorContext { has_selection: selections.iter().any(|s| !s.is_empty()), has_multiple_selections: selections.len() > 1, language_id: self.model.get_language_id() };
+        crate::shortcuts::user_command(chord_of(key, mods), &context)
+    }
+
     /// Roda o comando de um atalho: os que o VS Code liga ao `MultiCommand` (desfazer, refazer, selecionar tudo e a
     /// área de transferência) e os que a view trata vão pelas implementações dela, os do editor pelo `trigger` do
     /// widget, e os que não são do editor (um `workbench.*` do `keybindings.json`) ficam para o shell

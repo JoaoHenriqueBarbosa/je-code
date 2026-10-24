@@ -203,6 +203,11 @@ impl Explorer {
         listeners.push(tree.on_did_change_selection().listen({
             let queue = queue.clone();
             move |event| {
+                // Só a seleção do usuário abre o arquivo: a programática (o `reveal` do editor ativo) não traz evento do
+                // navegador, e abrir por ela faz o editor e o explorador se acionarem em laço.
+                if event.browser_event.is_none() {
+                    return;
+                }
                 // A seleção por clique direito não abre o arquivo: quem pede o menu cuida do resto.
                 let secondary = event.browser_event.as_ref().is_some_and(|b| b.button == PointerButton::Secondary);
                 if secondary {
