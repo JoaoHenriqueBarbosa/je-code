@@ -2857,7 +2857,8 @@ impl Shell {
         tree.style_mut(icon).content = Content::Codicon { id: "vscode".into(), size: 16.0, color: self.color("textLink.foreground") };
         // O centro: voltar, avançar e o command center, centrados na janela.
         let center_width = 26.0 * 2.0 + 6.0 + (width * 0.38).min(600.0) + 2.0;
-        let x = ((width - center_width) / 2.0).max(0.0).round();
+        // O centro fica 3 px à esquerda do meio exato da janela (medido no oráculo a 1200 px).
+        let x = ((width - center_width) / 2.0 - 3.0).max(0.0).round();
         for (i, id) in ["arrow-left", "arrow-right"].iter().enumerate() {
             let button = tree.create(title, Role::Button);
             tree.set_bounds(button, Rect::new(x + 26.0 * i as f64, 6.5, x + 26.0 * i as f64 + 22.0, 28.5));
@@ -3681,11 +3682,20 @@ impl Shell {
             Icon(&'a str),
             Text(String),
         }
+        // O respiro de cada lado (`.statusbar-item a`, medido no oráculo): 7,5 px com texto, 7 px num ícone só e
+        // 5,5 px no ícone de status da linguagem (`{ }`), que encosta no nome da linguagem.
+        let padding = |pieces: &[Piece]| -> f64 {
+            match pieces {
+                [Piece::Icon("json")] => 5.5,
+                [Piece::Icon(_)] => 7.0,
+                _ => 7.5,
+            }
+        };
         let measure = |pieces: &[Piece]| -> f64 {
             pieces.iter().map(|p| match p {
                 Piece::Icon(_) => 16.0,
                 Piece::Text(t) => measure_text(t, &font),
-            }).sum::<f64>() + 14.0
+            }).sum::<f64>() + 2.0 * padding(pieces)
         };
         let hits: RefCell<Vec<(NodeId, Command)>> = RefCell::new(Vec::new());
         let place = |tree: &mut Tree, x: f64, pieces: &[Piece], command: Option<Command>| -> f64 {
@@ -3697,7 +3707,7 @@ impl Shell {
             }
             tree.set_bounds(item, Rect::new(x, 2.0, x + item_width, 26.0));
             tree.style_mut(item).radius = 4.0;
-            let mut px = 7.0;
+            let mut px = padding(pieces);
             for piece in pieces {
                 let node = tree.create(item, Role::Generic);
                 match piece {
