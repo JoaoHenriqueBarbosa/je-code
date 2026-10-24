@@ -217,7 +217,7 @@ impl MainThreadQuickOpen {
                         TransferQuickPickItemOrSeparator::Item(mut item) => {
                             self.expand_item_props(&mut item);
                             for button in item.buttons.iter_mut().flatten() {
-                                expand_icon_path(&Some(button.icon_path_dto.clone()), &mut button.icon_path, &mut button.icon_class);
+                                expand_icon_path(&button.icon_path_dto.clone(), &mut button.icon_path, &mut button.icon_class);
                             }
                             let pick_item = to_pick_item(&item, &session.button_handles);
                             session.handles_to_items.borrow_mut().insert(item.handle, pick_item.clone());
@@ -248,7 +248,7 @@ impl MainThreadQuickOpen {
                     if button.handle == -1 {
                         buttons.push(self.quick_input_service.back_button());
                     } else {
-                        expand_icon_path(&Some(button.icon_path_dto.clone()), &mut button.icon_path, &mut button.icon_class);
+                        expand_icon_path(&button.icon_path_dto.clone(), &mut button.icon_path, &mut button.icon_class);
                         buttons.push(to_button(&button, &session.button_handles));
                     }
                 }
@@ -569,6 +569,7 @@ fn to_pick_item(item: &TransferQuickPickItem, button_handles: &ButtonHandles) ->
         },
         extra: Dynamic::object([("handle", Dynamic::Number(f64::from(item.handle)))]),
         detail: item.detail.clone(),
+        tooltip: item.tooltip.clone(),
         picked: item.picked,
         always_show: item.always_show,
         ..IQuickPickItem::default()
