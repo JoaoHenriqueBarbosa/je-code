@@ -287,7 +287,7 @@ fn get_provider_response(
             }
 
             if let Some(provided_code_actions) = &provided_code_actions {
-                let disposable: DisposableRef = Rc::clone(provided_code_actions);
+                let disposable: DisposableRef = provided_code_actions.clone() as DisposableRef;
                 disposables.add(disposable);
             }
 

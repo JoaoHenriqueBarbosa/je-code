@@ -434,7 +434,7 @@ impl CodeActionModelServices {
 
     /// `_setCodeActions(actions)`.
     fn set_code_actions(&self, actions: Rc<dyn CodeActionSet>) -> Rc<dyn CodeActionSet> {
-        let disposable: DisposableRef = Rc::clone(&actions);
+        let disposable: DisposableRef = actions.clone() as DisposableRef;
         self.code_actions_disposable.set(Some(disposable));
         actions
     }
@@ -507,7 +507,7 @@ impl CodeActionModelServices {
             token,
         )
         .await?;
-        let disposable: DisposableRef = Rc::clone(&code_action_set);
+        let disposable: DisposableRef = code_action_set.clone() as DisposableRef;
         code_action_sets.add(disposable);
         let mut all_code_actions = code_action_set.all_actions();
         if token.is_cancellation_requested() {
@@ -598,7 +598,7 @@ impl CodeActionModelServices {
                     token,
                 )
                 .await?;
-                let disposable: DisposableRef = Rc::clone(&actions_at_marker);
+                let disposable: DisposableRef = actions_at_marker.clone() as DisposableRef;
                 code_action_sets.add(disposable);
                 if token.is_cancellation_requested() {
                     return Ok(Some(empty_code_action_set()));
