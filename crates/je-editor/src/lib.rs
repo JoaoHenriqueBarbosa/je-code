@@ -211,3 +211,14 @@ pub mod word_part_operations;
 pub mod bracket_matching;
 pub mod indentation_contrib;
 pub mod multicursor;
+
+pub mod language_providers;
+pub mod language_feature_registry;
+pub mod smart_select;
+pub mod language_feature_debounce;
+pub mod outline_model;
+pub mod line_selection;
+pub mod cursor_undo;
+pub mod highlight_decorations;
+pub mod textual_highlight_provider;
+pub mod word_highlighter;

@@ -46,8 +46,8 @@
 //!   [`IDocumentHighlightProviderRegistry`], entregue pelo construtor.
 //! - **`aria.status`.** `announceCursorChange` monta a mensagem e a entrega ao `status` do aria (`base/browser/ui/aria`),
 //!   que não tem porte (é DOM): [`announce_cursor_change`] devolve a mensagem e as ações a descartam.
-//! - **Decorações.** `getSelectionHighlightDecorationOptions` é do `highlightDecorations.ts` do `wordHighlighter`, que
-//!   ainda não tem porte: as duas `ModelDecorationOptions` de seleção ficam aqui, com as cores do tema por id.
+//! - **Decorações.** `getSelectionHighlightDecorationOptions` é de `highlight_decorations` (o `highlightDecorations.ts` do
+//!   `wordHighlighter`).
 //! - **`_expandEmptyToWord(model, selection)`** ignora o `model` no original; aqui o parâmetro não existe.
 //! - **`SelectionHighlighter` e `MultiCursorSelectionController` (`IEditorContribution`).** O `EditorContributionCtor` do
 //!   registro não recebe serviços, então [`register_multi_cursor`] recebe os dois serviços e os captura nos construtores.
@@ -89,13 +89,11 @@ use crate::editor_extensions::{
     EditorActionBase, EditorActionContextMenuOptions, ServicesAccessor, register_editor_action,
     register_editor_contribution,
 };
-use crate::model::{
-    DecorationColor, FindMatch, MinimapPosition, ModelDecorationMinimapInit, ModelDecorationOptionsInit,
-    ModelDecorationOverviewRulerInit, ModelDeltaDecoration, OverviewRulerLane, TrackedRangeStickiness,
-};
+use crate::highlight_decorations::get_selection_highlight_decoration_options;
+use crate::model::{FindMatch, ModelDeltaDecoration};
 use crate::range::Range;
 use crate::selection::Selection;
-use crate::text_model::{FindScope, ModelDecorationOptions, TextModel};
+use crate::text_model::{FindScope, TextModel};
 use crate::text_model_search::LIMIT_FIND_COUNT;
 use crate::view_model_types::{CursorChangeReason, IViewModel};
 
@@ -205,7 +203,7 @@ pub trait IDocumentHighlightProviderRegistry {
 // #region Ajudas
 
 /// O `Weak` de uma contribuição (o `this` do original) no ouvinte: a chamada some se a contribuição já foi solta.
-fn listen_weak<T: 'static, E: 'static>(owner: &Weak<T>, event: Event<E>, handler: impl Fn(&T, &E) + 'static) -> DisposableRef {
+pub fn listen_weak<T: 'static, E: 'static>(owner: &Weak<T>, event: Event<E>, handler: impl Fn(&T, &E) + 'static) -> DisposableRef {
     let owner = owner.clone();
     event.listen(move |e| {
         if let Some(owner) = owner.upgrade() {
@@ -215,7 +213,7 @@ fn listen_weak<T: 'static, E: 'static>(owner: &Weak<T>, event: Event<E>, handler
 }
 
 /// `args.source` (`string | undefined`).
-fn source_arg(args: &Dynamic) -> Option<String> {
+pub fn source_arg(args: &Dynamic) -> Option<String> {
     match args {
         Dynamic::Object(_) => match args.get_str("source") {
             Dynamic::String(source) => Some(source.to_string_lossy()),
@@ -1213,49 +1211,6 @@ pub fn compat_change_all(find_controllers: Rc<dyn ICommonFindControllerSource>) 
 
 // #region SelectionHighlighter
 
-/// `ModelDecorationOptions.register(...)` das duas decorações de `getSelectionHighlightDecorationOptions`
-/// (`highlightDecorations.ts`, ver "Divergências").
-struct SelectionHighlightDecorationOptions {
-    with_overview: Rc<ModelDecorationOptions>,
-    no_overview: Rc<ModelDecorationOptions>,
-}
-
-thread_local! {
-    static SELECTION_HIGHLIGHT_OPTIONS: SelectionHighlightDecorationOptions = SelectionHighlightDecorationOptions {
-        with_overview: ModelDecorationOptions::register(&ModelDecorationOptionsInit {
-            description: "selection-highlight-overview".to_owned(),
-            stickiness: Some(TrackedRangeStickiness::NeverGrowsWhenTypingAtEdges),
-            class_name: Some("selectionHighlight".to_owned()),
-            overview_ruler: Some(ModelDecorationOverviewRulerInit {
-                color: Some(DecorationColor::Theme("editorOverviewRuler.selectionHighlightForeground".to_owned())),
-                dark_color: None,
-                position: Some(OverviewRulerLane::Center),
-            }),
-            minimap: Some(ModelDecorationMinimapInit {
-                color: Some(DecorationColor::Theme("minimap.selectionOccurrenceHighlight".to_owned())),
-                dark_color: None,
-                position: MinimapPosition::Inline,
-                section_header_style: None,
-                section_header_text: None,
-            }),
-            ..Default::default()
-        }),
-        no_overview: ModelDecorationOptions::register(&ModelDecorationOptionsInit {
-            description: "selection-highlight".to_owned(),
-            stickiness: Some(TrackedRangeStickiness::NeverGrowsWhenTypingAtEdges),
-            class_name: Some("selectionHighlight".to_owned()),
-            ..Default::default()
-        }),
-    };
-}
-
-/// `getSelectionHighlightDecorationOptions(hasSemanticHighlights)`: mostra na régua de visão geral só se o modelo não tem
-/// destaque semântico.
-fn get_selection_highlight_decoration_options(has_semantic_highlights: bool) -> Rc<ModelDecorationOptions> {
-    SELECTION_HIGHLIGHT_OPTIONS.with(|options| {
-        if has_semantic_highlights { options.no_overview.clone() } else { options.with_overview.clone() }
-    })
-}
 
 /// `SelectionHighlighterState`.
 struct SelectionHighlighterState {
