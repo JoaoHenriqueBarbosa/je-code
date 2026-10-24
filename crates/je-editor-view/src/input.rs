@@ -4,7 +4,7 @@
 
 use je_base::JsString;
 use je_base::dynamic::Dynamic;
-use je_editor::code_editor_widget::{ICodeEditor, SelectionOrRange};
+use je_editor::code_editor_widget::ICodeEditor;
 use je_editor::core_commands::core_navigation_commands;
 use je_editor::position::Position;
 use je_editor::range::Range;
@@ -49,8 +49,9 @@ fn position_payload(position: Position) -> Dynamic {
     Dynamic::object([("lineNumber", Dynamic::from(f64::from(position.line_number))), ("column", Dynamic::from(f64::from(position.column)))])
 }
 
-fn mouse_payload(position: Position, extra: &[(&str, Dynamic)]) -> Dynamic {
-    let mut entries = vec![("position", position_payload(position)), ("viewPosition", position_payload(position))];
+/// A carga dos comandos de mouse: a posição do modelo e a da view (diferentes com quebra de linha e dobra).
+fn mouse_payload(position: Position, view_position: Position, extra: &[(&str, Dynamic)]) -> Dynamic {
+    let mut entries = vec![("position", position_payload(position)), ("viewPosition", position_payload(view_position))];
     entries.extend(extra.iter().map(|(k, v)| (*k, v.clone())));
     Dynamic::object(entries)
 }
@@ -61,6 +62,11 @@ impl EditorView {
     /// O que mudou nos cursores desde `before`: revela o cursor primário e acorda o piscar.
     fn after_edit(&mut self, before: &[Selection], scroll_before: f64) {
         let moved = self.core.selections() != before;
+        if moved && self.folding.has_hidden() {
+            // O cursor caiu numa linha escondida (desfazer, colar, API): a região desdobra (`revealCursor`).
+            let line = self.core.primary().selection_start_line_number;
+            self.folding.reveal_line(&self.core, line);
+        }
         if moved {
             self.reveal_cursor();
         } else {
@@ -90,11 +96,16 @@ impl EditorView {
     /// Seleciona `range` (âncora no começo) e o revela: no centro se a linha está fora da janela, como o
     /// `revealRangeInCenterIfOutsideViewport` da busca.
     pub fn select_range(&mut self, range: Range) {
+        // A linha escondida numa região dobrada é desdobrada antes (a busca e o ir para linha revelam o alvo).
+        self.folding.update(&self.core);
+        self.folding.select_revealing(&self.core, range);
+        self.shared.invalid_all.set(true);
+        self.sync_scroll_dimensions_now();
         let (first, last) = self.layout.visible_lines(self.scroll_top());
-        self.core.widget.set_selection(SelectionOrRange::Range(range), Some("keyboard"));
+        let view = self.to_view_range(range);
         self.reveal_cursor();
-        if range.start_line_number < first || range.end_line_number > last {
-            self.scroll_to_center_line(range.start_line_number);
+        if view.start_line_number < first || view.end_line_number > last {
+            self.scroll_to_center_line(view.start_line_number);
         }
         self.reset_blink();
         self.mark_dirty();
@@ -116,7 +127,8 @@ impl EditorView {
 
     /// Rola o mínimo para o cursor primário aparecer.
     pub fn reveal_cursor(&mut self) {
-        let p = self.core.primary().get_position();
+        self.sync_scroll_dimensions_now();
+        let p = self.core.view_model.get_primary_cursor_state().view_state.position;
         let lh = self.layout.line_height();
         let top = f64::from(p.line_number - 1) * lh;
         let scroll_top = self.scroll_top();
@@ -149,6 +161,19 @@ impl EditorView {
             core.widget.push_undo_stop();
             let edits = vec![je_editor::edit_operation::EditOperation::replace(range, Some(JsString::from(text)))];
             core.widget.execute_edits(je_editor::code_editor_widget::ExecuteEditsSource::Name(Some("reload")), edits, Some(je_editor::code_editor_widget::EndCursorState::Selections(keep)));
+            core.widget.push_undo_stop();
+        });
+    }
+
+    /// Troca cada intervalo pelo texto dele numa edição só (o `Replace All` da busca), num passo de desfazer.
+    pub fn replace_ranges(&mut self, edits: Vec<(Range, String)>) {
+        if edits.is_empty() {
+            return;
+        }
+        self.run_command(|core| {
+            core.widget.push_undo_stop();
+            let ops = edits.into_iter().map(|(range, text)| je_editor::edit_operation::EditOperation::replace(range, Some(JsString::from(text.as_str())))).collect();
+            core.widget.execute_edits(je_editor::code_editor_widget::ExecuteEditsSource::Name(Some("find")), ops, None);
             core.widget.push_undo_stop();
         });
     }
@@ -219,7 +244,16 @@ impl EditorView {
             self.drag = Some(DragMode::Minimap);
             return;
         }
-        let position = self.position_at(x, y);
+        // O chevron de dobra da margem.
+        if click_count == 1
+            && let Some(line) = self.chevron_line_at(x, y)
+        {
+            self.toggle_fold_at(line, mods.shift);
+            self.reveal_cursor();
+            return;
+        }
+        let view_position = self.view_position_at(x, y);
+        let position = self.to_model(view_position);
         let in_margin = x < self.layout.content_left() - crate::layout::LINE_DECORATIONS_WIDTH;
         let count = if in_margin { 3 } else { click_count.clamp(1, 3) };
         let source = ("source", Dynamic::from("mouse"));
@@ -234,7 +268,14 @@ impl EditorView {
             (_, false, _) => ("_lineSelect", DragMode::Lines),
         };
         self.drag = Some(drag);
-        self.core_mouse(handler, mouse_payload(position, &[source]));
+        self.core_mouse(handler, mouse_payload(position, view_position, &[source]));
+        // O clique no fim de uma linha dobrada (na reticência) desdobra a região.
+        if count == 1
+            && !last
+            && let Some(line) = self.collapsed_line_end(position)
+        {
+            self.toggle_fold_at(line, false);
+        }
     }
 
     fn core_mouse(&mut self, handler: &str, payload: Dynamic) {
@@ -265,7 +306,8 @@ impl EditorView {
         if overshoot != 0.0 {
             self.scroll_by(0.0, overshoot / 2.0);
         }
-        let position = self.position_at(x, y.clamp(0.0, self.layout.height - 1.0));
+        let view_position = self.view_position_at(x, y.clamp(0.0, self.layout.height - 1.0));
+        let position = self.to_model(view_position);
         let source = ("source", Dynamic::from("mouse"));
         let handler = match mode {
             DragMode::Chars => "_moveToSelect",
@@ -276,7 +318,7 @@ impl EditorView {
             DragMode::LastCursorLines => "lastCursorLineSelectDrag",
             DragMode::Scrollbar(_) | DragMode::Minimap => return,
         };
-        self.core_mouse(handler, mouse_payload(position, &[source]));
+        self.core_mouse(handler, mouse_payload(position, view_position, &[source]));
     }
 
     pub fn mouse_up(&mut self) {
@@ -337,6 +379,11 @@ impl EditorView {
             "undo" | "default:undo" => self.undo(),
             "redo" | "default:redo" => self.redo(),
             "editor.action.selectAll" => self.select_all(),
+            "editor.fold" => self.fold(),
+            "editor.unfold" => self.unfold(),
+            "editor.foldAll" => self.fold_all(),
+            "editor.unfoldAll" => self.unfold_all(),
+            "editor.action.toggleWordWrap" => self.toggle_word_wrap(),
             other => self.trigger(other, if args.is_nullish() { None } else { Some(args) }),
         }
     }

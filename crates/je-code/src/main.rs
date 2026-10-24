@@ -49,6 +49,8 @@ struct PointerState {
 }
 
 struct App {
+    /// O tamanho e a posição da janela na abertura (os da última janela do VS Code, sem argumentos).
+    initial: shell::recent::LastWindow,
     shell: Shell,
     list: DisplayList,
     window: Option<Arc<Window>>,
@@ -210,7 +212,8 @@ impl App {
     /// buffer), em ms.
     fn frame_timed(&mut self) -> (f64, f64) {
         let (Some(window), Some(presenter)) = (&self.window, &mut self.presenter) else { return (0.0, 0.0) };
-        let scale = window.scale_factor();
+        // A escala da tela vezes o zoom da janela (`window.zoomLevel`, Ctrl+= e Ctrl+-).
+        let scale = window.scale_factor() * self.shell.zoom_factor();
         let size = window.inner_size().to_logical::<f64>(scale);
         let started = Instant::now();
         self.shell.resize(size.width, size.height);
@@ -272,7 +275,11 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title(self.shell.window_title()).with_inner_size(LogicalSize::new(1200.0, 800.0));
+        let (width, height) = self.initial.bounds.map_or((1200.0, 800.0), |(w, h, _, _)| (w, h));
+        let mut attrs = Window::default_attributes().with_title(self.shell.window_title()).with_inner_size(LogicalSize::new(width, height)).with_maximized(self.initial.maximized);
+        if let Some((_, _, x, y)) = self.initial.bounds {
+            attrs = attrs.with_position(LogicalPosition::new(x, y));
+        }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -338,7 +345,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+                let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) * self.shell.zoom_factor();
                 let LogicalPosition { x, y } = position.to_logical::<f64>(scale);
                 self.pointer.position = (x, y);
                 self.pointer_input(PointerInputKind::Move, PointerButton::Primary);
@@ -467,6 +474,11 @@ fn main() {
             }
         },
     };
+    // Sem argumentos, como o VS Code: reabre a pasta e o tamanho da última janela (o `windowsState` dele).
+    let last = if workspace.is_none() && files.is_empty() && screenshot_out.is_none() && !bench { shell::recent::last_window() } else { shell::recent::LastWindow::default() };
+    if workspace.is_none() {
+        workspace = last.folder.clone();
+    }
     let mut shell = match Shell::open(&theme_path, workspace, &files, 1200.0, 800.0) {
         Ok(s) => s,
         Err(e) => {
@@ -492,7 +504,7 @@ fn main() {
     shell.set_wake(Arc::new(move || {
         let _ = proxy.send_event(());
     }));
-    let mut app = App { shell, list: DisplayList::new(), window: None, presenter: None, backend_label: String::new(), modifiers: Modifiers::default(), pointer: PointerState::default(), bench, split: Vec::new() };
+    let mut app = App { initial: last, shell, list: DisplayList::new(), window: None, presenter: None, backend_label: String::new(), modifiers: Modifiers::default(), pointer: PointerState::default(), bench, split: Vec::new() };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("je-code: {e}");
         std::process::exit(1);
@@ -578,6 +590,8 @@ mod tests {
         click(&mut shell, 120.0, 96.0 + 22.0 + 11.0);
         snapshot(&mut shell, "1-open.png");
         assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("a.txt")));
+        // O clique único abriu em pré-visualização: fixar a aba mantém a.txt quando o próximo abrir.
+        shell.run(shell::Command::PinEditor(0));
         // A pasta src abre e mostra b.rs, que abre numa segunda aba.
         click(&mut shell, 120.0, 96.0 + 11.0);
         snapshot(&mut shell, "2-folder.png");
@@ -849,6 +863,16 @@ mod tests {
         let editor = shell.active_editor().expect("aba");
         assert_eq!(editor.view.model().get_language_id(), "rust");
         assert_eq!(editor.language_name, "Rust");
+        // Indentação pela barra de status: tabulações de tamanho 2.
+        shell.run(shell::Command::PickIndentation);
+        key(&mut shell, Some(EditorKey::Down), None);
+        key(&mut shell, Some(EditorKey::Enter), None);
+        for _ in 0..2 {
+            key(&mut shell, Some(EditorKey::Up), None);
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let options = shell.active_editor().expect("aba").view.model().get_options();
+        assert_eq!((options.insert_spaces, options.tab_size), (false, 2));
         shell.run(shell::Command::PickEol);
         key(&mut shell, Some(EditorKey::Down), None);
         key(&mut shell, Some(EditorKey::Enter), None);
@@ -961,6 +985,23 @@ mod tests {
         key(&mut shell, Some(EditorKey::Enter), Modifiers { ctrl: true, ..Modifiers::default() }, None);
         wait(&mut shell, &|s| s.count() == 0);
         assert_eq!(shell.git_status().count(), 0, "o commit levou os dois arquivos");
+        // Um remoto local: o commit novo fica 1 à frente; o Sync empurra e zera.
+        let remote = dir.with_extension("remote");
+        let out = std::process::Command::new("git").args(["init", "-q", "--bare"]).arg(&remote).output().expect("bare");
+        assert!(out.status.success());
+        run_git(&["remote", "add", "origin", &remote.to_string_lossy()]);
+        run_git(&["push", "-q", "-u", "origin", "main"]);
+        std::fs::write(dir.join("c.txt"), "c\n").expect("c");
+        run_git(&["add", "c.txt"]);
+        run_git(&["commit", "-q", "-m", "terceiro"]);
+        shell.run(shell::Command::ScmRefresh);
+        wait(&mut shell, &|s| s.ahead == 1);
+        assert!(shell.git_status().upstream);
+        snapshot(&mut shell, "g2-ahead.png");
+        shell.run(shell::Command::ScmOp(shell::git::Operation::Sync));
+        wait(&mut shell, &|s| s.ahead == 0);
+        assert_eq!(shell.git_status().ahead, 0, "o Sync empurrou o commit");
+        std::fs::remove_dir_all(&remote).ok();
         let log = std::process::Command::new("git").arg("-C").arg(&dir).args(["log", "--oneline"]).output().expect("log");
         assert!(String::from_utf8_lossy(&log.stdout).contains("segundo commit"));
         std::fs::remove_dir_all(&dir).ok();
@@ -1081,6 +1122,123 @@ mod tests {
             shell.key(true, KeyCode::Unknown, Modifiers::default(), Some(&c.to_string()), None);
         }
         snapshot(&mut shell, "x1-filtered.png");
+    }
+
+    #[test]
+    fn activity_bar_shows_a_hover_after_the_delay() {
+        je_base::runtime::with_faked_timers(|| {
+            let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+            snapshot(&mut shell, "h-before.png");
+            shell.pointer(PointerInput::new(PointerInputKind::Move, 26.0, 100.0));
+            je_base::runtime::advance_fake_time(600);
+            shell.take_dirty();
+            assert!(shell.has_hover(), "a dica aparece depois de 500 ms");
+            snapshot(&mut shell, "h0-hover.png");
+            shell.pointer(PointerInput::new(PointerInputKind::Move, 600.0, 400.0));
+            shell.take_dirty();
+            assert!(!shell.has_hover(), "e some ao sair");
+        });
+    }
+
+    #[test]
+    fn auto_save_after_delay_writes_the_file() {
+        let path = temp_file("auto.txt", "abc");
+        je_base::runtime::with_faked_timers(|| {
+            let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+            shell.set_auto_save("afterDelay", 1000);
+            shell.active_editor_mut().expect("aba").view.type_text("X");
+            shell.take_dirty();
+            je_base::runtime::advance_fake_time(500);
+            shell.take_dirty();
+            assert_eq!(std::fs::read_to_string(&path).expect("lê"), "abc", "antes do prazo nada é gravado");
+            je_base::runtime::advance_fake_time(600);
+            shell.take_dirty();
+            assert_eq!(std::fs::read_to_string(&path).expect("lê"), "Xabc", "depois do prazo a aba foi salva");
+            assert!(!shell.active_editor().expect("aba").is_modified());
+        });
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn single_click_opens_a_preview_tab_that_the_next_one_replaces() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-preview", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(n), n).expect("arquivo");
+        }
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        snapshot(&mut shell, "p-0.png");
+        // a.txt e depois b.txt pelo clique único: só uma aba, a de b.txt, em itálico.
+        click(&mut shell, 120.0, 96.0 + 11.0);
+        click(&mut shell, 120.0, 96.0 + 22.0 + 11.0);
+        snapshot(&mut shell, "p-1.png");
+        assert_eq!(shell.tab_paths(), vec![dir.join("b.txt")]);
+        // Editar fixa a aba: c.txt abre ao lado.
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        shell.take_dirty();
+        click(&mut shell, 120.0, 96.0 + 44.0 + 11.0);
+        assert_eq!(shell.tab_paths(), vec![dir.join("b.txt"), dir.join("c.txt")]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn split_editor_shows_two_groups_sharing_the_document() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("split.ts", "const a = 1;\nconst b = 2;\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        shell.run(shell::Command::SplitEditor);
+        snapshot(&mut shell, "sp0-split.png");
+        assert_eq!(shell.group_count(), 2);
+        // Digitar no grupo da direita aparece no da esquerda (o modelo é o mesmo).
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        shell.run(shell::Command::FocusGroup(0));
+        assert!(shell.active_editor().expect("aba").view.model().get_line_content(1).to_string_lossy().starts_with('X'));
+        // Clicar no grupo da direita o foca; fechar a aba dele fecha o grupo.
+        click(&mut shell, 1000.0, 300.0);
+        shell.run(shell::Command::CloseEditor(0));
+        // A aba está modificada: o diálogo pergunta; Don't Save fecha.
+        shell.run(shell::Command::DiscardAndClose(0));
+        snapshot(&mut shell, "sp1-closed.png");
+        assert_eq!(shell.group_count(), 1, "o grupo vazio fechou");
+        assert!(shell.active_editor().is_some(), "o grupo que sobrou mantém a aba");
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn find_and_replace_replaces_one_and_all() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("replace.txt", "foo bar foo\nfoo-1 foo-22\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, mods: Modifiers, text: Option<&str>| shell.key(true, KeyCode::Unknown, mods, text, key);
+        let type_text = |shell: &mut Shell, text: &str| {
+            for c in text.chars() {
+                key(shell, None, Modifiers::default(), Some(&c.to_string()));
+            }
+        };
+        let line = |shell: &Shell, n: i32| shell.active_editor().expect("aba").view.model().get_line_content(n).to_string_lossy();
+        // Ctrl+H com a palavra sob o cursor (`foo`) já semeada: o teclado vai direto para a substituição.
+        shell.run(shell::Command::FindAndReplace);
+        type_text(&mut shell, "baz");
+        snapshot(&mut shell, "r0-replace.png");
+        // Enter na substituição troca a ocorrência atual (a primeira) e vai para a próxima.
+        key(&mut shell, Some(EditorKey::Enter), Modifiers::default(), None);
+        assert_eq!(line(&shell, 1), "baz bar foo");
+        // Ctrl+Alt+Enter troca todas as que sobraram.
+        key(&mut shell, Some(EditorKey::Enter), Modifiers { ctrl: true, alt: true, ..Modifiers::default() }, None);
+        assert_eq!((line(&shell, 1), line(&shell, 2)), ("baz bar baz".to_owned(), "baz-1 baz-22".to_owned()));
+        // Regex com grupo: `baz-(\d+)` vira `n$1`.
+        shell.run(shell::Command::FindClose);
+        shell.run(shell::Command::Find);
+        shell.run(shell::Command::FindToggleRegex);
+        type_text(&mut shell, "baz-(\\d+)");
+        shell.run(shell::Command::FindToggleReplace);
+        for _ in 0..3 {
+            key(&mut shell, Some(EditorKey::Backspace), Modifiers::default(), None);
+        }
+        type_text(&mut shell, "n$1");
+        shell.run(shell::Command::FindReplaceAll);
+        assert_eq!(line(&shell, 2), "n1 n22");
+        std::fs::remove_file(&path).expect("remove");
     }
 
     #[test]

@@ -282,7 +282,7 @@ impl ScmView {
         let label = tree.create(header, Role::Generic);
         tree.set_bounds(label, Rect::new(20.0, 0.0, 120.0, 28.0));
         tree.style_mut(label).content = Content::Text { text: "Changes".to_owned(), style: ui_font(11.0, 700), color: fg, line_height: 28.0 };
-        for (k, (icon, command)) in [("check", Some(Command::ScmCommit)), ("refresh", Some(Command::ScmRefresh)), ("ellipsis", None)].into_iter().enumerate() {
+        for (k, (icon, command)) in [("check", Some(Command::ScmCommit)), ("refresh", Some(Command::ScmRefresh)), ("ellipsis", Some(Command::ScmMoreMenu))].into_iter().enumerate() {
             let x = width - 27.0 - 24.0 * (2 - k) as f64;
             let button = tree.create(parent, Role::Button);
             tree.set_bounds(button, Rect::new(x, 36.0, x + 22.0, 58.0));

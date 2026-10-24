@@ -23,6 +23,7 @@ use je_widgets::tree::object_tree_model::{ObjectTreeModel, ObjectTreeModelSetChi
 use je_widgets::tree::tree_types::{CollapsedValue, IObjectTreeElement, ITreeRenderer, TreeElementRenderDetails};
 
 use super::Command;
+use super::excludes::Matcher;
 use super::file_icons::FileIconTheme;
 use super::menus::CommandQueue;
 
@@ -32,8 +33,6 @@ type Model = ObjectTreeModel<PathBuf>;
 const ITEM_HEIGHT: f64 = 22.0;
 /// Onde o nome começa depois do ícone do arquivo.
 const LABEL_LEFT: f64 = 22.0;
-/// O `files.exclude` padrão.
-const EXCLUDED: [&str; 6] = [".git", ".svn", ".hg", "CVS", ".DS_Store", "Thumbs.db"];
 
 struct Delegate;
 
@@ -110,33 +109,44 @@ pub struct Explorer {
     expanded: Rc<RefCell<HashSet<PathBuf>>>,
     /// Os caminhos que estão na árvore (o `ObjectTreeModel` não expõe `has`).
     known: Rc<RefCell<HashSet<PathBuf>>>,
+    /// O `files.exclude` em vigor.
+    exclude: Rc<RefCell<Matcher>>,
     last_listing: RefCell<Vec<(PathBuf, Vec<String>)>>,
     _listeners: Vec<DisposableRef>,
 }
 
 /// As entradas de `dir` como elementos da árvore: pastas primeiro, depois arquivos, por nome sem caixa. As pastas
 /// em `expanded` já vêm abertas com os filhos lidos (recursivamente).
-fn read_children(dir: &Path, known: &RefCell<HashSet<PathBuf>>, expanded: &RefCell<HashSet<PathBuf>>, loaded: &RefCell<HashSet<PathBuf>>) -> Vec<IObjectTreeElement<PathBuf>> {
+/// O que a leitura de uma pasta consulta e atualiza.
+struct Scan<'a> {
+    root: &'a Path,
+    known: &'a RefCell<HashSet<PathBuf>>,
+    expanded: &'a RefCell<HashSet<PathBuf>>,
+    loaded: &'a RefCell<HashSet<PathBuf>>,
+    exclude: &'a RefCell<Matcher>,
+}
+
+fn read_children(dir: &Path, scan: &Scan<'_>) -> Vec<IObjectTreeElement<PathBuf>> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut entries: Vec<(bool, String, PathBuf)> = entries
         .filter_map(Result::ok)
         .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            (!EXCLUDED.contains(&name.as_str())).then(|| (e.path().is_dir(), name, e.path()))
+            let (name, path) = (e.file_name().to_string_lossy().into_owned(), e.path());
+            (!scan.exclude.borrow().excludes(scan.root, &path)).then(|| (path.is_dir(), name, path))
         })
         .collect();
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
     entries
         .into_iter()
         .map(|(is_dir, _, path)| {
-            known.borrow_mut().insert(path.clone());
+            scan.known.borrow_mut().insert(path.clone());
             let mut element = IObjectTreeElement::new(path.clone());
             if is_dir {
                 element.collapsible = Some(true);
-                if expanded.borrow().contains(&path) {
-                    loaded.borrow_mut().insert(path.clone());
+                if scan.expanded.borrow().contains(&path) {
+                    scan.loaded.borrow_mut().insert(path.clone());
                     element.collapsed = Some(CollapsedValue::Bool(false));
-                    element.children = Some(read_children(&path, known, expanded, loaded));
+                    element.children = Some(read_children(&path, scan));
                 } else {
                     element.collapsed = Some(CollapsedValue::Bool(true));
                 }
@@ -147,7 +157,8 @@ fn read_children(dir: &Path, known: &RefCell<HashSet<PathBuf>>, expanded: &RefCe
 }
 
 impl Explorer {
-    pub fn new(ui: &Ui, container: NodeId, root: &Path, theme: &ColorTheme, icons: Option<FileIconTheme>, language_of: LanguageOf, queue: CommandQueue) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(ui: &Ui, container: NodeId, root: &Path, theme: &ColorTheme, icons: Option<FileIconTheme>, language_of: LanguageOf, queue: CommandQueue, exclude: Matcher) -> Self {
         let foreground = theme.get_color("sideBar.foreground").unwrap_or(je_render::Rgba::opaque(0xcc, 0xcc, 0xcc));
         if icons.is_some() {
             let mut tree = ui.tree_mut();
@@ -167,11 +178,12 @@ impl Explorer {
         let loaded = Rc::new(RefCell::new(HashSet::from([root.to_path_buf()])));
         let expanded = Rc::new(RefCell::new(HashSet::new()));
         let known = Rc::new(RefCell::new(HashSet::new()));
-        tree.set_children(&None, read_children(root, &known, &expanded, &loaded), ObjectTreeModelSetChildrenOptions::default());
+        let exclude = Rc::new(RefCell::new(exclude));
+        tree.set_children(&None, read_children(root, &Scan { root, known: &known, expanded: &expanded, loaded: &loaded, exclude: &exclude }), ObjectTreeModelSetChildrenOptions::default());
         let mut listeners = Vec::new();
         // Abrir uma pasta lê os filhos dela na primeira vez; o estado aberto fica guardado.
         listeners.push(tree.on_did_change_collapse_state().listen({
-            let (weak, loaded, known, expanded) = (Rc::downgrade(&tree), loaded.clone(), known.clone(), expanded.clone());
+            let (weak, loaded, known, expanded, exclude, root) = (Rc::downgrade(&tree), loaded.clone(), known.clone(), expanded.clone(), exclude.clone(), root.to_path_buf());
             move |event| {
                 let node = &event.node;
                 let (Some(tree), Some(path)) = (weak.upgrade(), node.element.clone()) else { return };
@@ -183,7 +195,7 @@ impl Explorer {
                 if !loaded.borrow_mut().insert(path.clone()) {
                     return;
                 }
-                let children = read_children(&path, &known, &expanded, &loaded);
+                let children = read_children(&path, &Scan { root: &root, known: &known, expanded: &expanded, loaded: &loaded, exclude: &exclude });
                 tree.set_children(&Some(path), children, ObjectTreeModelSetChildrenOptions::default());
             }
         }));
@@ -196,9 +208,11 @@ impl Explorer {
                 if secondary {
                     return;
                 }
+                // O clique único abre como pré-visualização; o duplo (`click_count` 2) fixa a aba.
+                let double = event.browser_event.as_ref().is_some_and(|b| b.click_count >= 2);
                 for path in event.elements.iter().flatten() {
                     if path.is_file() {
-                        queue.borrow_mut().push(Command::OpenFile(path.clone()));
+                        queue.borrow_mut().push(if double { Command::OpenFile(path.clone()) } else { Command::PreviewFile(path.clone()) });
                     }
                 }
             }
@@ -215,7 +229,7 @@ impl Explorer {
                 }
             }
         }));
-        let explorer = Self { tree, root: root.to_path_buf(), loaded, expanded, known, last_listing: RefCell::new(Vec::new()), _listeners: listeners };
+        let explorer = Self { tree, root: root.to_path_buf(), loaded, expanded, known, exclude, last_listing: RefCell::new(Vec::new()), _listeners: listeners };
         *explorer.last_listing.borrow_mut() = explorer.listing();
         explorer
     }
@@ -223,6 +237,12 @@ impl Explorer {
     #[cfg(test)]
     pub fn contains(&self, path: &Path) -> bool {
         self.known.borrow().contains(path)
+    }
+
+    /// Troca o `files.exclude` e relê a árvore.
+    pub fn set_exclude(&self, exclude: Matcher) {
+        *self.exclude.borrow_mut() = exclude;
+        self.refresh();
     }
 
     /// Relê a árvore se alguma pasta aberta mudou no disco (entrada criada, apagada ou renomeada).
@@ -252,7 +272,8 @@ impl Explorer {
         self.loaded.borrow_mut().clear();
         self.loaded.borrow_mut().insert(self.root.clone());
         self.known.borrow_mut().clear();
-        self.tree.set_children(&None, read_children(&self.root, &self.known, &self.expanded, &self.loaded), ObjectTreeModelSetChildrenOptions::default());
+        let scan = Scan { root: &self.root, known: &self.known, expanded: &self.expanded, loaded: &self.loaded, exclude: &self.exclude };
+        self.tree.set_children(&None, read_children(&self.root, &scan), ObjectTreeModelSetChildrenOptions::default());
     }
 
     /// Abre a pasta (e as de cima) para o caminho aparecer, relendo o que faltar.

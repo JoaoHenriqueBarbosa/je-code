@@ -14,10 +14,12 @@ mod menus;
 mod search_backend;
 mod scm_view;
 mod search_view;
+mod excludes;
 mod extensions_view;
 mod file_ops;
 pub mod git;
 mod quick_pick;
+pub mod recent;
 mod terminal_panel;
 pub mod themes;
 
@@ -86,6 +88,9 @@ impl SideView {
         }
     }
 }
+
+/// O pedido de dica pendente: geração, nó alvo, texto e posição.
+type HoverRequest = Rc<RefCell<Option<(u64, NodeId, String, je_widgets::hover_api::HoverPosition)>>>;
 
 /// A gravidade de uma notificação (`Severity`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,11 +161,18 @@ pub enum PromptAction {
 pub enum Command {
     NewUntitled,
     OpenFile(PathBuf),
+    /// Abre como pré-visualização (o clique único do explorador e do Quick Open em modo preview).
+    PreviewFile(PathBuf),
+    PinEditor(usize),
     Save,
     SaveAll,
     Revert,
     CloseActiveEditor,
     CloseEditor(usize),
+    SplitEditor,
+    FocusGroup(usize),
+    /// Clique numa aba de um grupo fora de foco: foca o grupo e ativa a aba.
+    FocusGroupEditor(usize, usize),
     TabContextMenu(usize),
     CloseOthers(usize),
     CloseToTheRight(usize),
@@ -185,6 +197,7 @@ pub enum Command {
     ToggleSidebar,
     ToggleStatusBar,
     ToggleFullScreen,
+    ToggleWordWrap,
     ShowExplorer,
     ShowManageMenu,
     PickTheme,
@@ -192,6 +205,12 @@ pub enum Command {
     OpenSettingsJson,
     OpenKeybindingsJson,
     PickEol,
+    PickIndentation,
+    /// `Indent Using Spaces` (true) ou `Tabs` (false): pede o tamanho em seguida.
+    PickIndentSize(bool),
+    SetIndentation(bool, i32),
+    DetectIndentation,
+    ToggleMaximizedPanel,
     SetEol(bool),
     PickLanguage,
     SetLanguage(String),
@@ -209,12 +228,23 @@ pub enum Command {
     SearchToggleRegex,
     ShowScm,
     ShowExtensions,
+    OpenRecent,
+    /// `workbench.action.zoomIn`/`zoomOut`/`zoomReset`: muda o `window.zoomLevel` em um passo.
+    Zoom(i32),
+    AutoFetch,
+    /// O `files.autoSave: afterDelay` venceu o prazo para a versão dada da aba.
+    AutoSave(usize, i64),
+    /// Mostra a dica do nó depois da espera (`workbench.hover.delay`), se o ponteiro ainda estiver nele.
+    ShowHover(u64),
+    HideHover,
+    OpenFolderPath(PathBuf),
     ExtensionsFocus,
     ScmFocus,
     ScmCommit,
     ScmRefresh,
     ScmOpen(String),
     ScmContextMenu(scm_view::Entry),
+    ScmMoreMenu,
     ScmOp(git::Operation),
     DismissToast(u64),
     /// Abre o arquivo na linha e seleciona de `column` a `end_column`.
@@ -249,6 +279,11 @@ pub enum Command {
     FindToggleWord,
     FindToggleRegex,
     FindToggleReplace,
+    /// Ctrl+H: abre a busca com a linha de substituição.
+    FindAndReplace,
+    FindFocusReplace,
+    FindReplace,
+    FindReplaceAll,
     FindInSelection,
     /// Aceita a linha de índice dado do Quick Open ou da paleta.
     QuickPickAccept(usize),
@@ -288,12 +323,21 @@ pub struct OpenEditor {
     diff_version: i64,
     /// A data de modificação do arquivo no disco quando foi lido ou gravado (para notar mudanças de fora).
     disk_mtime: Option<std::time::SystemTime>,
+    /// A aba de pré-visualização (`workbench.editor.enablePreview`): título em itálico, trocada pela próxima
+    /// aberta do mesmo jeito; editar o texto ou clicar duas vezes a fixa.
+    preview: bool,
 }
 
 impl OpenEditor {
     pub fn is_modified(&self) -> bool {
         self.view.model().get_alternative_version_id() != self.saved_version
     }
+}
+
+/// Um grupo de editores fora de foco (o grupo em foco vive em `Shell::editors` e `Shell::active`).
+pub struct Group {
+    editors: Vec<OpenEditor>,
+    active: Option<usize>,
 }
 
 /// Os nós retidos e os que [`Shell::render`] remonta.
@@ -332,6 +376,10 @@ pub struct Shell {
     nodes: Nodes,
     editors: Vec<OpenEditor>,
     active: Option<usize>,
+    /// Os grupos da esquerda para a direita; a vaga do grupo em foco fica `None` (o conteúdo dele está em
+    /// `editors` e `active`).
+    groups: Vec<Option<Group>>,
+    group_index: usize,
     workspace: Option<PathBuf>,
     sidebar_visible: bool,
     sidebar_width: f64,
@@ -353,10 +401,22 @@ pub struct Shell {
     exiting: bool,
     /// O Save As veio do `Save` de um fechamento: a aba fecha depois de gravar.
     close_after_save_as: bool,
+    /// A dica (hover) na tela e o pedido pendente: geração, nó alvo, texto e posição.
+    hover: Option<Rc<je_widgets::hover_widget::WorkbenchHoverWidget>>,
+    context_view: Option<Rc<je_widgets::context_view::ContextView>>,
+    hover_request: HoverRequest,
     /// O diálogo modal aberto: enquanto existe, teclado e ponteiro vão só para ele.
     dialog: Option<Rc<je_widgets::dialog::Dialog>>,
     fullscreen_requested: bool,
     needs_render: bool,
+    /// O `window.zoomLevel` (cada nível é 20%).
+    zoom_level: f64,
+    /// O `files.autoSave` (`off`, `afterDelay`, `onFocusChange`, `onWindowChange`) e o `files.autoSaveDelay`.
+    auto_save: (String, u64),
+    /// A versão de cada aba já agendada para salvar (evita um timer por tecla).
+    auto_save_scheduled: Option<(usize, i64)>,
+    /// Pede um quadro sem remontar a moldura.
+    redraw: bool,
     quick_pick: Option<QuickPick>,
     /// O menu de contexto aberto (o widget `Menu`) e o nó onde ele pinta.
     context_menu: Option<(Rc<je_widgets::menu::Menu>, NodeId)>,
@@ -366,6 +426,8 @@ pub struct Shell {
     panel_visible: bool,
     panel_tab: PanelTab,
     panel_height: f64,
+    /// A altura de antes de maximizar o painel.
+    panel_restore_height: Option<f64>,
     terminal: Option<je_terminal::Terminal>,
     terminal_focused: bool,
     /// A pasta em que o próximo terminal abre (`Open in Integrated Terminal`).
@@ -450,7 +512,8 @@ impl Shell {
             }
             None => Rc::new(|_: &str| None),
         };
-        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
+        let user_settings = themes::user_settings();
+        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone(), excludes::Excludes::files(&user_settings).matcher()));
         let search = SearchView::new(&ui, search_node, &theme, icons.clone(), language_of.clone(), queue.clone());
         let scm = ScmView::new(&ui, scm_node, &theme, icons.clone(), language_of.clone(), queue.clone());
         let terminal_palette = terminal_panel::palette(&theme);
@@ -477,6 +540,8 @@ impl Shell {
             nodes: Nodes { chrome, menubar: menubar_node, explorer: explorer_node, search: search_node, scm: scm_node, editor_host: None },
             editors: Vec::new(),
             active: None,
+            groups: vec![None],
+            group_index: 0,
             sidebar_visible: workspace.is_some(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             workspace,
@@ -492,8 +557,15 @@ impl Shell {
             exiting: false,
             close_after_save_as: false,
             dialog: None,
+            hover: None,
+            hover_request: Rc::new(RefCell::new(None)),
+            context_view: None,
             fullscreen_requested: false,
             needs_render: true,
+            zoom_level: 0.0,
+            auto_save: ("off".to_owned(), 1000),
+            auto_save_scheduled: None,
+            redraw: false,
             quick_pick: None,
             context_menu: None,
             last_pointer: (0.0, 0.0),
@@ -501,6 +573,7 @@ impl Shell {
             panel_visible: false,
             panel_tab: PanelTab::Terminal,
             panel_height: DEFAULT_PANEL_HEIGHT,
+            panel_restore_height: None,
             terminal: None,
             terminal_focused: false,
             workspace_for_terminal: None,
@@ -522,6 +595,7 @@ impl Shell {
         }
         shell.detect_git();
         shell.schedule_disk_check();
+        shell.apply_user_settings();
         for file in files {
             shell.open_file(file)?;
         }
@@ -571,7 +645,7 @@ impl Shell {
         self.theme_file = (path.to_path_buf(), ui_theme.to_owned());
         let colors = EditorColors::from_theme(&self.theme);
         let token_colors = self.environment.as_ref().map(|env| env.color_map());
-        for editor in &mut self.editors {
+        for editor in self.all_editors_mut() {
             editor.view.set_colors(colors.clone());
             if let Some(map) = &token_colors {
                 editor.view.set_token_colors(map);
@@ -681,7 +755,7 @@ impl Shell {
         let saved_version = model.get_alternative_version_id();
         let index = self.active.map_or(self.editors.len(), |i| i + 1);
         let needs_head = path.is_some();
-        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None });
+        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None, preview: false });
         if needs_head {
             self.reload_heads();
         }
@@ -699,6 +773,22 @@ impl Shell {
         self.push_editor(Some(path.to_path_buf()), name, &String::from_utf8_lossy(&bytes));
         if let Some(editor) = self.active_editor_mut() {
             editor.disk_mtime = Self::mtime(path);
+        }
+        Ok(())
+    }
+
+    /// Abre `path` como pré-visualização: troca a aba de pré-visualização que houver (se ela não foi editada).
+    fn preview_file(&mut self, path: &Path) -> Result<(), String> {
+        if self.editors.iter().any(|e| e.path.as_deref() == Some(path)) {
+            return self.open_file(path);
+        }
+        let old = self.editors.iter().position(|e| e.preview && !e.is_modified());
+        self.open_file(path)?;
+        if let Some(active) = self.active {
+            self.editors[active].preview = true;
+            if let Some(old) = old.filter(|o| *o != active) {
+                self.close_editor(old);
+            }
         }
         Ok(())
     }
@@ -891,6 +981,7 @@ impl Shell {
             self.activate(active);
         }
         *self.hovered_tab.borrow_mut() = None;
+        self.close_empty_group();
         self.needs_render = true;
     }
 
@@ -904,11 +995,15 @@ impl Shell {
         let model = editor.view.model().clone();
         let text = model.get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy();
         let result = std::fs::write(&path, text.as_bytes());
-        if result.is_ok() {
-            editor.saved_version = model.get_alternative_version_id();
-            editor.disk_mtime = Self::mtime(&path);
-        }
         editor.view.mark_dirty();
+        if result.is_ok() {
+            // O mesmo arquivo aberto em outros grupos também fica salvo (o modelo é um só).
+            let (version, mtime) = (model.get_alternative_version_id(), Self::mtime(&path));
+            for other in self.all_editors_mut().filter(|e| e.path.as_deref() == Some(path.as_path())) {
+                other.saved_version = version;
+                other.disk_mtime = mtime;
+            }
+        }
         if result.is_ok() {
             self.git_op(git::Operation::Refresh);
             if themes::user_data_dir().map(|d| d.join("User/settings.json")).as_deref() == Some(path.as_path()) {
@@ -932,7 +1027,7 @@ impl Shell {
                 if let Some(env) = &self.environment {
                     view.set_token_colors(&env.color_map());
                 }
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None };
+                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None, preview: false };
                 self.activate(index);
             }
             Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
@@ -966,6 +1061,16 @@ impl Shell {
                     self.notify(Severity::Error, e);
                 }
             }
+            Command::PreviewFile(path) => {
+                if let Err(e) = self.preview_file(&path) {
+                    self.notify(Severity::Error, e);
+                }
+            }
+            Command::PinEditor(index) => {
+                if let Some(editor) = self.editors.get_mut(index) {
+                    editor.preview = false;
+                }
+            }
             Command::Save => {
                 if let Some(i) = active {
                     self.save(i);
@@ -989,6 +1094,14 @@ impl Shell {
                 }
             }
             Command::CloseEditor(i) => self.request_close(i),
+            Command::SplitEditor => self.split_editor(),
+            Command::FocusGroup(i) => self.focus_group(i),
+            Command::FocusGroupEditor(group, index) => {
+                self.focus_group(group);
+                if index < self.editors.len() {
+                    self.activate(index);
+                }
+            }
             Command::TabContextMenu(index) => self.tab_menu(index),
             Command::CloseOthers(index) | Command::CloseToTheRight(index) => {
                 // Fecha de trás para a frente para os índices não andarem; as modificadas perguntam uma por vez.
@@ -1122,6 +1235,74 @@ impl Shell {
                 }
                 self.start_search();
             }
+            // As dicas não mexem na moldura: saem antes do `needs_render` do fim.
+            Command::ShowHover(generation) => {
+                let request = self.hover_request.borrow().clone();
+                if let Some((g, node, text, position)) = request
+                    && g == generation
+                    && self.ui.tree().is_alive(node)
+                {
+                    self.show_hover(node, &text, position);
+                }
+                return;
+            }
+            Command::HideHover => {
+                *self.hover_request.borrow_mut() = None;
+                self.hide_hover();
+                return;
+            }
+            Command::AutoSave(index, version) => {
+                self.auto_save_scheduled = None;
+                if self.editors.get(index).is_some_and(|e| e.path.is_some() && e.is_modified() && e.view.model().get_version_id() == version) {
+                    self.save(index);
+                }
+                return;
+            }
+            Command::AutoFetch => {
+                if self.git_rx.is_none() {
+                    self.git_op(git::Operation::Fetch);
+                }
+                self.schedule_autofetch();
+                return;
+            }
+            Command::Zoom(step) => {
+                self.zoom_level = if step == 0 { 0.0 } else { (self.zoom_level + f64::from(step)).clamp(-8.0, 8.0) };
+                self.resize_editors();
+            }
+            Command::OpenRecent => {
+                let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+                let tidy = |p: &Path| -> String {
+                    match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
+                        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+                        None => p.display().to_string(),
+                    }
+                };
+                let items: Vec<PickItem> = recent::load()
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let (path, command) = match entry {
+                            recent::Recent::Folder(p) => (p.clone(), Command::OpenFolderPath(p)),
+                            recent::Recent::File(p) => (p.clone(), Command::OpenFile(p)),
+                        };
+                        let label = path.file_name()?.to_string_lossy().into_owned();
+                        let description = path.parent().map(tidy);
+                        Some(PickItem { label, description, keybinding: None, command, recent: false })
+                    })
+                    .collect();
+                if items.is_empty() {
+                    self.notify(Severity::Info, "Não há itens recentes do VS Code para mostrar.".to_owned());
+                } else {
+                    self.quick_pick = Some(QuickPick::list(items, "Select to open (hold Ctrl-key to force new window or Alt-key for same window)"));
+                    self.ui.blur();
+                }
+            }
+            Command::OpenFolderPath(path) => {
+                if path.is_dir() {
+                    self.set_workspace(path);
+                } else {
+                    self.notify(Severity::Error, format!("A pasta '{}' não existe mais.", path.display()));
+                }
+            }
             Command::ShowExtensions => {
                 self.show_view(SideView::Extensions);
                 self.extensions_focused = self.sidebar_visible;
@@ -1179,6 +1360,26 @@ impl Shell {
                 }
             }
             Command::ScmContextMenu(entry) => self.scm_menu(entry),
+            Command::ScmMoreMenu => {
+                // O `...` da vista Source Control: as operações com o remoto.
+                use je_base::actions::{Action, ActionCallback, ActionRef};
+                let queue = self.queue.clone();
+                let item = |label: &str, command: Command| -> ActionRef {
+                    let queue = queue.clone();
+                    let callback: ActionCallback = Rc::new(move |_| {
+                        queue.borrow_mut().push(command.clone());
+                        je_base::dynamic::Dynamic::Undefined.into()
+                    });
+                    Action::new(label, label, "", true, Some(callback)) as ActionRef
+                };
+                let actions = vec![
+                    item("Pull", Command::ScmOp(git::Operation::Pull)),
+                    item("Push", Command::ScmOp(git::Operation::Push)),
+                    item("Fetch", Command::ScmOp(git::Operation::Fetch)),
+                    item("Sync", Command::ScmOp(git::Operation::Sync)),
+                ];
+                self.open_menu(actions);
+            }
             Command::DismissToast(id) => {
                 self.toasts.retain(|t| t.id != id);
                 self.needs_render = true;
@@ -1196,6 +1397,11 @@ impl Shell {
             }
             Command::ToggleStatusBar => self.statusbar_visible = !self.statusbar_visible,
             Command::ToggleFullScreen => self.fullscreen_requested = true,
+            Command::ToggleWordWrap => {
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.toggle_word_wrap();
+                }
+            }
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
             Command::ShowManageMenu => {
@@ -1239,6 +1445,49 @@ impl Shell {
                     }
                     None => self.notify(Severity::Error, "Não achei a pasta de dados do usuário.".to_owned()),
                 }
+            }
+            Command::PickIndentation => {
+                let items = vec![
+                    PickItem { label: "Indent Using Spaces".to_owned(), description: Some("change view".to_owned()), keybinding: None, command: Command::PickIndentSize(true), recent: false },
+                    PickItem { label: "Indent Using Tabs".to_owned(), description: Some("change view".to_owned()), keybinding: None, command: Command::PickIndentSize(false), recent: false },
+                    PickItem { label: "Detect Indentation from Content".to_owned(), description: Some("change view".to_owned()), keybinding: None, command: Command::DetectIndentation, recent: false },
+                ];
+                self.quick_pick = Some(QuickPick::list(items, "Select Action"));
+                self.ui.blur();
+            }
+            Command::PickIndentSize(spaces) => {
+                let current = self.active_editor().map_or(4, |e| e.view.model().get_options().tab_size);
+                let items: Vec<PickItem> = (1..=8).map(|n| PickItem { label: n.to_string(), description: (n == current).then(|| "Configured Tab Size".to_owned()), keybinding: None, command: Command::SetIndentation(spaces, n), recent: false }).collect();
+                let at = items.iter().position(|i| i.description.is_some()).unwrap_or(3);
+                let mut pick = QuickPick::list(items, "Select Tab Size for the current file");
+                pick.move_focus(at as isize);
+                self.quick_pick = Some(pick);
+                self.ui.blur();
+            }
+            Command::SetIndentation(spaces, size) => {
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.model().update_options(je_editor::model::TextModelUpdateOptions { tab_size: Some(size), indent_size: Some(je_editor::model::IndentSize::Size(size)), insert_spaces: Some(spaces), ..Default::default() });
+                    editor.view.mark_dirty();
+                }
+            }
+            Command::DetectIndentation => {
+                if let Some(editor) = self.active_editor_mut() {
+                    let options = editor.view.model().get_options();
+                    editor.view.model().detect_indentation(options.insert_spaces, options.tab_size);
+                    editor.view.mark_dirty();
+                }
+            }
+            Command::ToggleMaximizedPanel => {
+                // Maximizar o painel é dar a ele a altura toda das partes, menos o mínimo do grupo de editores.
+                let full = (self.parts_bottom() - TITLE_HEIGHT - SASH - 80.0).max(80.0);
+                if self.panel_height >= full - 1.0 {
+                    self.panel_height = self.panel_restore_height.unwrap_or(DEFAULT_PANEL_HEIGHT);
+                } else {
+                    self.panel_restore_height = Some(self.panel_height);
+                    self.panel_height = full;
+                }
+                self.panel_visible = true;
+                self.resize_editors();
             }
             Command::PickEol => {
                 let items = [("LF", false), ("CRLF", true)].map(|(label, crlf)| PickItem { label: label.to_owned(), description: None, keybinding: None, command: Command::SetEol(crlf), recent: false }).to_vec();
@@ -1373,7 +1622,35 @@ impl Shell {
                 self.find_changed(true);
             }
             // A substituição e a busca na seleção ainda não existem: o botão não faz nada.
-            Command::FindToggleReplace | Command::FindInSelection => {}
+            Command::FindToggleReplace => {
+                if let Some(find) = &mut self.find {
+                    find.replace_visible = !find.replace_visible;
+                    find.in_replace = find.replace_visible;
+                }
+            }
+            Command::FindAndReplace => {
+                if self.find.is_none() {
+                    self.open_find();
+                }
+                if let Some(find) = &mut self.find {
+                    find.replace_visible = true;
+                    find.in_replace = !find.value.is_empty();
+                }
+                self.find_focused = true;
+            }
+            Command::FindFocusReplace => {
+                if let Some(find) = &mut self.find {
+                    find.in_replace = true;
+                }
+                self.find_focused = true;
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(false);
+                }
+            }
+            Command::FindReplace => self.find_replace(false),
+            Command::FindReplaceAll => self.find_replace(true),
+            // A busca na seleção ainda não existe: o botão não faz nada.
+            Command::FindInSelection => {}
             Command::Exit => {
                 self.exiting = true;
                 self.continue_exit();
@@ -1400,6 +1677,21 @@ impl Shell {
     #[cfg(test)]
     pub fn explorer_lists(&self, path: &Path) -> bool {
         self.explorer.as_ref().is_some_and(|e| e.contains(path))
+    }
+
+    #[cfg(test)]
+    pub fn has_hover(&self) -> bool {
+        self.hover.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn set_auto_save(&mut self, mode: &str, delay: u64) {
+        self.auto_save = (mode.to_owned(), delay);
+    }
+
+    #[cfg(test)]
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
     }
 
     #[cfg(test)]
@@ -1430,7 +1722,7 @@ impl Shell {
             self.ui.remove(child);
         }
         let language_of = self.language_of.clone();
-        self.explorer = Some(Explorer::new(&self.ui, node, &path, &self.theme, self.icons.clone(), language_of, self.queue.clone()));
+        self.explorer = Some(Explorer::new(&self.ui, node, &path, &self.theme, self.icons.clone(), language_of, self.queue.clone(), excludes::Excludes::files(&themes::user_settings()).matcher()));
         self.workspace = Some(path);
         self.workspace_files = None;
         self.sidebar_visible = true;
@@ -1493,15 +1785,39 @@ impl Shell {
         editor.view.set_gutter_changes(changes);
     }
 
-    /// Reaplica o `settings.json` do usuário: por enquanto o tema de cor (`workbench.colorTheme`).
+    /// Reaplica o `settings.json` do usuário: o tema de cor, o zoom e o salvamento automático.
     fn apply_user_settings(&mut self) {
         let settings = themes::user_settings();
+        if let Some(explorer) = &self.explorer {
+            explorer.set_exclude(excludes::Excludes::files(&settings).matcher());
+        }
+        self.search.excludes = excludes::Excludes::search(&settings);
+        self.workspace_files = None;
+        self.auto_save = (
+            settings.get("files.autoSave").and_then(|v| v.as_str()).unwrap_or("off").to_owned(),
+            settings.get("files.autoSaveDelay").and_then(serde_json::Value::as_u64).unwrap_or(1000),
+        );
+        if let Some(level) = settings.get("window.zoomLevel").and_then(serde_json::Value::as_f64) {
+            self.zoom_level = level.clamp(-8.0, 8.0);
+            self.resize_editors();
+        }
         let wanted = settings.get("workbench.colorTheme").and_then(|v| v.as_str());
         if let Some(index) = themes::resolve(&self.themes, wanted)
             && self.theme_index != Some(index)
         {
             self.apply_theme(index);
         }
+    }
+
+    /// O `git.autofetch`: um `git fetch` agora e a cada `git.autofetchPeriod` segundos (180 por padrão).
+    fn schedule_autofetch(&self) {
+        let settings = themes::user_settings();
+        if settings.get("git.autofetch").is_none_or(|v| v == &serde_json::Value::Bool(false)) || self.git_root.is_none() {
+            return;
+        }
+        let period = settings.get("git.autofetchPeriod").and_then(serde_json::Value::as_u64).unwrap_or(180).max(30);
+        let queue = self.queue.clone();
+        je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::AutoFetch), period * 1000);
     }
 
     /// Detecta o repositório do workspace e pede o estado.
@@ -1511,6 +1827,7 @@ impl Shell {
         self.git_rx = None;
         if self.git_root.is_some() {
             self.git_op(git::Operation::Refresh);
+            self.schedule_autofetch();
         }
     }
 
@@ -1907,7 +2224,8 @@ impl Shell {
         let files = match &self.workspace_files {
             Some(files) => files.clone(),
             None => {
-                let files = self.workspace.as_deref().map(quick_pick::scan_workspace).unwrap_or_default();
+                let excludes = excludes::Excludes::search(&themes::user_settings());
+                let files = self.workspace.as_deref().map(|w| quick_pick::scan_workspace(w, &excludes)).unwrap_or_default();
                 self.workspace_files = Some(files.clone());
                 files
             }
@@ -2036,9 +2354,82 @@ impl Shell {
         self.needs_render = true;
     }
 
+    /// `Replace` troca a ocorrência atual e vai à próxima; `Replace All` troca todas numa edição só.
+    fn find_replace(&mut self, all: bool) {
+        let (Some(find), Some(active)) = (self.find.as_mut(), self.active) else { return };
+        let editor = &mut self.editors[active];
+        if find.version != editor.view.model().get_version_id() {
+            find.search(editor.view.model());
+        }
+        let model = editor.view.model().clone();
+        let text_of = |r: &je_editor::range::Range| model.get_value_in_range(r).to_string_lossy();
+        if all {
+            let edits: Vec<_> = find.matches.iter().map(|r| (*r, find.replacement_for(&text_of(r)))).collect();
+            let count = edits.len();
+            editor.view.replace_ranges(edits);
+            find.search(editor.view.model());
+            find.current = None;
+            editor.view.set_find_matches(find.matches.clone(), None);
+            if count > 0 {
+                self.notify(Severity::Info, format!("Replaced {count} occurrence{}.", if count == 1 { "" } else { "s" }));
+            }
+        } else {
+            // Sem ocorrência atual, a primeira a partir do cursor vira a atual antes de trocar.
+            let current = find.current.and_then(|i| find.matches.get(i)).copied().or_else(|| find.select_from(editor.view.cursor_position()));
+            if let Some(range) = current {
+                let replacement = find.replacement_for(&text_of(&range));
+                editor.view.replace_ranges(vec![(range, replacement)]);
+                find.search(editor.view.model());
+                let next = find.select_from(range.get_start_position());
+                editor.view.set_find_matches(find.matches.clone(), find.current);
+                if let Some(next) = next {
+                    editor.view.select_range(next);
+                }
+            }
+        }
+        self.needs_render = true;
+    }
+
     /// Trata uma tecla com o campo da busca focado. Devolve se consumiu.
     fn find_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let Some(find) = self.find.as_mut() else { return false };
+        // Tab alterna entre os campos da busca e da substituição.
+        if key == Some(EditorKey::Tab) && find.replace_visible {
+            find.in_replace = !find.in_replace;
+            self.needs_render = true;
+            return true;
+        }
+        if find.in_replace {
+            let ctrl = mods.ctrl || mods.meta;
+            match key {
+                Some(EditorKey::Escape) => self.close_find(),
+                Some(EditorKey::Enter) => self.find_replace(ctrl && mods.alt),
+                Some(EditorKey::Left) => find.replace_cursor = find.replace_cursor.saturating_sub(1),
+                Some(EditorKey::Right) => find.replace_cursor = (find.replace_cursor + 1).min(find.replace_value.len()),
+                Some(EditorKey::Home) => find.replace_cursor = 0,
+                Some(EditorKey::End) => find.replace_cursor = find.replace_value.len(),
+                Some(EditorKey::Backspace) if find.replace_cursor > 0 => {
+                    find.replace_value.remove(find.replace_cursor - 1);
+                    find.replace_cursor -= 1;
+                }
+                Some(EditorKey::Delete) if find.replace_cursor < find.replace_value.len() => {
+                    find.replace_value.remove(find.replace_cursor);
+                }
+                Some(_) => {}
+                None => {
+                    if (!ctrl || mods.alt)
+                        && let Some(text) = text
+                    {
+                        let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                        let at = find.replace_cursor;
+                        find.replace_cursor += inserted.len();
+                        find.replace_value.splice(at..at, inserted);
+                    }
+                }
+            }
+            self.needs_render = true;
+            return true;
+        }
         let ctrl = mods.ctrl || mods.meta;
         let mut changed = false;
         // Com a semente selecionada, digitar ou apagar começa de um valor vazio; as setas só tiram a seleção.
@@ -2111,7 +2502,7 @@ impl Shell {
 
     fn render_find(&self, chrome: NodeId) {
         let (Some(find), Some(editor)) = (&self.find, self.active_editor()) else { return };
-        let rect = FindWidget::rect(self.editor_rect(), editor.view.layout().minimap_width());
+        let rect = find.rect(self.editor_rect(), editor.view.layout().minimap_width());
         for (node, command) in find.render(&mut self.ui.tree_mut(), chrome, rect, self.find_focused, &self.theme) {
             self.listen_command(node, command);
         }
@@ -2124,6 +2515,11 @@ impl Shell {
             editor.view.resize(rect.width(), rect.height());
         }
         self.needs_render = true;
+    }
+
+    /// O fator de zoom da janela: `1.2 ^ zoomLevel`, como o Electron.
+    pub fn zoom_factor(&self) -> f64 {
+        1.2_f64.powf(self.zoom_level)
     }
 
     pub fn take_exit(&mut self) -> bool {
@@ -2152,7 +2548,7 @@ impl Shell {
         self.sidebar_visible.then(|| Rect::new(left, TITLE_HEIGHT, left + self.sidebar_width, self.parts_bottom()))
     }
 
-    /// O painel do grupo de editores, com a borda de 1 px.
+    /// A área de todos os grupos de editores.
     fn editor_part_rect(&self) -> Rect {
         let left = self.sidebar_rect().map_or(ACTIVITY_LEFT + ACTIVITY_WIDTH + SASH, |r| r.x1 + SASH);
         let bottom = if self.panel_visible { self.parts_bottom() - self.panel_height - SASH } else { self.parts_bottom() };
@@ -2172,10 +2568,124 @@ impl Shell {
         self.panel_rect().map(|p| Rect::new(p.x0 + 1.0, p.y0 + 1.0 + PANEL_TITLE_HEIGHT, p.x1 - 1.0, p.y1 - 1.0))
     }
 
-    /// A área do editor de texto: abaixo das abas e dos breadcrumbs, dentro da borda.
-    fn editor_rect(&self) -> Rect {
-        let part = self.editor_part_rect().inset(-1.0);
+    /// O painel do grupo `index`, com a borda de 1 px: as colunas dividem a área por igual, com o sash entre elas.
+    fn group_part_rect(&self, index: usize) -> Rect {
+        let part = self.editor_part_rect();
+        let n = self.groups.len().max(1) as f64;
+        let width = (part.width() - SASH * (n - 1.0)) / n;
+        let x0 = (part.x0 + (width + SASH) * index as f64).round();
+        let x1 = if index + 1 == self.groups.len() { part.x1 } else { (part.x0 + (width + SASH) * index as f64 + width).round() };
+        Rect::new(x0, part.y0, x1, part.y1)
+    }
+
+    /// A área de texto de um grupo: abaixo das abas e dos breadcrumbs, dentro da borda.
+    fn group_editor_rect(&self, index: usize) -> Rect {
+        let part = self.group_part_rect(index).inset(-1.0);
         Rect::new(part.x0, part.y0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT, part.x1, part.y1)
+    }
+
+    /// A área do editor de texto do grupo em foco.
+    fn editor_rect(&self) -> Rect {
+        self.group_editor_rect(self.group_index)
+    }
+
+    /// Põe o foco no grupo `index`: o conteúdo do grupo em foco volta para a vaga dele e o do novo sai dela.
+    fn focus_group(&mut self, index: usize) {
+        if index == self.group_index || index >= self.groups.len() {
+            return;
+        }
+        let Some(incoming) = self.groups[index].take() else { return };
+        if let Some(editor) = self.active_editor_mut() {
+            editor.view.set_focus(false);
+        }
+        let outgoing = Group { editors: std::mem::replace(&mut self.editors, incoming.editors), active: incoming.active };
+        let outgoing = Group { active: std::mem::replace(&mut self.active, outgoing.active), editors: outgoing.editors };
+        self.groups[self.group_index] = Some(outgoing);
+        self.group_index = index;
+        if let Some(active) = self.active {
+            self.activate(active);
+        }
+        self.needs_render = true;
+    }
+
+    /// `workbench.action.splitEditor`: um grupo novo à direita com o mesmo documento (o mesmo modelo).
+    fn split_editor(&mut self) {
+        let Some(editor) = self.active_editor() else { return };
+        let rect = self.editor_rect();
+        let mut view = EditorView::new(editor.view.model().clone(), rect.width(), rect.height(), EditorColors::from_theme(&self.theme));
+        if let Some(env) = &self.environment {
+            view.set_token_colors(&env.color_map());
+        }
+        let copy = OpenEditor { path: editor.path.clone(), name: editor.name.clone(), language_name: editor.language_name.clone(), view, saved_version: editor.saved_version, head: editor.head.clone(), diff_version: -1, disk_mtime: editor.disk_mtime, preview: false };
+        self.groups.insert(self.group_index + 1, Some(Group { editors: vec![copy], active: Some(0) }));
+        self.focus_group(self.group_index + 1);
+        self.resize_editors();
+    }
+
+    /// Fecha o grupo em foco quando ele fica sem editores e há outro (o `workbench.editor.closeEmptyGroups`).
+    fn close_empty_group(&mut self) {
+        if !self.editors.is_empty() || self.groups.len() < 2 {
+            return;
+        }
+        let closing = self.group_index;
+        let next = if closing + 1 < self.groups.len() { closing + 1 } else { closing - 1 };
+        self.focus_group(next);
+        self.groups.remove(closing);
+        if self.group_index > closing {
+            self.group_index -= 1;
+        }
+        self.resize_editors();
+    }
+
+    /// Todos os editores abertos, de todos os grupos.
+    fn all_editors_mut(&mut self) -> impl Iterator<Item = &mut OpenEditor> {
+        self.editors.iter_mut().chain(self.groups.iter_mut().flatten().flat_map(|g| g.editors.iter_mut()))
+    }
+
+    /// Mostra a dica de `text` junto de `node` (o `IHoverService.showDelayedHover` com o estilo de ponteiro).
+    fn show_hover(&mut self, node: NodeId, text: &str, position: je_widgets::hover_api::HoverPosition) {
+        use je_widgets::hover_api::{HoverContent, HoverStyle, HoverTarget, IHoverOptions, IHoverPositionOptions};
+        self.hide_hover();
+        let mut options = IHoverOptions::new(HoverContent::Text(text.to_owned()), HoverTarget::Node(node));
+        options.style = Some(HoverStyle::Pointer);
+        options.position = Some(IHoverPositionOptions { hover_position: Some(position), anchor_alignment: None, force_position: None, clipping_element: None });
+        let hover = je_widgets::hover_widget::WorkbenchHoverWidget::new(&self.ui, options, je_widgets::hover_widget::default_hover_styles(&self.theme), None);
+        // A dica vai numa `ContextView` sobre a janela, como o `HoverService` faz: ela posiciona a caixa pela âncora.
+        let view = self.context_view.get_or_insert_with(|| {
+            let root = self.ui.root();
+            je_widgets::context_view::ContextView::new(&self.ui, root, je_widgets::context_view_api::ContextViewDOMPosition::Absolute)
+        });
+        view.show(je_widgets::hover_widget::HoverContextViewDelegate::new(hover.clone(), false, 0));
+        self.hover = Some(hover);
+        // Só um quadro novo: remontar a moldura mataria o nó alvo da dica.
+        self.redraw = true;
+    }
+
+    fn hide_hover(&mut self) {
+        if let Some(hover) = self.hover.take() {
+            if let Some(view) = &self.context_view {
+                view.hide();
+            }
+            IDisposable::dispose(&*hover);
+            self.redraw = true;
+        }
+    }
+
+    /// Liga a dica `text` ao nó: aparece depois de 500 ms com o ponteiro parado nele e some ao sair.
+    fn listen_hover(&self, node: NodeId, text: String, position: je_widgets::hover_api::HoverPosition) {
+        let (request, queue) = (self.hover_request.clone(), self.queue.clone());
+        let _ = self.ui.listen(node, EventKind::PointerEnter, false, move |_| {
+            let generation = request.borrow().as_ref().map_or(0, |r| r.0) + 1;
+            *request.borrow_mut() = Some((generation, node, text.clone(), position));
+            let queue = queue.clone();
+            je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::ShowHover(generation)), 500);
+        });
+        let (request, queue) = (self.hover_request.clone(), self.queue.clone());
+        let _ = self.ui.listen(node, EventKind::PointerLeave, false, move |_| {
+            if request.borrow().as_ref().is_some_and(|r| r.1 == node) {
+                queue.borrow_mut().push(Command::HideHover);
+            }
+        });
     }
 
     fn listen_command(&self, node: NodeId, command: Command) {
@@ -2187,6 +2697,9 @@ impl Shell {
     /// Remonta a moldura para o estado atual.
     pub fn render(&mut self) {
         self.needs_render = false;
+        // A moldura é remontada e o nó alvo da dica morre com ela: a dica some junto.
+        *self.hover_request.borrow_mut() = None;
+        self.hide_hover();
         let (width, height) = self.size;
         let old = self.nodes.chrome;
         let chrome = {
@@ -2338,6 +2851,17 @@ impl Shell {
         }
         for (button, view) in view_buttons {
             self.listen_command(button, Command::ShowView(view));
+            let shortcut = match view {
+                SideView::Explorer => "Ctrl+Shift+E",
+                SideView::Search => "Ctrl+Shift+F",
+                SideView::SourceControl => "Ctrl+Shift+G",
+                SideView::Debug => "Ctrl+Shift+D",
+                SideView::Extensions => "Ctrl+Shift+X",
+            };
+            self.listen_hover(button, format!("{} ({shortcut})", view.title()), je_widgets::hover_api::HoverPosition::Right);
+        }
+        if let Some(button) = manage_button {
+            self.listen_hover(button, "Manage".to_owned(), je_widgets::hover_api::HoverPosition::Right);
         }
     }
 
@@ -2530,7 +3054,7 @@ impl Shell {
         // À direita: maximizar e fechar sempre; o terminal ativo e as ações dele só na aba Terminal.
         let inner = rect.width() - 2.0;
         let terminal_tab = self.panel_tab == PanelTab::Terminal;
-        let mut icons: Vec<(&str, f64, Option<Command>)> = vec![("close", inner - 28.0, Some(Command::TogglePanel)), ("screen-full", inner - 54.0, None)];
+        let mut icons: Vec<(&str, f64, Option<Command>)> = vec![("close", inner - 28.0, Some(Command::TogglePanel)), ("screen-full", inner - 54.0, Some(Command::ToggleMaximizedPanel))];
         if terminal_tab {
             icons.extend([("ellipsis", inner - 80.0, None), ("trash", inner - 106.0, Some(Command::KillTerminal)), ("split-horizontal", inner - 132.0, None)]);
         }
@@ -2695,8 +3219,87 @@ impl Shell {
         }
     }
 
+    /// Um grupo fora de foco: a moldura, as abas (sem a de destaque do foco) e a superfície do editor ativo dele.
+    /// Clicar nele põe o foco no grupo.
+    fn render_other_group(&self, chrome: NodeId, index: usize) {
+        let Some(group) = self.groups[index].as_ref() else { return };
+        let part = self.group_part_rect(index);
+        let tab_font = ui_font(13.0, 400);
+        let inactive_fg = self.color("tab.inactiveForeground");
+        let unfocused_active_fg = self.color("tab.unfocusedActiveForeground");
+        let mut hits = Vec::new();
+        let mut tree = self.ui.tree_mut();
+        let frame = tree.create(chrome, Role::Region);
+        tree.set_bounds(frame, part);
+        let style = tree.style_mut(frame);
+        style.background = Some(self.color("editor.background"));
+        style.border = Some(Border { width: 1.0, color: self.color("editorGroup.border") });
+        style.radius = RADIUS;
+        style.clip = true;
+        hits.push((frame, Command::FocusGroup(index)));
+        let inner_width = part.width() - 2.0;
+        let strip = tree.create(frame, Role::TabList);
+        tree.set_bounds(strip, Rect::new(1.0, 1.0, 1.0 + inner_width, 1.0 + TABS_HEIGHT));
+        tree.style_mut(strip).background = Some(self.color("editorGroupHeader.connectedTabsBackground"));
+        let mut x = 0.0;
+        for (i, editor) in group.editors.iter().enumerate() {
+            let active = Some(i) == group.active;
+            let text_width = measure_text(&editor.name, &tab_font);
+            let width = (6.0 + 22.0 + text_width + 4.0 + 20.0 + 6.5).max(80.0).round();
+            let tab = tree.create(strip, Role::Tab);
+            tree.set_bounds(tab, Rect::new(x, 0.0, x + width, 31.0));
+            let style = tree.style_mut(tab);
+            style.corner_radii = Some([4.0, 4.0, 0.0, 0.0]);
+            style.cursor = Some(Cursor::Pointer);
+            if active {
+                style.background = Some(self.color("tab.unfocusedActiveBackground"));
+                let tail = tree.create(strip, Role::Generic);
+                tree.set_bounds(tail, Rect::new(x, 31.0, x + width, TABS_HEIGHT));
+                tree.style_mut(tail).background = Some(self.color("tab.unfocusedActiveBackground"));
+            }
+            if let Some(icons) = &self.icons {
+                let language = editor.view.model().get_language_id();
+                icons.decorate(&mut tree, tab, Rect::new(6.0, 3.5, 28.0, 27.5), &editor.name, Some(language.as_str()));
+            }
+            let label = tree.create(tab, Role::Generic);
+            tree.set_bounds(label, Rect::new(28.0, 3.5, 28.0 + text_width, 27.5));
+            let font = if editor.preview { je_text::TextStyle { italic: true, ..tab_font.clone() } } else { tab_font.clone() };
+            tree.style_mut(label).content = Content::Text { text: editor.name.clone(), style: font, color: if active { unfocused_active_fg } else { inactive_fg }, line_height: 24.0 };
+            if editor.is_modified() {
+                let dot = tree.create(tab, Role::Generic);
+                tree.set_bounds(dot, Rect::new(width - 26.5, 5.5, width - 6.5, 25.5));
+                tree.style_mut(dot).content = Content::Codicon { id: "circle-filled".into(), size: 12.0, color: inactive_fg };
+            }
+            hits.push((tab, Command::FocusGroupEditor(index, i)));
+            x += width;
+        }
+        if let Some(active) = group.active.and_then(|a| group.editors.get(a)) {
+            let crumbs = tree.create(frame, Role::Group);
+            tree.set_bounds(crumbs, Rect::new(1.0, 1.0 + TABS_HEIGHT, 1.0 + inner_width, 1.0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT));
+            tree.style_mut(crumbs).background = Some(self.color("breadcrumb.background"));
+            let name = tree.create(crumbs, Role::Link);
+            tree.set_bounds(name, Rect::new(38.0, 0.0, inner_width, BREADCRUMBS_HEIGHT));
+            tree.style_mut(name).content = Content::Text { text: active.name.clone(), style: tab_font.clone(), color: self.color("breadcrumb.foreground"), line_height: BREADCRUMBS_HEIGHT };
+            let host = tree.create(frame, Role::TextInput);
+            tree.set_bounds(host, Rect::new(1.0, 1.0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT, 1.0 + inner_width, part.height() - 1.0));
+            let style = tree.style_mut(host);
+            style.content = Content::Host(100 + index as u32);
+            style.cursor = Some(Cursor::Text);
+        }
+        drop(tree);
+        for (node, command) in hits {
+            let queue = self.queue.clone();
+            let _ = self.ui.listen(node, EventKind::PointerDown, false, move |_| queue.borrow_mut().push(command.clone()));
+        }
+    }
+
     fn render_editor_part(&mut self, chrome: NodeId) {
-        let part = self.editor_part_rect();
+        for index in 0..self.groups.len() {
+            if index != self.group_index {
+                self.render_other_group(chrome, index);
+            }
+        }
+        let part = self.group_part_rect(self.group_index);
         let tab_font = ui_font(13.0, 400);
         let active_fg = self.color("tab.activeForeground");
         let inactive_fg = self.color("tab.inactiveForeground");
@@ -2745,7 +3348,8 @@ impl Shell {
             }
             let label = tree.create(tab, Role::Generic);
             tree.set_bounds(label, Rect::new(6.0 + icon_width, 3.5, 6.0 + icon_width + text_width, 27.5));
-            tree.style_mut(label).content = Content::Text { text: editor.name.clone(), style: tab_font.clone(), color: fg, line_height: 24.0 };
+            let font = if editor.preview { je_text::TextStyle { italic: true, ..tab_font.clone() } } else { tab_font.clone() };
+            tree.style_mut(label).content = Content::Text { text: editor.name.clone(), style: font, color: fg, line_height: 24.0 };
             // O botão de fechar: visível na aba ativa e sob o ponteiro; o ponto de modificado no lugar dele.
             let close = tree.create(tab, Role::Button);
             let cx = width - 6.5 - 20.0;
@@ -2761,11 +3365,18 @@ impl Shell {
             x += width;
         }
         // As ações do grupo à direita: dividir e mais.
+        let mut split_button = None;
         for (i, id) in ["split-horizontal", "ellipsis"].iter().enumerate() {
             let button = tree.create(strip, Role::Button);
             let bx = inner_width - 4.0 - 22.0 * (2 - i) as f64 - 4.0 * (1 - i) as f64;
             tree.set_bounds(button, Rect::new(bx, 4.5, bx + 22.0, 26.5));
-            tree.style_mut(button).content = Content::Codicon { id: (*id).into(), size: 16.0, color: active_fg };
+            let style = tree.style_mut(button);
+            style.content = Content::Codicon { id: (*id).into(), size: 16.0, color: active_fg };
+            style.radius = 5.0;
+            if i == 0 {
+                style.cursor = Some(Cursor::Pointer);
+                split_button = Some(button);
+            }
         }
         // Os breadcrumbs do editor ativo: ícone, nome e o `…` dos símbolos.
         let active = &self.editors[self.active.unwrap_or(0)];
@@ -2829,7 +3440,12 @@ impl Shell {
         style.cursor = Some(Cursor::Text);
         drop(tree);
         self.nodes.editor_host = Some(host);
+        if let Some(button) = split_button {
+            self.listen_command(button, Command::SplitEditor);
+        }
         for (index, tab, close) in tab_nodes {
+            let title = self.editors[index].path.as_ref().map_or_else(|| self.editors[index].name.clone(), |p| p.display().to_string());
+            self.listen_hover(tab, title, je_widgets::hover_api::HoverPosition::Below);
             let queue = self.queue.clone();
             let _ = self.ui.listen(tab, EventKind::PointerDown, false, move |e| {
                 match e.pointer.map(|p| p.button) {
@@ -2839,6 +3455,8 @@ impl Shell {
                 }
             });
             let queue = self.queue.clone();
+            let queue_pin = self.queue.clone();
+            let _ = self.ui.listen(tab, EventKind::DoubleClick, false, move |_| queue_pin.borrow_mut().push(Command::PinEditor(index)));
             let _ = self.ui.listen(close, EventKind::Click, false, move |e| {
                 e.stop_propagation();
                 queue.borrow_mut().push(Command::CloseEditor(index));
@@ -2991,6 +3609,18 @@ impl Shell {
         left += place(&mut tree, left, &[Piece::Icon("remote")], None);
         if let Some(label) = self.branch_label() {
             left += place(&mut tree, left, &[Piece::Icon("git-branch"), Piece::Text(format!(" {label}"))], Some(Command::ShowScm));
+            // O `Synchronize Changes`: as contagens de puxar e empurrar, ou só o ícone de publicar sem remoto.
+            let (upstream, ahead, behind) = {
+                let s = self.scm.status.borrow();
+                (s.upstream, s.ahead, s.behind)
+            };
+            let busy = self.git_rx.is_some();
+            if upstream {
+                let text = if ahead == 0 && behind == 0 { String::new() } else { format!(" {behind}\u{2193} {ahead}\u{2191}") };
+                left += place(&mut tree, left, &[Piece::Icon(if busy { "loading" } else { "sync" }), Piece::Text(text)], Some(Command::ScmOp(git::Operation::Sync)));
+            } else {
+                left += place(&mut tree, left, &[Piece::Icon("cloud-upload")], None);
+            }
         }
         place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())], None);
         let mut items: Vec<(Vec<Piece>, Option<Command>)> = Vec::new();
@@ -3000,7 +3630,7 @@ impl Shell {
             let eol = if model.get_eol() == je_editor::model::Eol::CrLf { "CRLF" } else { "LF" };
             let indent = if options.insert_spaces { format!("Spaces: {}", options.indent_size) } else { format!("Tab Size: {}", options.tab_size) };
             items.push((vec![Piece::Text(editor.view.status_text())], Some(Command::PromptGoToLine)));
-            items.push((vec![Piece::Text(indent)], None));
+            items.push((vec![Piece::Text(indent)], Some(Command::PickIndentation)));
             items.push((vec![Piece::Text("UTF-8".to_owned())], None));
             items.push((vec![Piece::Text(eol.to_owned())], Some(Command::PickEol)));
             items.push((vec![Piece::Icon("json")], Some(Command::PickLanguage)));
@@ -3043,7 +3673,19 @@ impl Shell {
             e.view.resize(rect.width(), rect.height());
         }
         let (terminal, palette, terminal_focused) = (&self.terminal, &self.terminal_palette, self.terminal_focused);
+        let groups = &mut self.groups;
         tree.paint_hosted(list, scale, &mut |surface, area, list| {
+            if surface >= 100 {
+                // O editor ativo de um grupo fora de foco, sem cursor piscando.
+                let Some(view) = groups.get_mut((surface - 100) as usize).and_then(Option::as_mut).and_then(|g| g.active.and_then(|a| g.editors.get_mut(a))).map(|e| &mut e.view) else { return };
+                view.resize(area.width(), area.height());
+                view.set_focus(false);
+                let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
+                list.push_clip(Shape::RoundedRect(RoundedRect::from_rect(device, RoundedRectRadii::new(0.0, 0.0, 7.0 * scale, 7.0 * scale))));
+                view.paint(list, (area.x0, area.y0), scale, now);
+                list.pop_clip();
+                return;
+            }
             if surface == 1 {
                 if let Some(terminal) = terminal {
                     let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
@@ -3152,10 +3794,25 @@ impl Shell {
             self.needs_render = true;
             return;
         }
+        if input.kind == PointerInputKind::Down
+            && let Some(group) = (0..self.groups.len()).find(|i| *i != self.group_index && self.group_part_rect(*i).contains(je_render::kurbo::Point::new(x, y)))
+        {
+            // O clique num grupo fora de foco o foca antes; a moldura nova vale para o resto do clique.
+            self.focus_group(group);
+            self.render();
+        }
         if input.kind == PointerInputKind::Down {
             let in_terminal = self.panel_tab == PanelTab::Terminal && self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y)));
             if in_terminal != self.terminal_focused {
                 self.set_terminal_focus(in_terminal);
+            }
+        }
+        // O ponteiro sobre o editor (os chevrons de dobra da margem aparecem com ele).
+        if input.kind == PointerInputKind::Move {
+            let local = self.editor_local(x, y);
+            if let Some(editor) = self.active_editor_mut() {
+                let (lx, ly) = local.unwrap_or((-1.0, -1.0));
+                editor.view.mouse_move(lx, ly);
             }
         }
         let target = self.ui.pointer_input(input);
@@ -3227,12 +3884,21 @@ impl Shell {
             (true, false, false, KeyCode::KeyS) => Command::Save,
             (true, true, false, KeyCode::KeyS) => Command::PromptSaveAs,
             (true, false, false, KeyCode::KeyO) => Command::PromptOpenFile,
+            (true, false, false, KeyCode::KeyR) => Command::OpenRecent,
+            (true, _, false, KeyCode::Equal) | (true, false, false, KeyCode::NumpadAdd) => Command::Zoom(1),
+            (true, false, false, KeyCode::Minus) | (true, false, false, KeyCode::NumpadSubtract) => Command::Zoom(-1),
+            (true, false, false, KeyCode::Digit0) | (true, false, false, KeyCode::Numpad0) => Command::Zoom(0),
             (true, false, false, KeyCode::KeyW) | (true, false, false, KeyCode::F4) => Command::CloseActiveEditor,
             (true, false, false, KeyCode::KeyQ) => Command::Exit,
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
             (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
             (true, false, false, KeyCode::KeyF) => Command::Find,
+            (true, false, false, KeyCode::KeyH) => Command::FindAndReplace,
             (true, false, false, KeyCode::KeyJ) => Command::TogglePanel,
+            (true, false, false, KeyCode::Backslash) => Command::SplitEditor,
+            (true, false, false, KeyCode::Digit1) => Command::FocusGroup(0),
+            (true, false, false, KeyCode::Digit2) => Command::FocusGroup(1),
+            (true, false, false, KeyCode::Digit3) => Command::FocusGroup(2),
             (true, false, false, KeyCode::Comma) => Command::OpenSettingsJson,
             (true, false, false, KeyCode::KeyG) => Command::PromptGoToLine,
             (true, false, false, KeyCode::Backquote) => Command::ToggleTerminal,
@@ -3250,6 +3916,7 @@ impl Shell {
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
             (false, false, false, KeyCode::F11) => Command::ToggleFullScreen,
+            (false, false, true, KeyCode::KeyZ) => Command::ToggleWordWrap,
             _ => return None,
         })
     }
@@ -3366,7 +4033,7 @@ impl Shell {
                 (true, KeyCode::KeyR) => Some(Command::FindToggleRegex),
                 _ => None,
             };
-            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::QuickOpen | Command::ShowCommands | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
+            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::FindAndReplace | Command::QuickOpen | Command::ShowCommands | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
             if let Some(command) = toggles.or(shortcut) {
                 self.run(command);
                 return;
@@ -3421,6 +4088,9 @@ impl Shell {
         }
         if !focused {
             self.menubar.blur();
+            if matches!(self.auto_save.0.as_str(), "onFocusChange" | "onWindowChange") {
+                self.run(Command::SaveAll);
+            }
         }
     }
 
@@ -3428,6 +4098,27 @@ impl Shell {
     pub fn take_dirty(&mut self) -> bool {
         self.run_commands();
         let editor = self.active.is_some_and(|i| self.editors[i].view.take_dirty());
+        // Editar fixa a aba de pré-visualização.
+        if let Some(i) = self.active
+            && self.editors[i].preview
+            && self.editors[i].is_modified()
+        {
+            self.editors[i].preview = false;
+            self.needs_render = true;
+        }
+        // `files.autoSave: afterDelay`: a aba ativa modificada salva depois do prazo sem novas edições.
+        if self.auto_save.0 == "afterDelay"
+            && let Some(index) = self.active
+            && self.editors[index].path.is_some()
+            && self.editors[index].is_modified()
+        {
+            let version = self.editors[index].view.model().get_version_id();
+            if self.auto_save_scheduled != Some((index, version)) {
+                self.auto_save_scheduled = Some((index, version));
+                let queue = self.queue.clone();
+                je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::AutoSave(index, version)), self.auto_save.1);
+            }
+        }
         let terminal = self.terminal.as_ref().is_some_and(je_terminal::Terminal::take_dirty);
         if let Some(rx) = &self.git_rx
             && let Ok(result) = rx.try_recv()
@@ -3446,7 +4137,7 @@ impl Shell {
         if search {
             self.needs_render = true;
         }
-        editor || terminal || self.needs_render || self.ui.has_pending_animation_frame()
+        editor || terminal || self.needs_render || std::mem::take(&mut self.redraw) || self.ui.has_pending_animation_frame()
     }
 
     pub fn next_blink_deadline(&self, now: Instant) -> Option<Instant> {

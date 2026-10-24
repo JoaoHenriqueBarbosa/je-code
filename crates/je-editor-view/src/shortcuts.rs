@@ -60,6 +60,13 @@ pub(crate) fn key_code_of(key: EditorKey) -> KeyCode {
         EditorKey::Tab => KeyCode::Tab,
         EditorKey::Escape => KeyCode::Escape,
         EditorKey::Char(c) => {
+            // Com Shift o caractere do teclado americano é o de cima da tecla (`{` em `[`): o atalho é da tecla.
+            let c = match c {
+                '{' => '[',
+                '}' => ']',
+                ')' => '0',
+                _ => c,
+            };
             let name = c.to_string();
             match KeyCodeUtils::from_user_settings(&name) {
                 KeyCode::Unknown => KeyCodeUtils::from_string(&name),

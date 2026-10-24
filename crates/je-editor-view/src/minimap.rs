@@ -5,8 +5,7 @@
 //! O minimapa de um documento maior que a altura rola junto com o editor, em proporção: o topo do documento no
 //! topo do minimapa quando a rolagem é zero e o fim no fim quando ela é máxima.
 
-use je_editor::cursor_common::CursorSimpleModel;
-use je_editor::line_tokens::IViewLineTokens;
+use je_editor::view_model_types::IViewModel;
 use je_render::kurbo::Rect;
 use je_render::{DisplayList, Rgba, Shape};
 
@@ -73,12 +72,13 @@ impl EditorView {
         let tab = self.layout.tab_size.max(1) as usize;
         for line_number in first..=last {
             let top = f64::from(line_number - 1) * L::MINIMAP_LINE_HEIGHT - offset;
-            let content = self.model.get_line_content(line_number);
-            let units = content.units();
+            // As linhas da view (com quebra de linha e dobra), como o `getMinimapLinesRenderingData`.
+            let data = self.core.view_model.get_view_line_data(line_number);
+            let units = data.content.units();
             if units.iter().all(|u| *u == 0x20 || *u == 0x09) {
                 continue;
             }
-            let tokens = self.model.tokenization().get_line_tokens(line_number);
+            let tokens = data.tokens.clone();
             // A coluna de cada unidade (a tabulação avança até o próximo múltiplo de `tab`).
             let mut column = 0usize;
             let mut token_start = 0usize;

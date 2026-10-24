@@ -1304,6 +1304,13 @@ pub struct HoverContextViewDelegate {
     layer: i32,
 }
 
+impl HoverContextViewDelegate {
+    /// O delegado de uma dica: `focus` põe o foco nela ao mostrar e `layer` é a profundidade na pilha de dicas.
+    pub fn new(hover: Rc<WorkbenchHoverWidget>, focus: bool, layer: i32) -> Rc<Self> {
+        Rc::new(Self { hover, focus, layer })
+    }
+}
+
 impl IContextViewDelegate for HoverContextViewDelegate {
     fn get_anchor(&self) -> Anchor {
         Anchor::Rect(je_base::layout::IAnchor { x: self.hover.x(), y: self.hover.y(), width: None, height: None })
