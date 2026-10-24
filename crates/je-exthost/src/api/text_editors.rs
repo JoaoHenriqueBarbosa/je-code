@@ -118,7 +118,7 @@ impl TextObjects {
         instance("TextDocument", JsData::Num(id as f64))
     }
 
-    fn document_of(&self, value: &JsData) -> Result<TextDocument, String> {
+    pub(crate) fn document_of(&self, value: &JsData) -> Result<TextDocument, String> {
         match field(value, "_id") {
             Some(JsData::Num(id)) => self.documents.borrow().get(&(*id as u64)).cloned().ok_or_else(|| "TextDocument: documento desconhecido".to_owned()),
             _ => Err("esperava um TextDocument".to_owned()),

@@ -40,7 +40,7 @@ fn change_field(change: &JsData, name: &str) -> Result<Field, String> {
 }
 
 /// O resultado de uma operação do `uri.ts` que pode levantar (`[UriError]`), como `Result` de mensagem.
-fn guarded<T>(operation: impl FnOnce() -> T) -> Result<T, String> {
+pub(crate) fn guarded<T>(operation: impl FnOnce() -> T) -> Result<T, String> {
     errors::catch(operation).map_err(|error| error.message)
 }
 
