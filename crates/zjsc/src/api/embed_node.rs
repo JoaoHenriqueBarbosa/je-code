@@ -29,6 +29,8 @@ use crate::runtime::identifier::Identifier;
 use crate::runtime::js_array::{construct_array, is_js_array};
 use crate::runtime::js_function::JSFunction;
 use crate::runtime::js_object::JSObject;
+use crate::runtime::js_promise::JSPromise;
+use crate::runtime::js_promise_host::PromiseHost;
 use crate::runtime::js_value::{js_boolean, js_number, JSValue};
 use crate::runtime::object_constructor::{construct_empty_object, enumerable_own_entries};
 use crate::runtime::property_attribute::DONT_ENUM;
@@ -237,7 +239,29 @@ fn copies_by_value(value: &JSValue) -> bool {
     }
 }
 
+/// Um erro (`Error` e subclasses) viaja por cópia como objeto com `name`, `message` e `stack` (e a causa, se houver): é o
+/// que o código do hospedeiro lê de um `catch`.
+fn read_error(global: &JSGlobalObjectRef, value: JSValue, depth: usize) -> Option<JsData> {
+    use crate::runtime::js_type::JSType;
+    let JSValue::Cell(id) = value else { return None };
+    if !matches!(crate::runtime::cell_registry::cell_type(id), Some(JSType::ErrorInstanceType)) {
+        return None;
+    }
+    let mut fields = vec![(CLASS_KEY.to_owned(), JsData::Str("Error".to_owned()))];
+    for name in ["name", "message", "stack", "cause"] {
+        if let Ok(item) = get_object_property(global, value, &Identifier::from_span(global.vm(), name.as_bytes())) {
+            if !item.is_undefined() {
+                fields.push((name.to_owned(), read_value(global, item, depth + 1)));
+            }
+        }
+    }
+    Some(JsData::Object(fields))
+}
+
 fn read_value(global: &JSGlobalObjectRef, value: JSValue, depth: usize) -> JsData {
+    if let Some(error) = read_error(global, value, depth) {
+        return error;
+    }
     if value.is_undefined() {
         JsData::Undefined
     } else if value.is_null() {
@@ -334,7 +358,9 @@ pub enum NodeArg<'a> {
     Handle(&'a JsHandle),
 }
 
-/// O programa em curso.
+/// O programa em curso. Clonar é barato (duas contagens de referência): os closures que o hospedeiro entrega ao JavaScript
+/// guardam um clone para chamar de volta.
+#[derive(Clone)]
 pub struct NodeRunner {
     vm: Rc<VM>,
     global_object: JSGlobalObjectRef,
@@ -461,6 +487,50 @@ impl NodeRunner {
     pub fn register_module(&self, name: &str, exports: &JsData) {
         let handle = self.import(exports);
         HOST_MODULES.with(|modules| modules.borrow_mut().insert(name.to_owned(), handle));
+    }
+
+    /// `target[name](...args)` com `this` igual a `target`; devolve o resultado copiado. Esvazia as microtarefas.
+    pub fn call_method(&self, target: &JsHandle, name: &str, args: &[JsData]) -> Result<JsData, String> {
+        let vm = &self.vm;
+        let method = get_object_property(&self.global_object, target.0, &Identifier::from_span(vm, name.as_bytes())).map_err(|_| {
+            let message = vm.exception().map(|exception| describe_exception(&exception.value())).unwrap_or_default();
+            vm.clear_exception();
+            message
+        })?;
+        let values: Vec<JSValue> = args.iter().map(|arg| write_value(&self.global_object, arg)).collect();
+        let _arguments = RootScope::new(&values);
+        let result = call_function(&self.global_object, method, target.0, &values).ok_or_else(|| {
+            let message = vm.exception().map(|exception| describe_exception(&exception.value())).unwrap_or_default();
+            vm.clear_exception();
+            message
+        });
+        vm.drain_microtasks();
+        result.map(|value| read_value(&self.global_object, value, 0))
+    }
+
+    /// Uma promessa JavaScript nova, ainda pendente. [`NodeRunner::resolve_promise`] e [`NodeRunner::reject_promise`] a assentam.
+    pub fn new_promise(&self) -> JsHandle {
+        JsHandle::new(JSPromise::create(&self.vm, &self.global_object.promise_structure()).as_value())
+    }
+
+    /// Resolve `promise` (uma promessa de [`NodeRunner::new_promise`]) com `data`; só a primeira chamada vale.
+    pub fn resolve_promise(&self, promise: &JsHandle, data: &JsData) -> bool {
+        let Some(target) = JSPromise::from_value(&promise.0) else { return false };
+        let value = write_value(&self.global_object, data);
+        let _rooted = RootScope::new(&[value]);
+        target.resolve(&*self.global_object, value);
+        self.vm.drain_microtasks();
+        true
+    }
+
+    /// Rejeita `promise` com `data` (em geral um erro); só a primeira chamada vale.
+    pub fn reject_promise(&self, promise: &JsHandle, data: &JsData) -> bool {
+        let Some(target) = JSPromise::from_value(&promise.0) else { return false };
+        let value = write_value(&self.global_object, data);
+        let _rooted = RootScope::new(&[value]);
+        target.reject(&*self.global_object, value);
+        self.vm.drain_microtasks();
+        true
     }
 
     /// Converte `data` em valor JavaScript e o guarda.

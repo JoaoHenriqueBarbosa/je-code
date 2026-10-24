@@ -354,3 +354,45 @@ fn host_module_is_reachable_from_commonjs_modules_loaded_from_disk() {
         assert_eq!(text(runner, "loadExtension().activate()"), "olá, mundo:true:vscode");
     });
 }
+
+// ---- promessas: `call_method`, `new_promise`, `resolve_promise` e `reject_promise`
+
+#[test]
+fn javascript_promises_settle_native_callbacks_through_call_method() {
+    with_runner("", |runner, _| {
+        let outcomes: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (ok, bad) = (outcomes.clone(), outcomes.clone());
+        let on_fulfilled = runner.make_function("ok", 1, Rc::new(move |args| {
+            ok.borrow_mut().push(format!("ok:{}", match &args[0] { JsData::Num(n) => n.to_string(), JsData::Str(s) => s.clone(), _ => "?".into() }));
+            Ok(JsData::Undefined)
+        }));
+        let on_rejected = runner.make_function("bad", 1, Rc::new(move |args| {
+            bad.borrow_mut().push(format!("bad:{}", match &args[0] { JsData::Object(f) => f.iter().find(|(k, _)| k == "message").map(|(_, v)| match v { JsData::Str(s) => s.clone(), _ => "?".into() }).unwrap_or_default(), _ => "?".into() }));
+            Ok(JsData::Undefined)
+        }));
+        let resolved = runner.eval("Promise.resolve(7)", "t.js").unwrap();
+        let rejected = runner.eval("Promise.reject(new Error('quebrou'))", "t.js").unwrap();
+        let (f, r) = (Rc::new(on_fulfilled), Rc::new(on_rejected));
+        runner.call_method(&resolved, "then", &[JsData::Handle(f.clone()), JsData::Handle(r.clone())]).unwrap();
+        runner.call_method(&rejected, "then", &[JsData::Handle(f), JsData::Handle(r)]).unwrap();
+        assert_eq!(*outcomes.borrow(), ["ok:7", "bad:quebrou"]);
+    });
+}
+
+#[test]
+fn rust_created_promises_are_awaited_by_javascript() {
+    with_runner("globalThis.log = [];", |runner, _| {
+        let promise = Rc::new(runner.new_promise());
+        runner.set_global("pending", &JsData::Handle(promise.clone()));
+        runner.eval("pending.then((v) => log.push('then:' + v), (e) => log.push('catch:' + e)); (async () => { log.push('await:' + await pending); })();", "t.js").unwrap();
+        assert_eq!(text(runner, "log.join()"), "", "pendente: nada ainda");
+        assert!(runner.resolve_promise(&promise, &JsData::Str("pronto".into())));
+        assert!(runner.resolve_promise(&promise, &JsData::Str("de novo".into())), "a segunda chamada é aceita e ignorada");
+        assert_eq!(text(runner, "log.join()"), "then:pronto,await:pronto");
+        let failing = Rc::new(runner.new_promise());
+        runner.set_global("failing", &JsData::Handle(failing.clone()));
+        runner.eval("failing.catch((e) => log.push('erro:' + e))", "t.js").unwrap();
+        runner.reject_promise(&failing, &JsData::Str("falhou".into()));
+        assert_eq!(text(runner, "log.join()"), "then:pronto,await:pronto,erro:falhou");
+    });
+}
