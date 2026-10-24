@@ -317,7 +317,7 @@ fn reference_and_highlight_providers_convert_their_lists() {
         workbench.pump();
         let locations = settled_ok(&pending, "provideReferences").expect("as referências");
         assert_eq!(locations.len(), 2);
-        assert_eq!(locations[1].range, EditorRange::new(3, 2, 3, 5), "o intervalo vira base 1");
+        assert_eq!(locations[1].range, Some(EditorRange::new(3, 2, 3, 5)), "o intervalo vira base 1");
 
         let pending = observed.features_proxy().rpc_provide_document_highlights(highlight, &project_file("a.txt"), EditorPosition::new(2, 3), CancellationToken::None);
         workbench.pump();
