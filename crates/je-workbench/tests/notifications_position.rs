@@ -24,7 +24,7 @@ use je_workbench::browser::parts::notifications::notifications_actions::{
     HIDE_ICON, HIDE_UP_ICON, RegisteredIcon, codicon, get_notification_collapse_icon, get_notification_expand_icon,
 };
 use je_workbench::common::notifications::{NotificationsPosition, NotificationsSettings};
-use support::test_configuration_service::TestConfigurationService;
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 
 fn position_value(configuration_service: &TestConfigurationService) -> Dynamic {
     configuration_service.get_value(Some(NotificationsSettings::NotificationsPosition.as_str()), None)

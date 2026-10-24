@@ -34,8 +34,8 @@ use je_base::map::OrderedMap;
 use je_platform::notification::notification_legacy::LEGACY_EXTENSION_LINK_PARSING;
 use je_platform::notification::notification_message::{NotificationPart, NotificationText};
 use je_platform::notification::{
-    Notification, NotificationActions, NotificationHandle as _, NotificationPriority, NotificationProgress as _, NotificationProgressProperties, NotificationProperties,
-    NotificationSource, NotificationSourceOrText, NotificationsFilter, Severity, StatusHandle as _,
+    Notification, NotificationActions, NotificationPriority, NotificationProgress as _, NotificationProgressProperties, NotificationProperties,
+    NotificationSource, NotificationSourceOrText, NotificationsFilter, Severity, 
 };
 use je_workbench::common::notifications::{
     INotificationsModel, NotificationChangeEvent, NotificationChangeType, NotificationViewItem, NotificationViewItemContentChangeKind, NotificationsFilterState,
@@ -78,7 +78,8 @@ fn legacy_notification(message: &str) -> Notification {
 }
 
 fn action(guard: &LeakGuard, id: &str) -> ActionRef {
-    guard.add_rc(Action::new(id, "label", "", true, None))
+    let action: Rc<Action> = guard.add_rc(Action::new(id, "label", "", true, None));
+    action
 }
 
 fn with_primary_actions(notification: Notification, primary: Vec<ActionRef>) -> Notification {
