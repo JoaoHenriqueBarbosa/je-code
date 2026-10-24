@@ -65,7 +65,9 @@ use je_platform::log::{LogArg, LogService, Logger};
 use je_platform::markers::{MarkerCode, MarkerData, MarkerSeverity};
 use je_platform::resources::{host_environment, host_platform};
 
-use crate::services::extensions::extensions_registry::{ExtensionPoint, ExtensionPointDescriptor, extensions_registry};
+use crate::services::extensions::extensions_registry::{
+    ExtensionMessageCollector, ExtensionPoint, ExtensionPointDelta, ExtensionPointDescriptor, extensions_registry,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Enums e tipos de dados
@@ -1411,29 +1413,8 @@ impl ProblemPatternParser {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Contratos mínimos do ponto de extensão e o relator
+// O relator das mensagens de validação de um ponto de extensão
 // ---------------------------------------------------------------------------------------------
-
-/// `ExtensionMessageCollector`: onde as mensagens de validação de uma extensão aparecem.
-pub trait ExtensionMessageCollector {
-    fn error(&self, message: &str);
-    fn warn(&self, message: &str);
-    fn info(&self, message: &str);
-}
-
-/// `IExtensionPointUser<T>`: o valor contribuído por uma extensão e o coletor das mensagens dela.
-#[derive(Clone)]
-pub struct ExtensionPointUser<T> {
-    pub value: T,
-    pub collector: Rc<dyn ExtensionMessageCollector>,
-}
-
-/// `IExtensionPointUserDelta<T>`: `delta.added` e `delta.removed`.
-#[derive(Clone)]
-pub struct ExtensionPointDelta<T> {
-    pub added: Vec<ExtensionPointUser<T>>,
-    pub removed: Vec<ExtensionPointUser<T>>,
-}
 
 /// `ExtensionRegistryReporter`.
 pub struct ExtensionRegistryReporter {

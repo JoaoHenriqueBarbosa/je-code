@@ -227,7 +227,7 @@ impl Memory for LruMemory {
         }
 
         let top_score = items[0].score.borrow()[0];
-        let mut index_preselect: Option<usize> = None;
+        let index_preselect: Option<usize> = None;
         let mut index_recency: Option<usize> = None;
         let mut seq: i64 = -1;
         for (i, item) in items.iter().enumerate() {

@@ -33,7 +33,7 @@ use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::configuration::defaults::DefaultConfigurationChange;
 use je_platform::configuration::models::{
-    Configuration as BaseConfiguration, ConfigurationChangeEvent, ConfigurationInspectValue, ConfigurationKeys, ConfigurationModel, PreviousConfiguration, merge_changes,
+    ConfigurationChangeEvent, ConfigurationInspectValue, ConfigurationKeys, ConfigurationModel, PreviousConfiguration, merge_changes,
 };
 use je_platform::configuration::policy_configuration::{NullPolicyConfiguration, PolicyConfiguration, PolicyConfigurationApi};
 use je_platform::configuration::registry::{ConfigurationNode, ConfigurationNodeData, ConfigurationScope, PropertySchema, configuration_registry, key_from_override_identifiers};

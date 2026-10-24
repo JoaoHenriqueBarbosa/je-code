@@ -42,7 +42,7 @@ use je_platform::configuration::registry::{ConfigurationDefaults, ConfigurationR
 use je_platform::configuration::user_settings::UserSettings;
 use je_platform::files::file_service::{FileService, when_provider_registered};
 use je_platform::files::files::{FileChangeType, FileChangesEvent, FileOperation, FileOperationError, FileOperationEvent, FileOperationResult, ReadFileOptions};
-use je_platform::js::{for_in_entries, from_json, object_keys, set_property};
+use je_platform::js::{for_in_entries, from_json, object_keys};
 use je_platform::log::LogServiceRef;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::user_data_profile::user_data_profile::IUserDataProfilesService;

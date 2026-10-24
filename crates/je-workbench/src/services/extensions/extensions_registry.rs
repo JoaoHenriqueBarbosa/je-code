@@ -4,9 +4,10 @@
 //!
 //! Divergências:
 //! - O original acopla ao registro o esquema JSON do `package.json` (`schema`, `schemaRegistry`), o gerador de
-//!   eventos de ativação implícitos, o tratador e os usuários de cada ponto (`setHandler`, `acceptUsers`,
-//!   `ExtensionPointUserDelta`, `ExtensionMessageCollector`). Nada disso é lido pelas propriedades do manifesto;
-//!   entra quando o host de extensões for portado, junto com o `jsonSchema` do descritor.
+//!   eventos de ativação implícitos e o tratador de cada ponto (`setHandler`, `acceptUsers`). Nada disso é lido pelas
+//!   propriedades do manifesto; entra quando o host de extensões for portado, junto com o `jsonSchema` do descritor. Os
+//!   tipos que os tratadores recebem ([`ExtensionMessageCollector`], [`ExtensionPointUser`], [`ExtensionPointDelta`])
+//!   já estão aqui, porque os registros que consomem pontos de extensão (o `ProblemMatcherRegistry`) os leem.
 //! - O `Registry.as(PRExtensions.ExtensionsRegistry)` global é um `thread_local`, como o registro de
 //!   configuração ([`je_platform::configuration::registry::configuration_registry`]).
 
@@ -70,4 +71,25 @@ thread_local! {
 /// `ExtensionsRegistry`.
 pub fn extensions_registry() -> Rc<ExtensionsRegistryImpl> {
     EXTENSIONS_REGISTRY.with(Rc::clone)
+}
+
+/// `ExtensionMessageCollector`: onde as mensagens de validação de uma extensão aparecem.
+pub trait ExtensionMessageCollector {
+    fn error(&self, message: &str);
+    fn warn(&self, message: &str);
+    fn info(&self, message: &str);
+}
+
+/// `IExtensionPointUser<T>`: o valor contribuído por uma extensão e o coletor das mensagens dela.
+#[derive(Clone)]
+pub struct ExtensionPointUser<T> {
+    pub value: T,
+    pub collector: Rc<dyn ExtensionMessageCollector>,
+}
+
+/// `IExtensionPointUserDelta<T>`: `delta.added` e `delta.removed`.
+#[derive(Clone)]
+pub struct ExtensionPointDelta<T> {
+    pub added: Vec<ExtensionPointUser<T>>,
+    pub removed: Vec<ExtensionPointUser<T>>,
 }
