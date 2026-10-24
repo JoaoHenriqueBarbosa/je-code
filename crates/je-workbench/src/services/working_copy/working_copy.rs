@@ -25,6 +25,8 @@ use je_base::uri::URI;
 
 use crate::common::editor::{RevertOptions, SaveOptions, SaveReason, SaveSource};
 
+use super::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
+
 /// `WorkingCopyCapabilities`: máscara de bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkingCopyCapabilities(pub u32);
@@ -114,6 +116,14 @@ pub trait IWorkingCopy {
 
     /// Used by the workbench e.g. to track local history (unless this working copy is untitled).
     fn on_did_save(&self) -> Event<WorkingCopySaveEvent>;
+
+    /// Extensão do porte: no original o `onDidSave` de uma working copy de arquivo armazenado dispara o objeto
+    /// `IStoredFileWorkingCopySaveEvent` (com o `stat`) e o `isStoredFileWorkingCopySaveEvent` o reconhece em tempo de
+    /// execução. Aqui o evento tipado fica neste método (`None` nas working copies que não são de arquivo armazenado), e o
+    /// `WorkingCopyService` o repassa com o `stat` em `WorkingCopySaveEvent::stat`.
+    fn stored_file_save_event(&self) -> Option<Event<StoredFileWorkingCopySaveEvent>> {
+        None
+    }
 
     /// Indicates that the file has unsaved changes and should confirm before closing.
     fn is_dirty(&self) -> bool;

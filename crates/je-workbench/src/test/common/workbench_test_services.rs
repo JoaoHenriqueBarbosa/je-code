@@ -421,6 +421,10 @@ impl IWorkingCopy for TestWorkingCopy {
         self.on_did_save.event().map(|e| e.event.clone(), None)
     }
 
+    fn stored_file_save_event(&self) -> Option<Event<StoredFileWorkingCopySaveEvent>> {
+        Some(self.on_did_save.event())
+    }
+
     fn is_dirty(&self) -> bool {
         self.dirty.get()
     }
