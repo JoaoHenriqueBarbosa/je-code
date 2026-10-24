@@ -211,6 +211,10 @@ pub enum Command {
     ShowScm,
     ShowExtensions,
     OpenRecent,
+    /// `workbench.action.zoomIn`/`zoomOut`/`zoomReset`: muda o `window.zoomLevel` em um passo.
+    Zoom(i32),
+    /// O `files.autoSave: afterDelay` venceu o prazo para a versão dada da aba.
+    AutoSave(usize, i64),
     /// Mostra a dica do nó depois da espera (`workbench.hover.delay`), se o ponteiro ainda estiver nele.
     ShowHover(u64),
     HideHover,
@@ -367,6 +371,12 @@ pub struct Shell {
     dialog: Option<Rc<je_widgets::dialog::Dialog>>,
     fullscreen_requested: bool,
     needs_render: bool,
+    /// O `window.zoomLevel` (cada nível é 20%).
+    zoom_level: f64,
+    /// O `files.autoSave` (`off`, `afterDelay`, `onFocusChange`, `onWindowChange`) e o `files.autoSaveDelay`.
+    auto_save: (String, u64),
+    /// A versão de cada aba já agendada para salvar (evita um timer por tecla).
+    auto_save_scheduled: Option<(usize, i64)>,
     /// Pede um quadro sem remontar a moldura.
     redraw: bool,
     quick_pick: Option<QuickPick>,
@@ -509,6 +519,9 @@ impl Shell {
             context_view: None,
             fullscreen_requested: false,
             needs_render: true,
+            zoom_level: 0.0,
+            auto_save: ("off".to_owned(), 1000),
+            auto_save_scheduled: None,
             redraw: false,
             quick_pick: None,
             context_menu: None,
@@ -538,6 +551,7 @@ impl Shell {
         }
         shell.detect_git();
         shell.schedule_disk_check();
+        shell.apply_user_settings();
         for file in files {
             shell.open_file(file)?;
         }
@@ -1154,6 +1168,17 @@ impl Shell {
                 self.hide_hover();
                 return;
             }
+            Command::AutoSave(index, version) => {
+                self.auto_save_scheduled = None;
+                if self.editors.get(index).is_some_and(|e| e.path.is_some() && e.is_modified() && e.view.model().get_version_id() == version) {
+                    self.save(index);
+                }
+                return;
+            }
+            Command::Zoom(step) => {
+                self.zoom_level = if step == 0 { 0.0 } else { (self.zoom_level + f64::from(step)).clamp(-8.0, 8.0) };
+                self.resize_editors();
+            }
             Command::OpenRecent => {
                 let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
                 let tidy = |p: &Path| -> String {
@@ -1474,6 +1499,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn set_auto_save(&mut self, mode: &str, delay: u64) {
+        self.auto_save = (mode.to_owned(), delay);
+    }
+
+    #[cfg(test)]
     pub fn toast_count(&self) -> usize {
         self.toasts.len()
     }
@@ -1564,9 +1594,17 @@ impl Shell {
         editor.view.set_gutter_changes(changes);
     }
 
-    /// Reaplica o `settings.json` do usuário: por enquanto o tema de cor (`workbench.colorTheme`).
+    /// Reaplica o `settings.json` do usuário: o tema de cor, o zoom e o salvamento automático.
     fn apply_user_settings(&mut self) {
         let settings = themes::user_settings();
+        self.auto_save = (
+            settings.get("files.autoSave").and_then(|v| v.as_str()).unwrap_or("off").to_owned(),
+            settings.get("files.autoSaveDelay").and_then(serde_json::Value::as_u64).unwrap_or(1000),
+        );
+        if let Some(level) = settings.get("window.zoomLevel").and_then(serde_json::Value::as_f64) {
+            self.zoom_level = level.clamp(-8.0, 8.0);
+            self.resize_editors();
+        }
         let wanted = settings.get("workbench.colorTheme").and_then(|v| v.as_str());
         if let Some(index) = themes::resolve(&self.themes, wanted)
             && self.theme_index != Some(index)
@@ -2195,6 +2233,11 @@ impl Shell {
             editor.view.resize(rect.width(), rect.height());
         }
         self.needs_render = true;
+    }
+
+    /// O fator de zoom da janela: `1.2 ^ zoomLevel`, como o Electron.
+    pub fn zoom_factor(&self) -> f64 {
+        1.2_f64.powf(self.zoom_level)
     }
 
     pub fn take_exit(&mut self) -> bool {
@@ -3361,6 +3404,9 @@ impl Shell {
             (true, true, false, KeyCode::KeyS) => Command::PromptSaveAs,
             (true, false, false, KeyCode::KeyO) => Command::PromptOpenFile,
             (true, false, false, KeyCode::KeyR) => Command::OpenRecent,
+            (true, _, false, KeyCode::Equal) | (true, false, false, KeyCode::NumpadAdd) => Command::Zoom(1),
+            (true, false, false, KeyCode::Minus) | (true, false, false, KeyCode::NumpadSubtract) => Command::Zoom(-1),
+            (true, false, false, KeyCode::Digit0) | (true, false, false, KeyCode::Numpad0) => Command::Zoom(0),
             (true, false, false, KeyCode::KeyW) | (true, false, false, KeyCode::F4) => Command::CloseActiveEditor,
             (true, false, false, KeyCode::KeyQ) => Command::Exit,
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
@@ -3555,6 +3601,9 @@ impl Shell {
         }
         if !focused {
             self.menubar.blur();
+            if matches!(self.auto_save.0.as_str(), "onFocusChange" | "onWindowChange") {
+                self.run(Command::SaveAll);
+            }
         }
     }
 
@@ -3562,6 +3611,19 @@ impl Shell {
     pub fn take_dirty(&mut self) -> bool {
         self.run_commands();
         let editor = self.active.is_some_and(|i| self.editors[i].view.take_dirty());
+        // `files.autoSave: afterDelay`: a aba ativa modificada salva depois do prazo sem novas edições.
+        if self.auto_save.0 == "afterDelay"
+            && let Some(index) = self.active
+            && self.editors[index].path.is_some()
+            && self.editors[index].is_modified()
+        {
+            let version = self.editors[index].view.model().get_version_id();
+            if self.auto_save_scheduled != Some((index, version)) {
+                self.auto_save_scheduled = Some((index, version));
+                let queue = self.queue.clone();
+                je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::AutoSave(index, version)), self.auto_save.1);
+            }
+        }
         let terminal = self.terminal.as_ref().is_some_and(je_terminal::Terminal::take_dirty);
         if let Some(rx) = &self.git_rx
             && let Ok(result) = rx.try_recv()

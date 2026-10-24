@@ -212,7 +212,8 @@ impl App {
     /// buffer), em ms.
     fn frame_timed(&mut self) -> (f64, f64) {
         let (Some(window), Some(presenter)) = (&self.window, &mut self.presenter) else { return (0.0, 0.0) };
-        let scale = window.scale_factor();
+        // A escala da tela vezes o zoom da janela (`window.zoomLevel`, Ctrl+= e Ctrl+-).
+        let scale = window.scale_factor() * self.shell.zoom_factor();
         let size = window.inner_size().to_logical::<f64>(scale);
         let started = Instant::now();
         self.shell.resize(size.width, size.height);
@@ -344,7 +345,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+                let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) * self.shell.zoom_factor();
                 let LogicalPosition { x, y } = position.to_logical::<f64>(scale);
                 self.pointer.position = (x, y);
                 self.pointer_input(PointerInputKind::Move, PointerButton::Primary);
@@ -1108,6 +1109,25 @@ mod tests {
             shell.take_dirty();
             assert!(!shell.has_hover(), "e some ao sair");
         });
+    }
+
+    #[test]
+    fn auto_save_after_delay_writes_the_file() {
+        let path = temp_file("auto.txt", "abc");
+        je_base::runtime::with_faked_timers(|| {
+            let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+            shell.set_auto_save("afterDelay", 1000);
+            shell.active_editor_mut().expect("aba").view.type_text("X");
+            shell.take_dirty();
+            je_base::runtime::advance_fake_time(500);
+            shell.take_dirty();
+            assert_eq!(std::fs::read_to_string(&path).expect("lê"), "abc", "antes do prazo nada é gravado");
+            je_base::runtime::advance_fake_time(600);
+            shell.take_dirty();
+            assert_eq!(std::fs::read_to_string(&path).expect("lê"), "Xabc", "depois do prazo a aba foi salva");
+            assert!(!shell.active_editor().expect("aba").is_modified());
+        });
+        std::fs::remove_file(&path).expect("remove");
     }
 
     #[test]
