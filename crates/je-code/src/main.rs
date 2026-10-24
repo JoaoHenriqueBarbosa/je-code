@@ -940,6 +940,9 @@ mod tests {
         snapshot(&mut shell, "g0-scm.png");
         let status = shell.git_status();
         assert_eq!((status.branch.as_str(), status.staged.len(), status.changes.len()), ("main", 0, 2));
+        // O diff contra o HEAD aparece na margem do arquivo aberto.
+        shell.run(shell::Command::ScmOpen("a.txt".to_owned()));
+        snapshot(&mut shell, "g00-gutter.png");
         // Stage de tudo, mensagem e commit pela Ctrl+Enter.
         shell.run(shell::Command::ScmOp(shell::git::Operation::Stage(vec!["a.txt".to_owned(), "b.txt".to_owned()])));
         wait(&mut shell, &|s| s.staged.len() == 2);

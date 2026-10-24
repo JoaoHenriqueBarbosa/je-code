@@ -31,7 +31,7 @@ use je_editor::model::EndOfLinePreference;
 use je_editor::text_model::{TextModel, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
 use je_editor_view::environment::find_builtin_extensions;
-use je_editor_view::{EditorColors, EditorEnvironment, EditorKey, EditorView};
+use je_editor_view::{EditorColors, EditorEnvironment, EditorKey, EditorView, GutterChange, GutterKind};
 use je_render::kurbo::{Rect, RoundedRect, RoundedRectRadii};
 use je_render::{DisplayList, Rgba, Shape};
 use je_theme::ColorTheme;
@@ -228,6 +228,9 @@ pub struct OpenEditor {
     pub view: EditorView,
     /// A versão do modelo no último salvamento (para o indicador de arquivo modificado).
     saved_version: i64,
+    /// As linhas do arquivo no HEAD do git (para as barras de diff da margem) e a versão do modelo calculada.
+    head: Option<Vec<je_base::JsString>>,
+    diff_version: i64,
 }
 
 impl OpenEditor {
@@ -593,7 +596,11 @@ impl Shell {
         }
         let saved_version = model.get_alternative_version_id();
         let index = self.active.map_or(self.editors.len(), |i| i + 1);
-        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version });
+        let needs_head = path.is_some();
+        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1 });
+        if needs_head {
+            self.reload_heads();
+        }
         self.activate(index);
     }
 
@@ -687,7 +694,7 @@ impl Shell {
                 if let Some(env) = &self.environment {
                     view.set_token_colors(&env.color_map());
                 }
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id() };
+                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1 };
                 self.activate(index);
             }
             Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
@@ -1051,6 +1058,57 @@ impl Shell {
             explorer.reveal(selected.as_deref());
         }
         self.resize_editors();
+    }
+
+    /// Relê o conteúdo do HEAD de cada editor aberto (depois de um commit, de trocar de ramo ou ao abrir).
+    fn reload_heads(&mut self) {
+        let root = self.git_root.clone();
+        for editor in &mut self.editors {
+            editor.diff_version = -1;
+            editor.head = match (&root, &editor.path) {
+                (Some(root), Some(path)) => path.strip_prefix(root).ok().and_then(|rel| git::head_text(root, &rel.to_string_lossy().replace('\\', "/"))).map(|text| {
+                    // O modelo conta a linha vazia depois do último `\n`; o HEAD é cortado do mesmo jeito.
+                    text.replace("\r\n", "\n").split('\n').map(je_base::JsString::from).collect()
+                }),
+                _ => None,
+            };
+        }
+    }
+
+    /// As barras de diff do editor ativo contra o HEAD (`DirtyDiffModel`), quando o texto mudou.
+    fn update_gutter_diff(&mut self) {
+        use je_editor::diff::lines_diff_computer::{ILinesDiffComputer, LinesDiffComputerOptions};
+        let Some(editor) = self.active.map(|i| &mut self.editors[i]) else { return };
+        let version = editor.view.model().get_version_id();
+        if editor.diff_version == version {
+            return;
+        }
+        editor.diff_version = version;
+        let Some(head) = &editor.head else {
+            editor.view.set_gutter_changes(Vec::new());
+            return;
+        };
+        let modified = editor.view.model().get_lines_content();
+        let diff = je_editor::diff::default_lines_diff_computer::default_lines_diff_computer::DefaultLinesDiffComputer::new().compute_diff(
+            head,
+            &modified,
+            &LinesDiffComputerOptions { ignore_trim_whitespace: false, max_computation_time_ms: 200.0, compute_moves: false, extend_to_subwords: None },
+        );
+        let changes = diff
+            .changes
+            .iter()
+            .map(|c| {
+                let (original, modified) = (c.original, c.modified);
+                if original.is_empty() {
+                    GutterChange { start_line: modified.start_line_number, end_line: modified.end_line_number_exclusive - 1, kind: GutterKind::Added }
+                } else if modified.is_empty() {
+                    GutterChange { start_line: modified.start_line_number, end_line: modified.start_line_number, kind: GutterKind::Deleted }
+                } else {
+                    GutterChange { start_line: modified.start_line_number, end_line: modified.end_line_number_exclusive - 1, kind: GutterKind::Modified }
+                }
+            })
+            .collect();
+        editor.view.set_gutter_changes(changes);
     }
 
     /// Detecta o repositório do workspace e pede o estado.
@@ -2485,6 +2543,7 @@ impl Shell {
             // Os widgets retidos (a barra de menus) agendam o layout para o próximo quadro de animação: roda já.
             self.ui.run_animation_frame();
         }
+        self.update_gutter_diff();
         let rect = self.editor_rect();
         let host = self.nodes.editor_host;
         let tree = self.ui.tree();
@@ -2832,7 +2891,10 @@ impl Shell {
         {
             self.git_rx = None;
             match result {
-                Ok(status) => self.scm.set_status(status),
+                Ok(status) => {
+                    self.scm.set_status(status);
+                    self.reload_heads();
+                }
                 Err(e) => self.notify(Severity::Error, e),
             }
             self.needs_render = true;

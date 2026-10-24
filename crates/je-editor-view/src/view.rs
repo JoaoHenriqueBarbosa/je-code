@@ -76,6 +76,23 @@ pub(crate) struct Shared {
     pub dirty: Cell<bool>,
 }
 
+/// O tipo de uma mudança contra a versão do repositório.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GutterKind {
+    Added,
+    Modified,
+    /// Linhas removidas: o triângulo fica na fronteira antes de `start_line`.
+    Deleted,
+}
+
+/// Uma barra do diff na margem: de `start_line` a `end_line` (inclusive, 1-based).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GutterChange {
+    pub start_line: i32,
+    pub end_line: i32,
+    pub kind: GutterKind,
+}
+
 /// O último casamento de colchetes: a posição e a versão do modelo para as quais valeu, e o resultado.
 type BracketMatchCache = ((Position, i64), Option<(Range, Range)>);
 
@@ -120,6 +137,8 @@ pub struct EditorView {
     last_visible: Option<(i32, i32)>,
     bracket_match: RefCell<Option<BracketMatchCache>>,
     /// As ocorrências da busca (o widget de busca do shell) e o índice da atual.
+    /// As barras de diff da margem (o `quickDiff` do SCM): linhas e tipo.
+    gutter_changes: Vec<GutterChange>,
     pub(crate) find_matches: Vec<Range>,
     find_current: Option<usize>,
     subscriptions: Vec<DisposableRef>,
@@ -209,6 +228,7 @@ impl EditorView {
             max_line_width: 0.0,
             last_visible: None,
             bracket_match: RefCell::new(None),
+            gutter_changes: Vec::new(),
             find_matches: Vec::new(),
             find_current: None,
             subscriptions,
@@ -220,6 +240,14 @@ impl EditorView {
         self.find_matches = matches;
         self.find_current = current;
         self.mark_dirty();
+    }
+
+    /// Define as barras de diff da margem (calculadas pelo shell contra o HEAD).
+    pub fn set_gutter_changes(&mut self, changes: Vec<GutterChange>) {
+        if self.gutter_changes != changes {
+            self.gutter_changes = changes;
+            self.mark_dirty();
+        }
     }
 
     /// Troca a área de transferência (os testes usam só a cópia interna).
@@ -786,6 +814,51 @@ impl EditorView {
             let top_dev = (origin.1 + top) * scale;
             let baseline = text_baseline(top_dev, lh * scale, &line);
             line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, color);
+        }
+        // As barras do diff contra o HEAD: 3 px de largura, 5 px à direita da margem dos números.
+        let bar_left = ln_left + ln_width + 5.0;
+        for change in &self.gutter_changes {
+            let (color, deleted) = match change.kind {
+                GutterKind::Added => (colors.gutter_added, false),
+                GutterKind::Modified => (colors.gutter_modified, false),
+                GutterKind::Deleted => (colors.gutter_deleted, true),
+            };
+            if deleted {
+                // Um triângulo na fronteira entre as linhas, apontando para a direita.
+                let boundary = self.layout.line_top(change.start_line, scroll_top);
+                if boundary < -lh || boundary > view_height + lh {
+                    continue;
+                }
+                for step in 0..5 {
+                    let y = boundary - 2.5 + f64::from(step);
+                    let span = if step < 3 { f64::from(step) + 1.0 } else { 5.0 - f64::from(step) };
+                    list.fill_rect(rect(bar_left, y, bar_left + span, y + 1.0), color);
+                }
+                continue;
+            }
+            let (from, to) = (change.start_line.max(first), change.end_line.min(last));
+            if from > to {
+                continue;
+            }
+            let (top, bottom) = (self.layout.line_top(from, scroll_top), self.layout.line_top(to, scroll_top) + lh);
+            let r = rect(bar_left, top, bar_left + 3.0, bottom);
+            if change.kind == GutterKind::Modified {
+                // O azul tracejado das linhas modificadas: pixels alternados.
+                let step = scale.round().max(1.0);
+                let mut y = r.y0;
+                let mut row = 0;
+                while y < r.y1 {
+                    let mut x = r.x0 + if row % 2 == 0 { 0.0 } else { step };
+                    while x < r.x1 {
+                        list.fill_rect(Rect::new(x, y, (x + step).min(r.x1), (y + step).min(r.y1)), color);
+                        x += 2.0 * step;
+                    }
+                    y += step;
+                    row += 1;
+                }
+            } else {
+                list.fill_rect(r, color);
+            }
         }
         self.paint_minimap(list, origin, scale);
         self.paint_scrollbar(list, origin, scale);

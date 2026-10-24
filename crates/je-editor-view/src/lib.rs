@@ -28,4 +28,4 @@ pub use colors::EditorColors;
 pub use environment::EditorEnvironment;
 pub use input::{CopiedText, EditorKey};
 pub use layout::{FontMetrics, ViewLayout};
-pub use view::EditorView;
+pub use view::{EditorView, GutterChange, GutterKind};

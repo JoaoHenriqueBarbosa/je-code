@@ -95,6 +95,11 @@ pub fn find_root(dir: &Path) -> Option<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"]).ok().map(|s| PathBuf::from(s.trim()))
 }
 
+/// O conteúdo de `path` (relativo à raiz) no HEAD, para o diff da margem; `None` se o arquivo é novo ou não há commits.
+pub fn head_text(root: &Path, path: &str) -> Option<String> {
+    git(root, &["show", &format!("HEAD:{path}")]).ok()
+}
+
 fn kind_of(code: char) -> Option<Kind> {
     Some(match code {
         'M' => Kind::Modified,
