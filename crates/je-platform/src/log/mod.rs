@@ -37,6 +37,7 @@ use je_base::map::ResourceMap;
 use je_base::objects::safe_stringify;
 use je_base::runtime;
 use je_base::uri::URI;
+use je_instantiation::service_id;
 
 pub mod file_log;
 pub mod node;
@@ -208,6 +209,8 @@ pub trait Logger: IDisposable {
 pub trait LogService: Logger {}
 
 impl<T: Logger + ?Sized> LogService for T {}
+
+service_id!(pub I_LOG_SERVICE: dyn LogService = "logService");
 
 /// O handle compartilhado de um [`Logger`].
 pub type LoggerRef = Rc<dyn Logger>;

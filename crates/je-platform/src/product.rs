@@ -10,6 +10,7 @@
 //! e cresce quando um serviço novo precisar de mais um. [`je_base::product::IProductConfiguration`], o
 //! `product.json` completo, também o implementa.
 
+use je_base::product::StringsOrDictionary;
 use je_instantiation::service_id;
 
 /// `IProductService`, reduzido aos campos que os serviços portados leem.
@@ -40,6 +41,9 @@ pub trait IProductService {
     fn msft_internal_domains(&self) -> &[String];
     /// `enabledTelemetryLevels`, quando o produto declara.
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels>;
+    /// `trustedExtensionAuthAccess`, quando o produto declara. Devolve uma cópia (e não uma referência)
+    /// porque o original lê a propriedade a cada chamada e um produto de teste pode mudá-la entre elas.
+    fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary>;
 }
 
 /// `IEnabledTelemetryLevels`: o que o produto permite coletar.
@@ -67,6 +71,7 @@ pub struct ProductService {
     pub ai_config_aria_key: Option<String>,
     pub msft_internal_domains: Vec<String>,
     pub enabled_telemetry_levels: Option<EnabledTelemetryLevels>,
+    pub trusted_extension_auth_access: Option<StringsOrDictionary>,
 }
 
 impl Default for ProductService {
@@ -85,6 +90,7 @@ impl Default for ProductService {
             ai_config_aria_key: None,
             msft_internal_domains: Vec::new(),
             enabled_telemetry_levels: Some(EnabledTelemetryLevels { error: true, usage: true }),
+            trusted_extension_auth_access: None,
         }
     }
 }
@@ -129,6 +135,9 @@ impl IProductService for ProductService {
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels> {
         self.enabled_telemetry_levels
     }
+    fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
+        self.trusted_extension_auth_access.clone()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
@@ -170,5 +179,8 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels> {
         self.enabled_telemetry_levels.as_ref().map(|levels| EnabledTelemetryLevels { error: levels.error, usage: levels.usage })
+    }
+    fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
+        self.trusted_extension_auth_access.clone()
     }
 }
