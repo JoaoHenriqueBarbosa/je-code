@@ -60,3 +60,6 @@ pub mod untitled;
 pub mod telemetry;
 // Filtros do contexto de atribuição de experimentos (`assignmentContextFilter.ts` e o contrato `IAssignmentFilter`).
 pub mod assignment;
+
+// Serviço de views (`views/common/viewContainerModel.ts` e `views/browser/viewDescriptorService.ts`).
+pub mod views;

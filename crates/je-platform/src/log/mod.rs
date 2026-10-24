@@ -1111,6 +1111,10 @@ pub trait LoggerService: IDisposable {
     fn get_registered_logger(&self, resource: &URI) -> Option<LoggerResource>;
 }
 
+// Identificador de serviço do `ILoggerService` (`createDecorator<ILoggerService>('loggerService')`), que o
+// `ViewContainerModel` e o `ViewDescriptorService` declaram como dependência.
+service_id!(pub I_LOGGER_SERVICE: dyn LoggerService = "loggerService");
+
 #[derive(Clone)]
 struct LoggerEntry {
     logger: Option<LoggerRef>,
