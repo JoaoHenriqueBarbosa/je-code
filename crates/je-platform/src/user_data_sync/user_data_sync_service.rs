@@ -8,14 +8,16 @@
 //!
 //! Fora do porte (e por quê):
 //! - `createManualSyncTask` e `applyManualSync` (a sincronização manual, com `ProfileSynchronizer.apply`),
-//!   `resolveContent`, `replace`, `cleanUpRemoteData` (pedem o `IUserDataSyncResourceProviderService` e
+//!   `resolveContent`, `replace` (pedem o `IUserDataSyncResourceProviderService` e
 //!   `userDataSyncMachines.ts`), `saveRemoteActivityData` e `extractActivityData`: nenhum entra no caminho de
 //!   `createSyncTask().run()`. Por isso [`UserDataSyncService`] não implementa o trait
-//!   [`super::user_data_sync::IUserDataSyncService`] inteiro: expõe os métodos portados.
-//! - Os sincronizadores de `prompts`, `mcp` e `extensions` ainda não existem no porte:
+//!   [`super::user_data_sync::IUserDataSyncService`] inteiro: expõe os métodos portados. `cleanUpRemoteData` é
+//!   portado, e o `getRemoteSyncedProfiles` do serviço de recursos que ele usa é o `get_remote_synced_profiles`
+//!   privado daqui (lê o recurso de perfis do servidor e valida o `ISyncData`).
+//! - Os sincronizadores de `mcp` e `extensions` ainda não existem no porte:
 //!   [`ProfileSynchronizer::create_synchronizer`] devolve `None` para eles e o `registerSynchronizer` os pula (o de
 //!   extensões também pediria o `IExtensionGalleryService`). Existem os de perfis, `settings`, `keybindings`,
-//!   `snippets`, `tasks` e estado global.
+//!   `snippets`, `prompts` (o de snippets com outro tipo), `tasks` e estado global.
 //!
 //! Decisões de tradução:
 //! - `IUserDataManifest | IUserDataSyncLatestData | null` é `Option<`[`ManifestOrLatestData`]`>`: o
@@ -48,16 +50,16 @@ use je_base::uri::URI;
 use je_base::uuid::generate_uuid;
 use je_storage::StorageValue;
 
-use super::abstract_synchronizer::SynchroniserServices;
+use super::abstract_synchronizer::{SynchroniserServices, parse_json};
 use super::global_state_sync::GlobalStateSynchroniser;
 use super::keybindings_sync::KeybindingsSynchroniser;
 use super::settings_sync::{IExtensionManagementService, SettingsSynchroniser};
 use super::snippets_sync::SnippetsSynchroniser;
 use super::tasks_sync::TasksSynchroniser;
-use super::user_data_profiles_manifest_sync::UserDataProfilesManifestSynchroniser;
+use super::user_data_profiles_manifest_sync::{UserDataProfilesManifestSynchroniser, parse_user_data_profiles_manifest};
 use super::user_data_sync::{
-    ALL_SYNC_RESOURCES, ApplyMode, IUserDataManifest, IUserDataSyncConfiguration, IUserDataSyncLatestData, IUserDataSyncResource, IUserDataSyncResourceConflicts, IUserDataSyncResourceError,
-    IUserDataSyncStoreManagementService, IUserDataSyncTask, IUserDataSyncUtilService, IUserDataSynchroniser, ISyncUserDataProfile, RefOrUserData, SyncResource, SyncStatus,
+    ALL_SYNC_RESOURCES, ApplyMode, ISyncData, IUserDataManifest, IUserDataSyncConfiguration, IUserDataSyncLatestData, IUserDataSyncResource, IUserDataSyncResourceConflicts, IUserDataSyncResourceError,
+    IUserDataSyncStoreManagementService, IUserDataSyncTask, IUserDataSyncUtilService, IUserDataSynchroniser, ISyncUserDataProfile, RefOrUserData, ServerResource, SyncResource, SyncStatus,
     USER_DATA_SYNC_CONFIGURATION_SCOPE, UserDataSyncError, UserDataSyncErrorCode, UserDataSyncStoreError, create_sync_headers, to_user_data_sync_error,
 };
 use crate::log::{LogArg, LogMessage};
@@ -123,7 +125,7 @@ fn can_bailout(error: &Error) -> bool {
 
 /// `UserDataSyncError.toUserDataSyncError(error)` como o erro que se lança: um erro que já é de sincronização
 /// segue como está (com as propriedades do `UserDataSyncStoreError`).
-fn to_sync_error(error: &Error) -> Error {
+pub(super) fn to_sync_error(error: &Error) -> Error {
     if UserDataSyncError::from_error(error).is_some() { error.clone() } else { to_user_data_sync_error(error).into_error() }
 }
 
@@ -161,6 +163,8 @@ pub enum Synchroniser {
     Settings(Rc<SettingsSynchroniser>),
     Keybindings(Rc<KeybindingsSynchroniser>),
     Snippets(Rc<SnippetsSynchroniser>),
+    /// O `PromptsSynchronizer`: o [`SnippetsSynchroniser`] do tipo [`super::snippets_sync::SnippetsKind::Prompts`].
+    Prompts(Rc<SnippetsSynchroniser>),
     Tasks(Rc<TasksSynchroniser>),
     GlobalState(Rc<GlobalStateSynchroniser>),
 }
@@ -172,6 +176,7 @@ impl Synchroniser {
             Self::Settings(_) => SyncResource::Settings,
             Self::Keybindings(_) => SyncResource::Keybindings,
             Self::Snippets(_) => SyncResource::Snippets,
+            Self::Prompts(_) => SyncResource::Prompts,
             Self::Tasks(_) => SyncResource::Tasks,
             Self::GlobalState(_) => SyncResource::GlobalState,
         }
@@ -183,7 +188,7 @@ impl Synchroniser {
             Self::Profiles(synchroniser) => synchroniser.base.clone(),
             Self::Settings(synchroniser) => synchroniser.base(),
             Self::Keybindings(synchroniser) => synchroniser.base(),
-            Self::Snippets(synchroniser) => synchroniser.base.clone(),
+            Self::Snippets(synchroniser) | Self::Prompts(synchroniser) => synchroniser.base.clone(),
             Self::Tasks(synchroniser) => synchroniser.base(),
             Self::GlobalState(synchroniser) => synchroniser.base.clone(),
         }
@@ -249,7 +254,7 @@ impl Synchroniser {
             Self::Keybindings(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
-            Self::Snippets(synchroniser) => {
+            Self::Snippets(synchroniser) | Self::Prompts(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
             Self::Tasks(synchroniser) => {
@@ -519,6 +524,7 @@ impl ProfileSynchronizer {
                 self.user_data_sync_util_service.clone(),
             ))),
             SyncResource::Snippets => Some(Synchroniser::Snippets(SnippetsSynchroniser::new(self.profile.clone(), self.collection.clone(), self.services.clone()))),
+            SyncResource::Prompts => Some(Synchroniser::Prompts(SnippetsSynchroniser::new_prompts(self.profile.clone(), self.collection.clone(), self.services.clone()))),
             SyncResource::Tasks => Some(Synchroniser::Tasks(TasksSynchroniser::for_profile(self.profile.clone(), self.collection.clone(), self.services.clone()))),
             SyncResource::GlobalState => Some(Synchroniser::GlobalState(GlobalStateSynchroniser::new(
                 self.profile.clone(),
@@ -1029,6 +1035,80 @@ impl UserDataSyncService {
             })
         });
         async_fn(async move { Ok(result.await?.is_some()) })
+    }
+
+    /// `getRemoteSyncedProfiles` do `IUserDataSyncResourceProviderService`: os perfis do manifesto de perfis que o
+    /// servidor guarda (lista vazia se o recurso não tem conteúdo).
+    fn get_remote_synced_profiles(&self) -> Promise<Vec<ISyncUserDataProfile>> {
+        let this = self.rc();
+        async_fn(async move {
+            let user_data = this.services.user_data_sync_store_service.read_resource(ServerResource::from(SyncResource::Profiles), None, None, None).await?;
+            match user_data.content.filter(|content| !content.is_empty()) {
+                Some(content) => {
+                    let sync_data = this.parse_remote_sync_data(&content, SyncResource::Profiles)?;
+                    parse_user_data_profiles_manifest(&sync_data)
+                }
+                None => Ok(Vec::new()),
+            }
+        })
+    }
+
+    /// `parseSyncData` do `UserDataSyncResourceProviderService`.
+    fn parse_remote_sync_data(&self, content: &str, sync_resource: SyncResource) -> Result<ISyncData, Error> {
+        match parse_json(content) {
+            Ok(value) => {
+                if let Some(sync_data) = ISyncData::from_json(&value) {
+                    return Ok(sync_data);
+                }
+            }
+            Err(error) => self.services.log_service.error_args(&LogMessage::from(&error), &[]),
+        }
+        Err(UserDataSyncError::new(
+            je_base::nls::localize("incompatible sync data", "Cannot parse sync data as it is not compatible with the current version.", &[]),
+            UserDataSyncErrorCode::IncompatibleRemoteContent,
+            Some(sync_resource),
+        )
+        .into_error())
+    }
+
+    /// `cleanUpRemoteData`: apaga as coleções do servidor que nenhum perfil remoto usa e tira do manifesto de
+    /// perfis os que apontam para uma coleção que já não existe.
+    pub fn clean_up_remote_data(&self) -> Promise<()> {
+        let this = self.rc();
+        async_fn(async move {
+            let remote_profiles = this.get_remote_synced_profiles().await?;
+            let remote_profile_collections: Vec<String> = remote_profiles.iter().map(|profile| profile.collection.clone()).collect();
+            let all_collections = this.services.user_data_sync_store_service.get_all_collections(None).await?;
+            let redundant_collections: Vec<String> = all_collections.iter().filter(|collection| !remote_profile_collections.contains(collection)).cloned().collect();
+            if !redundant_collections.is_empty() {
+                this.services.log_service.info(&format!("Deleting {} redundant collections on server", redundant_collections.len()));
+                // Promise.allSettled: todas as exclusões começam juntas e os erros são ignorados
+                let deletions: Vec<Promise<()>> =
+                    redundant_collections.iter().map(|collection_id| this.services.user_data_sync_store_service.delete_collection(Some(collection_id.as_str()), None)).collect();
+                for deletion in deletions {
+                    let _ = deletion.await;
+                }
+                this.services.log_service.info("Deleted redundant collections on server");
+            }
+            let updated_remote_profiles: Vec<ISyncUserDataProfile> = remote_profiles.iter().filter(|profile| all_collections.contains(&profile.collection)).cloned().collect();
+            if updated_remote_profiles.len() != remote_profiles.len() {
+                let profile_manifest_synchronizer =
+                    UserDataProfilesManifestSynchroniser::new(this.user_data_profiles_service.default_profile(), None, this.user_data_profiles_service.clone(), this.services.clone());
+                let result = async {
+                    this.services.log_service.info("Resetting the last synced state of profiles");
+                    profile_manifest_synchronizer.base.reset_local().await?;
+                    this.services.log_service.info("Did reset the last synced state of profiles");
+                    this.services.log_service.info("Updating remote profiles with invalid collections on server");
+                    profile_manifest_synchronizer.update_remote_profiles(&updated_remote_profiles, None).await?;
+                    this.services.log_service.info("Updated remote profiles on server");
+                    Ok::<(), Error>(())
+                }
+                .await;
+                profile_manifest_synchronizer.dispose();
+                result?;
+            }
+            Ok(())
+        })
     }
 
     /// `reset`.

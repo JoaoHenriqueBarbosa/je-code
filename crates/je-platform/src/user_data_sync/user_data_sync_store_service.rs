@@ -15,9 +15,9 @@
 //!   `url`, `stableUrl`, `insidersUrl`, `canSwitch`, `authenticationProviders`. Um tipo guardado que não é
 //!   `insiders` nem `stable` vale o tipo padrão (o original cairia na URL padrão sem tipo reconhecível).
 //! - `headers['etag']` e `headers['retry-after']` usam o [`read_header`] da requisição (mesma chave, e também a
-//!   forma minúscula). `parseInt(retryAfter)` não numérico, que o original transforma numa data inválida, é
-//!   tratado como cabeçalho ausente (`TooManyRequests`), como o `retry_after_from_headers` do serviço de
-//!   requisição.
+//!   forma minúscula). `parseInt(retryAfter)` de um valor numérico (inclusive `0`, como o `0.25` dos testes, que
+//!   vira `0`) faz `donotMakeRequestsUntil` valer agora mais esse tanto de segundos. Um valor não numérico, que o
+//!   original transforma numa data inválida, é tratado como cabeçalho ausente (`TooManyRequests`).
 //! - Os métodos `async` do original viram [`Promise`], e `throw` dentro deles vira a promessa rejeitada. Os
 //!   erros do servidor são [`UserDataSyncStoreError`], convertidos em [`Error`] pelo `name` que o original compõe.
 
@@ -54,7 +54,7 @@ use crate::external_services::service_machine_id::get_service_machine_id;
 use crate::files::file_service::FileService;
 use crate::log::{LogArg};
 use crate::product::IProductService;
-use crate::request::{IRequestService, as_json, as_text, as_text_or_error, has_no_content, is_success, read_header, retry_after_from_headers};
+use crate::request::{IRequestService, as_json, as_text, as_text_or_error, has_no_content, is_success, read_header};
 use crate::resources::{host_environment, join_path};
 use crate::storage::{StorageScope, StorageService, StorageTarget};
 
@@ -193,6 +193,20 @@ fn header_dynamic(value: &HeaderValue) -> Dynamic {
 
 fn optional_dynamic(value: Option<&str>) -> Dynamic {
     value.map_or(Dynamic::Undefined, Dynamic::string)
+}
+
+/// `parseInt(headers['retry-after'])` quando o cabeçalho existe e não é vazio (o `if (retryAfter)` do original). O
+/// `NaN` de um valor sem dígitos no começo é `None`.
+fn parse_retry_after(headers: &IHeaders) -> Option<i64> {
+    let value = read_header(Some(headers), "retry-after").filter(|value| !value.is_empty())?;
+    let trimmed = value.trim_start();
+    let (negative, digits) = match trimmed.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
+    };
+    let end = digits.find(|character: char| !character.is_ascii_digit()).unwrap_or(digits.len());
+    let parsed: i64 = digits[..end].parse().ok()?;
+    Some(if negative { -parsed } else { parsed })
 }
 
 fn store_error(message: &str, url: &str, code: UserDataSyncErrorCode, server_code: Option<f64>, operation_id: Option<String>) -> Error {
@@ -709,7 +723,7 @@ impl UserDataSyncStoreClient {
                 }
                 Some(429) => {
                     let message = format!("{type_name} request '{url}' failed because of too many requests (429).");
-                    return match retry_after_from_headers(Some(&context.res.headers)) {
+                    return match parse_retry_after(&context.res.headers) {
                         Some(retry_after) => {
                             this.set_donot_make_requests_until(Some(date_now() as f64 + retry_after as f64 * 1000.0));
                             Err(fail(message, UserDataSyncErrorCode::TooManyRequestsAndRetryAfter))

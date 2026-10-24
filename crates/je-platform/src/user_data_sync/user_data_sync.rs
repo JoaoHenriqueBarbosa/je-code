@@ -987,9 +987,11 @@ pub struct SyncOptions {
     pub disable_cache: Option<bool>,
 }
 
-/// `IUserDataAutoSyncService`.
+/// `IUserDataAutoSyncService`. `onError` entrega o próprio erro (a [`UserDataSyncError`] com as propriedades
+/// que ele tiver, como a `url` do [`UserDataSyncStoreError`] e a marca do [`UserDataAutoSyncError`]), que o
+/// `instanceof` do original distingue.
 pub trait IUserDataAutoSyncService {
-    fn on_error(&self) -> Event<UserDataSyncError>;
+    fn on_error(&self) -> Event<Error>;
     fn turn_on(&self) -> Promise<()>;
     fn turn_off(&self, everywhere: bool) -> Promise<()>;
     fn trigger_sync(&self, sources: &[String], options: Option<SyncOptions>) -> Promise<()>;
