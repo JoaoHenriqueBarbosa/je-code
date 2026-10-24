@@ -61,7 +61,7 @@ use super::ext_host_documents::ExtHostDocuments;
 use super::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use super::ext_host_notebook_document::{ExtHostCell, ExtHostNotebookDocument, NotebookDocument};
 use super::ext_host_notebook_editor::{ExtHostNotebookEditor, NotebookEditor};
-use super::ext_host_protocol::{
+use super::ext_host_protocol::{ExtHostDocumentsAndEditorsShape,
     DocumentsAndEditorsDelta, ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookShape, IMainContext, INotebookCellStatusBarListDto,
     INotebookDocumentShowOptions, INotebookDocumentsAndEditorsDelta, INotebookEditorAddData, INotebookPartialFileStatsWithMetadata, MainContext,
     MainThreadNotebookDocumentsShape, MainThreadNotebookEditorsShape, MainThreadNotebookShape, NotebookCreateOptions, NotebookDataDto,
@@ -464,7 +464,7 @@ impl ExtHostNotebookController {
             handle,
             NotebookExtensionDescription {
                 id: extension.identifier.clone(),
-                location: Some(URI::parse(&extension.extension_location, false).to_json().components),
+                location: Some(URI::parse(extension.extension_location.as_str(), false).to_json().components),
             },
             view_type,
             transient_options,

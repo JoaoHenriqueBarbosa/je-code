@@ -19,6 +19,7 @@ use je_base::buffer::VSBuffer;
 use je_base::cancellation::CancellationToken;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::{DeferredPromise, MaybePromise};
+use je_workbench::api::common::ext_host_protocol::ExtHostNotebookShape;
 use je_workbench::api::common::ext_host_notebook::NotebookSerializer;
 use je_workbench::api::common::ext_host_types as types;
 use je_workbench::services::extensions::extensions::null_extension_description;
