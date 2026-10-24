@@ -70,10 +70,10 @@ impl crate::auto_indent::IVirtualModel for MovedLinesVirtualModel<'_> {
 }
 
 /// O `IIndentConverter` de `buildIndentConverter`.
-struct MoveLinesIndentConverter {
-    tab_size: i32,
-    indent_size: i32,
-    insert_spaces: bool,
+pub(crate) struct MoveLinesIndentConverter {
+    pub(crate) tab_size: i32,
+    pub(crate) indent_size: i32,
+    pub(crate) insert_spaces: bool,
 }
 
 impl IIndentConverter for MoveLinesIndentConverter {

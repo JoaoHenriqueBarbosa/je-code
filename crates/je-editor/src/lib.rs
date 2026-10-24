@@ -209,3 +209,4 @@ pub mod editor_decorations_collection;
 pub mod word_part_operations;
 
 pub mod bracket_matching;
+pub mod indentation_contrib;
