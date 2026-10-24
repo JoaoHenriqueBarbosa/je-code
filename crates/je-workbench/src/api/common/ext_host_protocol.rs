@@ -3746,3 +3746,243 @@ mod language_features_region {
 }
 
 // #endregion
+
+// #region Notebook (controlador, documentos e editores)
+
+pub use self::notebook_region::*;
+
+/// Os DTOs e as formas de `extHost.protocol.ts` que `extHostNotebook.ts`, `extHostNotebookDocument.ts`,
+/// `extHostNotebookEditor.ts` e `extHostNotebookDocuments.ts` usam (os de kernel entram com `extHostNotebookKernels.ts`).
+///
+/// Divergências:
+/// - Os `UriComponents` são [`URI`]. Os handles de célula (`number`) são `i64`, como os de `notebook_common`; os de
+///   registro (serializador, provedor de barra de status) são `u32`.
+/// - `NotebookCellDto` e `NotebookRawContentEventDto` não são os de `notebook_common` (`IMainCellDto`, que tem `url` e
+///   saídas `IOutputDto`): os do protocolo têm `uri` e saídas [`NotebookOutputDto`]. A união discriminada por `kind` é um
+///   `enum`, sem o campo `kind`.
+/// - `INotebookCellStatusBarEntryDto` (`Dto<INotebookCellStatusBarItem>`) guarda só o que `NotebookStatusBarItem.from`
+///   preenche: o comando já é o [`ICommandDto`] convertido, e o `tooltip` é texto.
+/// - `Promise<string>` de `$tryShowNotebookDocument` é um `String` (vazio no lugar de `undefined`/falsy).
+/// - `INotebookPartialFileStatsWithMetadata | files.FileOperationError` de `$saveNotebook` é [`NotebookSaveResult`].
+/// - `newActiveEditor?: string | null` é `Option<Option<String>>` (`None` ausente, `Some(None)` é `null`), como em
+///   [`DocumentsAndEditorsDelta`]. `$searchInNotebooks` não está em [`ExtHostNotebookShape`]: depende de `ExtHostSearch`,
+///   `CellSearchModel` e `searchNotebookHelpers`, que não existem no porte.
+mod notebook_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::cancellation::CancellationToken;
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_platform::accessibility::IAccessibilityInformation;
+    use je_platform::files::files::{FileOperationError, WriteFileOptions};
+
+    use super::{
+        EditorGroupColumn, ExtHostContext, ICommandDto, MainContext, NotebookDataDto, NotebookOutputDto, NotebookOutputItemDto, ProxyIdentifier,
+        SerializableObjectWithBuffers,
+    };
+    use crate::api::common::ext_host_type_converters::CellRange;
+    use crate::api::common::ext_host_types::NotebookEditorRevealType;
+    use crate::contrib::notebook::common::notebook_common::{
+        CellKind, CellStatusbarAlignment, INotebookContributionData, NotebookCellInternalMetadata, NotebookCellMetadata, NotebookCellTextModelSplice,
+        NotebookDocumentMetadata, NotebookExtensionDescription, TransientOptions,
+    };
+
+    /// `INotebookDocumentShowOptions`.
+    #[derive(Clone, Debug, Default)]
+    pub struct INotebookDocumentShowOptions {
+        pub position: Option<EditorGroupColumn>,
+        pub preserve_focus: Option<bool>,
+        pub pinned: Option<bool>,
+        pub selections: Option<Vec<CellRange>>,
+        pub label: Option<String>,
+    }
+
+    /// `INotebookCellStatusBarEntryDto`.
+    #[derive(Clone, Debug)]
+    pub struct INotebookCellStatusBarEntryDto {
+        pub alignment: CellStatusbarAlignment,
+        pub priority: Option<f64>,
+        pub text: String,
+        pub tooltip: Option<String>,
+        pub command: Option<ICommandDto>,
+        pub accessibility_information: Option<IAccessibilityInformation>,
+    }
+
+    /// `INotebookCellStatusBarListDto`.
+    #[derive(Clone, Debug)]
+    pub struct INotebookCellStatusBarListDto {
+        pub items: Vec<INotebookCellStatusBarEntryDto>,
+        pub cache_id: u32,
+    }
+
+    /// O argumento de `$tryCreateNotebook`: `{ viewType: string; content?: NotebookDataDto }`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookCreateOptions {
+        pub view_type: String,
+        pub content: Option<NotebookDataDto>,
+    }
+
+    /// `MainThreadNotebookShape`.
+    pub trait MainThreadNotebookShape: IDisposable {
+        fn rpc_register_notebook_serializer(
+            &self,
+            handle: u32,
+            extension: NotebookExtensionDescription,
+            view_type: &str,
+            options: TransientOptions,
+            registration: Option<INotebookContributionData>,
+        );
+        fn rpc_unregister_notebook_serializer(&self, handle: u32);
+
+        fn rpc_register_notebook_cell_status_bar_item_provider(&self, handle: u32, event_handle: Option<u32>, view_type: &str) -> Promise<()>;
+        fn rpc_unregister_notebook_cell_status_bar_item_provider(&self, handle: u32, event_handle: Option<u32>) -> Promise<()>;
+        fn rpc_emit_cell_status_bar_event(&self, event_handle: u32);
+    }
+
+    /// `MainThreadNotebookEditorsShape`.
+    pub trait MainThreadNotebookEditorsShape: IDisposable {
+        fn rpc_try_show_notebook_document(&self, uri: &URI, view_type: &str, options: INotebookDocumentShowOptions) -> Promise<String>;
+        fn rpc_try_reveal_range(&self, id: &str, range: CellRange, reveal_type: NotebookEditorRevealType) -> Promise<()>;
+        fn rpc_try_set_selections(&self, id: &str, range: Vec<CellRange>) -> Promise<()>;
+    }
+
+    /// `MainThreadNotebookDocumentsShape`.
+    pub trait MainThreadNotebookDocumentsShape: IDisposable {
+        fn rpc_try_create_notebook(&self, options: NotebookCreateOptions) -> Promise<URI>;
+        fn rpc_try_open_notebook(&self, uri: &URI) -> Promise<URI>;
+        fn rpc_try_save_notebook(&self, uri: &URI) -> Promise<bool>;
+    }
+
+    /// `NotebookCellDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookCellDto {
+        pub handle: i64,
+        pub uri: URI,
+        pub eol: String,
+        pub source: Vec<String>,
+        pub language: String,
+        pub mime: Option<String>,
+        pub cell_kind: CellKind,
+        pub outputs: Vec<NotebookOutputDto>,
+        pub metadata: Option<NotebookCellMetadata>,
+        pub internal_metadata: Option<NotebookCellInternalMetadata>,
+    }
+
+    /// `INotebookModelAddedData`.
+    #[derive(Clone, Debug)]
+    pub struct INotebookModelAddedData {
+        pub uri: URI,
+        pub version_id: i64,
+        pub cells: Vec<NotebookCellDto>,
+        pub view_type: String,
+        pub metadata: Option<NotebookDocumentMetadata>,
+    }
+
+    /// `INotebookEditorAddData`.
+    #[derive(Clone, Debug)]
+    pub struct INotebookEditorAddData {
+        pub id: String,
+        pub document_uri: URI,
+        pub selections: Vec<CellRange>,
+        pub visible_ranges: Vec<CellRange>,
+        pub view_column: Option<f64>,
+        pub view_type: String,
+    }
+
+    /// `INotebookDocumentsAndEditorsDelta`.
+    #[derive(Clone, Debug, Default)]
+    pub struct INotebookDocumentsAndEditorsDelta {
+        pub removed_documents: Option<Vec<URI>>,
+        pub added_documents: Option<Vec<INotebookModelAddedData>>,
+        pub removed_editors: Option<Vec<String>>,
+        pub added_editors: Option<Vec<INotebookEditorAddData>>,
+        pub new_active_editor: Option<Option<String>>,
+        pub visible_editors: Option<Vec<String>>,
+    }
+
+    /// `INotebookDocumentPropertiesChangeData`.
+    #[derive(Clone, Debug, Default)]
+    pub struct INotebookDocumentPropertiesChangeData {
+        pub metadata: Option<NotebookDocumentMetadata>,
+    }
+
+    /// `INotebookPartialFileStatsWithMetadata`: o `IFileStatWithMetadata` sem `resource` e `children`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct INotebookPartialFileStatsWithMetadata {
+        pub name: String,
+        pub is_file: bool,
+        pub is_directory: bool,
+        pub is_symbolic_link: bool,
+        pub mtime: i64,
+        pub ctime: i64,
+        pub size: u64,
+        pub readonly: bool,
+        pub locked: bool,
+        pub executable: bool,
+        pub etag: String,
+    }
+
+    /// `INotebookPartialFileStatsWithMetadata | files.FileOperationError`: o retorno de `$saveNotebook`.
+    #[derive(Clone, Debug)]
+    pub enum NotebookSaveResult {
+        Stats(INotebookPartialFileStatsWithMetadata),
+        Error(FileOperationError),
+    }
+
+    /// `NotebookRawContentEventDto`.
+    #[derive(Clone, Debug)]
+    pub enum NotebookRawContentEventDto {
+        ModelChange { changes: Vec<NotebookCellTextModelSplice<NotebookCellDto>> },
+        Move { index: usize, length: usize, new_idx: usize },
+        Output { index: usize, outputs: Vec<NotebookOutputDto> },
+        OutputItem { index: usize, output_id: String, output_items: Vec<NotebookOutputItemDto>, append: bool },
+        ChangeCellLanguage { index: usize, language: String },
+        ChangeCellMime { index: usize, mime: Option<String> },
+        ChangeCellMetadata { index: usize, metadata: NotebookCellMetadata },
+        ChangeCellInternalMetadata { index: usize, internal_metadata: NotebookCellInternalMetadata },
+        ChangeCellContent { index: usize },
+    }
+
+    /// `NotebookCellsChangedEventDto`.
+    #[derive(Clone, Debug)]
+    pub struct NotebookCellsChangedEventDto {
+        pub raw_events: Vec<NotebookRawContentEventDto>,
+        pub version_id: i64,
+    }
+
+    /// `ExtHostNotebookDocumentsAndEditorsShape`.
+    pub trait ExtHostNotebookDocumentsAndEditorsShape {
+        fn rpc_accept_document_and_editors_delta(&self, delta: SerializableObjectWithBuffers<INotebookDocumentsAndEditorsDelta>);
+    }
+
+    /// `ExtHostNotebookShape`.
+    pub trait ExtHostNotebookShape: ExtHostNotebookDocumentsAndEditorsShape {
+        fn rpc_provide_notebook_cell_status_bar_items(&self, handle: u32, uri: &URI, index: usize, token: CancellationToken) -> Promise<Option<INotebookCellStatusBarListDto>>;
+        fn rpc_release_notebook_cell_status_bar_items(&self, id: u32);
+
+        fn rpc_data_to_notebook(&self, handle: u32, data: VSBuffer, token: CancellationToken) -> Promise<SerializableObjectWithBuffers<NotebookDataDto>>;
+        fn rpc_notebook_to_data(&self, handle: u32, data: SerializableObjectWithBuffers<NotebookDataDto>, token: CancellationToken) -> Promise<VSBuffer>;
+        fn rpc_save_notebook(&self, handle: u32, uri: &URI, version_id: i64, options: WriteFileOptions, token: CancellationToken) -> Promise<NotebookSaveResult>;
+    }
+
+    /// `ExtHostNotebookDocumentsShape`. O `newMetadata?` é `Option<Dynamic>`.
+    pub trait ExtHostNotebookDocumentsShape {
+        fn rpc_accept_model_changed(&self, uri: &URI, event: SerializableObjectWithBuffers<NotebookCellsChangedEventDto>, is_dirty: bool, new_metadata: Option<Dynamic>);
+        fn rpc_accept_dirty_state_changed(&self, uri: &URI, is_dirty: bool);
+        fn rpc_accept_model_saved(&self, uri: &URI);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_NOTEBOOK: ProxyIdentifier<dyn MainThreadNotebookShape> = ProxyIdentifier::new("MainThreadNotebook");
+        pub const MAIN_THREAD_NOTEBOOK_DOCUMENTS: ProxyIdentifier<dyn MainThreadNotebookDocumentsShape> = ProxyIdentifier::new("MainThreadNotebookDocumentsShape");
+        pub const MAIN_THREAD_NOTEBOOK_EDITORS: ProxyIdentifier<dyn MainThreadNotebookEditorsShape> = ProxyIdentifier::new("MainThreadNotebookEditorsShape");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_NOTEBOOK: ProxyIdentifier<dyn ExtHostNotebookShape> = ProxyIdentifier::new("ExtHostNotebook");
+        pub const EXT_HOST_NOTEBOOK_DOCUMENTS: ProxyIdentifier<dyn ExtHostNotebookDocumentsShape> = ProxyIdentifier::new("ExtHostNotebookDocuments");
+    }
+}
+
+// #endregion
