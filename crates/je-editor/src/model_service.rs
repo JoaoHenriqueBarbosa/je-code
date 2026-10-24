@@ -739,6 +739,16 @@ impl IModelService for ModelService {
         self.models.borrow().get(&model_id(resource)).map(|model_data| model_data.model.clone())
     }
 
+    /// `getModels()`.
+    fn get_models(&self) -> Vec<Rc<TextModel>> {
+        ModelService::get_models(self)
+    }
+
+    /// `onModelAdded`.
+    fn on_model_added(&self) -> Event<Rc<TextModel>> {
+        ModelService::on_model_added(self)
+    }
+
     /// `createModel(value, languageSelection, resource?, isForSimpleWidget)`: o método genérico do `ModelService`, com o
     /// tipo de conteúdo que o contrato `dyn` aceita.
     fn create_model(&self, value: TextSource, language_selection: Option<&dyn ILanguageSelection>, resource: Option<&URI>, is_for_simple_widget: bool) -> Rc<TextModel> {

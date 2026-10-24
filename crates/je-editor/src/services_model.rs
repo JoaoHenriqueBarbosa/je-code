@@ -1,10 +1,11 @@
 //! Porte de `src/vs/editor/common/services/model.ts`: o `IModelService`.
 //!
 //! Divergências:
-//! - O trait é um recorte do contrato: `getModel` (que o `TextResourceConfigurationService` usa), `getCreationOptions`
-//!   (as ações de indentação) e `createModel`, `updateModel` e `destroyModel` (o `BaseTextEditorModel`). O resto do
-//!   contrato (`getModels`, `onModelAdded`, `onModelRemoved`, `onModelLanguageChanged` e o `DocumentTokensProvider`)
-//!   é do `ModelService` (`model_service.rs`), que implementa este trait e traz esses membros como métodos próprios.
+//! - O trait é um recorte do contrato: `getModel` (que o `TextResourceConfigurationService` usa), `getModels` e
+//!   `onModelAdded` (que o `SearchResultImpl` usa), `getCreationOptions` (as ações de indentação) e `createModel`,
+//!   `updateModel` e `destroyModel` (o `BaseTextEditorModel`). O resto do contrato (`onModelRemoved`,
+//!   `onModelLanguageChanged` e o `DocumentTokensProvider`) é do `ModelService` (`model_service.rs`), que implementa este
+//!   trait e traz esses membros como métodos próprios.
 //!   `createModel` e `updateModel` do trait recebem o [`TextSource`] (`string | ITextBufferFactory | ITextSnapshot`).
 //! - `ITextModel` é o [`TextModel`] concreto (o porte não tem a interface), e `ITextModel | null` é `Option`.
 //! - `getCreationOptions(language, resource, isForSimpleWidget)` entrou para as ações de indentação
@@ -12,6 +13,7 @@
 
 use std::rc::Rc;
 
+use je_base::event::Event;
 use je_base::uri::URI;
 
 use crate::language_service::ILanguageSelection;
@@ -23,6 +25,12 @@ use crate::text_model_edit_source::TextModelEditSource;
 pub trait IModelService {
     /// `getModel(resource)`: o modelo aberto para o recurso, se houver.
     fn get_model(&self, resource: &URI) -> Option<Rc<TextModel>>;
+
+    /// `getModels()`: todos os modelos abertos.
+    fn get_models(&self) -> Vec<Rc<TextModel>>;
+
+    /// `onModelAdded`: disparado quando um modelo é criado.
+    fn on_model_added(&self) -> Event<Rc<TextModel>>;
 
     /// `createModel(value, languageSelection, resource?, isForSimpleWidget = false)`: o `BaseTextEditorModel` cria os
     /// modelos que ele guarda por aqui.
