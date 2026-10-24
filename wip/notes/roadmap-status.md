@@ -68,6 +68,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: décimo segundo lote: snippetController2 (56), find (findModel 44, findController 21, find 3), defaultLinesDiffComputer (5), suggestMemory, hoverCopyButton, contentHover, decorationRenderOptions, modelService (41), smartSelect, outlineModel, wordHighlighter (parte: DocumentHighlightProviders 15 de 14+), codeAction (16), editorState (6), syntaxFold, workingCopyService, filesConfigurationService, resourceWorkingCopy, terminalEnvironment do workbench (44), promptInputModel (só produção). Pendência real: o `WordHighlighterContribution` (3 casos) e os testes de `promptInputModel`/`shellIntegrationAddon` dependem do emulador de terminal (decisão a tomar: crate de VT em Rust puro). Suíte: 9 081 passando, 0 falhas. Placar: 7 382 de 18 391 (40,14%); editor 89,03% (eu).
 
+- 2026-10-24: décimo terceiro lote: EditorInput (modelo de editores: editorInput, editorModel, sideBySide, diff, `IEditorService` reduzido; 17 casos), queryBuilder (36 + 3), extHostTypes (42, classes da API `vscode`), e a produção da configuração do workbench (`WorkspaceService`, sem testes: faltam UriIdentityService, FileUserDataProvider, UserDataProfileService concretos, em andamento). Suíte: 9 178 passando, 0 falhas. Placar: 7 478 de 18 391 (40,66%) (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
