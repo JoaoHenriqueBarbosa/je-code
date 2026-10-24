@@ -19,6 +19,7 @@ pub mod terminal_profiles;
 pub mod terminal_strings;
 
 pub mod node_terminal_environment;
+pub mod node_terminal_profiles;
 
 pub mod shell_integration_addon;
 
