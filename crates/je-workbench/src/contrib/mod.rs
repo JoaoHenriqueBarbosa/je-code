@@ -29,6 +29,7 @@ pub mod onboarding;
 
 pub mod tasks;
 
+pub mod markdown;
 pub mod snippets;
 pub mod tags;
 pub mod timeline;

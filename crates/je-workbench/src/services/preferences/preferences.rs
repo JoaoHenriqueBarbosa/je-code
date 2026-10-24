@@ -476,6 +476,12 @@ pub struct IOpenSettingsOptions {
 pub trait IPreferencesService {
     /// `openUserSettings(options?)`.
     fn open_user_settings(&self, options: Option<&IOpenSettingsOptions>) -> Promise<()>;
+
+    /// `openApplicationSettings(options?)`.
+    fn open_application_settings(&self, options: Option<&IOpenSettingsOptions>) -> Promise<()>;
+
+    /// `getSetting(settingId)`.
+    fn get_setting(&self, setting_id: &str) -> Option<ISetting>;
 }
 
 service_id!(pub I_PREFERENCES_SERVICE: dyn IPreferencesService = "preferencesService");
