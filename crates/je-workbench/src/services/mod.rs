@@ -5,3 +5,5 @@ pub mod search;
 
 pub mod suggest;
 pub mod policies;
+
+pub mod accounts;
