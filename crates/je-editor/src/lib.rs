@@ -200,3 +200,5 @@ pub mod core_commands;
 pub mod word_operations;
 pub mod indent_utils;
 pub mod move_lines_command;
+
+pub mod multicursor;
