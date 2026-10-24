@@ -40,7 +40,7 @@ use je_base::uri::URI;
 use je_platform::log::LogServiceRef;
 
 use super::ext_host_document_data::{ExtHostDocumentData, IExtHostDocumentSaveDelegate};
-use super::ext_host_protocol::{DocumentsAndEditorsDelta, ExtHostDocumentsAndEditorsShape, IMainContext, MainContext};
+use super::ext_host_protocol::{DocumentsAndEditorsDelta, ExtHostDocumentsAndEditorsShape, IMainContext, MainContext, MainThreadDocumentsShape};
 use super::ext_host_text_editor::{ExtHostTextEditor, TextEditor};
 use super::ext_host_type_converters as type_converters;
 
@@ -193,7 +193,8 @@ impl ExtHostDocumentsAndEditorsShape for ExtHostDocumentsAndEditors {
                 errors::throw(Error::new(format!("document '{} already exists!'", resource.to_string(false))));
             }
             if !exists {
-                let proxy: Rc<dyn IExtHostDocumentSaveDelegate> = self.ext_host_rpc.get_proxy(&MainContext::MAIN_THREAD_DOCUMENTS);
+                let shape: Rc<dyn MainThreadDocumentsShape> = self.ext_host_rpc.get_proxy(&MainContext::MAIN_THREAD_DOCUMENTS);
+                let proxy: Rc<dyn IExtHostDocumentSaveDelegate> = shape;
                 let value = Rc::new(ExtHostDocumentData::new(
                     proxy,
                     resource.clone(),

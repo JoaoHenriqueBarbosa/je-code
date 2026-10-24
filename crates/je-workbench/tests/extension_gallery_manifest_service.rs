@@ -596,9 +596,10 @@ impl Fixture {
                 self.storage.clone(),
                 telemetry.clone(),
                 log_service.clone(),
-            )))
+            ))) as Rc<dyn IExtensionGalleryAccountProvider>
         } else {
             self.guard.add_rc(Rc::new(GitHubGalleryAccountProvider::new(self.default_account_service.borrow().clone(), product.clone(), telemetry.clone(), log_service.clone())))
+                as Rc<dyn IExtensionGalleryAccountProvider>
         };
         account_service.set_account_provider(provider);
         let gallery_account_service: Rc<dyn IExtensionGalleryAccountService> = account_service;
