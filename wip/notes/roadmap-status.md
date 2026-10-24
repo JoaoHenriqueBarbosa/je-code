@@ -62,6 +62,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: nono lote: `cursor.test.ts` inteiro (263 de 263, montado de 5 fragmentos), lineCommentCommand (39), wordOperations (54 de 56), moveLinesCommand (14), encoding do textfile (50 de 55), labelService (38), memento (4), Settings Sync (synchronizer 46), busca do workbench. Dois achados de fidelidade corrigidos no porte: `LineTokens::get_metadata` fora do vetor vale 0 como no JS, e o `OnEnterSupport` preenche `brackets` como o original (medido rodando o código do VS Code em Node via esbuild). Casos pendentes ficam como `#[ignore]` com motivo medido e NÃO contam no placar: `Intl.Segmenter` do japonês (2), `jschardet` (4) e um fixture `some_utf8.css` sem BOM que o próprio teste original não passa com estes bytes (1). Suíte: 8 453 passando, 0 falhas, 7 ignorados. Placar: 6 798 de 18 391 (36,96%); editor 72,39%, platform 63,15%, workbench/services 22,08% (eu).
 
+- 2026-10-24: décimo lote: linesOperations (55), columnSelectionPaste (57), viewController (17), indentation (59 ativos de 85; os 26 `test.skip` do original ficam `#[ignore]`) e indentationLineProcessor (6), wordPartOperations (15), glyphLanesModel (4), lineBreakData (9), linesTextBufferBuilder (12), bracketMatching (7). Suíte: 8 694 passando, 0 falhas. Placar: 7 039 de 18 391 (38,27%); editor 80,06% (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.

@@ -6,7 +6,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
 | `platform` | 192 | 2806 | 105 | 1772 | 63.15 |
-| `editor` | 182 | 3144 | 101 | 2276 | 72.39 |
+| `editor` | 182 | 3144 | 111 | 2517 | 80.06 |
 | `workbench/services` | 137 | 2491 | 26 | 550 | 22.08 |
 | `workbench/api` | 94 | 965 | 1 | 28 | 2.90 |
 | `workbench/contrib` | 370 | 4636 | 19 | 240 | 5.18 |
@@ -14,7 +14,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 6798 | 36.96 |
+| **total** | | 18391 | | 7039 | 38.27 |
 
 ## Arquivos portados
 
@@ -251,6 +251,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/workspaces/test/common/workspaceIdentifier.test.ts` | 1 | `crates/je-platform/tests/workspace_identifier.rs` | 1 |
 | `src/vs/platform/workspaces/test/common/workspaces.test.ts` | 3 | `crates/je-platform/tests/workspaces.rs` | 3 |
 | `src/vs/platform/workspaces/test/node/workspaces.test.ts` | 2 | `crates/je-platform/tests/workspaces_node.rs` | 2 |
+| `src/vs/editor/contrib/bracketMatching/test/browser/bracketMatching.test.ts` | 7 | `crates/je-editor/tests/bracket_matching.rs` | 7 |
 | `src/vs/editor/contrib/caretOperations/test/browser/moveCarretCommand.test.ts` | 4 | `crates/je-editor/tests/move_caret_command.rs` | 4 |
 | `src/vs/editor/contrib/comment/test/browser/blockCommentCommand.test.ts` | 12 | `crates/je-editor/tests/block_comment_command.rs` | 12 |
 | `src/vs/editor/contrib/comment/test/browser/lineCommentCommand.test.ts` | 39 | `crates/je-editor/tests/line_comment_command.rs` | 39 |
@@ -261,6 +262,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/contrib/folding/test/browser/indentFold.test.ts` | 1 | `crates/je-editor/tests/indent_fold.rs` | 1 |
 | `src/vs/editor/contrib/folding/test/browser/indentRangeProvider.test.ts` | 26 | `crates/je-editor/tests/indent_range_provider.rs` | 26 |
 | `src/vs/editor/contrib/hover/test/browser/hoverUtils.test.ts` | 29 | `crates/je-editor/tests/hover_utils.rs` | 29 |
+| `src/vs/editor/contrib/indentation/test/browser/indentation.test.ts` | 59 | `crates/je-editor/tests/indentation_contrib.rs` | 59 |
+| `src/vs/editor/contrib/indentation/test/browser/indentationLineProcessor.test.ts` | 6 | `crates/je-editor/tests/indentation_line_processor_contrib.rs` | 6 |
 | `src/vs/editor/contrib/inlineCompletions/test/browser/computeGhostText.test.ts` | 10 | `crates/je-editor/tests/compute_ghost_text.rs` | 10 |
 | `src/vs/editor/contrib/inlineCompletions/test/browser/editKind.test.ts` | 30 | `crates/je-editor/tests/edit_kind.rs` | 30 |
 | `src/vs/editor/contrib/inlineCompletions/test/browser/graph.test.ts` | 11 | `crates/je-editor/tests/graph.rs` | 11 |
@@ -268,17 +271,20 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/contrib/inlineCompletions/test/browser/longDistanceWidgetPlacement.test.ts` | 19 | `crates/je-editor/tests/long_distance_widget_placement.rs` | 19 |
 | `src/vs/editor/contrib/inlineCompletions/test/browser/scrollToReveal.test.ts` | 21 | `crates/je-editor/tests/scroll_to_reveal.rs` | 21 |
 | `src/vs/editor/contrib/linesOperations/test/browser/copyLinesCommand.test.ts` | 10 | `crates/je-editor/tests/copy_lines_command.rs` | 8 |
+| `src/vs/editor/contrib/linesOperations/test/browser/linesOperations.test.ts` | 55 | `crates/je-editor/tests/lines_operations.rs` | 55 |
 | `src/vs/editor/contrib/linesOperations/test/browser/moveLinesCommand.test.ts` | 14 | `crates/je-editor/tests/move_lines_command.rs` | 14 |
 | `src/vs/editor/contrib/linesOperations/test/browser/sortLinesCommand.test.ts` | 7 | `crates/je-editor/tests/sort_lines_command.rs` | 7 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetParser.test.ts` | 54 | `crates/je-editor/tests/snippet_parser.rs` | 54 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetSession.test.ts` | 47 | `crates/je-editor/tests/snippet_session.rs` | 47 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetVariables.test.ts` | 17 | `crates/je-editor/tests/snippet_variables.rs` | 17 |
 | `src/vs/editor/contrib/wordOperations/test/browser/wordOperations.test.ts` | 56 | `crates/je-editor/tests/word_operations.rs` | 54 |
+| `src/vs/editor/contrib/wordPartOperations/test/browser/wordPartOperations.test.ts` | 15 | `crates/je-editor/tests/word_part_operations.rs` | 15 |
 | `src/vs/editor/test/browser/commands/shiftCommand.test.ts` | 25 | `crates/je-editor/tests/shift_command.rs` | 25 |
 | `src/vs/editor/test/browser/commands/sideEditing.test.ts` | 69 | `crates/je-editor/tests/side_editing.rs` | 69 |
 | `src/vs/editor/test/browser/commands/trimTrailingWhitespaceCommand.test.ts` | 2 | `crates/je-editor/tests/trim_trailing_whitespace_command.rs` | 2 |
 | `src/vs/editor/test/browser/config/editorConfiguration.test.ts` | 36 | `crates/je-editor/tests/editor_configuration.rs` | 36 |
 | `src/vs/editor/test/browser/config/editorLayoutProvider.test.ts` | 20 | `crates/je-editor/tests/editor_layout_provider.rs` | 20 |
+| `src/vs/editor/test/browser/controller/columnSelectionPaste.test.ts` | 57 | `crates/je-editor/tests/column_selection_paste.rs` | 57 |
 | `src/vs/editor/test/browser/controller/cursor.test.ts` | 263 | `crates/je-editor/tests/cursor.rs` | 263 |
 | `src/vs/editor/test/browser/controller/cursorMoveCommand.test.ts` | 55 | `crates/je-editor/tests/cursor_move_command.rs` | 55 |
 | `src/vs/editor/test/browser/controller/textAreaState.test.ts` | 26 | `crates/je-editor/tests/text_area_state.rs` | 26 |
@@ -287,6 +293,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/browser/gpu/objectCollectionBuffer.test.ts` | 6 | `crates/je-editor/tests/object_collection_buffer.rs` | 6 |
 | `src/vs/editor/test/browser/services/openerService.test.ts` | 20 | `crates/je-editor/tests/opener_service.rs` | 20 |
 | `src/vs/editor/test/browser/view/minimapCharRenderer.test.ts` | 2 | `crates/je-editor/tests/minimap_char_renderer.rs` | 2 |
+| `src/vs/editor/test/browser/view/viewController.test.ts` | 17 | `crates/je-editor/tests/view_controller.rs` | 17 |
 | `src/vs/editor/test/browser/view/viewLayer.test.ts` | 80 | `crates/je-editor/tests/view_layer.rs` | 80 |
 | `src/vs/editor/test/browser/viewModel/viewModelDecorations.test.ts` | 3 | `crates/je-editor/tests/view_model_decorations.rs` | 3 |
 | `src/vs/editor/test/browser/viewModel/viewModelImpl.test.ts` | 29 | `crates/je-editor/tests/view_model_impl.rs` | 29 |
@@ -316,6 +323,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/model/editableTextModelAuto.test.ts` | 4 | `crates/je-editor/tests/editable_text_model_auto.rs` | 4 |
 | `src/vs/editor/test/common/model/intervalTree.test.ts` | 25 | `crates/je-editor/tests/interval_tree.rs` | 25 |
 | `src/vs/editor/test/common/model/linesTextBuffer/linesTextBuffer.test.ts` | 29 | `crates/je-editor/tests/lines_text_buffer.rs` | 29 |
+| `src/vs/editor/test/common/model/linesTextBuffer/linesTextBufferBuilder.test.ts` | 12 | `crates/je-editor/tests/lines_text_buffer_builder.rs` | 12 |
 | `src/vs/editor/test/common/model/model.line.test.ts` | 53 | `crates/je-editor/tests/model_line.rs` | 53 |
 | `src/vs/editor/test/common/model/model.modes.test.ts` | 14 | `crates/je-editor/tests/model_modes.rs` | 14 |
 | `src/vs/editor/test/common/model/model.test.ts` | 32 | `crates/je-editor/tests/model.rs` | 32 |
@@ -349,7 +357,9 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/viewLayout/lineHeights.test.ts` | 38 | `crates/je-editor/tests/line_heights.rs` | 38 |
 | `src/vs/editor/test/common/viewLayout/linesLayout.test.ts` | 12 | `crates/je-editor/tests/lines_layout.rs` | 12 |
 | `src/vs/editor/test/common/viewLayout/viewLineRenderer.test.ts` | 97 | `crates/je-editor/tests/view_line_renderer.rs` | 97 |
+| `src/vs/editor/test/common/viewModel/glyphLanesModel.test.ts` | 4 | `crates/je-editor/tests/glyph_lanes_model.rs` | 4 |
 | `src/vs/editor/test/common/viewModel/inlineDecorations.test.ts` | 31 | `crates/je-editor/tests/inline_decorations.rs` | 31 |
+| `src/vs/editor/test/common/viewModel/lineBreakData.test.ts` | 9 | `crates/je-editor/tests/line_break_data.rs` | 9 |
 | `src/vs/editor/test/common/viewModel/monospaceLineBreaksComputer.test.ts` | 37 | `crates/je-editor/tests/monospace_line_breaks_computer.rs` | 37 |
 | `src/vs/editor/test/common/viewModel/prefixSumComputer.test.ts` | 48 | `crates/je-editor/tests/prefix_sum_computer.rs` | 48 |
 | `src/vs/workbench/services/accounts/test/browser/managedSettings.test.ts` | 28 | `crates/je-workbench/tests/accounts_managed_settings.rs` | 28 |
