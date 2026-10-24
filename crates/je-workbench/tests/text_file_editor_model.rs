@@ -254,7 +254,7 @@ where
     }
 }
 
-fn save_participant(participate: impl Fn(Rc<dyn ITextFileEditorModel>, TextFileSaveParticipantContext, CancellationToken) -> Promise<()> + 'static) -> Rc<dyn ITextFileSaveParticipant> {
+fn participant_of(participate: impl Fn(Rc<dyn ITextFileEditorModel>, TextFileSaveParticipantContext, CancellationToken) -> Promise<()> + 'static) -> Rc<dyn ITextFileSaveParticipant> {
     Rc::new(FnSaveParticipant(participate))
 }
 
@@ -268,7 +268,7 @@ async fn test_save_from_save_participant(disposables: &LeakGuard, accessor: &Tex
     let save_promise: Rc<RefCell<Option<Promise<bool>>>> = Rc::default();
 
     let (weak_model, slot) = (Rc::downgrade(model), save_promise.clone());
-    disposables.add(accessor.files().add_save_participant(save_participant(move |_model, _context, _token| {
+    disposables.add(accessor.files().add_save_participant(participant_of(move |_model, _context, _token| {
         let (weak_model, slot) = (weak_model.clone(), slot.clone());
         async_fn(async move {
             if async_ {
@@ -672,7 +672,7 @@ fn encoding_updates_with_language_based_configuration() {
 
         drop(accessor.test_configuration_service.set_user_configuration("files.encoding", Dynamic::from(UTF16BE), None));
 
-        model.set_language_id(language_id, None);
+        je_workbench::services::textfile::textfiles::ILanguageSupport::set_language_id(&*model, language_id, None);
 
         deferred_promise.await.unwrap(); // this asserts that the model was reloaded due to the language change
     });
@@ -1044,7 +1044,7 @@ fn save_participant() {
         }));
 
         let counter = event_counter.clone();
-        let participant = accessor.files().add_save_participant(save_participant(move |model, _context, _token| {
+        let participant = accessor.files().add_save_participant(participant_of(move |model, _context, _token| {
             assert!(model.is_dirty());
             update_model(as_text_file_editor_model(&model), "bar");
             assert!(model.is_dirty());
@@ -1080,7 +1080,7 @@ fn save_participant_skip() {
         let model = disposables.add_rc(accessor.create_model(&to_resource(TITLE, "/path/index_async.txt"), Some("utf8"), None));
 
         let counter = event_counter.clone();
-        disposables.add(accessor.files().add_save_participant(save_participant(move |_model, _context, _token| {
+        disposables.add(accessor.files().add_save_participant(participant_of(move |_model, _context, _token| {
             counter.set(counter.get() + 1);
 
             Promise::resolved(())
@@ -1112,7 +1112,7 @@ fn save_participant_async_participant() {
         }));
 
         let counter = event_counter.clone();
-        disposables.add(accessor.files().add_save_participant(save_participant(move |model, _context, _token| {
+        disposables.add(accessor.files().add_save_participant(participant_of(move |model, _context, _token| {
             assert!(model.is_dirty());
             update_model(as_text_file_editor_model(&model), "bar");
             assert!(model.is_dirty());
@@ -1140,7 +1140,7 @@ fn save_participant_bad_participant() {
 
         let model = disposables.add_rc(accessor.create_model(&to_resource(TITLE, "/path/index_async.txt"), Some("utf8"), None));
 
-        disposables.add(accessor.files().add_save_participant(save_participant(move |_model, _context, _token| {
+        disposables.add(accessor.files().add_save_participant(participant_of(move |_model, _context, _token| {
             let _boom = Error::new("boom");
 
             Promise::resolved(())
@@ -1165,7 +1165,7 @@ fn save_participant_participant_cancelled_when_saved_again() {
         let participations: Rc<RefCell<Vec<bool>>> = Rc::default();
 
         let collected = participations.clone();
-        disposables.add(accessor.files().add_save_participant(save_participant(move |_model, _context, token| {
+        disposables.add(accessor.files().add_save_participant(participant_of(move |_model, _context, token| {
             let collected = collected.clone();
             async_fn(async move {
                 timeout(10).await?;
@@ -1274,7 +1274,7 @@ fn save_participant_carries_context() {
         let from = uri_file("testFrom");
         let error: Rc<RefCell<Option<String>>> = Rc::default();
         let (slot, from_string) = (error.clone(), uri_string(&from));
-        disposables.add(accessor.files().add_save_participant(save_participant(move |_model, context, _token| {
+        disposables.add(accessor.files().add_save_participant(participant_of(move |_model, context, _token| {
             if context.reason != SaveReason::Explicit {
                 *slot.borrow_mut() = Some(format!("expected reason {:?} to be {:?}", context.reason, SaveReason::Explicit));
             } else if context.saved_from.as_ref().map(uri_string).as_deref() != Some(from_string.as_str()) {
