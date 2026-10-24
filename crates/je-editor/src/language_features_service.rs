@@ -619,6 +619,12 @@ pub trait DocumentColorProvider {
 
     /// `provideColorPresentations(model, colorInfo, token)`.
     fn provide_color_presentations(&self, model: &Rc<TextModel>, color_info: &IColorInformation, token: &CancellationToken) -> ProviderResult<Vec<IColorPresentation>>;
+
+    /// O `provider instanceof DefaultDocumentColorProvider` de `_findColorData`: só o provedor padrão embutido responde
+    /// `true`.
+    fn is_default_document_color_provider(&self) -> bool {
+        false
+    }
 }
 
 // ---- colar e soltar -----------------------------------------------------------------------------------

@@ -242,3 +242,10 @@ pub mod stable_editor_scroll;
 pub mod tree_views_dnd;
 
 pub mod get_icon_classes;
+
+pub mod codelens;
+pub mod color;
+pub mod format;
+pub mod get_links;
+pub mod goto_symbol;
+pub mod rename;

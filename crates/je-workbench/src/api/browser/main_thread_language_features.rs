@@ -227,27 +227,27 @@ impl TypeHierarchyProvider for MainThreadTypeHierarchyProvider {
     }
 }
 
-/// `_reviveWorkspaceSymbolDto(data)`: o símbolo sem `uri` ou `range` no `location` não é um `IWorkspaceSymbol`.
-fn revive_workspace_symbol_dto(data: &IWorkspaceSymbolDto) -> Option<IWorkspaceSymbol> {
-    Some(IWorkspaceSymbol {
+/// `_reviveWorkspaceSymbolDto(data)`: o `_reviveLocationDto` do original só revive o `uri`, e o `location` segue sem
+/// validação (o `uri` e o `range` podem faltar, ver [`IWorkspaceSymbol::location`]).
+fn revive_workspace_symbol_dto(data: &IWorkspaceSymbolDto) -> IWorkspaceSymbol {
+    IWorkspaceSymbol {
         name: data.name.clone(),
         container_name: data.container_name.clone(),
         kind: data.kind,
         tags: data.tags.clone(),
-        location: revive_location(data.location.clone())?,
+        location: data.location.clone(),
         cache_id: data.cache_id,
-    })
+    }
 }
 
 fn workspace_symbol_to_dto(symbol: &IWorkspaceSymbol) -> IWorkspaceSymbolDto {
-    use crate::api::common::ext_host_type_converters::LocationDto;
     IWorkspaceSymbolDto {
         cache_id: symbol.cache_id,
         name: symbol.name.clone(),
         container_name: symbol.container_name.clone(),
         kind: symbol.kind,
         tags: symbol.tags.clone(),
-        location: LocationDto { uri: Some(symbol.location.uri.clone()), range: Some(symbol.location.range) },
+        location: symbol.location.clone(),
     }
 }
 
@@ -266,7 +266,7 @@ impl IWorkspaceSymbolProvider for MainThreadWorkspaceSymbolProvider {
                 remote.proxy.rpc_release_workspace_symbols(remote.handle, last_result_id);
             }
             last_result_id.set(result.cache_id);
-            Ok(result.symbols.iter().filter_map(revive_workspace_symbol_dto).collect())
+            Ok(result.symbols.iter().map(revive_workspace_symbol_dto).collect())
         })
     }
 
@@ -278,7 +278,7 @@ impl IWorkspaceSymbolProvider for MainThreadWorkspaceSymbolProvider {
         self.remote
             .proxy
             .rpc_resolve_workspace_symbol(self.remote.handle, workspace_symbol_to_dto(item), token.clone())
-            .then(|resolved_item| resolved_item.and_then(|resolved_item| revive_workspace_symbol_dto(&resolved_item)))
+            .then(|resolved_item| resolved_item.map(|resolved_item| revive_workspace_symbol_dto(&resolved_item)))
     }
 }
 

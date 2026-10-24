@@ -2,7 +2,8 @@
 //! `WordDistance` do módulo `suggest` lê (`canComputeWordRanges` e `computeWordRanges`).
 //!
 //! As demais operações do serviço (cálculo de diferenças, edições de espaço em branco, links, cores, `navigateValueSet`,
-//! sincronização de modelos) entram junto das contribuições que as usam.
+//! sincronização de modelos) entram junto das contribuições que as usam. `computeMoreMinimalEdits` entra só como
+//! contrato (ver o método), para as funções de formatação.
 //!
 //! Representação:
 //! - `{ [word: string]: IRange[] }` é o [`WordRanges`], um mapa de palavra para os intervalos em que ela ocorre, na ordem
@@ -16,6 +17,7 @@ use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_instantiation::service_id;
 
+use crate::code_action::languages::TextEdit;
 use crate::edits::string_edit::StringEdit;
 use crate::range::Range;
 
@@ -42,6 +44,14 @@ pub trait IEditorWorkerService {
     /// `computeWordRanges(resource, range)`: as palavras de `range` e onde elas ocorrem, ou `None` quando o modelo
     /// não está no worker.
     fn compute_word_ranges(&self, resource: &URI, range: Range) -> Promise<Option<WordRanges>>;
+
+    /// `computeMoreMinimalEdits(resource, edits, pretty?)`: o serviço real pede ao worker (que tem o modelo sincronizado) o
+    /// diff de cada edição contra o texto atual, e ainda não tem porte. O `mock<IEditorWorkerService>()` do original deixa o
+    /// membro ausente (chamá-lo lança `TypeError`), e é isso que o corpo padrão faz: quem usa o serviço nas funções de
+    /// formatação sobrescreve este método.
+    fn compute_more_minimal_edits(&self, _resource: &URI, _edits: Option<Vec<TextEdit>>) -> Promise<Option<Vec<TextEdit>>> {
+        panic!("computeMoreMinimalEdits is not a function")
+    }
 
     /// `computeStringEditFromDiff(original, modified, { maxComputationTimeMs }, algorithm)`. O worker roda no mesmo
     /// thread, então o padrão calcula a diferença direto (o `$computeStringDiff` do worker); o `catch` do original,
