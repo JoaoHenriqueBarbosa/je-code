@@ -43,6 +43,8 @@ use crate::log::LogServiceRef;
 use crate::storage::StorageScope;
 use crate::user_data_profile::{UseDefaultProfileFlags, UserDataProfile};
 
+use super::global_state_merge::StorageDictionary;
+
 /// `getDisallowedIgnoredSettings`: as chaves registradas que não podem ser ignoradas na sincronização
 /// (`disallowSyncIgnore`).
 pub fn get_disallowed_ignored_settings() -> Vec<JsString> {
@@ -686,10 +688,11 @@ pub struct IStorageValue {
     pub scope: Option<StorageScope>,
 }
 
-/// `IGlobalState`.
-#[derive(Clone, Debug, PartialEq)]
+/// `IGlobalState`: `IStringDictionary<IStorageValue>` é o [`StorageDictionary`] do merge (a ordem das chaves decide a
+/// ordem do que o merge devolve).
+#[derive(Clone, Debug)]
 pub struct IGlobalState {
-    pub storage: IndexMap<String, IStorageValue>,
+    pub storage: StorageDictionary,
 }
 
 /// `IWorkspaceStateFolder`.
