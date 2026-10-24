@@ -30,7 +30,7 @@ use std::rc::Rc;
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers};
 use je_base::buffer::{VSBuffer, encode_base64};
 use je_base::lifecycle::{IDisposable, id_of, to_disposable};
-use je_base::path::{Platform, PathModule};
+use je_base::path::PathModule;
 use je_base::uri::{URI, UriComponents};
 use je_editor::language_service::ILanguageService;
 use je_editor::modes_registry::LanguageExtensionPoint;
@@ -158,7 +158,7 @@ fn create_text_editor_basics() {
         input = track(&disposables, service.create_text_editor(resource_input(&to_resource(TITLE, "/index.html"))));
         let input_different_case = track(&disposables, service.create_text_editor(resource_input(&to_resource(TITLE, "/INDEX.html"))));
 
-        if !Platform::detect().is_linux {
+        if !je_base::platform::Platform::detect().is_linux {
             assert!(same(&input, &input_different_case));
             assert_eq!(input.resource().map(|resource| uri_string(&resource)), input_different_case.resource().map(|resource| uri_string(&resource)));
         } else {
