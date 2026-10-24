@@ -77,6 +77,7 @@ pub mod registry;
 pub mod secrets;
 
 pub mod label;
+pub mod list;
 pub mod path;
 pub mod uri_identity;
 pub mod virtual_workspace;
@@ -84,3 +85,4 @@ pub mod virtual_workspace;
 pub mod diagnostics;
 
 pub mod metered_connection;
+pub mod observable;

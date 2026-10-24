@@ -1,12 +1,16 @@
-//! Porte parcial de `src/vs/workbench/contrib/notebook/browser/viewModel/cellOutputTextHelper.ts`: o texto de uma saída de célula
-//! (`getOutputText`, `getOutputStreamText`) e a cópia dele para a área de transferência (`copyCellOutput`, com `TEXT_BASED_MIMETYPES`).
+//! Porte de `src/vs/workbench/contrib/notebook/browser/viewModel/cellOutputTextHelper.ts`: o texto de uma saída de célula
+//! (`getOutputText`, `getOutputStreamText`), o texto de todas as saídas de uma célula (`getAllOutputsText`) e a cópia dele para a
+//! área de transferência (`copyCellOutput`, com `TEXT_BASED_MIMETYPES`).
 //!
 //! Divergências:
-//! - `getAllOutputsText` não é portado: ele chama `outputViewModel.resolveMimeTypes(notebook, undefined)`, que depende do
-//!   `INotebookService.getOutputMimeTypeInfo` e do resolvedor de renderizadores (ver `cell_output_view_model.rs`).
-//! - `ICellOutputViewModel` do original (com `model` e `cellViewModel`) é o trait [`ICellOutputViewModel`], e o `ICellViewModel` que o
-//!   `getOutputStreamText` lê (`outputsViewModels` e `model.outputs`) é o [`ICellOutputsOwner`]. O [`CellOutputViewModel`] do porte guarda
-//!   só o `id` da célula dona (não a célula), então ele não implementa o trait: quem liga a célula à saída (o widget) implementa os dois.
+//! - `ICellOutputViewModel` do original (com `model`, `cellViewModel` e `resolveMimeTypes`) é o trait [`ICellOutputViewModel`], e o
+//!   `ICellViewModel` que o `getOutputStreamText` lê (`outputsViewModels` e `model.outputs`) é o [`ICellOutputsOwner`]. O
+//!   [`CellOutputViewModel`] do porte guarda só o `id` da célula dona (não a célula), então ele não implementa o trait: quem liga a
+//!   célula à saída (o widget) implementa os dois. O `resolveMimeTypes` tem corpo padrão que lança `TypeError` (o objeto literal
+//!   `{ model } as ICellOutputViewModel` do original não o tem).
+//! - `getAllOutputsText(notebook, viewCell, shortErrors)` recebe também o `INotebookService` (o `CellOutputViewModel` do original o
+//!   guardava; ver `cell_output_view_model.rs`) e faz a ligação de cada saída com a célula num [`BoundCellOutputs`] criado na chamada.
+//!   O `viewCell.outputsViewModels` de uma célula de markup é `undefined` no original, e ler `length` lança `TypeError`.
 //! - `indexOf(output)` é a identidade do objeto (o endereço do `Rc`).
 //! - `new TextDecoder().decode(bytes)` é a decodificação UTF-8 com `U+FFFD` nos bytes inválidos e sem o BOM inicial.
 //! - `JSON.parse(text)` é o `parse_str` do je-base (que aceita comentários e vírgula final): o texto só vale quando a leitura não
@@ -14,9 +18,11 @@
 //! - `await clipboardService.writeText(text)` é a promessa devolvida; a falha vira `logService.error(...)` e a promessa resolve.
 //! - `string.trim()` é o `trim` de `je_base::js_string`.
 
-use std::rc::Rc;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 use je_base::JsString;
+use je_base::errors::{self, Error};
 use je_base::js_regexp::replace_all;
 use je_base::js_string::trim;
 use je_base::json::{Value, parse_str};
@@ -26,14 +32,22 @@ use je_editor::services::clipboard_service::IClipboardService;
 use je_platform::log::{LogService, Logger};
 use zyarr::RegExp;
 
-use crate::contrib::notebook::common::notebook_common::{ICellOutput, IOutputItemDto};
+use crate::contrib::notebook::browser::view_model::cell_output_view_model::CellOutputViewModel;
+use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
+use crate::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
+use crate::contrib::notebook::common::notebook_common::{ICell, ICellOutput, IOrderedMimeType, IOutputItemDto};
+use crate::contrib::notebook::common::notebook_service::INotebookService;
 
-/// A saída de uma célula (`ICellOutputViewModel`): o modelo e a célula dona.
+/// A saída de uma célula (`ICellOutputViewModel`): o modelo, a célula dona e a escolha do tipo de mídia.
 pub trait ICellOutputViewModel {
     /// `model`.
     fn model(&self) -> Rc<dyn ICellOutput>;
     /// `cellViewModel`.
     fn cell_view_model(&self) -> Option<Rc<dyn ICellOutputsOwner>>;
+    /// `resolveMimeTypes(textModel, kernelProvides)`: os tipos de mídia na ordem de preferência e o índice do escolhido.
+    fn resolve_mime_types(&self, _text_model: &NotebookTextModel, _kernel_provides: Option<&[String]>) -> (Vec<IOrderedMimeType>, usize) {
+        errors::throw(Error::type_error("resolveMimeTypes is not a function"))
+    }
 }
 
 /// O que o `getOutputStreamText` lê da célula dona (`ICellViewModel`).
@@ -42,6 +56,111 @@ pub trait ICellOutputsOwner {
     fn outputs_view_models(&self) -> Vec<Rc<dyn ICellOutputViewModel>>;
     /// `model.outputs`.
     fn model_outputs(&self) -> Vec<Rc<dyn ICellOutput>>;
+}
+
+/// Uma saída de célula de código ligada à célula dona e ao serviço de notebooks (o `CellOutputViewModel` do original).
+struct BoundOutput {
+    view_model: Rc<CellOutputViewModel>,
+    notebook_service: Rc<dyn INotebookService>,
+    owner: RefCell<Weak<BoundCellOutputs>>,
+}
+
+impl ICellOutputViewModel for BoundOutput {
+    fn model(&self) -> Rc<dyn ICellOutput> {
+        self.view_model.model()
+    }
+
+    fn cell_view_model(&self) -> Option<Rc<dyn ICellOutputsOwner>> {
+        self.owner.borrow().upgrade().map(|owner| owner as Rc<dyn ICellOutputsOwner>)
+    }
+
+    fn resolve_mime_types(&self, text_model: &NotebookTextModel, kernel_provides: Option<&[String]>) -> (Vec<IOrderedMimeType>, usize) {
+        self.view_model.resolve_mime_types(self.notebook_service.as_ref(), text_model, kernel_provides)
+    }
+}
+
+/// As saídas de uma célula de código ligadas à célula (o `ICellViewModel` que o `getOutputStreamText` lê). As saídas são criadas uma
+/// vez, para que a identidade do `Rc` valha como o `indexOf` do original.
+pub struct BoundCellOutputs {
+    outputs: RefCell<Vec<Rc<BoundOutput>>>,
+    model_outputs: Vec<Rc<dyn ICellOutput>>,
+}
+
+impl BoundCellOutputs {
+    pub fn new(cell: &CellViewModel, notebook_service: &Rc<dyn INotebookService>) -> Rc<Self> {
+        let Some(code_cell) = cell.as_code() else {
+            errors::throw(Error::type_error("Cannot read properties of undefined (reading 'length')"))
+        };
+        let owner = Rc::new(Self { outputs: RefCell::new(Vec::new()), model_outputs: code_cell.model.outputs() });
+        let bound: Vec<Rc<BoundOutput>> = code_cell
+            .outputs_view_models()
+            .into_iter()
+            .map(|view_model| Rc::new(BoundOutput { view_model, notebook_service: notebook_service.clone(), owner: RefCell::new(Rc::downgrade(&owner)) }))
+            .collect();
+        *owner.outputs.borrow_mut() = bound;
+        owner
+    }
+}
+
+impl ICellOutputsOwner for BoundCellOutputs {
+    fn outputs_view_models(&self) -> Vec<Rc<dyn ICellOutputViewModel>> {
+        self.outputs.borrow().iter().map(|output| output.clone() as Rc<dyn ICellOutputViewModel>).collect()
+    }
+
+    fn model_outputs(&self) -> Vec<Rc<dyn ICellOutput>> {
+        self.model_outputs.clone()
+    }
+}
+
+/// `getAllOutputsText(notebook, viewCell, shortErrors = false)`.
+pub fn get_all_outputs_text(notebook_service: &Rc<dyn INotebookService>, notebook: &NotebookTextModel, view_cell: &CellViewModel, short_errors: bool) -> String {
+    let owner = BoundCellOutputs::new(view_cell, notebook_service);
+    let output_view_models = owner.outputs_view_models();
+    let model_outputs = owner.model_outputs();
+    let mut output_text: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < output_view_models.len() {
+        let output_view_model = &output_view_models[i];
+        let Some(output_text_model) = model_outputs.get(i) else {
+            errors::throw(Error::type_error("Cannot read properties of undefined (reading 'outputs')"))
+        };
+        let (mime_types, pick) = output_view_model.resolve_mime_types(notebook, None);
+        let Some(picked) = mime_types.get(pick) else {
+            errors::throw(Error::type_error("Cannot read properties of undefined (reading 'mimeType')"))
+        };
+        let mime_type = picked.mime_type.clone();
+        let outputs = output_text_model.outputs();
+        let mut buffer = outputs.iter().find(|output| output.mime == mime_type);
+
+        if buffer.is_none() || mime_type.starts_with("image") {
+            buffer = outputs.iter().find(|output| !output.mime.starts_with("image"));
+        }
+
+        let Some(buffer) = buffer else {
+            i += 1;
+            continue;
+        };
+
+        let text = if is_text_stream_mime(&mime_type) {
+            let (stream, count) = get_output_stream_text(output_view_model.as_ref());
+            if count > 1 {
+                i += count - 1;
+            }
+            stream
+        } else {
+            get_output_text(&mime_type, buffer, short_errors)
+        };
+
+        output_text.push(text);
+        i += 1;
+    }
+
+    if output_text.len() > 1 {
+        let total = output_text.len();
+        output_text.iter().enumerate().map(|(i, output)| format!("Cell output {} of {}\n{}", i + 1, total, output)).collect::<Vec<_>>().join("\n")
+    } else {
+        output_text.into_iter().next().unwrap_or_default()
+    }
 }
 
 /// `new TextDecoder().decode(bytes)`.

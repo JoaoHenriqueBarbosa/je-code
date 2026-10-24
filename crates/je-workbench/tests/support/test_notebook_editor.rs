@@ -232,11 +232,20 @@ impl INotebookCellExecution for TestCellExecution {
 #[derive(Default)]
 pub struct TestNotebookExecutionStateService {
     executions: Rc<RefCell<HashMap<String, Rc<dyn INotebookCellExecution>>>>,
+    /// O `override onDidChangeExecution = emitter.event` de uma subclasse do original; sem ele o evento nunca dispara.
+    pub did_change_execution: Option<Event<ExecutionStateChange>>,
+}
+
+impl TestNotebookExecutionStateService {
+    /// O dublê com o `onDidChangeExecution` sobrescrito.
+    pub fn with_did_change_execution(event: Event<ExecutionStateChange>) -> Self {
+        Self { did_change_execution: Some(event), ..Self::default() }
+    }
 }
 
 impl INotebookExecutionStateService for TestNotebookExecutionStateService {
     fn on_did_change_execution(&self) -> Event<ExecutionStateChange> {
-        Event::none()
+        self.did_change_execution.clone().unwrap_or_else(Event::none)
     }
 
     fn on_did_change_last_run_fail_state(&self) -> Event<INotebookFailStateChangedEvent> {
@@ -591,8 +600,18 @@ pub fn with_test_notebook<R>(
     cells: Vec<MockNotebookCell>,
     callback: impl FnOnce(&Rc<ActiveTestNotebookEditorDelegate>, &Rc<NotebookViewModel>, &Rc<DisposableStore>, &NotebookTestServices) -> R,
 ) -> R {
+    with_test_notebook_services(setup_notebook_services, cells, callback)
+}
+
+/// `withTestNotebook(cells, callback, instantiationService)`: os serviços vêm de `setup`, que monta os do
+/// `setupInstantiationService` e troca (o `instantiationService.stub(...)` do original) os que o caso precisa.
+pub fn with_test_notebook_services<R>(
+    setup: impl FnOnce(&DisposableStore) -> NotebookTestServices,
+    cells: Vec<MockNotebookCell>,
+    callback: impl FnOnce(&Rc<ActiveTestNotebookEditorDelegate>, &Rc<NotebookViewModel>, &Rc<DisposableStore>, &NotebookTestServices) -> R,
+) -> R {
     let disposables = DisposableStore::new();
-    let services = setup_notebook_services(&disposables);
+    let services = setup(&disposables);
     let notebook_editor = create_test_notebook_editor(&services, &disposables, cells);
 
     let mut outcome = None;

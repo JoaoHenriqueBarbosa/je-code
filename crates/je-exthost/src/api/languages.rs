@@ -111,7 +111,7 @@ pub struct LanguagesState {
 }
 
 /// A extensão que o host usa nos registros (ver as divergências do módulo).
-fn host_extension() -> Rc<ExtensionDescription> {
+pub fn host_extension() -> Rc<ExtensionDescription> {
     Rc::new(ExtensionDescription {
         id: HOST_EXTENSION.to_owned(),
         identifier: ExtensionIdentifier::new(HOST_EXTENSION),

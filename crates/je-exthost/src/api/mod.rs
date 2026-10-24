@@ -14,22 +14,30 @@ use std::rc::Rc;
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS_KEY};
 
 pub mod commands;
+pub mod debug;
 pub mod disposable;
 pub mod enums;
 pub mod env;
 pub mod events;
 pub mod extensions;
+pub mod file_system_events;
 pub mod l10n;
+pub mod js_object;
 pub mod language_types;
 pub mod languages;
 pub mod output_channel;
 pub mod progress;
 pub mod quick_input;
+pub mod quick_session;
+pub mod scm;
+pub mod terminal;
 pub mod text_editors;
+pub mod tree_views;
 pub mod types;
 pub mod uri;
 pub mod window;
 pub mod workspace;
+pub mod workspace_edit;
 
 /// O identificador da extensão chamadora: o `vscode` é um só para todas as extensões, então o host não sabe qual delas chama e usa
 /// este para o que o original lê da `IExtensionDescription` (o log de traço do `findFiles`, o canal de saída, o progresso).

@@ -3,9 +3,10 @@
 //! [`NumberBadge`].
 //!
 //! Divergências:
-//! - O resto da interface (`onDidChangeActivity`, `showViewContainerActivity`, `getViewContainerActivities`,
-//!   `showAccountsActivity`, `showGlobalActivity`, `getActivity`) e os selos `IconBadge`, `ProgressBadge`, `WarningBadge` e
-//!   `ErrorBadge` pertencem às partes de barra de atividade e de contas, que ainda não foram portadas.
+//! - `onDidChangeActivity` e `getViewContainerActivities` entram com implementação padrão (nunca dispara, lista vazia), e o
+//!   `badge instanceof ProgressBadge` é `IBadge::is_progress_badge`.
+//! - O resto da interface (`showViewContainerActivity`, `showAccountsActivity`, `showGlobalActivity`, `getActivity`) e os
+//!   selos `IconBadge`, `WarningBadge` e `ErrorBadge` pertencem às partes de barra de atividade e de contas, que ainda não foram portadas.
 //! - `IBadge.getColors(theme)` fica de fora: `IColorTheme` e `Color` são da camada de tema da interface. Só
 //!   `getDescription()` entra.
 //! - `IActivity` do original só tem o `badge`; o `priority` que o `CustomTreeView` põe no objeto literal é ignorado pelo
@@ -13,11 +14,17 @@
 
 use std::rc::Rc;
 
+use je_base::event::Event;
 use je_base::lifecycle::DisposableRef;
 
 /// `IBadge`.
 pub trait IBadge {
     fn get_description(&self) -> String;
+
+    /// O `badge instanceof ProgressBadge` do original: só o [`ProgressBadge`] responde `true`.
+    fn is_progress_badge(&self) -> bool {
+        false
+    }
 }
 
 /// `IActivity`.
@@ -45,8 +52,40 @@ impl IBadge for NumberBadge {
     }
 }
 
+/// `ProgressBadge`: o selo de progresso (o `getDescription` é o que o construtor recebe).
+pub struct ProgressBadge {
+    description_fn: Rc<dyn Fn() -> String>,
+}
+
+impl ProgressBadge {
+    /// `new ProgressBadge(getDescription)`.
+    pub fn new(description_fn: impl Fn() -> String + 'static) -> Self {
+        Self { description_fn: Rc::new(description_fn) }
+    }
+}
+
+impl IBadge for ProgressBadge {
+    fn get_description(&self) -> String {
+        (self.description_fn)()
+    }
+
+    fn is_progress_badge(&self) -> bool {
+        true
+    }
+}
+
 /// `IActivityService`.
 pub trait IActivityService {
+    /// `onDidChangeActivity`: dispara quando uma atividade muda (o padrão nunca dispara).
+    fn on_did_change_activity(&self) -> Event<()> {
+        Event::none()
+    }
+
+    /// `getViewContainerActivities(viewContainerId)`: as atividades do contêiner de views (o padrão é a lista vazia).
+    fn get_view_container_activities(&self, _view_container_id: &str) -> Vec<IActivity> {
+        Vec::new()
+    }
+
     /// `showViewActivity(viewId, badge)`: mostra o selo da view até o descarte do retorno.
     fn show_view_activity(&self, view_id: &str, badge: IActivity) -> DisposableRef;
 }

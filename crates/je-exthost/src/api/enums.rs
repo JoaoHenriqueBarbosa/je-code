@@ -11,6 +11,8 @@
 
 use je_base::themables::ThemeIcon;
 use je_platform::log::LogLevel;
+use je_workbench::api::common::ext_host_debug_types::DebugConsoleMode;
+use je_workbench::contrib::debug::debug::DebugConfigurationProviderTriggerKind;
 use je_workbench::api::common::ext_host_types::{
     CodeActionTriggerKind, CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, ExtensionKind,
     InputBoxValidationSeverity, ProgressLocation, QuickPickItemKind, StatusBarAlignment, SymbolKind, SymbolTag,
@@ -173,6 +175,20 @@ pub fn enums() -> Vec<(String, JsData)> {
         (
             "CodeActionTriggerKind".to_owned(),
             enum_object(&[("Invoke", CodeActionTriggerKind::Invoke.value()), ("Automatic", CodeActionTriggerKind::Automatic.value())]),
+        ),
+        // `TreeItemCollapsibleState`, `TreeItemCheckboxState`, `TerminalExitReason` e `TerminalLocation` (`extHostTypes.ts`).
+        ("TreeItemCollapsibleState".to_owned(), enum_object(&[("None", 0), ("Collapsed", 1), ("Expanded", 2)])),
+        ("TreeItemCheckboxState".to_owned(), enum_object(&[("Unchecked", 0), ("Checked", 1)])),
+        ("TerminalExitReason".to_owned(), enum_object(&[("Unknown", 0), ("Shutdown", 1), ("Process", 2), ("User", 3), ("Extension", 4)])),
+        ("TerminalLocation".to_owned(), enum_object(&[("Panel", 1), ("Editor", 2)])),
+        // `DebugConsoleMode` (`extHostTypes.ts`) e `DebugConfigurationProviderTriggerKind` (`debug.ts`).
+        ("DebugConsoleMode".to_owned(), enum_object(&[("Separate", DebugConsoleMode::Separate as i32), ("MergeWithParent", DebugConsoleMode::MergeWithParent as i32)])),
+        (
+            "DebugConfigurationProviderTriggerKind".to_owned(),
+            enum_object(&[
+                ("Initial", DebugConfigurationProviderTriggerKind::Initial as i32),
+                ("Dynamic", DebugConfigurationProviderTriggerKind::Dynamic as i32),
+            ]),
         ),
     ]
 }

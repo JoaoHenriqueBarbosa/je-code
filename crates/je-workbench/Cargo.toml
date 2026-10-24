@@ -33,6 +33,8 @@ jiff = { version = "0.2", default-features = false, features = ["std", "tz-syste
 je-widgets = { path = "../je-widgets" }
 # O nó (`NodeId`) e a árvore (`Ui`) em que o `EditorPart` e o `EditorGroupView` se apoiam para o grid e o layout centralizado.
 je-ui = { path = "../je-ui" }
+# `new URL(...)` (WHATWG) do `UrlFinder`: valida cada trecho que parece uma URL de servidor local.
+url = "2"
 
 # `textfile/encoding`: o `iconv-lite` (codificações WHATWG) do original, em Rust puro, e o `jschardet`
 # (detecção), a crate do workspace que porta o 3.1.4.

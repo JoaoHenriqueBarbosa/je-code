@@ -94,6 +94,8 @@ pub trait IProgressIndicator {
 /// `IEditorProgressService`: o indicador de progresso local ao editor.
 pub trait IEditorProgressService: IProgressIndicator {}
 
+je_instantiation::service_id!(pub I_EDITOR_PROGRESS_SERVICE: dyn IEditorProgressService = "editorProgressService");
+
 /// `ActionSet<T>`.
 pub trait ActionSet<T>: IDisposable {
     fn valid_actions(&self) -> Vec<T>;
