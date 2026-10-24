@@ -91,15 +91,7 @@ fn nls_no_results() -> String {
 
 // #region Serviços (recortes)
 
-/// A fatia de `IClipboardService` que a busca usa: a área de transferência de busca do macOS.
-pub trait IClipboardService {
-    /// `readFindText()`.
-    fn read_find_text(&self) -> Promise<JsString>;
-    /// `writeFindText(text)`.
-    fn write_find_text(&self, text: &JsString) -> Promise<()>;
-}
-
-je_instantiation::service_id!(pub I_CLIPBOARD_SERVICE: dyn IClipboardService = "clipboardService");
+pub use crate::services::clipboard_service::{I_CLIPBOARD_SERVICE, IClipboardService};
 
 /// A fatia de `IInputBox` (`quickInput.ts`) que o `Go to Match...` usa.
 pub trait IInputBox: IDisposable {

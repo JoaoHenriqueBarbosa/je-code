@@ -41,11 +41,13 @@ use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
+use je_base::errors::{Error, throw};
 use je_base::async_::Delayer;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::runtime;
+use je_base::uri::URI;
 use je_base::symbols::Delay;
 use je_editor::code_editor_widget::{CodeEditorWidget, ExecuteEditsSource, ICodeEditor};
 use je_editor::cursor_common::CursorSimpleModel;
@@ -70,7 +72,8 @@ use support::test_code_editor::{
     CodeEditorServices, ITestEditorAction, TestCodeEditor, TestCodeEditorInstantiationOptions, with_test_code_editor,
 };
 
-/// `IClipboardService` do ambiente de teste (só `readFindText` e `writeFindText`).
+/// O `IClipboardService` da suíte: o objeto `{ readFindText, writeFindText } as any` do original. Os demais membros não
+/// existem nele, e chamá-los lança, como chamar um membro ausente no JavaScript.
 struct TestClipboardService {
     state: RefCell<JsString>,
 }
@@ -83,6 +86,26 @@ impl IClipboardService for TestClipboardService {
     fn write_find_text(&self, text: &JsString) -> Promise<()> {
         *self.state.borrow_mut() = text.clone();
         Promise::resolved(())
+    }
+
+    fn write_text(&self, _text: &str) -> Promise<()> {
+        throw(Error::new("clipboardService.writeText is not a function"))
+    }
+
+    fn read_text(&self) -> Promise<String> {
+        throw(Error::new("clipboardService.readText is not a function"))
+    }
+
+    fn write_resources(&self, _resources: Vec<URI>) -> Promise<()> {
+        throw(Error::new("clipboardService.writeResources is not a function"))
+    }
+
+    fn read_resources(&self) -> Promise<Vec<URI>> {
+        throw(Error::new("clipboardService.readResources is not a function"))
+    }
+
+    fn has_resources(&self) -> Promise<bool> {
+        throw(Error::new("clipboardService.hasResources is not a function"))
     }
 }
 
