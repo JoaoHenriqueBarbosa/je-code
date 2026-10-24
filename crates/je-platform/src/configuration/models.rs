@@ -827,20 +827,23 @@ impl ConfigurationModelParser {
 }
 
 /// `ConfigurationInspectValue`: o valor de uma chave em cada camada.
+///
+/// Os campos são públicos para quem simula o `IConfigurationValue` (o objeto literal que os testes do
+/// `textResourceConfigurationService` devolvem de `inspect`) montar o valor a partir de modelos por camada.
 pub struct ConfigurationInspectValue {
-    key: JsString,
-    overrides: ConfigurationOverrides,
-    value: Dynamic,
-    override_identifiers: Option<Vec<JsString>>,
-    default_configuration: ConfigurationModel,
-    policy_configuration: Option<ConfigurationModel>,
-    application_configuration: Option<ConfigurationModel>,
-    user_configuration: ConfigurationModel,
-    local_user_configuration: ConfigurationModel,
-    remote_user_configuration: ConfigurationModel,
-    workspace_configuration: Option<ConfigurationModel>,
-    folder_configuration_model: Option<ConfigurationModel>,
-    memory_configuration_model: ConfigurationModel,
+    pub key: JsString,
+    pub overrides: ConfigurationOverrides,
+    pub value: Dynamic,
+    pub override_identifiers: Option<Vec<JsString>>,
+    pub default_configuration: ConfigurationModel,
+    pub policy_configuration: Option<ConfigurationModel>,
+    pub application_configuration: Option<ConfigurationModel>,
+    pub user_configuration: ConfigurationModel,
+    pub local_user_configuration: ConfigurationModel,
+    pub remote_user_configuration: ConfigurationModel,
+    pub workspace_configuration: Option<ConfigurationModel>,
+    pub folder_configuration_model: Option<ConfigurationModel>,
+    pub memory_configuration_model: ConfigurationModel,
 }
 
 impl ConfigurationInspectValue {

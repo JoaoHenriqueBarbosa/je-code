@@ -15,6 +15,10 @@ je-base = { path = "../je-base" }
 je-theme = { path = "../je-theme" }
 # `RegExp` ECMAScript da busca no buffer (`findMatchesLineByLine`).
 zyarr = { path = "../zyarr" }
+# `IConfigurationService`, `ConfigurationTarget` e os valores de configuração (`textResourceConfigurationService`).
+je-platform = { path = "../je-platform" }
+# Os identificadores de serviço e o `Injectable` (`createDecorator` e os parâmetros `@IFoo`).
+je-instantiation = { path = "../je-instantiation" }
 
 [[bench]]
 name = "piece_tree"

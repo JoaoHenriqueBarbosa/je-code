@@ -10,6 +10,8 @@ pub mod modes_test_utils;
 pub mod on_enter_rules;
 pub mod random;
 pub mod test_command;
+pub mod test_configuration_service;
+pub mod test_instantiation_service;
 pub mod test_folding_decoration_provider;
 pub mod test_language_configuration_service;
 pub mod test_line_token;
