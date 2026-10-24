@@ -144,7 +144,31 @@ Fonte: **eu** (leitura de `crates/je-exthost/src/api/window.rs` e dos módulos c
 | `onDidChangeTextEditorSelection`, `onDidChangeTextEditorOptions`, `onDidChangeTextEditorVisibleRanges`, `onDidChangeTextEditorViewColumn` | entregue | `api/text_editors.rs` |
 | `TextEditor` (`document`, `selection`, `selections`, `options`, `visibleRanges`, `viewColumn`, `edit` com `TextEditorEdit`, `revealRange`, `show`, `hide`) | entregue | `api/text_editors.rs` |
 | `TextEditor#insertSnippet`, `setDecorations`, `createTextEditorDecorationType` | falta | pedem `SnippetString` e as decorações de ponta a ponta |
-| `tabGroups`, `createTreeView`, `createWebviewPanel`, `createTerminal` e os provedores | falta | |
+| `tabGroups`, `createWebviewPanel` | falta | |
+| `createTerminal(name, shellPath, shellArgs)`, `createTerminal(options)` (`name`, `shellPath`, `shellArgs`, `cwd`, `env`, `iconPath` como `Uri` ou `{ light, dark }`, `color`, `message`, `strictEnv`, `hideFromUser`, `isTransient`) e `createTerminal({ name, pty })` com `Pseudoterminal` (`onDidWrite`, `onDidClose`, `onDidOverrideDimensions`, `onDidChangeName`, `open`, `close`, `handleInput`, `setDimensions`, com o `this` do objeto) | entregue | `api/terminal.rs`, sobre o `ExtHostTerminalService` (`WorkerExtHostTerminalService::new_local`) |
+| `terminals`, `activeTerminal`, `onDidOpenTerminal`, `onDidCloseTerminal`, `onDidChangeActiveTerminal`, `onDidChangeTerminalState`, `Terminal` (`name`, `processId`, `creationOptions`, `exitStatus`, `state`, `sendText`, `show`, `hide`, `dispose`), `registerTerminalProfileProvider`, `TerminalProfile` | entregue | `api/terminal.rs` |
+| `TerminalOptions#location`, `iconPath` como `ThemeIcon`, `Terminal#shellIntegration`, `onDidChangeTerminalDimensions`, `onDidWriteTerminalData`, `onDidExecuteTerminalCommand`, `registerTerminalLinkProvider`, `registerTerminalQuickFixProvider`, `environmentVariableCollection` | falta | o serviço tem; falta a ponte (`TerminalLocation` tem o enum em `api/enums.rs`, falta ler `location`) |
+| `createTreeView(viewId, { treeDataProvider, showCollapseAll, canSelectMany, manageCheckboxStateManually })`, `registerTreeDataProvider`, `TreeDataProvider` de classe (`getTreeItem`, `getChildren`, `getParent`, `resolveTreeItem`, `onDidChangeTreeData`, com `this` e elementos por identidade), `TreeItem`, `TreeItemCollapsibleState` | entregue | `api/tree_views.rs`, sobre o `ExtHostTreeViews` |
+| `TreeView` (`selection`, `visible`, `message`, `title`, `description`, `onDidChangeSelection`, `onDidChangeVisibility`, `onDidExpandElement`, `onDidCollapseElement`, `reveal`, `dispose`) | entregue | `api/tree_views.rs` |
+| `TreeView#badge`, `onDidChangeCheckboxState`, `dragAndDropController`, `activeItem` (proposta) e a mensagem em markdown | falta | o serviço tem; falta a ponte |
+| `scm.createSourceControl` e o resto de `scm` | falta | o `ExtHostSCM` está portado, a ponte não entrou nesta rodada (sem fôlego) |
+
+Terminais e árvores usam o mecanismo novo `api/js_object.rs` (`JsObjects`): leitura de propriedades, chamada de método e escuta de evento POR
+REFERÊNCIA (um leitor em JavaScript entrega o valor a uma função nativa por referência), mais `identify` (um `WeakMap` dá um número estável a cada
+objeto), porque o motor copia objetos comuns e o `ExtHostTreeViews` compara os elementos por identidade. As funções de `window` que recebem objetos da
+extensão (`createTerminal`, `registerTerminalProfileProvider`, `createTreeView`, `registerTreeDataProvider`) são campos de função do próprio namespace,
+não métodos do protótipo (que recebem cópias). Os encaminhadores `LateExtHostTerminalService` e `LateExtHostTreeViews` (`in_process.rs`) entregam ao
+serviço real as chamadas que o cliente faz no construtor.
+
+Os testes de ponta a ponta são `crates/je-workbench/tests/extension_host_api_terminal.rs` e `extension_host_api_tree_views.rs`. Em ambos o lado do
+workbench é um DUBLÊ do `MainThread*Shape` (o `MainThreadTerminalService` real pede doze serviços do terminal e o `MainThreadTreeViews` real a camada de
+visões, sem dublês prontos): o dublê anota os pedidos da extensão e devolve ao `ExtHost*` real o que o cliente real devolveria.
+
+Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): `ITerminalDimensionsDto`, `TerminalLaunchConfig` e
+`TreeViewRegistrationOptions` precisam ter campos públicos; `ICreateContributedTerminalProfileOptions` precisa de `Default`; os nomes
+`ExtHostContext::EXT_HOST_TREE_VIEWS` e `MainContext::MAIN_THREAD_TREE_VIEWS`; `Promise::then` com `Fn`; a ordem dos eventos de seleção e visibilidade no
+teste de árvore; o `TreeItem` que `getTreeItem` devolve e o `Pseudoterminal` devolvido por um provedor de perfil atravessam como cópia (o `this` do
+`pty` de um perfil não vale; o `pty` passado direto a `createTerminal` vai por referência e vale).
 
 Em `workspace` (mesmo módulo de ponte): `textDocuments`, `openTextDocument` (`Uri`, caminho e opções `{ language, content, encoding }`), `onDidOpenTextDocument`,
 `onDidCloseTextDocument`, `onDidChangeTextDocument` e `onDidSaveTextDocument` entregues; `onWillSaveTextDocument` e `registerTextDocumentContentProvider` faltam.

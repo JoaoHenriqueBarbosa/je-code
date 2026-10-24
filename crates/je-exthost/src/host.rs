@@ -24,11 +24,14 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape, ExtHostEditorsShape,
-    ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape,
+    ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostTerminalServiceShape,
+    ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadTelemetryShape,
 };
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_status_bar::ExtHostStatusBar;
+use je_workbench::api::common::ext_host_terminal_service::WorkerExtHostTerminalService;
+use je_workbench::api::common::ext_host_tree_views::ExtHostTreeViews;
 use je_workbench::api::common::ext_host_window::ExtHostWindow;
 use je_workbench::api::common::ext_host_workspace::{ExtHostWorkspace, IExtHostInitDataService, IExtHostWorkspaceProvider, IURITransformerService, WorkspaceFolder};
 use je_workbench::services::extensions::extensions::IExtensionService;
@@ -158,6 +161,8 @@ struct BridgedServices {
     progress: Option<Rc<ExtHostProgress>>,
     text_editors: Option<TextEditorServices>,
     language_features: Option<Rc<ExtHostLanguageFeatures>>,
+    terminal: Option<Rc<WorkerExtHostTerminalService>>,
+    tree_views: Option<Rc<ExtHostTreeViews>>,
     main_thread: Vec<Rc<dyn IDisposable>>,
 }
 
@@ -335,6 +340,21 @@ impl ExtensionHost {
                 bridged.progress = Some(progress);
             }
 
+            if provided(MainContext::MAIN_THREAD_TERMINAL_SERVICE.sid) {
+                let terminal = WorkerExtHostTerminalService::new_local(commands.clone(), bridged_ref);
+                let terminal_shape: Rc<dyn ExtHostTerminalServiceShape> = terminal.clone();
+                late.terminal_service.0.bind(terminal_shape);
+                bridged.terminal = Some(terminal);
+            }
+
+            if provided(MainContext::MAIN_THREAD_TREE_VIEWS.sid) {
+                let proxy = bridged_ref.get_proxy(&MainContext::MAIN_THREAD_TREE_VIEWS);
+                let tree_views = ExtHostTreeViews::new(proxy, &commands, log_service.clone());
+                let tree_views_shape: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
+                late.tree_views.0.bind(tree_views_shape);
+                bridged.tree_views = Some(tree_views);
+            }
+
             // `vscode.languages` pede os documentos de texto e, por grupo, o cliente `MainThread*` dele; os provedores pedem também os
             // diagnósticos (o `ExtHostLanguageFeatures` os usa nas ações de código).
             if let Some(text_editor_api) = &text_editor_api {
@@ -384,6 +404,8 @@ impl ExtensionHost {
                 || bridged.quick_open.is_some()
                 || bridged.output.is_some()
                 || bridged.progress.is_some()
+                || bridged.terminal.is_some()
+                || bridged.tree_views.is_some()
                 || text_editor_api.is_some()
             {
                 let window_services = Rc::new(WindowServices {
@@ -393,6 +415,8 @@ impl ExtensionHost {
                     quick_open: bridged.quick_open.clone(),
                     output: bridged.output.clone(),
                     progress: bridged.progress.clone(),
+                    terminal: bridged.terminal.clone(),
+                    tree_views: bridged.tree_views.clone(),
                     text_editors: text_editor_api,
                 });
                 members.push(("window".to_owned(), window::namespace(runner, window_services, &table, &event_tables, &window_state)));
@@ -457,6 +481,12 @@ impl ExtensionHost {
         }
         if let Some(language_features) = &self.bridged.language_features {
             language_features.dispose();
+        }
+        if let Some(terminal) = &self.bridged.terminal {
+            terminal.dispose();
+        }
+        if let Some(tree_views) = &self.bridged.tree_views {
+            tree_views.dispose();
         }
         for client in &self.bridged.main_thread {
             client.dispose();
