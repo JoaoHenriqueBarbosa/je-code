@@ -13,9 +13,10 @@
 use std::cell::RefCell;
 
 use je_base::product::{
-    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExtensionRecommendations, IExtensionsGallery,
-    IStringDictionary, StringsOrDictionary,
+    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExeBasedExtensionTip, IExtensionRecommendations,
+    IExtensionsGallery, IRemoteExtensionTip, IStringDictionary, IVirtualWorkspaceExtensionTip, StringsOrDictionary,
 };
+use je_base::product::IConfigBasedExtensionTip as IRawConfigBasedExtensionTip;
 use je_instantiation::service_id;
 
 /// `IProductService`, reduzido aos campos que os serviços portados leem.
@@ -94,6 +95,34 @@ pub trait IProductService {
     fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
         None
     }
+    /// `keymapExtensionTips`: as extensões de mapa de teclas que o produto recomenda. Padrão: nenhuma.
+    fn keymap_extension_tips(&self) -> Option<&Vec<String>> {
+        None
+    }
+    /// `languageExtensionTips`: as extensões de idioma que o produto recomenda. Padrão: nenhuma.
+    fn language_extension_tips(&self) -> Option<&Vec<String>> {
+        None
+    }
+    /// `webExtensionTips`: as extensões que o produto recomenda na web. Padrão: nenhuma.
+    fn web_extension_tips(&self) -> Option<&Vec<String>> {
+        None
+    }
+    /// `remoteExtensionTips`. Padrão: nenhuma.
+    fn remote_extension_tips(&self) -> Option<&IStringDictionary<IRemoteExtensionTip>> {
+        None
+    }
+    /// `virtualWorkspaceExtensionTips`. Padrão: nenhuma.
+    fn virtual_workspace_extension_tips(&self) -> Option<&IStringDictionary<IVirtualWorkspaceExtensionTip>> {
+        None
+    }
+    /// `configBasedExtensionTips`. Padrão: nenhuma.
+    fn config_based_extension_tips(&self) -> Option<&IStringDictionary<IRawConfigBasedExtensionTip>> {
+        None
+    }
+    /// `exeBasedExtensionTips`. Padrão: nenhuma.
+    fn exe_based_extension_tips(&self) -> Option<&IStringDictionary<IExeBasedExtensionTip>> {
+        None
+    }
     /// `copilotVersions`: as versões do runtime e do SDK do Copilot empacotados, quando o produto declara. Padrão: nenhuma.
     fn copilot_versions(&self) -> Option<&ICopilotVersions> {
         None
@@ -114,6 +143,11 @@ pub trait IProductService {
     }
     /// `extensionKeywords`: as palavras-chave de busca por extensão de arquivo (`ext:py`). Padrão: nenhuma.
     fn extension_keywords(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        None
+    }
+    /// `extensionEnabledApiProposals`: as propostas de API que o produto libera por identificador de extensão (lido pelo
+    /// `ExtensionsProposedApi`). Padrão: o produto não declara nenhuma.
+    fn extension_enabled_api_proposals(&self) -> Option<&IStringDictionary<Vec<String>>> {
         None
     }
 }
@@ -174,6 +208,22 @@ pub struct ProductService {
     pub trusted_extension_publishers: Vec<String>,
     /// `extensionKeywords`.
     pub extension_keywords: Option<IStringDictionary<Vec<String>>>,
+    /// `extensionRecommendations`.
+    pub extension_recommendations: Option<IStringDictionary<IExtensionRecommendations>>,
+    /// `keymapExtensionTips`.
+    pub keymap_extension_tips: Option<Vec<String>>,
+    /// `languageExtensionTips`.
+    pub language_extension_tips: Option<Vec<String>>,
+    /// `webExtensionTips`.
+    pub web_extension_tips: Option<Vec<String>>,
+    /// `remoteExtensionTips`.
+    pub remote_extension_tips: Option<IStringDictionary<IRemoteExtensionTip>>,
+    /// `virtualWorkspaceExtensionTips`.
+    pub virtual_workspace_extension_tips: Option<IStringDictionary<IVirtualWorkspaceExtensionTip>>,
+    /// `configBasedExtensionTips`.
+    pub config_based_extension_tips: Option<IStringDictionary<IRawConfigBasedExtensionTip>>,
+    /// `exeBasedExtensionTips`.
+    pub exe_based_extension_tips: Option<IStringDictionary<IExeBasedExtensionTip>>,
 }
 
 impl Default for ProductService {
@@ -207,6 +257,14 @@ impl Default for ProductService {
             date: None,
             trusted_extension_publishers: Vec::new(),
             extension_keywords: None,
+            extension_recommendations: None,
+            keymap_extension_tips: None,
+            language_extension_tips: None,
+            web_extension_tips: None,
+            remote_extension_tips: None,
+            virtual_workspace_extension_tips: None,
+            config_based_extension_tips: None,
+            exe_based_extension_tips: None,
         }
     }
 }
@@ -308,9 +366,54 @@ impl IProductService for ProductService {
     fn extension_keywords(&self) -> Option<&IStringDictionary<Vec<String>>> {
         self.extension_keywords.as_ref()
     }
+    fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
+        self.extension_recommendations.as_ref()
+    }
+    fn keymap_extension_tips(&self) -> Option<&Vec<String>> {
+        self.keymap_extension_tips.as_ref()
+    }
+    fn language_extension_tips(&self) -> Option<&Vec<String>> {
+        self.language_extension_tips.as_ref()
+    }
+    fn web_extension_tips(&self) -> Option<&Vec<String>> {
+        self.web_extension_tips.as_ref()
+    }
+    fn remote_extension_tips(&self) -> Option<&IStringDictionary<IRemoteExtensionTip>> {
+        self.remote_extension_tips.as_ref()
+    }
+    fn virtual_workspace_extension_tips(&self) -> Option<&IStringDictionary<IVirtualWorkspaceExtensionTip>> {
+        self.virtual_workspace_extension_tips.as_ref()
+    }
+    fn config_based_extension_tips(&self) -> Option<&IStringDictionary<IRawConfigBasedExtensionTip>> {
+        self.config_based_extension_tips.as_ref()
+    }
+    fn exe_based_extension_tips(&self) -> Option<&IStringDictionary<IExeBasedExtensionTip>> {
+        self.exe_based_extension_tips.as_ref()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
+    fn keymap_extension_tips(&self) -> Option<&Vec<String>> {
+        self.keymap_extension_tips.as_ref()
+    }
+    fn language_extension_tips(&self) -> Option<&Vec<String>> {
+        self.language_extension_tips.as_ref()
+    }
+    fn web_extension_tips(&self) -> Option<&Vec<String>> {
+        self.web_extension_tips.as_ref()
+    }
+    fn remote_extension_tips(&self) -> Option<&IStringDictionary<IRemoteExtensionTip>> {
+        self.remote_extension_tips.as_ref()
+    }
+    fn virtual_workspace_extension_tips(&self) -> Option<&IStringDictionary<IVirtualWorkspaceExtensionTip>> {
+        self.virtual_workspace_extension_tips.as_ref()
+    }
+    fn config_based_extension_tips(&self) -> Option<&IStringDictionary<IRawConfigBasedExtensionTip>> {
+        self.config_based_extension_tips.as_ref()
+    }
+    fn exe_based_extension_tips(&self) -> Option<&IStringDictionary<IExeBasedExtensionTip>> {
+        self.exe_based_extension_tips.as_ref()
+    }
     fn embedder_identifier(&self) -> Option<&str> {
         self.embedder_identifier.as_deref()
     }
@@ -352,6 +455,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn trusted_extension_protocol_handlers(&self) -> Vec<String> {
         self.trusted_extension_protocol_handlers.clone().unwrap_or_default()
+    }
+    fn extension_enabled_api_proposals(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_enabled_api_proposals.as_ref()
     }
     fn commit(&self) -> Option<&str> {
         self.commit.as_deref()

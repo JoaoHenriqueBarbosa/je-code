@@ -6,4 +6,10 @@ pub mod terminal_configuration_service;
 
 pub mod terminal_instance;
 
+pub mod terminal_process_manager;
+
+pub mod terminal_status_list;
+
+pub mod environment_variable_info;
+
 pub mod xterm;

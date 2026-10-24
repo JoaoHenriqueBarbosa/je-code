@@ -1,0 +1,894 @@
+[
+  {
+    "cell_type": "markdown",
+    "source": [
+      "# Video generation with ZeroScope and OpenVINO\n",
+      "\n",
+      "#### Table of contents:\n",
+      "\n",
+      "- [Install and import required packages](#Install-and-import-required-packages)\n",
+      "- [Load the model](#Load-the-model)\n",
+      "- [Convert the model](#Convert-the-model)\n",
+      "    - [Define the conversion function](#Define-the-conversion-function)\n",
+      "    - [UNet](#UNet)\n",
+      "    - [VAE](#VAE)\n",
+      "    - [Text encoder](#Text-encoder)\n",
+      "- [Build a pipeline](#Build-a-pipeline)\n",
+      "- [Inference with OpenVINO](#Inference-with-OpenVINO)\n",
+      "    - [Select inference device](#Select-inference-device)\n",
+      "    - [Define a prompt](#Define-a-prompt)\n",
+      "    - [Video generation](#Video-generation)\n",
+      "- [Interactive demo](#Interactive-demo)\n",
+      "\n",
+      "\n",
+      "### Installation Instructions\n",
+      "\n",
+      "This is a self-contained example that relies solely on its own code.\n",
+      "\n",
+      "We recommend  running the notebook in a virtual environment. You only need a Jupyter server to start.\n",
+      "For details, please refer to [Installation Guide](https://github.com/openvinotoolkit/openvino_notebooks/blob/latest/README.md#-installation-guide).\n",
+      "\n",
+      "<img referrerpolicy=\"no-referrer-when-downgrade\" src=\"https://static.scarf.sh/a.png?x-pxid=5b5a4db0-7875-4bfb-bdbd-01698b5b1a77&file=notebooks/zeroscope-text2video/zeroscope-text2video.ipynb\" />\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "The ZeroScope model is a free and open-source text-to-video model that can generate realistic and engaging videos from text descriptions. It is based on the [Modelscope](https://modelscope.cn/models/damo/text-to-video-synthesis/summary) model, but it has been improved to produce higher-quality videos with a 16:9 aspect ratio and no Shutterstock watermark. The ZeroScope model is available in two versions: ZeroScope_v2 576w, which is optimized for rapid content creation at a resolution of 576x320 pixels, and ZeroScope_v2 XL, which upscales videos to a high-definition resolution of 1024x576.\n",
+      "\n",
+      "The ZeroScope model is trained on a dataset of over 9,000 videos and 29,000 tagged frames. It uses a diffusion model to generate videos, which means that it starts with a random noise image and gradually adds detail to it until it matches the text description. The ZeroScope model is still under development, but it has already been used to create some impressive videos. For example, it has been used to create videos of people dancing, playing sports, and even driving cars.\n",
+      "\n",
+      "The ZeroScope model is a powerful tool that can be used to create various videos, from simple animations to complex scenes. It is still under development, but it has the potential to revolutionize the way we create and consume video content.\n",
+      "\n",
+      "Both versions of the ZeroScope model are available on Hugging Face:\n",
+      " - [ZeroScope_v2 576w](https://huggingface.co/cerspense/zeroscope_v2_576w)\n",
+      " - [ZeroScope_v2 XL](https://huggingface.co/cerspense/zeroscope_v2_XL)\n",
+      "\n",
+      "We will use the first one."
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "<div class=\"alert alert-block alert-warning\">\n",
+      "    This tutorial requires at least 24GB of free memory to generate a video with a frame size of 432x240 and 16 frames. Increasing either of these values will require more memory and take more time.\n",
+      "</div>"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Install and import required packages\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "To work with text-to-video synthesis model, we will use Hugging Face's [Diffusers](https://github.com/huggingface/diffusers) library. It provides already pretrained model from `cerspense`."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%pip install -q --extra-index-url https://download.pytorch.org/whl/cpu  \"diffusers>=0.18.0\" \"torch>=2.1\" transformers \"openvino>=2023.1.0\" numpy \"gradio>=4.19\""
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "import gc\n",
+      "from typing import Optional, Union, List, Callable\n",
+      "import base64\n",
+      "import tempfile\n",
+      "import warnings\n",
+      "\n",
+      "import diffusers\n",
+      "import transformers\n",
+      "import numpy as np\n",
+      "import IPython\n",
+      "import ipywidgets as widgets\n",
+      "import torch\n",
+      "import PIL\n",
+      "import gradio as gr\n",
+      "\n",
+      "import openvino as ov"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Original 576x320 inference requires a lot of RAM (>100GB), so let's run our example on a smaller frame size, keeping the same aspect ratio. Try reducing values below to reduce the memory consumption."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "WIDTH = 432  # must be divisible by 8\n",
+      "HEIGHT = 240  # must be divisible by 8\n",
+      "NUM_FRAMES = 16"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Load the model\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "The model is loaded from HuggingFace using `.from_pretrained` method of `diffusers.DiffusionPipeline`."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "pipe = diffusers.DiffusionPipeline.from_pretrained(\"cerspense/zeroscope_v2_576w\")"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "unet = pipe.unet\n",
+      "unet.eval()\n",
+      "vae = pipe.vae\n",
+      "vae.eval()\n",
+      "text_encoder = pipe.text_encoder\n",
+      "text_encoder.eval()\n",
+      "tokenizer = pipe.tokenizer\n",
+      "scheduler = pipe.scheduler\n",
+      "vae_scale_factor = pipe.vae_scale_factor\n",
+      "unet_in_channels = pipe.unet.config.in_channels\n",
+      "sample_width = WIDTH // vae_scale_factor\n",
+      "sample_height = HEIGHT // vae_scale_factor\n",
+      "del pipe\n",
+      "gc.collect();"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Convert the model\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "The architecture for generating videos from text comprises three distinct sub-networks: one for extracting text features, another for translating text features into the video latent space using a diffusion model, and a final one for mapping the video latent space to the visual space. The collective parameters of the entire model amount to approximately 1.7 billion. It's capable of processing English input. The diffusion model is built upon the Unet3D model and achieves video generation by iteratively denoising a starting point of pure Gaussian noise video."
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": []
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Define the conversion function\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Model components are PyTorch modules, that can be converted with `ov.convert_model` function directly. We also use `ov.save_model` function to serialize the result of conversion."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "warnings.filterwarnings(\"ignore\", category=torch.jit.TracerWarning)"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "from pathlib import Path\n",
+      "\n",
+      "\n",
+      "def convert(model: torch.nn.Module, xml_path: str, **convert_kwargs) -> Path:\n",
+      "    xml_path = Path(xml_path)\n",
+      "    if not xml_path.exists():\n",
+      "        xml_path.parent.mkdir(parents=True, exist_ok=True)\n",
+      "        with torch.no_grad():\n",
+      "            converted_model = ov.convert_model(model, **convert_kwargs)\n",
+      "        ov.save_model(converted_model, xml_path)\n",
+      "        del converted_model\n",
+      "        gc.collect()\n",
+      "        torch._C._jit_clear_class_registry()\n",
+      "        torch.jit._recursive.concrete_type_store = torch.jit._recursive.ConcreteTypeStore()\n",
+      "        torch.jit._state._clear_class_state()\n",
+      "    return xml_path"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### UNet\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Text-to-video generation pipeline main component is a conditional 3D UNet model that takes a noisy sample, conditional state, and a timestep and returns a sample shaped output."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "unet_xml_path = convert(\n",
+      "    unet,\n",
+      "    \"models/unet.xml\",\n",
+      "    example_input={\n",
+      "        \"sample\": torch.randn(2, 4, 2, int(sample_height // 2), int(sample_width // 2)),\n",
+      "        \"timestep\": torch.tensor(1),\n",
+      "        \"encoder_hidden_states\": torch.randn(2, 77, 1024),\n",
+      "    },\n",
+      "    input=[\n",
+      "        (\"sample\", (2, 4, NUM_FRAMES, sample_height, sample_width)),\n",
+      "        (\"timestep\", ()),\n",
+      "        (\"encoder_hidden_states\", (2, 77, 1024)),\n",
+      "    ],\n",
+      ")\n",
+      "del unet\n",
+      "gc.collect();"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### VAE\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Variational autoencoder (VAE) uses UNet output to decode latents to visual representations. Our VAE model has KL loss for encoding images into latents and decoding latent representations into images. For inference, we need only decoder part."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "class VaeDecoderWrapper(torch.nn.Module):\n",
+      "    def __init__(self, vae):\n",
+      "        super().__init__()\n",
+      "        self.vae = vae\n",
+      "\n",
+      "    def forward(self, z: torch.FloatTensor):\n",
+      "        return self.vae.decode(z)"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "vae_decoder_xml_path = convert(\n",
+      "    VaeDecoderWrapper(vae),\n",
+      "    \"models/vae.xml\",\n",
+      "    example_input=torch.randn(2, 4, 32, 32),\n",
+      "    input=((NUM_FRAMES, 4, sample_height, sample_width)),\n",
+      ")\n",
+      "del vae\n",
+      "gc.collect();"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Text encoder\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Text encoder is used to encode the input prompt to tensor. Default tensor length is 77."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "text_encoder_xml = convert(\n",
+      "    text_encoder,\n",
+      "    \"models/text_encoder.xml\",\n",
+      "    example_input=torch.ones(1, 77, dtype=torch.int64),\n",
+      "    input=((1, 77), ov.Type.i64),\n",
+      ")\n",
+      "del text_encoder\n",
+      "gc.collect();"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Build a pipeline\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "def tensor2vid(video: torch.Tensor, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]) -> List[np.ndarray]:\n",
+      "    # This code is copied from https://github.com/modelscope/modelscope/blob/1509fdb973e5871f37148a4b5e5964cafd43e64d/modelscope/pipelines/multi_modal/text_to_video_synthesis_pipeline.py#L78\n",
+      "    # reshape to ncfhw\n",
+      "    mean = torch.tensor(mean, device=video.device).reshape(1, -1, 1, 1, 1)\n",
+      "    std = torch.tensor(std, device=video.device).reshape(1, -1, 1, 1, 1)\n",
+      "    # unnormalize back to [0,1]\n",
+      "    video = video.mul_(std).add_(mean)\n",
+      "    video.clamp_(0, 1)\n",
+      "    # prepare the final outputs\n",
+      "    i, c, f, h, w = video.shape\n",
+      "    images = video.permute(2, 3, 0, 4, 1).reshape(f, h, i * w, c)  # 1st (frames, h, batch_size, w, c) 2nd (frames, h, batch_size * w, c)\n",
+      "    images = images.unbind(dim=0)  # prepare a list of indvidual (consecutive frames)\n",
+      "    images = [(image.cpu().numpy() * 255).astype(\"uint8\") for image in images]  # f h w c\n",
+      "    return images"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "try:\n",
+      "    from diffusers.utils import randn_tensor\n",
+      "except ImportError:\n",
+      "    from diffusers.utils.torch_utils import randn_tensor\n",
+      "\n",
+      "\n",
+      "class OVTextToVideoSDPipeline(diffusers.DiffusionPipeline):\n",
+      "    def __init__(\n",
+      "        self,\n",
+      "        vae_decoder: ov.CompiledModel,\n",
+      "        text_encoder: ov.CompiledModel,\n",
+      "        tokenizer: transformers.CLIPTokenizer,\n",
+      "        unet: ov.CompiledModel,\n",
+      "        scheduler: diffusers.schedulers.DDIMScheduler,\n",
+      "    ):\n",
+      "        super().__init__()\n",
+      "\n",
+      "        self.vae_decoder = vae_decoder\n",
+      "        self.text_encoder = text_encoder\n",
+      "        self.tokenizer = tokenizer\n",
+      "        self.unet = unet\n",
+      "        self.scheduler = scheduler\n",
+      "        self.vae_scale_factor = vae_scale_factor\n",
+      "        self.unet_in_channels = unet_in_channels\n",
+      "        self.width = WIDTH\n",
+      "        self.height = HEIGHT\n",
+      "        self.num_frames = NUM_FRAMES\n",
+      "\n",
+      "    def __call__(\n",
+      "        self,\n",
+      "        prompt: Union[str, List[str]] = None,\n",
+      "        num_inference_steps: int = 50,\n",
+      "        guidance_scale: float = 9.0,\n",
+      "        negative_prompt: Optional[Union[str, List[str]]] = None,\n",
+      "        eta: float = 0.0,\n",
+      "        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,\n",
+      "        latents: Optional[torch.FloatTensor] = None,\n",
+      "        prompt_embeds: Optional[torch.FloatTensor] = None,\n",
+      "        negative_prompt_embeds: Optional[torch.FloatTensor] = None,\n",
+      "        output_type: Optional[str] = \"np\",\n",
+      "        return_dict: bool = True,\n",
+      "        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,\n",
+      "        callback_steps: int = 1,\n",
+      "    ):\n",
+      "        r\"\"\"\n",
+      "        Function invoked when calling the pipeline for generation.\n",
+      "\n",
+      "        Args:\n",
+      "            prompt (`str` or `List[str]`, *optional*):\n",
+      "                The prompt or prompts to guide the video generation. If not defined, one has to pass `prompt_embeds`.\n",
+      "                instead.\n",
+      "            num_inference_steps (`int`, *optional*, defaults to 50):\n",
+      "                The number of denoising steps. More denoising steps usually lead to a higher quality videos at the\n",
+      "                expense of slower inference.\n",
+      "            guidance_scale (`float`, *optional*, defaults to 7.5):\n",
+      "                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).\n",
+      "                `guidance_scale` is defined as `w` of equation 2. of [Imagen\n",
+      "                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >\n",
+      "                1`. Higher guidance scale encourages to generate videos that are closely linked to the text `prompt`,\n",
+      "                usually at the expense of lower video quality.\n",
+      "            negative_prompt (`str` or `List[str]`, *optional*):\n",
+      "                The prompt or prompts not to guide the video generation. If not defined, one has to pass\n",
+      "                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is\n",
+      "                less than `1`).\n",
+      "            eta (`float`, *optional*, defaults to 0.0):\n",
+      "                Corresponds to parameter eta (η) in the DDIM paper: https://arxiv.org/abs/2010.02502. Only applies to\n",
+      "                [`schedulers.DDIMScheduler`], will be ignored for others.\n",
+      "            generator (`torch.Generator` or `List[torch.Generator]`, *optional*):\n",
+      "                One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)\n",
+      "                to make generation deterministic.\n",
+      "            latents (`torch.FloatTensor`, *optional*):\n",
+      "                Pre-generated noisy latents, sampled from a Gaussian distribution, to be used as inputs for video\n",
+      "                generation. Can be used to tweak the same generation with different prompts. If not provided, a latents\n",
+      "                tensor will ge generated by sampling using the supplied random `generator`. Latents should be of shape\n",
+      "                `(batch_size, num_channel, num_frames, height, width)`.\n",
+      "            prompt_embeds (`torch.FloatTensor`, *optional*):\n",
+      "                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not\n",
+      "                provided, text embeddings will be generated from `prompt` input argument.\n",
+      "            negative_prompt_embeds (`torch.FloatTensor`, *optional*):\n",
+      "                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt\n",
+      "                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input\n",
+      "                argument.\n",
+      "            output_type (`str`, *optional*, defaults to `\"np\"`):\n",
+      "                The output format of the generate video. Choose between `torch.FloatTensor` or `np.array`.\n",
+      "            return_dict (`bool`, *optional*, defaults to `True`):\n",
+      "                Whether or not to return a [`~pipelines.stable_diffusion.TextToVideoSDPipelineOutput`] instead of a\n",
+      "                plain tuple.\n",
+      "            callback (`Callable`, *optional*):\n",
+      "                A function that will be called every `callback_steps` steps during inference. The function will be\n",
+      "                called with the following arguments: `callback(step: int, timestep: int, latents: torch.FloatTensor)`.\n",
+      "            callback_steps (`int`, *optional*, defaults to 1):\n",
+      "                The frequency at which the `callback` function will be called. If not specified, the callback will be\n",
+      "                called at every step.\n",
+      "\n",
+      "        Returns:\n",
+      "            `List[np.ndarray]`: generated video frames\n",
+      "        \"\"\"\n",
+      "\n",
+      "        num_images_per_prompt = 1\n",
+      "\n",
+      "        # 1. Check inputs. Raise error if not correct\n",
+      "        self.check_inputs(\n",
+      "            prompt,\n",
+      "            callback_steps,\n",
+      "            negative_prompt,\n",
+      "            prompt_embeds,\n",
+      "            negative_prompt_embeds,\n",
+      "        )\n",
+      "\n",
+      "        # 2. Define call parameters\n",
+      "        if prompt is not None and isinstance(prompt, str):\n",
+      "            batch_size = 1\n",
+      "        elif prompt is not None and isinstance(prompt, list):\n",
+      "            batch_size = len(prompt)\n",
+      "        else:\n",
+      "            batch_size = prompt_embeds.shape[0]\n",
+      "\n",
+      "        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)\n",
+      "        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`\n",
+      "        # corresponds to doing no classifier free guidance.\n",
+      "        do_classifier_free_guidance = guidance_scale > 1.0\n",
+      "\n",
+      "        # 3. Encode input prompt\n",
+      "        prompt_embeds = self._encode_prompt(\n",
+      "            prompt,\n",
+      "            num_images_per_prompt,\n",
+      "            do_classifier_free_guidance,\n",
+      "            negative_prompt,\n",
+      "            prompt_embeds=prompt_embeds,\n",
+      "            negative_prompt_embeds=negative_prompt_embeds,\n",
+      "        )\n",
+      "\n",
+      "        # 4. Prepare timesteps\n",
+      "        self.scheduler.set_timesteps(num_inference_steps)\n",
+      "        timesteps = self.scheduler.timesteps\n",
+      "\n",
+      "        # 5. Prepare latent variables\n",
+      "        num_channels_latents = self.unet_in_channels\n",
+      "        latents = self.prepare_latents(\n",
+      "            batch_size * num_images_per_prompt,\n",
+      "            num_channels_latents,\n",
+      "            prompt_embeds.dtype,\n",
+      "            generator,\n",
+      "            latents,\n",
+      "        )\n",
+      "\n",
+      "        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline\n",
+      "        extra_step_kwargs = {\"generator\": generator, \"eta\": eta}\n",
+      "\n",
+      "        # 7. Denoising loop\n",
+      "        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order\n",
+      "        with self.progress_bar(total=num_inference_steps) as progress_bar:\n",
+      "            for i, t in enumerate(timesteps):\n",
+      "                # expand the latents if we are doing classifier free guidance\n",
+      "                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents\n",
+      "                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)\n",
+      "\n",
+      "                # predict the noise residual\n",
+      "                noise_pred = self.unet(\n",
+      "                    {\n",
+      "                        \"sample\": latent_model_input,\n",
+      "                        \"timestep\": t,\n",
+      "                        \"encoder_hidden_states\": prompt_embeds,\n",
+      "                    }\n",
+      "                )[0]\n",
+      "                noise_pred = torch.tensor(noise_pred)\n",
+      "\n",
+      "                # perform guidance\n",
+      "                if do_classifier_free_guidance:\n",
+      "                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)\n",
+      "                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)\n",
+      "\n",
+      "                # reshape latents\n",
+      "                bsz, channel, frames, width, height = latents.shape\n",
+      "                latents = latents.permute(0, 2, 1, 3, 4).reshape(bsz * frames, channel, width, height)\n",
+      "                noise_pred = noise_pred.permute(0, 2, 1, 3, 4).reshape(bsz * frames, channel, width, height)\n",
+      "\n",
+      "                # compute the previous noisy sample x_t -> x_t-1\n",
+      "                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample\n",
+      "\n",
+      "                # reshape latents back\n",
+      "                latents = latents[None, :].reshape(bsz, frames, channel, width, height).permute(0, 2, 1, 3, 4)\n",
+      "\n",
+      "                # call the callback, if provided\n",
+      "                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):\n",
+      "                    progress_bar.update()\n",
+      "                    if callback is not None and i % callback_steps == 0:\n",
+      "                        callback(i, t, latents)\n",
+      "\n",
+      "        video_tensor = self.decode_latents(latents)\n",
+      "\n",
+      "        if output_type == \"pt\":\n",
+      "            video = video_tensor\n",
+      "        else:\n",
+      "            video = tensor2vid(video_tensor)\n",
+      "\n",
+      "        if not return_dict:\n",
+      "            return (video,)\n",
+      "\n",
+      "        return {\"frames\": video}\n",
+      "\n",
+      "    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt\n",
+      "    def _encode_prompt(\n",
+      "        self,\n",
+      "        prompt,\n",
+      "        num_images_per_prompt,\n",
+      "        do_classifier_free_guidance,\n",
+      "        negative_prompt=None,\n",
+      "        prompt_embeds: Optional[torch.FloatTensor] = None,\n",
+      "        negative_prompt_embeds: Optional[torch.FloatTensor] = None,\n",
+      "    ):\n",
+      "        r\"\"\"\n",
+      "        Encodes the prompt into text encoder hidden states.\n",
+      "\n",
+      "        Args:\n",
+      "             prompt (`str` or `List[str]`, *optional*):\n",
+      "                prompt to be encoded\n",
+      "            num_images_per_prompt (`int`):\n",
+      "                number of images that should be generated per prompt\n",
+      "            do_classifier_free_guidance (`bool`):\n",
+      "                whether to use classifier free guidance or not\n",
+      "            negative_prompt (`str` or `List[str]`, *optional*):\n",
+      "                The prompt or prompts not to guide the image generation. If not defined, one has to pass\n",
+      "                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is\n",
+      "                less than `1`).\n",
+      "            prompt_embeds (`torch.FloatTensor`, *optional*):\n",
+      "                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not\n",
+      "                provided, text embeddings will be generated from `prompt` input argument.\n",
+      "            negative_prompt_embeds (`torch.FloatTensor`, *optional*):\n",
+      "                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt\n",
+      "                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input\n",
+      "                argument.\n",
+      "        \"\"\"\n",
+      "        if prompt is not None and isinstance(prompt, str):\n",
+      "            batch_size = 1\n",
+      "        elif prompt is not None and isinstance(prompt, list):\n",
+      "            batch_size = len(prompt)\n",
+      "        else:\n",
+      "            batch_size = prompt_embeds.shape[0]\n",
+      "\n",
+      "        if prompt_embeds is None:\n",
+      "            text_inputs = self.tokenizer(\n",
+      "                prompt,\n",
+      "                padding=\"max_length\",\n",
+      "                max_length=self.tokenizer.model_max_length,\n",
+      "                truncation=True,\n",
+      "                return_tensors=\"pt\",\n",
+      "            )\n",
+      "            text_input_ids = text_inputs.input_ids\n",
+      "            untruncated_ids = self.tokenizer(prompt, padding=\"longest\", return_tensors=\"pt\").input_ids\n",
+      "\n",
+      "            if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):\n",
+      "                removed_text = self.tokenizer.batch_decode(untruncated_ids[:, self.tokenizer.model_max_length - 1 : -1])\n",
+      "                print(\n",
+      "                    \"The following part of your input was truncated because CLIP can only handle sequences up to\"\n",
+      "                    f\" {self.tokenizer.model_max_length} tokens: {removed_text}\"\n",
+      "                )\n",
+      "\n",
+      "            prompt_embeds = self.text_encoder(text_input_ids)\n",
+      "            prompt_embeds = prompt_embeds[0]\n",
+      "            prompt_embeds = torch.tensor(prompt_embeds)\n",
+      "\n",
+      "        bs_embed, seq_len, _ = prompt_embeds.shape\n",
+      "        # duplicate text embeddings for each generation per prompt, using mps friendly method\n",
+      "        prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)\n",
+      "        prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)\n",
+      "\n",
+      "        # get unconditional embeddings for classifier free guidance\n",
+      "        if do_classifier_free_guidance and negative_prompt_embeds is None:\n",
+      "            uncond_tokens: List[str]\n",
+      "            if negative_prompt is None:\n",
+      "                uncond_tokens = [\"\"] * batch_size\n",
+      "            elif type(prompt) is not type(negative_prompt):\n",
+      "                raise TypeError(f\"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !=\" f\" {type(prompt)}.\")\n",
+      "            elif isinstance(negative_prompt, str):\n",
+      "                uncond_tokens = [negative_prompt]\n",
+      "            elif batch_size != len(negative_prompt):\n",
+      "                raise ValueError(\n",
+      "                    f\"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:\"\n",
+      "                    f\" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches\"\n",
+      "                    \" the batch size of `prompt`.\"\n",
+      "                )\n",
+      "            else:\n",
+      "                uncond_tokens = negative_prompt\n",
+      "\n",
+      "            max_length = prompt_embeds.shape[1]\n",
+      "            uncond_input = self.tokenizer(\n",
+      "                uncond_tokens,\n",
+      "                padding=\"max_length\",\n",
+      "                max_length=max_length,\n",
+      "                truncation=True,\n",
+      "                return_tensors=\"pt\",\n",
+      "            )\n",
+      "\n",
+      "            negative_prompt_embeds = self.text_encoder(uncond_input.input_ids)\n",
+      "            negative_prompt_embeds = negative_prompt_embeds[0]\n",
+      "            negative_prompt_embeds = torch.tensor(negative_prompt_embeds)\n",
+      "\n",
+      "        if do_classifier_free_guidance:\n",
+      "            # duplicate unconditional embeddings for each generation per prompt, using mps friendly method\n",
+      "            seq_len = negative_prompt_embeds.shape[1]\n",
+      "\n",
+      "            negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_images_per_prompt, 1)\n",
+      "            negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)\n",
+      "\n",
+      "            # For classifier free guidance, we need to do two forward passes.\n",
+      "            # Here we concatenate the unconditional and text embeddings into a single batch\n",
+      "            # to avoid doing two forward passes\n",
+      "            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])\n",
+      "\n",
+      "        return prompt_embeds\n",
+      "\n",
+      "    def prepare_latents(\n",
+      "        self,\n",
+      "        batch_size,\n",
+      "        num_channels_latents,\n",
+      "        dtype,\n",
+      "        generator,\n",
+      "        latents=None,\n",
+      "    ):\n",
+      "        shape = (\n",
+      "            batch_size,\n",
+      "            num_channels_latents,\n",
+      "            self.num_frames,\n",
+      "            self.height // self.vae_scale_factor,\n",
+      "            self.width // self.vae_scale_factor,\n",
+      "        )\n",
+      "        if isinstance(generator, list) and len(generator) != batch_size:\n",
+      "            raise ValueError(\n",
+      "                f\"You have passed a list of generators of length {len(generator)}, but requested an effective batch\"\n",
+      "                f\" size of {batch_size}. Make sure the batch size matches the length of the generators.\"\n",
+      "            )\n",
+      "\n",
+      "        if latents is None:\n",
+      "            latents = randn_tensor(shape, generator=generator, dtype=dtype)\n",
+      "\n",
+      "        # scale the initial noise by the standard deviation required by the scheduler\n",
+      "        latents = latents * self.scheduler.init_noise_sigma\n",
+      "        return latents\n",
+      "\n",
+      "    def check_inputs(\n",
+      "        self,\n",
+      "        prompt,\n",
+      "        callback_steps,\n",
+      "        negative_prompt=None,\n",
+      "        prompt_embeds=None,\n",
+      "        negative_prompt_embeds=None,\n",
+      "    ):\n",
+      "        if self.height % 8 != 0 or self.width % 8 != 0:\n",
+      "            raise ValueError(f\"`height` and `width` have to be divisible by 8 but are {self.height} and {self.width}.\")\n",
+      "\n",
+      "        if (callback_steps is None) or (callback_steps is not None and (not isinstance(callback_steps, int) or callback_steps <= 0)):\n",
+      "            raise ValueError(f\"`callback_steps` has to be a positive integer but is {callback_steps} of type\" f\" {type(callback_steps)}.\")\n",
+      "\n",
+      "        if prompt is not None and prompt_embeds is not None:\n",
+      "            raise ValueError(\n",
+      "                f\"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to\" \" only forward one of the two.\"\n",
+      "            )\n",
+      "        elif prompt is None and prompt_embeds is None:\n",
+      "            raise ValueError(\"Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined.\")\n",
+      "        elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):\n",
+      "            raise ValueError(f\"`prompt` has to be of type `str` or `list` but is {type(prompt)}\")\n",
+      "\n",
+      "        if negative_prompt is not None and negative_prompt_embeds is not None:\n",
+      "            raise ValueError(\n",
+      "                f\"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:\"\n",
+      "                f\" {negative_prompt_embeds}. Please make sure to only forward one of the two.\"\n",
+      "            )\n",
+      "\n",
+      "        if prompt_embeds is not None and negative_prompt_embeds is not None:\n",
+      "            if prompt_embeds.shape != negative_prompt_embeds.shape:\n",
+      "                raise ValueError(\n",
+      "                    \"`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but\"\n",
+      "                    f\" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`\"\n",
+      "                    f\" {negative_prompt_embeds.shape}.\"\n",
+      "                )\n",
+      "\n",
+      "    def decode_latents(self, latents):\n",
+      "        scale_factor = 0.18215\n",
+      "        latents = 1 / scale_factor * latents\n",
+      "\n",
+      "        batch_size, channels, num_frames, height, width = latents.shape\n",
+      "        latents = latents.permute(0, 2, 1, 3, 4).reshape(batch_size * num_frames, channels, height, width)\n",
+      "        image = self.vae_decoder(latents)[0]\n",
+      "        image = torch.tensor(image)\n",
+      "        video = (\n",
+      "            image[None, :]\n",
+      "            .reshape(\n",
+      "                (\n",
+      "                    batch_size,\n",
+      "                    num_frames,\n",
+      "                    -1,\n",
+      "                )\n",
+      "                + image.shape[2:]\n",
+      "            )\n",
+      "            .permute(0, 2, 1, 3, 4)\n",
+      "        )\n",
+      "        # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16\n",
+      "        video = video.float()\n",
+      "        return video"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Inference with OpenVINO\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "core = ov.Core()"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Select inference device\n",
+      "[back to top ⬆️](#Table-of-contents:)\n",
+      "\n",
+      "select device from dropdown list for running inference using OpenVINO"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "device = widgets.Dropdown(\n",
+      "    options=core.available_devices + [\"AUTO\"],\n",
+      "    value=\"AUTO\",\n",
+      "    description=\"Device:\",\n",
+      "    disabled=False,\n",
+      ")\n",
+      "\n",
+      "device"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%%time\n",
+      "ov_unet = core.compile_model(unet_xml_path, device_name=device.value)"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%%time\n",
+      "ov_vae_decoder = core.compile_model(vae_decoder_xml_path, device_name=device.value)"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%%time\n",
+      "ov_text_encoder = core.compile_model(text_encoder_xml, device_name=device.value)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Here we replace the pipeline parts with versions converted to OpenVINO IR and compiled to specific device. Note that we use original pipeline tokenizer and scheduler."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "ov_pipe = OVTextToVideoSDPipeline(ov_vae_decoder, ov_text_encoder, tokenizer, ov_unet, scheduler)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Define a prompt\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "prompt = \"A panda eating bamboo on a rock.\""
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "Let's generate a video for our prompt. For full list of arguments, see `__call__` function definition of `OVTextToVideoSDPipeline` class in [Build a pipeline](#Build-a-pipeline) section."
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Video generation\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "frames = ov_pipe(prompt, num_inference_steps=25)[\"frames\"]"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "images = [PIL.Image.fromarray(frame) for frame in frames]\n",
+      "images[0].save(\"output.gif\", save_all=True, append_images=images[1:], duration=125, loop=0)\n",
+      "with open(\"output.gif\", \"rb\") as gif_file:\n",
+      "    b64 = f\"data:image/gif;base64,{base64.b64encode(gif_file.read()).decode()}\"\n",
+      "IPython.display.HTML(f'<img src=\"{b64}\" />')"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Interactive demo\n",
+      "[back to top ⬆️](#Table-of-contents:)\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "def generate(prompt, seed, num_inference_steps, _=gr.Progress(track_tqdm=True)):\n",
+      "    generator = torch.Generator().manual_seed(seed)\n",
+      "    frames = ov_pipe(\n",
+      "        prompt,\n",
+      "        num_inference_steps=num_inference_steps,\n",
+      "        generator=generator,\n",
+      "    )[\"frames\"]\n",
+      "    out_file = tempfile.NamedTemporaryFile(suffix=\".gif\", delete=False)\n",
+      "    images = [PIL.Image.fromarray(frame) for frame in frames]\n",
+      "    images[0].save(out_file, save_all=True, append_images=images[1:], duration=125, loop=0)\n",
+      "    return out_file.name\n",
+      "\n",
+      "\n",
+      "demo = gr.Interface(\n",
+      "    generate,\n",
+      "    [\n",
+      "        gr.Textbox(label=\"Prompt\"),\n",
+      "        gr.Slider(0, 1000000, value=42, label=\"Seed\", step=1),\n",
+      "        gr.Slider(10, 50, value=25, label=\"Number of inference steps\", step=1),\n",
+      "    ],\n",
+      "    gr.Image(label=\"Result\"),\n",
+      "    examples=[\n",
+      "        [\"An astronaut riding a horse.\", 0, 25],\n",
+      "        [\"A panda eating bamboo on a rock.\", 0, 25],\n",
+      "        [\"Spiderman is surfing.\", 0, 25],\n",
+      "    ],\n",
+      "    allow_flagging=\"never\",\n",
+      ")\n",
+      "\n",
+      "try:\n",
+      "    demo.queue().launch(debug=True)\n",
+      "except Exception:\n",
+      "    demo.queue().launch(share=True, debug=True)\n",
+      "# if you are launching remotely, specify server_name and server_port\n",
+      "# demo.launch(server_name='your server name', server_port='server port in int')\n",
+      "# Read more in the docs: https://gradio.app/docs/"
+    ]
+  }
+]

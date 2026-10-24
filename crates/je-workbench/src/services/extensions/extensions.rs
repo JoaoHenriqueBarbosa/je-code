@@ -21,14 +21,30 @@
 //!   `ExtensionDescription` do `je-extensions` ([`null_extension_description`], [`is_proposed_api_enabled`],
 //!   [`check_proposed_api_enabled`]); a proposta é o nome como texto (`ApiProposalName` do original), e o erro que o
 //!   original lança é o `Err`.
+//! - Entram com o `AbstractExtensionService`: `toExtension`, `toExtensionDescription`, `IMessage`, `ActivationTimes`,
+//!   `IExtensionsStatus`, `ExtensionPointContribution`, `ExtensionHostStartup`, `IExtensionInspectInfo`, `IExtensionHost`,
+//!   `IWillActivateEvent`, `IResponsiveStateChangeEvent` e `IInternalExtensionService`. `ExtensionPointContribution.value` é o
+//!   JSON da contribuição. `ExtensionHostExtensions`, `IExtensionHostProfile`, `ProfileSession` e `NullExtensionService` não
+//!   foram portados (os dois primeiros dependem do gerenciador de host concreto e do perfilador, o último não tem leitor).
+
+use std::rc::Rc;
 
 use je_base::event::Event;
 use je_base::errors::Error;
+use je_base::parts::ipc::IMessagePassingProtocol;
 use je_base::promise::Promise;
 use je_base::uri::URI;
-use je_extensions::manifest::{ExtensionIdentifier, ExtensionManifest, TargetPlatform};
+use je_extensions::management::{InstallSource, LocalExtension};
+use je_extensions::manifest::{ExtensionIdentifier, ExtensionIdentifierInfo, ExtensionManifest, ExtensionType, TargetPlatform};
 use je_extensions::scanner::ExtensionDescription;
+use je_extensions::util::{get_extension_id, get_gallery_extension_id};
 use je_instantiation::service_id;
+use je_platform::notification::notification::Severity;
+
+use super::extension_activation::ExtensionActivationReason;
+use super::extension_description_registry::SharedExtensionDescription;
+use super::extension_host_kind::ExtensionHostKind;
+use super::extension_running_location::ExtensionRunningLocation;
 
 /// `nullExtensionDescription`: a descrição de extensão que os testes e o código sem extensão de origem usam.
 pub fn null_extension_description() -> ExtensionDescription {
@@ -203,3 +219,179 @@ pub struct IExtensionsChangeEvent {
 }
 
 service_id!(pub I_EXTENSION_SERVICE: dyn IExtensionService = "extensionService");
+
+/// `toExtension(extensionDescription)`: a extensão que a descrição em execução representa.
+pub fn to_extension(extension_description: &ExtensionDescription) -> LocalExtension {
+    LocalExtension {
+        extension_type: if extension_description.is_builtin { ExtensionType::System } else { ExtensionType::User },
+        is_builtin: extension_description.is_builtin || extension_description.is_user_builtin,
+        identifier: ExtensionIdentifierInfo {
+            id: get_gallery_extension_id(Some(extension_description.manifest.publisher.as_str()).filter(|publisher| !publisher.is_empty()), &extension_description.manifest.name),
+            uuid: extension_description.uuid.clone(),
+        },
+        manifest: extension_description.manifest.clone(),
+        location: extension_description.extension_location.clone(),
+        target_platform: extension_description.target_platform,
+        publisher_display_name: extension_description.publisher_display_name.clone(),
+        readme_url: None,
+        changelog_url: None,
+        is_valid: true,
+        validations: Vec::new(),
+        pre_release: extension_description.pre_release,
+        is_workspace_scoped: false,
+        is_machine_scoped: false,
+        is_application_scoped: false,
+        publisher_id: None,
+        installed_timestamp: None,
+        is_pre_release_version: extension_description.pre_release,
+        has_pre_release_version: false,
+        private: false,
+        updated: false,
+        pinned: false,
+        force_auto_update: false,
+        source: InstallSource::Vsix,
+        size: 0.0,
+    }
+}
+
+/// `toExtensionDescription(extension, isUnderDevelopment?)`.
+pub fn to_extension_description(extension: &LocalExtension, is_under_development: bool) -> ExtensionDescription {
+    let id = get_extension_id(&extension.manifest.publisher, &extension.manifest.name);
+    ExtensionDescription {
+        identifier: ExtensionIdentifier::new(id.clone()),
+        id,
+        is_builtin: extension.extension_type == ExtensionType::System,
+        is_user_builtin: extension.extension_type == ExtensionType::User && extension.is_builtin,
+        is_under_development,
+        extension_location: extension.location.clone(),
+        uuid: extension.identifier.uuid.clone(),
+        target_platform: extension.target_platform,
+        publisher_display_name: extension.publisher_display_name.clone(),
+        pre_release: extension.pre_release,
+        manifest: extension.manifest.clone(),
+    }
+}
+
+/// `IMessage`: uma mensagem de validação de um ponto de extensão. O campo `type` do original é `severity`.
+#[derive(Clone, Debug)]
+pub struct IMessage {
+    pub severity: Severity,
+    pub message: String,
+    pub extension_id: ExtensionIdentifier,
+    pub extension_point_id: String,
+}
+
+/// `ActivationTimes`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActivationTimes {
+    pub code_loading_time: f64,
+    pub activate_call_time: f64,
+    pub activate_resolved_time: f64,
+    pub activation_reason: ExtensionActivationReason,
+}
+
+/// `IExtensionsStatus`. `activationTimes: ActivationTimes | undefined` é `Option`.
+#[derive(Clone, Debug)]
+pub struct IExtensionsStatus {
+    pub id: ExtensionIdentifier,
+    pub messages: Vec<IMessage>,
+    pub activation_started: bool,
+    pub activation_times: Option<ActivationTimes>,
+    pub runtime_errors: Vec<Error>,
+    pub running_location: Option<ExtensionRunningLocation>,
+}
+
+/// `ExtensionPointContribution<T>`: o `T` é o JSON da contribuição (`desc.contributes[extPoint.name]`).
+#[derive(Clone, Debug)]
+pub struct ExtensionPointContribution {
+    pub description: SharedExtensionDescription,
+    pub value: serde_json::Value,
+}
+
+/// `desc.contributes` como JSON, uma chave por ponto de extensão (vazio quando a extensão não contribui nada). O
+/// `contributes` do porte é uma struct tipada; o `AbstractExtensionService` e os geradores de eventos de ativação implícitos
+/// leem as contribuições por nome de ponto, como o `for (const extPointName in desc.contributes)` do original. A ordem é a dos
+/// campos da struct e, depois, a das chaves que ela não conhece.
+pub fn extension_contributions(extension_description: &ExtensionDescription) -> serde_json::Map<String, serde_json::Value> {
+    match extension_description.manifest.contributes.as_ref().map(serde_json::to_value) {
+        Some(Ok(serde_json::Value::Object(contributions))) => contributions,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// `ExtensionHostStartup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtensionHostStartup {
+    /// The extension host should be launched immediately and doesn't require a `$startExtensionHost` call.
+    EagerAutoStart = 1,
+    /// The extension host should be launched immediately and needs a `$startExtensionHost` call.
+    EagerManualStart = 2,
+    /// The extension host should be launched lazily and only when it has extensions it needs to host. It doesn't
+    /// require a `$startExtensionHost` call.
+    LazyAutoStart = 3,
+}
+
+/// `IExtensionInspectInfo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IExtensionInspectInfo {
+    pub port: u16,
+    pub host: String,
+    pub devtools_url: Option<String>,
+    pub devtools_label: Option<String>,
+}
+
+/// `IExtensionHost`: um host de extensões (processo local, web worker local ou remoto) que o `AbstractExtensionService`
+/// gerencia por trás de um `IExtensionHostManager`.
+///
+/// Divergências:
+/// - `extensions: ExtensionHostExtensions | null` fica de fora: só o `ExtensionHostManager` o lê (ele guarda a versão do
+///   registro que o host já recebeu), e o gerenciador concreto não está portado.
+/// - `disconnect?()` é opcional no original: o padrão devolve `None`, o `undefined` de quem não o declara.
+pub trait IExtensionHost {
+    fn pid(&self) -> Option<u32>;
+    fn running_location(&self) -> ExtensionRunningLocation;
+    fn remote_authority(&self) -> Option<String>;
+    fn startup(&self) -> ExtensionHostStartup;
+    fn on_exit(&self) -> Event<(i32, Option<String>)>;
+
+    fn start(&self) -> Promise<Rc<dyn IMessagePassingProtocol>>;
+    fn get_inspect_port(&self) -> Option<IExtensionInspectInfo>;
+    fn enable_inspect_port(&self) -> Promise<bool>;
+    fn disconnect(&self) -> Option<Promise<()>> {
+        None
+    }
+    fn dispose(&self);
+}
+
+/// `IWillActivateEvent`.
+#[derive(Clone)]
+pub struct IWillActivateEvent {
+    pub event: String,
+    pub activation: Promise<()>,
+    pub activation_kind: ActivationKind,
+}
+
+/// `IResponsiveStateChangeEvent`. `getInspectListener(tryEnableInspector)` devolve a porta de inspeção, ou `None`
+/// (`0` no original: inspecionar não é possível).
+#[derive(Clone)]
+pub struct IResponsiveStateChangeEvent {
+    pub extension_host_kind: ExtensionHostKind,
+    pub is_responsive: bool,
+    pub get_inspect_listener: Rc<dyn Fn(bool) -> Promise<Option<IExtensionInspectInfo>>>,
+}
+
+/// `IInternalExtensionService`: o que o `AbstractExtensionService` entrega a cada host de extensões.
+pub trait IInternalExtensionService {
+    fn activate_by_id(&self, extension_id: &ExtensionIdentifier, reason: ExtensionActivationReason) -> Promise<()>;
+    fn on_will_activate_extension(&self, extension_id: &ExtensionIdentifier);
+    fn on_did_activate_extension(
+        &self,
+        extension_id: &ExtensionIdentifier,
+        code_loading_time: f64,
+        activate_call_time: f64,
+        activate_resolved_time: f64,
+        activation_reason: ExtensionActivationReason,
+    );
+    fn on_did_activate_extension_error(&self, extension_id: &ExtensionIdentifier, error: &Error);
+    fn on_extension_runtime_error(&self, extension_id: &ExtensionIdentifier, err: &Error);
+}

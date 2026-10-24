@@ -8,8 +8,9 @@
 //!   `registerNotebookSerializer`, `withNotebookDataProvider`, `tryGetDataProviderSync`, `getViewTypeProvider`,
 //!   `getRendererInfo`, `getRenderers`, `getStaticPreloads`, `createNotebookTextModel`, `getNotebookTextModel`,
 //!   `getNotebookTextModels`, `listNotebookDocuments`, `registerContributedNotebookType`, `hasSupportedNotebooks`,
-//!   `getNotebookProviderResourceRoots` e `clearEditorCache`. Ficam de fora `getOutputMimeTypeInfo`, `updateMimePreferredRenderer`,
-//!   `saveMimeDisplayOrder`, `createNotebookTextDocumentSnapshot`, `restoreNotebookTextModelFromSnapshot`,
+//!   `getNotebookProviderResourceRoots` e `clearEditorCache`. `createNotebookTextDocumentSnapshot` entra como contrato com corpo
+//!   padrão que rejeita (para o `NotebookFileWorkingCopyModel`). Ficam de fora `getOutputMimeTypeInfo`, `updateMimePreferredRenderer`,
+//!   `saveMimeDisplayOrder`, `restoreNotebookTextModelFromSnapshot`,
 //!   `getContributedNotebookType(s)` (dependem do `NotebookProviderInfo` de `notebookProvider.ts`, que não tem porte),
 //!   `setToCopy` e `getToCopy`.
 //! - `INotebookSerializer.searchInNotebooks` não existe: o `$searchInNotebooks` não está em `ExtHostNotebookShape` (depende do
@@ -23,6 +24,7 @@ use std::rc::Rc;
 
 use je_base::buffer::{VSBuffer, VSBufferReadableStream};
 use je_base::cancellation::CancellationToken;
+use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::lifecycle::DisposableRef;
 use je_base::promise::Promise;
@@ -31,6 +33,7 @@ use je_instantiation::service_id;
 use je_platform::files::files::{FileStatWithMetadata, WriteFileOptions};
 
 use super::model::notebook_text_model::NotebookTextModel;
+use crate::services::working_copy::file_working_copy::SnapshotContext;
 use super::notebook_common::{
     INotebookContributionData, INotebookRendererInfo, INotebookStaticPreloadInfo, NotebookData, NotebookExtensionDescription, TransientOptions,
 };
@@ -81,6 +84,14 @@ pub trait INotebookService {
     fn get_notebook_text_model(&self, uri: &URI) -> Option<Rc<NotebookTextModel>>;
     fn get_notebook_text_models(&self) -> Vec<Rc<NotebookTextModel>>;
     fn list_notebook_documents(&self) -> Vec<Rc<NotebookTextModel>>;
+
+    /// `createNotebookTextDocumentSnapshot(uri, context, token)`: o conteúdo serializado do notebook, que o
+    /// `NotebookFileWorkingCopyModel` grava e guarda em backup. A implementação do serviço (`notebookServiceImpl.ts`) fica para
+    /// a fatia dos serviços; o corpo padrão rejeita, como o `mock<INotebookService>()` do original (membro ausente), e quem
+    /// usa o snapshot sobrescreve.
+    fn create_notebook_text_document_snapshot(&self, _uri: &URI, _context: SnapshotContext, _token: CancellationToken) -> Promise<VSBufferReadableStream> {
+        Promise::rejected(Error::new("TypeError: createNotebookTextDocumentSnapshot is not a function"))
+    }
 
     /// Register a notebook type that we will handle. The notebook editor will be registered for notebook types contributed by
     /// extensions.

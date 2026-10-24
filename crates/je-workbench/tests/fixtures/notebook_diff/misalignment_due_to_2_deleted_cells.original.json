@@ -1,0 +1,686 @@
+[
+  {
+    "cell_type": "markdown",
+    "source": [
+      "[![Roboflow Notebooks](https://ik.imagekit.io/roboflow/notebooks/template/bannertest2-2.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672932710194)](https://github.com/roboflow/notebooks)\n",
+      "\n",
+      "# Fast Segment Anything Model (FastSAM)\n",
+      "\n",
+      "---\n",
+      "\n",
+      "[![GitHub](https://badges.aleen42.com/src/github.svg)](https://github.com/CASIA-IVA-Lab/FastSAM)\n",
+      "[![arXiv](https://img.shields.io/badge/arXiv-2306.12156-b31b1b.svg)](https://arxiv.org/pdf/2306.12156.pdf)\n",
+      "[![YouTube](https://badges.aleen42.com/src/youtube.svg)](https://youtu.be/yHNPyqazYYU)\n",
+      "[![Roboflow](https://raw.githubusercontent.com/roboflow-ai/notebooks/main/assets/badges/roboflow-blogpost.svg)](https://blog.roboflow.com/how-to-use-fastsam)\n",
+      "\n",
+      "The Fast Segment Anything Model (FastSAM) is a CNN Segment Anything Model trained by only 2% of the SA-1B dataset published by SAM authors.\n",
+      "\n",
+      "![fast-segment-anything-model-figure-1](https://media.roboflow.com/notebooks/examples/fast-sam-figure-1.png)\n",
+      "\n",
+      "The FastSAM authors claim it achieves comparable performance to the SAM method at 50 times the speed.\n",
+      "\n",
+      "![fast-segment-anything-model-figure-2](https://media.roboflow.com/notebooks/examples/fast-sam-figure-2.png)\n",
+      "\n",
+      "## Complementary Materials Covering SAM\n",
+      "\n",
+      "---\n",
+      "\n",
+      "[![GitHub](https://badges.aleen42.com/src/github.svg)](https://github.com/facebookresearch/segment-anything)\n",
+      "[![arXiv](https://img.shields.io/badge/arXiv-2304.02643-b31b1b.svg)](https://arxiv.org/abs/2304.02643)\n",
+      "[![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/roboflow-ai/notebooks/blob/main/notebooks/how-to-segment-anything-with-sam.ipynb)\n",
+      "[![YouTube](https://badges.aleen42.com/src/youtube.svg)](https://youtu.be/D-D6ZmadzPE)\n",
+      "[![Roboflow](https://raw.githubusercontent.com/roboflow-ai/notebooks/main/assets/badges/roboflow-blogpost.svg)](https://blog.roboflow.com/how-to-use-segment-anything-model-sam)\n",
+      "\n",
+      "## Steps in this Tutorial\n",
+      "\n",
+      "In this tutorial, we are going to cover:\n",
+      "\n",
+      "- Before you start\n",
+      "- Install FastSAM, SAM, and other dependencies\n",
+      "- Download FastSAM and SAM weights\n",
+      "- Download example data\n",
+      "- Imports\n",
+      "- Load FastSAM\n",
+      "- FastSAM inference\n",
+      "- FastSAM box prompt inference\n",
+      "- FastSAM point prompt inference\n",
+      "- FastSAM text prompt inference\n",
+      "- SAM vs FastSAM\n",
+      "- Roboflow benchmark dataset\n",
+      "\n",
+      "## 🔥 Let's begin!"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Before you start\n",
+      "\n",
+      "Let's make sure that we have access to GPU. We can use `nvidia-smi` command to do that. In case of any problems navigate to `Edit` -> `Notebook settings` -> `Hardware accelerator`, set it to `GPU`, and then click `Save`."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "!nvidia-smi"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** To make it easier for us to manage datasets, images and models we create a `HOME` constant."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "import os\n",
+      "HOME = os.getcwd()\n",
+      "print(\"HOME:\", HOME)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Install FastSAM, SAM, and other dependencies"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%cd {HOME}\n",
+      "\n",
+      "# install FastSAM\n",
+      "!git clone https://github.com/CASIA-IVA-Lab/FastSAM.git\n",
+      "!pip -q install -r FastSAM/requirements.txt\n",
+      "# install CLIP\n",
+      "!pip -q install git+https://github.com/openai/CLIP.git\n",
+      "# install SAM\n",
+      "!pip -q install git+https://github.com/facebookresearch/segment-anything.git\n",
+      "# install other dependencies\n",
+      "!pip -q install roboflow supervision jupyter_bbox_widget"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Download FastSAM and SAM weights"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "!mkdir -p {HOME}/weights\n",
+      "!wget -P {HOME}/weights -q https://huggingface.co/spaces/An-619/FastSAM/resolve/main/weights/FastSAM.pt\n",
+      "!wget -P {HOME}/weights -q https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth\n",
+      "!ls -lh {HOME}/weights"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "FAST_SAM_CHECKPOINT_PATH = f\"{HOME}/weights/FastSAM.pt\"\n",
+      "SAM_SAM_CHECKPOINT_PATH = f\"{HOME}/weights/sam_vit_h_4b8939.pth\""
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Download example data\n",
+      "\n",
+      "**NONE:** Let's download few example images. Feel free to use your images or videos."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "!mkdir -p {HOME}/data\n",
+      "!wget -P {HOME}/data -q https://media.roboflow.com/notebooks/examples/dog.jpeg\n",
+      "!wget -P {HOME}/data -q https://media.roboflow.com/notebooks/examples/robot.jpeg\n",
+      "!ls -lh {HOME}/data"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Imports\n",
+      "\n",
+      "**NOTE:** `FastSAM` code is not distributed via `pip` not it is packaged. Make sure to run code below from `{HOME}/FastSAM` directory. ⚠️"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%cd {HOME}/FastSAM\n",
+      "\n",
+      "import os\n",
+      "import cv2\n",
+      "import torch\n",
+      "import roboflow\n",
+      "import base64\n",
+      "\n",
+      "import supervision as sv\n",
+      "import numpy as np\n",
+      "\n",
+      "from roboflow import Roboflow\n",
+      "from fastsam import FastSAM, FastSAMPrompt\n",
+      "from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Load FastSAM"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')\n",
+      "print(f\"DEVICE = {DEVICE}\")\n",
+      "fast_sam = FastSAM(FAST_SAM_CHECKPOINT_PATH)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## FastSAM inference\n",
+      "\n",
+      "* `retina_masks=True` determines whether the model uses retina masks for generating segmentation masks.\n",
+      "* `imgsz=1024` sets the input image size to 1024x1024 pixels for processing by the model.\n",
+      "* `conf=0.4` sets the minimum confidence threshold for object detection.\n",
+      "* `iou=0.9` sets the minimum intersection over union threshold for non-maximum suppression to filter out duplicate detections."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "IMAGE_PATH = f\"{HOME}/data/dog.jpeg\""
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "os.makedirs(f\"{HOME}/output\", exist_ok=True)\n",
+      "output_image_path = f\"{HOME}/output/output-{os.path.basename(IMAGE_PATH)}\""
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.4,\n",
+      "    iou=0.9)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.everything_prompt()\n",
+      "prompt_process.plot(annotations=masks, output=f\"{HOME}/output\")"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** `prompt_process.everything_prompt` returns `torch.Tensor` when DEVICE = 'cuda:0'. `prompt_process.everything_prompt` returns `numpy.ndarray` when DEVICE = 'cpu'."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "# Convert masks to boolean (True/False)\n",
+      "def masks_to_bool(masks):\n",
+      "    if type(masks) == np.ndarray:\n",
+      "        masks = masks.astype(bool)\n",
+      "    else:\n",
+      "        masks = masks.cpu().numpy().astype(bool)\n",
+      "    return masks"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "def annotate_image(image_path: str, masks: np.ndarray) -> np.ndarray:\n",
+      "    image = cv2.imread(image_path)\n",
+      "\n",
+      "    xyxy = sv.mask_to_xyxy(masks=masks)\n",
+      "    detections = sv.Detections(xyxy=xyxy, mask=masks)\n",
+      "\n",
+      "    mask_annotator = sv.MaskAnnotator(color_lookup = sv.ColorLookup.INDEX)\n",
+      "    return mask_annotator.annotate(scene=image.copy(), detections=detections)"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "masks = masks_to_bool(masks)\n",
+      "annotated_image=annotate_image(image_path=IMAGE_PATH, masks=masks)\n",
+      "sv.plot_image(image=annotated_image, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** The quality of the generated masks is quite poor. Let's see if we can improve it by manipulating the parameters."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.5,\n",
+      "    iou=0.6)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.everything_prompt()"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "masks = masks_to_bool(masks)\n",
+      "annotated_image=annotate_image(image_path=IMAGE_PATH, masks=masks)\n",
+      "sv.plot_image(image=annotated_image, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## FastSAM box prompt inference"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Draw Box"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "# helper function that loads an image before adding it to the widget\n",
+      "\n",
+      "def encode_image(filepath):\n",
+      "    with open(filepath, 'rb') as f:\n",
+      "        image_bytes = f.read()\n",
+      "    encoded = str(base64.b64encode(image_bytes), 'utf-8')\n",
+      "    return \"data:image/jpg;base64,\"+encoded"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** Execute cell below and use your mouse to draw bounding box on the image 👇"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "IS_COLAB = True\n",
+      "\n",
+      "if IS_COLAB:\n",
+      "    from google.colab import output\n",
+      "    output.enable_custom_widget_manager()\n",
+      "\n",
+      "from jupyter_bbox_widget import BBoxWidget\n",
+      "\n",
+      "widget = BBoxWidget()\n",
+      "widget.image = encode_image(IMAGE_PATH)\n",
+      "widget"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "widget.bboxes"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Generate mask with FastSAM"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "# default_box is going to be used if you will not draw any box on image above\n",
+      "default_box = {'x': 68, 'y': 247, 'width': 555, 'height': 678, 'label': ''}\n",
+      "\n",
+      "box = widget.bboxes[0] if widget.bboxes else default_box\n",
+      "box = [\n",
+      "    box['x'],\n",
+      "    box['y'],\n",
+      "    box['x'] + box['width'],\n",
+      "    box['y'] + box['height']\n",
+      "]"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.5,\n",
+      "    iou=0.6)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.box_prompt(bbox=box)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** `prompt_process.box_prompt` returns `numy.ndarray`"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "masks = masks_to_bool(masks)\n",
+      "annotated_image=annotate_image(image_path=IMAGE_PATH, masks=masks)\n",
+      "sv.plot_image(image=annotated_image, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## FastSAM point prompt inference"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Select point"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "point = [405, 505]"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Generate mask with FastSAM"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.5,\n",
+      "    iou=0.6)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.point_prompt(points=[point], pointlabel=[1])"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** `prompt_process.point_prompt` returns `numy.ndarray`"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "masks = masks_to_bool(masks)\n",
+      "annotated_image=annotate_image(image_path=IMAGE_PATH, masks=masks)\n",
+      "sv.plot_image(image=annotated_image, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## FastSAM text prompt inference"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.5,\n",
+      "    iou=0.6)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.text_prompt(text='cap')"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** `prompt_process.text_prompt` returns `numy.ndarray`"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "masks = masks_to_bool(masks)\n",
+      "annotated_image=annotate_image(image_path=IMAGE_PATH, masks=masks)\n",
+      "sv.plot_image(image=annotated_image, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "##  SAM vs FastSAM"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "IMAGE_PATH = f\"{HOME}/data/robot.jpeg\""
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Load SAM"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "MODEL_TYPE = \"vit_h\"\n",
+      "\n",
+      "sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_SAM_CHECKPOINT_PATH).to(device=DEVICE)\n",
+      "mask_generator = SamAutomaticMaskGenerator(sam)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### SAM inference"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "image_bgr = cv2.imread(IMAGE_PATH)\n",
+      "image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)\n",
+      "\n",
+      "sam_result = mask_generator.generate(image_rgb)\n",
+      "sam_detections = sv.Detections.from_sam(sam_result=sam_result)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### FastSAM inference"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.5,\n",
+      "    iou=0.6)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.everything_prompt()\n",
+      "masks = masks_to_bool(masks)\n",
+      "xyxy = sv.mask_to_xyxy(masks=masks)\n",
+      "fast_sam_detections = sv.Detections(xyxy=xyxy, mask=masks)"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### FastSAM vs. SAM"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "mask_annotator = sv.MaskAnnotator(color_lookup = sv.ColorLookup.INDEX)\n",
+      "\n",
+      "sam_result = mask_annotator.annotate(scene=image_bgr.copy(), detections=sam_detections)\n",
+      "fast_sam_result = mask_annotator.annotate(scene=image_bgr.copy(), detections=fast_sam_detections)\n",
+      "\n",
+      "sv.plot_images_grid(\n",
+      "    images=[sam_result, fast_sam_result],\n",
+      "    grid_size=(1, 2),\n",
+      "    titles=['SAM', 'FastSAM']\n",
+      ")"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "**NOTE:** There is a lot going on in our test image. Let's plot our masks against a blank background."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "mask_annotator = sv.MaskAnnotator(color_lookup = sv.ColorLookup.INDEX)\n",
+      "\n",
+      "sam_result = mask_annotator.annotate(scene=np.zeros_like(image_bgr), detections=sam_detections)\n",
+      "fast_sam_result = mask_annotator.annotate(scene=np.zeros_like(image_bgr), detections=fast_sam_detections)\n",
+      "\n",
+      "sv.plot_images_grid(\n",
+      "    images=[sam_result, fast_sam_result],\n",
+      "    grid_size=(1, 2),\n",
+      "    titles=['SAM', 'FastSAM']\n",
+      ")"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "### Mask diff\n",
+      "\n",
+      "**NOTE:** Let's try to understand which masks generated by SAM were not generated by FastSAM."
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "def compute_iou(mask1, mask2):\n",
+      "    intersection = np.logical_and(mask1, mask2)\n",
+      "    union = np.logical_or(mask1, mask2)\n",
+      "    return np.sum(intersection) / np.sum(union)\n",
+      "\n",
+      "def filter_masks(mask_array1, mask_array2, threshold):\n",
+      "    return np.array([mask1 for mask1 in mask_array1 if max(compute_iou(mask1, mask2) for mask2 in mask_array2) < threshold])"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "diff_masks = filter_masks(sam_detections.mask, fast_sam_detections.mask, 0.5)\n",
+      "diff_xyxy = sv.mask_to_xyxy(masks=diff_masks)\n",
+      "diff_detections = sv.Detections(xyxy=diff_xyxy, mask=diff_masks)\n",
+      "\n",
+      "mask_annotator = sv.MaskAnnotator(color_lookup = sv.ColorLookup.INDEX)\n",
+      "diff_result = mask_annotator.annotate(scene=np.zeros_like(image_bgr), detections=diff_detections)\n",
+      "sv.plot_image(image=diff_result, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Roboflow Benchmark Dataset"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "%cd {HOME}\n",
+      "\n",
+      "roboflow.login()\n",
+      "rf = Roboflow()\n",
+      "\n",
+      "project = rf.workspace(\"roboticfish\").project(\"underwater_object_detection\")\n",
+      "dataset = project.version(10).download(\"yolov8\")"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "IMAGE_PATH = os.path.join(dataset.location, 'train', 'images', 'IMG_2311_jpeg_jpg.rf.09ae6820eaff21dc838b1f9b6b20342b.jpg')"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "results = fast_sam(\n",
+      "    source=IMAGE_PATH,\n",
+      "    device=DEVICE,\n",
+      "    retina_masks=True,\n",
+      "    imgsz=1024,\n",
+      "    conf=0.5,\n",
+      "    iou=0.6)\n",
+      "prompt_process = FastSAMPrompt(IMAGE_PATH, results, device=DEVICE)\n",
+      "masks = prompt_process.text_prompt(text='Penguin')"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "masks = masks_to_bool(masks)\n",
+      "annotated_image=annotate_image(image_path=IMAGE_PATH, masks=masks)\n",
+      "sv.plot_image(image=annotated_image, size=(8, 8))"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## 🏆 Congratulations\n",
+      "\n",
+      "### Learning Resources\n",
+      "\n",
+      "Roboflow has produced many resources that you may find interesting as you advance your knowledge of computer vision:\n",
+      "\n",
+      "- [Roboflow Notebooks](https://github.com/roboflow/notebooks): A repository of over 20 notebooks that walk through how to train custom models with a range of model types, from YOLOv7 to SegFormer.\n",
+      "- [Roboflow YouTube](https://www.youtube.com/c/Roboflow): Our library of videos featuring deep dives into the latest in computer vision, detailed tutorials that accompany our notebooks, and more.\n",
+      "- [Roboflow Discuss](https://discuss.roboflow.com/): Have a question about how to do something on Roboflow? Ask your question on our discussion forum.\n",
+      "- [Roboflow Models](https://roboflow.com): Learn about state-of-the-art models and their performance. Find links and tutorials to guide your learning.\n",
+      "\n",
+      "### Convert data formats\n",
+      "\n",
+      "Roboflow provides free utilities to convert data between dozens of popular computer vision formats. Check out [Roboflow Formats](https://roboflow.com/formats) to find tutorials on how to convert data between formats in a few clicks.\n",
+      "\n",
+      "### Connect computer vision to your project logic\n",
+      "\n",
+      "[Roboflow Templates](https://roboflow.com/templates) is a public gallery of code snippets that you can use to connect computer vision to your project logic. Code snippets range from sending emails after inference to measuring object distance between detections."
+    ]
+  }
+]

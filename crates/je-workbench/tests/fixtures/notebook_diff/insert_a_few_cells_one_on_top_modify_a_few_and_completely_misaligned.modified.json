@@ -1,0 +1,159 @@
+[
+  {
+    "cell_type": "markdown",
+    "source": [
+      "# Fetch Data"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "import requests\n",
+      "import sys\n",
+      "import pandas as pd\n",
+      "import matplotlib.pyplot as plt\n",
+      "from cachetools import cached, TTLCache\n",
+      "from dotenv import load_dotenv"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "import os\n",
+      "\n",
+      "GITHUB_API_URL = \"https://api.github.com\"\n",
+      "REPO_OWNER = \"microsoft\"\n",
+      "ISSUE = 123\n",
+      "load_dotenv()\n",
+      "TOKEN = os.getenv(\"GH\")\n",
+      "\n",
+      "headers = {\n",
+      "    \"Authorization\": f\"Bearer {TOKEN}\",\n",
+      "    \"Accept\": \"application/vnd.github+json\"\n",
+      "}"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "import csv\n",
+      "from datetime import datetime\n",
+      "import os\n",
+      "\n",
+      "def append_information(repo, open_issues_count, ):\n",
+      "    file_exists = os.path.isfile(filename)\n",
+      "    timestamp = datetime.utcnow().isoformat()\n",
+      "\n",
+      "    # Open the file in append mode\n",
+      "    with open(filename, 'a', newline='', encoding='utf-8') as csvfile:\n",
+      "        writer = csv.writer(csvfile)\n",
+      "\n",
+      "        # If the file didn't exist before, write the header row\n",
+      "        if not file_exists:\n",
+      "            writer.writerow([\n",
+      "                \"timestamp\",\n",
+      "                \"repo\",\n",
+      "                \"open_issues_count\",\n",
+      "                \"open_prs_count\",\n",
+      "                \"bug_issues_count\",\n",
+      "                \"feature_request_issues_count\",\n",
+      "                \"invalid_issues_count\"\n",
+      "            ])\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "def get_repo_issue_stats(owner, repo, token):\n",
+      "    # Common GitHub GraphQL endpoint\n",
+      "    url = \"https://api.github.com/graphql\"\n",
+      "    headers = {\n",
+      "        \"Authorization\": f\"Bearer {token}\",\n",
+      "        \"Accept\": \"application/vnd.github.v4+json\"\n",
+      "    }\n",
+      "\n",
+      "    # First query: Get various issue/PR counts from the repository object\n",
+      "    query_repo = \"\"\"\n",
+      "    query ($owner: String!, $name: String!) {\n",
+      "      repository(owner: $owner, name: $name) {\n",
+      "        issues(states: OPEN) {\n",
+      "          totalCount\n",
+      "        }\n",
+      "        pullRequests(states: OPEN) {\n",
+      "          totalCount\n",
+      "        }\n",
+      "        bugIssues: issues(states: OPEN, labels: [\"bug\"]) {\n",
+      "          totalCount\n",
+      "        }\n",
+      "        featureRequestIssues: issues(states: OPEN, labels: [\"feature-request\"]) {\n",
+      "          totalCount\n",
+      "        }\n",
+      "      }\n",
+      "    }\n",
+      "    \"\"\"\n"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "for REPO in REPOS:\n",
+      "    stats = get_repo_issue_stats(OWNER, REPO, TOKEN)\n",
+      "    print(stats)\n",
+      "\n",
+      "    append_metrics_to_csv(\n",
+      "        filename=\"repo_metrics.csv\",\n",
+      "        repo=f\"{OWNER}/{REPO}\",\n",
+      "        open_issues_count=stats['open_issues_count'],\n",
+      "        open_prs_count=stats['open_prs_count'],\n",
+      "        bug_issues_count=stats['bug_issues_count'],\n",
+      "        feature_request_issues_count=stats['feature_request_issues_count'],\n",
+      "        invalid_issues_count=stats['invalid_issues_count']\n",
+      "    )"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "# Plot"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "import pandas as pd\n",
+      "import plotly.graph_objs as go\n",
+      "from plotly.subplots import make_subplots\n",
+      "\n",
+      "def plot_repo_metrics(repo, csv_filename=\"repo_metrics.csv\"):\n",
+      "    # Load the CSV data\n",
+      "    df = pd.read_csv(csv_filename)\n",
+      "\n",
+      "    fig.add_trace(go.Scatter(\n",
+      "        x=df_repo['timestamp'],\n",
+      "        y=df_repo['open_issues_count'],\n",
+      "        mode='lines+markers',\n",
+      "        name='Open Issues',\n",
+      "        hovertemplate='Open Issues: %{y}<br>Time: %{x}<extra></extra>'\n",
+      "    ))\n"
+    ]
+  },
+  {
+    "cell_type": "markdown",
+    "source": [
+      "## Header"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "for REPO in REPOS:\n",
+      "    plot_repo_metrics(f\"{OWNER}/{REPO}\")"
+    ]
+  },
+  {
+    "cell_type": "code",
+    "source": [
+      "plot_repo_metrics(f\"{OWNER}/vscode\")"
+    ]
+  }
+]

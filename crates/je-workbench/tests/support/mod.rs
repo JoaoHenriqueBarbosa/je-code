@@ -27,6 +27,9 @@ pub mod fake_xterm;
 // Porte de `terminalLinkOpeners.test.ts` e `terminalLocalLinkDetector.test.ts`: os dublês dos serviços.
 pub mod terminal_link_support;
 
+// Porte de `terminalInstance.test.ts`: os dublês do processo, do serviço de instâncias e do resolvedor de perfil.
+pub mod terminal_instance_support;
+
 // Porte de `textFileEditorModelManager.test.ts`.
 pub mod text_file_support;
 
@@ -56,3 +59,9 @@ pub mod extension_enablement_support;
 
 // Porte de `extensionsWorkbenchService.test.ts`: os serviços do `setup` da suíte `ExtensionsWorkbenchServiceTest`.
 pub mod extensions_workbench_service_support;
+
+// Porte de `extensionsActions.test.ts`: o `setupTest` e os servidores de gerenciamento do teste.
+pub mod extensions_actions_support;
+// Porte de `extensionRecommendationsService.test.ts`: o `setup` da suíte `ExtensionRecommendationsService Test` (usa os
+// suportes `extension_enablement_support` e `extensions_workbench_service_support`).
+pub mod extension_recommendations_support;

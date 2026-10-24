@@ -53,6 +53,7 @@ use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
+use je_base::lifecycle::DisposableRef;
 use je_base::map::ResourceMap;
 use je_base::network::schemas;
 use je_base::paging::{IPager, single_page_pager};
@@ -76,6 +77,9 @@ use je_platform::configuration::{
 };
 use je_platform::dialogs::dialogs::{Confirmation, ConfirmationResult, IDialogService, Input, InputResult, Prompt, PromptResult};
 use je_platform::files::i_file_service::IFileService;
+use je_platform::label::label::{
+    FormatterChangeEvent, ILabelService, LabelFormatter, LabelSeparator, ResourceLabelFormatter, UriLabelOptions, WorkspaceLabelOptions, WorkspaceLabelTarget,
+};
 use je_platform::log::NullLogService;
 use je_platform::metered_connection::IMeteredConnectionService;
 use je_platform::product::{IProductService, ProductService};
@@ -90,6 +94,7 @@ use je_platform::user_data_profile::{
 };
 use je_platform::user_data_sync::user_data_sync::{IUserDataAutoSyncService, SyncOptions};
 use je_platform::workspace::AnyWorkspaceIdentifier;
+use je_workbench::contrib::extensions::extensions_actions::ExtensionActionServices;
 use je_workbench::contrib::extensions::extensions_service::{ExtensionsWorkbenchService, ExtensionsWorkbenchServiceParts, IIgnoredExtensionsManagementService};
 use je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService;
 use je_workbench::services::extension_management::extension_install_service::{
@@ -102,13 +107,13 @@ use je_workbench::services::extension_management::extension_management::{
     IProfileAwareExtensionManagementService, IResourceExtension, IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService,
     InstallExtensionResult,
 };
-use je_workbench::services::extensions::extensions::{ActivationKind, IExtensionDescription, IExtensionService};
+use je_workbench::services::extensions::extensions::{ActivationKind, IExtensionDescription, IExtensionService, IExtensionsChangeEvent};
 use je_workbench::services::extensions::extension_manifest_properties_service::ExtensionManifestPropertiesService;
 use je_workbench::services::host::host::IHostService;
 use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
 use je_workbench::services::user_data_profile::user_data_profile::IUserDataProfileService;
 use je_workbench::services::user_data_profile::user_data_profile_service::UserDataProfileService;
-use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestHostService};
+use je_workbench::test::browser::workbench_test_services::{EnvironmentOverrides, TestEnvironmentService, TestHostService};
 use je_workbench::test::common::workbench_test_services::{
     TestContextService, TestFileService, TestLifecycleService, TestNotificationService, TestProductService, TestWorkspaceTrustEnablementService,
     TestWorkspaceTrustManagementService,
@@ -884,6 +889,9 @@ impl IMeteredConnectionService for StubMeteredConnectionService {
 /// whenInstalledExtensionsRegistered: true }`.
 pub struct StubExtensionService {
     extensions: Vec<ExtensionDescription>,
+    can_add: bool,
+    can_remove: bool,
+    on_change: Event<IExtensionsChangeEvent>,
 }
 
 impl StubExtensionService {
@@ -894,7 +902,13 @@ impl StubExtensionService {
 
     /// `extensions: [runningExtension]`.
     pub fn with_extensions(extensions: Vec<ExtensionDescription>) -> Rc<Self> {
-        Rc::new(Self { extensions })
+        Self::configured(extensions, false, false, Event::none())
+    }
+
+    /// `{ extensions, onDidChangeExtensions, canAddExtension: () => canAdd, canRemoveExtension: () => canRemove, ... }`
+    /// (o literal que o `extensionsActions.test.ts` registra: o que o caso omite vale `false`).
+    pub fn configured(extensions: Vec<ExtensionDescription>, can_add: bool, can_remove: bool, on_change: Event<IExtensionsChangeEvent>) -> Rc<Self> {
+        Rc::new(Self { extensions, can_add, can_remove, on_change })
     }
 }
 
@@ -921,6 +935,60 @@ impl IExtensionService for StubExtensionService {
 
     fn extensions(&self) -> Vec<ExtensionDescription> {
         self.extensions.clone()
+    }
+
+    fn on_did_change_extensions(&self) -> Event<IExtensionsChangeEvent> {
+        self.on_change.clone()
+    }
+
+    fn can_add_extension(&self, _extension: &ExtensionDescription) -> bool {
+        self.can_add
+    }
+
+    fn can_remove_extension(&self, _extension: &ExtensionDescription) -> bool {
+        self.can_remove
+    }
+}
+
+/// `{ onDidChangeFormatters: emitter.event }`: o `ILabelService` que o `setup` do `extensionsActions.test.ts` registra.
+pub struct StubLabelService {
+    pub did_change_formatters: Rc<Emitter<FormatterChangeEvent>>,
+}
+
+fn label_not_implemented() -> ! {
+    errors::throw(Error::new("Method not implemented."))
+}
+
+impl ILabelService for StubLabelService {
+    fn get_uri_label(&self, _resource: &URI, _options: &UriLabelOptions) -> String {
+        label_not_implemented()
+    }
+    fn get_uri_basename_label(&self, _resource: &URI) -> String {
+        label_not_implemented()
+    }
+    fn get_workspace_label(&self, _workspace: &WorkspaceLabelTarget, _options: Option<&WorkspaceLabelOptions>) -> String {
+        label_not_implemented()
+    }
+    fn get_host_label(&self, _scheme: &str, _authority: Option<&str>) -> String {
+        label_not_implemented()
+    }
+    fn get_host_tooltip(&self, _scheme: &str, _authority: Option<&str>) -> Option<String> {
+        label_not_implemented()
+    }
+    fn get_separator(&self, _scheme: &str, _authority: Option<&str>) -> LabelSeparator {
+        label_not_implemented()
+    }
+    fn get_uri_home(&self, _resource: &URI) -> Option<URI> {
+        None
+    }
+    fn register_formatter(&self, _formatter: LabelFormatter) -> DisposableRef {
+        label_not_implemented()
+    }
+    fn on_did_change_formatters(&self) -> Event<FormatterChangeEvent> {
+        self.did_change_formatters.event()
+    }
+    fn register_cached_formatter(&self, _formatter: ResourceLabelFormatter) -> DisposableRef {
+        label_not_implemented()
     }
 }
 
@@ -1087,13 +1155,13 @@ pub struct WorkbenchFixture {
     lifecycle: Rc<TestLifecycleService>,
     workspace_trust: Rc<TestWorkspaceTrustManagementService>,
     manifest_properties: Rc<ExtensionManifestPropertiesService>,
-    configuration: RefCell<Rc<StubConfigurationService>>,
+    configuration: RefCell<Rc<dyn IConfigurationService>>,
     server_service: RefCell<Rc<dyn IExtensionManagementServerService>>,
     enablement: RefCell<Rc<TestExtensionEnablementService>>,
-    environment: Rc<dyn IWorkbenchEnvironmentService>,
+    environment: RefCell<Rc<dyn IWorkbenchEnvironmentService>>,
     user_data_sync_enablement: Rc<StubUserDataSyncEnablementService>,
     product: Rc<RefCell<ProductService>>,
-    extension_service: RefCell<Rc<StubExtensionService>>,
+    extension_service: RefCell<Rc<dyn IExtensionService>>,
     dialog: RefCell<Rc<StubDialogService>>,
     file_service: Rc<dyn IFileService>,
     user_data_profile_service: Rc<UserDataProfileService>,
@@ -1103,12 +1171,18 @@ pub struct WorkbenchFixture {
 impl WorkbenchFixture {
     /// O `setup`.
     pub fn new() -> Rc<Self> {
+        Self::with_configuration(|guard| StubConfigurationService::new(guard, None))
+    }
+
+    /// O `setup` com o `IConfigurationService` que o `make` cria (o `extensionsActions.test.ts` registra um
+    /// `TestConfigurationService`, e não o literal de `stubConfiguration`).
+    pub fn with_configuration(make: impl FnOnce(&LeakGuard) -> Rc<dyn IConfigurationService>) -> Rc<Self> {
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
         let file_service_concrete = guard.add_rc(TestFileService::new());
         let file_service: Rc<dyn IFileService> = file_service_concrete;
         let gallery = StubGalleryService::new();
         let context = TestContextService::new(None, None);
-        let configuration = StubConfigurationService::new(&guard, None);
+        let configuration = make(&guard);
         let profile = to_user_data_profile("test", "test", &uri_file("foo"), &uri_file("cache"), None, None, &ext_uri());
         let user_data_profile_service = guard.add_rc(UserDataProfileService::create(profile.clone(), ()));
         let user_data_profiles_service = Rc::new(NoUserDataProfilesService { default_profile: profile });
@@ -1152,7 +1226,7 @@ impl WorkbenchFixture {
             configuration: RefCell::new(configuration),
             server_service: RefCell::new(server_service),
             enablement: RefCell::new(enablement),
-            environment,
+            environment: RefCell::new(environment),
             user_data_sync_enablement,
             product: Rc::new(RefCell::new(TestProductService::default())),
             extension_service: RefCell::new(StubExtensionService::new()),
@@ -1168,7 +1242,7 @@ impl WorkbenchFixture {
         guard: &LeakGuard,
         storage: &Rc<AbstractStorageService>,
         context: &Rc<TestContextService>,
-        configuration: &Rc<StubConfigurationService>,
+        configuration: &Rc<dyn IConfigurationService>,
         server_service: &Rc<dyn IExtensionManagementServerService>,
         management: &Rc<StubExtensionManagementService>,
         lifecycle: &Rc<TestLifecycleService>,
@@ -1221,10 +1295,16 @@ impl WorkbenchFixture {
             &self.lifecycle,
             &self.workspace_trust,
             &self.manifest_properties,
-            &self.environment,
+            &self.environment.borrow(),
             &self.user_data_sync_enablement,
         );
         *self.enablement.borrow_mut() = enablement;
+    }
+
+    /// `instantiationService.stub(IWorkbenchEnvironmentService, { ... })` (e os demais decoradores de ambiente): vale para o
+    /// `TestExtensionEnablementService` que o caso criar em seguida.
+    pub fn stub_environment(&self, overrides: EnvironmentOverrides) {
+        *self.environment.borrow_mut() = TestEnvironmentService::with_overrides(overrides);
     }
 
     /// `stubConfiguration(autoUpdateValue)`: o valor do `extensions.autoUpdate` (`None` é `undefined`, que vale `true`).
@@ -1240,6 +1320,49 @@ impl WorkbenchFixture {
     /// `instantiationService.stub(IExtensionService, { extensions, ... })`.
     pub fn stub_extension_service(&self, extensions: Vec<ExtensionDescription>) {
         *self.extension_service.borrow_mut() = StubExtensionService::with_extensions(extensions);
+    }
+
+    /// `instantiationService.stub(IExtensionService, service)`.
+    pub fn stub_extension_service_with(&self, service: Rc<dyn IExtensionService>) {
+        *self.extension_service.borrow_mut() = service;
+    }
+
+    /// `instantiationService.get(IExtensionService)`.
+    pub fn extension_service(&self) -> Rc<dyn IExtensionService> {
+        self.extension_service.borrow().clone()
+    }
+
+    /// `instantiationService.get(IExtensionManagementServerService)`.
+    pub fn server_service(&self) -> Rc<dyn IExtensionManagementServerService> {
+        self.server_service.borrow().clone()
+    }
+
+    /// `instantiationService.get(IConfigurationService)`.
+    pub fn configuration_service(&self) -> Rc<dyn IConfigurationService> {
+        self.configuration.borrow().clone()
+    }
+
+    /// Os serviços que as ações de extensão recebem por decorador, com o que estiver registrado neste momento.
+    pub fn extension_action_services(&self, label_service: Rc<StubLabelService>, workbench_service: Rc<ExtensionsWorkbenchService>) -> ExtensionActionServices {
+        let enablement = self.enablement.borrow().clone();
+        ExtensionActionServices {
+            extensions_workbench_service: workbench_service,
+            extension_management_service: self.management.clone(),
+            extension_service: self.extension_service.borrow().clone(),
+            extension_enablement_service: enablement.service(),
+            extension_management_server_service: self.server_service.borrow().clone(),
+            extension_manifest_properties_service: self.manifest_properties.clone(),
+            product_service: Rc::new(self.product.borrow().clone()),
+            configuration_service: self.configuration.borrow().clone(),
+            workspace_context_service: self.context.clone(),
+            host_service: Rc::new(TestHostService),
+            update_service: Rc::new(StubUpdateService),
+            telemetry_service: Rc::new(NullTelemetryServiceShape),
+            allowed_extensions_service: enablement.allowed_extensions_service.clone(),
+            label_service,
+            dialog_service: self.dialog.borrow().clone(),
+            user_data_profiles_service: self.user_data_profiles_service.clone(),
+        }
     }
 
     /// `instantiationService.stub(IDialogService, ...)`.
@@ -1323,9 +1446,14 @@ const MAX_TURNS: usize = 100_000;
 /// Roda o caso: o `setup`, o corpo (`async`), e o `teardown` (descartar o `disposableStore` e conferir os vazamentos).
 pub fn run<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<WorkbenchFixture>) -> F) {
     let fixture = WorkbenchFixture::new();
+    run_future(body(fixture.clone()));
+}
+
+/// O laço de eventos de [`run`]: roda `future` até ele terminar (quem o criou já fez o `setup`, e o `teardown` acontece
+/// quando o `future` solta o que tem).
+pub fn run_future<F: Future<Output = ()> + 'static>(future: F) {
     let done = Rc::new(Cell::new(false));
     let finished = done.clone();
-    let future = body(fixture.clone());
     runtime::spawn_local(async move {
         future.await;
         finished.set(true);

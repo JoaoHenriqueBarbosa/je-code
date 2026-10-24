@@ -175,7 +175,7 @@ fn bool_enablement(state: EnablementState) -> bool {
 }
 
 /// `toExtensionDescription(extension)` (`services/extensions/common/extensions.ts`).
-fn to_extension_description(local: &LocalExtension) -> ExtensionDescription {
+pub fn to_extension_description(local: &LocalExtension) -> ExtensionDescription {
     let id = get_gallery_extension_id(Some(local.manifest.publisher.as_str()).filter(|publisher| !publisher.is_empty()), &local.manifest.name);
     ExtensionDescription {
         identifier: ExtensionIdentifier::new(id.clone()),
@@ -194,7 +194,7 @@ fn to_extension_description(local: &LocalExtension) -> ExtensionDescription {
 
 /// `toExtension(description)` (`services/extensions/common/extensions.ts`): a extensão local que a descrição em execução
 /// representa, para achar o servidor dela.
-fn to_extension(description: &ExtensionDescription) -> LocalExtension {
+pub fn to_extension(description: &ExtensionDescription) -> LocalExtension {
     LocalExtension {
         extension_type: if description.is_builtin { ExtensionType::System } else { ExtensionType::User },
         is_builtin: !description.is_under_development,

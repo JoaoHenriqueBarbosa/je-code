@@ -8,6 +8,7 @@ pub mod smart_snippet_inserter;
 pub mod common;
 pub mod preferences_search;
 pub mod preferences_widgets;
+pub mod settings_editor2;
 pub mod settings_editor_setting_indicators;
 pub mod settings_layout;
 pub mod settings_tree_models;

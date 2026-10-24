@@ -1,13 +1,13 @@
 //! Porte de `src/vs/workbench/contrib/notebook/test/browser/diff/notebookDiffService.test.ts` (suíte `NotebookDiff Diff Service`), caso a caso e na mesma ordem.
 //!
-//! Casos de fora (9 dos 53), todos de fixtures de milhares de linhas de JSON de notebooks Jupyter reais (de 1000 a
-//! 2200 linhas cada, 13 mil no total, sem nenhuma lógica própria além dos dados), que não cabem num arquivo de
-//! teste fiel e revisável: `Detect modification and insertion of cells`, `Detect modification in 2 cells`,
+//! Os 53 casos estão portados. Os 9 últimos (`Detect modification and insertion of cells`, `Detect modification in 2 cells`,
 //! `Detect modification in multiple cells`, `Modification with Insertion, detected as deletion of a cell`,
 //! `Modification of three cells`, `Modification of multiple cells`, `Modification of a large cell and insert a new
 //! cell`, `Misalignment due to 2 deleted cells` e `Insert a few cells (one on top), modify a few and completely
-//! misaligned`. Eles chamam o mesmo `mapCells` dos 44 casos portados; entram quando as fixtures puderem ser
-//! importadas por um arquivo de dados.
+//! misaligned`) usam notebooks Jupyter reais de milhares de linhas, que o original escreve inline no teste: as fixtures são
+//! os arquivos `tests/fixtures/notebook_diff/<caso>.original.json` e `<caso>.modified.json`, cada um com um array de
+//! `{ "cell_type", "source" }` (os dois campos que o `fromJupyterCell` lê; o resto de cada célula Jupyter, que o original
+//! nunca usa, não foi copiado), lidos por `include_str!` ([`jupyter_cells`]).
 //!
 //! Notas de tradução:
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` é o `LeakGuard` criado no começo de cada caso. O `suiteSetup` que cria
@@ -999,4 +999,166 @@ fn update_code_cell_1() {
 
     assert_eq!(mapping, [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]);
     assert_eq!(changes(&diff), [(0, 2, 0, 2)]);
+}
+
+/// `fromJupyterCell(cell)`: o `source` e o `cell_type` da célula Jupyter da fixture (o resto da célula o original nunca lê).
+fn from_jupyter_cell(cell: &serde_json::Value) -> MockCell {
+    let is_code = cell["cell_type"] == "code";
+    MockCell {
+        lines: cell["source"].as_array().expect("source").iter().map(|line| line.as_str().expect("linha do source").to_owned()).collect(),
+        lang: if is_code { "python" } else { "markdown" },
+        kind: if is_code { CellKind::Code } else { CellKind::Markup },
+        outputs: Vec::new(),
+        metadata: None,
+    }
+}
+
+/// `[ ...células Jupyter... ].map(fromJupyterCell)`, com as células lidas do arquivo JSON da fixture.
+fn jupyter_cells(fixture: &str) -> Vec<MockCell> {
+    let cells: serde_json::Value = serde_json::from_str(fixture).expect("fixture JSON");
+    cells.as_array().expect("array de células").iter().map(from_jupyter_cell).collect()
+}
+
+/// `{ modified: i, original: i }` de 0 até `last` (inclusive).
+fn identity_mapping(last: i64) -> Vec<(i64, i64)> {
+    (0..=last).map(|index| (index, index)).collect()
+}
+
+#[test]
+fn detect_modification_and_insertion_of_cells() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/detect_modification_and_insertion_of_cells.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/detect_modification_and_insertion_of_cells.modified.json")),
+    );
+
+    let mut expected_mapping = identity_mapping(12);
+    expected_mapping.extend((13..=21).map(|modified| (modified, modified + 2)));
+    assert_eq!(mapping, expected_mapping);
+    assert_eq!(changes(&diff), [(2, 1, 2, 1), (5, 1, 5, 1), (6, 1, 6, 1), (7, 1, 7, 1), (8, 1, 8, 1), (12, 1, 12, 1), (13, 2, 13, 0), (16, 1, 14, 1)]);
+}
+
+#[test]
+fn detect_modification_in_2_cells() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/detect_modification_in_2_cells.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/detect_modification_in_2_cells.modified.json")),
+    );
+
+    assert_eq!(mapping, identity_mapping(23));
+    assert_eq!(changes(&diff), [(1, 1, 1, 1), (4, 1, 4, 1), (20, 1, 20, 1)]);
+}
+
+#[test]
+fn detect_modification_in_multiple_cells() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/detect_modification_in_multiple_cells.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/detect_modification_in_multiple_cells.modified.json")),
+    );
+
+    assert_eq!(mapping, identity_mapping(23));
+    assert_eq!(changes(&diff), [(4, 1, 4, 1), (10, 1, 10, 1), (16, 1, 16, 1), (18, 1, 18, 1), (20, 1, 20, 1)]);
+}
+
+#[test]
+fn modification_with_insertion_detected_as_deletion_of_a_cell() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_with_insertion_detected_as_deletion_of_a_cell.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_with_insertion_detected_as_deletion_of_a_cell.modified.json")),
+    );
+
+    let mut expected_mapping = identity_mapping(49);
+    expected_mapping.extend([(50, -1), (51, -1)]);
+    assert_eq!(mapping, expected_mapping);
+    assert_eq!(changes(&diff), [(49, 1, 49, 1), (50, 0, 50, 2)]);
+}
+
+#[test]
+fn modification_of_three_cells() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_of_three_cells.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_of_three_cells.modified.json")),
+    );
+
+    assert_eq!(mapping, identity_mapping(49));
+    // O original deixa comentada a mudança `{ originalStart: 50, originalLength: 0, modifiedStart: 50, modifiedLength: 2 }`.
+    assert_eq!(changes(&diff), [(6, 1, 6, 1), (15, 1, 15, 1), (36, 1, 36, 1)]);
+}
+
+#[test]
+fn modification_of_multiple_cells() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_of_multiple_cells.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_of_multiple_cells.modified.json")),
+    );
+
+    assert_eq!(mapping, identity_mapping(46));
+    assert_eq!(changes(&diff), [(5, 2, 5, 2), (25, 1, 25, 1), (42, 1, 42, 1), (44, 1, 44, 1), (46, 1, 46, 1)]);
+}
+
+#[test]
+fn modification_of_a_large_cell_and_insert_a_new_cell() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_of_a_large_cell_and_insert_a_new_cell.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/modification_of_a_large_cell_and_insert_a_new_cell.modified.json")),
+    );
+
+    let mut expected_mapping = identity_mapping(52);
+    expected_mapping.extend([(53, -1), (54, -1)]);
+    assert_eq!(mapping, expected_mapping);
+    assert_eq!(changes(&diff), [(52, 1, 52, 1), (53, 0, 53, 2)]);
+}
+
+#[test]
+fn misalignment_due_to_2_deleted_cells() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/misalignment_due_to_2_deleted_cells.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/misalignment_due_to_2_deleted_cells.modified.json")),
+    );
+
+    let mut expected_mapping = identity_mapping(17);
+    expected_mapping.extend([(18, 19), (19, 20)]);
+    expected_mapping.extend((20..=67).map(|modified| (modified, modified + 2)));
+    assert_eq!(mapping, expected_mapping);
+    // O original deixa comentada a mudança `{ originalStart: 53, originalLength: 0, modifiedStart: 53, modifiedLength: 2 }`.
+    assert_eq!(
+        changes(&diff),
+        [
+            (12, 1, 12, 1),
+            (15, 1, 15, 1),
+            (18, 1, 18, 0),
+            (20, 1, 19, 1),
+            (21, 1, 20, 0),
+            (22, 1, 20, 1),
+            (23, 1, 21, 1),
+            (26, 1, 24, 1),
+            (37, 1, 35, 1),
+            (44, 1, 42, 1),
+            (48, 1, 46, 1),
+            (56, 1, 54, 1),
+            (58, 1, 56, 1),
+            (60, 1, 58, 1),
+            (63, 1, 61, 1),
+            (68, 1, 66, 1),
+        ]
+    );
+}
+
+#[test]
+fn insert_a_few_cells_one_on_top_modify_a_few_and_completely_misaligned() {
+    let _disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let (mapping, diff) = map_cells(
+        jupyter_cells(include_str!("fixtures/notebook_diff/insert_a_few_cells_one_on_top_modify_a_few_and_completely_misaligned.original.json")),
+        jupyter_cells(include_str!("fixtures/notebook_diff/insert_a_few_cells_one_on_top_modify_a_few_and_completely_misaligned.modified.json")),
+    );
+
+    assert_eq!(mapping, [(0, -1), (1, 0), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, -1), (9, 7), (10, -1)]);
+    assert_eq!(changes(&diff), [(0, 0, 0, 1), (0, 1, 1, 1), (1, 1, 2, 1), (7, 0, 8, 1), (8, 0, 10, 1)]);
 }

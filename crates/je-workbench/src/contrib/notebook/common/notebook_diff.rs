@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use je_base::diff::DiffChange;
 
-use super::notebook_common::{CellKind, INotebookDiffResult};
+use super::model::notebook_cell_text_model::NotebookCellTextModel;
+use super::notebook_common::{CellKind, ICell as CommonCell, INotebookDiffResult};
 
 /// `CellDiffInfo`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +30,31 @@ pub trait ICell {
     fn cell_kind(&self) -> CellKind;
     fn get_hash_value(&self) -> i32;
     fn equal(&self, cell: &dyn ICell) -> bool;
+
+    /// O `NotebookCellTextModel` por trás da célula: o `equal(b: NotebookCellTextModel)` do original compara com outro
+    /// `NotebookCellTextModel` (o TypeScript aceita pela tipagem estrutural), e o Rust precisa do tipo concreto.
+    fn as_notebook_cell_text_model(&self) -> Option<&NotebookCellTextModel> {
+        None
+    }
+}
+
+/// O `NotebookCellTextModel` como a célula de `computeDiff` (o `INotebookTextModel.cells` do `NotebookDiffViewModel`).
+impl ICell for NotebookCellTextModel {
+    fn cell_kind(&self) -> CellKind {
+        CommonCell::cell_kind(self)
+    }
+
+    fn get_hash_value(&self) -> i32 {
+        CommonCell::get_hash_value(self)
+    }
+
+    fn equal(&self, cell: &dyn ICell) -> bool {
+        cell.as_notebook_cell_text_model().is_some_and(|other| NotebookCellTextModel::equal(self, other))
+    }
+
+    fn as_notebook_cell_text_model(&self) -> Option<&NotebookCellTextModel> {
+        Some(self)
+    }
 }
 
 /// O `{ cellDiffInfo, firstChangeIndex }` que `computeDiff` devolve.

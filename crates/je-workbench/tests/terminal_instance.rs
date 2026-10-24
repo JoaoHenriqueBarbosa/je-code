@@ -1,22 +1,41 @@
 //! Porte de `src/vs/workbench/contrib/terminal/test/browser/terminalInstance.test.ts` (suíte `Workbench - TerminalInstance`), caso a caso e na mesma ordem.
 //!
-//! Casos de fora (os 23 do `TerminalInstance`), que dependem da classe `TerminalInstance` real: o processo
-//! (`ITerminalProcessManager`, `ITerminalChildProcess`, `ITerminalBackend`, `ITerminalInstanceService`), o emulador de
-//! terminal da Fase 6, o DOM e o `workbenchInstantiationService` inteiro, que ainda não existem no porte:
-//! - `TerminalInstance`: `removed`/`active horizontal scrollbars are released ...` (2), `repeated horizontal scrollbar toggles
-//!   ...`, `horizontal scrollbar removal does not affect another terminal`, `should create an instance of TerminalInstance
-//!   with env from default profile`, `marked remote resolver terminal bypasses workspace trust request`, `unmarked terminal
-//!   requests workspace trust`, `reuseTerminal requests workspace trust ...`, `should not create a process when workspace
-//!   trust is denied`, `should not create a process with an unexpected cwd in an empty workspace`, `should preserve title for
-//!   task terminals`, `should only load the line data event addon once ...`, `clearing a custom title with ... restores
-//!   process title updates` (variações do laço) e `... restores shell title sequence updates`, `should preserve agent shell
-//!   type ...`, `should detect Command Code agent shell type ...`, `runCommand should wait for prompt input ...`, `should fire
-//!   onWillDispose ...`, `should dispose contribution-owned xterm addons ...`, `should stop handling file drops ...`,
-//!   `should not start handling file drops ...` e os 2 `custom key event handler ...`.
+//! Casos de fora (11 dos 24 do `TerminalInstance`, com os laços contados caso a caso), que dependem de DOM ou de peças do xterm.js
+//! que o porte não tem:
+//! - `removed/active horizontal scrollbars are released ...` (2), `repeated horizontal scrollbar toggles ...` e `horizontal
+//!   scrollbar removal does not affect another terminal`: a barra de rolagem horizontal (`DomScrollableElement`), o
+//!   `attachToElement`, o `layout` e o `toggleSizeToContentWidth` são DOM;
+//! - `should only load the line data event addon once ...`: o `LineDataEventAddon` e o `loadAddon` do xterm;
+//! - `runCommand should wait for prompt input ...`: o caso troca `instance.sendText` por atribuição (o Rust não troca um método
+//!   de uma instância), e o `sendText` verdadeiro espera o `ptyProcessReady`, que o `onProcessReady = Event.None` do dublê nunca
+//!   resolve;
+//! - `should dispose contribution-owned xterm addons ...`: o `xterm.raw.loadAddon`;
+//! - `should stop handling file drops ...` e `should not start handling file drops ...`: o `attachToElement` e o evento `drop` do DOM;
+//! - os 2 `custom key event handler ...`: o `attachCustomKeyEventHandler`, o `KeyboardEvent` e o `softDispatch` do
+//!   `IKeybindingService`.
 //!
-//! Portados: `DEFAULT_COMMANDS_TO_SKIP_SHELL` (1), `parseExitResult` (11), `TerminalLabelComputer` (21) e `getCwdResource` (8).
+//! Portados (54): `TerminalInstance` (13), `DEFAULT_COMMANDS_TO_SKIP_SHELL` (1), `parseExitResult` (11), `TerminalLabelComputer` (21)
+//! e `getCwdResource` (8).
 //!
 //! Divergências:
+//! - **`createTerminalInstantiationService`.** O `workbenchInstantiationService` inteiro é o `InstantiationService` com os 15
+//!   serviços que a `TerminalInstance` e o `TerminalProcessManager` do porte leem (os dublês de `terminal_instance_support.rs` e os
+//!   de `workbenchTestServices`: `TestPathService`, `TestEnvironmentService`, `TestRemoteAgentService`, `TestContextService`,
+//!   `TestFileService`). `IViewDescriptorService` e `IViewsService` ficam de fora: só a parte de DOM da instância os lê. O
+//!   `IConfigurationResolverService` fica sem registro, como no `TestInstantiationService` não estrito do original.
+//! - **`createTerminalInstance`.** A criação é síncrona ([`create_instance_with_config`]) e o `await instance.xtermReadyPromise` é o
+//!   [`xterm_ready`], dentro do caso assíncrono. O construtor do xterm é o [`FakeXterm`].
+//! - **`instance.dispose()` no fim dos casos assíncronos.** O `run_with_real_timers` espera todos os temporizadores (o de 10 s dos
+//!   eventos iniciais, por exemplo); o original os deixa para o descarte da suíte.
+//! - **`instance['_createProcess']()`, `_onTitleChange`, `_handleShellTypeChange` e os campos `_cwd`/`_userHome`.** Os membros
+//!   privados que o original alcança por colchete são métodos públicos (`create_process`, `on_title_change`,
+//!   `handle_shell_type_change`, `override_cwd_and_user_home`).
+//! - **`await instance.rename(...)`.** O `rename` do porte é síncrono.
+//! - **`for (const title of ['', undefined])`.** São dois casos, `..._with_empty_string_...` e `..._with_undefined_...`.
+//! - **`writeP(instance.xterm!.raw, ...)`.** É o `write` do emulador, que o dublê interpreta de forma síncrona.
+//! - **`ok(exitResult && typeof exitResult === 'object' && typeof exitResult.message === 'string')`.** É o `ExitCodeOrError::Error`
+//!   (o `message` é sempre texto).
+
 //! - **`getCwdResource`.** O original monta um objeto que reimplementa o método com um `mockFileService` e um
 //!   `mockPathService`; aqui os dois mocks são o [`MockCwdServices`] (que implementa [`ICwdResourceServices`]) e o método
 //!   chamado é o [`get_cwd_resource`] real, sobre o store de capacidades com o `{ getCwd }` do original.
@@ -36,7 +55,9 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+mod support;
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers};
@@ -64,6 +85,31 @@ use je_workbench::contrib::terminal::browser::terminal_instance::{
 use je_workbench::contrib::terminal::common::terminal::{ProcessState, default_commands_to_skip_shell};
 use je_workbench::test::common::workbench_test_services::{TestContextService, TestFileService};
 
+use je_base::lifecycle::IDisposable;
+use je_platform::contextkey::contextkey::IContextKey;
+use je_platform::log::NullLogService;
+use je_platform::path::path_service::{I_PATH_SERVICE, IPathService};
+use je_platform::product::{I_PRODUCT_SERVICE, IProductService, ProductService};
+use je_platform::terminal::terminal::{I_TERMINAL_LOG_SERVICE, ITerminalEnvironment, ITerminalLogService, PosixShellType, ShellCwd, TerminalEnvironmentValue, TitleEventSource};
+use je_platform::workspace::{Workspace, new_test_workspace};
+use je_platform::workspace_trust::{I_WORKSPACE_TRUST_REQUEST_SERVICE, IWorkspaceTrustRequestService};
+use je_workbench::contrib::terminal::browser::terminal::{
+    I_TERMINAL_INSTANCE_SERVICE, I_TERMINAL_SERVICE, ITerminalInstanceService, ITerminalService,
+};
+use je_workbench::contrib::terminal::browser::terminal_instance::{TerminalInstance, TerminalInstanceArgs};
+use je_workbench::contrib::terminal::browser::xterm::xterm_terminal::{IXtermRaw, XtermOptions};
+use je_workbench::contrib::terminal::common::environment_variable::{I_ENVIRONMENT_VARIABLE_SERVICE, IEnvironmentVariableService};
+use je_workbench::contrib::terminal::common::terminal::{I_TERMINAL_PROFILE_RESOLVER_SERVICE, ITerminalProfileResolverService};
+use je_workbench::services::environment::environment_service::{I_WORKBENCH_ENVIRONMENT_SERVICE, IWorkbenchEnvironmentService};
+use je_workbench::services::history::history::{I_HISTORY_SERVICE, IHistoryService};
+use je_workbench::services::remote::remote_agent_service::{I_REMOTE_AGENT_SERVICE, IRemoteAgentService};
+use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestPathService, TestRemoteAgentService};
+use support::fake_xterm::FakeXterm;
+use support::terminal_instance_support::{
+    TestEnvironmentVariableService, TestHistoryService, TestTerminalInstanceService, TestTerminalProfileResolverService, TestTerminalService,
+    TestTerminalWorkspaceTrustRequestService,
+};
+
 /// `fixPath('/foo/root1')`.
 const ROOT_1: &str = "/foo/root1";
 /// `fixPath('/foo/root2')`.
@@ -71,6 +117,368 @@ const ROOT_2: &str = "/foo/root2";
 
 fn is_windows() -> bool {
     Platform::detect().is_windows
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// suite('TerminalInstance')
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// O `terminalShellTypeContextKey` do original (`set`, `reset` e `get` que não fazem nada).
+struct NoopContextKey;
+
+impl IContextKey for NoopContextKey {
+    fn set(&self, _value: Dynamic) {}
+
+    fn reset(&self) {}
+
+    fn get(&self) -> Dynamic {
+        Dynamic::Undefined
+    }
+}
+
+/// `createTerminalInstantiationService(terminalInstanceService?, workspace?, requestWorkspaceTrust = async () => true, workspaceTrustRequestService?)`.
+fn create_terminal_instantiation_service(
+    store: &LeakGuard,
+    terminal_instance_service: Option<Rc<TestTerminalInstanceService>>,
+    workspace: Option<Rc<Workspace>>,
+    request_workspace_trust: Option<Rc<dyn Fn() -> Promise<bool>>>,
+    workspace_trust_request_service: Option<Rc<dyn IWorkspaceTrustRequestService>>,
+) -> Rc<InstantiationService> {
+    let configuration_service = TestConfigurationService::new(Some(Dynamic::object([
+        ("files", Dynamic::object(Vec::<(&str, Dynamic)>::new())),
+        (
+            "terminal",
+            Dynamic::object([(
+                "integrated",
+                Dynamic::object([
+                    ("fontFamily", Dynamic::string("monospace")),
+                    ("scrollback", Dynamic::Number(1000.0)),
+                    ("fastScrollSensitivity", Dynamic::Number(2.0)),
+                    ("mouseWheelScrollSensitivity", Dynamic::Number(1.0)),
+                    ("unicodeVersion", Dynamic::string("6")),
+                    ("commandsToSkipShell", Dynamic::array(Vec::<Dynamic>::new())),
+                    ("shellIntegration", Dynamic::object([("enabled", Dynamic::Bool(true))])),
+                ]),
+            )]),
+        ),
+    ])));
+    // O emissor do `TestConfigurationService` é descartado pelo store do caso (o original não o descarta).
+    store.add_rc(configuration_service.on_did_change_configuration_emitter.clone());
+    let configuration: Rc<dyn IConfigurationService> = configuration_service.clone();
+    let configuration_instantiation = store.add_rc(InstantiationService::new(ServiceCollection::new().with(I_CONFIGURATION_SERVICE, configuration.clone())));
+    let terminal_configuration_concrete = store.add_rc(configuration_instantiation.create_instance::<TerminalConfigurationService>(()));
+    let terminal_configuration_service: Rc<dyn ITerminalConfigurationService> = terminal_configuration_concrete;
+
+    let file_service_concrete = store.add_rc(TestFileService::new());
+    let file_service: Rc<dyn IFileService> = file_service_concrete;
+    // `if (workspace) instantiationService.stub(IWorkspaceContextService, new TestContextService(workspace))`
+    let workspace_context_service: Rc<dyn IWorkspaceContextService> = TestContextService::new(workspace, None);
+    let terminal_instance_service: Rc<dyn ITerminalInstanceService> = terminal_instance_service.unwrap_or_else(TestTerminalInstanceService::new);
+    let workspace_trust_request_service: Rc<dyn IWorkspaceTrustRequestService> = workspace_trust_request_service.unwrap_or_else(|| {
+        let request: Rc<dyn Fn() -> Promise<bool>> = request_workspace_trust.unwrap_or_else(|| Rc::new(|| Promise::resolved(true)));
+        TestTerminalWorkspaceTrustRequestService::from_function(request)
+    });
+    let terminal_profile_resolver_service: Rc<dyn ITerminalProfileResolverService> = TestTerminalProfileResolverService::mock();
+    let path_service: Rc<dyn IPathService> = TestPathService::new(None, None);
+    let workbench_environment_service: Rc<dyn IWorkbenchEnvironmentService> = TestEnvironmentService::new();
+    let remote_agent_service: Rc<dyn IRemoteAgentService> = Rc::new(TestRemoteAgentService);
+    let product_service: Rc<dyn IProductService> = Rc::new(ProductService::default());
+    let history_service: Rc<dyn IHistoryService> = TestHistoryService::new(None);
+    let environment_variable_service: Rc<dyn IEnvironmentVariableService> = TestEnvironmentVariableService::new();
+    let terminal_service: Rc<dyn ITerminalService> = Rc::new(TestTerminalService);
+    let log_service: Rc<dyn ITerminalLogService> = Rc::new(NullLogService);
+    store.add_rc(InstantiationService::new(
+        ServiceCollection::new()
+            .with(I_CONFIGURATION_SERVICE, configuration)
+            .with(I_TERMINAL_CONFIGURATION_SERVICE, terminal_configuration_service)
+            .with(I_FILE_SERVICE, file_service)
+            .with(I_WORKSPACE_CONTEXT_SERVICE, workspace_context_service)
+            .with(I_TERMINAL_INSTANCE_SERVICE, terminal_instance_service)
+            .with(I_WORKSPACE_TRUST_REQUEST_SERVICE, workspace_trust_request_service)
+            .with(I_TERMINAL_PROFILE_RESOLVER_SERVICE, terminal_profile_resolver_service)
+            .with(I_PATH_SERVICE, path_service)
+            .with(I_WORKBENCH_ENVIRONMENT_SERVICE, workbench_environment_service)
+            .with(I_REMOTE_AGENT_SERVICE, remote_agent_service)
+            .with(I_PRODUCT_SERVICE, product_service)
+            .with(I_HISTORY_SERVICE, history_service)
+            .with(I_ENVIRONMENT_VARIABLE_SERVICE, environment_variable_service)
+            .with(I_TERMINAL_SERVICE, terminal_service)
+            .with(I_TERMINAL_LOG_SERVICE, log_service),
+    ))
+}
+
+/// `store.add(instantiationService.createInstance(TerminalInstance, terminalShellTypeContextKey, shellLaunchConfig))`. O construtor
+/// do emulador é o que cria o [`FakeXterm`] com as opções recebidas.
+fn create_instance_with_config(store: &LeakGuard, instantiation_service: &InstantiationService, shell_launch_config: IShellLaunchConfig) -> Rc<TerminalInstance> {
+    store.add_rc(instantiation_service.create_instance::<TerminalInstance>(TerminalInstanceArgs {
+        terminal_shell_type_context_key: Rc::new(NoopContextKey),
+        shell_launch_config,
+        xterm_ctor: Box::new(|options: &XtermOptions| -> Rc<dyn IXtermRaw> { FakeXterm::from_options(options) }),
+    }))
+}
+
+/// `await instance.xtermReadyPromise`: a parte assíncrona de `createTerminalInstance`.
+async fn xterm_ready(instance: &TerminalInstance) {
+    instance.xterm_ready_promise().await.unwrap();
+}
+
+/// `{ executable: '/usr/bin/zsh', cwd: URI.file('/home/test'), isTransient: true }`.
+fn zsh_launch_config() -> IShellLaunchConfig {
+    IShellLaunchConfig {
+        executable: Some("/usr/bin/zsh".to_owned()),
+        cwd: Some(ShellCwd::Uri(URI::file("/home/test", je_platform::resources::host_platform()))),
+        is_transient: Some(true),
+        ..IShellLaunchConfig::default()
+    }
+}
+
+#[test]
+fn terminal_instance_should_create_an_instance_of_terminal_instance_with_env_from_default_profile() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        // Wait for the terminal instance to resolve shell launch config env.
+        common::timeout(100).await.unwrap();
+        let expected: ITerminalEnvironment = vec![("TEST".to_owned(), TerminalEnvironmentValue::Value("TEST".to_owned()))];
+        assert_eq!(instance.shell_launch_config().borrow().env, Some(expected));
+        // O `run_until_idle` espera os temporizadores da instância: o original os deixa para o descarte da suíte.
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_marked_remote_resolver_terminal_bypasses_workspace_trust_request() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let workspace_trust_request_service = TestTerminalWorkspaceTrustRequestService::new();
+    let trust_service: Rc<dyn IWorkspaceTrustRequestService> = workspace_trust_request_service.clone();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, Some(trust_service));
+    let instance = create_instance_with_config(
+        &store,
+        &instantiation_service,
+        IShellLaunchConfig { remote_resolver_terminal: true, hide_from_user: Some(true), ..zsh_launch_config() },
+    );
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        instance.create_process().await.unwrap();
+
+        assert_eq!(
+            (workspace_trust_request_service.request_count(), instance.shell_launch_config().borrow().remote_resolver_terminal),
+            // `persistedResolverFlag: undefined`
+            (0, false)
+        );
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_unmarked_terminal_requests_workspace_trust() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let workspace_trust_request_service = TestTerminalWorkspaceTrustRequestService::new();
+    let trust_service: Rc<dyn IWorkspaceTrustRequestService> = workspace_trust_request_service.clone();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, Some(trust_service));
+    let instance = create_instance_with_config(&store, &instantiation_service, zsh_launch_config());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        instance.create_process().await.unwrap();
+
+        assert_eq!(workspace_trust_request_service.request_count(), 1);
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_reuse_terminal_requests_workspace_trust_and_does_not_relaunch_when_trust_is_denied() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let terminal_instance_service = TestTerminalInstanceService::new();
+    let workspace_trust_request_service = TestTerminalWorkspaceTrustRequestService::new();
+    let trust_service: Rc<dyn IWorkspaceTrustRequestService> = workspace_trust_request_service.clone();
+    let instantiation_service = create_terminal_instantiation_service(&store, Some(terminal_instance_service.clone()), None, None, Some(trust_service));
+    let instance = create_instance_with_config(&store, &instantiation_service, zsh_launch_config());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+
+        instance.reuse_terminal(IShellLaunchConfig { executable: Some("/usr/bin/zsh".to_owned()), ..IShellLaunchConfig::default() }, true).await.unwrap();
+
+        assert_eq!((workspace_trust_request_service.request_count(), terminal_instance_service.create_process_count()), (1, 0));
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_should_not_create_a_process_when_workspace_trust_is_denied() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let terminal_instance_service = TestTerminalInstanceService::new();
+    let (trust_request, resolve_trust) = Promise::new();
+    let request_workspace_trust: Rc<dyn Fn() -> Promise<bool>> = Rc::new(move || trust_request.clone());
+    let instantiation_service = create_terminal_instantiation_service(&store, Some(terminal_instance_service.clone()), None, Some(request_workspace_trust), None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    let exit_promise = instance.on_exit().to_promise(None);
+    resolve_trust.resolve(false);
+    run_with_real_timers(async move {
+        exit_promise.await.unwrap();
+
+        assert_eq!(terminal_instance_service.create_process_count(), 0);
+    });
+}
+
+#[test]
+fn terminal_instance_should_not_create_a_process_with_an_unexpected_cwd_in_an_empty_workspace() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let terminal_instance_service = TestTerminalInstanceService::new();
+    let instantiation_service =
+        create_terminal_instantiation_service(&store, Some(terminal_instance_service.clone()), Some(new_test_workspace("empty", Vec::new(), None, None)), None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        terminal_instance_service.process_created_promise().await.unwrap();
+        common::timeout(0).await.unwrap();
+        instance.override_cwd_and_user_home(Some("/unexpected"), Some("/home"));
+        let exit_promise = instance.on_exit().to_promise(None);
+
+        instance.create_process().await.unwrap();
+        let exit_result = exit_promise.await.unwrap();
+
+        // `ok(exitResult && typeof exitResult === 'object' && typeof exitResult.message === 'string')`
+        assert!(matches!(exit_result, Some(ExitCodeOrError::Error(_))));
+        assert_eq!(terminal_instance_service.create_process_count(), 1);
+    });
+}
+
+#[test]
+fn terminal_instance_should_preserve_title_for_task_terminals() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let task_terminal = create_instance_with_config(
+        &store,
+        &instantiation_service,
+        IShellLaunchConfig { type_: Some(TerminalType::Task), name: Some("Test Task Name".to_owned()), ..IShellLaunchConfig::default() },
+    );
+
+    // Simulate setting the title via API (as the task system would do)
+    task_terminal.rename(Some("Test Task Name"), None);
+    assert_eq!(task_terminal.title(), "Test Task Name");
+
+    // Simulate a process title change (which happens when task completes)
+    task_terminal.rename(Some("some-process-name"), Some(TitleEventSource::Process));
+
+    // Verify that the task name is preserved
+    assert_eq!(task_terminal.title(), "Test Task Name", "Task terminal should preserve API-set title");
+}
+
+/// O corpo de `for (const title of ['', undefined])`.
+fn clearing_a_custom_title_restores_process_title_updates(title: Option<&'static str>) {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        instance.rename(Some("custom"), None);
+        instance.rename(title, None);
+        instance.rename(Some("next-process"), Some(TitleEventSource::Process));
+
+        assert_eq!(
+            (instance.static_title(), instance.process_name(), instance.title(), instance.title_source()),
+            (None, "next-process".to_owned(), "next-process".to_owned(), TitleEventSource::Process)
+        );
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_clearing_a_custom_title_with_empty_string_restores_process_title_updates() {
+    clearing_a_custom_title_restores_process_title_updates(Some(""));
+}
+
+#[test]
+fn terminal_instance_clearing_a_custom_title_with_undefined_restores_process_title_updates() {
+    clearing_a_custom_title_restores_process_title_updates(None);
+}
+
+#[test]
+fn terminal_instance_clearing_a_custom_title_restores_shell_title_sequence_updates() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        instance.rename(Some("custom"), None);
+        instance.rename(Some(""), None);
+        // `writeP(instance.xterm!.raw, '\x1b]0;next-title\x07')`
+        instance.xterm().unwrap().raw().write("\x1b]0;next-title\x07", None);
+
+        assert_eq!(
+            (instance.static_title(), instance.sequence(), instance.title(), instance.title_source()),
+            (None, Some("next-title".to_owned()), "next-title".to_owned(), TitleEventSource::Sequence)
+        );
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_should_preserve_agent_shell_type_detected_from_sequence_until_the_parent_shell_returns() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+
+        assert_eq!(instance.shell_type(), None);
+        instance.on_title_change("Claude Code");
+        assert_eq!(instance.shell_type(), Some(ShellType::General(GeneralShellType::Claude)));
+
+        instance.handle_shell_type_change(Some(ShellType::General(GeneralShellType::Node)));
+        assert_eq!(instance.shell_type(), Some(ShellType::General(GeneralShellType::Claude)));
+
+        instance.handle_shell_type_change(None);
+        assert_eq!(instance.shell_type(), Some(ShellType::General(GeneralShellType::Claude)));
+
+        instance.handle_shell_type_change(Some(ShellType::Posix(PosixShellType::Zsh)));
+        assert_eq!(instance.shell_type(), Some(ShellType::Posix(PosixShellType::Zsh)));
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_should_detect_command_code_agent_shell_type_from_its_osc_title() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+
+        assert_eq!(instance.shell_type(), None);
+        instance.on_title_change("\u{2733} Command Code \u{00b7} my-project");
+        assert_eq!(instance.shell_type(), Some(ShellType::General(GeneralShellType::CommandCode)));
+        instance.dispose();
+    });
+}
+
+#[test]
+fn terminal_instance_should_fire_on_will_dispose_before_xterm_disposal_and_on_disposed_after_xterm_disposal() {
+    let store = ensure_no_disposables_are_leaked_in_test_suite();
+    let instantiation_service = create_terminal_instantiation_service(&store, None, None, None, None);
+    let instance = create_instance_with_config(&store, &instantiation_service, IShellLaunchConfig::default());
+    run_with_real_timers(async move {
+        xterm_ready(&instance).await;
+        let xterm = instance.xterm_ready_promise().await.unwrap().unwrap();
+        let disposal_order: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+
+        let order = disposal_order.clone();
+        let will_dispose = instance.on_will_dispose().listen(move |_| order.borrow_mut().push("onWillDispose"));
+        let order = disposal_order.clone();
+        let xterm_disposed = xterm.on_did_dispose().listen(move |_| order.borrow_mut().push("xterm"));
+        let order = disposal_order.clone();
+        let disposed = instance.on_disposed().listen(move |_| order.borrow_mut().push("onDisposed"));
+
+        instance.dispose();
+
+        assert_eq!(*disposal_order.borrow(), vec!["onWillDispose", "xterm", "onDisposed"]);
+        will_dispose.dispose();
+        xterm_disposed.dispose();
+        disposed.dispose();
+    });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

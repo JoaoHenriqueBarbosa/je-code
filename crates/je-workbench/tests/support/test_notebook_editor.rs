@@ -1,8 +1,8 @@
 //! Porte parcial de `src/vs/workbench/contrib/notebook/test/browser/testNotebookEditor.ts`: o que `notebookCommon.test.ts`
 //! e `notebookTextModel.test.ts` usam dele, que é `setupInstantiationService`, `TestCell`, `valueBytesFromString`,
 //! `withTestNotebook` (com `createTestNotebookEditor`), `TestNotebookExecutionStateService` e o
-//! `NullNotebookLoggingService`. O resto do arquivo (o editor de teste completo, `NotebookEditorTestModel`,
-//! `withTestNotebookDiffModel`, `createNotebookCellList`) depende do editor de notebook e fica para as fatias dele.
+//! `NullNotebookLoggingService`. O resto do arquivo (o editor de teste completo, `NotebookEditorTestModel`) depende do editor
+//! de notebook e fica para as fatias dele; `withTestNotebookDiffModel` e `createNotebookCellList` estão aqui.
 //!
 //! Divergências:
 //! - `setupInstantiationService` registra o `ILanguageService` (o `LanguageService`), o `INotebookLoggingService`, o
@@ -26,9 +26,14 @@
 //!   `focusNotebookCell`...). `setupInstantiationService` guarda a configuração no [`NotebookTestServices`]; os serviços
 //!   que o original registra e nenhum caso lê (tema, contexto, lista, layout, log, área de transferência, armazenamento,
 //!   confiança, teclado, barra de status, outline, `ICodeEditorService`) não existem no porte. O ramo
-//!   `MultiModelEditStackElement` do desfazer não existe no porte do editor. `withTestNotebookDiffModel` e o editor de diff
-//!   (`NotebookDiffViewModel`, `diffElementViewModel`) não foram portados. O `ITextModelService` não existe aqui, então o
+//!   `MultiModelEditStackElement` do desfazer não existe no porte do editor. O `ITextModelService` não existe aqui, então o
 //!   `_withElement` do `NotebookViewModel` só chama o callback.
+//! - `withTestNotebookDiffModel` é [`with_test_notebook_diff_model`]: os dois `mock<IResolvedNotebookEditorModel>` (só `notebook`
+//!   e `resource` respondem) e o `mock<INotebookDiffEditorModel>` são o [`TestNotebookDiffModel`] com os dois
+//!   `NotebookDiffEditorModelSide`; o callback é assíncrono (devolve um `Future`) e recebe o `DisposableStore` e os serviços
+//!   (`setupInstantiationService`, que no original é o `accessor`: o `INotebookService` que os casos liam dele não existe no
+//!   porte, e o `NotebookDiffViewModel` não o recebe). O `try`/`finally` do original é a limpeza depois do `await` (um
+//!   pânico do callback reprova o caso de qualquer jeito).
 //! - `runWithFakedTimers({ useFakeTimers: true }, ...)` é `runtime::with_faked_timers`; o `try`/`finally` do original é
 //!   um `catch_unwind` com a limpeza e o novo lançamento do pânico. Os callbacks `async` do original são síncronos (o
 //!   `UndoRedoService` do porte é síncrono).
@@ -38,6 +43,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::ops::Deref;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -70,7 +76,8 @@ use je_workbench::contrib::notebook::browser::view_model::view_context::{IBaseCe
 use je_workbench::contrib::notebook::common::model::notebook_cell_text_model::NotebookCellTextModel;
 use je_workbench::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
 use je_workbench::contrib::notebook::common::notebook_common::{
-    CellKind, CellUri, ICell, ICellDto2, IOutputDto, ISelectionIndexState, ISelectionState, NotebookCellExecutionState, NotebookCellMetadata, TransientOptions,
+    CellKind, CellUri, ICell, ICellDto2, INotebookDiffEditorModel, IOutputDto, ISelectionIndexState, ISelectionState, NotebookCellExecutionState, NotebookCellMetadata,
+    NotebookDiffEditorModelSide, TransientOptions,
 };
 use je_workbench::contrib::notebook::common::notebook_range::ICellRange;
 use je_workbench::contrib::notebook::common::notebook_execution_state_service::{
@@ -599,4 +606,55 @@ pub fn with_test_notebook<R>(
         // O `with_faked_timers` captura o pânico em silêncio; o lançamento de novo mostra a mensagem do caso que falhou.
         Err(payload) => panic!("{}", errors::from_panic(payload)),
     }
+}
+
+/// O `mock<INotebookDiffEditorModel>` de `withTestNotebookDiffModel`, com os dois `mock<IResolvedNotebookEditorModel>`.
+pub struct TestNotebookDiffModel {
+    original: NotebookDiffEditorModelSide,
+    modified: NotebookDiffEditorModelSide,
+}
+
+impl INotebookDiffEditorModel for TestNotebookDiffModel {
+    fn original(&self) -> NotebookDiffEditorModelSide {
+        self.original.clone()
+    }
+
+    fn modified(&self) -> NotebookDiffEditorModelSide {
+        self.modified.clone()
+    }
+}
+
+impl IDisposable for TestNotebookDiffModel {
+    fn dispose(&self) {}
+}
+
+fn diff_model_side(notebook: &TestNotebookEditor) -> NotebookDiffEditorModelSide {
+    let text_model = notebook.editor.text_model.clone();
+    NotebookDiffEditorModelSide { resource: text_model.uri(), view_type: text_model.view_type(), notebook: text_model }
+}
+
+/// `withTestNotebookDiffModel(originalCells, modifiedCells, callback)`.
+pub async fn with_test_notebook_diff_model<R, Fut>(
+    original_cells: Vec<MockNotebookCell>,
+    modified_cells: Vec<MockNotebookCell>,
+    callback: impl FnOnce(Rc<TestNotebookDiffModel>, Rc<DisposableStore>, Rc<NotebookTestServices>) -> Fut,
+) -> R
+where
+    Fut: Future<Output = R>,
+{
+    let disposables = DisposableStore::new();
+    let services = Rc::new(setup_notebook_services(&disposables));
+    let original_notebook = create_test_notebook_editor(&services, &disposables, original_cells);
+    let modified_notebook = create_test_notebook_editor(&services, &disposables, modified_cells);
+    let model = Rc::new(TestNotebookDiffModel { original: diff_model_side(&original_notebook), modified: diff_model_side(&modified_notebook) });
+
+    let result = callback(model, disposables.clone(), services).await;
+
+    for notebook in [&original_notebook, &modified_notebook] {
+        notebook.editor.dispose();
+        notebook.editor.text_model.dispose();
+        notebook.view_model.dispose();
+    }
+    disposables.dispose();
+    result
 }

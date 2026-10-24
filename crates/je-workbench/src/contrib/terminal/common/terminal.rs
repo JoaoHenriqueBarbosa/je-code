@@ -1,8 +1,10 @@
 //! Porte parcial de `src/vs/workbench/contrib/terminal/common/terminal.ts`: as constantes de fonte, `FontWeight`,
-//! `ITerminalFont`, os ids de comando (`TerminalCommandId`) e `DEFAULT_COMMANDS_TO_SKIP_SHELL`.
+//! `ITerminalFont`, os ids de comando (`TerminalCommandId`), `DEFAULT_COMMANDS_TO_SKIP_SHELL`, `ProcessState`, o estado do
+//! processo (`ITerminalProcessInfo`, `ITerminalProcessManager`, `IBeforeProcessDataEvent`), o `ITerminalProfileResolverService`
+//! (com o `IShellLaunchConfigResolveOptions`) e o `ITerminalStatus`.
 //!
-//! O resto do arquivo (`ITerminalConfiguration` tipada, `ITerminalProfileResolverService`, `ITerminalProcessManager`,
-//! `ITerminalEditorService`...) entra quando um consumidor pedir.
+//! O resto do arquivo (`ITerminalConfiguration` tipada, `ITerminalProfileService`, `ITerminalEditorService`...) entra quando
+//! um consumidor pedir.
 //!
 //! Divergências:
 //! - **`const enum` de string.** `TerminalCommandId` é um enum com `as_str()` devolvendo o valor do original, como os de
@@ -13,9 +15,36 @@
 //!   embutidos na ordem do original, e os do histórico vêm do enum já portado.
 //! - **`ITerminalFont`** tem `charWidth` e `charHeight` opcionais, que são `Option<f64>`.
 //! - **`isLinux`** é a plataforma detectada ([`Platform::detect`]).
+//! - **`IShellLaunchConfig` compartilhado.** O original passa o mesmo objeto da instância ao gerenciador de processo e ao
+//!   resolvedor de perfil, que o alteram no lugar (`executable`, `args`, `env`, `attachPersistentProcess`...). Aqui o objeto é
+//!   um [`SharedShellLaunchConfig`] (`Rc<RefCell<...>>`), e quem o lê ou escreve empresta só por um instante, nunca por um
+//!   `await`.
+//! - **`ITerminalProcessManager.setDimensions`** tem três sobrecargas no original; aqui são [`ITerminalProcessManager::set_dimensions`]
+//!   (a assíncrona, que espera o `ptyProcessReady`) e [`ITerminalProcessManager::set_dimensions_sync`] (a de `sync: true`).
+//! - **`ITerminalProcessManager.dispose(immediate?)`** é [`ITerminalProcessManager::dispose_immediate`], e o `dispose()` do
+//!   `IDisposable` é o `dispose_immediate(false)`.
+//! - **`ptyProcessReady`.** Depois de descartado o gerenciador o campo vira `undefined` no original (que o `await` aceita);
+//!   aqui devolve uma promessa já resolvida.
+//! - **`ITerminalStatus.hoverActions[].run`** é um `Rc<dyn Fn()>`.
 
-use je_base::platform::Platform;
+use std::cell::RefCell;
+use std::rc::Rc;
 
+use je_base::event::Event;
+use je_base::platform::{OperatingSystem, Platform};
+use je_base::promise::Promise;
+use je_base::severity::Severity;
+use je_base::themables::ThemeIcon;
+use je_instantiation::service_id;
+use je_platform::terminal::capabilities::capabilities::{ISerializedCommandDetectionCapability, ITerminalCapabilityStore};
+use je_platform::terminal::environment_variable::IMergedEnvironmentVariableCollection;
+use je_platform::terminal::terminal::{
+    IProcessDataEvent, IProcessProperty, IProcessReadyEvent, IShellLaunchConfig, ITerminalLaunchOutcome, ITerminalProfile, ProcessPropertyType, UnicodeVersion,
+};
+use je_base::arrays::OneOrMany;
+
+use super::environment_variable::IEnvironmentVariableInfo;
+use super::terminal_backend::ITerminalBackend;
 use crate::contrib::terminal_contrib::history::terminal_history::DEFAULT_TERMINAL_HISTORY_COMMANDS_TO_SKIP_SHELL;
 
 /// `TERMINAL_CONFIG_SECTION`.
@@ -403,3 +432,126 @@ pub fn default_commands_to_skip_shell() -> Vec<&'static str> {
     commands.extend(DEFAULT_TERMINAL_SUGGEST_COMMANDS_TO_SKIP_SHELL);
     commands
 }
+
+/// O `IShellLaunchConfig` compartilhado entre a instância, o gerenciador de processo e o resolvedor de perfil (ver
+/// "Divergências").
+pub type SharedShellLaunchConfig = Rc<RefCell<IShellLaunchConfig>>;
+
+/// `IShellLaunchConfigResolveOptions`.
+#[derive(Clone, Copy, Debug)]
+pub struct IShellLaunchConfigResolveOptions<'a> {
+    pub remote_authority: Option<&'a str>,
+    pub os: OperatingSystem,
+    pub allow_automation_shell: Option<bool>,
+    pub allow_agent_host_shell: Option<bool>,
+}
+
+/// `ITerminalProfileResolverService`.
+pub trait ITerminalProfileResolverService {
+    fn default_profile_name(&self) -> Option<String>;
+
+    /// Resolves the icon of a shell launch config if this will use the default profile.
+    fn resolve_icon(&self, shell_launch_config: &mut IShellLaunchConfig, os: OperatingSystem);
+    fn resolve_shell_launch_config(&self, shell_launch_config: SharedShellLaunchConfig, options: IShellLaunchConfigResolveOptions<'_>) -> Promise<()>;
+    fn get_default_profile(&self, options: IShellLaunchConfigResolveOptions<'_>) -> Promise<ITerminalProfile>;
+    fn get_default_shell(&self, options: IShellLaunchConfigResolveOptions<'_>) -> Promise<String>;
+    fn get_default_shell_args(&self, options: IShellLaunchConfigResolveOptions<'_>) -> Promise<OneOrMany<String>>;
+    /// `getDefaultIcon(): TerminalIcon & ThemeIcon`.
+    fn get_default_icon(&self) -> ThemeIcon;
+    fn get_environment(&self, remote_authority: Option<&str>) -> Promise<je_base::process::ProcessEnvironment>;
+}
+
+service_id!(pub I_TERMINAL_PROFILE_RESOLVER_SERVICE: dyn ITerminalProfileResolverService = "terminalProfileResolverService");
+
+/// `ITerminalStatusHoverAction`.
+#[derive(Clone)]
+pub struct ITerminalStatusHoverAction {
+    pub label: String,
+    pub command_id: String,
+    pub run: Rc<dyn Fn()>,
+}
+
+/// `ITerminalStatus`.
+#[derive(Clone)]
+pub struct ITerminalStatus {
+    /// An internal string ID used to identify the status.
+    pub id: String,
+    /// The severity of the status, this defines both the color and how likely the status is to be the "primary status".
+    pub severity: Severity,
+    /// An icon representing the status, if this is not specified it will not show up on the terminal tab and will use the
+    /// generic `info` icon when hovering.
+    pub icon: Option<ThemeIcon>,
+    /// What to show for this status in the terminal's hover.
+    pub tooltip: Option<String>,
+    /// What to show for this status in the terminal's hover when details are toggled.
+    pub detailed_tooltip: Option<String>,
+    /// Actions to expose on hover.
+    pub hover_actions: Option<Vec<ITerminalStatusHoverAction>>,
+}
+
+/// `IBeforeProcessDataEvent`.
+pub struct IBeforeProcessDataEvent {
+    /// The data of the event, this can be modified by the event listener to change what gets sent to the terminal.
+    pub data: RefCell<String>,
+}
+
+/// `ITerminalProcessInfo`: read-only process information that can apply to detached terminals.
+pub trait ITerminalProcessInfo {
+    fn process_state(&self) -> ProcessState;
+    fn pty_process_ready(&self) -> Promise<()>;
+    fn shell_process_id(&self) -> Option<u32>;
+    fn remote_authority(&self) -> Option<String>;
+    fn os(&self) -> Option<OperatingSystem>;
+    fn user_home(&self) -> Option<String>;
+    fn initial_cwd(&self) -> String;
+    fn environment_variable_info(&self) -> Option<Rc<dyn IEnvironmentVariableInfo>>;
+    fn persistent_process_id(&self) -> Option<u32>;
+    fn should_persist(&self) -> bool;
+    fn has_written_data(&self) -> bool;
+    fn has_child_processes(&self) -> bool;
+    fn backend(&self) -> Option<Rc<dyn ITerminalBackend>>;
+    fn capabilities(&self) -> Rc<dyn ITerminalCapabilityStore>;
+    fn shell_integration_nonce(&self) -> String;
+    fn ext_environment_variable_collection(&self) -> Option<Rc<dyn IMergedEnvironmentVariableCollection>>;
+}
+
+/// `ITerminalProcessManager`.
+pub trait ITerminalProcessManager: je_base::lifecycle::IDisposable + ITerminalProcessInfo {
+    fn process_traits(&self) -> Option<IProcessReadyEvent>;
+    fn process_ready_timestamp(&self) -> f64;
+
+    fn on_pty_disconnect(&self) -> Event<()>;
+    fn on_pty_reconnect(&self) -> Event<()>;
+
+    fn on_process_ready(&self) -> Event<IProcessReadyEvent>;
+    fn on_before_process_data(&self) -> Event<Rc<IBeforeProcessDataEvent>>;
+    fn on_process_data(&self) -> Event<Rc<IProcessDataEvent>>;
+    fn on_process_replay_complete(&self) -> Event<()>;
+    fn on_environment_variable_info_changed(&self) -> Event<Rc<dyn IEnvironmentVariableInfo>>;
+    fn on_did_change_property(&self) -> Event<IProcessProperty>;
+    fn on_process_exit(&self) -> Event<Option<i32>>;
+    fn on_restore_commands(&self) -> Event<ISerializedCommandDetectionCapability>;
+
+    /// `dispose(immediate?)`.
+    fn dispose_immediate(&self, immediate: bool);
+    fn detach_from_process(&self, force_persist: Option<bool>) -> Promise<()>;
+    fn create_process(&self, shell_launch_config: SharedShellLaunchConfig, cols: i32, rows: i32) -> Promise<Option<ITerminalLaunchOutcome>>;
+    fn relaunch(&self, shell_launch_config: SharedShellLaunchConfig, cols: i32, rows: i32, reset: bool) -> Promise<Option<ITerminalLaunchOutcome>>;
+    fn write(&self, data: &str) -> Promise<()>;
+    fn send_signal(&self, signal: &str) -> Promise<()>;
+    /// `setDimensions(cols, rows, sync?: undefined | false, pixelWidth?, pixelHeight?)`.
+    fn set_dimensions(&self, cols: i32, rows: i32, pixel_width: Option<i32>, pixel_height: Option<i32>) -> Promise<()>;
+    /// `setDimensions(cols, rows, true, pixelWidth?, pixelHeight?)`.
+    fn set_dimensions_sync(&self, cols: i32, rows: i32, pixel_width: Option<i32>, pixel_height: Option<i32>);
+    fn clear_buffer(&self) -> Promise<()>;
+    fn set_unicode_version(&self, version: UnicodeVersion) -> Promise<()>;
+    fn set_next_command_id(&self, command_line: &str, command_id: &str) -> Promise<()>;
+    fn acknowledge_data_event(&self, char_count: usize);
+    fn process_binary(&self, data: &str) -> Promise<()>;
+
+    fn refresh_property(&self, property_type: ProcessPropertyType) -> Promise<IProcessProperty>;
+    fn update_property(&self, property: IProcessProperty) -> Promise<()>;
+    fn get_backend_os(&self) -> Promise<OperatingSystem>;
+    fn free_port_kill_process(&self, port: &str) -> Promise<()>;
+}
+

@@ -118,9 +118,17 @@ pub fn timeout(ms: u64) -> Promise<()> {
     })
 }
 
+/// O `Date.now()` do mocha sem relógio falso é a hora real (ms desde 1970); o do loop de [`runtime`] conta a partir do início
+/// dele, então os casos que comparam `Date.now()` com datas fixas ajustam o relógio de parede como o `clock.setSystemTime` do sinon.
+pub fn use_wall_clock_date_now() {
+    let epoch_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0));
+    runtime::set_system_time(epoch_ms);
+}
+
 /// O caso assíncrono do mocha sem `runWithFakedTimers`: o corpo roda no relógio real e o laço espera os timers de verdade
 /// até não sobrar trabalho (o `Date.now()` é o do sistema).
 pub fn run_with_real_timers(body: impl Future<Output = ()> + 'static) {
+    use_wall_clock_date_now();
     let done = Rc::new(Cell::new(false));
     let finished = done.clone();
     runtime::spawn_local(async move {

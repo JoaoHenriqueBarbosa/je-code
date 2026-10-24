@@ -437,6 +437,8 @@ pub struct FakeXterm {
     on_cursor_move: Rc<Emitter<()>>,
     on_write_parsed: Rc<Emitter<()>>,
     on_resize: Rc<Emitter<platform::TerminalResize>>,
+    on_title_change: Rc<Emitter<JsString>>,
+    bracketed_paste_mode: Cell<bool>,
     next_marker_id: Cell<u64>,
     deleted_lines: RefCell<Vec<(i32, i32)>>,
     /// Os marcadores registrados, descartados com o terminal (`Terminal.dispose()` descarta o buffer e os marcadores dele).
@@ -485,6 +487,8 @@ impl FakeXterm {
             on_cursor_move: Emitter::new(),
             on_write_parsed: Emitter::new(),
             on_resize: Emitter::new(),
+            on_title_change: Emitter::new(),
+            bracketed_paste_mode: Cell::new(false),
             next_marker_id: Cell::new(0),
             markers: RefCell::new(Vec::new()),
             deleted_lines: RefCell::new(Vec::new()),
@@ -567,10 +571,16 @@ impl FakeXterm {
         if let Ok(ident) = ident.parse::<i32>() {
             let handlers: Vec<platform::OscHandler> =
                 self.parser.state.osc_handlers.borrow().iter().filter(|(_, handler_ident, _)| *handler_ident == ident).map(|(_, _, handler)| handler.clone()).collect();
+            let mut handled = false;
             for handler in handlers.iter().rev() {
                 if handler(data) {
+                    handled = true;
                     break;
                 }
+            }
+            // O xterm trata o título (`OSC 0` e `OSC 2`) por dentro, depois dos tratadores registrados, e avisa o `onTitleChange`.
+            if !handled && (ident == 0 || ident == 2) {
+                self.on_title_change.fire(JsString::from(data));
             }
         }
         if chars[end] == '\u{7}' { end } else { end + 1 }
@@ -587,6 +597,10 @@ impl FakeXterm {
         }
         let final_byte = chars[end];
         let params_text: String = chars[start + 2..end].iter().collect();
+        // `CSI ? 2004 h` e `CSI ? 2004 l` ligam e desligam a colagem entre colchetes.
+        if params_text == "?2004" && (final_byte == 'h' || final_byte == 'l') {
+            self.bracketed_paste_mode.set(final_byte == 'h');
+        }
         let params: Vec<platform::CsiParam> = if params_text.is_empty() {
             Vec::new()
         } else {
@@ -677,6 +691,14 @@ impl IXtermRaw for FakeXterm {
         if let Some(callback) = callback {
             callback();
         }
+    }
+
+    fn on_title_change(&self) -> Event<JsString> {
+        self.on_title_change.event()
+    }
+
+    fn bracketed_paste_mode(&self) -> bool {
+        self.bracketed_paste_mode.get()
     }
 }
 
