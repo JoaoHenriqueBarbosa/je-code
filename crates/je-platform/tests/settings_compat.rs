@@ -55,7 +55,7 @@ fn real_user_settings_parse_without_errors_and_keep_all_keys() {
     let mut missing: Vec<String> = Vec::new();
     for (key, expected) in for_in_entries(&raw) {
         let found = get_configuration_value(&tree, &key, None);
-        if !deep_strict_equal(&found, &expected) {
+        if !found.deep_strict_equals(&expected) {
             missing.push(key.to_string_lossy());
         }
     }

@@ -40,26 +40,10 @@ pub fn j(text: &str) -> Dynamic {
     Dynamic::from_json(&value)
 }
 
-/// `assert.deepStrictEqual` sobre valores dinâmicos: a mesma forma e os mesmos valores (a ordem das chaves não conta).
-pub fn deep_strict_equal(a: &Dynamic, b: &Dynamic) -> bool {
-    match (a, b) {
-        (Dynamic::Array(x), Dynamic::Array(y)) => {
-            let (x, y) = (x.to_vec(), y.to_vec());
-            x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| deep_strict_equal(p, q))
-        }
-        (Dynamic::Object(x), Dynamic::Object(y)) => {
-            let (ex, ey) = (x.entries(), y.entries());
-            ex.len() == ey.len() && ex.iter().all(|(k, v)| y.get(k).is_some_and(|w| deep_strict_equal(v, &w)))
-        }
-        (Dynamic::Number(x), Dynamic::Number(y)) if x.is_nan() && y.is_nan() => true,
-        _ => a.strict_equals(b),
-    }
-}
+#[path = "../../../je-base/tests/common/mod.rs"]
+mod base;
 
-#[track_caller]
-pub fn assert_deep_strict_equal(actual: &Dynamic, expected: &Dynamic) {
-    assert!(deep_strict_equal(actual, expected), "deepStrictEqual falhou\n  atual:    {actual:?}\n  esperado: {expected:?}");
-}
+pub use base::assert_deep_strict_equal;
 
 // ---- os proxies ----------------------------------------------------------------------------------------
 

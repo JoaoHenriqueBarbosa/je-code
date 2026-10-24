@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::rc::Rc;
 
+use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::lifecycle::{
     DisposableRef, DisposableStore, DisposableTracker, IDisposable, set_disposable_tracker,
@@ -127,4 +128,11 @@ pub fn run_with_faked_timers(body: impl Future<Output = ()> + 'static) {
     });
     fail_on_unexpected_errors();
     assert!(done.get(), "o teste assíncrono não terminou");
+}
+
+/// `assert.deepStrictEqual(actual, expected)`: reprova com os dois valores quando diferem
+/// ([`Dynamic::deep_strict_equals`]).
+#[track_caller]
+pub fn assert_deep_strict_equal(actual: &Dynamic, expected: &Dynamic) {
+    assert!(actual.deep_strict_equals(expected), "deepStrictEqual falhou\n  atual:    {actual:?}\n  esperado: {expected:?}");
 }

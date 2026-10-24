@@ -550,6 +550,33 @@ impl Dynamic {
         }
     }
 
+    /// `util.isDeepStrictEqual(a, b)` do Node (o critério do `assert.deepStrictEqual`) sobre o modelo dinâmico:
+    /// primitivos por `Object.is` (só `NaN` é igual a `NaN`), arrays e arrays tipados elemento a elemento, objetos com
+    /// a mesma classe (o protótipo) e as mesmas chaves próprias (em qualquer ordem) com valores iguais, `Date` pelo
+    /// instante e `RegExp` pela fonte e pelas flags. Funções, só a mesma.
+    pub fn deep_strict_equals(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Number(a), Self::Number(b)) if a.is_nan() && b.is_nan() => true,
+            (Self::Array(x), Self::Array(y)) => {
+                let (x, y) = (x.to_vec(), y.to_vec());
+                x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| p.deep_strict_equals(q))
+            }
+            (Self::TypedArray(x), Self::TypedArray(y)) => x.to_vec() == y.to_vec(),
+            (Self::Object(x), Self::Object(y)) => {
+                let same_class = match (x.class(), y.class()) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.same(b),
+                    _ => false,
+                };
+                let (ex, ey) = (x.entries(), y.entries());
+                same_class && ex.len() == ey.len() && ex.iter().all(|(k, v)| y.get(k).is_some_and(|w| v.deep_strict_equals(&w)))
+            }
+            (Self::Date(x), Self::Date(y)) => x.time_value() == y.time_value(),
+            (Self::RegExp(x), Self::RegExp(y)) => x.source() == y.source() && x.flags() == y.flags(),
+            _ => self.strict_equals(other),
+        }
+    }
+
     /// `Array.isArray`.
     pub fn is_array(&self) -> bool {
         matches!(self, Self::Array(_))

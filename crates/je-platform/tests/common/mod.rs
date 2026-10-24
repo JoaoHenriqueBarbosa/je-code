@@ -29,7 +29,7 @@ pub mod keybinding;
 mod base;
 
 #[allow(unused_imports)]
-pub use base::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
+pub use base::{LeakGuard, assert_deep_strict_equal, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 
 /// Um literal no estilo do TypeScript: JSON com aspas simples. Não tem `undefined`: quem precisa monta
 /// o valor na mão.
@@ -66,28 +66,6 @@ pub fn jstr(text: &str) -> JsString {
 
 pub fn dyn_strs(items: &[&str]) -> Dynamic {
     Dynamic::array(items.iter().map(|i| Dynamic::string(i)))
-}
-
-/// `assert.deepStrictEqual` sobre valores dinâmicos: a mesma forma e os mesmos valores (a ordem das
-/// chaves não conta; protótipos não existem no `Dynamic`).
-pub fn deep_strict_equal(a: &Dynamic, b: &Dynamic) -> bool {
-    match (a, b) {
-        (Dynamic::Array(x), Dynamic::Array(y)) => {
-            let (x, y) = (x.to_vec(), y.to_vec());
-            x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| deep_strict_equal(p, q))
-        }
-        (Dynamic::Object(x), Dynamic::Object(y)) => {
-            let (ex, ey) = (x.entries(), y.entries());
-            ex.len() == ey.len() && ex.iter().all(|(k, v)| y.get(k).is_some_and(|w| deep_strict_equal(v, &w)))
-        }
-        (Dynamic::Number(x), Dynamic::Number(y)) if x.is_nan() && y.is_nan() => true,
-        _ => a.strict_equals(b),
-    }
-}
-
-#[track_caller]
-pub fn assert_deep_strict_equal(actual: &Dynamic, expected: &Dynamic) {
-    assert!(deep_strict_equal(actual, expected), "deepStrictEqual falhou\n  atual:    {actual:?}\n  esperado: {expected:?}");
 }
 
 /// `JSON.stringify(value)`.

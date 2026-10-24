@@ -26,8 +26,8 @@
 //!   original, só alcançável com a célula já removida) vira `usize::MAX`. Um índice de edição fora do intervalo
 //!   (`Number.MAX_VALUE` ou `-1` no original) é `usize::MAX`, que cai no mesmo `_assertIndex` e lança o mesmo erro.
 //! - **`Array#sort` de `_doApplyEdits`**: o comparador do original não é uma ordem total (um `end` indefinido devolve
-//!   `-1` mesmo contra outro indefinido), e o `sort_by` do Rust pode entrar em pânico com isso; a ordenação é a de
-//!   inserção binária do V8 sobre a primeira corrida, que não exige ordem total.
+//!   `-1` mesmo contra outro indefinido), e o `sort_by` do Rust pode entrar em pânico com isso; a ordenação é o
+//!   `sort_by_compare` do `je_base` (o TimSort do V8, com a mesma sequência de comparações).
 //! - **`cellDto.outputs ||= []`** de `_replaceCells` não existe: `outputs` é um `Vec`, nunca ausente.
 //! - **Buffer de texto da célula** em `_replaceCells`: o `TextModel` do porte guarda o buffer sem `Rc`, então
 //!   `cell.resetTextBuffer(cell.textModel.getTextBuffer())` recebe um buffer novo com o valor do modelo (registrado no
@@ -43,6 +43,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
+use je_base::arrays::sort_by_compare;
 use je_base::JsString;
 use je_base::diff::{ISequence, LcsDiff, SequenceElements};
 use je_base::dynamic::{Dynamic, ObjectRef};
@@ -532,51 +533,6 @@ struct TransformedEdit {
     cell_index: i64,
     end: Option<i64>,
     original_index: usize,
-}
-
-/// `Array#sort` do V8 (TimSort, que para listas curtas é uma corrida inicial seguida de inserção binária), sem exigir
-/// que o comparador seja uma ordem total.
-fn js_sort_by<T>(items: &mut Vec<T>, compare: impl Fn(&T, &T) -> i64) {
-    let length = items.len();
-    if length < 2 {
-        return;
-    }
-
-    // CountAndMakeRun
-    let mut run_length = 2;
-    let is_descending = compare(&items[1], &items[0]) < 0;
-    let mut previous = 1;
-    for index in 2..length {
-        let order = compare(&items[index], &items[previous]);
-        if is_descending {
-            if order >= 0 {
-                break;
-            }
-        } else if order < 0 {
-            break;
-        }
-        previous = index;
-        run_length += 1;
-    }
-    if is_descending {
-        items[..run_length].reverse();
-    }
-
-    // BinaryInsertionSort
-    for start in run_length..length {
-        let mut left = 0;
-        let mut right = start;
-        while left < right {
-            let mid = left + ((right - left) >> 1);
-            if compare(&items[start], &items[mid]) < 0 {
-                right = mid;
-            } else {
-                left = mid + 1;
-            }
-        }
-        let pivot = items.remove(start);
-        items.insert(left, pivot);
-    }
 }
 
 pub struct NotebookTextModel {
@@ -1234,16 +1190,16 @@ impl NotebookTextModel {
 
         // compress all edits which have no side effects on cell index
         let mut merged_edits = Self::merge_cell_edits(edits_with_details);
-        js_sort_by(&mut merged_edits, |a, b| {
+        sort_by_compare(&mut merged_edits, |a, b| {
             let Some(a_end) = a.end else {
-                return -1;
+                return -1.0;
             };
             let Some(b_end) = b.end else {
-                return 1;
+                return 1.0;
             };
 
             let by_end = b_end - a_end;
-            if by_end != 0 { by_end } else { b.original_index as i64 - a.original_index as i64 }
+            (if by_end != 0 { by_end } else { b.original_index as i64 - a.original_index as i64 }) as f64
         });
 
         let mut grouped: Vec<Vec<TransformedEdit>> = Vec::new();

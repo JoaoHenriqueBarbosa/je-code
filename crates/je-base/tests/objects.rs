@@ -1,7 +1,7 @@
 //! Porte de `src/vs/base/test/common/objects.test.ts` (suíte `Objects`), caso a caso e na mesma ordem.
 //!
 //! Os valores do TypeScript (`any`) são [`Dynamic`]; ver `src/dynamic.rs`. `assert.deepStrictEqual`
-//! é o `deep_strict_equal` abaixo. O caso `mapValues` fica fora da suíte `Objects` no original (é
+//! é o `Dynamic::deep_strict_equals`. O caso `mapValues` fica fora da suíte `Objects` no original (é
 //! um `test` solto no fim do arquivo) e vem por último aqui também. O caso `extra_*` NÃO é do
 //! original: cobre os formatos de `JSON.stringify` que `safeStringify` precisa reproduzir
 //! (números, `Date`, `RegExp`, arrays tipados, valores omitidos), com a saída conferida no Node.
@@ -32,21 +32,6 @@ fn nums(values: &[f64]) -> Dynamic {
 
 fn key(text: &str) -> JsString {
     JsString::from(text)
-}
-
-/// `assert.deepStrictEqual`: mesma forma, mesmos valores (a ordem das chaves não conta).
-fn deep_strict_equal(a: &Dynamic, b: &Dynamic) -> bool {
-    match (a, b) {
-        (Dynamic::Array(x), Dynamic::Array(y)) => {
-            let (x, y) = (x.to_vec(), y.to_vec());
-            x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| deep_strict_equal(p, q))
-        }
-        (Dynamic::Object(x), Dynamic::Object(y)) => {
-            let (ex, ey) = (x.entries(), y.entries());
-            ex.len() == ey.len() && ex.iter().all(|(k, v)| y.get(k).is_some_and(|w| deep_strict_equal(v, &w)))
-        }
-        _ => a.strict_equals(b) || a == b,
-    }
 }
 
 fn check(one: &Dynamic, other: &Dynamic, msg: &str) {
@@ -139,7 +124,7 @@ fn clone_and_change() {
     let o = obj(vec![("o1", o1.clone()), ("o2", o1)]);
 
     let cloned = objects::clone_and_change(&o, &|_| Dynamic::Undefined);
-    assert!(deep_strict_equal(&cloned, &o));
+    assert!(cloned.deep_strict_equals(&o));
     assert!(!cloned.strict_equals(&o), "é uma cópia, não o mesmo objeto");
 }
 
@@ -282,7 +267,7 @@ fn map_values() {
         s(&format!("{key}: {}", v * 2.0))
     });
 
-    assert!(deep_strict_equal(&result, &obj(vec![("a", s("a: 2")), ("b", s("b: 4")), ("c", s("c: 6"))])));
+    assert!(result.deep_strict_equals(&obj(vec![("a", s("a: 2")), ("b", s("b: 4")), ("c", s("c: 6"))])));
 }
 
 #[test]
