@@ -1603,6 +1603,10 @@ impl ITextFileEditorModel for TextFileEditorModel {
         self.preferred_language_id.borrow().clone()
     }
 
+    fn is_readonly(&self) -> Readonly {
+        TextFileEditorModel::is_readonly(self)
+    }
+
     fn text_editor_model(&self) -> Option<Rc<TextModel>> {
         self.base.text_editor_model()
     }

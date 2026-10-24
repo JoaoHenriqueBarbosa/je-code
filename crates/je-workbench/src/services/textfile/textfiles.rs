@@ -46,6 +46,7 @@ use je_platform::files::files::{FileOperationError, FileOperationResult, FileRea
 
 use crate::common::editor::editor_model::IEditorModel;
 use crate::common::editor::{RevertOptions, SaveOptions, SaveReason, SaveSource};
+use crate::services::files_configuration::files_configuration_service::Readonly;
 use crate::services::textfile::collaborators::{IProgress, ProgressStep};
 use crate::services::untitled::untitled_text_editor_service::IUntitledTextEditorModelManager;
 use crate::services::working_copy::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
@@ -175,6 +176,14 @@ impl TextFileOperationError {
 /// `TextFileOperationError.isTextFileOperationError(obj)`.
 pub fn is_text_file_operation_error(error: &Error) -> bool {
     error.prop("textFileOperationResult").is_some()
+}
+
+/// O `error.textFileOperationResult` de um [`TextFileOperationError`] (`None` quando o erro é de outra origem).
+pub fn text_file_operation_result_of(error: &Error) -> Option<TextFileOperationResult> {
+    match error.prop("textFileOperationResult")? {
+        "0" => Some(TextFileOperationResult::FileIsBinary),
+        _ => None,
+    }
 }
 
 /// `IResourceEncoding`.
@@ -511,6 +520,12 @@ pub trait ITextFileEditorModel: IWorkingCopy + IEditorModel + ILanguageSupport {
     /// `IEncodingSupport.setEncoding`.
     fn set_encoding(&self, encoding: &str, mode: EncodingMode) -> Promise<()>;
     fn get_language_id(&self) -> Option<String>;
+
+    /// `isReadonly()` de `ITextEditorModel` (`boolean | IMarkdownString`). O padrão é não somente leitura, para quem não
+    /// consulta a configuração de arquivos.
+    fn is_readonly(&self) -> Readonly {
+        Readonly::Bool(false)
+    }
 
     /// `textEditorModel` (`ITextModel | null`).
     fn text_editor_model(&self) -> Option<Rc<TextModel>>;
