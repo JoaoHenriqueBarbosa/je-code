@@ -1,6 +1,5 @@
 //! Porte de `src/vs/editor/contrib/comment/browser`: os comandos de comentar e descomentar
-//! (`blockCommentCommand.ts` e `lineCommentCommand.ts`). `comment.ts`, com as ações do editor (Ctrl+/ e
-//! Shift+Alt+A), é a camada de contribuição e fica de fora.
+//! (`blockCommentCommand.ts` e `lineCommentCommand.ts`) e as ações do editor (`comment.ts`: Ctrl+/ e Shift+Alt+A).
 //!
 //! Notas de tradução comuns aos dois comandos:
 //! - Os textos de linha são UTF-16 ([`je_base::JsString`]) e os tokens de comentário da configuração de
@@ -8,6 +7,7 @@
 //!   UTF-16, como o original.
 
 pub mod block_comment_command;
+pub mod comment_actions;
 pub mod line_comment_command;
 
 /// O índice do JavaScript (que pode ser negativo) como o `from` de `indexOf`/`lastIndexOf`, que o

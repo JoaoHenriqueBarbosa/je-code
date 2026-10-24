@@ -111,7 +111,7 @@ use je_base::promise::Promise;
 use je_base::scrollable::{INewScrollPosition, ScheduleAtNextAnimationFrame};
 use je_base::severity::Severity;
 use je_base::uri::URI;
-use je_instantiation::ServicesAccessor;
+use je_instantiation::{InstantiationService, ServicesAccessor};
 use je_platform::actions::MenuId;
 use je_platform::commands::{CommandMetadata, ICommandService};
 use je_platform::notification::notification_message::{NotificationPart, NotificationText};
@@ -544,10 +544,8 @@ impl IEditorAction for InternalEditorAction {
         let Some(editor) = self.editor.upgrade() else {
             return Promise::resolved(());
         };
-        match args {
-            Some(args) => self.command.run_editor_command(None, &editor, args),
-            None => self.command.run_editor_command(None, &editor, &Dynamic::Undefined),
-        }
+        let undefined = Dynamic::Undefined;
+        editor.run_command_with_services(&self.command, args.unwrap_or(&undefined))
     }
 }
 
@@ -989,9 +987,30 @@ pub struct CodeEditorWidget {
     model_data: RefCell<Option<Rc<ModelData>>>,
     update_counter: Cell<i32>,
     in_composition: Cell<bool>,
+    /// O serviço de instanciação com que os comandos de editor rodam (o `invokeFunction` do original); sem ele
+    /// o `accessor` chega como `None`.
+    instantiation_service: RefCell<Option<Rc<InstantiationService>>>,
 }
 
 impl CodeEditorWidget {
+    /// Instala o serviço de instanciação que dá o `ServicesAccessor` aos comandos e ações do editor. Os comandos
+    /// que exigem o `accessor` (apagar palavra, aparar espaços) não rodam sem ele.
+    pub fn set_instantiation_service(&self, instantiation_service: Rc<InstantiationService>) {
+        *self.instantiation_service.borrow_mut() = Some(instantiation_service);
+    }
+
+    /// `instantiationService.invokeFunction((accessor) => command.runEditorCommand(accessor, this, args))`.
+    fn run_command_with_services(&self, command: &Rc<dyn IEditorCommand>, args: &Dynamic) -> Promise<()> {
+        let Some(editor) = self.me.upgrade() else {
+            return Promise::resolved(());
+        };
+        let service = self.instantiation_service.borrow().clone();
+        match service {
+            Some(service) => service.invoke_function(|accessor| command.run_editor_command(Some(accessor), &editor, args)),
+            None => command.run_editor_command(None, &editor, args),
+        }
+    }
+
     /// O construtor: `configuration` é a `_configuration` já criada (ver o topo do módulo).
     pub fn new(
         configuration: Rc<dyn IEditorConfiguration>,
@@ -1033,6 +1052,7 @@ impl CodeEditorWidget {
             model_data: RefCell::new(None),
             update_counter: Cell::new(0),
             in_composition: Cell::new(false),
+            instantiation_service: RefCell::new(None),
         });
 
         this.register_listener(this.configuration.on_did_change(), |editor, e| {
@@ -1494,9 +1514,7 @@ impl CodeEditorWidget {
         if let Dynamic::Object(object) = payload {
             object.set(&JsString::from("source"), source.map_or(Dynamic::Undefined, |source| Dynamic::from(source)));
         }
-        if let Some(editor) = self.me.upgrade() {
-            let _ = command.run_editor_command(None, &editor, payload).catch(|error| errors::on_unexpected_error(&error));
-        }
+        let _ = self.run_command_with_services(&command, payload).catch(|error| errors::on_unexpected_error(&error));
         true
     }
 

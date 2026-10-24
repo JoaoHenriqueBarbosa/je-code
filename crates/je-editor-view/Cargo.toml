@@ -12,7 +12,9 @@ workspace = true
 [dependencies]
 je-base = { path = "../je-base" }
 je-editor = { path = "../je-editor" }
+je-instantiation = { path = "../je-instantiation" }
 je-languages = { path = "../je-languages" }
+je-platform = { path = "../je-platform" }
 je-render = { path = "../je-render" }
 je-text = { path = "../je-text" }
 je-theme = { path = "../je-theme" }
