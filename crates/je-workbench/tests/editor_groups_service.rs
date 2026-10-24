@@ -1,48 +1,246 @@
 //! Porte de `src/vs/workbench/services/editor/test/browser/editorGroupsService.test.ts` (suíte `EditorGroupsService`), caso a caso e na mesma ordem.
 //!
-//! Esta é a fatia 2 do `PORT_PLAN.md` (o `EditorPart` lógico com o `EditorGroupView` mínimo): entram os casos de GRUPOS que não
-//! abrem editores. Ainda NÃO portados (o placar conta só os `#[test]`):
-//! - `sideGroup`, `save & restore state`, `copy/merge groups` e `merge all groups`: abrem editores em grupos (`openEditor`), que
-//!   vem com o `EditorGroupView` completo (fatia 3); `save & restore state` ainda precisa do `TestEditorPart` (fatia 4).
-//! - `editor basics`, `openEditors / closeEditors` e todos os casos de `closeEditor(s)`, `closeAllEditors`, `moveEditor(s)`,
-//!   `copyEditor(s)`, `replaceEditors`, `find editors`, `sticky editors`, `selection`, `moveEditor with context`,
-//!   `moveEditor disabled`, `onWillOpenEditor`, `copyEditor with context`, `locked groups`, `closeAllGroups action` e
-//!   `transient editors`: dependem das operações de editor do grupo (fatia 3).
+//! Fatias 2 e 3 do `PORT_PLAN.md` (o `EditorPart` lógico e o `EditorGroupView` completo): entram os casos de grupos e todos os
+//! de editor (abrir, fechar, mover, copiar, substituir, aderentes, transientes, seleção e bloqueio). Ainda NÃO portados (o
+//! placar conta só os `#[test]`):
+//! - `save & restore state`: precisa do `TestEditorPart` (`testSaveState`, `clearState`) e do serializador do editor de teste
+//!   registrado no `EditorFactoryRegistry` (fatia 4, `EditorParts`).
+//! - `closeAllGroups action - cannot close editor handling`: usa a `CloseAllEditorGroupsAction` de `editorActions.ts`, ainda
+//!   não portada.
 //! - `working sets` (3 casos) e `context key provider` (4 casos): dependem de `applyState`, do `EditorParts` e do
-//!   `common/contextkeys.ts` (fatias 3 e 4).
+//!   `common/contextkeys.ts` (fatia 4).
 //!
 //! Notas de tradução:
 //! - **`createPart`.** `workbenchInstantiationService` com o `MockScopableContextKeyService` é um `InstantiationService` com o
 //!   `TestConfigurationService`, um `InMemoryStorageService` e o `MockContextKeyService::scopable()`; `createEditorParts` (que cria
 //!   a parte, dá `create` e `layout(1080, 800, 0, 0)`) é o [`create_part`]. O `EditorParts` e o `TestEditorPart` são da fatia 4.
+//!   Os casos de editor usam o [`create_test_part`], que acrescenta o que o `workbenchInstantiationService` entrega e o grupo
+//!   lê: o `TestFileDialogService` (`setConfirmResult`), o `TestDialogService`, o `IFilesConfigurationService` e o
+//!   `IUriIdentityService` (de `editor_input_services`), e o `IEditorGroupsService` (um adaptador sobre a própria parte, que no
+//!   original é o `TestEditorParts` registrado por `instantiationService.stub(IEditorGroupsService, parts)`).
+//! - **`registerTestEditor`.** O `setup` do original registra o painel `TEST_EDITOR_ID` para `TestFileEditorInput` e
+//!   `SideBySideEditorInput`: é o `register_editor_pane` do registro de painéis lógico (a classe da entrada é o `TypeId`). O
+//!   serializador (`EditorsObserverTestEditorInputSerializer`) só serve aos casos de estado salvo, fora deste placar.
+//! - **Funções `async`.** Os casos `async` rodam em `run_with_faked_timers` (o `await` custa uma rodada de microtarefas como
+//!   no motor JS), com o guarda criado dentro do corpo. Promessas que o original solta sem `await` (`onWillOpenEditor`) são
+//!   esperadas no fim, para o corpo não terminar com tarefas pendentes.
 //! - **Eventos e grupos.** `part.groups[0]` é `part.groups()[0]`; `assert.strictEqual(a, b)` entre grupos é `Rc::ptr_eq`
-//!   ([`same`]); `{ group }` onde o original passa um `IEditorGroup | GroupIdentifier` é [`group_ref`].
-//! - **`ensureNoDisposablesAreLeakedInTestSuite`** é o `LeakGuard`; o `disposables` do original é o próprio guarda.
+//!   ([`same`]); `{ group }` onde o original passa um `IEditorGroup | GroupIdentifier` é [`group_ref`]; entre editores é a
+//!   identidade do ponteiro ([`is_editor`]).
+//! - **`ensureNoDisposablesAreLeakedInTestSuite`** é o `LeakGuard` (o original o importa mas esta suíte não o chama: o guarda
+//!   aqui é mais estrito); o `disposables` do original é o próprio guarda.
 //! - **`assert.strictEqual(oldOptions, currentOptions)`** compara por valor (`EditorPartOptions` é `PartialEq`).
+//! - **`URI.file('foo/bar')`** é `uri_file("foo/bar")`; `{ pinned: true }` e companhia são o `EditorOptions` com os campos
+//!   dados; `openEditor(editor)` sem opções é `None`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+mod editor_input_services;
 
+use std::any::TypeId;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
-use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
+use editor_input_services::{WorkbenchServices, uri_identity_service};
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
-use je_base::lifecycle::DisposableRef;
+use je_base::lifecycle::{DisposableRef, IDisposable, id_of};
+use je_base::promise::Promise;
 use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
-use je_platform::storage::{InMemoryStorageService, StorageService};
-use je_ui::Ui;
-use je_workbench::browser::parts::editor::editor_part::EditorPart;
-use je_workbench::common::editor::GroupModelChangeKind;
-use je_workbench::services::editor::editor_groups_service::{
-    EditorGroupActivationEvent, EditorGroupLayout, FindGroupScope, GroupActivationReason, GroupDirection, GroupLayoutArgument, GroupLocation, GroupOrientation,
-    GroupRef, GroupsArrangement, GroupsOrder, IEditorGroup, IEditorPart, ShowTabs, is_editor_group,
+use je_platform::dialogs::{
+    ConfirmResult, Confirmation, ConfirmationResult, FileNameOrResource, I_DIALOG_SERVICE, I_FILE_DIALOG_SERVICE, IDialogService, IFileDialogService, Input,
+    InputResult, OpenDialogOptions, PickAndOpenOptions, Prompt, PromptResult, SaveDialogOptions,
 };
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
+use je_platform::opener::editor_types::{AuxiliaryEditorOptions, EditorOptions, ModalEditorPartOptions};
+use je_platform::resources::uri_file;
+use je_platform::storage::{InMemoryStorageService, StorageService};
+use je_platform::uri_identity::uri_identity::I_URI_IDENTITY_SERVICE;
+use je_ui::Ui;
+use je_workbench::browser::parts::editor::editor_panes::{EditorPaneDescriptor, editor_pane_registry};
+use je_workbench::browser::parts::editor::editor_part::EditorPart;
+use je_workbench::common::editor::editor_group_model::{EditorOrIndex, GetEditorsOptions, GroupModelChangeEvent};
+use je_workbench::common::editor::side_by_side_editor_input::SideBySideEditorInput;
+use je_workbench::common::editor::{
+    CloseDirection, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorsOrder, FindEditorOptions, GroupIdentifier,
+    GroupModelChangeKind, SideBySideEditor, TextEditorOptions,
+};
+use je_workbench::services::editor::editor_groups_service::{
+    CloseAllEditorsOptions, CloseEditorOptions, CloseEditorsFilter, CloseEditorsTarget, EditorGroupActivationEvent, EditorGroupLayout, EditorReplacement,
+    FindGroupScope, GroupActivationReason, GroupDirection, GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder,
+    I_EDITOR_GROUPS_SERVICE, IEditorGroup, IEditorGroupsService, IEditorPart, IModalEditorPart, MergeGroupMode, MergeGroupOptions, ShowTabs, is_editor_group,
+};
+use je_workbench::services::editor::editor_service::IEditorService;
 use je_workbench::services::layout::layout_service::MAIN_WINDOW;
+use je_workbench::test::browser::workbench_test_services::{TestEditorService, TestFileEditorInput};
+
+const TEST_EDITOR_ID: &str = "MyFileEditorForEditorGroupService";
+const TEST_EDITOR_INPUT_ID: &str = "testEditorInputForEditorGroupService";
+
+/// `TestFileDialogService`: só o `showSaveConfirm` com o resultado que o caso escolhe (`setConfirmResult`).
+struct TestFileDialogService {
+    confirm_result: Cell<ConfirmResult>,
+}
+
+impl TestFileDialogService {
+    fn new() -> Rc<Self> {
+        Rc::new(Self { confirm_result: Cell::new(ConfirmResult::DontSave) })
+    }
+
+    /// `setConfirmResult(result)`.
+    fn set_confirm_result(&self, result: ConfirmResult) {
+        self.confirm_result.set(result);
+    }
+}
+
+impl IFileDialogService for TestFileDialogService {
+    fn default_file_path(&self, _scheme_filter: Option<&str>) -> Promise<je_base::uri::URI> {
+        panic!("Method not implemented.")
+    }
+
+    fn default_folder_path(&self, _scheme_filter: Option<&str>) -> Promise<je_base::uri::URI> {
+        panic!("Method not implemented.")
+    }
+
+    fn default_workspace_path(&self, _scheme_filter: Option<&str>) -> Promise<je_base::uri::URI> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_file_folder_and_open(&self, _options: PickAndOpenOptions) -> Promise<()> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_file_and_open(&self, _options: PickAndOpenOptions) -> Promise<()> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_folder_and_open(&self, _options: PickAndOpenOptions) -> Promise<()> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_workspace_and_open(&self, _options: PickAndOpenOptions) -> Promise<()> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_file_to_save(&self, _default_uri: &je_base::uri::URI, _available_file_systems: Option<Vec<String>>) -> Promise<Option<je_base::uri::URI>> {
+        panic!("Method not implemented.")
+    }
+
+    fn preferred_home(&self, _scheme_filter: Option<&str>) -> Promise<je_base::uri::URI> {
+        panic!("Method not implemented.")
+    }
+
+    fn show_save_dialog(&self, _options: SaveDialogOptions) -> Promise<Option<je_base::uri::URI>> {
+        panic!("Method not implemented.")
+    }
+
+    fn show_save_confirm(&self, _file_names_or_resources: &[FileNameOrResource]) -> Promise<ConfirmResult> {
+        Promise::resolved(self.confirm_result.get())
+    }
+
+    fn show_open_dialog(&self, _options: OpenDialogOptions) -> Promise<Option<Vec<je_base::uri::URI>>> {
+        panic!("Method not implemented.")
+    }
+}
+
+/// `TestDialogService` do `workbenchInstantiationService`: `info`, `warn` e `error` resolvem sem mostrar nada; os demais
+/// não são exercitados por esta suíte.
+struct TestDialogService;
+
+impl IDialogService for TestDialogService {
+    fn on_will_show_dialog(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn on_did_show_dialog(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn confirm(&self, _confirmation: Confirmation) -> Promise<ConfirmationResult> {
+        unreachable!("TestDialogService.confirm não é exercitado por esta suíte")
+    }
+
+    fn prompt(&self, _prompt: Prompt) -> Promise<PromptResult> {
+        unreachable!("TestDialogService.prompt não é exercitado por esta suíte")
+    }
+
+    fn input(&self, _input: Input) -> Promise<InputResult> {
+        unreachable!("TestDialogService.input não é exercitado por esta suíte")
+    }
+
+    fn info(&self, _message: &str, _detail: Option<&str>) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn warn(&self, _message: &str, _detail: Option<&str>) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn error(&self, _message: &str, _detail: Option<&str>) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn about(&self) -> Promise<()> {
+        unreachable!("TestDialogService.about não é exercitado por esta suíte")
+    }
+}
+
+/// O `IEditorGroupsService` que o `findGroup` (do `sideGroup`) lê: a própria parte (`instantiationService.stub(IEditorGroupsService, parts)`
+/// no original, onde o serviço é o `TestEditorParts`).
+struct PartGroupsService {
+    part: Weak<EditorPart>,
+}
+
+impl PartGroupsService {
+    fn part(&self) -> Rc<EditorPart> {
+        self.part.upgrade().expect("a parte está viva enquanto o serviço é usado")
+    }
+}
+
+impl IEditorGroupsService for PartGroupsService {
+    fn active_group(&self) -> Rc<dyn IEditorGroup> {
+        self.part().active_group()
+    }
+
+    fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
+        self.part().groups()
+    }
+
+    fn get_groups(&self, order: GroupsOrder) -> Vec<Rc<dyn IEditorGroup>> {
+        self.part().get_groups(order)
+    }
+
+    fn get_group(&self, identifier: GroupIdentifier) -> Option<Rc<dyn IEditorGroup>> {
+        self.part().get_group(identifier)
+    }
+
+    fn find_group(&self, scope: &FindGroupScope) -> Option<Rc<dyn IEditorGroup>> {
+        self.part().find_group(scope)
+    }
+
+    fn add_group(&self, location: Option<GroupRef>, direction: GroupDirection) -> Rc<dyn IEditorGroup> {
+        self.part().add_group(location, direction)
+    }
+
+    fn main_part(&self) -> Rc<dyn IEditorPart> {
+        self.part()
+    }
+
+    fn create_auxiliary_editor_part(&self, _options: Option<AuxiliaryEditorOptions>) -> Promise<Rc<dyn IEditorPart>> {
+        panic!("Method not implemented.")
+    }
+
+    fn create_modal_editor_part(&self, _options: Option<ModalEditorPartOptions>) -> Promise<Rc<dyn IModalEditorPart>> {
+        panic!("Method not implemented.")
+    }
+
+    fn active_modal_editor_part(&self) -> Option<Rc<dyn IModalEditorPart>> {
+        None
+    }
+}
 
 /// `createPart()`: a parte principal criada (`create`) e com layout de 1080x800.
 fn create_part(guard: &LeakGuard) -> Rc<EditorPart> {
@@ -70,6 +268,128 @@ fn create_part(guard: &LeakGuard) -> Rc<EditorPart> {
 
     part
 }
+
+/// A parte de `createPart()` e o que os casos de editor usam dela (`TestServiceAccessor`).
+struct TestPart {
+    part: Rc<EditorPart>,
+    /// `accessor.fileDialogService`.
+    file_dialog_service: Rc<TestFileDialogService>,
+    /// `accessor.editorService`.
+    editor_service: Rc<dyn IEditorService>,
+}
+
+/// `createPart(instantiationService)` para os casos de editor: o `setup` registra o painel de teste, e o
+/// `workbenchInstantiationService` entrega os serviços que o grupo lê (ver o cabeçalho). `configuration` é o
+/// `TestConfigurationService` que o caso preparou (`setUserConfiguration`).
+fn create_test_part(guard: &LeakGuard, configuration: Rc<TestConfigurationService>) -> TestPart {
+    // `registerTestEditor(TEST_EDITOR_ID, [TestFileEditorInput, SideBySideEditorInput], TEST_EDITOR_INPUT_ID)`
+    guard.add(editor_pane_registry().register_editor_pane(
+        EditorPaneDescriptor::new(TEST_EDITOR_ID, "Test Editor Control"),
+        vec![TypeId::of::<TestFileEditorInput>(), TypeId::of::<SideBySideEditorInput>()],
+    ));
+
+    let workbench_services = WorkbenchServices::new(guard, &configuration);
+    let configuration_service: Rc<dyn IConfigurationService> = configuration.clone();
+    let file_dialog_service = TestFileDialogService::new();
+    let file_dialog: Rc<dyn IFileDialogService> = file_dialog_service.clone();
+    let dialog_service: Rc<dyn IDialogService> = Rc::new(TestDialogService);
+    let files_configuration_service: Rc<dyn je_workbench::services::files_configuration::files_configuration_service::IFilesConfigurationService> =
+        workbench_services.files_configuration_service.clone();
+
+    let services = ServiceCollection::new()
+        .with(I_CONFIGURATION_SERVICE, configuration_service.clone())
+        .with(I_FILE_DIALOG_SERVICE, file_dialog)
+        .with(I_DIALOG_SERVICE, dialog_service)
+        .with(je_workbench::services::files_configuration::files_configuration_service::I_FILES_CONFIGURATION_SERVICE, files_configuration_service)
+        .with(I_URI_IDENTITY_SERVICE, uri_identity_service());
+    let instantiation_service = InstantiationService::new(services.clone());
+    let storage = InMemoryStorageService::new();
+    let storage_service: Rc<dyn StorageService> = Rc::new(storage.clone());
+    let context_key_service = MockContextKeyService::scopable();
+
+    let part = guard.add_rc(EditorPart::new(
+        &Ui::new(),
+        instantiation_service.clone(),
+        configuration_service,
+        storage_service,
+        &*context_key_service,
+        "workbench.parts.editor",
+        "",
+        MAIN_WINDOW,
+    ));
+    guard.add_rc(storage);
+    guard.add_rc(instantiation_service);
+
+    // `instantiationService.stub(IEditorGroupsService, parts)`
+    let groups_service: Rc<dyn IEditorGroupsService> = Rc::new(PartGroupsService { part: Rc::downgrade(&part) });
+    services.set(I_EDITOR_GROUPS_SERVICE, groups_service);
+
+    part.create(None);
+    part.layout(1080.0, 800.0, 0.0, 0.0);
+
+    let editor_service: Rc<dyn IEditorService> = Rc::new(TestEditorService);
+
+    TestPart { part, file_dialog_service, editor_service }
+}
+
+/// `createTestFileEditorInput(resource, typeId)`.
+fn create_test_file_editor_input(guard: &LeakGuard, resource: &str, type_id: &str) -> Rc<TestFileEditorInput> {
+    guard.add_rc(TestFileEditorInput::new(uri_file(resource), type_id))
+}
+
+/// `createTestFileEditorInput(URI.file(resource), TEST_EDITOR_INPUT_ID)`.
+fn input(guard: &LeakGuard, resource: &str) -> Rc<TestFileEditorInput> {
+    create_test_file_editor_input(guard, resource, TEST_EDITOR_INPUT_ID)
+}
+
+/// O mesmo que [`input`], para os casos em que uma variável `input` sombreia a função.
+fn input_with_path(guard: &LeakGuard, resource: &str) -> Rc<TestFileEditorInput> {
+    input(guard, resource)
+}
+
+/// `createCannotCloseTestFileEditorInput(resource, typeId)`.
+fn create_cannot_close_test_file_editor_input(guard: &LeakGuard, resource: &str, type_id: &str) -> Rc<TestFileEditorInput> {
+    let input = create_test_file_editor_input(guard, resource, type_id);
+    input.set_capabilities(EditorInputCapabilities::CANNOT_CLOSE);
+
+    input
+}
+
+/// A entrada de teste como o handle de entrada que o grupo recebe.
+fn editor(input: &Rc<TestFileEditorInput>) -> EditorInputRef {
+    input.clone()
+}
+
+/// `assert.strictEqual(actual, expected)` entre editores: a mesma entrada.
+fn is_editor<T: ?Sized>(actual: Option<EditorInputRef>, expected: &Rc<T>) -> bool {
+    actual.is_some_and(|actual| id_of(&actual) == id_of(expected))
+}
+
+/// `assert.deepStrictEqual(group.getEditors(SEQUENTIAL), [...])`: as mesmas entradas, na ordem.
+fn editors_are(actual: &[EditorInputRef], expected: &[&Rc<TestFileEditorInput>]) -> bool {
+    actual.len() == expected.len() && actual.iter().zip(expected).all(|(actual, expected)| id_of(actual) == id_of(*expected))
+}
+
+/// `EditorInput` como `EditorInput | IUntypedEditorInput`.
+fn typed(input: &Rc<TestFileEditorInput>) -> EditorInputOrUntyped {
+    EditorInputOrUntyped::Typed(input.clone())
+}
+
+/// `{ pinned: true }`.
+fn pinned() -> EditorOptions {
+    EditorOptions { pinned: Some(true), ..EditorOptions::default() }
+}
+
+/// `{ editor, options }`.
+fn with_options(input: &Rc<TestFileEditorInput>, options: Option<EditorOptions>) -> EditorInputWithOptions {
+    EditorInputWithOptions { editor: editor(input), options: options.map(TextEditorOptions::from) }
+}
+
+/// `{ index }`.
+fn at_index(index: usize) -> EditorOptions {
+    EditorOptions { index: Some(index as f64), ..EditorOptions::default() }
+}
+
 
 fn group_ref(group: &Rc<dyn IEditorGroup>) -> GroupRef {
     GroupRef::Group(group.clone())
@@ -255,6 +575,28 @@ fn groups_basics() {
 }
 
 #[test]
+fn side_group() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = create_test_part(&guard, TestConfigurationService::new(None)).part;
+
+        let root_group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        root_group.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+        part.side_group().open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        assert_eq!(part.count(), 2);
+
+        part.activate_group(group_ref(&root_group));
+        part.side_group().open_editor(&editor(&input3), Some(pinned())).await.unwrap();
+        assert_eq!(part.count(), 2);
+    });
+}
+
+#[test]
 fn groups_index_labels() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let part = create_part(&guard);
@@ -342,6 +684,82 @@ fn groups_label() {
 }
 
 #[test]
+fn copy_merge_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = create_test_part(&guard, TestConfigurationService::new(None)).part;
+
+        let (group_added_counter, group_added_listener) = count(&part.on_did_add_group());
+        let (group_removed_counter, group_removed_listener) = count(&part.on_did_remove_group());
+
+        let root_group = part.groups()[0].clone();
+        let root_group_disposed = Rc::new(Cell::new(false));
+        let dispose_listener = {
+            let root_group_disposed = root_group_disposed.clone();
+            root_group.on_will_dispose().listen(move |_| root_group_disposed.set(true))
+        };
+
+        let input = input(&guard, "foo/bar");
+
+        root_group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        let right_group = part.add_group(Some(group_ref(&root_group)), GroupDirection::Right);
+        part.activate_group(group_ref(&right_group));
+        let down_group = part.copy_group(group_ref(&root_group), group_ref(&right_group), GroupDirection::Down);
+        assert_eq!(group_added_counter.get(), 2);
+        assert_eq!(down_group.count(), 1);
+        assert!(down_group.active_editor().is_some_and(|active_editor| active_editor.as_any().is::<TestFileEditorInput>()));
+        let mut res = part.merge_group(group_ref(&root_group), group_ref(&right_group), Some(MergeGroupOptions { mode: Some(MergeGroupMode::CopyEditors), ..MergeGroupOptions::default() }));
+        assert!(res);
+        assert_eq!(right_group.count(), 1);
+        assert!(right_group.active_editor().is_some_and(|active_editor| active_editor.as_any().is::<TestFileEditorInput>()));
+        res = part.merge_group(group_ref(&root_group), group_ref(&right_group), Some(MergeGroupOptions { mode: Some(MergeGroupMode::MoveEditors), ..MergeGroupOptions::default() }));
+        assert!(res);
+        assert_eq!(root_group.count(), 0);
+        res = part.merge_group(group_ref(&root_group), group_ref(&down_group), None);
+        assert!(res);
+        assert_eq!(group_removed_counter.get(), 1);
+        assert!(root_group_disposed.get());
+
+        group_added_listener.dispose();
+        group_removed_listener.dispose();
+        dispose_listener.dispose();
+        part.dispose();
+    });
+}
+
+#[test]
+fn merge_all_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = create_test_part(&guard, TestConfigurationService::new(None)).part;
+
+        let root_group = part.groups()[0].clone();
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        root_group.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+
+        let right_group = part.add_group(Some(group_ref(&root_group)), GroupDirection::Right);
+        right_group.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+
+        let down_group = part.copy_group(group_ref(&root_group), group_ref(&right_group), GroupDirection::Down);
+        down_group.open_editor(&editor(&input3), Some(pinned())).await.unwrap();
+
+        part.activate_group(group_ref(&root_group));
+
+        assert_eq!(root_group.count(), 1);
+
+        let result = part.merge_all_groups(group_ref(&part.active_group()));
+        assert!(result);
+        assert_eq!(root_group.count(), 3);
+
+        part.dispose();
+    });
+}
+
+#[test]
 fn when_ready_when_restored() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let part = create_part(&guard);
@@ -377,6 +795,1117 @@ fn options() {
     assert!(!part.part_options().allow_drop_into_group);
     enforced.dispose();
     assert!(part.part_options().allow_drop_into_group);
+}
+
+/// `counter++`.
+fn bump(counter: &Cell<usize>) {
+    counter.set(counter.get() + 1);
+}
+
+/// `createPart()` com a configuração padrão do `workbenchInstantiationService`.
+fn part_of(guard: &LeakGuard) -> Rc<EditorPart> {
+    create_test_part(guard, TestConfigurationService::new(None)).part
+}
+
+/// `{ editor, replacement, forceReplaceDirty }`.
+fn replacement(editor_to_replace: &Rc<TestFileEditorInput>, replacement: &Rc<TestFileEditorInput>, force_replace_dirty: Option<bool>) -> EditorReplacement {
+    EditorReplacement { editor: editor(editor_to_replace), replacement: editor(replacement), options: None, force_replace_dirty }
+}
+
+/// `{ except }` e as demais opções de `ICloseEditorsFilter`.
+fn close_filter(except: Option<&Rc<TestFileEditorInput>>, direction: Option<CloseDirection>, exclude_sticky: bool, saved_only: bool) -> CloseEditorsTarget {
+    CloseEditorsTarget::Filter(CloseEditorsFilter {
+        except: except.map(editor),
+        direction,
+        saved_only: saved_only.then_some(true),
+        exclude_sticky: exclude_sticky.then_some(true),
+    })
+}
+
+/// `[input...]`: o primeiro argumento de `closeEditors(editors)`.
+fn close_list(inputs: &[&Rc<TestFileEditorInput>]) -> CloseEditorsTarget {
+    CloseEditorsTarget::Editors(inputs.iter().map(|input| editor(input)).collect())
+}
+
+#[test]
+fn editor_basics() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let active_editor_change_counter = Rc::new(Cell::new(0));
+        let editor_did_open_counter = Rc::new(Cell::new(0));
+        let editor_open_events: Rc<RefCell<Vec<GroupModelChangeEvent>>> = Rc::default();
+        let editor_close_counter = Rc::new(Cell::new(0));
+        let editor_close_events: Rc<RefCell<Vec<GroupModelChangeEvent>>> = Rc::default();
+        let editor_pin_counter = Rc::new(Cell::new(0));
+        let editor_sticky_counter = Rc::new(Cell::new(0));
+        let editor_capabilities_counter = Rc::new(Cell::new(0));
+        guard.add({
+            let (editor_did_open_counter, editor_open_events, editor_close_counter, editor_close_events) =
+                (editor_did_open_counter.clone(), editor_open_events.clone(), editor_close_counter.clone(), editor_close_events.clone());
+            let (editor_pin_counter, editor_sticky_counter, editor_capabilities_counter) =
+                (editor_pin_counter.clone(), editor_sticky_counter.clone(), editor_capabilities_counter.clone());
+            group.on_did_model_change().listen(move |e| match e.kind {
+                GroupModelChangeKind::EditorOpen => {
+                    assert!(e.editor.is_some());
+                    bump(&editor_did_open_counter);
+                    editor_open_events.borrow_mut().push(e.clone());
+                }
+                GroupModelChangeKind::EditorPin => {
+                    assert!(e.editor.is_some());
+                    bump(&editor_pin_counter);
+                }
+                GroupModelChangeKind::EditorSticky => {
+                    assert!(e.editor.is_some());
+                    bump(&editor_sticky_counter);
+                }
+                GroupModelChangeKind::EditorCapabilities => {
+                    assert!(e.editor.is_some());
+                    bump(&editor_capabilities_counter);
+                }
+                GroupModelChangeKind::EditorClose => {
+                    assert!(e.editor.is_some());
+                    bump(&editor_close_counter);
+                    editor_close_events.borrow_mut().push(e.clone());
+                }
+                _ => {}
+            })
+        });
+        guard.add({
+            let active_editor_change_counter = active_editor_change_counter.clone();
+            group.on_did_active_editor_change().listen(move |e| {
+                assert!(e.editor.is_some());
+                bump(&active_editor_change_counter);
+            })
+        });
+
+        let (editor_close_counter1, editor_close_listener) = count(&group.on_did_close_editor());
+        guard.add(editor_close_listener);
+
+        let (editor_will_close_counter, editor_will_close_listener) = count(&group.on_will_close_editor());
+        guard.add(editor_will_close_listener);
+
+        let (editor_did_close_counter, editor_did_close_listener) = count(&group.on_did_close_editor());
+        guard.add(editor_did_close_listener);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_inactive), Some(EditorOptions { inactive: Some(true), ..EditorOptions::default() })).await.unwrap();
+
+        assert!(group.is_active(&typed(&input)));
+        assert!(!group.is_active(&typed(&input_inactive)));
+        assert!(group.contains(&typed(&input), None));
+        assert!(group.contains(&typed(&input_inactive), None));
+        assert!(!group.is_empty());
+        assert_eq!(group.count(), 2);
+        assert_eq!(editor_capabilities_counter.get(), 0);
+        assert_eq!(editor_did_open_counter.get(), 2);
+        assert_eq!(editor_open_events.borrow()[0].editor_index, Some(0));
+        assert_eq!(editor_open_events.borrow()[1].editor_index, Some(1));
+        assert!(is_editor(editor_open_events.borrow()[0].editor.clone(), &input));
+        assert!(is_editor(editor_open_events.borrow()[1].editor.clone(), &input_inactive));
+        assert_eq!(active_editor_change_counter.get(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+        assert_eq!(group.get_index_of_editor(&editor(&input)), 0);
+        assert_eq!(group.get_index_of_editor(&editor(&input_inactive)), 1);
+        assert!(group.is_first(&editor(&input)));
+        assert!(!group.is_first(&editor(&input_inactive)));
+        assert!(!group.is_last(&editor(&input)));
+        assert!(group.is_last(&editor(&input_inactive)));
+
+        input.set_capabilities(EditorInputCapabilities::REQUIRES_TRUST);
+        assert_eq!(editor_capabilities_counter.get(), 1);
+
+        input_inactive.set_capabilities(EditorInputCapabilities::SINGLETON);
+        assert_eq!(editor_capabilities_counter.get(), 2);
+
+        assert!(is_editor(group.preview_editor(), &input_inactive));
+        assert!(!group.is_pinned(&EditorOrIndex::Editor(editor(&input_inactive))));
+        group.pin_editor(Some(&editor(&input_inactive)));
+        assert_eq!(editor_pin_counter.get(), 1);
+        assert!(group.is_pinned(&EditorOrIndex::Editor(editor(&input_inactive))));
+        assert!(group.preview_editor().is_none());
+
+        assert!(is_editor(group.active_editor(), &input));
+        assert_eq!(group.active_editor_pane().map(|pane| pane.get_id()).as_deref(), Some(TEST_EDITOR_ID));
+        assert_eq!(group.count(), 2);
+
+        let mru = group.get_editors(EditorsOrder::MostRecentlyActive, None);
+        assert!(is_editor(mru.first().cloned(), &input));
+        assert!(is_editor(mru.get(1).cloned(), &input_inactive));
+
+        group.open_editor(&editor(&input_inactive), None).await.unwrap();
+        assert_eq!(active_editor_change_counter.get(), 2);
+        assert!(is_editor(group.active_editor(), &input_inactive));
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+        let closed = group.close_editor(Some(&editor(&input_inactive))).await.unwrap();
+        assert!(closed);
+
+        assert_eq!(active_editor_change_counter.get(), 3);
+        assert_eq!(editor_close_counter.get(), 1);
+        assert_eq!(editor_close_events.borrow()[0].editor_index, Some(1));
+        assert!(is_editor(editor_close_events.borrow()[0].editor.clone(), &input_inactive));
+        assert_eq!(editor_close_counter1.get(), 1);
+        assert_eq!(editor_will_close_counter.get(), 1);
+        assert_eq!(editor_did_close_counter.get(), 1);
+
+        assert!(input_inactive.got_disposed.get());
+
+        assert!(is_editor(group.active_editor(), &input));
+
+        assert_eq!(editor_sticky_counter.get(), 0);
+        group.stick_editor(Some(&editor(&input)));
+        assert_eq!(editor_sticky_counter.get(), 1);
+        group.unstick_editor(Some(&editor(&input)));
+        assert_eq!(editor_sticky_counter.get(), 2);
+    });
+}
+
+#[test]
+fn open_editors_close_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+
+        group.close_editors(close_list(&[&input, &input_inactive]), None).await.unwrap();
+
+        assert!(input.got_disposed.get());
+        assert!(input_inactive.got_disposed.get());
+
+        assert!(group.is_empty());
+    });
+}
+
+#[test]
+fn close_editor_dirty_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+
+        let group = part.active_group();
+
+        let input = input(&guard, "foo/bar");
+        input.dirty.set(true);
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::Cancel);
+        let mut closed = group.close_editor(Some(&editor(&input))).await.unwrap();
+        assert!(!closed);
+
+        assert!(!input.got_disposed.get());
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+        closed = group.close_editor(Some(&editor(&input))).await.unwrap();
+        assert!(closed);
+
+        assert!(input.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_editor_one_opened_in_multiple_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+        right_group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+
+        let mut closed = right_group.close_editor(Some(&editor(&input))).await.unwrap();
+        assert!(closed);
+
+        assert!(!input.got_disposed.get());
+
+        closed = group.close_editor(Some(&editor(&input))).await.unwrap();
+        assert!(closed);
+
+        assert!(input.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_editor_cannot_close_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input = create_cannot_close_test_file_editor_input(&guard, "foo/bar", TEST_EDITOR_INPUT_ID);
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+
+        let closed = group.close_editor(Some(&editor(&input))).await.unwrap();
+        assert!(!closed);
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.active_editor(), &input));
+        assert!(!input.got_disposed.get());
+
+        let force_closed = group.close_editor_with_options(Some(&editor(&input)), Some(CloseEditorOptions { force: Some(true), ..CloseEditorOptions::default() })).await.unwrap();
+        assert!(force_closed);
+        assert!(group.is_empty());
+        assert!(input.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_editors_dirty_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        input1.dirty.set(true);
+
+        let input2 = input(&guard, "foo/bar2");
+
+        group.open_editor(&editor(&input1), None).await.unwrap();
+        group.open_editor(&editor(&input2), None).await.unwrap();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::Cancel);
+        let mut close_result = group.close_editors(close_list(&[&input1, &input2]), None).await.unwrap();
+        assert!(!close_result);
+
+        assert!(!input1.got_disposed.get());
+        assert!(!input2.got_disposed.get());
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+        close_result = group.close_editors(close_list(&[&input1, &input2]), None).await.unwrap();
+        assert!(close_result);
+
+        assert!(input1.got_disposed.get());
+        assert!(input2.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_editors_except_one() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned())), with_options(&input3, None)]).await.unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), None, false, false), None).await.unwrap();
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input2));
+    });
+}
+
+#[test]
+fn close_editors_cannot_close_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = create_cannot_close_test_file_editor_input(&guard, "foo/bar2", TEST_EDITOR_INPUT_ID);
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned()))]).await.unwrap();
+
+        let close_result = group.close_editors(close_list(&[&input1, &input2]), None).await.unwrap();
+        assert!(close_result);
+        assert!(editors_are(&group.get_editors(EditorsOrder::Sequential, None), &[&input2]));
+        assert!(input1.got_disposed.get());
+        assert!(!input2.got_disposed.get());
+
+        let force_close_result = group.close_editors(close_list(&[&input2]), Some(CloseEditorOptions { force: Some(true), ..CloseEditorOptions::default() })).await.unwrap();
+        assert!(force_close_result);
+        assert!(group.is_empty());
+        assert!(input2.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_editors_except_one_sticky_editor() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group
+            .open_editors(vec![
+                with_options(&input1, Some(EditorOptions { pinned: Some(true), sticky: Some(true), ..EditorOptions::default() })),
+                with_options(&input2, Some(pinned())),
+                with_options(&input3, None),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), None, true, false), None).await.unwrap();
+
+        assert_eq!(group.count(), 2);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+
+        group.close_editors(close_filter(Some(&input2), None, false, false), None).await.unwrap();
+
+        assert_eq!(group.count(), 1);
+        assert_eq!(group.sticky_count(), 0);
+        assert!(is_editor(group.get_editor_by_index(0), &input2));
+    });
+}
+
+#[test]
+fn close_editors_saved_only() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned())), with_options(&input3, None)]).await.unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(None, None, false, true), None).await.unwrap();
+        assert_eq!(group.count(), 0);
+    });
+}
+
+#[test]
+fn close_editors_saved_only_sticky_editor() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group
+            .open_editors(vec![
+                with_options(&input1, Some(EditorOptions { pinned: Some(true), sticky: Some(true), ..EditorOptions::default() })),
+                with_options(&input2, Some(pinned())),
+                with_options(&input3, None),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(None, None, true, true), None).await.unwrap();
+
+        assert_eq!(group.count(), 1);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+
+        group.close_editors(close_filter(None, None, false, true), None).await.unwrap();
+        assert_eq!(group.count(), 0);
+    });
+}
+
+#[test]
+fn close_editors_direction_right() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned())), with_options(&input3, None)]).await.unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), Some(CloseDirection::Right), false, false), None).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+    });
+}
+
+#[test]
+fn close_editors_direction_right_sticky_editor() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group
+            .open_editors(vec![
+                with_options(&input1, Some(EditorOptions { pinned: Some(true), sticky: Some(true), ..EditorOptions::default() })),
+                with_options(&input2, Some(pinned())),
+                with_options(&input3, None),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), Some(CloseDirection::Right), true, false), None).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+
+        group.close_editors(close_filter(Some(&input2), Some(CloseDirection::Right), false, false), None).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+    });
+}
+
+#[test]
+fn close_editors_direction_left() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned())), with_options(&input3, None)]).await.unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), Some(CloseDirection::Left), false, false), None).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input2));
+        assert!(is_editor(group.get_editor_by_index(1), &input3));
+    });
+}
+
+#[test]
+fn close_editors_direction_left_sticky_editor() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group
+            .open_editors(vec![
+                with_options(&input1, Some(EditorOptions { pinned: Some(true), sticky: Some(true), ..EditorOptions::default() })),
+                with_options(&input2, Some(pinned())),
+                with_options(&input3, None),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(group.count(), 3);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), Some(CloseDirection::Left), true, false), None).await.unwrap();
+        assert_eq!(group.count(), 3);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+
+        group.close_editors(close_filter(Some(&input2), Some(CloseDirection::Left), false, false), None).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input2));
+        assert!(is_editor(group.get_editor_by_index(1), &input3));
+    });
+}
+
+#[test]
+fn close_all_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+
+        group.close_all_editors(None).await.unwrap();
+        assert!(group.is_empty());
+    });
+}
+
+#[test]
+fn close_all_editors_dirty_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        input1.dirty.set(true);
+
+        let input2 = input(&guard, "foo/bar2");
+
+        group.open_editor(&editor(&input1), None).await.unwrap();
+        group.open_editor(&editor(&input2), None).await.unwrap();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::Cancel);
+        let mut close_result = group.close_all_editors(None).await.unwrap();
+
+        assert!(!close_result);
+        assert!(!input1.got_disposed.get());
+        assert!(!input2.got_disposed.get());
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+        close_result = group.close_all_editors(None).await.unwrap();
+
+        assert!(close_result);
+        assert!(input1.got_disposed.get());
+        assert!(input2.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_all_editors_sticky_editor() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group
+            .open_editors(vec![with_options(&input, Some(EditorOptions { pinned: Some(true), sticky: Some(true), ..EditorOptions::default() })), with_options(&input_inactive, None)])
+            .await
+            .unwrap();
+
+        assert_eq!(group.count(), 2);
+        assert_eq!(group.sticky_count(), 1);
+
+        group.close_all_editors(Some(CloseAllEditorsOptions { exclude_sticky: Some(true), ..CloseAllEditorsOptions::default() })).await.unwrap();
+
+        assert_eq!(group.count(), 1);
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+
+        group.close_all_editors(None).await.unwrap();
+
+        assert!(group.is_empty());
+    });
+}
+
+#[test]
+fn close_all_editors_cannot_close_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = create_cannot_close_test_file_editor_input(&guard, "foo/bar2", TEST_EDITOR_INPUT_ID);
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned()))]).await.unwrap();
+
+        let close_result = group.close_all_editors(None).await.unwrap();
+        assert!(close_result);
+        assert!(editors_are(&group.get_editors(EditorsOrder::Sequential, None), &[&input2]));
+        assert!(input1.got_disposed.get());
+        assert!(!input2.got_disposed.get());
+    });
+}
+
+#[test]
+fn close_all_editors_force_closes_cannot_close_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input = create_cannot_close_test_file_editor_input(&guard, "foo/bar", TEST_EDITOR_INPUT_ID);
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+
+        let close_result = group.close_all_editors(Some(CloseAllEditorsOptions { force: Some(true), ..CloseAllEditorsOptions::default() })).await.unwrap();
+        assert!(close_result);
+        assert!(group.is_empty());
+        assert!(input.got_disposed.get());
+    });
+}
+
+#[test]
+fn move_editor_same_group() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        let move_events: Rc<RefCell<Vec<GroupModelChangeEvent>>> = Rc::default();
+        guard.add({
+            let move_events = move_events.clone();
+            group.on_did_model_change().listen(move |e| {
+                if e.kind == GroupModelChangeKind::EditorMove {
+                    assert!(e.editor.is_some());
+                    move_events.borrow_mut().push(e.clone());
+                }
+            })
+        });
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+        group.move_editor_with_options(&editor(&input_inactive), &group, Some(at_index(0)));
+        assert_eq!(move_events.borrow().len(), 1);
+        assert_eq!(move_events.borrow()[0].editor_index, Some(0));
+        assert_eq!(move_events.borrow()[0].old_editor_index, Some(1));
+        assert!(is_editor(move_events.borrow()[0].editor.clone(), &input_inactive));
+        assert!(is_editor(group.get_editor_by_index(0), &input_inactive));
+        assert!(is_editor(group.get_editor_by_index(1), &input));
+
+        let res = group.move_editors(vec![with_options(&input_inactive, Some(at_index(1)))], &group);
+        assert!(res);
+        assert_eq!(move_events.borrow().len(), 2);
+        assert_eq!(move_events.borrow()[1].editor_index, Some(1));
+        assert_eq!(move_events.borrow()[1].old_editor_index, Some(0));
+        assert!(is_editor(move_events.borrow()[1].editor.clone(), &input_inactive));
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+    });
+}
+
+#[test]
+fn move_editor_across_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+        group.move_editor_with_options(&editor(&input_inactive), &right_group, Some(at_index(0)));
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert_eq!(right_group.count(), 1);
+        assert!(is_editor(right_group.get_editor_by_index(0), &input_inactive));
+    });
+}
+
+#[test]
+fn move_editors_across_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned())), with_options(&input3, Some(pinned()))]).await.unwrap();
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+        group.move_editors(vec![with_options(&input2, None), with_options(&input3, None)], &right_group);
+        assert_eq!(group.count(), 1);
+        assert_eq!(right_group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(right_group.get_editor_by_index(0), &input2));
+        assert!(is_editor(right_group.get_editor_by_index(1), &input3));
+    });
+}
+
+#[test]
+fn copy_editor_across_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+        group.copy_editor(&editor(&input_inactive), &right_group, Some(at_index(0)));
+        assert_eq!(group.count(), 2);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+        assert!(is_editor(group.get_editor_by_index(1), &input_inactive));
+        assert_eq!(right_group.count(), 1);
+        assert!(is_editor(right_group.get_editor_by_index(0), &input_inactive));
+    });
+}
+
+#[test]
+fn copy_editors_across_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        group.open_editors(vec![with_options(&input1, Some(pinned())), with_options(&input2, Some(pinned())), with_options(&input3, Some(pinned()))]).await.unwrap();
+        assert!(is_editor(group.get_editor_by_index(0), &input1));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input3));
+        group.copy_editors(vec![with_options(&input1, None), with_options(&input2, None), with_options(&input3, None)], &right_group);
+        for group in [&group, &right_group] {
+            assert!(is_editor(group.get_editor_by_index(0), &input1));
+            assert!(is_editor(group.get_editor_by_index(1), &input2));
+            assert!(is_editor(group.get_editor_by_index(2), &input3));
+        }
+    });
+}
+
+#[test]
+fn replace_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+
+        group.replace_editors(vec![replacement(&input, &input_inactive, None)]).await.unwrap();
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input_inactive));
+    });
+}
+
+#[test]
+fn replace_editors_dirty_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        input1.dirty.set(true);
+
+        let input2 = input(&guard, "foo/bar2");
+
+        group.open_editor(&editor(&input1), None).await.unwrap();
+        assert!(is_editor(group.active_editor(), &input1));
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::Cancel);
+        group.replace_editors(vec![replacement(&input1, &input2, None)]).await.unwrap();
+
+        assert!(is_editor(group.active_editor(), &input1));
+        assert!(!input1.got_disposed.get());
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+        group.replace_editors(vec![replacement(&input1, &input2, None)]).await.unwrap();
+
+        assert!(is_editor(group.active_editor(), &input2));
+        assert!(input1.got_disposed.get());
+    });
+}
+
+#[test]
+fn replace_editors_force_replace_dirty_flag() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::DontSave);
+
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        input1.dirty.set(true);
+
+        let input2 = input(&guard, "foo/bar2");
+
+        group.open_editor(&editor(&input1), None).await.unwrap();
+        assert!(is_editor(group.active_editor(), &input1));
+        test_part.file_dialog_service.set_confirm_result(ConfirmResult::Cancel);
+        group.replace_editors(vec![replacement(&input1, &input2, Some(false))]).await.unwrap();
+
+        assert!(is_editor(group.active_editor(), &input1));
+        assert!(!input1.got_disposed.get());
+
+        group.replace_editors(vec![replacement(&input1, &input2, Some(true))]).await.unwrap();
+
+        assert!(is_editor(group.active_editor(), &input2));
+        assert!(input1.got_disposed.get());
+    });
+}
+
+#[test]
+fn replace_editors_proper_index_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+        let input4 = input(&guard, "foo/bar4");
+        let input5 = input(&guard, "foo/bar5");
+
+        let input6 = input(&guard, "foo/bar6");
+        let input7 = input(&guard, "foo/bar7");
+        let input8 = input(&guard, "foo/bar8");
+
+        group.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input3), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input4), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input5), Some(pinned())).await.unwrap();
+
+        group.replace_editors(vec![replacement(&input1, &input6, None), replacement(&input3, &input7, None), replacement(&input5, &input8, None)]).await.unwrap();
+
+        assert!(is_editor(group.get_editor_by_index(0), &input6));
+        assert!(is_editor(group.get_editor_by_index(1), &input2));
+        assert!(is_editor(group.get_editor_by_index(2), &input7));
+        assert!(is_editor(group.get_editor_by_index(3), &input4));
+        assert!(is_editor(group.get_editor_by_index(4), &input8));
+    });
+}
+
+#[test]
+fn replace_editors_should_be_able_to_replace_when_side_by_side_editor_is_involved_with_same_input_side_by_side() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let side_by_side_input = guard.add_rc(SideBySideEditorInput::new(None, None, editor(&input), editor(&input), test_part.editor_service.clone()));
+        let side_by_side_ref: EditorInputRef = side_by_side_input.clone();
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+
+        group.replace_editors(vec![EditorReplacement { editor: editor(&input), replacement: side_by_side_ref.clone(), options: None, force_replace_dirty: None }]).await.unwrap();
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &side_by_side_input));
+
+        group.replace_editors(vec![EditorReplacement { editor: side_by_side_ref, replacement: editor(&input), options: None, force_replace_dirty: None }]).await.unwrap();
+        assert_eq!(group.count(), 1);
+        assert!(is_editor(group.get_editor_by_index(0), &input));
+    });
+}
+
+#[test]
+fn replace_editors_cannot_close_editor_handling() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input = create_cannot_close_test_file_editor_input(&guard, "foo/bar", TEST_EDITOR_INPUT_ID);
+        let replacement_input = input_with_path(&guard, "foo/baz");
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+        group.replace_editors(vec![replacement(&input, &replacement_input, None)]).await.unwrap();
+
+        assert!(editors_are(&group.get_editors(EditorsOrder::Sequential, None), &[&replacement_input]));
+        assert!(input.got_disposed.get());
+    });
+}
+
+#[test]
+fn find_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        let group2 = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+        assert!(group.is_empty());
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = create_test_file_editor_input(&guard, "foo/bar1", &format!("{TEST_EDITOR_INPUT_ID}-1"));
+        let input3 = input(&guard, "foo/bar3");
+        let input4 = input(&guard, "foo/bar4");
+        let input5 = create_test_file_editor_input(&guard, "foo/bar4", &format!("{TEST_EDITOR_INPUT_ID}-1"));
+
+        group.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input3), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input4), Some(pinned())).await.unwrap();
+        group2.open_editor(&editor(&input5), Some(pinned())).await.unwrap();
+
+        let mut found_editors = group.find_editors(&uri_file("foo/bar1"), None);
+        assert_eq!(found_editors.len(), 2);
+        found_editors = group2.find_editors(&uri_file("foo/bar4"), None);
+        assert_eq!(found_editors.len(), 1);
+    });
+}
+
+#[test]
+fn find_editors_side_by_side_support() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_part = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_part.part.clone();
+
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let secondary_input = input(&guard, "foo/bar-secondary");
+        let primary_input = create_test_file_editor_input(&guard, "foo/bar-primary", &format!("{TEST_EDITOR_INPUT_ID}-1"));
+
+        let side_by_side_editor = guard.add_rc(SideBySideEditorInput::new(None, None, editor(&secondary_input), editor(&primary_input), test_part.editor_service.clone()));
+        let side_by_side_ref: EditorInputRef = side_by_side_editor.clone();
+        group.open_editor(&side_by_side_ref, Some(pinned())).await.unwrap();
+
+        let support = |support_side_by_side: SideBySideEditor| Some(FindEditorOptions { support_side_by_side: Some(support_side_by_side), ..FindEditorOptions::default() });
+
+        let mut found_editors = group.find_editors(&uri_file("foo/bar-secondary"), None);
+        assert_eq!(found_editors.len(), 0);
+
+        found_editors = group.find_editors(&uri_file("foo/bar-secondary"), support(SideBySideEditor::Primary));
+        assert_eq!(found_editors.len(), 0);
+
+        found_editors = group.find_editors(&uri_file("foo/bar-primary"), support(SideBySideEditor::Primary));
+        assert_eq!(found_editors.len(), 1);
+
+        found_editors = group.find_editors(&uri_file("foo/bar-secondary"), support(SideBySideEditor::Secondary));
+        assert_eq!(found_editors.len(), 1);
+
+        found_editors = group.find_editors(&uri_file("foo/bar-primary"), support(SideBySideEditor::Secondary));
+        assert_eq!(found_editors.len(), 0);
+
+        found_editors = group.find_editors(&uri_file("foo/bar-secondary"), support(SideBySideEditor::Any));
+        assert_eq!(found_editors.len(), 1);
+
+        found_editors = group.find_editors(&uri_file("foo/bar-primary"), support(SideBySideEditor::Any));
+        assert_eq!(found_editors.len(), 1);
+    });
 }
 
 #[test]
@@ -465,6 +1994,470 @@ fn centered_layout() {
 }
 
 #[test]
+fn sticky_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let exclude_sticky = Some(GetEditorsOptions { exclude_sticky: Some(true) });
+        let is_sticky = |input: &Rc<TestFileEditorInput>| group.is_sticky(&EditorOrIndex::Editor(editor(input)));
+
+        assert_eq!(group.sticky_count(), 0);
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, None).len(), 0);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, None).len(), 0);
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, exclude_sticky).len(), 0);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, exclude_sticky).len(), 0);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_inactive), Some(EditorOptions { inactive: Some(true), ..EditorOptions::default() })).await.unwrap();
+
+        assert_eq!(group.sticky_count(), 0);
+        assert!(!is_sticky(&input));
+        assert!(!is_sticky(&input_inactive));
+
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, exclude_sticky).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, exclude_sticky).len(), 2);
+
+        group.stick_editor(Some(&editor(&input)));
+
+        assert_eq!(group.sticky_count(), 1);
+        assert!(is_sticky(&input));
+        assert!(!is_sticky(&input_inactive));
+
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, exclude_sticky).len(), 1);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, exclude_sticky).len(), 1);
+
+        group.unstick_editor(Some(&editor(&input)));
+
+        assert_eq!(group.sticky_count(), 0);
+        assert!(!is_sticky(&input));
+        assert!(!is_sticky(&input_inactive));
+
+        assert_eq!(group.get_index_of_editor(&editor(&input)), 0);
+        assert_eq!(group.get_index_of_editor(&editor(&input_inactive)), 1);
+
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, exclude_sticky).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, exclude_sticky).len(), 2);
+
+        let (editor_move_counter, editor_move_listener) = count_model_changes(&group, GroupModelChangeKind::EditorMove);
+        guard.add(editor_move_listener);
+
+        group.stick_editor(Some(&editor(&input_inactive)));
+
+        assert_eq!(group.sticky_count(), 1);
+        assert!(!is_sticky(&input));
+        assert!(is_sticky(&input_inactive));
+
+        assert_eq!(group.get_index_of_editor(&editor(&input)), 1);
+        assert_eq!(group.get_index_of_editor(&editor(&input_inactive)), 0);
+        assert_eq!(editor_move_counter.get(), 1);
+
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, None).len(), 2);
+        assert_eq!(group.get_editors(EditorsOrder::Sequential, exclude_sticky).len(), 1);
+        assert_eq!(group.get_editors(EditorsOrder::MostRecentlyActive, exclude_sticky).len(), 1);
+
+        let input_sticky = input_with_path(&guard, "foo/bar/sticky");
+
+        group.open_editor(&editor(&input_sticky), Some(EditorOptions { sticky: Some(true), ..EditorOptions::default() })).await.unwrap();
+
+        assert_eq!(group.sticky_count(), 2);
+        assert!(!is_sticky(&input));
+        assert!(is_sticky(&input_inactive));
+        assert!(is_sticky(&input_sticky));
+
+        assert_eq!(group.get_index_of_editor(&editor(&input_inactive)), 0);
+        assert_eq!(group.get_index_of_editor(&editor(&input_sticky)), 1);
+        assert_eq!(group.get_index_of_editor(&editor(&input)), 2);
+
+        group.open_editor(&editor(&input), Some(EditorOptions { sticky: Some(true), ..EditorOptions::default() })).await.unwrap();
+
+        assert_eq!(group.sticky_count(), 3);
+        assert!(is_sticky(&input));
+        assert!(is_sticky(&input_inactive));
+        assert!(is_sticky(&input_sticky));
+
+        assert_eq!(group.get_index_of_editor(&editor(&input_inactive)), 0);
+        assert_eq!(group.get_index_of_editor(&editor(&input_sticky)), 1);
+        assert_eq!(group.get_index_of_editor(&editor(&input)), 2);
+    });
+}
+
+#[test]
+fn sticky_true_wins_over_index() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        assert_eq!(group.sticky_count(), 0);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+        let input_sticky = input_with_path(&guard, "foo/bar/sticky");
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_inactive), Some(EditorOptions { inactive: Some(true), ..EditorOptions::default() })).await.unwrap();
+        group.open_editor(&editor(&input_sticky), Some(EditorOptions { sticky: Some(true), index: Some(2.0), ..EditorOptions::default() })).await.unwrap();
+
+        assert_eq!(group.sticky_count(), 1);
+        assert!(group.is_sticky(&EditorOrIndex::Editor(editor(&input_sticky))));
+
+        assert_eq!(group.get_index_of_editor(&editor(&input)), 1);
+        assert_eq!(group.get_index_of_editor(&editor(&input_inactive)), 2);
+        assert_eq!(group.get_index_of_editor(&editor(&input_sticky)), 0);
+    });
+}
+
+#[test]
+fn selection_set_selection_is_selected_selected_editors() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+        let input3 = input(&guard, "foo/bar3");
+
+        let is_selection = |inputs: &[&Rc<TestFileEditorInput>]| -> bool {
+            let selected_editors = group.selected_editors();
+            for input in inputs {
+                if !selected_editors.iter().any(|selected| id_of(selected) == id_of(*input)) {
+                    return false;
+                }
+            }
+            inputs.len() == selected_editors.len()
+        };
+
+        // Active: input1, Selected: input1
+        group.open_editors([&input1, &input2, &input3].into_iter().map(|input| with_options(input, Some(pinned()))).collect()).await.unwrap();
+
+        assert!(group.is_active(&typed(&input1)));
+        assert!(group.is_selected(&editor(&input1)));
+        assert!(!group.is_selected(&editor(&input2)));
+        assert!(!group.is_selected(&editor(&input3)));
+
+        assert!(is_selection(&[&input1]));
+
+        // Active: input1, Selected: input1, input3
+        group.set_selection(&editor(&input1), vec![editor(&input3)]).await.unwrap();
+
+        assert!(group.is_active(&typed(&input1)));
+        assert!(group.is_selected(&editor(&input1)));
+        assert!(!group.is_selected(&editor(&input2)));
+        assert!(group.is_selected(&editor(&input3)));
+
+        assert!(is_selection(&[&input1, &input3]));
+
+        // Active: input2, Selected: input1, input3
+        group.set_selection(&editor(&input2), vec![editor(&input1), editor(&input3)]).await.unwrap();
+
+        assert!(group.is_selected(&editor(&input1)));
+        assert!(group.is_active(&typed(&input2)));
+        assert!(group.is_selected(&editor(&input2)));
+        assert!(group.is_selected(&editor(&input3)));
+
+        assert!(is_selection(&[&input1, &input2, &input3]));
+
+        group.set_selection(&editor(&input1), Vec::new()).await.unwrap();
+
+        // Selected: input3
+        assert!(group.is_active(&typed(&input1)));
+        assert!(group.is_selected(&editor(&input1)));
+        assert!(!group.is_selected(&editor(&input2)));
+        assert!(!group.is_selected(&editor(&input3)));
+
+        assert!(is_selection(&[&input1]));
+    });
+}
+
+#[test]
+fn move_editor_with_context_across_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+        let third_input = input_with_path(&guard, "foo/bar/third");
+
+        let (left_fired_count, left_group_listener) = count(&group.on_will_move_editor());
+        let (right_fired_count, right_group_listener) = count(&right_group.on_will_move_editor());
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None), with_options(&third_input, None)]).await.unwrap();
+        assert_eq!(left_fired_count.get(), 0);
+        assert_eq!(right_fired_count.get(), 0);
+
+        let mut result = group.move_editor(&editor(&input), &right_group);
+        assert!(result);
+        assert_eq!(left_fired_count.get(), 1);
+        assert_eq!(right_fired_count.get(), 0);
+
+        result = group.move_editor(&editor(&input_inactive), &right_group);
+        assert!(result);
+        assert_eq!(left_fired_count.get(), 2);
+        assert_eq!(right_fired_count.get(), 0);
+
+        result = right_group.move_editor(&editor(&input_inactive), &group);
+        assert!(result);
+        assert_eq!(left_fired_count.get(), 2);
+        assert_eq!(right_fired_count.get(), 1);
+
+        left_group_listener.dispose();
+        right_group_listener.dispose();
+    });
+}
+
+#[test]
+fn move_editor_disabled() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+        let third_input = input_with_path(&guard, "foo/bar/third");
+
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None), with_options(&third_input, None)]).await.unwrap();
+
+        input.set_move_disabled("disabled");
+        let result = group.move_editor(&editor(&input), &right_group);
+
+        assert!(!result);
+        assert_eq!(group.count(), 3);
+    });
+}
+
+#[test]
+fn on_will_open_editor() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let input = input(&guard, "foo/bar");
+        let second_input = input_with_path(&guard, "foo/bar/second");
+        let third_input = input_with_path(&guard, "foo/bar/third");
+
+        let (left_fired_count, left_group_listener) = count(&group.on_will_open_editor());
+        let (right_fired_count, right_group_listener) = count(&right_group.on_will_open_editor());
+
+        group.open_editor(&editor(&input), None).await.unwrap();
+        assert_eq!(left_fired_count.get(), 1);
+        assert_eq!(right_fired_count.get(), 0);
+
+        let second_open = right_group.open_editor(&editor(&second_input), None);
+        assert_eq!(left_fired_count.get(), 1);
+        assert_eq!(right_fired_count.get(), 1);
+
+        let third_open = group.open_editor(&editor(&third_input), None);
+        assert_eq!(left_fired_count.get(), 2);
+        assert_eq!(right_fired_count.get(), 1);
+
+        // Ensure move fires the open event too
+        right_group.move_editor(&editor(&second_input), &group);
+        assert_eq!(left_fired_count.get(), 3);
+        assert_eq!(right_fired_count.get(), 1);
+
+        left_group_listener.dispose();
+        right_group_listener.dispose();
+
+        // as promessas soltas do original terminam aqui, para o corpo não acabar com tarefas pendentes
+        second_open.await.unwrap();
+        third_open.await.unwrap();
+    });
+}
+
+#[test]
+fn copy_editor_with_context_across_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+        assert!(group.is_empty());
+        let (fired_count, move_listener) = count(&group.on_will_move_editor());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+        let input = input(&guard, "foo/bar");
+        let input_inactive = input_with_path(&guard, "foo/bar/inactive");
+        group.open_editors(vec![with_options(&input, Some(pinned())), with_options(&input_inactive, None)]).await.unwrap();
+        assert_eq!(fired_count.get(), 0);
+
+        group.copy_editor(&editor(&input_inactive), &right_group, Some(at_index(0)));
+
+        assert_eq!(fired_count.get(), 0);
+        move_listener.dispose();
+    });
+}
+
+#[test]
+fn locked_groups_basics() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+
+        let left_fired_count_from_part = Rc::new(Cell::new(0));
+        let right_fired_count_from_part = Rc::new(Cell::new(0));
+        let part_listener = {
+            let (group, right_group) = (group.clone(), right_group.clone());
+            let (left_fired_count_from_part, right_fired_count_from_part) = (left_fired_count_from_part.clone(), right_fired_count_from_part.clone());
+            part.on_did_change_group_locked().listen(move |g| {
+                if same(g, &group) {
+                    bump(&left_fired_count_from_part);
+                } else if same(g, &right_group) {
+                    bump(&right_fired_count_from_part);
+                }
+            })
+        };
+
+        let (left_fired_count_from_group, left_group_listener) = count_model_changes(&group, GroupModelChangeKind::GroupLocked);
+        let (right_fired_count_from_group, right_group_listener) = count_model_changes(&right_group, GroupModelChangeKind::GroupLocked);
+
+        right_group.lock(true);
+        right_group.lock(true);
+
+        assert_eq!(left_fired_count_from_group.get(), 0);
+        assert_eq!(left_fired_count_from_part.get(), 0);
+        assert_eq!(right_fired_count_from_group.get(), 1);
+        assert_eq!(right_fired_count_from_part.get(), 1);
+
+        right_group.lock(false);
+        right_group.lock(false);
+
+        assert_eq!(left_fired_count_from_group.get(), 0);
+        assert_eq!(left_fired_count_from_part.get(), 0);
+        assert_eq!(right_fired_count_from_group.get(), 2);
+        assert_eq!(right_fired_count_from_part.get(), 2);
+
+        group.lock(true);
+        group.lock(true);
+
+        assert_eq!(left_fired_count_from_group.get(), 1);
+        assert_eq!(left_fired_count_from_part.get(), 1);
+        assert_eq!(right_fired_count_from_group.get(), 2);
+        assert_eq!(right_fired_count_from_part.get(), 2);
+
+        group.lock(false);
+        group.lock(false);
+
+        assert_eq!(left_fired_count_from_group.get(), 2);
+        assert_eq!(left_fired_count_from_part.get(), 2);
+        assert_eq!(right_fired_count_from_group.get(), 2);
+        assert_eq!(right_fired_count_from_part.get(), 2);
+
+        part_listener.dispose();
+        left_group_listener.dispose();
+        right_group_listener.dispose();
+    });
+}
+
+#[test]
+fn locked_groups_single_group_is_can_be_locked() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        group.lock(true);
+        assert!(group.is_locked());
+
+        let right_group = part.add_group(Some(group_ref(&group)), GroupDirection::Right);
+        right_group.lock(true);
+
+        assert!(right_group.is_locked());
+
+        part.remove_group(group_ref(&group));
+        assert!(right_group.is_locked());
+
+        let right_group2 = part.add_group(Some(group_ref(&right_group)), GroupDirection::Right);
+        right_group.lock(true);
+        right_group2.lock(true);
+
+        assert!(right_group.is_locked());
+        assert!(right_group2.is_locked());
+
+        part.remove_group(group_ref(&right_group2));
+
+        assert!(right_group.is_locked());
+    });
+}
+
+#[test]
+fn locked_groups_auto_locking_via_setting() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let configuration = TestConfigurationService::new(None);
+        configuration
+            .set_user_configuration(
+                "workbench",
+                Dynamic::object([("editor", Dynamic::object([("autoLockGroups", Dynamic::object([(TEST_EDITOR_INPUT_ID, Dynamic::Bool(true))]))]))]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let part = create_test_part(&guard, configuration).part;
+
+        let root_group = part.active_group();
+        let right_group = part.add_group(Some(group_ref(&root_group)), GroupDirection::Right);
+
+        let input1 = input(&guard, "foo/bar1");
+        let input2 = input(&guard, "foo/bar2");
+
+        // First editor opens in right group: Locked=true
+        right_group.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+        assert!(right_group.is_locked());
+
+        // Second editors opens in now unlocked right group: Locked=false
+        right_group.lock(false);
+        right_group.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        assert!(!right_group.is_locked());
+
+        //First editor opens in root group without other groups being opened: Locked=false
+        right_group.close_all_editors(None).await.unwrap();
+        part.remove_group(group_ref(&right_group));
+        root_group.close_all_editors(None).await.unwrap();
+
+        let input1 = input(&guard, "foo/bar1");
+        let _input2 = input(&guard, "foo/bar2");
+
+        root_group.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+        assert!(!root_group.is_locked());
+        let _right_group = part.add_group(Some(group_ref(&root_group)), GroupDirection::Right);
+        assert!(!root_group.is_locked());
+        let left_group = part.add_group(Some(group_ref(&root_group)), GroupDirection::Left);
+        assert!(!root_group.is_locked());
+        part.remove_group(group_ref(&left_group));
+        assert!(!root_group.is_locked());
+    });
+}
+
+#[test]
 fn maximize_editor_group() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let part = create_part(&guard);
@@ -513,6 +2506,87 @@ fn maximize_editor_group() {
 
     assert_eq!(maximized_value.get(), Some(false));
     maximize_group_event_disposable.dispose();
+}
+
+#[test]
+fn transient_editors_basics() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input = input(&guard, "foo/bar");
+        let input_transient = input_with_path(&guard, "foo/bar/inactive");
+        let transient = EditorOptions { transient: Some(true), ..EditorOptions::default() };
+        let is_transient = |input: &Rc<TestFileEditorInput>| group.is_transient(&EditorOrIndex::Editor(editor(input)));
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_transient), Some(transient.clone())).await.unwrap();
+
+        assert!(!is_transient(&input));
+        assert!(is_transient(&input_transient));
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_transient), Some(transient.clone())).await.unwrap();
+
+        assert!(is_transient(&input_transient));
+
+        group.open_editor(&editor(&input_transient), Some(EditorOptions { transient: Some(false), ..EditorOptions::default() })).await.unwrap();
+        assert!(!is_transient(&input_transient));
+
+        group.open_editor(&editor(&input_transient), Some(transient)).await.unwrap();
+        assert!(!is_transient(&input_transient)); // cannot make a non-transient editor transient when already opened
+    });
+}
+
+#[test]
+fn transient_editors_pinning_clears_transient() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = part_of(&guard);
+        let group = part.active_group();
+
+        let input = input(&guard, "foo/bar");
+        let input_transient = input_with_path(&guard, "foo/bar/inactive");
+        let is_transient = |input: &Rc<TestFileEditorInput>| group.is_transient(&EditorOrIndex::Editor(editor(input)));
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_transient), Some(EditorOptions { transient: Some(true), ..EditorOptions::default() })).await.unwrap();
+
+        assert!(!is_transient(&input));
+        assert!(is_transient(&input_transient));
+
+        group.open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        group.open_editor(&editor(&input_transient), Some(EditorOptions { pinned: Some(true), transient: Some(true), ..EditorOptions::default() })).await.unwrap();
+
+        assert!(!is_transient(&input_transient));
+    });
+}
+
+#[test]
+fn transient_editors_overrides_enable_preview_setting() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let configuration = TestConfigurationService::new(None);
+        configuration.set_user_configuration("workbench", Dynamic::object([("editor", Dynamic::object([("enablePreview", Dynamic::Bool(false))]))]), None).await.unwrap();
+
+        let part = create_test_part(&guard, configuration).part;
+
+        let group = part.active_group();
+        assert!(group.is_empty());
+
+        let input = input(&guard, "foo/bar");
+        let input2 = input_with_path(&guard, "foo/bar2");
+
+        group.open_editor(&editor(&input), Some(EditorOptions { pinned: Some(false), ..EditorOptions::default() })).await.unwrap();
+        assert!(group.is_pinned(&EditorOrIndex::Editor(editor(&input))));
+
+        group.open_editor(&editor(&input2), Some(EditorOptions { transient: Some(true), ..EditorOptions::default() })).await.unwrap();
+        assert!(!group.is_pinned(&EditorOrIndex::Editor(editor(&input2))));
+
+        group.focus();
+        assert!(group.is_pinned(&EditorOrIndex::Editor(editor(&input2))));
+    });
 }
 
 #[test]

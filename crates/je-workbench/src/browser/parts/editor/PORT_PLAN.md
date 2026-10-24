@@ -103,8 +103,32 @@ helper em `test/browser/workbench_test_services.rs`, com a `EditorPart` de teste
    (conjuntos de trabalho, precisa de `closeAllEditors` e `openEditors`), o provider de context key, `handleContextKeys`
    (`common/contextkeys.ts`), o ouvinte de mudança externa do memento e o movimento entre partes (fatia 4).
 
-3. `EditorGroupView` completo (C), por famílias: abrir e ativar; fechar (sujo, `CannotClose`); mover e copiar;
-   substituir; aderentes, transientes e seleção; bloqueio.
+3. **FEITA (escrita sem compilar, o integrador confere).** `EditorGroupView` completo e lógico (C) em
+   `browser/parts/editor/editor_group_view.rs`, com o painel de editor substituído por um registro lógico do editor visível
+   (`editor_panes.rs`: `EditorPanes`, `EditorPane`, `EditorPaneRegistry`; o painel guarda a entrada atribuída, as opções e o
+   id registrado, sem DOM). Famílias, nesta ordem:
+   - (a) abrir e ativar: `openEditor`, `openEditors`, `activeEditor`, `activeEditorPane`, `isActive`, `previewEditor`,
+     `isPinned`, `onDidModelChange`, `onWillOpenEditor`, `onDidActiveEditorChange`, `onDidOpenEditorFail`, `whenRestored`,
+     restauração do editor ativo ao copiar ou restaurar, auto bloqueio por `workbench.editor.autoLockGroups`;
+   - (b) fechar: `closeEditor`, `closeEditors` (lista e filtro: `except`, `direction`, `savedOnly`, `excludeSticky`),
+     `closeAllEditors`, editor sujo com `handleCloseConfirmation` (auto salvar, `closeHandler`, `ConfirmResult`), `CannotClose`
+     e `force`, `onWillCloseEditor`, `onDidCloseEditor`, descarte de editor compartilhado só quando nenhum grupo o tem;
+   - (c) mover e copiar entre grupos: `moveEditor`, `moveEditors`, `copyEditor`, `copyEditors` (com `canMove`, `onWillMoveEditor`
+     e o estado de visão), e, no `EditorPart`, `copyGroup`, `mergeGroup`, `mergeAllGroups` (já existiam, agora com grupos que
+     têm editores) e `sideGroup` (`findGroup` com `SIDE_GROUP` sobre o `IEditorGroupsService` do `InstantiationService`);
+   - (d) `replaceEditors` (com `forceReplaceDirty` e índices), `findEditors`, `stickEditor` e `unstickEditor`, transientes
+     (o foco limpa o transiente), seleção (`setSelection`, `isSelected`, `selectedEditors`) e `lock`.
+   O `EditorGroupView` recebe a parte pelo trait `EditorGroupsView` (o `IEditorGroupsView` e o `IEditorPartsView` do original).
+   `IEditorGroup` ganhou `onWillOpenEditor` e `IEditorPane` ganhou `getId`, ambos com padrão. Ficaram fora (documentado nos
+   cabeçalhos): o título (`EditorTitleControl`), o menu, o telemetria, os context keys do grupo (`common/contextkeys.ts`),
+   `hostService.focus`, o diálogo modal de erro ao abrir, o painel de "confiança necessária" e a busca de painel por
+   `instanceof`. Placar: 62 dos 71 casos de `tests/editor_groups_service.rs` (os 13 da fatia 2 e 49 novos: `sideGroup`,
+   `copy/merge groups`, `merge all groups`, `editor basics`, `openEditors / closeEditors`, `closeEditor` (3), `closeEditors` (10),
+   `closeAllEditors` (5), `moveEditor` (3), `moveEditors`, `copyEditor`, `copyEditors`, `replaceEditors` (6), `find editors` (2),
+   `sticky editors` (2), `selection`, `moveEditor with context`, `moveEditor disabled`, `onWillOpenEditor`,
+   `copyEditor with context`, `locked groups` (3) e `transient editors` (3)). Fora: `save & restore state` (`TestEditorPart` e
+   o serializador do editor de teste, fatia 4), `closeAllGroups action` (`CloseAllEditorGroupsAction` de `editorActions.ts`),
+   `working sets` (3) e `context key provider` (4) (`applyState`, `EditorParts` e `common/contextkeys.ts`).
 4. `EditorParts` e `TestEditorParts` (D), e o `ModalEditorPart` passa a estender a `EditorPart`.
 5. Placar: ligar o teste em `crates/je-workbench/tests/editor_groups_service.rs` e acrescentar a linha em
    `docs/conformance.md`.
