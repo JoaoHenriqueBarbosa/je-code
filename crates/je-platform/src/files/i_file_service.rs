@@ -112,6 +112,37 @@ pub trait IFileService {
         Promise::rejected(Error::new("IFileService.copy não é suportado por esta implementação"))
     }
 
+    /// `move(source, target, overwrite?)`: moves the file or folder to the target location, across providers when
+    /// needed. Rejects when the target exists and `overwrite` is not set.
+    ///
+    /// Emits a `FileOperation.MOVE` (or `COPY`, when the move was done as a copy and delete) file operation event
+    /// when successful. O padrão rejeita, como o de [`IFileService::copy`]; o `FileService` o sobrescreve.
+    fn move_(&self, _source: &URI, _target: &URI, _overwrite: Option<bool>) -> Promise<FileStatWithMetadata> {
+        Promise::rejected(Error::new("IFileService.move não é suportado por esta implementação"))
+    }
+
+    /// `canCreateFile(resource, options?)`: `Ok(())` é o `true` do original e `Err` o erro devolvido. O padrão aceita
+    /// qualquer criação (o `canCreateFile` do `TestFileService` do oráculo); o `FileService` o sobrescreve com a validação
+    /// de verdade.
+    fn can_create_file(&self, _resource: &URI, _options: Option<CreateFileOptions>) -> Promise<Result<(), Error>> {
+        Promise::resolved(Ok(()))
+    }
+
+    /// `canMove(source, target, overwrite?)`: `Ok(())` é o `true` do original. O padrão aceita qualquer movimento.
+    fn can_move(&self, _source: &URI, _target: &URI, _overwrite: Option<bool>) -> Promise<Result<(), Error>> {
+        Promise::resolved(Ok(()))
+    }
+
+    /// `canCopy(source, target, overwrite?)`: `Ok(())` é o `true` do original. O padrão aceita qualquer cópia.
+    fn can_copy(&self, _source: &URI, _target: &URI, _overwrite: Option<bool>) -> Promise<Result<(), Error>> {
+        Promise::resolved(Ok(()))
+    }
+
+    /// `canDelete(resource, options?)`: `Ok(())` é o `true` do original. O padrão aceita qualquer exclusão.
+    fn can_delete(&self, _resource: &URI, _options: Option<PartialFileDeleteOptions>) -> Promise<Result<(), Error>> {
+        Promise::resolved(Ok(()))
+    }
+
     /// `onWillActivateFileSystemProvider`: an event that is fired when a file system provider is about to be activated.
     /// Listeners can feed into the event by registering a promise with the event.
     fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent>;
@@ -201,6 +232,26 @@ impl IFileService for FileService {
 
     fn copy(&self, source: &URI, target: &URI, overwrite: Option<bool>) -> Promise<FileStatWithMetadata> {
         FileService::copy(&self.rc(), source, target, overwrite)
+    }
+
+    fn move_(&self, source: &URI, target: &URI, overwrite: Option<bool>) -> Promise<FileStatWithMetadata> {
+        FileService::move_(&self.rc(), source, target, overwrite)
+    }
+
+    fn can_create_file(&self, resource: &URI, options: Option<CreateFileOptions>) -> Promise<Result<(), Error>> {
+        FileService::can_create_file(&self.rc(), resource, options)
+    }
+
+    fn can_move(&self, source: &URI, target: &URI, overwrite: Option<bool>) -> Promise<Result<(), Error>> {
+        FileService::can_move(&self.rc(), source, target, overwrite)
+    }
+
+    fn can_copy(&self, source: &URI, target: &URI, overwrite: Option<bool>) -> Promise<Result<(), Error>> {
+        FileService::can_copy(&self.rc(), source, target, overwrite)
+    }
+
+    fn can_delete(&self, resource: &URI, options: Option<PartialFileDeleteOptions>) -> Promise<Result<(), Error>> {
+        FileService::can_delete(&self.rc(), resource, options)
     }
 
     fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent> {

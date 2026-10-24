@@ -1349,6 +1349,18 @@ impl IFileService for TestFileService {
     fn del(&self, _resource: &URI, _options: Option<je_platform::files::files::PartialFileDeleteOptions>) -> Promise<()> {
         Promise::resolved(())
     }
+
+    /// `move(source, target, overwrite?)`: o original devolve `null` (`Promise.resolve(null!)`); o contrato do porte devolve
+    /// um stat, e o dublê devolve o do `createFileStat(target, readonly)`. As validações (`canMove`, `canCopy`,
+    /// `canCreateFile` e `canDelete`) são as do padrão do contrato, que aceitam tudo (o `true` do original).
+    fn move_(&self, _source: &URI, target: &URI, _overwrite: Option<bool>) -> Promise<je_platform::files::files::FileStatWithMetadata> {
+        Promise::resolved(self.file_stat(target))
+    }
+
+    /// `copy(source, target, overwrite?)`: como [`TestFileService::move_`], sem efeito além do stat do alvo.
+    fn copy(&self, _source: &URI, target: &URI, _overwrite: Option<bool>) -> Promise<je_platform::files::files::FileStatWithMetadata> {
+        Promise::resolved(self.file_stat(target))
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -21,6 +21,7 @@ use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::Event;
+use je_base::lifecycle::DisposableRef;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::text_model::TextModel;
@@ -31,6 +32,8 @@ use je_platform::notification::notification_telemetry::NotificationTelemetryId;
 use crate::common::editor::{EditorIdentifier, EditorInputOrUntyped, SaveOptions, SaveReason};
 use crate::services::textfile::textfiles::EncodedContent;
 use crate::services::working_copy::stored_file_working_copy::IStoredFileWorkingCopy;
+use crate::services::working_copy::stored_file_working_copy_save_participant::IStoredFileWorkingCopySaveParticipant;
+use crate::services::working_copy::working_copy::IWorkingCopy;
 
 //#region IProgressService
 
@@ -166,11 +169,40 @@ pub struct MoveOperation {
     pub overwrite: Option<bool>,
 }
 
+/// `ICopyOperation extends IMoveOperation {}`.
+pub type CopyOperation = MoveOperation;
+
+/// `ICreateOperation`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateOperation {
+    pub resource: URI,
+    pub overwrite: Option<bool>,
+}
+
+/// `IDeleteOperation`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeleteOperation {
+    pub resource: URI,
+    pub use_trash: Option<bool>,
+    pub recursive: Option<bool>,
+}
+
+/// `WorkingCopyProvider`: returns the working copies for a given resource.
+pub type WorkingCopyProvider = Rc<dyn Fn(&URI) -> Vec<Rc<dyn IWorkingCopy>>>;
+
+/// `IWorkingCopyFileOperationParticipant`.
+pub trait IWorkingCopyFileOperationParticipant {
+    /// Participate in a file operation of working copies. Allows to change the working copies before they are being
+    /// saved to disk. `timeout` é o `files.participants.timeout` em milissegundos.
+    fn participate(&self, files: Vec<WorkingCopyFileEventFile>, operation: FileOperation, undo_info: Option<FileOperationUndoRedoInfo>, timeout: f64, token: CancellationToken) -> Promise<()>;
+}
+
 /// A mensagem de `create` e `move` num `IWorkingCopyFileService` que não os traz.
 const WORKING_COPY_FILE_OPERATION_UNSUPPORTED: &str = "esta implementação de IWorkingCopyFileService não executa a operação de arquivo";
 
-/// `IWorkingCopyFileService` (os três eventos que o gerenciador de modelos de arquivo de texto escuta, mais `create` e
-/// `move`, que o `TextFileService` chama).
+/// `IWorkingCopyFileService`. O serviço completo é o `WorkingCopyFileService` de
+/// `services/working_copy/working_copy_file_service.rs`; os métodos além dos três eventos e de `create`/`move` (que o
+/// `TextFileService` chama) têm implementação padrão, para os dublês que só trazem o recorte que leem.
 pub trait IWorkingCopyFileService {
     /// An event that is fired before a working copy file operation is about to run.
     fn on_will_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent>;
@@ -191,6 +223,50 @@ pub trait IWorkingCopyFileService {
     /// using the associated file service for those resources. Rejeita quando a implementação não a traz.
     fn move_(&self, _operations: Vec<MoveOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
         Promise::rejected(Error::new(WORKING_COPY_FILE_OPERATION_UNSUPPORTED))
+    }
+
+    /// Will create a folder and any parent folder that needs to be created. Events are only emitted for the provided
+    /// resource, but not any parent folders that are being created as part of the operation. Rejeita quando a
+    /// implementação não a traz.
+    fn create_folder(&self, _operations: Vec<CreateOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        Promise::rejected(Error::new(WORKING_COPY_FILE_OPERATION_UNSUPPORTED))
+    }
+
+    /// Will copy working copies matching the provided resources and corresponding children to the target resources
+    /// using the associated file service for those resources. Rejeita quando a implementação não a traz.
+    fn copy(&self, _operations: Vec<CopyOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        Promise::rejected(Error::new(WORKING_COPY_FILE_OPERATION_UNSUPPORTED))
+    }
+
+    /// Will delete working copies matching the provided resources and children using the associated file service for
+    /// those resources. Rejeita quando a implementação não a traz.
+    fn delete(&self, _operations: Vec<DeleteOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<()> {
+        Promise::rejected(Error::new(WORKING_COPY_FILE_OPERATION_UNSUPPORTED))
+    }
+
+    /// Adds a participant for file operations on working copies. Sem participantes de operação de arquivo (o caso do
+    /// serviço que ainda não os tem) o registro não faz nada.
+    fn add_file_operation_participant(&self, _participant: Rc<dyn IWorkingCopyFileOperationParticipant>) -> DisposableRef {
+        je_base::lifecycle::none()
+    }
+
+    /// Adds a participant for save operations on stored file working copies. Sem participantes de salvar o registro
+    /// não faz nada.
+    fn add_save_participant(&self, _participant: Rc<dyn IStoredFileWorkingCopySaveParticipant>) -> DisposableRef {
+        je_base::lifecycle::none()
+    }
+
+    /// Register a new provider for working copies based on a resource. Returns a disposable that unregisters the
+    /// provider. Sem provedores o registro não faz nada.
+    fn register_working_copy_provider(&self, _provider: WorkingCopyProvider) -> DisposableRef {
+        je_base::lifecycle::none()
+    }
+
+    /// Will return all working copies that are dirty matching the provided resource. If the resource is a folder and the
+    /// scheme supports file operations, a working copy that is dirty and is a child of that folder will also be returned.
+    /// Sem provedores não há working copy a devolver.
+    fn get_dirty(&self, _resource: &URI) -> Vec<Rc<dyn IWorkingCopy>> {
+        Vec::new()
     }
 
     /// Whether save participants are present for stored file working copies. Sem participantes registrados (o caso do
