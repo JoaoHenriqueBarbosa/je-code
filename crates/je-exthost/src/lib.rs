@@ -18,6 +18,7 @@ pub mod runtime;
 pub mod api;
 pub mod convert;
 pub mod host;
+pub mod in_process;
 pub mod local_context;
 // O host de extensões em processo ligado ao workbench por um protocolo de mensagens em memória (só com o motor e o carregador
 // de módulos em disco, que não existem no alvo web).

@@ -19,6 +19,11 @@ impl LocalContext {
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
+
+    /// Há um objeto registrado em `sid`.
+    pub fn contains(&self, sid: &'static str) -> bool {
+        self.proxies.borrow().contains_key(sid)
+    }
 }
 
 impl IMainContext for LocalContext {

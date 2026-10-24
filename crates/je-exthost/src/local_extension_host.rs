@@ -47,6 +47,7 @@ use zjsc::api::embed_node::NodeRunner;
 
 use crate::ext_host_extension_service::{ExtHostExtensionService, ExtHostExtensionServiceActor};
 use crate::host::ExtensionHost;
+use crate::in_process::IMainThreadBinder;
 
 /// `IWebWorkerExtensionHostDataProvider` (`getInitData`): as extensões que o host recebe ao subir (`initData.extensions`). O serviço de
 /// extensões o implementa (no caso do primeiro início, as extensões locais e as que rodam neste host; na reinicialização, o
@@ -76,6 +77,7 @@ pub struct LocalExtensionHost {
     on_exit: Rc<Emitter<(i32, Option<String>)>>,
     started: RefCell<Option<StartedHost>>,
     is_terminating: Cell<bool>,
+    binder: RefCell<Option<Rc<dyn IMainThreadBinder>>>,
 }
 
 impl LocalExtensionHost {
@@ -99,7 +101,14 @@ impl LocalExtensionHost {
             on_exit: Emitter::new(),
             started: RefCell::new(None),
             is_terminating: Cell::new(false),
+            binder: RefCell::new(None),
         })
+    }
+
+    /// Entrega o `binder` que monta, em processo, os clientes `MainThread*` dos namespaces `workspace` e `window` (ver
+    /// [`crate::in_process`]). Precisa vir antes de `start()`; sem ele o `vscode` do host só tem `commands`, `l10n` e as classes.
+    pub fn set_main_thread_binder(&self, binder: Rc<dyn IMainThreadBinder>) {
+        *self.binder.borrow_mut() = Some(binder);
     }
 
     /// Esvazia as microtarefas dos dois mundos (as do motor e as das `Promise` do Rust) até estabilizar.
@@ -133,7 +142,8 @@ impl LocalExtensionHost {
 
         let host_rpc = RpcProtocol::new(host_protocol.clone(), None);
         register_known_shapes(&host_rpc);
-        let ext_host = Rc::new(ExtensionHost::with_context(&self.runner, &*host_rpc));
+        let binder = self.binder.borrow().clone();
+        let ext_host = Rc::new(ExtensionHost::with_bridge(&self.runner, &*host_rpc, binder.as_deref(), self.log_service.clone()));
         let auto_start = matches!(self.startup, ExtensionHostStartup::EagerAutoStart | ExtensionHostStartup::LazyAutoStart);
         let service = ExtHostExtensionService::new(self.runner.clone(), ext_host.disposables().clone(), &*host_rpc, self.log_service.clone(), auto_start, snapshot);
         host_rpc.set_actor(EXT_HOST_EXTENSION_SERVICE_SID, ExtHostExtensionServiceActor::new(service.clone()));
@@ -199,6 +209,7 @@ impl IExtensionHost for LocalExtensionHost {
         let started = self.started.borrow_mut().take();
         if let Some(started) = started {
             started.service.deactivate_all();
+            started.ext_host.dispose_main_thread();
             started.host_rpc.dispose();
             started.host_protocol.disconnect();
             started.workbench_protocol.disconnect();
