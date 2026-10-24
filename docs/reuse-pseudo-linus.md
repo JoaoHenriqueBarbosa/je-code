@@ -21,6 +21,13 @@ licença) no README dela, como o `zbun` faz com o bun; mudança local fica lista
 | Terminal no alvo web (sem pty no navegador) | `shell`, `kernel`, `vfs` e o userland | terminal web rodando o sandbox | ideia, não medida |
 | Sistema de arquivos em memória no alvo web | `vfs` (tmpfs persistente com snapshot O(1)) | provider de arquivos da web | ideia, não medida |
 
+## Portes de bibliotecas de terceiros fora do pseudo-linus
+
+- `crates/jschardet`: o `jschardet` 3.1.4 do npm (o que o VS Code usa em `guessEncodingByBuffer`), um `.rs` por `.js`, licença
+  LGPL-2.1, porte feito aqui porque o pseudo-linus não tem detector de codificação. O `chardetng` que o porte usava antes não
+  restringe a candidatos e dava resposta diferente em texto curto; saiu do `je-workbench`. Origem, licença e as mudanças
+  locais estão no README da crate (a cauda inalcançável das tabelas de frequência do Big5, EUC-KR, GB2312 e JIS não foi copiada).
+
 ## O que não se reaproveita, e por quê
 
 - Módulos do Node no zjsc (`path`, `url`, `util`, `stream`): são o JS do bun rodando dentro do motor,
