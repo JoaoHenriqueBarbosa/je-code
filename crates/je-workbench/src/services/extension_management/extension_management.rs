@@ -174,6 +174,12 @@ service_id!(pub I_EXTENSION_MANAGEMENT_SERVER_SERVICE: dyn IExtensionManagementS
 /// `IWorkbenchExtensionManagementService`, reduzido ao que o gerenciador de habilitação lê (ver a nota do módulo).
 pub trait IWorkbenchExtensionManagementService: IProfileAwareExtensionManagementService {
     fn get_installed_workspace_extensions(&self, include_invalid: bool) -> Promise<Vec<ExtensionRef>>;
+
+    /// `onDidEnableExtensions`: as extensões que foram habilitadas (lido pelo `AbstractExtensionService`). O padrão é o
+    /// `Event.None`, o de um serviço que não habilita extensões por outra via.
+    fn on_did_enable_extensions(&self) -> Event<Vec<ExtensionRef>> {
+        Event::none()
+    }
 }
 
 service_id!(pub I_WORKBENCH_EXTENSION_MANAGEMENT_SERVICE: dyn IWorkbenchExtensionManagementService = "extensionManagementService");

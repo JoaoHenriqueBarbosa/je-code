@@ -116,6 +116,11 @@ pub trait IProductService {
     fn extension_keywords(&self) -> Option<&IStringDictionary<Vec<String>>> {
         None
     }
+    /// `extensionEnabledApiProposals`: as propostas de API que o produto libera por identificador de extensão (lido pelo
+    /// `ExtensionsProposedApi`). Padrão: o produto não declara nenhuma.
+    fn extension_enabled_api_proposals(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        None
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -352,6 +357,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn trusted_extension_protocol_handlers(&self) -> Vec<String> {
         self.trusted_extension_protocol_handlers.clone().unwrap_or_default()
+    }
+    fn extension_enabled_api_proposals(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_enabled_api_proposals.as_ref()
     }
     fn commit(&self) -> Option<&str> {
         self.commit.as_deref()

@@ -1,8 +1,10 @@
 //! Porte parcial de `src/vs/workbench/services/extensions/browser/extensionService.ts`: o `BrowserExtensionHostKindPicker`,
 //! que decide em qual host de extensão (web worker local ou remoto) cada extensão roda no navegador.
 //!
-//! Fora do porte: o `ExtensionService` (o serviço do navegador, que estende o `AbstractExtensionService`, ainda não
-//! portado: o gerenciador de hosts de extensão, o `IExtensionHost` e o restante de `common/abstractExtensionService.ts`).
+//! Fora do porte: o `ExtensionService` (o serviço do navegador, que estende o `AbstractExtensionService`). O
+//! `AbstractExtensionService`, o `IExtensionHost` e o `IExtensionHostManager` já estão portados em
+//! [`crate::services::extensions::abstract_extension_service`]; falta o que o serviço do navegador acrescenta (as fábricas de
+//! host, `_resolveExtensions`) e o `ExtensionHostManager` concreto.
 //!
 //! Divergências:
 //! - `ILogService` é o [`LogServiceRef`] (o `@ILogService` do construtor).
