@@ -1,6 +1,7 @@
 //! Porte parcial de `src/vs/workbench/api/common`.
 
 pub mod ext_host_authentication;
+pub mod ext_host_xaa_auth_provider;
 pub mod ext_host_browsers;
 pub mod ext_host_protocol;
 pub mod ext_host_text_editor;

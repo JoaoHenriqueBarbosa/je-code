@@ -31,6 +31,7 @@ pub mod main_thread_debug_service;
 // Kernels de notebook: `mainThreadNotebookKernels.ts` e as conversões de `mainThreadNotebookDto.ts` que ele usa.
 pub mod main_thread_notebook_dto;
 pub mod main_thread_notebook_kernels;
+pub mod main_thread_share;
 
 // Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
 pub mod main_thread_webview_panels;
