@@ -1611,3 +1611,21 @@ mod mock_label_service {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Bloco do porte de `storedFileWorkingCopy.test.ts`: o `save` do `TestEditorService`.
+//
+// - `TestEditorService.save(editors, options?)` lança `Method not implemented.` no original; o recorte
+//   `IEditorServiceSave` (ver `services/textfile/collaborators.rs`) recebe só um identificador, o único uso da working copy
+//   de arquivo armazenado.
+// ---------------------------------------------------------------------------------------------------------------------
+
+impl crate::services::textfile::collaborators::IEditorServiceSave for TestEditorService {
+    fn save(
+        &self,
+        _editor: crate::common::editor::EditorIdentifier,
+        _options: Option<crate::services::textfile::collaborators::SaveEditorsOptions>,
+    ) -> je_base::promise::Promise<crate::services::textfile::collaborators::SaveEditorsResult> {
+        je_base::errors::throw(je_base::errors::Error::new("Method not implemented."))
+    }
+}
