@@ -33,6 +33,10 @@ pub mod remote;
 // Serviço de arquivos de texto: codificação (`textfile/common/encoding.ts`).
 pub mod textfile;
 
+// `ILanguageDetectionService` e o `ITextEditorModel`/`ITextModelService` que os modelos de texto do workbench leem.
+pub mod language_detection;
+pub mod textmodel_resolver;
+
 // `IEditorService` reduzido (o que o `findViewStateForEditor` e o `SideBySideEditorInput` leem).
 // Configuração do workbench: `WorkspaceService`, edição e as camadas por workspace e por pasta.
 pub mod configuration;

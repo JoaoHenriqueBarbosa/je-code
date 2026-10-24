@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::{DisposableStore, IDisposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::promise::Promise;
 
 /// O contrato de um modelo de editor: `EditorModel` e `IResolvableEditorModel` (`IDisposable` com `resolve` e `isResolved`).
@@ -54,6 +54,11 @@ impl EditorModel {
         let on_will_dispose = Emitter::new();
         store.add(on_will_dispose.clone());
         Self { store, on_will_dispose, resolved: Cell::new(false) }
+    }
+
+    /// `_register(o)`: o que a subclasse registra é descartado junto com o modelo.
+    pub fn register(&self, o: DisposableRef) -> DisposableRef {
+        self.store.add(o)
     }
 }
 

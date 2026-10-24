@@ -38,7 +38,8 @@ use je_editor::languages_registry::LanguageNameIdPair;
 use je_editor::model::TextModelCreationOptions;
 use je_editor::modes_registry::{LanguageExtensionPoint, LanguageIcon};
 use je_editor::services_model::{IModelService, I_MODEL_SERVICE};
-use je_editor::text_model::TextModel;
+use je_editor::text_model::{TextModel, TextSource};
+use je_editor::text_model_edit_source::TextModelEditSource;
 use je_editor::text_resource_configuration_service::{ITextResourceConfigurationService, TextResourceConfigurationService};
 use je_platform::configuration::models::{ConfigurationInspectValue, ConfigurationModel};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
@@ -163,6 +164,18 @@ impl IModelService for ModelServiceStub {
 
     fn get_creation_options(&self, _language: &str, _resource: Option<&URI>, _is_for_simple_widget: bool) -> TextModelCreationOptions {
         absent("getCreationOptions")
+    }
+
+    fn create_model(&self, _value: TextSource, _language_selection: Option<&dyn ILanguageSelection>, _resource: Option<&URI>, _is_for_simple_widget: bool) -> Rc<TextModel> {
+        absent("createModel")
+    }
+
+    fn update_model(&self, _model: &TextModel, _value: TextSource, _reason: Option<TextModelEditSource>) {
+        absent("updateModel")
+    }
+
+    fn destroy_model(&self, _resource: &URI) {
+        absent("destroyModel")
     }
 }
 
