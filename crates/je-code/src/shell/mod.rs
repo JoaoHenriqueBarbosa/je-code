@@ -12,8 +12,10 @@ mod file_icons;
 mod find;
 mod menus;
 mod search_backend;
+mod scm_view;
 mod search_view;
 mod file_ops;
+pub mod git;
 mod quick_pick;
 mod terminal_panel;
 pub mod themes;
@@ -44,6 +46,7 @@ use file_icons::FileIconTheme;
 use find::FindWidget;
 use menus::CommandQueue;
 use quick_pick::{PickItem, QuickPick};
+use scm_view::ScmView;
 use search_view::SearchView;
 
 /// O tema padrão relativo à pasta de extensões embutidas.
@@ -153,6 +156,13 @@ pub enum Command {
     SearchToggleCase,
     SearchToggleWord,
     SearchToggleRegex,
+    ShowScm,
+    ScmFocus,
+    ScmCommit,
+    ScmRefresh,
+    ScmOpen(String),
+    ScmContextMenu(scm_view::Entry),
+    ScmOp(git::Operation),
     DismissToast(u64),
     /// Abre o arquivo na linha e seleciona de `column` a `end_column`.
     OpenAt(PathBuf, i32, i32, i32),
@@ -233,6 +243,7 @@ struct Nodes {
     menubar: NodeId,
     explorer: NodeId,
     search: NodeId,
+    scm: NodeId,
     /// A superfície do editor ativo dentro de `chrome` (muda a cada `render`).
     editor_host: Option<NodeId>,
 }
@@ -247,6 +258,10 @@ pub struct Shell {
     explorer: Option<Explorer>,
     side_view: SideView,
     search: SearchView,
+    scm: ScmView,
+    scm_focused: bool,
+    git_root: Option<PathBuf>,
+    git_rx: Option<std::sync::mpsc::Receiver<Result<git::Status, String>>>,
     search_focused: bool,
     search_generation: u64,
     nodes: Nodes,
@@ -334,15 +349,16 @@ impl Shell {
         });
         let ui = Ui::new();
         let root = ui.root();
-        let (chrome, menubar_node, explorer_node, search_node) = {
+        let (chrome, menubar_node, explorer_node, search_node, scm_node) = {
             let mut tree = ui.tree_mut();
             tree.set_bounds(root, Rect::new(0.0, 0.0, width, height));
             let chrome = tree.create(root, Role::Generic);
             let explorer = tree.create(root, Role::Tree);
             let search = tree.create(root, Role::Tree);
+            let scm = tree.create(root, Role::Tree);
             let menubar = tree.create(root, Role::MenuBar);
             tree.add_class(menubar, "menubar");
-            (chrome, menubar, explorer, search)
+            (chrome, menubar, explorer, search, scm)
         };
         let queue: CommandQueue = Rc::new(RefCell::new(Vec::new()));
         let (menubar, mut palette_items) = Self::build_menubar(&ui, menubar_node, &theme, &queue);
@@ -358,6 +374,7 @@ impl Shell {
         };
         let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
         let search = SearchView::new(&ui, search_node, &theme, icons.clone(), language_of.clone(), queue.clone());
+        let scm = ScmView::new(&ui, scm_node, &theme, icons.clone(), language_of.clone(), queue.clone());
         let terminal_palette = terminal_panel::palette(&theme);
         let mut shell = Self {
             ui,
@@ -369,9 +386,13 @@ impl Shell {
             explorer,
             side_view: SideView::Explorer,
             search,
+            scm,
+            scm_focused: false,
+            git_root: None,
+            git_rx: None,
             search_focused: false,
             search_generation: 0,
-            nodes: Nodes { chrome, menubar: menubar_node, explorer: explorer_node, search: search_node, editor_host: None },
+            nodes: Nodes { chrome, menubar: menubar_node, explorer: explorer_node, search: search_node, scm: scm_node, editor_host: None },
             editors: Vec::new(),
             active: None,
             sidebar_visible: workspace.is_some(),
@@ -413,6 +434,7 @@ impl Shell {
         if let Some(entry) = shell.theme_index.and_then(|i| shell.themes.get(i)) {
             shell.theme_file.1 = entry.ui_theme.clone();
         }
+        shell.detect_git();
         for file in files {
             shell.open_file(file)?;
         }
@@ -473,6 +495,7 @@ impl Shell {
             explorer.restyle(&self.theme);
         }
         self.search.restyle(&self.theme);
+        self.scm.restyle(&self.theme);
         // A barra de menus guarda as cores na criação: recria no mesmo nó.
         IDisposable::dispose(&*self.menubar);
         let children = self.ui.tree().children(self.nodes.menubar).to_vec();
@@ -644,6 +667,9 @@ impl Shell {
             editor.saved_version = model.get_alternative_version_id();
         }
         editor.view.mark_dirty();
+        if result.is_ok() {
+            self.git_op(git::Operation::Refresh);
+        }
         if let Err(e) = result {
             self.notify(Severity::Error, format!("Falha ao salvar '{}': {e}", path.display()));
         }
@@ -795,6 +821,50 @@ impl Shell {
                 }
                 self.start_search();
             }
+            Command::ShowScm => {
+                self.show_view(SideView::SourceControl);
+                if self.sidebar_visible {
+                    self.scm_focused = true;
+                    self.search_focused = false;
+                    self.set_terminal_focus_off();
+                    self.ui.blur();
+                    self.git_op(git::Operation::Refresh);
+                }
+            }
+            Command::ScmFocus => {
+                self.scm_focused = true;
+                self.search_focused = false;
+                self.set_terminal_focus_off();
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(false);
+                }
+            }
+            Command::ScmRefresh => self.git_op(git::Operation::Refresh),
+            Command::ScmOp(op) => {
+                self.git_op(op);
+            }
+            Command::ScmCommit => {
+                let message = self.scm.text();
+                let staged = self.scm.status.borrow().staged.len();
+                if message.trim().is_empty() {
+                    self.notify(Severity::Warning, "Please provide a commit message.".to_owned());
+                } else if staged == 0 {
+                    self.notify(Severity::Warning, "There are no staged changes to commit. Stage some changes first.".to_owned());
+                } else {
+                    self.git_op(git::Operation::Commit(message));
+                    self.scm.message.clear();
+                    self.scm.cursor = 0;
+                }
+            }
+            Command::ScmOpen(path) => {
+                if let Some(root) = self.git_root.clone() {
+                    let full = root.join(&path);
+                    if full.is_file() {
+                        let _ = self.open_file(&full);
+                    }
+                }
+            }
+            Command::ScmContextMenu(entry) => self.scm_menu(entry),
             Command::DismissToast(id) => {
                 self.toasts.retain(|t| t.id != id);
                 self.needs_render = true;
@@ -939,6 +1009,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn git_status(&self) -> git::Status {
+        self.scm.status.borrow().clone()
+    }
+
+    #[cfg(test)]
     pub fn toast_count(&self) -> usize {
         self.toasts.len()
     }
@@ -970,11 +1045,118 @@ impl Shell {
         self.workspace = Some(path);
         self.workspace_files = None;
         self.sidebar_visible = true;
+        self.detect_git();
         let selected = self.active_editor().and_then(|e| e.path.clone());
         if let Some(explorer) = &self.explorer {
             explorer.reveal(selected.as_deref());
         }
         self.resize_editors();
+    }
+
+    /// Detecta o repositório do workspace e pede o estado.
+    fn detect_git(&mut self) {
+        self.git_root = self.workspace.as_deref().and_then(git::find_root);
+        self.scm.set_status(git::Status::default());
+        self.git_rx = None;
+        if self.git_root.is_some() {
+            self.git_op(git::Operation::Refresh);
+        }
+    }
+
+    /// Roda uma operação do git numa thread; o estado novo chega depois (ver `take_dirty`).
+    fn git_op(&mut self, op: git::Operation) {
+        if let Some(root) = self.git_root.clone() {
+            self.git_rx = Some(git::spawn(root, op, self.wake.clone()));
+        }
+    }
+
+    /// O texto de `Ln, Col`... do ramo na barra de status: `main`, com `*` se a árvore está suja e `+` se há índice.
+    fn branch_label(&self) -> Option<String> {
+        self.git_root.as_ref()?;
+        let status = self.scm.status.borrow();
+        if status.branch.is_empty() {
+            return None;
+        }
+        Some(format!("{}{}{}", status.branch, if status.changes.is_empty() { "" } else { "*" }, if status.staged.is_empty() { "" } else { "+" }))
+    }
+
+    fn scm_menu(&mut self, entry: scm_view::Entry) {
+        use je_base::actions::{Action, ActionCallback, ActionRef};
+        use scm_view::{Entry, Group};
+        let queue = self.queue.clone();
+        let item = |label: &str, command: Command| -> ActionRef {
+            let queue = queue.clone();
+            let callback: ActionCallback = Rc::new(move |_| {
+                queue.borrow_mut().push(command.clone());
+                je_base::dynamic::Dynamic::Undefined.into()
+            });
+            Action::new(label, label, "", true, Some(callback)) as ActionRef
+        };
+        let mut actions: Vec<ActionRef> = Vec::new();
+        match &entry {
+            Entry::File(group, path) => {
+                actions.push(item("Open File", Command::ScmOpen(path.clone())));
+                let change = self.scm.changes_of(*group).into_iter().find(|c| &c.path == path);
+                match group {
+                    Group::Staged => actions.push(item("Unstage Changes", Command::ScmOp(git::Operation::Unstage(vec![path.clone()])))),
+                    Group::Changes => {
+                        actions.push(item("Stage Changes", Command::ScmOp(git::Operation::Stage(vec![path.clone()]))));
+                        if let Some(change) = change {
+                            actions.push(item("Discard Changes", Command::ScmOp(git::Operation::Discard(vec![change]))));
+                        }
+                    }
+                }
+            }
+            Entry::Group(Group::Staged) => {
+                let paths = self.scm.changes_of(Group::Staged).into_iter().map(|c| c.path).collect();
+                actions.push(item("Unstage All Changes", Command::ScmOp(git::Operation::Unstage(paths))));
+            }
+            Entry::Group(Group::Changes) => {
+                let all = self.scm.changes_of(Group::Changes);
+                actions.push(item("Stage All Changes", Command::ScmOp(git::Operation::Stage(all.iter().map(|c| c.path.clone()).collect()))));
+                actions.push(item("Discard All Changes", Command::ScmOp(git::Operation::Discard(all))));
+            }
+        }
+        self.open_menu(actions);
+    }
+
+    /// Trata uma tecla com a mensagem do commit focada. Devolve se consumiu.
+    fn scm_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+        let ctrl = mods.ctrl || mods.meta;
+        let view = &mut self.scm;
+        match key {
+            Some(EditorKey::Escape) => {
+                self.scm_focused = false;
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(true);
+                }
+            }
+            Some(EditorKey::Enter) if ctrl => self.run(Command::ScmCommit),
+            Some(EditorKey::Left) => view.cursor = view.cursor.saturating_sub(1),
+            Some(EditorKey::Right) => view.cursor = (view.cursor + 1).min(view.message.len()),
+            Some(EditorKey::Home) => view.cursor = 0,
+            Some(EditorKey::End) => view.cursor = view.message.len(),
+            Some(EditorKey::Backspace) if view.cursor > 0 => {
+                view.message.remove(view.cursor - 1);
+                view.cursor -= 1;
+            }
+            Some(EditorKey::Delete) if view.cursor < view.message.len() => {
+                view.message.remove(view.cursor);
+            }
+            Some(EditorKey::Up | EditorKey::Down | EditorKey::PageUp | EditorKey::PageDown | EditorKey::Tab | EditorKey::Backspace | EditorKey::Delete | EditorKey::Enter) => {}
+            _ => {
+                if (!ctrl || mods.alt)
+                    && let Some(text) = text
+                {
+                    let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                    let at = view.cursor;
+                    view.cursor += inserted.len();
+                    view.message.splice(at..at, inserted);
+                }
+            }
+        }
+        self.needs_render = true;
+        true
     }
 
     /// Mostra a vista `view` na barra lateral (clicar na ativa recolhe a barra, como no VS Code).
@@ -1132,6 +1314,11 @@ impl Shell {
         actions.push(Separator::new() as ActionRef);
         actions.push(item("Rename...", Command::PromptRename(path.to_path_buf())));
         actions.push(item("Delete", Command::ConfirmDelete(path.to_path_buf())));
+        self.open_menu(actions);
+    }
+
+    /// Abre um menu de contexto com `actions` na posição do ponteiro.
+    fn open_menu(&mut self, actions: Vec<je_base::actions::ActionRef>) {
         self.close_context_menu();
         let (x, y) = self.last_pointer;
         let slot = {
@@ -1663,6 +1850,22 @@ impl Shell {
             if checked {
                 style.background = Some(self.color("activityBar.activeBackground"));
             }
+            if view == SideView::SourceControl {
+                let count = self.scm.status.borrow().count();
+                if count > 0 && self.git_root.is_some() {
+                    let text = if count > 99 { "99+".to_owned() } else { count.to_string() };
+                    let badge_font = ui_font(9.0, 600);
+                    let w = (measure_text(&text, &badge_font) + 8.0).max(16.0).round();
+                    let badge = tree.create(button, Role::Generic);
+                    tree.set_bounds(badge, Rect::new(18.0, 18.0, 18.0 + w, 34.0));
+                    let style = tree.style_mut(badge);
+                    style.background = Some(self.color("activityBarBadge.background"));
+                    style.radius = 8.0;
+                    let t = tree.create(badge, Role::Generic);
+                    tree.set_bounds(t, Rect::new((w - measure_text(&text, &badge_font)) / 2.0, 0.0, w, 16.0));
+                    tree.style_mut(t).content = Content::Text { text, style: badge_font, color: self.color("activityBarBadge.foreground"), line_height: 16.0 };
+                }
+            }
             view_buttons.push((button, view));
         }
         let height = bottom - TITLE_HEIGHT;
@@ -1683,6 +1886,7 @@ impl Shell {
             let mut tree = self.ui.tree_mut();
             tree.style_mut(self.nodes.explorer).visible = false;
             tree.style_mut(self.nodes.search).visible = false;
+            tree.style_mut(self.nodes.scm).visible = false;
             return;
         };
         let fg = self.color("sideBarTitle.foreground");
@@ -1725,6 +1929,7 @@ impl Shell {
                 tree.set_bounds(self.nodes.explorer, list);
                 tree.style_mut(self.nodes.explorer).visible = self.explorer.is_some();
                 tree.style_mut(self.nodes.search).visible = false;
+                tree.style_mut(self.nodes.scm).visible = false;
                 drop(tree);
                 if let Some(explorer) = &self.explorer {
                     explorer.layout(list.width(), list.height());
@@ -1751,8 +1956,32 @@ impl Shell {
                 tree.set_bounds(self.nodes.search, list);
                 tree.style_mut(self.nodes.search).visible = true;
                 tree.style_mut(self.nodes.explorer).visible = false;
+                tree.style_mut(self.nodes.scm).visible = false;
                 drop(tree);
                 self.search.layout(list.width(), list.height());
+            }
+            SideView::SourceControl => {
+                if self.git_root.is_none() {
+                    let note = tree.create(bar, Role::Status);
+                    tree.set_bounds(note, Rect::new(13.0, 40.0, rect.width() - 13.0, 80.0));
+                    let message = if self.workspace.is_some() { "The folder currently open doesn't have a Git repository." } else { "You have not yet opened a folder." };
+                    tree.style_mut(note).content = Content::Text { text: message.to_owned(), style: ui_font(13.0, 400), color: fg, line_height: 20.0 };
+                    let mut tree_ref = tree;
+                    tree_ref.style_mut(self.nodes.explorer).visible = false;
+                    tree_ref.style_mut(self.nodes.search).visible = false;
+                    tree_ref.style_mut(self.nodes.scm).visible = false;
+                } else {
+                    let branch = self.scm.status.borrow().branch.clone();
+                    let (header_hits, top) = self.scm.render_header(&mut tree, bar, rect.width(), self.scm_focused, &branch);
+                    hits.extend(header_hits);
+                    let list = Rect::new(rect.x0 + 5.0, rect.y0 + top + 5.0, rect.x1 - 6.0, rect.y1 - 6.0);
+                    tree.set_bounds(self.nodes.scm, list);
+                    tree.style_mut(self.nodes.scm).visible = true;
+                    tree.style_mut(self.nodes.explorer).visible = false;
+                    tree.style_mut(self.nodes.search).visible = false;
+                    drop(tree);
+                    self.scm.layout(list.width(), list.height());
+                }
             }
             other => {
                 // As vistas ainda sem implementação mostram só o título e um aviso honesto.
@@ -1761,6 +1990,7 @@ impl Shell {
                 tree.style_mut(note).content = Content::Text { text: format!("{} ainda não existe no je-code.", other.title()), style: ui_font(13.0, 400), color: fg, line_height: 20.0 };
                 tree.style_mut(self.nodes.explorer).visible = false;
                 tree.style_mut(self.nodes.search).visible = false;
+                tree.style_mut(self.nodes.scm).visible = false;
             }
         }
         for (node, command) in hits {
@@ -1875,7 +2105,7 @@ impl Shell {
     }
 
     /// O fundo do grupo sem editores (`editorGroupWatermark`): o logotipo apagado e os atalhos principais.
-    fn render_watermark(tree: &mut Tree, frame: NodeId, part: Rect, theme: &ColorTheme) {
+    fn render_watermark(tree: &mut Tree, frame: NodeId, part: Rect, theme: &ColorTheme, folder_open: bool) {
         let color = |id: &str| theme.get_color(id).unwrap_or(Rgba::opaque(0xff, 0, 0xff));
         let background = color("editor.background");
         // O logotipo é um tom mais escuro que o fundo (`letterpress`).
@@ -1891,12 +2121,17 @@ impl Shell {
         let chip_bg = color("keybindingLabel.background");
         let chip_border = color("keybindingLabel.bottomBorder");
         let chip_fg = color("keybindingLabel.foreground");
-        let rows: [(&str, Vec<Vec<&str>>); 4] = [
-            ("Show All Commands", vec![vec!["Ctrl", "Shift", "P"]]),
-            ("Open Recent", vec![vec!["Ctrl", "R"]]),
-            ("Open File", vec![vec!["Ctrl", "O"]]),
-            ("Open Folder", vec![vec!["Ctrl", "K"], vec!["Ctrl", "O"]]),
-        ];
+        // Com uma pasta aberta o grupo sugere os comandos do projeto; sem pasta, os de abrir.
+        let rows: Vec<(&str, Vec<Vec<&str>>)> = if folder_open {
+            vec![("Show All Commands", vec![vec!["Ctrl", "Shift", "P"]]), ("Toggle Terminal", vec![vec!["Ctrl", "`"]]), ("Start Debugging", vec![vec!["F5"]])]
+        } else {
+            vec![
+                ("Show All Commands", vec![vec!["Ctrl", "Shift", "P"]]),
+                ("Open Recent", vec![vec!["Ctrl", "R"]]),
+                ("Open File", vec![vec!["Ctrl", "O"]]),
+                ("Open Folder", vec![vec!["Ctrl", "K"], vec!["Ctrl", "O"]]),
+            ]
+        };
         let left = center_x - 136.0;
         let mut y = top + 286.0;
         for (label, chords) in rows {
@@ -1959,7 +2194,7 @@ impl Shell {
         let inner_width = part.width() - 2.0;
         if self.editors.is_empty() {
             self.nodes.editor_host = None;
-            Self::render_watermark(&mut tree, frame, part, &self.theme);
+            Self::render_watermark(&mut tree, frame, part, &self.theme, self.workspace.is_some());
             return;
         }
         // A faixa das abas (`.tabs-and-actions-container`).
@@ -2206,6 +2441,9 @@ impl Shell {
         };
         let mut left = 6.0;
         left += place(&mut tree, left, &[Piece::Icon("remote")], None);
+        if let Some(label) = self.branch_label() {
+            left += place(&mut tree, left, &[Piece::Icon("git-branch"), Piece::Text(format!(" {label}"))], Some(Command::ShowScm));
+        }
         place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())], None);
         let mut items: Vec<(Vec<Piece>, Option<Command>)> = Vec::new();
         if let Some(editor) = self.active_editor() {
@@ -2369,6 +2607,7 @@ impl Shell {
             self.ui.blur();
             self.find_focused = false;
             self.search_focused = false;
+            self.scm_focused = false;
             if let Some((lx, ly)) = self.editor_local(x, y)
                 && let Some(editor) = self.active_editor_mut()
             {
@@ -2401,6 +2640,7 @@ impl Shell {
             match (self.side_view, &self.explorer) {
                 (SideView::Explorer, Some(explorer)) => explorer.scroll_by(dy),
                 (SideView::Search, _) => self.search.scroll_by(dy),
+                (SideView::SourceControl, _) => self.scm.scroll_by(dy),
                 _ => {}
             }
             return;
@@ -2440,6 +2680,7 @@ impl Shell {
             (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::ShowCommands,
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, true, false, KeyCode::KeyF) => Command::ShowSearch,
+            (true, true, false, KeyCode::KeyG) => Command::ShowScm,
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
             (false, false, false, KeyCode::F11) => Command::ToggleFullScreen,
@@ -2492,6 +2733,16 @@ impl Shell {
                 }
             }
             return;
+        }
+        if self.scm_focused && self.sidebar_visible && self.side_view == SideView::SourceControl && down {
+            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::ShowScm | Command::ShowSearch | Command::QuickOpen | Command::ShowCommands | Command::TogglePanel | Command::ToggleTerminal | Command::ToggleSidebar | Command::NewUntitled | Command::ShowExplorer));
+            if let Some(command) = shortcut {
+                self.run(command);
+                return;
+            }
+            if self.scm_key(text, editor_key, mods) {
+                return;
+            }
         }
         if self.search_focused && self.sidebar_visible && self.side_view == SideView::Search && down {
             let toggles = match (mods.alt, key_code) {
@@ -2559,6 +2810,10 @@ impl Shell {
     }
 
     pub fn set_window_focus(&mut self, focused: bool) {
+        if focused && self.git_root.is_some() {
+            // Ao voltar para a janela o estado do git pode ter mudado fora dela.
+            self.git_op(git::Operation::Refresh);
+        }
         if let Some(editor) = self.active_editor_mut() {
             editor.view.set_focus(focused);
         }
@@ -2572,6 +2827,16 @@ impl Shell {
         self.run_commands();
         let editor = self.active.is_some_and(|i| self.editors[i].view.take_dirty());
         let terminal = self.terminal.as_ref().is_some_and(je_terminal::Terminal::take_dirty);
+        if let Some(rx) = &self.git_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            self.git_rx = None;
+            match result {
+                Ok(status) => self.scm.set_status(status),
+                Err(e) => self.notify(Severity::Error, e),
+            }
+            self.needs_render = true;
+        }
         let search = self.search.poll();
         if search {
             self.needs_render = true;

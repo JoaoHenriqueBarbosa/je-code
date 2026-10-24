@@ -908,6 +908,56 @@ mod tests {
     }
 
     #[test]
+    fn source_control_view_stages_and_commits() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-scm", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().expect("git existe");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run_git(&["init", "-q", "-b", "main"]);
+        run_git(&["config", "user.email", "a@b.c"]);
+        run_git(&["config", "user.name", "teste"]);
+        std::fs::write(dir.join("a.txt"), "um\n").expect("a");
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("a.txt"), "um\ndois\n").expect("edita");
+        std::fs::write(dir.join("b.txt"), "novo\n").expect("novo");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        shell.set_wake(Arc::new(|| {}));
+        let wait = |shell: &mut Shell, ready: &dyn Fn(&shell::git::Status) -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                shell.take_dirty();
+                if ready(&shell.git_status()) || std::time::Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        shell.run(shell::Command::ShowScm);
+        wait(&mut shell, &|s| s.count() == 2);
+        snapshot(&mut shell, "g0-scm.png");
+        let status = shell.git_status();
+        assert_eq!((status.branch.as_str(), status.staged.len(), status.changes.len()), ("main", 0, 2));
+        // Stage de tudo, mensagem e commit pela Ctrl+Enter.
+        shell.run(shell::Command::ScmOp(shell::git::Operation::Stage(vec!["a.txt".to_owned(), "b.txt".to_owned()])));
+        wait(&mut shell, &|s| s.staged.len() == 2);
+        snapshot(&mut shell, "g1-staged.png");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, mods: Modifiers, text: Option<&str>| shell.key(true, KeyCode::Unknown, mods, text, key);
+        shell.run(shell::Command::ScmFocus);
+        for c in "segundo commit".chars() {
+            key(&mut shell, None, Modifiers::default(), Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), Modifiers { ctrl: true, ..Modifiers::default() }, None);
+        wait(&mut shell, &|s| s.count() == 0);
+        assert_eq!(shell.git_status().count(), 0, "o commit levou os dois arquivos");
+        let log = std::process::Command::new("git").arg("-C").arg(&dir).args(["log", "--oneline"]).output().expect("log");
+        assert!(String::from_utf8_lossy(&log.stdout).contains("segundo commit"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");
