@@ -8,6 +8,9 @@
 //! - [`edits`]: `EndOfLine`, `TextEdit`.
 //! - [`symbols`]: `SymbolKind`, `SymbolTag`, `DocumentSymbol`, `DocumentHighlight`, `CallHierarchyItem`,
 //!   `CallHierarchyIncomingCall`, `CallHierarchyOutgoingCall`, `TypeHierarchyItem`.
+//! - [`text_editor`]: `TextEditorLineNumbersStyle`, `ThemableDecorationAttachmentRenderOptions`,
+//!   `ThemableDecorationRenderOptions`, `DecorationRangeBehavior`, `DecorationRenderOptions`,
+//!   `fromRangeOrRangeWithMessage` e `pathOrURIToURI`.
 //!
 //! Este arquivo tem o resto: [`ICommandsConverter`] (o `Command.ICommandsConverter`), `ViewColumn` e o
 //! `EditorGroupColumn`.
@@ -18,9 +21,7 @@
 //! [`geometry`]).
 //!
 //! AINDA NÃO PORTADO (cada item pede classes ou DTOs que ainda não existem no porte; ficam por nome do
-//! `namespace` do original): `TokenType`, `DocumentSelector`, `TabSelector`, a família de decoração
-//! (`DecorationOptions`, `ThemableDecorationRenderOptions`, `ThemableDecorationAttachmentRenderOptions`,
-//! `DecorationRenderOptions`, `DecorationRangeBehavior`, `fromRangeOrRangeWithMessage`), `WorkspaceEdit`
+//! `namespace` do original): `TokenType`, `DocumentSelector`, `TabSelector`, `WorkspaceEdit`
 //! (depende de `IWorkspaceEditDto` e de `NotebookCellData`), `WorkspaceSymbol`, `DefinitionLink`, `Hover`,
 //! `EvaluatableExpression`, `InlineValue`, `InlineValueContext`, `MultiDocumentHighlight`,
 //! `CompletionTriggerKind`, `CompletionContext`, `CompletionItemTag`, `CompletionCommand`,
@@ -46,6 +47,7 @@ pub mod geometry;
 pub mod markers;
 pub mod markup;
 pub mod symbols;
+pub mod text_editor;
 
 pub use edits::{EndOfLine, TextEdit};
 pub use geometry::{CellRange, Location, LocationDto, NotebookRange, Position, Range, Selection};
@@ -54,6 +56,10 @@ pub use markup::MarkdownString;
 pub use symbols::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentHighlight, DocumentSymbol, HierarchyItemDto, IncomingCallDto,
     OutgoingCallDto, SymbolKind, SymbolTag, TypeHierarchyItem,
+};
+pub use text_editor::{
+    DecorationRangeBehavior, DecorationRenderOptions, TextEditorLineNumbersStyle, ThemableDecorationAttachmentRenderOptions,
+    ThemableDecorationRenderOptions, from_range_or_range_with_message, path_or_uri_to_uri,
 };
 
 /// `Command.ICommandsConverter`: a conversão entre o `vscode.Command` da API e o `ICommandDto` do protocolo.

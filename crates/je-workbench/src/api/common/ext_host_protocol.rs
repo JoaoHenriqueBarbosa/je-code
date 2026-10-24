@@ -272,6 +272,295 @@ pub trait ExtHostCommandsShape {
 
 // #endregion
 
+// #region Documentos e editores de texto
+
+pub use self::documents_and_editors_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostTextEditor.ts`, `extHostDocumentsAndEditors.ts` e
+/// `extHostDocuments.ts` usam: `MainThreadDocumentsShape`, `MainThreadTextEditorsShape`,
+/// `ExtHostDocumentsShape`, `ExtHostDocumentsAndEditorsShape`, os DTOs deles e os identificadores
+/// `MainContext.MainThreadDocuments`, `MainThreadTextEditors`, `ExtHostContext.ExtHostDocuments` e
+/// `ExtHostDocumentsAndEditors`. Fica num módulo próprio (reexportado aqui) para as importações não
+/// colidirem com as das outras regiões do arquivo.
+///
+/// Divergências:
+/// - `UriComponents` é a [`URI`] (o `URI.revive` do original já está feito), e `IRange`, `ISelection` e
+///   `ISingleEditOperation` são os tipos do editor ([`EditorRange`], [`EditorSelection`],
+///   [`SingleEditOperation`]). O `EOL: string` de `IModelAddedData` e o `eol: string` do evento serializado são o
+///   [`Eol`] do modelo (só há `'\n'` e `'\r\n'`), e o `versionId` é `i64`, como no espelho do modelo.
+/// - `MainThreadDocumentsShape extends IDisposable, IExtHostDocumentSaveDelegate`: o `$trySaveDocument` é o
+///   `rpc_try_save_document` do supertrait [`IExtHostDocumentSaveDelegate`].
+/// - `newActiveEditor?: string | null` é `Option<Option<String>>` (`None` é `undefined`, `Some(None)` é `null`).
+/// - `$getDiffInformation` devolve `IChange[]`: o [`LineChange`] sem `charChanges`. `$trySetDecorationsFast`
+///   recebe os `number[]` como `Vec<f64>`. `$tryShowTextDocument`, `$tryHideEditor`, `$tryShowEditor` e os demais
+///   métodos de `MainThreadTextEditorsShape` seguem a assinatura do original com os tipos acima.
+/// - `ISnippetOptions` (o `opts` de `$tryInsertSnippet`, que o original anota como `IUndoStopOptions`, mas
+///   recebe o `keepWhitespace` também) é [`SnippetOptions`].
+/// - `TextEditorRevealType` do protocolo (valores `0` a `3`) é o enum de `ext_host_types`, de valores iguais.
+/// - `IDecorationOptions`, `IDecorationInstanceRenderOptions` e `IThemeDecorationInstanceRenderOptions` (de
+///   `editorCommon.ts`) são [`DecorationOptionsDto`], [`DecorationInstanceRenderOptionsDto`] e
+///   [`ThemeDecorationInstanceRenderOptionsDto`]; `IDecorationRenderOptions` é o do editor.
+/// - `IMarkdownString | IMarkdownString[]` é [`MarkdownStringOrArray`].
+mod documents_and_editors_region {
+    use je_base::dynamic::Dynamic;
+    use je_base::html_content::IMarkdownString;
+    use je_base::js_string::JsString;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::config::editor_options::cursor_style::TextEditorCursorStyle;
+    use je_editor::config::editor_options::line_numbers::RenderLineNumbersType;
+    use je_editor::diff::legacy_lines_diff_computer::LineChange;
+    use je_editor::edit_operation::SingleEditOperation;
+    use je_editor::model::{EndOfLineSequence, Eol};
+    use je_editor::range::Range as EditorRange;
+    use je_editor::selection::Selection as EditorSelection;
+    use je_editor::services::decoration_render_options::{ContentDecorationRenderOptions, DecorationRenderOptions};
+    use je_editor::text_model_events::ModelContentChange;
+    use je_extensions::manifest::ExtensionIdentifier;
+
+    use super::{EditorGroupColumn, ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_document_data::IExtHostDocumentSaveDelegate;
+    use crate::api::common::ext_host_types::TextEditorRevealType;
+
+    // ---- configuração do editor
+
+    /// `tabSize?: number | 'auto'`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum TabSizeValue {
+        Size(f64),
+        Auto,
+    }
+
+    /// `indentSize?: number | 'tabSize'` (e o `originalIndentSize: number | 'tabSize'`).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum IndentSizeValue {
+        Size(f64),
+        TabSize,
+    }
+
+    /// `insertSpaces?: boolean | 'auto'`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum InsertSpacesValue {
+        Bool(bool),
+        Auto,
+    }
+
+    /// `ITextEditorConfigurationUpdate`: cada campo ausente é `undefined`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct TextEditorConfigurationUpdate {
+        pub tab_size: Option<TabSizeValue>,
+        pub indent_size: Option<IndentSizeValue>,
+        pub insert_spaces: Option<InsertSpacesValue>,
+        pub cursor_style: Option<TextEditorCursorStyle>,
+        pub line_numbers: Option<RenderLineNumbersType>,
+    }
+
+    /// `IResolvedTextEditorConfiguration`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ResolvedTextEditorConfiguration {
+        pub tab_size: f64,
+        pub indent_size: f64,
+        pub original_indent_size: IndentSizeValue,
+        pub insert_spaces: bool,
+        pub cursor_style: TextEditorCursorStyle,
+        pub line_numbers: RenderLineNumbersType,
+    }
+
+    /// `IUndoStopOptions`. O valor padrão do original (`{ undoStopBefore: true, undoStopAfter: true }`) é o
+    /// [`Default`].
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct UndoStopOptions {
+        pub undo_stop_before: bool,
+        pub undo_stop_after: bool,
+    }
+
+    impl Default for UndoStopOptions {
+        fn default() -> Self {
+            Self { undo_stop_before: true, undo_stop_after: true }
+        }
+    }
+
+    /// `IApplyEditsOptions`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ApplyEditsOptions {
+        pub set_end_of_line: Option<EndOfLineSequence>,
+        pub undo_stop_before: bool,
+        pub undo_stop_after: bool,
+    }
+
+    /// `ISnippetOptions`. O valor padrão do original é `{ undoStopBefore: true, undoStopAfter: true }`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SnippetOptions {
+        pub undo_stop_before: bool,
+        pub undo_stop_after: bool,
+        pub keep_whitespace: Option<bool>,
+    }
+
+    impl Default for SnippetOptions {
+        fn default() -> Self {
+            Self { undo_stop_before: true, undo_stop_after: true, keep_whitespace: None }
+        }
+    }
+
+    /// `ITextDocumentShowOptions`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct TextDocumentShowOptions {
+        pub position: Option<EditorGroupColumn>,
+        pub preserve_focus: Option<bool>,
+        pub pinned: Option<bool>,
+        pub selection: Option<EditorRange>,
+    }
+
+    // ---- decorações
+
+    /// `IMarkdownString | IMarkdownString[]`.
+    #[derive(Clone, Debug)]
+    pub enum MarkdownStringOrArray {
+        One(IMarkdownString),
+        Many(Vec<IMarkdownString>),
+    }
+
+    /// `IThemeDecorationInstanceRenderOptions`.
+    #[derive(Clone, Debug, Default)]
+    pub struct ThemeDecorationInstanceRenderOptionsDto {
+        pub before: Option<ContentDecorationRenderOptions>,
+        pub after: Option<ContentDecorationRenderOptions>,
+    }
+
+    /// `IDecorationInstanceRenderOptions`: as opções de tema (`base`) mais as variantes `light` e `dark`.
+    #[derive(Clone, Debug, Default)]
+    pub struct DecorationInstanceRenderOptionsDto {
+        pub base: ThemeDecorationInstanceRenderOptionsDto,
+        pub light: Option<ThemeDecorationInstanceRenderOptionsDto>,
+        pub dark: Option<ThemeDecorationInstanceRenderOptionsDto>,
+    }
+
+    /// `IDecorationOptions`.
+    #[derive(Clone, Debug)]
+    pub struct DecorationOptionsDto {
+        pub range: EditorRange,
+        pub hover_message: Option<MarkdownStringOrArray>,
+        pub render_options: Option<DecorationInstanceRenderOptionsDto>,
+    }
+
+    // ---- documentos
+
+    /// O `options` de `$tryCreateDocument`: `{ language?: string; content?: string; encoding?: string }`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct CreateDocumentOptions {
+        pub language: Option<String>,
+        pub content: Option<String>,
+        pub encoding: Option<String>,
+    }
+
+    /// O `options` de `$tryOpenDocument`: `{ encoding?: string }`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct OpenDocumentOptions {
+        pub encoding: Option<String>,
+    }
+
+    /// `MainThreadDocumentsShape`.
+    pub trait MainThreadDocumentsShape: IDisposable + IExtHostDocumentSaveDelegate {
+        fn rpc_try_create_document(&self, options: Option<CreateDocumentOptions>) -> Promise<URI>;
+        fn rpc_try_open_document(&self, uri: &URI, options: Option<OpenDocumentOptions>) -> Promise<URI>;
+    }
+
+    /// `MainThreadTextEditorsShape`.
+    pub trait MainThreadTextEditorsShape: IDisposable {
+        fn rpc_try_show_text_document(&self, resource: &URI, options: TextDocumentShowOptions) -> Promise<Option<String>>;
+        fn rpc_register_text_editor_decoration_type(&self, extension_id: &ExtensionIdentifier, key: &str, options: DecorationRenderOptions);
+        fn rpc_remove_text_editor_decoration_type(&self, key: &str);
+        fn rpc_try_show_editor(&self, id: &str, position: EditorGroupColumn) -> Promise<()>;
+        fn rpc_try_hide_editor(&self, id: &str) -> Promise<()>;
+        fn rpc_try_set_options(&self, id: &str, options: TextEditorConfigurationUpdate) -> Promise<()>;
+        fn rpc_try_set_decorations(&self, id: &str, key: &str, ranges: Vec<DecorationOptionsDto>) -> Promise<()>;
+        fn rpc_try_set_decorations_fast(&self, id: &str, key: &str, ranges: Vec<f64>) -> Promise<()>;
+        fn rpc_try_reveal_range(&self, id: &str, range: EditorRange, reveal_type: TextEditorRevealType) -> Promise<()>;
+        fn rpc_try_set_selections(&self, id: &str, selections: Vec<EditorSelection>) -> Promise<()>;
+        fn rpc_try_apply_edits(&self, id: &str, model_version_id: f64, edits: Vec<SingleEditOperation>, opts: ApplyEditsOptions) -> Promise<bool>;
+        fn rpc_try_insert_snippet(&self, id: &str, model_version_id: f64, template: &str, selections: &[EditorRange], opts: SnippetOptions) -> Promise<bool>;
+        fn rpc_get_diff_information(&self, id: &str) -> Promise<Vec<LineChange>>;
+    }
+
+    /// `IModelAddedData`.
+    #[derive(Clone, Debug)]
+    pub struct ModelAddedData {
+        pub uri: URI,
+        pub version_id: i64,
+        pub lines: Vec<JsString>,
+        pub eol: Eol,
+        pub language_id: String,
+        pub is_dirty: bool,
+        pub encoding: String,
+    }
+
+    /// `ISerializedModelContentChangedEvent`. O `detailedReason: Record<string, unknown> | undefined` é um
+    /// [`Dynamic`] (um objeto).
+    #[derive(Clone, Debug)]
+    pub struct SerializedModelContentChangedEvent {
+        pub changes: Vec<ModelContentChange>,
+        pub eol: Eol,
+        pub version_id: i64,
+        pub is_undoing: bool,
+        pub is_redoing: bool,
+        pub is_flush: bool,
+        pub is_eol_change: bool,
+        pub detailed_reason: Option<Dynamic>,
+    }
+
+    /// `ExtHostDocumentsShape`.
+    pub trait ExtHostDocumentsShape {
+        fn rpc_accept_model_language_changed(&self, uri: &URI, new_language_id: &str);
+        fn rpc_accept_model_saved(&self, uri: &URI);
+        fn rpc_accept_dirty_state_changed(&self, uri: &URI, is_dirty: bool);
+        fn rpc_accept_encoding_changed(&self, uri: &URI, encoding: &str);
+        fn rpc_accept_model_changed(&self, uri: &URI, e: SerializedModelContentChangedEvent, is_dirty: bool);
+    }
+
+    // ---- documentos e editores
+
+    /// `ITextEditorAddData`. O `editorPosition: EditorGroupColumn | undefined` é um `Option`.
+    #[derive(Clone, Debug)]
+    pub struct TextEditorAddData {
+        pub id: String,
+        pub document_uri: URI,
+        pub options: ResolvedTextEditorConfiguration,
+        pub selections: Vec<EditorSelection>,
+        pub visible_ranges: Vec<EditorRange>,
+        pub editor_position: Option<EditorGroupColumn>,
+    }
+
+    /// `IDocumentsAndEditorsDelta`: cada campo ausente é `undefined`.
+    #[derive(Clone, Debug, Default)]
+    pub struct DocumentsAndEditorsDelta {
+        pub removed_documents: Option<Vec<URI>>,
+        pub added_documents: Option<Vec<ModelAddedData>>,
+        pub removed_editors: Option<Vec<String>>,
+        pub added_editors: Option<Vec<TextEditorAddData>>,
+        pub new_active_editor: Option<Option<String>>,
+    }
+
+    /// `ExtHostDocumentsAndEditorsShape`.
+    pub trait ExtHostDocumentsAndEditorsShape {
+        fn rpc_accept_documents_and_editors_delta(&self, delta: DocumentsAndEditorsDelta);
+    }
+
+    // ---- identificadores
+
+    impl MainContext {
+        pub const MAIN_THREAD_DOCUMENTS: ProxyIdentifier<dyn MainThreadDocumentsShape> = ProxyIdentifier::new("MainThreadDocuments");
+        pub const MAIN_THREAD_TEXT_EDITORS: ProxyIdentifier<dyn MainThreadTextEditorsShape> = ProxyIdentifier::new("MainThreadTextEditors");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_DOCUMENTS_AND_EDITORS: ProxyIdentifier<dyn ExtHostDocumentsAndEditorsShape> = ProxyIdentifier::new("ExtHostDocumentsAndEditors");
+        pub const EXT_HOST_DOCUMENTS: ProxyIdentifier<dyn ExtHostDocumentsShape> = ProxyIdentifier::new("ExtHostDocuments");
+    }
+}
+
+// #endregion
+
 // #region Telemetry
 
 /// `MainThreadTelemetryShape`. O `$publicLog2<E, T>` genérico do original, que só checa o tipo dos dados em

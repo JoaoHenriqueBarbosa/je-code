@@ -7,6 +7,7 @@
 //! - [`symbols`]: `Diagnostic`, `SymbolInformation`, `CodeActionKind`, `Hover`, `CodeLens`, hierarquias...
 //! - [`completion`]: `CompletionItem`, `DocumentLink`, `Color`, `InlineSuggestion`...
 //! - [`semantic_tokens`]: `SemanticTokensBuilder` e companhia.
+//! - [`text_editor`]: as opções de decoração (`DecorationRenderOptions`...) e `TextEditorDiffInformation`.
 //! - [`markdown_string`]: `MarkdownString`.
 //! - [`language_model`]: `LanguageModel*` e `Mcp*`.
 //! - [`enums`]: as enumerações soltas.
@@ -45,6 +46,7 @@ pub mod notebook;
 pub mod position_range;
 pub mod semantic_tokens;
 pub mod symbols;
+pub mod text_editor;
 
 pub use completion::*;
 pub use edits::*;
@@ -55,6 +57,7 @@ pub use notebook::*;
 pub use position_range::*;
 pub use semantic_tokens::*;
 pub use symbols::*;
+pub use text_editor::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
