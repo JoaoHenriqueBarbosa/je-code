@@ -10,6 +10,7 @@ pub mod serialized_json;
 pub mod stored_value;
 pub mod test_coverage;
 pub mod test_exclusions;
+pub mod test_explorer_filter_state;
 pub mod test_id;
 pub mod test_item_collection;
 pub mod test_profile_service;

@@ -40,6 +40,16 @@ pub trait StoredJson: Sized {
     fn from_json(value: &Value) -> Option<Self>;
 }
 
+impl StoredJson for bool {
+    fn to_json(&self) -> Value {
+        Value::Bool(*self)
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        value.as_bool()
+    }
+}
+
 /// `defaultSerialization`.
 pub fn default_serialization<T: StoredJson + 'static>() -> IStoredValueSerialization<T> {
     IStoredValueSerialization {
