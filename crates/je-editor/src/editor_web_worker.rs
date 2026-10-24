@@ -8,7 +8,8 @@
 //! - O worker roda no mesmo thread: os métodos `$...` do original (chamadas de IPC que devolvem `Promise`) são métodos
 //!   comuns que recebem os dados já como valores do porte; `IRawModelData` é o [`RawModelData`].
 //! - `MirrorModel extends MirrorTextModel` é a composição [`MirrorModel`] sobre o [`MirrorTextModel`]. Dele só entram o
-//!   `getLineWords` e o `_wordenize` que o `$computeWordRanges` usa.
+//!   `getLineWords` e o `_wordenize` que o `$computeWordRanges` usa, mais `getValue` e `getLinesContent` (o worker de
+//!   notebook, `contrib/notebook/common/services/notebookWebWorker.ts`, os lê).
 //! - `$computeWordRanges(modelUrl, range, wordDef, wordDefFlags)` recebe a definição de palavra como o texto e as flags
 //!   do `RegExp` (o IPC não leva o objeto) e devolve a promessa de [`WordRanges`]; `Object.create(null)` é um
 //!   `HashMap`. `!isNaN(Number(word.word))` é [`is_numeric_word`].
@@ -78,6 +79,16 @@ pub struct MirrorModel {
 impl MirrorModel {
     pub fn new(uri: URI, lines: Vec<JsString>, eol: Eol, version_id: i64) -> Self {
         Self { inner: MirrorTextModel::new(Some(uri), lines, eol, version_id) }
+    }
+
+    /// `getValue()`: o texto inteiro, com o fim de linha do espelho.
+    pub fn get_value(&self) -> JsString {
+        self.inner.get_text()
+    }
+
+    /// `getLinesContent()`: uma cópia das linhas.
+    pub fn get_lines_content(&self) -> Vec<JsString> {
+        self.inner.lines().to_vec()
     }
 
     /// `onEvents(e)`.
