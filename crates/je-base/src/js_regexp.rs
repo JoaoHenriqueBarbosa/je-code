@@ -73,9 +73,17 @@ pub struct JsRegExp {
     /// linha, que não muda o significado ao recriar o `RegExp`).
     source: Vec<u16>,
     last_index: Cell<usize>,
+    /// Quantas vezes `exec` foi chamado: o contador que os testes do original fazem com uma subclasse de `RegExp`
+    /// (`class CountingRegExp extends RegExp { override exec(...) { this.count++; ... } }`).
+    exec_count: Cell<usize>,
 }
 
 impl JsRegExp {
+    /// O número de chamadas de `exec` até agora.
+    pub fn exec_count(&self) -> usize {
+        self.exec_count.get()
+    }
+
     /// `new RegExp(pattern, flags)`.
     pub fn new(pattern: &[u16], flags: &str) -> Result<JsRegExp, RegExpError> {
         let flags: Vec<u16> = flags.encode_utf16().collect();
@@ -83,6 +91,7 @@ impl JsRegExp {
             inner: RegExp::new(pattern, &flags)?,
             source: pattern.to_vec(),
             last_index: Cell::new(0),
+            exec_count: Cell::new(0),
         })
     }
 
@@ -112,6 +121,7 @@ impl JsRegExp {
     /// `regex.exec(text)`: com `g` ou `y` parte de `lastIndex` e o atualiza (zera se não casa); sem as
     /// duas flags parte do zero e não mexe em `lastIndex`.
     pub fn exec(&self, text: &[u16]) -> Option<Match> {
+        self.exec_count.set(self.exec_count.get() + 1);
         let flags = self.inner.flags();
         let stateful = flags.global || flags.sticky;
         let start = if stateful { self.last_index.get() } else { 0 };
