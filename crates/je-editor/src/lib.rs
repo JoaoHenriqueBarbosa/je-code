@@ -227,3 +227,5 @@ pub mod cursor_undo;
 pub mod highlight_decorations;
 pub mod textual_highlight_provider;
 pub mod word_highlighter;
+pub mod code_action;
+pub mod editor_state;

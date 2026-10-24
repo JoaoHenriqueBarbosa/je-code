@@ -3,8 +3,8 @@
 //! `SelectedLines`. O controlador, as ações e o restante de `folding.ts` não fazem parte desta fatia.
 //!
 //! Os módulos filhos são `foldingRanges.ts` ([`folding_ranges`]), `indentRangeProvider.ts`
-//! ([`indent_range_provider`]), `foldingModel.ts` ([`folding_model`]) e `hiddenRangeModel.ts`
-//! ([`hidden_range_model`]). `foldingDecorations.ts` não foi portado: depende de `ICodeEditor`, do registro
+//! ([`indent_range_provider`]), `foldingModel.ts` ([`folding_model`]), `hiddenRangeModel.ts`
+//! ([`hidden_range_model`]) e `syntaxRangeProvider.ts` ([`syntax_range_provider`]). `foldingDecorations.ts` não foi portado: depende de `ICodeEditor`, do registro
 //! de cores e de ícones (`registerColor`, `registerIcon`) e de `Codicon`, que não existem.
 //!
 //! Decisões de tradução:
@@ -24,6 +24,7 @@ pub mod folding_ranges;
 pub mod indent_range_provider;
 pub mod folding_model;
 pub mod hidden_range_model;
+pub mod syntax_range_provider;
 
 use folding_ranges::FoldingRegions;
 
