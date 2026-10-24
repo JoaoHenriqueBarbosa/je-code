@@ -7,8 +7,8 @@
 //!
 //! Divergências:
 //! - **O que falta de `authentication.ts`**: `isAuthenticationSession`, `WORKBENCH_ONLY_SESSION_OPTION_PREFIX`,
-//!   `withoutWorkbenchOnlySessionOptions`, `getAuthenticationSessionRequestKey` (nenhum serviço portado os
-//!   chama; entram com o `AuthenticationExtensionsService`) e os membros de `IAuthenticationExtensionsService`
+//!   `withoutWorkbenchOnlySessionOptions` (nenhum serviço portado o chama; entra com o
+//!   `AuthenticationExtensionsService`) e os membros de `IAuthenticationExtensionsService`
 //!   (preferência de sessão, `selectSession`, `requestSessionAccess`...). Já estão aqui
 //!   `ACCOUNTS_AVATAR_SETTING`, `IAuthenticationConstraint`, `IAuthenticationProvider`,
 //!   `IAuthenticationProviderHostDelegate` e `getDynamicAuthenticationProviderId`.
@@ -37,7 +37,7 @@
 use std::rc::Rc;
 
 use je_base::JsString;
-use je_base::dynamic::Dynamic;
+use je_base::dynamic::{json_stringify, Dynamic};
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::json::{Object, Value};
@@ -152,6 +152,48 @@ pub struct IAuthenticationWwwAuthenticateRequest {
 pub enum AuthenticationScopeListOrRequest {
     Scopes(Vec<String>),
     Request(IAuthenticationWwwAuthenticateRequest),
+}
+
+/// `getAuthenticationSessionRequestKey`: builds a value-sensitive request key without splitting opaque provider scope strings.
+///
+/// As chaves a mais de `options` (`[key: string]: any`, aqui `extra`) entram na chave como no `Object.entries` do original, e as
+/// entradas `undefined` ficam de fora; `JSON.stringify` e o `sort` padrão (unidades UTF-16) são os do JavaScript.
+pub fn get_authentication_session_request_key(scope_list_or_request: &AuthenticationScopeListOrRequest, options: &IAuthenticationProviderSessionOptions) -> String {
+    let sorted_scopes = |scopes: &[String]| {
+        let mut scopes: Vec<JsString> = scopes.iter().map(|scope| JsString::from(scope.as_str())).collect();
+        scopes.sort();
+        Dynamic::array(scopes.into_iter().map(Dynamic::String))
+    };
+    let request = match scope_list_or_request {
+        AuthenticationScopeListOrRequest::Scopes(scopes) => sorted_scopes(scopes),
+        AuthenticationScopeListOrRequest::Request(request) => Dynamic::object([
+            ("wwwAuthenticate", Dynamic::string(&request.www_authenticate)),
+            ("fallbackScopes", request.fallback_scopes.as_ref().map_or(Dynamic::Undefined, |scopes| sorted_scopes(scopes))),
+        ]),
+    };
+
+    // `{ ...options, account: options.account?.id, authorizationServer: options.authorizationServer?.toString(true) }`
+    let mut entries: Vec<(JsString, Dynamic)> = Vec::new();
+    let mut put = |name: JsString, value: Dynamic| match entries.iter_mut().find(|(key, _)| *key == name) {
+        Some(existing) => existing.1 = value,
+        None => entries.push((name, value)),
+    };
+    if let Some(Dynamic::Object(extra)) = &options.extra {
+        for (name, value) in extra.entries() {
+            put(name, value);
+        }
+    }
+    let text = |value: &Option<String>| value.as_deref().map_or(Dynamic::Undefined, Dynamic::string);
+    put(JsString::from("silent"), options.silent.map_or(Dynamic::Undefined, Dynamic::Bool));
+    put(JsString::from("clientId"), text(&options.client_id));
+    put(JsString::from("resource"), text(&options.resource));
+    put(JsString::from("audience"), text(&options.audience));
+    put(JsString::from("account"), options.account.as_ref().map_or(Dynamic::Undefined, |account| Dynamic::string(&account.id)));
+    put(JsString::from("authorizationServer"), options.authorization_server.as_ref().map_or(Dynamic::Undefined, |uri| Dynamic::String(uri.to_string(true))));
+    entries.retain(|(_, value)| !value.is_undefined());
+    entries.sort_by(|(first, _), (second, _)| first.cmp(second));
+    let entries = Dynamic::array(entries.into_iter().map(|(name, value)| Dynamic::array([Dynamic::String(name), value])));
+    json_stringify(&Dynamic::array([request, entries])).unwrap_or_default()
 }
 
 /// `AuthenticationProviderInformation`.
