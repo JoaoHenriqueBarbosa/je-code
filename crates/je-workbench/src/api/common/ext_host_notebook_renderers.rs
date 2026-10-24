@@ -58,7 +58,7 @@ impl ExtHostNotebookRenderers {
     /// `createRendererMessaging(manifest, rendererId)`.
     pub fn create_renderer_messaging(self: &Rc<Self>, manifest: &ExtensionDescription, renderer_id: &str) -> Result<NotebookRendererMessaging, Error> {
         let contributes_renderer =
-            manifest.manifest.contributes.as_ref().is_some_and(|contributes| contributes.notebook_renderer.iter().any(|renderer| renderer.id == renderer_id));
+            manifest.manifest.contributes.as_ref().is_some_and(|contributes| contributes.notebook_renderer.iter().flatten().any(|renderer| renderer.id.as_deref() == Some(renderer_id)));
         if !contributes_renderer {
             return Err(Error::new(format!("Extensions may only call createRendererMessaging() for renderers they contribute (got {renderer_id})")));
         }

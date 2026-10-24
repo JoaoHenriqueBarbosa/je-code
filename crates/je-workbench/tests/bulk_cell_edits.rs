@@ -31,7 +31,7 @@ use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::lifecycle::{DisposableStore, IDisposable, Reference};
 use je_base::promise::Promise;
-use je_base::platform::Platform;
+use je_base::path::Platform;
 use je_base::uri::{Field, URI, UriChange};
 use je_editor::undo_redo::{UndoRedoGroup, UndoRedoSource};
 use je_platform::progress::progress::IProgress;

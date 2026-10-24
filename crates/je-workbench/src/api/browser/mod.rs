@@ -48,5 +48,4 @@ pub mod main_thread_uri_openers;
 pub mod main_thread_notebook;
 pub mod main_thread_notebook_documents;
 pub mod main_thread_notebook_documents_and_editors;
-pub mod main_thread_notebook_dto;
 pub mod main_thread_notebook_editors;

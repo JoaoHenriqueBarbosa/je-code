@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::JsString;
+use je_base::buffer::VSBufferReadableStream;
 use je_base::event::Event;
 use je_base::lifecycle::{DisposableRef, IDisposable, none};
 use je_base::promise::Promise;
@@ -30,7 +31,9 @@ use je_workbench::api::browser::main_thread_notebook_kernels::MainThreadNotebook
 use je_workbench::api::common::ext_host_protocol::{IMainContext, INotebookKernelDto2, MainThreadNotebookKernelsShape};
 use je_workbench::contrib::notebook::browser::notebook_editor_widget::NotebookEditorWidget;
 use je_workbench::contrib::notebook::browser::services::notebook_editor_service::{IBorrowValue, INotebookEditorService};
-use je_workbench::contrib::notebook::common::notebook_common::{INotebookTextModel, NotebookCellExecutionState, NotebookExecutionState};
+use je_workbench::contrib::notebook::common::notebook_common::{
+    INotebookContributionData, INotebookRendererInfo, INotebookStaticPreloadInfo, INotebookTextModel, NotebookCellExecutionState, NotebookExecutionState, NotebookExtensionDescription,
+};
 use je_workbench::contrib::notebook::common::notebook_execution_state_service::{
     ExecutionStateChange, ICellExecuteUpdate, ICellExecutionComplete, INotebookCellExecution, INotebookExecution, INotebookExecutionStateService, INotebookFailStateChangedEvent,
 };
@@ -38,7 +41,8 @@ use je_workbench::contrib::notebook::common::notebook_kernel_service::{
     INotebookKernel, INotebookKernelDetectionTask, INotebookKernelMatchResult, INotebookKernelService, INotebookTextModelLike, IKernelSourceActionProvider,
     ISelectedNotebooksChangeEvent,
 };
-use je_workbench::contrib::notebook::common::notebook_service::INotebookService;
+use je_workbench::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
+use je_workbench::contrib::notebook::common::notebook_service::{INotebookSerializer, INotebookService, SimpleNotebookProviderInfo};
 
 fn absent(member: &str) -> ! {
     unreachable!("TypeError: {member} is not a function")
@@ -256,8 +260,74 @@ impl INotebookExecutionStateService for StubExecutionStateService {
 struct StubNotebookService;
 
 impl INotebookService for StubNotebookService {
-    fn get_notebook_text_model(&self, _uri: &URI) -> Option<Rc<dyn INotebookTextModel>> {
+    fn can_resolve(&self, _view_type: &str) -> Promise<bool> {
+        absent("canResolve")
+    }
+    fn on_add_view_type(&self) -> Event<String> {
+        absent("onAddViewType")
+    }
+    fn on_will_remove_view_type(&self) -> Event<String> {
+        absent("onWillRemoveViewType")
+    }
+    fn on_did_change_output_renderers(&self) -> Event<()> {
+        absent("onDidChangeOutputRenderers")
+    }
+    fn on_will_add_notebook_document(&self) -> Event<Rc<NotebookTextModel>> {
+        absent("onWillAddNotebookDocument")
+    }
+    fn on_did_add_notebook_document(&self) -> Event<Rc<NotebookTextModel>> {
+        absent("onDidAddNotebookDocument")
+    }
+    fn on_will_remove_notebook_document(&self) -> Event<Rc<NotebookTextModel>> {
+        absent("onWillRemoveNotebookDocument")
+    }
+    fn on_did_remove_notebook_document(&self) -> Event<Rc<NotebookTextModel>> {
+        absent("onDidRemoveNotebookDocument")
+    }
+    fn register_notebook_serializer(&self, _view_type: &str, _extension_data: NotebookExtensionDescription, _serializer: Rc<dyn INotebookSerializer>) -> DisposableRef {
+        absent("registerNotebookSerializer")
+    }
+    fn with_notebook_data_provider(&self, _view_type: &str) -> Promise<Rc<SimpleNotebookProviderInfo>> {
+        absent("withNotebookDataProvider")
+    }
+    fn try_get_data_provider_sync(&self, _view_type: &str) -> Option<Rc<SimpleNotebookProviderInfo>> {
+        absent("tryGetDataProviderSync")
+    }
+    fn get_view_type_provider(&self, _view_type: &str) -> Option<String> {
+        absent("getViewTypeProvider")
+    }
+    fn get_renderer_info(&self, _id: &str) -> Option<Rc<dyn INotebookRendererInfo>> {
+        absent("getRendererInfo")
+    }
+    fn get_renderers(&self) -> Vec<Rc<dyn INotebookRendererInfo>> {
+        absent("getRenderers")
+    }
+    fn get_static_preloads(&self, _view_type: &str) -> Vec<INotebookStaticPreloadInfo> {
+        absent("getStaticPreloads")
+    }
+    fn create_notebook_text_model(&self, _view_type: &str, _uri: &URI, _stream: Option<VSBufferReadableStream>) -> Promise<Rc<NotebookTextModel>> {
+        absent("createNotebookTextModel")
+    }
+    fn get_notebook_text_model(&self, _uri: &URI) -> Option<Rc<NotebookTextModel>> {
         None
+    }
+    fn get_notebook_text_models(&self) -> Vec<Rc<NotebookTextModel>> {
+        absent("getNotebookTextModels")
+    }
+    fn list_notebook_documents(&self) -> Vec<Rc<NotebookTextModel>> {
+        absent("listNotebookDocuments")
+    }
+    fn register_contributed_notebook_type(&self, _view_type: &str, _data: INotebookContributionData) -> DisposableRef {
+        absent("registerContributedNotebookType")
+    }
+    fn has_supported_notebooks(&self, _resource: &URI) -> bool {
+        absent("hasSupportedNotebooks")
+    }
+    fn get_notebook_provider_resource_roots(&self) -> Vec<URI> {
+        absent("getNotebookProviderResourceRoots")
+    }
+    fn clear_editor_cache(&self) {
+        absent("clearEditorCache")
     }
 }
 

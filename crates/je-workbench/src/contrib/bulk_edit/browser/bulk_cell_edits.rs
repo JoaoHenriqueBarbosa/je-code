@@ -19,6 +19,7 @@
 //! - **`getNotebookEditorFromEditorPane(activeEditorPane)`** é o de `notebook_browser` (o painel responde pelo editor).
 //! - `undoRedoSource` é guardado e não lido (o original também não o lê).
 
+use je_base::lifecycle::IDisposable;
 use std::any::Any;
 use std::rc::Rc;
 
