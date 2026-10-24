@@ -14,7 +14,10 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_theme::ColorTheme;
 use je_ui::{Border, Content, Cursor, NodeId, Role, Tree};
-use je_widgets::text::{measure_text, ui_font};
+use je_widgets::text::ui_font;
+use je_widgets::text_field::TextField;
+
+use super::input::InputColors;
 
 use super::Command;
 
@@ -29,8 +32,8 @@ const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 const MATCH_LIMIT: usize = 20_000;
 
 pub struct FindWidget {
-    pub value: Vec<char>,
-    pub cursor: usize,
+    /// O campo da busca.
+    pub field: TextField,
     pub match_case: bool,
     pub whole_word: bool,
     pub regex: bool,
@@ -40,29 +43,25 @@ pub struct FindWidget {
     pub version: i64,
     /// A posição de onde a busca parte ao digitar (o cursor do editor ao abrir).
     pub origin: Position,
-    /// O valor inteiro está selecionado (a semente ao abrir): digitar o substitui.
-    pub select_all: bool,
     /// A linha de substituição aberta, o texto dela e se o teclado está nela (e não no campo da busca).
     pub replace_visible: bool,
-    pub replace_value: Vec<char>,
-    pub replace_cursor: usize,
+    pub replace: TextField,
     pub in_replace: bool,
 }
 
 impl FindWidget {
     pub fn new(seed: &str, origin: Position) -> Self {
-        let value: Vec<char> = seed.chars().collect();
-        Self { cursor: value.len(), value, match_case: false, whole_word: false, regex: false, matches: Vec::new(), current: None, version: -1, origin, select_all: !seed.is_empty(), replace_visible: false, replace_value: Vec::new(), replace_cursor: 0, in_replace: false }
+        Self { field: super::input::seeded(seed), match_case: false, whole_word: false, regex: false, matches: Vec::new(), current: None, version: -1, origin, replace_visible: false, replace: TextField::new(), in_replace: false }
     }
 
     pub fn text(&self) -> String {
-        self.value.iter().collect()
+        self.field.value().to_owned()
     }
 
     /// Recalcula as ocorrências no modelo.
     pub fn search(&mut self, model: &TextModel) {
         self.version = model.get_version_id();
-        self.matches = if self.value.is_empty() {
+        self.matches = if self.field.is_empty() {
             Vec::new()
         } else {
             let separators = self.whole_word.then_some(WORD_SEPARATORS);
@@ -95,12 +94,12 @@ impl FindWidget {
 
     /// O texto que troca a ocorrência `matched`.
     pub fn replacement_for(&self, matched: &str) -> String {
-        expand_replacement(&self.text(), self.regex, self.match_case, &self.replace_value.iter().collect::<String>(), matched)
+        expand_replacement(&self.text(), self.regex, self.match_case, self.replace.value(), matched)
     }
 
     /// O texto do contador.
     pub fn count_label(&self) -> String {
-        if self.value.is_empty() {
+        if self.field.is_empty() {
             return "No results".to_owned();
         }
         match (self.matches.len(), self.current) {
@@ -118,7 +117,7 @@ impl FindWidget {
     }
 
     /// Monta o widget como filho de `parent` na posição `rect` e devolve os nós clicáveis.
-    pub fn render(&self, tree: &mut Tree, parent: NodeId, rect: Rect, focused: bool, theme: &ColorTheme) -> Vec<(NodeId, Command)> {
+    pub fn render(&mut self, tree: &mut Tree, parent: NodeId, rect: Rect, focused: bool, theme: &ColorTheme) -> Vec<(NodeId, Command)> {
         let color = |id: &str| theme.get_color(id).unwrap_or(Rgba::opaque(0xff, 0, 0xff));
         let foreground = color("editorWidget.foreground");
         let icon_color = color("icon.foreground");
@@ -147,34 +146,13 @@ impl FindWidget {
         tree.set_bounds(input, Rect::new(26.0, 3.0, 242.0, 28.0));
         let style = tree.style_mut(input);
         style.background = Some(color("input.background"));
-        let no_results = !self.value.is_empty() && self.matches.is_empty();
+        let no_results = !self.field.is_empty() && self.matches.is_empty();
         let find_focused = focused && !self.in_replace;
         let border = if no_results { color("inputValidation.errorBorder") } else if find_focused { color("focusBorder") } else { color("input.border") };
         style.border = Some(Border { width: 1.0, color: border });
         style.radius = 4.0;
-        let text = tree.create(input, Role::Generic);
-        tree.set_bounds(text, Rect::new(6.0, 0.0, 140.0, 23.0));
-        let shown = self.text();
-        if shown.is_empty() {
-            tree.style_mut(text).content = Content::Text { text: "Find".to_owned(), style: font.clone(), color: color("input.placeholderForeground"), line_height: 23.0 };
-        } else {
-            tree.style_mut(text).content = Content::Text { text: shown, style: font.clone(), color: foreground, line_height: 23.0 };
-        }
-        if find_focused && self.select_all && !self.value.is_empty() {
-            let width = measure_text(&self.text(), &font);
-            let selection = tree.create(input, Role::Generic);
-            tree.set_bounds(selection, Rect::new(6.0, 3.0, 6.0 + width, 20.0));
-            tree.style_mut(selection).background = Some(color("editor.selectionBackground"));
-            // O texto fica por cima da seleção.
-            tree.insert_before(input, text, None);
-        }
-        if find_focused {
-            let before: String = self.value[..self.cursor].iter().collect();
-            let x = 6.0 + measure_text(&before, &font);
-            let caret = tree.create(input, Role::Generic);
-            tree.set_bounds(caret, Rect::new(x, 4.0, x + 1.0, 18.0));
-            tree.style_mut(caret).background = Some(foreground);
-        }
+        let colors = InputColors { foreground, placeholder: color("input.placeholderForeground"), selection: color("editor.selectionBackground") };
+        super::input::paint(tree, input, Rect::new(6.0, 0.0, 144.0, 23.0), &mut self.field, "Find", find_focused, &font, &colors);
         // As chaves dentro do campo (`Aa`, `ab`, `.*`), 20 x 20 a cada 22 px.
         let toggles = [("case-sensitive", self.match_case, Command::FindToggleCase), ("whole-word", self.whole_word, Command::FindToggleWord), ("regex", self.regex, Command::FindToggleRegex)];
         for (i, (icon, on, command)) in toggles.into_iter().enumerate() {
@@ -211,21 +189,7 @@ impl FindWidget {
             style.background = Some(color("input.background"));
             style.border = Some(Border { width: 1.0, color: if focused && self.in_replace { color("focusBorder") } else { color("input.border") } });
             style.radius = 4.0;
-            let text = tree.create(input, Role::Generic);
-            tree.set_bounds(text, Rect::new(6.0, 0.0, 180.0, 23.0));
-            let value: String = self.replace_value.iter().collect();
-            if value.is_empty() {
-                tree.style_mut(text).content = Content::Text { text: "Replace".to_owned(), style: ui_font(12.0, 400), color: color("input.placeholderForeground"), line_height: 23.0 };
-            } else {
-                tree.style_mut(text).content = Content::Text { text: value, style: ui_font(12.0, 400), color: foreground, line_height: 23.0 };
-            }
-            if focused && self.in_replace {
-                let before: String = self.replace_value[..self.replace_cursor].iter().collect();
-                let x = 6.0 + measure_text(&before, &ui_font(12.0, 400));
-                let caret = tree.create(input, Role::Generic);
-                tree.set_bounds(caret, Rect::new(x, 4.0, x + 1.0, 18.0));
-                tree.style_mut(caret).background = Some(foreground);
-            }
+            super::input::paint(tree, input, Rect::new(6.0, 0.0, 208.0, 23.0), &mut self.replace, "Replace", focused && self.in_replace, &ui_font(12.0, 400), &colors);
             button(tree, &mut hits, Rect::new(246.0, 33.5, 268.0, 55.5), "replace", 16.0, enabled, Command::FindReplace, 5.0);
             button(tree, &mut hits, Rect::new(271.0, 33.5, 293.0, 55.5), "replace-all", 16.0, enabled, Command::FindReplaceAll, 5.0);
         }

@@ -17,6 +17,7 @@ mod search_view;
 mod excludes;
 mod extensions_view;
 mod file_ops;
+mod input;
 pub mod git;
 mod quick_pick;
 pub mod recent;
@@ -1670,7 +1671,7 @@ impl Shell {
                 }
                 if let Some(find) = &mut self.find {
                     find.replace_visible = true;
-                    find.in_replace = !find.value.is_empty();
+                    find.in_replace = !find.field.is_empty();
                 }
                 self.find_focused = true;
             }
@@ -2535,7 +2536,7 @@ impl Shell {
     }
 
     /// Trata uma tecla com o campo da busca focado. Devolve se consumiu.
-    fn find_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+    fn find_key(&mut self, key_code: KeyCode, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let Some(find) = self.find.as_mut() else { return false };
         // Tab alterna entre os campos da busca e da substituição.
         if key == Some(EditorKey::Tab) && find.replace_visible {
@@ -2543,93 +2544,26 @@ impl Shell {
             self.needs_render = true;
             return true;
         }
-        if find.in_replace {
-            let ctrl = mods.ctrl || mods.meta;
-            match key {
-                Some(EditorKey::Escape) => self.close_find(),
-                Some(EditorKey::Enter) => self.find_replace(ctrl && mods.alt),
-                Some(EditorKey::Left) => find.replace_cursor = find.replace_cursor.saturating_sub(1),
-                Some(EditorKey::Right) => find.replace_cursor = (find.replace_cursor + 1).min(find.replace_value.len()),
-                Some(EditorKey::Home) => find.replace_cursor = 0,
-                Some(EditorKey::End) => find.replace_cursor = find.replace_value.len(),
-                Some(EditorKey::Backspace) if find.replace_cursor > 0 => {
-                    find.replace_value.remove(find.replace_cursor - 1);
-                    find.replace_cursor -= 1;
-                }
-                Some(EditorKey::Delete) if find.replace_cursor < find.replace_value.len() => {
-                    find.replace_value.remove(find.replace_cursor);
-                }
-                Some(_) => {}
-                None => {
-                    if (!ctrl || mods.alt)
-                        && let Some(text) = text
-                    {
-                        let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
-                        let at = find.replace_cursor;
-                        find.replace_cursor += inserted.len();
-                        find.replace_value.splice(at..at, inserted);
-                    }
-                }
-            }
-            self.needs_render = true;
-            return true;
-        }
         let ctrl = mods.ctrl || mods.meta;
-        let mut changed = false;
-        // Com a semente selecionada, digitar ou apagar começa de um valor vazio; as setas só tiram a seleção.
-        let edits = matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) || (key.is_none() || matches!(key, Some(EditorKey::Char(_)))) && (!ctrl || mods.alt) && text.is_some();
-        if find.select_all && edits {
-            find.value.clear();
-            find.cursor = 0;
-            find.select_all = false;
-            changed = true;
-            if matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) {
-                self.find_origin_refresh();
-                self.find_changed(true);
-                self.needs_render = true;
-                return true;
-            }
-        } else if !matches!(key, Some(EditorKey::Enter | EditorKey::Escape)) {
-            find.select_all = false;
-        }
-        let Some(find) = self.find.as_mut() else { return false };
         match key {
             Some(EditorKey::Escape) => {
                 self.close_find();
+                return true;
+            }
+            Some(EditorKey::Enter) if find.in_replace => {
+                self.find_replace(ctrl && mods.alt);
                 return true;
             }
             Some(EditorKey::Enter) => {
                 self.find_step(if mods.shift { -1 } else { 1 });
                 return true;
             }
-            Some(EditorKey::Left) => find.cursor = find.cursor.saturating_sub(1),
-            Some(EditorKey::Right) => find.cursor = (find.cursor + 1).min(find.value.len()),
-            Some(EditorKey::Home) => find.cursor = 0,
-            Some(EditorKey::End) => find.cursor = find.value.len(),
-            Some(EditorKey::Backspace) if find.cursor > 0 => {
-                find.value.remove(find.cursor - 1);
-                find.cursor -= 1;
-                changed = true;
-            }
-            Some(EditorKey::Delete) if find.cursor < find.value.len() => {
-                find.value.remove(find.cursor);
-                changed = true;
-            }
-            Some(EditorKey::Up | EditorKey::Down | EditorKey::PageUp | EditorKey::PageDown | EditorKey::Tab | EditorKey::Backspace | EditorKey::Delete) => return true,
-            Some(EditorKey::Char('a')) => {}
-            _ => {
-                if (!ctrl || mods.alt)
-                    && let Some(text) = text
-                {
-                    let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
-                    let at = find.cursor;
-                    find.cursor += inserted.len();
-                    find.value.splice(at..at, inserted);
-                    changed = true;
-                }
-            }
+            _ => {}
         }
-        if changed {
+        let in_replace = find.in_replace;
+        let field = if in_replace { &mut find.replace } else { &mut find.field };
+        let changed = input::edit(field, key_code, key, mods, text, &input::SystemClipboard::new());
+        if changed == Some(true) && !in_replace {
             self.find_origin_refresh();
             self.find_changed(true);
         }
@@ -2644,10 +2578,13 @@ impl Shell {
         }
     }
 
-    fn render_find(&self, chrome: NodeId) {
-        let (Some(find), Some(editor)) = (&self.find, self.active_editor()) else { return };
-        let rect = find.rect(self.editor_rect(), editor.view.layout().minimap_width());
-        for (node, command) in find.render(&mut self.ui.tree_mut(), chrome, rect, self.find_focused, &self.theme) {
+    fn render_find(&mut self, chrome: NodeId) {
+        let Some(minimap) = self.active_editor().map(|e| e.view.layout().minimap_width()) else { return };
+        let editor_rect = self.editor_rect();
+        let Some(find) = self.find.as_mut() else { return };
+        let rect = find.rect(editor_rect, minimap);
+        let hits = find.render(&mut self.ui.tree_mut(), chrome, rect, self.find_focused, &self.theme);
+        for (node, command) in hits {
             self.listen_command(node, command);
         }
     }
@@ -4227,7 +4164,7 @@ impl Shell {
                 self.run(command);
                 return;
             }
-            if self.find_key(text, editor_key, mods) {
+            if self.find_key(key_code, text, editor_key, mods) {
                 return;
             }
         }
