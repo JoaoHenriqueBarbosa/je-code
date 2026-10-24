@@ -5,3 +5,6 @@ pub mod contrib;
 pub mod notebook_browser;
 pub mod notebook_editor_widget;
 pub mod services;
+pub mod view;
+pub mod view_model;
+pub mod view_parts;
