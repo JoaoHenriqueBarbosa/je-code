@@ -48,6 +48,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: segundo lote da roda: ViewModel completo (`viewModelImpl` partes A e B), openerService, textResourceConfigurationService, linesTextBuffer, minimap, hoverUtils, policy completo (copilotManagedSettings, nativeManagedSettings, IPC), autenticação, userAttention, userActivity, preferencesValidation, extensionManifestProperties, statusbarModel, layoutService. Suíte: 7 056 passando, 0 falhas. Placar: 5 655 de 16 410 (34,46%): base 81,65%, platform 56,02%, editor 54,55%, workbench/services 12,08% (eu, `scripts/conformance.py`).
 
+- 2026-10-24: terceiro lote: EditorConfiguration (trait completo e classe, migrateOptions, tabFocus, TestConfiguration), accounts (managedSettings, githubEnterprise), policyDiagnosticsMarkdown, extHostBrowsers (primeiro arquivo de `workbench/api`), contribs pequenos (extensionQuery, extractRange, smartSnippetInserter, policyReference, testingUri). Corrigido no porte: `flattenManagedSettings` gravava `__proto__` primitivo. Suíte: 7 202 passando, 0 falhas. Placar: 5 775 de 16 410 (35,19%) (eu, `scripts/conformance.py`).
+
 ## Pendência antes do primeiro push
 
 - O histórico local tem caminho da máquina em dois commits já corrigidos (`oracle-harness/zyarr-gen/gen.js` no c468a64 e `crates/je-platform/tests/settings_compat.rs` no 55c6335). Reescrever esses dois commits (ou fazer squash do histórico) antes de publicar o repositório.
