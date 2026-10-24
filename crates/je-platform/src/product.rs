@@ -98,6 +98,11 @@ pub trait IProductService {
     fn copilot_versions(&self) -> Option<&ICopilotVersions> {
         None
     }
+    /// `builtInExtensionsEnabledWithAutoUpdates`: os identificadores das extensões embutidas que se atualizam também no
+    /// canal estável. Padrão: nenhuma.
+    fn built_in_extensions_enabled_with_auto_updates(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -367,5 +372,8 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn copilot_versions(&self) -> Option<&ICopilotVersions> {
         self.copilot_versions.as_ref()
+    }
+    fn built_in_extensions_enabled_with_auto_updates(&self) -> Vec<String> {
+        self.built_in_extensions_enabled_with_auto_updates.clone()
     }
 }

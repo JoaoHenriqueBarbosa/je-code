@@ -59,6 +59,17 @@ pub type ILocalExtension = IExtension;
 /// Uma extensão compartilhada: o original passa o mesmo objeto de mão em mão e compara por identidade.
 pub type ExtensionRef = Rc<IExtension>;
 
+/// `IResourceExtension`: uma extensão que vive num recurso (uma pasta do workspace ou um VSIX), sem passar pela galeria
+/// nem pelo gerenciador de instalação. O campo `type: 'resource'` do original é o próprio tipo.
+#[derive(Clone, Debug)]
+pub struct IResourceExtension {
+    pub identifier: ExtensionIdentifierInfo,
+    pub location: URI,
+    pub manifest: ExtensionManifest,
+    pub readme_uri: Option<URI>,
+    pub changelog_uri: Option<URI>,
+}
+
 /// `InstallExtensionResult`: o resultado de uma instalação (`local` é a extensão instalada, quando houve).
 #[derive(Clone)]
 pub struct InstallExtensionResult {
