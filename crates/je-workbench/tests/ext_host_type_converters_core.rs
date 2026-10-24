@@ -194,7 +194,7 @@ fn markdown_string_de_texto_bloco_de_codigo_e_markdown() {
     let dto = converters::MarkdownString::from(&MarkedString::Markdown(markdown.clone()));
     assert_eq!(dto.support_theme_icons, Some(true));
     assert_eq!(dto.support_html, Some(true));
-    assert!(dto.uris.is_none(), "a extração de uris depende do lexer Markdown, ainda não portado");
+    assert!(dto.uris.is_some(), "o original sempre define `uris` (um objeto, vazio quando o texto não tem links)");
 
     let restored = converters::MarkdownString::to(&dto);
     assert_eq!(restored.value, markdown.value);
