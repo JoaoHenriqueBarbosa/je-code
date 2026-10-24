@@ -3,12 +3,12 @@
 //!
 //! Notas de tradução:
 //! - `setup`/`teardown` e `ensureNoDisposablesAreLeakedInTestSuite()` são o `with_fixture`: cria o `LeakGuard`, o
-//!   `MockContextKeyService` (aqui o `ContextKeyService` de `je-platform` com o `TestConfigurationService`), o modelo, o
+//!   `MockContextKeyService` (o de `je-platform`), o modelo, o
 //!   editor de teste e as seleções iniciais, roda o caso e descarta o modelo, o controlador, o editor e o serviço de
 //!   chaves (o `teardown` do original descarta o modelo e o controlador; o editor e o serviço pertencem ao
 //!   `LeakGuard` do porte).
 //! - `instaService.createInstance(SnippetController2, editor)` é o `Fixture::create_controller`, que injeta o
-//!   `SnippetController2Services` (log nulo, o `ContextKeyService`, o `ILanguageConfigurationService` do editor de teste, o
+//!   `SnippetController2Services` (log nulo, o `MockContextKeyService`, o `ILanguageConfigurationService` do editor de teste, o
 //!   `ILabelService` sem métodos e o `IWorkspaceContextService` que só define `getWorkspace()`).
 //! - `SnippetController2.InSnippetMode.getValue(service)` é o `get_value` do `RawContextKey` (o valor é booleano).
 //! - `editor.trigger('test', 'type', ...)` é o `type_text`; `editor.trigger('test', 'cut' | Handler.Cut, ...)` é o
@@ -42,9 +42,8 @@ use je_editor::snippet::snippet_controller2::{
 };
 use je_editor::snippet::snippet_session::{SnippetEdit, SnippetServices};
 use je_editor::text_model::TextModel;
-use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::contextkey::{IContextKeyService, RawContextKey};
-use je_platform::contextkey::service::ContextKeyService;
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::log::NullLogService;
 use je_platform::workspace::Workspace;
 use snippet_doubles::{ClosureLabelService, WorkspaceOnlyService};
@@ -76,7 +75,7 @@ struct ContextState {
 struct Fixture {
     model: Rc<TextModel>,
     editor: Rc<TestCodeEditor>,
-    context_keys: Rc<ContextKeyService>,
+    context_keys: Rc<MockContextKeyService>,
     snippet_services: Rc<SnippetServices>,
     /// `ctrl`, o controlador criado pelo caso (descartado no `teardown`).
     controller: RefCell<Option<Rc<SnippetController2>>>,
@@ -168,7 +167,7 @@ fn with_fixture(test: impl FnOnce(&Fixture)) {
     je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
 
-    let context_keys = ContextKeyService::new(TestConfigurationService::new(None));
+    let context_keys = MockContextKeyService::new();
     let model = create_text_model("if\n    $state\nfi");
     let editor = create_test_code_editor(Some(model.clone()), TestCodeEditorInstantiationOptions::default());
     let workspace = Workspace::new("foo", Vec::new(), false, None, Rc::new(|_: &je_base::uri::URI| false), None);

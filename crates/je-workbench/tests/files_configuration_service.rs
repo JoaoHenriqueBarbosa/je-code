@@ -6,7 +6,7 @@
 //!   cada caso e o `setup` ([`setup`]) logo depois; o [`Fixture`] descarta o `disposables` do original no `Drop`, antes
 //!   do guarda conferir os vazamentos (o `Drop` dele roda depois, por ter sido declarado primeiro).
 //! - **`workbenchInstantiationService(undefined, disposables)`.** Só os serviços de que o `FilesConfigurationService`
-//!   depende são criados, com os mesmos dublês do original: `MockContextKeyService` (aqui o `ContextKeyService` real,
+//!   depende são criados, com os mesmos dublês do original: `MockContextKeyService` (o de `je-platform`,
 //!   como no teste do `snippet_controller2`), `TestConfigurationService` com `files.participants.timeout`, o
 //!   `TestContextService` com o `TestWorkspace`, o `TestEnvironmentService`, o `TestFileService`, o `TestMarkerService` e o
 //!   `TestTextResourceConfigurationService`. O `UriIdentityService` real ainda não foi portado: o
@@ -36,7 +36,7 @@ use je_base::uri::URI;
 use je_instantiation::Injectable;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::contextkey::service::ContextKeyService;
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::resources::{host_environment, uri_file};
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_workbench::services::files_configuration::files_configuration_service::{IFilesConfigurationService, Readonly, ReadonlyUpdate};
@@ -80,7 +80,7 @@ fn setup() -> Fixture {
         "files",
         Dynamic::object([("participants", Dynamic::object([("timeout", Dynamic::from(60000))]))]),
     )])));
-    let context_key_service = disposables.add_rc(ContextKeyService::new(configuration_service.clone()));
+    let context_key_service = disposables.add_rc(MockContextKeyService::new());
     let file_service = disposables.add_rc(TestFileService::new());
 
     let service = disposables.add_rc(TestFilesConfigurationService::create(

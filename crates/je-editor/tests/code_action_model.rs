@@ -5,7 +5,7 @@
 //! - `setup`/`teardown` são [`Fixture`]: o `MarkerService`, o modelo `foo-lang` com a URI `untitled:path`, o editor de
 //!   teste com a posição 1,1 e o registro novo; o `teardown` descarta o editor, o modelo e o serviço de marcadores.
 //!   `ensureNoDisposablesAreLeakedInTestSuite()` é o `LeakGuard` (o `store` do original).
-//! - `MockContextKeyService` é o `ContextKeyService` de `je-platform` com o `TestConfigurationService`, como em
+//! - `MockContextKeyService` é o de `je-platform`, como em
 //!   `snippet_controller2.rs`.
 //! - `runWithFakedTimers({ useFakeTimers: true }, () => ...)` e os casos `async` são o corpo `async` de
 //!   [`run_with_faked_timers`], que o executa no event loop do porte (os casos sem `runWithFakedTimers` rodam do mesmo
@@ -50,7 +50,7 @@ use je_editor::selection::Selection;
 use je_editor::text_model::TextModel;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::contextkey::service::ContextKeyService;
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::markers::marker_service::MarkerService;
 use je_platform::markers::{IMarkerService, MarkerCode, MarkerData, MarkerSeverity};
 use support::test_code_editor::{TestCodeEditor, TestCodeEditorInstantiationOptions, create_test_code_editor};
@@ -94,7 +94,7 @@ struct Fixture {
     model: Rc<TextModel>,
     editor: Rc<TestCodeEditor>,
     registry: Registry,
-    context_keys: Rc<ContextKeyService>,
+    context_keys: Rc<MockContextKeyService>,
 }
 
 impl Fixture {
@@ -111,7 +111,7 @@ impl Fixture {
         let editor = create_test_code_editor(Some(model.clone()), TestCodeEditorInstantiationOptions::default());
         editor.set_position(Position::new(1, 1), None);
         let registry: Registry = Rc::new(LanguageFeatureRegistry::new(None));
-        let context_keys = ContextKeyService::new(TestConfigurationService::new(None));
+        let context_keys = MockContextKeyService::new();
         Self { ds, uri, marker_service, model, editor, registry, context_keys }
     }
 

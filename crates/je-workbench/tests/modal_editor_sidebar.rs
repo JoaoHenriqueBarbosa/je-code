@@ -8,7 +8,7 @@
 //!   `modal_editor_part`, em vez de uma cópia. As constantes `MODAL_MIN_WIDTH`, `MODAL_SIDEBAR_MIN_WIDTH` e
 //!   `MODAL_SIDEBAR_DEFAULT_WIDTH` também são as de produção (o original repete as suas, com a padrão em 220 enquanto a
 //!   produção usa 260; nenhum caso depende do valor, todos o comparam com a constante).
-//! - `MockContextKeyService` é o `ContextKeyService` de `je-platform` sobre o `TestConfigurationService`, como nos demais
+//! - `MockContextKeyService` é o de `je-platform`, como nos demais
 //!   testes portados. `{}` (o contêiner de mentira) é `Rc<()>` como `Rc<dyn Any>`.
 //! - `class extends Disposable` com `this._register(...)` é o `Disposable` do campo `base`, e
 //!   `disposables.add(host)` é o `add_rc` do guarda de vazamentos.
@@ -25,9 +25,8 @@ use std::rc::Rc;
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, MutableDisposable, to_disposable};
-use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::contextkey::IContextKeyService;
-use je_platform::contextkey::service::ContextKeyService;
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::opener::editor_types::{LayoutDimension, ModalEditorPartOptions, ModalEditorSidebar};
 use je_workbench::browser::parts::editor::modal_editor_part::{
     MODAL_MIN_WIDTH, MODAL_SIDEBAR_DEFAULT_WIDTH, MODAL_SIDEBAR_MIN_WIDTH, clamped_sidebar_width, effective_min_width, initial_sidebar_width, reset_sidebar_width,
@@ -40,7 +39,7 @@ struct TestModalEditorSidebarHost {
     on_did_resize: Rc<Emitter<()>>,
     on_did_layout: Rc<Emitter<LayoutDimension>>,
     content_disposable: Rc<MutableDisposable<dyn IDisposable>>,
-    context_key_service: Rc<ContextKeyService>,
+    context_key_service: Rc<MockContextKeyService>,
     sidebar_width: Cell<f64>,
     has_sidebar: Cell<bool>,
     sidebar_visible: Cell<bool>,
@@ -58,7 +57,7 @@ impl TestModalEditorSidebarHost {
         let on_did_resize: Rc<Emitter<()>> = Emitter::new();
         let on_did_layout: Rc<Emitter<LayoutDimension>> = Emitter::new();
         let content_disposable: Rc<MutableDisposable<dyn IDisposable>> = MutableDisposable::new();
-        let context_key_service = ContextKeyService::new(TestConfigurationService::new(None));
+        let context_key_service = MockContextKeyService::new();
         base.register(on_did_resize.clone());
         base.register(on_did_layout.clone());
         base.register(content_disposable.clone());
