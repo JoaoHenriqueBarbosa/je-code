@@ -84,6 +84,35 @@ pub fn parse(json: &str) -> Vec<Recent> {
         .unwrap_or_default()
 }
 
+/// O estado da última janela do VS Code (`windowsState.lastActiveWindow` do `User/globalStorage/storage.json`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LastWindow {
+    pub folder: Option<PathBuf>,
+    /// Largura, altura, x e y em pixels lógicos, e se estava maximizada (`mode` 1).
+    pub bounds: Option<(f64, f64, f64, f64)>,
+    pub maximized: bool,
+}
+
+/// Lê o estado da última janela do VS Code do usuário.
+pub fn last_window() -> LastWindow {
+    super::themes::user_data_dir().map_or_else(LastWindow::default, |dir| last_window_from(&dir))
+}
+
+/// O mesmo, a partir de uma pasta de dados do usuário dada.
+pub fn last_window_from(user_data: &std::path::Path) -> LastWindow {
+    let path = user_data.join("User/globalStorage/storage.json");
+    let Ok(text) = std::fs::read_to_string(path) else { return LastWindow::default() };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return LastWindow::default() };
+    let window = &json["windowsState"]["lastActiveWindow"];
+    let folder = window["folder"].as_str().and_then(|uri| file_uri_to_path(uri).or_else(|| wsl_uri_to_path(uri))).filter(|p| p.is_dir());
+    let ui = &window["uiState"];
+    let bounds = match (ui["width"].as_f64(), ui["height"].as_f64()) {
+        (Some(w), Some(h)) if w >= 400.0 && h >= 300.0 => Some((w, h, ui["x"].as_f64().unwrap_or(0.0), ui["y"].as_f64().unwrap_or(0.0))),
+        _ => None,
+    };
+    LastWindow { folder, bounds, maximized: ui["mode"].as_i64() == Some(1) }
+}
+
 /// Os bancos onde a lista pode estar, na ordem em que o VS Code a procura.
 fn databases() -> Vec<PathBuf> {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
@@ -126,6 +155,24 @@ mod tests {
         } else {
             assert_eq!(list, vec![Recent::Folder(PathBuf::from("/home/u/my proj")), Recent::File(PathBuf::from("/home/u/a.txt"))]);
         }
+    }
+
+    #[test]
+    fn last_window_reads_folder_and_bounds() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-lw", std::process::id()));
+        let work = dir.join("proj");
+        std::fs::create_dir_all(dir.join("User/globalStorage")).expect("pasta");
+        std::fs::create_dir_all(&work).expect("projeto");
+        let uri = format!("file://{}", work.display()).replace(' ', "%20");
+        let json = format!(r#"{{"windowsState":{{"lastActiveWindow":{{"folder":"{uri}","uiState":{{"mode":1,"x":10,"y":20,"width":1300,"height":900}}}}}}}}"#);
+        std::fs::write(dir.join("User/globalStorage/storage.json"), json).expect("grava");
+        let last = last_window_from(&dir);
+        if cfg!(unix) {
+            assert_eq!(last.folder, Some(work.clone()));
+        }
+        assert_eq!(last.bounds, Some((1300.0, 900.0, 10.0, 20.0)));
+        assert!(last.maximized);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Lê o `state.vscdb` de verdade apontado por `JE_USER_DATA_DIR` (manual: `cargo test -- --ignored`).

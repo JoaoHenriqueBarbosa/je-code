@@ -18,7 +18,7 @@ mod extensions_view;
 mod file_ops;
 pub mod git;
 mod quick_pick;
-mod recent;
+pub mod recent;
 mod terminal_panel;
 pub mod themes;
 

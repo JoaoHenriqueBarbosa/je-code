@@ -49,6 +49,8 @@ struct PointerState {
 }
 
 struct App {
+    /// O tamanho e a posição da janela na abertura (os da última janela do VS Code, sem argumentos).
+    initial: shell::recent::LastWindow,
     shell: Shell,
     list: DisplayList,
     window: Option<Arc<Window>>,
@@ -272,7 +274,11 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title(self.shell.window_title()).with_inner_size(LogicalSize::new(1200.0, 800.0));
+        let (width, height) = self.initial.bounds.map_or((1200.0, 800.0), |(w, h, _, _)| (w, h));
+        let mut attrs = Window::default_attributes().with_title(self.shell.window_title()).with_inner_size(LogicalSize::new(width, height)).with_maximized(self.initial.maximized);
+        if let Some((_, _, x, y)) = self.initial.bounds {
+            attrs = attrs.with_position(LogicalPosition::new(x, y));
+        }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -467,6 +473,11 @@ fn main() {
             }
         },
     };
+    // Sem argumentos, como o VS Code: reabre a pasta e o tamanho da última janela (o `windowsState` dele).
+    let last = if workspace.is_none() && files.is_empty() && screenshot_out.is_none() && !bench { shell::recent::last_window() } else { shell::recent::LastWindow::default() };
+    if workspace.is_none() {
+        workspace = last.folder.clone();
+    }
     let mut shell = match Shell::open(&theme_path, workspace, &files, 1200.0, 800.0) {
         Ok(s) => s,
         Err(e) => {
@@ -492,7 +503,7 @@ fn main() {
     shell.set_wake(Arc::new(move || {
         let _ = proxy.send_event(());
     }));
-    let mut app = App { shell, list: DisplayList::new(), window: None, presenter: None, backend_label: String::new(), modifiers: Modifiers::default(), pointer: PointerState::default(), bench, split: Vec::new() };
+    let mut app = App { initial: last, shell, list: DisplayList::new(), window: None, presenter: None, backend_label: String::new(), modifiers: Modifiers::default(), pointer: PointerState::default(), bench, split: Vec::new() };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("je-code: {e}");
         std::process::exit(1);
