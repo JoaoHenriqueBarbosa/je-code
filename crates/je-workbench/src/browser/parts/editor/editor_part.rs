@@ -13,14 +13,22 @@
 //!   ([`EditorPart::set_has_file_icons`] faz o papel de `onDidFileIconThemeChange`).
 //! - **Foco.** Sem foco do DOM, `shouldRestoreFocus` é sempre falso (reparentar nós não rouba foco) e os `preserveFocus` somem
 //!   dos métodos. `focus()` do grupo dispara `onDidFocus`, que ativa o grupo (ver `editor_group_view.rs`).
-//! - **Uma parte só.** O `IEditorPartsView` (`editorPartsView`) e a `groupsView` de cada grupo chegam com a fatia 4: aqui
+//! - **`editorPartsView`.** O `IEditorPartsView` é o trait [`EditorPartsView`], que o `EditorParts` implementa e entrega à
+//!   parte por [`EditorPart::set_parts_view`]: `groups`, `getGroup` e `bind` das chaves de contexto. A parte avulsa (sem
+//!   `EditorParts`, como nos testes da fatia 2) usa só os próprios grupos e não liga `isTopRightEditorGroup`.
 //!   `assertGroupView` procura o grupo nesta parte, e `addGroup`, `moveGroup` e `copyGroup` trabalham só no grid desta parte.
 //!   `hostService.moveTop` (trazer a janela para a frente) não existe. O `scopedInstantiationService` (filho com o
 //!   `IContextKeyService` escopado) é o próprio `InstantiationService`, porque o modelo do grupo só lê a configuração.
-//! - **Context keys.** `handleContextKeys` (`editorAreaFocus`, `multipleEditorGroups`, `editorPartMaximizedEditorGroup`,
-//!   `editorTabsVisible`, `isTopRightEditorGroup`) depende de `common/contextkeys.ts`, ainda não portado. O provider de
-//!   context key e os conjuntos de trabalho (`applyState`; `createState` entra) ficam com o padrão que lança `Method not
-//!   implemented.` do contrato.
+//! - **Context keys.** `handleContextKeys` liga `editorAreaFocus`, `editorPartMultipleEditorGroups`,
+//!   `editorPartMaximizedEditorGroup`, `editorTabsVisible` (no contexto escopado da parte) e `isTopRightEditorGroup` (por
+//!   grupo, pelo `bind` do `EditorParts`), com as chaves de `common/contextkeys.rs`. O `applyContentRightInset` que o original
+//!   chama junto é pintura e não existe.
+//! - **Estado de trabalho.** `applyState` (`'empty'` é [`ApplyStateTarget::Empty`]) perde o `IEditorGroupViewOptions` (só
+//!   `preserveFocus`, que sem foco do DOM não tem efeito). A janela de `contentDimension` ainda indefinida (parte nunca
+//!   posta em layout) é o `Option` do estado. O ouvinte de mudança externa do memento (`onDidChangeMementoState`) aplica o
+//!   estado novo e solta a promessa, como o original.
+//! - **Identidade de grupo ao ativar.** `doSetGroupActive` compara o objeto (`!==`), não o `id`: ao aplicar um estado os
+//!   grupos novos nascem com o mesmo `id` dos descartados e precisam virar o grupo ativo.
 //! - **`groupsView` dos grupos.** Cada [`EditorGroupView`] recebe o [`EditorGroupsView`] da parte (`PartGroupsView`, que
 //!   delega aos métodos privados daqui), que faz o papel do `IEditorGroupsView` e do `IEditorPartsView` do original.
 //! - **`sideGroup`.** `findGroup(accessor, { editor, options }, SIDE_GROUP)` roda no `InstantiationService` da parte, que
@@ -41,7 +49,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use je_base::JsString;
-use je_base::async_::async_fn;
+use je_base::async_::{async_fn, await_maybe};
 use je_base::dynamic::{Dynamic, ObjectRef, Truthy};
 use je_base::errors::{self, Error, throw};
 use je_base::event::{Emitter, Event, PauseableEmitter, Relay, any};
@@ -60,8 +68,14 @@ use je_widgets::grid::{
 use je_widgets::gridview::{GridNode, GridViewRef, GridViewView, SerializedNode, ViewDimensions};
 use je_widgets::sash::BoundarySashes;
 
-use crate::browser::parts::editor::editor::{EditorPartCreationOptions, assign_part_options, get_editor_part_options, impacts_editor_part_options};
+use crate::browser::parts::editor::editor::{
+    EditorPartCreationOptions, EditorPartsView, assign_part_options, get_editor_part_options, impacts_editor_part_options,
+};
 use crate::browser::parts::editor::editor_group_view::{ContextKeyTarget, EditorGroupSource, EditorGroupView, EditorGroupsView};
+use crate::common::contextkeys::{
+    editor_area_focus_context, editor_part_maximized_editor_group_context, editor_part_multiple_editor_groups_context, editor_tabs_visible_context,
+    is_top_right_editor_group_context,
+};
 use crate::common::editor::editor_group_model::{
     EditorOrIndex, SerializedEditorGroupModel, SerializedEditorInput, is_serialized_editor_group_model,
 };
@@ -71,7 +85,7 @@ use crate::services::editor::editor_group_finder::{FindGroupEditor, find_group};
 use crate::services::editor::editor_groups_service::{
     EditorGroupActivationEvent, EditorGroupLayout, EditorPartOptions, EditorPartOptionsChangeEvent, FindGroupScope, GroupActivationReason, GroupDirection,
     GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder, IEditorGroup, IEditorPart, IEditorSideGroup, MergeGroupMode,
-    MergeGroupOptions, PreferredGroup, SplitSizing,
+    MergeGroupOptions, PreferredGroup, ShowTabs, SplitSizing,
 };
 use crate::services::layout::layout_service::WindowId;
 use je_platform::opener::editor_types::EditorOptions;
@@ -88,6 +102,13 @@ pub struct EditorPartUiState {
     pub serialized_grid: SerializedEditorGrid,
     pub active_group: GroupIdentifier,
     pub most_recent_active_groups: Vec<GroupIdentifier>,
+}
+
+/// `IEditorPartUIState | 'empty'`: o parâmetro de [`EditorPart::apply_state`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApplyStateTarget {
+    State(EditorPartUiState),
+    Empty,
 }
 
 /// `GridWidgetView<T>`: a vista que guarda o grid do `EditorPart` (o `CenteredViewLayout` a posiciona).
@@ -201,6 +222,8 @@ pub struct EditorPart {
     grid_widget_view: Rc<GridWidgetView>,
     /// O [`EditorGroupsView`] que cada grupo recebe (em `Weak`): a parte vista pelos grupos.
     groups_view: Rc<PartGroupsView>,
+    /// `editorPartsView`: o `EditorParts` que contém esta parte (`None` na parte avulsa).
+    parts_view: RefCell<Option<Weak<dyn EditorPartsView>>>,
     has_file_icons: Cell<bool>,
     state: RefCell<PartState>,
     store: Rc<DisposableStore>,
@@ -271,11 +294,22 @@ impl EditorGroupsView for PartGroupsView {
     }
 
     fn groups(&self) -> Vec<Rc<EditorGroupView>> {
-        self.part().group_views()
+        let part = self.part();
+
+        // `editorPartsView.groups`: os grupos de todas as partes quando há um `EditorParts`
+        match part.parts_view() {
+            Some(parts_view) => parts_view.groups(),
+            None => part.group_views(),
+        }
     }
 
     fn get_group(&self, identifier: GroupIdentifier) -> Option<Rc<EditorGroupView>> {
-        self.part().get_group_view(identifier)
+        let part = self.part();
+
+        match part.parts_view() {
+            Some(parts_view) => parts_view.get_group(identifier),
+            None => part.get_group_view(identifier),
+        }
     }
 }
 
@@ -370,14 +404,14 @@ fn count_layout_groups(groups: &[GroupLayoutArgument]) -> usize {
 // region: o estado como objeto dinâmico (o JSON que o original grava no memento)
 
 /// `value[key]` de um objeto, `undefined` para o que não é objeto.
-fn prop(value: &Dynamic, key: &str) -> Dynamic {
+pub(crate) fn prop(value: &Dynamic, key: &str) -> Dynamic {
     match value {
         Dynamic::Object(_) => value.get_str(key),
         _ => Dynamic::Undefined,
     }
 }
 
-fn number_of(value: &Dynamic) -> Option<f64> {
+pub(crate) fn number_of(value: &Dynamic) -> Option<f64> {
     match value {
         Dynamic::Number(number) => Some(*number),
         _ => None,
@@ -506,7 +540,7 @@ fn grid_from_dynamic(value: &Dynamic) -> Option<SerializedEditorGrid> {
     })
 }
 
-fn state_to_dynamic(state: &EditorPartUiState) -> Dynamic {
+pub(crate) fn state_to_dynamic(state: &EditorPartUiState) -> Dynamic {
     Dynamic::object([
         ("serializedGrid", grid_to_dynamic(&state.serialized_grid)),
         ("activeGroup", Dynamic::Number(state.active_group as f64)),
@@ -514,7 +548,7 @@ fn state_to_dynamic(state: &EditorPartUiState) -> Dynamic {
     ])
 }
 
-fn state_from_dynamic(value: &Dynamic) -> Option<EditorPartUiState> {
+pub(crate) fn state_from_dynamic(value: &Dynamic) -> Option<EditorPartUiState> {
     let Dynamic::Array(most_recent_active_groups) = prop(value, "mostRecentActiveGroups") else { return None };
 
     Some(EditorPartUiState {
@@ -580,6 +614,7 @@ impl EditorPart {
             scoped_context_key_service,
             grid_widget_view,
             groups_view: Rc::new(PartGroupsView { part: this.clone() }),
+            parts_view: RefCell::new(None),
             has_file_icons: Cell::new(true),
             state: RefCell::new(PartState {
                 group_views: Vec::new(),
@@ -639,6 +674,19 @@ impl EditorPart {
             if let Some(part) = weak.upgrade() {
                 part.save_state();
                 part.memento.save_memento();
+            }
+        }));
+        // `onDidChangeMementoState`: o espaço de trabalho mudou por fora (outra janela), aplicar o estado novo
+        let weak = self.this.clone();
+        self.store.add(self.memento.on_did_change_value(StorageScope::Workspace, &self.store).listen(move |event| {
+            let Some(part) = weak.upgrade() else { return };
+
+            if event.external && event.scope == StorageScope::Workspace {
+                part.memento.reload_memento(event.scope);
+
+                if let Some(state) = part.load_ui_state() {
+                    let _ = part.apply_state(ApplyStateTarget::State(state));
+                }
             }
         }));
     }
@@ -749,6 +797,34 @@ impl EditorPart {
 
     // endregion
 
+    // region: a visão de todas as partes
+
+    /// O `EditorParts` que contém esta parte (o `editorPartsView` do original). Chamado pelo `EditorParts` ao registrar a parte.
+    pub fn set_parts_view(&self, parts_view: Weak<dyn EditorPartsView>) {
+        *self.parts_view.borrow_mut() = Some(parts_view);
+    }
+
+    fn parts_view(&self) -> Option<Rc<dyn EditorPartsView>> {
+        self.parts_view.borrow().as_ref().and_then(Weak::upgrade)
+    }
+
+    /// `willRestoreState`: se a criação da parte restaura o estado do espaço de trabalho.
+    pub fn will_restore_state(&self) -> bool {
+        self.state.borrow().will_restore_state
+    }
+
+    /// `_contentDimension = undefined`: esquece o último layout, como numa parte que nunca foi posta em layout (o teste de
+    /// conjunto de trabalho do original faz a mesma atribuição por um `cast`).
+    pub fn forget_content_dimension(&self) {
+        self.state.borrow_mut().content_dimension = None;
+    }
+
+    fn rc(&self) -> Rc<EditorPart> {
+        self.this.upgrade().expect("a parte está viva enquanto é usada")
+    }
+
+    // endregion
+
     // region: busca
 
     /// `findGroup(scope, source = this.activeGroup, wrap)`.
@@ -829,7 +905,7 @@ impl EditorPart {
     fn do_set_group_active(&self, group: &Rc<EditorGroupView>, reason: GroupActivationReason) {
         let previous_active_group = self.state.borrow().active_group.clone();
 
-        if previous_active_group.as_ref().is_none_or(|previous| !same_group(previous, group)) {
+        if previous_active_group.as_ref().is_none_or(|previous| !Rc::ptr_eq(previous, group)) {
             self.state.borrow_mut().active_group = Some(group.clone());
 
             // Update list of most recently active groups
@@ -1395,6 +1471,9 @@ impl EditorPart {
             centered_layout_widget.set_fixed_width(event.new_part_options.centered_layout_fixed_width);
         }));
 
+        // Context keys
+        self.handle_context_keys();
+
         // Signal ready
         self.when_ready_promise.complete(());
         self.state.borrow_mut().is_ready = true;
@@ -1402,6 +1481,195 @@ impl EditorPart {
         // Signal restored
         self.when_restored_promise.complete(());
     }
+
+    /// `handleContextKeys()`.
+    fn handle_context_keys(&self) {
+        let scoped = self.scoped_context_key_service.as_ref();
+
+        // Bind `editorAreaFocus` to the editor part's scoped context key service so it evaluates to `true` only when keyboard
+        // focus is within the editor area. Applies to all editor parts (main, modal, auxiliary).
+        editor_area_focus_context().bind_to(scoped).set(Dynamic::Bool(true));
+
+        let multiple_editor_groups_context = editor_part_multiple_editor_groups_context().bind_to(scoped);
+        let maximized_editor_group_context = editor_part_maximized_editor_group_context().bind_to(scoped);
+        let editor_tabs_visible_context = editor_tabs_visible_context().bind_to(scoped);
+
+        let weak = self.this.clone();
+        let update_context_keys: Rc<dyn Fn()> = Rc::new({
+            let weak = weak.clone();
+            move || {
+                let Some(part) = weak.upgrade() else { return };
+
+                if part.group_count() > 1 {
+                    multiple_editor_groups_context.set(Dynamic::Bool(true));
+                } else {
+                    multiple_editor_groups_context.reset();
+                }
+
+                if part.grid_widget().is_some_and(|grid| grid.has_maximized_view()) {
+                    maximized_editor_group_context.set(Dynamic::Bool(true));
+                } else {
+                    maximized_editor_group_context.reset();
+                }
+            }
+        });
+
+        let update_editor_tabs_visible_context: Rc<dyn Fn()> = Rc::new({
+            let weak = weak.clone();
+            move || {
+                let Some(part) = weak.upgrade() else { return };
+
+                let multiple = part.state.borrow().part_options.show_tabs == ShowTabs::Multiple;
+                editor_tabs_visible_context.set(Dynamic::Bool(multiple));
+            }
+        });
+
+        let update_top_right_group_context_key: Rc<dyn Fn()> = Rc::new({
+            let weak = weak.clone();
+            move || {
+                let Some(part) = weak.upgrade() else { return };
+                let Some(grid) = part.grid_widget() else { return };
+                if part.state.borrow().content_dimension.is_none() {
+                    return;
+                }
+                let Some(parts_view) = part.parts_view() else { return };
+
+                let groups = part.group_views();
+                let top_right_group = groups
+                    .iter()
+                    .find(|group| grid.get_neighbor_views(group, Direction::Up, false).is_empty() && grid.get_neighbor_views(group, Direction::Right, false).is_empty())
+                    .cloned();
+
+                for group in &groups {
+                    let context_key = parts_view.bind(&is_top_right_editor_group_context(), group);
+                    context_key.set(Dynamic::Bool(top_right_group.as_ref().is_some_and(|top_right| Rc::ptr_eq(top_right, group))));
+                }
+            }
+        });
+
+        update_context_keys();
+        update_editor_tabs_visible_context();
+        update_top_right_group_context_key();
+
+        let (update, update_top_right) = (update_context_keys.clone(), update_top_right_group_context_key.clone());
+        self.store.add(self.on_did_add_group.event().listen(move |_| {
+            update();
+            update_top_right();
+        }));
+
+        let (update, update_top_right) = (update_context_keys.clone(), update_top_right_group_context_key.clone());
+        self.store.add(self.on_did_remove_group.event().listen(move |_| {
+            update();
+            update_top_right();
+        }));
+
+        let update = update_context_keys.clone();
+        self.store.add(self.on_did_change_group_maximized.event().listen(move |_| update()));
+
+        self.store.add(self.on_did_change_editor_part_options.event().listen(move |_| update_editor_tabs_visible_context()));
+
+        let update_top_right = update_top_right_group_context_key.clone();
+        self.store.add(self.on_did_move_group.event().listen(move |_| update_top_right()));
+
+        self.store.add(self.on_did_layout.event().listen(move |_| update_top_right_group_context_key()));
+    }
+
+    /// `loadState()` como o estado tipado (`None` se ausente ou se o JSON não tem a forma do estado).
+    fn load_ui_state(&self) -> Option<EditorPartUiState> {
+        self.load_state().and_then(|raw_state| state_from_dynamic(&raw_state))
+    }
+
+    // region: aplicar estado
+
+    /// `applyState(state, options)`: troca os grupos pelos do estado (ou funde tudo no grupo ativo, no estado vazio). Os
+    /// editores que não puderam fechar (os que pedem confirmação) voltam para o grupo ativo.
+    pub fn apply_state(&self, state: ApplyStateTarget) -> Promise<()> {
+        match state {
+            ApplyStateTarget::Empty => self.do_apply_empty_state(),
+            ApplyStateTarget::State(state) => self.do_apply_state(state),
+        }
+    }
+
+    fn do_apply_state(&self, state: EditorPartUiState) -> Promise<()> {
+        let part = self.rc();
+
+        async_fn(async move {
+            let groups = part.do_prepare_apply_state().await?;
+
+            // Pause add/remove events for groups during the duration of applying the state. This ensures that we can do this
+            // transition atomically with the new state being ready when the events are fired. This is important because
+            // usually there is never the state where no groups are present, but for this transition we need to temporarily
+            // dispose all groups to restore the new set.
+            part.on_did_add_group.pause();
+            part.on_did_remove_group.pause();
+
+            part.dispose_groups();
+
+            // MRU
+            part.state.borrow_mut().most_recent_active_groups = state.most_recent_active_groups.clone();
+
+            // Grid Widget
+            let applied = errors::catch(|| part.do_apply_grid_state(&state.serialized_grid, state.active_group, None));
+
+            // It is very important to keep this order: first resume the events for removed groups and then for added groups.
+            // Many listeners may store groups in sets by their identifier and groups can have the same identifier before and
+            // after.
+            part.on_did_remove_group.resume();
+            part.on_did_add_group.resume();
+            applied?;
+
+            // Restore editors that were not closed before and are now opened now
+            let all_groups = part.groups_view.groups();
+            let editors: Vec<EditorInputWithOptions> = groups
+                .iter()
+                .flat_map(|group| IEditorGroup::editors(&**group))
+                .filter(|editor| all_groups.iter().all(|group_view| !group_view.contains(&EditorInputOrUntyped::Typed(editor.clone()), None)))
+                .map(|editor| EditorInputWithOptions {
+                    editor,
+                    options: Some(TextEditorOptions::from(EditorOptions {
+                        pinned: Some(true),
+                        preserve_focus: Some(true),
+                        inactive: Some(true),
+                        ..EditorOptions::default()
+                    })),
+                })
+                .collect();
+            let active_group = part.active_view();
+            IEditorGroup::open_editors(&*active_group, editors).await?;
+
+            Ok(())
+        })
+    }
+
+    fn do_apply_empty_state(&self) -> Promise<()> {
+        let part = self.rc();
+
+        async_fn(async move {
+            part.do_prepare_apply_state().await?;
+
+            part.merge_all_groups_with_options(&GroupRef::Group(part.active_view().as_group()), None);
+
+            Ok(())
+        })
+    }
+
+    fn do_prepare_apply_state(&self) -> Promise<Vec<Rc<EditorGroupView>>> {
+        let part = self.rc();
+
+        async_fn(async move {
+            // Before disposing groups, try to close as many editors as possible, but skip over those that would trigger a
+            // dialog (for example when being dirty). This is to be able to later restore these editors after state has been
+            // applied.
+            let groups = part.get_group_views(GroupsOrder::MostRecentlyActive);
+            for group in &groups {
+                await_maybe(MaybePromise::Value(IEditorGroup::close_all_editors_excluding_confirming(&**group, Some(true)))).await?;
+            }
+
+            Ok(groups)
+        })
+    }
+
+    // endregion
 
     /// `createState()`.
     pub fn create_state(&self) -> EditorPartUiState {

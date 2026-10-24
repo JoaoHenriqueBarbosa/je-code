@@ -14,14 +14,17 @@
 //!   resultante nunca o tem: fica `None`.
 
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
 use je_editor::core_2d::dimension::Dimension;
 use je_platform::configuration::models::ConfigurationChangeEvent;
 use je_platform::configuration::service::IConfigurationService;
+use je_platform::contextkey::contextkey::{IContextKey, RawContextKey};
 use je_platform::opener::editor_types::EditorOptions;
 
-use crate::common::editor::{EditorInputOrUntyped, EditorInputRef, PreventPinnedEditorClose};
+use crate::browser::parts::editor::editor_group_view::EditorGroupView;
+use crate::common::editor::{EditorInputOrUntyped, EditorInputRef, GroupIdentifier, PreventPinnedEditorClose};
 use crate::services::editor::editor_groups_service::{
     DoubleClickTabAction, EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartLimitOptions, EditorPartOptions, IEditorGroup,
     OpenPositioning, OpenSideBySideDirection, PinnedTabSizing, ShowTabs, SplitInGroupLayout, SplitSizing, TabActionLocation, TabHeight, TabSizing,
@@ -255,4 +258,19 @@ pub fn fill_active_editor_view_state(group: &dyn IEditorGroup, expected_active_e
     }
 
     options
+}
+
+/// `IEditorPartsView`, no recorte que as partes e os grupos leem: todos os grupos de todas as partes e a ligação de uma chave
+/// de contexto a um grupo (`bind`). O `EditorParts` implementa; a parte avulsa (sem `EditorParts`) não tem onde ligar as
+/// chaves e usa só os próprios grupos. `registerPart`, `mainPart`, `activeGroup`, `getGroups`, `count` e as criações de parte
+/// auxiliar e modal são métodos do próprio `EditorParts`.
+pub trait EditorPartsView {
+    /// `groups`: os grupos de todas as partes, na ordem de criação.
+    fn groups(&self) -> Vec<Rc<EditorGroupView>>;
+
+    /// `getGroup(identifier)`: o grupo de qualquer parte.
+    fn get_group(&self, identifier: GroupIdentifier) -> Option<Rc<EditorGroupView>>;
+
+    /// `bind(contextKey, group)`: liga a chave ao contexto escopado do grupo e, quando o grupo é o ativo, ao contexto global.
+    fn bind(&self, context_key: &RawContextKey, group: &Rc<EditorGroupView>) -> Rc<dyn IContextKey>;
 }

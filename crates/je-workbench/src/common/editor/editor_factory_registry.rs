@@ -89,13 +89,23 @@ impl EditorFactoryRegistry {
     /// `registerEditorSerializer(editorTypeId, ctor)`: registers a editor serializer for the given editor to the registry. An
     /// editor serializer is capable of serializing and deserializing editor from string data.
     pub fn register_editor_serializer<S: Injectable<Args = ()> + IEditorSerializer>(&self, editor_type_id: &str) -> DisposableRef {
+        self.register_editor_serializer_with(editor_type_id, Rc::new(create_serializer::<S>))
+    }
+
+    /// `registerEditorSerializer(editorTypeId, ctor)` com um construtor que o chamador monta (o `ctor` do original é uma
+    /// classe que pode fechar sobre variáveis do escopo, como o `EditorsObserverTestEditorInputSerializer` que guarda o
+    /// `serializerInputId`). [`EditorFactoryRegistry::register_editor_serializer`] é o caso do tipo sem estado.
+    pub fn register_editor_serializer_with(
+        &self,
+        editor_type_id: &str,
+        ctor: Rc<dyn Fn(&InstantiationService) -> Rc<dyn IEditorSerializer>>,
+    ) -> DisposableRef {
         let already_registered = self.editor_serializer_constructors.borrow().iter().any(|(key, _)| key == editor_type_id)
             || self.editor_serializer_instances.borrow().contains_key(editor_type_id);
         if already_registered {
             errors::throw(Error::new(format!("A editor serializer with type ID '{editor_type_id}' was already registered.")));
         }
 
-        let ctor: SerializerConstructor = Rc::new(create_serializer::<S>);
         let instantiation_service = self.instantiation_service.borrow().clone();
         match instantiation_service {
             None => self.editor_serializer_constructors.borrow_mut().push((editor_type_id.to_string(), ctor)),

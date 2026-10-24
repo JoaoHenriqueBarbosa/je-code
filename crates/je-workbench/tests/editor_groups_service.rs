@@ -1,26 +1,27 @@
 //! Porte de `src/vs/workbench/services/editor/test/browser/editorGroupsService.test.ts` (suíte `EditorGroupsService`), caso a caso e na mesma ordem.
 //!
-//! Fatias 2 e 3 do `PORT_PLAN.md` (o `EditorPart` lógico e o `EditorGroupView` completo): entram os casos de grupos e todos os
-//! de editor (abrir, fechar, mover, copiar, substituir, aderentes, transientes, seleção e bloqueio). Ainda NÃO portados (o
-//! placar conta só os `#[test]`):
-//! - `save & restore state`: precisa do `TestEditorPart` (`testSaveState`, `clearState`) e do serializador do editor de teste
-//!   registrado no `EditorFactoryRegistry` (fatia 4, `EditorParts`).
-//! - `closeAllGroups action - cannot close editor handling`: usa a `CloseAllEditorGroupsAction` de `editorActions.ts`, ainda
-//!   não portada.
-//! - `working sets` (3 casos) e `context key provider` (4 casos): dependem de `applyState`, do `EditorParts` e do
-//!   `common/contextkeys.ts` (fatia 4).
+//! Fatias 2 a 4 do `PORT_PLAN.md` (o `EditorPart` lógico, o `EditorGroupView` completo e o `EditorParts`): entram os casos de
+//! grupos, todos os de editor (abrir, fechar, mover, copiar, substituir, aderentes, transientes, seleção e bloqueio), o estado
+//! salvo, os conjuntos de trabalho (`applyState`) e o provedor de chave de contexto. Ainda NÃO portado (o placar conta só os
+//! `#[test]`):
+//! - `closeAllGroups action - cannot close editor handling`: usa a `CloseAllEditorGroupsAction` de `editorActions.ts`, que
+//!   não foi portada. A ação lê o `IEditorService.getEditors(order, { excludeSticky })`, o `IEditorService.revert` e o
+//!   `IEditorService.save` com razão, o `IProgressService` e o `ILogService`, dos quais o porte só tem o `getEditors(order)`
+//!   (sem `excludeSticky`) e o `save`; o `TestEditorService` do porte é uma casca que não lista editores. Portar a ação
+//!   exige primeiro o `EditorService` real e o `IProgressService`.
 //!
 //! Notas de tradução:
-//! - **`createPart`.** `workbenchInstantiationService` com o `MockScopableContextKeyService` é um `InstantiationService` com o
-//!   `TestConfigurationService`, um `InMemoryStorageService` e o `MockContextKeyService::scopable()`; `createEditorParts` (que cria
-//!   a parte, dá `create` e `layout(1080, 800, 0, 0)`) é o [`create_part`]. O `EditorParts` e o `TestEditorPart` são da fatia 4.
-//!   Os casos de editor usam o [`create_test_part`], que acrescenta o que o `workbenchInstantiationService` entrega e o grupo
+//! - **`createParts` e `createPart`.** `workbenchInstantiationService` com o `MockScopableContextKeyService` é um
+//!   `InstantiationService` com o `TestConfigurationService`, um `InMemoryStorageService` e o
+//!   `MockContextKeyService::scopable()` (o serviço raiz, [`TestParts::root_context_key_service`]); [`create_parts`] inicia
+//!   o registro de serializadores (`EditorFactoryRegistry.start`), cria o `TestEditorParts` (`createEditorParts`: a parte
+//!   principal com `create` e `layout(1080, 800, 0, 0)`, esperando a restauração das partes) e registra o `EditorParts` como
+//!   `IEditorGroupsService`. [`create_test_part`] acrescenta o que o `workbenchInstantiationService` entrega e o grupo
 //!   lê: o `TestFileDialogService` (`setConfirmResult`), o `TestDialogService`, o `IFilesConfigurationService` e o
-//!   `IUriIdentityService` (de `editor_input_services`), e o `IEditorGroupsService` (um adaptador sobre a própria parte, que no
-//!   original é o `TestEditorParts` registrado por `instantiationService.stub(IEditorGroupsService, parts)`).
+//!   `IUriIdentityService` (de `editor_input_services`). `createPart` devolve a `TestEditorPart` (`parts.testMainPart`).
 //! - **`registerTestEditor`.** O `setup` do original registra o painel `TEST_EDITOR_ID` para `TestFileEditorInput` e
-//!   `SideBySideEditorInput`: é o `register_editor_pane` do registro de painéis lógico (a classe da entrada é o `TypeId`). O
-//!   serializador (`EditorsObserverTestEditorInputSerializer`) só serve aos casos de estado salvo, fora deste placar.
+//!   `SideBySideEditorInput` (a classe da entrada é o `TypeId`) e o serializador de `TEST_EDITOR_INPUT_ID`: é o
+//!   `register_test_editor` de `workbench_test_services`, chamado uma vez por caso em [`register_test_editor_for_suite`].
 //! - **Funções `async`.** Os casos `async` rodam em `run_with_faked_timers` (o `await` custa uma rodada de microtarefas como
 //!   no motor JS), com o guarda criado dentro do corpo. Promessas que o original solta sem `await` (`onWillOpenEditor`) são
 //!   esperadas no fim, para o corpo não terminar com tarefas pendentes.
@@ -32,6 +33,15 @@
 //! - **`assert.strictEqual(oldOptions, currentOptions)`** compara por valor (`EditorPartOptions` é `PartialEq`).
 //! - **`URI.file('foo/bar')`** é `uri_file("foo/bar")`; `{ pinned: true }` e companhia são o `EditorOptions` com os campos
 //!   dados; `openEditor(editor)` sem opções é `None`.
+//! - **`save & restore state`.** `part.dispose()` descarta só a parte principal (as partes ficam, como no original), e a
+//!   segunda `createPart(instantiationService)` é [`create_parts`] sobre o mesmo serviço de instanciação. As entradas que o
+//!   serializador de teste recria ficam num store do `registerTestEditor` (o guarda de vazamentos daqui as exige descartadas).
+//! - **`working sets`.** `part.applyState(state)` recebe [`ApplyStateTarget`] (`'empty'` é `Empty`); `pane?.group` é a busca do
+//!   grupo pelo `group_id` do painel; `input3.dirty = true` é `dirty.set(true)`; a atribuição por `cast` de
+//!   `_contentDimension = undefined` é `TestEditorPart::reset_content_dimension`.
+//! - **`context key provider`.** O provedor (`IEditorGroupContextKeyProvider<number>`) devolve [`Dynamic`]; o contexto raiz
+//!   é o `MockContextKeyService` que as partes recebem (`rootContextKeyService`), e `getContextKeyValue` é comparado com
+//!   `strict_equals` (`assert.strictEqual`).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -39,43 +49,47 @@ mod editor_input_services;
 
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use editor_input_services::{WorkbenchServices, uri_identity_service};
 use je_base::dynamic::Dynamic;
-use je_base::event::Event;
+use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, IDisposable, id_of};
 use je_base::promise::Promise;
 use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
+use je_platform::contextkey::contextkey::{ContextKeyMeta, I_CONTEXT_KEY_SERVICE, IContextKeyService, RawContextKey};
 use je_platform::dialogs::{
     ConfirmResult, Confirmation, ConfirmationResult, FileNameOrResource, I_DIALOG_SERVICE, I_FILE_DIALOG_SERVICE, IDialogService, IFileDialogService, Input,
     InputResult, OpenDialogOptions, PickAndOpenOptions, Prompt, PromptResult, SaveDialogOptions,
 };
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
-use je_platform::opener::editor_types::{AuxiliaryEditorOptions, EditorOptions, ModalEditorPartOptions};
-use je_platform::resources::uri_file;
-use je_platform::storage::{InMemoryStorageService, StorageService};
+use je_platform::opener::editor_types::EditorOptions;
+use je_platform::resources::{ext_uri, uri_file};
+use je_platform::storage::{I_STORAGE_SERVICE, InMemoryStorageService, StorageService};
 use je_platform::uri_identity::uri_identity::I_URI_IDENTITY_SERVICE;
 use je_ui::Ui;
-use je_workbench::browser::parts::editor::editor_panes::{EditorPaneDescriptor, editor_pane_registry};
-use je_workbench::browser::parts::editor::editor_part::EditorPart;
+use je_workbench::browser::parts::editor::editor_part::ApplyStateTarget;
+use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
 use je_workbench::common::editor::editor_group_model::{EditorOrIndex, GetEditorsOptions, GroupModelChangeEvent};
 use je_workbench::common::editor::side_by_side_editor_input::SideBySideEditorInput;
 use je_workbench::common::editor::{
-    CloseDirection, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorsOrder, FindEditorOptions, GroupIdentifier,
-    GroupModelChangeKind, SideBySideEditor, TextEditorOptions,
+    CloseDirection, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorsOrder, FindEditorOptions, GroupModelChangeKind,
+    SideBySideEditor, TextEditorOptions,
 };
 use je_workbench::services::editor::editor_groups_service::{
-    CloseAllEditorsOptions, CloseEditorOptions, CloseEditorsFilter, CloseEditorsTarget, EditorGroupActivationEvent, EditorGroupLayout, EditorReplacement,
-    FindGroupScope, GroupActivationReason, GroupDirection, GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder,
-    I_EDITOR_GROUPS_SERVICE, IEditorGroup, IEditorGroupsService, IEditorPart, IModalEditorPart, MergeGroupMode, MergeGroupOptions, ShowTabs, is_editor_group,
+    CloseAllEditorsOptions, CloseEditorOptions, CloseEditorsFilter, CloseEditorsTarget, EditorGroupActivationEvent, EditorGroupContextKeyProvider,
+    EditorGroupLayout, EditorReplacement, FindGroupScope, GroupActivationReason, GroupDirection, GroupLayoutArgument, GroupLocation,
+    GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder, I_EDITOR_GROUPS_SERVICE, IEditorGroup, IEditorGroupsService, IEditorPart, MergeGroupMode,
+    MergeGroupOptions, ShowTabs, is_editor_group,
 };
 use je_workbench::services::editor::editor_service::IEditorService;
-use je_workbench::services::layout::layout_service::MAIN_WINDOW;
-use je_workbench::test::browser::workbench_test_services::{TestEditorService, TestFileEditorInput};
+use je_workbench::services::files_configuration::files_configuration_service::{I_FILES_CONFIGURATION_SERVICE, IFilesConfigurationService};
+use je_workbench::test::browser::workbench_test_services::{
+    TestEditorParts, TestEditorPart, TestEditorService, TestFileEditorInput, create_editor_parts, register_test_editor,
+};
 
 const TEST_EDITOR_ID: &str = "MyFileEditorForEditorGroupService";
 const TEST_EDITOR_INPUT_ID: &str = "testEditorInputForEditorGroupService";
@@ -188,148 +202,104 @@ impl IDialogService for TestDialogService {
     }
 }
 
-/// O `IEditorGroupsService` que o `findGroup` (do `sideGroup`) lê: a própria parte (`instantiationService.stub(IEditorGroupsService, parts)`
-/// no original, onde o serviço é o `TestEditorParts`).
-struct PartGroupsService {
-    part: Weak<EditorPart>,
+/// O que o `workbenchInstantiationService` entrega aos casos de editor além do serviço de instanciação: o
+/// `TestFileDialogService` (`setConfirmResult`) e o `TestDialogService`, o `IFilesConfigurationService` e o
+/// `IUriIdentityService`, num `ServiceCollection` e o diálogo de arquivo que o caso controla.
+fn editor_workbench_services(guard: &LeakGuard, configuration: &Rc<TestConfigurationService>) -> (ServiceCollection, Rc<TestFileDialogService>) {
+    let workbench_services = WorkbenchServices::new(guard, configuration);
+    let file_dialog_service = TestFileDialogService::new();
+    let file_dialog: Rc<dyn IFileDialogService> = file_dialog_service.clone();
+    let dialog_service: Rc<dyn IDialogService> = Rc::new(TestDialogService);
+    let files_configuration_service: Rc<dyn IFilesConfigurationService> = workbench_services.files_configuration_service.clone();
+
+    let services = ServiceCollection::new()
+        .with(I_FILE_DIALOG_SERVICE, file_dialog)
+        .with(I_DIALOG_SERVICE, dialog_service)
+        .with(I_FILES_CONFIGURATION_SERVICE, files_configuration_service)
+        .with(I_URI_IDENTITY_SERVICE, uri_identity_service());
+
+    (services, file_dialog_service)
 }
 
-impl PartGroupsService {
-    fn part(&self) -> Rc<EditorPart> {
-        self.part.upgrade().expect("a parte está viva enquanto o serviço é usado")
-    }
-}
-
-impl IEditorGroupsService for PartGroupsService {
-    fn active_group(&self) -> Rc<dyn IEditorGroup> {
-        self.part().active_group()
-    }
-
-    fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
-        self.part().groups()
-    }
-
-    fn get_groups(&self, order: GroupsOrder) -> Vec<Rc<dyn IEditorGroup>> {
-        self.part().get_groups(order)
-    }
-
-    fn get_group(&self, identifier: GroupIdentifier) -> Option<Rc<dyn IEditorGroup>> {
-        self.part().get_group(identifier)
-    }
-
-    fn find_group(&self, scope: &FindGroupScope) -> Option<Rc<dyn IEditorGroup>> {
-        self.part().find_group(scope)
-    }
-
-    fn add_group(&self, location: Option<GroupRef>, direction: GroupDirection) -> Rc<dyn IEditorGroup> {
-        self.part().add_group(location, direction)
-    }
-
-    fn main_part(&self) -> Rc<dyn IEditorPart> {
-        self.part()
-    }
-
-    fn create_auxiliary_editor_part(&self, _options: Option<AuxiliaryEditorOptions>) -> Promise<Rc<dyn IEditorPart>> {
-        panic!("Method not implemented.")
-    }
-
-    fn create_modal_editor_part(&self, _options: Option<ModalEditorPartOptions>) -> Promise<Rc<dyn IModalEditorPart>> {
-        panic!("Method not implemented.")
-    }
-
-    fn active_modal_editor_part(&self) -> Option<Rc<dyn IModalEditorPart>> {
-        None
-    }
-}
-
-/// `createPart()`: a parte principal criada (`create`) e com layout de 1080x800.
-fn create_part(guard: &LeakGuard) -> Rc<EditorPart> {
-    let configuration: Rc<dyn IConfigurationService> = TestConfigurationService::new(None);
-    let instantiation_service = InstantiationService::new(ServiceCollection::new().with(I_CONFIGURATION_SERVICE, configuration.clone()));
-    let storage = InMemoryStorageService::new();
-    let storage_service: Rc<dyn StorageService> = Rc::new(storage.clone());
-    let context_key_service = MockContextKeyService::scopable();
-
-    let part = guard.add_rc(EditorPart::new(
-        &Ui::new(),
-        instantiation_service.clone(),
-        configuration,
-        storage_service,
-        &*context_key_service,
-        "workbench.parts.editor",
-        "",
-        MAIN_WINDOW,
-    ));
-    guard.add_rc(storage);
-    guard.add_rc(instantiation_service);
-
-    part.create(None);
-    part.layout(1080.0, 800.0, 0.0, 0.0);
-
-    part
-}
-
-/// A parte de `createPart()` e o que os casos de editor usam dela (`TestServiceAccessor`).
-struct TestPart {
-    part: Rc<EditorPart>,
+/// O que `createPart` devolve (o `[part, instantiationService]` do original) e o que os casos usam do
+/// `TestServiceAccessor`.
+struct TestParts {
+    /// `parts`.
+    parts: Rc<TestEditorParts>,
+    /// `parts.testMainPart`.
+    part: Rc<TestEditorPart>,
+    /// `instantiationService`.
+    instantiation_service: Rc<InstantiationService>,
+    /// O `ServiceCollection` do `instantiationService` (o `stub` do original muda o serviço dentro dele).
+    services: ServiceCollection,
+    /// O `IContextKeyService` raiz (`instantiationService.get(IContextKeyService)`).
+    root_context_key_service: Rc<MockContextKeyService>,
     /// `accessor.fileDialogService`.
     file_dialog_service: Rc<TestFileDialogService>,
     /// `accessor.editorService`.
     editor_service: Rc<dyn IEditorService>,
 }
 
-/// `createPart(instantiationService)` para os casos de editor: o `setup` registra o painel de teste, e o
-/// `workbenchInstantiationService` entrega os serviços que o grupo lê (ver o cabeçalho). `configuration` é o
-/// `TestConfigurationService` que o caso preparou (`setUserConfiguration`).
-fn create_test_part(guard: &LeakGuard, configuration: Rc<TestConfigurationService>) -> TestPart {
-    // `registerTestEditor(TEST_EDITOR_ID, [TestFileEditorInput, SideBySideEditorInput], TEST_EDITOR_INPUT_ID)`
-    guard.add(editor_pane_registry().register_editor_pane(
-        EditorPaneDescriptor::new(TEST_EDITOR_ID, "Test Editor Control"),
-        vec![TypeId::of::<TestFileEditorInput>(), TypeId::of::<SideBySideEditorInput>()],
-    ));
-
-    let workbench_services = WorkbenchServices::new(guard, &configuration);
-    let configuration_service: Rc<dyn IConfigurationService> = configuration.clone();
-    let file_dialog_service = TestFileDialogService::new();
-    let file_dialog: Rc<dyn IFileDialogService> = file_dialog_service.clone();
-    let dialog_service: Rc<dyn IDialogService> = Rc::new(TestDialogService);
-    let files_configuration_service: Rc<dyn je_workbench::services::files_configuration::files_configuration_service::IFilesConfigurationService> =
-        workbench_services.files_configuration_service.clone();
-
-    let services = ServiceCollection::new()
-        .with(I_CONFIGURATION_SERVICE, configuration_service.clone())
-        .with(I_FILE_DIALOG_SERVICE, file_dialog)
-        .with(I_DIALOG_SERVICE, dialog_service)
-        .with(je_workbench::services::files_configuration::files_configuration_service::I_FILES_CONFIGURATION_SERVICE, files_configuration_service)
-        .with(I_URI_IDENTITY_SERVICE, uri_identity_service());
-    let instantiation_service = InstantiationService::new(services.clone());
-    let storage = InMemoryStorageService::new();
-    let storage_service: Rc<dyn StorageService> = Rc::new(storage.clone());
-    let context_key_service = MockContextKeyService::scopable();
-
-    let part = guard.add_rc(EditorPart::new(
-        &Ui::new(),
-        instantiation_service.clone(),
-        configuration_service,
-        storage_service,
-        &*context_key_service,
-        "workbench.parts.editor",
-        "",
-        MAIN_WINDOW,
-    ));
-    guard.add_rc(storage);
-    guard.add_rc(instantiation_service);
+/// `createParts(instantiationService)`: inicia o registro de serializadores (`EditorFactoryRegistry.start`), cria as partes
+/// (`createEditorParts`, com `create` e `layout(1080, 800, 0, 0)`) e registra o serviço de grupos.
+fn create_parts(guard: &LeakGuard, instantiation_service: &Rc<InstantiationService>, services: &ServiceCollection) -> Rc<TestEditorParts> {
+    instantiation_service.invoke_function(|accessor| editor_factory_registry().start(accessor));
+    let parts = guard.add_rc(create_editor_parts(&Ui::new(), instantiation_service));
 
     // `instantiationService.stub(IEditorGroupsService, parts)`
-    let groups_service: Rc<dyn IEditorGroupsService> = Rc::new(PartGroupsService { part: Rc::downgrade(&part) });
-    services.set(I_EDITOR_GROUPS_SERVICE, groups_service);
+    services.set(I_EDITOR_GROUPS_SERVICE, parts.groups_service());
 
-    part.create(None);
-    part.layout(1080.0, 800.0, 0.0, 0.0);
+    parts
+}
 
+/// `workbenchInstantiationService`: `services` é o que o ambiente já tinha posto; a configuração, o armazenamento e o
+/// `IContextKeyService` (o `MockScopableContextKeyService`) entram aqui.
+fn create_test_parts_with(
+    guard: &LeakGuard,
+    configuration: Rc<dyn IConfigurationService>,
+    services: ServiceCollection,
+    file_dialog_service: Rc<TestFileDialogService>,
+) -> TestParts {
+    let storage = InMemoryStorageService::new();
+    let storage_service: Rc<dyn StorageService> = Rc::new(storage.clone());
+    let root_context_key_service = MockContextKeyService::scopable();
+    let context_key_service: Rc<dyn IContextKeyService> = root_context_key_service.clone();
+
+    let services = services.with(I_CONFIGURATION_SERVICE, configuration).with(I_STORAGE_SERVICE, storage_service).with(I_CONTEXT_KEY_SERVICE, context_key_service);
+    let instantiation_service = InstantiationService::new(services.clone());
+    guard.add_rc(storage);
+    guard.add_rc(instantiation_service.clone());
+
+    let parts = create_parts(guard, &instantiation_service, &services);
+    let part = parts.test_main_part.clone();
     let editor_service: Rc<dyn IEditorService> = Rc::new(TestEditorService);
 
-    TestPart { part, file_dialog_service, editor_service }
+    TestParts { parts, part, instantiation_service, services, root_context_key_service, file_dialog_service, editor_service }
+}
+
+/// O `setup` da suíte: `registerTestEditor(TEST_EDITOR_ID, [TestFileEditorInput, SideBySideEditorInput], TEST_EDITOR_INPUT_ID)`.
+fn register_test_editor_for_suite(guard: &LeakGuard) {
+    guard.add(register_test_editor(
+        TEST_EDITOR_ID,
+        vec![TypeId::of::<TestFileEditorInput>(), TypeId::of::<SideBySideEditorInput>()],
+        Some(TEST_EDITOR_INPUT_ID),
+    ));
+}
+
+/// `createPart()` para os casos de editor: o `setup` registra o painel e o serializador de teste, e o
+/// `workbenchInstantiationService` entrega os serviços que o grupo lê. `configuration` é o `TestConfigurationService` que o
+/// caso preparou (`setUserConfiguration`).
+fn create_test_part(guard: &LeakGuard, configuration: Rc<TestConfigurationService>) -> TestParts {
+    register_test_editor_for_suite(guard);
+
+    let (services, file_dialog_service) = editor_workbench_services(guard, &configuration);
+
+    create_test_parts_with(guard, configuration, services, file_dialog_service)
+}
+
+/// `createPart()` para os casos que só leem os grupos: o mesmo, com a configuração padrão.
+fn create_part(guard: &LeakGuard) -> Rc<TestEditorPart> {
+    create_test_part(guard, TestConfigurationService::new(None)).part
 }
 
 /// `createTestFileEditorInput(resource, typeId)`.
@@ -597,6 +567,43 @@ fn side_group() {
 }
 
 #[test]
+fn save_and_restore_state() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let test_parts = create_test_part(&guard, TestConfigurationService::new(None));
+        let part = test_parts.part.clone();
+
+        let root_group = part.groups()[0].clone();
+        let right_group = part.add_group(Some(group_ref(&root_group)), GroupDirection::Right);
+        let down_group = part.add_group(Some(group_ref(&right_group)), GroupDirection::Down);
+
+        let root_group_input = input(&guard, "foo/bar1");
+        root_group.open_editor(&editor(&root_group_input), Some(pinned())).await.unwrap();
+
+        let right_group_input = input(&guard, "foo/bar2");
+        right_group.open_editor(&editor(&right_group_input), Some(pinned())).await.unwrap();
+
+        assert_eq!(part.groups().len(), 3);
+
+        part.test_save_state();
+        part.dispose();
+
+        // `createPart(instantiationService)`: as partes novas sobre o mesmo serviço de instanciação
+        let restored_part = create_parts(&guard, &test_parts.instantiation_service, &test_parts.services).test_main_part.clone();
+
+        assert_eq!(restored_part.groups().len(), 3);
+        assert!(restored_part.get_group(root_group.id()).is_some());
+        assert!(restored_part.has_group(root_group.id()));
+        assert!(restored_part.get_group(right_group.id()).is_some());
+        assert!(restored_part.has_group(right_group.id()));
+        assert!(restored_part.get_group(down_group.id()).is_some());
+        assert!(restored_part.has_group(down_group.id()));
+
+        restored_part.clear_state();
+    });
+}
+
+#[test]
 fn groups_index_labels() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let part = create_part(&guard);
@@ -803,7 +810,7 @@ fn bump(counter: &Cell<usize>) {
 }
 
 /// `createPart()` com a configuração padrão do `workbenchInstantiationService`.
-fn part_of(guard: &LeakGuard) -> Rc<EditorPart> {
+fn part_of(guard: &LeakGuard) -> Rc<TestEditorPart> {
     create_test_part(guard, TestConfigurationService::new(None)).part
 }
 
@@ -2586,6 +2593,273 @@ fn transient_editors_overrides_enable_preview_setting() {
 
         group.focus();
         assert!(group.is_pinned(&EditorOrIndex::Editor(editor(&input2))));
+    });
+}
+
+#[test]
+fn working_sets_create_apply_state() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = create_test_part(&guard, TestConfigurationService::new(None)).part;
+
+        let input = input_with_path(&guard, "foo/bar");
+        let input2 = input_with_path(&guard, "foo/bar2");
+
+        let pane1 = part.active_group().open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        let pane2 = part.side_group().open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        // `pane1?.group` e `pane2?.group`
+        let group1 = pane1.and_then(|pane| part.get_group(pane.group_id()));
+        let group2 = pane2.and_then(|pane| part.get_group(pane.group_id()));
+
+        let state = part.create_state();
+
+        if let Some(group) = &group2 {
+            group.close_all_editors(None).await.unwrap();
+        }
+        if let Some(group) = &group1 {
+            group.close_all_editors(None).await.unwrap();
+        }
+
+        assert_eq!(part.count(), 1);
+        assert!(part.active_group().is_empty());
+
+        part.apply_state(ApplyStateTarget::State(state)).await.unwrap();
+
+        assert_eq!(part.count(), 2);
+
+        assert!(part.groups()[0].contains(&typed(&input), None));
+        assert!(part.groups()[1].contains(&typed(&input2), None));
+
+        for group in part.groups() {
+            group.close_all_editors(None).await.unwrap();
+        }
+
+        let empty_state = part.create_state();
+
+        part.apply_state(ApplyStateTarget::State(empty_state.clone())).await.unwrap();
+        assert_eq!(part.count(), 1);
+
+        let input3 = input_with_path(&guard, "foo/bar3");
+        input3.dirty.set(true);
+        part.active_group().open_editor(&editor(&input3), Some(pinned())).await.unwrap();
+
+        part.apply_state(ApplyStateTarget::State(empty_state)).await.unwrap();
+
+        assert_eq!(part.count(), 1);
+        assert!(part.groups()[0].contains(&typed(&input3), None)); // dirty editors enforce to be there even when state is empty
+
+        part.apply_state(ApplyStateTarget::Empty).await.unwrap();
+
+        assert_eq!(part.count(), 1);
+        assert!(part.groups()[0].contains(&typed(&input3), None)); // dirty editors enforce to be there even when state is empty
+
+        input3.dirty.set(false);
+
+        part.apply_state(ApplyStateTarget::Empty).await.unwrap();
+
+        assert_eq!(part.count(), 1);
+        assert!(part.active_group().is_empty());
+    });
+}
+
+#[test]
+fn working_sets_apply_state_when_the_part_has_never_been_laid_out_does_not_throw_and_registers_restored_groups() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let part = create_test_part(&guard, TestConfigurationService::new(None)).part;
+
+        let input = input_with_path(&guard, "foo/bar");
+        let input2 = input_with_path(&guard, "foo/bar2");
+
+        part.active_group().open_editor(&editor(&input), Some(pinned())).await.unwrap();
+        part.side_group().open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+
+        let state = part.create_state();
+
+        for group in part.groups() {
+            group.close_all_editors(None).await.unwrap();
+        }
+
+        // Simulate an editor part that has never been laid out (e.g. it stayed hidden since the window opened, like the Agents
+        // window editor area after a reload with the side pane closed). In that state `_contentDimension` is still undefined
+        // and laying out during the restore would throw, aborting before the `onDidAddGroup` events fire.
+        part.reset_content_dimension();
+
+        let (added_groups, listener) = count(&part.on_did_add_group());
+
+        // Must not throw, must restore the groups, and must fire `onDidAddGroup` for them so listeners (e.g. the editor
+        // service) register them.
+        part.apply_state(ApplyStateTarget::State(state)).await.unwrap();
+        listener.dispose();
+
+        assert_eq!(part.count(), 2);
+        assert!(part.groups()[0].contains(&typed(&input), None));
+        assert!(part.groups()[1].contains(&typed(&input2), None));
+        assert_eq!(added_groups.get(), 2, "expected exactly 2 onDidAddGroup events, got {}", added_groups.get());
+    });
+}
+
+/// `assert.strictEqual(contextKeyService.getContextKeyValue(key), expected)`.
+fn context_key_value_is(service: &dyn IContextKeyService, key: &str, expected: &Dynamic) -> bool {
+    service.get_context_key_value(key).strict_equals(expected)
+}
+
+/// O número do `group.id + offset` que os provedores de teste devolvem.
+fn id_value(group_id: i64) -> Dynamic {
+    Dynamic::Number(group_id as f64)
+}
+
+#[test]
+fn context_key_provider() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+
+        // Instantiate workbench and setup initial state
+        let test_parts = create_test_part(&guard, TestConfigurationService::new(None));
+        let root_context_key_service = test_parts.root_context_key_service.clone();
+        let parts = test_parts.parts.clone();
+
+        let input1 = input_with_path(&guard, "foo/bar");
+        let input2 = input_with_path(&guard, "foo/bar2");
+        let input3 = input_with_path(&guard, "foo/bar3");
+
+        let group1 = parts.active_group();
+        let group2 = parts.add_group(Some(group_ref(&group1)), GroupDirection::Right);
+
+        group2.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        group1.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+
+        // Create context key provider
+        let raw_context_key = RawContextKey::new("testContextKey", parts.active_group().id() as f64, ContextKeyMeta::None);
+        let context_key_provider = EditorGroupContextKeyProvider {
+            context_key: raw_context_key.clone(),
+            get_group_context_key_value: Rc::new(|group: &Rc<dyn IEditorGroup>| id_value(group.id())),
+            on_did_change: None,
+        };
+        guard.add(parts.register_context_key_provider(context_key_provider));
+
+        // Initial state: group1 is active
+        assert_eq!(parts.active_group().id(), group1.id());
+
+        let key = raw_context_key.key();
+        assert!(context_key_value_is(&*root_context_key_service, key, &id_value(group1.id())));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &id_value(group1.id())));
+        assert!(context_key_value_is(&*group2.scoped_context_key_service(), key, &id_value(group2.id())));
+
+        // Make group2 active and ensure both gloabal and local context key values are updated
+        parts.activate_group(group_ref(&group2));
+
+        assert!(context_key_value_is(&*root_context_key_service, key, &id_value(group2.id())));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &id_value(group1.id())));
+        assert!(context_key_value_is(&*group2.scoped_context_key_service(), key, &id_value(group2.id())));
+
+        // Add a new group and ensure both gloabal and local context key values are updated
+        // Group 3 will be active
+        let group3 = parts.add_group(Some(group_ref(&group2)), GroupDirection::Right);
+        group3.open_editor(&editor(&input3), Some(pinned())).await.unwrap();
+
+        assert!(context_key_value_is(&*root_context_key_service, key, &id_value(group3.id())));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &id_value(group1.id())));
+        assert!(context_key_value_is(&*group2.scoped_context_key_service(), key, &id_value(group2.id())));
+        assert!(context_key_value_is(&*group3.scoped_context_key_service(), key, &id_value(group3.id())));
+    });
+}
+
+#[test]
+fn context_key_provider_on_did_change() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+
+        // Instantiate workbench and setup initial state
+        let test_parts = create_test_part(&guard, TestConfigurationService::new(None));
+        let root_context_key_service = test_parts.root_context_key_service.clone();
+        let parts = test_parts.parts.clone();
+
+        let input1 = input_with_path(&guard, "foo/bar");
+        let input2 = input_with_path(&guard, "foo/bar2");
+
+        let group1 = parts.active_group();
+        let group2 = parts.add_group(Some(group_ref(&group1)), GroupDirection::Right);
+
+        group2.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        group1.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+
+        // Create context key provider
+        let offset = Rc::new(Cell::new(0_i64));
+        let on_did_change: Rc<Emitter<()>> = guard.add_rc(Emitter::new());
+
+        let raw_context_key = RawContextKey::new("testContextKey", parts.active_group().id() as f64, ContextKeyMeta::None);
+        let context_key_provider = EditorGroupContextKeyProvider {
+            context_key: raw_context_key.clone(),
+            get_group_context_key_value: Rc::new({
+                let offset = offset.clone();
+                move |group: &Rc<dyn IEditorGroup>| id_value(group.id() + offset.get())
+            }),
+            on_did_change: Some(on_did_change.event()),
+        };
+        guard.add(parts.register_context_key_provider(context_key_provider));
+
+        // Initial state: group1 is active
+        assert_eq!(parts.active_group().id(), group1.id());
+
+        let key = raw_context_key.key();
+        assert!(context_key_value_is(&*root_context_key_service, key, &id_value(group1.id() + offset.get())));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &id_value(group1.id() + offset.get())));
+        assert!(context_key_value_is(&*group2.scoped_context_key_service(), key, &id_value(group2.id() + offset.get())));
+
+        // Make a change to the context key provider and fire onDidChange such that all context key values are updated
+        offset.set(10);
+        on_did_change.fire(());
+
+        assert!(context_key_value_is(&*root_context_key_service, key, &id_value(group1.id() + offset.get())));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &id_value(group1.id() + offset.get())));
+        assert!(context_key_value_is(&*group2.scoped_context_key_service(), key, &id_value(group2.id() + offset.get())));
+    });
+}
+
+#[test]
+fn context_key_provider_active_editor_change() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+
+        // Instantiate workbench and setup initial state
+        let test_parts = create_test_part(&guard, TestConfigurationService::new(None));
+        let root_context_key_service = test_parts.root_context_key_service.clone();
+        let parts = test_parts.parts.clone();
+
+        let input1 = input_with_path(&guard, "foo/bar");
+        let input2 = input_with_path(&guard, "foo/bar2");
+
+        let group1 = parts.active_group();
+
+        group1.open_editor(&editor(&input2), Some(pinned())).await.unwrap();
+        group1.open_editor(&editor(&input1), Some(pinned())).await.unwrap();
+
+        // Create context key provider
+        let resource_text = |resource: &je_base::uri::URI| resource.to_string(false).to_string_lossy();
+        let raw_context_key = RawContextKey::new("testContextKey", resource_text(&input1.resource), ContextKeyMeta::None);
+        let context_key_provider = EditorGroupContextKeyProvider {
+            context_key: raw_context_key.clone(),
+            get_group_context_key_value: Rc::new(|group: &Rc<dyn IEditorGroup>| {
+                Dynamic::string(&group.active_editor().and_then(|editor| editor.resource()).map_or_else(String::new, |resource| resource.to_string(false).to_string_lossy()))
+            }),
+            on_did_change: None,
+        };
+        guard.add(parts.register_context_key_provider(context_key_provider));
+
+        // Initial state: input1 is active
+        let active_resource = group1.active_editor().and_then(|editor| editor.resource());
+        assert!(ext_uri().is_equal(active_resource.as_ref(), Some(&input1.resource), false));
+
+        let key = raw_context_key.key();
+        assert!(context_key_value_is(&*root_context_key_service, key, &Dynamic::string(&resource_text(&input1.resource))));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &Dynamic::string(&resource_text(&input1.resource))));
+
+        // Make input2 active and ensure both gloabal and local context key values are updated
+        group1.open_editor(&editor(&input2), None).await.unwrap();
+
+        assert!(context_key_value_is(&*root_context_key_service, key, &Dynamic::string(&resource_text(&input2.resource))));
+        assert!(context_key_value_is(&*group1.scoped_context_key_service(), key, &Dynamic::string(&resource_text(&input2.resource))));
     });
 }
 

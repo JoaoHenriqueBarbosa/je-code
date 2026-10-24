@@ -813,6 +813,189 @@ impl IEditorGroupsService for TestEditorGroupsService {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// `registerTestEditor`, `TestEditorPart`, `TestEditorParts` e `createEditorParts`.
+//
+// - **`registerTestEditor(id, inputs, serializerInputId)`** registra o painel de teste (o `TestEditor` do original só guarda
+//   o id, não desenha nada, e o painel lógico é o descritor) para os tipos de entrada dados e, se há `serializerInputId`, o
+//   `EditorsObserverTestEditorInputSerializer`, que grava `{ resource }` e recria um `TestFileEditorInput` com esse tipo.
+//   O serializador fecha sobre o `serializerInputId`, então entra por `register_editor_serializer_with`.
+// - **`TestEditorPart`** é a parte principal (`MainEditorPart`) com `testSaveState`, `clearState` e o esquecimento do
+//   `_contentDimension`: o original herda; aqui embrulha a parte e a expõe por `Deref`. Não implementa o
+//   `IEditorGroupsService` como o original: os dois usos dele (`createEditorPart`, `createEditorParts`) ainda não têm suíte
+//   portada que o leia, e o serviço dos testes de grupo é o [`TestEditorParts`].
+// - **`TestEditorParts`** embrulha o `EditorParts` real (o gancho `createMainEditorPart` não existe): `testMainPart` é a
+//   parte principal embrulhada. O `Deref` dá os métodos do serviço de grupos.
+// - **`createEditorParts(instantiationService)`** lê a configuração, o armazenamento e o `IContextKeyService` do serviço de
+//   instanciação, cria a parte (`create`) e dá o `layout(1080, 800, 0, 0)`. O `await parts.whenReady` do original é o
+//   esvaziamento das microtarefas (o helper é síncrono), que deixa a restauração das partes completar.
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use editor_parts_doubles::{TestEditorPart, TestEditorParts, create_editor_parts, register_test_editor};
+
+mod editor_parts_doubles {
+    use std::any::TypeId;
+    use std::ops::Deref;
+    use std::rc::Rc;
+
+    use je_base::dynamic::{Dynamic, json_stringify};
+    use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
+    use je_base::runtime::run_microtasks;
+    use je_base::uri::URI;
+    use je_instantiation::InstantiationService;
+    use je_platform::configuration::service::I_CONFIGURATION_SERVICE;
+    use je_platform::contextkey::contextkey::I_CONTEXT_KEY_SERVICE;
+    use je_platform::storage::I_STORAGE_SERVICE;
+    use je_ui::Ui;
+
+    use super::TestFileEditorInput;
+    use crate::browser::parts::editor::editor_panes::{EditorPaneDescriptor, editor_pane_registry};
+    use crate::browser::parts::editor::editor_part::EditorPart;
+    use crate::browser::parts::editor::editor_parts::EditorParts;
+    use crate::common::editor::EditorInputRef;
+    use crate::common::editor::editor_factory_registry::{IEditorSerializer, editor_factory_registry};
+    use crate::services::editor::editor_groups_service::IEditorGroupsService;
+
+    /// `ISerializedTestInput` e o `EditorsObserverTestEditorInputSerializer`. As entradas recriadas ficam no `disposables` do
+    /// `registerTestEditor` (o original não as descarta; o guarda de vazamentos dos testes portados as exige descartadas).
+    struct EditorsObserverTestEditorInputSerializer {
+        serializer_input_id: String,
+        disposables: Rc<DisposableStore>,
+    }
+
+    impl IEditorSerializer for EditorsObserverTestEditorInputSerializer {
+        fn can_serialize(&self, _editor_input: &EditorInputRef) -> bool {
+            true
+        }
+
+        fn serialize(&self, editor_input: &EditorInputRef) -> Option<String> {
+            let test_editor_input = editor_input.as_any().downcast_ref::<TestFileEditorInput>()?;
+
+            json_stringify(&Dynamic::object([("resource", Dynamic::string(&test_editor_input.resource.to_string(false).to_string_lossy()))]))
+        }
+
+        fn deserialize(&self, _instantiation_service: &InstantiationService, serialized_editor_input: &str) -> Option<EditorInputRef> {
+            let test_input: serde_json::Value = serde_json::from_str(serialized_editor_input).ok()?;
+            let resource = URI::parse(test_input.get("resource")?.as_str()?, false);
+
+            let test_editor_input = self.disposables.add_rc(TestFileEditorInput::new(resource, &self.serializer_input_id));
+            let editor_input: EditorInputRef = test_editor_input;
+
+            Some(editor_input)
+        }
+    }
+
+    /// `registerTestEditor(id, inputs, serializerInputId?)`.
+    pub fn register_test_editor(id: &str, inputs: Vec<TypeId>, serializer_input_id: Option<&str>) -> DisposableRef {
+        let disposables = DisposableStore::new();
+
+        disposables.add(editor_pane_registry().register_editor_pane(EditorPaneDescriptor::new(id, "Test Editor Control"), inputs));
+
+        if let Some(serializer_input_id) = serializer_input_id {
+            let (serializer_input_id_owned, serializer_disposables) = (serializer_input_id.to_string(), disposables.clone());
+            disposables.add(editor_factory_registry().register_editor_serializer_with(
+                serializer_input_id,
+                Rc::new(move |_instantiation_service: &InstantiationService| -> Rc<dyn IEditorSerializer> {
+                    Rc::new(EditorsObserverTestEditorInputSerializer {
+                        serializer_input_id: serializer_input_id_owned.clone(),
+                        disposables: serializer_disposables.clone(),
+                    })
+                }),
+            ));
+        }
+
+        disposables
+    }
+
+    /// `TestEditorPart`.
+    pub struct TestEditorPart {
+        part: Rc<EditorPart>,
+    }
+
+    impl TestEditorPart {
+        pub fn new(part: Rc<EditorPart>) -> Rc<Self> {
+            Rc::new(Self { part })
+        }
+
+        /// `testSaveState()`.
+        pub fn test_save_state(&self) {
+            self.part.save_state();
+        }
+
+        /// `clearState()`: esvazia os mementos do espaço de trabalho e do perfil.
+        pub fn clear_state(&self) {
+            for memento in [self.part.workspace_memento(), self.part.profile_memento()] {
+                for key in memento.keys() {
+                    memento.delete(&key);
+                }
+            }
+        }
+
+        /// `(part as unknown as { _contentDimension: unknown })._contentDimension = undefined`.
+        pub fn reset_content_dimension(&self) {
+            self.part.forget_content_dimension();
+        }
+    }
+
+    impl Deref for TestEditorPart {
+        type Target = EditorPart;
+
+        fn deref(&self) -> &EditorPart {
+            &self.part
+        }
+    }
+
+    impl IDisposable for TestEditorPart {
+        fn dispose(&self) {
+            self.part.dispose();
+        }
+    }
+
+    /// `TestEditorParts`.
+    pub struct TestEditorParts {
+        parts: Rc<EditorParts>,
+        /// `testMainPart`.
+        pub test_main_part: Rc<TestEditorPart>,
+    }
+
+    impl TestEditorParts {
+        /// O serviço, como o `instantiationService.stub(IEditorGroupsService, parts)` o registra.
+        pub fn groups_service(&self) -> Rc<dyn IEditorGroupsService> {
+            self.parts.clone()
+        }
+    }
+
+    impl Deref for TestEditorParts {
+        type Target = EditorParts;
+
+        fn deref(&self) -> &EditorParts {
+            &self.parts
+        }
+    }
+
+    impl IDisposable for TestEditorParts {
+        fn dispose(&self) {
+            self.parts.dispose();
+        }
+    }
+
+    /// `createEditorParts(instantiationService, disposables)`: o chamador põe o resultado no guarda (`disposables.add(parts)`).
+    pub fn create_editor_parts(ui: &Ui, instantiation_service: &Rc<InstantiationService>) -> Rc<TestEditorParts> {
+        let (configuration_service, storage_service, context_key_service) = instantiation_service
+            .invoke_function(|accessor| (accessor.get(I_CONFIGURATION_SERVICE), accessor.get(I_STORAGE_SERVICE), accessor.get(I_CONTEXT_KEY_SERVICE)));
+
+        let parts = EditorParts::new(ui, instantiation_service.clone(), configuration_service, storage_service, context_key_service);
+        let test_main_part = TestEditorPart::new(parts.main_editor_part());
+        test_main_part.create(None);
+        test_main_part.layout(1080.0, 800.0, 0.0, 0.0);
+
+        // `await parts.whenReady`
+        run_microtasks();
+
+        Rc::new(TestEditorParts { parts, test_main_part })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Dublês de escrita de configuração: o recorte injetável dos serviços de texto que o `ConfigurationEditing` e o
 // `JSONEditingService` usam.
 //

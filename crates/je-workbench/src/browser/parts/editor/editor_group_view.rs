@@ -22,16 +22,18 @@
 //!   frente antes do diálogo de salvar) não existe no `IHostService` portado e não tem efeito sem janela. O
 //!   `IEditorGroupViewOptions.preserveFocus` do construtor só decidia dar foco depois de restaurar: some.
 //! - **`groupsView` e `editorPartsView`** são o trait [`EditorGroupsView`] (a parte que contém o grupo e a visão de todas as
-//!   partes numa coisa só: o `IEditorGroupsView` e o `IEditorPartsView` do original). Com uma parte só (a fatia 4 traz o
-//!   `EditorParts`), `editorPartsView.groups` são os grupos da parte. O `windowId` que o grupo lê da `groupsView` é o parâmetro
+//!   partes numa coisa só: o `IEditorGroupsView` e o `IEditorPartsView` do original). `editorPartsView.groups` e
+//!   `editorPartsView.getGroup` são os grupos de todas as partes quando a parte tem um `EditorParts` (a parte lê pelo trait
+//!   `EditorPartsView`) e os da própria parte quando está avulsa. O `windowId` que o grupo lê da `groupsView` é o parâmetro
 //!   `window_id`.
 //! - **Serviços** lidos na hora de usar, pelo `InstantiationService` (o original os recebe no construtor):
 //!   `IFileDialogService` (a confirmação de salvar), `IDialogService` (o erro de editor que não pode mover),
 //!   `IFilesConfigurationService` (o modo de auto salvar), `IUriIdentityService` (`findEditors`) e o `ILogService` (opcional:
 //!   sem ele os erros não são registrados). O `IEditorResolverService`, o `IFileService`, o `IMenuService`, o
 //!   `ITelemetryService`, o `IKeybindingService` e o `IContextMenuService` só serviam ao título, aos context keys do grupo e
-//!   ao menu, e não entram. Os context keys do grupo (`handleGroupContextKeys`, `activeEditorDirty` e companhia) dependem de
-//!   `common/contextkeys.ts`, ainda não portado (a mesma pendência do `EditorPart`).
+//!   ao menu, e não entram. Os context keys do grupo (`handleGroupContextKeys`, `activeEditorDirty` e companhia) ficam fora: as chaves
+//!   existem em `common/contextkeys.rs`, mas ligá-las pede o `ResourceContextKey` (`ILanguageService`, `IModelService`,
+//!   `IFileService`), que ainda não foi portado.
 //! - **Promessas.** As funções `async` do original são [`async_fn`]: o corpo roda já, de forma síncrona, até o primeiro
 //!   `await`, e cada `await` custa uma rodada de microtarefas. `closeAllEditors({ excludeConfirming: true })` devolve a
 //!   promessa já resolvida (o original devolve `boolean`; o método irmão [`IEditorGroup::close_all_editors_excluding_confirming`]
