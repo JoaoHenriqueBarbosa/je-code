@@ -66,6 +66,12 @@ impl EditSources {
         Self::simple("reloadFromDisk")
     }
 
+    /// `EditSources.suggest({ providerId })`: o `providerId` não tem campo nesta representação simplificada e não é
+    /// guardado (o `CompletionItem` do porte não tem `extensionId`, então o original o deixa `undefined`).
+    pub fn suggest() -> TextModelEditSource {
+        Self::simple("suggest")
+    }
+
     /// `EditSources.cursor({ kind, detailedSource })`: `kind` fica em `name` (é o que `getType()` devolve para
     /// a origem `cursor`). O `detailedSource` não tem campo nesta representação simplificada e não é guardado.
     pub fn cursor(kind: &str, _detailed_source: Option<&str>) -> TextModelEditSource {

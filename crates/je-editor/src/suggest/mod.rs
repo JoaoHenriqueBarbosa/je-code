@@ -6,6 +6,8 @@ pub mod suggest_memory;
 pub mod completion_model;
 pub mod word_distance;
 
+pub mod suggest_controller;
+
 pub mod suggest_alternatives;
 pub mod suggest_commit_characters;
 pub mod suggest_model;
