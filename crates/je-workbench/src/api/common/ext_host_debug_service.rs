@@ -1027,7 +1027,8 @@ impl ExtHostDebugServiceBase {
         self.config_providers.borrow().iter().find(|p| p.handle == handle).map(|p| p.provider.clone())
     }
 
-    fn defines_debug_type(ed: &ExtensionDescription, r#type: &str) -> bool {
+    /// `definesDebugType(ed, type)`: a extensão contribui um depurador `type` com `label` (só a contribuição com `label` "define" o tipo).
+    pub fn defines_debug_type(ed: &ExtensionDescription, r#type: &str) -> bool {
         if let Some(contributes) = &ed.manifest.contributes
             && let Some(debuggers) = &contributes.debuggers
         {

@@ -71,7 +71,7 @@ pub struct WorkspaceServices {
 }
 
 /// Uma pasta como o objeto `vscode.WorkspaceFolder` (ver as divergências do módulo).
-fn folder_to_js(folder: &WorkspaceFolder) -> JsData {
+pub(crate) fn folder_to_js(folder: &WorkspaceFolder) -> JsData {
     JsData::Object(vec![
         ("uri".to_owned(), uri_to_js(folder.uri())),
         ("name".to_owned(), JsData::Str(folder.name())),

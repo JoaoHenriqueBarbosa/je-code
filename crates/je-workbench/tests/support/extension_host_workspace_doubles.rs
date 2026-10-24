@@ -2,14 +2,16 @@
 //! configuração do workbench (por exemplo, `createFileSystemWatcher` lê as pastas e `files.watcherExclude`).
 //!
 //! - `WorkspaceClient` no lugar do `MainThreadWorkspace`: o real pede quinze serviços do workbench (busca, editores, confiança,
-//!   arquivos de texto...) que esses testes não exercem; o dublê manda `$initializeWorkspace` ao `ExtHostWorkspace` e falha com
-//!   `panic!` se o host chamar qualquer outro método.
-//! - `StaticConfigurationService` embrulha o `TestConfigurationService` e devolve dados de configuração vazios
-//!   (`getConfigurationData`), que o serviço de teste não tem, para o `MainThreadConfiguration` REAL iniciar o `ExtHostConfiguration`.
+//!   arquivos de texto...) que esses testes não exercem; o dublê manda `$initializeWorkspace` ao `ExtHostWorkspace` (e, a pedido do
+//!   teste, `$acceptWorkspaceData` e `$onDidGrantWorkspaceTrust`) e falha com `panic!` se o host chamar qualquer outro método.
+//! - `StaticConfigurationService` embrulha o `TestConfigurationService` (que registra o `updateValue`) e devolve os dados de
+//!   configuração semeados (`getConfigurationData`), que o serviço de teste não tem, para o `MainThreadConfiguration` REAL iniciar o
+//!   `ExtHostConfiguration`. Sem semente, os dados são vazios.
 //! - `MainThreadMessageService` (REAL) sobre `TestDialogService` e `TestNotificationService`, que o `ExtHostWorkspace` exige ao nascer.
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
@@ -18,6 +20,7 @@ use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_base::JsString;
 use je_platform::configuration::models::{ConfigurationChangeEvent, ConfigurationKeys};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
@@ -29,7 +32,7 @@ use je_platform::workspace_trust::{ResourceTrustRequestOptions, WorkspaceTrustRe
 use je_workbench::api::browser::main_thread_configuration::MainThreadConfiguration;
 use je_workbench::api::browser::main_thread_message_service::MainThreadMessageService;
 use je_workbench::api::common::ext_host_protocol::{
-    EncodingOptionDto, ExtHostContext, IMainContext, ITextSearchComplete, IWorkspaceData, MainContext, MainThreadConfigurationShape, MainThreadMessageServiceShape,
+    EncodingOptionDto, ExtHostContext, ExtHostWorkspaceShape, IMainContext, ITextSearchComplete, IWorkspaceData, MainContext, MainThreadConfigurationShape, MainThreadMessageServiceShape,
     MainThreadWorkspaceShape, ResolvedDecodingDto, ResolvedEncodingDto, SaveOptionsDto, WorkspaceFolderDataDto, WorkspaceFolderToAdd,
 };
 use je_workbench::services::search::query_builder::{IFileQueryBuilderOptions, ITextQueryBuilderOptions};
@@ -44,8 +47,22 @@ fn unexercised(method: &str) -> ! {
     panic!("o teste não exercita MainThreadWorkspace.{method}")
 }
 
-/// O dublê do `MainThreadWorkspace`.
-pub struct WorkspaceClient;
+/// O dublê do `MainThreadWorkspace`: guarda o proxy do `ExtHostWorkspace`, por onde o teste entrega as mudanças do workbench.
+pub struct WorkspaceClient {
+    proxy: Rc<dyn ExtHostWorkspaceShape>,
+}
+
+impl WorkspaceClient {
+    /// O workbench troca o workspace (`$acceptWorkspaceData`).
+    pub fn publish(&self, data: IWorkspaceData) {
+        self.proxy.rpc_accept_workspace_data(Some(data));
+    }
+
+    /// O workbench concede a confiança no workspace (`$onDidGrantWorkspaceTrust`).
+    pub fn grant_trust(&self) {
+        self.proxy.rpc_on_did_grant_workspace_trust();
+    }
+}
 
 impl IDisposable for WorkspaceClient {
     fn dispose(&self) {}
@@ -133,13 +150,50 @@ impl MainThreadWorkspaceShape for WorkspaceClient {
     }
 }
 
-/// O `IConfigurationService` do teste: o `TestConfigurationService` mais dados de configuração vazios.
+/// O `IConfigurationService` do teste: o `TestConfigurationService` mais os dados de configuração semeados.
 pub struct StaticConfigurationService {
-    inner: Rc<TestConfigurationService>,
+    /// O serviço de teste por baixo (o teste lê dele o `update_value_calls` e dispara o `on_did_change_configuration_emitter`).
+    pub inner: Rc<TestConfigurationService>,
+    data: RefCell<ConfigurationData>,
 }
 
-fn empty_model() -> ConfigurationModelData {
-    ConfigurationModelData { contents: Dynamic::object(Vec::<(&str, Dynamic)>::new()), keys: Vec::new(), overrides: Vec::new(), raw: None }
+impl StaticConfigurationService {
+    /// Semeado com `data`.
+    pub fn seeded(data: ConfigurationData) -> Rc<Self> {
+        Rc::new(Self { inner: TestConfigurationService::new(None), data: RefCell::new(data) })
+    }
+
+    /// Sem semente: todas as camadas vazias.
+    pub fn empty() -> Rc<Self> {
+        Self::seeded(configuration_data(empty_model()))
+    }
+
+    /// Troca os dados que `getConfigurationData` devolve (a próxima leitura da extensão vê o valor novo).
+    pub fn set_data(&self, data: ConfigurationData) {
+        *self.data.borrow_mut() = data;
+    }
+}
+
+/// O modelo de uma camada com `contents` e as `keys` que ele define.
+pub fn model(contents: Dynamic, keys: &[&str]) -> ConfigurationModelData {
+    ConfigurationModelData { contents, keys: keys.iter().map(|key| JsString::from(*key)).collect(), overrides: Vec::new(), raw: None }
+}
+
+pub fn empty_model() -> ConfigurationModelData {
+    model(Dynamic::object(Vec::<(&str, Dynamic)>::new()), &[])
+}
+
+/// Os dados de configuração com `user_local` na camada do usuário e as demais vazias.
+pub fn configuration_data(user_local: ConfigurationModelData) -> ConfigurationData {
+    ConfigurationData {
+        defaults: empty_model(),
+        policy: empty_model(),
+        application: empty_model(),
+        user_local,
+        user_remote: empty_model(),
+        workspace: empty_model(),
+        folders: Vec::new(),
+    }
 }
 
 impl IConfigurationService for StaticConfigurationService {
@@ -148,15 +202,7 @@ impl IConfigurationService for StaticConfigurationService {
     }
 
     fn get_configuration_data(&self) -> Option<ConfigurationData> {
-        Some(ConfigurationData {
-            defaults: empty_model(),
-            policy: empty_model(),
-            application: empty_model(),
-            user_local: empty_model(),
-            user_remote: empty_model(),
-            workspace: empty_model(),
-            folders: Vec::new(),
-        })
+        Some(self.data.borrow().clone())
     }
 
     fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic {
@@ -204,16 +250,28 @@ pub fn message_service(workbench: &Workbench) -> Rc<MainThreadMessageService> {
     )
 }
 
-/// Liga ao host o `MainThreadWorkspace` (dublê), o `MainThreadConfiguration` e o `MainThreadMessageService` (reais), com
-/// `initial_data` como o workspace inicial.
-pub fn bind_workspace_clients(context: &Rc<dyn IMainContext>, message_service: Rc<MainThreadMessageService>, initial_data: IWorkspaceData) -> Vec<Rc<dyn IDisposable>> {
+/// Os clientes que [`bind_workspace_clients`] ligou ao host.
+pub struct WorkspaceClients {
+    /// O dublê do `MainThreadWorkspace`, para o teste publicar mudanças do workbench.
+    pub workspace: Rc<WorkspaceClient>,
+    /// Todos os clientes, para o binder devolver ao host (que os descarta ao parar).
+    pub disposables: Vec<Rc<dyn IDisposable>>,
+}
+
+/// Liga ao host o `MainThreadWorkspace` (dublê), o `MainThreadConfiguration` (real, sobre `configuration_service`) e o
+/// `MainThreadMessageService` (real), com `initial_data` como o workspace inicial.
+pub fn bind_workspace_clients(
+    context: &Rc<dyn IMainContext>,
+    message_service: Rc<MainThreadMessageService>,
+    initial_data: IWorkspaceData,
+    configuration_service: Rc<StaticConfigurationService>,
+) -> WorkspaceClients {
     let workspace_proxy = context.get_proxy(&ExtHostContext::EXT_HOST_WORKSPACE);
     workspace_proxy.rpc_initialize_workspace(Some(initial_data), false);
-    let client = Rc::new(WorkspaceClient);
+    let client = Rc::new(WorkspaceClient { proxy: workspace_proxy });
     let client_shape: Rc<dyn MainThreadWorkspaceShape> = client.clone();
     context.set(&MainContext::MAIN_THREAD_WORKSPACE, client_shape);
 
-    let configuration_service = Rc::new(StaticConfigurationService { inner: TestConfigurationService::new(None) });
     let configuration = MainThreadConfiguration::new(&**context, TestContextService::new(None, None), configuration_service, TestEnvironmentService::new());
     let configuration_shape: Rc<dyn MainThreadConfigurationShape> = configuration.clone();
     context.set(&MainContext::MAIN_THREAD_CONFIGURATION, configuration_shape);
@@ -221,6 +279,6 @@ pub fn bind_workspace_clients(context: &Rc<dyn IMainContext>, message_service: R
     let message_shape: Rc<dyn MainThreadMessageServiceShape> = message_service.clone();
     context.set(&MainContext::MAIN_THREAD_MESSAGE_SERVICE, message_shape);
 
-    let clients: [Rc<dyn IDisposable>; 3] = [client, configuration, message_service];
-    clients.into_iter().collect()
+    let clients: [Rc<dyn IDisposable>; 3] = [client.clone(), configuration, message_service];
+    WorkspaceClients { workspace: client, disposables: clients.into_iter().collect() }
 }

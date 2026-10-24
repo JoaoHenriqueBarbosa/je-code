@@ -13,6 +13,8 @@ use je_platform::request::request::{AuthInfo, Credentials};
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
 use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
+use je_workbench::api::common::ext_host_debug_protocol::ExtHostDebugServiceShape;
+use je_workbench::api::common::ext_host_debug_service::{ExtHostDebugServiceBase, ExtHostDebugServiceDeps, WorkerExtHostDebugService};
 use je_workbench::api::common::ext_host_diagnostics::ExtHostDiagnostics;
 use je_workbench::api::common::ext_host_document_data::IExtHostDocumentSaveDelegate;
 use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
@@ -50,7 +52,8 @@ use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
 use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
-use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::{commands, debug, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::js_object::JsObjects;
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
 use crate::local_context::LocalContext;
@@ -205,6 +208,7 @@ struct BridgedServices {
     language_features: Option<Rc<ExtHostLanguageFeatures>>,
     terminal: Option<Rc<WorkerExtHostTerminalService>>,
     tree_views: Option<Rc<ExtHostTreeViews>>,
+    debug: Option<Rc<ExtHostDebugServiceBase>>,
     main_thread: Vec<Rc<dyn IDisposable>>,
 }
 
@@ -284,6 +288,8 @@ impl ExtensionHost {
         members.extend(languages::classes(runner, &languages_state));
         let scm_objects = Rc::new(scm::ScmObjects::default());
         scm::define_classes(runner, &scm_objects, &event_tables);
+        let debug_objects = Rc::new(debug::DebugObjects::default());
+        members.extend(debug::classes(runner, &debug_objects));
         let extension_slot = ExtensionServiceSlot::new();
         extensions::define_class(runner, &extension_slot);
 
@@ -442,6 +448,35 @@ impl ExtensionHost {
                 members.push(("scm".to_owned(), scm::namespace(runner, &scm_service, &scm_objects)));
             }
 
+            // `vscode.debug` pede o cliente `MainThreadDebugService`. O host não tem o `IConfigurationResolverService` nem o namespace
+            // `tests` (ver `NoVariableResolver` e `NoTesting`); o registro de extensões vem do serviço que o host liga depois.
+            if provided(MainContext::MAIN_THREAD_DEBUG_SERVICE.sid) {
+                let workspace_provider: Rc<dyn IExtHostWorkspaceProvider> = match &bridged.workspace {
+                    Some(workspace_service) => workspace_service.clone(),
+                    None => Rc::new(NoWorkspaceProvider),
+                };
+                let debug_context: Rc<dyn IMainContext> = Rc::new(debug::DebugContext {
+                    debug: bridged_ref.get_proxy(&MainContext::MAIN_THREAD_DEBUG_SERVICE),
+                    telemetry: bridged_ref.get_proxy(&MainContext::MAIN_THREAD_TELEMETRY),
+                });
+                let service = WorkerExtHostDebugService::new(ExtHostDebugServiceDeps {
+                    rpc_service: debug_context,
+                    workspace_service: workspace_provider,
+                    extension_service: extension_slot.clone(),
+                    variable_resolver: Rc::new(debug::NoVariableResolver),
+                    commands: commands.clone(),
+                    testing: Rc::new(debug::NoTesting),
+                });
+                let service_shape: Rc<dyn ExtHostDebugServiceShape> = service.clone();
+                late.debug_service.0.bind(service_shape);
+                let services = debug::DebugServices { service: service.clone(), extensions: extension_slot.clone() };
+                members.push((
+                    "debug".to_owned(),
+                    debug::namespace(runner, &JsObjects::new(runner), &services, &debug_objects, &table, &event_tables),
+                ));
+                bridged.debug = Some(service);
+            }
+
             // `vscode.languages` pede os documentos de texto e, por grupo, o cliente `MainThread*` dele; os provedores pedem também os
             // diagnósticos (o `ExtHostLanguageFeatures` os usa nas ações de código).
             if let Some(text_editor_api) = &text_editor_api {
@@ -574,6 +609,9 @@ impl ExtensionHost {
         }
         if let Some(tree_views) = &self.bridged.tree_views {
             tree_views.dispose();
+        }
+        if let Some(debug) = &self.bridged.debug {
+            debug.dispose();
         }
         for client in &self.bridged.main_thread {
             client.dispose();

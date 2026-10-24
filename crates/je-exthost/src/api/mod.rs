@@ -14,6 +14,7 @@ use std::rc::Rc;
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS_KEY};
 
 pub mod commands;
+pub mod debug;
 pub mod disposable;
 pub mod enums;
 pub mod env;

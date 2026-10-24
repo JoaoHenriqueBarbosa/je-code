@@ -297,3 +297,34 @@ Teste: `crates/je-workbench/tests/extension_host_api_file_system_events.rs`, com
 ao JavaScript com a mensagem exata; o `RelativePattern` com `**/*.txt` casa em minúsculas contra `/w/...`; `ExtHostFileSystemInfoShape` ainda não
 é ligado (o `accept_provider_infos` do workbench não chega ao host).
 
+Correção posterior (o integrador mediu 5 de 6): `will_run_file_operation_collects_only_workspace_edits_from_wait_until` falhava porque o `Emitter` guarda cada
+inscrição num contêiner novo, então o listener que o `PromiseJoin` recebe nunca era o registrado em `WillEmitter::listeners` (a busca por `Rc::ptr_eq` dava `None`,
+a edição era descartada e o `$onWillRunFileOperation` devolvia `None`). O original guarda a `extension` como propriedade da própria função do listener; o porte agora
+marca a extensão enquanto o listener embrulhado roda (`CurrentExtension`) e o `waitUntil`, síncrono, a lê no instante do `PromiseJoin`. Escrito sem compilar.
+
+## Estado da entrega de `debug` (2026-10-25, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `api/debug.rs`, `ext_host_debug_service.rs`, `ext_host_debug_types.rs` e do oráculo `extHost.api.impl.ts`). Nenhum número de ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `debug.registerDebugConfigurationProvider(type, provider, triggerKind?)` (`provideDebugConfigurations`, `resolveDebugConfiguration`, `resolveDebugConfigurationWithSubstitutedVariables`, chamados por referência com o `this` do objeto) | entregue | `api/debug.rs`, sobre o `ExtHostDebugService` |
+| `debug.registerDebugAdapterDescriptorFactory(type, factory)` com `DebugAdapterExecutable`, `DebugAdapterServer`, `DebugAdapterNamedPipeServer` | entregue (só a extensão do host que contribui o depurador registra, ver as divergências do módulo) | `api/debug.rs` |
+| `debug.startDebugging(folder, nameOrConfig, parentSessionOrOptions)` com `DebugSessionOptions` (`parentSession`, `lifecycleManagedByParent`, `consoleMode`, `noDebug`, `compact`, `suppressDebug*`, `debugUI`), `stopDebugging(session?)` | entregue | `api/debug.rs` |
+| `debug.activeDebugSession`, `onDidStartDebugSession`, `onDidTerminateDebugSession`, `onDidChangeActiveDebugSession`, `onDidReceiveDebugSessionCustomEvent`, `activeDebugConsole` (`append`, `appendLine`) | entregue | `api/debug.rs` |
+| `DebugSession` (`id`, `type`, `name` com atribuição, `workspaceFolder`, `configuration`, `parentSession`, `customRequest`, `getDebugProtocolBreakpoint`) | entregue | `api/debug.rs` |
+| `debug.breakpoints`, `addBreakpoints`, `removeBreakpoints`, `onDidChangeBreakpoints`, `SourceBreakpoint`, `FunctionBreakpoint`, `Breakpoint`, `DebugConsoleMode`, `DebugConfigurationProviderTriggerKind` | entregue | `api/debug.rs`, `api/enums.rs` |
+| `registerDebugAdapterTrackerFactory`, `asDebugSourceUri`, `activeStackItem`, `onDidChangeActiveStackItem`, `DebugAdapterInlineImplementation`, `DataBreakpoint` construível, `DebugSessionOptions#testRun`, as propostas `debugVisualization` | falta | o serviço tem; o `DebugAdapterInlineImplementation` pede o adaptador por referência no construtor (a classe existe e rejeita com mensagem explícita) |
+
+`debug` entra em `vscode` quando o binder registra `MainThreadDebugService`. O encaminhador `LateExtHostDebugService` (`in_process.rs`) entrega ao `ExtHostDebugService` real
+as chamadas sem retorno do cliente. O host não tem o `IConfigurationResolverService` (`NoVariableResolver`: `$substituteVariables` rejeita com a explicação) nem o namespace
+`tests` (`NoTesting`). O registro de extensões que o serviço pede ao nascer vem do `ExtensionServiceSlot`, que o assenta quando `bind_extension_service` liga o serviço.
+
+Teste: `crates/je-workbench/tests/extension_host_api_debug.rs` (dublê do `MainThreadDebugServiceShape` que anota cada pedido; a extensão que define o depurador `mock` usa
+`run_extension_contributing` do harness). Pendências a confirmar na primeira compilação: `define_accessor_class` com `parent` (`SourceBreakpoint` e `FunctionBreakpoint` herdam de
+`Breakpoint`); o `$$class` de uma instância criada por `new DebugAdapterExecutable(...)` ao voltar como valor de promessa (há um reconhecimento por campos como alternativa);
+`Debug` de `IDebugSessionReplMode` nas linhas do dublê; a ordem de `registerDebugTypes` na ativação.
+
+Os dublês de workspace e de configuração dos testes `extension_host_api_*` moram só em `tests/support/extension_host_workspace_doubles.rs` (`WorkspaceClient`,
+`StaticConfigurationService` semeável, `bind_workspace_clients`); `extension_host_api_workspace.rs` e `extension_host_api_file_system_events.rs` os usam.
+

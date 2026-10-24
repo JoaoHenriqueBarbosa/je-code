@@ -20,7 +20,7 @@ use je_base::uri::URI;
 use je_exthost::in_process::IMainThreadBinder;
 use je_exthost::local_extension_host::{ILocalExtensionHostDataProvider, LocalExtensionHost};
 use je_exthost::runtime::{run_host_program, with_runtime_thread, NodeRunner};
-use je_extensions::manifest::{ExtensionIdentifier, ExtensionKind, ExtensionManifest, TargetPlatform};
+use je_extensions::manifest::{ExtensionContributions, ExtensionIdentifier, ExtensionKind, ExtensionManifest, TargetPlatform};
 use je_extensions::scanner::ExtensionDescription;
 use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::commands::commands::ICommandService;
@@ -118,7 +118,7 @@ impl AbstractExtensionServiceHooks for ExampleExtensionService {
     }
 }
 
-fn extension_description(location: &str) -> ExtensionDescription {
+fn extension_description(location: &str, contributes: Option<ExtensionContributions>) -> ExtensionDescription {
     ExtensionDescription {
         id: "je-test.api".to_owned(),
         identifier: ExtensionIdentifier::new("je-test.api"),
@@ -136,6 +136,7 @@ fn extension_description(location: &str) -> ExtensionDescription {
             version: "1.0.0".to_owned(),
             main: Some("./extension.js".to_owned()),
             activation_events: Some(vec!["onTest".to_owned()]),
+            contributes,
             ..ExtensionManifest::default()
         },
     }
@@ -192,12 +193,22 @@ pub fn run_extension<State: 'static>(
     setup: impl FnOnce(&Workbench) -> (Rc<dyn IMainThreadBinder>, State) + Send + 'static,
     check: impl FnOnce(&Workbench, State) + Send + 'static,
 ) {
+    run_extension_contributing(source, None, setup, check);
+}
+
+/// Como [`run_extension`], com o `contributes` do manifesto da extensão de exemplo (por exemplo, o depurador que a extensão define).
+pub fn run_extension_contributing<State: 'static>(
+    source: &'static str,
+    contributes: Option<ExtensionContributions>,
+    setup: impl FnOnce(&Workbench) -> (Rc<dyn IMainThreadBinder>, State) + Send + 'static,
+    check: impl FnOnce(&Workbench, State) + Send + 'static,
+) {
     with_runtime_thread(move || {
         run_host_program(move |runner| {
             let dir = tempfile::tempdir().expect("diretório temporário");
             std::fs::write(dir.path().join("extension.js"), source).expect("grava a extensão");
             let location = URI::file(dir.path().to_string_lossy().into_owned(), je_platform::resources::host_platform()).to_string(false).to_string_lossy();
-            let description = Rc::new(extension_description(&location));
+            let description = Rc::new(extension_description(&location, contributes));
 
             let disposables = DisposableStore::new();
             let log_service = NullLogService::shared();
