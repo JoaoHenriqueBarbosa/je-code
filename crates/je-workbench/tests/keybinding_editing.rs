@@ -46,7 +46,19 @@ use je_platform::files::in_memory::InMemoryFileSystemProvider;
 use je_platform::js::{from_json, to_json};
 use je_platform::keybinding::resolved_keybinding_item::ResolvedKeybindingItem;
 use je_platform::keybinding::us_layout_resolved_keybinding::USLayoutResolvedKeybinding;
-use je_platform::resources::{host_platform, join_path, uri_file};
+use je_base::platform::OperatingSystem;
+use je_platform::resources::{join_path, uri_file};
+
+/// O `OS` de `platform.ts` do sistema que roda o teste.
+fn host_os() -> OperatingSystem {
+    if cfg!(windows) {
+        OperatingSystem::Windows
+    } else if cfg!(target_os = "macos") {
+        OperatingSystem::Macintosh
+    } else {
+        OperatingSystem::Linux
+    }
+}
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::uri_identity::uri_identity_service::UriIdentityService;
 use je_platform::user_data::file_user_data_provider::FileUserDataProvider;
@@ -110,7 +122,7 @@ fn a_resolved_keybinding_item(spec: ItemSpec) -> Rc<ResolvedKeybindingItem> {
         }
     }
     let keybinding: Option<Rc<dyn ResolvedKeybinding>> =
-        if chords.is_empty() { None } else { Some(Rc::new(USLayoutResolvedKeybinding::from_chords(chords, host_platform().os))) };
+        if chords.is_empty() { None } else { Some(Rc::new(USLayoutResolvedKeybinding::from_chords(chords, host_os()))) };
     let command = spec.command.filter(|command| !command.is_empty()).unwrap_or("some command");
     ResolvedKeybindingItem::new(
         keybinding,
