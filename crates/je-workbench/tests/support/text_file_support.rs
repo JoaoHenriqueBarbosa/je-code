@@ -50,44 +50,59 @@ use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
 use je_base::async_::async_fn;
-use je_base::buffer::{VSBuffer, VSBufferReadableStream};
+use je_base::buffer::{VSBuffer, VSBufferReadableStream, new_writeable_buffer_stream};
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
+use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::lifecycle::{DisposableId, DisposableRef, DisposableStore, IDisposable, id_of, id_of_ref};
+use je_base::network::schemas;
 use je_base::promise::{MaybePromise, Promise};
-use je_base::stream::{ReadableStream, ReadableStreamEvents, Transformer, transform};
+use je_base::runtime;
+use je_base::stream::{ReadableStream, ReadableStreamEvents, Transformer, WriteableStream, WriteableStreamImpl, transform};
 use je_base::uri::URI;
-use je_editor::language_service::{ILanguageService, LanguageService};
+use je_editor::language_service::{ILanguageService, I_LANGUAGE_SERVICE, LanguageService};
 use je_editor::model_service::ModelService;
-use je_editor::services_model::IModelService;
+use je_editor::services_model::{IModelService, I_MODEL_SERVICE};
 use je_editor::text_model::TextModel;
-use je_editor::text_resource_configuration_service::ITextResourceConfigurationService;
+use je_editor::text_resource_configuration_service::{ITextResourceConfigurationService, I_TEXT_RESOURCE_CONFIGURATION_SERVICE};
 use je_editor::undo_redo_service::UndoRedoService;
-use je_instantiation::{InstantiationService, ServiceCollection};
-use je_platform::accessibility::{AccessibilitySupport, IAccessibilityService};
+use je_instantiation::{Injectable, InstantiationService, ServiceCollection};
+use je_platform::accessibility::{AccessibilitySupport, IAccessibilityService, I_ACCESSIBILITY_SERVICE};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::dialogs::dialogs::{
     CheckboxResult, ConfirmResult, Confirmation, ConfirmationResult, FileNameOrResource, IDialogService, IFileDialogService, Input, InputResult, OpenDialogOptions, PickAndOpenOptions,
     Prompt, PromptCancel, PromptResult, SaveDialogOptions,
 };
-use je_platform::files::files::{FileOperationError, FileStat, FileStatWithMetadata};
+use je_platform::files::file_service::FileService;
+use je_platform::files::files::{
+    FileChange, FileDeleteOptions, FileOpenOptions, FileOperationError, FileOverwriteOptions, FileReadStreamOptions, FileStat, FileStatWithMetadata, FileSystemProvider,
+    FileSystemProviderCapabilities, FileType, FileWriteOptions, Stat, WatchOptions,
+};
 use je_platform::files::i_file_service::IFileService;
+use je_platform::files::in_memory::InMemoryFileSystemProvider;
+use je_platform::label::label::{ILabelService, I_LABEL_SERVICE};
+use je_platform::log::NullLogService;
 use je_platform::path::path_service::IPathService;
+use je_platform::uri_identity::uri_identity_service::UriIdentityService;
 use je_platform::workspace::IWorkspaceContextService;
 use je_workbench::common::editor::SaveReason;
+use je_workbench::services::editor::editor_service::{IEditorService, I_EDITOR_SERVICE};
 use je_workbench::services::files_configuration::files_configuration_service::{
     IAutoSaveConfiguration, IAutoSaveMode, IFilesConfigurationService, Readonly, ReadonlyUpdate, ResourceOrEditor, SingleReadonlyUpdate,
 };
 use je_workbench::services::working_copy::working_copy::{IWorkingCopy, WorkingCopyIdentifier};
-use je_workbench::services::working_copy::working_copy_service::{IWorkingCopyService, WorkingCopySaveEvent, WorkingCopyService};
+use je_workbench::services::working_copy::working_copy_backup::{IWorkingCopyBackupService, I_WORKING_COPY_BACKUP_SERVICE};
+use je_workbench::services::working_copy::working_copy_service::{IWorkingCopyService, WorkingCopySaveEvent, WorkingCopyService, I_WORKING_COPY_SERVICE};
 use je_workbench::services::decorations::decorations::{IDecoration, IDecorationsProvider, IDecorationsService, IResourceDecorationChangeEvent};
 use je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService;
-use je_workbench::services::language_detection::language_detection_worker_service::ILanguageDetectionService;
+use je_workbench::services::language_detection::language_detection_worker_service::{ILanguageDetectionService, I_LANGUAGE_DETECTION_SERVICE};
 use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
-use je_workbench::services::textfile::abstract_text_file_service::{AbstractTextFileService, TextFileServiceDependencies};
+use je_workbench::services::textfile::abstract_text_file_service::{AbstractTextFileService, EncodingOverride, TextFileServiceDependencies};
 use je_workbench::services::textfile::browser_text_file_service::BrowserTextFileService;
-use je_workbench::services::textfile::collaborators::{FileOperationUndoRedoInfo, ICodeEditorTransientProperties};
+use je_workbench::services::textfile::collaborators::{FileOperationUndoRedoInfo, ICodeEditorTransientProperties, IWorkingCopyFileService};
+use je_workbench::services::textfile::encoding::{UTF16BE, UTF16LE, UTF8_WITH_BOM};
 use je_workbench::services::textfile::text_buffer_factory::create_text_buffer_factory_from_stream;
 use je_workbench::services::textfile::text_file_editor_model::{TextFileEditorModel, TextFileEditorModelServices};
 use je_workbench::services::textfile::text_file_editor_model_manager::TextFileEditorModelManager;
@@ -101,7 +116,7 @@ use je_workbench::services::untitled::untitled_text_editor_service::{IUntitledTe
 use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestExtensionService, TestPathService};
 use je_workbench::test::common::workbench_test_services::{TestContextService, TestTextResourceConfigurationService, TestTextResourcePropertiesService};
 
-use super::stored_file_working_copy_support::TestServiceAccessor;
+use super::stored_file_working_copy_support::{TestProgressService, TestServiceAccessor, TestWorkingCopyFileService};
 
 //#region TestTextFileService
 
@@ -117,8 +132,21 @@ macro_rules! delegate_to_inner {
     };
 }
 
-/// `TestTextFileService`.
+/// Qual classe de teste o [`TestTextFileService`] representa.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestServiceKind {
+    /// `TestTextFileService`: sobrescreve `readStream` e `write`.
+    Test,
+    /// `TestBrowserTextFileServiceWithEncodingOverrides`: o serviço do navegador com o `TestEncodingOracle` (que fixa as
+    /// extensões `utf16le`, `utf16be` e `utf8bom`).
+    BrowserWithEncodingOverrides,
+}
+
+/// `TestTextFileService` (e, com [`TestTextFileService::with_encoding_overrides`],
+/// `TestBrowserTextFileServiceWithEncodingOverrides`: as duas classes repassam o mesmo serviço real, então dividem o
+/// repasse gerado pela macro e diferem só no que sobrescrevem).
 pub struct TestTextFileService {
+    kind: TestServiceKind,
     inner: Rc<AbstractTextFileService>,
     manager: Rc<TextFileEditorModelManager>,
     file_service: Rc<dyn IFileService>,
@@ -129,16 +157,45 @@ pub struct TestTextFileService {
 impl TestTextFileService {
     /// `constructor(...)`: o `super(...)` é o [`BrowserTextFileService::new`].
     pub fn new(dependencies: TextFileServiceDependencies) -> Rc<Self> {
+        Self::build(dependencies, TestServiceKind::Test)
+    }
+
+    /// `new TestBrowserTextFileServiceWithEncodingOverrides(...)`: o serviço do navegador sem as sobrescritas de
+    /// `readStream` e `write`, com o `TestEncodingOracle` no lugar do oráculo de codificação.
+    ///
+    /// Divergência: o `TestEncodingOracle` sobrescreve o getter e o setter de `encodingOverrides` (o setter não faz
+    /// nada, então a mudança de pastas do workspace não restaura os padrões). O [`EncodingOracle`] do porte é o real,
+    /// com a lista trocada logo depois de criado; o escutador de mudança de pastas do workspace restauraria os padrões,
+    /// mas o workspace de teste nunca muda.
+    pub fn with_encoding_overrides(dependencies: TextFileServiceDependencies) -> Rc<Self> {
+        Self::build(dependencies, TestServiceKind::BrowserWithEncodingOverrides)
+    }
+
+    fn build(dependencies: TextFileServiceDependencies, kind: TestServiceKind) -> Rc<Self> {
         let file_service = dependencies.file_service.clone();
         let manager = dependencies.files.clone();
         let inner = BrowserTextFileService::new(dependencies);
 
-        Rc::new(Self { inner, manager, file_service, read_stream_error: RefCell::new(None), write_error: RefCell::new(None) })
+        if kind == TestServiceKind::BrowserWithEncodingOverrides {
+            inner.encoding_oracle().set_encoding_overrides(
+                [("utf16le", UTF16LE), ("utf16be", UTF16BE), ("utf8bom", UTF8_WITH_BOM)]
+                    .into_iter()
+                    .map(|(extension, encoding)| EncodingOverride { parent: None, extension: Some(extension.to_string()), encoding: encoding.to_string() })
+                    .collect(),
+            );
+        }
+
+        Rc::new(Self { kind, inner, manager, file_service, read_stream_error: RefCell::new(None), write_error: RefCell::new(None) })
     }
 
     /// `files as ITestTextFileEditorModelManager`.
     pub fn files_manager(&self) -> Rc<TextFileEditorModelManager> {
         self.manager.clone()
+    }
+
+    /// `suggestFilename(languageId, untitledName)`.
+    pub fn suggest_filename(&self, language_id: &str, untitled_name: &str) -> String {
+        self.inner.suggest_filename(language_id, untitled_name)
     }
 
     /// `setReadStreamErrorOnce(error)`.
@@ -178,6 +235,10 @@ impl ITextFileService for TestTextFileService {
     }
 
     fn read_stream(&self, resource: &URI, options: Option<ReadTextFileOptions>) -> Promise<TextFileStreamContent> {
+        if self.kind == TestServiceKind::BrowserWithEncodingOverrides {
+            return ITextFileService::read_stream(&*self.inner, resource, options);
+        }
+
         let error = self.read_stream_error.borrow_mut().take();
         if let Some(error) = error {
             return Promise::rejected(error.into_error());
@@ -215,6 +276,10 @@ impl ITextFileService for TestTextFileService {
     }
 
     fn write(&self, resource: &URI, value: TextOrSnapshot, options: Option<WriteTextFileOptions>) -> Promise<FileStatWithMetadata> {
+        if self.kind == TestServiceKind::BrowserWithEncodingOverrides {
+            return ITextFileService::write(&*self.inner, resource, value, options);
+        }
+
         let error = self.write_error.borrow_mut().take();
         if let Some(error) = error {
             return Promise::rejected(error.into_error());
@@ -222,6 +287,161 @@ impl ITextFileService for TestTextFileService {
 
         ITextFileService::write(&*self.inner, resource, value, options)
     }
+}
+
+//#endregion
+
+//#region TestInMemoryFileSystemProvider e os serviços do setup de `browserTextFileService.io.test.ts`
+
+/// O `setTimeout(0)` do `timeout(0)` do `async.ts`.
+fn timeout_zero() -> Promise<()> {
+    Promise::with_executor(|resolver| {
+        runtime::set_timeout(move || resolver.resolve(()), 0);
+    })
+}
+
+/// `TestInMemoryFileSystemProvider extends InMemoryFileSystemProvider`: o provider em memória real com as capacidades
+/// `FileReadWrite`, `PathCaseSensitive` e `FileReadStream`, e o `readFileStream` em trechos de 64 KiB. Sem herança, é a
+/// composição sobre o [`InMemoryFileSystemProvider`], que repassa o restante do contrato.
+pub struct TestInMemoryFileSystemProvider {
+    inner: Rc<InMemoryFileSystemProvider>,
+}
+
+impl TestInMemoryFileSystemProvider {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self { inner: InMemoryFileSystemProvider::new() })
+    }
+
+    /// Escreve o arquivo em trechos de 64 KiB, com um `timeout(0)` antes de cada um e antes do fim.
+    async fn write_chunks(inner: Rc<InMemoryFileSystemProvider>, resource: URI, stream: Rc<WriteableStreamImpl<VSBuffer>>) -> Result<(), Error> {
+        const BUFFER_SIZE: usize = 64 * 1024;
+
+        let data = inner.read_file(&resource, false).await?.to_vec();
+
+        let mut offset = 0;
+        while offset < data.len() {
+            timeout_zero().await?;
+            let end = (offset + BUFFER_SIZE).min(data.len());
+            if let Some(pending) = stream.write(VSBuffer::wrap(data[offset..end].to_vec())) {
+                pending.await?;
+            }
+            offset += BUFFER_SIZE;
+        }
+
+        timeout_zero().await?;
+        stream.end(None);
+
+        Ok(())
+    }
+}
+
+impl IDisposable for TestInMemoryFileSystemProvider {
+    fn dispose(&self) {
+        self.inner.dispose();
+    }
+}
+
+impl FileSystemProvider for TestInMemoryFileSystemProvider {
+    fn capabilities(&self) -> FileSystemProviderCapabilities {
+        FileSystemProviderCapabilities::FILE_READ_WRITE | FileSystemProviderCapabilities::PATH_CASE_SENSITIVE | FileSystemProviderCapabilities::FILE_READ_STREAM
+    }
+
+    fn on_did_change_capabilities(&self) -> Event<()> {
+        self.inner.on_did_change_capabilities()
+    }
+
+    fn on_did_change_file(&self) -> Event<Vec<FileChange>> {
+        self.inner.on_did_change_file()
+    }
+
+    fn watch(&self, resource: &URI, opts: &WatchOptions) -> DisposableRef {
+        self.inner.watch(resource, opts)
+    }
+
+    fn stat(&self, resource: &URI) -> Promise<Stat> {
+        self.inner.stat(resource)
+    }
+
+    fn mkdir(&self, resource: &URI) -> Promise<()> {
+        self.inner.mkdir(resource)
+    }
+
+    fn readdir(&self, resource: &URI) -> Promise<Vec<(String, FileType)>> {
+        self.inner.readdir(resource)
+    }
+
+    fn delete(&self, resource: &URI, opts: &FileDeleteOptions) -> Promise<()> {
+        self.inner.delete(resource, opts)
+    }
+
+    fn rename(&self, from: &URI, to: &URI, opts: &FileOverwriteOptions) -> Promise<()> {
+        self.inner.rename(from, to, opts)
+    }
+
+    fn read_file(&self, resource: &URI, atomic: bool) -> Promise<VSBuffer> {
+        self.inner.read_file(resource, atomic)
+    }
+
+    fn write_file(&self, resource: &URI, content: VSBuffer, opts: &FileWriteOptions) -> Promise<()> {
+        self.inner.write_file(resource, content, opts)
+    }
+
+    fn read_file_stream(&self, resource: &URI, _opts: &FileReadStreamOptions, _token: &CancellationToken) -> VSBufferReadableStream {
+        let stream = new_writeable_buffer_stream(None);
+
+        let (inner, resource, writer) = (self.inner.clone(), resource.clone(), stream.clone());
+        drop(async_fn(async move {
+            if let Err(error) = Self::write_chunks(inner, resource, writer.clone()).await {
+                writer.error(error);
+                writer.end(None);
+            }
+
+            Ok(())
+        }));
+
+        stream
+    }
+
+    fn open(&self, resource: &URI, opts: &FileOpenOptions) -> Promise<i64> {
+        self.inner.open(resource, opts)
+    }
+
+    fn close(&self, fd: i64) -> Promise<()> {
+        self.inner.close(fd)
+    }
+
+    fn read(&self, fd: i64, pos: u64, data: &VSBuffer, offset: usize, length: usize) -> Promise<usize> {
+        self.inner.read(fd, pos, data, offset, length)
+    }
+
+    fn write(&self, fd: i64, pos: u64, data: &VSBuffer, offset: usize, length: usize) -> Promise<usize> {
+        self.inner.write(fd, pos, data, offset, length)
+    }
+}
+
+/// Os serviços que `instantiationService.createChild(collection)` troca no `setup` de `browserTextFileService.io.test.ts`:
+/// o `IFileService` e o `IWorkingCopyFileService`. Os demais vêm do `workbenchInstantiationService` pai.
+pub struct ChildServices {
+    pub file_service: Rc<dyn IFileService>,
+    pub working_copy_file_service: Rc<dyn IWorkingCopyFileService>,
+}
+
+/// O `FileService` com o [`TestInMemoryFileSystemProvider`] registrado para o esquema `file`, e o
+/// `WorkingCopyFileService` sobre ele (com um `WorkingCopyService` e um `UriIdentityService` próprios, como no original).
+pub fn browser_io_child_services(disposables: &Rc<DisposableStore>) -> (ChildServices, Rc<TestInMemoryFileSystemProvider>) {
+    let log_service = NullLogService::shared();
+    let file_service = disposables.add_rc(FileService::new(log_service.clone()));
+
+    let file_provider = disposables.add_rc(TestInMemoryFileSystemProvider::new());
+    disposables.add(file_service.register_provider(schemas::FILE, file_provider.clone()).expect("o esquema file ainda não tem provider"));
+
+    let file_service: Rc<dyn IFileService> = file_service;
+    let working_copy_service = disposables.add_rc(WorkingCopyService::new());
+    let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (file_service.clone(),)));
+    let working_copy_file_service =
+        disposables.add_rc(TestWorkingCopyFileService::new(log_service, Rc::new(TestProgressService), file_service.clone(), working_copy_service, uri_identity_service));
+
+    (ChildServices { file_service, working_copy_file_service }, file_provider)
 }
 
 //#endregion
@@ -673,7 +893,26 @@ impl Deref for TextFileTestAccessor {
 impl TextFileTestAccessor {
     /// `workbenchInstantiationService(undefined, disposables)` e `instantiationService.createInstance(TestServiceAccessor)`.
     pub fn new(disposables: &Rc<DisposableStore>) -> Self {
+        Self::build(disposables, None)
+    }
+
+    /// O mesmo acessor, mas com o serviço de arquivos de texto criado numa `createChild(collection)` que troca o
+    /// `IFileService` e o `IWorkingCopyFileService` (o `setup` de `browserTextFileService.io.test.ts`), e com a classe
+    /// `TestBrowserTextFileServiceWithEncodingOverrides` no lugar da `TestTextFileService`.
+    pub fn with_child_services(disposables: &Rc<DisposableStore>, child: ChildServices) -> Self {
+        Self::build(disposables, Some(child))
+    }
+
+    fn build(disposables: &Rc<DisposableStore>, child: Option<ChildServices>) -> Self {
         let base = TestServiceAccessor::new(disposables);
+        let file_service: Rc<dyn IFileService> = match &child {
+            Some(child) => child.file_service.clone(),
+            None => base.file_service.clone(),
+        };
+        let working_copy_file_service: Rc<dyn IWorkingCopyFileService> = match &child {
+            Some(child) => child.working_copy_file_service.clone(),
+            None => base.working_copy_file_service.clone(),
+        };
 
         let test_configuration_service = TestConfigurationService::new(None);
         disposables.add_rc(test_configuration_service.on_did_change_configuration_emitter.clone());
@@ -685,7 +924,7 @@ impl TextFileTestAccessor {
             TestTextResourcePropertiesService::new(configuration_service.clone()),
             UndoRedoService::for_tests(),
         ));
-        let text_resource_configuration_service = TestTextResourceConfigurationService::new(configuration_service.clone());
+        let text_resource_configuration_service: Rc<dyn ITextResourceConfigurationService> = TestTextResourceConfigurationService::new(configuration_service.clone());
         let context_service = TestContextService::new(None, None);
         let environment_service: Rc<dyn IWorkbenchEnvironmentService> = TestEnvironmentService::new();
         let path_service: Rc<dyn IPathService> = TestPathService::new(None, None);
@@ -702,10 +941,22 @@ impl TextFileTestAccessor {
         // Os modelos precisam do próprio `ITextFileService`, que só existe depois do gerenciador que os cria.
         let text_file_service_slot: Rc<RefCell<Weak<TestTextFileService>>> = Rc::new(RefCell::new(Weak::new()));
         let working_copy_service = TestWorkingCopyService::new(base.working_copy_service.clone());
+
+        // Os serviços que o `UntitledTextEditorModel` injeta (o `UntitledTextEditorService` o cria por `createInstance`).
+        collection.set(I_LANGUAGE_SERVICE, language_service.clone() as Rc<dyn ILanguageService>);
+        collection.set(I_MODEL_SERVICE, model_service.clone() as Rc<dyn IModelService>);
+        collection.set(I_WORKING_COPY_BACKUP_SERVICE, base.working_copy_backup_service.clone() as Rc<dyn IWorkingCopyBackupService>);
+        collection.set(I_TEXT_RESOURCE_CONFIGURATION_SERVICE, text_resource_configuration_service.clone());
+        collection.set(I_WORKING_COPY_SERVICE, working_copy_service.clone() as Rc<dyn IWorkingCopyService>);
+        collection.set(I_LABEL_SERVICE, base.label_service.clone() as Rc<dyn ILabelService>);
+        collection.set(I_EDITOR_SERVICE, base.editor_service.clone() as Rc<dyn IEditorService>);
+        collection.set(I_LANGUAGE_DETECTION_SERVICE, language_detection_service.clone());
+        collection.set(I_ACCESSIBILITY_SERVICE, accessibility_service.clone());
+
         let services_factory: ServicesFactory = {
             let slot = text_file_service_slot.clone();
             let (language_service, model_service) = (language_service.clone(), model_service.clone());
-            let (file_service, log_service) = (base.file_service.clone(), base.log_service.clone());
+            let (file_service, log_service) = (file_service.clone(), base.log_service.clone());
             let (working_copy_backup_service, working_copy_service) = (base.working_copy_backup_service.clone(), working_copy_service.clone());
             let (files_configuration_service, label_service) = (base.files_configuration_service.clone(), base.label_service.clone());
             let (path_service, progress_service) = (path_service.clone(), base.progress_service.clone());
@@ -737,27 +988,27 @@ impl TextFileTestAccessor {
         };
 
         let manager = TextFileEditorModelManager::new(
-            base.file_service.clone(),
+            file_service.clone(),
             base.notification_service.clone(),
-            base.working_copy_file_service.clone(),
+            working_copy_file_service.clone(),
             base.uri_identity_service.clone(),
             TextFileSaveParticipant::new(base.log_service.clone(), base.progress_service.clone()),
             model_factory.clone(),
         );
 
-        let text_file_service = disposables.add_rc(TestTextFileService::new(TextFileServiceDependencies {
-            file_service: base.file_service.clone(),
+        let dependencies = TextFileServiceDependencies {
+            file_service,
             untitled_text_editor_service: untitled_text_editor_service.clone(),
             lifecycle_service: base.lifecycle_service.clone() as Rc<dyn ILifecycleService>,
             model_service: model_service.clone(),
             environment_service,
             dialog_service: dialog_service.clone(),
             file_dialog_service: file_dialog_service.clone(),
-            text_resource_configuration_service: text_resource_configuration_service as Rc<dyn ITextResourceConfigurationService>,
+            text_resource_configuration_service,
             files_configuration_service: base.files_configuration_service.clone(),
             code_editor_service: Rc::new(TestCodeEditorService::default()),
             path_service,
-            working_copy_file_service: base.working_copy_file_service.clone(),
+            working_copy_file_service,
             uri_identity_service: base.uri_identity_service.clone(),
             workspace_context_service: context_service.clone() as Rc<dyn IWorkspaceContextService>,
             language_service: language_service.clone(),
@@ -765,7 +1016,8 @@ impl TextFileTestAccessor {
             elevated_file_service: base.elevated_file_service.clone(),
             decorations_service: Rc::new(TestDecorationsService),
             files: manager,
-        }));
+        };
+        let text_file_service = disposables.add_rc(if child.is_some() { TestTextFileService::with_encoding_overrides(dependencies) } else { TestTextFileService::new(dependencies) });
         *text_file_service_slot.borrow_mut() = Rc::downgrade(&text_file_service);
 
         collection.set(I_CONFIGURATION_SERVICE, configuration_service);
