@@ -35,6 +35,7 @@ pub mod types;
 pub mod uri;
 pub mod window;
 pub mod workspace;
+pub mod workspace_edit;
 
 /// O identificador da extensão chamadora: o `vscode` é um só para todas as extensões, então o host não sabe qual delas chama e usa
 /// este para o que o original lê da `IExtensionDescription` (o log de traço do `findFiles`, o canal de saída, o progresso).

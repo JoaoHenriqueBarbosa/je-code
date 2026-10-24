@@ -264,3 +264,18 @@ binder em `tests/support/extension_host_api_languages_support.rs`.
 Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): `Event` precisa ser `Clone` (o `onDidChangeDiagnostics` o clona);
 `FormattingOptions` é lido por `tab_size` e `insert_spaces`; as instâncias de `DiagnosticCollection` são identificadas por `_id` (a identidade `a === b`
 falha); `CodeActionKind` não é construtível (`new CodeActionKind(x)` não existe).
+
+## Estado da entrega de `WorkspaceEdit` e `workspace.applyEdit` (2026-10-24, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `crates/je-exthost/src/api/workspace_edit.rs`, `ext_host_types/edits.rs` e `ext_host_bulk_edits.rs`). Nenhum
+número de ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `new WorkspaceEdit()` com `replace`, `insert`, `delete`, `set`, `createFile`, `deleteFile`, `renameFile`, `has`, `get`, `entries`, `size`, `toJSON` | entregue (estado por id no lado Rust) | `api/workspace_edit.rs` |
+| `workspace.applyEdit(edit, metadata?)` | entregue, ligado ao `ExtHostBulkEdits` (precisa do cliente `MainThreadBulkEdits`) | `api/workspace_edit.rs`, `host.rs` |
+| `WorkspaceEdit#set` com `NotebookEdit`, `createFile` com `contents` | falta (erro explícito) | `NotebookEdit` não existe no host; `Uint8Array` não atravessa o motor |
+| `CodeAction#edit` | falta (a conversão `WorkspaceEdit` para o provedor de code action ainda não foi ligada à classe) | `api/language_types.rs` |
+| `createFileSystemWatcher`, `onDid/WillCreate/Delete/RenameFiles` | não iniciado | falta o `ExtHostFileSystemEventService` ligado |
+
+Teste: `crates/je-workbench/tests/extension_host_api_workspace_edit.rs` (nenhum rodou).
