@@ -81,20 +81,21 @@ pub struct TextFileEditorTracker {
 }
 
 impl Injectable for TextFileEditorTracker {
-    type Args = Option<Rc<dyn TextFileEditorTrackerHooks>>;
+    /// Os `hooks` (o `ITextFileEditorTrackerHooks` do original para os atrasos) e o registro de editores de código: o
+    /// `ICodeEditorService` ainda não tem identificador de serviço no porte, então o registro entra como argumento.
+    type Args = (Option<Rc<dyn TextFileEditorTrackerHooks>>, Rc<CodeEditorRegistry>);
     type Deps = (
         Rc<dyn IEditorService>,
         Rc<dyn ITextFileService>,
         Rc<dyn ILifecycleService>,
         Rc<dyn IHostService>,
-        Rc<CodeEditorRegistry>,
         Rc<dyn IFilesConfigurationService>,
         Rc<dyn IWorkingCopyEditorService>,
     );
 
     fn create(
-        hooks: Self::Args,
-        (editor_service, text_file_service, lifecycle_service, host_service, code_editor_service, files_configuration_service, working_copy_editor_service): Self::Deps,
+        (hooks, code_editor_service): Self::Args,
+        (editor_service, text_file_service, lifecycle_service, host_service, files_configuration_service, working_copy_editor_service): Self::Deps,
     ) -> Rc<Self> {
         let hooks: Rc<dyn TextFileEditorTrackerHooks> = hooks.unwrap_or_else(|| Rc::new(DefaultTextFileEditorTrackerHooks));
         let base = Disposable::new();

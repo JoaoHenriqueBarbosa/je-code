@@ -138,13 +138,12 @@ async fn create_tracker(disposables: &Rc<DisposableStore>, auto_save_enabled: bo
 
     let hooks: Rc<dyn TextFileEditorTrackerHooks> = Rc::new(TestTextFileEditorTrackerHooks);
     disposables.add_rc(TextFileEditorTracker::create(
-        Some(hooks),
+        (Some(hooks), code_editor_registry),
         (
             accessor.editor_service.clone(),
             accessor.text_file_service.clone(),
             accessor.lifecycle_service.clone(),
             host_service.clone(),
-            code_editor_registry,
             files_configuration_service,
             accessor.working_copy_editor_service.clone(),
         ),
