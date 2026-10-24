@@ -1,21 +1,24 @@
 //! Porte de `src/vs/workbench/contrib/terminal/test/browser/xterm/shellIntegrationAddon.test.ts` (suíte `ShellIntegrationAddon`), caso a caso e na mesma ordem.
 //!
-//! Casos de fora (23), que dependem do emulador de terminal (Fase 6: o `Terminal` do xterm com `parser.registerOscHandler`,
-//! `writeP`) e das capacidades `CommandDetectionCapability`, `CwdDetectionCapability` e `BufferMarkCapability`, ainda não
-//! portadas, e dos mocks do `sinon` sobre elas:
-//! - `cwd detection`: `should activate capability on the cwd sequence`, `should pass cwd sequence to the capability as
-//!   trusted when nonce matches`, `should treat cwd sequence as untrusted when nonce is missing`, `... when nonce does not
-//!   match`, `detect ITerm sequence`, `detect SetCwd sequence` (`should accept well-formatted URLs` e `should ignore
-//!   ill-formatted URLs`) e `detect SetWindowsFrindlyCwd sequence` (8 casos);
-//! - `command tracking`: os 11 casos `should activate capability on ...`, `should pass ... to the capability`,
-//!   `should not activate capability on the cwd sequence` e `should pass cwd sequence to the capability if it's
-//!   initialized`;
-//! - `BufferMarkCapability`: `SetMark`, `SetMark - ID`, `SetMark - hidden` e `SetMark - hidden & ID` (4 casos).
-//!
-//! Portados: `parseMarkSequence` (4), `deserializeMessage` (22), `serializeVSCodeOscMessage` (21) e
-//! `parseKeyValueAssignment` (1), que só exercitam as funções puras de `shellIntegrationAddon.ts`.
+//! Os 23 casos que usam o emulador (`cwd detection`, `command tracking` e os quatro `SetMark`) rodam contra o
+//! [`FakeXterm`] (em `tests/support/fake_xterm.rs`, no lugar do `Terminal` do xterm): `writeP(xterm, data)` é
+//! [`FakeXterm::write_p`], e o `loadAddon` é [`ShellIntegrationAddon::activate`]. Os 26 casos de funções puras
+//! (`parseMarkSequence` (4), `deserializeMessage` (22), `serializeVSCodeOscMessage` (21) e `parseKeyValueAssignment` (1))
+//! seguem como estavam.
 //!
 //! Divergências:
+//! - **`TestShellIntegrationAddon` e `sinon.mock(capability)`.** A subclasse de teste expõe os métodos `protected`
+//!   `_createOrGetCommandDetection` e `_createOrGetCwdDetection`, que no porte são públicos; o `getCommandDetectionMock` e o
+//!   `getCwdDectionMock` criam (ou pegam) a capacidade real, a trocam no store por um dublê que repassa tudo à real e que
+//!   registra as chamadas dos métodos do mock ([`RecordingCommandDetection`] e [`RecordingCwdDetection`]), e o
+//!   `mock.expects(...).once().withExactArgs(...)` e o `mock.verify()` viram a comparação da lista de chamadas gravadas com a
+//!   lista esperada. Como no `sinon`, o método com expectativa não chama o original.
+//! - **`ensureNoDisposablesAreLeakedInTestSuite()`.** O [`Fixture`] cria o guarda de vazamentos antes de tudo e descarta o
+//!   addon no `Drop`.
+//! - **`new TestShellIntegrationAddon('', true, undefined, undefined, new NullLogService())`.** São os mesmos argumentos do
+//!   [`ShellIntegrationAddon::new`] (nonce vazio, telemetria desligada, sem evento de texto e sem serviço de telemetria).
+//! - **`withExactArgs()` de `handleCommandFinished(7)`.** O argumento é `Some(7.0)` (o `number`) e a lista grava o texto da
+//!   chamada.
 //! - **`cases.forEach(... test(title, ...))`.** Cada elemento do vetor de casos é um `#[test]` gerado pela macro
 //!   `deserialize_case!`/`serialize_case!`, com o título no nome da função.
 //! - **`Backslash`, `Newline` e `Semicolon`.** Os casos escrevem as barras invertidas diretamente em literais `r"..."` ou
@@ -23,9 +26,519 @@
 //! - **`deepEqual(parseMarkSequence(...), { id: undefined, hidden: false })`** é `assert_eq!` com [`MarkSequence`]
 //!   (`id: None` é o `undefined`).
 
-use je_platform::terminal::shell_integration_addon::{
-    KeyValueAssignment, MarkSequence, deserialize_vscode_osc_message, parse_key_value_assignment, parse_mark_sequence, serialize_vscode_osc_message,
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
+mod support;
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use je_base::event::Event;
+use je_platform::log::NullLogService;
+use je_platform::terminal::capabilities::capabilities::{
+    CommandDetection, CwdDetection, ICommandDetectionCapability, ICommandInvalidationRequest, ICurrentPartialCommand, ICwdDetectionCapability, IHandleCommandOptions,
+    IPromptInputModel, ISerializedCommandDetectionCapability, ITerminalCapabilityStore, ITerminalCommand, TerminalCapability, TerminalCommandConfidence,
+    TerminalCommandForLine,
 };
+use je_platform::terminal::capabilities::terminal_capability_store::TerminalCapabilityStore;
+use je_platform::terminal::shell_integration_addon::{
+    KeyValueAssignment, MarkSequence, ShellIntegrationAddon, deserialize_vscode_osc_message, parse_key_value_assignment, parse_mark_sequence,
+    serialize_vscode_osc_message,
+};
+use je_platform::terminal::xterm_headless::IHeadlessTerminal;
+use support::fake_xterm::FakeXterm;
+
+/// A lista de chamadas que o dublê grava no lugar da expectativa do `sinon`.
+type Calls = Rc<RefCell<Vec<String>>>;
+
+/// O dublê de `sinon.mock(cwdDetection)` com `expects('updateCwd')`: repassa tudo à capacidade real, menos o
+/// `updateCwd`, que só grava a chamada.
+struct RecordingCwdDetection {
+    inner: Rc<dyn ICwdDetectionCapability>,
+    calls: Calls,
+}
+
+impl ICwdDetectionCapability for RecordingCwdDetection {
+    fn capability_type(&self) -> TerminalCapability {
+        self.inner.capability_type()
+    }
+
+    fn on_did_change_cwd(&self) -> Event<String> {
+        self.inner.on_did_change_cwd()
+    }
+
+    fn cwds(&self) -> Vec<String> {
+        self.inner.cwds()
+    }
+
+    fn is_trusted(&self) -> bool {
+        self.inner.is_trusted()
+    }
+
+    fn get_cwd(&self) -> String {
+        self.inner.get_cwd()
+    }
+
+    fn update_cwd(&self, cwd: &str, is_trusted: Option<bool>) {
+        self.calls.borrow_mut().push(format!("updateCwd({cwd:?}, {is_trusted:?})"));
+    }
+}
+
+/// O dublê de `sinon.mock(commandDetection)` com as expectativas dos métodos que os casos usam (`handlePromptStart`,
+/// `handleCommandStart`, `handleCommandExecuted`, `handleCommandFinished`, `setCommandLine` e `setCwd`): repassa tudo à
+/// capacidade real, menos esses seis, que só gravam a chamada.
+struct RecordingCommandDetection {
+    inner: Rc<dyn ICommandDetectionCapability>,
+    calls: Calls,
+}
+
+impl RecordingCommandDetection {
+    fn record(&self, call: String) {
+        self.calls.borrow_mut().push(call);
+    }
+}
+
+impl ICommandDetectionCapability for RecordingCommandDetection {
+    fn capability_type(&self) -> TerminalCapability {
+        self.inner.capability_type()
+    }
+
+    fn prompt_input_model(&self) -> Rc<dyn IPromptInputModel> {
+        self.inner.prompt_input_model()
+    }
+
+    fn commands(&self) -> Vec<Rc<dyn ITerminalCommand>> {
+        self.inner.commands()
+    }
+
+    fn executing_command(&self) -> Option<String> {
+        self.inner.executing_command()
+    }
+
+    fn executing_command_object(&self) -> Option<Rc<dyn ITerminalCommand>> {
+        self.inner.executing_command_object()
+    }
+
+    fn executing_command_confidence(&self) -> Option<TerminalCommandConfidence> {
+        self.inner.executing_command_confidence()
+    }
+
+    fn cwd(&self) -> Option<String> {
+        self.inner.cwd()
+    }
+
+    fn has_rich_command_detection(&self) -> bool {
+        self.inner.has_rich_command_detection()
+    }
+
+    fn current_command(&self) -> Option<Rc<dyn ICurrentPartialCommand>> {
+        self.inner.current_command()
+    }
+
+    fn on_command_started(&self) -> Event<Rc<dyn ITerminalCommand>> {
+        self.inner.on_command_started()
+    }
+
+    fn on_command_finished(&self) -> Event<Rc<dyn ITerminalCommand>> {
+        self.inner.on_command_finished()
+    }
+
+    fn on_command_executed(&self) -> Event<Rc<dyn ITerminalCommand>> {
+        self.inner.on_command_executed()
+    }
+
+    fn on_command_invalidated(&self) -> Event<Vec<Rc<dyn ITerminalCommand>>> {
+        self.inner.on_command_invalidated()
+    }
+
+    fn on_current_command_invalidated(&self) -> Event<ICommandInvalidationRequest> {
+        self.inner.on_current_command_invalidated()
+    }
+
+    fn on_set_rich_command_detection(&self) -> Event<bool> {
+        self.inner.on_set_rich_command_detection()
+    }
+
+    fn set_continuation_prompt(&self, value: &str) {
+        self.inner.set_continuation_prompt(value);
+    }
+
+    fn set_prompt_terminator(&self, value: &str, last_prompt_line: &str) {
+        self.inner.set_prompt_terminator(value, last_prompt_line);
+    }
+
+    fn set_cwd(&self, value: &str) {
+        self.record(format!("setCwd({value:?})"));
+    }
+
+    fn set_is_windows_pty(&self, value: bool) {
+        self.inner.set_is_windows_pty(value);
+    }
+
+    fn set_is_command_storage_disabled(&self) {
+        self.inner.set_is_command_storage_disabled();
+    }
+
+    fn get_cwd_for_line(&self, line: f64) -> Option<String> {
+        self.inner.get_cwd_for_line(line)
+    }
+
+    fn get_command_for_line(&self, line: f64) -> Option<TerminalCommandForLine> {
+        self.inner.get_command_for_line(line)
+    }
+
+    fn clear_commands(&self) {
+        self.inner.clear_commands();
+    }
+
+    fn handle_prompt_start(&self, options: Option<&IHandleCommandOptions>) {
+        assert!(options.is_none(), "o original chama handlePromptStart sem argumentos");
+        self.record("handlePromptStart()".to_owned());
+    }
+
+    fn handle_continuation_start(&self) {
+        self.inner.handle_continuation_start();
+    }
+
+    fn handle_continuation_end(&self) {
+        self.inner.handle_continuation_end();
+    }
+
+    fn handle_right_prompt_start(&self) {
+        self.inner.handle_right_prompt_start();
+    }
+
+    fn handle_right_prompt_end(&self) {
+        self.inner.handle_right_prompt_end();
+    }
+
+    fn handle_command_start(&self, options: Option<&IHandleCommandOptions>) {
+        assert!(options.is_none(), "o original chama handleCommandStart sem argumentos");
+        self.record("handleCommandStart()".to_owned());
+    }
+
+    fn handle_command_executed(&self, options: Option<&IHandleCommandOptions>) {
+        assert!(options.is_none(), "o original chama handleCommandExecuted sem argumentos");
+        self.record("handleCommandExecuted()".to_owned());
+    }
+
+    fn handle_command_finished(&self, exit_code: Option<f64>, options: Option<&IHandleCommandOptions>) {
+        assert!(options.is_none(), "o original chama handleCommandFinished só com o código de saída");
+        self.record(format!("handleCommandFinished({exit_code:?})"));
+    }
+
+    fn set_has_rich_command_detection(&self, value: bool) {
+        self.inner.set_has_rich_command_detection(value);
+    }
+
+    fn set_command_line(&self, command_line: &str, is_trusted: bool) {
+        self.record(format!("setCommandLine({command_line:?}, {is_trusted})"));
+    }
+
+    fn set_next_command_id(&self, command: &str, command_id: &str) {
+        self.inner.set_next_command_id(command, command_id);
+    }
+
+    fn serialize(&self) -> ISerializedCommandDetectionCapability {
+        self.inner.serialize()
+    }
+
+    fn deserialize(&self, serialized: &ISerializedCommandDetectionCapability) {
+        self.inner.deserialize(serialized);
+    }
+}
+
+/// O `setup` da suíte: o emulador (80 colunas por 30 linhas), o addon ativado nele e o store de capacidades.
+struct Fixture {
+    xterm: Rc<FakeXterm>,
+    addon: Rc<ShellIntegrationAddon>,
+    capabilities: Rc<TerminalCapabilityStore>,
+    // Declarado por último: o `Drop` dele descarta o addon e confere os vazamentos depois dos demais campos.
+    _guard: LeakGuard,
+}
+
+/// O `teardown` do original descarta o `xterm`, que descarta os marcadores registrados; o guarda confere os vazamentos depois.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.xterm.dispose();
+    }
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let xterm = FakeXterm::new(80, 30);
+        let addon = guard.add_rc(ShellIntegrationAddon::new("", Some(true), None, None, NullLogService::shared()));
+        addon.activate(xterm.clone());
+        let capabilities = addon.capabilities();
+        Self { xterm, addon, capabilities, _guard: guard }
+    }
+
+    fn terminal(&self) -> Rc<dyn IHeadlessTerminal> {
+        self.xterm.clone()
+    }
+
+    /// `shellIntegrationAddon.getCommandDetectionMock(xterm)`.
+    fn get_command_detection_mock(&self) -> Calls {
+        let capability = self.addon.create_or_get_command_detection(&self.terminal());
+        let calls = Calls::default();
+        self.capabilities.add::<CommandDetection>(Rc::new(RecordingCommandDetection { inner: capability, calls: calls.clone() }));
+        calls
+    }
+
+    /// `shellIntegrationAddon.getCwdDectionMock()`.
+    fn get_cwd_detection_mock(&self) -> Calls {
+        let capability = self.addon.create_or_get_cwd_detection();
+        let calls = Calls::default();
+        self.capabilities.add::<CwdDetection>(Rc::new(RecordingCwdDetection { inner: capability, calls: calls.clone() }));
+        calls
+    }
+
+    fn write_p(&self, data: &str) {
+        self.xterm.write_p(data);
+    }
+
+    fn has(&self, capability: TerminalCapability) -> bool {
+        self.capabilities.has(capability)
+    }
+
+    /// O trio `has(false)`, `writeP('foo')`, `has(false)` que abre os casos de ativação, e depois a escrita de `sequence`.
+    fn assert_activates_on(&self, capability: TerminalCapability, sequence: &str) {
+        assert!(!self.has(capability));
+        self.write_p("foo");
+        assert!(!self.has(capability));
+        self.write_p(sequence);
+        assert!(self.has(capability));
+    }
+}
+
+/// `mock.expects('updateCwd').once().withExactArgs(cwd, isTrusted)`.
+fn update_cwd_call(cwd: &str, is_trusted: bool) -> String {
+    format!("updateCwd({cwd:?}, Some({is_trusted}))")
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// suite('cwd detection')
+// ---------------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn should_activate_capability_on_the_cwd_sequence_osc_633_p_cwd_cwd_st() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::CwdDetection, "\x1b]633;P;Cwd=/foo\x07");
+}
+
+#[test]
+fn should_pass_cwd_sequence_to_the_capability_as_trusted_when_nonce_matches() {
+    let f = Fixture::new();
+    let calls = f.get_cwd_detection_mock();
+    // The addon is constructed with nonce '' so a trailing ';' produces args[1]==='' which matches
+    f.write_p("\x1b]633;P;Cwd=/foo;\x07");
+    assert_eq!(*calls.borrow(), [update_cwd_call("/foo", true)]);
+}
+
+#[test]
+fn should_treat_cwd_sequence_as_untrusted_when_nonce_is_missing() {
+    let f = Fixture::new();
+    let calls = f.get_cwd_detection_mock();
+    f.write_p("\x1b]633;P;Cwd=/foo\x07");
+    assert_eq!(*calls.borrow(), [update_cwd_call("/foo", false)]);
+}
+
+#[test]
+fn should_treat_cwd_sequence_as_untrusted_when_nonce_does_not_match() {
+    let f = Fixture::new();
+    let calls = f.get_cwd_detection_mock();
+    f.write_p("\x1b]633;P;Cwd=/foo;invalid-nonce\x07");
+    assert_eq!(*calls.borrow(), [update_cwd_call("/foo", false)]);
+}
+
+#[test]
+fn detect_iterm_sequence_osc_1337_current_dir_cwd_st() {
+    let f = Fixture::new();
+    // [title, input, expected]
+    let cases = [("root", "/", "/"), ("non-root", "/some/path", "/some/path")];
+    for (title, input, expected) in cases {
+        let calls = f.get_cwd_detection_mock();
+        f.write_p(&format!("\x1b]1337;CurrentDir={input}\x07"));
+        assert_eq!(*calls.borrow(), [update_cwd_call(expected, false)], "{title}");
+    }
+}
+
+#[test]
+fn detect_set_cwd_sequence_should_accept_well_formatted_urls() {
+    let f = Fixture::new();
+    // [title, input, expected]
+    let cases = [
+        // Different hostname values:
+        ("empty hostname, pointing root", "file:///", "/"),
+        ("empty hostname", "file:///test-root/local", "/test-root/local"),
+        ("non-empty hostname", "file://some-hostname/test-root/local", "/test-root/local"),
+        // URL-encoded chars:
+        ("URL-encoded value (1)", "file:///test-root/%6c%6f%63%61%6c", "/test-root/local"),
+        ("URL-encoded value (2)", "file:///test-root/local%22", "/test-root/local\""),
+        ("URL-encoded value (3)", "file:///test-root/local\"", "/test-root/local\""),
+    ];
+    for (title, input, expected) in cases {
+        let calls = f.get_cwd_detection_mock();
+        f.write_p(&format!("\x1b]7;{input}\x07"));
+        assert_eq!(*calls.borrow(), [update_cwd_call(expected, false)], "{title}");
+    }
+}
+
+#[test]
+fn detect_set_cwd_sequence_should_ignore_ill_formatted_urls() {
+    let f = Fixture::new();
+    // [title, input]
+    let cases = [
+        // Different hostname values:
+        ("no hostname, pointing root", "file://"),
+        // Non-`file` scheme values:
+        ("no scheme (1)", "/test-root"),
+        ("no scheme (2)", "//test-root"),
+        ("no scheme (3)", "///test-root"),
+        ("no scheme (4)", ":///test-root"),
+        ("http", "http:///test-root"),
+        ("ftp", "ftp:///test-root"),
+        ("ssh", "ssh:///test-root"),
+    ];
+    for (title, input) in cases {
+        let calls = f.get_cwd_detection_mock();
+        f.write_p(&format!("\x1b]7;{input}\x07"));
+        assert!(calls.borrow().is_empty(), "{title}");
+    }
+}
+
+#[test]
+fn detect_set_windows_friendly_cwd_sequence_osc_9_9_cwd_st() {
+    let f = Fixture::new();
+    // [title, input, expected]
+    let cases = [("root", "/", "/"), ("non-root", "/some/path", "/some/path")];
+    for (title, input, expected) in cases {
+        let calls = f.get_cwd_detection_mock();
+        f.write_p(&format!("\x1b]9;9;{input}\x07"));
+        assert_eq!(*calls.borrow(), [update_cwd_call(expected, false)], "{title}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// suite('command tracking')
+// ---------------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn should_activate_capability_on_the_prompt_start_sequence_osc_633_a_st() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::CommandDetection, "\x1b]633;A\x07");
+}
+
+#[test]
+fn should_pass_prompt_start_sequence_to_the_capability() {
+    let f = Fixture::new();
+    let calls = f.get_command_detection_mock();
+    f.write_p("\x1b]633;A\x07");
+    assert_eq!(*calls.borrow(), ["handlePromptStart()"]);
+}
+
+#[test]
+fn should_activate_capability_on_the_command_start_sequence_osc_633_b_st() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::CommandDetection, "\x1b]633;B\x07");
+}
+
+#[test]
+fn should_pass_command_start_sequence_to_the_capability() {
+    let f = Fixture::new();
+    let calls = f.get_command_detection_mock();
+    f.write_p("\x1b]633;B\x07");
+    assert_eq!(*calls.borrow(), ["handleCommandStart()"]);
+}
+
+#[test]
+fn should_activate_capability_on_the_command_executed_sequence_osc_633_c_st() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::CommandDetection, "\x1b]633;C\x07");
+}
+
+#[test]
+fn should_pass_command_executed_sequence_to_the_capability() {
+    let f = Fixture::new();
+    let calls = f.get_command_detection_mock();
+    f.write_p("\x1b]633;C\x07");
+    assert_eq!(*calls.borrow(), ["handleCommandExecuted()"]);
+}
+
+#[test]
+fn should_activate_capability_on_the_command_finished_sequence_osc_633_d_exit_code_st() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::CommandDetection, "\x1b]633;D;7\x07");
+}
+
+#[test]
+fn should_pass_command_finished_sequence_to_the_capability() {
+    let f = Fixture::new();
+    let calls = f.get_command_detection_mock();
+    f.write_p("\x1b]633;D;7\x07");
+    assert_eq!(*calls.borrow(), ["handleCommandFinished(Some(7.0))"]);
+}
+
+#[test]
+fn should_pass_command_line_sequence_to_the_capability() {
+    let f = Fixture::new();
+    let calls = f.get_command_detection_mock();
+    f.write_p("\x1b]633;E\x07");
+    assert_eq!(*calls.borrow(), ["setCommandLine(\"\", false)"]);
+
+    let calls2 = f.get_command_detection_mock();
+    f.write_p("\x1b]633;E;cmd\x07");
+    f.write_p("\x1b]633;E;cmd;invalid-nonce\x07");
+    assert_eq!(*calls2.borrow(), ["setCommandLine(\"cmd\", false)", "setCommandLine(\"cmd\", false)"]);
+}
+
+#[test]
+fn should_not_activate_capability_on_the_cwd_sequence_osc_633_p_cwd_cwd_st() {
+    let f = Fixture::new();
+    assert!(!f.has(TerminalCapability::CommandDetection));
+    f.write_p("foo");
+    assert!(!f.has(TerminalCapability::CommandDetection));
+    f.write_p("\x1b]633;P;Cwd=/foo\x07");
+    assert!(!f.has(TerminalCapability::CommandDetection));
+}
+
+#[test]
+fn should_pass_cwd_sequence_to_the_capability_if_its_initialized() {
+    let f = Fixture::new();
+    let calls = f.get_command_detection_mock();
+    f.write_p("\x1b]633;P;Cwd=/foo\x07");
+    assert_eq!(*calls.borrow(), ["setCwd(\"/foo\")"]);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// suite('BufferMarkCapability')
+// ---------------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn set_mark() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::BufferMarkDetection, "\x1b]633;SetMark;\x07");
+}
+
+#[test]
+fn set_mark_id() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::BufferMarkDetection, "\x1b]633;SetMark;1;\x07");
+}
+
+#[test]
+fn set_mark_hidden() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::BufferMarkDetection, "\x1b]633;SetMark;;Hidden\x07");
+}
+
+#[test]
+fn set_mark_hidden_and_id() {
+    let f = Fixture::new();
+    f.assert_activates_on(TerminalCapability::BufferMarkDetection, "\x1b]633;SetMark;1;Hidden\x07");
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // suite('BufferMarkCapability') > suite('parseMarkSequence')

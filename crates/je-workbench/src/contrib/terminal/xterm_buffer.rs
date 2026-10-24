@@ -85,3 +85,12 @@ pub trait IBuffer {
     /// A linha do índice `y` (começando em 0), ou `None` se ela não existe.
     fn get_line(&self, y: i32) -> Option<Rc<dyn IBufferLine>>;
 }
+
+/// `Terminal` do `@xterm/xterm`, só com o que os detectores de links leem (`terminal.cols` e `terminal.buffer.active`).
+pub trait ITerminal {
+    /// `terminal.cols`.
+    fn cols(&self) -> i32;
+
+    /// `terminal.buffer.active`.
+    fn buffer_active(&self) -> Rc<dyn IBuffer>;
+}
