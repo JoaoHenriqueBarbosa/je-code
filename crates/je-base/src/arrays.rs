@@ -3,9 +3,9 @@
 //! Representação:
 //! - `T[]` é `&[T]`/`Vec<T>`; `T | undefined` é `Option<T>`; os comparadores devolvem `f64`
 //!   ([`CompareResult`], um `number` do JavaScript), com [`to_ordering`] para ordenar com o `sort_by`
-//!   do Rust (`NaN` conta como empate, como no `Array.prototype.sort`). O `sort` do Rust é estável,
-//!   como o do JS, mas um comparador que não seja uma ordem total pode derrubá-lo com pânico, ao
-//!   contrário do V8.
+//!   do Rust (`NaN` conta como empate, como no `Array.prototype.sort`). A ordenação ([`sort_by_compare`])
+//!   não usa o `sort_by` do Rust (que pode entrar em pânico com comparador inconsistente): reproduz o
+//!   TimSort do V8 com a mesma sequência de chamadas ao comparador.
 //! - Onde o TypeScript devolve ou recebe elementos por referência (`T`), as funções que guardam o
 //!   elemento em outra coleção pedem `T: Clone`.
 //! - Chave de `distinct`/`uniqueFilter`/`withoutDuplicates` é um `K: Hash + Eq` (o `Set` do JS usa
@@ -92,51 +92,577 @@ pub fn to_ordering(result: CompareResult) -> Ordering {
     }
 }
 
-/// Abaixo deste tamanho o `Array.prototype.sort` do V8 (TimSort) não mescla corridas: acha a primeira corrida
-/// (`CountAndMakeRun`) e insere o resto por inserção binária (`BinaryInsertionSort`).
+/// Tamanho a partir do qual o TimSort do V8 passa a calcular um `minrun` menor que o vetor e a mesclar corridas.
 const V8_MIN_MERGE: usize = 64;
 
-/// `array.sort(compare)`, com a sequência de chamadas ao comparador do V8. Isso importa quando o comparador
-/// não é uma ordem total: o resultado (e a ausência de pânico) segue o do JavaScript.
+/// `kMinGallopWins` do V8 e valor inicial de `min_gallop`.
+const V8_MIN_GALLOP_WINS: isize = 7;
+
+/// Um comparador sobre posições do vetor de trabalho (as posições originais dos elementos).
+type IndexCompare<'a> = &'a dyn Fn(usize, usize) -> CompareResult;
+
+fn u(index: isize) -> usize {
+    index as usize
+}
+
+/// `array.sort(compare)`, com a sequência de chamadas ao comparador do V8: o TimSort inteiro de
+/// `third_party/v8/builtins/array-sort.tq` (`CountAndMakeRun`, `BinaryInsertionSort`, `MergeCollapse`,
+/// `MergeAt`, `GallopLeft`/`GallopRight`, `MergeLow`/`MergeHigh` com `min_gallop` adaptativo), cada chamada
+/// com os argumentos na mesma ordem. Isso importa quando o comparador não é uma ordem total: o resultado
+/// (e a ausência de pânico) segue o do JavaScript.
 ///
-/// Pendente: a partir de 64 elementos o V8 mescla corridas (`MergeCollapse`, galope); aqui o vetor cai na
-/// ordenação estável do Rust, que dá o mesmo resultado só quando o comparador é uma ordem total.
+/// Como `T` não é `Clone`, o TimSort ordena um vetor de posições (`usize`, que se copia de graça) e o
+/// comparador sempre vê os elementos originais por referência; no fim a permutação é aplicada com `swap`.
 pub fn sort_by_compare<T>(array: &mut [T], compare: impl Fn(&T, &T) -> CompareResult) {
     let length = array.len();
     if length < 2 {
         return;
     }
-    if length >= V8_MIN_MERGE {
-        array.sort_by(|a, b| to_ordering(compare(a, b)));
-        return;
-    }
+    let order = {
+        let view: &[T] = array;
+        let by_index = |a: usize, b: usize| compare(&view[a], &view[b]);
+        v8_tim_sort(length, &by_index)
+    };
+    apply_permutation(array, order);
+}
 
-    // CountAndMakeRun(0, length)
+/// Põe em `array[i]` o elemento que estava em `source[i]`, seguindo os ciclos da permutação.
+fn apply_permutation<T>(array: &mut [T], mut source: Vec<usize>) {
+    for start in 0..source.len() {
+        let mut current = start;
+        loop {
+            let next = source[current];
+            source[current] = current;
+            if next == start {
+                break;
+            }
+            array.swap(current, next);
+            current = next;
+        }
+    }
+}
+
+/// `ComputeMinRunLength`.
+fn compute_min_run_length(length: usize) -> usize {
+    let mut n = length;
+    let mut r = 0;
+    while n >= V8_MIN_MERGE {
+        r |= n & 1;
+        n >>= 1;
+    }
+    n + r
+}
+
+/// `ArrayTimSortImpl`: devolve as posições originais na ordem final.
+fn v8_tim_sort(length: usize, cmp: IndexCompare) -> Vec<usize> {
+    let mut work: Vec<usize> = (0..length).collect();
+    let mut min_gallop = V8_MIN_GALLOP_WINS;
+    let mut runs: Vec<(isize, isize)> = Vec::new();
+    let min_run_length = compute_min_run_length(length);
+    let mut low = 0;
+    let mut remaining = length;
+    while remaining != 0 {
+        let mut current_run_length = count_and_make_run(&mut work, cmp, low, low + remaining);
+        if current_run_length < min_run_length {
+            let forced_run_length = min_run_length.min(remaining);
+            binary_insertion_sort(&mut work, cmp, low, low + current_run_length, low + forced_run_length);
+            current_run_length = forced_run_length;
+        }
+        runs.push((low as isize, current_run_length as isize));
+        merge_collapse(&mut work, &mut runs, &mut min_gallop, cmp);
+        low += current_run_length;
+        remaining -= current_run_length;
+    }
+    merge_force_collapse(&mut work, &mut runs, &mut min_gallop, cmp);
+    work
+}
+
+/// `CountAndMakeRun(lowArg, high)`.
+fn count_and_make_run(work: &mut [usize], cmp: IndexCompare, low_arg: usize, high: usize) -> usize {
+    let low = low_arg + 1;
+    if low == high {
+        return 1;
+    }
     let mut run_length = 2;
-    let is_descending = compare(&array[1], &array[0]) < 0.0;
-    for index in 2..length {
-        let order = compare(&array[index], &array[index - 1]);
+    let order = cmp(work[low], work[low - 1]);
+    let is_descending = order < 0.0;
+    let mut previous = work[low];
+    for index in (low + 1)..high {
+        let current = work[index];
+        let order = cmp(current, previous);
         if if is_descending { order >= 0.0 } else { order < 0.0 } {
             break;
         }
+        previous = current;
         run_length += 1;
     }
     if is_descending {
-        array[..run_length].reverse();
+        work[(low - 1)..(low - 1 + run_length)].reverse();
     }
+    run_length
+}
 
-    // BinaryInsertionSort(0, run_length, length)
-    for start in run_length..length {
-        let (mut left, mut right) = (0, start);
+/// `BinaryInsertionSort(low, startArg, high)`.
+fn binary_insertion_sort(work: &mut [usize], cmp: IndexCompare, low: usize, start_arg: usize, high: usize) {
+    let start_from = if low == start_arg { start_arg + 1 } else { start_arg };
+    for start in start_from..high {
+        let (mut left, mut right) = (low, start);
+        let pivot = work[start];
         while left < right {
             let mid = left + ((right - left) >> 1);
-            if compare(&array[start], &array[mid]) < 0.0 {
+            if cmp(pivot, work[mid]) < 0.0 {
                 right = mid;
             } else {
                 left = mid + 1;
             }
         }
-        array[left..=start].rotate_right(1);
+        work[left..=start].rotate_right(1);
+    }
+}
+
+/// `RunInvariantEstablished(n)`.
+fn run_invariant_established(runs: &[(isize, isize)], n: usize) -> bool {
+    n < 2 || runs[n - 2].1 > runs[n - 1].1 + runs[n].1
+}
+
+/// `MergeCollapse`, com a correção de 2015 (olha `n - 2` e `n - 3`).
+fn merge_collapse(work: &mut [usize], runs: &mut Vec<(isize, isize)>, min_gallop: &mut isize, cmp: IndexCompare) {
+    while runs.len() > 1 {
+        let mut n = runs.len() - 2;
+        if !run_invariant_established(runs, n + 1) || !run_invariant_established(runs, n) {
+            if n > 0 && runs[n - 1].1 < runs[n + 1].1 {
+                n -= 1;
+            }
+            merge_at(work, runs, min_gallop, cmp, n);
+        } else if runs[n].1 <= runs[n + 1].1 {
+            merge_at(work, runs, min_gallop, cmp, n);
+        } else {
+            break;
+        }
+    }
+}
+
+/// `MergeForceCollapse`.
+fn merge_force_collapse(work: &mut [usize], runs: &mut Vec<(isize, isize)>, min_gallop: &mut isize, cmp: IndexCompare) {
+    while runs.len() > 1 {
+        let mut n = runs.len() - 2;
+        if n > 0 && runs[n - 1].1 < runs[n + 1].1 {
+            n -= 1;
+        }
+        merge_at(work, runs, min_gallop, cmp, n);
+    }
+}
+
+/// `MergeAt(i)`: mescla as corridas `i` e `i + 1`.
+fn merge_at(work: &mut [usize], runs: &mut Vec<(isize, isize)>, min_gallop: &mut isize, cmp: IndexCompare, i: usize) {
+    let (mut base_a, mut length_a) = runs[i];
+    let (base_b, mut length_b) = runs[i + 1];
+    runs[i].1 = length_a + length_b;
+    if i + 3 == runs.len() {
+        runs[i + 1] = runs[i + 2];
+    }
+    runs.pop();
+
+    // Onde o primeiro elemento de B entra em A: os anteriores já estão no lugar.
+    let key_right = work[u(base_b)];
+    let k = gallop_right(work, cmp, key_right, base_a, length_a, 0);
+    base_a += k;
+    length_a -= k;
+    if length_a == 0 {
+        return;
+    }
+    // Onde o último elemento de A entra em B: os posteriores já estão no lugar.
+    let key_left = work[u(base_a + length_a - 1)];
+    length_b = gallop_left(work, cmp, key_left, base_b, length_b, length_b - 1);
+    if length_b == 0 {
+        return;
+    }
+    if length_a <= length_b {
+        merge_low(work, min_gallop, cmp, base_a, length_a, base_b, length_b);
+    } else {
+        merge_high(work, min_gallop, cmp, base_a, length_a, base_b, length_b);
+    }
+}
+
+/// `GallopLeft(array, key, base, length, hint)`.
+fn gallop_left(array: &[usize], cmp: IndexCompare, key: usize, base: isize, length: isize, hint: isize) -> isize {
+    let mut last_ofs: isize = 0;
+    let mut offset: isize = 1;
+    let order = cmp(array[u(base + hint)], key);
+    if order < 0.0 {
+        // a[hint] < key: galopa à direita até a[hint + last_ofs] < key <= a[hint + offset].
+        let max_ofs = length - hint;
+        while offset < max_ofs {
+            let order = cmp(array[u(base + hint + offset)], key);
+            if order >= 0.0 {
+                break;
+            }
+            last_ofs = offset;
+            offset = (offset << 1) + 1;
+        }
+        if offset > max_ofs {
+            offset = max_ofs;
+        }
+        last_ofs += hint;
+        offset += hint;
+    } else {
+        // key <= a[hint]: galopa à esquerda até a[hint - offset] < key <= a[hint - last_ofs].
+        let max_ofs = hint + 1;
+        while offset < max_ofs {
+            let order = cmp(array[u(base + hint - offset)], key);
+            if order < 0.0 {
+                break;
+            }
+            last_ofs = offset;
+            offset = (offset << 1) + 1;
+        }
+        if offset > max_ofs {
+            offset = max_ofs;
+        }
+        let tmp = last_ofs;
+        last_ofs = hint - offset;
+        offset = hint - tmp;
+    }
+    // Agora a[base + last_ofs] < key <= a[base + offset]: busca binária.
+    last_ofs += 1;
+    while last_ofs < offset {
+        let m = last_ofs + ((offset - last_ofs) >> 1);
+        let order = cmp(array[u(base + m)], key);
+        if order < 0.0 {
+            last_ofs = m + 1;
+        } else {
+            offset = m;
+        }
+    }
+    offset
+}
+
+/// `GallopRight(array, key, base, length, hint)`.
+fn gallop_right(array: &[usize], cmp: IndexCompare, key: usize, base: isize, length: isize, hint: isize) -> isize {
+    let mut last_ofs: isize = 0;
+    let mut offset: isize = 1;
+    let order = cmp(key, array[u(base + hint)]);
+    if order < 0.0 {
+        // key < a[hint]: galopa à esquerda até a[hint - offset] <= key < a[hint - last_ofs].
+        let max_ofs = hint + 1;
+        while offset < max_ofs {
+            let order = cmp(key, array[u(base + hint - offset)]);
+            if order >= 0.0 {
+                break;
+            }
+            last_ofs = offset;
+            offset = (offset << 1) + 1;
+        }
+        if offset > max_ofs {
+            offset = max_ofs;
+        }
+        let tmp = last_ofs;
+        last_ofs = hint - offset;
+        offset = hint - tmp;
+    } else {
+        // a[hint] <= key: galopa à direita até a[hint + last_ofs] <= key < a[hint + offset].
+        let max_ofs = length - hint;
+        while offset < max_ofs {
+            let order = cmp(key, array[u(base + hint + offset)]);
+            if order < 0.0 {
+                break;
+            }
+            last_ofs = offset;
+            offset = (offset << 1) + 1;
+        }
+        if offset > max_ofs {
+            offset = max_ofs;
+        }
+        last_ofs += hint;
+        offset += hint;
+    }
+    // Agora a[base + last_ofs] <= key < a[base + offset]: busca binária.
+    last_ofs += 1;
+    while last_ofs < offset {
+        let m = last_ofs + ((offset - last_ofs) >> 1);
+        let order = cmp(key, array[u(base + m)]);
+        if order < 0.0 {
+            offset = m;
+        } else {
+            last_ofs = m + 1;
+        }
+    }
+    offset
+}
+
+/// Como terminou o laço de `MergeLow`/`MergeHigh`: `Succeed` ou o rótulo `CopyB`/`CopyA`.
+#[derive(Clone, Copy, PartialEq)]
+enum MergeEnd {
+    Succeed,
+    CopyLast,
+}
+
+/// `MergeLow`: mescla A (copiada para um temporário) e B da esquerda para a direita; `length_a <= length_b`.
+fn merge_low(
+    work: &mut [usize],
+    min_gallop_state: &mut isize,
+    cmp: IndexCompare,
+    base_a: isize,
+    length_a_arg: isize,
+    base_b: isize,
+    length_b_arg: isize,
+) {
+    let mut length_a = length_a_arg;
+    let mut length_b = length_b_arg;
+    let temp: Vec<usize> = work[u(base_a)..u(base_a + length_a)].to_vec();
+    let mut dest = base_a;
+    let mut cursor_temp: isize = 0;
+    let mut cursor_b = base_b;
+
+    work[u(dest)] = work[u(cursor_b)];
+    dest += 1;
+    cursor_b += 1;
+
+    let end = 'merge: {
+        length_b -= 1;
+        if length_b == 0 {
+            break 'merge MergeEnd::Succeed;
+        }
+        if length_a == 1 {
+            break 'merge MergeEnd::CopyLast;
+        }
+        let mut min_gallop = *min_gallop_state;
+        loop {
+            let mut wins_a: isize = 0;
+            let mut wins_b: isize = 0;
+            // Mescla um a um até uma das corridas parecer ganhar sempre.
+            loop {
+                let order = cmp(work[u(cursor_b)], temp[u(cursor_temp)]);
+                if order < 0.0 {
+                    work[u(dest)] = work[u(cursor_b)];
+                    dest += 1;
+                    cursor_b += 1;
+                    wins_b += 1;
+                    length_b -= 1;
+                    wins_a = 0;
+                    if length_b == 0 {
+                        break 'merge MergeEnd::Succeed;
+                    }
+                    if wins_b >= min_gallop {
+                        break;
+                    }
+                } else {
+                    work[u(dest)] = temp[u(cursor_temp)];
+                    dest += 1;
+                    cursor_temp += 1;
+                    wins_a += 1;
+                    length_a -= 1;
+                    wins_b = 0;
+                    if length_a == 1 {
+                        break 'merge MergeEnd::CopyLast;
+                    }
+                    if wins_a >= min_gallop {
+                        break;
+                    }
+                }
+            }
+
+            // Modo galope.
+            min_gallop += 1;
+            let mut first_iteration = true;
+            while wins_a >= V8_MIN_GALLOP_WINS || wins_b >= V8_MIN_GALLOP_WINS || first_iteration {
+                first_iteration = false;
+                min_gallop = (min_gallop - 1).max(1);
+                *min_gallop_state = min_gallop;
+
+                wins_a = gallop_right(&temp, cmp, work[u(cursor_b)], cursor_temp, length_a, 0);
+                if wins_a > 0 {
+                    work[u(dest)..u(dest + wins_a)].copy_from_slice(&temp[u(cursor_temp)..u(cursor_temp + wins_a)]);
+                    dest += wins_a;
+                    cursor_temp += wins_a;
+                    length_a -= wins_a;
+                    if length_a == 1 {
+                        break 'merge MergeEnd::CopyLast;
+                    }
+                    // Com comparador consistente length_a não zera aqui, mas não se pode supor isso.
+                    if length_a == 0 {
+                        break 'merge MergeEnd::Succeed;
+                    }
+                }
+                work[u(dest)] = work[u(cursor_b)];
+                dest += 1;
+                cursor_b += 1;
+                length_b -= 1;
+                if length_b == 0 {
+                    break 'merge MergeEnd::Succeed;
+                }
+
+                wins_b = gallop_left(work, cmp, temp[u(cursor_temp)], cursor_b, length_b, 0);
+                if wins_b > 0 {
+                    work.copy_within(u(cursor_b)..u(cursor_b + wins_b), u(dest));
+                    dest += wins_b;
+                    cursor_b += wins_b;
+                    length_b -= wins_b;
+                    if length_b == 0 {
+                        break 'merge MergeEnd::Succeed;
+                    }
+                }
+                work[u(dest)] = temp[u(cursor_temp)];
+                dest += 1;
+                cursor_temp += 1;
+                length_a -= 1;
+                if length_a == 1 {
+                    break 'merge MergeEnd::CopyLast;
+                }
+            }
+            min_gallop += 1; // penaliza por sair do modo galope
+            *min_gallop_state = min_gallop;
+        }
+    };
+
+    match end {
+        MergeEnd::Succeed => {
+            if length_a > 0 {
+                work[u(dest)..u(dest + length_a)].copy_from_slice(&temp[u(cursor_temp)..u(cursor_temp + length_a)]);
+            }
+        }
+        MergeEnd::CopyLast => {
+            // O último elemento de A pertence ao fim da mescla.
+            work.copy_within(u(cursor_b)..u(cursor_b + length_b), u(dest));
+            work[u(dest + length_b)] = temp[u(cursor_temp)];
+        }
+    }
+}
+
+/// `MergeHigh`: mescla A e B (copiada para um temporário) da direita para a esquerda; `length_a > length_b`.
+fn merge_high(
+    work: &mut [usize],
+    min_gallop_state: &mut isize,
+    cmp: IndexCompare,
+    base_a: isize,
+    length_a_arg: isize,
+    base_b: isize,
+    length_b_arg: isize,
+) {
+    let mut length_a = length_a_arg;
+    let mut length_b = length_b_arg;
+    let temp: Vec<usize> = work[u(base_b)..u(base_b + length_b)].to_vec();
+    let mut dest = base_b + length_b - 1;
+    let mut cursor_temp = length_b - 1;
+    let mut cursor_a = base_a + length_a - 1;
+
+    work[u(dest)] = work[u(cursor_a)];
+    dest -= 1;
+    cursor_a -= 1;
+
+    let end = 'merge: {
+        length_a -= 1;
+        if length_a == 0 {
+            break 'merge MergeEnd::Succeed;
+        }
+        if length_b == 1 {
+            break 'merge MergeEnd::CopyLast;
+        }
+        let mut min_gallop = *min_gallop_state;
+        loop {
+            let mut wins_a: isize = 0;
+            let mut wins_b: isize = 0;
+            loop {
+                let order = cmp(temp[u(cursor_temp)], work[u(cursor_a)]);
+                if order < 0.0 {
+                    work[u(dest)] = work[u(cursor_a)];
+                    dest -= 1;
+                    cursor_a -= 1;
+                    wins_a += 1;
+                    length_a -= 1;
+                    wins_b = 0;
+                    if length_a == 0 {
+                        break 'merge MergeEnd::Succeed;
+                    }
+                    if wins_a >= min_gallop {
+                        break;
+                    }
+                } else {
+                    work[u(dest)] = temp[u(cursor_temp)];
+                    dest -= 1;
+                    cursor_temp -= 1;
+                    wins_b += 1;
+                    length_b -= 1;
+                    wins_a = 0;
+                    if length_b == 1 {
+                        break 'merge MergeEnd::CopyLast;
+                    }
+                    if wins_b >= min_gallop {
+                        break;
+                    }
+                }
+            }
+
+            // Modo galope.
+            min_gallop += 1;
+            let mut first_iteration = true;
+            while wins_a >= V8_MIN_GALLOP_WINS || wins_b >= V8_MIN_GALLOP_WINS || first_iteration {
+                first_iteration = false;
+                min_gallop = (min_gallop - 1).max(1);
+                *min_gallop_state = min_gallop;
+
+                let k = gallop_right(work, cmp, temp[u(cursor_temp)], base_a, length_a, length_a - 1);
+                wins_a = length_a - k;
+                if wins_a > 0 {
+                    dest -= wins_a;
+                    cursor_a -= wins_a;
+                    work.copy_within(u(cursor_a + 1)..u(cursor_a + 1 + wins_a), u(dest + 1));
+                    length_a -= wins_a;
+                    if length_a == 0 {
+                        break 'merge MergeEnd::Succeed;
+                    }
+                }
+                work[u(dest)] = temp[u(cursor_temp)];
+                dest -= 1;
+                cursor_temp -= 1;
+                length_b -= 1;
+                if length_b == 1 {
+                    break 'merge MergeEnd::CopyLast;
+                }
+
+                let k = gallop_left(&temp, cmp, work[u(cursor_a)], 0, length_b, length_b - 1);
+                wins_b = length_b - k;
+                if wins_b > 0 {
+                    dest -= wins_b;
+                    cursor_temp -= wins_b;
+                    work[u(dest + 1)..u(dest + 1 + wins_b)]
+                        .copy_from_slice(&temp[u(cursor_temp + 1)..u(cursor_temp + 1 + wins_b)]);
+                    length_b -= wins_b;
+                    if length_b == 1 {
+                        break 'merge MergeEnd::CopyLast;
+                    }
+                    // Com comparador consistente length_b não zera aqui, mas não se pode supor isso.
+                    if length_b == 0 {
+                        break 'merge MergeEnd::Succeed;
+                    }
+                }
+                work[u(dest)] = work[u(cursor_a)];
+                dest -= 1;
+                cursor_a -= 1;
+                length_a -= 1;
+                if length_a == 0 {
+                    break 'merge MergeEnd::Succeed;
+                }
+            }
+            min_gallop += 1; // penaliza por sair do modo galope
+            *min_gallop_state = min_gallop;
+        }
+    };
+
+    match end {
+        MergeEnd::Succeed => {
+            if length_b > 0 {
+                let from = dest - (length_b - 1);
+                work[u(from)..u(from + length_b)].copy_from_slice(&temp[0..u(length_b)]);
+            }
+        }
+        MergeEnd::CopyLast => {
+            // O primeiro elemento de B pertence ao começo da mescla.
+            dest -= length_a;
+            cursor_a -= length_a;
+            work.copy_within(u(cursor_a + 1)..u(cursor_a + 1 + length_a), u(dest + 1));
+            work[u(dest)] = temp[u(cursor_temp)];
+        }
     }
 }
 
