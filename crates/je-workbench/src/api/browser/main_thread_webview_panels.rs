@@ -23,6 +23,8 @@
 //! - **`DiffEditorInput`.** `input instanceof DiffEditorInput` é [`EditorInput::diff_editors`] (a modificada, `primary`, e a
 //!   original, `secondary`), e a identidade de entradas (`===`) é a de [`id_of`].
 //! - **Grupos.** `PreferredGroup` é o [`GroupRef`]; `ACTIVE_GROUP` e `SIDE_GROUP` são os identificadores especiais dele.
+//! - **`webviewInputs` e `addWebviewInput`** são o trait [`IMainThreadWebviewPanels`] (o que o `MainThreadCustomEditors` lê
+//!   do objeto, e o que o teste dele substitui pelo `mock<MainThreadWebviewPanels>()`).
 //!
 //! [`ExtUri`]: je_base::resources::ExtUri
 
@@ -120,6 +122,16 @@ pub struct MainThreadWebviewPanelsServices {
     pub uri_identity_service: Rc<dyn IUriIdentityService>,
 }
 
+/// O que o `MainThreadCustomEditors` lê do `MainThreadWebviewPanels` (`webviewInputs` e `addWebviewInput`): o contrato que o
+/// teste substitui pelo `mock<MainThreadWebviewPanels>()`.
+pub trait IMainThreadWebviewPanels {
+    /// `webviewInputs`.
+    fn webview_inputs(&self) -> Vec<Rc<WebviewInput>>;
+
+    /// `addWebviewInput(handle, input, options)`.
+    fn add_webview_input(&self, handle: &str, input: Rc<WebviewInput>, options: MainThreadWebviewOptions);
+}
+
 pub struct MainThreadWebviewPanels {
     this: Weak<MainThreadWebviewPanels>,
     base: Rc<Disposable>,
@@ -209,19 +221,23 @@ impl MainThreadWebviewPanels {
             _ => None,
         }
     }
+}
 
+impl IMainThreadWebviewPanels for MainThreadWebviewPanels {
     /// `webviewInputs`.
-    pub fn webview_inputs(&self) -> Vec<Rc<WebviewInput>> {
+    fn webview_inputs(&self) -> Vec<Rc<WebviewInput>> {
         self.webview_inputs.borrow().handles_to_inputs.values().cloned().collect()
     }
 
     /// `addWebviewInput(handle, input, options)`: lança (`Webview already registered`) quando o handle já está registrado.
-    pub fn add_webview_input(&self, handle: &str, input: Rc<WebviewInput>, options: MainThreadWebviewOptions) {
+    fn add_webview_input(&self, handle: &str, input: Rc<WebviewInput>, options: MainThreadWebviewOptions) {
         if let Err(error) = self.try_add_webview_input(handle, input, options) {
             errors::throw(error);
         }
     }
+}
 
+impl MainThreadWebviewPanels {
     fn try_add_webview_input(&self, handle: &str, input: Rc<WebviewInput>, options: MainThreadWebviewOptions) -> Result<(), Error> {
         self.webview_inputs.borrow_mut().add(handle, input.clone());
         let webview: Rc<dyn IWebview> = input.webview();
@@ -560,7 +576,7 @@ fn revive_webview_icon(value: Option<WebviewIconPathDto>) -> Option<WebviewIconP
 }
 
 /// `reviveWebviewOptions(panelOptions)`.
-fn revive_webview_options(panel_options: &WebviewPanelOptionsDto) -> WebviewOptions {
+pub(crate) fn revive_webview_options(panel_options: &WebviewPanelOptionsDto) -> WebviewOptions {
     WebviewOptions {
         enable_find_widget: panel_options.enable_find_widget,
         retain_context_when_hidden: panel_options.retain_context_when_hidden,
@@ -569,7 +585,7 @@ fn revive_webview_options(panel_options: &WebviewPanelOptionsDto) -> WebviewOpti
 }
 
 /// O `webview.options` (um `WebviewOptions`) lido como `IWebviewPanelOptions`: os dois campos que o protocolo declara.
-fn webview_options_to_panel_options_dto(options: &WebviewOptions) -> WebviewPanelOptionsDto {
+pub(crate) fn webview_options_to_panel_options_dto(options: &WebviewOptions) -> WebviewPanelOptionsDto {
     WebviewPanelOptionsDto { enable_find_widget: options.enable_find_widget, retain_context_when_hidden: options.retain_context_when_hidden }
 }
 

@@ -200,6 +200,12 @@ pub trait IEditorPaneSelection {
     fn log(&self) -> Option<String> {
         None
     }
+
+    /// Para o `instanceof` que o `compare` do original faz sobre a outra seleção. O padrão (a seleção que não compara por
+    /// tipo) é um valor que nenhuma classe de seleção reconhece.
+    fn as_any(&self) -> &dyn std::any::Any {
+        &()
+    }
 }
 
 /// `IEditorPaneScrollPosition`: scroll position of a pane.
