@@ -19,6 +19,7 @@ je-base = { path = "../je-base" }
 je-editor = { path = "../je-editor" }
 je-editor-view = { path = "../je-editor-view" }
 je-extensions = { path = "../je-extensions" }
+je-storage = { path = "../je-storage" }
 je-platform = { path = "../je-platform" }
 je-render = { path = "../je-render" }
 je-terminal = { path = "../je-terminal" }

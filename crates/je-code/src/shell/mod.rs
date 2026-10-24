@@ -18,6 +18,7 @@ mod extensions_view;
 mod file_ops;
 pub mod git;
 mod quick_pick;
+mod recent;
 mod terminal_panel;
 pub mod themes;
 
@@ -209,6 +210,8 @@ pub enum Command {
     SearchToggleRegex,
     ShowScm,
     ShowExtensions,
+    OpenRecent,
+    OpenFolderPath(PathBuf),
     ExtensionsFocus,
     ScmFocus,
     ScmCommit,
@@ -1121,6 +1124,40 @@ impl Shell {
                     _ => self.search.regex = !self.search.regex,
                 }
                 self.start_search();
+            }
+            Command::OpenRecent => {
+                let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+                let tidy = |p: &Path| -> String {
+                    match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
+                        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+                        None => p.display().to_string(),
+                    }
+                };
+                let items: Vec<PickItem> = recent::load()
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let (path, command) = match entry {
+                            recent::Recent::Folder(p) => (p.clone(), Command::OpenFolderPath(p)),
+                            recent::Recent::File(p) => (p.clone(), Command::OpenFile(p)),
+                        };
+                        let label = path.file_name()?.to_string_lossy().into_owned();
+                        let description = path.parent().map(&tidy);
+                        Some(PickItem { label, description, keybinding: None, command, recent: false })
+                    })
+                    .collect();
+                if items.is_empty() {
+                    self.notify(Severity::Info, "Não há itens recentes do VS Code para mostrar.".to_owned());
+                } else {
+                    self.quick_pick = Some(QuickPick::list(items, "Select to open (hold Ctrl-key to force new window or Alt-key for same window)"));
+                    self.ui.blur();
+                }
+            }
+            Command::OpenFolderPath(path) => {
+                if path.is_dir() {
+                    self.set_workspace(path);
+                } else {
+                    self.notify(Severity::Error, format!("A pasta '{}' não existe mais.", path.display()));
+                }
             }
             Command::ShowExtensions => {
                 self.show_view(SideView::Extensions);
@@ -3227,6 +3264,7 @@ impl Shell {
             (true, false, false, KeyCode::KeyS) => Command::Save,
             (true, true, false, KeyCode::KeyS) => Command::PromptSaveAs,
             (true, false, false, KeyCode::KeyO) => Command::PromptOpenFile,
+            (true, false, false, KeyCode::KeyR) => Command::OpenRecent,
             (true, false, false, KeyCode::KeyW) | (true, false, false, KeyCode::F4) => Command::CloseActiveEditor,
             (true, false, false, KeyCode::KeyQ) => Command::Exit,
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
