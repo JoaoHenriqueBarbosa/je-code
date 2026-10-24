@@ -211,3 +211,9 @@ pub mod word_part_operations;
 pub mod bracket_matching;
 pub mod indentation_contrib;
 pub mod multicursor;
+
+pub mod suggest;
+
+pub mod services;
+
+pub mod model_service;

@@ -141,16 +141,16 @@ pub struct TokenizationSupportChangedEvent {
 // `src/vs/editor/common/languages.ts` (linhas 353 a 736 do original).
 //
 // Diferenças do original:
-// - `CompletionItem` não tem `range`, `additionalTextEdits`, `command`, `action`, `extensionId` nem `_id`
-//   (dependem de `IRange`, `ISingleEditOperation`, `Command` e `ExtensionIdentifier`, que nenhum consumidor
-//   atual lê); os demais campos estão todos.
+// - `CompletionItem` tem o `range` ([`CompletionItemRange`]), mas não tem `additionalTextEdits`, `command`,
+//   `action`, `extensionId` nem `_id` (dependem de `ISingleEditOperation`, `Command` e `ExtensionIdentifier`,
+//   que nenhum consumidor atual lê); os demais campos estão todos.
 // - `CompletionItemProvider` só traz `_debugDisplayName`, `triggerCharacters` e `resolveCompletionItem`;
 //   `provideCompletionItems` precisa de `ITextModel` e de `ProviderResult`, e fica para quando o consumidor
 //   chegar. O `ProviderResult<CompletionItem>` do `resolveCompletionItem` é uma `Promise<Option<_>>`
 //   (`null` e `undefined` viram `None`).
 // - `resolveCompletionItem?` opcional vira [`CompletionItemProvider::has_resolve_completion_item`].
-// - `CompletionItemKinds` (ícone, rótulo traduzido, `fromString`) não foi portado: dependem de `Codicon` e
-//   de `localize`, e só o enum é lido pelo terminal.
+// - `CompletionItemKinds` só traz o `fromString` ([`CompletionItemKind::from_string`]): o ícone e o rótulo
+//   traduzido dependem de `Codicon` e de `localize`, e nenhum consumidor os lê.
 // - `string | CompletionItemLabel` é [`CompletionLabel`] e `string | IMarkdownString` é [`StringOrMarkdown`].
 
 /// `CompletionItemKind`. `Snippet` é o maior valor (usado em comparações).
@@ -185,6 +185,89 @@ pub enum CompletionItemKind {
     Issue,
     Tool,
     Snippet,
+}
+
+impl CompletionItemKind {
+    /// Os valores do enum na ordem numérica do original (o `CompletionItemKind` de `const enum`).
+    const ALL: [CompletionItemKind; 29] = [
+        CompletionItemKind::Method,
+        CompletionItemKind::Function,
+        CompletionItemKind::Constructor,
+        CompletionItemKind::Field,
+        CompletionItemKind::Variable,
+        CompletionItemKind::Class,
+        CompletionItemKind::Struct,
+        CompletionItemKind::Interface,
+        CompletionItemKind::Module,
+        CompletionItemKind::Property,
+        CompletionItemKind::Event,
+        CompletionItemKind::Operator,
+        CompletionItemKind::Unit,
+        CompletionItemKind::Value,
+        CompletionItemKind::Constant,
+        CompletionItemKind::Enum,
+        CompletionItemKind::EnumMember,
+        CompletionItemKind::Keyword,
+        CompletionItemKind::Text,
+        CompletionItemKind::Color,
+        CompletionItemKind::File,
+        CompletionItemKind::Reference,
+        CompletionItemKind::Customcolor,
+        CompletionItemKind::Folder,
+        CompletionItemKind::TypeParameter,
+        CompletionItemKind::User,
+        CompletionItemKind::Issue,
+        CompletionItemKind::Tool,
+        CompletionItemKind::Snippet,
+    ];
+
+    /// O valor numérico do original (`Method` é 0 e `Snippet` é 28).
+    pub fn to_index(self) -> usize {
+        self as usize
+    }
+
+    /// O inverso de [`Self::to_index`]: `None` fora de 0 a 28.
+    pub fn from_index(index: usize) -> Option<CompletionItemKind> {
+        Self::ALL.get(index).copied()
+    }
+
+    /// `CompletionItemKinds.fromString(value, strict)`: o nome (`'enum-member'`, `'enumMember'`, `'account'`...)
+    /// para o tipo. Fora do modo estrito, um nome desconhecido vira `Property`.
+    pub fn from_string(value: &str, strict: bool) -> Option<CompletionItemKind> {
+        let found = match value {
+            "method" => Some(CompletionItemKind::Method),
+            "function" => Some(CompletionItemKind::Function),
+            "constructor" => Some(CompletionItemKind::Constructor),
+            "field" => Some(CompletionItemKind::Field),
+            "variable" => Some(CompletionItemKind::Variable),
+            "class" => Some(CompletionItemKind::Class),
+            "struct" => Some(CompletionItemKind::Struct),
+            "interface" => Some(CompletionItemKind::Interface),
+            "module" => Some(CompletionItemKind::Module),
+            "property" => Some(CompletionItemKind::Property),
+            "event" => Some(CompletionItemKind::Event),
+            "operator" => Some(CompletionItemKind::Operator),
+            "unit" => Some(CompletionItemKind::Unit),
+            "value" => Some(CompletionItemKind::Value),
+            "constant" => Some(CompletionItemKind::Constant),
+            "enum" => Some(CompletionItemKind::Enum),
+            "enum-member" | "enumMember" => Some(CompletionItemKind::EnumMember),
+            "keyword" => Some(CompletionItemKind::Keyword),
+            "snippet" => Some(CompletionItemKind::Snippet),
+            "text" => Some(CompletionItemKind::Text),
+            "color" => Some(CompletionItemKind::Color),
+            "file" => Some(CompletionItemKind::File),
+            "reference" => Some(CompletionItemKind::Reference),
+            "customcolor" => Some(CompletionItemKind::Customcolor),
+            "folder" => Some(CompletionItemKind::Folder),
+            "type-parameter" | "typeParameter" => Some(CompletionItemKind::TypeParameter),
+            "account" => Some(CompletionItemKind::User),
+            "issue" => Some(CompletionItemKind::Issue),
+            "tool" => Some(CompletionItemKind::Tool),
+            _ => None,
+        };
+        found.or(if strict { None } else { Some(CompletionItemKind::Property) })
+    }
 }
 
 /// `CompletionItemLabel`.
@@ -234,12 +317,31 @@ impl StringOrMarkdown {
     }
 }
 
+/// `IRange | { insert: IRange; replace: IRange }`: o `range` de um [`CompletionItem`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionItemRange {
+    /// Um intervalo só: o trecho trocado pelo texto inserido.
+    Single(crate::range::Range),
+    /// Intervalos separados para o modo de inserir e o de substituir.
+    InsertReplace { insert: crate::range::Range, replace: crate::range::Range },
+}
+
+/// `CompletionList`: o resultado de um provedor. O `dispose?()` opcional é o `dispose` com `Option`.
+#[derive(Clone)]
+pub struct CompletionList {
+    pub suggestions: Vec<CompletionItem>,
+    pub incomplete: Option<bool>,
+    pub dispose: Option<std::rc::Rc<dyn Fn()>>,
+}
+
 /// `CompletionItem`.
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
     /// O rótulo; por padrão é também o texto inserido ao escolher o item.
     pub label: CompletionLabel,
     pub kind: CompletionItemKind,
+    /// O trecho que o item troca ao ser inserido.
+    pub range: CompletionItemRange,
     /// Modificadores do `kind` que afetam a exibição (por exemplo, `Deprecated` fica riscado).
     pub tags: Option<Vec<CompletionItemTag>>,
     pub detail: Option<String>,
