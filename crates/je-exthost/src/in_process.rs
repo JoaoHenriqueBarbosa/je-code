@@ -58,7 +58,12 @@ use je_workbench::api::common::ext_host_protocol::{
     ITerminalCompletionContextDto, ITerminalDimensionsDto, ITerminalLinkDto, IShellLaunchConfigDto, SCMArtifactDto, SCMArtifactGroupDto, SCMHistoryItemChangeDto, SCMHistoryItemDto,
     SCMHistoryItemRefDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
 };
+use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::common::views::ITreeItem;
+use je_workbench::contrib::debug::debug::{
+    IAdapterDescriptor, IConfig, IDebugVisualization, IDebugVisualizationContext, IDebugVisualizationTreeItem, MainThreadDebugVisualization,
+};
+use je_workbench::contrib::debug::debug_protocol::ProtocolMessage;
 use je_workbench::api::common::ext_host_protocol::{
     DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
     ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
@@ -859,9 +864,120 @@ impl ExtHostSCMShape for LateExtHostSCM {
     }
 }
 
+/// O `ExtHostDebugServiceShape` que ainda não existe quando o cliente `MainThreadDebugService` do workbench nasce. As chamadas sem
+/// retorno (`$sendDAMessage`, `$acceptBreakpointsDelta`, `$disposeDebugVisualizers`, `$disposeVisualizedTree`) ficam na fila se chegarem
+/// antes do `bind`; as com retorno só acontecem depois de montado o host.
+#[derive(Default)]
+pub struct LateExtHostDebugService(pub Late<dyn ExtHostDebugServiceShape>);
+
+impl ExtHostDebugServiceShape for LateExtHostDebugService {
+    fn rpc_substitute_variables(&self, folder: Option<URI>, config: IConfig) -> Promise<IConfig> {
+        self.0.bound().rpc_substitute_variables(folder, config)
+    }
+
+    fn rpc_run_in_terminal(&self, args: serde_json::Value, session_id: &str) -> Promise<Option<i64>> {
+        self.0.bound().rpc_run_in_terminal(args, session_id)
+    }
+
+    fn rpc_start_da_session(&self, handle: u32, session: IDebugSessionDto) -> Promise<()> {
+        self.0.bound().rpc_start_da_session(handle, session)
+    }
+
+    fn rpc_stop_da_session(&self, handle: u32) -> Promise<()> {
+        self.0.bound().rpc_stop_da_session(handle)
+    }
+
+    fn rpc_send_da_message(&self, handle: u32, message: ProtocolMessage) {
+        self.0.call_void(move |target| target.rpc_send_da_message(handle, message));
+    }
+
+    fn rpc_resolve_debug_configuration(&self, handle: u32, folder: Option<URI>, debug_configuration: IConfig, token: CancellationToken) -> Promise<Option<IConfig>> {
+        self.0.bound().rpc_resolve_debug_configuration(handle, folder, debug_configuration, token)
+    }
+
+    fn rpc_resolve_debug_configuration_with_substituted_variables(
+        &self,
+        handle: u32,
+        folder: Option<URI>,
+        debug_configuration: IConfig,
+        token: CancellationToken,
+    ) -> Promise<Option<IConfig>> {
+        self.0.bound().rpc_resolve_debug_configuration_with_substituted_variables(handle, folder, debug_configuration, token)
+    }
+
+    fn rpc_provide_debug_configurations(&self, handle: u32, folder: Option<URI>, token: CancellationToken) -> Promise<Vec<IConfig>> {
+        self.0.bound().rpc_provide_debug_configurations(handle, folder, token)
+    }
+
+    fn rpc_provide_debug_adapter(&self, handle: u32, session: IDebugSessionDto) -> Promise<IAdapterDescriptor> {
+        self.0.bound().rpc_provide_debug_adapter(handle, session)
+    }
+
+    fn rpc_accept_debug_session_started(&self, session: IDebugSessionDto) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_started(session)
+    }
+
+    fn rpc_accept_debug_session_terminated(&self, session: IDebugSessionDto) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_terminated(session)
+    }
+
+    fn rpc_accept_debug_session_active_changed(&self, session: Option<IDebugSessionDto>) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_active_changed(session)
+    }
+
+    fn rpc_accept_debug_session_custom_event(&self, session: IDebugSessionDto, event: serde_json::Value) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_custom_event(session, event)
+    }
+
+    fn rpc_accept_breakpoints_delta(&self, delta: IBreakpointsDeltaDto) {
+        self.0.call_void(move |target| target.rpc_accept_breakpoints_delta(delta));
+    }
+
+    fn rpc_accept_debug_session_name_changed(&self, session: IDebugSessionDto, name: &str) -> Promise<()> {
+        self.0.bound().rpc_accept_debug_session_name_changed(session, name)
+    }
+
+    fn rpc_accept_stack_frame_focus(&self, focus: Option<StackFocusDto>) -> Promise<()> {
+        self.0.bound().rpc_accept_stack_frame_focus(focus)
+    }
+
+    fn rpc_provide_debug_visualizers(&self, extension_id: &str, id: &str, context: IDebugVisualizationContext, token: CancellationToken) -> Promise<Vec<IDebugVisualization>> {
+        self.0.bound().rpc_provide_debug_visualizers(extension_id, id, context, token)
+    }
+
+    fn rpc_resolve_debug_visualizer(&self, id: u64, token: CancellationToken) -> Promise<MainThreadDebugVisualization> {
+        self.0.bound().rpc_resolve_debug_visualizer(id, token)
+    }
+
+    fn rpc_execute_debug_visualizer_command(&self, id: u64) -> Promise<()> {
+        self.0.bound().rpc_execute_debug_visualizer_command(id)
+    }
+
+    fn rpc_dispose_debug_visualizers(&self, ids: Vec<u64>) {
+        self.0.call_void(move |target| target.rpc_dispose_debug_visualizers(ids));
+    }
+
+    fn rpc_get_visualizer_tree_item(&self, tree_id: &str, element: IDebugVisualizationContext) -> Promise<Option<IDebugVisualizationTreeItem>> {
+        self.0.bound().rpc_get_visualizer_tree_item(tree_id, element)
+    }
+
+    fn rpc_get_visualizer_tree_item_children(&self, tree_id: &str, element: u64) -> Promise<Vec<IDebugVisualizationTreeItem>> {
+        self.0.bound().rpc_get_visualizer_tree_item_children(tree_id, element)
+    }
+
+    fn rpc_edit_visualizer_tree_item(&self, element: u64, value: &str) -> Promise<Option<IDebugVisualizationTreeItem>> {
+        self.0.bound().rpc_edit_visualizer_tree_item(element, value)
+    }
+
+    fn rpc_dispose_visualized_tree(&self, element: u64) {
+        self.0.call_void(move |target| target.rpc_dispose_visualized_tree(element));
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
     pub scm: Rc<LateExtHostSCM>,
+    pub debug_service: Rc<LateExtHostDebugService>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
     pub tree_views: Rc<LateExtHostTreeViews>,
     pub workspace: Rc<LateExtHostWorkspace>,
@@ -897,6 +1013,9 @@ impl LateForwarders {
         let language_features = Rc::new(LateExtHostLanguageFeatures::default());
         let terminal_service = Rc::new(LateExtHostTerminalService::default());
         let tree_views = Rc::new(LateExtHostTreeViews::default());
+        let debug_service = Rc::new(LateExtHostDebugService::default());
+        let as_debug_service: Rc<dyn ExtHostDebugServiceShape> = debug_service.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_DEBUG_SERVICE.sid, Rc::new(as_debug_service));
         let scm = Rc::new(LateExtHostSCM::default());
         let as_scm: Rc<dyn ExtHostSCMShape> = scm.clone();
         local.set_erased(ExtHostContext::EXT_HOST_SCM.sid, Rc::new(as_scm));
@@ -930,7 +1049,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

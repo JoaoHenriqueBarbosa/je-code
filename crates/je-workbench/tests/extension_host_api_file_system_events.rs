@@ -162,7 +162,13 @@ impl IMainThreadBinder for Binder {
         *self.panel.ext_host.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_FILE_SYSTEM_EVENT_SERVICE));
         let panel: Rc<dyn MainThreadFileSystemEventServiceShape> = self.panel.clone();
         context.set(&MainContext::MAIN_THREAD_FILE_SYSTEM_EVENT_SERVICE, panel);
-        let mut clients = workspace_doubles::bind_workspace_clients(&context, self.message_service.clone(), workspace_doubles::workspace_data(&["/w"]));
+        let mut clients = workspace_doubles::bind_workspace_clients(
+            &context,
+            self.message_service.clone(),
+            workspace_doubles::workspace_data(&["/w"]),
+            workspace_doubles::StaticConfigurationService::empty(),
+        )
+        .disposables;
         clients.push(self.panel.clone());
         clients
     }
