@@ -546,7 +546,7 @@ impl MainThreadDocumentsShape for MainThreadDocuments {
         let this = self.this();
         let input_uri = uri_data.clone();
         async_fn(async move {
-            if input_uri.scheme().is_empty() || (input_uri.fs_path(Platform::detect()).is_empty() && input_uri.authority().is_empty()) {
+            if input_uri.scheme().is_empty() || (je_platform::resources::fs_path(&input_uri).is_empty() && input_uri.authority().is_empty()) {
                 return Err(Error::no_telemetry("Invalid uri. Scheme and authority or path must be set."));
             }
 

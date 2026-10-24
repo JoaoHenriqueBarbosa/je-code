@@ -31,28 +31,18 @@ mod main_thread_support;
 /// O suporte de editor do `je-editor/tests/support` que o `createTestCodeEditor` precisa, no mesmo módulo pai (os arquivos
 /// se referem uns aos outros por `super::`).
 #[allow(dead_code, unused_imports)]
+#[path = "../../je-editor/tests/support"]
 mod editor_support {
-    #[path = "../../../je-editor/tests/support/editor_test_services.rs"]
     pub mod editor_test_services;
-    #[path = "../../../je-editor/tests/support/test_clipboard_service.rs"]
     pub mod test_clipboard_service;
-    #[path = "../../../je-editor/tests/support/test_code_editor.rs"]
     pub mod test_code_editor;
-    #[path = "../../../je-editor/tests/support/test_code_editor_service.rs"]
     pub mod test_code_editor_service;
-    #[path = "../../../je-editor/tests/support/test_color_theme_service.rs"]
     pub mod test_color_theme_service;
-    #[path = "../../../je-editor/tests/support/test_configuration.rs"]
     pub mod test_configuration;
-    #[path = "../../../je-editor/tests/support/test_instantiation_service.rs"]
     pub mod test_instantiation_service;
-    #[path = "../../../je-editor/tests/support/test_language_configuration_service.rs"]
     pub mod test_language_configuration_service;
-    #[path = "../../../je-editor/tests/support/test_notification_service.rs"]
     pub mod test_notification_service;
-    #[path = "../../../je-editor/tests/support/test_text_model.rs"]
     pub mod test_text_model;
-    #[path = "../../../je-editor/tests/support/test_theme_service.rs"]
     pub mod test_theme_service;
 }
 

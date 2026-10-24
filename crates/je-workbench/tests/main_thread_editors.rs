@@ -37,28 +37,18 @@ mod main_thread_support;
 /// O suporte de editor do `je-editor/tests/support` que o `createTestCodeEditor` precisa, no mesmo módulo pai (os arquivos
 /// se referem uns aos outros por `super::`).
 #[allow(dead_code, unused_imports)]
+#[path = "../../je-editor/tests/support"]
 mod editor_support {
-    #[path = "../../../je-editor/tests/support/editor_test_services.rs"]
     pub mod editor_test_services;
-    #[path = "../../../je-editor/tests/support/test_clipboard_service.rs"]
     pub mod test_clipboard_service;
-    #[path = "../../../je-editor/tests/support/test_code_editor.rs"]
     pub mod test_code_editor;
-    #[path = "../../../je-editor/tests/support/test_code_editor_service.rs"]
     pub mod test_code_editor_service;
-    #[path = "../../../je-editor/tests/support/test_color_theme_service.rs"]
     pub mod test_color_theme_service;
-    #[path = "../../../je-editor/tests/support/test_configuration.rs"]
     pub mod test_configuration;
-    #[path = "../../../je-editor/tests/support/test_instantiation_service.rs"]
     pub mod test_instantiation_service;
-    #[path = "../../../je-editor/tests/support/test_language_configuration_service.rs"]
     pub mod test_language_configuration_service;
-    #[path = "../../../je-editor/tests/support/test_notification_service.rs"]
     pub mod test_notification_service;
-    #[path = "../../../je-editor/tests/support/test_text_model.rs"]
     pub mod test_text_model;
-    #[path = "../../../je-editor/tests/support/test_theme_service.rs"]
     pub mod test_theme_service;
 }
 
@@ -74,6 +64,7 @@ use je_base::js_string::JsString;
 use je_base::uri::URI;
 use je_editor::edit_operation::SingleEditOperation;
 use je_editor::model_service::ModelService;
+use je_editor::services_model::IModelService;
 use je_editor::range::Range;
 use je_editor::services::abstract_code_editor_service::ICodeEditorRegistry;
 use je_editor::undo_redo_service::UndoRedoService;
@@ -144,7 +135,8 @@ impl Fixture {
             UndoRedoService::for_tests(),
         ));
         let code_editor_service = Rc::new(TestCodeEditorService::new(TestThemeService::new_default()));
-        let code_editor_registry: Rc<dyn ICodeEditorRegistry> = disposables.add_rc(code_editor_service.registry().clone());
+        let code_editor_registry = disposables.add_rc(code_editor_service.registry().clone());
+        let code_editor_registry: Rc<dyn ICodeEditorRegistry> = code_editor_registry;
 
         let file_service = disposables.add_rc(TestFileService::new());
         let file_service_contract: Rc<dyn IFileService> = file_service.clone();
@@ -183,6 +175,8 @@ impl Fixture {
 
         // Create a test code editor using the helper
         let model = model_service.create_model("Hello world!", None, Some(&URI::parse("foo:existing", false)), false);
+        // O `ModelService` do porte não é filho do `InstantiationService` do caso, então não descarta o modelo no teardown como o do original.
+        disposables.add_rc(model.clone());
         let test_code_editor = disposables.add_rc(create_test_code_editor(Some(model.clone()), TestCodeEditorInstantiationOptions::default()));
 
         let clipboard_service = Rc::new(TestClipboardService::new());

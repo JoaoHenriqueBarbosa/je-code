@@ -47,8 +47,9 @@ use je_workbench::services::textfile::textfiles::{
     TextFileSaveAsOptions, TextFileSaveEvent, TextFileSaveOptions, TextFileSaveParticipantContext, TextFileStreamContent, TextOrSnapshot, WriteTextFileOptions,
 };
 use je_workbench::services::textmodel_resolver::resolver_service::{ITextModelService, TextModelReference};
+use je_workbench::services::untitled::untitled_text_editor_model::IUntitledTextEditorModel;
 use je_workbench::services::untitled::untitled_text_editor_service::{
-    IUntitledTextEditorModel, IUntitledTextEditorModelManager, IUntitledTextEditorService, UntitledTextEditorModelSaveEvent, UntitledTextEditorOptions,
+    IUntitledTextEditorModelManager, IUntitledTextEditorService, UntitledTextEditorModelSaveEvent, UntitledTextEditorOptions,
 };
 
 // ---- SingleProxyRPCProtocol
