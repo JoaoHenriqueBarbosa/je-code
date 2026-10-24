@@ -122,6 +122,14 @@ impl IPreferencesService for MockPreferencesService {
     fn open_user_settings(&self, _options: Option<&IOpenSettingsOptions>) -> Promise<()> {
         panic!("openUserSettings is not a function")
     }
+
+    fn open_application_settings(&self, _options: Option<&IOpenSettingsOptions>) -> Promise<()> {
+        panic!("openApplicationSettings is not a function")
+    }
+
+    fn get_setting(&self, _setting_id: &str) -> Option<je_workbench::services::preferences::preferences::ISetting> {
+        panic!("getSetting is not a function")
+    }
 }
 
 /// `{ canOpenExternalUri: () => Preferred, openExternalUri: (uri, context) => { opened.push({ uri, context }); } }`.
