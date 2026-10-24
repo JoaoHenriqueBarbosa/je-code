@@ -303,7 +303,14 @@ impl IWorkspaceContextService for TestContextService {
 /// `AbstractStorageService::emit_will_save_state` (já público). `TestStorageService::new()` devolve o serviço.
 pub type TestStorageService = InMemoryStorageService;
 
+/// O `backup(token)` que uma subclasse de `TestWorkingCopy` sobrescreve.
+pub type TestWorkingCopyBackupOverride = Rc<dyn Fn(&CancellationToken) -> Promise<WorkingCopyBackup>>;
+
 /// `TestWorkingCopy`.
+///
+/// Divergência: as subclasses do original que sobrescrevem `backupDelay` e `backup(token)` (como o `TestBackupWorkingCopy` do
+/// teste do rastreador de backups) são esta mesma struct com [`TestWorkingCopy::set_backup_delay`] e
+/// [`TestWorkingCopy::set_backup_override`] chamados antes do uso.
 pub struct TestWorkingCopy {
     base: Rc<Disposable>,
     on_did_change_dirty: Rc<Emitter<()>>,
@@ -313,6 +320,8 @@ pub struct TestWorkingCopy {
     resource: URI,
     type_id: String,
     dirty: Cell<bool>,
+    backup_delay: Cell<Option<u64>>,
+    backup_override: RefCell<Option<TestWorkingCopyBackupOverride>>,
 }
 
 impl TestWorkingCopy {
@@ -334,7 +343,19 @@ impl TestWorkingCopy {
             resource,
             type_id: type_id.unwrap_or("testWorkingCopyType").to_string(),
             dirty: Cell::new(is_dirty.unwrap_or(false)),
+            backup_delay: Cell::new(None),
+            backup_override: RefCell::new(None),
         })
+    }
+
+    /// `readonly backupDelay = delay` de uma subclasse.
+    pub fn set_backup_delay(&self, delay: Option<u64>) {
+        self.backup_delay.set(delay);
+    }
+
+    /// `override async backup(token)` de uma subclasse.
+    pub fn set_backup_override(&self, backup: TestWorkingCopyBackupOverride) {
+        *self.backup_override.borrow_mut() = Some(backup);
     }
 
     pub fn set_dirty(&self, dirty: bool) {
@@ -408,8 +429,16 @@ impl IWorkingCopy for TestWorkingCopy {
         self.is_dirty()
     }
 
-    fn backup(&self, _token: &CancellationToken) -> Promise<WorkingCopyBackup> {
-        Promise::resolved(WorkingCopyBackup::default())
+    fn backup_delay(&self) -> Option<u64> {
+        self.backup_delay.get()
+    }
+
+    fn backup(&self, token: &CancellationToken) -> Promise<WorkingCopyBackup> {
+        let backup_override = self.backup_override.borrow().clone();
+        match backup_override {
+            Some(backup) => backup(token),
+            None => Promise::resolved(WorkingCopyBackup::default()),
+        }
     }
 
     fn save(&self, options: Option<SaveOptions>) -> Promise<bool> {

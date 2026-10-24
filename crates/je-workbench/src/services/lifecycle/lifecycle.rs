@@ -97,11 +97,15 @@ pub struct BeforeShutdownEvent {
     /// The reason why the application will be shutting down.
     pub reason: ShutdownReason,
     vetos: Rc<RefCell<Vec<ShutdownVeto>>>,
+    /// O `finalVeto` que o `InternalBeforeShutdownEvent` define: fica no evento base, compartilhado entre os clones, para
+    /// quem recebe o `BeforeShutdownEvent` do `onBeforeShutdown` (o `event as InternalBeforeShutdownEvent` do original)
+    /// poder registrá-lo por [`InternalBeforeShutdownEvent::from_event`].
+    final_veto: Rc<RefCell<Option<(FinalVetoFn, String)>>>,
 }
 
 impl BeforeShutdownEvent {
     pub fn new(reason: ShutdownReason) -> Self {
-        Self { reason, vetos: Rc::new(RefCell::new(Vec::new())) }
+        Self { reason, vetos: Rc::new(RefCell::new(Vec::new())), final_veto: Rc::new(RefCell::new(None)) }
     }
 
     /// Allows to veto the shutdown. The veto can be a long running operation but it will block the application from
@@ -124,24 +128,28 @@ pub type FinalVetoFn = Rc<dyn Fn() -> MaybePromise<bool>>;
 pub struct InternalBeforeShutdownEvent {
     /// O `BeforeShutdownEvent` que esta versão interna estende.
     pub event: BeforeShutdownEvent,
-    final_veto: Rc<RefCell<Option<(FinalVetoFn, String)>>>,
 }
 
 impl InternalBeforeShutdownEvent {
     pub fn new(reason: ShutdownReason) -> Self {
-        Self { event: BeforeShutdownEvent::new(reason), final_veto: Rc::new(RefCell::new(None)) }
+        Self { event: BeforeShutdownEvent::new(reason) }
+    }
+
+    /// `event as InternalBeforeShutdownEvent`: a visão interna do mesmo evento (o `finalVeto` é o do evento base).
+    pub fn from_event(event: BeforeShutdownEvent) -> Self {
+        Self { event }
     }
 
     /// Allows to set a veto operation to run after all other vetos have been handled from the `BeforeShutdownEvent`.
     ///
     /// This method is hidden from the API because it is intended to be only used once internally.
     pub fn final_veto(&self, veto_fn: FinalVetoFn, id: &str) {
-        *self.final_veto.borrow_mut() = Some((veto_fn, id.to_string()));
+        *self.event.final_veto.borrow_mut() = Some((veto_fn, id.to_string()));
     }
 
     /// A veto final registrada, se houver.
     pub fn get_final_veto(&self) -> Option<(FinalVetoFn, String)> {
-        self.final_veto.borrow().clone()
+        self.event.final_veto.borrow().clone()
     }
 }
 

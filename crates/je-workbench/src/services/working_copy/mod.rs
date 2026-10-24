@@ -10,6 +10,7 @@ pub mod stored_file_working_copy_save_participant;
 pub mod working_copy;
 pub mod working_copy_backup;
 pub mod working_copy_backup_service;
+pub mod working_copy_backup_tracker;
 pub mod working_copy_service;
 
 // Contratos de `workingCopyEditorService.ts` (o handler que reabre o editor de uma working copy e o serviço que o registra).
