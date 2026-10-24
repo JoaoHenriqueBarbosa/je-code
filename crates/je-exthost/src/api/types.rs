@@ -16,7 +16,7 @@ fn number(value: Option<&JsData>) -> Option<f64> {
     }
 }
 
-fn marked(class: &str, mut fields: Vec<(String, JsData)>) -> JsData {
+pub(crate) fn marked(class: &str, mut fields: Vec<(String, JsData)>) -> JsData {
     fields.insert(0, (CLASS_KEY.to_owned(), JsData::Str(class.to_owned())));
     JsData::Object(fields)
 }

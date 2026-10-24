@@ -16,7 +16,8 @@ use je_workbench::contrib::debug::debug::DebugConfigurationProviderTriggerKind;
 use je_workbench::api::common::ext_host_types::{
     CodeActionTriggerKind, CommentMode, CommentState, CommentThreadApplicability, CommentThreadCollapsibleState, CommentThreadFocus, CommentThreadState,
     CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, ExtensionKind,
-    InputBoxValidationSeverity, ProgressLocation, QuickPickItemKind, StatusBarAlignment, SymbolKind, SymbolTag,
+    InputBoxValidationSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment, NotebookControllerAffinity,
+    NotebookEditorRevealType, ProgressLocation, QuickPickItemKind, StatusBarAlignment, SymbolKind, SymbolTag,
 };
 use zjsc::api::embed_node::JsData;
 
@@ -199,6 +200,34 @@ pub fn enums() -> Vec<(String, JsData)> {
             enum_object(&[("Current", CommentThreadApplicability::Current.value()), ("Outdated", CommentThreadApplicability::Outdated.value())]),
         ),
         ("CommentThreadFocus".to_owned(), enum_object(&[("Reply", CommentThreadFocus::Reply.value()), ("Comment", CommentThreadFocus::Comment.value())])),
+        // Os enums de notebook (`extHostTypes.ts`): `NotebookCellKind`, `NotebookCellExecutionState`, `NotebookCellStatusBarAlignment`,
+        // `NotebookEditorRevealType` e `NotebookControllerAffinity`.
+        ("NotebookCellKind".to_owned(), enum_object(&[("Markup", NotebookCellKind::Markup.value()), ("Code", NotebookCellKind::Code.value())])),
+        (
+            "NotebookCellExecutionState".to_owned(),
+            enum_object(&[
+                ("Idle", NotebookCellExecutionState::Idle.value()),
+                ("Pending", NotebookCellExecutionState::Pending.value()),
+                ("Executing", NotebookCellExecutionState::Executing.value()),
+            ]),
+        ),
+        (
+            "NotebookCellStatusBarAlignment".to_owned(),
+            enum_object(&[("Left", NotebookCellStatusBarAlignment::Left.value()), ("Right", NotebookCellStatusBarAlignment::Right.value())]),
+        ),
+        (
+            "NotebookEditorRevealType".to_owned(),
+            enum_object(&[
+                ("Default", NotebookEditorRevealType::Default.value()),
+                ("InCenter", NotebookEditorRevealType::InCenter.value()),
+                ("InCenterIfOutsideViewport", NotebookEditorRevealType::InCenterIfOutsideViewport.value()),
+                ("AtTop", NotebookEditorRevealType::AtTop.value()),
+            ]),
+        ),
+        (
+            "NotebookControllerAffinity".to_owned(),
+            enum_object(&[("Default", NotebookControllerAffinity::Default.value()), ("Preferred", NotebookControllerAffinity::Preferred.value())]),
+        ),
         // `DebugConsoleMode` (`extHostTypes.ts`) e `DebugConfigurationProviderTriggerKind` (`debug.ts`).
         ("DebugConsoleMode".to_owned(), enum_object(&[("Separate", DebugConsoleMode::Separate as i32), ("MergeWithParent", DebugConsoleMode::MergeWithParent as i32)])),
         (
