@@ -484,7 +484,8 @@ impl DebugSession {
                             session.on_did_change_repl_elements.fire(e.clone());
                         }
                     });
-                    if let Some(old) = this.repl_listener.borrow_mut().replace(listener) {
+                    let old = this.repl_listener.borrow_mut().replace(listener);
+                    if let Some(old) = old {
                         old.dispose();
                     }
                     *this.parent_session.borrow_mut() = None;
@@ -512,6 +513,12 @@ impl DebugSession {
         self.raw.borrow().clone()
     }
 
+    /// Copia o `raw` para fora do empréstimo, para que o chamador possa reentrar na sessão sem `RefCell already borrowed`.
+    fn current_raw(&self) -> Option<Rc<dyn IRawDebugSession>> {
+        let raw = self.raw.borrow().clone();
+        raw
+    }
+
     /// `state` sobrescrito (o `override get state()` das subclasses de teste do original).
     pub fn override_state(&self, state: Option<State>) {
         *self.state_override.borrow_mut() = state;
@@ -522,8 +529,9 @@ impl DebugSession {
     }
 
     fn fetch_threads_scheduler(&self) -> Rc<RunOnceScheduler> {
-        if let Some(scheduler) = self.fetch_threads_scheduler.borrow().as_ref() {
-            return scheduler.clone();
+        let existing = self.fetch_threads_scheduler.borrow().clone();
+        if let Some(scheduler) = existing {
+            return scheduler;
         }
         let weak = self.me.clone();
         let inst = RunOnceScheduler::new(
@@ -837,7 +845,7 @@ impl DebugSession {
                         Err(e) => {
                             // Disconnect the debug session on configuration done error #10596
                             this.services.notify_error(&e.message);
-                            if let Some(raw) = this.raw.borrow().clone() {
+                            if let Some(raw) = this.current_raw() {
                                 raw.disconnect(json!({}));
                             }
                             None
@@ -1388,7 +1396,8 @@ impl IDisposable for DebugSession {
         self.cancel_all_requests();
         self.raw_listeners.dispose();
         self.global_disposables.dispose();
-        if let Some(listener) = self.repl_listener.borrow_mut().take() {
+        let listener = self.repl_listener.borrow_mut().take();
+        if let Some(listener) = listener {
             listener.dispose();
         }
         if let Some(scheduler) = self.pass_focus_scheduler.borrow().as_ref() {
@@ -1796,7 +1805,8 @@ impl IDebugSessionFull for DebugSession {
             let Some(raw) = this.raw.borrow().clone() else {
                 return Err(no_debug_adapter("launch or attach"));
             };
-            if let Some(parent) = this.parent_session.borrow().clone()
+            let parent = this.parent_session.borrow().clone();
+            if let Some(parent) = parent
                 && parent.state() == State::Inactive
             {
                 return Err(Error::cancellation());
@@ -1827,7 +1837,7 @@ impl IDebugSessionFull for DebugSession {
                 && let Some(parent) = parent
             {
                 parent.terminate(restart).await?;
-            } else if let Some(raw) = this.raw.borrow().clone() {
+            } else if let Some(raw) = this.current_raw() {
                 if capability(&raw.capabilities(), "supportsTerminateRequest") && this.configuration.borrow().0.get("request").and_then(Value::as_str) == Some("launch") {
                     raw.terminate(restart).await?;
                 } else {
@@ -1857,7 +1867,7 @@ impl IDebugSessionFull for DebugSession {
                 && let Some(parent) = parent
             {
                 parent.disconnect(restart, suspend).await?;
-            } else if let Some(raw) = this.raw.borrow().clone() {
+            } else if let Some(raw) = this.current_raw() {
                 raw.disconnect(json!({ "restart": restart, "terminateDebuggee": false, "suspendDebuggee": suspend })).await?;
             }
 

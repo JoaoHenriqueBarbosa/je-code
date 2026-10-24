@@ -211,7 +211,7 @@ fn refresh_top_of_callstack_notifies_when_a_repeated_stop_confirms_the_stack_is_
         let disposable = DisposableStore::new();
         let storage = TestStorageService::new();
         disposable.add_rc(storage.clone());
-        let model = DebugModel::new(mock_debug_storage(storage_service_of(&storage)), Rc::new(NotDirty), None, NullLogService::shared());
+        let model = DebugModel::new(disposable.add_rc(mock_debug_storage(storage_service_of(&storage))), Rc::new(NotDirty), None, NullLogService::shared());
         disposable.add_rc(model.clone());
 
         let call_stack_change_count = Rc::new(Cell::new(0));
@@ -250,7 +250,7 @@ fn refresh_top_of_callstack_resolves_all_returned_promises_when_called_multiple_
         let disposable = DisposableStore::new();
         let storage = TestStorageService::new();
         disposable.add_rc(storage.clone());
-        let model = DebugModel::new(mock_debug_storage(storage_service_of(&storage)), Rc::new(NotDirty), None, NullLogService::shared());
+        let model = DebugModel::new(disposable.add_rc(mock_debug_storage(storage_service_of(&storage))), Rc::new(NotDirty), None, NullLogService::shared());
         disposable.add_rc(model.clone());
 
         let flags: Rc<RefCell<[bool; 4]>> = Rc::new(RefCell::new([false; 4]));
