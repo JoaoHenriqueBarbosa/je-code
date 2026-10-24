@@ -8,13 +8,13 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `platform` | 192 | 2806 | 110 | 1886 | 67.21 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
 | `workbench/services` | 137 | 2491 | 70 | 1835 | 73.67 |
-| `workbench/api` | 94 | 965 | 62 | 687 | 71.19 |
+| `workbench/api` | 94 | 965 | 74 | 738 | 76.48 |
 | `workbench/contrib` | 370 | 4636 | 57 | 950 | 20.49 |
 | `workbench (shell)` | 69 | 621 | 20 | 223 | 35.91 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 10345 | 56.25 |
+| **total** | | 18391 | | 10396 | 56.53 |
 
 ## Arquivos portados
 
@@ -466,12 +466,16 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyHistoryService.test.ts` | 19 | `crates/je-workbench/tests/working_copy_history_service.rs` | 19 |
 | `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyHistoryTracker.test.ts` | 6 | `crates/je-workbench/tests/working_copy_history_tracker.rs` | 6 |
 | `src/vs/workbench/services/workspaces/test/browser/workspaceEditingService.test.ts` | 4 | `crates/je-workbench/tests/workspace_editing_service.rs` | 4 |
+| `src/vs/workbench/api/test/browser/extHost.api.impl.test.ts` | 2 | `crates/je-workbench/tests/ext_host_api_impl.rs` | 2 |
 | `src/vs/workbench/api/test/browser/extHostApiCommands.test.ts` | 32 | `crates/je-workbench/tests/ext_host_api_commands.rs` | 32 |
 | `src/vs/workbench/api/test/browser/extHostAuthentication.test.ts` | 5 | `crates/je-workbench/tests/ext_host_authentication.rs` | 2 |
 | `src/vs/workbench/api/test/browser/extHostBrowsers.test.ts` | 28 | `crates/je-workbench/tests/ext_host_browsers.rs` | 28 |
 | `src/vs/workbench/api/test/browser/extHostBulkEdits.test.ts` | 2 | `crates/je-workbench/tests/ext_host_bulk_edits.rs` | 2 |
 | `src/vs/workbench/api/test/browser/extHostCommands.test.ts` | 4 | `crates/je-workbench/tests/ext_host_commands.rs` | 4 |
 | `src/vs/workbench/api/test/browser/extHostConfiguration.test.ts` | 19 | `crates/je-workbench/tests/ext_host_configuration.rs` | 19 |
+| `src/vs/workbench/api/test/browser/extHostDebugAdapters.test.ts` | 4 | `crates/je-workbench/tests/ext_host_debug_adapters.rs` | 4 |
+| `src/vs/workbench/api/test/browser/extHostDebugTreeSessions.test.ts` | 5 | `crates/je-workbench/tests/ext_host_debug_tree_sessions.rs` | 5 |
+| `src/vs/workbench/api/test/browser/extHostDebugVisualization.test.ts` | 3 | `crates/je-workbench/tests/ext_host_debug_visualization.rs` | 3 |
 | `src/vs/workbench/api/test/browser/extHostDecorations.test.ts` | 1 | `crates/je-workbench/tests/ext_host_decorations.rs` | 1 |
 | `src/vs/workbench/api/test/browser/extHostDiagnostics.test.ts` | 19 | `crates/je-workbench/tests/ext_host_diagnostics.rs` | 19 |
 | `src/vs/workbench/api/test/browser/extHostDocumentContentProvider.test.ts` | 1 | `crates/je-workbench/tests/ext_host_document_content_provider.rs` | 1 |
@@ -502,12 +506,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/api/test/browser/extHostWebview.test.ts` | 8 | `crates/je-workbench/tests/ext_host_webview.rs` | 8 |
 | `src/vs/workbench/api/test/browser/extHostWorkspace.test.ts` | 41 | `crates/je-workbench/tests/ext_host_workspace.rs` | 41 |
 | `src/vs/workbench/api/test/browser/extHostWorkspaceSymbols.test.ts` | 2 | `crates/je-workbench/tests/ext_host_workspace_symbols.rs` | 2 |
+| `src/vs/workbench/api/test/browser/extHostXaaAuthProvider.test.ts` | 9 | `crates/je-workbench/tests/ext_host_xaa_auth_provider.rs` | 9 |
 | `src/vs/workbench/api/test/browser/mainThreadAuthentication.test.ts` | 1 | `crates/je-workbench/tests/main_thread_authentication.rs` | 1 |
 | `src/vs/workbench/api/test/browser/mainThreadBulkEdits.test.ts` | 1 | `crates/je-workbench/tests/main_thread_bulk_edits.rs` | 1 |
 | `src/vs/workbench/api/test/browser/mainThreadCommands.test.ts` | 3 | `crates/je-workbench/tests/main_thread_commands.rs` | 3 |
 | `src/vs/workbench/api/test/browser/mainThreadConfiguration.test.ts` | 19 | `crates/je-workbench/tests/main_thread_configuration.rs` | 19 |
 | `src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts` | 14 | `crates/je-workbench/tests/main_thread_custom_editors.rs` | 12 |
 | `src/vs/workbench/api/test/browser/mainThreadCustomTextEditorNavigation.test.ts` | 8 | `crates/je-workbench/tests/main_thread_custom_text_editor_navigation.rs` | 8 |
+| `src/vs/workbench/api/test/browser/mainThreadDebugService.test.ts` | 2 | `crates/je-workbench/tests/main_thread_debug_service.rs` | 2 |
 | `src/vs/workbench/api/test/browser/mainThreadDiagnostics.test.ts` | 3 | `crates/je-workbench/tests/main_thread_diagnostics.rs` | 3 |
 | `src/vs/workbench/api/test/browser/mainThreadDocumentContentProviders.test.ts` | 2 | `crates/je-workbench/tests/main_thread_document_content_providers.rs` | 2 |
 | `src/vs/workbench/api/test/browser/mainThreadDocuments.test.ts` | 4 | `crates/je-workbench/tests/main_thread_documents.rs` | 4 |
@@ -517,14 +523,20 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/api/test/browser/mainThreadManagedSockets.test.ts` | 3 | `crates/je-workbench/tests/main_thread_managed_sockets.rs` | 3 |
 | `src/vs/workbench/api/test/browser/mainThreadProgress.test.ts` | 3 | `crates/je-workbench/tests/main_thread_progress.rs` | 3 |
 | `src/vs/workbench/api/test/browser/mainThreadQuickOpen.test.ts` | 5 | `crates/je-workbench/tests/main_thread_quick_open.rs` | 5 |
+| `src/vs/workbench/api/test/browser/mainThreadShare.test.ts` | 1 | `crates/je-workbench/tests/main_thread_share.rs` | 1 |
 | `src/vs/workbench/api/test/browser/mainThreadTelemetry.test.ts` | 2 | `crates/je-workbench/tests/main_thread_telemetry.rs` | 2 |
 | `src/vs/workbench/api/test/browser/mainThreadTimeline.test.ts` | 10 | `crates/je-workbench/tests/main_thread_timeline.rs` | 10 |
+| `src/vs/workbench/api/test/browser/mainThreadTreeViews.test.ts` | 4 | `crates/je-workbench/tests/main_thread_tree_views.rs` | 4 |
+| `src/vs/workbench/api/test/browser/mainThreadVariableProvider.test.ts` | 4 | `crates/je-workbench/tests/main_thread_variable_provider.rs` | 4 |
 | `src/vs/workbench/api/test/browser/mainThreadWebviewPanels.test.ts` | 10 | `crates/je-workbench/tests/main_thread_webview_panels.rs` | 10 |
 | `src/vs/workbench/api/test/browser/mainThreadWorkspace.test.ts` | 6 | `crates/je-workbench/tests/main_thread_workspace.rs` | 6 |
 | `src/vs/workbench/api/test/common/extHostCommentThreads.test.ts` | 7 | `crates/je-workbench/tests/ext_host_comment_threads.rs` | 7 |
+| `src/vs/workbench/api/test/common/extHostComments.test.ts` | 1 | `crates/je-workbench/tests/ext_host_comments.rs` | 1 |
 | `src/vs/workbench/api/test/common/extHostCustomEditors.test.ts` | 6 | `crates/je-workbench/tests/ext_host_custom_editors.rs` | 6 |
+| `src/vs/workbench/api/test/common/extHostCustomTextEditorNavigation.test.ts` | 8 | `crates/je-workbench/tests/ext_host_custom_text_editor_navigation.rs` | 8 |
 | `src/vs/workbench/api/test/common/extHostExtensionActivator.test.ts` | 9 | `crates/je-workbench/tests/ext_host_extension_activator.rs` | 9 |
 | `src/vs/workbench/api/test/common/extHostSCM.test.ts` | 7 | `crates/je-workbench/tests/ext_host_scm.rs` | 7 |
+| `src/vs/workbench/api/test/common/extHostTerminalShellIntegration.test.ts` | 8 | `crates/je-workbench/tests/ext_host_terminal_shell_integration.rs` | 8 |
 | `src/vs/workbench/api/test/common/extHostTypeConverters.test.ts` | 23 | `crates/je-workbench/tests/ext_host_type_converters.rs` | 21 |
 | `src/vs/workbench/api/test/common/extensionHostMain.test.ts` | 7 | `crates/je-workbench/tests/extension_host_main.rs` | 7 |
 | `src/vs/workbench/api/test/node/loopbackServer.test.ts` | 4 | `crates/je-workbench/tests/loopback_server.rs` | 4 |
