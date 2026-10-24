@@ -8,10 +8,18 @@
 //! A identidade de uma origem (o `===` do original, que o `EditSourceData.join` do `editTelemetry` usa) é a do
 //! `Rc<TextModelEditSource>` que o chamador guarda.
 //!
-//! Pendente: as fábricas `rename`, `chatUndoEdits`, `chatReset`, `codeAction` com `ProviderId` completo e o
-//! `EditDeltaInfo`/`EditSuggestionId.newId` entram quando o consumidor for portado.
+//! Pendente: as fábricas `rename`, `chatUndoEdits`, `chatReset` e `codeAction` com `ProviderId` completo entram quando
+//! o consumidor for portado.
+
+use je_base::JsString;
+use je_base::uuid::prefixed_uuid;
 
 use crate::code_action::languages::ProviderId;
+use crate::edits::edit::{BaseEdit, BaseReplacement};
+use crate::edits::line_edit::LineEdit;
+use crate::edits::string_edit::{BaseStringEdit, BaseStringReplacement};
+use crate::position_to_offset::TextLength;
+use crate::text::abstract_text::StringText;
 
 /// `ITextModelEditSourceMetadata` de uma origem: pares chave/valor na ordem de criação.
 pub type EditSourceMetadata = Vec<(String, Option<String>)>;
@@ -157,6 +165,71 @@ pub struct InlineChatApplyEditData {
     pub session_id: Option<String>,
     pub language_id: String,
     pub extension_id: Option<VersionedExtensionId>,
+}
+
+/// `EditDeltaInfo`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditDeltaInfo {
+    pub lines_added: i32,
+    pub lines_removed: i32,
+    pub chars_added: i32,
+    pub chars_removed: i32,
+}
+
+impl EditDeltaInfo {
+    pub fn new(lines_added: i32, lines_removed: i32, chars_added: i32, chars_removed: i32) -> Self {
+        Self { lines_added, lines_removed, chars_added, chars_removed }
+    }
+
+    /// `EditDeltaInfo.fromText(text)`.
+    pub fn from_text(text: &str) -> Self {
+        let lines_added = TextLength::of_text(text).line_count;
+        let chars_added = JsString::from(text).len() as i32;
+        Self::new(lines_added, 0, chars_added, 0)
+    }
+
+    /// `EditDeltaInfo.fromEdit(edit, originalString)`.
+    pub fn from_edit<E: BaseStringEdit>(edit: &E, original_string: &StringText) -> Self
+    where
+        E::Replacement: BaseStringReplacement,
+    {
+        let line_edit = LineEdit::from_string_edit(edit, original_string);
+        let lines_added: i32 = line_edit.replacements.iter().map(|r| r.new_lines.len() as i32).sum();
+        let lines_removed: i32 = line_edit.replacements.iter().map(|r| r.line_range.length()).sum();
+        let chars_added: i32 = edit.replacements().iter().map(|r| r.get_new_length()).sum();
+        let chars_removed: i32 = edit.replacements().iter().map(|r| r.replace_range().length()).sum();
+        Self::new(lines_added, lines_removed, chars_added, chars_removed)
+    }
+
+    /// `EditDeltaInfo.tryCreate(linesAdded, linesRemoved, charsAdded, charsRemoved)`.
+    pub fn try_create(lines_added: Option<i32>, lines_removed: Option<i32>, chars_added: Option<i32>, chars_removed: Option<i32>) -> Option<Self> {
+        Some(Self::new(lines_added?, lines_removed?, chars_added?, chars_removed?))
+    }
+}
+
+/// `EditSuggestionId`: an opaque serializable type that represents a unique identity for an edit.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EditSuggestionId(String);
+
+impl EditSuggestionId {
+    /// `EditSuggestionId.newId(genPrefixedUuid)`: use `AiEditTelemetryServiceImpl` to create a new id!
+    pub fn new_id(gen_prefixed_uuid: Option<&dyn Fn(&str) -> String>) -> Self {
+        let id = match gen_prefixed_uuid {
+            Some(generate) => generate("sgt"),
+            None => prefixed_uuid("sgt"),
+        };
+        Self(id)
+    }
+
+    /// `toEditIdentity(id)`: o identificador de um texto já serializado (`$$codeBlockSuggestionId` de uma origem).
+    pub fn from_serialized(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// O texto do identificador (`id as unknown as string`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// `EditSources`.
