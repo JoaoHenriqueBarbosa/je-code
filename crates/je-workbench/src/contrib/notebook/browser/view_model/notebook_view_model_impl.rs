@@ -354,10 +354,13 @@ impl NotebookViewModel {
         })
         .collect();
 
+        // `private readonly _localStore = this._register(new DisposableStore())`.
+        let local_store = DisposableStore::new();
+        base.register(local_store.clone());
         let this = Rc::new_cyclic(|this| Self {
             base,
             this: this.clone(),
-            local_store: DisposableStore::new(),
+            local_store,
             handle_to_view_cell_mapping: RefCell::new(HashMap::new()),
             options: RefCell::new(options),
             on_did_change_options,

@@ -124,6 +124,7 @@ impl NotebookCellList {
         base.register(local_disposable_store.clone());
         base.register(view_model_store.clone());
         let previous_focus_listener = MutableDisposable::<dyn IDisposable>::new();
+        base.register(previous_focus_listener.clone());
 
         let this = Rc::new(Self {
             base,
@@ -1000,6 +1001,3 @@ impl ListViewInfoAccessor {
         self.list.get_visible_ranges_plus_viewport_above_and_below()
     }
 }
-
-/// `CellKind` é usado pelos chamadores de `elements`; reexportado para os testes não importarem o módulo comum.
-pub use CellKind as ListCellKind;
