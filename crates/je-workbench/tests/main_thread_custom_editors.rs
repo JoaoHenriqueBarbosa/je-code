@@ -52,7 +52,7 @@ use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::lifecycle::{DisposableRef, IDisposable, none, to_disposable};
 use je_base::path::Platform;
-use je_base::promise::{Promise, Resolver};
+use je_base::promise::{MaybePromise, Promise, Resolver};
 use je_base::resources::ExtUri;
 use je_base::uri::URI;
 use je_editor::model::RelaxedTextModelCreationOptions;
@@ -63,7 +63,9 @@ use je_extensions::scanner::ExtensionDescription;
 use je_platform::dialogs::{ConfirmResult, FileNameOrResource, IFileDialogService, OpenDialogOptions, PickAndOpenOptions, SaveDialogOptions};
 use je_platform::opener::editor_types::TextEditorSelection;
 use je_platform::storage::{InMemoryStorageService, StorageService};
-use je_platform::undo_redo::undo_redo::{IUndoRedoService, ResourceUndoRedoElement};
+use je_editor::undo_redo::{
+    IUndoRedoService, PastFutureElements, ResourceEditStackSnapshot, UndoRedoElementRef, UndoRedoGroup, UndoRedoSource, UndoRedoTarget, UriComparisonKeyComputer,
+};
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_theme::ThemeType;
 use je_workbench::api::browser::main_thread_custom_editors::{CustomEditorModelServices, MainThreadCustomEditors, MainThreadCustomEditorsServices};
@@ -773,19 +775,55 @@ impl IFileDialogService for FileDialogService {
 struct UndoRedoService;
 
 impl IUndoRedoService for UndoRedoService {
-    fn push_element(&self, _element: ResourceUndoRedoElement) {
+    fn register_uri_comparison_key_computer(&self, _scheme: &str, _computer: Rc<dyn UriComparisonKeyComputer>) -> DisposableRef {
+        panic!("registerUriComparisonKeyComputer is not a function");
+    }
+
+    fn get_uri_comparison_key(&self, _resource: &URI) -> String {
+        panic!("getUriComparisonKey is not a function");
+    }
+
+    fn push_element(&self, _element: UndoRedoElementRef, _group: Option<&UndoRedoGroup>, _source: Option<&UndoRedoSource>) {
         panic!("pushElement is not a function");
+    }
+
+    fn get_last_element(&self, _resource: &URI) -> Option<UndoRedoElementRef> {
+        panic!("getLastElement is not a function");
+    }
+
+    fn get_elements(&self, _resource: &URI) -> PastFutureElements {
+        panic!("getElements is not a function");
+    }
+
+    fn set_elements_valid_flag(&self, _resource: &URI, _is_valid: bool, _filter: &dyn Fn(&UndoRedoElementRef) -> bool) {
+        panic!("setElementsValidFlag is not a function");
     }
 
     fn remove_elements(&self, _resource: &URI) {
         panic!("removeElements is not a function");
     }
 
-    fn undo(&self, _resource: &URI) -> Promise<()> {
+    fn create_snapshot(&self, _resource: &URI) -> ResourceEditStackSnapshot {
+        panic!("createSnapshot is not a function");
+    }
+
+    fn restore_snapshot(&self, _snapshot: &ResourceEditStackSnapshot) {
+        panic!("restoreSnapshot is not a function");
+    }
+
+    fn can_undo(&self, _target: UndoRedoTarget<'_>) -> bool {
+        panic!("canUndo is not a function");
+    }
+
+    fn undo(&self, _target: UndoRedoTarget<'_>) -> MaybePromise<()> {
         panic!("undo is not a function");
     }
 
-    fn redo(&self, _resource: &URI) -> Promise<()> {
+    fn can_redo(&self, _target: UndoRedoTarget<'_>) -> bool {
+        panic!("canRedo is not a function");
+    }
+
+    fn redo(&self, _target: UndoRedoTarget<'_>) -> MaybePromise<()> {
         panic!("redo is not a function");
     }
 }

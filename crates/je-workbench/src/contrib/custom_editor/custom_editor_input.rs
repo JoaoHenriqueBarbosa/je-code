@@ -39,16 +39,16 @@ use je_base::event::{Emitter, Event};
 use je_base::js_string::JsString;
 use je_base::network::schemas;
 use je_base::path::{PathModule, ProcessEnvironment};
-use je_base::promise::Promise;
+use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
 use je_platform::dialogs::dialogs::IFileDialogService;
 use je_platform::files::i_file_service::IFileService;
 use je_platform::label::label::{ILabelService, UriLabelOptions};
 use je_platform::opener::editor_types::{EditorOptions, EditorOverride};
 use je_platform::resources::ext_uri;
-use je_platform::undo_redo::undo_redo::IUndoRedoService;
 use je_editor::range::Range;
 use je_editor::selection::{Selection, SelectionDirection};
+use je_editor::undo_redo::{IUndoRedoService, UndoRedoTarget};
 
 use super::custom_editor::{CustomEditorModelReference, ICustomEditorService};
 use super::custom_text_editor_navigation::ICustomTextEditorNavigation;
@@ -316,15 +316,15 @@ impl CustomEditorInput {
     }
 
     /// `undo()`: `assertReturnsDefined(this._modelRef)` lança quando o modelo ainda não foi resolvido.
-    pub fn undo(&self) -> Promise<()> {
+    pub fn undo(&self) -> MaybePromise<()> {
         self.assert_model_ref();
-        self.services.undo_redo_service.undo(&self.editor_resource)
+        self.services.undo_redo_service.undo(UndoRedoTarget::Resource(&self.editor_resource))
     }
 
     /// `redo()`.
-    pub fn redo(&self) -> Promise<()> {
+    pub fn redo(&self) -> MaybePromise<()> {
         self.assert_model_ref();
-        self.services.undo_redo_service.redo(&self.editor_resource)
+        self.services.undo_redo_service.redo(UndoRedoTarget::Resource(&self.editor_resource))
     }
 
     fn assert_model_ref(&self) {

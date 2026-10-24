@@ -2,12 +2,15 @@
 //! (`api/browser/mainThreadTreeViews.ts`) e o `CustomTreeView` (`browser/parts/views/treeView.ts`) usam entre si:
 //! [`ITreeView`], [`ITreeViewDataProvider`] e [`ITreeViewDragAndDropController`].
 //!
-//! Só há contratos aqui, sem implementação: o `CustomTreeView` (a árvore desenhada na parte de visões, com DOM), o
-//! `ViewDescriptorService` ligado ao `ViewsRegistry` por descritor de árvore e o `TreeViewsDnDService` do porte
-//! (`je-editor/src/tree_views_dnd.rs`) sem o `CustomTreeViewDragAndDrop` não têm onde rodar. O `MainThreadTreeViews` e a
-//! suíte `mainThreadTreeViews.test.ts` ficam para quando o `CustomTreeView` existir.
+//! Os contratos têm a implementação do lado da interface em `crate::browser::parts::views::tree_view` (o `CustomTreeView`,
+//! sem o `TreeViewPane` e sem a árvore desenhada) e a do lado das extensões no `MainThreadTreeViews`
+//! (`api/browser/main_thread_tree_views.rs`).
 //!
 //! Divergências:
+//! - `ITreeViewDataProvider.didUpdateItems` não existe no original: o `CustomTreeView` do original muda por identidade os
+//!   objetos `ITreeItem` que o provedor devolveu (`node.children = ...`, `child.parent = ...`, `checkbox.isChecked = ...`) e
+//!   o provedor (`TreeViewDataProvider`) enxerga a mudança porque guarda os mesmos objetos. Aqui os itens que cruzam o
+//!   contrato são valores, então a árvore avisa o provedor das mudanças com [`ITreeViewDataProvider::did_update_items`].
 //! - `Promise<readonly ITreeItem[] | undefined>` é `Promise<Option<Vec<ITreeItem>>>`; os membros opcionais da interface
 //!   (`isTreeEmpty`, `onDidChangeEmpty`, `getChildrenBatch`, `dragAndDropController`, `message`, `handleDragEnd`) são
 //!   métodos com implementação padrão (ausente, sem eventos), como nos outros contratos parciais do porte.
@@ -49,6 +52,10 @@ pub trait ITreeViewDataProvider {
     fn get_children_batch(&self, _elements: Option<&[ITreeItem]>) -> Option<Promise<Option<Vec<Vec<ITreeItem>>>>> {
         None
     }
+
+    /// Os itens que a árvore mudou (filhos carregados, pai, estado do checkbox), como valores completos: o provedor que
+    /// guarda a identidade dos itens as aplica (ver as divergências do módulo).
+    fn did_update_items(&self, _items: &[ITreeItem]) {}
 }
 
 /// `ITreeViewDragAndDropController`.

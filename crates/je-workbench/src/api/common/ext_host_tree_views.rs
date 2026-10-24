@@ -1713,6 +1713,7 @@ impl ExtHostTreeView {
             checkbox: self.get_checkbox(extension_tree_item),
             children: None,
             parent: None,
+            custom_properties: Vec::new(),
         };
 
         Ok(Rc::new(TreeNode { item: RefCell::new(item), extension_item: extension_tree_item.clone(), parent: parent.cloned(), children: RefCell::new(None), disposable_store }))

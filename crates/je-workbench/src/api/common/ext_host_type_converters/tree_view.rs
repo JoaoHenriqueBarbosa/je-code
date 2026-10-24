@@ -145,7 +145,7 @@ fn serialize_uri_list(string_value: &str) -> Vec<UriListPart> {
         .collect()
 }
 
-fn revive_uri_list(parts: &[UriListPart]) -> String {
+pub(crate) fn revive_uri_list(parts: &[UriListPart]) -> String {
     let entries: Vec<UriListEntry> = parts
         .iter()
         .map(|part| match part {

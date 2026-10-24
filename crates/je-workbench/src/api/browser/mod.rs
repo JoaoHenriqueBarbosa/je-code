@@ -16,6 +16,7 @@ pub mod main_thread_status_bar;
 pub mod main_thread_timeline;
 pub mod main_thread_quick_open;
 pub mod main_thread_workspace;
+pub mod main_thread_tree_views;
 pub mod main_thread_message_service;
 
 // Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
