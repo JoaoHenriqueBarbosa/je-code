@@ -6,7 +6,9 @@
 //! ([`user_data_profiles_manifest_sync`]) e os serviços que o cliente de teste monta: o servidor
 //! ([`user_data_sync_store_service`]), a ativação ([`user_data_sync_enablement_service`]), o histórico local
 //! ([`user_data_sync_local_store_service`]), a conta ([`user_data_sync_account`]) e o serviço de sincronização
-//! ([`user_data_sync_service`], sem a sincronização manual).
+//! ([`user_data_sync_service`], sem a sincronização manual), a base dos sincronizadores de arquivo JSON
+//! ([`abstract_json_synchronizer`]) e os sincronizadores de `keybindings` ([`keybindings_sync`]) e de `tasks`
+//! ([`tasks_sync`]).
 
 pub mod content;
 pub mod global_state_merge;
@@ -25,3 +27,7 @@ pub mod user_data_sync_enablement_service;
 pub mod user_data_sync_local_store_service;
 pub mod user_data_sync_service;
 pub mod user_data_sync_store_service;
+
+pub mod abstract_json_synchronizer;
+pub mod keybindings_sync;
+pub mod tasks_sync;
