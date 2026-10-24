@@ -1,5 +1,6 @@
 //! Porte de `src/vs/workbench/contrib/files`.
 
+pub mod browser;
 pub mod browser_files;
 pub mod common_files;
 pub mod explorer_file_nesting_trie;

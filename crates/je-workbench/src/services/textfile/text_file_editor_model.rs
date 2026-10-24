@@ -1615,3 +1615,20 @@ impl ITextFileEditorModel for TextFileEditorModel {
         self.base.create_snapshot()
     }
 }
+
+/// `TextFileEditorModel extends BaseTextEditorModel implements ITextFileEditorModel`, e todo `BaseTextEditorModel` é um
+/// `ITextEditorModel`: é o contrato que o `ITextModelService` devolve nas referências de modelo (o `ITextEditorModel` não é
+/// importado aqui para os métodos de mesmo nome do [`ITextFileEditorModel`] continuarem sem ambiguidade neste módulo).
+impl crate::services::textmodel_resolver::resolver_service::ITextEditorModel for TextFileEditorModel {
+    fn text_editor_model(&self) -> Option<Rc<TextModel>> {
+        self.base.text_editor_model()
+    }
+
+    fn is_readonly(&self) -> Readonly {
+        TextFileEditorModel::is_readonly(self)
+    }
+
+    fn create_snapshot(&self) -> Option<Box<dyn TextSnapshot>> {
+        self.base.create_snapshot()
+    }
+}

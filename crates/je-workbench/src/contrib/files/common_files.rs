@@ -5,6 +5,15 @@
 //! O resto do módulo (`VIEWLET_ID`, `IFilesConfiguration`, `OpenEditor` e as chaves de contexto) entra com
 //! os consumidores que o leem.
 
+/// `TEXT_FILE_EDITOR_ID`: id of the text file editor pane.
+pub const TEXT_FILE_EDITOR_ID: &str = "workbench.editors.files.textFileEditor";
+
+/// `FILE_EDITOR_INPUT_ID`: id of the file editor input (`FileEditorInput.typeId`).
+pub const FILE_EDITOR_INPUT_ID: &str = "workbench.editors.files.fileEditorInput";
+
+/// `BINARY_FILE_EDITOR_ID`: id of the binary file editor pane.
+pub const BINARY_FILE_EDITOR_ID: &str = "workbench.editors.files.binaryFileEditor";
+
 /// `UndoConfirmLevel` (`explorer.confirmUndo`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UndoConfirmLevel {
