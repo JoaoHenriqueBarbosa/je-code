@@ -14,3 +14,14 @@ pub mod rpc_protocol;
 pub mod extension_host_kind;
 pub mod extension_running_location;
 pub mod extension_running_location_tracker;
+// `abstractExtensionService.ts` e o que ele lê: `extensionHostManagers.ts`, `extensionHostProtocol.ts` (só o delta),
+// `extensionHostProxy.ts` (só o resultado de `resolveAuthority`), `extensionDevOptions.ts`, `extensionsProposedApi.ts` (com
+// `extensionsApiProposals.ts`) e `implicitActivationEvents.ts`.
+pub mod abstract_extension_service;
+pub mod extension_dev_options;
+pub mod extension_host_managers;
+pub mod extension_host_protocol;
+pub mod extension_host_proxy;
+pub mod extensions_api_proposals;
+pub mod extensions_proposed_api;
+pub mod implicit_activation_events;
