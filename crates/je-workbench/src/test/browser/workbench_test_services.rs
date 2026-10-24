@@ -30,6 +30,7 @@ use je_base::JsString;
 use je_platform::environment::environment::{DisableExtensions, EnvironmentService, ExtensionHostDebugParams, ExtensionKind, SyncMode};
 use je_platform::product::ProductService;
 use je_platform::remote::remote_agent_environment::RemoteAgentEnvironment;
+use je_platform::window::IPath;
 use je_platform::resources::{ext_uri, host_platform, join_path, uri_file};
 
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
@@ -127,12 +128,17 @@ impl IRemoteAgentService for TestRemoteAgentService {
 }
 
 /// Os valores do ambiente que um teste troca (`instantiationService.stub(IWorkbenchEnvironmentService, { ... })`):
-/// `disableExtensions`, `enableExtensions` e `isSessionsWindow`. O que fica no padrão é o do `TestEnvironmentService`.
+/// `disableExtensions`, `enableExtensions`, `isSessionsWindow`, `disableWorkspaceTrust` (`None` é o padrão do
+/// `TestEnvironmentService`, verdadeiro), `remoteAuthority` e `filesToOpenOrCreate`. O que fica no padrão é o do
+/// `TestEnvironmentService`.
 #[derive(Clone, Debug, Default)]
 pub struct EnvironmentOverrides {
     pub disable_extensions: Option<DisableExtensions>,
     pub enable_extensions: Option<Vec<String>>,
     pub is_sessions_window: bool,
+    pub disable_workspace_trust: Option<bool>,
+    pub remote_authority: Option<String>,
+    pub files_to_open_or_create: Option<Vec<IPath>>,
 }
 
 /// `TestEnvironmentService`.
@@ -320,7 +326,7 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
     }
 
     fn remote_authority(&self) -> Option<String> {
-        None
+        self.overrides.remote_authority.clone()
     }
 
     fn skip_release_notes(&self) -> bool {
@@ -333,7 +339,11 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
 
     /// `!this.options.enableWorkspaceTrust`.
     fn disable_workspace_trust(&self) -> bool {
-        true
+        self.overrides.disable_workspace_trust.unwrap_or(true)
+    }
+
+    fn files_to_open_or_create(&self) -> Option<Vec<IPath>> {
+        self.overrides.files_to_open_or_create.clone()
     }
 
     fn is_sessions_window(&self) -> bool {
