@@ -216,7 +216,7 @@ pub struct BrowserViewTheme {
 
 /// `IBrowserViewWindowConfiguration`: tudo o que uma janela contribui para as visões que ela possui,
 /// enviado como uma unidade só pela janela dona.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BrowserViewWindowConfiguration {
     /// Theme variables for injected UI.
     pub theme: BrowserViewTheme,
