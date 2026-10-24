@@ -11,20 +11,28 @@
 //!   `thread_local`, devolvidos por funções.
 //! - `ProviderResult<T[]>` de `provideWorkspaceSymbols` é uma `Promise<Vec<IWorkspaceSymbol>>`: o único provedor do
 //!   porte (o do `MainThreadLanguageFeatures`) sempre responde com uma promessa e uma lista.
-//! - `getWorkspaceSymbols` e `WorkspaceSymbolItem` não são portados aqui.
+//! - `getWorkspaceSymbols` e `WorkspaceSymbolItem` são [`get_workspace_symbols`] e [`WorkspaceSymbolItem`]. O `compareItems`
+//!   do original lança (`TypeError`) quando um símbolo sem `uri` chega à comparação (`undefined.toString()`): o erro é
+//!   guardado e rejeita a promessa do resultado, como a exceção do `groupBy` rejeitaria a função `async`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use je_base::arrays::{CompareResult, group_by};
+use je_base::async_::async_fn;
 use je_base::cancellation::CancellationToken;
+use je_base::errors::{Error, on_unexpected_external_error};
 use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
 use je_base::promise::Promise;
+use je_base::strings::compare;
 use je_editor::language_feature_registry::LanguageFeatureRegistry;
-use je_editor::language_features_service::{Location, Registry};
+use je_editor::language_features_service::Registry;
 use je_editor::language_providers::{ProviderResult, SymbolKind, SymbolTag};
 use je_editor::position::Position;
+use je_editor::range::Range;
 use je_editor::text_model::TextModel;
 
+use crate::api::common::ext_host_type_converters::LocationDto;
 use crate::api::common::ext_host_type_converters::symbols::{HierarchyItemDto, IncomingCallDto, OutgoingCallDto};
 
 /// `CallHierarchyItem`.
@@ -118,7 +126,9 @@ pub struct IWorkspaceSymbol {
     pub container_name: Option<String>,
     pub kind: SymbolKind,
     pub tags: Option<Vec<SymbolTag>>,
-    pub location: Location,
+    /// O `location` tipado `Location`: o `_reviveLocationDto` do original não valida nada, então o `uri` e o `range` podem
+    /// faltar (a classe `Location` da API aceita os dois ausentes), e `getWorkspaceSymbols` depende disso.
+    pub location: LocationDto,
     /// O `cacheId` do `IWorkspaceSymbolDto` (`CachedSessionItem`), que o `resolveWorkspaceSymbol` devolve ao host.
     pub cache_id: Option<(u32, u32)>,
 }
@@ -160,4 +170,93 @@ impl WorkspaceSymbolProviderRegistry {
     pub fn all() -> Vec<Rc<dyn IWorkspaceSymbolProvider>> {
         WORKSPACE_SYMBOL_SUPPORTS.with(|supports| supports.borrow().clone())
     }
+}
+
+/// `WorkspaceSymbolItem`.
+#[derive(Clone)]
+pub struct WorkspaceSymbolItem {
+    pub symbol: IWorkspaceSymbol,
+    pub provider: Rc<dyn IWorkspaceSymbolProvider>,
+}
+
+/// `location.uri.toString()` de `compareItems`: o `uri` ausente lança no original.
+fn symbol_uri_units(item: &WorkspaceSymbolItem) -> Result<Vec<u16>, Error> {
+    match &item.symbol.location.uri {
+        Some(uri) => Ok(uri.to_string(false).units().to_vec()),
+        None => Err(Error::new("Cannot read properties of undefined (reading 'toString')")),
+    }
+}
+
+/// `compareItems(a, b)` de `getWorkspaceSymbols`.
+fn compare_workspace_symbol_items(a: &WorkspaceSymbolItem, b: &WorkspaceSymbolItem) -> Result<i32, Error> {
+    let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let mut res = compare(&units(&a.symbol.name), &units(&b.symbol.name));
+    if res == 0 {
+        res = a.symbol.kind as i32 - b.symbol.kind as i32;
+    }
+    if res == 0 {
+        res = compare(&symbol_uri_units(a)?, &symbol_uri_units(b)?);
+    }
+    if res == 0 {
+        if let (Some(a_range), Some(b_range)) = (&a.symbol.location.range, &b.symbol.location.range) {
+            if !Range::are_intersecting(a_range, b_range) {
+                res = Range::compare_ranges_using_starts(Some(a_range), Some(b_range));
+            }
+        } else if a.provider.has_resolve_workspace_symbol() && !b.provider.has_resolve_workspace_symbol() {
+            res = -1;
+        } else if !a.provider.has_resolve_workspace_symbol() && b.provider.has_resolve_workspace_symbol() {
+            res = 1;
+        }
+    }
+    if res == 0 {
+        res = compare(&units(a.symbol.container_name.as_deref().unwrap_or("")), &units(b.symbol.container_name.as_deref().unwrap_or("")));
+    }
+    Ok(res)
+}
+
+/// `getWorkspaceSymbols(query, token = CancellationToken.None)`.
+pub fn get_workspace_symbols(query: &str, token: &CancellationToken) -> Promise<Vec<WorkspaceSymbolItem>> {
+    let (query, token) = (query.to_owned(), token.clone());
+    async_fn(async move {
+        let all: Rc<RefCell<Vec<WorkspaceSymbolItem>>> = Rc::default();
+
+        let promises: Vec<Promise<()>> = WorkspaceSymbolProviderRegistry::all()
+            .into_iter()
+            .map(|provider| {
+                let (all, query, token) = (Rc::clone(&all), query.clone(), token.clone());
+                async_fn(async move {
+                    match provider.provide_workspace_symbols(&query, &token).await {
+                        Ok(value) => {
+                            for symbol in value {
+                                all.borrow_mut().push(WorkspaceSymbolItem { symbol, provider: Rc::clone(&provider) });
+                            }
+                        }
+                        Err(err) => on_unexpected_external_error(&err),
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+
+        Promise::all(promises).await?;
+
+        if token.is_cancellation_requested() {
+            return Ok(Vec::new());
+        }
+
+        // de-duplicate entries
+        let failure: RefCell<Option<Error>> = RefCell::new(None);
+        let all = all.borrow().clone();
+        let groups = group_by(&all, |a, b| match compare_workspace_symbol_items(a, b) {
+            Ok(res) => CompareResult::from(res),
+            Err(err) => {
+                failure.borrow_mut().get_or_insert(err);
+                0.0
+            }
+        });
+        if let Some(err) = failure.into_inner() {
+            return Err(err);
+        }
+        Ok(groups.into_iter().filter_map(|group| group.into_iter().next()).collect())
+    })
 }
