@@ -51,7 +51,7 @@ use je_platform::files::i_file_service::IFileService;
 use je_platform::label::label::{ILabelService, UriLabelOptions};
 use je_platform::log::LogService;
 use je_platform::notification::notification::{INotificationService, NotificationMessage};
-use je_platform::opener::editor_types::EditorOptions;
+use je_platform::opener::editor_types::{EditorOptions, TextEditorSelection};
 use je_platform::opener::opener::{IOpenerService, OpenOptions, OpenResource};
 use je_platform::path::path_service::IPathService;
 use je_platform::quickinput::picker_quick_access::{
@@ -66,10 +66,10 @@ use je_platform::quickinput::quick_input::{
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::workspace::IWorkspaceContextService;
 
-use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, TextEditorOptions, TextEditorSelection, UntypedEditorInput};
+use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, TextEditorOptions, UntypedEditorInput};
 use crate::contrib::search::common::cache_state::FileQueryCacheState;
 use crate::contrib::search::search::extract_range_from_filter;
-use crate::services::editor::editor_groups_service::{IEditorGroupsService, PreferredGroup};
+use crate::services::editor::editor_groups_service::{GroupRef, IEditorGroupsService, PreferredGroup};
 use crate::services::editor::editor_service::{ActiveTextEditorControl, IEditorService};
 use crate::services::editor::custom_editor_label_service::ICustomEditorLabelService;
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
@@ -501,7 +501,7 @@ impl AnythingQuickAccessProvider {
                         if open_to_side {
                             this.services.editor_view_state.restore().await?;
                             if this.services.editor_groups_service.get_group(source_group).is_some() {
-                                this.services.editor_groups_service.activate_group(PreferredGroup::Id(source_group));
+                                this.services.editor_groups_service.activate_group(GroupRef::Id(source_group));
                             }
                         }
 
@@ -512,7 +512,7 @@ impl AnythingQuickAccessProvider {
                                 &OpenResource::Text(filter_text.as_str().into()),
                                 Some(&OpenOptions {
                                     from_user_gesture: Some(true),
-                                    allow_contributed_openers: Some(true.into()),
+                                    allow_contributed_openers: Some(je_platform::opener::opener::AllowContributedOpeners::Bool(true)),
                                     open_to_side: Some(open_to_side),
                                     editor_options: Some(EditorOptions {
                                         preserve_focus: Some(in_background),
@@ -1009,7 +1009,7 @@ impl AnythingQuickAccessProvider {
             }
 
             let flavor = this.services.path_service.path().await?;
-            let is_absolute_path_query = je_base::path::PathModule::new(flavor, "/").is_absolute(&detildified_query);
+            let is_absolute_path_query = is_absolute_for_flavor(flavor, &detildified_query);
             if token.is_cancellation_requested() {
                 return Ok(None);
             }
@@ -1049,7 +1049,7 @@ impl AnythingQuickAccessProvider {
             // absolute paths exist
             let original = query.original.to_string_lossy();
             let flavor = this.services.path_service.path().await?;
-            let is_absolute_path_query = je_base::path::PathModule::new(flavor, "/").is_absolute(&original);
+            let is_absolute_path_query = is_absolute_for_flavor(flavor, &original);
             if !is_absolute_path_query {
                 let mut resources: Vec<URI> = Vec::new();
                 for folder in this.services.context_service.get_workspace().folders() {
@@ -1176,8 +1176,9 @@ impl AnythingQuickAccessProvider {
                         if token.is_cancellation_requested() {
                             return Ok(Picks::Items(Vec::new()));
                         }
-                        disposables.add(model_reference.disposable());
-                        model_reference.text_editor_model()
+                        let text_model = model_reference.object.text_editor_model().expect("o modelo de texto resolvido");
+                        disposables.add(Rc::new(model_reference));
+                        text_model
                     }
                     Err(_) => return Ok(Picks::Items(Vec::new())), // return if model cannot be resolved
                 },
@@ -1584,5 +1585,14 @@ impl IDisposable for AnythingQuickAccessProvider {
 impl AnythingQuickAccessProvider {
     pub fn disposable(&self) -> &Rc<Disposable> {
         self.picker_base.disposable()
+    }
+}
+
+/// `pathService.path` seguido de `isAbsolute(path)`: o sabor (`win32` ou `posix`) decide o módulo de caminho.
+fn is_absolute_for_flavor(flavor: je_base::path::Platform, path: &str) -> bool {
+    let environment = je_platform::resources::host_environment();
+    match flavor {
+        je_base::path::Platform::Posix => je_base::path::PathModule::posix(environment.as_ref()).is_absolute(path),
+        je_base::path::Platform::Win32 => je_base::path::PathModule::win32(environment.as_ref()).is_absolute(path),
     }
 }
