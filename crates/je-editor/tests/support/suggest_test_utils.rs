@@ -79,6 +79,7 @@ pub fn create_suggest_item_with(label: CompletionLabel, overwrite_before: i32, o
         command: None,
         action: None,
         extension_id: None,
+        internal_id: None,
     };
     let container = Rc::new(CompletionList {
         suggestions: vec![suggestion.clone()],

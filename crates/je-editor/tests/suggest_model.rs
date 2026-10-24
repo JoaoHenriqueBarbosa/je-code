@@ -412,6 +412,7 @@ fn suggestion(label: CompletionLabel, kind: CompletionItemKind, insert_text: &st
         command: None,
         action: None,
         extension_id: None,
+        internal_id: None,
     }
 }
 

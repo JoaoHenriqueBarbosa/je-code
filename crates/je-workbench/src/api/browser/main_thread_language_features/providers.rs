@@ -872,8 +872,6 @@ pub(super) struct MainThreadCompletionProvider {
     pub trigger_characters: Vec<String>,
     pub debug_display_name: String,
     pub supports_resolve_details: bool,
-    /// O `_id` de cada item devolvido (ver a nota do módulo).
-    pub item_ids: Rc<RefCell<HashMap<String, ChainedCacheId>>>,
 }
 
 fn label_text(label: &CompletionLabel) -> &str {
@@ -881,17 +879,6 @@ fn label_text(label: &CompletionLabel) -> &str {
         CompletionLabel::Text(text) => text,
         CompletionLabel::Item(item) => &item.label,
     }
-}
-
-/// A chave sob a qual o `_id` de um item é guardado.
-fn item_key(item: &CompletionItem) -> String {
-    format!(
-        "{}\u{0}{}\u{0}{}\u{0}{}",
-        label_text(&item.label),
-        item.insert_text,
-        item.sort_text.as_deref().unwrap_or(""),
-        item.filter_text.as_deref().unwrap_or("")
-    )
 }
 
 /// `_inflateSuggestDto(defaultRange, data, extensionId)`.
@@ -911,6 +898,7 @@ pub(super) fn inflate_suggest_dto(default_range: CompletionItemRange, data: &ISu
     CompletionItem {
         label,
         extension_id: Some(extension_id.clone()),
+        internal_id: data.cache_id,
         kind: data.kind.unwrap_or(CompletionItemKind::Property),
         tags: data.kind_modifier.clone(),
         detail: data.detail.clone(),
@@ -946,17 +934,12 @@ impl CompletionItemProvider for MainThreadCompletionProvider {
 
     fn provide_completion_items(&self, model: &Rc<TextModel>, position: Position, context: &CompletionContext, token: &CancellationToken) -> ProviderResult<Rc<CompletionList>> {
         let (remote, uri, context, token) = (self.remote.clone(), model.uri(), context.clone(), token.clone());
-        let (extension_id, item_ids) = (self.extension_id.clone(), Rc::clone(&self.item_ids));
+        let extension_id = self.extension_id.clone();
         async_fn(async move {
             let Some(result) = remote.proxy.rpc_provide_completion_items(remote.handle, &uri, position, context, token).await? else {
                 return Ok(None);
             };
             let suggestions = inflate_suggest_result(&result, &extension_id);
-            for (item, data) in suggestions.iter().zip(&result.completions) {
-                if let Some(cache_id) = data.cache_id {
-                    item_ids.borrow_mut().insert(item_key(item), cache_id);
-                }
-            }
             let cache_id = result.cache_id;
             let dispose: Rc<dyn Fn()> = Rc::new(move || {
                 if let Some(cache_id) = cache_id {
@@ -978,8 +961,8 @@ impl CompletionItemProvider for MainThreadCompletionProvider {
 
     fn resolve_completion_item(&self, suggestion: &CompletionItem, token: &CancellationToken) -> Promise<Option<CompletionItem>> {
         let (remote, suggestion, token) = (self.remote.clone(), suggestion.clone(), token.clone());
-        let (extension_id, item_ids) = (self.extension_id.clone(), Rc::clone(&self.item_ids));
-        let id = item_ids.borrow().get(&item_key(&suggestion)).copied();
+        let extension_id = self.extension_id.clone();
+        let id = suggestion.internal_id;
         async_fn(async move {
             let Some(id) = id else {
                 return Err(Error::new("Cannot resolve a completion item without an id"));

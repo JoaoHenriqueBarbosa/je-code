@@ -76,6 +76,7 @@ fn suggestion(label: &str, kind: CompletionItemKind, range: CompletionItemRange)
         command: None,
         action: None,
         extension_id: None,
+        internal_id: None,
     }
 }
 

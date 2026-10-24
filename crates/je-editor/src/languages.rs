@@ -391,6 +391,8 @@ pub struct CompletionItem {
     pub action: Option<crate::code_action::languages::Command>,
     /// `extensionId` (internal): a extensão que contribuiu o item.
     pub extension_id: Option<je_extensions::manifest::ExtensionIdentifier>,
+    /// `_id` (internal): o identificador do item no cache do host de extensões, que o `resolveCompletionItem` devolve ao host.
+    pub internal_id: Option<(u32, u32)>,
 }
 
 /// `CompletionItemProvider` (ver as diferenças acima).

@@ -616,7 +616,6 @@ impl MainThreadLanguageFeaturesShape for MainThreadLanguageFeatures {
             debug_display_name: format!("{}({})", extension_id.value, trigger_characters.join("")),
             trigger_characters,
             supports_resolve_details,
-            item_ids: Rc::new(RefCell::new(HashMap::new())),
         });
         self.set_registration(handle, self.language_features_service.completion_provider.register(to_selector(&selector), provider));
     }

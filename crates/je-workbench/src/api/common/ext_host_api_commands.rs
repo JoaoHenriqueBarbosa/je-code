@@ -506,6 +506,7 @@ fn completion_item_from_dto(value: &Dynamic) -> Result<EditorCompletionItem, Err
         command: command_from_dto(&value.get_str("command")),
         action: None,
         extension_id: None,
+        internal_id: None,
     })
 }
 
@@ -882,6 +883,10 @@ fn string_or_markdown_from_dto(value: &Dynamic) -> Option<StringOrMarkdown> {
 
 /// `languages.Command.is(value)` e a leitura do `languages.Command` do RPC (`{ id, title, tooltip?, arguments? }`).
 fn command_from_dto(value: &Dynamic) -> Option<EditorCommand> {
+    // `suggestion.command` ausente: `languages.Command.is(undefined)` é falso, sem ler propriedade de `undefined`.
+    if !matches!(value, Dynamic::Object(_)) {
+        return None;
+    }
     let (Dynamic::String(id), Dynamic::String(title)) = (value.get_str("id"), value.get_str("title")) else {
         return None;
     };

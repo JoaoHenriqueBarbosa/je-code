@@ -176,6 +176,7 @@ impl SnippetCompletion {
             }),
             action: None,
             extension_id: self.extension_id.clone(),
+            internal_id: None,
         }
     }
 }
