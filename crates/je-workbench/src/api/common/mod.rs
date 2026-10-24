@@ -41,3 +41,7 @@ pub mod ext_host_test_item;
 pub mod ext_host_testing;
 pub mod ext_host_testing_converters;
 pub mod ext_host_testing_types;
+
+// ApiCommands: `extHostApiCommands.ts` e os comandos internos `_execute*` do editor que ele chama.
+pub mod editor_execute_commands;
+pub mod ext_host_api_commands;
