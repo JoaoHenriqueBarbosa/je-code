@@ -329,11 +329,23 @@ pub struct CodeAction {
     pub diagnostics: Option<Vec<Diagnostic>>,
     pub kind: Option<CodeActionKind>,
     pub is_preferred: Option<bool>,
+    /// `isAI` (proposta `codeActionAI`).
+    pub is_ai: Option<bool>,
+    /// `ranges` (proposta `codeActionRanges`).
+    pub ranges: Option<Vec<Range>>,
+    /// `disabled?: { readonly reason: string }`: o motivo.
+    pub disabled: Option<CodeActionDisabled>,
+}
+
+/// `CodeAction.disabled`: `{ readonly reason: string }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeActionDisabled {
+    pub reason: String,
 }
 
 impl CodeAction {
     pub fn new(title: impl Into<String>, kind: Option<CodeActionKind>) -> CodeAction {
-        CodeAction { title: title.into(), command: None, edit: None, diagnostics: None, kind, is_preferred: None }
+        CodeAction { title: title.into(), command: None, edit: None, diagnostics: None, kind, is_preferred: None, is_ai: None, ranges: None, disabled: None }
     }
 }
 
