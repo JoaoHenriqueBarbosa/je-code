@@ -31,6 +31,11 @@ pub mod ext_host_status_bar;
 pub mod ext_host_diagnostics;
 pub mod ext_host_timeline;
 
+// LanguageFeatures: `extHostLanguageFeatures.ts` (parte 1), a superfície de provedores da API e os conversores novos.
+pub mod ext_host_language_features;
+pub mod ext_host_language_features_api;
+pub mod ext_host_language_features_converters;
+
 // Testing: `extHostTesting.ts`, `extHostTestItem.ts` e os tipos e conversores de teste.
 pub mod ext_host_test_item;
 pub mod ext_host_testing;

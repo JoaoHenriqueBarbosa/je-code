@@ -2800,3 +2800,204 @@ mod scm_region {
 }
 
 // #endregion
+
+// #region LanguageFeatures
+
+pub use self::language_features_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostLanguageFeatures.ts` usa: `IDocumentFilterDto`, `ILocationDto`,
+/// `ILocationLinkDto`, `HoverWithId`, `ICodeLensDto`, `ICodeLensListDto`, `MainThreadLanguageFeaturesShape`,
+/// `ExtHostLanguageFeaturesShape` e os identificadores `MainContext.MainThreadLanguageFeatures` e
+/// `ExtHostContext.ExtHostLanguageFeatures`.
+///
+/// PARTE 1 (somente o que os adaptadores já portados pedem): `DocumentSymbol`, `CodeLens`, `Definition`,
+/// `Declaration`, `Implementation`, `TypeDefinition`, `Hover`, `DocumentHighlight`, `MultiDocumentHighlight` e
+/// `Reference`. Os métodos dos demais provedores (ação de código, formatação, símbolos do workspace, renomeação,
+/// semântica, completar, assinatura, dicas embutidas, links, cor, dobra, seleção, hierarquias, soltar, valores
+/// embutidos, expressão avaliável, edição ligada e `$setWordDefinitions`) entram nos dois traits na parte 2.
+///
+/// Divergências:
+/// - Os handles (`number`) são `u32` e os `UriComponents` são [`URI`] (os dois lados dividem o processo e o `revive` é a
+///   identidade). O `IRange` e o `IPosition` são os tipos do editor.
+/// - O `$serialized: true` de `IDocumentFilterDto` é sempre verdadeiro e não existe como campo. O
+///   `pattern?: string | IRelativePattern` é o [`GlobPatternDto`] do conversor de `GlobPattern`.
+/// - `ILocationDto` (`Dto<languages.Location>`) é o [`LocationDto`] dos conversores, de `uri` e `range` opcionais.
+///   `ILocationLinkDto` (`Dto<languages.LocationLink>`) tem `uri` e `range` obrigatórios, como o `languages.LocationLink`.
+/// - `languages.Hover` é [`HoverDto`] e `HoverWithId extends languages.Hover` é o [`HoverWithId`], com os mesmos campos mais
+///   o `id`. `languages.HoverContext<{ id: number }>` é [`HoverContextDto`].
+/// - `CachedSessionItem<Dto<languages.CodeLens>>` é [`ICodeLensDto`] (o `command` do `languages.CodeLens` já chega como
+///   `ICommandDto` depois do `toInternal`) e `CachedSession<{ lenses }>` é [`ICodeLensListDto`]; `ChainedCacheId` é uma tupla.
+/// - `Dto<languages.MultiDocumentHighlight[]>` é uma lista de [`MultiDocumentHighlightDto`].
+/// - `$emitCodeLensEvent(eventHandle, event?: any)` leva o evento como `Option<Dynamic>`.
+mod language_features_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::dynamic::Dynamic;
+    use je_base::html_content::IMarkdownString;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::language_providers::{DocumentHighlight, DocumentSymbol};
+    use je_editor::position::Position as EditorPosition;
+    use je_editor::range::Range as EditorRange;
+
+    use super::{ExtHostContext, ICommandDto, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_type_converters::LocationDto;
+    use crate::api::common::ext_host_workspace::GlobPatternDto;
+
+    /// `IDocumentFilterDto`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct IDocumentFilterDto {
+        pub language: Option<String>,
+        pub scheme: Option<String>,
+        pub pattern: Option<GlobPatternDto>,
+        pub exclusive: Option<bool>,
+        pub notebook_type: Option<String>,
+        pub is_builtin: Option<bool>,
+    }
+
+    /// `CacheId`.
+    pub type CacheId = u32;
+
+    /// `ChainedCacheId`.
+    pub type ChainedCacheId = (CacheId, CacheId);
+
+    /// `ILocationDto`.
+    pub type ILocationDto = LocationDto;
+
+    /// `ILocationLinkDto`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ILocationLinkDto {
+        pub origin_selection_range: Option<EditorRange>,
+        pub uri: URI,
+        pub range: EditorRange,
+        pub target_selection_range: Option<EditorRange>,
+    }
+
+    /// `languages.Hover`.
+    #[derive(Clone, Debug)]
+    pub struct HoverDto {
+        pub contents: Vec<IMarkdownString>,
+        pub range: Option<EditorRange>,
+        pub can_increase_verbosity: Option<bool>,
+        pub can_decrease_verbosity: Option<bool>,
+    }
+
+    /// `HoverWithId`: o [`HoverDto`] mais o `id` do hover.
+    #[derive(Clone, Debug)]
+    pub struct HoverWithId {
+        pub hover: HoverDto,
+        pub id: u32,
+    }
+
+    /// O `{ id: number }` que `languages.HoverContext<{ id: number }>` usa como `previousHover`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct HoverIdDto {
+        pub id: u32,
+    }
+
+    /// `languages.HoverVerbosityRequest<{ id: number }>`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct HoverVerbosityRequestDto {
+        pub verbosity_delta: f64,
+        pub previous_hover: HoverIdDto,
+    }
+
+    /// `languages.HoverContext<{ id: number }>`.
+    #[derive(Clone, Copy, Debug, PartialEq, Default)]
+    pub struct HoverContextDto {
+        pub verbosity_request: Option<HoverVerbosityRequestDto>,
+    }
+
+    /// `languages.ReferenceContext`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ReferenceContext {
+        pub include_declaration: bool,
+    }
+
+    /// `Dto<languages.MultiDocumentHighlight>`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct MultiDocumentHighlightDto {
+        pub uri: URI,
+        pub highlights: Vec<DocumentHighlight>,
+    }
+
+    /// `ICodeLensDto`.
+    #[derive(Clone, Debug)]
+    pub struct ICodeLensDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub range: EditorRange,
+        pub id: Option<String>,
+        pub command: Option<ICommandDto>,
+    }
+
+    /// `ICodeLensListDto`.
+    #[derive(Clone, Debug)]
+    pub struct ICodeLensListDto {
+        pub cache_id: Option<CacheId>,
+        pub lenses: Vec<ICodeLensDto>,
+    }
+
+    /// `MainThreadLanguageFeaturesShape` (parte 1, ver a nota do módulo).
+    pub trait MainThreadLanguageFeaturesShape: IDisposable {
+        fn rpc_unregister(&self, handle: u32);
+        fn rpc_register_document_symbol_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, label: &str);
+        fn rpc_register_code_lens_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>, event_handle: Option<u32>);
+        fn rpc_emit_code_lens_event(&self, event_handle: u32, event: Option<Dynamic>);
+        fn rpc_register_definition_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_declaration_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_implementation_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_type_definition_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_hover_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_document_highlight_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_multi_document_highlight_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_reference_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+    }
+
+    /// `ExtHostLanguageFeaturesShape` (parte 1, ver a nota do módulo).
+    pub trait ExtHostLanguageFeaturesShape {
+        fn rpc_provide_document_symbols(&self, handle: u32, resource: &URI, token: CancellationToken) -> Promise<Option<Vec<DocumentSymbol>>>;
+        fn rpc_provide_code_lenses(&self, handle: u32, resource: &URI, token: CancellationToken) -> Promise<Option<ICodeLensListDto>>;
+        fn rpc_resolve_code_lens(&self, handle: u32, symbol: ICodeLensDto, token: CancellationToken) -> Promise<Option<ICodeLensDto>>;
+        fn rpc_release_code_lenses(&self, handle: u32, id: u32);
+        fn rpc_provide_definition(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        fn rpc_provide_declaration(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        fn rpc_provide_implementation(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        fn rpc_provide_type_definition(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        fn rpc_provide_hover(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            context: Option<HoverContextDto>,
+            token: CancellationToken,
+        ) -> Promise<Option<HoverWithId>>;
+        fn rpc_release_hover(&self, handle: u32, id: u32);
+        fn rpc_provide_document_highlights(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<Vec<DocumentHighlight>>>;
+        fn rpc_provide_multi_document_highlights(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            other_models: Vec<URI>,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<MultiDocumentHighlightDto>>>;
+        fn rpc_provide_references(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            context: ReferenceContext,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<ILocationDto>>>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_LANGUAGE_FEATURES: ProxyIdentifier<dyn MainThreadLanguageFeaturesShape> = ProxyIdentifier::new("MainThreadLanguageFeatures");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_LANGUAGE_FEATURES: ProxyIdentifier<dyn ExtHostLanguageFeaturesShape> = ProxyIdentifier::new("ExtHostLanguageFeatures");
+    }
+}
+
+// #endregion
