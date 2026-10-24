@@ -454,3 +454,45 @@ pub fn has_workspace_file_extension(path: &str) -> bool {
 pub fn has_workspace_file_extension_uri(path: &URI) -> bool {
     ext_uri_biased_ignore_path_case().extname(path) == WORKSPACE_SUFFIX
 }
+
+// ---------------------------------------------------------------------------------------------
+// Porte de `src/vs/platform/workspace/test/common/testWorkspace.ts`: o workspace usado pelos testes. É infraestrutura
+// de teste compartilhada por todas as crates acima, por isso fica público e junto do tipo que ele constrói.
+//
+// Divergências: a classe `Workspace` que estende a base (só fixa `transient` em falso e dá padrões aos parâmetros)
+// é a função [`new_test_workspace`], porque o Rust não tem herança e os parâmetros opcionais são `Option`; o
+// `TestWorkspace` (uma constante do módulo, compartilhada) é [`default_test_workspace`], que devolve sempre o mesmo `Rc`.
+// ---------------------------------------------------------------------------------------------
+
+use je_base::platform::Platform;
+use je_base::resources::ExtUri;
+
+/// `new Workspace(id, folders, configuration, ignorePathCasing)` de `testWorkspace.ts`. `ignore_path_casing` ausente é
+/// o padrão do original (`() => !isLinux`).
+pub fn new_test_workspace(id: &str, folders: Vec<WorkspaceFolder>, configuration: Option<URI>, ignore_path_casing: Option<UriPredicate>) -> Rc<Workspace> {
+    let ignore_path_casing = ignore_path_casing.unwrap_or_else(|| -> UriPredicate {
+        let is_linux = Platform::detect().is_linux;
+        Rc::new(move |_: &URI| !is_linux)
+    });
+    Workspace::new(id, folders, false, configuration, ignore_path_casing, None)
+}
+
+/// `testWorkspace(...resource)`: o workspace `test-workspace` com uma pasta por recurso.
+pub fn test_workspace(resources: &[URI]) -> Rc<Workspace> {
+    let ext_uri = ExtUri::unbiased(host_environment());
+    let folders = resources.iter().map(|resource| to_workspace_folder(resource, ext_uri.basename_or_authority(resource))).collect();
+    new_test_workspace("test-workspace", folders, None, None)
+}
+
+thread_local! {
+    static TEST_WORKSPACE: Rc<Workspace> = {
+        let ws_uri = crate::resources::uri_file(if Platform::detect().is_windows { "C:\\testWorkspace" } else { "/testWorkspace" });
+        test_workspace(&[ws_uri])
+    };
+}
+
+/// `TestWorkspace`: o workspace padrão dos testes, com a pasta `/testWorkspace` (`C:\testWorkspace` no Windows).
+/// Cada thread (cada teste) tem o seu, como cada processo de teste do original tem o seu módulo.
+pub fn default_test_workspace() -> Rc<Workspace> {
+    TEST_WORKSPACE.with(Rc::clone)
+}

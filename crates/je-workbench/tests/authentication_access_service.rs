@@ -8,7 +8,7 @@
 //!   `InstantiationService` sobre um `ServiceCollection` com os dois serviços; `createInstance` é o
 //!   `create_instance` real.
 //! - `TestStorageService` é o `InMemoryStorageService` (o `testEmitWillSaveState` não é usado aqui) e
-//!   `TestProductService` é o `ProductService` de `support::workbench_test_services`, com
+//!   `TestProductService` é o `ProductService` de `je_workbench::test::common::workbench_test_services`, com
 //!   `trustedExtensionAuthAccess` mutável por dentro. O `teardown` (que zera essa propriedade) não existe: cada caso cria o seu produto.
 //! - `AllowedExtension` sem `allowed` (`allowed property is undefined`) é `allowed: None`.
 //! - `JSON.parse(storedData)` é `json_parse`, e `parsedData.length` e `.id` leem o [`Value`] resultante.
@@ -16,7 +16,6 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
-mod support;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -34,7 +33,7 @@ use je_workbench::services::authentication::authentication_access_service::{
     AuthenticationAccessService, ExtensionSessionAccessChange, IAuthenticationAccessService,
 };
 use je_platform::product::ProductService;
-use support::workbench_test_services::test_product_service;
+use je_workbench::test::common::workbench_test_services::TestProductService;
 
 struct Fixture {
     storage_service: Rc<AbstractStorageService>,
@@ -48,7 +47,7 @@ fn setup(disposables: &LeakGuard) -> Fixture {
     let storage: Rc<dyn StorageService> = Rc::new(storage_service.clone());
 
     // Set up product service with no trusted extensions by default
-    let product_service = test_product_service();
+    let product_service = Rc::new(TestProductService::default());
     let product: Rc<dyn IProductService> = product_service.clone();
 
     let instantiation_service =

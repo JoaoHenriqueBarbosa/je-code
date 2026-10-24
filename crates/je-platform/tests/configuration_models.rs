@@ -23,7 +23,7 @@ use je_platform::configuration::models::{
 };
 use je_platform::configuration::registry::{ConfigurationNode, ConfigurationScope, configuration_registry};
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationValue};
-use je_platform::workspace::WorkspaceFolder;
+use je_platform::workspace::{WorkspaceFolder, new_test_workspace};
 
 use common::*;
 
@@ -1364,13 +1364,15 @@ mod configuration_change_event {
         configuration.update_folder_configuration(&uri_file("folder1"), to_configuration_model("{ 'window.zoomLevel': 2, 'window.restoreFullscreen': true }"));
         configuration.update_folder_configuration(&uri_file("folder2"), to_configuration_model("{ 'workbench.editor.enablePreview': true, 'window.restoreWindows': true }"));
         let data = configuration.to_data();
-        let workspace = test_workspace_with_folders(
+        let workspace = new_test_workspace(
             "a",
             vec![
                 WorkspaceFolder::new(uri_file("folder1"), "a", 0, None),
                 WorkspaceFolder::new(uri_file("folder2"), "b", 1, None),
                 WorkspaceFolder::new(uri_file("folder3"), "c", 2, None),
             ],
+            None,
+            None,
         );
         let change = merge_changes(&[
             configuration.compare_and_update_workspace_configuration(to_configuration_model("{ 'window.title': 'native' }")),
@@ -1476,13 +1478,15 @@ mod configuration_change_event {
             configuration.compare_and_delete_folder_configuration(&uri_file("file1")),
             configuration.compare_and_update_folder_configuration(&uri_file("file2"), to_configuration_model("{ 'workbench.editor.enablePreview': true, 'window.restoreWindows': true }")),
         ]);
-        let workspace = test_workspace_with_folders(
+        let workspace = new_test_workspace(
             "a",
             vec![
                 WorkspaceFolder::new(uri_file("file1"), "a", 0, None),
                 WorkspaceFolder::new(uri_file("file2"), "b", 1, None),
                 WorkspaceFolder::new(uri_file("folder3"), "c", 2, None),
             ],
+            None,
+            None,
         );
         let test_object = event(change, Some(PreviousConfiguration { workspace: Some(workspace.clone()), data }), &configuration, Some(workspace));
 

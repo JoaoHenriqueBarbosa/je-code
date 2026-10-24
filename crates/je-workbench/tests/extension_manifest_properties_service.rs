@@ -23,7 +23,6 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
-mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -37,7 +36,7 @@ use je_platform::configuration::test_configuration_service::TestConfigurationSer
 use je_platform::log::NullLogService;
 use je_workbench::services::extensions::extension_manifest_properties_service::{ExtensionManifestPropertiesService, IExtensionManifestPropertiesService};
 use serde_json::{Map, Value, json};
-use support::workbench_test_services::{TestWorkspaceTrustEnablementService, test_product_service};
+use je_workbench::test::common::workbench_test_services::{TestProductService, TestWorkspaceTrustEnablementService};
 
 /// `isWeb`.
 fn is_web() -> bool {
@@ -81,7 +80,7 @@ fn get_extension_manifest(properties: Value) -> ExtensionManifest {
 /// new TestWorkspaceTrustEnablementService(), new NullLogService()))`.
 fn create_test_object(guard: &LeakGuard, configuration_service: Rc<TestConfigurationService>) -> Rc<ExtensionManifestPropertiesService> {
     guard.add_rc(ExtensionManifestPropertiesService::new(
-        test_product_service(),
+        Rc::new(TestProductService::default()),
         configuration_service,
         TestWorkspaceTrustEnablementService::new(true),
         NullLogService::shared(),
