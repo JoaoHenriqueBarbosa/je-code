@@ -81,8 +81,31 @@ impl ViewLayout {
         self.glyph_margin_width() + self.line_numbers_width() + LINE_DECORATIONS_WIDTH
     }
 
+    /// A largura da barra de rolagem vertical (`verticalScrollbarSize`).
+    pub const SCROLLBAR_WIDTH: f64 = 14.0;
+    /// A largura de cada coluna do minimapa em px (`minimap.scale` 1 e `renderCharacters`).
+    pub const MINIMAP_CHAR_WIDTH: f64 = 1.0;
+    /// A altura de cada linha do minimapa.
+    pub const MINIMAP_LINE_HEIGHT: f64 = 2.0;
+    /// A margem à esquerda do texto do minimapa (`MINIMAP_GUTTER_WIDTH`).
+    pub const MINIMAP_GUTTER: f64 = 8.0;
+
+    /// A largura do minimapa (`computeMinimapLayout` no modo `proportional`, com `maxColumn` 120): a fração da
+    /// largura externa que deixa cada coluna do minimapa com a largura de um caractere típico do editor.
+    pub fn minimap_width(&self) -> f64 {
+        let outer = self.width - Self::SCROLLBAR_WIDTH;
+        let fraction = (outer * Self::MINIMAP_CHAR_WIDTH / (self.metrics.char_width + Self::MINIMAP_CHAR_WIDTH)).floor();
+        // `maxColumn` 120 mais a margem do minimapa.
+        fraction.clamp(0.0, 120.0 * Self::MINIMAP_CHAR_WIDTH + Self::MINIMAP_GUTTER)
+    }
+
+    /// A borda direita da área do texto (onde começa o minimapa).
+    pub fn text_right(&self) -> f64 {
+        (self.width - Self::SCROLLBAR_WIDTH - self.minimap_width()).max(self.content_left())
+    }
+
     pub fn content_width(&self) -> f64 {
-        (self.width - self.content_left()).max(0.0)
+        (self.text_right() - self.content_left()).max(0.0)
     }
 
     pub fn line_height(&self) -> f64 {
@@ -195,5 +218,23 @@ mod tests {
         assert_eq!(l.tab_cells(0), 4);
         assert_eq!(l.tab_cells(1), 3);
         assert_eq!(l.tab_cells(4), 4);
+    }
+}
+
+#[cfg(test)]
+mod minimap_tests {
+    use super::*;
+
+    /// Medidas do oráculo (VS Code 1.143.1, editor de 842 x 677 px, 29 linhas, fonte de 14 px): minimapa de 88 px e
+    /// botão da barra com 379 px.
+    #[test]
+    fn minimap_and_scrollbar_match_the_oracle() {
+        // O caractere típico do oráculo (Droid Sans Mono 14 px): 8,4 px; a fonte medida aqui depende da máquina.
+        let metrics = FontMetrics { char_width: 8.4, ..FontMetrics::measure(DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT) };
+        let layout = ViewLayout::new(metrics, 4, 842.0, 677.0, 29);
+        assert_eq!(layout.minimap_width(), 88.0);
+        assert_eq!(layout.text_right(), 842.0 - 14.0 - 88.0);
+        let size = (layout.height * layout.height / layout.scroll_height()).floor();
+        assert_eq!(size, 379.0);
     }
 }

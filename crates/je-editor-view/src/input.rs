@@ -156,6 +156,23 @@ impl EditorView {
         if button != PointerButton::Primary {
             return;
         }
+        let scrollbar_left = self.layout.width - crate::layout::ViewLayout::SCROLLBAR_WIDTH;
+        if x >= scrollbar_left {
+            // A barra vertical: o botão arrasta; o resto da trilha leva o botão para o ponteiro (centrado nele).
+            let (top, size) = self.scrollbar_slider();
+            if y < top || y >= top + size {
+                self.scroll_to_slider_top(y - size / 2.0);
+            }
+            let grab = y - self.scrollbar_slider().0;
+            self.drag = Some(DragMode::Scrollbar(grab));
+            return;
+        }
+        if x >= self.layout.text_right() {
+            let line = self.minimap_line_at(y);
+            self.scroll_to_center_line(line);
+            self.drag = Some(DragMode::Minimap);
+            return;
+        }
         let position = self.position_at(x, y);
         let in_margin = x < self.layout.content_left() - crate::layout::LINE_DECORATIONS_WIDTH;
         let count = if in_margin { 3 } else { click_count.clamp(1, 3) };
@@ -181,6 +198,18 @@ impl EditorView {
     /// O ponteiro se moveu com o botão apertado: estende a seleção conforme o modo do clique.
     pub fn mouse_drag(&mut self, x: f64, y: f64) {
         let Some(mode) = self.drag else { return };
+        match mode {
+            DragMode::Scrollbar(grab) => {
+                self.scroll_to_slider_top(y - grab);
+                return;
+            }
+            DragMode::Minimap => {
+                let line = self.minimap_line_at(y.clamp(0.0, self.layout.height));
+                self.scroll_to_center_line(line);
+                return;
+            }
+            _ => {}
+        }
         // Arrastar além das bordas rola a view.
         let overshoot = if y < 0.0 { y } else if y > self.layout.height { y - self.layout.height } else { 0.0 };
         if overshoot != 0.0 {
@@ -205,6 +234,7 @@ impl EditorView {
                     select(initial.get_start_position(), line.get_end_position())
                 }
             }
+            DragMode::Scrollbar(_) | DragMode::Minimap => return,
         };
         if selection != self.cursor.selection {
             self.set_selection(selection, None);

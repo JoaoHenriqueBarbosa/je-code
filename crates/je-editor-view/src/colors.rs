@@ -28,6 +28,14 @@ pub struct EditorColors {
     pub unexpected_bracket: Rgba,
     /// `editorWhitespace.foreground`, dos espaços e tabulações da seleção.
     pub whitespace: Rgba,
+    pub scrollbar_slider: Rgba,
+    pub scrollbar_slider_hover: Rgba,
+    pub scrollbar_slider_active: Rgba,
+    /// `minimap.background` (sem tema: o fundo do editor).
+    pub minimap_background: Rgba,
+    pub minimap_slider: Rgba,
+    pub minimap_slider_hover: Rgba,
+    pub minimap_slider_active: Rgba,
 }
 
 impl EditorColors {
@@ -55,6 +63,13 @@ impl EditorColors {
             bracket_colors,
             unexpected_bracket: color("editorBracketHighlight.unexpectedBracket.foreground"),
             whitespace: color("editorWhitespace.foreground"),
+            scrollbar_slider: color("scrollbarSlider.background"),
+            scrollbar_slider_hover: color("scrollbarSlider.hoverBackground"),
+            scrollbar_slider_active: color("scrollbarSlider.activeBackground"),
+            minimap_background: theme.get_color("minimap.background").unwrap_or_else(|| color("editor.background")),
+            minimap_slider: color("minimapSlider.background"),
+            minimap_slider_hover: color("minimapSlider.hoverBackground"),
+            minimap_slider_active: color("minimapSlider.activeBackground"),
         }
     }
 

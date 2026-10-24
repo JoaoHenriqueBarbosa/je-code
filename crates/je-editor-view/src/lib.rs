@@ -16,6 +16,7 @@ pub mod cursor;
 pub mod environment;
 pub mod input;
 pub mod layout;
+mod minimap;
 pub mod text;
 pub mod view;
 

@@ -86,6 +86,10 @@ pub(crate) enum DragMode {
     Chars,
     Words(Range),
     Lines(Range),
+    /// Arrastando o botão da barra de rolagem; guarda o deslocamento do ponteiro dentro do botão.
+    Scrollbar(f64),
+    /// Arrastando no minimapa.
+    Minimap,
 }
 
 pub struct EditorView {
@@ -337,7 +341,7 @@ impl EditorView {
         built
     }
 
-    fn token_color(&self, metadata: u32) -> Rgba {
+    pub(crate) fn token_color(&self, metadata: u32) -> Rgba {
         let foreground = TokenMetadata::get_foreground(metadata) as usize;
         self.token_colors.get(foreground).copied().flatten().filter(|_| foreground != 0).unwrap_or(self.colors.foreground)
     }
@@ -565,6 +569,7 @@ impl EditorView {
         let lh = self.layout.line_height();
         let content_left = self.layout.content_left();
         let view_width = self.layout.width;
+        let text_right = self.layout.text_right();
         let view_height = self.layout.height;
         let snap = |v: f64| v.round();
         // Converte px lógicos da view em px de dispositivo, com as bordas no pixel (o Chromium alinha as caixas).
@@ -584,16 +589,16 @@ impl EditorView {
         list.push_clip(je_render::Shape::Rect(rect(0.0, 0.0, view_width, view_height)));
 
         // Área de conteúdo, recortada (a rolagem horizontal não pode invadir a margem).
-        list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, view_width, view_height)));
+        list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, text_right, view_height)));
 
         // 1. Realce da linha do cursor (só com a seleção vazia).
         if selection.is_empty() && (first..=last).contains(&cursor_line) {
             let top = self.layout.line_top(cursor_line, scroll_top);
             if let Some(bg) = colors.line_highlight {
-                list.fill_rect(rect(content_left, top, view_width, top + lh), bg);
+                list.fill_rect(rect(content_left, top, text_right, top + lh), bg);
             }
             if let Some(border) = colors.line_highlight_border {
-                list.stroke(je_render::Shape::Rect(rect(content_left + 1.0, top + 1.0, view_width - 1.0, top + lh - 1.0)), 2.0 * scale, border);
+                list.stroke(je_render::Shape::Rect(rect(content_left + 1.0, top + 1.0, text_right - 1.0, top + lh - 1.0)), 2.0 * scale, border);
             }
         }
 
@@ -741,6 +746,8 @@ impl EditorView {
             let baseline = text_baseline(top_dev, lh * scale, &line);
             line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, color);
         }
+        self.paint_minimap(list, origin, scale);
+        self.paint_scrollbar(list, origin, scale);
         list.pop_clip();
     }
 }
