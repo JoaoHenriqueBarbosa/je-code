@@ -175,7 +175,7 @@ fn bool_enablement(state: EnablementState) -> bool {
 }
 
 /// `toExtensionDescription(extension)` (`services/extensions/common/extensions.ts`).
-fn to_extension_description(local: &LocalExtension) -> ExtensionDescription {
+pub fn to_extension_description(local: &LocalExtension) -> ExtensionDescription {
     let id = get_gallery_extension_id(Some(local.manifest.publisher.as_str()).filter(|publisher| !publisher.is_empty()), &local.manifest.name);
     ExtensionDescription {
         identifier: ExtensionIdentifier::new(id.clone()),

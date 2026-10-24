@@ -56,3 +56,6 @@ pub mod extension_enablement_support;
 
 // Porte de `extensionsWorkbenchService.test.ts`: os serviços do `setup` da suíte `ExtensionsWorkbenchServiceTest`.
 pub mod extensions_workbench_service_support;
+
+// Porte de `extensionsActions.test.ts`: o `setupTest` e os servidores de gerenciamento do teste.
+pub mod extensions_actions_support;

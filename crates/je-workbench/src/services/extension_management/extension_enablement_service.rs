@@ -92,7 +92,7 @@ const EXTENSION_UNIFICATION_SETTING: &str = "chat.extensionUnification.enabled";
 const MALICIOUS_EXTENSIONS_STORAGE_KEY: &str = "extensionsEnablement/malicious";
 
 /// `ChatAIDisabledSettingId` (`platform/chat/common/chatSettings.ts`).
-const CHAT_AI_DISABLED_SETTING_ID: &str = "chat.disableAIFeatures";
+pub const CHAT_AI_DISABLED_SETTING_ID: &str = "chat.disableAIFeatures";
 
 /// `webWorkerExtHostConfig` (`workbench/services/extensions/common/extensions.ts`).
 pub const WEB_WORKER_EXT_HOST_CONFIG: &str = "extensions.webWorker";
