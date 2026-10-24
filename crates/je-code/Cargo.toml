@@ -6,6 +6,10 @@ license.workspace = true
 publish = false
 description = "O executável do je-code."
 
+[lib]
+name = "je_code"
+path = "src/lib.rs"
+
 [[bin]]
 name = "je-code"
 path = "src/main.rs"

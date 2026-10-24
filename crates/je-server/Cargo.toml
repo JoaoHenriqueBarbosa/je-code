@@ -14,5 +14,7 @@ je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
 je-instantiation = { path = "../je-instantiation" }
 
+indexmap = "2"
+
 [dev-dependencies]
 tempfile = "3"

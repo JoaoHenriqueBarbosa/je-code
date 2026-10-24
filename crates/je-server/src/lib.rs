@@ -5,6 +5,7 @@
 //! `serverEnvironmentService.ts` e `server_lifetime_service` é `serverLifetimeService.ts`.
 
 pub mod cookie;
+pub mod remote_resource_response;
 pub mod server_connection_token;
 pub mod server_environment_service;
 pub mod server_lifetime_service;
