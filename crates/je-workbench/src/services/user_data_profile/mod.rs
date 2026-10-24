@@ -2,3 +2,5 @@
 
 pub mod user_data_profile;
 pub mod user_data_profile_service;
+
+pub mod snippets_resource;
