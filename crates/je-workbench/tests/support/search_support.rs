@@ -22,6 +22,7 @@
 #[path = "../../../je-base/tests/common/mod.rs"]
 mod common;
 
+use je_workbench::contrib::search::search_tree_model::search_tree_common::ISearchModel;
 use std::cell::RefCell;
 use std::rc::Rc;
 

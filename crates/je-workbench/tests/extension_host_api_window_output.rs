@@ -16,6 +16,7 @@
 #[path = "support/extension_host_api_harness.rs"]
 mod harness;
 
+use je_workbench::services::output::output::IOutputChannelRegistry;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
