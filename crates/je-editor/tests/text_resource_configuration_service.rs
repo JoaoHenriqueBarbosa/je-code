@@ -35,6 +35,7 @@ use je_base::uri::URI;
 use je_editor::language_service::{ILanguageSelection, ILanguageService, I_LANGUAGE_SERVICE};
 use je_editor::languages::ILanguageIdCodec;
 use je_editor::languages_registry::LanguageNameIdPair;
+use je_editor::model::TextModelCreationOptions;
 use je_editor::modes_registry::{LanguageExtensionPoint, LanguageIcon};
 use je_editor::services_model::{IModelService, I_MODEL_SERVICE};
 use je_editor::text_model::TextModel;
@@ -158,6 +159,10 @@ struct ModelServiceStub;
 impl IModelService for ModelServiceStub {
     fn get_model(&self, _resource: &URI) -> Option<Rc<TextModel>> {
         None
+    }
+
+    fn get_creation_options(&self, _language: &str, _resource: &URI, _is_for_simple_widget: bool) -> TextModelCreationOptions {
+        absent("getCreationOptions")
     }
 }
 
