@@ -703,6 +703,7 @@ use je_base::errors::{Error, throw};
 use je_platform::opener::editor_types::{AuxiliaryEditorOptions, ModalEditorPartOptions};
 
 use crate::common::editor::GroupIdentifier;
+use crate::services::layout::layout_service::{MAIN_WINDOW, WindowId};
 use crate::services::editor::editor_groups_service::{
     FindGroupScope, GroupDirection, GroupRef, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart, IModalEditorPart,
 };
@@ -721,6 +722,11 @@ impl TestEditorGroupsService {
 }
 
 impl IEditorPart for TestEditorGroupsService {
+    /// `windowId = mainWindow.vscodeWindowId`.
+    fn window_id(&self) -> WindowId {
+        MAIN_WINDOW
+    }
+
     fn active_group(&self) -> Rc<dyn IEditorGroup> {
         self.groups[0].clone()
     }
