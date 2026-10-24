@@ -85,8 +85,43 @@ pub enum ActivationKind {
     Immediate = 1,
 }
 
+/// `WillStopExtensionHostsEvent`: o evento que os ouvintes de `onWillStop` recebem e usam para vetar a parada dos hosts de
+/// extensões (`veto(value, reason)` guarda o voto, que quem disparou o evento lê em [`Self::vetoes`]).
+#[derive(Clone)]
+pub struct WillStopExtensionHostsEvent {
+    /// A human readable reason for stopping the extension hosts that e.g. can be shown in a confirmation dialog to the user.
+    pub reason: String,
+    /// A flag to indicate if the operation was triggered automatically.
+    pub auto: bool,
+    vetoes: std::rc::Rc<std::cell::RefCell<Vec<(Promise<bool>, String)>>>,
+}
+
+impl WillStopExtensionHostsEvent {
+    pub fn new(reason: &str, auto: bool) -> Self {
+        Self { reason: reason.to_owned(), auto, vetoes: Default::default() }
+    }
+
+    /// `veto(value, reason)`: allows to veto the stopping of extension hosts. The veto can be a long running operation
+    /// (`value` é a promessa; o `boolean` é a promessa já resolvida). `reason` is a human readable reason for vetoing the
+    /// extension host stop in case where the resolved `value: true`.
+    pub fn veto(&self, value: Promise<bool>, reason: &str) {
+        self.vetoes.borrow_mut().push((value, reason.to_owned()));
+    }
+
+    /// Os votos registrados por `veto`, para quem disparou o evento esperar.
+    pub fn vetoes(&self) -> Vec<(Promise<bool>, String)> {
+        self.vetoes.borrow().clone()
+    }
+}
+
 /// `IExtensionService`.
 pub trait IExtensionService {
+    /// `onWillStop`: an event that is fired when the extension host is about to stop; listeners can veto the stop.
+    /// A implementação padrão é o `Event.None` do `NullExtensionService`.
+    fn on_will_stop(&self) -> Event<WillStopExtensionHostsEvent> {
+        Event::none()
+    }
+
     /// Send an activation event and activate interested extensions (`activateByEvent(activationEvent, activationKind?)`).
     ///
     /// This will wait for the normal startup of the extension host(s).

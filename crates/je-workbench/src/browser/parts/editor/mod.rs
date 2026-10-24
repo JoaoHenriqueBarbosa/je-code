@@ -10,3 +10,4 @@ pub mod editor_part;
 pub mod editors_observer;
 pub mod editor_parts;
 pub mod modal_editor_part;
+pub mod text_editor;

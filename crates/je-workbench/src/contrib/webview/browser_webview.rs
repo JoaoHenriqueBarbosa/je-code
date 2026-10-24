@@ -162,6 +162,10 @@ pub trait IWebview: IDisposable {
     /// The origin this webview itself is loaded from. May not be unique.
     fn origin(&self) -> String;
 
+    /// `origin` (setter). O padrão não guarda nada: o dublê que não tem o campo aceita a atribuição, como um objeto
+    /// JavaScript sem a propriedade; o webview de verdade sobrescreve.
+    fn set_origin(&self, _origin: &str) {}
+
     /// Set html content.
     fn set_html(&self, html: &str);
 
@@ -266,3 +270,13 @@ impl ExtensionKeyedWebviewOriginStore {
         self.store.get_origin(view_type, Some(&ext_id.value))
     }
 }
+
+/// `IWebviewService`, só o que as entradas de editor personalizado leem dele: `createWebviewOverlay(initInfo)` (o
+/// recorte da Fase 6 é a criação do elemento em si, que o serviço de verdade faz; o resto do contrato, `activeWebview`,
+/// `webviews`, `onDidChangeActiveWebview` e `createWebviewElement`, fica fora porque nada neste porte o chama).
+pub trait IWebviewService {
+    /// `createWebviewOverlay(initInfo)`.
+    fn create_webview_overlay(&self, init_info: WebviewInitInfo) -> Rc<dyn IOverlayWebview>;
+}
+
+je_instantiation::service_id!(pub I_WEBVIEW_SERVICE: dyn IWebviewService = "webviewService");

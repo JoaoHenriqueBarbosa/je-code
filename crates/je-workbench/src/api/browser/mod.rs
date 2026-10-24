@@ -3,6 +3,7 @@
 
 pub mod main_thread_commands;
 pub mod main_thread_configuration;
+pub mod main_thread_custom_editors;
 pub mod main_thread_custom_text_editor_navigation;
 pub mod main_thread_documents;
 pub mod main_thread_language_features;
