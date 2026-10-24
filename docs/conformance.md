@@ -6,7 +6,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
 | `platform` | 192 | 2806 | 105 | 1772 | 63.15 |
-| `editor` | 182 | 3144 | 111 | 2517 | 80.06 |
+| `editor` | 182 | 3144 | 113 | 2612 | 83.08 |
 | `workbench/services` | 137 | 2491 | 26 | 550 | 22.08 |
 | `workbench/api` | 94 | 965 | 1 | 28 | 2.90 |
 | `workbench/contrib` | 370 | 4636 | 19 | 240 | 5.18 |
@@ -14,7 +14,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 7039 | 38.27 |
+| **total** | | 18391 | | 7134 | 38.79 |
 
 ## Arquivos portados
 
@@ -274,6 +274,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/contrib/linesOperations/test/browser/linesOperations.test.ts` | 55 | `crates/je-editor/tests/lines_operations.rs` | 55 |
 | `src/vs/editor/contrib/linesOperations/test/browser/moveLinesCommand.test.ts` | 14 | `crates/je-editor/tests/move_lines_command.rs` | 14 |
 | `src/vs/editor/contrib/linesOperations/test/browser/sortLinesCommand.test.ts` | 7 | `crates/je-editor/tests/sort_lines_command.rs` | 7 |
+| `src/vs/editor/contrib/multicursor/test/browser/multicursor.test.ts` | 76 | `crates/je-editor/tests/multicursor.rs` | 76 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetParser.test.ts` | 54 | `crates/je-editor/tests/snippet_parser.rs` | 54 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetSession.test.ts` | 47 | `crates/je-editor/tests/snippet_session.rs` | 47 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetVariables.test.ts` | 17 | `crates/je-editor/tests/snippet_variables.rs` | 17 |
@@ -287,6 +288,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/browser/controller/columnSelectionPaste.test.ts` | 57 | `crates/je-editor/tests/column_selection_paste.rs` | 57 |
 | `src/vs/editor/test/browser/controller/cursor.test.ts` | 263 | `crates/je-editor/tests/cursor.rs` | 263 |
 | `src/vs/editor/test/browser/controller/cursorMoveCommand.test.ts` | 55 | `crates/je-editor/tests/cursor_move_command.rs` | 55 |
+| `src/vs/editor/test/browser/controller/textAreaInput.test.ts` | 19 | `crates/je-editor/tests/text_area_input.rs` | 19 |
 | `src/vs/editor/test/browser/controller/textAreaState.test.ts` | 26 | `crates/je-editor/tests/text_area_state.rs` | 26 |
 | `src/vs/editor/test/browser/gpu/atlas/textureAtlasAllocator.test.ts` | 11 | `crates/je-editor/tests/texture_atlas_allocator.rs` | 11 |
 | `src/vs/editor/test/browser/gpu/bufferDirtyTracker.test.ts` | 2 | `crates/je-editor/tests/buffer_dirty_tracker.rs` | 2 |

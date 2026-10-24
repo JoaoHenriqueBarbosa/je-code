@@ -64,6 +64,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: décimo lote: linesOperations (55), columnSelectionPaste (57), viewController (17), indentation (59 ativos de 85; os 26 `test.skip` do original ficam `#[ignore]`) e indentationLineProcessor (6), wordPartOperations (15), glyphLanesModel (4), lineBreakData (9), linesTextBufferBuilder (12), bracketMatching (7). Suíte: 8 694 passando, 0 falhas. Placar: 7 039 de 18 391 (38,27%); editor 80,06% (eu).
 
+- 2026-10-24: décimo primeiro lote: multicursor (76, contra dublê do FindController), textAreaInput (19, gravações IME lidas do teste original em tempo de execução). Unificada a `EditorDecorationsCollection` (duas frentes tinham escrito a mesma). Suíte: 8 789 passando, 0 falhas. Placar: 7 134 de 18 391 (38,79%); editor 83,08% (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
