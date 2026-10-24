@@ -18,5 +18,10 @@ pub mod working_copy_file_operation_participant;
 pub mod working_copy_file_service;
 pub mod working_copy_service;
 
+// Histórico local das working copies (`workingCopyHistory.ts`, `workingCopyHistoryService.ts` e `workingCopyHistoryTracker.ts`).
+pub mod working_copy_history;
+pub mod working_copy_history_service;
+pub mod working_copy_history_tracker;
+
 // Contratos de `workingCopyEditorService.ts` (o handler que reabre o editor de uma working copy e o serviço que o registra).
 pub mod working_copy_editor_service;

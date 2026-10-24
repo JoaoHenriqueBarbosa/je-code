@@ -1421,6 +1421,10 @@ impl IWorkingCopy for TextFileEditorModel {
         self.on_did_save.event().map(|event| event.event.clone(), None)
     }
 
+    fn stored_file_save_event(&self) -> Option<Event<StoredFileWorkingCopySaveEvent>> {
+        Some(self.on_did_save.event())
+    }
+
     fn is_dirty(&self) -> bool {
         self.dirty.get()
     }

@@ -28,6 +28,7 @@ use je_base::lifecycle::{ById, Disposable, DisposableMap, DisposableRef, Disposa
 use je_base::map::{OrderedMap, ResourceMap};
 use je_base::uri::URI;
 use je_instantiation::{Injectable, InstantiationType, delayed_proxy, register_singleton, service_id, service_impl};
+use je_platform::files::files::FileStatWithMetadata;
 
 use super::working_copy::{IWorkingCopy, WorkingCopyIdentifier, WorkingCopySaveEvent as BaseWorkingCopySaveEvent};
 
@@ -38,6 +39,9 @@ pub struct WorkingCopySaveEvent {
     pub working_copy: Rc<dyn IWorkingCopy>,
     /// O `reason` e o `source` herdados de `IBaseWorkingCopySaveEvent`.
     pub event: BaseWorkingCopySaveEvent,
+    /// O `stat` do `IStoredFileWorkingCopySaveEvent` (presente só quando a working copy é de arquivo armazenado, que é o que
+    /// o `isStoredFileWorkingCopySaveEvent` do original testa).
+    pub stat: Option<FileStatWithMetadata>,
 }
 
 /// `IWorkingCopyService`.
@@ -367,9 +371,21 @@ impl IWorkingCopyService for WorkingCopyService {
         let (content_copy, dirty_copy, save_copy) = (working_copy.clone(), working_copy.clone(), working_copy.clone());
         working_copy.on_did_change_content().listen_in(move |_| on_did_change_content.fire(content_copy.clone()), &disposables);
         working_copy.on_did_change_dirty().listen_in(move |_| on_did_change_dirty.fire(dirty_copy.clone()), &disposables);
-        working_copy
-            .on_did_save()
-            .listen_in(move |e| on_did_save.fire(WorkingCopySaveEvent { working_copy: save_copy.clone(), event: e.clone() }), &disposables);
+        // O `onDidSave` com o `stat` (arquivo armazenado) ou o evento base (as demais working copies)
+        match working_copy.stored_file_save_event() {
+            Some(stored_event) => {
+                stored_event.listen_in(
+                    move |e| on_did_save.fire(WorkingCopySaveEvent { working_copy: save_copy.clone(), event: e.event.clone(), stat: Some(e.stat.clone()) }),
+                    &disposables,
+                );
+            }
+            None => {
+                working_copy.on_did_save().listen_in(
+                    move |e| on_did_save.fire(WorkingCopySaveEvent { working_copy: save_copy.clone(), event: e.clone(), stat: None }),
+                    &disposables,
+                );
+            }
+        }
         self.map_working_copy_to_listeners.set(ById(working_copy.clone()), disposables, false);
 
         // Send some initial events
