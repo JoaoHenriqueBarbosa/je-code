@@ -2,9 +2,10 @@
 //! workbench a mostra: instalada, da galeria ou de um recurso), os estados que ele expõe e as chaves de configuração.
 //!
 //! Recortes (cada um entra inteiro quando o serviço que ele descreve for portado):
-//! - **`IExtensionsWorkbenchService`, `InstallExtensionOptions`, `IExtensionsNotification`, `ExtensionContainers`,
-//!   `IExtensionsViewState` e `IExtensionContainer`** dependem da interface de usuário (editor, views, contêineres de
-//!   widgets) e do serviço do workbench, que ainda não existe no porte.
+//! - **`IExtensionsWorkbenchService`, `InstallExtensionOptions`, `IExtensionsNotification` e `IExtensionsViewState`**
+//!   dependem da interface de usuário (editor, views) e do serviço do workbench, que ainda não existe no porte como
+//!   contrato: o serviço é o [`ExtensionsWorkbenchService`] concreto. **`IExtensionContainer`** e
+//!   **`ExtensionContainers`** (a lógica que liga o `onChange` do serviço às ações) estão aqui.
 //! - **As chaves de contexto** (`RawContextKey`) e os grupos de menu (`MenuId`) não têm o serviço de contexto ligado a
 //!   este módulo; as constantes de texto que as acompanham estão aqui.
 //! - **`IExtension.local`, `gallery`** são os tipos do `je-extensions` ([`LocalExtension`] e [`GalleryExtension`]), a
@@ -16,8 +17,13 @@ use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
+use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_extensions::util::are_same_extensions;
+
+use super::extensions_service::ExtensionsWorkbenchService;
+use super::extensions_workbench_service::Extension;
 use je_extensions::management::{DeprecationInfo, GalleryExtension, LocalExtension};
 use je_extensions::manifest::{ExtensionIdentifierInfo, ExtensionManifest, ExtensionType};
 
@@ -143,3 +149,70 @@ pub const LIST_WORKSPACE_UNSUPPORTED_EXTENSIONS_COMMAND_ID: &str = "workbench.ex
 pub const THEME_ACTIONS_GROUP: &str = "_theme_";
 pub const INSTALL_ACTIONS_GROUP: &str = "0_install";
 pub const UPDATE_ACTIONS_GROUP: &str = "0_update";
+
+/// `IExtensionContainer`: o que recebe a extensão que o `onChange` do serviço traz (as ações, os itens de lista...).
+pub trait IExtensionContainer: IDisposable {
+    fn extension(&self) -> Option<Rc<Extension>>;
+    fn set_extension(&self, extension: Option<Rc<Extension>>);
+    /// `updateWhenCounterExtensionChanges`: `undefined` (falso) na maioria dos contêineres.
+    fn update_when_counter_extension_changes(&self) -> bool {
+        false
+    }
+    fn update(&self);
+}
+
+/// `ExtensionContainers`: repassa a extensão que mudou aos contêineres que a mostram.
+pub struct ExtensionContainers {
+    base: Rc<Disposable>,
+    containers: Vec<Rc<dyn IExtensionContainer>>,
+}
+
+impl ExtensionContainers {
+    /// `constructor(containers, extensionsWorkbenchService)`.
+    pub fn new(containers: Vec<Rc<dyn IExtensionContainer>>, extensions_workbench_service: &ExtensionsWorkbenchService) -> Rc<Self> {
+        let this = Rc::new(Self { base: Disposable::new(), containers });
+        let weak = Rc::downgrade(&this);
+        this.base.register(extensions_workbench_service.on_change().listen(move |extension| {
+            if let Some(this) = weak.upgrade() {
+                this.update(extension.clone());
+            }
+        }));
+        this
+    }
+
+    /// `set extension(extension)`.
+    pub fn set_extension(&self, extension: Rc<Extension>) {
+        for container in &self.containers {
+            container.set_extension(Some(extension.clone()));
+        }
+    }
+
+    fn update(&self, extension: Option<Rc<Extension>>) {
+        for container in &self.containers {
+            match (&extension, container.extension()) {
+                (Some(extension), Some(container_extension)) => {
+                    if are_same_extensions(&container_extension.identifier(), &extension.identifier()) {
+                        let container_server = container_extension.server();
+                        let extension_server = extension.server();
+                        if let (Some(container_server), Some(extension_server)) = (&container_server, &extension_server)
+                            && !Rc::ptr_eq(container_server, extension_server)
+                        {
+                            if container.update_when_counter_extension_changes() {
+                                container.update();
+                            }
+                        } else {
+                            container.set_extension(Some(extension.clone()));
+                        }
+                    }
+                }
+                _ => container.update(),
+            }
+        }
+    }
+}
+
+impl IDisposable for ExtensionContainers {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+}
