@@ -53,7 +53,7 @@ use je_platform::keybinding::keybinding::{IKeybindingService, KeybindingsSchemaC
 use je_platform::keybinding::keybinding_resolver::ResolutionResult;
 use je_platform::keybinding::resolved_keybinding_item::ResolvedKeybindingItem;
 use je_platform::keybinding::us_layout_resolved_keybinding::USLayoutResolvedKeybinding;
-use je_workbench::services::extensions::extensions::{IExtensionDescription, IExtensionService};
+use je_workbench::services::extensions::extensions::{ActivationKind, IExtensionDescription, IExtensionService};
 use je_workbench::services::preferences::keybindings_editor_model::KeybindingsEditorModel;
 use je_workbench::services::preferences::preferences::{IKeybindingItemEntry, KeybindingMatch, KeybindingMatches};
 use platform_keybinding::os;
@@ -208,6 +208,14 @@ impl StubExtensionService {
 }
 
 impl IExtensionService for StubExtensionService {
+    fn activate_by_event(&self, _activation_event: &str, _activation_kind: Option<ActivationKind>) -> Promise<()> {
+        not_stubbed("activateByEvent")
+    }
+
+    fn activation_event_is_done(&self, _activation_event: &str) -> bool {
+        not_stubbed("activationEventIsDone")
+    }
+
     fn get_extension(&self, _id: &str) -> Promise<Option<IExtensionDescription>> {
         not_stubbed("getExtension")
     }

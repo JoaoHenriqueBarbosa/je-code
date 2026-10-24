@@ -13,7 +13,7 @@ pub struct NotificationText {
 }
 
 /// `string | NotificationText`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotificationPart {
     Text(String),
     Rich(NotificationText),

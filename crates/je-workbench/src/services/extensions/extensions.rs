@@ -13,6 +13,8 @@
 //!   devolve o `ExtensionDescription` do `je-extensions`, o descritor inteiro, e não o `IExtensionDescription` reduzido
 //!   acima. Quem implementa [`IExtensionService`] precisa implementá-lo (o dublê `TestExtensionService` devolve a lista
 //!   vazia, como o `extensions = []` do original).
+//! - `activateByEvent` e `activationEventIsDone` entram com a ponte `MainThreadCommands`; `ActivationKind` é o enum
+//!   [`ActivationKind`] e o `activationKind?` é `Option<ActivationKind>`.
 //! - `nullExtensionDescription`, `isProposedApiEnabled` e `checkProposedApiEnabled` trabalham sobre o
 //!   `ExtensionDescription` do `je-extensions` ([`null_extension_description`], [`is_proposed_api_enabled`],
 //!   [`check_proposed_api_enabled`]); a proposta é o nome como texto (`ApiProposalName` do original), e o erro que o
@@ -74,8 +76,30 @@ pub struct IExtensionDescription {
     pub extension_location: URI,
 }
 
+/// `ActivationKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationKind {
+    Normal = 0,
+    Immediate = 1,
+}
+
 /// `IExtensionService`.
 pub trait IExtensionService {
+    /// Send an activation event and activate interested extensions (`activateByEvent(activationEvent, activationKind?)`).
+    ///
+    /// This will wait for the normal startup of the extension host(s).
+    ///
+    /// In extraordinary circumstances, if the activation event needs to activate
+    /// one or more extensions before the normal startup is finished, then you can use
+    /// `ActivationKind.Immediate`. Please do not use this flag unless really necessary
+    /// and you understand all consequences.
+    fn activate_by_event(&self, activation_event: &str, activation_kind: Option<ActivationKind>) -> Promise<()>;
+
+    /// Determine if `activateByEvent(activationEvent)` has resolved already.
+    ///
+    /// i.e. the activation event is finished and all interested extensions are already active.
+    fn activation_event_is_done(&self, activation_event: &str) -> bool;
+
     /// Returns the description of the extension with the given id, or `None` when it is not installed.
     fn get_extension(&self, id: &str) -> Promise<Option<IExtensionDescription>>;
 

@@ -1351,3 +1351,77 @@ mod file_system_event_region {
 }
 
 // #endregion
+
+// #region Progress (bloco próprio: `extHostProgress.ts` e `mainThreadProgress.ts`)
+
+pub use self::progress_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostProgress.ts` e `mainThreadProgress.ts` usam: `IProgressOptionsDto`,
+/// `IProgressStepDto`, `MainThreadProgressShape`, `ExtHostProgressShape` e os identificadores
+/// `MainContext.MainThreadProgress` e `ExtHostContext.ExtHostProgress`.
+///
+/// Divergências:
+/// - `IProgressOptionsDto extends Omit<IProgressOptions, 'title' | 'legacyExtensionLinkParsing' | 'telemetry'>`: o
+///   struct tem só os campos que sobram (`location`, `source`, `total`, `cancellable`, `buttons`) mais o `title`
+///   como texto e o `telemetryId`. Os campos de capacidade (`legacyExtensionLinkParsing`, `telemetry`) não existem no
+///   DTO, o que o compilador garante. `IProgressStepDto extends Omit<IProgressStep, 'message'>` é o struct com o
+///   `message` como texto.
+/// - O `handle: number` é `u32` (o contador de `ExtHostProgress`), e o `extensionId?: string` é `Option<&str>`.
+mod progress_region {
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_platform::notification::notification::NotificationSourceOrText;
+    use je_platform::notification::notification_telemetry::NotificationTelemetryId;
+    use je_platform::progress::progress::{ProgressCancellable, ProgressLocationId};
+
+    use super::ProxyIdentifier;
+
+    /// `IProgressOptionsDto`.
+    #[derive(Clone, Debug)]
+    pub struct IProgressOptionsDto {
+        pub location: ProgressLocationId,
+        pub title: Option<String>,
+        pub telemetry_id: Option<NotificationTelemetryId>,
+        pub source: Option<NotificationSourceOrText>,
+        pub total: Option<f64>,
+        pub cancellable: Option<ProgressCancellable>,
+        pub buttons: Option<Vec<String>>,
+    }
+
+    impl IProgressOptionsDto {
+        /// O DTO só com o local, o resto ausente.
+        pub fn new(location: impl Into<ProgressLocationId>) -> Self {
+            Self { location: location.into(), title: None, telemetry_id: None, source: None, total: None, cancellable: None, buttons: None }
+        }
+    }
+
+    /// `IProgressStepDto`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct IProgressStepDto {
+        pub message: Option<String>,
+        pub increment: Option<f64>,
+        pub total: Option<f64>,
+    }
+
+    /// `MainThreadProgressShape`.
+    pub trait MainThreadProgressShape: IDisposable {
+        fn rpc_start_progress(&self, handle: u32, options: IProgressOptionsDto, extension_id: Option<&str>) -> Promise<()>;
+        fn rpc_progress_report(&self, handle: u32, message: IProgressStepDto);
+        fn rpc_progress_end(&self, handle: u32);
+    }
+
+    /// `ExtHostProgressShape`.
+    pub trait ExtHostProgressShape {
+        fn rpc_accept_progress_canceled(&self, handle: u32);
+    }
+
+    impl super::MainContext {
+        pub const MAIN_THREAD_PROGRESS: ProxyIdentifier<dyn MainThreadProgressShape> = ProxyIdentifier::new("MainThreadProgress");
+    }
+
+    impl super::ExtHostContext {
+        pub const EXT_HOST_PROGRESS: ProxyIdentifier<dyn ExtHostProgressShape> = ProxyIdentifier::new("ExtHostProgress");
+    }
+}
+
+// #endregion
