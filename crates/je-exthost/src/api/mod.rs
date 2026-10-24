@@ -7,3 +7,4 @@
 pub mod commands;
 pub mod disposable;
 pub mod l10n;
+pub mod types;

@@ -14,7 +14,7 @@ use je_workbench::api::common::ext_host_protocol::{
 use je_workbench::services::extensions::extensions::IExtensionService;
 use zjsc::api::embed_node::{JsData, NodeRunner};
 
-use crate::api::{commands, disposable, l10n};
+use crate::api::{commands, disposable, l10n, types};
 use crate::local_context::LocalContext;
 
 /// O `ExtHostCommandsShape` que ainda não existe quando o lado do workbench é criado: encaminha para o real depois de
@@ -83,11 +83,13 @@ impl ExtensionHost {
 
         let table = disposable::DisposableTable::new();
         let disposable_class = disposable::define(runner, &table);
-        let vscode = JsData::Object(vec![
-            ("Disposable".to_owned(), disposable_class),
+        let mut members = types::classes(runner);
+        members.push(("Disposable".to_owned(), disposable_class));
+        members.extend([
             ("commands".to_owned(), commands::namespace(runner, &commands, &table)),
             ("l10n".to_owned(), l10n::namespace(runner)),
         ]);
+        let vscode = JsData::Object(members);
         runner.register_module("vscode", &vscode);
         ExtensionHost { runner: runner.clone(), commands, vscode, _main_thread_commands: main_thread_commands }
     }
