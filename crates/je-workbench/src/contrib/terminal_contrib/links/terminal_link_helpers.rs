@@ -195,7 +195,8 @@ pub fn update_link_with_relative_cwd(
     } else {
         let mut common_dirs = 0;
         let mut i = 0;
-        let cwd_path: Vec<&str> = cwd.split(sep).rev().collect();
+        let mut cwd_path: Vec<&str> = cwd.split(sep).collect();
+        cwd_path.reverse();
         let link_path: Vec<&str> = text.split(sep).collect();
         // Pega todos os resultados como candidatos, priorizando o link com mais diretórios em comum. Por
         // exemplo, no diretório /home/common com o link common/file, o resultado deve ser
