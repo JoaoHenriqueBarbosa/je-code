@@ -973,6 +973,23 @@ mod tests {
         key(&mut shell, Some(EditorKey::Enter), Modifiers { ctrl: true, ..Modifiers::default() }, None);
         wait(&mut shell, &|s| s.count() == 0);
         assert_eq!(shell.git_status().count(), 0, "o commit levou os dois arquivos");
+        // Um remoto local: o commit novo fica 1 à frente; o Sync empurra e zera.
+        let remote = dir.with_extension("remote");
+        let out = std::process::Command::new("git").args(["init", "-q", "--bare"]).arg(&remote).output().expect("bare");
+        assert!(out.status.success());
+        run_git(&["remote", "add", "origin", &remote.to_string_lossy()]);
+        run_git(&["push", "-q", "-u", "origin", "main"]);
+        std::fs::write(dir.join("c.txt"), "c\n").expect("c");
+        run_git(&["add", "c.txt"]);
+        run_git(&["commit", "-q", "-m", "terceiro"]);
+        shell.run(shell::Command::ScmRefresh);
+        wait(&mut shell, &|s| s.ahead == 1);
+        assert!(shell.git_status().upstream);
+        snapshot(&mut shell, "g2-ahead.png");
+        shell.run(shell::Command::ScmOp(shell::git::Operation::Sync));
+        wait(&mut shell, &|s| s.ahead == 0);
+        assert_eq!(shell.git_status().ahead, 0, "o Sync empurrou o commit");
+        std::fs::remove_dir_all(&remote).ok();
         let log = std::process::Command::new("git").arg("-C").arg(&dir).args(["log", "--oneline"]).output().expect("log");
         assert!(String::from_utf8_lossy(&log.stdout).contains("segundo commit"));
         std::fs::remove_dir_all(&dir).ok();

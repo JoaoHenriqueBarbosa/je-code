@@ -218,6 +218,7 @@ pub enum Command {
     OpenRecent,
     /// `workbench.action.zoomIn`/`zoomOut`/`zoomReset`: muda o `window.zoomLevel` em um passo.
     Zoom(i32),
+    AutoFetch,
     /// O `files.autoSave: afterDelay` venceu o prazo para a versão dada da aba.
     AutoSave(usize, i64),
     /// Mostra a dica do nó depois da espera (`workbench.hover.delay`), se o ponteiro ainda estiver nele.
@@ -1181,6 +1182,13 @@ impl Shell {
                 }
                 return;
             }
+            Command::AutoFetch => {
+                if self.git_rx.is_none() {
+                    self.git_op(git::Operation::Fetch);
+                }
+                self.schedule_autofetch();
+                return;
+            }
             Command::Zoom(step) => {
                 self.zoom_level = if step == 0 { 0.0 } else { (self.zoom_level + f64::from(step)).clamp(-8.0, 8.0) };
                 self.resize_editors();
@@ -1629,6 +1637,17 @@ impl Shell {
         }
     }
 
+    /// O `git.autofetch`: um `git fetch` agora e a cada `git.autofetchPeriod` segundos (180 por padrão).
+    fn schedule_autofetch(&self) {
+        let settings = themes::user_settings();
+        if settings.get("git.autofetch").is_none_or(|v| v == &serde_json::Value::Bool(false)) || self.git_root.is_none() {
+            return;
+        }
+        let period = settings.get("git.autofetchPeriod").and_then(serde_json::Value::as_u64).unwrap_or(180).max(30);
+        let queue = self.queue.clone();
+        je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::AutoFetch), period * 1000);
+    }
+
     /// Detecta o repositório do workspace e pede o estado.
     fn detect_git(&mut self) {
         self.git_root = self.workspace.as_deref().and_then(git::find_root);
@@ -1636,6 +1655,7 @@ impl Shell {
         self.git_rx = None;
         if self.git_root.is_some() {
             self.git_op(git::Operation::Refresh);
+            self.schedule_autofetch();
         }
     }
 
@@ -3184,6 +3204,18 @@ impl Shell {
         left += place(&mut tree, left, &[Piece::Icon("remote")], None);
         if let Some(label) = self.branch_label() {
             left += place(&mut tree, left, &[Piece::Icon("git-branch"), Piece::Text(format!(" {label}"))], Some(Command::ShowScm));
+            // O `Synchronize Changes`: as contagens de puxar e empurrar, ou só o ícone de publicar sem remoto.
+            let (upstream, ahead, behind) = {
+                let s = self.scm.status.borrow();
+                (s.upstream, s.ahead, s.behind)
+            };
+            let busy = self.git_rx.is_some();
+            if upstream {
+                let text = if ahead == 0 && behind == 0 { String::new() } else { format!(" {behind}\u{2193} {ahead}\u{2191}") };
+                left += place(&mut tree, left, &[Piece::Icon(if busy { "loading" } else { "sync" }), Piece::Text(text)], Some(Command::ScmOp(git::Operation::Sync)));
+            } else {
+                left += place(&mut tree, left, &[Piece::Icon("cloud-upload")], None);
+            }
         }
         place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())], None);
         let mut items: Vec<(Vec<Piece>, Option<Command>)> = Vec::new();

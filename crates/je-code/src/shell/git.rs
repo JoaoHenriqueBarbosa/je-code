@@ -58,6 +58,8 @@ pub struct Change {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     pub branch: String,
+    /// O ramo tem um remoto de acompanhamento (`main...origin/main`).
+    pub upstream: bool,
     pub ahead: u32,
     pub behind: u32,
     pub staged: Vec<Change>,
@@ -121,6 +123,7 @@ pub fn parse_status(output: &str) -> Status {
             // `main...origin/main [ahead 1, behind 2]`, `main`, `No commits yet on main` ou `HEAD (no branch)`.
             let (name, tracking) = header.split_once(" [").map_or((header, ""), |(n, t)| (n, t));
             status.branch = name.strip_prefix("No commits yet on ").unwrap_or(name).split("...").next().unwrap_or(name).to_owned();
+            status.upstream = name.contains("...");
             for part in tracking.trim_end_matches(']').split(", ") {
                 if let Some(n) = part.strip_prefix("ahead ") {
                     status.ahead = n.parse().unwrap_or(0);
@@ -167,6 +170,12 @@ pub enum Operation {
     Discard(Vec<Change>),
     Commit(String),
     Refresh,
+    /// `git fetch` (o `git.autofetch` roda este a cada `git.autofetchPeriod`).
+    Fetch,
+    Pull,
+    Push,
+    /// O `Sync` da barra de status: pull e depois push.
+    Sync,
 }
 
 fn run_operation(root: &Path, op: &Operation) -> Result<(), String> {
@@ -201,6 +210,10 @@ fn run_operation(root: &Path, op: &Operation) -> Result<(), String> {
             Ok(())
         }
         Operation::Commit(message) => git(root, &["commit", "-m", message]).map(|_| ()),
+        Operation::Fetch => git(root, &["fetch", "--quiet"]).map(|_| ()),
+        Operation::Pull => git(root, &["pull", "--quiet"]).map(|_| ()),
+        Operation::Push => git(root, &["push", "--quiet"]).map(|_| ()),
+        Operation::Sync => git(root, &["pull", "--quiet"]).and_then(|_| git(root, &["push", "--quiet"])).map(|_| ()),
     }
 }
 
@@ -237,6 +250,8 @@ mod tests {
 
     #[test]
     fn parses_branch_and_the_two_columns() {
+        assert!(parse_status("## main...origin/main\0").upstream);
+        assert!(!parse_status("## main\0").upstream);
         let status = parse_status("## main...origin/main [ahead 1, behind 2]\0 M notes.txt\0M  src/a.rs\0D  old.txt\0?? fresh.txt\0R  new.txt\0was.txt\0UU both.txt\0");
         assert_eq!((status.branch.as_str(), status.ahead, status.behind), ("main", 1, 2));
         let staged: Vec<_> = status.staged.iter().map(|c| (c.path.as_str(), c.kind)).collect();
