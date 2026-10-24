@@ -69,7 +69,7 @@ use je_platform::workspace::IWorkspaceContextService;
 use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, TextEditorOptions, TextEditorSelection, UntypedEditorInput};
 use crate::contrib::search::common::cache_state::FileQueryCacheState;
 use crate::contrib::search::search::extract_range_from_filter;
-use crate::services::editor::editor_groups_service::{IEditorGroupsService, PreferredGroup};
+use crate::services::editor::editor_groups_service::{GroupRef, IEditorGroupsService, PreferredGroup};
 use crate::services::editor::editor_service::{ActiveTextEditorControl, IEditorService};
 use crate::services::editor::custom_editor_label_service::ICustomEditorLabelService;
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
@@ -247,15 +247,17 @@ pub struct AnythingQuickAccessProvider {
     services: AnythingQuickAccessServices,
     pick_state: PickState,
     link_source_group: Cell<Option<i64>>,
-    file_query_builder: QueryBuilder,
+    file_query_builder: Rc<QueryBuilder>,
     file_query_delayer: ThrottledDelayer<Vec<URI>>,
     label_only_editor_history_pick_accessor: QuickPickItemScorerAccessor,
+    /// O `_getPicks` sobrescrito por uma subclasse (`protected override _getPicks`), quando houver.
+    picks_override: RefCell<Option<Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>>>>,
 }
 
 impl AnythingQuickAccessProvider {
     pub const PREFIX: &'static str = "";
 
-    pub fn new(services: AnythingQuickAccessServices, file_query_builder: QueryBuilder) -> Rc<Self> {
+    pub fn new(services: AnythingQuickAccessServices, file_query_builder: Rc<QueryBuilder>) -> Rc<Self> {
         Rc::new_cyclic(|this| Self {
             this: this.clone(),
             picker_base: PickerQuickAccessProvider::new(
@@ -281,6 +283,7 @@ impl AnythingQuickAccessProvider {
             file_query_builder,
             file_query_delayer: ThrottledDelayer::new(TYPING_SEARCH_DELAY),
             label_only_editor_history_pick_accessor: QuickPickItemScorerAccessor::new(true, false),
+            picks_override: RefCell::new(None),
         })
     }
 
@@ -404,7 +407,8 @@ impl AnythingQuickAccessProvider {
         }));
 
         // Start picker
-        let source: Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>> = self.self_rc();
+        let default_source: Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>> = self.self_rc();
+        let source = self.picks_override.borrow().clone().unwrap_or(default_source);
         disposables.add(self.picker_base.provide(source, picker, token, run_options));
 
         disposables
@@ -501,7 +505,7 @@ impl AnythingQuickAccessProvider {
                         if open_to_side {
                             this.services.editor_view_state.restore().await?;
                             if this.services.editor_groups_service.get_group(source_group).is_some() {
-                                this.services.editor_groups_service.activate_group(PreferredGroup::Id(source_group));
+                                this.services.editor_groups_service.activate_group(GroupRef::Id(source_group));
                             }
                         }
 
@@ -1173,11 +1177,14 @@ impl AnythingQuickAccessProvider {
                 Some(model) => model,
                 None => match this.services.text_model_service.create_model_reference(&active_global_resource).await {
                     Ok(model_reference) => {
+                        disposables.add_rc(Rc::new(model_reference.clone()));
                         if token.is_cancellation_requested() {
                             return Ok(Picks::Items(Vec::new()));
                         }
-                        disposables.add(model_reference.disposable());
-                        model_reference.text_editor_model()
+                        match model_reference.object.text_editor_model() {
+                            Some(model) => model,
+                            None => return Ok(Picks::Items(Vec::new())),
+                        }
                     }
                     Err(_) => return Ok(Picks::Items(Vec::new())), // return if model cannot be resolved
                 },
@@ -1582,6 +1589,11 @@ impl IDisposable for AnythingQuickAccessProvider {
 
 /// O `Disposable` base, para quem registra o provedor num `DisposableStore`.
 impl AnythingQuickAccessProvider {
+    /// Faz o papel de uma subclasse que sobrescreve `_getPicks`.
+    pub fn override_get_picks(&self, source: Rc<dyn IPickerQuickAccessSource<IAnythingQuickAccessProviderRunOptions>>) {
+        *self.picks_override.borrow_mut() = Some(source);
+    }
+
     pub fn disposable(&self) -> &Rc<Disposable> {
         self.picker_base.disposable()
     }
