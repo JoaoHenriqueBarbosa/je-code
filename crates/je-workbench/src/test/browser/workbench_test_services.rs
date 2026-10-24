@@ -409,6 +409,11 @@ mod editor_inputs {
             None
         }
 
+        /// `activeTextEditorLanguageId` nasce `undefined`.
+        fn active_text_editor_language_id(&self) -> Option<String> {
+            None
+        }
+
         /// `openEditor`: o `TestEditorService` do original devolve `undefined` (nenhum painel abriu o editor).
         fn open_editor(&self, _editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>> {
             Promise::resolved(None)

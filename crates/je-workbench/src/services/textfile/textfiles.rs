@@ -21,8 +21,10 @@
 //!   `VSBuffer | VSBufferReadable` é [`EncodedContent`] (o leitor em `Rc<RefCell<..>>`, como o `WorkingCopyBackupContent`).
 //! - **`TextFileOperationError`** é um [`Error`] com a propriedade `textFileOperationResult` (sobre o `FileOperationError`
 //!   `FILE_OTHER_ERROR`); [`is_text_file_operation_error`] é o `isTextFileOperationError`.
-//! - **`untitled: IUntitledTextEditorModelManager`** de `ITextFileService` fica de fora: o serviço de arquivos sem
-//!   título (`untitledTextEditorService.ts`) ainda não foi portado, e o membro entra com ele.
+//! - **`untitled: IUntitledTextEditorModelManager`** de `ITextFileService` é [`ITextFileService::untitled`] (a propriedade
+//!   vira método, como as demais do porte).
+//! - **`IEncodingSupport`** é o trait [`IEncodingSupport`] (o `UntitledTextEditorInput` o implementa); o
+//!   `ITextFileEditorModel` mantém `getEncoding` e `setEncoding` como membros próprios.
 //! - **`getEncodedReadable`** e suas sobrecargas são [`ITextFileService::get_encoded_readable`], que devolve
 //!   `Option<EncodedContent>` (`undefined` quando o valor é `undefined`).
 
@@ -45,8 +47,9 @@ use je_platform::files::files::{FileOperationError, FileOperationResult, FileRea
 use crate::common::editor::editor_model::IEditorModel;
 use crate::common::editor::{RevertOptions, SaveOptions, SaveReason, SaveSource};
 use crate::services::textfile::collaborators::{IProgress, ProgressStep};
+use crate::services::untitled::untitled_text_editor_service::IUntitledTextEditorModelManager;
 use crate::services::working_copy::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
-use crate::services::working_copy::working_copy::IWorkingCopy;
+use crate::services::working_copy::working_copy::{IWorkingCopy, WorkingCopyBackupContent};
 
 je_instantiation::service_id!(pub I_TEXT_FILE_SERVICE: dyn ITextFileService = "textFileService");
 
@@ -58,6 +61,20 @@ pub type VSBufferReadable = Rc<RefCell<Box<dyn Readable<VSBuffer>>>>;
 pub enum EncodedContent {
     Buffer(VSBuffer),
     Readable(VSBufferReadable),
+}
+
+/// O conteúdo de um backup de working copy a partir do que o `getEncodedReadable` devolveu: o buffer vira o leitor dele
+/// (`bufferToReadable`), que é o que o `IWorkingCopyBackup.content` aceita.
+impl From<EncodedContent> for WorkingCopyBackupContent {
+    fn from(content: EncodedContent) -> Self {
+        match content {
+            EncodedContent::Readable(readable) => WorkingCopyBackupContent::Readable(readable),
+            EncodedContent::Buffer(buffer) => {
+                let readable: Box<dyn Readable<VSBuffer>> = Box::new(je_base::stream::to_readable(buffer));
+                WorkingCopyBackupContent::Readable(Rc::new(RefCell::new(readable)))
+            }
+        }
+    }
 }
 
 /// `string | ITextSnapshot`.
@@ -464,6 +481,15 @@ pub trait ILanguageSupport {
     fn set_language_id(&self, language_id: &str, source: Option<&str>);
 }
 
+/// `IEncodingSupport`.
+pub trait IEncodingSupport {
+    /// Gets the encoding of the object if known.
+    fn get_encoding(&self) -> Option<String>;
+
+    /// Sets the encoding for the object for saving.
+    fn set_encoding(&self, encoding: &str, mode: EncodingMode) -> Promise<()>;
+}
+
 /// `ITextFileEditorModel` (e, por herança, `ITextEditorModel`, `IEncodingSupport`, `ILanguageSupport` e `IWorkingCopy`).
 pub trait ITextFileEditorModel: IWorkingCopy + IEditorModel + ILanguageSupport {
     fn on_did_save_stored(&self) -> Event<StoredFileWorkingCopySaveEvent>;
@@ -544,6 +570,9 @@ pub fn to_buffer_or_readable(value: Option<TextOrSnapshot>) -> Option<EncodedCon
 pub trait ITextFileService {
     /// Access to the manager of text file editor models providing further methods to work with them.
     fn files(&self) -> Rc<dyn ITextFileEditorModelManager>;
+
+    /// Access to the manager of untitled text editors.
+    fn untitled(&self) -> Rc<dyn IUntitledTextEditorModelManager>;
 
     /// Helper to determine encoding for resources.
     fn encoding(&self) -> Rc<dyn IResourceEncodings>;

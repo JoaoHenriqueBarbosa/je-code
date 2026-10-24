@@ -17,3 +17,6 @@ pub mod text_file_editor_model;
 pub mod text_file_editor_model_manager;
 pub mod text_file_save_participant;
 pub mod textfiles;
+
+// Contrato de `common/textEditorService.ts` (a criação de entradas de editor de texto a partir de entradas sem tipo).
+pub mod text_editor_service;

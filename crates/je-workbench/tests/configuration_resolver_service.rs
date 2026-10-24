@@ -111,6 +111,10 @@ impl IEditorService for TestEditorServiceWithActiveEditor {
         Some(ActiveTextEditorControl::Code(code_editor()))
     }
 
+    fn active_text_editor_language_id(&self) -> Option<String> {
+        unreachable!("TestEditorServiceWithActiveEditor.activeTextEditorLanguageId não é exercitado por esta suíte")
+    }
+
     fn open_editor(&self, _editor: UntypedEditorInput) -> Promise<Option<Rc<dyn je_workbench::common::editor::IEditorPane>>> {
         unreachable!("TestEditorServiceWithActiveEditor.openEditor não é exercitado por esta suíte")
     }
