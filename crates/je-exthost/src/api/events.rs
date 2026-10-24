@@ -84,8 +84,21 @@ fn id_of(value: &JsData) -> Option<u64> {
 
 /// A função de evento `(listener, thisArgs?, disposables?) => Disposable` sobre `event`; `to_js` converte o valor do evento.
 pub fn event_function<T: 'static>(runner: &NodeRunner, table: &Rc<DisposableTable>, name: &str, event: Event<T>, to_js: impl Fn(&T) -> JsData + 'static) -> JsData {
+    event_function_with_epilogue(runner, table, name, event, move |value| (to_js(value), |_: &T| {}))
+}
+
+/// Como [`event_function`], mas `prepare` devolve também um epílogo que roda com o valor do evento logo depois que o listener
+/// retorna (ou lança). É o gancho dos eventos `waitUntil`: o listener só pode chamar `waitUntil` durante o despacho, e quem
+/// entrega as promessas ao evento precisa do `&T` vivo, que o objeto copiado para o JavaScript não pode guardar.
+pub fn event_function_with_epilogue<T: 'static, E: FnOnce(&T) + 'static>(
+    runner: &NodeRunner,
+    table: &Rc<DisposableTable>,
+    name: &str,
+    event: Event<T>,
+    prepare: impl Fn(&T) -> (JsData, E) + 'static,
+) -> JsData {
     let (call_runner, table) = (runner.clone(), table.clone());
-    let to_js = Rc::new(to_js);
+    let to_js = Rc::new(prepare);
     let label = name.to_owned();
     let function = runner.make_function(
         name,
@@ -100,11 +113,12 @@ pub fn event_function<T: 'static>(runner: &NodeRunner, table: &Rc<DisposableTabl
             };
             let (runner, convert) = (call_runner.clone(), to_js.clone());
             let subscription = event.listen(move |value| {
-                let payload = convert(value);
+                let (payload, epilogue) = convert(value);
                 let outcome = match &this_arg {
                     Some(this_arg) => runner.call_method(&listener, "call", &[this_arg.clone(), payload]).map(|_| ()).map_err(Error::new),
                     None => runner.call_data_throwing(&listener, &[payload]).map(|_| ()).map_err(|thrown| js_to_error(&thrown)),
                 };
+                epilogue(value);
                 if let Err(error) = outcome {
                     on_unexpected_error(&error);
                 }

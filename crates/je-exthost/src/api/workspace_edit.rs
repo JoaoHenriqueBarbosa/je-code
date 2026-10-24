@@ -69,6 +69,12 @@ impl WorkspaceEditObjects {
     fn snapshot(&self, value: &JsData) -> Result<WorkspaceEdit, String> {
         self.with(value, |edit| Ok(edit.clone()))
     }
+
+    /// A edição que `value` representa, se for uma `WorkspaceEdit` deste host (o valor de uma promessa de `waitUntil`); qualquer
+    /// outro valor é `None`.
+    pub(crate) fn resolved_edit(&self, value: &JsData) -> Option<WorkspaceEdit> {
+        if class_name(value) == Some("WorkspaceEdit") { self.snapshot(value).ok() } else { None }
+    }
 }
 
 // ---- a leitura dos argumentos

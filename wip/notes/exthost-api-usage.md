@@ -276,6 +276,24 @@ número de ativação foi medido.
 | `workspace.applyEdit(edit, metadata?)` | entregue, ligado ao `ExtHostBulkEdits` (precisa do cliente `MainThreadBulkEdits`) | `api/workspace_edit.rs`, `host.rs` |
 | `WorkspaceEdit#set` com `NotebookEdit`, `createFile` com `contents` | falta (erro explícito) | `NotebookEdit` não existe no host; `Uint8Array` não atravessa o motor |
 | `CodeAction#edit` | falta (a conversão `WorkspaceEdit` para o provedor de code action ainda não foi ligada à classe) | `api/language_types.rs` |
-| `createFileSystemWatcher`, `onDid/WillCreate/Delete/RenameFiles` | não iniciado | falta o `ExtHostFileSystemEventService` ligado |
+| `createFileSystemWatcher`, `onDid/WillCreate/Delete/RenameFiles` | entregue (2026-10-24, escrito sem compilar), ver a seção seguinte | `api/file_system_events.rs` |
 
 Teste: `crates/je-workbench/tests/extension_host_api_workspace_edit.rs` (nenhum rodou).
+
+## Estado da entrega dos eventos de arquivo (2026-10-24, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `api/file_system_events.rs`, `ext_host_file_system_event_service.rs` e `extHost.api.impl.ts`). Nenhum número de
+ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `workspace.createFileSystemWatcher(glob, ignoreCreate?, ignoreChange?, ignoreDelete?)` com `onDidCreate`, `onDidChange`, `onDidDelete`, `ignore*Events`, `dispose` | entregue, ligado ao `ExtHostFileSystemEventService` (precisa dos clientes `MainThreadFileSystemEventService`, workspace e configuração) | `api/file_system_events.rs`, `host.rs` |
+| `workspace.onDidCreateFiles`, `onDidDeleteFiles`, `onDidRenameFiles` | entregue (copiar conta como criar; gravar não gera evento) | `api/file_system_events.rs` |
+| `workspace.onWillCreateFiles`, `onWillDeleteFiles`, `onWillRenameFiles` com `token`, `files`, `waitUntil` | entregue; só a `WorkspaceEdit` que a promessa devolve entra na operação; `waitUntil` fora do despacho lança | `api/file_system_events.rs`, `events.rs` (`event_function_with_epilogue`) |
+| `FileSystemWatcher` como objeto copiado | divergência: `dispose` e os eventos são funções próprias do objeto, e `extension` é o `je.exthost` | `api/file_system_events.rs` |
+
+Teste: `crates/je-workbench/tests/extension_host_api_file_system_events.rs`, com os dublês de workspace em
+`tests/support/extension_host_workspace_doubles.rs` (nenhum rodou). Pendências a confirmar na primeira compilação: o erro de `waitUntil` chega
+ao JavaScript com a mensagem exata; o `RelativePattern` com `**/*.txt` casa em minúsculas contra `/w/...`; `ExtHostFileSystemInfoShape` ainda não
+é ligado (o `accept_provider_infos` do workbench não chega ao host).
+
