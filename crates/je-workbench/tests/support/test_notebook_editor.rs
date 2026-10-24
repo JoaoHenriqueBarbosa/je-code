@@ -53,7 +53,7 @@ use je_editor::language_service::{ILanguageService, I_LANGUAGE_SERVICE, Language
 use je_editor::model::DefaultEndOfLine;
 use je_editor::model_service::ModelService;
 use je_editor::undo_redo::UndoRedoElement;
-use je_editor::undo_redo_service::{UndoRedoService, UndoRedoTarget};
+use je_editor::undo_redo_service::{IUndoRedoService, UndoRedoService, UndoRedoTarget};
 use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
@@ -367,6 +367,7 @@ impl NotebookViewModel {
         let element = edit_stack.past.last().cloned();
 
         if let Some(element) = element
+            && let Some(element) = element.as_resource()
             && element.as_any().is::<SingleModelEditStackElement>()
         {
             self.undo_service.undo(UndoRedoTarget::Resource(&self.uri()));
@@ -383,6 +384,7 @@ impl NotebookViewModel {
         let element = edit_stack.future.first().cloned();
 
         if let Some(element) = element
+            && let Some(element) = element.as_resource()
             && element.as_any().is::<SingleModelEditStackElement>()
         {
             self.undo_service.redo(UndoRedoTarget::Resource(&self.uri()));

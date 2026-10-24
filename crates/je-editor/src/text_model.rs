@@ -72,7 +72,7 @@ use crate::text_model_events::{
 };
 use crate::text_model_search::{SearchParams, TextModelSearch};
 use crate::undo_redo::{ResourceEditStackSnapshot, UndoRedoGroup};
-use crate::undo_redo_service::{UndoRedoService, UndoRedoTarget};
+use crate::undo_redo_service::{IUndoRedoService, UndoRedoService, UndoRedoTarget};
 use crate::word_helper::WordAtPosition;
 
 /// `Constants.MAX_SAFE_SMALL_INTEGER` do `uint.ts`.

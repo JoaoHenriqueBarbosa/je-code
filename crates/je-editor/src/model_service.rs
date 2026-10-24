@@ -42,7 +42,7 @@ use je_platform::configuration::service::IConfigurationService;
 use crate::config::editor_options::{boolean, clamped_int, clamped_int_or};
 use crate::cursor_common::CursorSimpleModel;
 use crate::edit_operation::{EditOperation, SingleEditOperation};
-use crate::edit_stack::SingleModelEditStackElement;
+use crate::edit_stack::as_edit_stack_element;
 use crate::language_service::ILanguageSelection;
 use crate::model::{
     BracketPairColorizationOptions, DefaultEndOfLine, EndOfLinePreference, EndOfLineSequence, IndentSize, TextModelCreationOptions,
@@ -58,7 +58,7 @@ use crate::text_model_defaults::EDITOR_MODEL_DEFAULTS;
 use crate::text_model_edit_source::{EditSources, TextModelEditSource};
 use crate::text_model_events::ModelLanguageChangedEvent;
 use crate::text_resource_configuration_service::ITextResourcePropertiesService;
-use crate::undo_redo::{ResourceEditStackSnapshot, UndoRedoElement};
+use crate::undo_redo::{IUndoRedoService, ResourceEditStackSnapshot, UndoRedoElementRef};
 use crate::undo_redo_service::UndoRedoService;
 
 /// `MODEL_ID(resource)`.
@@ -72,13 +72,8 @@ fn language_and_resource_key(language: &str, resource: Option<&URI>) -> String {
 }
 
 /// `isEditStackElement(element) && element.matchesResource(resource)`.
-fn is_edit_stack_element_of(element: &dyn UndoRedoElement, resource: &URI) -> bool {
-    edit_stack_element(element).is_some_and(|element| element.matches_resource(resource))
-}
-
-/// `isEditStackElement(element)`.
-fn edit_stack_element(element: &dyn UndoRedoElement) -> Option<&SingleModelEditStackElement> {
-    element.as_any().downcast_ref::<SingleModelEditStackElement>()
+fn is_edit_stack_element_of(element: &UndoRedoElementRef, resource: &URI) -> bool {
+    as_edit_stack_element(element).is_some_and(|element| element.matches_resource(resource))
 }
 
 /// `{ model, oldLanguageId }` de `onModelLanguageChanged`.
@@ -474,10 +469,10 @@ impl ModelService {
             };
             if sha1_is_equal || disposed_model_data.shares_undo_redo_stack {
                 for element in elements.past.iter().chain(elements.future.iter()) {
-                    if let Some(element) = edit_stack_element(&**element)
+                    if let Some(element) = as_edit_stack_element(element)
                         && element.matches_resource(resource)
                     {
-                        element.set_model(Some(&*model));
+                        element.set_model(resource, Some(&*model));
                     }
                 }
                 self.undo_redo_service.set_elements_valid_flag(resource, true, &|element| is_edit_stack_element_of(element, resource));
@@ -658,12 +653,12 @@ impl ModelService {
             let elements = self.undo_redo_service.get_elements(&uri);
             if !elements.past.is_empty() || !elements.future.is_empty() {
                 for element in elements.past.iter().chain(elements.future.iter()) {
-                    if let Some(element) = edit_stack_element(&**element)
+                    if let Some(element) = as_edit_stack_element(element)
                         && element.matches_resource(&uri)
                     {
                         maintain_undo_redo_stack = true;
-                        heap_size += element.heap_size() as i64;
-                        element.set_model(None); // remove reference from text buffer instance
+                        heap_size += element.heap_size(&uri) as i64;
+                        element.set_model(&uri, None); // remove reference from text buffer instance
                     }
                 }
             }

@@ -6,24 +6,37 @@
 //!   do recurso; o `model: ITextModel | URI` do original, usado para reanexar elementos de um modelo
 //!   destruído, vira o estado `Detached` com só a URI.
 //! - O `EditStack` guarda o modelo por `Weak`, criado junto do modelo (`Rc::new_cyclic`).
-//!
-//! Pendente: `MultiModelEditStackElement` e `IUndoRedoDelegate`, que são o elemento de workspace (várias
-//! URIs numa operação) do `undoRedo.ts`.
+//! - `EditStackElement = SingleModelEditStackElement | MultiModelEditStackElement` é o [`EditStackElement`], uma visão
+//!   emprestada do [`UndoRedoElementRef`] que o serviço devolve; `isEditStackElement(element)` é
+//!   [`as_edit_stack_element`]. O `setModel(model | URI)` do `MultiModelEditStackElement` recebe a URI e o modelo
+//!   opcional (`None` é o `setModel(uri)`), porque a URI não vem do modelo ausente.
+//! - O `IUndoRedoService` do `EditStack` é o [`UndoRedoService`] concreto, como no `TextModel` que o cria.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fmt;
 use std::rc::{Rc, Weak};
 
 use je_base::errors::{self, Error};
+use je_base::lifecycle::DisposableRef;
+use je_base::promise::MaybePromise;
+use je_base::resources::ExtUri;
 use je_base::uri::URI;
+use je_platform::resources::host_environment;
 
 use crate::model::{EndOfLineSequence, ValidAnnotatedEditOperation, ValidEditOperation};
 use crate::selection::Selection;
 use crate::text_change::{TextChange, compress_consecutive_text_changes};
 use crate::text_model::TextModel;
 use crate::text_model_edit_source::{EditSources, TextModelEditSource};
-use crate::undo_redo::{UndoRedoElement, UndoRedoGroup};
+use crate::undo_redo::{IUndoRedoService, UndoRedoElement, UndoRedoElementRef, UndoRedoGroup, WorkspaceUndoRedoElement};
 use crate::undo_redo_service::UndoRedoService;
+
+/// `uriGetComparisonKey(resource)`.
+fn uri_get_comparison_key(resource: &URI) -> String {
+    resource.to_string(false).to_string_lossy()
+}
 
 /// `SingleModelEditStackData`.
 #[derive(Clone, Debug, PartialEq)]
@@ -224,6 +237,12 @@ impl SingleModelEditStackElement {
         self.resource.to_string(false) == resource.to_string(false)
     }
 
+    /// `URI.isUri(this.model)`: a URI do elemento quando ele não tem modelo (o `getMissingModels` do elemento de vários
+    /// modelos pede esses).
+    pub fn missing_model(&self) -> Option<URI> {
+        matches!(&*self.model.borrow(), ElementModel::Detached).then(|| self.resource.clone())
+    }
+
     /// `setModel(model)`.
     pub fn set_model(&self, model: Option<&TextModel>) {
         *self.model.borrow_mut() = match model {
@@ -348,9 +367,221 @@ impl UndoRedoElement for SingleModelEditStackElement {
     }
 }
 
-/// `isEditStackElement` para o elemento de um modelo só.
-pub fn as_edit_stack_element(element: &Rc<dyn UndoRedoElement>) -> Option<&SingleModelEditStackElement> {
-    element.as_any().downcast_ref::<SingleModelEditStackElement>()
+/// `IUndoRedoDelegate`.
+pub trait UndoRedoDelegate {
+    /// `prepareUndoRedo(element)`: `None` é `void`.
+    fn prepare_undo_redo(&self, element: &MultiModelEditStackElement) -> Option<MaybePromise<DisposableRef>>;
+}
+
+/// `MultiModelEditStackElement`: o elemento de workspace de uma edição que mexe em vários modelos.
+pub struct MultiModelEditStackElement {
+    pub label: String,
+    pub code: String,
+    is_open: Cell<bool>,
+    edit_stack_elements_arr: Vec<Rc<SingleModelEditStackElement>>,
+    edit_stack_elements_map: HashMap<String, Rc<SingleModelEditStackElement>>,
+    delegate: RefCell<Option<Rc<dyn UndoRedoDelegate>>>,
+}
+
+impl MultiModelEditStackElement {
+    pub fn new(label: &str, code: &str, edit_stack_elements: Vec<Rc<SingleModelEditStackElement>>) -> Self {
+        let mut edit_stack_elements_map = HashMap::new();
+        for edit_stack_element in &edit_stack_elements {
+            let key = uri_get_comparison_key(&edit_stack_element.resource);
+            edit_stack_elements_map.insert(key, edit_stack_element.clone());
+        }
+        Self {
+            label: label.to_owned(),
+            code: code.to_owned(),
+            is_open: Cell::new(true),
+            edit_stack_elements_arr: edit_stack_elements,
+            edit_stack_elements_map,
+            delegate: RefCell::new(None),
+        }
+    }
+
+    /// `setDelegate(delegate)`.
+    pub fn set_delegate(&self, delegate: Rc<dyn UndoRedoDelegate>) {
+        *self.delegate.borrow_mut() = Some(delegate);
+    }
+
+    /// `getMissingModels()`.
+    pub fn get_missing_models(&self) -> Vec<URI> {
+        self.edit_stack_elements_arr.iter().filter_map(|edit_stack_element| edit_stack_element.missing_model()).collect()
+    }
+
+    /// `matchesResource(resource)`.
+    pub fn matches_resource(&self, resource: &URI) -> bool {
+        self.edit_stack_elements_map.contains_key(&uri_get_comparison_key(resource))
+    }
+
+    /// `setModel(model | URI)`: `resource` é a URI do modelo (ou a própria URI), `model` o modelo (`None` desanexa).
+    pub fn set_model(&self, resource: &URI, model: Option<&TextModel>) {
+        if let Some(edit_stack_element) = self.edit_stack_elements_map.get(&uri_get_comparison_key(resource)) {
+            edit_stack_element.set_model(model);
+        }
+    }
+
+    /// `canAppend(model)`.
+    pub fn can_append(&self, model: &TextModel) -> bool {
+        if !self.is_open.get() {
+            return false;
+        }
+        self.edit_stack_elements_map.get(&uri_get_comparison_key(&model.uri())).is_some_and(|edit_stack_element| edit_stack_element.can_append(model))
+    }
+
+    /// `append(model, textChanges, afterEOL, afterVersionId, afterCursorState)`.
+    pub fn append(&self, model: &TextModel, text_changes: Vec<TextChange>, after_eol: EndOfLineSequence, after_version_id: i64, after_cursor_state: Option<Vec<Selection>>) {
+        let edit_stack_element = self
+            .edit_stack_elements_map
+            .get(&uri_get_comparison_key(&model.uri()))
+            .unwrap_or_else(|| errors::throw(Error::new("Cannot read properties of undefined (reading 'append')")));
+        edit_stack_element.append(text_changes, after_eol, after_version_id, after_cursor_state);
+    }
+
+    /// `close()`.
+    pub fn close(&self) {
+        self.is_open.set(false);
+    }
+
+    /// `open()`.
+    pub fn open(&self) {
+        // cannot reopen
+    }
+
+    /// `heapSize(resource)`.
+    pub fn heap_size(&self, resource: &URI) -> usize {
+        self.edit_stack_elements_map.get(&uri_get_comparison_key(resource)).map_or(0, |edit_stack_element| edit_stack_element.heap_size())
+    }
+}
+
+impl fmt::Display for MultiModelEditStackElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ext_uri = ExtUri::unbiased(host_environment());
+        let result: Vec<String> = self
+            .edit_stack_elements_arr
+            .iter()
+            .map(|edit_stack_element| format!("{}: {}", ext_uri.basename(&edit_stack_element.resource, None), edit_stack_element))
+            .collect();
+        write!(f, "{{{}}}", result.join(", "))
+    }
+}
+
+impl WorkspaceUndoRedoElement for MultiModelEditStackElement {
+    fn resources(&self) -> Vec<URI> {
+        self.edit_stack_elements_arr.iter().map(|edit_stack_element| edit_stack_element.resource.clone()).collect()
+    }
+
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn code(&self) -> String {
+        self.code.clone()
+    }
+
+    fn undo(&self) -> MaybePromise<()> {
+        self.is_open.set(false);
+
+        for edit_stack_element in &self.edit_stack_elements_arr {
+            edit_stack_element.undo();
+        }
+        MaybePromise::Value(())
+    }
+
+    fn redo(&self) -> MaybePromise<()> {
+        for edit_stack_element in &self.edit_stack_elements_arr {
+            edit_stack_element.redo();
+        }
+        MaybePromise::Value(())
+    }
+
+    fn can_split(&self) -> bool {
+        true
+    }
+
+    fn split(&self) -> Option<Vec<Rc<dyn UndoRedoElement>>> {
+        Some(self.edit_stack_elements_arr.iter().map(|edit_stack_element| edit_stack_element.clone() as Rc<dyn UndoRedoElement>).collect())
+    }
+
+    fn prepare_undo_redo(&self) -> Option<MaybePromise<DisposableRef>> {
+        let delegate = self.delegate.borrow().clone();
+        delegate.and_then(|delegate| delegate.prepare_undo_redo(self))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// `EditStackElement`: `SingleModelEditStackElement | MultiModelEditStackElement`, emprestado do elemento do serviço.
+#[derive(Clone, Copy)]
+pub enum EditStackElement<'a> {
+    Single(&'a SingleModelEditStackElement),
+    Multi(&'a MultiModelEditStackElement),
+}
+
+impl EditStackElement<'_> {
+    pub fn close(&self) {
+        match self {
+            Self::Single(element) => element.close(),
+            Self::Multi(element) => element.close(),
+        }
+    }
+
+    pub fn open(&self) {
+        match self {
+            Self::Single(element) => element.open(),
+            Self::Multi(element) => element.open(),
+        }
+    }
+
+    pub fn can_append(&self, model: &TextModel) -> bool {
+        match self {
+            Self::Single(element) => element.can_append(model),
+            Self::Multi(element) => element.can_append(model),
+        }
+    }
+
+    /// `append(model, textChanges, afterEOL, afterVersionId, afterCursorState)`.
+    pub fn append(&self, model: &TextModel, text_changes: Vec<TextChange>, after_eol: EndOfLineSequence, after_version_id: i64, after_cursor_state: Option<Vec<Selection>>) {
+        match self {
+            Self::Single(element) => element.append(text_changes, after_eol, after_version_id, after_cursor_state),
+            Self::Multi(element) => element.append(model, text_changes, after_eol, after_version_id, after_cursor_state),
+        }
+    }
+
+    pub fn matches_resource(&self, resource: &URI) -> bool {
+        match self {
+            Self::Single(element) => element.matches_resource(resource),
+            Self::Multi(element) => element.matches_resource(resource),
+        }
+    }
+
+    /// `setModel(model | URI)` (ver as decisões do módulo).
+    pub fn set_model(&self, resource: &URI, model: Option<&TextModel>) {
+        match self {
+            Self::Single(element) => element.set_model(model),
+            Self::Multi(element) => element.set_model(resource, model),
+        }
+    }
+
+    /// `heapSize(resource)`.
+    pub fn heap_size(&self, resource: &URI) -> usize {
+        match self {
+            Self::Single(element) => element.heap_size(),
+            Self::Multi(element) => element.heap_size(resource),
+        }
+    }
+}
+
+/// `isEditStackElement(element)`.
+pub fn as_edit_stack_element(element: &UndoRedoElementRef) -> Option<EditStackElement<'_>> {
+    let any = element.as_any();
+    if let Some(single) = any.downcast_ref::<SingleModelEditStackElement>() {
+        return Some(EditStackElement::Single(single));
+    }
+    any.downcast_ref::<MultiModelEditStackElement>().map(EditStackElement::Multi)
 }
 
 /// `EditStack`.
@@ -388,7 +619,7 @@ impl EditStack {
         self.undo_redo_service.remove_elements(&self.model().uri());
     }
 
-    fn get_or_create_edit_stack_element(&self, model: &TextModel, before_cursor_state: Option<Vec<Selection>>, group: Option<&UndoRedoGroup>) -> Rc<dyn UndoRedoElement> {
+    fn get_or_create_edit_stack_element(&self, model: &TextModel, before_cursor_state: Option<Vec<Selection>>, group: Option<&UndoRedoGroup>) -> UndoRedoElementRef {
         if let Some(last_element) = self.undo_redo_service.get_last_element(&model.uri())
             && as_edit_stack_element(&last_element).is_some_and(|element| element.can_append(model))
         {
@@ -400,6 +631,7 @@ impl EditStack {
             model,
             before_cursor_state,
         ));
+        let new_element = UndoRedoElementRef::Resource(new_element);
         self.undo_redo_service.push_element(new_element.clone(), group, None);
         new_element
     }
@@ -408,8 +640,8 @@ impl EditStack {
         let model = self.model();
         let edit_stack_element = self.get_or_create_edit_stack_element(&model, None, None);
         model.set_eol(eol);
-        let element = as_edit_stack_element(&edit_stack_element).expect("o elemento é de um modelo só");
-        element.append(Vec::new(), EndOfLineSequence::from(model.get_eol()), model.get_alternative_version_id(), None);
+        let element = as_edit_stack_element(&edit_stack_element).expect("o elemento é de um modelo da pilha de edições");
+        element.append(&model, Vec::new(), EndOfLineSequence::from(model.get_eol()), model.get_alternative_version_id(), None);
     }
 
     pub fn push_edit_operation(
@@ -433,8 +665,9 @@ impl EditStack {
             .map(|(index, op)| (index, &op.text_change))
             .collect();
         text_changes.sort_by(|a, b| a.1.old_position.cmp(&b.1.old_position).then(a.0.cmp(&b.0)));
-        let element = as_edit_stack_element(&edit_stack_element).expect("o elemento é de um modelo só");
+        let element = as_edit_stack_element(&edit_stack_element).expect("o elemento é de um modelo da pilha de edições");
         element.append(
+            &model,
             text_changes.into_iter().map(|(_, change)| change.clone()).collect(),
             EndOfLineSequence::from(model.get_eol()),
             model.get_alternative_version_id(),
