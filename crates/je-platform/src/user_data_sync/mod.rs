@@ -34,3 +34,5 @@ pub mod tasks_sync;
 
 pub mod global_state_sync;
 pub mod settings_sync;
+
+pub mod snippets_sync;

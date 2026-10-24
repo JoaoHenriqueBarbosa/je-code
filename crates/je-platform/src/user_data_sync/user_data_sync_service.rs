@@ -12,10 +12,10 @@
 //!   `userDataSyncMachines.ts`), `saveRemoteActivityData` e `extractActivityData`: nenhum entra no caminho de
 //!   `createSyncTask().run()`. Por isso [`UserDataSyncService`] não implementa o trait
 //!   [`super::user_data_sync::IUserDataSyncService`] inteiro: expõe os métodos portados.
-//! - Os sincronizadores de `snippets`, `prompts`, `mcp` e `extensions` ainda não existem no porte:
+//! - Os sincronizadores de `prompts`, `mcp` e `extensions` ainda não existem no porte:
 //!   [`ProfileSynchronizer::create_synchronizer`] devolve `None` para eles e o `registerSynchronizer` os pula (o de
 //!   extensões também pediria o `IExtensionGalleryService`). Existem os de perfis, `settings`, `keybindings`,
-//!   `tasks` e estado global.
+//!   `snippets`, `tasks` e estado global.
 //!
 //! Decisões de tradução:
 //! - `IUserDataManifest | IUserDataSyncLatestData | null` é `Option<`[`ManifestOrLatestData`]`>`: o
@@ -52,6 +52,7 @@ use super::abstract_synchronizer::SynchroniserServices;
 use super::global_state_sync::GlobalStateSynchroniser;
 use super::keybindings_sync::KeybindingsSynchroniser;
 use super::settings_sync::{IExtensionManagementService, SettingsSynchroniser};
+use super::snippets_sync::SnippetsSynchroniser;
 use super::tasks_sync::TasksSynchroniser;
 use super::user_data_profiles_manifest_sync::UserDataProfilesManifestSynchroniser;
 use super::user_data_sync::{
@@ -159,6 +160,7 @@ pub enum Synchroniser {
     Profiles(Rc<UserDataProfilesManifestSynchroniser>),
     Settings(Rc<SettingsSynchroniser>),
     Keybindings(Rc<KeybindingsSynchroniser>),
+    Snippets(Rc<SnippetsSynchroniser>),
     Tasks(Rc<TasksSynchroniser>),
     GlobalState(Rc<GlobalStateSynchroniser>),
 }
@@ -169,6 +171,7 @@ impl Synchroniser {
             Self::Profiles(_) => SyncResource::Profiles,
             Self::Settings(_) => SyncResource::Settings,
             Self::Keybindings(_) => SyncResource::Keybindings,
+            Self::Snippets(_) => SyncResource::Snippets,
             Self::Tasks(_) => SyncResource::Tasks,
             Self::GlobalState(_) => SyncResource::GlobalState,
         }
@@ -180,6 +183,7 @@ impl Synchroniser {
             Self::Profiles(synchroniser) => synchroniser.base.clone(),
             Self::Settings(synchroniser) => synchroniser.base(),
             Self::Keybindings(synchroniser) => synchroniser.base(),
+            Self::Snippets(synchroniser) => synchroniser.base.clone(),
             Self::Tasks(synchroniser) => synchroniser.base(),
             Self::GlobalState(synchroniser) => synchroniser.base.clone(),
         }
@@ -205,6 +209,14 @@ impl Synchroniser {
     pub fn into_keybindings(self) -> Option<Rc<KeybindingsSynchroniser>> {
         match self {
             Self::Keybindings(synchroniser) => Some(synchroniser),
+            _ => None,
+        }
+    }
+
+    /// `as SnippetsSynchroniser`.
+    pub fn into_snippets(self) -> Option<Rc<SnippetsSynchroniser>> {
+        match self {
+            Self::Snippets(synchroniser) => Some(synchroniser),
             _ => None,
         }
     }
@@ -235,6 +247,9 @@ impl Synchroniser {
                 store.add_rc(synchroniser.clone());
             }
             Self::Keybindings(synchroniser) => {
+                store.add_rc(synchroniser.clone());
+            }
+            Self::Snippets(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
             Self::Tasks(synchroniser) => {
@@ -503,6 +518,7 @@ impl ProfileSynchronizer {
                 self.services.clone(),
                 self.user_data_sync_util_service.clone(),
             ))),
+            SyncResource::Snippets => Some(Synchroniser::Snippets(SnippetsSynchroniser::new(self.profile.clone(), self.collection.clone(), self.services.clone()))),
             SyncResource::Tasks => Some(Synchroniser::Tasks(TasksSynchroniser::for_profile(self.profile.clone(), self.collection.clone(), self.services.clone()))),
             SyncResource::GlobalState => Some(Synchroniser::GlobalState(GlobalStateSynchroniser::new(
                 self.profile.clone(),
