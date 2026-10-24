@@ -391,7 +391,7 @@ pub struct SynchroniserServices {
 /// O que `AbstractSynchroniser` deixa abstrato.
 ///
 /// Os métodos recebem `self: Rc<Self>` porque as continuações `async` precisam do sincronizador vivo.
-pub trait SynchroniserImpl: 'static {
+pub trait SynchroniserImpl: Sized + 'static {
     /// Os campos que o preview deste sincronizador acrescenta ao [`IResourcePreview`].
     type Preview: Clone + 'static;
     /// Os campos que o resultado deste sincronizador acrescenta ao [`IAcceptResult`]. [`Default`] é o valor
@@ -428,6 +428,32 @@ pub trait SynchroniserImpl: 'static {
     fn has_local_data(self: Rc<Self>) -> Promise<bool>;
 
     fn resolve_content(self: Rc<Self>, uri: URI) -> Promise<Option<String>>;
+
+    // Os métodos `protected` que o original deixa sobrescrever. A base do original (`super.x(...)`) é o método
+    // `super_x` de [`AbstractSynchroniser`], que o padrão destes ganchos chama; `base` é o `this` como base.
+
+    /// `doSync`: `super.doSync` é [`AbstractSynchroniser::super_do_sync`].
+    fn do_sync(
+        self: Rc<Self>,
+        base: Rc<AbstractSynchroniser<Self>>,
+        remote_user_data: IRemoteUserData,
+        last_sync_user_data: Option<IRemoteUserData>,
+        strategy: SyncStrategy,
+        user_data_sync_configuration: IUserDataSyncConfiguration,
+    ) -> Promise<SyncStatus> {
+        base.super_do_sync(remote_user_data, last_sync_user_data, strategy, user_data_sync_configuration)
+    }
+
+    /// `getLatestRemoteUserData`: `super.getLatestRemoteUserData` é
+    /// [`AbstractSynchroniser::super_get_latest_remote_user_data`].
+    fn get_latest_remote_user_data(self: Rc<Self>, base: Rc<AbstractSynchroniser<Self>>, ref_or_latest_data: Option<RefOrUserData>, last_sync_user_data: Option<IRemoteUserData>) -> Promise<IRemoteUserData> {
+        base.super_get_latest_remote_user_data(ref_or_latest_data, last_sync_user_data)
+    }
+
+    /// `doTriggerLocalChange`: `super.doTriggerLocalChange` é [`AbstractSynchroniser::super_do_trigger_local_change`].
+    fn do_trigger_local_change(self: Rc<Self>, base: Rc<AbstractSynchroniser<Self>>) -> Promise<()> {
+        base.super_do_trigger_local_change()
+    }
 }
 
 type Preview<I> = ISyncResourcePreview<<I as SynchroniserImpl>::Preview, <I as SynchroniserImpl>::Accept>;
@@ -540,7 +566,7 @@ impl<I: SynchroniserImpl> AbstractSynchroniser<I> {
     }
 
     /// `this.extUri.isEqual(a, b)`.
-    fn is_same_resource(&self, a: &URI, b: &URI) -> bool {
+    pub fn is_same_resource(&self, a: &URI, b: &URI) -> bool {
         self.services.ext_uri.is_equal(Some(a), Some(b), false)
     }
 
@@ -564,10 +590,11 @@ impl<I: SynchroniserImpl> AbstractSynchroniser<I> {
     /// `triggerLocalChange`.
     pub fn trigger_local_change(&self) {
         let this = self.rc();
-        let _ = self.local_change_trigger_throttler.trigger(move |_token| this.do_trigger_local_change(), None);
+        let _ = self.local_change_trigger_throttler.trigger(move |_token| this.imp().do_trigger_local_change(this.clone()), None);
     }
 
-    fn do_trigger_local_change(&self) -> Promise<()> {
+    /// `doTriggerLocalChange` da base (o que `super.doTriggerLocalChange()` chama).
+    pub fn super_do_trigger_local_change(&self) -> Promise<()> {
         let this = self.rc();
         async_fn(async move {
             let status = this.state.borrow().status;
@@ -622,8 +649,14 @@ impl<I: SynchroniserImpl> AbstractSynchroniser<I> {
         })
     }
 
-    /// `getLatestRemoteUserData`: `None` é o `null` (o recurso não existe no servidor).
+    /// `getLatestRemoteUserData`, com o despacho virtual do original: passa pelo gancho do sincronizador concreto.
     pub fn get_latest_remote_user_data(&self, ref_or_latest_data: Option<RefOrUserData>, last_sync_user_data: Option<IRemoteUserData>) -> Promise<IRemoteUserData> {
+        self.imp().get_latest_remote_user_data(self.rc(), ref_or_latest_data, last_sync_user_data)
+    }
+
+    /// `getLatestRemoteUserData` da base (o que `super.getLatestRemoteUserData(...)` chama): `None` é o `null`
+    /// (o recurso não existe no servidor).
+    pub fn super_get_latest_remote_user_data(&self, ref_or_latest_data: Option<RefOrUserData>, last_sync_user_data: Option<IRemoteUserData>) -> Promise<IRemoteUserData> {
         let this = self.rc();
         async_fn(async move {
             match ref_or_latest_data {
@@ -657,7 +690,7 @@ impl<I: SynchroniserImpl> AbstractSynchroniser<I> {
                 .into_error());
             }
 
-            let error = match this.do_sync(remote_user_data.clone(), last_sync_user_data.clone(), strategy, user_data_sync_configuration.clone()).await {
+            let error = match this.imp().do_sync(this.clone(), remote_user_data.clone(), last_sync_user_data.clone(), strategy, user_data_sync_configuration.clone()).await {
                 Ok(status) => return Ok(status),
                 Err(error) => error,
             };
@@ -692,7 +725,8 @@ impl<I: SynchroniserImpl> AbstractSynchroniser<I> {
         })
     }
 
-    fn do_sync(&self, remote_user_data: IRemoteUserData, last_sync_user_data: Option<IRemoteUserData>, strategy: SyncStrategy, user_data_sync_configuration: IUserDataSyncConfiguration) -> Promise<SyncStatus> {
+    /// `doSync` da base (o que `super.doSync(...)` chama).
+    pub fn super_do_sync(&self, remote_user_data: IRemoteUserData, last_sync_user_data: Option<IRemoteUserData>, strategy: SyncStrategy, user_data_sync_configuration: IUserDataSyncConfiguration) -> Promise<SyncStatus> {
         let this = self.rc();
         async_fn(async move {
             let result = Self::do_sync_body(this.clone(), remote_user_data, last_sync_user_data, strategy, user_data_sync_configuration).await;
