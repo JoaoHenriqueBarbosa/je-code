@@ -77,3 +77,6 @@ pub mod mock_debug;
 // Porte de `baseDebugView.test.ts`, `watchExpressionView.test.ts` e `variablesView.test.ts`: o `LinkDetector` e o
 // `DebugExpressionRenderer` de teste, o `IDebugService` com o `getViewModel` trocado, o escopo e a variável do `setup`.
 pub mod debug_view_support;
+
+// Porte de `searchResult.test.ts` e `searchViewlet.test.ts`: o `setup` e os `aSearchResult`, `aFileMatch` e `aFolderMatch`.
+pub mod search_support;
