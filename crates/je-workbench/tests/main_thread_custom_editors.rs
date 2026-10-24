@@ -103,8 +103,9 @@ use je_workbench::services::textfile::textfiles::{
 };
 use je_workbench::services::textfile::collaborators::FileOperationUndoRedoInfo;
 use je_workbench::services::textmodel_resolver::resolver_service::{ITextEditorModel, ITextModelService, TextModelReference};
+use je_workbench::services::untitled::untitled_text_editor_model::IUntitledTextEditorModel;
 use je_workbench::services::untitled::untitled_text_editor_service::{
-    IUntitledTextEditorModel, IUntitledTextEditorModelManager, IUntitledTextEditorService, UntitledTextEditorModelSaveEvent, UntitledTextEditorOptions,
+    IUntitledTextEditorModelManager, IUntitledTextEditorService, UntitledTextEditorModelSaveEvent, UntitledTextEditorOptions,
 };
 use je_workbench::services::working_copy::working_copy_service::WorkingCopyService;
 use je_workbench::test::browser::workbench_test_services::{MockLabelService, TestEditorGroupsService, TestEditorService, TestEnvironmentService, TestPathService};
@@ -856,7 +857,7 @@ impl ITextEditorModel for ResolvedTextEditorModel {
         je_workbench::services::files_configuration::files_configuration_service::Readonly::Bool(false)
     }
 
-    fn create_snapshot(&self) -> Option<Box<dyn je_editor::text_model::TextSnapshot>> {
+    fn create_snapshot(&self) -> Option<Box<dyn je_editor::model::TextSnapshot>> {
         panic!("createSnapshot is not a function");
     }
 }
@@ -1094,12 +1095,12 @@ fn create_custom_editors(store: &LeakGuard, ext_host: ExtHost) -> Fixture {
         text_file_service: Rc::new(TextFileService),
     };
 
-    let context = MapMainContext::default();
+    let context: Rc<dyn IMainContext> = Rc::new(MapMainContext::default());
     let proxy_shape: Rc<dyn ExtHostCustomEditorsShape> = proxy;
     context.set(&ExtHostContext::EXT_HOST_CUSTOM_EDITORS, proxy_shape);
 
     let custom_editors = store.add_rc(MainThreadCustomEditors::new(
-        &context,
+        &*context,
         Rc::new(MockMainThreadWebviews),
         main_thread_web_view_panels,
         MainThreadCustomEditorsServices {
@@ -1453,7 +1454,7 @@ fn asks_the_extension_again_when_a_new_editor_opens_a_document_that_failed_to_op
         let custom_editors = create_custom_editors(&store, fails_on_first_attempt());
 
         let failed = custom_editors.create_input();
-        let error = resolve(&failed.input).await.unwrap_err();
+        let error = resolve(&failed.input).await.err().expect("deveria rejeitar");
         assert!(error.message.contains("Could not open the document"));
         failed.input.dispose();
 
@@ -1487,7 +1488,7 @@ fn asks_the_extension_again_when_retrying_an_editor_whose_document_failed_to_ope
         let custom_editors = create_custom_editors(&store, fails_on_first_attempt());
 
         let Created { input, .. } = custom_editors.create_input();
-        let error = resolve(&input).await.unwrap_err();
+        let error = resolve(&input).await.err().expect("deveria rejeitar");
         assert!(error.message.contains("Could not open the document"));
         resolve(&input).await.unwrap();
         input.dispose();
@@ -1586,7 +1587,7 @@ fn retries_an_inline_diff_whose_original_document_failed_to_open_250622() {
         let custom_editors = create_custom_editors(&store, ext_host);
 
         let Created { input, .. } = custom_editors.create_diff_input(original_resource);
-        let error = resolve(&input).await.unwrap_err();
+        let error = resolve(&input).await.err().expect("deveria rejeitar");
         assert!(error.message.contains("Could not open the original document"));
         resolve(&input).await.unwrap();
         input.dispose();

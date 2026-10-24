@@ -432,10 +432,10 @@ impl MainThreadCustomEditors {
             }));
         }
         {
-            let clear = clear.clone();
-            cleanup.add(EditorInput::on_will_dispose(&*input).listen(move |_| clear()));
-            let clear = clear.clone();
-            cleanup.add(input.webview().on_did_dispose().listen(move |_| clear()));
+            let clear_on_will_dispose = clear.clone();
+            cleanup.add(EditorInput::on_will_dispose(&*input).listen(move |_| clear_on_will_dispose()));
+            let clear_on_did_dispose = clear.clone();
+            cleanup.add(input.webview().on_did_dispose().listen(move |_| clear_on_did_dispose()));
         }
         provider_disposables.add(cleanup);
 
@@ -619,7 +619,7 @@ impl MainThreadCustomEditors {
                                 is_equal(diff.original_resource(), &resource_for_editors) || is_equal(diff.modified_resource(), &resource_for_editors)
                             }
                             Some(CustomEditorWebviewInput::SideBySide(_)) => {
-                                EditorInput::resource(&***editor).is_some_and(|editor_resource| is_equal(&editor_resource, &resource_for_editors))
+                                EditorInput::resource(&**editor).is_some_and(|editor_resource| is_equal(&editor_resource, &resource_for_editors))
                             }
                             None => false,
                         })
