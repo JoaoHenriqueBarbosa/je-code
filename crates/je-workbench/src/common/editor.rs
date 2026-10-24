@@ -4,7 +4,9 @@
 //! (`ISaveOptions`, `IRevertOptions`) e o `GroupIdentifier` que os serviços de working copy já liam.
 //!
 //! O `EditorInput` (classe abstrata) e os modelos de `common/editor/` ficam em submódulos deste arquivo, um por `.ts`:
-//! [`editor_input`], [`editor_model`], [`side_by_side_editor_input`] e [`diff_editor_input`].
+//! [`editor_input`], [`editor_model`], [`side_by_side_editor_input`], [`diff_editor_input`], [`editor_group_model`] e
+//! [`filtered_editor_group_model`]. O registro de serializadores (`IEditorSerializer` e `IEditorFactoryRegistry`, que o
+//! original declara neste `.ts`) fica em [`editor_factory_registry`].
 //!
 //! Notas de tradução:
 //! - **`EditorInput` é o trait [`EditorInput`](editor_input::EditorInput)** e o handle compartilhado é
@@ -24,7 +26,7 @@
 //!   e [`EditorResourceAccessor::get_canonical_uri`] (só `URI`) e as variantes `_sides` (a união inteira, [`EditorUri`]).
 //!
 //! Fora deste módulo (e por quê): `IEditorPane` completo e `IEditorGroup` (dependem de `IComposite`, `IInstantiationService`
-//! e do `IEditorGroupsService`), `IEditorFactoryRegistry`, `IEditorSerializer`, `IFileEditorFactory`, `IFileEditorInput`
+//! e do `IEditorGroupsService`), `IFileEditorFactory`, `IFileEditorInput`
 //! (dependem do `IInstantiationService` e do `Registry` de plataforma), `pathsToEditors`, `createEditorOpenError`,
 //! `createTooLargeFileError`, `IToolbarActions` (dependem de `IAction`), `IEditorMemento`, `IEditorPartConfiguration` e
 //! `preventEditorClose` (entram com o `editorGroupModel`), `isEditorIdentifier`, `isEditorCommandsContext`,
@@ -49,8 +51,11 @@ use crate::services::files_configuration::files_configuration_service::{EditorOr
 
 pub mod diff_editor_input;
 pub mod diff_editor_model;
+pub mod editor_factory_registry;
+pub mod editor_group_model;
 pub mod editor_input;
 pub mod editor_model;
+pub mod filtered_editor_group_model;
 pub mod side_by_side_editor_input;
 
 /// Handle compartilhado de um `EditorInput`.
