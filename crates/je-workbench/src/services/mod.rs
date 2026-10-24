@@ -58,3 +58,5 @@ pub mod untitled;
 
 // Propriedades comuns da telemetria do workbench (`telemetry/browser/workbenchCommonProperties.ts`).
 pub mod telemetry;
+// Filtros do contexto de atribuição de experimentos (`assignmentContextFilter.ts` e o contrato `IAssignmentFilter`).
+pub mod assignment;
