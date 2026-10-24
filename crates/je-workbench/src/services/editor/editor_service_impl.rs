@@ -980,7 +980,8 @@ impl IEditorService for EditorService {
             self.text_editor_service.clone(),
         );
 
-        disposables.add_rc(Self::create(Some(editor_groups_container), deps))
+        let scoped = disposables.add_rc(Self::create(Some(editor_groups_container), deps));
+        scoped
     }
 
     // region: Editor accessors
