@@ -6,15 +6,19 @@
 //! chamam.
 //!
 //! Divergências:
-//! - **O que falta de `authentication.ts`** (entra quando o `AuthenticationService` for portado):
+//! - **O que falta de `authentication.ts`**: `isAuthenticationSession`, `WORKBENCH_ONLY_SESSION_OPTION_PREFIX`,
+//!   `withoutWorkbenchOnlySessionOptions`, `getAuthenticationSessionRequestKey` (nenhum serviço portado os
+//!   chama; entram com o `AuthenticationExtensionsService`) e os membros de `IAuthenticationExtensionsService`
+//!   (preferência de sessão, `selectSession`, `requestSessionAccess`...). Já estão aqui
 //!   `ACCOUNTS_AVATAR_SETTING`, `IAuthenticationConstraint`, `IAuthenticationProvider`,
-//!   `IAuthenticationProviderHostDelegate`, `getDynamicAuthenticationProviderId`, `isAuthenticationSession`,
-//!   `isAuthenticationWwwAuthenticateRequest`, `WORKBENCH_ONLY_SESSION_OPTION_PREFIX`,
-//!   `withoutWorkbenchOnlySessionOptions`, `getAuthenticationSessionRequestKey`, e os membros de
-//!   `IAuthenticationService` (`onDidUnregisterAuthenticationProvider`,
-//!   `declaredProviders`, `removeSession`...) e de `IAuthenticationExtensionsService`
-//!   (preferência de sessão, `selectSession`, `requestSessionAccess`...) que nenhum serviço portado chama.
-//!   Os dois traits crescem com eles.
+//!   `IAuthenticationProviderHostDelegate` e `getDynamicAuthenticationProviderId`.
+//! - **`IAuthenticationService` em dois traits.** [`IAuthenticationService`] mantém os membros que os serviços
+//!   de acesso, de uso e de consulta chamam, e [`IAuthenticationServiceProviders`] (supertrait) tem o resto
+//!   (`declaredProviders`, `registerAuthenticationProvider`, `removeSession`...), para os dublês que já
+//!   implementam o trait reduzido não quebrarem. O `AuthenticationService` implementa os dois.
+//! - **`IAuthenticationProvider`**: os membros opcionais do original são métodos com padrão `None`; um provedor
+//!   com `dispose` (`isDisposable`) devolve a si em `as_disposable`. `AuthenticationProviderInformation`,
+//!   `AuthenticationSession` e os eventos de mudança ganharam `Debug` e `PartialEq` (o `deepEqual` dos testes).
 //! - **`IAuthenticationService.getAccounts`** devolve `Promise<Vec<AuthenticationSessionAccount>>` (o
 //!   `ReadonlyArray` é um vetor de cópias). `AuthenticationSessionAccount.icon` é `Option<URI>`.
 //! - **Eventos com objeto anônimo** (`{ providerId, accountName }` e `{ extensionIds, providerId }`) são as
@@ -30,11 +34,15 @@
 //!   textual é descartada (no original ela ficaria na lista, sem nunca casar com uma extensão); um `name`
 //!   ausente vira texto vazio, que é falso como o `undefined` nas conferências do serviço.
 
+use std::rc::Rc;
+
 use je_base::JsString;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::json::{Object, Value};
+use je_base::lifecycle::DisposableRef;
+use je_base::oauth::{IAuthenticationChallenge, IAuthorizationProtectedResourceMetadata, IAuthorizationServerMetadata};
 use je_base::jsonc::json_parse;
 use je_base::product::StringsOrDictionary;
 use je_base::promise::Promise;
@@ -46,7 +54,7 @@ use je_platform::storage::{StorageScope, StorageService};
 pub const INTERNAL_AUTH_PROVIDER_PREFIX: &str = "__";
 
 /// `AuthenticationSessionAccount`.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AuthenticationSessionAccount {
     pub label: String,
     pub id: String,
@@ -62,7 +70,7 @@ impl AuthenticationSessionAccount {
 }
 
 /// `AuthenticationSession`.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AuthenticationSession {
     pub id: String,
     pub access_token: String,
@@ -84,7 +92,7 @@ impl AuthenticationSession {
 }
 
 /// `AuthenticationSessionsChangeEvent`: `added`, `removed` e `changed` são `ReadonlyArray | undefined`.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AuthenticationSessionsChangeEvent {
     pub added: Option<Vec<AuthenticationSession>>,
     pub removed: Option<Vec<AuthenticationSession>>,
@@ -92,7 +100,7 @@ pub struct AuthenticationSessionsChangeEvent {
 }
 
 /// O `{ providerId, label, event }` de `IAuthenticationService.onDidChangeSessions`.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AuthenticationSessionsChange {
     pub provider_id: String,
     pub label: String,
@@ -212,6 +220,190 @@ pub trait IAuthenticationService {
 }
 
 service_id!(pub I_AUTHENTICATION_SERVICE: dyn IAuthenticationService = "IAuthenticationService");
+
+/// Setting that controls whether the profile image (avatar) of a signed-in account is shown in account related UI.
+pub const ACCOUNTS_AVATAR_SETTING: &str = "workbench.accounts.showAvatar";
+
+/// `IAuthenticationConstraint`: represents constraints for authentication, including challenges and optional
+/// scopes. This is used when creating or retrieving sessions that must satisfy specific authentication
+/// requirements from WWW-Authenticate headers.
+#[derive(Clone, Debug)]
+pub struct IAuthenticationConstraint {
+    /// Array of authentication challenges parsed from WWW-Authenticate headers.
+    pub challenges: Vec<IAuthenticationChallenge>,
+    /// Optional scopes for the session. If not provided, the authentication provider may extract scopes from
+    /// the challenges or use default scopes.
+    pub fallback_scopes: Option<Vec<String>>,
+}
+
+/// `IAuthenticationProviderHostDelegate`.
+pub trait IAuthenticationProviderHostDelegate {
+    /// Priority for this delegate, delegates are tested in descending priority order.
+    fn priority(&self) -> f64;
+
+    fn create(
+        &self,
+        authorization_server: &URI,
+        server_metadata: &IAuthorizationServerMetadata,
+        resource: Option<&IAuthorizationProtectedResourceMetadata>,
+        client_id: Option<&str>,
+        client_secret: Option<&str>,
+    ) -> Promise<String>;
+
+    /// Creates an XAA (enterprise-managed, ID-JAG) authentication provider for the given SSO issuer. The returned
+    /// string is the provider id. `None` é o `createXaa?` ausente do original.
+    fn create_xaa(&self, _issuer: &URI) -> Option<Promise<String>> {
+        None
+    }
+
+    /// `!!delegate.createXaa`: se o delegado tem o membro opcional `createXaa`.
+    fn supports_xaa(&self) -> bool {
+        false
+    }
+}
+
+/// `getDynamicAuthenticationProviderId`.
+pub fn get_dynamic_authentication_provider_id(authorization_server: &URI, resource: Option<&IAuthorizationProtectedResourceMetadata>) -> String {
+    match resource {
+        Some(resource) => format!("{} {}", authorization_server.to_string(true).to_string_lossy(), resource.resource),
+        None => authorization_server.to_string(true).to_string_lossy(),
+    }
+}
+
+/// `IAuthenticationProvider`: represents an authentication provider.
+///
+/// Os membros opcionais do original (`resourceServer?`, `authorizationServers?`, `confirmation?`,
+/// `getSessionsFromChallenges?`, `createSessionFromChallenges?`) são métodos com padrão que devolve `None`, o
+/// membro ausente.
+pub trait IAuthenticationProvider {
+    /// The unique identifier of the authentication provider.
+    fn id(&self) -> String;
+
+    /// The display label of the authentication provider.
+    fn label(&self) -> String;
+
+    /// The resource server URI that this provider is responsible for, if any.
+    fn resource_server(&self) -> Option<URI> {
+        None
+    }
+
+    /// The resolved authorization servers. These can still contain globs, but should be concrete URIs.
+    fn authorization_servers(&self) -> Option<Vec<URI>> {
+        None
+    }
+
+    /// Indicates whether the authentication provider supports multiple accounts.
+    fn supports_multiple_accounts(&self) -> bool;
+
+    /// Optional function to provide a custom confirmation message for authentication prompts. If not implemented
+    /// (ou devolve `None`), the default confirmation messages will be used.
+    fn confirmation(&self, _extension_name: &str, _recreating_session: bool) -> Option<String> {
+        None
+    }
+
+    /// An event which fires when the array of sessions has changed, or data within a session has changed.
+    fn on_did_change_sessions(&self) -> Event<AuthenticationSessionsChangeEvent>;
+
+    /// Retrieves a list of authentication sessions. If `scopes` is provided, the sessions returned should match
+    /// these permissions, otherwise all sessions should be returned.
+    fn get_sessions(&self, scopes: Option<Vec<String>>, options: IAuthenticationProviderSessionOptions) -> Promise<Vec<AuthenticationSession>>;
+
+    /// Prompts the user to log in. If login is successful, the `onDidChangeSessions` event should be fired. If
+    /// login fails, a rejected promise should be returned. If the provider does not support multiple accounts,
+    /// this method should not be called if there is already an existing session matching the provided scopes.
+    fn create_session(&self, scopes: Vec<String>, options: IAuthenticationProviderSessionOptions) -> Promise<AuthenticationSession>;
+
+    /// Get existing sessions that match the given authentication constraints. `None` é o membro ausente.
+    fn get_sessions_from_challenges(
+        &self,
+        _constraint: IAuthenticationConstraint,
+        _options: IAuthenticationProviderSessionOptions,
+    ) -> Option<Promise<Vec<AuthenticationSession>>> {
+        None
+    }
+
+    /// Create a new session based on authentication constraints. This is called when no existing session matches
+    /// the constraint requirements. `None` é o membro ausente.
+    fn create_session_from_challenges(
+        &self,
+        _constraint: IAuthenticationConstraint,
+        _options: IAuthenticationProviderSessionOptions,
+    ) -> Option<Promise<AuthenticationSession>> {
+        None
+    }
+
+    /// Removes the session corresponding to the specified session ID. If the removal is successful, the
+    /// `onDidChangeSessions` event should be fired. If a session cannot be removed, the provider should reject.
+    fn remove_session(&self, session_id: &str) -> Promise<()>;
+
+    /// O `isDisposable(authenticationProvider)` do `registerAuthenticationProvider`: um provedor com `dispose`
+    /// devolve a si mesmo como descartável, e o serviço o descarta junto com o registro.
+    fn as_disposable(&self) -> Option<DisposableRef> {
+        None
+    }
+}
+
+/// Os membros de `IAuthenticationService` que os serviços portados antes do `AuthenticationService` não chamam
+/// (ver o topo do arquivo). Ficam num trait à parte, supertrait [`IAuthenticationService`], para os dublês dos
+/// outros serviços, que implementam só o trait reduzido, continuarem valendo; o `AuthenticationService`
+/// implementa os dois, e juntos são o `IAuthenticationService` do original.
+pub trait IAuthenticationServiceProviders: IAuthenticationService {
+    /// Fires when an authentication provider has been unregistered.
+    fn on_did_unregister_authentication_provider(&self) -> Event<AuthenticationProviderInformation>;
+
+    /// Fires when the list of declaredProviders has changed.
+    fn on_did_change_declared_providers(&self) -> Event<()>;
+
+    /// All providers that have been statically declared by extensions. These may not actually be registered or
+    /// active yet (uma cópia da lista).
+    fn declared_providers(&self) -> Vec<AuthenticationProviderInformation>;
+
+    /// Registers that an extension has declared an authentication provider in their package.json. Lança se o id ou
+    /// o rótulo são vazios, ou se o id já foi declarado.
+    fn register_declared_authentication_provider(&self, provider: AuthenticationProviderInformation);
+
+    /// Unregisters a declared authentication provider.
+    fn unregister_declared_authentication_provider(&self, id: &str);
+
+    /// Checks if an authentication provider has been registered.
+    fn is_authentication_provider_registered(&self, id: &str) -> bool;
+
+    /// Checks if an authentication provider is dynamic.
+    fn is_dynamic_authentication_provider(&self, id: &str) -> bool;
+
+    /// Registers an authentication provider.
+    fn register_authentication_provider(&self, id: &str, provider: Rc<dyn IAuthenticationProvider>);
+
+    /// Unregisters an authentication provider.
+    fn unregister_authentication_provider(&self, id: &str);
+
+    /// Gets the provider with the given id. Lança se o provedor não está registrado.
+    fn get_provider(&self, id: &str) -> Rc<dyn IAuthenticationProvider>;
+
+    /// Removes the session with the given id from the provider with the given id.
+    fn remove_session(&self, provider_id: &str, session_id: &str) -> Promise<()>;
+
+    /// Gets a provider id for a specified authorization server. `resource_server` is the resource server URI that
+    /// should match the provider's resourceServer (if defined).
+    fn get_or_activate_provider_id_for_server(&self, authorization_server: &URI, resource_server: Option<&URI>) -> Promise<Option<String>>;
+
+    /// Allows the ability register a delegate that will be used to start authentication providers.
+    fn register_authentication_provider_host_delegate(&self, delegate: Rc<dyn IAuthenticationProviderHostDelegate>) -> DisposableRef;
+
+    /// Creates a dynamic authentication provider for the given server metadata.
+    fn create_dynamic_authentication_provider(
+        &self,
+        authorization_server: &URI,
+        server_metadata: &IAuthorizationServerMetadata,
+        resource: Option<&IAuthorizationProtectedResourceMetadata>,
+        client_id: Option<&str>,
+        client_secret: Option<&str>,
+    ) -> Promise<Option<Rc<dyn IAuthenticationProvider>>>;
+
+    /// Gets or creates a built-in XAA (enterprise-managed, ID-JAG) authentication provider for the given SSO issuer.
+    /// Subsequent calls with the same issuer return the existing provider.
+    fn create_or_get_xaa_provider(&self, issuer: &URI) -> Promise<Option<String>>;
+}
 
 // Pendência anotada no original: mover isto para o `MainThreadAuthentication`.
 /// `IAuthenticationExtensionsService`, reduzido às preferências de conta (ver o topo do arquivo).

@@ -5,6 +5,8 @@
 #[allow(clippy::module_inception)] // `authentication.rs` é o porte de `authentication.ts`, como no original
 pub mod authentication;
 pub mod authentication_access_service;
+// `browser/authenticationService.ts`.
+pub mod authentication_service;
 
 // Serviços de uso e de acesso por MCP e a API de consulta (`authenticationUsageService`,
 // `authenticationMcpAccessService`, `authenticationMcpUsageService`, `authenticationMcpService` (só a
