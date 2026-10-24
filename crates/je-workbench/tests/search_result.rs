@@ -665,7 +665,8 @@ fn match_file_match_search_result_hierarchy_exists() {
 
     let search_model = t.instantiation_service.create_instance::<SearchModelImpl>(());
     guard.add_rc(search_model.clone());
-    let weak_search_model: Weak<dyn ISearchModel> = Rc::downgrade(&search_model);
+    let weak_search_model = Rc::downgrade(&search_model);
+    let weak_search_model: Weak<dyn ISearchModel> = weak_search_model;
     let search_result = t.instantiation_service.create_instance::<SearchResultImpl>(weak_search_model);
     guard.add_rc(search_result.clone());
     // O original deixa o resultado sem consulta (ver as divergências do módulo).
