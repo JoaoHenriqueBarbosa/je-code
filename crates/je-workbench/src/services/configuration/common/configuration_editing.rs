@@ -26,7 +26,7 @@ use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::configuration::registry::{ConfigurationScope, configuration_registry, is_override_property, key_from_override_identifiers};
-use je_platform::configuration::{ConfigurationOverrides, ConfigurationUpdateOptions, ConfigurationUpdateOverrides, ConfigurationValue, HandleDirtyFile};
+use je_platform::configuration::{ConfigurationOverrides, ConfigurationUpdateOptions, ConfigurationUpdateOverrides, HandleDirtyFile};
 use je_platform::files::file_service::FileService;
 use je_platform::files::files::{FileOperationError, FileOperationResult};
 use je_platform::js::to_json;

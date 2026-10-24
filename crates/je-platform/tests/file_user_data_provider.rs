@@ -440,7 +440,7 @@ struct TestFileSystemProvider {
 }
 
 /// `throw new Error('Not Supported')`.
-fn not_supported<T>() -> Promise<T> {
+fn not_supported<T: Clone + 'static>() -> Promise<T> {
     Promise::rejected(Error::new("Not Supported"))
 }
 
