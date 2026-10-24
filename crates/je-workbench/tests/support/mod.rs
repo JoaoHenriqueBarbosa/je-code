@@ -25,3 +25,6 @@ pub mod text_file_support;
 
 // Porte de `untitledFileWorkingCopy.test.ts` e de `untitledScratchpadWorkingCopy.test.ts`.
 pub mod untitled_file_working_copy_support;
+
+// Porte de `workingCopyBackupTracker.test.ts`: o `createEditorPart` e o `EditorService` real.
+pub mod editor_service_support;
