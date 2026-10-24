@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::lifecycle::IDisposable;
+use je_base::nls::localize;
 use je_base::promise::{MaybePromise, Promise};
 use je_base::severity::Severity;
 use je_base::themables::ThemeColor;
@@ -142,6 +143,11 @@ impl StatusBarItems {
     }
 }
 
+/// O nome de um item sem `name` (no original, `"{label} (Extension)"` com o nome da extensão chamadora).
+fn default_item_name() -> String {
+    localize("extensionLabel", "{0} (Extension)", &["Extension"])
+}
+
 fn status_bar_color_to_js(color: StatusBarColor) -> JsData {
     match color {
         StatusBarColor::String(text) => JsData::Str(text),
@@ -220,7 +226,7 @@ fn define_status_bar_item(runner: &NodeRunner, items: &Rc<StatusBarItems>, table
         set(
             "name",
             Rc::new(|entry, value| {
-                entry.set_name(opt_string(value).as_deref());
+                entry.set_name(Some(opt_string(value).filter(|name| !name.is_empty()).unwrap_or_else(default_item_name).as_str()));
                 Ok(())
             }),
         ),
@@ -320,7 +326,11 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
                     other => (None, other, args.get(1)),
                 };
                 let alignment = opt_number(alignment).and_then(|value| StatusBarAlignment::from_value(value as i32));
-                let entry = create_bar.create_status_bar_entry(None, id.as_deref(), alignment, opt_number(priority));
+                // O host não sabe qual extensão chamou: sem `id`, o item ganha um identificador próprio, e sem `name`, o nome padrão
+                // (o original os deriva da extensão, que aqui não existe).
+                let id = id.unwrap_or_else(|| format!("je.exthost.statusbar.{}", create_items.next.get() + 1));
+                let entry = create_bar.create_status_bar_entry(None, Some(id.as_str()), alignment, opt_number(priority));
+                entry.set_name(Some(default_item_name().as_str()));
                 Ok(create_items.add(entry))
             }),
         );
