@@ -48,3 +48,6 @@ tempfile = "3"
 # O medidor de caractere do terminal nos testes (`terminalConfigurationService.test.ts`) mede com o mesmo sistema de texto
 # nativo que desenha a UI, no lugar do `getBoundingClientRect` do DOM.
 je-text = { path = "../je-text" }
+# O host de extensões real (zjsc rodando o código das extensões) para o teste de integração `extension_host_manager`; o `je-exthost`
+# depende do `je-workbench`, e uma dependência de desenvolvimento circular é aceita pelo Cargo (só os testes de integração a usam).
+je-exthost = { path = "../je-exthost" }

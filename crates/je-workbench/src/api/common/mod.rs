@@ -4,6 +4,8 @@ pub mod ext_host_authentication;
 pub mod ext_host_xaa_auth_provider;
 pub mod ext_host_browsers;
 pub mod ext_host_protocol;
+// As formas tipadas do protocolo sobre o `RpcProtocol` (proxy e ator de cada serviço do host de extensões).
+pub mod ext_host_rpc_shapes;
 pub mod ext_host_text_editor;
 pub mod ext_host_type_converters;
 pub mod ext_host_types;

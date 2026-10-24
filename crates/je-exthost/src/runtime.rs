@@ -4,6 +4,8 @@
 use std::io::Write;
 use std::rc::Rc;
 
+use zjsc::api::embed_node::run_node;
+pub use zjsc::api::embed_node::NodeRunner;
 use zjsc::api::module_probe::{EntryKind, ModuleFs};
 use zjsc::runtime::console_host::ConsoleHost;
 use zjsc::runtime::vm::VM;
@@ -82,4 +84,14 @@ pub fn with_runtime_thread<T: Send + 'static>(body: impl FnOnce() -> T + Send + 
         .expect("thread do motor")
         .join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// O programa principal do host de extensões: publica a ponte `globalThis.__jeRequire`, porque `require` só existe no escopo do
+/// módulo principal e o `ExtHostExtensionService` carrega o `main` de cada extensão por ela (o `_loadCommonJSModule` do original).
+pub const HOST_MAIN_SOURCE: &str = "globalThis.__jeRequire = (path) => require(path);";
+
+/// Cria o programa Node do host (o console do processo, os módulos em disco e o [`HOST_MAIN_SOURCE`]) e entrega o `NodeRunner` a
+/// `body`. Roda na thread corrente, que precisa ser a de [`with_runtime_thread`]: o motor é preso à thread.
+pub fn run_host_program<T>(body: impl FnOnce(&NodeRunner) -> T) -> Result<T, String> {
+    run_node(Rc::new(OsConsole), Rc::new(DiskModuleFs), "/je-exthost/main.js", HOST_MAIN_SOURCE, body)
 }

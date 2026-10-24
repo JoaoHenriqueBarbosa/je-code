@@ -12,9 +12,10 @@
 //!   com [`AbstractExtensionService::set_hooks`] antes do primeiro uso. As versões "de base" dos métodos sobrescrevíveis são
 //!   [`AbstractExtensionService::initialize_base`] e [`AbstractExtensionService::on_extension_host_crashed_base`], que os corpos
 //!   padrão do trait chamam (o `super._initialize()` e o `super._onExtensionHostCrashed(...)` do original).
-//! - **`_doCreateExtensionHostManager` é obrigatório** no trait: o corpo padrão do original cria o `ExtensionHostManager` (ou o
-//!   `LazyCreateExtensionHostManager`) pela instanciação, e esses dois (com o `ExtHostCustomersRegistry`, o `IExtensionHostProxy`
-//!   e o `ExtensionHostExtensions`) ainda não estão portados. Quem implementar o trait entrega o gerenciador.
+//! - **`_doCreateExtensionHostManager` tem corpo padrão**, o do original: cria o [`ExtensionHostManager`] (ou o
+//!   `LazyCreateExtensionHostManager`, quando o host é `LazyAutoStart`) com os serviços que o serviço já guarda
+//!   ([`AbstractExtensionService::do_create_extension_host_manager_base`]). O hook recebe o serviço (`service`), como `initialize`, e
+//!   quem o sobrescreve (um dublê de teste) entrega o gerenciador que quiser.
 //! - **`AsyncIterable<ResolvedExtensions>`** é o trait [`ResolvedExtensionsStream`] (`next()` devolve `None` no fim), e as classes
 //!   `ResolverExtensions`, `LocalExtensions` e `RemoteExtensions` são as variantes do [`ResolvedExtensions`]. O serviço consome cada
 //!   item assim que ele chega, como o `for await` do original.
@@ -86,7 +87,9 @@ use super::extension_description_registry::{
     SharedExtensionDescription,
 };
 use super::extension_host_kind::{ExtensionHostKind, ExtensionRunningPreference, IExtensionHostKindPicker};
+use super::extension_host_manager::{ExtensionHostManager, ExtensionHostManagerServices};
 use super::extension_host_managers::IExtensionHostManager;
+use super::lazy_create_extension_host_manager::LazyCreateExtensionHostManager;
 use super::extension_host_protocol::IExtensionDescriptionDelta;
 use super::extension_host_proxy::IResolveAuthorityResult;
 use super::extension_manifest_properties_service::IExtensionManifestPropertiesService;
@@ -178,8 +181,16 @@ pub trait AbstractExtensionServiceHooks {
     /// `_resolveAuthority(remoteAuthority)` (abstrato).
     fn resolve_authority(&self, remote_authority: &str) -> Promise<ResolverResult>;
 
-    /// `_doCreateExtensionHostManager(extensionHost, initialActivationEvents)`.
-    fn do_create_extension_host_manager(&self, extension_host: Rc<dyn IExtensionHost>, initial_activation_events: Vec<String>) -> Rc<dyn IExtensionHostManager>;
+    /// `_doCreateExtensionHostManager(extensionHost, initialActivationEvents)`. O corpo padrão é o do original (ver
+    /// [`AbstractExtensionService::do_create_extension_host_manager_base`]); `service` é o `this` da classe de base.
+    fn do_create_extension_host_manager(
+        &self,
+        service: &AbstractExtensionService,
+        extension_host: Rc<dyn IExtensionHost>,
+        initial_activation_events: Vec<String>,
+    ) -> Rc<dyn IExtensionHostManager> {
+        service.do_create_extension_host_manager_base(extension_host, initial_activation_events)
+    }
 
     /// `_initialize()`. O corpo padrão é o `super._initialize()`.
     fn initialize(&self, service: &AbstractExtensionService) -> Promise<()> {
@@ -1603,7 +1614,7 @@ impl AbstractExtensionService {
     ) -> Option<(Rc<dyn IExtensionHostManager>, Rc<DisposableStore>)> {
         let extension_host = self.extension_host_factory.create_extension_host(&self.running_locations, running_location, is_initial_start)?;
 
-        let process_manager: Rc<dyn IExtensionHostManager> = self.hooks().do_create_extension_host_manager(extension_host, initial_activation_events.to_vec());
+        let process_manager: Rc<dyn IExtensionHostManager> = self.hooks().do_create_extension_host_manager(self, extension_host, initial_activation_events.to_vec());
         let disposable_store = DisposableStore::new();
 
         let service = self.this.clone();
@@ -1967,6 +1978,21 @@ impl AbstractExtensionService {
     }
 
     //#region Called by extension host
+
+    /// `_doCreateExtensionHostManager(extensionHost, initialActivationEvents)` do `AbstractExtensionService`: o gerenciador de verdade
+    /// ([`ExtensionHostManager`]) ou, quando o host é de partida preguiçosa, o [`LazyCreateExtensionHostManager`].
+    pub fn do_create_extension_host_manager_base(&self, extension_host: Rc<dyn IExtensionHost>, initial_activation_events: Vec<String>) -> Rc<dyn IExtensionHostManager> {
+        let internal_extension_service = self.acquire_internal_api(extension_host.clone());
+        let services = ExtensionHostManagerServices {
+            environment_service: self.environment_service.clone(),
+            telemetry_service: self.telemetry_service.clone(),
+            log_service: self.log_service.clone(),
+        };
+        if extension_host.startup() == ExtensionHostStartup::LazyAutoStart {
+            return LazyCreateExtensionHostManager::new(extension_host, initial_activation_events, internal_extension_service, services);
+        }
+        ExtensionHostManager::new(extension_host, initial_activation_events, internal_extension_service, services)
+    }
 
     /// `_acquireInternalAPI(extensionHost)`: o que o host recebe do serviço.
     pub fn acquire_internal_api(&self, extension_host: Rc<dyn IExtensionHost>) -> Rc<dyn IInternalExtensionService> {

@@ -25,3 +25,8 @@ pub mod extension_host_proxy;
 pub mod extensions_api_proposals;
 pub mod extensions_proposed_api;
 pub mod implicit_activation_events;
+// `extHostCustomers.ts`, `extensionHostManager.ts` e `lazyCreateExtensionHostManager.ts`: o gerenciador do host de extensões (cria o
+// `RPCProtocol` sobre o protocolo do host e instancia os clientes `MainThread*` do registro).
+pub mod ext_host_customers;
+pub mod extension_host_manager;
+pub mod lazy_create_extension_host_manager;

@@ -61,11 +61,13 @@ pub struct ExtensionHost {
     runner: NodeRunner,
     commands: Rc<ExtHostCommands>,
     vscode: JsData,
-    _main_thread_commands: Rc<MainThreadCommands>,
+    table: Rc<disposable::DisposableTable>,
+    _main_thread_commands: Option<Rc<MainThreadCommands>>,
 }
 
 impl ExtensionHost {
-    /// Monta os serviços e registra `require('vscode')` em `runner`.
+    /// Monta os serviços e registra `require('vscode')` em `runner`, com o `MainThreadCommands` do workbench no mesmo
+    /// [`LocalContext`] (sem serialização: os dois lados são Rust no mesmo processo).
     pub fn new(runner: &NodeRunner, services: WorkbenchServices) -> ExtensionHost {
         let context = LocalContext::new();
         let context_ref: &dyn IMainContext = &*context;
@@ -77,9 +79,20 @@ impl ExtensionHost {
         let main_thread_commands = MainThreadCommands::new(context_ref, services.command_service, services.extension_service);
         let main_shape: Rc<dyn je_workbench::api::common::ext_host_protocol::MainThreadCommandsShape> = main_thread_commands.clone();
         context_ref.set_erased(MainContext::MAIN_THREAD_COMMANDS.sid, Rc::new(main_shape));
-        let commands = ExtHostCommands::new(context_ref, NullLogService::shared(), Rc::new(NullTelemetry));
-        let shape: Rc<dyn ExtHostCommandsShape> = commands.clone();
+        let mut host = Self::with_context(runner, context_ref);
+        let shape: Rc<dyn ExtHostCommandsShape> = host.commands.clone();
         *late.0.borrow_mut() = Some(shape);
+        host._main_thread_commands = Some(main_thread_commands);
+        host
+    }
+
+    /// Monta o host sobre `context`, que já entrega o proxy de `MainThreadCommands` e `MainThreadTelemetry` (o `RPCProtocol` do
+    /// lado do host, quando o workbench está do outro lado de um protocolo de mensagens), registra o `ExtHostCommands` nele
+    /// (para o workbench executar os comandos que as extensões registram) e registra `require('vscode')` em `runner`.
+    pub fn with_context(runner: &NodeRunner, context: &dyn IMainContext) -> ExtensionHost {
+        let commands = ExtHostCommands::new(context, NullLogService::shared(), Rc::new(NullTelemetry));
+        let shape: Rc<dyn ExtHostCommandsShape> = commands.clone();
+        context.set(&ExtHostContext::EXT_HOST_COMMANDS, shape);
 
         let table = disposable::DisposableTable::new();
         let disposable_class = disposable::define(runner, &table);
@@ -91,7 +104,7 @@ impl ExtensionHost {
         ]);
         let vscode = JsData::Object(members);
         runner.register_module("vscode", &vscode);
-        ExtensionHost { runner: runner.clone(), commands, vscode, _main_thread_commands: main_thread_commands }
+        ExtensionHost { runner: runner.clone(), commands, vscode, table, _main_thread_commands: None }
     }
 
     pub fn commands(&self) -> &Rc<ExtHostCommands> {
@@ -100,6 +113,11 @@ impl ExtensionHost {
 
     pub fn vscode(&self) -> &JsData {
         &self.vscode
+    }
+
+    /// A tabela dos descartáveis do Rust que o JavaScript segura (`registerCommand` devolve um deles).
+    pub fn disposables(&self) -> &Rc<disposable::DisposableTable> {
+        &self.table
     }
 
     /// Esvazia as microtarefas dos dois mundos (as do motor e as das `Promise` do Rust) até estabilizar.
