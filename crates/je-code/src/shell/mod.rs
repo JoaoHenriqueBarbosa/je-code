@@ -2301,7 +2301,7 @@ impl Shell {
     }
 
     /// Trata uma tecla com o Quick Open aberto. Devolve se consumiu.
-    fn quick_pick_key(&mut self, down: bool, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+    fn quick_pick_key(&mut self, down: bool, key_code: KeyCode, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let Some(pick) = self.quick_pick.as_mut() else { return false };
         if !down {
             return true;
@@ -2326,20 +2326,11 @@ impl Shell {
             Some(EditorKey::Down) => pick.move_focus(1),
             Some(EditorKey::PageUp) => pick.move_focus(-10),
             Some(EditorKey::PageDown) => pick.move_focus(10),
-            Some(EditorKey::Left) => pick.move_cursor(pick.cursor().saturating_sub(1)),
-            Some(EditorKey::Right) => pick.move_cursor(pick.cursor() + 1),
-            Some(EditorKey::Home) => pick.move_cursor(0),
-            Some(EditorKey::End) => pick.move_cursor(pick.len()),
-            Some(EditorKey::Backspace) => pick.backspace(),
-            Some(EditorKey::Delete) => pick.delete(),
             _ => {
-                if (!ctrl || mods.alt)
-                    && let Some(text) = text
-                {
-                    pick.type_text(text);
-                }
+                pick.edit(key_code, key, mods, text);
             }
         }
+        let _ = ctrl;
         self.needs_render = true;
         if self.theme_before_preview.is_some() {
             self.preview_theme();
@@ -2725,8 +2716,8 @@ impl Shell {
         self.render_quick_pick(chrome);
     }
 
-    fn render_quick_pick(&self, chrome: NodeId) {
-        let Some(pick) = &self.quick_pick else { return };
+    fn render_quick_pick(&mut self, chrome: NodeId) {
+        let Some(pick) = self.quick_pick.as_mut() else { return };
         let rows = pick.render(&mut self.ui.tree_mut(), chrome, self.size.0, &self.theme, self.icons.as_ref(), &self.language_of);
         for (row, index) in rows {
             self.listen_command(row, Command::QuickPickAccept(index));
@@ -3970,7 +3961,7 @@ impl Shell {
             self.run_commands();
             return;
         }
-        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) && self.quick_pick_key(down, text, editor_key, mods) {
+        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) && self.quick_pick_key(down, key_code, text, editor_key, mods) {
             return;
         }
         if self.terminal_focused && self.panel_visible && self.panel_tab == PanelTab::Terminal && self.terminal.is_some() && self.quick_pick.is_none() {

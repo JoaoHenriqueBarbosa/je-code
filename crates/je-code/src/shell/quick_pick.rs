@@ -22,6 +22,7 @@ use je_text::TextStyle;
 use je_theme::ColorTheme;
 use je_ui::{Border, Content, Cursor, NodeId, Role, Tree};
 use je_widgets::text::{measure_text, ui_font};
+use je_widgets::text_field::TextField;
 
 use super::Command;
 use super::explorer::LanguageOf;
@@ -68,8 +69,8 @@ pub struct QuickPick {
     files: Vec<PickItem>,
     recents: Vec<PickItem>,
     commands: Vec<PickItem>,
-    value: Vec<char>,
-    cursor: usize,
+    /// O campo do valor (`>` no começo é a paleta).
+    field: TextField,
     /// Os resultados na ordem mostrada: índice na fonte (`recents`, `files` ou `commands`), pontuação.
     results: Vec<(PickItem, Rc<ItemScore>)>,
     focus: usize,
@@ -117,8 +118,9 @@ pub fn scan_workspace(root: &Path, excludes: &super::excludes::Excludes) -> Vec<
 
 impl QuickPick {
     pub fn new(files: Vec<PickItem>, recents: Vec<PickItem>, commands: Vec<PickItem>, initial: &str) -> Self {
-        let value: Vec<char> = initial.chars().collect();
-        let mut pick = Self { files, recents, commands, cursor: value.len(), value, results: Vec::new(), focus: 0, scroll: 0, list_placeholder: None, prompt: None };
+        let mut field = TextField::new();
+        field.set_value(initial);
+        let mut pick = Self { files, recents, commands, field, results: Vec::new(), focus: 0, scroll: 0, list_placeholder: None, prompt: None };
         pick.refresh();
         pick
     }
@@ -134,19 +136,18 @@ impl QuickPick {
     /// Um prompt de uma linha (`InputBox` do `quickInput`): sem lista, o Enter entrega `action` com o texto.
     pub fn prompt(placeholder: &str, initial: &str, action: super::PromptAction) -> Self {
         let mut pick = Self::list(Vec::new(), placeholder);
-        pick.value = initial.chars().collect();
-        pick.cursor = pick.value.len();
+        pick.field.set_value(initial);
         pick.prompt = Some(action);
         pick
     }
 
     /// A ação e o texto do prompt, se este é um.
     pub fn prompt_result(&self) -> Option<(super::PromptAction, String)> {
-        self.prompt.clone().map(|action| (action, self.value.iter().collect()))
+        self.prompt.clone().map(|action| (action, self.field.value().to_owned()))
     }
 
     pub fn is_commands(&self) -> bool {
-        self.list_placeholder.is_some() || self.value.first() == Some(&'>')
+        self.list_placeholder.is_some() || self.field.value().starts_with('>')
     }
 
     fn query_start(&self) -> usize {
@@ -160,7 +161,7 @@ impl QuickPick {
 
     fn query(&self) -> String {
         let start = self.query_start();
-        self.value[start..].iter().collect::<String>().trim().to_owned()
+        self.field.value()[start..].trim().to_owned()
     }
 
     /// Recalcula os resultados para o valor atual.
@@ -197,46 +198,13 @@ impl QuickPick {
         self.scroll = 0;
     }
 
-    fn set_value(&mut self, value: Vec<char>, cursor: usize) {
-        self.value = value;
-        self.cursor = cursor;
-        self.refresh();
-    }
-
-    pub fn type_text(&mut self, text: &str) {
-        let mut value = self.value.clone();
-        let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
-        let cursor = self.cursor + inserted.len();
-        value.splice(self.cursor..self.cursor, inserted);
-        self.set_value(value, cursor);
-    }
-
-    pub fn backspace(&mut self) {
-        if self.cursor > 0 {
-            let mut value = self.value.clone();
-            value.remove(self.cursor - 1);
-            self.set_value(value, self.cursor - 1);
+    /// Entrega uma tecla de edição ao campo e refaz a lista se o valor mudou; `None` se a tecla não é do campo.
+    pub fn edit(&mut self, key_code: je_base::key_codes::KeyCode, key: Option<je_editor_view::EditorKey>, mods: je_ui::Modifiers, text: Option<&str>) -> Option<bool> {
+        let changed = super::input::edit(&mut self.field, key_code, key, mods, text, &super::input::SystemClipboard::new());
+        if changed == Some(true) {
+            self.refresh();
         }
-    }
-
-    pub fn delete(&mut self) {
-        if self.cursor < self.value.len() {
-            let mut value = self.value.clone();
-            value.remove(self.cursor);
-            self.set_value(value, self.cursor);
-        }
-    }
-
-    pub fn move_cursor(&mut self, to: usize) {
-        self.cursor = to.min(self.value.len());
-    }
-
-    pub fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    pub fn len(&self) -> usize {
-        self.value.len()
+        changed
     }
 
     pub fn move_focus(&mut self, delta: isize) {
@@ -267,7 +235,7 @@ impl QuickPick {
     }
 
     /// Monta o painel como filho de `parent` e devolve os nós das linhas com o índice do resultado.
-    pub fn render(&self, tree: &mut Tree, parent: NodeId, window_width: f64, theme: &ColorTheme, icons: Option<&FileIconTheme>, language_of: &LanguageOf) -> Vec<(NodeId, usize)> {
+    pub fn render(&mut self, tree: &mut Tree, parent: NodeId, window_width: f64, theme: &ColorTheme, icons: Option<&FileIconTheme>, language_of: &LanguageOf) -> Vec<(NodeId, usize)> {
         let color = |id: &str| theme.get_color(id).unwrap_or(Rgba::opaque(0xff, 0, 0xff));
         let (foreground, background) = (color("quickInput.foreground"), color("quickInput.background"));
         let font = ui_font(13.0, 400);
@@ -287,22 +255,9 @@ impl QuickPick {
         style.background = Some(color("input.background"));
         style.border = Some(Border { width: 1.0, color: color("focusBorder") });
         style.radius = 4.0;
-        let text_node = tree.create(input, Role::Generic);
-        let shown: String = self.value.iter().collect();
-        if shown.is_empty() {
-            let placeholder = self.list_placeholder.as_deref().unwrap_or(if self.is_commands() { PLACEHOLDER_COMMANDS } else { PLACEHOLDER_FILES });
-            tree.set_bounds(text_node, Rect::new(7.0, 1.0, 586.0, 24.0));
-            tree.style_mut(text_node).content = Content::Text { text: placeholder.to_owned(), style: font.clone(), color: color("input.placeholderForeground"), line_height: 23.0 };
-        } else {
-            tree.set_bounds(text_node, Rect::new(7.0, 1.0, 586.0, 24.0));
-            tree.style_mut(text_node).content = Content::Text { text: shown.clone(), style: font.clone(), color: foreground, line_height: 23.0 };
-        }
-        // O cursor de texto: 1 px na posição do cursor.
-        let before: String = self.value[..self.cursor].iter().collect();
-        let caret_x = 7.0 + measure_text(&before, &font);
-        let caret = tree.create(input, Role::Generic);
-        tree.set_bounds(caret, Rect::new(caret_x, 5.0, caret_x + 1.0, 20.0));
-        tree.style_mut(caret).background = Some(foreground);
+        let placeholder = self.list_placeholder.clone().unwrap_or_else(|| if self.is_commands() { PLACEHOLDER_COMMANDS } else { PLACEHOLDER_FILES }.to_owned());
+        let colors = super::input::InputColors { foreground, placeholder: color("input.placeholderForeground"), selection: color("editor.selectionBackground") };
+        super::input::paint(tree, input, Rect::new(7.0, 1.0, 581.0, 24.0), &mut self.field, &placeholder, true, &font, &colors);
         // A lista.
         let mut rows = Vec::new();
         if self.results.is_empty() {
@@ -327,7 +282,7 @@ impl QuickPick {
                 style.background = Some(focus_bg);
             }
             // A borda do grupo: a primeira linha do segundo grupo leva 1 px de `pickerGroup.border` em cima.
-            let group_start = previous_recent != Some(item.recent) && !self.is_commands() && !self.value.is_empty();
+            let group_start = previous_recent != Some(item.recent) && !self.is_commands() && !self.field.is_empty();
             if group_start && slot > 0 {
                 let line = tree.create(row, Role::Separator);
                 tree.set_bounds(line, Rect::new(0.0, 0.0, WIDTH - 14.0, 1.0));
