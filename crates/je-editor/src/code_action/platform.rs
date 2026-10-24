@@ -123,6 +123,8 @@ pub trait IBulkEditService {
     fn apply(&self, edit: &WorkspaceEdit, options: BulkEditOptions) -> Promise<BulkEditResult>;
 }
 
+je_instantiation::service_id!(pub I_BULK_EDIT_SERVICE: dyn IBulkEditService = "IWorkspaceEditService");
+
 /// Os sinais de `AccessibilitySignal` que o `codeAction` toca.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessibilitySignal {
