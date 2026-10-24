@@ -133,6 +133,16 @@ pub struct FindDecorations {
 }
 
 impl FindDecorations {
+    /// `FindDecorations._CURRENT_FIND_MATCH_DECORATION`.
+    pub fn current_find_match_decoration() -> Rc<ModelDecorationOptions> {
+        CURRENT_FIND_MATCH_DECORATION.with(Rc::clone)
+    }
+
+    /// `FindDecorations._FIND_MATCH_DECORATION`.
+    pub fn find_match_decoration() -> Rc<ModelDecorationOptions> {
+        FIND_MATCH_DECORATION.with(Rc::clone)
+    }
+
     pub fn new(editor: &Rc<CodeEditorWidget>) -> Self {
         Self {
             editor: Rc::downgrade(editor),

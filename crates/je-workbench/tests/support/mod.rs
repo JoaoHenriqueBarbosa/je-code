@@ -28,6 +28,9 @@ pub mod fake_xterm;
 // Porte de `terminalLinkOpeners.test.ts` e `terminalLocalLinkDetector.test.ts`: os dublês dos serviços.
 pub mod terminal_link_support;
 
+// Os dublês parciais das contribuições do terminal (`ITerminalInstance`, `ITerminalService` e companhia).
+pub mod terminal_contrib_support;
+
 // Porte de `terminalInstance.test.ts`: os dublês do processo, do serviço de instâncias e do resolvedor de perfil.
 pub mod terminal_instance_support;
 
@@ -70,3 +73,7 @@ pub mod extension_recommendations_support;
 // Porte de `contrib/debug/test/common/mockDebug.ts` e `test/browser/mockDebugModel.ts`: `MockSession`, `MockRawSession`,
 // `MockDebugAdapter`, `createMockDebugModel` e o `createTestSession` de `callStack.test.ts`.
 pub mod mock_debug;
+
+// Porte de `baseDebugView.test.ts`, `watchExpressionView.test.ts` e `variablesView.test.ts`: o `LinkDetector` e o
+// `DebugExpressionRenderer` de teste, o `IDebugService` com o `getViewModel` trocado, o escopo e a variável do `setup`.
+pub mod debug_view_support;

@@ -390,8 +390,9 @@ pub fn handle_ansi_output(
     root
 }
 
-/// `container.style[property] = value`: grava a declaração no atributo `style`, trocando a que já existe.
-fn set_style_property(element: &Element, property: &str, value: &str) {
+/// `container.style[property] = value`: grava a declaração no atributo `style`, trocando a que já existe (um valor vazio
+/// remove a declaração, como o DOM).
+pub fn set_style_property(element: &Element, property: &str, value: &str) {
     let mut declarations: Vec<(String, String)> = element
         .get_attribute("style")
         .map(|style| {
@@ -401,9 +402,13 @@ fn set_style_property(element: &Element, property: &str, value: &str) {
                 .collect()
         })
         .unwrap_or_default();
-    match declarations.iter_mut().find(|(name, _)| name == property) {
-        Some(entry) => entry.1 = value.to_owned(),
-        None => declarations.push((property.to_owned(), value.to_owned())),
+    if value.is_empty() {
+        declarations.retain(|(name, _)| name != property);
+    } else {
+        match declarations.iter_mut().find(|(name, _)| name == property) {
+            Some(entry) => entry.1 = value.to_owned(),
+            None => declarations.push((property.to_owned(), value.to_owned())),
+        }
     }
     let style: String = declarations.iter().map(|(name, value)| format!("{name}: {value}; ")).collect();
     element.set_attribute("style", style.trim_end());

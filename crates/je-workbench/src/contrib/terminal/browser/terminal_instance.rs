@@ -2716,6 +2716,26 @@ impl ITerminalInstance for TerminalInstance {
     fn dispose_with_reason(&self, reason: Option<TerminalExitReason>) {
         self.dispose_with_reason(reason);
     }
+
+    fn resource(&self) -> URI {
+        self.resource().clone()
+    }
+
+    fn has_remote_authority(&self) -> bool {
+        self.has_remote_authority()
+    }
+
+    fn used_shell_integration_injection(&self) -> bool {
+        self.used_shell_integration_injection()
+    }
+
+    fn shell_integration_injection_failure_reason(&self) -> Option<ShellIntegrationInjectionFailureReason> {
+        self.shell_integration_injection_failure_reason()
+    }
+
+    fn session_id(&self) -> String {
+        self.session_id().to_owned()
+    }
 }
 
 impl IDisposable for TerminalInstance {

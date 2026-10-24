@@ -29,6 +29,7 @@ pub mod onboarding;
 pub mod tasks;
 
 pub mod snippets;
+pub mod tags;
 pub mod timeline;
 // O que o editor de configurações usa do chat (configurações de rede do agente e descrição do modelo padrão sob política).
 pub mod chat;
