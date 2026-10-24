@@ -75,6 +75,19 @@ pub trait IProductService {
     fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
         None
     }
+    /// `embedderIdentifier`: quem embute o workbench na web, quando o produto declara. Padrão: nenhum.
+    fn embedder_identifier(&self) -> Option<&str> {
+        None
+    }
+    /// `removeTelemetryMachineId`: se o identificador de máquina da telemetria é suprimido. Padrão: falso.
+    fn remove_telemetry_machine_id(&self) -> bool {
+        false
+    }
+    /// `remoteExtensionTips` e `virtualWorkspaceExtensionTips` (só os nomes dos remotos, o que o
+    /// `cleanRemoteAuthority` lê). Padrão: o produto não declara nenhum.
+    fn remote_authoring_config(&self) -> Option<crate::telemetry::telemetry_utils::RemoteAuthoringConfig> {
+        None
+    }
     /// `extensionRecommendations`: as extensões que o produto recomenda por evento, quando ele declara. Padrão: nenhuma.
     fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
         None
@@ -245,6 +258,21 @@ impl IProductService for ProductService {
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
+    fn embedder_identifier(&self) -> Option<&str> {
+        self.embedder_identifier.as_deref()
+    }
+    fn remove_telemetry_machine_id(&self) -> bool {
+        self.remove_telemetry_machine_id.unwrap_or(false)
+    }
+    fn remote_authoring_config(&self) -> Option<crate::telemetry::telemetry_utils::RemoteAuthoringConfig> {
+        if self.remote_extension_tips.is_none() && self.virtual_workspace_extension_tips.is_none() {
+            return None;
+        }
+        Some(crate::telemetry::telemetry_utils::RemoteAuthoringConfig {
+            remote_extension_tips: self.remote_extension_tips.as_ref().map(|tips| tips.keys().cloned().collect()),
+            virtual_workspace_extension_tips: self.virtual_workspace_extension_tips.as_ref().map(|tips| tips.keys().cloned().collect()),
+        })
+    }
     fn version(&self) -> &str {
         &self.version
     }
