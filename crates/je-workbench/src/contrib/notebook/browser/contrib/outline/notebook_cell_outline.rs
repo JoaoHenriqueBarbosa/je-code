@@ -29,7 +29,7 @@ use std::rc::{Rc, Weak};
 use je_base::async_::Delayer;
 use je_base::cancellation::CancellationToken;
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::{DisposableStore, IDisposable, Reference, to_disposable};
+use je_base::lifecycle::{DisposableStore, IDisposable, Reference, plain_disposable, to_disposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::symbols::Delay;
 use je_base::uri::URI;
@@ -84,7 +84,9 @@ pub struct NotebookOutlineConfig {
 fn as_provider_reference(reference: &Reference<Rc<NotebookCellOutlineDataSource>>) -> Reference<Rc<dyn INotebookCellOutlineDataSource>> {
     let original = reference.clone();
     let object: Rc<dyn INotebookCellOutlineDataSource> = reference.object.clone();
-    Reference::new(object, to_disposable(move || original.dispose()))
+    // Só uma fachada de tipo sobre a mesma referência (o original passa o mesmo `IReference` aos três provedores): não é um
+    // descartável novo, por isso não é rastreado.
+    Reference::new(object, plain_disposable(move || original.dispose()))
 }
 
 /// `NotebookCellOutline`.
