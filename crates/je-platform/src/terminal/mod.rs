@@ -18,5 +18,7 @@ pub mod terminal_profiles;
 
 pub mod node_terminal_environment;
 
+pub mod shell_integration_addon;
+
 pub mod terminal_settings;
 pub mod xterm_headless;
