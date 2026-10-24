@@ -28,6 +28,7 @@
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
 
+use je_editor::code_action::platform::I_EDITOR_PROGRESS_SERVICE;
 use std::future::Future;
 use std::rc::Rc;
 
@@ -51,7 +52,7 @@ use je_workbench::contrib::notebook::browser::contrib::find::find_match_decorati
 use je_workbench::contrib::notebook::browser::notebook_browser::{CellFindMatchWithIndex, ICellViewModel, INotebookFindOptions};
 use je_workbench::contrib::notebook::browser::notebook_editor_widget::{NotebookEditorWidget, NotebookWidgetDomNode};
 use je_workbench::contrib::notebook::browser::services::notebook_editor_service_impl::{
-    EditorGroupProgressService, I_EDITOR_PROGRESS_SERVICE, NOTEBOOK_EDITOR_INPUT_ID, NotebookBorrowValue, NotebookEditorWidgetService, NotebookEditorWidgetServiceDeps,
+    NOTEBOOK_EDITOR_INPUT_ID, NotebookBorrowValue, NotebookEditorWidgetService, NotebookEditorWidgetServiceDeps,
     NotebookInputIdentity, NotebookWidgetFactory,
 };
 use je_workbench::contrib::notebook::common::notebook_common::INotebookTextModel;
@@ -152,7 +153,7 @@ impl NotebookWidgetFactory for TestWidgetFactory {
         _instantiation_service: &InstantiationService,
         _editor_group_context_key_service: Rc<dyn IContextKeyService>,
         _widget_dispose_store: &DisposableStore,
-        _editor_group_editor_progress_service: Rc<dyn EditorGroupProgressService>,
+        _editor_group_editor_progress_service: Rc<dyn je_editor::code_action::platform::IEditorProgressService>,
         _initial_dimension: Option<Dimension>,
     ) -> Rc<dyn NotebookEditorWidget> {
         Rc::new(StubWidget)
@@ -329,7 +330,7 @@ fn setup(store: &Rc<DisposableStore>) -> Fixture {
     let editor_group2: Rc<dyn IEditorGroup> = Rc::new(StubGroup { id: 2, on_did_close_editor: Event::none(), on_will_move_editor: Event::none() });
 
     let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
-    let progress_service: Rc<dyn EditorGroupProgressService> = Rc::new(StubProgressService);
+    let progress_service: Rc<dyn je_editor::code_action::platform::IEditorProgressService> = Rc::new(StubProgressService);
     let instantiation_service =
         store.add_rc(InstantiationService::new(ServiceCollection::new().with(I_CONTEXT_KEY_SERVICE, context_key_service.clone()).with(I_EDITOR_PROGRESS_SERVICE, progress_service)));
 

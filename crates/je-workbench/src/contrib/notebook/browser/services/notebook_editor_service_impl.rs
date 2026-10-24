@@ -20,9 +20,8 @@
 //!   `isCompositeNotebookEditorInput(editor) ? editor.editorInputs : []` é o [`CompositeInputsResolver`] das dependências
 //!   (`None` quando a entrada não é composta). `{ resource, typeId }` é [`NotebookInputIdentity`].
 //! - **Chaves de contexto.** `InteractiveWindowOpen` e `MOST_RECENT_REPL_EDITOR` (`notebookContextKeys.ts`, ainda não
-//!   portado) estão aqui, com a mesma chave e o mesmo valor padrão. `IEditorProgressService` não tem identificador de serviço
-//!   no porte: [`I_EDITOR_PROGRESS_SERVICE`] é o de `platform/progress/common/progress.ts`, sobre o
-//!   [`EditorGroupProgressService`] (o motivo está na declaração).
+//!   portado) estão aqui, com a mesma chave e o mesmo valor padrão. [`I_EDITOR_PROGRESS_SERVICE`] é o de
+//!   `platform/progress/common/progress.ts`, declarado no `je_editor` ao lado do trait [`IEditorProgressService`].
 //! - **Fora do recorte:** `getNotebookForPossibleCell` (precisa do `ICodeEditor` das células).
 //! - O `Map` do JavaScript mantém a ordem de inserção: os grupos e os editores ficam em listas ordenadas.
 
@@ -36,7 +35,7 @@ use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::map::ResourceMap;
 use je_base::uri::URI;
-use je_editor::code_action::platform::IEditorProgressService;
+use je_editor::code_action::platform::{I_EDITOR_PROGRESS_SERVICE, IEditorProgressService};
 use je_editor::core_2d::dimension::Dimension;
 use je_instantiation::{InstantiationService, ServicesAccessor, service_id};
 use je_platform::contextkey::contextkey::{ContextKeyMeta, I_CONTEXT_KEY_SERVICE, IContextKey, IContextKeyService, RawContextKey};
@@ -55,14 +54,6 @@ pub const NOTEBOOK_EDITOR_INPUT_ID: &str = "workbench.input.notebook";
 /// `NotebookDiffEditorInput.ID`.
 pub const NOTEBOOK_DIFF_EDITOR_INPUT_ID: &str = "workbench.input.diffNotebookInput";
 
-/// O `IEditorProgressService` como trait local: o identificador de serviço precisa de um trait do próprio crate (a regra do
-/// órfão não deixa declarar `Service` para o `dyn` de um trait de `je_editor`), e quem implementa
-/// [`IEditorProgressService`] já o implementa.
-pub trait EditorGroupProgressService: IEditorProgressService {}
-
-impl<T: IEditorProgressService> EditorGroupProgressService for T {}
-
-service_id!(pub I_EDITOR_PROGRESS_SERVICE: dyn EditorGroupProgressService = "editorProgressService");
 
 thread_local! {
     /// `InteractiveWindowOpen`.
@@ -95,7 +86,7 @@ pub trait NotebookWidgetFactory {
         instantiation_service: &InstantiationService,
         editor_group_context_key_service: Rc<dyn IContextKeyService>,
         widget_dispose_store: &DisposableStore,
-        editor_group_editor_progress_service: Rc<dyn EditorGroupProgressService>,
+        editor_group_editor_progress_service: Rc<dyn IEditorProgressService>,
         initial_dimension: Option<Dimension>,
     ) -> Rc<dyn NotebookEditorWidget>;
 }
