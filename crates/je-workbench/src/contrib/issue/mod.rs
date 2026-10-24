@@ -2,5 +2,6 @@
 
 pub mod base_issue_reporter_service;
 pub mod issue_common;
+pub mod issue_form_service;
 pub mod issue_reporter_model;
 pub mod issue_reporter_util;

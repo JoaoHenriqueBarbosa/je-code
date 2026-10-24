@@ -65,4 +65,29 @@ pub trait NotebookEditorWidget {
     fn as_notebook_editor(self: Rc<Self>) -> Option<Rc<dyn crate::contrib::notebook::browser::notebook_browser::INotebookEditor>> {
         None
     }
+
+    /// `onWillHide()`: avisa o widget de que o painel dele vai sumir. Corpo padrão: um widget sem painel não tem o que fazer.
+    fn on_will_hide(&self) {}
+
+    /// `getDomNode()`: o nó do widget na árvore de elementos, que o serviço de widgets retira depois de descartá-lo. Corpo
+    /// padrão: um widget sem DOM devolve um nó solto, cujo `remove` não faz nada.
+    fn get_dom_node(&self) -> Rc<dyn NotebookWidgetDomNode> {
+        Rc::new(DetachedDomNode)
+    }
+
+    /// `dispose()`: descarta o widget. Tem outro nome para não colidir com o `IDisposable::dispose` de quem implementa os
+    /// dois traits. Corpo padrão: nada a descartar.
+    fn dispose_widget(&self) {}
+}
+
+/// O nó (`HTMLElement`) que `NotebookEditorWidget.getDomNode()` devolve, no que o serviço de widgets usa: `remove()`.
+pub trait NotebookWidgetDomNode {
+    fn remove(&self);
+}
+
+/// O nó de um widget sem DOM.
+struct DetachedDomNode;
+
+impl NotebookWidgetDomNode for DetachedDomNode {
+    fn remove(&self) {}
 }
