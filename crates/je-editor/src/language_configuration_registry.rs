@@ -435,11 +435,18 @@ pub struct ResolvedLanguageConfiguration {
 }
 
 impl ResolvedLanguageConfiguration {
-    pub fn new(language_id: &str, underlying_config: LanguageConfiguration) -> Self {
+    pub fn new(language_id: &str, mut underlying_config: LanguageConfiguration) -> Self {
         let on_enter_support = (underlying_config.brackets.is_some()
             || underlying_config.indentation_rules.is_some()
             || underlying_config.on_enter_rules.is_some())
         .then(|| OnEnterSupport::new(OnEnterSupportOptions::from(&underlying_config)));
+        // O construtor do `OnEnterSupport` do original faz `opts.brackets = opts.brackets || [...]` sobre o próprio
+        // objeto da configuração, e o `CharacterPairSupport` logo abaixo lê esse `brackets` já preenchido: uma
+        // linguagem só com `indentationRules` ou `onEnterRules` ganha os pares `()`, `{}` e `[]` (medido no JS).
+        if on_enter_support.is_some() && underlying_config.brackets.is_none() {
+            let pair = |open: &str, close: &str| (open.to_owned(), close.to_owned());
+            underlying_config.brackets = Some(vec![pair("(", ")"), pair("{", "}"), pair("[", "]")]);
+        }
         Self {
             language_id: language_id.to_owned(),
             brackets: RefCell::new(None),
