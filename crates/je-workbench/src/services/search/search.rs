@@ -1,7 +1,10 @@
 //! Porte parcial de `src/vs/workbench/services/search/common/search.ts`: o que a prévia de resultados de texto,
 //! o casamento de padrão de arquivo e o `ReplacePattern` usam (`IPatternInfo`, `INotebookPatternInfo`,
 //! `ITextSearchPreviewOptions`, `ISearchRange`, `SearchRange`, `OneLineRange`, `SearchRangeSetPairing`,
-//! `ITextSearchMatch`, `TextSearchMatch`, `IRawFileMatch` e `isFilePatternMatch`).
+//! `ITextSearchMatch`, `TextSearchMatch`, `IRawFileMatch` e `isFilePatternMatch`), mais as consultas que o
+//! `searchHelpers` e o motor do ripgrep leem (`IFolderQuery`, `ExcludeGlobPattern`, `ICommonQueryProps`,
+//! `ITextQueryProps`, `IAITextQueryProps`, `QueryType`, `ITextSearchQuery`, `ITextSearchContext` e
+//! `ITextSearchResult`).
 //!
 //! Diferenças de forma em relação ao original, nenhuma de comportamento:
 //! - os números do JavaScript (linhas, colunas, contagens) são `i64`, e o texto é [`JsString`]: colunas e
@@ -15,12 +18,18 @@
 //!   `uri` e o `cellFragment` opcionais da interface não existem em `TextSearchMatch` e não são portados.
 //! - `ranges: ISearchRange | ISearchRange[]` vira `&[SearchRange]` (um intervalo único é uma fatia de um
 //!   elemento). Uma lista vazia dá pânico, como o `ranges[0].startLineNumber` do original dá `TypeError`.
+//! - `U extends UriComponents = URI` das consultas é o parâmetro de tipo `U` (padrão [`URI`]), sem restrição.
+//! - `ITextQueryProps extends ICommonQueryProps` vira a composição: o campo `common`. O discriminante `type`
+//!   (sempre `QueryType.Text` ou `QueryType.aiText`) é o próprio tipo da struct.
+//! - `ITextSearchResult = ITextSearchMatch | ITextSearchContext` é o enum [`ITextSearchResult`], e o `uri`
+//!   opcional de `ITextSearchContext` não existe (como em `TextSearchMatch`).
 //! - os argumentos opcionais viram `Option` (`previewOptions`, `webviewIndex`) ou `bool` (`ignoreCase`, onde
 //!   `undefined` e `false` são equivalentes).
 
-use je_base::glob::{self, GlobOptions};
+use je_base::glob::{self, Expression, GlobOptions};
 use je_base::js_string::JsString;
 use je_base::strings::{fuzzy_contains, get_n_lines};
+use je_base::uri::URI;
 
 /// `IPatternInfo`: o padrão de busca e as opções que a caixa de busca do usuário liga e desliga.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -254,5 +263,165 @@ pub fn is_file_pattern_match(candidate: &IRawFileMatch, file_pattern_to_use: &st
             GlobOptions::default()
         };
         glob::match_pattern(file_pattern_to_use, path_to_match, &options)
+    }
+}
+
+/// `ExcludeGlobPattern`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcludeGlobPattern<U = URI> {
+    pub folder: Option<U>,
+    pub pattern: Expression,
+}
+
+/// `IFolderQuery`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IFolderQuery<U = URI> {
+    pub folder: U,
+    pub folder_name: Option<String>,
+    pub exclude_pattern: Option<Vec<ExcludeGlobPattern<U>>>,
+    pub include_pattern: Option<Expression>,
+    pub ignore_glob_case: Option<bool>,
+    pub file_encoding: Option<String>,
+    pub disregard_ignore_files: Option<bool>,
+    pub disregard_global_ignore_files: Option<bool>,
+    pub disregard_parent_ignore_files: Option<bool>,
+    pub ignore_symlinks: Option<bool>,
+}
+
+impl<U> IFolderQuery<U> {
+    /// Um `{ folder }` sem nenhuma opção.
+    pub fn new(folder: U) -> Self {
+        Self {
+            folder,
+            folder_name: None,
+            exclude_pattern: None,
+            include_pattern: None,
+            ignore_glob_case: None,
+            file_encoding: None,
+            disregard_ignore_files: None,
+            disregard_global_ignore_files: None,
+            disregard_parent_ignore_files: None,
+            ignore_symlinks: None,
+        }
+    }
+}
+
+/// `ICommonQueryProps`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ICommonQueryProps<U = URI> {
+    /// Para telemetria: o que dispara a busca (`_reason`).
+    pub reason: Option<String>,
+    pub folder_queries: Vec<IFolderQuery<U>>,
+    /// O padrão de inclusão que vai para o ripgrep. Vale mais que os arquivos de ignore, se houver.
+    pub include_pattern: Option<Expression>,
+    pub exclude_pattern: Option<Expression>,
+    pub ignore_glob_case: Option<bool>,
+    pub extra_file_resources: Option<Vec<U>>,
+    pub only_open_editors: Option<bool>,
+    pub max_results: Option<i64>,
+    pub using_search_paths: Option<bool>,
+    pub only_file_scheme: Option<bool>,
+}
+
+impl<U> ICommonQueryProps<U> {
+    /// Um `{ folderQueries }` sem nenhuma opção.
+    pub fn new(folder_queries: Vec<IFolderQuery<U>>) -> Self {
+        Self {
+            reason: None,
+            folder_queries,
+            include_pattern: None,
+            exclude_pattern: None,
+            ignore_glob_case: None,
+            extra_file_resources: None,
+            only_open_editors: None,
+            max_results: None,
+            using_search_paths: None,
+            only_file_scheme: None,
+        }
+    }
+}
+
+/// `ITextQueryProps` (`type: QueryType.Text`): `ITextQuery` é `ITextQueryProps<URI>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITextQueryProps<U = URI> {
+    pub common: ICommonQueryProps<U>,
+    pub content_pattern: PatternInfo,
+    pub preview_options: Option<ITextSearchPreviewOptions>,
+    pub max_file_size: Option<i64>,
+    pub surrounding_context: Option<i64>,
+    pub user_disabled_excludes_and_ignore_files: Option<bool>,
+}
+
+impl<U> ITextQueryProps<U> {
+    /// Um `{ folderQueries, contentPattern }` sem nenhuma opção.
+    pub fn new(folder_queries: Vec<IFolderQuery<U>>, content_pattern: PatternInfo) -> Self {
+        Self {
+            common: ICommonQueryProps::new(folder_queries),
+            content_pattern,
+            preview_options: None,
+            max_file_size: None,
+            surrounding_context: None,
+            user_disabled_excludes_and_ignore_files: None,
+        }
+    }
+}
+
+/// `IAITextQueryProps` (`type: QueryType.aiText`): `IAITextQuery` é `IAITextQueryProps<URI>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IAITextQueryProps<U = URI> {
+    pub common: ICommonQueryProps<U>,
+    pub content_pattern: JsString,
+    pub preview_options: Option<ITextSearchPreviewOptions>,
+    pub max_file_size: Option<i64>,
+    pub surrounding_context: Option<i64>,
+    pub user_disabled_excludes_and_ignore_files: Option<bool>,
+}
+
+pub type ITextQuery = ITextQueryProps<URI>;
+pub type IAITextQuery = IAITextQueryProps<URI>;
+
+/// `QueryType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryType {
+    File = 1,
+    Text = 2,
+    AiText = 3,
+}
+
+/// `ITextSearchQuery = ITextQuery | IAITextQuery`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ITextSearchQuery {
+    Text(ITextQuery),
+    AiText(IAITextQuery),
+}
+
+impl ITextSearchQuery {
+    /// `query.surroundingContext`, comum às duas formas.
+    pub fn surrounding_context(&self) -> Option<i64> {
+        match self {
+            ITextSearchQuery::Text(query) => query.surrounding_context,
+            ITextSearchQuery::AiText(query) => query.surrounding_context,
+        }
+    }
+}
+
+/// `ITextSearchContext`: uma linha de contexto ao redor de um casamento.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITextSearchContext {
+    pub text: JsString,
+    pub line_number: i64,
+}
+
+/// `ITextSearchResult = ITextSearchMatch | ITextSearchContext`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ITextSearchResult {
+    Match(TextSearchMatch),
+    Context(ITextSearchContext),
+}
+
+impl ITextSearchResult {
+    /// `resultIsMatch`.
+    pub fn is_match(&self) -> bool {
+        matches!(self, ITextSearchResult::Match(_))
     }
 }

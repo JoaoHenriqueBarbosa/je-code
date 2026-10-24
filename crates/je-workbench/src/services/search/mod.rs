@@ -5,3 +5,8 @@ pub mod replace;
 pub mod ripgrep_search_utils;
 pub mod search;
 pub mod search_ext_types;
+
+pub mod folder_query_search_tree;
+pub mod ripgrep_text_search_engine;
+pub mod search_ext_types_internal;
+pub mod search_helpers;
