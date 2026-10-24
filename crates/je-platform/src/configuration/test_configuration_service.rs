@@ -137,6 +137,9 @@ pub struct UpdateValueCall {
 
 type InspectStub = Box<dyn Fn(&str, &ConfigurationOverrides) -> Rc<dyn ConfigurationValue>>;
 
+/// O substituto de `getValue` (a subclasse que o sobrescreve): recebe a seção e os `overrides` que o chamador deu.
+type GetValueStub = Box<dyn Fn(Option<&str>, Option<&ConfigurationOverrides>) -> Dynamic>;
+
 /// `TestConfigurationService`.
 pub struct TestConfigurationService {
     configuration: Dynamic,
@@ -144,6 +147,7 @@ pub struct TestConfigurationService {
     configuration_by_root: RefCell<TernarySearchTree<String, Dynamic>>,
     override_identifiers: RefCell<HashMap<String, Vec<JsString>>>,
     inspect_stub: RefCell<Option<InspectStub>>,
+    get_value_stub: RefCell<Option<GetValueStub>>,
     update_value_behavior: Cell<UpdateValueBehavior>,
     update_value_calls: RefCell<Vec<UpdateValueCall>>,
 }
@@ -167,6 +171,7 @@ impl TestConfigurationService {
             configuration_by_root: RefCell::new(TernarySearchTree::for_paths(false)),
             override_identifiers: RefCell::new(HashMap::new()),
             inspect_stub: RefCell::new(None),
+            get_value_stub: RefCell::new(None),
             update_value_behavior: Cell::new(UpdateValueBehavior::Resolves),
             update_value_calls: RefCell::new(Vec::new()),
         })
@@ -203,6 +208,12 @@ impl TestConfigurationService {
         *self.inspect_stub.borrow_mut() = Some(Box::new(hook));
     }
 
+    /// `override getValue()` de uma subclasse (o `MockInputsConfigurationService` do resolvedor de variáveis): o `getValue`
+    /// devolve o que o gancho montar, no lugar do comportamento da classe.
+    pub fn stub_get_value_with(&self, hook: impl Fn(Option<&str>, Option<&ConfigurationOverrides>) -> Dynamic + 'static) {
+        *self.get_value_stub.borrow_mut() = Some(Box::new(hook));
+    }
+
     /// `sinon.stub(service, 'updateValue')` com o comportamento dado.
     pub fn stub_update_value(&self, behavior: UpdateValueBehavior) {
         self.update_value_behavior.set(behavior);
@@ -224,6 +235,9 @@ impl IConfigurationService for TestConfigurationService {
     }
 
     fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic {
+        if let Some(stub) = &*self.get_value_stub.borrow() {
+            return stub(section, overrides);
+        }
         let configuration_for_root = overrides
             .and_then(|overrides| overrides.resource.as_ref())
             .and_then(|resource| self.configuration_by_root.borrow().find_substr(&fs_path_key(resource)).cloned());

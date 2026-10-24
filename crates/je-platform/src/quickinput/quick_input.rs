@@ -139,3 +139,65 @@ pub struct IQuickTreeItem {
     /// When false, the item is not selectable and does not respond to mouse/keyboard activation.
     pub pickable: Option<bool>,
 }
+
+// ---------------------------------------------------------------------------------------------
+// `IInputOptions`, `IPickOptions`, `IQuickPickItem` e `IQuickInputService`, reduzidos ao que os serviços do workbench
+// que pedem entrada ao usuário leem (o `configurationResolverService`).
+//
+// Divergências:
+// - `IQuickInputService` traz só `input` e `pick`; `createQuickPick`, `createInputBox`, `focus`, `navigate`... entram com a
+//   UI do quick input.
+// - `pick<T extends IQuickPickItem>` é genérico no original e o retorno é o próprio item `T`. Aqui o item é
+//   [`IQuickPickItem`], com o [`IQuickItem`] em `base` e, em `extra`, os campos que o tipo derivado acrescenta (o
+//   `PickStringItem.value`, por exemplo) como objeto dinâmico. `canPickMany` e o `CancellationToken` ficam de fora: nenhum
+//   chamador portado os usa.
+// - Em `IInputOptions` e `IPickOptions` entram só os campos lidos pelos chamadores portados.
+// ---------------------------------------------------------------------------------------------
+
+use je_base::dynamic::Dynamic;
+use je_base::promise::Promise;
+
+/// `IInputOptions`.
+#[derive(Clone, Debug, Default)]
+pub struct IInputOptions {
+    /// The text to display underneath the input box.
+    pub prompt: Option<String>,
+    /// The value to prefill in the input box.
+    pub value: Option<String>,
+    /// Set to true to show a password prompt that will not show the typed value.
+    pub password: Option<bool>,
+    /// Set to true to keep the input box open when focus moves to another part of the editor or to another window.
+    pub ignore_focus_lost: Option<bool>,
+}
+
+/// `IPickOptions`.
+#[derive(Clone, Debug, Default)]
+pub struct IPickOptions {
+    /// An optional string to show as placeholder in the input box to guide the user what she picks on.
+    pub place_holder: Option<String>,
+    /// An optional flag to include the description when filtering the picks.
+    pub match_on_detail: Option<bool>,
+    /// Set to true to keep the picker open when focus moves to another part of the editor or to another window.
+    pub ignore_focus_lost: Option<bool>,
+}
+
+/// `IQuickPickItem` e os campos que o tipo derivado (`T extends IQuickPickItem`) acrescenta, em `extra`.
+#[derive(Clone, Debug)]
+pub struct IQuickPickItem {
+    pub base: IQuickItem,
+    /// Os campos do tipo derivado, como objeto dinâmico (`{ value }` no `PickStringItem`).
+    pub extra: Dynamic,
+}
+
+/// `IQuickInputService`.
+pub trait IQuickInputService {
+    /// Opens the quick input box for text input and returns a promise with the user typed value if it was confirmed or
+    /// `None` if it was canceled.
+    fn input(&self, options: Option<&IInputOptions>) -> Promise<Option<String>>;
+
+    /// Opens the quick input box for selecting items and returns a promise with the user selected item or `None` if
+    /// canceled.
+    fn pick(&self, picks: Vec<IQuickPickItem>, options: Option<&IPickOptions>) -> Promise<Option<IQuickPickItem>>;
+}
+
+je_instantiation::service_id!(pub I_QUICK_INPUT_SERVICE: dyn IQuickInputService = "quickInputService");

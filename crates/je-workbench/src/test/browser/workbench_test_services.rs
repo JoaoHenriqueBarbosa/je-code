@@ -364,7 +364,7 @@ mod editor_inputs {
     use crate::common::editor::{
         EditorInputCapabilities, EditorInputOrUntyped, GroupIdentifier, IEditorPane, MoveResult, RevertOptions, SaveOptions, UntypedEditorInput,
     };
-    use crate::services::editor::editor_service::IEditorService;
+    use crate::services::editor::editor_service::{ActiveTextEditorControl, IEditorService};
 
     /// `TestEditorService`.
     pub struct TestEditorService;
@@ -372,6 +372,16 @@ mod editor_inputs {
     impl IEditorService for TestEditorService {
         fn visible_editor_panes(&self) -> Vec<Rc<dyn IEditorPane>> {
             Vec::new()
+        }
+
+        /// `activeEditor` nasce `undefined`.
+        fn active_editor(&self) -> Option<EditorInputOrUntyped> {
+            None
+        }
+
+        /// `activeTextEditorControl` nasce `undefined`.
+        fn active_text_editor_control(&self) -> Option<ActiveTextEditorControl> {
+            None
         }
     }
 
@@ -1168,6 +1178,93 @@ mod remote_doubles {
 
         fn get_raw_environment(&self) -> Promise<Option<RemoteAgentEnvironment>> {
             self.environment.promise.clone()
+        }
+    }
+}
+
+// `TestQuickInputService` e `TestExtensionService`: os dublês que o teste do resolvedor de variáveis de configuração usa.
+//
+// - `TestQuickInputService` implementa o `IQuickInputService` reduzido (`input` e `pick`, os dois métodos que os serviços
+//   portados chamam): os demais (`createQuickPick`, `focus`, `navigate`...) lançam `not implemented` no original e entram com
+//   o contrato inteiro. `input` devolve `'resolved' + options.prompt` e `pick` devolve o item fixo
+//   `{ label: 'selectedPick', description: 'pick description', value: 'selectedPick' }`, que aqui leva o `value` em `extra`.
+//   `sinon.stub(quickInputService, 'input').resolves(value)` é [`TestQuickInputService::stub_input_resolves`].
+// - `TestExtensionService` é o `IExtensionService` reduzido (`getExtension`), que devolve `undefined` (o `NullExtensionService`).
+//   `sinon.stub(service, 'getExtension').withArgs(id).returns(Promise.resolve(description))` é
+//   [`TestExtensionService::stub_get_extension`].
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use quick_input_and_extension::{TestExtensionService, TestQuickInputService};
+
+mod quick_input_and_extension {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use je_base::JsString;
+    use je_base::dynamic::Dynamic;
+    use je_base::promise::Promise;
+    use je_platform::quickinput::quick_input::{IInputOptions, IPickOptions, IQuickInputService, IQuickItem, IQuickPickItem};
+
+    use crate::services::extensions::extensions::{IExtensionDescription, IExtensionService};
+
+    /// `TestQuickInputService`.
+    pub struct TestQuickInputService {
+        /// O que `sinon.stub(service, 'input').resolves(...)` fixa: `Some(valor)` troca o retorno de `input`.
+        input_stub: RefCell<Option<Option<String>>>,
+    }
+
+    impl TestQuickInputService {
+        pub fn new() -> Rc<Self> {
+            Rc::new(Self { input_stub: RefCell::new(None) })
+        }
+
+        /// `sinon.stub(quickInputService, 'input').resolves(value)`.
+        pub fn stub_input_resolves(&self, value: Option<String>) {
+            *self.input_stub.borrow_mut() = Some(value);
+        }
+    }
+
+    impl IQuickInputService for TestQuickInputService {
+        /// `options ? 'resolved' + options.prompt : 'resolved'`: `prompt` ausente é `undefined`, que o `+` escreve como texto.
+        fn input(&self, options: Option<&IInputOptions>) -> Promise<Option<String>> {
+            if let Some(stub) = &*self.input_stub.borrow() {
+                return Promise::resolved(stub.clone());
+            }
+            Promise::resolved(Some(match options {
+                Some(options) => format!("resolved{}", options.prompt.as_deref().unwrap_or("undefined")),
+                None => "resolved".to_string(),
+            }))
+        }
+
+        /// `Array.isArray(picks)` é sempre verdadeiro aqui: o item fixo.
+        fn pick(&self, _picks: Vec<IQuickPickItem>, _options: Option<&IPickOptions>) -> Promise<Option<IQuickPickItem>> {
+            Promise::resolved(Some(IQuickPickItem {
+                base: IQuickItem { label: JsString::from("selectedPick"), description: Some(JsString::from("pick description")), ..IQuickItem::default() },
+                extra: Dynamic::object([("value", Dynamic::string("selectedPick"))]),
+            }))
+        }
+    }
+
+    /// `TestExtensionService`.
+    pub struct TestExtensionService {
+        extensions: RefCell<Vec<(String, IExtensionDescription)>>,
+    }
+
+    impl TestExtensionService {
+        pub fn new() -> Rc<Self> {
+            Rc::new(Self { extensions: RefCell::new(Vec::new()) })
+        }
+
+        /// `sinon.stub(service, 'getExtension').withArgs(id).returns(Promise.resolve(description))`.
+        pub fn stub_get_extension(&self, id: &str, description: IExtensionDescription) {
+            self.extensions.borrow_mut().push((id.to_string(), description));
+        }
+    }
+
+    impl IExtensionService for TestExtensionService {
+        fn get_extension(&self, id: &str) -> Promise<Option<IExtensionDescription>> {
+            let stubbed = self.extensions.borrow().iter().rfind(|(stubbed_id, _)| stubbed_id == id).map(|(_, description)| description.clone());
+            Promise::resolved(stubbed)
         }
     }
 }
