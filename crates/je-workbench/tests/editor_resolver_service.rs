@@ -124,6 +124,9 @@ fn object_object_uri() -> URI {
 /// `createEditorResolverService(instantiationService)`.
 async fn create_env(disposables: &Rc<DisposableStore>, accessor: EditorServiceAccessor) -> Env {
     accessor.part.when_ready().await.unwrap();
+    // No original o `TextEditorService` é criado de forma preguiçosa e nenhum caso o instancia, então o editor padrão `*`
+    // (`registerDefaultEditor`) nunca existe no resolvedor. O acessor o cria de imediato; descartá-lo tira o registro.
+    accessor.text_editor_service.dispose();
     let part = accessor.part.clone();
     let service = accessor.editor_resolver_service.clone();
     let ctx = Ctx { disposables: disposables.clone(), editor_service: accessor.editor_service.clone() };
