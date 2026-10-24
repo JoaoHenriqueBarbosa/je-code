@@ -39,7 +39,7 @@ fn make_pair(folder: &WorkspaceFolder, cwd: Option<CwdArg<'_>>, is_absolute: boo
         Some(CwdArg::Uri(uri)) => uri.clone(),
         Some(CwdArg::Folder(other)) => other.uri.clone(),
     };
-    let is_overridden = cwd_uri.to_string() != folder.uri.to_string();
+    let is_overridden = cwd_uri.to_string(false) != folder.uri.to_string(false);
     Rc::new(WorkspaceFolderCwdPair { folder: folder.clone(), cwd: cwd_uri, is_absolute, is_overridden })
 }
 

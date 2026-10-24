@@ -49,8 +49,10 @@ use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic
 
 /// Os serviços do host que o namespace usa.
 pub struct WorkspaceServices {
-    pub workspace: Rc<ExtHostWorkspace>,
-    pub configuration: Rc<ExtHostConfiguration>,
+    /// Sem os clientes `MainThreadWorkspace`, `MainThreadConfiguration` e `MainThreadMessageService` não há pastas, configuração nem
+    /// `findFiles`; o namespace continua existindo com os membros de documento, como no original, em que `vscode.workspace` sempre
+    /// existe.
+    pub workspace: Option<(Rc<ExtHostWorkspace>, Rc<ExtHostConfiguration>)>,
     /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `textDocuments`, `openTextDocument` nem os eventos de
     /// documento.
     pub text_editors: Option<TextEditorApi>,
@@ -197,126 +199,127 @@ fn configuration_change_to_js(runner: &NodeRunner, event: &ExtHostConfigurationC
 
 /// O namespace `workspace`.
 pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<DisposableTable>, events: &Rc<EventTables>) -> JsData {
-    let workspace = &services.workspace;
     let mut methods: Vec<(String, u32, MethodCallback)> = Vec::new();
     let mut getters: Vec<(String, MethodCallback)> = Vec::new();
+    if let Some((workspace, configuration)) = &services.workspace {
 
-    {
-        let workspace = workspace.clone();
-        methods.push((
-            "getWorkspaceFolder".to_owned(),
-            1,
-            Rc::new(move |_, args| {
-                let uri = uri_from_js(args.first().unwrap_or(&JsData::Undefined))?;
-                Ok(workspace.get_workspace_folder(&uri, None).map_or(JsData::Undefined, |folder| folder_to_js(&folder)))
-            }),
-        ));
-    }
-    {
-        let workspace = workspace.clone();
-        methods.push((
-            "asRelativePath".to_owned(),
-            2,
-            Rc::new(move |_, args| {
-                let input = match args.first() {
-                    Some(JsData::Str(path)) => RelativePathInput::Path(path.clone()),
-                    Some(uri @ JsData::Object(_)) => RelativePathInput::Uri(uri_from_js(uri)?),
-                    _ => RelativePathInput::Undefined,
-                };
-                let include_workspace = match args.get(1) {
-                    Some(JsData::Bool(flag)) => Some(*flag),
-                    _ => None,
-                };
-                Ok(JsData::Str(workspace.get_relative_path(input, include_workspace)))
-            }),
-        ));
-    }
-    {
-        let configuration = services.configuration.clone();
-        let config_runner = runner.clone();
-        methods.push((
-            "getConfiguration".to_owned(),
-            2,
-            Rc::new(move |_, args| {
-                let section = opt_string(args.first());
-                let scope = if args.len() == 1 { None } else { scope_of(args.get(1))? };
-                let provider = configuration.initialized_provider().ok_or("getConfiguration: a configuração ainda não foi inicializada")?;
-                Ok(configuration_to_js(&config_runner, provider.get_configuration(section.as_deref(), scope.as_ref(), None)))
-            }),
-        ));
-    }
-    {
-        let (workspace, find_events, find_runner) = (workspace.clone(), events.clone(), runner.clone());
-        methods.push((
-            "findFiles".to_owned(),
-            4,
-            Rc::new(move |_, args| {
-                let include = if is_nullish(args.first()) { None } else { Some(glob_of(args.first().expect("não é nulo"))?) };
-                let exclude = match args.get(1) {
-                    None | Some(JsData::Undefined) => FindFilesExclude::Undefined,
-                    Some(JsData::Null) => FindFilesExclude::Null,
-                    Some(pattern) => FindFilesExclude::Pattern(glob_of(pattern)?),
-                };
-                let max_results = opt_number(args.get(2)).map(|count| count as i64);
-                let token = find_events.token_arg(args.get(3));
-                let found = workspace.find_files(include, exclude, max_results, &ExtensionIdentifier::new(HOST_EXTENSION), token);
-                Ok(promise_to_js(&find_runner, found, |uris| JsData::Array(uris.iter().map(uri_to_js).collect())))
-            }),
-        ));
-    }
+        {
+            let workspace = workspace.clone();
+            methods.push((
+                "getWorkspaceFolder".to_owned(),
+                1,
+                Rc::new(move |_, args| {
+                    let uri = uri_from_js(args.first().unwrap_or(&JsData::Undefined))?;
+                    Ok(workspace.get_workspace_folder(&uri, None).map_or(JsData::Undefined, |folder| folder_to_js(&folder)))
+                }),
+            ));
+        }
+        {
+            let workspace = workspace.clone();
+            methods.push((
+                "asRelativePath".to_owned(),
+                2,
+                Rc::new(move |_, args| {
+                    let input = match args.first() {
+                        Some(JsData::Str(path)) => RelativePathInput::Path(path.clone()),
+                        Some(uri @ JsData::Object(_)) => RelativePathInput::Uri(uri_from_js(uri)?),
+                        _ => RelativePathInput::Undefined,
+                    };
+                    let include_workspace = match args.get(1) {
+                        Some(JsData::Bool(flag)) => Some(*flag),
+                        _ => None,
+                    };
+                    Ok(JsData::Str(workspace.get_relative_path(input, include_workspace)))
+                }),
+            ));
+        }
+        {
+            let configuration = configuration.clone();
+            let config_runner = runner.clone();
+            methods.push((
+                "getConfiguration".to_owned(),
+                2,
+                Rc::new(move |_, args| {
+                    let section = opt_string(args.first());
+                    let scope = if args.len() == 1 { None } else { scope_of(args.get(1))? };
+                    let provider = configuration.initialized_provider().ok_or("getConfiguration: a configuração ainda não foi inicializada")?;
+                    Ok(configuration_to_js(&config_runner, provider.get_configuration(section.as_deref(), scope.as_ref(), None)))
+                }),
+            ));
+        }
+        {
+            let (workspace, find_events, find_runner) = (workspace.clone(), events.clone(), runner.clone());
+            methods.push((
+                "findFiles".to_owned(),
+                4,
+                Rc::new(move |_, args| {
+                    let include = if is_nullish(args.first()) { None } else { Some(glob_of(args.first().expect("não é nulo"))?) };
+                    let exclude = match args.get(1) {
+                        None | Some(JsData::Undefined) => FindFilesExclude::Undefined,
+                        Some(JsData::Null) => FindFilesExclude::Null,
+                        Some(pattern) => FindFilesExclude::Pattern(glob_of(pattern)?),
+                    };
+                    let max_results = opt_number(args.get(2)).map(|count| count as i64);
+                    let token = find_events.token_arg(args.get(3));
+                    let found = workspace.find_files(include, exclude, max_results, &ExtensionIdentifier::new(HOST_EXTENSION), token);
+                    Ok(promise_to_js(&find_runner, found, |uris| JsData::Array(uris.iter().map(uri_to_js).collect())))
+                }),
+            ));
+        }
 
-    {
-        let workspace = workspace.clone();
-        getters.push(("name".to_owned(), Rc::new(move |_, _| Ok(workspace.name().map_or(JsData::Undefined, JsData::Str)))));
-    }
-    {
-        let workspace = workspace.clone();
-        getters.push(("rootPath".to_owned(), Rc::new(move |_, _| Ok(workspace.get_path().map_or(JsData::Undefined, JsData::Str)))));
-    }
-    {
-        let workspace = workspace.clone();
-        getters.push((
-            "workspaceFolders".to_owned(),
-            Rc::new(move |_, _| Ok(workspace.get_workspace_folders().map_or(JsData::Undefined, |folders| folders_to_js(&folders)))),
-        ));
-    }
-    {
-        let workspace = workspace.clone();
-        getters.push(("workspaceFile".to_owned(), Rc::new(move |_, _| Ok(workspace.workspace_file().map_or(JsData::Undefined, |uri| uri_to_js(&uri))))));
-    }
-    {
-        let workspace = workspace.clone();
-        getters.push(("isTrusted".to_owned(), Rc::new(move |_, _| Ok(JsData::Bool(workspace.trusted())))));
-    }
-    {
-        let (workspace, runner, table) = (workspace.clone(), runner.clone(), table.clone());
-        getters.push((
-            "onDidChangeWorkspaceFolders".to_owned(),
-            Rc::new(move |_, _| {
-                Ok(event_function(&runner, &table, "onDidChangeWorkspaceFolders", workspace.on_did_change_workspace(), |event| {
-                    JsData::Object(vec![("added".to_owned(), folders_to_js(&event.added)), ("removed".to_owned(), folders_to_js(&event.removed))])
-                }))
-            }),
-        ));
-    }
-    {
-        let (workspace, runner, table) = (workspace.clone(), runner.clone(), table.clone());
-        getters.push((
-            "onDidGrantWorkspaceTrust".to_owned(),
-            Rc::new(move |_, _| Ok(event_function(&runner, &table, "onDidGrantWorkspaceTrust", workspace.on_did_grant_workspace_trust(), |()| JsData::Undefined))),
-        ));
-    }
-    {
-        let (configuration, event_runner, table) = (services.configuration.clone(), runner.clone(), table.clone());
-        getters.push((
-            "onDidChangeConfiguration".to_owned(),
-            Rc::new(move |_, _| {
-                let converter = event_runner.clone();
-                Ok(event_function(&event_runner, &table, "onDidChangeConfiguration", configuration_change_event(&configuration), move |event| {
-                    configuration_change_to_js(&converter, event)
-                }))
-            }),
-        ));
+        {
+            let workspace = workspace.clone();
+            getters.push(("name".to_owned(), Rc::new(move |_, _| Ok(workspace.name().map_or(JsData::Undefined, JsData::Str)))));
+        }
+        {
+            let workspace = workspace.clone();
+            getters.push(("rootPath".to_owned(), Rc::new(move |_, _| Ok(workspace.get_path().map_or(JsData::Undefined, JsData::Str)))));
+        }
+        {
+            let workspace = workspace.clone();
+            getters.push((
+                "workspaceFolders".to_owned(),
+                Rc::new(move |_, _| Ok(workspace.get_workspace_folders().map_or(JsData::Undefined, |folders| folders_to_js(&folders)))),
+            ));
+        }
+        {
+            let workspace = workspace.clone();
+            getters.push(("workspaceFile".to_owned(), Rc::new(move |_, _| Ok(workspace.workspace_file().map_or(JsData::Undefined, |uri| uri_to_js(&uri))))));
+        }
+        {
+            let workspace = workspace.clone();
+            getters.push(("isTrusted".to_owned(), Rc::new(move |_, _| Ok(JsData::Bool(workspace.trusted())))));
+        }
+        {
+            let (workspace, runner, table) = (workspace.clone(), runner.clone(), table.clone());
+            getters.push((
+                "onDidChangeWorkspaceFolders".to_owned(),
+                Rc::new(move |_, _| {
+                    Ok(event_function(&runner, &table, "onDidChangeWorkspaceFolders", workspace.on_did_change_workspace(), |event| {
+                        JsData::Object(vec![("added".to_owned(), folders_to_js(&event.added)), ("removed".to_owned(), folders_to_js(&event.removed))])
+                    }))
+                }),
+            ));
+        }
+        {
+            let (workspace, runner, table) = (workspace.clone(), runner.clone(), table.clone());
+            getters.push((
+                "onDidGrantWorkspaceTrust".to_owned(),
+                Rc::new(move |_, _| Ok(event_function(&runner, &table, "onDidGrantWorkspaceTrust", workspace.on_did_grant_workspace_trust(), |()| JsData::Undefined))),
+            ));
+        }
+        {
+            let (configuration, event_runner, table) = (configuration.clone(), runner.clone(), table.clone());
+            getters.push((
+                "onDidChangeConfiguration".to_owned(),
+                Rc::new(move |_, _| {
+                    let converter = event_runner.clone();
+                    Ok(event_function(&event_runner, &table, "onDidChangeConfiguration", configuration_change_event(&configuration), move |event| {
+                        configuration_change_to_js(&converter, event)
+                    }))
+                }),
+            ));
+        }
     }
     if let Some(text_editors) = &services.text_editors {
         let (document_methods, document_getters) = text_editors::workspace_members(runner, text_editors, table);

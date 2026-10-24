@@ -18,6 +18,9 @@
 //! Fora deste teste: o `openTextDocument` de um recurso que ainda não tem modelo (pede o `ITextModelService` real, que o
 //! `main_thread_documents` já cobre) e o `showTextDocument` que resolve um editor (pede um `IEditorPane` completo).
 
+#[allow(dead_code)]
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
 #[path = "support/extension_host_api_harness.rs"]
 mod harness;
 #[allow(dead_code, unused_imports)]
@@ -42,6 +45,7 @@ mod editor_support {
     pub mod test_theme_service;
 }
 
+use je_instantiation::Injectable;
 use std::cell::RefCell;
 use std::rc::Rc;
 

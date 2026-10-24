@@ -52,6 +52,7 @@ use je_platform::configuration::test_configuration_service::{TestConfigurationSe
 use je_platform::notification::INotificationService;
 use je_platform::resources::uri_file;
 use je_platform::storage::storage::InMemoryStorageService;
+use je_platform::storage::StorageService;
 use je_workbench::common::notifications::INotificationsModel;
 use je_workbench::contrib::code_editor::large_file_optimizations::LargeFileOptimizationsWarner;
 use je_workbench::services::notification::common::notification_service::NotificationService;
@@ -67,7 +68,8 @@ fn run_case(line_count: usize, large_file_optimizations: bool, expected_notifica
         RelaxedTextModelCreationOptions { large_file_optimizations: Some(large_file_optimizations), ..Default::default() },
         Some(uri_file(&format!("/{FILENAME}"))),
     ));
-    let notification_service = store.add_rc(NotificationService::new(store.add_rc(InMemoryStorageService::new())));
+    let storage_service: Rc<dyn StorageService> = Rc::new(store.add_rc(InMemoryStorageService::new()));
+    let notification_service = store.add_rc(NotificationService::new(storage_service));
     {
         let notification_service = notification_service.clone();
         store.add(to_disposable(move || {

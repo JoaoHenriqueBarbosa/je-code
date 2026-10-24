@@ -81,7 +81,7 @@ impl ConfigView {
             executable: config.executable.clone(),
             cwd: config.cwd.as_ref().map(|cwd| match cwd {
                 ShellCwd::Path(path) => path.clone(),
-                ShellCwd::Uri(uri) => uri.to_string(),
+                ShellCwd::Uri(uri) => uri.to_string(false).to_string_lossy(),
             }),
             args: config.args.clone(),
             env: config.env.clone(),

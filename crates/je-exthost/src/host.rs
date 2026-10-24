@@ -261,17 +261,17 @@ impl ExtensionHost {
                 late.workspace.0.bind(workspace_shape);
                 let configuration_shape: Rc<dyn ExtHostConfigurationShape> = configuration.clone();
                 late.configuration.0.bind(configuration_shape);
-                members.push((
-                    "workspace".to_owned(),
-                    workspace::namespace(
-                        runner,
-                        &WorkspaceServices { workspace: workspace_service.clone(), configuration: configuration.clone(), text_editors: text_editor_api.clone() },
-                        &table,
-                        &event_tables,
-                    ),
-                ));
                 bridged.workspace = Some(workspace_service);
                 bridged.configuration = Some(configuration);
+            }
+
+            // `vscode.workspace` existe se houver os clientes de workspace ou os de documentos e editores (o original sempre o tem).
+            let workspace_pair = bridged.workspace.clone().zip(bridged.configuration.clone());
+            if workspace_pair.is_some() || text_editor_api.is_some() {
+                members.push((
+                    "workspace".to_owned(),
+                    workspace::namespace(runner, &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone() }, &table, &event_tables),
+                ));
             }
 
             if provided(MainContext::MAIN_THREAD_STATUS_BAR.sid) {
