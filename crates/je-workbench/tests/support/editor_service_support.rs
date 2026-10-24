@@ -46,7 +46,7 @@ use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, id_of, id_
 use je_base::promise::Promise;
 use je_base::runtime;
 use je_base::uri::URI;
-use je_instantiation::InstantiationService;
+use je_instantiation::{InstantiationService, ServiceEntry};
 use je_platform::commands::commands::{ICommandService, I_COMMAND_SERVICE};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::dialogs::{I_DIALOG_SERVICE, I_FILE_DIALOG_SERVICE, IDialogService, IFileDialogService};
@@ -208,17 +208,23 @@ impl IEditorGroupsService for PartGroupsService {
 /// última referência é liberada, depois que o `canDispose` do serviço deixa (`destroyReferencedObject`).
 pub struct UntitledTextModelService {
     untitled: Rc<UntitledTextEditorService>,
+    /// O resolvedor dos demais esquemas (arquivo): o `doCreateReferencedObject` do original os manda para `files.resolve`.
+    files: Rc<dyn ITextModelService>,
     references: Rc<RefCell<HashMap<String, usize>>>,
 }
 
 impl UntitledTextModelService {
-    pub fn new(untitled: Rc<UntitledTextEditorService>) -> Rc<Self> {
-        Rc::new(Self { untitled, references: Rc::default() })
+    pub fn new(untitled: Rc<UntitledTextEditorService>, files: Rc<dyn ITextModelService>) -> Rc<Self> {
+        Rc::new(Self { untitled, files, references: Rc::default() })
     }
 }
 
 impl ITextModelService for UntitledTextModelService {
     fn create_model_reference(&self, resource: &URI) -> Promise<TextModelReference> {
+        if *resource.scheme() != *je_base::network::schemas::UNTITLED {
+            return self.files.create_model_reference(resource);
+        }
+
         let untitled = self.untitled.clone();
         let references = self.references.clone();
         let key = resource.to_string(false).to_string_lossy();
@@ -504,7 +510,15 @@ impl EditorServiceAccessor {
         collection.set(I_WORKSPACE_TRUST_REQUEST_SERVICE, workspace_trust_request_service.clone() as Rc<dyn IWorkspaceTrustRequestService>);
         collection.set(I_WORKBENCH_ENVIRONMENT_SERVICE, TestEnvironmentService::new() as Rc<dyn IWorkbenchEnvironmentService>);
         collection.set(I_UNTITLED_TEXT_EDITOR_SERVICE, base.untitled_text_editor_service.clone() as Rc<dyn IUntitledTextEditorService>);
-        collection.set(I_TEXT_MODEL_SERVICE, UntitledTextModelService::new(base.untitled_text_editor_service.clone()) as Rc<dyn ITextModelService>);
+        // O `ITextModelService` que o `TextFileTestAccessor` registrou (recursos de arquivo) fica atrás do esquema `untitled`.
+        let file_text_model_service = match collection.get(I_TEXT_MODEL_SERVICE) {
+            Some(ServiceEntry::Instance(service)) => service,
+            _ => panic!("o TextFileTestAccessor registra o ITextModelService como instância"),
+        };
+        collection.set(
+            I_TEXT_MODEL_SERVICE,
+            UntitledTextModelService::new(base.untitled_text_editor_service.clone(), file_text_model_service) as Rc<dyn ITextModelService>,
+        );
         let editor_pane_service: Rc<dyn IEditorPaneService> = instantiation_service.create_instance::<EditorPaneService>(());
         collection.set(I_EDITOR_PANE_SERVICE, editor_pane_service.clone());
 
