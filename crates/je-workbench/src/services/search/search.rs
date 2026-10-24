@@ -575,9 +575,11 @@ pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 20000;
 /// `SEARCH_EXCLUDE_CONFIG`.
 pub const SEARCH_EXCLUDE_CONFIG: &str = "search.exclude";
 
-/// `SearchSortOrder` (`search.sortOrder`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `SearchSortOrder` (`search.sortOrder`; os valores de texto do original são `default`, `fileNames`, `type`, `modified`,
+/// `countDescending` e `countAscending`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchSortOrder {
+    #[default]
     Default,
     FileNames,
     Type,
