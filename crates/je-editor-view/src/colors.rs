@@ -33,6 +33,10 @@ pub struct EditorColors {
     pub find_match_highlight: Rgba,
     /// `editorOverviewRuler.findMatchForeground`, das marcas na régua da barra de rolagem.
     pub find_match_ruler: Rgba,
+    /// `editorGutter.addedBackground`, `modifiedBackground` e `deletedBackground`: as barras do diff contra o HEAD.
+    pub gutter_added: Rgba,
+    pub gutter_modified: Rgba,
+    pub gutter_deleted: Rgba,
     pub scrollbar_slider: Rgba,
     pub scrollbar_slider_hover: Rgba,
     pub scrollbar_slider_active: Rgba,
@@ -71,6 +75,9 @@ impl EditorColors {
             find_match: color("editor.findMatchBackground"),
             find_match_highlight: color("editor.findMatchHighlightBackground"),
             find_match_ruler: color("editorOverviewRuler.findMatchForeground"),
+            gutter_added: color("editorGutter.addedBackground"),
+            gutter_modified: theme.get_color("editorGutter.modifiedBackground").unwrap_or(Rgba::opaque(0x1b, 0x81, 0xa8)),
+            gutter_deleted: color("editorGutter.deletedBackground"),
             scrollbar_slider: color("scrollbarSlider.background"),
             scrollbar_slider_hover: color("scrollbarSlider.hoverBackground"),
             scrollbar_slider_active: color("scrollbarSlider.activeBackground"),

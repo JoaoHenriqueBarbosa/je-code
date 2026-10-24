@@ -708,6 +708,11 @@ where
         self.map_mouse_event(self.view.view.on_mouse_dbl_click()).filter(|e| e.target != TreeMouseEventTarget::Filter, None)
     }
 
+    /// `onContextMenu`.
+    pub fn on_context_menu(&self) -> BaseEvent<TreeMouseEvent<M::Element>> {
+        self.map_mouse_event(self.view.view.on_context_menu())
+    }
+
     pub fn on_pointer(&self) -> BaseEvent<TreeMouseEvent<M::Element>> {
         self.map_mouse_event(self.view.on_pointer())
     }

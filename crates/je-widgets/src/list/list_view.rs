@@ -128,6 +128,7 @@ pub struct ListView<T: Clone + 'static> {
     on_did_change_content_height: Rc<Emitter<f64>>,
     on_mouse_click: Rc<Emitter<ListMouseEvent<T>>>,
     on_mouse_dbl_click: Rc<Emitter<ListMouseEvent<T>>>,
+    on_context_menu: Rc<Emitter<ListMouseEvent<T>>>,
     on_mouse_up: Rc<Emitter<ListMouseEvent<T>>>,
     on_mouse_down: Rc<Emitter<ListMouseEvent<T>>>,
     on_mouse_move: Rc<Emitter<ListMouseEvent<T>>>,
@@ -221,6 +222,7 @@ impl<T: Clone + 'static> ListView<T> {
             on_did_change_content_height: registered_emitter(&base),
             on_mouse_click: registered_emitter(&base),
             on_mouse_dbl_click: registered_emitter(&base),
+            on_context_menu: registered_emitter(&base),
             on_mouse_up: registered_emitter(&base),
             on_mouse_down: registered_emitter(&base),
             on_mouse_move: registered_emitter(&base),
@@ -237,6 +239,7 @@ impl<T: Clone + 'static> ListView<T> {
         for (kind, emitter) in [
             (EventKind::Click, this.on_mouse_click.clone()),
             (EventKind::DoubleClick, this.on_mouse_dbl_click.clone()),
+            (EventKind::ContextMenu, this.on_context_menu.clone()),
             (EventKind::PointerUp, this.on_mouse_up.clone()),
             (EventKind::PointerDown, this.on_mouse_down.clone()),
             (EventKind::PointerMove, this.on_mouse_move.clone()),
@@ -282,6 +285,11 @@ impl<T: Clone + 'static> ListView<T> {
 
     pub fn on_mouse_dbl_click(&self) -> BaseEvent<ListMouseEvent<T>> {
         self.on_mouse_dbl_click.event()
+    }
+
+    /// `onContextMenu`: o botão secundário sobre uma linha (ou sobre o vazio, com `index` `None`).
+    pub fn on_context_menu(&self) -> BaseEvent<ListMouseEvent<T>> {
+        self.on_context_menu.event()
     }
 
     pub fn on_mouse_up(&self) -> BaseEvent<ListMouseEvent<T>> {

@@ -212,6 +212,7 @@ pub mod word_part_operations;
 pub mod bracket_matching;
 pub mod indentation_contrib;
 pub mod multicursor;
+pub mod multicursor_find_state;
 
 pub mod suggest;
 

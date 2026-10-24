@@ -76,6 +76,8 @@ pub struct QuickPick {
     scroll: usize,
     /// Uma lista fixa de itens (o seletor de tema): o valor só filtra, sem prefixo `>` e sem ícones de arquivo.
     list_placeholder: Option<String>,
+    /// Um prompt de nome: o Enter devolve esta ação com o texto digitado.
+    prompt: Option<super::PromptAction>,
 }
 
 /// Os arquivos do workspace (caminho relativo como descrição, nome como rótulo), até um limite.
@@ -115,7 +117,7 @@ pub fn scan_workspace(root: &Path) -> Vec<PickItem> {
 impl QuickPick {
     pub fn new(files: Vec<PickItem>, recents: Vec<PickItem>, commands: Vec<PickItem>, initial: &str) -> Self {
         let value: Vec<char> = initial.chars().collect();
-        let mut pick = Self { files, recents, commands, cursor: value.len(), value, results: Vec::new(), focus: 0, scroll: 0, list_placeholder: None };
+        let mut pick = Self { files, recents, commands, cursor: value.len(), value, results: Vec::new(), focus: 0, scroll: 0, list_placeholder: None, prompt: None };
         pick.refresh();
         pick
     }
@@ -126,6 +128,20 @@ impl QuickPick {
         pick.list_placeholder = Some(placeholder.to_owned());
         pick.refresh();
         pick
+    }
+
+    /// Um prompt de uma linha (`InputBox` do `quickInput`): sem lista, o Enter entrega `action` com o texto.
+    pub fn prompt(placeholder: &str, initial: &str, action: super::PromptAction) -> Self {
+        let mut pick = Self::list(Vec::new(), placeholder);
+        pick.value = initial.chars().collect();
+        pick.cursor = pick.value.len();
+        pick.prompt = Some(action);
+        pick
+    }
+
+    /// A ação e o texto do prompt, se este é um.
+    pub fn prompt_result(&self) -> Option<(super::PromptAction, String)> {
+        self.prompt.clone().map(|action| (action, self.value.iter().collect()))
     }
 
     pub fn is_commands(&self) -> bool {

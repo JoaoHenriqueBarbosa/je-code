@@ -311,7 +311,13 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Com abas modificadas a janela pergunta antes; sem elas, fecha já.
+                self.shell.request_exit();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -730,6 +736,314 @@ mod tests {
         assert!(applied != dark, "Enter aplica o tema escolhido");
         assert_eq!(&applied[at..at + 3], &[0xff, 0xff, 0xff], "o fundo do editor é o do Light Modern");
         std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn explorer_context_menu_renames_and_creates() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-ctx", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "alpha").expect("a");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, code: KeyCode, text: Option<&str>| shell.key(true, code, Modifiers::default(), text, key);
+        let right_click = |shell: &mut Shell, x: f64, y: f64| {
+            for kind in [PointerInputKind::Move, PointerInputKind::Down, PointerInputKind::Up] {
+                let mut input = PointerInput::new(kind, x, y);
+                input.button = PointerButton::Secondary;
+                shell.pointer(input);
+            }
+        };
+        snapshot(&mut shell, "c0-tree.png");
+        // Botão direito na linha de a.txt abre o menu de contexto; Esc o fecha sem abrir o arquivo.
+        right_click(&mut shell, 120.0, 96.0 + 11.0);
+        snapshot(&mut shell, "c1-menu.png");
+        assert!(shell.has_context_menu(), "o menu de contexto abriu");
+        assert!(shell.active_editor().is_none(), "o botão direito não abre o arquivo");
+        key(&mut shell, Some(EditorKey::Escape), KeyCode::Escape, None);
+        assert!(!shell.has_context_menu(), "Esc fecha o menu");
+        // Renomear: a quinta opção (Open Containing Folder já vem em foco; mais quatro Down).
+        right_click(&mut shell, 120.0, 96.0 + 11.0);
+        for _ in 0..4 {
+            key(&mut shell, Some(EditorKey::Down), KeyCode::DownArrow, None);
+        }
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter, None);
+        assert!(!shell.has_context_menu(), "o item rodou e o menu fechou");
+        snapshot(&mut shell, "c2-prompt.png");
+        for _ in 0..5 {
+            key(&mut shell, Some(EditorKey::Backspace), KeyCode::Backspace, None);
+        }
+        for c in "b.txt".chars() {
+            key(&mut shell, None, KeyCode::Unknown, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter, None);
+        assert!(dir.join("b.txt").is_file() && !dir.join("a.txt").exists(), "o arquivo foi renomeado");
+        snapshot(&mut shell, "c3-renamed.png");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_folder_and_save_as_prompts_work() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-open", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).expect("pasta");
+        std::fs::write(dir.join("sub/x.ts"), "export {}").expect("x");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        let type_text = |shell: &mut Shell, text: &str| {
+            for c in text.chars() {
+                key(shell, None, Some(&c.to_string()));
+            }
+        };
+        // Open Folder: o explorador passa a mostrar a pasta digitada.
+        shell.run(shell::Command::PromptOpenFolder);
+        type_text(&mut shell, &dir.display().to_string());
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.workspace_path(), Some(dir.clone()));
+        snapshot(&mut shell, "o0-folder.png");
+        // Open File: relativo à pasta aberta.
+        shell.run(shell::Command::PromptOpenFile);
+        for _ in 0..dir.display().to_string().len() + 1 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        type_text(&mut shell, "sub/x.ts");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("sub/x.ts")));
+        // Save As de um arquivo novo: o texto vai para o disco e a aba segue o caminho.
+        shell.run(shell::Command::NewUntitled);
+        shell.active_editor_mut().expect("aba").view.type_text("hello");
+        shell.run(shell::Command::Save);
+        for _ in 0..200 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        type_text(&mut shell, &dir.join("novo.txt").display().to_string());
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(std::fs::read_to_string(dir.join("novo.txt")).expect("gravou"), "hello");
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("novo.txt")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn go_to_line_prompt_moves_the_cursor() {
+        let path = temp_file("goto.txt", "um\ndois\ntres\nquatro\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::PromptGoToLine);
+        for c in "3:2".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let p = shell.active_editor().expect("aba").view.cursor_position();
+        assert_eq!((p.line_number, p.column), (3, 2));
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn status_bar_pickers_change_language_and_eol() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("mode.txt", "fn main() {}\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::PickLanguage);
+        for c in "rust".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let editor = shell.active_editor().expect("aba");
+        assert_eq!(editor.view.model().get_language_id(), "rust");
+        assert_eq!(editor.language_name, "Rust");
+        shell.run(shell::Command::PickEol);
+        key(&mut shell, Some(EditorKey::Down), None);
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_eol(), je_editor::model::Eol::CrLf);
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn search_view_finds_in_files_and_opens_the_match() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-sv", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).expect("pasta");
+        std::fs::write(dir.join("a.ts"), "export class Counter {\n  private count = 0;\n}\n").expect("a");
+        std::fs::write(dir.join("src/b.ts"), "this.count += step;\nreturn this.count;\n").expect("b");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::ShowSearch);
+        for c in "count".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        // A busca roda numa thread: espera os resultados chegarem.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            shell.take_dirty();
+            snapshot(&mut shell, "s0-search.png");
+            if shell.search_message().is_some_and(|m| m.starts_with("4 results in 2 files")) || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(shell.search_message().as_deref(), Some("4 results in 2 files"));
+        // A primeira linha de resultado (depois da linha do arquivo a.ts) abre o arquivo na linha 1.
+        click(&mut shell, 120.0, 35.0 + 105.0 + 22.0 + 11.0);
+        snapshot(&mut shell, "s1-open.png");
+        let editor = shell.active_editor().expect("abriu");
+        assert_eq!(editor.path.as_deref(), Some(dir.join("a.ts").as_path()));
+        let r = editor.view.cursor_selection_range();
+        assert_eq!((r.start_line_number, r.start_column, r.end_column), (1, 14, 19), "a ocorrência fica selecionada");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_operations_show_a_toast_that_can_be_closed() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-toast", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "a").expect("a");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        // Criar um arquivo que já existe falha com uma notificação de erro.
+        shell.run(shell::Command::PromptNewFile(dir.clone()));
+        for c in "a.txt".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.toast_count(), 1);
+        snapshot(&mut shell, "n0-toast.png");
+        // O botão de fechar (canto superior direito do aviso) o dispensa.
+        let (width, height) = (1200.0, 800.0);
+        let toast_top = height - 28.0 - 8.0 - (14.0 + 22.0 * 2.0 + 14.0);
+        click(&mut shell, width - 8.0 - 21.0, toast_top + 23.0);
+        assert_eq!(shell.toast_count(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn source_control_view_stages_and_commits() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-scm", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().expect("git existe");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run_git(&["init", "-q", "-b", "main"]);
+        run_git(&["config", "user.email", "a@b.c"]);
+        run_git(&["config", "user.name", "teste"]);
+        std::fs::write(dir.join("a.txt"), "um\n").expect("a");
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("a.txt"), "um\ndois\n").expect("edita");
+        std::fs::write(dir.join("b.txt"), "novo\n").expect("novo");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        shell.set_wake(Arc::new(|| {}));
+        let wait = |shell: &mut Shell, ready: &dyn Fn(&shell::git::Status) -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                shell.take_dirty();
+                if ready(&shell.git_status()) || std::time::Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        shell.run(shell::Command::ShowScm);
+        wait(&mut shell, &|s| s.count() == 2);
+        snapshot(&mut shell, "g0-scm.png");
+        let status = shell.git_status();
+        assert_eq!((status.branch.as_str(), status.staged.len(), status.changes.len()), ("main", 0, 2));
+        // O diff contra o HEAD aparece na margem do arquivo aberto.
+        shell.run(shell::Command::ScmOpen("a.txt".to_owned()));
+        snapshot(&mut shell, "g00-gutter.png");
+        // Stage de tudo, mensagem e commit pela Ctrl+Enter.
+        shell.run(shell::Command::ScmOp(shell::git::Operation::Stage(vec!["a.txt".to_owned(), "b.txt".to_owned()])));
+        wait(&mut shell, &|s| s.staged.len() == 2);
+        snapshot(&mut shell, "g1-staged.png");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, mods: Modifiers, text: Option<&str>| shell.key(true, KeyCode::Unknown, mods, text, key);
+        shell.run(shell::Command::ScmFocus);
+        for c in "segundo commit".chars() {
+            key(&mut shell, None, Modifiers::default(), Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), Modifiers { ctrl: true, ..Modifiers::default() }, None);
+        wait(&mut shell, &|s| s.count() == 0);
+        assert_eq!(shell.git_status().count(), 0, "o commit levou os dois arquivos");
+        let log = std::process::Command::new("git").arg("-C").arg(&dir).args(["log", "--oneline"]).output().expect("log");
+        assert!(String::from_utf8_lossy(&log.stdout).contains("segundo commit"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manage_menu_and_layout_buttons_respond() {
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+        // A engrenagem da activity bar abre o menu Manage, com o clique primário.
+        click(&mut shell, 26.0, 742.0);
+        assert!(shell.has_context_menu());
+        snapshot(&mut shell, "m0-manage.png");
+        shell.key(true, KeyCode::Escape, Modifiers::default(), None, Some(EditorKey::Escape));
+        assert!(!shell.has_context_menu());
+        // O botão de layout do painel (terceiro à direita) mostra e esconde o painel.
+        let toggle = |shell: &mut Shell| click(shell, 1063.0, 17.0);
+        toggle(&mut shell);
+        assert!(shell.panel_is_visible());
+        toggle(&mut shell);
+        assert!(!shell.panel_is_visible());
+        // Problems mostra a aba com a mensagem de vazio, sem abrir terminal.
+        shell.run(shell::Command::ShowPanelTab(shell::PanelTab::Problems));
+        assert!(shell.panel_is_visible());
+        snapshot(&mut shell, "m1-problems.png");
+    }
+
+    #[test]
+    fn closing_a_modified_tab_asks_to_save() {
+        let path = temp_file("dirty.txt", "abc");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        // Tecla apertada e solta: o diálogo fecha com o Esc no `keyup`, como o original.
+        let key = |shell: &mut Shell, key: Option<EditorKey>, code: KeyCode| {
+            shell.key(true, code, Modifiers::default(), None, key);
+            shell.key(false, code, Modifiers::default(), None, key);
+        };
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        shell.run(shell::Command::CloseActiveEditor);
+        snapshot(&mut shell, "d0-ask.png");
+        assert!(shell.active_editor().is_some(), "a aba modificada não fecha sem perguntar");
+        // Esc cancela; a aba e a edição continuam.
+        key(&mut shell, Some(EditorKey::Escape), KeyCode::Escape);
+        assert!(shell.active_editor().expect("aba").is_modified());
+        // Save (o botão em foco) grava e fecha.
+        shell.run(shell::Command::CloseActiveEditor);
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter);
+        assert!(shell.active_editor().is_none());
+        assert_eq!(std::fs::read_to_string(&path).expect("lê"), "Xabc");
+        // Sair com uma aba modificada também pergunta; Don't Save fecha e sai.
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        shell.active_editor_mut().expect("aba").view.type_text("Y");
+        shell.request_exit();
+        assert!(!shell.take_exit(), "não sai antes da resposta");
+        // Tab vai ao segundo botão (Don't Save) e Enter o aciona.
+        key(&mut shell, Some(EditorKey::Tab), KeyCode::Tab);
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter);
+        assert!(shell.take_exit(), "Don't Save sai");
+        assert_eq!(std::fs::read_to_string(&path).expect("lê"), "Xabc", "o texto descartado não foi gravado");
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn tab_context_menu_closes_others_and_to_the_right() {
+        let files: Vec<PathBuf> = ["t1.txt", "t2.txt", "t3.txt", "t4.txt"].iter().map(|n| temp_file(n, n)).collect();
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &files, 1200.0, 800.0).expect("abre");
+        let names = |shell: &Shell| shell.tab_paths();
+        assert_eq!(names(&shell).len(), 4);
+        // Botão direito na segunda aba abre o menu.
+        let mut input = PointerInput::new(PointerInputKind::Down, 200.0, 51.0);
+        input.button = PointerButton::Secondary;
+        shell.pointer(PointerInput::new(PointerInputKind::Move, 200.0, 51.0));
+        shell.pointer(input);
+        input.kind = PointerInputKind::Up;
+        shell.pointer(input);
+        assert!(shell.has_context_menu());
+        snapshot(&mut shell, "tab0-menu.png");
+        shell.key(true, KeyCode::Escape, Modifiers::default(), None, Some(EditorKey::Escape));
+        shell.run(shell::Command::CloseToTheRight(1));
+        assert_eq!(names(&shell), files[..2].to_vec());
+        shell.run(shell::Command::CloseOthers(0));
+        assert_eq!(names(&shell), files[..1].to_vec());
+        for f in files {
+            std::fs::remove_file(f).ok();
+        }
     }
 
     #[test]
