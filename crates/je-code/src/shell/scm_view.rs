@@ -14,6 +14,9 @@ use je_ui::{Border, Content, Cursor, NodeId, Role, Ui};
 use je_widgets::list::list_styles::default_list_styles;
 use je_widgets::list::list_types::{IListVirtualDelegate, TemplateData};
 use je_widgets::text::{ellipsize, measure_text, ui_font};
+use je_widgets::text_field::TextField;
+
+use super::input::InputColors;
 use je_widgets::tree::abstract_tree::ExpandOnlyOnTwistieClick;
 use je_widgets::tree::index_tree_model::TreeNode;
 use je_widgets::tree::object_tree::{ObjectTree, ObjectTreeOptions};
@@ -160,8 +163,8 @@ pub struct ScmView {
     theme: Rc<RefCell<ColorTheme>>,
     collapsed: Rc<RefCell<std::collections::HashSet<Group>>>,
     width: Rc<RefCell<f64>>,
-    pub message: Vec<char>,
-    pub cursor: usize,
+    /// O campo da mensagem do commit.
+    pub message: TextField,
     _listeners: Vec<DisposableRef>,
 }
 
@@ -214,7 +217,7 @@ impl ScmView {
                 }
             }
         }));
-        Self { tree, status, theme: theme_cell, collapsed, width, message: Vec::new(), cursor: 0, _listeners: listeners }
+        Self { tree, status, theme: theme_cell, collapsed, width, message: TextField::new(), _listeners: listeners }
     }
 
     pub fn restyle(&self, theme: &ColorTheme) {
@@ -226,7 +229,7 @@ impl ScmView {
     }
 
     pub fn text(&self) -> String {
-        self.message.iter().collect()
+        self.message.value().to_owned()
     }
 
     pub fn set_status(&self, status: Status) {
@@ -267,7 +270,7 @@ impl ScmView {
 
     /// O cabeçalho: a linha `Changes` do repositório com as ações, o campo da mensagem e o botão Commit. Devolve os
     /// alvos de clique e onde a árvore começa (relativo à barra lateral).
-    pub fn render_header(&self, tree: &mut je_ui::Tree, parent: NodeId, width: f64, focused: bool, branch: &str) -> (Vec<(NodeId, Command)>, f64) {
+    pub fn render_header(&mut self, tree: &mut je_ui::Tree, parent: NodeId, width: f64, focused: bool, branch: &str) -> (Vec<(NodeId, Command)>, f64) {
         let theme = self.theme.borrow().clone();
         let color = |id: &str| theme.get_color(id).unwrap_or(Rgba::opaque(0xff, 0, 0xff));
         let font = ui_font(13.0, 400);
@@ -303,22 +306,9 @@ impl ScmView {
         style.border = Some(Border { width: 1.0, color: if focused { color("focusBorder") } else { color("input.border") } });
         style.radius = 4.0;
         let inner = width - 10.0 - 24.0;
-        let text = tree.create(input, Role::Generic);
-        tree.set_bounds(text, Rect::new(7.0, 1.0, inner - 7.0, 24.0));
-        if self.message.is_empty() {
-            let placeholder = ellipsize(&format!("Message (Ctrl+Enter to commit on '{branch}')"), &font, inner - 16.0);
-            tree.style_mut(text).content = Content::Text { text: placeholder, style: font.clone(), color: color("input.placeholderForeground"), line_height: 24.0 };
-        } else {
-            let shown = ellipsize(&self.text(), &font, inner - 16.0);
-            tree.style_mut(text).content = Content::Text { text: shown, style: font.clone(), color: fg, line_height: 24.0 };
-        }
-        if focused {
-            let before: String = self.message[..self.cursor].iter().collect();
-            let x = 7.0 + measure_text(&before, &font).min(inner - 16.0);
-            let caret = tree.create(input, Role::Generic);
-            tree.set_bounds(caret, Rect::new(x, 5.0, x + 1.0, 20.0));
-            tree.style_mut(caret).background = Some(fg);
-        }
+        let placeholder = ellipsize(&format!("Message (Ctrl+Enter to commit on '{branch}')"), &font, inner - 16.0);
+        let colors = InputColors { foreground: fg, placeholder: color("input.placeholderForeground"), selection: color("editor.selectionBackground") };
+        super::input::paint(tree, input, Rect::new(7.0, 1.0, inner - 7.0, 24.0), &mut self.message, &placeholder, focused, &font, &colors);
         // O botão Commit com a seta de opções à direita.
         let button = tree.create(parent, Role::Button);
         tree.set_bounds(button, Rect::new(24.0, 100.0, width - 10.0, 125.0));

@@ -377,7 +377,7 @@ pub struct Shell {
     timeline_path: Option<PathBuf>,
     /// As extensões instaladas (lidas na primeira abertura da vista Extensions) e o filtro e a rolagem dela.
     extensions: Option<Vec<extensions_view::ExtensionEntry>>,
-    extensions_filter: Vec<char>,
+    extensions_filter: je_widgets::text_field::TextField,
     extensions_scroll: f64,
     extensions_focused: bool,
     git_rx: Option<std::sync::mpsc::Receiver<Result<git::Status, String>>>,
@@ -544,7 +544,7 @@ impl Shell {
             timeline_entries: Vec::new(),
             timeline_path: None,
             extensions: None,
-            extensions_filter: Vec::new(),
+            extensions_filter: je_widgets::text_field::TextField::new(),
             extensions_scroll: 0.0,
             extensions_focused: false,
             git_rx: None,
@@ -1377,8 +1377,7 @@ impl Shell {
                     self.notify(Severity::Warning, "There are no staged changes to commit. Stage some changes first.".to_owned());
                 } else {
                     self.git_op(git::Operation::Commit(message));
-                    self.scm.message.clear();
-                    self.scm.cursor = 0;
+                    self.scm.message.set_value("");
                 }
             }
             Command::ScmOpen(path) => {
@@ -1943,9 +1942,8 @@ impl Shell {
     }
 
     /// Trata uma tecla com a mensagem do commit focada. Devolve se consumiu.
-    fn scm_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+    fn scm_key(&mut self, key_code: KeyCode, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let ctrl = mods.ctrl || mods.meta;
-        let view = &mut self.scm;
         match key {
             Some(EditorKey::Escape) => {
                 self.scm_focused = false;
@@ -1954,27 +1952,8 @@ impl Shell {
                 }
             }
             Some(EditorKey::Enter) if ctrl => self.run(Command::ScmCommit),
-            Some(EditorKey::Left) => view.cursor = view.cursor.saturating_sub(1),
-            Some(EditorKey::Right) => view.cursor = (view.cursor + 1).min(view.message.len()),
-            Some(EditorKey::Home) => view.cursor = 0,
-            Some(EditorKey::End) => view.cursor = view.message.len(),
-            Some(EditorKey::Backspace) if view.cursor > 0 => {
-                view.message.remove(view.cursor - 1);
-                view.cursor -= 1;
-            }
-            Some(EditorKey::Delete) if view.cursor < view.message.len() => {
-                view.message.remove(view.cursor);
-            }
-            Some(EditorKey::Up | EditorKey::Down | EditorKey::PageUp | EditorKey::PageDown | EditorKey::Tab | EditorKey::Backspace | EditorKey::Delete | EditorKey::Enter) => {}
             _ => {
-                if (!ctrl || mods.alt)
-                    && let Some(text) = text
-                {
-                    let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
-                    let at = view.cursor;
-                    view.cursor += inserted.len();
-                    view.message.splice(at..at, inserted);
-                }
+                input::edit(&mut self.scm.message, key_code, key, mods, text, &input::SystemClipboard::new());
             }
         }
         self.needs_render = true;
@@ -3035,20 +3014,9 @@ impl Shell {
                 style.background = Some(self.color("input.background"));
                 style.border = Some(Border { width: 1.0, color: if self.extensions_focused { self.color("focusBorder") } else { self.color("input.border") } });
                 style.radius = 4.0;
-                let text = tree.create(input, Role::Generic);
-                tree.set_bounds(text, Rect::new(7.0, 1.0, rect.width() - 40.0, 24.0));
-                let filter: String = self.extensions_filter.iter().collect();
-                if filter.is_empty() {
-                    tree.style_mut(text).content = Content::Text { text: "Search Extensions in Marketplace".to_owned(), style: ui_font(13.0, 400), color: self.color("input.placeholderForeground"), line_height: 24.0 };
-                } else {
-                    tree.style_mut(text).content = Content::Text { text: filter.clone(), style: ui_font(13.0, 400), color: fg, line_height: 24.0 };
-                }
-                if self.extensions_focused {
-                    let x = 7.0 + measure_text(&filter, &ui_font(13.0, 400));
-                    let caret = tree.create(input, Role::Generic);
-                    tree.set_bounds(caret, Rect::new(x, 5.0, x + 1.0, 20.0));
-                    tree.style_mut(caret).background = Some(fg);
-                }
+                let colors = input::InputColors { foreground: fg, placeholder: self.color("input.placeholderForeground"), selection: self.color("editor.selectionBackground") };
+                input::paint(&mut tree, input, Rect::new(7.0, 1.0, rect.width() - 40.0, 24.0), &mut self.extensions_filter, "Search Extensions in Marketplace", self.extensions_focused, &ui_font(13.0, 400), &colors);
+                let filter = self.extensions_filter.value().to_owned();
                 let entries = self.extensions.clone().unwrap_or_default();
                 let total = extensions_view::render(&mut tree, bar, &entries, &filter, rect.width(), 72.0, rect.height() - 6.0, self.extensions_scroll, &self.theme);
                 self.extensions_scroll = self.extensions_scroll.min((total - (rect.height() - 78.0)).max(0.0));
@@ -4040,27 +4008,17 @@ impl Shell {
             return;
         }
         if self.extensions_focused && self.sidebar_visible && self.side_view == SideView::Extensions && down {
-            let ctrl = mods.ctrl || mods.meta;
             if let Some(command) = self.workbench_shortcut(key_code, mods) {
                 self.run(command);
                 return;
             }
-            match editor_key {
-                Some(EditorKey::Escape) => {
-                    self.extensions_focused = false;
-                    if let Some(editor) = self.active_editor_mut() {
-                        editor.view.set_focus(true);
-                    }
+            if editor_key == Some(EditorKey::Escape) {
+                self.extensions_focused = false;
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(true);
                 }
-                Some(EditorKey::Backspace) => {
-                    self.extensions_filter.pop();
-                }
-                Some(_) => {}
-                None => {
-                    if let Some(text) = text.filter(|_| !ctrl || mods.alt) {
-                        self.extensions_filter.extend(text.chars().filter(|c| !c.is_control()));
-                    }
-                }
+            } else {
+                input::edit(&mut self.extensions_filter, key_code, editor_key, mods, text, &input::SystemClipboard::new());
             }
             self.extensions_scroll = 0.0;
             self.needs_render = true;
@@ -4072,7 +4030,7 @@ impl Shell {
                 self.run(command);
                 return;
             }
-            if self.scm_key(text, editor_key, mods) {
+            if self.scm_key(key_code, text, editor_key, mods) {
                 return;
             }
         }
