@@ -1324,3 +1324,179 @@ mod extension_enablement_test_services {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `MockLabelService` (`src/vs/workbench/services/label/test/common/mockLabelService.ts`): o `ILabelService` dos testes
+// das migalhas e de tudo que lê o `home` de um formatador de rótulo.
+//
+// - **`uriExt`** (`IExtUri = extUri`) é o `ExtUri` do construtor, e sem argumento o `ExtUri` sem viés.
+// - **Formatadores por identidade.** `this.formatters.filter(candidate => candidate !== formatter)` compara os `Rc` do
+//   [`LabelFormatter`] (dois formatadores iguais registrados em separado continuam distintos).
+// - **`registerFormatter`** dispara `onDidChangeFormatters` ao registrar e ao descartar, e um formatador de modelo
+//   (`ResourceLabelTemplateFormatter`) também dispara quando o seu `onDidChangeFormatting` dispara.
+// - **`getUriLabel`/`getUriBasenameLabel`** usam o `fsPath` e o módulo `path` nativos do processo (`normalize` e `basename`).
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use mock_label_service::MockLabelService;
+
+mod mock_label_service {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use je_base::event::{Emitter, Event};
+    use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
+    use je_base::path::PathModule;
+    use je_base::resources::ExtUri;
+    use je_base::uri::{Field, URI, UriChange};
+    use je_base::JsString;
+    use je_platform::label::label::{
+        FormatterChangeEvent, ILabelService, LabelFormatter, LabelSeparator, ResourceLabelFormatter, ResourceLabelFormatting, ResourceLabelFormattingContext,
+        UriLabelOptions, WorkspaceLabelOptions, WorkspaceLabelTarget,
+    };
+    use je_platform::resources::{ext_uri, fs_path, host_environment};
+
+    use crate::services::label::resource_label_template::{ResourceLabelTemplate, ResourceLabelTemplateMatch, with_path_only};
+
+    /// O `{ home, formatting }` que `findHomeFormatter` devolve.
+    struct HomeMatch {
+        home: URI,
+        formatting: ResourceLabelFormatting,
+    }
+
+    /// `candidate !== formatter`, por identidade do `Rc`.
+    fn is_same_formatter(a: &LabelFormatter, b: &LabelFormatter) -> bool {
+        match (a, b) {
+            (LabelFormatter::Resource(a), LabelFormatter::Resource(b)) => Rc::ptr_eq(a, b),
+            (LabelFormatter::Template(a), LabelFormatter::Template(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// `isTemplateFormatter(formatter) ? formatter.home.scheme : formatter.scheme`.
+    fn formatter_scheme(formatter: &LabelFormatter) -> String {
+        match formatter {
+            LabelFormatter::Resource(formatter) => formatter.scheme.clone(),
+            LabelFormatter::Template(formatter) => formatter.home.scheme().to_string_lossy(),
+        }
+    }
+
+    /// `MockLabelService`.
+    pub struct MockLabelService {
+        uri_ext: ExtUri,
+        formatters: Rc<RefCell<Vec<LabelFormatter>>>,
+        on_did_change_formatters: Rc<Emitter<FormatterChangeEvent>>,
+    }
+
+    impl MockLabelService {
+        /// `constructor(uriExt: IExtUri = extUri)`.
+        pub fn new(uri_ext: Option<ExtUri>) -> Rc<Self> {
+            Rc::new(Self { uri_ext: uri_ext.unwrap_or_else(ext_uri), formatters: Rc::new(RefCell::new(Vec::new())), on_did_change_formatters: Emitter::new() })
+        }
+
+        /// `get formatterCount()`.
+        pub fn formatter_count(&self) -> usize {
+            self.formatters.borrow().len()
+        }
+
+        /// `findHomeFormatter(resource)`: o formatador cujo `home` contém o recurso, com o `home` mais longo.
+        fn find_home_formatter(&self, resource: &URI) -> Option<HomeMatch> {
+            let mut result: Option<HomeMatch> = None;
+            for formatter in self.formatters.borrow().iter() {
+                let candidate = match formatter {
+                    LabelFormatter::Template(template) => {
+                        let Some(template_match) = ResourceLabelTemplate::new(&template.home).match_resource(resource, &self.uri_ext) else {
+                            continue;
+                        };
+                        let ResourceLabelTemplateMatch { home, parameters } = template_match;
+                        let context = ResourceLabelFormattingContext { resource: resource.clone(), home: home.clone(), parameters };
+                        (template.formatting)(&context).map(|formatting| HomeMatch { home, formatting })
+                    }
+                    LabelFormatter::Resource(formatter) => {
+                        let Some(home) = formatter.home.as_ref().filter(|home| !home.is_empty()) else {
+                            continue;
+                        };
+                        let same_authority = formatter.authority.as_ref().is_none_or(|authority| authority.is_empty() || *authority == resource.authority().to_string_lossy());
+                        let home_resource = resource.with(&UriChange { path: Field::Set(JsString::from(home.as_str())), ..UriChange::default() });
+                        (formatter.scheme == resource.scheme().to_string_lossy() && same_authority && self.uri_ext.is_equal_or_parent(resource, &home_resource, false, false))
+                            .then(|| HomeMatch { home: with_path_only(resource, home.as_str()), formatting: formatter.formatting.clone() })
+                    }
+                };
+                if let Some(candidate) = candidate {
+                    let longer = result.as_ref().is_none_or(|current| candidate.home.path().units().len() > current.home.path().units().len());
+                    if longer {
+                        result = Some(candidate);
+                    }
+                }
+            }
+            result
+        }
+    }
+
+    impl ILabelService for MockLabelService {
+        fn get_uri_label(&self, resource: &URI, _options: &UriLabelOptions) -> String {
+            if let Some(found) = self.find_home_formatter(resource) {
+                let path = resource.path().units();
+                let relative_path = String::from_utf16_lossy(&path[found.home.path().units().len().min(path.len())..]);
+                let relative_path = relative_path.strip_prefix('/').unwrap_or(&relative_path);
+                return if relative_path.is_empty() { found.formatting.label } else { format!("{}/{}", found.formatting.label, relative_path) };
+            }
+            let env = host_environment();
+            PathModule::native(env.as_ref()).normalize(&fs_path(resource))
+        }
+
+        fn get_uri_basename_label(&self, resource: &URI) -> String {
+            let env = host_environment();
+            PathModule::native(env.as_ref()).basename(&fs_path(resource), None)
+        }
+
+        fn get_workspace_label(&self, _workspace: &WorkspaceLabelTarget, _options: Option<&WorkspaceLabelOptions>) -> String {
+            String::new()
+        }
+
+        fn get_host_label(&self, _scheme: &str, _authority: Option<&str>) -> String {
+            String::new()
+        }
+
+        fn get_host_tooltip(&self, _scheme: &str, _authority: Option<&str>) -> Option<String> {
+            Some(String::new())
+        }
+
+        fn get_separator(&self, _scheme: &str, _authority: Option<&str>) -> LabelSeparator {
+            LabelSeparator::Slash
+        }
+
+        fn get_uri_home(&self, resource: &URI) -> Option<URI> {
+            self.find_home_formatter(resource).map(|found| found.home)
+        }
+
+        fn register_formatter(&self, formatter: LabelFormatter) -> DisposableRef {
+            self.formatters.borrow_mut().push(formatter.clone());
+            let scheme = formatter_scheme(&formatter);
+            self.on_did_change_formatters.fire(FormatterChangeEvent { scheme: scheme.clone() });
+            let change_listener = match &formatter {
+                LabelFormatter::Template(template) => {
+                    let (emitter, scheme) = (self.on_did_change_formatters.clone(), scheme.clone());
+                    Some(template.on_did_change_formatting.listen(move |_| emitter.fire(FormatterChangeEvent { scheme: scheme.clone() })))
+                }
+                LabelFormatter::Resource(_) => None,
+            };
+
+            let (formatters, emitter) = (self.formatters.clone(), self.on_did_change_formatters.clone());
+            to_disposable(move || {
+                if let Some(change_listener) = change_listener {
+                    change_listener.dispose();
+                }
+                formatters.borrow_mut().retain(|candidate| !is_same_formatter(candidate, &formatter));
+                emitter.fire(FormatterChangeEvent { scheme });
+            })
+        }
+
+        fn on_did_change_formatters(&self) -> Event<FormatterChangeEvent> {
+            self.on_did_change_formatters.event()
+        }
+
+        fn register_cached_formatter(&self, formatter: ResourceLabelFormatter) -> DisposableRef {
+            self.register_formatter(LabelFormatter::from(formatter))
+        }
+    }
+}

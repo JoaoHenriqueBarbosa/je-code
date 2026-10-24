@@ -125,6 +125,9 @@ pub trait IEditorPane {
 
     /// Returns the current view state of the editor if any.
     fn get_view_state(&self) -> Option<Dynamic>;
+
+    /// `onDidChangeControl`: an event to notify whenever the control of the pane changes.
+    fn on_did_change_control(&self) -> je_base::event::Event<()>;
 }
 
 /// `EditorPaneSelectionChangeReason`.

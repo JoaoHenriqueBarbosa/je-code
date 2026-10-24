@@ -483,7 +483,7 @@ pub struct MainThreadMessageOptions {
 }
 
 /// Um item de `commands` de `$showMessage`: `{ title, isCloseAffordance, handle }`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MessageCommandDto {
     pub title: String,
     pub is_close_affordance: bool,

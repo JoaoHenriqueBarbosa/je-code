@@ -199,3 +199,37 @@ pub struct TextEditorSelection {
     pub end_line_number: Option<f64>,
     pub end_column: Option<f64>,
 }
+
+/// `IModalEditorOptions`: opções do editor modal por editor, dadas por uma entrada de editor que quer influenciar como
+/// é desenhada dentro da parte de editor modal. Ao contrário de [`ModalEditorPartOptions`], valem para um editor só e
+/// saem do editor ativo (não da API de opções da parte).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModalEditorOptions {
+    /// Quando verdadeiro, o editor modal desenha um cabeçalho simplificado: usa o fundo do editor, esconde o ícone do
+    /// título, remove a borda de baixo e usa uma altura fixa um pouco maior. Útil para editores que trazem o próprio
+    /// cabeçalho.
+    pub compact_header: Option<bool>,
+    /// Se o editor modal pode ser movido para uma área de editores.
+    pub can_move_to_editor_area: Option<bool>,
+}
+
+/// `IModalEditorOptionsProvider`: interface marcadora das entradas de editor que querem personalizar como são
+/// desenhadas quando abertas na parte de editor modal (ver [`ModalEditorOptions`]).
+pub trait ModalEditorOptionsProvider {
+    fn get_modal_editor_options(&self) -> Option<ModalEditorOptions>;
+}
+
+/// `isModalEditorOptionsProvider(obj)`: o `obj: unknown` do original (`undefined`, `null`, um objeto sem o método ou com
+/// ele que não é função) é o `None` aqui, porque a checagem estrutural é resolvida pelo tipo: só um valor que
+/// implementa [`ModalEditorOptionsProvider`] chega como `Some`.
+pub fn is_modal_editor_options_provider(candidate: Option<&dyn ModalEditorOptionsProvider>) -> bool {
+    candidate.is_some()
+}
+
+/// `canMoveModalEditorToEditorArea(obj)`: o padrão é poder mover, e o editor desliga com `canMoveToEditorArea: false`.
+pub fn can_move_modal_editor_to_editor_area(candidate: Option<&dyn ModalEditorOptionsProvider>) -> bool {
+    match candidate {
+        None => true,
+        Some(provider) => provider.get_modal_editor_options().and_then(|options| options.can_move_to_editor_area) != Some(false),
+    }
+}
