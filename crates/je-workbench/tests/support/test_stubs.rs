@@ -276,3 +276,47 @@ pub fn get_initialized_main_test_collection(single_use: Rc<TestTestCollection>) 
         Ok(c)
     })
 }
+
+/// `type StubTreeIds = { [id: string]: StubTreeIds | undefined }`: as chaves na ordem de inserção, cada uma com os filhos
+/// ou `None` (uma folha).
+pub struct StubTreeIds(pub Vec<(&'static str, Option<StubTreeIds>)>);
+
+/// `makeSimpleStubTree(ids)`.
+pub fn make_simple_stub_tree(ids: &StubTreeIds) -> Rc<TestTestCollection> {
+    let collection = TestTestCollection::new("ctrlId");
+
+    fn add(parent: &TestItemHandle, children: &StubTreeIds, path: &[String]) {
+        for (id, grandchildren) in &children.0 {
+            let mut item_path = path.to_vec();
+            item_path.push((*id).to_string());
+            let item = TestTestItem::new(TestId::new(item_path.clone()), id, None);
+            parent.children().add(item.clone());
+            if let Some(grandchildren) = grandchildren {
+                add(&item, grandchildren, &item_path);
+            }
+        }
+    }
+
+    add(collection.root(), ids, &["ctrlId".to_string()]);
+    collection
+}
+
+/// `upcastPartial<IUriIdentityService>({ asCanonicalUri, extUri })`: a identidade de URI com `asCanonicalUri` e `extUri`
+/// dados (um membro ausente lança, como chamar um membro `undefined`).
+pub struct PartialUriIdentityService {
+    pub canonical: Box<dyn Fn(&URI) -> URI>,
+    pub ext_uri: Option<ExtUri>,
+}
+
+impl IUriIdentityService for PartialUriIdentityService {
+    fn ext_uri(&self) -> ExtUri {
+        match &self.ext_uri {
+            Some(ext_uri) => ext_uri.clone(),
+            None => throw(Error::type_error("Cannot read properties of undefined (reading 'isEqual')")),
+        }
+    }
+
+    fn as_canonical_uri(&self, uri: &URI) -> URI {
+        (self.canonical)(uri)
+    }
+}

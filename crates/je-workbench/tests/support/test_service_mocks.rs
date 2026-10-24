@@ -26,10 +26,15 @@ use je_workbench::contrib::testing::common::test_types::{
 
 type StartContinuousRun = Box<dyn Fn(ResolvedTestRunRequest, CancellationToken) -> Promise<()>>;
 
-/// `class MockTestService extends mock<ITestService>()`: só o `startContinuousRun` é sobrescrito.
+/// `mock<ITestService>()` e `upcastPartial<ITestService>(...)`: só o `startContinuousRun`, a `collection` e o
+/// `onDidProcessDiff` podem ser sobrescritos.
 #[derive(Default)]
 pub struct MockTestService {
     pub start_continuous_run: RefCell<Option<StartContinuousRun>>,
+    /// `upcastPartial<ITestService>({ collection })`.
+    pub collection: RefCell<Option<Rc<dyn IMainThreadTestCollection>>>,
+    /// `upcastPartial<ITestService>({ onDidProcessDiff })`.
+    pub on_did_process_diff: RefCell<Option<Event<Rc<TestsDiff>>>>,
 }
 
 impl ITestService for MockTestService {
@@ -40,13 +45,19 @@ impl ITestService for MockTestService {
         throw(Error::new("excluded is not a function"))
     }
     fn collection(&self) -> Rc<dyn IMainThreadTestCollection> {
-        throw(Error::new("collection is not a function"))
+        match self.collection.borrow().as_ref() {
+            Some(collection) => collection.clone(),
+            None => throw(Error::new("Cannot read properties of undefined (reading 'getNodeById')")),
+        }
     }
     fn on_will_process_diff(&self) -> Event<Rc<TestsDiff>> {
         throw(Error::new("onWillProcessDiff is not a function"))
     }
     fn on_did_process_diff(&self) -> Event<Rc<TestsDiff>> {
-        throw(Error::new("onDidProcessDiff is not a function"))
+        match self.on_did_process_diff.borrow().as_ref() {
+            Some(event) => event.clone(),
+            None => throw(Error::new("Cannot read properties of undefined (reading 'onDidProcessDiff')")),
+        }
     }
     fn show_inline_output(&self) -> Rc<MutableObservableValue<bool>> {
         throw(Error::new("showInlineOutput is not a function"))

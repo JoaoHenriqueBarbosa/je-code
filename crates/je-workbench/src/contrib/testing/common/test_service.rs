@@ -15,21 +15,23 @@
 //! - **`Iterable<T>`** de retorno são `Vec<T>`. **`Infinity`** de `levels` é `f64::INFINITY`.
 //! - **`expandAndGetTestById`** é `async` no original: devolve `Promise`, e o corpo é um `async_fn`.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
-use je_base::async_::async_fn;
+use je_base::async_::{AsyncIterable, AsyncIterableEmitter, AsyncIterableProducer, async_fn, race_cancellation_error};
 use je_base::cancellation::CancellationToken;
 use je_base::errors::{Error, throw};
 use je_base::event::Event;
-use je_base::lifecycle::{DisposableRef, IDisposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::marshalling_ids::MarshalledId;
 use je_base::observable::IObservable;
 use je_base::prefix_tree::{Node, WellDefinedPrefixTree};
-use je_base::promise::Promise;
+use je_base::promise::{DeferredPromise, MaybePromise, Promise};
 use je_base::uri::URI;
 use je_editor::position::Position;
 use je_editor::range::Range;
 use je_instantiation::service_id;
+use je_platform::uri_identity::uri_identity::IUriIdentityService;
 
 use super::observable_value::MutableObservableValue;
 use super::test_exclusions::TestExclusions;
@@ -37,9 +39,12 @@ use super::test_id::TestId;
 use super::test_result::ITestResult;
 use super::test_types::{
     ICallProfileRunHandler, IStartControllerTests, IStartControllerTestsResult, ITestItemContext, IncrementalNodeRef, IncrementalTestCollectionItem,
-    InternalTestItem, ResolvedTestRunRequest, TestControllerCapability, TestMessageFollowupRequest, TestMessageFollowupResponse, TestRunProfileBitset,
+    InternalTestItem, ResolvedTestRunRequest, TestItemExpandState, TestControllerCapability, TestMessageFollowupRequest, TestMessageFollowupResponse, TestRunProfileBitset,
     TestsDiff,
 };
+
+/// `TestIdPathParts.Delimiter`.
+const TEST_ID_DELIMITER: char = '\0';
 
 /// `Location` de `languages.ts`: um intervalo num recurso.
 #[derive(Clone, Debug, PartialEq)]
@@ -178,6 +183,251 @@ pub fn expand_and_get_test_by_id(
         }
         Ok(None)
     })
+}
+
+/// Waits for the test to no longer be busy, optionally including pending discovery expansion.
+///
+/// O original lança o `CancellationError` de forma síncrona e devolve `undefined` quando o teste já está ocioso; aqui as
+/// duas saídas são uma promessa (rejeitada com o erro de cancelamento, ou já resolvida), que é o que um chamador dentro
+/// de uma função `async` observa.
+pub fn wait_for_test_to_be_idle(
+    test_service: &dyn ITestService,
+    test: &IncrementalNodeRef<IncrementalTestCollectionItem>,
+    token: CancellationToken,
+    wait_for_expansion: bool,
+) -> Promise<()> {
+    if token.is_cancellation_requested() {
+        return Promise::rejected(Error::cancellation());
+    }
+    let is_busy = move |item: Option<&IncrementalTestCollectionItem>| {
+        item.is_some_and(|item| item.item.busy || (wait_for_expansion && item.expand == TestItemExpandState::BusyExpanding))
+    };
+    if !is_busy(Some(&test.borrow())) {
+        return Promise::resolved(());
+    }
+
+    let store = DisposableStore::new();
+    let (promise, resolver) = Promise::new();
+    let ext_id = test.borrow().item.ext_id.clone();
+    let collection = test_service.collection();
+    let resolver_on_diff = resolver.clone();
+    store.add(test_service.on_did_process_diff().listen(move |_| {
+        let node = collection.get_node_by_id(&ext_id);
+        if !is_busy(node.as_ref().map(|node| node.borrow()).as_deref()) {
+            resolver_on_diff.resolve(());
+        }
+    }));
+    store.add(token.on_cancellation_requested().listen(move |_| resolver.reject(Error::cancellation())));
+    promise.finally(move || store.dispose())
+}
+
+/// Um item da fila de `testsInFile`: ids prontos, ou uma expansão em andamento que dá os ids quando termina.
+enum QueueEntry {
+    Ids(Vec<String>),
+    Deferred(Rc<DeferredPromise<Rc<dyn Fn() -> Result<Vec<String>, Error>>>>),
+}
+
+/// Iterator that expands to and iterates through tests in the file. Iterates
+/// in strictly descending order.
+///
+/// Divergência: o gerador assíncrono do original só corre quando o consumidor pede o próximo valor. Aqui o corpo é o
+/// executor de um [`AsyncIterableProducer`], que corre numa microtarefa logo depois da criação e acumula os lotes; fechar o
+/// iterador (`return()`) o faz parar na próxima volta do laço, e o `token` o interrompe como no original. Para um
+/// consumidor que lê tudo (todos os usos do original) o resultado é o mesmo.
+pub fn tests_in_file(
+    test_service: Rc<dyn ITestService>,
+    ident: Rc<dyn IUriIdentityService>,
+    uri: URI,
+    wait_for_idle: bool,
+    descend_in_file: bool,
+    token: CancellationToken,
+) -> Rc<dyn AsyncIterable<Vec<IncrementalNodeRef<IncrementalTestCollectionItem>>>> {
+    let stopped = Rc::new(Cell::new(false));
+    let stopped_on_return = stopped.clone();
+    let producer = AsyncIterableProducer::new(
+        move |emitter: AsyncIterableEmitter<Vec<IncrementalNodeRef<IncrementalTestCollectionItem>>>| {
+            MaybePromise::Promise(async_fn(async move {
+                // Canonicalize the URI so that comparisons against test item URIs (which are
+                // stored in their canonical form via asCanonicalUri() during deserialization)
+                // work correctly in remote environments such as WSL, SSH, and dev containers
+                // where URI.file(path) may produce a non-canonical form. Fixes #275268.
+                let canonical_uri = ident.as_canonical_uri(&uri);
+                let ext_uri = ident.ext_uri();
+                let collection = test_service.collection();
+
+                // In this function we go to a bit of effort to avoid awaiting unnecessarily
+                // and bulking the test collections we do collect for consumers. This fixes
+                // a performance issue (#235819) where a large number of tests in a file
+                // would cause a long delay switching editors.
+                let mut queue: Vec<QueueEntry> = Vec::new();
+
+                let mut existing = collection.get_node_by_url(&canonical_uri);
+                existing.sort_by_key(|node| node.borrow().item.ext_id.encode_utf16().count());
+
+                // getNodeByUrl will return all known tests in the URI, but this can include
+                // children of tests even when `descendInFile` is false. Remove those cases.
+                let mut i = 0;
+                while i + 1 < existing.len() {
+                    let prefix = format!("{}{}", existing[i].borrow().item.ext_id, TEST_ID_DELIMITER);
+                    let mut k = i + 1;
+                    while k < existing.len() {
+                        if existing[k].borrow().item.ext_id.starts_with(&prefix) {
+                            existing.remove(k);
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    i += 1;
+                }
+
+                queue.push(QueueEntry::Ids(if existing.is_empty() {
+                    collection.root_ids()
+                } else {
+                    existing.iter().map(|node| node.borrow().item.ext_id.clone()).collect()
+                }));
+
+                let mut gather: Vec<IncrementalNodeRef<IncrementalTestCollectionItem>> = Vec::new();
+                while let Some(next) = queue.pop() {
+                    if token.is_cancellation_requested() {
+                        return Err(Error::cancellation());
+                    }
+                    if stopped.get() {
+                        return Ok(());
+                    }
+                    let ids: Vec<String> = match next {
+                        QueueEntry::Ids(ids) => ids,
+                        QueueEntry::Deferred(deferred) if deferred.is_settled() => match deferred.value() {
+                            Some(ids) => ids()?,
+                            None => Vec::new(),
+                        },
+                        QueueEntry::Deferred(deferred) => {
+                            if !gather.is_empty() {
+                                emitter.emit_one(std::mem::take(&mut gather));
+                            }
+                            let ids = race_cancellation_error(&deferred.promise, &token).await?;
+                            ids()?
+                        }
+                    };
+
+                    for id in ids {
+                        if token.is_cancellation_requested() {
+                            return Err(Error::cancellation());
+                        }
+                        let Some(test) = collection.get_node_by_id(&id) else {
+                            continue; // possible because we expand async and things could delete
+                        };
+
+                        let test_uri = test.borrow().item.uri.clone();
+                        let Some(test_uri) = test_uri else {
+                            queue.push(QueueEntry::Ids(test.borrow().children.iter().cloned().collect()));
+                            continue;
+                        };
+
+                        if ext_uri.is_equal(Some(&canonical_uri), Some(&test_uri), false) {
+                            gather.push(test.clone());
+
+                            if !descend_in_file {
+                                continue;
+                            }
+                        }
+
+                        if ext_uri.is_equal_or_parent(&canonical_uri, &test_uri, false, false) {
+                            let mut prom: Option<Promise<()>> = None;
+                            if test.borrow().expand == TestItemExpandState::Expandable {
+                                prom = Some(collection.expand(&test.borrow().item.ext_id, 1.0));
+                            }
+                            if wait_for_idle {
+                                if let Some(expanding) = prom.take() {
+                                    let (service, test, token) = (test_service.clone(), test.clone(), token.clone());
+                                    prom = Some(expanding.then_promise(move |()| wait_for_test_to_be_idle(service.as_ref(), &test, token.clone(), false)));
+                                } else if test.borrow().item.busy {
+                                    prom = Some(wait_for_test_to_be_idle(test_service.as_ref(), &test, token.clone(), false));
+                                }
+                            }
+
+                            if let Some(prom) = prom {
+                                // Queue errors as values so abandoned batches cannot produce unhandled rejections.
+                                let test_for_children = test.clone();
+                                let settled = async_fn(async move {
+                                    let result: Rc<dyn Fn() -> Result<Vec<String>, Error>> = match prom.await {
+                                        Ok(()) => Rc::new(move || Ok(test_for_children.borrow().children.iter().cloned().collect())),
+                                        Err(error) => Rc::new(move || Err(error.clone())),
+                                    };
+                                    Ok(result)
+                                });
+                                queue.push(QueueEntry::Deferred(Rc::new(DeferredPromise::from_promise(&settled))));
+                            } else if !test.borrow().children.is_empty() {
+                                queue.push(QueueEntry::Ids(test.borrow().children.iter().cloned().collect()));
+                            }
+                        }
+                    }
+                }
+
+                if !gather.is_empty() {
+                    emitter.emit_one(gather);
+                }
+                Ok(())
+            }))
+        },
+        Some(Rc::new(move || stopped_on_return.set(true))),
+    );
+    producer
+}
+
+/// Iterator that iterates to the top-level children of tests under the given
+/// the URI.
+///
+/// Divergência: ver [`tests_in_file`] (o gerador vira o executor de um [`AsyncIterableProducer`]).
+pub fn tests_under_uri(
+    test_service: Rc<dyn ITestService>,
+    ident: Rc<dyn IUriIdentityService>,
+    uri: URI,
+    wait_for_idle: bool,
+) -> Rc<dyn AsyncIterable<IncrementalNodeRef<IncrementalTestCollectionItem>>> {
+    let stopped = Rc::new(Cell::new(false));
+    let stopped_on_return = stopped.clone();
+    AsyncIterableProducer::new(
+        move |emitter: AsyncIterableEmitter<IncrementalNodeRef<IncrementalTestCollectionItem>>| {
+            MaybePromise::Promise(async_fn(async move {
+                let ext_uri = ident.ext_uri();
+                let collection = test_service.collection();
+
+                let mut queue: Vec<Vec<String>> = vec![collection.root_ids()];
+                while let Some(ids) = queue.pop() {
+                    for test_id in ids {
+                        if stopped.get() {
+                            return Ok(());
+                        }
+                        let test = collection.get_node_by_id(&test_id);
+
+                        // Expand tests with URIs that are parent of the item, add tests
+                        // that are within the URI. Don't add their children, since those
+                        // tests already encompass their children.
+                        let Some(test) = test else {
+                            continue; // no-op
+                        };
+                        let test_uri = test.borrow().item.uri.clone();
+                        match test_uri {
+                            Some(test_uri) if ext_uri.is_equal_or_parent(&test_uri, &uri, false, false) => emitter.emit_one(test),
+                            test_uri if test_uri.as_ref().is_none_or(|test_uri| ext_uri.is_equal_or_parent(&uri, test_uri, false, false)) => {
+                                if test.borrow().expand == TestItemExpandState::Expandable {
+                                    let ext_id = test.borrow().item.ext_id.clone();
+                                    collection.expand(&ext_id, 1.0).await?;
+                                }
+                                if wait_for_idle {
+                                    wait_for_test_to_be_idle(test_service.as_ref(), &test, CancellationToken::None, false).await?;
+                                }
+                                queue.push(test.borrow().children.iter().cloned().collect());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(())
+            }))
+        },
+        Some(Rc::new(move || stopped_on_return.set(true))),
+    )
 }
 
 /// Simplifies the array of tests by preferring test item parents if all of
