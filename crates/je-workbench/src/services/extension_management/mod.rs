@@ -16,5 +16,6 @@ pub mod extension_gallery_service;
 pub mod extension_install_service;
 pub mod extension_install_service_impl;
 pub mod extension_management;
+pub mod extension_tips_service;
 pub mod global_extension_enablement_service;
 pub mod service_contracts;

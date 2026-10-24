@@ -7,3 +7,4 @@
 
 pub mod extension_gallery_manifest;
 pub mod extension_gallery_manifest_service;
+pub mod extension_tips;

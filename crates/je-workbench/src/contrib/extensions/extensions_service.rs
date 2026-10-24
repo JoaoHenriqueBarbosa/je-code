@@ -194,7 +194,7 @@ pub fn to_extension_description(local: &LocalExtension) -> ExtensionDescription 
 
 /// `toExtension(description)` (`services/extensions/common/extensions.ts`): a extensão local que a descrição em execução
 /// representa, para achar o servidor dela.
-fn to_extension(description: &ExtensionDescription) -> LocalExtension {
+pub fn to_extension(description: &ExtensionDescription) -> LocalExtension {
     LocalExtension {
         extension_type: if description.is_builtin { ExtensionType::System } else { ExtensionType::User },
         is_builtin: !description.is_under_development,

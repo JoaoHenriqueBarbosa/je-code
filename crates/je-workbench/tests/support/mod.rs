@@ -59,3 +59,6 @@ pub mod extensions_workbench_service_support;
 
 // Porte de `extensionsActions.test.ts`: o `setupTest` e os servidores de gerenciamento do teste.
 pub mod extensions_actions_support;
+// Porte de `extensionRecommendationsService.test.ts`: o `setup` da suíte `ExtensionRecommendationsService Test` (usa os
+// suportes `extension_enablement_support` e `extensions_workbench_service_support`).
+pub mod extension_recommendations_support;

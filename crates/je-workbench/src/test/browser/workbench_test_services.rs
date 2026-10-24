@@ -129,7 +129,7 @@ impl IRemoteAgentService for TestRemoteAgentService {
 
 /// Os valores do ambiente que um teste troca (`instantiationService.stub(IWorkbenchEnvironmentService, { ... })`):
 /// `disableExtensions`, `enableExtensions`, `isSessionsWindow`, `disableWorkspaceTrust` (`None` é o padrão do
-/// `TestEnvironmentService`, verdadeiro), `remoteAuthority` e `filesToOpenOrCreate`. O que fica no padrão é o do
+/// `TestEnvironmentService`, verdadeiro), `remoteAuthority`, `filesToOpenOrCreate` e `isExtensionDevelopment`. O que fica no padrão é o do
 /// `TestEnvironmentService`.
 #[derive(Clone, Debug, Default)]
 pub struct EnvironmentOverrides {
@@ -139,6 +139,7 @@ pub struct EnvironmentOverrides {
     pub disable_workspace_trust: Option<bool>,
     pub remote_authority: Option<String>,
     pub files_to_open_or_create: Option<Vec<IPath>>,
+    pub is_extension_development: bool,
 }
 
 /// `TestEnvironmentService`.
@@ -240,7 +241,7 @@ impl EnvironmentService for TestEnvironmentService {
     }
 
     fn is_extension_development(&self) -> bool {
-        false
+        self.overrides.is_extension_development
     }
 
     fn disable_extensions(&self) -> DisableExtensions {
