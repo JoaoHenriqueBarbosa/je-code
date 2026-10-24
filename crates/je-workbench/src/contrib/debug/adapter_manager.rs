@@ -163,11 +163,12 @@ impl AdapterManager {
         store.add(on_did_register_debugger.clone());
         store.add(on_did_debuggers_ext_point_read.clone());
 
-        let mut keys: Vec<Rc<dyn IContextKey>> = Vec::new();
+        let keys: RefCell<Vec<Rc<dyn IContextKey>>> = RefCell::new(Vec::new());
         services.context_key_service.buffer_change_events(&|| {
-            keys.push(context_debuggers_available().bind_to(&*services.context_key_service));
-            keys.push(context_debug_extension_available().bind_to(&*services.context_key_service));
+            keys.borrow_mut().push(context_debuggers_available().bind_to(&*services.context_key_service));
+            keys.borrow_mut().push(context_debug_extension_available().bind_to(&*services.context_key_service));
         });
+        let mut keys = keys.into_inner();
         let debug_extensions_available = keys.pop().expect("a chave de extensões");
         let debuggers_available = keys.pop().expect("a chave de depuradores");
 

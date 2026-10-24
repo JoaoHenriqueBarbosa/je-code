@@ -584,11 +584,12 @@ fn decorations() {
     );
     let breakpoints = model.get_breakpoints(None);
 
+    let language_service = guard.add_rc(LanguageService::new(false));
     let services = BreakpointDecorationServices {
         debug_model: model.clone(),
         adapter_manager: Rc::new(UnusedAdapterManager),
         label_service: MockLabelService::new(None),
-        language_service: guard.add_rc(LanguageService::new(false)),
+        language_service,
     };
     let mut decorations = create_breakpoint_decorations(&services, &text_model, &breakpoints, State::Running, true, true);
     assert_eq!(decorations.len(), 3); // last breakpoint filtered out since it has a large line number

@@ -556,13 +556,13 @@ impl DynamicProvider {
             let token = Rc::new(CancellationTokenSource::new(None));
             disposables.add_rc(token.clone());
             let input = manager.services.quick_input.create_quick_pick();
-            disposables.add_rc(input.clone());
+            disposables.add(input.clone());
             input.set_busy(true);
             input.set_placeholder(&localize("selectConfiguration", "Select Launch Configuration", &[]));
             let (chosen_promise, resolver) = Promise::<Option<DynamicPickItem>>::new();
             {
-                let resolver = resolver.clone();
-                disposables.add(input.on_did_accept().listen(move |item| resolver.resolve(item.clone())));
+                let accept_resolver = resolver.clone();
+                disposables.add(input.on_did_accept().listen(move |item| accept_resolver.resolve(item.clone())));
                 let pin_manager = manager.clone();
                 let pin_resolver = resolver.clone();
                 disposables.add(input.on_did_trigger_item_button().listen(move |item| {
