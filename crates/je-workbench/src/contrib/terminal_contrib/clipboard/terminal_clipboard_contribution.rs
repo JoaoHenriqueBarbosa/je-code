@@ -17,6 +17,7 @@
 //!   saída, copiar a seleção e colar), que dependem do registro de ações do terminal (`terminalActions.ts`) e das chaves de
 //!   contexto, sem contrato no porte.
 
+use je_base::dynamic::Truthy;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 

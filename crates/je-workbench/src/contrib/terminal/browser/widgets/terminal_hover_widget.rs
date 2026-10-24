@@ -13,6 +13,7 @@
 //!   os ouvintes ficam registrados no `Disposable` do próprio widget, que o `dispose` do widget descarta.
 //! - **`IConfigurationService.getValue(TerminalSettingId.ShowLinkHover)`** é lido em `attach`, como no original.
 
+use je_base::dynamic::Truthy;
 use std::rc::Rc;
 
 use je_base::html_content::MarkdownString;
