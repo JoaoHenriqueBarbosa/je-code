@@ -11,8 +11,9 @@
 //!   `MainThreadDocuments` (que falha se for chamado).
 //! - `new class extends mock<MainThreadCustomEditorsShape>()` com os três `override` vira [`MainThreadCustomEditors`]:
 //!   os três métodos respondem e os demais falham (`panic!`), como o método ausente do objeto vazio lançaria
-//!   `TypeError`. `mock<ExtHostWebviews>()` e `mock<ExtHostWebviewPanels>()` são [`UnusedWebviews`] e
-//!   [`UnusedWebviewPanels`]: nenhum método é chamado nestes casos.
+//!   `TypeError`. `mock<ExtHostWebviews>()` e `mock<ExtHostWebviewPanels>()` são o `ExtHostWebviews` e o
+//!   `ExtHostWebviewPanels` reais, sobre o `MockMainThreadWebviewManager` de `support/webview_support.rs` (todo método
+//!   falha): nenhum método é chamado nestes casos.
 //! - O `CustomDocument` literal (`{ uri, dispose }`, com `uri` fixo ou um getter) é o [`TestDocument`], com a `uri` num
 //!   `RefCell` (o getter do último caso) e o `dispose` num fecho que devolve [`Result`] (o lançamento do original).
 //! - Os provedores literais são [`CustomProvider`] (`{ openCustomDocument: () => document, resolveCustomEditor: () => {} }`) e
@@ -22,6 +23,8 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+#[path = "support/webview_support.rs"]
+mod webview_support;
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -36,21 +39,24 @@ use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
 use je_editor::selection::Selection as EditorSelection;
-use je_extensions::scanner::ExtensionDescription;
 use je_platform::log::NullLogService;
 use je_workbench::api::common::ext_host_custom_editors::{
     CustomDocument, CustomEditorRegistrationOptions, CustomDocumentOpenContext, CustomReadonlyEditorProvider, CustomTextEditorProvider, EditorProvider,
-    ExtHostCustomEditors, ExtHostWebview, ExtHostWebviewPanels, ExtHostWebviews, WebviewPanel,
+    ExtHostCustomEditors,
 };
 use je_workbench::api::common::ext_host_document_data::{IExtHostDocumentSaveDelegate, TextDocument};
 use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, CreateCustomDocumentResult, CustomEditorProviderCapabilities, ExtHostCustomEditorsShape, IMainContext, MainContext,
-    MainThreadCustomEditorsShape, MainThreadDocumentsShape, OpenDocumentOptions, WebviewContentOptions, WebviewExtensionDescription, WebviewPanelOptions,
+    MainThreadCustomEditorsShape, MainThreadDocumentsShape, OpenDocumentOptions, WebviewExtensionDescription, WebviewPanelOptions,
 };
 use je_workbench::api::common::ext_host_types::Disposable;
+use je_workbench::api::common::ext_host_webview::ExtHostWebviews;
+use je_workbench::api::common::ext_host_webview_panels::{ExtHostWebviewPanel, ExtHostWebviewPanels};
+use je_workbench::contrib::webview::webview_common::WebviewRemoteInfo;
 use je_workbench::services::extensions::extensions::null_extension_description;
+use webview_support::{MockMainThreadWebviewManager, NullApiDeprecationService};
 
 /// `TestRPCProtocol`: os proxies são os objetos registrados por `set`.
 #[derive(Default)]
@@ -136,52 +142,22 @@ impl MainThreadCustomEditorsShape for MainThreadCustomEditors {
     }
 }
 
-/// `mock<ExtHostWebviews>()`.
-struct UnusedWebviews;
-
-impl ExtHostWebviews for UnusedWebviews {
-    fn create_new_webview(&self, _handle: &str, _options: &WebviewContentOptions, _extension: &ExtensionDescription) -> Rc<dyn ExtHostWebview> {
-        panic!("o colaborador não deveria ser chamado");
-    }
-
-    fn ensure_default_content_options(&self, _handle: &str, _content_options: &WebviewContentOptions, _extension: &ExtensionDescription) {
-        panic!("o colaborador não deveria ser chamado");
-    }
-}
-
-/// `mock<ExtHostWebviewPanels>()`.
-struct UnusedWebviewPanels;
-
-impl ExtHostWebviewPanels for UnusedWebviewPanels {
-    fn create_new_webview_panel(
-        &self,
-        _webview_handle: &str,
-        _view_type: &str,
-        _title: &str,
-        _position: f64,
-        _options: WebviewPanelOptions,
-        _webview: Rc<dyn ExtHostWebview>,
-        _active: bool,
-    ) -> Rc<dyn WebviewPanel> {
-        panic!("o colaborador não deveria ser chamado");
-    }
-
-    fn get_webview_panel(&self, _handle: &str) -> Option<Rc<dyn WebviewPanel>> {
-        panic!("o colaborador não deveria ser chamado");
-    }
-}
-
-/// O `setup`: `new ExtHostCustomEditors(SingleProxyRPCProtocol(proxy), documents, undefined, webviews, panels)`.
+/// O `setup`: `new ExtHostCustomEditors(SingleProxyRPCProtocol(proxy), documents, undefined, webviews, panels)`. Os
+/// `ExtHostWebviews` e `ExtHostWebviewPanels` (o `mock<...>()` do original) são os reais, sobre um
+/// `MainThreadWebviewManager` cujo método não é chamado em nenhum caso.
 fn setup() -> ExtHostCustomEditors {
     let rpc: Rc<dyn IMainContext> = Rc::new(TestRpcProtocol::default());
     let proxy: Rc<dyn MainThreadCustomEditorsShape> = Rc::new(MainThreadCustomEditors);
     rpc.set(&MainContext::MAIN_THREAD_CUSTOM_EDITORS, proxy);
     let documents_proxy: Rc<dyn MainThreadDocumentsShape> = Rc::new(UnusedMainThreadDocuments);
     rpc.set(&MainContext::MAIN_THREAD_DOCUMENTS, documents_proxy);
+    Rc::new(MockMainThreadWebviewManager::default()).register_in(&*rpc);
 
     let documents_and_editors = Rc::new(ExtHostDocumentsAndEditors::new(rpc.clone(), NullLogService::shared()));
     let documents = ExtHostDocuments::new(&*rpc, documents_and_editors);
-    ExtHostCustomEditors::new(&*rpc, documents, None, Rc::new(UnusedWebviews), Rc::new(UnusedWebviewPanels))
+    let webviews = ExtHostWebviews::new(&*rpc, WebviewRemoteInfo { is_remote: false, authority: None }, None, NullLogService::shared(), Rc::new(NullApiDeprecationService));
+    let panels = ExtHostWebviewPanels::new(&*rpc, webviews.clone(), None);
+    ExtHostCustomEditors::new(&*rpc, documents, None, webviews, panels)
 }
 
 const VIEW_TYPE: &str = "custom-document-test";
@@ -223,7 +199,7 @@ impl CustomReadonlyEditorProvider for CustomProvider {
         MaybePromise::Value(self.document.clone())
     }
 
-    fn resolve_custom_editor(&self, _document: Rc<dyn CustomDocument>, _panel: Rc<dyn WebviewPanel>, _token: CancellationToken) -> MaybePromise<()> {
+    fn resolve_custom_editor(&self, _document: Rc<dyn CustomDocument>, _panel: Rc<ExtHostWebviewPanel>, _token: CancellationToken) -> MaybePromise<()> {
         MaybePromise::Value(())
     }
 }
@@ -232,7 +208,7 @@ impl CustomReadonlyEditorProvider for CustomProvider {
 struct TextProvider;
 
 impl CustomTextEditorProvider for TextProvider {
-    fn resolve_custom_text_editor(&self, _document: TextDocument, _panel: Rc<dyn WebviewPanel>, _token: CancellationToken) -> MaybePromise<()> {
+    fn resolve_custom_text_editor(&self, _document: TextDocument, _panel: Rc<ExtHostWebviewPanel>, _token: CancellationToken) -> MaybePromise<()> {
         MaybePromise::Value(())
     }
 }

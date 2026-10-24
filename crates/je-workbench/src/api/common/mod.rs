@@ -31,6 +31,12 @@ pub mod ext_host_status_bar;
 pub mod ext_host_diagnostics;
 pub mod ext_host_timeline;
 
+// Webviews: `extHostWebview.ts`, `extHostWebviewPanels.ts`, `extHostWebviewView.ts` e `extHostWebviewMessaging.ts`.
+pub mod ext_host_webview;
+pub mod ext_host_webview_messaging;
+pub mod ext_host_webview_panels;
+pub mod ext_host_webview_view;
+
 // LanguageFeatures: `extHostLanguageFeatures.ts` (parte 1), a superfície de provedores da API e os conversores novos.
 pub mod ext_host_language_features;
 pub mod ext_host_language_features_api;

@@ -36,5 +36,8 @@ pub mod canvases;
 // Webviews (`contrib/webview`): a leitura de recursos locais.
 pub mod webview;
 
+// Painéis de webview (`contrib/webviewPanel`): a entrada de editor e o contrato do serviço.
+pub mod webview_panel;
+
 // Telemetria de edições (`contrib/editTelemetry`): a base do rastreamento da origem de cada trecho.
 pub mod edit_telemetry;

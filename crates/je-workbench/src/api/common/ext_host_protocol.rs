@@ -3982,6 +3982,233 @@ mod notebook_region {
     impl ExtHostContext {
         pub const EXT_HOST_NOTEBOOK: ProxyIdentifier<dyn ExtHostNotebookShape> = ProxyIdentifier::new("ExtHostNotebook");
         pub const EXT_HOST_NOTEBOOK_DOCUMENTS: ProxyIdentifier<dyn ExtHostNotebookDocumentsShape> = ProxyIdentifier::new("ExtHostNotebookDocuments");
+
+// #region Webviews (painéis, views e mensagens)
+
+pub use self::webviews_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostWebview.ts`, `extHostWebviewPanels.ts`, `extHostWebviewView.ts` e
+/// `extHostWebviewMessaging.ts` usam (e os `MainThreadWebviews*` do workbench): `MainThreadWebviewsShape`,
+/// `MainThreadWebviewPanelsShape`, `MainThreadWebviewViewsShape`, `ExtHostWebviewsShape`, `ExtHostWebviewPanelsShape`,
+/// `ExtHostWebviewViewsShape`, os DTOs e os identificadores `MainContext.MainThreadWebviews*` e
+/// `ExtHostContext.ExtHostWebviews*`. `WebviewHandle`, `WebviewExtensionDescription`, `IWebviewContentOptions` e
+/// `IWebviewPanelOptions` já vêm da região dos editores personalizados.
+///
+/// Divergências:
+/// - `UriComponents` é a [`URI`]; `VSBuffer` é o [`VSBuffer`]; o `any` do estado (`state`) é [`Dynamic`].
+/// - `$postMessage(handle, value, ...buffers)` recebe os buffers num `Vec`.
+/// - `WebviewPanelViewStateData` (um `Record` por handle) é um `Vec` de pares na ordem de inserção das chaves, que é a
+///   ordem que `Object.keys` devolve.
+/// - `IWebviewIconPath` (`ThemeIcon | { light, dark }`) é o enum [`WebviewIconPathDto`]. O `initData` anônimo de
+///   `$deserializeWebviewPanel` é [`WebviewDeserializeInitData`].
+/// - `WebviewMessageArrayBufferViewType` (um `const enum` numérico) é um enum com os mesmos valores, e a referência a um
+///   `ArrayBuffer` é [`WebviewMessageArrayBufferReference`].
+/// - `WebviewEditorCapabilities` (que o `extHost.protocol.ts` declara e nenhum arquivo deste porte lê) não entra.
+mod webviews_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::themables::ThemeIcon;
+    use je_base::uri::URI;
+
+    use super::{
+        EditorGroupColumn, ExtHostContext, MainContext, ProxyIdentifier, SerializableObjectWithBuffers, WebviewContentOptions, WebviewExtensionDescription,
+        WebviewHandle, WebviewPanelOptions,
+    };
+    use crate::common::views::IViewBadge;
+
+    /// `WebviewPanelShowOptions`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct WebviewPanelShowOptions {
+        pub view_column: Option<EditorGroupColumn>,
+        pub preserve_focus: Option<bool>,
+    }
+
+    /// `IWebviewIconPath`: `ThemeIcon | { light: UriComponents; dark: UriComponents }`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum WebviewIconPathDto {
+        ThemeIcon(ThemeIcon),
+        LightDark { light: URI, dark: URI },
+    }
+
+    /// `IWebviewInitData`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct WebviewInitData {
+        pub title: String,
+        pub webview_options: WebviewContentOptions,
+        pub panel_options: WebviewPanelOptions,
+        pub serialize_buffers_for_post_message: bool,
+    }
+
+    /// O valor de cada chave de `WebviewPanelViewStateData`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct WebviewPanelViewState {
+        pub active: bool,
+        pub visible: bool,
+        pub position: EditorGroupColumn,
+    }
+
+    /// `WebviewPanelViewStateData`: um `Record<handle, ...>`, na ordem de inserção.
+    pub type WebviewPanelViewStateData = Vec<(WebviewHandle, WebviewPanelViewState)>;
+
+    /// O `initData` anônimo de `$deserializeWebviewPanel`.
+    #[derive(Clone, Debug)]
+    pub struct WebviewDeserializeInitData {
+        pub title: String,
+        pub state: Dynamic,
+        pub webview_options: WebviewContentOptions,
+        pub panel_options: WebviewPanelOptions,
+        pub active: bool,
+    }
+
+    /// O `options` de `$registerWebviewViewProvider`: `{ retainContextWhenHidden?; serializeBuffersForPostMessage }`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct WebviewViewProviderOptions {
+        pub retain_context_when_hidden: Option<bool>,
+        pub serialize_buffers_for_post_message: bool,
+    }
+
+    /// `WebviewMessageArrayBufferViewType`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum WebviewMessageArrayBufferViewType {
+        Int8Array = 1,
+        Uint8Array = 2,
+        Uint8ClampedArray = 3,
+        Int16Array = 4,
+        Uint16Array = 5,
+        Int32Array = 6,
+        Uint32Array = 7,
+        Float32Array = 8,
+        Float64Array = 9,
+        BigInt64Array = 10,
+        BigUint64Array = 11,
+    }
+
+    impl WebviewMessageArrayBufferViewType {
+        /// O valor numérico que trafega no JSON.
+        pub fn value(self) -> u8 {
+            self as u8
+        }
+
+        /// O tipo que o número nomeia, ou `None` (o `default: throw new Error('Unknown array buffer view type')`).
+        pub fn from_value(value: f64) -> Option<Self> {
+            if value.fract() != 0.0 {
+                return None;
+            }
+            Some(match value as i64 {
+                1 => Self::Int8Array,
+                2 => Self::Uint8Array,
+                3 => Self::Uint8ClampedArray,
+                4 => Self::Int16Array,
+                5 => Self::Uint16Array,
+                6 => Self::Int32Array,
+                7 => Self::Uint32Array,
+                8 => Self::Float32Array,
+                9 => Self::Float64Array,
+                10 => Self::BigInt64Array,
+                11 => Self::BigUint64Array,
+                _ => return None,
+            })
+        }
+    }
+
+    /// O `view` de `WebviewMessageArrayBufferReference`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct WebviewMessageArrayBufferView {
+        pub view_type: WebviewMessageArrayBufferViewType,
+        pub byte_length: usize,
+        pub byte_offset: usize,
+    }
+
+    /// `WebviewMessageArrayBufferReference` (o `$$vscode_array_buffer_reference$$: true` é implícito).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct WebviewMessageArrayBufferReference {
+        pub index: usize,
+        pub view: Option<WebviewMessageArrayBufferView>,
+    }
+
+    /// `MainThreadWebviewsShape`.
+    pub trait MainThreadWebviewsShape: IDisposable {
+        fn rpc_set_html(&self, handle: &str, value: &str);
+        fn rpc_set_options(&self, handle: &str, options: WebviewContentOptions);
+        fn rpc_post_message(&self, handle: &str, value: &str, buffers: Vec<VSBuffer>) -> Promise<bool>;
+    }
+
+    /// `MainThreadWebviewPanelsShape`.
+    pub trait MainThreadWebviewPanelsShape: IDisposable {
+        fn rpc_create_webview_panel(
+            &self,
+            extension: WebviewExtensionDescription,
+            handle: &str,
+            view_type: &str,
+            init_data: WebviewInitData,
+            show_options: WebviewPanelShowOptions,
+        );
+        fn rpc_dispose_webview(&self, handle: &str);
+        fn rpc_reveal(&self, handle: &str, show_options: WebviewPanelShowOptions);
+        fn rpc_set_title(&self, handle: &str, value: &str);
+        fn rpc_set_icon_path(&self, handle: &str, value: Option<WebviewIconPathDto>);
+
+        fn rpc_register_serializer(&self, view_type: &str, options: WebviewSerializerOptions);
+        fn rpc_unregister_serializer(&self, view_type: &str);
+    }
+
+    /// O `options` de `$registerSerializer`: `{ serializeBuffersForPostMessage: boolean }`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct WebviewSerializerOptions {
+        pub serialize_buffers_for_post_message: bool,
+    }
+
+    /// `MainThreadWebviewViewsShape`.
+    pub trait MainThreadWebviewViewsShape: IDisposable {
+        fn rpc_register_webview_view_provider(&self, extension: WebviewExtensionDescription, view_type: &str, options: WebviewViewProviderOptions);
+        fn rpc_unregister_webview_view_provider(&self, view_type: &str);
+
+        fn rpc_set_webview_view_title(&self, handle: &str, value: Option<&str>);
+        fn rpc_set_webview_view_description(&self, handle: &str, value: Option<&str>);
+        fn rpc_set_webview_view_badge(&self, handle: &str, badge: Option<IViewBadge>);
+
+        fn rpc_show(&self, handle: &str, preserve_focus: bool);
+    }
+
+    /// `ExtHostWebviewsShape`.
+    pub trait ExtHostWebviewsShape {
+        fn rpc_on_message(&self, handle: &str, json_serialized_message: &str, buffers: SerializableObjectWithBuffers<Vec<VSBuffer>>);
+        fn rpc_on_missing_csp(&self, handle: &str, extension_id: &str);
+    }
+
+    /// `ExtHostWebviewPanelsShape`.
+    pub trait ExtHostWebviewPanelsShape {
+        fn rpc_on_did_change_webview_panel_view_states(&self, new_state: WebviewPanelViewStateData);
+        fn rpc_on_did_dispose_webview_panel(&self, handle: &str) -> Promise<()>;
+        fn rpc_deserialize_webview_panel(&self, new_webview_handle: &str, view_type: &str, init_data: WebviewDeserializeInitData, position: EditorGroupColumn) -> Promise<()>;
+    }
+
+    /// `ExtHostWebviewViewsShape`.
+    pub trait ExtHostWebviewViewsShape {
+        fn rpc_resolve_webview_view(
+            &self,
+            webview_handle: &str,
+            view_type: &str,
+            title: Option<String>,
+            state: Dynamic,
+            cancellation: je_base::cancellation::CancellationToken,
+        ) -> Promise<()>;
+        fn rpc_on_did_change_webview_view_visibility(&self, webview_handle: &str, visible: bool);
+        fn rpc_dispose_webview_view(&self, webview_handle: &str);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_WEBVIEWS: ProxyIdentifier<dyn MainThreadWebviewsShape> = ProxyIdentifier::new("MainThreadWebviews");
+        pub const MAIN_THREAD_WEBVIEW_PANELS: ProxyIdentifier<dyn MainThreadWebviewPanelsShape> = ProxyIdentifier::new("MainThreadWebviewPanels");
+        pub const MAIN_THREAD_WEBVIEW_VIEWS: ProxyIdentifier<dyn MainThreadWebviewViewsShape> = ProxyIdentifier::new("MainThreadWebviewViews");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_WEBVIEWS: ProxyIdentifier<dyn ExtHostWebviewsShape> = ProxyIdentifier::new("ExtHostWebviews");
+        pub const EXT_HOST_WEBVIEW_PANELS: ProxyIdentifier<dyn ExtHostWebviewPanelsShape> = ProxyIdentifier::new("ExtHostWebviewPanels");
+        pub const EXT_HOST_WEBVIEW_VIEWS: ProxyIdentifier<dyn ExtHostWebviewViewsShape> = ProxyIdentifier::new("ExtHostWebviewViews");
     }
 }
 
