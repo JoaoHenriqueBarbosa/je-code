@@ -538,6 +538,9 @@ mod editor_inputs {
         /// `disableToUntyped`.
         pub disable_to_untyped: Cell<bool>,
 
+        /// O `toUntyped()` de uma subclasse do original que o sobrescreve (por exemplo `TestFileEditorInputWithUntyped` de
+        /// `historyService.test.ts`): quando definido, é o que `to_untyped` devolve.
+        untyped_override: RefCell<Option<UntypedEditorInput>>,
         capabilities: Cell<EditorInputCapabilities>,
 
         /// `movedEditor`.
@@ -572,6 +575,7 @@ mod editor_inputs {
                 modified: Cell::new(None),
                 fails: Cell::new(false),
                 disable_to_untyped: Cell::new(false),
+                untyped_override: RefCell::new(None),
                 capabilities: Cell::new(EditorInputCapabilities::NONE),
                 moved_editor: RefCell::new(None),
                 move_disabled_reason: RefCell::new(None),
@@ -597,6 +601,12 @@ mod editor_inputs {
         /// O contador de chamadas do `rename` que uma subclasse do original incrementa (`renameCalls++`).
         pub fn rename_calls(&self) -> usize {
             self.rename_calls.get()
+        }
+
+        /// A subclasse do original que sobrescreve o `toUntyped()`: a entrada passa a devolver `untyped` no lugar do
+        /// `{ resource }` padrão.
+        pub fn set_untyped_override(&self, untyped: UntypedEditorInput) {
+            *self.untyped_override.borrow_mut() = Some(untyped);
         }
 
         pub fn set_encoding(&self, _encoding: &str) {}
@@ -721,6 +731,10 @@ mod editor_inputs {
         fn to_untyped(&self, _options: Option<&crate::common::editor::editor_input::UntypedEditorOptions>) -> Option<UntypedEditorInput> {
             if self.disable_to_untyped.get() {
                 return None;
+            }
+
+            if let Some(untyped) = &*self.untyped_override.borrow() {
+                return Some(untyped.clone());
             }
 
             Some(UntypedEditorInput::from_resource(self.resource.clone()))
