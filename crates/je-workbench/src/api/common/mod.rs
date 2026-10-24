@@ -65,3 +65,8 @@ pub mod ext_host_decorations;
 // Ativação de extensões: `extHostExtensionActivator.ts` e `extensionHostMain.ts` (o tratador de erros do host).
 pub mod ext_host_extension_activator;
 pub mod extension_host_main;
+
+// `extHost.api.impl.ts`: só `getTerminalInternalOptions`.
+pub mod ext_host_api_impl;
+// `extHostTerminalShellIntegration.ts`: só o `InternalTerminalShellIntegration` e os tipos `vscode.*` que ele produz.
+pub mod ext_host_terminal_shell_integration;
