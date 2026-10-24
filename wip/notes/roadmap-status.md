@@ -72,6 +72,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: décimo quarto lote: completionModel (13), wordDistance, suggest (6), parameterHintsModel (10), extHostDocumentData (27), UriIdentityService (7), FileUserDataProvider (36), UserDataProfileService. Decisão de arquitetura do extension host registrada em `wip/notes/exthost-plan.md` (host em Rust, `$$class` no lugar de `instanceof`). Suíte: 9 278 passando, 0 falhas. Placar: 7 578 de 18 391 (41,20%) (eu).
 
+- 2026-10-24: décimo quinto lote: editorGroupModel (49), filteredEditorGroupModel (18), browserSearch (17), testReporterModel (10), onboardingRegistry (2), multiDiffEditorLayoutDebug (4), núcleo do extension host (valores `$$class`, conversores, extHostCommands). Suíte: 9 460 passando, 0 falhas. Placar: 7 682 de 18 391 (41,77%) (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
