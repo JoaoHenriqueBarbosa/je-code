@@ -39,6 +39,7 @@ use std::rc::Rc;
 use je_base::dynamic::Dynamic;
 use je_base::network::schemas;
 use je_base::runtime;
+use je_base::lifecycle::IDisposable;
 use je_extensions::management::InstallOperation;
 use je_extensions::manifest::{EXTENSIONS_ENABLE_AGENTS_WINDOW_CAPABILITY, ExtensionIdentifierInfo, ExtensionType};
 use je_platform::configuration::service::IConfigurationService;

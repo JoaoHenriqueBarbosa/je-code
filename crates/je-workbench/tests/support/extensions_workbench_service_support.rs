@@ -1104,7 +1104,8 @@ impl WorkbenchFixture {
     /// O `setup`.
     pub fn new() -> Rc<Self> {
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
-        let file_service: Rc<dyn IFileService> = guard.add_rc(TestFileService::new());
+        let file_service_concrete = guard.add_rc(TestFileService::new());
+        let file_service: Rc<dyn IFileService> = file_service_concrete;
         let gallery = StubGalleryService::new();
         let context = TestContextService::new(None, None);
         let configuration = StubConfigurationService::new(&guard, None);
