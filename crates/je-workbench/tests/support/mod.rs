@@ -65,3 +65,7 @@ pub mod extensions_actions_support;
 // Porte de `extensionRecommendationsService.test.ts`: o `setup` da suíte `ExtensionRecommendationsService Test` (usa os
 // suportes `extension_enablement_support` e `extensions_workbench_service_support`).
 pub mod extension_recommendations_support;
+
+// Porte de `contrib/debug/test/common/mockDebug.ts` e `test/browser/mockDebugModel.ts`: `MockSession`, `MockRawSession`,
+// `MockDebugAdapter`, `createMockDebugModel` e o `createTestSession` de `callStack.test.ts`.
+pub mod mock_debug;

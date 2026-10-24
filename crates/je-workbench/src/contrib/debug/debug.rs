@@ -274,8 +274,36 @@ pub enum BreakpointIds {
 
 // ---- sessão, modelo e modelo de visão
 
-/// `DebugCompoundRoot`: o serviço só o repassa de uma sessão para a filha.
-pub struct DebugCompoundRoot;
+/// `DebugCompoundRoot` (`debugCompoundRoot.ts`): o serviço o repassa de uma sessão para a filha e a sessão ouve o fim.
+pub struct DebugCompoundRoot {
+    stopped: std::cell::Cell<bool>,
+    stop_emitter: std::rc::Rc<je_base::event::Emitter<()>>,
+}
+
+impl Default for DebugCompoundRoot {
+    fn default() -> Self {
+        Self { stopped: std::cell::Cell::new(false), stop_emitter: je_base::event::Emitter::new() }
+    }
+}
+
+impl DebugCompoundRoot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `onDidSessionStop`.
+    pub fn on_did_session_stop(&self) -> je_base::event::Event<()> {
+        self.stop_emitter.event()
+    }
+
+    pub fn session_stopped(&self) {
+        if !self.stopped.get() {
+            // avoid sending extranous terminate events
+            self.stopped.set(true);
+            self.stop_emitter.fire(());
+        }
+    }
+}
 
 /// `ILaunch`: o serviço só o repassa do `IConfigurationManager` ao `startDebugging`.
 pub trait ILaunch {}
