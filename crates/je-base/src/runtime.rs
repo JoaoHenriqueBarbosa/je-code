@@ -7,6 +7,19 @@
 //!
 //! Erro lançado por microtarefa ou timer vai para o `onUnexpectedError`, que é o que o renderer do
 //! VS Code faz com exceção não capturada (o `unhandledrejection` e o `error` da janela).
+//!
+//! # Ligação com o agendamento virtual (`virtual_scheduling`)
+//!
+//! O `globalTimeApi.ts` do VS Code troca `globalThis.setTimeout`, `setInterval`, `Date` e
+//! `performance.now` por uma `TimeApi` (a virtual, a de gravação, a de log). O equivalente aqui é a
+//! `TimeApi` instalada no thread ([`time_api`] e [`set_time_api`]): [`set_timeout`], [`clear_timeout`] e
+//! [`date_now`] (e os demais métodos, via [`time_api`]) delegam a ela. Sem nada instalado vale a
+//! [`RealTimeApi`](crate::virtual_scheduling::time_api::RealTimeApi), que chama as funções `native_*`
+//! deste arquivo (o agendador de verdade, o mesmo de sempre). Não existe segundo agendador: a API
+//! virtual põe os eventos no `VirtualClock` e é o `VirtualTimeProcessor` que os dispara, usando a API
+//! real (os timers nativos deste loop) só para ceder a vez entre eventos, como o original faz com o
+//! `setImmediate` do host. O [`with_faked_timers`] (porte do `timeTravelScheduler.ts` antigo) continua
+//! intacto e independente: ele troca o relógio nativo, e a `TimeApi` instalada fica por cima dele.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -18,6 +31,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use crate::errors;
+use crate::virtual_scheduling::time_api::{RealTimeApi, TimeApi};
 
 type Task = Box<dyn FnOnce()>;
 type LocalFuture = Pin<Box<dyn Future<Output = ()>>>;
@@ -111,23 +125,63 @@ pub fn queue_microtask(f: impl FnOnce() + 'static) {
     LOOP.with(|l| l.microtasks.borrow_mut().push_back(Box::new(f)));
 }
 
-/// O handle de um timer; `cancel` é o `clearTimeout`.
+/// O handle de um timer (também o de intervalo, imediato e quadro de animação, que dividem a numeração);
+/// `cancel` é o `clearTimeout`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TimerId(u64);
 
-/// `setTimeout(f, ms)`. Como no navegador, atraso negativo ou zero vale zero.
+impl TimerId {
+    /// O handle de numeração própria (a `TimeApi` virtual numera os seus, fora da faixa do loop).
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+thread_local! {
+    /// A `TimeApi` que o `setTimeout`, o `Date.now` e companhia deste thread usam (o `globalThis` do
+    /// original). Começa na real.
+    static TIME_API: RefCell<Rc<dyn TimeApi>> = RefCell::new(Rc::new(RealTimeApi) as Rc<dyn TimeApi>);
+}
+
+/// A `TimeApi` instalada agora: os globais de tempo do thread (`captureGlobalTimeApi`).
+pub fn time_api() -> Rc<dyn TimeApi> {
+    TIME_API.with(|api| api.borrow().clone())
+}
+
+/// Instala `api` como a `TimeApi` do thread. Quem instala guarda a anterior ([`time_api`]) e a devolve
+/// depois (`pushGlobalTimeApi`).
+pub fn set_time_api(api: Rc<dyn TimeApi>) {
+    TIME_API.with(|current| *current.borrow_mut() = api);
+}
+
+/// `setTimeout(f, ms)`, o global: vai para a `TimeApi` instalada. Como no navegador, atraso negativo ou
+/// zero vale zero.
 pub fn set_timeout(f: impl FnOnce() + 'static, ms: u64) -> TimerId {
+    time_api().set_timeout(Box::new(f), ms)
+}
+
+/// `clearTimeout(id)`, o global.
+pub fn clear_timeout(id: TimerId) {
+    time_api().clear_timeout(id);
+}
+
+/// O `setTimeout` do próprio loop, sem passar pela `TimeApi` instalada (o real do `RealTimeApi`).
+pub(crate) fn native_set_timeout(f: Task, ms: u64) -> TimerId {
     LOOP.with(|l| {
         let id = l.seq();
         let key = TimerKey { due: l.now().saturating_add(ms), seq: id };
-        l.timers.borrow_mut().insert(key, (id, Box::new(f)));
+        l.timers.borrow_mut().insert(key, (id, f));
         l.timer_keys.borrow_mut().insert(id, key);
         TimerId(id)
     })
 }
 
-/// `clearTimeout(id)`.
-pub fn clear_timeout(id: TimerId) {
+/// O `clearTimeout` do próprio loop.
+pub(crate) fn native_clear_timeout(id: TimerId) {
     LOOP.with(|l| {
         if let Some(key) = l.timer_keys.borrow_mut().remove(&id.0) {
             l.timers.borrow_mut().remove(&key);
@@ -135,7 +189,41 @@ pub fn clear_timeout(id: TimerId) {
     });
 }
 
-/// Milissegundos do relógio do loop (`Date.now()` relativo ao início, ou o relógio virtual).
+thread_local! {
+    /// O timer pendente de cada intervalo nativo.
+    static INTERVALS: RefCell<HashMap<u64, TimerId>> = RefCell::new(HashMap::new());
+}
+
+/// Arma o próximo disparo do intervalo `id`: rearma antes de chamar o `handler`, para que uma exceção
+/// dele não mate o intervalo (a mesma ordem do intervalo virtual).
+fn arm_interval(id: u64, handler: Rc<dyn Fn()>, ms: u64) {
+    let timer = native_set_timeout(
+        Box::new(move || {
+            arm_interval(id, handler.clone(), ms);
+            handler();
+        }),
+        ms,
+    );
+    INTERVALS.with(|i| i.borrow_mut().insert(id, timer));
+}
+
+/// O `setInterval` do próprio loop.
+pub(crate) fn native_set_interval(handler: Rc<dyn Fn()>, ms: u64) -> TimerId {
+    let id = LOOP.with(EventLoop::seq);
+    arm_interval(id, handler, ms);
+    TimerId(id)
+}
+
+/// O `clearInterval` do próprio loop.
+pub(crate) fn native_clear_interval(id: TimerId) {
+    let timer = INTERVALS.with(|i| i.borrow_mut().remove(&id.0));
+    if let Some(timer) = timer {
+        native_clear_timeout(timer);
+    }
+}
+
+/// Milissegundos do relógio do loop (`Date.now()` relativo ao início, ou o relógio virtual do
+/// [`with_faked_timers`]). Nativo: não passa pela `TimeApi` instalada.
 pub fn now() -> u64 {
     LOOP.with(EventLoop::now)
 }
@@ -145,10 +233,15 @@ thread_local! {
     static SYSTEM_TIME_SHIFT: Cell<i64> = const { Cell::new(0) };
 }
 
-/// `Date.now()`: o relógio de parede, que é o do loop mais o deslocamento de [`set_system_time`]. Os
-/// timers contam pelo relógio do loop e não notam o deslocamento (um `setTimeout` não se importa com o
-/// relógio de parede mudar).
+/// `Date.now()`, o global: vai para a `TimeApi` instalada.
 pub fn date_now() -> u64 {
+    time_api().date_now()
+}
+
+/// O `Date.now()` do próprio loop: o relógio de parede, que é o do loop mais o deslocamento de
+/// [`set_system_time`]. Os timers contam pelo relógio do loop e não notam o deslocamento (um
+/// `setTimeout` não se importa com o relógio de parede mudar).
+pub(crate) fn native_date_now() -> u64 {
     let now = i64::try_from(now()).unwrap_or(i64::MAX);
     u64::try_from(now.saturating_add(SYSTEM_TIME_SHIFT.with(Cell::get))).unwrap_or(0)
 }
