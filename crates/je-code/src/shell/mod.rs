@@ -140,6 +140,8 @@ pub enum Command {
     ShowExplorer,
     PickTheme,
     SetTheme(usize),
+    OpenSettingsJson,
+    OpenKeybindingsJson,
     PickEol,
     SetEol(bool),
     PickLanguage,
@@ -365,7 +367,13 @@ impl Shell {
         };
         let queue: CommandQueue = Rc::new(RefCell::new(Vec::new()));
         let (menubar, mut palette_items) = Self::build_menubar(&ui, menubar_node, &theme, &queue);
-        palette_items.push(PickItem { label: "Preferences: Color Theme".to_owned(), description: None, keybinding: Some("Ctrl+K Ctrl+T".to_owned()), command: Command::PickTheme, recent: false });
+        for (label, keybinding, command) in [
+            ("Preferences: Color Theme", Some("Ctrl+K Ctrl+T"), Command::PickTheme),
+            ("Preferences: Open User Settings (JSON)", Some("Ctrl+,"), Command::OpenSettingsJson),
+            ("Preferences: Open Keyboard Shortcuts (JSON)", None, Command::OpenKeybindingsJson),
+        ] {
+            palette_items.push(PickItem { label: label.to_owned(), description: None, keybinding: keybinding.map(str::to_owned), command, recent: false });
+        }
         let themes = extensions.as_deref().map(themes::catalog).unwrap_or_default();
         let theme_index = themes.iter().position(|t| t.path == theme_path);
         let language_of: explorer::LanguageOf = match &environment {
@@ -676,6 +684,9 @@ impl Shell {
         editor.view.mark_dirty();
         if result.is_ok() {
             self.git_op(git::Operation::Refresh);
+            if themes::user_data_dir().map(|d| d.join("User/settings.json")).as_deref() == Some(path.as_path()) {
+                self.apply_user_settings();
+            }
         }
         if let Err(e) = result {
             self.notify(Severity::Error, format!("Falha ao salvar '{}': {e}", path.display()));
@@ -892,6 +903,25 @@ impl Shell {
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
             Command::PickTheme => self.open_theme_picker(),
+            Command::OpenSettingsJson | Command::OpenKeybindingsJson => {
+                let file = if command == Command::OpenSettingsJson { "settings.json" } else { "keybindings.json" };
+                match themes::user_data_dir().map(|d| d.join("User").join(file)) {
+                    Some(path) => {
+                        // O arquivo do usuário do VS Code: criado vazio se ainda não existe.
+                        if !path.exists() {
+                            let initial = if file == "settings.json" { "{\n}\n" } else { "[\n]\n" };
+                            if let Err(e) = file_ops::write_new(&path, initial) {
+                                self.notify(Severity::Error, e);
+                                return;
+                            }
+                        }
+                        if let Err(e) = self.open_file(&path) {
+                            self.notify(Severity::Error, e);
+                        }
+                    }
+                    None => self.notify(Severity::Error, "Não achei a pasta de dados do usuário.".to_owned()),
+                }
+            }
             Command::PickEol => {
                 let items = [("LF", false), ("CRLF", true)].map(|(label, crlf)| PickItem { label: label.to_owned(), description: None, keybinding: None, command: Command::SetEol(crlf), recent: false }).to_vec();
                 self.quick_pick = Some(QuickPick::list(items, "Select End of Line Sequence"));
@@ -1109,6 +1139,17 @@ impl Shell {
             })
             .collect();
         editor.view.set_gutter_changes(changes);
+    }
+
+    /// Reaplica o `settings.json` do usuário: por enquanto o tema de cor (`workbench.colorTheme`).
+    fn apply_user_settings(&mut self) {
+        let settings = themes::user_settings();
+        let wanted = settings.get("workbench.colorTheme").and_then(|v| v.as_str());
+        if let Some(index) = themes::resolve(&self.themes, wanted)
+            && self.theme_index != Some(index)
+        {
+            self.apply_theme(index);
+        }
     }
 
     /// Detecta o repositório do workspace e pede o estado.
@@ -2731,6 +2772,7 @@ impl Shell {
             (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
             (true, false, false, KeyCode::KeyF) => Command::Find,
             (true, false, false, KeyCode::KeyJ) => Command::TogglePanel,
+            (true, false, false, KeyCode::Comma) => Command::OpenSettingsJson,
             (true, false, false, KeyCode::KeyG) => Command::PromptGoToLine,
             (true, false, false, KeyCode::Backquote) => Command::ToggleTerminal,
             (true, true, false, KeyCode::Backquote) => Command::NewTerminal,
