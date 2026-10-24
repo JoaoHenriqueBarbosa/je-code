@@ -84,8 +84,25 @@ helper em `test/browser/workbench_test_services.rs`, com a `EditorPart` de teste
    (`close_with_options`), `createAuxiliaryEditorPart` devolve `IEditorPart` e não `IAuxiliaryEditorPart`, `addGroup` com
    `Option<GroupRef>`, e `IEditorGroupsContainer` não é trait (macro `editor_groups_container_members` nos dois traits).
    Esperado para a fatia 2: sobrescrever todos os padrões que lançam `Method not implemented.`.
-2. `EditorPart` lógico (B) sobre `SerializableGrid`, com um `EditorGroupView` mínimo que só guarda o
-   `EditorGroupModel` e a identidade, para destravar os casos de grupos (cerca de 18 casos).
+2. **FEITA (escrita sem compilar, o integrador confere).** `EditorPart` lógico (B) em `browser/parts/editor/editor_part.rs` sobre
+   `SerializableGrid`, com o `EditorGroupView` mínimo em `editor_group_view.rs` (modelo, identidade, índice, rótulo, vista do
+   grid, contexto de chaves escopado) e `editor.rs` (`DEFAULT_EDITOR_PART_OPTIONS`, `getEditorPartOptions`,
+   `impactsEditorPartOptions`, tamanhos mínimo e máximo do editor). Cobre: `getGroups` nas três ordens, `findGroup` por direção e
+   por localização, `activateGroup` (e o motivo de ativação), `addGroup` (com cópia), `removeGroup`, `moveGroup`, `copyGroup`,
+   `mergeGroup`, `mergeAllGroups`, `arrangeGroups` (maximizar, expandir, igualar), `toggleMaximizeGroup`, `toggleExpandGroup`,
+   `getSize`, `setSize`, `setGroupOrientation`, `applyLayout`, `getLayout`, `centerLayout`, `enforcePartOptions`, as opções da
+   parte, os eventos (`onDidAddGroup`, `onDidRemoveGroup`, `onDidMoveGroup`, `onDidActivateGroup`, `onDidChangeActiveGroup`,
+   `onDidChangeGroupIndex`, `onDidChangeGroupLabel`, `onDidChangeGroupLocked`, `onDidChangeGroupMaximized`, `onDidLayout`),
+   `createState`, `saveState`, o restauro do estado do memento (`create`) e `notifyGroupsLabelChange`. `close_editor` e
+   `move_editor` do `IEditorGroup` passaram a ter padrão que lança (eram obrigatórios), porque o grupo mínimo ainda não os tem.
+   Placar: 13 casos em `tests/editor_groups_service.rs` (`groups basics`, `groups index / labels`, `groups label`,
+   `whenReady / whenRestored`, `options`, `find neighbour group (left/right)`, `(up/down)`, `find group by location`,
+   `applyLayout (2x2)`, `getLayout`, `centeredLayout`, `maximize editor group`, `onDidActivateGroup carries activation reason`).
+   Ficaram de fora: `sideGroup` (precisa de `openEditor` e do `findGroup` do serviço), `save & restore state` (abre editores e
+   precisa do `TestEditorPart`), `copy/merge groups` e `merge all groups` (abrem editores). Pendentes na parte: `applyState`
+   (conjuntos de trabalho, precisa de `closeAllEditors` e `openEditors`), o provider de context key, `handleContextKeys`
+   (`common/contextkeys.ts`), o ouvinte de mudança externa do memento e o movimento entre partes (fatia 4).
+
 3. `EditorGroupView` completo (C), por famílias: abrir e ativar; fechar (sujo, `CannotClose`); mover e copiar;
    substituir; aderentes, transientes e seleção; bloqueio.
 4. `EditorParts` e `TestEditorParts` (D), e o `ModalEditorPart` passa a estender a `EditorPart`.
