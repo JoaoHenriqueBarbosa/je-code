@@ -148,3 +148,106 @@ fn real_time_slicing_matches_wall_clock() {
         assert!(waited >= Duration::from_millis(28) && waited < Duration::from_millis(400), "disparou em tempo real: {waited:?}");
     });
 }
+
+// ---- valores nativos: o `vscode` é construído em Rust, sem prelúdio em JavaScript
+
+use zjsc::api::embed_node::JsData;
+
+fn number(data: &JsData) -> f64 {
+    match data {
+        JsData::Num(value) => *value,
+        _ => panic!("esperava número"),
+    }
+}
+
+#[test]
+fn native_function_receives_and_returns_numbers() {
+    with_runner("", |runner, _| {
+        let add = runner.make_function("add", 2, Rc::new(|args| Ok(JsData::Num(number(&args[0]) + number(&args[1])))));
+        runner.set_global("add", &JsData::Handle(Rc::new(add)));
+        assert_eq!(text(runner, "String(add(40, 2)) + ':' + add.name + ':' + add.length"), "42:add:2");
+    });
+}
+
+#[test]
+fn native_function_receives_structured_arguments() {
+    with_runner("", |runner, _| {
+        let seen: Rc<RefCell<Option<JsData>>> = Rc::default();
+        let sink = seen.clone();
+        let record = runner.make_function(
+            "record",
+            1,
+            Rc::new(move |args| {
+                *sink.borrow_mut() = Some(args[0].clone());
+                Ok(JsData::Undefined)
+            }),
+        );
+        runner.set_global("record", &JsData::Handle(Rc::new(record)));
+        runner.eval("record({ a: 1, list: [1, 'x', null, true, undefined], nested: { s: 'ç' } })", "t.js").unwrap();
+        let JsData::Object(fields) = seen.borrow().clone().unwrap() else { panic!("esperava objeto") };
+        let by_name: std::collections::HashMap<_, _> = fields.into_iter().collect();
+        assert_eq!(number(&by_name["a"]), 1.0);
+        let JsData::Array(list) = &by_name["list"] else { panic!("esperava array") };
+        assert!(matches!(list.as_slice(), [JsData::Num(_), JsData::Str(x), JsData::Null, JsData::Bool(true), JsData::Undefined] if x == "x"));
+        let JsData::Object(nested) = &by_name["nested"] else { panic!("esperava objeto") };
+        assert!(matches!(nested.as_slice(), [(key, JsData::Str(value))] if key == "s" && value == "ç"));
+    });
+}
+
+#[test]
+fn native_function_returns_structured_values_to_javascript() {
+    with_runner("", |runner, _| {
+        let make = runner.make_function(
+            "make",
+            0,
+            Rc::new(|_| Ok(JsData::Object(vec![("k".into(), JsData::Num(1.0)), ("list".into(), JsData::Array(vec![JsData::Num(1.0), JsData::Str("dois".into()), JsData::Null]))]))),
+        );
+        runner.set_global("make", &JsData::Handle(Rc::new(make)));
+        assert_eq!(text(runner, "JSON.stringify(make())"), r#"{"k":1,"list":[1,"dois",null]}"#);
+        assert_eq!(text(runner, "String(Array.isArray(make().list))"), "true");
+    });
+}
+
+#[test]
+fn native_function_errors_become_type_errors() {
+    with_runner("", |runner, _| {
+        let fail = runner.make_function("fail", 0, Rc::new(|_| Err("não pode".to_owned())));
+        runner.set_global("fail", &JsData::Handle(Rc::new(fail)));
+        assert_eq!(text(runner, "try { fail(); 'sem erro' } catch (e) { (e instanceof TypeError) + ':' + e.message }"), "true:não pode");
+    });
+}
+
+#[test]
+fn functions_and_promises_cross_as_handles_and_keep_working() {
+    with_runner("", |runner, _| {
+        let held: Rc<RefCell<Vec<JsData>>> = Rc::default();
+        let sink = held.clone();
+        let keep = runner.make_function(
+            "keep",
+            1,
+            Rc::new(move |args| {
+                sink.borrow_mut().push(args[0].clone());
+                Ok(JsData::Undefined)
+            }),
+        );
+        runner.set_global("keep", &JsData::Handle(Rc::new(keep)));
+        runner.eval("keep((x) => 'oi ' + x); keep(Promise.resolve(7)); keep(new Date(0));", "t.js").unwrap();
+        let held = held.borrow();
+        let JsData::Handle(callback) = &held[0] else { panic!("a função devia chegar como handle") };
+        let result = runner.call_data(callback, &[JsData::Str("mundo".into())]).unwrap();
+        assert!(matches!(result, JsData::Str(ref value) if value == "oi mundo"));
+        assert!(matches!(held[1], JsData::Handle(_)), "promessa fica handle, não vira objeto vazio");
+        assert!(matches!(held[2], JsData::Handle(_)), "Date fica handle");
+    });
+}
+
+#[test]
+fn native_functions_installed_on_objects_can_be_called_as_methods() {
+    with_runner("", |runner, _| {
+        let hello = runner.make_function("hello", 1, Rc::new(|args| Ok(JsData::Str(format!("olá, {}", match &args[0] { JsData::Str(name) => name.as_str(), _ => "?" })))));
+        let api = JsData::Object(vec![("greet".into(), JsData::Handle(Rc::new(hello)))]);
+        runner.set_global("api", &api);
+        assert_eq!(text(runner, "api.greet('você')"), "olá, você");
+        assert_eq!(text(runner, "typeof api.greet + ':' + Object.keys(api).join()"), "function:greet");
+    });
+}

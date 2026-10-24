@@ -11,6 +11,7 @@
 //! [`NodeRunner::call`] para o caminho inverso. O JSON dispensa o hospedeiro de conhecer as células do motor.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::api::eval::{describe_exception, evaluate, install_cjs_fs, named_program_source, new_global_object, run_main_program, VmFinalizer};
@@ -24,7 +25,12 @@ use crate::runtime::implementation_visibility::ImplementationVisibility;
 use crate::runtime::js_global_object::{JSGlobalObject, JSGlobalObjectRef};
 use crate::runtime::js_module_loader::rust_string;
 use crate::runtime::js_string::js_string;
+use crate::runtime::identifier::Identifier;
+use crate::runtime::js_array::{construct_array, is_js_array};
+use crate::runtime::js_function::JSFunction;
 use crate::runtime::js_value::{js_boolean, js_number, JSValue};
+use crate::runtime::object_constructor::{construct_empty_object, enumerable_own_entries};
+use crate::runtime::property_name::PropertyName;
 use crate::runtime::native_class_support::install_global_function_with_visibility;
 use crate::runtime::object_to_primitive::call_function;
 use crate::runtime::vm::VM;
@@ -49,6 +55,122 @@ fn bridge_call_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResu
     }
 }
 host_function!(bridge_call, bridge_call_body);
+
+/// O que atende uma função nativa criada por [`NodeRunner::make_function`]: recebe os argumentos já lidos e devolve o
+/// resultado, ou a mensagem do `TypeError` que o JavaScript vê.
+pub type NativeCallback = Rc<dyn Fn(&[JsData]) -> Result<JsData, String>>;
+
+thread_local! {
+    /// As funções nativas vivas, pelo id da célula da função.
+    static NATIVES: RefCell<HashMap<usize, NativeCallback>> = RefCell::new(HashMap::new());
+}
+
+fn native_trampoline_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResult {
+    let Some(callback) = NATIVES.with(|natives| natives.borrow().get(&call.callee()).cloned()) else {
+        return Err(Thrown::type_error("função nativa sem implementação registrada"));
+    };
+    let Some(global) = global_object.to_ref() else { return Ok(JSValue::undefined()) };
+    let arguments: Vec<JsData> = call.arguments().iter().map(|argument| read_value(&global, *argument, 0)).collect();
+    match callback(&arguments) {
+        Ok(data) => Ok(write_value(&global, &data)),
+        Err(message) => Err(Thrown::TypeError(message)),
+    }
+}
+host_function!(native_trampoline, native_trampoline_body);
+
+/// Os valores que cruzam a fronteira: o que o JavaScript e o Rust trocam. Objetos e arrays viajam por cópia (só as
+/// propriedades próprias enumeráveis, com profundidade limitada); função, promessa e qualquer outra célula viajam como
+/// [`JsHandle`], que o coletor não solta.
+#[derive(Clone)]
+pub enum JsData {
+    Undefined,
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    Array(Vec<JsData>),
+    Object(Vec<(String, JsData)>),
+    Handle(Rc<JsHandle>),
+}
+
+/// A profundidade máxima de uma cópia (cíclico ou absurdamente fundo vira `undefined` além dela).
+const MAX_COPY_DEPTH: usize = 32;
+
+/// Só o objeto comum e o array viajam por cópia; promessa, `Map`, `Date`, erro, tipado, função e o resto ficam como
+/// [`JsHandle`] para não perder a identidade nem o comportamento.
+fn copies_by_value(value: &JSValue) -> bool {
+    use crate::runtime::js_type::JSType;
+    match value {
+        JSValue::Cell(id) => matches!(crate::runtime::cell_registry::cell_type(*id), Some(JSType::FinalObjectType | JSType::ArrayType)),
+        _ => false,
+    }
+}
+
+fn read_value(global: &JSGlobalObjectRef, value: JSValue, depth: usize) -> JsData {
+    if value.is_undefined() {
+        JsData::Undefined
+    } else if value.is_null() {
+        JsData::Null
+    } else if value.is_boolean() {
+        JsData::Bool(value.as_boolean())
+    } else if value.is_number() {
+        JsData::Num(value.as_number())
+    } else if value.is_string() {
+        JsData::Str(rust_string(&value.to_wtf_string()))
+    } else if copies_by_value(&value) {
+        if depth >= MAX_COPY_DEPTH {
+            return JsData::Undefined;
+        }
+        let Ok(entries) = enumerable_own_entries(global, value) else { return JsData::Undefined };
+        if is_js_array(&value) {
+            let mut indexed: Vec<(u32, JsData)> = entries
+                .iter()
+                .filter_map(|(name, item)| String::from_utf8_lossy(&name.utf8()).parse::<u32>().ok().map(|index| (index, read_value(global, *item, depth + 1))))
+                .collect();
+            indexed.sort_by_key(|(index, _)| *index);
+            JsData::Array(indexed.into_iter().map(|(_, item)| item).collect())
+        } else {
+            JsData::Object(entries.iter().map(|(name, item)| (String::from_utf8_lossy(&name.utf8()).into_owned(), read_value(global, *item, depth + 1))).collect())
+        }
+    } else {
+        JsData::Handle(Rc::new(JsHandle::new(value)))
+    }
+}
+
+fn write_value(global: &JSGlobalObjectRef, data: &JsData) -> JSValue {
+    let vm = global.vm();
+    match data {
+        JsData::Undefined => JSValue::undefined(),
+        JsData::Null => JSValue::null(),
+        JsData::Bool(flag) => js_boolean(*flag),
+        JsData::Num(number) => js_number(*number),
+        JsData::Str(text) => JSValue::from_js_string(js_string(vm, &WtfString::from_utf8(text.as_bytes()))),
+        JsData::Handle(handle) => handle.0,
+        JsData::Array(items) => {
+            let values: Vec<JSValue> = items.iter().map(|item| write_value(global, item)).collect();
+            let _rooted = RootScope::new(&values);
+            construct_array(vm, &global.array_structure(), &values).as_value()
+        }
+        JsData::Object(fields) => {
+            let object = construct_empty_object(global);
+            let values: Vec<JSValue> = fields.iter().map(|(_, item)| write_value(global, item)).collect();
+            let _rooted = RootScope::new(&values);
+            for ((name, _), value) in fields.iter().zip(values) {
+                let identifier = Identifier::from_span(vm, name.as_bytes());
+                let property = PropertyName::from_identifier(&identifier);
+                match property.parse_index() {
+                    Some(index) => {
+                        let _ = object.put_by_index(vm, index, value, false);
+                    }
+                    None => {
+                        object.put_direct(vm, &property, value, 0);
+                    }
+                }
+            }
+            object.as_value()
+        }
+    }
+}
 
 /// Um valor JavaScript que o hospedeiro guarda (o `Strong` da API C): o coletor não o solta enquanto o handle vive.
 pub struct JsHandle(JSValue, #[allow(dead_code)] Root);
@@ -93,6 +215,19 @@ impl NodeRunner {
         result.map_err(|exception| describe_exception(&exception))
     }
 
+    /// Chama `function` com `args` já como [`JsData`] (cada um vira valor JavaScript) e devolve o resultado copiado.
+    pub fn call_data(&self, function: &JsHandle, args: &[JsData]) -> Result<JsData, String> {
+        let values: Vec<JSValue> = args.iter().map(|arg| write_value(&self.global_object, arg)).collect();
+        let _arguments = RootScope::new(&values);
+        let result = call_function(&self.global_object, function.0, JSValue::undefined(), &values).ok_or_else(|| {
+            let message = self.vm.exception().map(|exception| describe_exception(&exception.value())).unwrap_or_default();
+            self.vm.clear_exception();
+            message
+        });
+        self.vm.drain_microtasks();
+        result.map(|value| read_value(&self.global_object, value, 0))
+    }
+
     /// Chama a função de `function` com `args` (sem `this`), esvazia as microtarefas e devolve o resultado.
     pub fn call(&self, function: &JsHandle, args: &[NodeArg]) -> Result<JsHandle, String> {
         let values: Vec<JSValue> = args
@@ -115,6 +250,42 @@ impl NodeRunner {
         });
         self.vm.drain_microtasks();
         result
+    }
+
+    /// Cria uma função JavaScript (`name`, `length`) cujo corpo é `callback`.
+    pub fn make_function(&self, name: &str, length: u32, callback: NativeCallback) -> JsHandle {
+        let function = JSFunction::create_native(
+            &self.vm,
+            &self.global_object,
+            length,
+            &WtfString::from_utf8(name.as_bytes()),
+            native_trampoline,
+            ImplementationVisibility::Public,
+            crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+            crate::runtime::js_function::call_host_function_as_constructor,
+        );
+        let value = function.as_value();
+        if let JSValue::Cell(id) = value {
+            NATIVES.with(|natives| natives.borrow_mut().insert(id, callback));
+        }
+        JsHandle::new(value)
+    }
+
+    /// Converte `data` em valor JavaScript e o guarda.
+    pub fn import(&self, data: &JsData) -> JsHandle {
+        JsHandle::new(write_value(&self.global_object, data))
+    }
+
+    /// Copia o valor de `handle` para o lado do Rust.
+    pub fn export(&self, handle: &JsHandle) -> JsData {
+        read_value(&self.global_object, handle.0, 0)
+    }
+
+    /// `globalThis[name] = data`.
+    pub fn set_global(&self, name: &str, data: &JsData) {
+        let value = write_value(&self.global_object, data);
+        let _rooted = RootScope::new(&[value]);
+        crate::runtime::native_class_support::install_global(&self.global_object, name, value);
     }
 
     /// Instala a ponte `__je_call(nome, json)` e o `handler` que a atende.
