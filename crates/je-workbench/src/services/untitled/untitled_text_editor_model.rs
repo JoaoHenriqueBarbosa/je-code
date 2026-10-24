@@ -269,7 +269,8 @@ impl Injectable for UntitledTextEditorModel {
 }
 
 impl UntitledTextEditorModel {
-    fn rc(&self) -> Rc<Self> {
+    /// O próprio modelo como `Rc` (o `this`, para quem o recupera por `downcast_ref` e precisa do `Rc`).
+    pub fn rc(&self) -> Rc<Self> {
         self.this.upgrade().expect("o modelo está vivo enquanto é usado")
     }
 
