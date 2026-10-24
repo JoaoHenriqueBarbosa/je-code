@@ -157,11 +157,13 @@ je_instantiation::delayed_proxy!(pub BulkEditServiceProxy for dyn IBulkEditServi
 
 je_instantiation::service_id!(pub I_BULK_EDIT_SERVICE: dyn IBulkEditService = "IWorkspaceEditService", proxy BulkEditServiceProxy);
 
-/// Os sinais de `AccessibilitySignal` que o `codeAction` toca.
+/// Os sinais de `AccessibilitySignal` que o `codeAction` e o serviço de estado de execução dos notebooks tocam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessibilitySignal {
     CodeActionTriggered,
     CodeActionApplied,
+    NotebookCellCompleted,
+    NotebookCellFailed,
 }
 
 /// `IAccessibilitySignalService`, só com `playSignal`.

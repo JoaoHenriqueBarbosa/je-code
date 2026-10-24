@@ -8,7 +8,18 @@
 //!   [`NotebookCellsLayout`]. O widget visual, o `NotebookCellListView`, as view zones (`NotebookViewZones`), as sobreposições
 //!   de célula (`NotebookCellOverlays`), o webview, as variáveis de contexto de cursor (`NOTEBOOK_EDITOR_CURSOR_BOUNDARY`), a
 //!   âncora de rolagem (`NotebookCellAnchor`), o estilo, o foco do DOM e os `reveal*` (que rolam a view e esperam o editor de
-//!   código) são Fase 6 e não entram.
+//!   código) são Fase 6 e não entram. O `NotebookCellAnchor` entra ([`super::notebook_cell_anchor`]), com o
+//!   `onDidScroll` da lista.
+//! - A rolagem lógica reproduz as duas dimensões do `ListView`: o `_scrollHeight` (altura do conteúdo mais o
+//!   `paddingBottom`, atualizado a cada `splice` e a cada mudança de altura) e a altura que o `Scrollable` conhece, que só
+//!   alcança o `_scrollHeight` no quadro de animação seguinte (`eventuallyUpdateScrollDimensions`). Sem quadro de
+//!   animação, a alcança no próximo `setScrollTop` ou `layout`, que é o que o original faz ao cancelar o quadro
+//!   agendado. É isso que limita a rolagem logo depois de a célula crescer (o `updateElementHeight` rola antes de
+//!   atualizar as dimensões). O `forceIntegerValues` do `Scrollable` do `ListView` trunca a posição de rolagem.
+//! - `updateElementHeight(index, size, anchorIndex)` do `ListView` é [`NotebookCellList::update_element_height`]; o
+//!   `_rerender` que ele chama depois mede a altura dinâmica dos itens no DOM, o que a camada lógica não tem.
+//!   `revealCells` é portado; `revealCell` e os `revealRange*` (que esperam o editor de código) não.
+//! - `if (focus)` do `updateElementHeight2` é falso para o índice de foco 0 (o `0` do JavaScript), e o porte mantém isso.
 //! - A atualização com `synchronous = false` (agendada no próximo quadro de animação pelo `DOM.scheduleAtNextAnimationFrame`)
 //!   é aplicada na hora, porque a camada lógica não tem quadro de animação.
 //! - `updateElementHeight2` troca o tamanho do item no layout sem ancoragem (a ancoragem é do `ListView`).
@@ -28,14 +39,19 @@ use std::rc::Rc;
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, MutableDisposable};
+use je_base::scrollable::ScrollEvent;
 use je_editor::model::TrackedRangeStickiness;
 use je_editor::prefix_sum_computer::PrefixSumComputer;
+use je_platform::configuration::service::IConfigurationService;
 use je_widgets::list::range_map::{IItem, IRangeMap};
 
+use super::notebook_cell_anchor::{ICellListView, NotebookCellAnchor};
 use super::notebook_cell_list_view::NotebookCellsLayout;
-use crate::contrib::notebook::browser::view_model::cell_view_model_types::INotebookViewCellsUpdateEvent;
+use crate::contrib::notebook::browser::notebook_options::NotebookOptions;
+use crate::contrib::notebook::browser::view_model::cell_view_model_types::{CellFocusMode, INotebookViewCellsUpdateEvent};
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::{CellViewModel, NotebookViewModel};
 use crate::contrib::notebook::common::notebook_common::{CellKind, ISelectionHandleState, ISelectionIndexState, ISelectionState, diff};
+use crate::contrib::notebook::common::notebook_execution_state_service::INotebookExecutionStateService;
 use crate::contrib::notebook::common::notebook_range::{ICellRange, cell_ranges_equal, cell_ranges_to_indexes, reduce_cell_ranges};
 
 /// `getVisibleCells(cells, hiddenRanges)`.
@@ -72,17 +88,46 @@ pub struct CellListEvent {
     pub indexes: Vec<usize>,
 }
 
+/// `CellRevealPosition`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellRevealPosition {
+    Top,
+    Center,
+    Bottom,
+    NearTop,
+}
+
+/// `IWorkbenchListOptionsUpdate` (o `IListViewOptionsUpdate` do `ListView`): só o `paddingBottom`, a única opção de
+/// layout que a lista lógica guarda.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CellListOptionsUpdate {
+    pub padding_bottom: Option<f64>,
+}
+
 /// `NotebookCellList`.
 pub struct NotebookCellList {
     base: Rc<Disposable>,
     list_user: String,
+    notebook_options: Rc<NotebookOptions>,
     delegate: Box<dyn Fn(&CellViewModel) -> f64>,
     elements: RefCell<Vec<CellViewModel>>,
     focus: RefCell<Vec<usize>>,
     selection: RefCell<Vec<usize>>,
     layout: RefCell<NotebookCellsLayout>,
+    /// A posição do `Scrollable`.
     scroll_top: Cell<f64>,
+    /// `lastRenderTop` do `ListView`.
+    last_render_top: Cell<f64>,
     render_height: Cell<f64>,
+    padding_bottom: Cell<f64>,
+    /// `_scrollHeight` do `ListView` (sem o `paddingBottom`).
+    view_scroll_height: Cell<f64>,
+    /// A altura de rolagem que o `Scrollable` conhece.
+    scrollable_scroll_height: Cell<f64>,
+    /// Há um `scrollableElementUpdateDisposable` agendado (a atualização das dimensões no próximo quadro).
+    scroll_dimensions_update_pending: Cell<bool>,
+    notebook_cell_anchor: Rc<NotebookCellAnchor>,
+    on_did_scroll: Rc<Emitter<ScrollEvent>>,
 
     on_did_change_focus: Rc<Emitter<CellListEvent>>,
     on_did_change_selection: Rc<Emitter<CellListEvent>>,
@@ -103,10 +148,21 @@ pub struct NotebookCellList {
 }
 
 impl NotebookCellList {
-    /// `new NotebookCellList(listUser, container, notebookOptions, delegate, renderers, contextKeyService, options, ...)`: só o
-    /// `listUser` e o `delegate.getHeight` (o `getTemplateId` e os renderizadores são da view).
-    pub fn new(list_user: &str, get_height: impl Fn(&CellViewModel) -> f64 + 'static) -> Rc<Self> {
+    /// `new NotebookCellList(listUser, container, notebookOptions, delegate, renderers, contextKeyService, options, ...)`: o
+    /// `listUser`, o `notebookOptions`, o `delegate.getHeight` (o `getTemplateId` e os renderizadores são da view) e os dois
+    /// serviços que o `NotebookCellAnchor` lê.
+    pub fn new(
+        list_user: &str,
+        notebook_options: Rc<NotebookOptions>,
+        get_height: impl Fn(&CellViewModel) -> f64 + 'static,
+        configuration_service: Rc<dyn IConfigurationService>,
+        notebook_execution_state_service: Rc<dyn INotebookExecutionStateService>,
+    ) -> Rc<Self> {
         let base = Disposable::new();
+        let on_did_scroll = Emitter::<ScrollEvent>::new();
+        base.register(on_did_scroll.clone());
+        let notebook_cell_anchor = NotebookCellAnchor::new(notebook_execution_state_service, configuration_service, on_did_scroll.event());
+        base.register(notebook_cell_anchor.clone());
         let on_did_change_focus = Emitter::<CellListEvent>::new();
         let on_did_change_selection = Emitter::<CellListEvent>::new();
         let on_did_remove_outputs = Emitter::<usize>::new();
@@ -129,13 +185,21 @@ impl NotebookCellList {
         let this = Rc::new(Self {
             base,
             list_user: list_user.to_string(),
+            notebook_options,
             delegate: Box::new(get_height),
             elements: RefCell::new(Vec::new()),
             focus: RefCell::new(Vec::new()),
             selection: RefCell::new(Vec::new()),
             layout: RefCell::new(NotebookCellsLayout::new(None)),
             scroll_top: Cell::new(0.0),
+            last_render_top: Cell::new(0.0),
             render_height: Cell::new(0.0),
+            padding_bottom: Cell::new(0.0),
+            view_scroll_height: Cell::new(0.0),
+            scrollable_scroll_height: Cell::new(0.0),
+            scroll_dimensions_update_pending: Cell::new(false),
+            notebook_cell_anchor,
+            on_did_scroll,
             on_did_change_focus,
             on_did_change_selection,
             on_did_remove_outputs,
@@ -345,6 +409,7 @@ impl NotebookCellList {
         self.elements.borrow_mut().splice(start..start + delete_count, elements.iter().cloned());
         let items: Vec<IItem> = elements.iter().map(|element| IItem { size: (self.delegate)(element) }).collect();
         self.layout.borrow_mut().splice(start, delete_count, &items);
+        self.eventually_update_scroll_dimensions();
 
         *self.focus.borrow_mut() = new_focus.clone();
         *self.selection.borrow_mut() = new_selection.clone();
@@ -363,26 +428,158 @@ impl NotebookCellList {
         self.render_height.get()
     }
 
+    /// `scrollHeight` do `ListView`: `_scrollHeight + paddingBottom`.
     pub fn get_scroll_height(&self) -> f64 {
-        self.layout.borrow().size()
+        self.view_scroll_height.get() + self.padding_bottom.get()
     }
 
     pub fn scroll_top(&self) -> f64 {
         self.scroll_top.get()
     }
 
+    /// `eventuallyUpdateScrollDimensions()`: `_scrollHeight` passa a ser a altura do conteúdo e o `Scrollable` é
+    /// atualizado no próximo quadro (ver as divergências).
+    fn eventually_update_scroll_dimensions(&self) {
+        self.view_scroll_height.set(self.layout.borrow().size());
+        self.scroll_dimensions_update_pending.set(true);
+    }
+
+    /// O quadro agendado por `eventuallyUpdateScrollDimensions` é cancelado e o `Scrollable` recebe o `scrollHeight` agora.
+    fn flush_scroll_dimensions(&self) {
+        if self.scroll_dimensions_update_pending.replace(false) {
+            self.scrollable_scroll_height.set(self.get_scroll_height());
+        }
+    }
+
+    /// `Scrollable.setScrollPosition({ scrollTop })` com o `forceIntegerValues` do `ListView`: valida contra as dimensões que
+    /// o `Scrollable` conhece e dispara o `onScroll` (e o `render` do `ListView`, que atualiza o `lastRenderTop`) se mudou.
+    fn scrollable_set_scroll_top(&self, scroll_top: f64) {
+        let max = (self.scrollable_scroll_height.get() - self.render_height.get()).max(0.0);
+        let new_scroll_top = scroll_top.clamp(0.0, max).trunc();
+        let old_scroll_top = self.scroll_top.get();
+        if new_scroll_top == old_scroll_top {
+            return;
+        }
+
+        self.scroll_top.set(new_scroll_top);
+        self.last_render_top.set(new_scroll_top);
+        self.on_did_scroll.fire(ScrollEvent {
+            in_smooth_scrolling: false,
+            old_width: 0.0,
+            old_scroll_width: 0.0,
+            old_scroll_left: 0.0,
+            width: 0.0,
+            scroll_width: 0.0,
+            scroll_left: 0.0,
+            old_height: self.render_height.get(),
+            old_scroll_height: self.scrollable_scroll_height.get(),
+            old_scroll_top,
+            height: self.render_height.get(),
+            scroll_height: self.scrollable_scroll_height.get(),
+            scroll_top: new_scroll_top,
+            width_changed: false,
+            scroll_width_changed: false,
+            scroll_left_changed: false,
+            height_changed: false,
+            scroll_height_changed: false,
+            scroll_top_changed: true,
+        });
+    }
+
+    /// `ListView.setScrollTop(scrollTop)`.
+    fn view_set_scroll_top(&self, scroll_top: f64) {
+        self.flush_scroll_dimensions();
+        self.scrollable_set_scroll_top(scroll_top);
+    }
+
     pub fn set_scroll_top(&self, scroll_top: f64) {
-        let max = (self.get_scroll_height() - self.render_height.get()).max(0.0);
-        self.scroll_top.set(scroll_top.clamp(0.0, max));
+        self.view_set_scroll_top(scroll_top);
         self.update_visible_ranges();
     }
 
-    /// `layout(height?, width?)`.
+    /// `onDidScroll`.
+    pub fn on_did_scroll(&self) -> Event<ScrollEvent> {
+        self.on_did_scroll.event()
+    }
+
+    /// `layout(height?, width?)`: a `width` só serve ao `_rerender` das alturas dinâmicas e não é lida.
     pub fn layout(&self, height: Option<f64>) {
+        self.flush_scroll_dimensions();
         if let Some(height) = height {
             self.render_height.set(height);
         }
+        // o `Scrollable` valida a posição contra as novas dimensões
+        self.scrollable_set_scroll_top(self.scroll_top.get());
         self.update_visible_ranges();
+    }
+
+    /// `updateOptions(options)`: o `paddingBottom` vai direto ao `Scrollable`.
+    pub fn update_options(&self, options: &CellListOptionsUpdate) {
+        if let Some(padding_bottom) = options.padding_bottom {
+            self.padding_bottom.set(padding_bottom);
+            self.scrollable_scroll_height.set(self.get_scroll_height());
+            self.scrollable_set_scroll_top(self.scroll_top.get());
+        }
+    }
+
+    /// `getVisibleRange(renderTop, renderHeight)` do `ListView`: `[start, end)` dos itens visíveis.
+    fn get_visible_range(&self, render_top: f64, render_height: f64) -> (i64, i64) {
+        let layout = self.layout.borrow();
+        (layout.index_at(render_top), layout.index_after(render_top + render_height - 1.0))
+    }
+
+    /// `firstMostlyVisibleIndex` do `ListView`.
+    fn first_mostly_visible_index(&self) -> i64 {
+        let first_visible_index = self.get_visible_range(self.last_render_top.get(), self.render_height.get()).0;
+        let layout = self.layout.borrow();
+        let first_el_top = layout.position_at(first_visible_index);
+        let next_el_top = layout.position_at(first_visible_index + 1);
+        if next_el_top != -1.0 {
+            let first_el_midpoint = (next_el_top - first_el_top) / 2.0 + first_el_top;
+            if first_el_midpoint < self.scroll_top.get() {
+                return first_visible_index + 1;
+            }
+        }
+
+        first_visible_index
+    }
+
+    /// `updateElementHeight(index, size, anchorIndex)` do `ListView`.
+    pub fn update_element_height(&self, index: usize, size: f64, anchor_index: Option<usize>) {
+        if index >= self.length() {
+            return;
+        }
+
+        let original_size = self.layout.borrow().item_size(index);
+        if original_size == size {
+            return;
+        }
+
+        let (render_start, render_end) = self.get_visible_range(self.last_render_top.get(), self.render_height.get());
+
+        let height_diff = if (index as i64) < render_start {
+            // do not scroll the viewport if resized element is out of viewport
+            size - original_size
+        } else if anchor_index.is_some_and(|anchor| anchor > index && (anchor as i64) < render_end) {
+            // anchor in viewport
+            // resized element in viewport and above the anchor
+            size - original_size
+        } else {
+            0.0
+        };
+
+        self.layout.borrow_mut().splice(index, 1, &[IItem { size }]);
+
+        self.last_render_top.set((self.last_render_top.get() + height_diff).max(0.0));
+        self.view_set_scroll_top(self.last_render_top.get());
+
+        self.eventually_update_scroll_dimensions();
+        self.update_visible_ranges();
+    }
+
+    /// `updateElementHeight(index, size)` do `List`: sem âncora.
+    pub fn update_element_height_by_index(&self, index: usize, size: f64) {
+        self.update_element_height(index, size, None);
     }
 
     pub fn element_top(&self, index: usize) -> f64 {
@@ -438,14 +635,172 @@ impl NotebookCellList {
         self.element_top(index as usize) + self.view_element_height(index as usize)
     }
 
-    pub fn update_element_height2(&self, element: &CellViewModel, size: f64) {
+    /// `isElementAboveViewport(index)`.
+    fn is_element_above_viewport(&self, index: usize) -> bool {
+        let element_top = self.element_top(index);
+        let element_bottom = element_top + self.layout.borrow().item_size(index);
+
+        element_bottom < self.scroll_top.get()
+    }
+
+    /// `updateElementHeight2(element, size, anchorElementIndex = null)`. As view zones e as sobreposições de célula
+    /// (`viewZones.layout()`, `cellOverlays.layout()`) e o ajuste do webview são da view (Fase 6).
+    pub fn update_element_height2(&self, element: &CellViewModel, size: f64, anchor_element_index: Option<usize>) {
         let index = self.get_view_index_upper_bound(element);
         if index < 0 || index as usize >= self.length() {
             return;
         }
+        let index = index as usize;
 
-        self.layout.borrow_mut().splice(index as usize, 1, &[IItem { size }]);
-        self.update_visible_ranges();
+        if self.is_element_above_viewport(index) {
+            // update element above viewport
+            self.update_element_height(index, size, anchor_element_index);
+            return;
+        }
+
+        if anchor_element_index.is_some() {
+            self.update_element_height(index, size, anchor_element_index);
+            return;
+        }
+
+        let focused = self.get_focus();
+        let focus = focused.first().copied();
+
+        // `if (focus)`: o índice 0 é falso em JavaScript
+        if let Some(focus) = focus.filter(|focus| *focus != 0) {
+            // If the cell is growing, we should favor anchoring to the focused cell
+            let height_delta = size - self.layout.borrow().item_size(index);
+
+            if self.notebook_cell_anchor.should_anchor(&ListViewMetrics { list: self }, focus, height_delta, &self.element(index)) {
+                self.update_element_height(index, size, Some(focus));
+                return;
+            }
+        }
+
+        self.update_element_height(index, size, None);
+    }
+
+    /// `revealCells(range)`: a faixa é revelada com o mínimo de rolagem possível.
+    pub fn reveal_cells(&self, range: ICellRange) {
+        let start_index = self.get_view_index_upper_bound2(range.start);
+
+        if start_index < 0 {
+            return;
+        }
+        let start_index = start_index as usize;
+
+        let end_index = self.get_view_index_upper_bound2(range.end - 1);
+        // o `elementTop(endIndex)` de um índice fora da lista é `undefined` no original; aqui o índice é o último
+        let end_index = (end_index.max(0) as usize).min(self.length().saturating_sub(1));
+
+        let scroll_top = self.get_view_scroll_top();
+        let wrapper_bottom = self.get_view_scroll_bottom();
+        let element_top = self.element_top(start_index);
+        if element_top >= scroll_top && element_top < wrapper_bottom {
+            // start element is visible
+            // check end
+
+            let end_element_top = self.element_top(end_index);
+            let end_element_height = self.layout.borrow().item_size(end_index);
+
+            if end_element_top + end_element_height <= wrapper_bottom {
+                // fully visible
+                return;
+            }
+
+            if end_element_top >= wrapper_bottom {
+                return self.reveal_internal(end_index, false, CellRevealPosition::Bottom, false);
+            }
+
+            if end_element_top < wrapper_bottom {
+                // end element partially visible
+                if end_element_top + end_element_height - wrapper_bottom < element_top - scroll_top {
+                    // there is enough space to just scroll up a little bit to make the end element visible
+                    return self.set_scroll_top(scroll_top + end_element_top + end_element_height - wrapper_bottom);
+                } else {
+                    // don't even try it
+                    return self.reveal_internal(start_index, false, CellRevealPosition::Top, false);
+                }
+            }
+        }
+
+        self.reveal_in_view_with_minimal_scrolling(start_index, false);
+    }
+
+    fn reveal_in_view_with_minimal_scrolling(&self, view_index: usize, first_line: bool) {
+        let first_index = self.first_mostly_visible_index();
+        let element_height = self.layout.borrow().item_size(view_index);
+
+        if (view_index as i64) <= first_index || (!first_line && element_height >= self.render_height.get()) {
+            self.reveal_internal(view_index, true, CellRevealPosition::Top, false);
+        } else {
+            self.reveal_internal(view_index, true, CellRevealPosition::Bottom, first_line);
+        }
+    }
+
+    fn reveal_internal(&self, view_index: usize, ignore_if_inside_viewport: bool, reveal_position: CellRevealPosition, first_line: bool) {
+        if view_index >= self.length() {
+            return;
+        }
+
+        let scroll_top = self.get_view_scroll_top();
+        let wrapper_bottom = self.get_view_scroll_bottom();
+        let element_top = self.element_top(view_index);
+        let element_bottom = self.layout.borrow().item_size(view_index) + element_top;
+
+        if ignore_if_inside_viewport && element_top >= scroll_top && element_bottom < wrapper_bottom {
+            // element is already fully visible
+            return;
+        }
+
+        match reveal_position {
+            CellRevealPosition::Top => {
+                self.set_scroll_top(element_top);
+                self.set_scroll_top(self.element_top(view_index));
+            }
+            CellRevealPosition::Center | CellRevealPosition::NearTop => {
+                // reveal the cell top in the viewport center initially
+                self.set_scroll_top(element_top - self.render_height.get() / 2.0);
+                // cell rendered already, we now have a more accurate cell height
+                let new_element_top = self.element_top(view_index);
+                let new_element_height = self.layout.borrow().item_size(view_index);
+                let render_height = self.get_view_scroll_bottom() - self.get_view_scroll_top();
+                if new_element_height >= render_height {
+                    // cell is larger than viewport, reveal top
+                    self.set_scroll_top(new_element_top);
+                } else if reveal_position == CellRevealPosition::Center {
+                    self.set_scroll_top(new_element_top + (new_element_height / 2.0) - (render_height / 2.0));
+                } else {
+                    self.set_scroll_top(new_element_top - (render_height / 5.0));
+                }
+            }
+            CellRevealPosition::Bottom => {
+                if first_line {
+                    let line_height = self.view_model().and_then(|view_model| view_model.layout_info()).map(|info| info.font_info.line_height).unwrap_or(15.0);
+                    let layout_configuration = self.notebook_options.get_layout_configuration();
+                    let padding = layout_configuration.cell_top_margin + layout_configuration.editor_top_padding;
+                    let first_line_location = element_top + line_height + padding;
+                    if first_line_location < wrapper_bottom {
+                        // first line is already visible
+                        return;
+                    }
+
+                    self.set_scroll_top(self.scroll_top.get() + (first_line_location - wrapper_bottom));
+                    return;
+                }
+                self.set_scroll_top(self.scroll_top.get() + (element_bottom - wrapper_bottom));
+                self.set_scroll_top(self.scroll_top.get() + (self.element_top(view_index) + self.layout.borrow().item_size(view_index) - self.get_view_scroll_bottom()));
+            }
+        }
+    }
+
+    /// `scrollToBottom()`.
+    pub fn scroll_to_bottom(&self) {
+        let scroll_height = self.get_scroll_height();
+        let scroll_top = self.get_view_scroll_top();
+        let wrapper_bottom = self.get_view_scroll_bottom();
+
+        self.set_scroll_top(scroll_height - (wrapper_bottom - scroll_top));
     }
 
     /// O `updateVisibleRanges` do construtor.
@@ -941,6 +1296,33 @@ impl IDisposable for NotebookCellList {
 
     fn constructor_name(&self) -> &'static str {
         "NotebookCellList"
+    }
+}
+
+/// O `this.view` (o `ListView`) da lista, como o `NotebookCellAnchor` o lê.
+struct ListViewMetrics<'a> {
+    list: &'a NotebookCellList,
+}
+
+impl ICellListView for ListViewMetrics<'_> {
+    fn element_focus_mode(&self, index: usize) -> CellFocusMode {
+        self.list.element(index).base().focus_mode()
+    }
+
+    fn element_top(&self, index: usize) -> f64 {
+        self.list.element_top(index)
+    }
+
+    fn element_height(&self, index: usize) -> f64 {
+        self.list.layout.borrow().item_size(index)
+    }
+
+    fn render_height(&self) -> f64 {
+        self.list.render_height.get()
+    }
+
+    fn get_scroll_top(&self) -> f64 {
+        self.list.scroll_top.get()
     }
 }
 

@@ -5,14 +5,16 @@
 //! - `IWorkbenchEnvironmentService extends IEnvironmentService` é o trait [`IWorkbenchEnvironmentService`] com o
 //!   [`EnvironmentService`] como supertrait. O `refineServiceDecorator` reaproveita o identificador do
 //!   `IEnvironmentService` (`environmentService`), e [`I_WORKBENCH_ENVIRONMENT_SERVICE`] também.
-//! - Não entram, porque os tipos de que dependem não foram portados: `filesToOpenOrCreate`, `filesToDiff` e
-//!   `filesToMerge` (`IPath` de `platform/window/common/window.ts` com `ITextEditorOptions`) e
-//!   `webviewExternalEndpoint` (o `IProductService` do porte não traz `webviewContentExternalBaseUrlTemplate`).
-//!   Cada um entra quando o contrato de que depende for portado.
+//! - `filesToOpenOrCreate`, `filesToDiff` e `filesToMerge` (`IPath[] | undefined`) são métodos com padrão `None`, e o
+//!   [`IPath`] do porte só tem o `fileUri` (o resto de `platform/window/common/window.ts`, com o `ITextEditorOptions`,
+//!   entra quando alguém o ler).
+//! - Não entra, porque o tipo de que depende não foi portado: `webviewExternalEndpoint` (o `IProductService` do porte
+//!   não traz `webviewContentExternalBaseUrlTemplate`). Entra quando o contrato de que depende for portado.
 
 use je_base::uri::URI;
 use je_instantiation::service_id;
 use je_platform::environment::environment::EnvironmentService;
+use je_platform::window::IPath;
 
 /// `IWorkbenchEnvironmentService`: a workbench specific environment service that is only present in workbench layer.
 ///
@@ -33,6 +35,19 @@ pub trait IWorkbenchEnvironmentService: EnvironmentService {
     fn skip_welcome(&self) -> bool;
     fn disable_workspace_trust(&self) -> bool;
     fn is_sessions_window(&self) -> bool;
+
+    /// `filesToOpenOrCreate` (`IPath[] | undefined`, só o `fileUri`).
+    fn files_to_open_or_create(&self) -> Option<Vec<IPath>> {
+        None
+    }
+    /// `filesToDiff` (`IPath[] | undefined`, só o `fileUri`).
+    fn files_to_diff(&self) -> Option<Vec<IPath>> {
+        None
+    }
+    /// `filesToMerge` (`IPath[] | undefined`, só o `fileUri`).
+    fn files_to_merge(&self) -> Option<Vec<IPath>> {
+        None
+    }
 
     // --- Development
     fn debug_renderer(&self) -> bool;
