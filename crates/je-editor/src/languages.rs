@@ -382,6 +382,9 @@ pub struct CompletionItem {
     /// Máscara de [`completion_item_insert_text_rule`].
     pub insert_text_rules: Option<u32>,
     pub commit_characters: Option<Vec<String>>,
+    /// An optional array of additional text edits that are applied when selecting this completion. Edits must not
+    /// overlap with the main edit nor with themselves.
+    pub additional_text_edits: Option<Vec<crate::edit_operation::SingleEditOperation>>,
 }
 
 /// `CompletionItemProvider` (ver as diferenças acima).

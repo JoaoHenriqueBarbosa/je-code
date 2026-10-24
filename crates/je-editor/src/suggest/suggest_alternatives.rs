@@ -13,10 +13,6 @@
 //! - `model.items` é a lista filtrada de [`CompletionModel::items`]; os índices são `usize`.
 //!
 //! Divergências:
-//! - O `CompletionItem` do porte (`languages.rs`) não tem `additionalTextEdits` (depende de `ISingleEditOperation`, que
-//!   nenhum consumidor lia até agora). O laço de `_moveIndex`, que pula os itens com `additionalTextEdits`, sempre
-//!   para no primeiro passo (`!undefined` é verdadeiro), e [`SuggestAlternatives::move_index`] faz esse passo único. Com
-//!   o campo no porte do tipo, o laço do original volta a valer sem mudar mais nada.
 //! - `this._listener` sobrescrito por um segundo `set` sem `reset` fica sem descarte, como no original: o ouvinte
 //!   antigo só chama `reset`, e sai com o editor.
 
@@ -115,12 +111,19 @@ impl SuggestAlternatives {
 
     /// `_moveIndex(fwd, model, index)` (ver "Divergências").
     fn move_index(fwd: bool, model: &CompletionModel, index: usize) -> usize {
-        let length = model.items().len();
-        if length == 0 {
-            return index;
+        let items = model.items();
+        let length = items.len();
+        let mut new_index = index;
+        for _ in 0..length {
+            new_index = (new_index + length + if fwd { 1 } else { length - 1 }) % length;
+            if new_index == index {
+                break;
+            }
+            if items[new_index].completion.borrow().additional_text_edits.is_none() {
+                break;
+            }
         }
-        let step = if fwd { 1 } else { length - 1 };
-        (index + length + step) % length
+        new_index
     }
 
     pub fn next(&self) {

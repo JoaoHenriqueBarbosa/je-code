@@ -63,7 +63,7 @@ use je_base::errors::{Error, on_unexpected_error};
 use je_base::event::{Emitter, Event};
 use je_base::filters::FuzzyScoreOptions;
 use je_base::lifecycle::{DisposableStore, IDisposable};
-use je_base::observable::{IObservable, Observable, register_autorun_self_disposable};
+use je_base::observable::{IObservable, register_autorun_self_disposable};
 use je_base::promise::Promise;
 use je_base::random::random_f64;
 use je_base::runtime;
@@ -72,7 +72,7 @@ use je_base::types::assert_type;
 use je_platform::contextkey::IContextKeyService;
 use je_platform::environment::environment::EnvironmentService;
 use je_platform::js::string_to_number;
-use je_platform::log::{LogArg, LogMessage, LogServiceRef, Logger};
+use je_platform::log::{LogArg, LogMessage, LogServiceRef};
 use je_platform::telemetry::telemetry::ITelemetryService;
 
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
