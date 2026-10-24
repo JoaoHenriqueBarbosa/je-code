@@ -55,3 +55,6 @@ pub mod notebook;
 // Editores de texto sem título (`untitledTextEditorModel.ts`, `untitledTextEditorService.ts`, `untitledTextEditorInput.ts` e
 // `untitledTextEditorHandler.ts`).
 pub mod untitled;
+
+// Propriedades comuns da telemetria do workbench (`telemetry/browser/workbenchCommonProperties.ts`).
+pub mod telemetry;
