@@ -218,6 +218,16 @@ impl IMainContext for TestMainContext {
     }
 }
 
+// ---- `sync()` do TestRPCProtocol (bloco próprio: `extHostCommentThreads.test.ts`) ----------------------------
+
+impl TestMainContext {
+    /// `rpcProtocol.sync()`: espera uma macrotarefa (`setTimeout(c, 0)`) e depois as chamadas remotas em voo. Aqui os proxies
+    /// respondem na própria chamada, então nunca há chamada em voo e só resta a macrotarefa.
+    pub fn sync(&self) -> Promise<()> {
+        base::timeout(0)
+    }
+}
+
 // ---- os serviços ---------------------------------------------------------------------------------------
 
 /// `new class extends mock<IExtHostFileSystemInfo>() { override getCapabilities() { return isLinux ? PathCaseSensitive : undefined } }`.
