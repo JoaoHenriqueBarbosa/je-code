@@ -31,6 +31,8 @@ zyarr = { path = "../zyarr" }
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 # `Direction` e `IViewSize` do grid (`base/browser/ui/grid`) que o `IWorkbenchLayoutService` usa.
 je-widgets = { path = "../je-widgets" }
+# O nó (`NodeId`) e a árvore (`Ui`) em que o `EditorPart` e o `EditorGroupView` se apoiam para o grid e o layout centralizado.
+je-ui = { path = "../je-ui" }
 
 # `textfile/encoding`: o `iconv-lite` (codificações WHATWG) e o `jschardet` (detecção) do original, em
 # Rust puro. Versões fora do `Cargo.lock` da raiz, que ainda não tinha nenhuma das duas.

@@ -605,11 +605,17 @@ pub trait IEditorGroup {
 
     /// `closeEditor(editor?)`: closes an editor from the group. Resolves to `false` when there was a veto closing the
     /// editor, e.g. when it is dirty. Sem `editor`, fecha o editor ativo.
-    fn close_editor(&self, editor: Option<&EditorInputRef>) -> Promise<bool>;
+    /// Tem implementação padrão (lança o erro do dublê) para o `EditorGroupView` da fatia 2, que ainda não abre nem fecha
+    /// editores (isso vem com os painéis de editor, na fatia 3).
+    fn close_editor(&self, _editor: Option<&EditorInputRef>) -> Promise<bool> {
+        not_implemented()
+    }
 
     /// `moveEditor(editor, target)`: move an editor from this group either within this group or to another group.
-    /// Returns whether the editor was moved or not.
-    fn move_editor(&self, editor: &EditorInputRef, target: &Rc<dyn IEditorGroup>) -> bool;
+    /// Returns whether the editor was moved or not. Mesma observação de [`IEditorGroup::close_editor`].
+    fn move_editor(&self, _editor: &EditorInputRef, _target: &Rc<dyn IEditorGroup>) -> bool {
+        not_implemented()
+    }
 
     // Os membros abaixo completam o `IEditorGroup`. Todos têm implementação padrão para não quebrar quem implementa só o
     // recorte acima: os eventos nunca disparam, `count` e `isEmpty` saem de `editors`, e o resto lança o erro do dublê.
