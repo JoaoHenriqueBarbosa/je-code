@@ -851,6 +851,40 @@ mod tests {
     }
 
     #[test]
+    fn search_view_finds_in_files_and_opens_the_match() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-sv", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).expect("pasta");
+        std::fs::write(dir.join("a.ts"), "export class Counter {\n  private count = 0;\n}\n").expect("a");
+        std::fs::write(dir.join("src/b.ts"), "this.count += step;\nreturn this.count;\n").expect("b");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::ShowSearch);
+        for c in "count".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        // A busca roda numa thread: espera os resultados chegarem.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            shell.take_dirty();
+            snapshot(&mut shell, "s0-search.png");
+            if shell.search_message().is_some_and(|m| m.starts_with("4 results in 2 files")) || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(shell.search_message().as_deref(), Some("4 results in 2 files"));
+        // A primeira linha de resultado (depois da linha do arquivo a.ts) abre o arquivo na linha 1.
+        click(&mut shell, 120.0, 35.0 + 105.0 + 22.0 + 11.0);
+        snapshot(&mut shell, "s1-open.png");
+        let editor = shell.active_editor().expect("abriu");
+        assert_eq!(editor.path.as_deref(), Some(dir.join("a.ts").as_path()));
+        let r = editor.view.cursor_selection_range();
+        assert_eq!((r.start_line_number, r.start_column, r.end_column), (1, 14, 19), "a ocorrência fica selecionada");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

@@ -11,6 +11,8 @@ mod explorer;
 mod file_icons;
 mod find;
 mod menus;
+mod search_backend;
+mod search_view;
 mod file_ops;
 mod quick_pick;
 mod terminal_panel;
@@ -42,9 +44,44 @@ use file_icons::FileIconTheme;
 use find::FindWidget;
 use menus::CommandQueue;
 use quick_pick::{PickItem, QuickPick};
+use search_view::SearchView;
 
 /// O tema padrão relativo à pasta de extensões embutidas.
 pub const BUILTIN_DEFAULT_THEME: &str = "theme-defaults/themes/2026-dark.json";
+
+/// Os contêineres de vista da barra lateral (a activity bar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideView {
+    Explorer,
+    Search,
+    SourceControl,
+    Debug,
+    Extensions,
+}
+
+impl SideView {
+    pub const ALL: [SideView; 5] = [Self::Explorer, Self::Search, Self::SourceControl, Self::Debug, Self::Extensions];
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Explorer => "Explorer",
+            Self::Search => "Search",
+            Self::SourceControl => "Source Control",
+            Self::Debug => "Run and Debug",
+            Self::Extensions => "Extensions",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Explorer => "files",
+            Self::Search => "search",
+            Self::SourceControl => "source-control",
+            Self::Debug => "debug-alt",
+            Self::Extensions => "extensions",
+        }
+    }
+}
 
 /// O que um prompt de nome faz com o texto digitado.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +126,18 @@ pub enum Command {
     SetLanguage(String),
     /// O botão direito num item do explorador.
     ExplorerContextMenu(PathBuf),
+    ShowView(SideView),
+    ShowSearch,
+    SearchFocus,
+    SearchTick(u64),
+    SearchNow,
+    SearchClear,
+    SearchCollapse,
+    SearchToggleCase,
+    SearchToggleWord,
+    SearchToggleRegex,
+    /// Abre o arquivo na linha e seleciona de `column` a `end_column`.
+    OpenAt(PathBuf, i32, i32, i32),
     /// Um nome digitado no prompt (Enter) para a ação dele.
     Prompt(PromptAction, String),
     DeletePath(PathBuf),
@@ -165,6 +214,7 @@ struct Nodes {
     chrome: NodeId,
     menubar: NodeId,
     explorer: NodeId,
+    search: NodeId,
     /// A superfície do editor ativo dentro de `chrome` (muda a cada `render`).
     editor_host: Option<NodeId>,
 }
@@ -177,6 +227,10 @@ pub struct Shell {
     queue: CommandQueue,
     menubar: Rc<MenuBar>,
     explorer: Option<Explorer>,
+    side_view: SideView,
+    search: SearchView,
+    search_focused: bool,
+    search_generation: u64,
     nodes: Nodes,
     editors: Vec<OpenEditor>,
     active: Option<usize>,
@@ -261,14 +315,15 @@ impl Shell {
         });
         let ui = Ui::new();
         let root = ui.root();
-        let (chrome, menubar_node, explorer_node) = {
+        let (chrome, menubar_node, explorer_node, search_node) = {
             let mut tree = ui.tree_mut();
             tree.set_bounds(root, Rect::new(0.0, 0.0, width, height));
             let chrome = tree.create(root, Role::Generic);
             let explorer = tree.create(root, Role::Tree);
+            let search = tree.create(root, Role::Tree);
             let menubar = tree.create(root, Role::MenuBar);
             tree.add_class(menubar, "menubar");
-            (chrome, menubar, explorer)
+            (chrome, menubar, explorer, search)
         };
         let queue: CommandQueue = Rc::new(RefCell::new(Vec::new()));
         let (menubar, mut palette_items) = Self::build_menubar(&ui, menubar_node, &theme, &queue);
@@ -283,6 +338,7 @@ impl Shell {
             None => Rc::new(|_: &str| None),
         };
         let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
+        let search = SearchView::new(&ui, search_node, &theme, icons.clone(), language_of.clone(), queue.clone());
         let terminal_palette = terminal_panel::palette(&theme);
         let mut shell = Self {
             ui,
@@ -292,7 +348,11 @@ impl Shell {
             queue,
             menubar,
             explorer,
-            nodes: Nodes { chrome, menubar: menubar_node, explorer: explorer_node, editor_host: None },
+            side_view: SideView::Explorer,
+            search,
+            search_focused: false,
+            search_generation: 0,
+            nodes: Nodes { chrome, menubar: menubar_node, explorer: explorer_node, search: search_node, editor_host: None },
             editors: Vec::new(),
             active: None,
             sidebar_visible: workspace.is_some(),
@@ -392,6 +452,7 @@ impl Shell {
         if let Some(explorer) = &self.explorer {
             explorer.restyle(&self.theme);
         }
+        self.search.restyle(&self.theme);
         // A barra de menus guarda as cores na criação: recria no mesmo nó.
         IDisposable::dispose(&*self.menubar);
         let children = self.ui.tree().children(self.nodes.menubar).to_vec();
@@ -666,7 +727,65 @@ impl Shell {
                 self.sidebar_visible = !self.sidebar_visible;
                 self.resize_editors();
             }
-            Command::ShowExplorer => self.sidebar_visible = !self.sidebar_visible || self.explorer.is_none(),
+            Command::ShowExplorer => self.show_view(SideView::Explorer),
+            Command::ShowView(view) => self.show_view(view),
+            Command::ShowSearch => {
+                // A semente é a seleção (ou a palavra) do editor; o campo vem selecionado.
+                let seed = self.active_editor().map(|e| e.view.seed_search_string()).unwrap_or_default();
+                self.show_view(SideView::Search);
+                if !seed.is_empty() {
+                    self.search.value = seed.chars().collect();
+                    self.search.cursor = self.search.value.len();
+                    self.search.select_all = true;
+                    self.start_search();
+                } else {
+                    self.search.select_all = !self.search.value.is_empty();
+                }
+                self.search_focused = true;
+                self.set_terminal_focus_off();
+                self.ui.blur();
+                self.resize_editors();
+            }
+            Command::SearchFocus => {
+                self.search_focused = true;
+                self.set_terminal_focus_off();
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(false);
+                }
+            }
+            Command::SearchTick(generation) => {
+                if generation == self.search_generation {
+                    self.start_search();
+                }
+            }
+            Command::SearchNow => self.start_search(),
+            Command::SearchClear => {
+                self.search.clear();
+                self.needs_render = true;
+            }
+            Command::SearchCollapse => {
+                self.search.collapse_all();
+                self.needs_render = true;
+            }
+            Command::SearchToggleCase | Command::SearchToggleWord | Command::SearchToggleRegex => {
+                match command {
+                    Command::SearchToggleCase => self.search.match_case = !self.search.match_case,
+                    Command::SearchToggleWord => self.search.whole_word = !self.search.whole_word,
+                    _ => self.search.regex = !self.search.regex,
+                }
+                self.start_search();
+            }
+            Command::OpenAt(path, line, column, end_column) => {
+                if let Err(e) = self.open_file(&path) {
+                    self.notice = Some(e);
+                } else if let Some(editor) = self.active_editor_mut() {
+                    editor.view.select_range(je_editor::range::Range::new(line, column, line, end_column));
+                    self.search_focused = false;
+                    if let Some(editor) = self.active_editor_mut() {
+                        editor.view.set_focus(true);
+                    }
+                }
+            }
             Command::ToggleStatusBar => self.statusbar_visible = !self.statusbar_visible,
             Command::ToggleFullScreen => self.fullscreen_requested = true,
             Command::QuickOpen => self.open_quick_pick(""),
@@ -796,6 +915,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn search_message(&self) -> Option<String> {
+        self.search.message()
+    }
+
+    #[cfg(test)]
     pub fn workspace_path(&self) -> Option<PathBuf> {
         self.workspace.clone()
     }
@@ -822,6 +946,101 @@ impl Shell {
             explorer.reveal(selected.as_deref());
         }
         self.resize_editors();
+    }
+
+    /// Mostra a vista `view` na barra lateral (clicar na ativa recolhe a barra, como no VS Code).
+    fn show_view(&mut self, view: SideView) {
+        if self.sidebar_visible && self.side_view == view {
+            self.sidebar_visible = false;
+        } else {
+            self.sidebar_visible = true;
+            self.side_view = view;
+        }
+        if view != SideView::Search || !self.sidebar_visible {
+            self.search_focused = false;
+        }
+        self.resize_editors();
+    }
+
+    fn set_terminal_focus_off(&mut self) {
+        if self.terminal_focused {
+            self.terminal_focused = false;
+        }
+    }
+
+    /// Roda a busca com o campo atual no workspace.
+    fn start_search(&mut self) {
+        let wake = self.wake.clone();
+        self.search.run(self.workspace.as_deref(), wake);
+        self.needs_render = true;
+    }
+
+    /// Agenda a busca depois de uma pausa na digitação (o debounce de 300 ms do VS Code).
+    fn schedule_search(&mut self) {
+        self.search_generation += 1;
+        let generation = self.search_generation;
+        let queue = self.queue.clone();
+        je_base::runtime::set_timeout(Box::new(move || queue.borrow_mut().push(Command::SearchTick(generation))), 300);
+    }
+
+    /// Trata uma tecla com o campo da vista Search focado. Devolve se consumiu.
+    fn search_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+        let ctrl = mods.ctrl || mods.meta;
+        let view = &mut self.search;
+        let edits = matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) || (key.is_none() || matches!(key, Some(EditorKey::Char(_)))) && (!ctrl || mods.alt) && text.is_some();
+        let mut changed = false;
+        if view.select_all && edits {
+            view.value.clear();
+            view.cursor = 0;
+            view.select_all = false;
+            changed = true;
+            if matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) {
+                self.schedule_search();
+                self.needs_render = true;
+                return true;
+            }
+        } else if !matches!(key, Some(EditorKey::Enter | EditorKey::Escape)) {
+            view.select_all = false;
+        }
+        match key {
+            Some(EditorKey::Escape) => {
+                self.search_focused = false;
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(true);
+                }
+            }
+            Some(EditorKey::Enter) => self.start_search(),
+            Some(EditorKey::Left) => view.cursor = view.cursor.saturating_sub(1),
+            Some(EditorKey::Right) => view.cursor = (view.cursor + 1).min(view.value.len()),
+            Some(EditorKey::Home) => view.cursor = 0,
+            Some(EditorKey::End) => view.cursor = view.value.len(),
+            Some(EditorKey::Backspace) if view.cursor > 0 => {
+                view.value.remove(view.cursor - 1);
+                view.cursor -= 1;
+                changed = true;
+            }
+            Some(EditorKey::Delete) if view.cursor < view.value.len() => {
+                view.value.remove(view.cursor);
+                changed = true;
+            }
+            Some(EditorKey::Up | EditorKey::Down | EditorKey::PageUp | EditorKey::PageDown | EditorKey::Tab | EditorKey::Backspace | EditorKey::Delete) => {}
+            _ => {
+                if (!ctrl || mods.alt)
+                    && let Some(text) = text
+                {
+                    let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                    let at = view.cursor;
+                    view.cursor += inserted.len();
+                    view.value.splice(at..at, inserted);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.schedule_search();
+        }
+        self.needs_render = true;
+        true
     }
 
     fn refresh_explorer(&mut self) {
@@ -1403,21 +1622,19 @@ impl Shell {
         if self.sidebar_visible {
             style.border_widths = Some([1.0, 0.0, 1.0, 1.0]);
         }
-        let top = ["files", "search", "source-control", "debug-alt", "extensions"];
-        let mut explorer_button = None;
-        for (i, id) in top.iter().enumerate() {
+        let mut view_buttons = Vec::new();
+        for (i, view) in SideView::ALL.into_iter().enumerate() {
             let button = tree.create(bar, Role::Button);
             tree.set_bounds(button, Rect::new(4.0, 4.0 + 44.0 * i as f64, 40.0, 40.0 + 44.0 * i as f64));
-            let checked = i == 0 && self.sidebar_visible;
+            let checked = view == self.side_view && self.sidebar_visible;
             let style = tree.style_mut(button);
-            style.content = Content::Codicon { id: (*id).into(), size: 24.0, color: if checked { foreground } else { inactive } };
+            style.content = Content::Codicon { id: view.icon().into(), size: 24.0, color: if checked { foreground } else { inactive } };
             style.radius = 4.0;
+            style.cursor = Some(Cursor::Pointer);
             if checked {
                 style.background = Some(self.color("activityBar.activeBackground"));
             }
-            if i == 0 {
-                explorer_button = Some(button);
-            }
+            view_buttons.push((button, view));
         }
         let height = bottom - TITLE_HEIGHT;
         for (i, id) in ["account", "settings-gear"].iter().enumerate() {
@@ -1427,14 +1644,16 @@ impl Shell {
             tree.style_mut(button).content = Content::Codicon { id: (*id).into(), size: 24.0, color: inactive };
         }
         drop(tree);
-        if let Some(button) = explorer_button {
-            self.listen_command(button, Command::ShowExplorer);
+        for (button, view) in view_buttons {
+            self.listen_command(button, Command::ShowView(view));
         }
     }
 
     fn render_sidebar(&mut self, chrome: NodeId) {
         let Some(rect) = self.sidebar_rect() else {
-            self.ui.tree_mut().style_mut(self.nodes.explorer).visible = false;
+            let mut tree = self.ui.tree_mut();
+            tree.style_mut(self.nodes.explorer).visible = false;
+            tree.style_mut(self.nodes.search).visible = false;
             return;
         };
         let fg = self.color("sideBarTitle.foreground");
@@ -1448,34 +1667,75 @@ impl Shell {
         // O título (`.composite.title`, 32 px) com o nome em 12 px semi-negrito e o `...` à direita.
         let title = tree.create(bar, Role::Heading);
         tree.set_bounds(title, Rect::new(13.0, 1.0, rect.width() - 40.0, 33.0));
-        tree.style_mut(title).content = Content::Text { text: "Explorer".to_owned(), style: ui_font(12.0, 600), color: fg, line_height: 32.0 };
-        let more = tree.create(bar, Role::Button);
-        tree.set_bounds(more, Rect::new(rect.width() - 27.0, 6.0, rect.width() - 5.0, 28.0));
-        tree.style_mut(more).content = Content::Codicon { id: "ellipsis".into(), size: 16.0, color: fg };
-        // A seção da pasta e, embaixo, Outline e Timeline recolhidas (`.pane-header`, 28 px, 11 px negrito).
-        let section = |tree: &mut Tree, y: f64, label: &str, expanded: bool| {
-            let header = tree.create(bar, Role::Button);
-            tree.set_bounds(header, Rect::new(5.0, y, rect.width() - 6.0, y + 28.0));
-            let chevron = tree.create(header, Role::Generic);
-            tree.set_bounds(chevron, Rect::new(2.0, 6.0, 18.0, 22.0));
-            tree.style_mut(chevron).content = Content::Codicon { id: if expanded { "chevron-down" } else { "chevron-right" }.into(), size: 16.0, color: fg };
-            let text = tree.create(header, Role::Generic);
-            tree.set_bounds(text, Rect::new(20.0, 0.0, rect.width() - 30.0, 28.0));
-            tree.style_mut(text).content = Content::Text { text: label.to_owned(), style: ui_font(11.0, 700), color: fg, line_height: 28.0 };
-        };
-        let bottom = rect.height() - 6.0;
-        if let Some(name) = self.workspace_name() {
-            section(&mut tree, 33.0, &name, true);
+        tree.style_mut(title).content = Content::Text { text: self.side_view.title().to_owned(), style: ui_font(12.0, 600), color: fg, line_height: 32.0 };
+        let mut hits: Vec<(NodeId, Command)> = Vec::new();
+        match self.side_view {
+            SideView::Explorer => {
+                let more = tree.create(bar, Role::Button);
+                tree.set_bounds(more, Rect::new(rect.width() - 27.0, 6.0, rect.width() - 5.0, 28.0));
+                tree.style_mut(more).content = Content::Codicon { id: "ellipsis".into(), size: 16.0, color: fg };
+                // A seção da pasta e, embaixo, Outline e Timeline recolhidas (`.pane-header`, 28 px, 11 px negrito).
+                let section = |tree: &mut Tree, y: f64, label: &str, expanded: bool| {
+                    let header = tree.create(bar, Role::Button);
+                    tree.set_bounds(header, Rect::new(5.0, y, rect.width() - 6.0, y + 28.0));
+                    let chevron = tree.create(header, Role::Generic);
+                    tree.set_bounds(chevron, Rect::new(2.0, 6.0, 18.0, 22.0));
+                    tree.style_mut(chevron).content = Content::Codicon { id: if expanded { "chevron-down" } else { "chevron-right" }.into(), size: 16.0, color: fg };
+                    let text = tree.create(header, Role::Generic);
+                    tree.set_bounds(text, Rect::new(20.0, 0.0, rect.width() - 30.0, 28.0));
+                    tree.style_mut(text).content = Content::Text { text: label.to_owned(), style: ui_font(11.0, 700), color: fg, line_height: 28.0 };
+                };
+                let bottom = rect.height() - 6.0;
+                if let Some(name) = self.workspace_name() {
+                    section(&mut tree, 33.0, &name, true);
+                }
+                section(&mut tree, bottom - 56.0, "Outline", false);
+                section(&mut tree, bottom - 28.0, "Timeline", false);
+                // O explorador retido fica entre o cabeçalho da pasta e o Outline.
+                let list = Rect::new(rect.x0 + 5.0, rect.y0 + 61.0, rect.x1 - 6.0, rect.y0 + bottom - 56.0 - 1.0);
+                tree.set_bounds(self.nodes.explorer, list);
+                tree.style_mut(self.nodes.explorer).visible = self.explorer.is_some();
+                tree.style_mut(self.nodes.search).visible = false;
+                drop(tree);
+                if let Some(explorer) = &self.explorer {
+                    explorer.layout(list.width(), list.height());
+                }
+            }
+            SideView::Search => {
+                // As ações do título: atualizar, limpar, nova busca no editor, lista e recolher tudo.
+                let actions = [("refresh", Some(Command::SearchNow)), ("clear-all", Some(Command::SearchClear)), ("new-file", None), ("list-flat", None), ("collapse-all", Some(Command::SearchCollapse))];
+                for (k, (icon, command)) in actions.into_iter().enumerate() {
+                    let x = rect.width() - 27.0 - 26.0 * (4 - k) as f64;
+                    let button = tree.create(bar, Role::Button);
+                    tree.set_bounds(button, Rect::new(x, 5.0, x + 22.0, 27.0));
+                    let style = tree.style_mut(button);
+                    style.content = Content::Codicon { id: icon.into(), size: 16.0, color: fg };
+                    style.radius = 5.0;
+                    if let Some(command) = command {
+                        style.cursor = Some(Cursor::Pointer);
+                        hits.push((button, command));
+                    }
+                }
+                let (header_hits, top) = self.search.render_header(&mut tree, bar, rect.width(), self.search_focused, &self.theme);
+                hits.extend(header_hits);
+                let list = Rect::new(rect.x0 + 5.0, rect.y0 + top, rect.x1 - 6.0, rect.y1 - 6.0);
+                tree.set_bounds(self.nodes.search, list);
+                tree.style_mut(self.nodes.search).visible = true;
+                tree.style_mut(self.nodes.explorer).visible = false;
+                drop(tree);
+                self.search.layout(list.width(), list.height());
+            }
+            other => {
+                // As vistas ainda sem implementação mostram só o título e um aviso honesto.
+                let note = tree.create(bar, Role::Status);
+                tree.set_bounds(note, Rect::new(13.0, 40.0, rect.width() - 13.0, 60.0));
+                tree.style_mut(note).content = Content::Text { text: format!("{} ainda não existe no je-code.", other.title()), style: ui_font(13.0, 400), color: fg, line_height: 20.0 };
+                tree.style_mut(self.nodes.explorer).visible = false;
+                tree.style_mut(self.nodes.search).visible = false;
+            }
         }
-        section(&mut tree, bottom - 56.0, "Outline", false);
-        section(&mut tree, bottom - 28.0, "Timeline", false);
-        // O explorador retido fica entre o cabeçalho da pasta e o Outline.
-        let list = Rect::new(rect.x0 + 5.0, rect.y0 + 61.0, rect.x1 - 6.0, rect.y0 + bottom - 56.0 - 1.0);
-        tree.set_bounds(self.nodes.explorer, list);
-        tree.style_mut(self.nodes.explorer).visible = self.explorer.is_some();
-        drop(tree);
-        if let Some(explorer) = &self.explorer {
-            explorer.layout(list.width(), list.height());
+        for (node, command) in hits {
+            self.listen_command(node, command);
         }
     }
 
@@ -1936,6 +2196,7 @@ impl Shell {
         if input.kind == PointerInputKind::Down && Some(target) == self.nodes.editor_host && input.button == PointerButton::Primary {
             self.ui.blur();
             self.find_focused = false;
+            self.search_focused = false;
             if let Some((lx, ly)) = self.editor_local(x, y)
                 && let Some(editor) = self.active_editor_mut()
             {
@@ -2004,6 +2265,7 @@ impl Shell {
             (false, true, false, KeyCode::F3) => Command::FindPrevious,
             (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::ShowCommands,
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
+            (true, true, false, KeyCode::KeyF) => Command::ShowSearch,
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
             (false, false, false, KeyCode::F11) => Command::ToggleFullScreen,
@@ -2058,6 +2320,22 @@ impl Shell {
                 }
             }
             return;
+        }
+        if self.search_focused && self.sidebar_visible && self.side_view == SideView::Search && down {
+            let toggles = match (mods.alt, key_code) {
+                (true, KeyCode::KeyC) => Some(Command::SearchToggleCase),
+                (true, KeyCode::KeyW) => Some(Command::SearchToggleWord),
+                (true, KeyCode::KeyR) => Some(Command::SearchToggleRegex),
+                _ => None,
+            };
+            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::ShowSearch | Command::QuickOpen | Command::ShowCommands | Command::Find | Command::TogglePanel | Command::ToggleTerminal | Command::ToggleSidebar | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ShowExplorer));
+            if let Some(command) = toggles.or(shortcut) {
+                self.run(command);
+                return;
+            }
+            if self.search_key(text, editor_key, mods) {
+                return;
+            }
         }
         if self.find_focused && self.find.is_some() && down {
             let toggles = match (mods.alt, key_code) {
@@ -2122,6 +2400,10 @@ impl Shell {
         self.run_commands();
         let editor = self.active.is_some_and(|i| self.editors[i].view.take_dirty());
         let terminal = self.terminal.as_ref().is_some_and(je_terminal::Terminal::take_dirty);
+        let search = self.search.poll();
+        if search {
+            self.needs_render = true;
+        }
         editor || terminal || self.needs_render || self.ui.has_pending_animation_frame()
     }
 
