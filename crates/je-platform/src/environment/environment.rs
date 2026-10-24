@@ -77,6 +77,11 @@ pub trait EnvironmentService {
     fn is_extension_development(&self) -> bool;
     fn disable_extensions(&self) -> DisableExtensions;
     fn skip_builtin_extensions(&self) -> Vec<String>;
+    /// `enableExtensions` (`--enable-extension`): as extensões que a linha de comando habilita. Quem não
+    /// recebe a opção deixa o padrão (`undefined` no original).
+    fn enable_extensions(&self) -> Option<Vec<String>> {
+        None
+    }
     fn extension_development_location_uri(&self) -> Option<Vec<URI>>;
     fn extension_development_kind(&self) -> Option<Vec<ExtensionKind>>;
     fn extension_tests_location_uri(&self) -> Option<URI>;
