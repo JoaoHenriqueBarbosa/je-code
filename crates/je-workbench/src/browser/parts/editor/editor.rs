@@ -274,3 +274,9 @@ pub trait EditorPartsView {
     /// `bind(contextKey, group)`: liga a chave ao contexto escopado do grupo e, quando o grupo é o ativo, ao contexto global.
     fn bind(&self, context_key: &RawContextKey, group: &Rc<EditorGroupView>) -> Rc<dyn IContextKey>;
 }
+
+/// `CONNECTED_EDITOR_TABS_CLASS`: a classe do contêiner com as abas de editor conectadas (Modern UI).
+pub const CONNECTED_EDITOR_TABS_CLASS: &str = "modern-ui-connected-editor-tabs";
+
+/// `CONNECTED_EDITOR_TABS_SELECTOR`.
+pub const CONNECTED_EDITOR_TABS_SELECTOR: &str = ".modern-ui-connected-editor-tabs";
