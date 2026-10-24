@@ -2815,8 +2815,9 @@ pub use self::language_features_region::*;
 /// `Reference`, e (parte 2) expressão avaliável, valores embutidos, edição ligada, ação de código, colar, formatação
 /// (documento, intervalo, ao digitar), símbolos do workspace, renomeação, novos nomes de símbolo, tokens semânticos,
 /// completar, assinatura, dicas embutidas, links, cor, dobra, seleção, hierarquias de chamada e de tipo, e soltar.
-/// Ainda pendentes para a parte 3: as completações em linha (`$registerInlineCompletionsSupport`,
-/// `$provideInlineCompletions` e os `$handleInlineCompletion*`), `$setLanguageConfiguration` e `$setWordDefinitions`.
+/// PARTE 3: `$setLanguageConfiguration` (com `ILanguageConfigurationDto` e as regras), `$setWordDefinitions` e
+/// `$acceptInlineCompletionsUnificationState`. Ainda pendentes: as completações em linha (`$registerInlineCompletionsSupport`,
+/// `$provideInlineCompletions` e os `$handleInlineCompletion*`), que dependem de tipos do editor sem porte.
 ///
 /// Divergências da parte 2:
 /// - Os DTOs que o original tira de `languages.ts` e o editor ainda não tem são definidos aqui (`FormattingOptions`,
@@ -2845,6 +2846,9 @@ pub use self::language_features_region::*;
 /// - `CachedSessionItem<Dto<languages.CodeLens>>` é [`ICodeLensDto`] (o `command` do `languages.CodeLens` já chega como
 ///   `ICommandDto` depois do `toInternal`) e `CachedSession<{ lenses }>` é [`ICodeLensListDto`]; `ChainedCacheId` é uma tupla.
 /// - `Dto<languages.MultiDocumentHighlight[]>` é uma lista de [`MultiDocumentHighlightDto`].
+/// - `ILanguageConfigurationDto`: `comments`, `brackets` e as ações de `IOnEnterRuleDto` são os [`CommentRule`], [`CharacterPair`] e
+///   [`EnterAction`] do editor (mesmas formas); o `__electricCharacterSupport` e o `__characterPairSupport` ficam com os campos
+///   que o original declara (`brackets?: any` é um [`Dynamic`]).
 /// - `$emitCodeLensEvent(eventHandle, event?: any)` leva o evento como `Option<Dynamic>`.
 mod language_features_region {
     use je_base::buffer::VSBuffer;
@@ -2856,6 +2860,7 @@ mod language_features_region {
     use je_base::uri::URI;
     use je_editor::code_action::languages::{CodeActionContext, TextEdit as EditorTextEdit};
     use je_editor::folding::syntax_range_provider::{FoldingContext, FoldingRange as EditorFoldingRange};
+    use je_editor::language_configuration::{CharacterPair, CommentRule, EnterAction};
     use je_editor::language_providers::{
         DocumentHighlight, DocumentSymbol, SelectionRange as EditorSelectionRange, SymbolKind as EditorSymbolKind, SymbolTag as EditorSymbolTag,
     };
@@ -2868,6 +2873,7 @@ mod language_features_region {
     use je_platform::markers::markers::MarkerData;
 
     use super::{DataTransferDto, ExtHostContext, ICommandDto, IWorkspaceEditDto, MainContext, ProxyIdentifier};
+    use crate::services::inline_completions::inline_completions_unification::IInlineCompletionsUnificationState;
     use crate::api::common::ext_host_type_converters::{HierarchyItemDto, IncomingCallDto, LocationDto, OutgoingCallDto};
     use crate::api::common::ext_host_types::{DocumentPasteTriggerKind, InlayHintKind, NewSymbolNameTag, SemanticTokensLegend};
     use crate::api::common::ext_host_workspace::GlobPatternDto;
@@ -3001,6 +3007,88 @@ mod language_features_region {
     pub struct ILinkedEditingRangesDto {
         pub ranges: Vec<EditorRange>,
         pub word_pattern: Option<IRegExpDto>,
+    }
+
+    // ---- parte 3: configuração de linguagem e definições de palavra
+
+    /// `IIndentationRuleDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct IIndentationRuleDto {
+        pub decrease_indent_pattern: IRegExpDto,
+        pub increase_indent_pattern: IRegExpDto,
+        pub indent_next_line_pattern: Option<IRegExpDto>,
+        pub un_indented_line_pattern: Option<IRegExpDto>,
+    }
+
+    /// `IOnEnterRuleDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct IOnEnterRuleDto {
+        pub before_text: IRegExpDto,
+        pub after_text: Option<IRegExpDto>,
+        pub previous_line_text: Option<IRegExpDto>,
+        pub action: EnterAction,
+    }
+
+    /// `IAutoClosingPairDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct IAutoClosingPairDto {
+        pub open: String,
+        pub close: String,
+        pub not_in: Option<Vec<String>>,
+        pub before_text: Option<IRegExpDto>,
+    }
+
+    /// O `docComment` de `ILanguageConfigurationDto.__electricCharacterSupport`. O `scope` e o `lineStart` só existem na
+    /// API (a thread principal lê `open` e `close`).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ElectricCharacterDocCommentDto {
+        pub scope: String,
+        pub open: String,
+        pub line_start: String,
+        pub close: Option<String>,
+    }
+
+    /// O `__electricCharacterSupport` (obsoleto) de `ILanguageConfigurationDto`. O `brackets?: any` é um [`Dynamic`] que
+    /// ninguém lê.
+    #[derive(Clone, Default)]
+    pub struct ElectricCharacterSupportDto {
+        pub brackets: Option<Dynamic>,
+        pub doc_comment: Option<ElectricCharacterDocCommentDto>,
+    }
+
+    /// O par de `ILanguageConfigurationDto.__characterPairSupport.autoClosingPairs`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct CharacterPairSupportPairDto {
+        pub open: String,
+        pub close: String,
+        pub not_in: Option<Vec<String>>,
+    }
+
+    /// O `__characterPairSupport` (obsoleto) de `ILanguageConfigurationDto`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct CharacterPairSupportDto {
+        pub auto_closing_pairs: Vec<CharacterPairSupportPairDto>,
+    }
+
+    /// `ILanguageConfigurationDto`.
+    #[derive(Clone, Default)]
+    pub struct ILanguageConfigurationDto {
+        pub comments: Option<CommentRule>,
+        pub brackets: Option<Vec<CharacterPair>>,
+        pub word_pattern: Option<IRegExpDto>,
+        pub indentation_rules: Option<IIndentationRuleDto>,
+        pub on_enter_rules: Option<Vec<IOnEnterRuleDto>>,
+        pub electric_character_support: Option<ElectricCharacterSupportDto>,
+        pub character_pair_support: Option<CharacterPairSupportDto>,
+        pub auto_closing_pairs: Option<Vec<IAutoClosingPairDto>>,
+    }
+
+    /// `ILanguageWordDefinitionDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ILanguageWordDefinitionDto {
+        pub language_id: String,
+        pub regex_source: String,
+        pub regex_flags: String,
     }
 
     // ---- parte 2: ações de código e colar
@@ -3425,6 +3513,7 @@ mod language_features_region {
         fn rpc_register_document_on_drop_edit_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, metadata: Option<IDocumentDropEditProviderMetadata>);
         fn rpc_resolve_paste_file_data(&self, handle: u32, request_id: u32, data_id: &str) -> Promise<VSBuffer>;
         fn rpc_resolve_document_on_drop_file_data(&self, handle: u32, request_id: u32, data_id: &str) -> Promise<VSBuffer>;
+        fn rpc_set_language_configuration(&self, handle: u32, language_id: &str, configuration: ILanguageConfigurationDto);
     }
 
     /// `ExtHostLanguageFeaturesShape` (parte 1, ver a nota do módulo).
@@ -3643,6 +3732,8 @@ mod language_features_region {
         ) -> Promise<Option<Vec<IDocumentDropEditDto>>>;
         fn rpc_resolve_drop_edit(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedDropEditDto>;
         fn rpc_release_document_on_drop_edits(&self, handle: u32, cache_id: u32);
+        fn rpc_set_word_definitions(&self, word_definitions: Vec<ILanguageWordDefinitionDto>);
+        fn rpc_accept_inline_completions_unification_state(&self, state: IInlineCompletionsUnificationState);
     }
 
     impl MainContext {

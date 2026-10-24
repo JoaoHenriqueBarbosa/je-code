@@ -1,7 +1,8 @@
 //! Porte de `src/vs/workbench/api/test/browser/extHostLanguageFeatures.test.ts` (suíte `ExtHostLanguageFeatures`), caso a caso e na mesma ordem.
 //!
-//! PORTADOS (22 de 65 `test(` do original, contando cada caso dos laços `for (const declinedRequests of [0, 2])` como dois):
-//! `DocumentDropEdits does not cache an empty edit array without release IDs`, `DocumentSymbols` x4 (incluindo `Quick Outline ... #138502`),
+//! PORTADOS (23 de 65 `test(` do original, contando cada caso dos laços `for (const declinedRequests of [0, 2])` como dois):
+//! `AutoClosingPair.beforeText requires proposed API`, `DocumentDropEdits does not cache an empty edit array without release IDs`,
+//! `DocumentSymbols` x4 (incluindo `Quick Outline ... #138502`),
 //! `Occurrences` x4, `Quick Fix` x3 e `#29469`, `Parameter Hints` x2, `Suggest` x5 e `Selection Ranges` x2.
 //! Divergência de tradução: o `#29469` devolve `[undefined, null, comando]` e o `Vec` não tem elementos ausentes, então o caso
 //! devolve só o comando (o `if (!candidate) continue` do adaptador não existe no porte).
@@ -13,8 +14,8 @@
 //!   `getWorkspaceSymbols` (Navigate types x2), `rename` (Rename x5 e os dois #98352), `getDocumentFormattingEditsUntilResult`,
 //!   `getDocumentRangeFormattingEditsUntilResult` e `getOnTypeFormattingEdits` (Format Doc x3, Format Range x3, Format on
 //!   Type), `getLinks` (Links x2) e `getColors` (Document colors).
-//! - `AutoClosingPair.beforeText requires proposed API`: depende de `$setLanguageConfiguration` do `MainThreadLanguageFeatures` e de
-//!   `setLanguageConfiguration` do host, que ainda não têm porte (ver a lista de pendentes dos dois arquivos).
+//! - Os casos de completação em linha (`InlineCompletion`) não existem nesta suíte do original; o porte da
+//!   `InlineCompletionAdapter` e do `ExtensionBackedInlineCompletionsProvider` está pendente (ver os dois arquivos de origem).
 //! - Os casos `DocumentDropEdits releases cache IDs after N declined requests` e `DocumentPasteEdits releases cache IDs after N
 //!   declined requests` espionam `extHost.$releaseDocumentOnDropEdits` e `$releasePasteEdits` (`sinon.spy`): a spy exige um
 //!   proxy de `ExtHostLanguageFeaturesShape` que repasse o método ao host e registre as chamadas, e o dublê desse trait inteiro
@@ -30,7 +31,12 @@
 //! - `setUnexpectedErrorHandler(() => { })` e o `ensureNoDisposablesAreLeakedInTestSuite` são o guarda criado no começo de cada
 //!   caso.
 //! - `IMarkerService` e `IUriIdentityService` do `TestInstantiationService`: o serviço de identidade é o dublê que devolve a
-//!   própria URI (`asCanonicalUri(uri) { return uri; }`).
+//!   própria URI (`asCanonicalUri(uri) { return uri; }`). `ILanguageService`, `ILanguageConfigurationService` e
+//!   `IInlineCompletionsUnificationService` não são registrados no original (o `TestInstantiationService` não é estrito e os resolve
+//!   como `undefined`), então o [`MainThreadLanguageFeatures`] os recebe como `None`.
+//! - `sinon.stub(mainThread, '$setLanguageConfiguration')`: o [`StubbedSetLanguageConfiguration`] é o proxy do lado do workbench que
+//!   repassa tudo ao [`MainThreadLanguageFeatures`] real, menos `$setLanguageConfiguration`, que só conta a chamada (`callCount`).
+//!   Se o `MainThreadLanguageFeaturesShape` ganhar um método, o repasse dele entra na lista do `forward_to_inner!`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -40,15 +46,17 @@ mod support;
 #[path = "../../je-editor/tests/support/test_text_model.rs"]
 mod test_text_model;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use je_base::JsString;
+use je_base::buffer::VSBuffer;
 use je_base::cancellation::CancellationToken;
 use je_base::data_transfer::VSDataTransfer;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
+use je_base::js_regexp::JsRegExp;
 use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
@@ -83,15 +91,16 @@ use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsA
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiCodeActionContext, ApiCodeActionProvider, ApiCompletionItemProvider, ApiCompletionList, ApiCompletionResult, ApiDocumentDropEditProvider,
-    ApiDocumentHighlightProvider, ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiProviderResult, ApiRangeOrSelection, ApiSelectionRangeProvider,
+    ApiAutoClosingPair, ApiCodeActionContext, ApiCodeActionProvider, ApiCompletionItemProvider, ApiCompletionList, ApiCompletionResult, ApiDocumentDropEditProvider,
+    ApiDocumentHighlightProvider, ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiLanguageConfiguration, ApiProviderResult, ApiRangeOrSelection, ApiSelectionRangeProvider,
     ApiSignatureHelpContext, ApiSignatureHelpProvider, ApiSignatureHelpRef, CommandOrCodeAction, CompletionItemRef, DocumentEditRef,
     IExtHostApiDeprecationService, OneOrMany, SignatureHelpMetadataOrTriggerChars,
 };
 use je_workbench::api::common::ext_host_protocol::{
-    CommandArgs, DocumentsAndEditorsDelta, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostLanguageFeaturesShape, IExtHostTelemetry, IMarkerChange,
-    MainContext, MainThreadCommandsShape, MainThreadDiagnosticsShape, MainThreadDocumentsShape, MainThreadLanguageFeaturesShape, ModelAddedData,
-    CreateDocumentOptions, OpenDocumentOptions,
+    CommandArgs, DocumentsAndEditorsDelta, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostLanguageFeaturesShape, ICodeActionProviderMetadataDto,
+    IDocumentDropEditProviderMetadata, IDocumentFilterDto, IExtHostTelemetry, ILanguageConfigurationDto, IMarkerChange, IPasteEditProviderMetadataDto,
+    ISignatureHelpProviderMetadataDto, MainContext, MainThreadCommandsShape, MainThreadDiagnosticsShape, MainThreadDocumentsShape, MainThreadLanguageFeaturesShape,
+    ModelAddedData, CreateDocumentOptions, OpenDocumentOptions,
 };
 use je_workbench::api::common::ext_host_type_converters::{DocumentFilterInput, DocumentSelectorInput};
 use je_workbench::api::common::ext_host_types as types;
@@ -194,6 +203,122 @@ impl MainThreadDiagnosticsShape for UnusedMainThreadDiagnostics {
     }
 }
 
+/// `sinon.stub(mainThread, '$setLanguageConfiguration')`: o proxy do lado do workbench que repassa tudo ao
+/// [`MainThreadLanguageFeatures`] real, menos `$setLanguageConfiguration`, que só conta a chamada.
+struct StubbedSetLanguageConfiguration {
+    inner: Rc<MainThreadLanguageFeatures>,
+    /// `setLanguageConfiguration.callCount`.
+    call_count: Rc<Cell<u32>>,
+}
+
+impl IDisposable for StubbedSetLanguageConfiguration {
+    fn dispose(&self) {
+        self.inner.dispose();
+    }
+}
+
+/// Repassa ao `self.inner` os métodos de [`MainThreadLanguageFeaturesShape`] que o dublê não substitui.
+macro_rules! forward_to_inner {
+    ($($method:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)*) => {
+        $(
+            fn $method(&self, $($arg: $ty),*) $(-> $ret)? {
+                self.inner.$method($($arg),*)
+            }
+        )*
+    };
+}
+
+impl MainThreadLanguageFeaturesShape for StubbedSetLanguageConfiguration {
+    forward_to_inner! {
+        rpc_unregister(handle: u32);
+        rpc_register_document_symbol_provider(handle: u32, selector: Vec<IDocumentFilterDto>, label: &str);
+        rpc_register_code_lens_support(handle: u32, selector: Vec<IDocumentFilterDto>, event_handle: Option<u32>);
+        rpc_emit_code_lens_event(event_handle: u32, event: Option<Dynamic>);
+        rpc_register_definition_support(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_declaration_support(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_implementation_support(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_type_definition_support(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_hover_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_document_highlight_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_multi_document_highlight_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_reference_support(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_evaluatable_expression_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_inline_values_provider(handle: u32, selector: Vec<IDocumentFilterDto>, event_handle: Option<u32>);
+        rpc_emit_inline_values_event(event_handle: u32, event: Option<Dynamic>);
+        rpc_register_linked_editing_range_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_code_action_support(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            metadata: ICodeActionProviderMetadataDto,
+            display_name: &str,
+            extension_id: &str,
+            supports_resolve: bool
+        );
+        rpc_register_paste_edit_provider(handle: u32, selector: Vec<IDocumentFilterDto>, metadata: IPasteEditProviderMetadataDto);
+        rpc_register_document_formatting_support(handle: u32, selector: Vec<IDocumentFilterDto>, extension_id: &ExtensionIdentifier, display_name: &str);
+        rpc_register_range_formatting_support(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            extension_id: &ExtensionIdentifier,
+            display_name: &str,
+            support_ranges: bool
+        );
+        rpc_register_on_type_formatting_support(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            auto_format_trigger_characters: Vec<String>,
+            extension_id: &ExtensionIdentifier
+        );
+        rpc_register_navigate_type_support(handle: u32, supports_resolve: bool);
+        rpc_register_rename_support(handle: u32, selector: Vec<IDocumentFilterDto>, supports_resolve_initial_values: bool);
+        rpc_register_new_symbol_names_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_document_semantic_tokens_provider(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            legend: types::SemanticTokensLegend,
+            event_handle: Option<u32>
+        );
+        rpc_emit_document_semantic_tokens_event(event_handle: u32);
+        rpc_register_document_range_semantic_tokens_provider(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            legend: types::SemanticTokensLegend,
+            event_handle: Option<u32>
+        );
+        rpc_emit_document_range_semantic_tokens_event(event_handle: u32);
+        rpc_register_completions_provider(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            trigger_characters: Vec<String>,
+            supports_resolve_details: bool,
+            extension_id: &ExtensionIdentifier
+        );
+        rpc_register_signature_help_provider(handle: u32, selector: Vec<IDocumentFilterDto>, metadata: ISignatureHelpProviderMetadataDto);
+        rpc_register_inlay_hints_provider(
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            supports_resolve: bool,
+            event_handle: Option<u32>,
+            display_name: Option<&str>
+        );
+        rpc_emit_inlay_hints_event(event_handle: u32);
+        rpc_register_document_link_provider(handle: u32, selector: Vec<IDocumentFilterDto>, supports_resolve: bool);
+        rpc_register_document_color_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_folding_range_provider(handle: u32, selector: Vec<IDocumentFilterDto>, extension_id: &ExtensionIdentifier, event_handle: Option<u32>);
+        rpc_emit_folding_range_event(event_handle: u32, event: Option<Dynamic>);
+        rpc_register_selection_range_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_call_hierarchy_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_type_hierarchy_provider(handle: u32, selector: Vec<IDocumentFilterDto>);
+        rpc_register_document_on_drop_edit_provider(handle: u32, selector: Vec<IDocumentFilterDto>, metadata: Option<IDocumentDropEditProviderMetadata>);
+        rpc_resolve_paste_file_data(handle: u32, request_id: u32, data_id: &str) -> Promise<VSBuffer>;
+        rpc_resolve_document_on_drop_file_data(handle: u32, request_id: u32, data_id: &str) -> Promise<VSBuffer>;
+    }
+
+    fn rpc_set_language_configuration(&self, _handle: u32, _language_id: &str, _configuration: ILanguageConfigurationDto) {
+        self.call_count.set(self.call_count.get() + 1);
+    }
+}
+
 // ---- o ambiente (`setup` e `teardown`) ----------------------------------------------------------------
 
 /// `const defaultSelector = { scheme: 'far' }`.
@@ -216,6 +341,11 @@ struct Env {
 impl Env {
     /// `setup(() => { ... })`.
     fn new() -> Env {
+        Env::with_set_language_configuration_calls(None)
+    }
+
+    /// O `setup`, com `sinon.stub(mainThread, '$setLanguageConfiguration')` quando há um contador de chamadas.
+    fn with_set_language_configuration_calls(set_language_configuration_calls: Option<Rc<Cell<u32>>>) -> Env {
         let model = create_text_model_with(
             ["This is the first line", "This is the second line", "This is the third line"].join("\n").as_str(),
             None,
@@ -264,10 +394,17 @@ impl Env {
         // O lado do workbench primeiro: ele só pede o proxy do host quando um provedor é registrado.
         let main_thread = MainThreadLanguageFeatures::new(
             rpc_protocol.clone(),
+            None,
+            None,
             language_features_service.clone(),
             Rc::new(IdentityUriIdentityService) as Rc<dyn IUriIdentityService>,
+            None,
         );
-        rpc_protocol.set(&MainContext::MAIN_THREAD_LANGUAGE_FEATURES, main_thread.clone() as Rc<dyn MainThreadLanguageFeaturesShape>);
+        let main_thread_proxy: Rc<dyn MainThreadLanguageFeaturesShape> = match set_language_configuration_calls {
+            Some(call_count) => Rc::new(StubbedSetLanguageConfiguration { inner: main_thread.clone(), call_count }),
+            None => main_thread.clone(),
+        };
+        rpc_protocol.set(&MainContext::MAIN_THREAD_LANGUAGE_FEATURES, main_thread_proxy);
 
         let ext_host = ExtHostLanguageFeatures::new(
             rpc_protocol.as_ref(),
@@ -326,6 +463,38 @@ fn range(start_line: f64, start_character: f64, end_line: f64, end_character: f6
 }
 
 // ---- casos --------------------------------------------------------------------------------------------
+
+#[test]
+fn auto_closing_pair_before_text_requires_proposed_api() {
+    run_with_faked_timers(async move {
+        let call_count = Rc::new(Cell::new(0));
+        let mut env = Env::with_set_language_configuration_calls(Some(Rc::clone(&call_count)));
+        let default_extension = null_extension_description();
+        let braces = |before_text: Option<Rc<JsRegExp>>| ApiLanguageConfiguration {
+            auto_closing_pairs: Some(vec![ApiAutoClosingPair { open: "{".to_owned(), close: "}".to_owned(), not_in: None, before_text }]),
+            ..ApiLanguageConfiguration::default()
+        };
+
+        let registration = env.ext_host.set_language_configuration(&default_extension, "testLanguage", &braces(None)).expect("setLanguageConfiguration");
+        env.add(registration);
+
+        let configuration = braces(Some(Rc::new(JsRegExp::from_str("\\{$", "").expect("RegExp"))));
+        let error = env
+            .ext_host
+            .set_language_configuration(&default_extension, "testLanguage", &configuration)
+            .err()
+            .expect("setLanguageConfiguration deveria lançar");
+        assert!(error.message.contains("CANNOT use API proposal: autoClosingPairBeforeText"), "{}", error.message);
+
+        let mut extension_with_proposal = null_extension_description();
+        extension_with_proposal.manifest.enabled_api_proposals = Some(vec!["autoClosingPairBeforeText".to_owned()]);
+        let registration = env.ext_host.set_language_configuration(&extension_with_proposal, "testLanguage", &configuration).expect("setLanguageConfiguration");
+        env.add(registration);
+        env.rpc_protocol.sync().await.expect("sync");
+        assert_eq!(call_count.get(), 2);
+        env.teardown().await;
+    });
+}
 
 #[test]
 fn document_drop_edits_does_not_cache_an_empty_edit_array_without_release_ids() {

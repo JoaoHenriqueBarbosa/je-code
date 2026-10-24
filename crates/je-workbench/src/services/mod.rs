@@ -5,6 +5,7 @@ pub mod search;
 pub mod editor;
 
 pub mod suggest;
+pub mod inline_completions;
 pub mod policies;
 
 pub mod preferences;

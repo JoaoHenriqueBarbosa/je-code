@@ -49,14 +49,17 @@ use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
 use je_base::event::Event;
+use je_base::js_regexp::JsRegExp;
 use je_base::promise::MaybePromise;
 use je_base::uri::URI;
 use je_editor::folding::syntax_range_provider::FoldingContext;
+use je_editor::language_configuration::{CharacterPair, CommentRule, IndentationRule, OnEnterRule};
 use je_extensions::scanner::ExtensionDescription;
 
 use super::ext_host_document_data::TextDocument;
-use super::ext_host_protocol::{FormattingOptions, ReferenceContext};
+use super::ext_host_protocol::{CharacterPairSupportDto, ElectricCharacterSupportDto, FormattingOptions, ReferenceContext};
 use super::ext_host_types::{
+    SyntaxTokenType,
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeAction, CodeActionKind, CodeActionTriggerKind, CodeLens, Color,
     ColorInformation, ColorPresentation, Command, CompletionContext, CompletionItem, Diagnostic, DocumentHighlight, DocumentLink,
     DocumentPasteTriggerKind, DocumentSymbol, EvaluatableExpression, FoldingRange, InlayHint, InlineValueContext, InlineValueEvaluatableExpression,
@@ -722,3 +725,29 @@ pub trait ApiDocumentPasteEditProvider {
     }
 }
 
+
+// ---- parte 3: configuração de linguagem
+
+/// `vscode.AutoClosingPair`.
+#[derive(Clone, Debug)]
+pub struct ApiAutoClosingPair {
+    pub open: String,
+    pub close: String,
+    pub not_in: Option<Vec<SyntaxTokenType>>,
+    /// Exige a API proposta `autoClosingPairBeforeText`.
+    pub before_text: Option<Rc<JsRegExp>>,
+}
+
+/// `vscode.LanguageConfiguration`. O `CommentRule`, o `IndentationRule` e o `OnEnterRule` da API têm a forma dos do editor e são
+/// os do editor; o `__electricCharacterSupport` e o `__characterPairSupport` têm a forma dos DTOs e são os do protocolo.
+#[derive(Clone, Default)]
+pub struct ApiLanguageConfiguration {
+    pub comments: Option<CommentRule>,
+    pub brackets: Option<Vec<CharacterPair>>,
+    pub word_pattern: Option<Rc<JsRegExp>>,
+    pub indentation_rules: Option<IndentationRule>,
+    pub on_enter_rules: Option<Vec<OnEnterRule>>,
+    pub electric_character_support: Option<ElectricCharacterSupportDto>,
+    pub character_pair_support: Option<CharacterPairSupportDto>,
+    pub auto_closing_pairs: Option<Vec<ApiAutoClosingPair>>,
+}
