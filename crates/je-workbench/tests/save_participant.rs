@@ -22,6 +22,7 @@
 mod common;
 mod support;
 
+use je_workbench::services::textfile::textfiles::ITextFileEditorModelManager;
 use std::cell::RefCell;
 use std::rc::Rc;
 
