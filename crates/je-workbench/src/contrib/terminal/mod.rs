@@ -3,3 +3,5 @@
 pub mod terminal_uri;
 
 pub mod xterm_buffer;
+
+pub mod common;

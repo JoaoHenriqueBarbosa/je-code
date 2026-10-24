@@ -17,3 +17,6 @@ pub mod terminal_environment;
 pub mod terminal_profiles;
 
 pub mod node_terminal_environment;
+
+pub mod terminal_settings;
+pub mod xterm_headless;
