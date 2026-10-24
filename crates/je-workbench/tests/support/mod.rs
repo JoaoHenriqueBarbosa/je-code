@@ -22,3 +22,6 @@ pub mod terminal_completion_support;
 
 // Porte de `textFileEditorModelManager.test.ts`.
 pub mod text_file_support;
+
+// Porte de `untitledFileWorkingCopy.test.ts` e de `untitledScratchpadWorkingCopy.test.ts`.
+pub mod untitled_file_working_copy_support;
