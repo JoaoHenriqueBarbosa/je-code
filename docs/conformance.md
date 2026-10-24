@@ -9,12 +9,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
 | `workbench/services` | 137 | 2491 | 85 | 2029 | 81.45 |
 | `workbench/api` | 94 | 965 | 77 | 747 | 77.41 |
-| `workbench/contrib` | 370 | 4636 | 155 | 1953 | 42.13 |
+| `workbench/contrib` | 370 | 4636 | 155 | 1966 | 42.41 |
 | `workbench (shell)` | 69 | 621 | 20 | 223 | 35.91 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 11602 | 63.09 |
+| **total** | | 18391 | | 11615 | 63.16 |
 
 ## Arquivos portados
 
@@ -563,11 +563,11 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/bulkEdit/test/browser/bulkFileEdits.test.ts` | 6 | `crates/je-workbench/tests/bulk_file_edits.rs` | 6 |
 | `src/vs/workbench/contrib/canvases/test/common/canvas.test.ts` | 3 | `crates/je-workbench/tests/canvas.rs` | 3 |
 | `src/vs/workbench/contrib/customEditor/test/common/customEditorModelManager.test.ts` | 11 | `crates/je-workbench/tests/custom_editor_model_manager.rs` | 11 |
-| `src/vs/workbench/contrib/debug/test/browser/baseDebugView.test.ts` | 5 | `crates/je-workbench/tests/debug_base_debug_view.rs` | 1 |
-| `src/vs/workbench/contrib/debug/test/browser/breakpoints.test.ts` | 13 | `crates/je-workbench/tests/debug_breakpoints.rs` | 12 |
+| `src/vs/workbench/contrib/debug/test/browser/baseDebugView.test.ts` | 5 | `crates/je-workbench/tests/debug_base_debug_view.rs` | 5 |
+| `src/vs/workbench/contrib/debug/test/browser/breakpoints.test.ts` | 13 | `crates/je-workbench/tests/debug_breakpoints.rs` | 13 |
 | `src/vs/workbench/contrib/debug/test/browser/callStack.test.ts` | 13 | `crates/je-workbench/tests/debug_call_stack.rs` | 13 |
 | `src/vs/workbench/contrib/debug/test/browser/debugANSIHandling.test.ts` | 8 | `crates/je-workbench/tests/debug_ansi_handling.rs` | 8 |
-| `src/vs/workbench/contrib/debug/test/browser/debugConfigurationManager.test.ts` | 4 | `crates/je-workbench/tests/debug_configuration_manager.rs` | 0 |
+| `src/vs/workbench/contrib/debug/test/browser/debugConfigurationManager.test.ts` | 4 | `crates/je-workbench/tests/debug_configuration_manager.rs` | 4 |
 | `src/vs/workbench/contrib/debug/test/browser/debugHover.test.ts` | 1 | `crates/je-workbench/tests/debug_hover.rs` | 1 |
 | `src/vs/workbench/contrib/debug/test/browser/debugMemory.test.ts` | 2 | `crates/je-workbench/tests/debug_memory.rs` | 2 |
 | `src/vs/workbench/contrib/debug/test/browser/debugSession.test.ts` | 11 | `crates/je-workbench/tests/debug_session.rs` | 11 |
@@ -577,8 +577,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/debug/test/browser/linkDetector.test.ts` | 26 | `crates/je-workbench/tests/link_detector.rs` | 26 |
 | `src/vs/workbench/contrib/debug/test/browser/rawDebugSession.test.ts` | 2 | `crates/je-workbench/tests/debug_raw_session.rs` | 2 |
 | `src/vs/workbench/contrib/debug/test/browser/repl.test.ts` | 10 | `crates/je-workbench/tests/debug_repl.rs` | 10 |
-| `src/vs/workbench/contrib/debug/test/browser/variablesView.test.ts` | 2 | `crates/je-workbench/tests/debug_variables_view.rs` | 0 |
-| `src/vs/workbench/contrib/debug/test/browser/watchExpressionView.test.ts` | 2 | `crates/je-workbench/tests/debug_watch_expression_view.rs` | 0 |
+| `src/vs/workbench/contrib/debug/test/browser/variablesView.test.ts` | 2 | `crates/je-workbench/tests/debug_variables_view.rs` | 2 |
+| `src/vs/workbench/contrib/debug/test/browser/watchExpressionView.test.ts` | 2 | `crates/je-workbench/tests/debug_watch_expression_view.rs` | 2 |
 | `src/vs/workbench/contrib/debug/test/common/abstractDebugAdapter.test.ts` | 3 | `crates/je-workbench/tests/abstract_debug_adapter.rs` | 3 |
 | `src/vs/workbench/contrib/debug/test/common/debugModel.test.ts` | 7 | `crates/je-workbench/tests/debug_model.rs` | 7 |
 | `src/vs/workbench/contrib/debug/test/node/debugAdapter.test.ts` | 4 | `crates/je-workbench/tests/debug_adapter.rs` | 3 |
