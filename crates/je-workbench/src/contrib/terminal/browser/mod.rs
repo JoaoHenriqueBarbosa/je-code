@@ -28,3 +28,6 @@ pub mod terminal_actions;
 
 // Porte de `terminalInstanceService.ts`.
 pub mod terminal_instance_service;
+
+// Porte de `terminalService.ts` (o `TerminalService`, com os recortes declarados no cabeçalho).
+pub mod terminal_service;

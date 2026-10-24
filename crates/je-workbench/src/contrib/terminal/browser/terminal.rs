@@ -48,10 +48,11 @@ use je_base::uri::URI;
 use je_instantiation::service_id;
 use je_platform::terminal::capabilities::capabilities::ITerminalCapabilityStore;
 use je_platform::terminal::terminal::{
-    IShellLaunchConfig, ITerminalLaunchError, ITerminalProfile, ShellCwd, ShellIntegrationInjectionFailureReason, TerminalExitReason, TerminalLocation,
-    TerminalShellType,
+    IShellLaunchConfig, ITerminalLaunchError, ITerminalProfile, ShellCwd, ShellIntegrationInjectionFailureReason, TerminalExitReason, TerminalIcon, TerminalLocation,
+    TerminalShellType, TitleEventSource,
 };
 
+use super::terminal_instance::IconChangedEvent;
 use crate::contrib::terminal::common::terminal::{IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, SharedShellLaunchConfig, TerminalFont};
 use crate::contrib::terminal::common::terminal_backend::ITerminalBackend;
 
@@ -189,6 +190,95 @@ pub trait ITerminalInstance {
     }
     /// `clearSelection()`.
     fn clear_selection(&self) {}
+
+    // Os membros que o `TerminalService` lê (o `TerminalService` do original os lê do `ITerminalInstance`). O padrão é o de um
+    // `mock<ITerminalInstance>()` (o membro não definido lança); a classe [`TerminalInstance`](super::terminal_instance::TerminalInstance)
+    // sobrescreve os que ela tem. `onMaximumDimensionsChanged`, `onDidFocus` e `hasFocus` valem "nunca dispara" e "sem foco" por
+    // padrão: a classe do porte não os tem (o dimensionamento e o foco são do frontend nativo).
+
+    /// `hasChildProcesses`.
+    fn has_child_processes(&self) -> bool {
+        je_base::errors::throw(je_base::errors::Error::new("hasChildProcesses is not a function"))
+    }
+    /// `persistentProcessId`.
+    fn persistent_process_id(&self) -> Option<u32> {
+        je_base::errors::throw(je_base::errors::Error::new("persistentProcessId is not a function"))
+    }
+    /// `titleSource`.
+    fn title_source(&self) -> TitleEventSource {
+        je_base::errors::throw(je_base::errors::Error::new("titleSource is not a function"))
+    }
+    /// `staticTitle`.
+    fn static_title(&self) -> Option<String> {
+        je_base::errors::throw(je_base::errors::Error::new("staticTitle is not a function"))
+    }
+    /// `icon`.
+    fn icon(&self) -> Option<TerminalIcon> {
+        je_base::errors::throw(je_base::errors::Error::new("icon is not a function"))
+    }
+    /// `color`.
+    fn color(&self) -> Option<String> {
+        je_base::errors::throw(je_base::errors::Error::new("color is not a function"))
+    }
+    /// `onExit`, sem a carga (o código ou o erro de saída): o `TerminalService` só espera o evento.
+    fn on_exit_signal(&self) -> Event<()> {
+        je_base::errors::throw(je_base::errors::Error::new("onExit is not a function"))
+    }
+    /// `onTitleChanged`.
+    fn on_title_changed(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        je_base::errors::throw(je_base::errors::Error::new("onTitleChanged is not a function"))
+    }
+    /// `onIconChanged`.
+    fn on_icon_changed(&self) -> Event<IconChangedEvent> {
+        je_base::errors::throw(je_base::errors::Error::new("onIconChanged is not a function"))
+    }
+    /// `onProcessIdReady`.
+    fn on_process_id_ready(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        je_base::errors::throw(je_base::errors::Error::new("onProcessIdReady is not a function"))
+    }
+    /// `onDimensionsChanged`.
+    fn on_dimensions_changed(&self) -> Event<()> {
+        je_base::errors::throw(je_base::errors::Error::new("onDimensionsChanged is not a function"))
+    }
+    /// `onDidInputData`.
+    fn on_did_input_data(&self) -> Event<String> {
+        je_base::errors::throw(je_base::errors::Error::new("onDidInputData is not a function"))
+    }
+    /// `onDidChangeShellType`.
+    fn on_did_change_shell_type(&self) -> Event<TerminalShellType> {
+        je_base::errors::throw(je_base::errors::Error::new("onDidChangeShellType is not a function"))
+    }
+    /// `onMaximumDimensionsChanged`.
+    fn on_maximum_dimensions_changed(&self) -> Event<()> {
+        Event::none()
+    }
+    /// `onDidFocus`.
+    fn on_did_focus(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        Event::none()
+    }
+    /// `hasFocus`.
+    fn has_focus(&self) -> bool {
+        false
+    }
+}
+
+/// `ITerminalInstanceHost`, reduzido ao que o `TerminalService` lê: o dono de um conjunto de instâncias (o serviço de grupos ou o
+/// de editores) com os eventos que o `TerminalService` repassa.
+pub trait ITerminalInstanceHost {
+    /// `activeInstance`.
+    fn active_instance(&self) -> Option<Rc<dyn ITerminalInstance>>;
+    /// `instances`.
+    fn instances(&self) -> Vec<Rc<dyn ITerminalInstance>>;
+    /// `onDidChangeActiveInstance`.
+    fn on_did_change_active_instance(&self) -> Event<Option<Rc<dyn ITerminalInstance>>>;
+    /// `onDidDisposeInstance`.
+    fn on_did_dispose_instance(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// `onDidFocusInstance`.
+    fn on_did_focus_instance(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// `onDidChangeInstanceCapability`.
+    fn on_did_change_instance_capability(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// `onDidChangeInstances`.
+    fn on_did_change_instances(&self) -> Event<()>;
 }
 
 /// `ITerminalLink`.
@@ -206,17 +296,48 @@ pub trait ITerminalExternalLinkProvider {
     fn provide_links(&self, instance: Rc<dyn ITerminalInstance>, line: &str) -> Promise<Option<Vec<ITerminalLink>>>;
 }
 
-/// `ITerminalGroupService`, reduzido ao que o `MainThreadTerminalService` lê.
+/// `ITerminalGroupService`, reduzido ao que o `MainThreadTerminalService` e o `TerminalService` leem. Os membros do
+/// `TerminalService` têm o padrão de um `mock<ITerminalGroupService>()` (o membro não definido lança).
 pub trait ITerminalGroupService {
     /// `showPanel(focus?)`.
     fn show_panel(&self, focus: bool) -> Promise<()>;
     /// `hidePanel()`.
     fn hide_panel(&self);
+
+    /// O `ITerminalInstanceHost` do serviço (`instances`, `activeInstance` e os eventos de instância).
+    fn instance_host(&self) -> Rc<dyn ITerminalInstanceHost> {
+        je_base::errors::throw(je_base::errors::Error::new("instanceHost is not a function"))
+    }
+    /// `onDidChangeActiveGroup`, sem a carga (o grupo ativo não faz parte do porte).
+    fn on_did_change_active_group(&self) -> Event<()> {
+        je_base::errors::throw(je_base::errors::Error::new("onDidChangeActiveGroup is not a function"))
+    }
+    /// `setActiveInstance(instance)`.
+    fn set_active_instance(&self, _instance: Rc<dyn ITerminalInstance>) {
+        je_base::errors::throw(je_base::errors::Error::new("setActiveInstance is not a function"))
+    }
+    /// `setActiveInstanceByIndex(index)`.
+    fn set_active_instance_by_index(&self, _index: usize) {
+        je_base::errors::throw(je_base::errors::Error::new("setActiveInstanceByIndex is not a function"))
+    }
+    /// `createGroup(shellLaunchConfig)` seguido de `group.terminalInstances[0]`: a instância do grupo novo.
+    fn create_group(&self, _shell_launch_config: IShellLaunchConfig) -> Rc<dyn ITerminalInstance> {
+        je_base::errors::throw(je_base::errors::Error::new("createGroup is not a function"))
+    }
+    /// `createGroup(instance)`.
+    fn create_group_for_instance(&self, _instance: Rc<dyn ITerminalInstance>) {
+        je_base::errors::throw(je_base::errors::Error::new("createGroup is not a function"))
+    }
+    /// `getGroupForInstance(parent)?.split(shellLaunchConfig)`: `None` quando a instância não tem grupo.
+    fn split_instance(&self, _parent: Rc<dyn ITerminalInstance>, _shell_launch_config: IShellLaunchConfig) -> Option<Rc<dyn ITerminalInstance>> {
+        je_base::errors::throw(je_base::errors::Error::new("getGroupForInstance is not a function"))
+    }
 }
 
 service_id!(pub I_TERMINAL_GROUP_SERVICE: dyn ITerminalGroupService = "terminalGroupService");
 
-/// `ITerminalEditorService`, reduzido ao que o `MainThreadTerminalService` lê.
+/// `ITerminalEditorService`, reduzido ao que o `MainThreadTerminalService` e o `TerminalService` leem. Os membros do
+/// `TerminalService` têm o padrão de um `mock<ITerminalEditorService>()` (o membro não definido lança).
 pub trait ITerminalEditorService {
     /// `revealActiveEditor(preserveFocus?)`.
     fn reveal_active_editor(&self, preserve_focus: bool) -> Promise<()>;
@@ -225,6 +346,24 @@ pub trait ITerminalEditorService {
     /// editor. O padrão é o de um `mock<ITerminalEditorService>()` (o membro não definido lança).
     fn get_input_from_resource(&self, _resource: &URI) -> Result<TerminalEditorInput, je_base::errors::Error> {
         Err(je_base::errors::Error::new("getInputFromResource is not a function"))
+    }
+
+    /// O `ITerminalInstanceHost` do serviço (`instances`, `activeInstance` e os eventos de instância).
+    fn instance_host(&self) -> Rc<dyn ITerminalInstanceHost> {
+        je_base::errors::throw(je_base::errors::Error::new("instanceHost is not a function"))
+    }
+    /// `setActiveInstance(instance)`.
+    fn set_active_instance(&self, _instance: Rc<dyn ITerminalInstance>) {
+        je_base::errors::throw(je_base::errors::Error::new("setActiveInstance is not a function"))
+    }
+    /// `openEditor(instance, editorOptions?)`: o `location` é o `TerminalEditorLocation` (`viewColumn` e `preserveFocus`), na
+    /// forma [`TerminalCreateLocation::Editor`].
+    fn open_editor(&self, _instance: Rc<dyn ITerminalInstance>, _location: Option<TerminalCreateLocation>) {
+        je_base::errors::throw(je_base::errors::Error::new("openEditor is not a function"))
+    }
+    /// `splitInstance(parent, shellLaunchConfig)`.
+    fn split_instance(&self, _parent: Rc<dyn ITerminalInstance>, _shell_launch_config: IShellLaunchConfig) -> Promise<Rc<dyn ITerminalInstance>> {
+        je_base::errors::throw(je_base::errors::Error::new("splitInstance is not a function"))
     }
 }
 

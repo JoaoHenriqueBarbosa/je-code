@@ -2736,6 +2736,58 @@ impl ITerminalInstance for TerminalInstance {
     fn session_id(&self) -> String {
         self.session_id().to_owned()
     }
+
+    fn has_child_processes(&self) -> bool {
+        self.has_child_processes()
+    }
+
+    fn persistent_process_id(&self) -> Option<u32> {
+        self.persistent_process_id()
+    }
+
+    fn title_source(&self) -> TitleEventSource {
+        self.title_source()
+    }
+
+    fn static_title(&self) -> Option<String> {
+        self.static_title()
+    }
+
+    fn icon(&self) -> Option<TerminalIcon> {
+        self.icon()
+    }
+
+    fn color(&self) -> Option<String> {
+        self.color()
+    }
+
+    fn on_exit_signal(&self) -> Event<()> {
+        self.on_exit().signal()
+    }
+
+    fn on_title_changed(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        self.on_title_changed()
+    }
+
+    fn on_icon_changed(&self) -> Event<IconChangedEvent> {
+        self.on_icon_changed()
+    }
+
+    fn on_process_id_ready(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        self.on_process_id_ready()
+    }
+
+    fn on_dimensions_changed(&self) -> Event<()> {
+        self.on_dimensions_changed()
+    }
+
+    fn on_did_input_data(&self) -> Event<String> {
+        self.on_did_input_data()
+    }
+
+    fn on_did_change_shell_type(&self) -> Event<TerminalShellType> {
+        self.on_did_change_shell_type()
+    }
 }
 
 impl IDisposable for TerminalInstance {

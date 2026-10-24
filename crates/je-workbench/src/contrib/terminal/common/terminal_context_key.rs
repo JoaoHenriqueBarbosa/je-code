@@ -1,5 +1,6 @@
-//! Porte parcial de `src/vs/workbench/contrib/terminal/common/terminalContextKey.ts`: só a chave `terminalShellType`
-//! (`TerminalContextKeys.shellType`), que o `TerminalInstanceService` liga ao serviço de chaves de contexto.
+//! Porte parcial de `src/vs/workbench/contrib/terminal/common/terminalContextKey.ts`: as chaves `terminalShellType`
+//! (`TerminalContextKeys.shellType`, que o `TerminalInstanceService` liga ao serviço de chaves de contexto), `terminalIsOpen`,
+//! `terminalCount`, `terminalProcessSupported` e `terminalHasBeenCreated` (que o `TerminalService` liga).
 //!
 //! O resto do arquivo (as demais chaves, as expressões negadas e o `shouldShowViewInlineActions`) entra quando um consumidor
 //! pedir.
@@ -33,4 +34,58 @@ thread_local! {
 /// `TerminalContextKeys.shellType.bindTo(contextKeyService)`.
 pub fn shell_type_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
     SHELL_TYPE.with(|key| key.bind_to(context_key_service))
+}
+
+/// `TerminalContextKeyStrings.IsOpen`.
+pub const IS_OPEN_CONTEXT_KEY: &str = "terminalIsOpen";
+
+/// `TerminalContextKeyStrings.Count`.
+pub const COUNT_CONTEXT_KEY: &str = "terminalCount";
+
+/// `TerminalContextKeyStrings.ProcessSupported`.
+pub const PROCESS_SUPPORTED_CONTEXT_KEY: &str = "terminalProcessSupported";
+
+/// `TerminalContextKeyStrings.TerminalHasBeenCreated`.
+pub const TERMINAL_HAS_BEEN_CREATED_CONTEXT_KEY: &str = "terminalHasBeenCreated";
+
+thread_local! {
+    /// `TerminalContextKeys.isOpen`: whether the terminal view is open (`RawContextKey<boolean>`, escondida da lista central).
+    static IS_OPEN: RawContextKey = RawContextKey::new(IS_OPEN_CONTEXT_KEY, Dynamic::Bool(false), ContextKeyMeta::Hide);
+
+    /// `TerminalContextKeys.count`: the current number of terminals.
+    static COUNT: RawContextKey = RawContextKey::new(
+        COUNT_CONTEXT_KEY,
+        Dynamic::Number(0.0),
+        ContextKeyMeta::Description(localize("terminalCountContextKey", "The current number of terminals.", &[])),
+    );
+
+    /// `TerminalContextKeys.processSupported`: whether terminal processes can be launched in the current workspace.
+    static PROCESS_SUPPORTED: RawContextKey = RawContextKey::new(
+        PROCESS_SUPPORTED_CONTEXT_KEY,
+        Dynamic::Bool(false),
+        ContextKeyMeta::Description(localize("terminalProcessSupportedContextKey", "Whether terminal processes can be launched in the current workspace.", &[])),
+    );
+
+    /// `TerminalContextKeys.terminalHasBeenCreated`: whether a terminal has been created in this window (escondida da lista central).
+    static TERMINAL_HAS_BEEN_CREATED: RawContextKey = RawContextKey::new(TERMINAL_HAS_BEEN_CREATED_CONTEXT_KEY, Dynamic::Bool(false), ContextKeyMeta::Hide);
+}
+
+/// `TerminalContextKeys.isOpen.bindTo(service)`.
+pub fn is_open_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
+    IS_OPEN.with(|key| key.bind_to(context_key_service))
+}
+
+/// `TerminalContextKeys.count.bindTo(service)`.
+pub fn count_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
+    COUNT.with(|key| key.bind_to(context_key_service))
+}
+
+/// `TerminalContextKeys.processSupported.bindTo(service)`.
+pub fn process_supported_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
+    PROCESS_SUPPORTED.with(|key| key.bind_to(context_key_service))
+}
+
+/// `TerminalContextKeys.terminalHasBeenCreated.bindTo(service)`.
+pub fn terminal_has_been_created_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
+    TERMINAL_HAS_BEEN_CREATED.with(|key| key.bind_to(context_key_service))
 }
