@@ -177,3 +177,8 @@ pub mod minimap_tokens_color_tracker;
 pub mod view_context;
 pub mod view_model_impl_support;
 pub mod gpu;
+
+pub mod minimap_char_sheet;
+pub mod minimap_char_renderer;
+pub mod minimap_pre_baked;
+pub mod minimap_char_renderer_factory;
