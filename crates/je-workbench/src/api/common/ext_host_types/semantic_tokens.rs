@@ -42,7 +42,7 @@ impl SemanticTokens {
 }
 
 /// `SemanticTokensEdit`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SemanticTokensEdit {
     pub start: f64,
     pub delete_count: f64,
@@ -56,7 +56,7 @@ impl SemanticTokensEdit {
 }
 
 /// `SemanticTokensEdits`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SemanticTokensEdits {
     pub result_id: Option<String>,
     pub edits: Vec<SemanticTokensEdit>,
