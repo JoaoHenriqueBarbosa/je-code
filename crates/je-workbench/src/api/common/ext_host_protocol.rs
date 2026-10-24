@@ -1662,3 +1662,210 @@ mod comments_region {
 }
 
 // #endregion
+
+// #region QuickOpen
+
+pub use self::quick_open_region::*;
+
+/// `MainThreadQuickOpenShape`, `ExtHostQuickOpenShape`, os DTOs de transferência (`TransferQuickPickItem`,
+/// `TransferQuickInputButton`, `TransferQuickInput`, `IInputBoxOptions`, `IconPathDto`) e os identificadores
+/// `MainContext.MainThreadQuickOpen` e `ExtHostContext.ExtHostQuickOpen` (de `extHost.protocol.ts`, usados por
+/// `mainThreadQuickOpen.ts`).
+///
+/// Divergências:
+/// - `UriComponents` é [`URI`] e `IconPathDto` (`UriComponents | { light, dark } | ThemeIcon`) é o enum [`IconPathDto`].
+/// - `TransferQuickPickItem` e `TransferQuickInputButton` estendem `IQuickPickItem` e `IQuickInputButton`: os campos
+///   que o `MainThreadQuickOpen` preenche (`iconPath`, `iconClass`, `iconClasses`) estão no struct. `label` é
+///   `Option<String>` porque o original o preenche com `??=` quando só há `resourceUri`. O `toggle?: { checked }` é o
+///   [`QuickInputButtonToggle`] compartilhado, que o widget escreve.
+/// - `handle` de item é `u32`, de botão é `i64` (o botão de voltar da API tem `handle` -1); `instance` e `sessionId`
+///   são `u32`. O `handle` ausente do evento de botão (o botão do serviço, que não é um `TransferQuickInputButton`) é
+///   `None`.
+/// - `TransferQuickInput` tem o `[key: string]: any` que o `$createOrUpdate` percorre com `for ... in`: [`params`](TransferQuickInput::params)
+///   guarda os pares na ordem de inserção, cada um como [`TransferQuickInputParam`]; as chaves que o host de extensões
+///   envia são variantes tipadas e o resto é [`TransferQuickInputParam::Other`] (que o `MainThreadQuickOpen` ignora, pois
+///   o `input[param] = value` do original só pendura uma propriedade solta). `type` é o `kind`; `id` é o `id`.
+/// - `IPickOptions<TransferQuickPickItem>` é o [`IPickOptions`] sem genérico; o retorno de `$show` (`number | number[] |
+///   undefined`) é [`QuickOpenShowResult`] dentro de `Option`.
+/// - O `$validateInput` devolve o [`InputValidationResult`] da plataforma (`string | { content, severity } | null | undefined`).
+mod quick_open_region {
+    use std::rc::Rc;
+
+    use je_base::cancellation::CancellationToken;
+    use je_base::dynamic::Dynamic;
+    use je_base::errors::Error;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::severity::Severity;
+    use je_base::themables::ThemeIcon;
+    use je_base::uri::URI;
+    use je_platform::quickinput::quick_input::{
+        IPickOptions, IQuickPickSeparator, InputValidationResult, QuickInputButtonLocation, QuickInputButtonToggle, QuickInputIconPath,
+    };
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// `IconPathDto`.
+    #[derive(Clone, Debug)]
+    pub enum IconPathDto {
+        Uri(URI),
+        Themed { light: URI, dark: URI },
+        ThemeIcon(ThemeIcon),
+    }
+
+    /// `TransferQuickInputButton`.
+    #[derive(Clone, Debug)]
+    pub struct TransferQuickInputButton {
+        pub handle: i64,
+        pub icon_path_dto: IconPathDto,
+        pub toggle: Option<Rc<QuickInputButtonToggle>>,
+        pub tooltip: Option<String>,
+        pub always_visible: Option<bool>,
+        pub location: Option<QuickInputButtonLocation>,
+        pub label: Option<String>,
+        pub secondary: Option<bool>,
+        pub icon_path: Option<QuickInputIconPath>,
+        pub icon_class: Option<String>,
+    }
+
+    impl TransferQuickInputButton {
+        /// O botão só com o `handle` e o ícone, o resto ausente.
+        pub fn new(handle: i64, icon_path_dto: IconPathDto) -> Self {
+            Self {
+                handle,
+                icon_path_dto,
+                toggle: None,
+                tooltip: None,
+                always_visible: None,
+                location: None,
+                label: None,
+                secondary: None,
+                icon_path: None,
+                icon_class: None,
+            }
+        }
+    }
+
+    /// `TransferQuickPickItem`.
+    #[derive(Clone, Debug, Default)]
+    pub struct TransferQuickPickItem {
+        pub handle: u32,
+        pub label: Option<String>,
+        pub icon_path_dto: Option<IconPathDto>,
+        pub description: Option<String>,
+        pub detail: Option<String>,
+        pub picked: Option<bool>,
+        pub always_show: Option<bool>,
+        pub buttons: Option<Vec<TransferQuickInputButton>>,
+        pub resource_uri: Option<URI>,
+        pub icon_path: Option<QuickInputIconPath>,
+        pub icon_class: Option<String>,
+        /// A propriedade `iconClasses` que o `MainThreadQuickOpen` define (um getter preguiçoso no original).
+        pub icon_classes: Option<Vec<String>>,
+    }
+
+    /// `TransferQuickPickItemOrSeparator`.
+    #[derive(Clone, Debug)]
+    pub enum TransferQuickPickItemOrSeparator {
+        Item(TransferQuickPickItem),
+        Separator(IQuickPickSeparator),
+    }
+
+    /// O `type?: 'quickPick' | 'inputBox'` de `BaseTransferQuickInput`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum TransferQuickInputKind {
+        QuickPick,
+        InputBox,
+    }
+
+    /// Uma chave de `TransferQuickInput` com o valor dela (`null` do original é `None`).
+    #[derive(Clone, Debug)]
+    pub enum TransferQuickInputParam {
+        Title(Option<String>),
+        Step(Option<u32>),
+        TotalSteps(Option<u32>),
+        Enabled(bool),
+        Busy(bool),
+        Visible(bool),
+        IgnoreFocusOut(bool),
+        Value(String),
+        ValueSelection(Option<(u32, u32)>),
+        Placeholder(Option<String>),
+        Prompt(Option<String>),
+        Password(bool),
+        ValidationMessage(Option<String>),
+        Severity(Severity),
+        Buttons(Vec<TransferQuickInputButton>),
+        Items(Option<Vec<TransferQuickPickItemOrSeparator>>),
+        ActiveItems(Vec<u32>),
+        SelectedItems(Vec<u32>),
+        CanSelectMany(bool),
+        MatchOnDescription(bool),
+        MatchOnDetail(bool),
+        SortByLabel(bool),
+        KeepScrollPosition(bool),
+        /// Qualquer outra chave do `[key: string]: any`.
+        Other(String, Dynamic),
+    }
+
+    /// `TransferQuickInput` (`TransferQuickPick | TransferInputBox`).
+    #[derive(Clone, Debug)]
+    pub struct TransferQuickInput {
+        pub id: u32,
+        pub kind: Option<TransferQuickInputKind>,
+        /// Os pares na ordem de inserção (sem `id` e `type`).
+        pub params: Vec<TransferQuickInputParam>,
+    }
+
+    /// `IInputBoxOptions`.
+    #[derive(Clone, Debug, Default)]
+    pub struct IInputBoxOptions {
+        pub title: Option<String>,
+        pub value: Option<String>,
+        pub value_selection: Option<(u32, u32)>,
+        pub prompt: Option<String>,
+        pub place_holder: Option<String>,
+        pub password: Option<bool>,
+        pub ignore_focus_out: Option<bool>,
+    }
+
+    /// O `number | number[]` que `$show` devolve.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum QuickOpenShowResult {
+        One(u32),
+        Many(Vec<u32>),
+    }
+
+    /// `MainThreadQuickOpenShape`.
+    pub trait MainThreadQuickOpenShape: IDisposable {
+        fn rpc_show(&self, instance: u32, options: IPickOptions, token: CancellationToken) -> Promise<Option<QuickOpenShowResult>>;
+        fn rpc_set_items(&self, instance: u32, items: Vec<TransferQuickPickItemOrSeparator>) -> Promise<()>;
+        fn rpc_set_error(&self, instance: u32, error: Error) -> Promise<()>;
+        fn rpc_input(&self, options: Option<IInputBoxOptions>, validate_input: bool, token: CancellationToken) -> Promise<Option<String>>;
+        fn rpc_create_or_update(&self, params: TransferQuickInput) -> Promise<()>;
+        fn rpc_dispose(&self, id: u32) -> Promise<()>;
+    }
+
+    /// `ExtHostQuickOpenShape`.
+    pub trait ExtHostQuickOpenShape {
+        fn rpc_on_item_selected(&self, handle: u32);
+        fn rpc_validate_input(&self, input: &str) -> Promise<InputValidationResult>;
+        fn rpc_on_did_change_active(&self, session_id: u32, handles: Vec<u32>);
+        fn rpc_on_did_change_selection(&self, session_id: u32, handles: Vec<u32>);
+        fn rpc_on_did_accept(&self, session_id: u32);
+        fn rpc_on_did_change_value(&self, session_id: u32, value: &str);
+        fn rpc_on_did_trigger_button(&self, session_id: u32, handle: Option<i64>, checked: Option<bool>);
+        fn rpc_on_did_trigger_item_button(&self, session_id: u32, item_handle: Option<u32>, button_handle: Option<i64>, checked: Option<bool>);
+        fn rpc_on_did_hide(&self, session_id: u32);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_QUICK_OPEN: ProxyIdentifier<dyn MainThreadQuickOpenShape> = ProxyIdentifier::new("MainThreadQuickOpen");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_QUICK_OPEN: ProxyIdentifier<dyn ExtHostQuickOpenShape> = ProxyIdentifier::new("ExtHostQuickOpen");
+    }
+}
+
+// #endregion

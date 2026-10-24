@@ -402,18 +402,20 @@ impl AbstractGalleryAccountProvider for MicrosoftGalleryAccountProvider {
                 .map(|(index, account)| IQuickPickItem {
                     base: IQuickItem { label: JsString::from(account.label.as_str()), ..IQuickItem::default() },
                     extra: Dynamic::object([("accountIndex", Dynamic::Number(index as f64))]),
+                    ..IQuickPickItem::default()
                 })
                 .collect();
             picks.push(IQuickPickItem {
                 base: IQuickItem { label: JsString::from(localize("marketplace.signInDifferentAccount", "Sign in with a Different Account…", &[]).as_str()), ..IQuickItem::default() },
                 extra: Dynamic::Undefined,
+                ..IQuickPickItem::default()
             });
 
             let options = IPickOptions {
                 place_holder: Some(localize("marketplace.pickAccount", "Select the account to use for the Extensions Marketplace", &[])),
                 ..IPickOptions::default()
             };
-            let Some(pick) = this.quick_input_service.pick(picks, Some(&options)).await? else {
+            let Some(pick) = this.quick_input_service.pick_items(picks, Some(&options)).await? else {
                 return Ok(()); // cancelled
             };
             this.choose_account(&scopes, picked_account(&pick, &accounts)).await?;
