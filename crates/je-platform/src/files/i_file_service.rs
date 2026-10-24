@@ -3,7 +3,8 @@
 //!
 //! O porte do serviço de arquivos é a struct concreta [`FileService`], sem trait. Este módulo define o `IFileService`
 //! reduzido ao que os serviços portados até aqui leem dele (`getProvider`, `resolve` com `resolveMetadata`,
-//! `onDidFilesChange` e `exists`), com a assinatura de cada método igual à do original, e cresce junto com os
+//! `onDidFilesChange`, `exists`, `hasProvider`, `hasCapability` e os eventos de registro e de capacidades dos
+//! providers), com a assinatura de cada método igual à do original, e cresce junto com os
 //! consumidores. O `FileService` o implementa por [`Rc<FileService>`], porque os métodos dele recebem `self: &Rc<Self>`.
 //!
 //! Divergências:
@@ -18,7 +19,10 @@ use je_base::uri::URI;
 use je_instantiation::service_id;
 
 use super::file_service::FileService;
-use super::files::{FileChangesEvent, FileStatWithMetadata, FileSystemProviderRef, ResolveFileOptions};
+use super::files::{
+    FileChangesEvent, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
+    FileSystemProviderRegistrationEvent, ResolveFileOptions,
+};
 
 /// `IFileService`.
 pub trait IFileService {
@@ -34,6 +38,20 @@ pub trait IFileService {
 
     /// Checks if a resource exists.
     fn exists(&self, resource: &URI) -> Promise<bool>;
+
+    /// An event that is fired when a file system provider is added or removed.
+    fn on_did_change_file_system_provider_registrations(&self) -> Event<FileSystemProviderRegistrationEvent>;
+
+    /// An event that is fired when the capabilities of a file system provider change.
+    fn on_did_change_file_system_provider_capabilities(&self) -> Event<FileSystemProviderCapabilitiesChangeEvent>;
+
+    /// Checks if this file service has a registered provider for the provided resource.
+    ///
+    /// Note: this does NOT account for contributed providers from extensions that have not been activated yet.
+    fn has_provider(&self, resource: &URI) -> bool;
+
+    /// Checks if the provider for the provided resource has the provided file system capability.
+    fn has_capability(&self, resource: &URI, capability: FileSystemProviderCapabilities) -> bool;
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
@@ -53,5 +71,21 @@ impl IFileService for Rc<FileService> {
 
     fn exists(&self, resource: &URI) -> Promise<bool> {
         FileService::exists(self, resource)
+    }
+
+    fn on_did_change_file_system_provider_registrations(&self) -> Event<FileSystemProviderRegistrationEvent> {
+        FileService::on_did_change_file_system_provider_registrations(self)
+    }
+
+    fn on_did_change_file_system_provider_capabilities(&self) -> Event<FileSystemProviderCapabilitiesChangeEvent> {
+        FileService::on_did_change_file_system_provider_capabilities(self)
+    }
+
+    fn has_provider(&self, resource: &URI) -> bool {
+        FileService::has_provider(self, resource)
+    }
+
+    fn has_capability(&self, resource: &URI, capability: FileSystemProviderCapabilities) -> bool {
+        FileService::has_capability(self, resource, capability)
     }
 }

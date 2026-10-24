@@ -44,6 +44,7 @@ use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{self, Disposable, DisposableRef, IDisposable, to_disposable};
 use je_base::map::{ResourceMap, ResourceSet};
+use je_base::network::schemas;
 use je_base::path::PathModule;
 use je_base::platform::Platform;
 use je_base::promise::{DeferredPromise, Promise};
@@ -53,7 +54,10 @@ use je_editor::position::Position;
 use je_editor::text_resource_configuration_service::{ITextResourceConfigurationChangeEvent, ITextResourceConfigurationService, ITextResourcePropertiesService};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, ConfigurationValue};
-use je_platform::files::files::{FileChangesEvent, FileStat, FileStatWithMetadata, FileSystemProviderRef, ResolveFileOptions};
+use je_platform::files::files::{
+    FileChangesEvent, FileStat, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
+    FileSystemProviderRegistrationEvent, ResolveFileOptions,
+};
 use je_platform::files::i_file_service::IFileService;
 use je_platform::log::{AbstractLoggerService, LogLevel, LoggerRef, NullLogger};
 use je_platform::markers::{IMarkerService, Marker, MarkerChangeOptions, MarkerData, MarkerReadOptions, MarkerStatistics, ResourceMarker};
@@ -1030,6 +1034,7 @@ impl ITextResourceConfigurationService for TestTextResourceConfigurationService 
 pub struct TestFileService {
     base: Rc<Disposable>,
     on_did_files_change: Rc<Emitter<Rc<FileChangesEvent>>>,
+    on_did_change_file_system_provider_capabilities: Rc<Emitter<FileSystemProviderCapabilitiesChangeEvent>>,
     /// `readonly`.
     pub readonly: Cell<bool>,
     /// `notExistsSet`.
@@ -1042,9 +1047,12 @@ impl TestFileService {
         let base = Disposable::new();
         let on_did_files_change = Emitter::new();
         base.register(on_did_files_change.clone());
+        let on_did_change_file_system_provider_capabilities = Emitter::new();
+        base.register(on_did_change_file_system_provider_capabilities.clone());
         Rc::new(Self {
             base,
             on_did_files_change,
+            on_did_change_file_system_provider_capabilities,
             readonly: Cell::new(false),
             not_exists_set: RefCell::new(ResourceMap::new()),
             providers: RefCell::new(HashMap::new()),
@@ -1054,6 +1062,11 @@ impl TestFileService {
     /// `fireFileChanges(event)`.
     pub fn fire_file_changes(&self, event: Rc<FileChangesEvent>) {
         self.on_did_files_change.fire(event);
+    }
+
+    /// `fireFileSystemProviderCapabilitiesChangeEvent(event)`.
+    pub fn fire_file_system_provider_capabilities_change_event(&self, event: FileSystemProviderCapabilitiesChangeEvent) {
+        self.on_did_change_file_system_provider_capabilities.fire(event);
     }
 
     /// `registerProvider(scheme, provider)`.
@@ -1089,5 +1102,24 @@ impl IFileService for TestFileService {
 
     fn exists(&self, resource: &URI) -> Promise<bool> {
         Promise::resolved(!self.not_exists_set.borrow().has(resource))
+    }
+
+    fn on_did_change_file_system_provider_registrations(&self) -> Event<FileSystemProviderRegistrationEvent> {
+        Event::none()
+    }
+
+    fn on_did_change_file_system_provider_capabilities(&self) -> Event<FileSystemProviderCapabilitiesChangeEvent> {
+        self.on_did_change_file_system_provider_capabilities.event()
+    }
+
+    fn has_provider(&self, resource: &URI) -> bool {
+        resource.scheme() == schemas::FILE || self.providers.borrow().contains_key(&resource.scheme().to_string_lossy())
+    }
+
+    fn has_capability(&self, resource: &URI, capability: FileSystemProviderCapabilities) -> bool {
+        if capability == FileSystemProviderCapabilities::PATH_CASE_SENSITIVE && Platform::detect().is_linux {
+            return true;
+        }
+        self.get_provider(&resource.scheme().to_string_lossy()).is_some_and(|provider| provider.capabilities().intersects(capability))
     }
 }
