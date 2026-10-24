@@ -87,6 +87,10 @@ impl IActiveCodeEditor for CodeEditorWidget {
     fn get_language_id(&self) -> Option<String> {
         ICodeEditor::get_model(self).map(|model| model.get_language_id())
     }
+
+    fn code_editor_widget(&self) -> Option<Rc<CodeEditorWidget>> {
+        Some(self.rc())
+    }
 }
 
 /// `MainThreadTextEditorProperties`.

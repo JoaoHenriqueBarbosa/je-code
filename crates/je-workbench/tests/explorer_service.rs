@@ -22,8 +22,15 @@
 //! - `preserves real tree lookup and selection after multi-source ... moves (...)` (seis) e `keeps moved items reachable when
 //!   another move touches them during a batch (...)` (três): criam a `WorkbenchCompressibleAsyncDataTree` com o
 //!   `IListService`, os contextos de chave e o DOM (`append(document.body, $('.explorer-move-test'))`).
-//! - `updates Explorer after a bulk edit stops on cancellation` e `... rejects a partial failure`: usam o `BulkFileEdits`
-//!   (`contrib/bulkEdit/browser/bulkFileEdits.ts`) e o `WorkingCopyFileService.move/copy`, que não foram portados.
+//!
+//! Notas dos dois casos `updates Explorer after a bulk edit ...`:
+//! - **`instantiation.stub(IWorkingCopyFileService, { move, copy })`.** É o [`MoveWorkingCopyFileService`], que troca o
+//!   dublê dos eventos no `TestInstantiationService` do caso; o `BulkFileEdits` é criado por `createInstance` sobre ele.
+//!   O `UndoRedoService` do `workbenchInstantiationService` é o `UndoRedoService::for_tests()`.
+//! - **`copy: async () => assert.fail(...)`.** É o `panic!` do `copy` (o grupo seguinte não pode rodar).
+//! - **`assert.rejects(bulk.apply(), candidate => candidate === error)`.** O `Error` do porte se compara por valor.
+//! - **`[...source.children.keys()]`.** As chaves vêm ordenadas (as da cópia do modelo não garantem a ordem de inserção, e
+//!   os valores esperados já estão em ordem alfabética).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -44,13 +51,17 @@ use je_base::event::{Emitter, Event};
 use je_base::promise::{DeferredPromise, Promise};
 use je_base::resources::ExtUri;
 use je_base::uri::{Field, URI, UriChange};
-use je_editor::code_action::languages::WorkspaceEdit;
+use je_base::cancellation::{CancellationToken, CancellationTokenSource};
+use je_editor::bulk_edit_service::ResourceFileEdit;
+use je_editor::code_action::languages::{WorkspaceEdit, WorkspaceFileEditOptions};
 use je_editor::code_action::platform::{BulkEditOptions, BulkEditResult, I_BULK_EDIT_SERVICE, IBulkEditService};
 use je_editor::services::clipboard_service::I_CLIPBOARD_SERVICE;
+use je_editor::undo_redo::{I_UNDO_REDO_SERVICE, IUndoRedoService, UndoRedoGroup};
+use je_editor::undo_redo_service::UndoRedoService;
 use je_instantiation::Injectable;
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::files::files::{FileChange, FileChangeType, FileChangesEvent, FileOperation, FileOperationEvent};
+use je_platform::files::files::{FileChange, FileChangeType, FileChangesEvent, FileOperation, FileOperationEvent, FileStatWithMetadata};
 use je_platform::files::i_file_service::{I_FILE_SERVICE, IFileService};
 use je_platform::progress::progress::{I_PROGRESS_SERVICE, IProgress, IProgressService, Progress, ProgressOptions, ProgressStep, ProgressTask};
 use je_platform::resources::{host_environment, join_path};
@@ -60,12 +71,15 @@ use je_platform::workspace::I_WORKSPACE_CONTEXT_SERVICE;
 use je_workbench::contrib::files::browser_files::{EditableData, ExplorerReveal, IExplorerService, IExplorerView};
 use je_workbench::contrib::files::common_files::{SESSIONS_FILES_VIEW_ID, VIEW_ID};
 use je_workbench::contrib::files::explorer_model::{ExplorerItem, NewExplorerItem};
+use je_workbench::contrib::bulk_edit::browser::bulk_file_edits::{BulkFileEdits, BulkFileEditsArgs};
 use je_workbench::contrib::files::explorer_service::ExplorerService;
 use je_workbench::services::editor::editor_service::I_EDITOR_SERVICE;
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::files_configuration::files_configuration_service::{I_FILES_CONFIGURATION_SERVICE, IFilesConfigurationService};
 use je_workbench::services::host::host::{I_HOST_SERVICE, IHostService, ReloadOptions};
-use je_workbench::services::textfile::collaborators::{I_WORKING_COPY_FILE_SERVICE, IWorkingCopyFileService, WorkingCopyFileEvent, WorkingCopyFileEventFile};
+use je_workbench::services::textfile::collaborators::{
+    CopyOperation, FileOperationUndoRedoInfo, I_WORKING_COPY_FILE_SERVICE, IWorkingCopyFileService, MoveOperation, WorkingCopyFileEvent, WorkingCopyFileEventFile,
+};
 use je_workbench::test::browser::workbench_test_services::{EnvironmentOverrides, TestEditorService, TestEnvironmentService};
 use je_workbench::test::common::workbench_test_services::{FileStatOptions, NullFilesConfigurationService, TestContextService, TestFileService, create_file_stat};
 use test_clipboard_service::TestClipboardService;
@@ -147,6 +161,61 @@ impl IWorkingCopyFileService for TestWorkingCopyFileService {
 
     fn on_did_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
         self.did_run.event()
+    }
+}
+
+/// `instantiation.stub(IWorkingCopyFileService, { move, copy })` do caso `updates Explorer after a bulk edit ...`: o `move`
+/// dispara os eventos do lote, avisa o `fileService` de cada arquivo movido e então falha (`failure`) ou cancela o token
+/// (`tokenSource.cancel()`) e termina; o `copy` não pode rodar.
+struct MoveWorkingCopyFileService {
+    will_run: Rc<Emitter<WorkingCopyFileEvent>>,
+    did_run: Rc<Emitter<WorkingCopyFileEvent>>,
+    did_fail: Rc<Emitter<WorkingCopyFileEvent>>,
+    file_service: Rc<TestFileService>,
+    operation: Operation,
+    token_source: CancellationTokenSource,
+    failure: bool,
+    error: Error,
+}
+
+impl IWorkingCopyFileService for MoveWorkingCopyFileService {
+    fn on_will_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
+        self.will_run.event()
+    }
+
+    fn on_did_fail_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
+        self.did_fail.event()
+    }
+
+    fn on_did_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
+        self.did_run.event()
+    }
+
+    fn move_(&self, operations: Vec<MoveOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        let (will_run, did_run, did_fail) = (self.will_run.clone(), self.did_run.clone(), self.did_fail.clone());
+        let (file_service, operation, token_source) = (self.file_service.clone(), self.operation.clone(), self.token_source.clone());
+        let (failure, error) = (self.failure, self.error.clone());
+        async_fn(async move {
+            fire(&will_run, &operation).await?;
+            for MoveOperation { file, .. } in &operations {
+                file_service.fire_after_operation(FileOperationEvent::new(
+                    file.source.clone(),
+                    FileOperation::Move,
+                    Some(create_file_stat(&file.target, &FileStatOptions::default())),
+                ));
+                if failure {
+                    fire(&did_fail, &operation).await?;
+                    return Err(error);
+                }
+            }
+            token_source.cancel();
+            fire(&did_run, &operation).await?;
+            Ok(operations.iter().map(|operation| create_file_stat(&operation.file.target, &FileStatOptions::default())).collect())
+        })
+    }
+
+    fn copy(&self, _operations: Vec<CopyOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        panic!("The next operation group must not run")
     }
 }
 
@@ -284,6 +353,8 @@ fn workbench_instantiation_service(
     instantiation.stub(I_FILES_CONFIGURATION_SERVICE, files_configuration);
     instantiation.stub(I_WORKBENCH_ENVIRONMENT_SERVICE, environment);
     instantiation.stub(I_WORKING_COPY_FILE_SERVICE, working_copy);
+    let undo_redo_service: Rc<dyn IUndoRedoService> = UndoRedoService::for_tests();
+    instantiation.stub(I_UNDO_REDO_SERVICE, undo_redo_service);
     instantiation
 }
 
@@ -456,6 +527,7 @@ struct MoveBatches {
     refresh: Rc<RefCell<Option<Rc<dyn Fn() -> Promise<()>>>>>,
     view_work: Rc<RefCell<Vec<Promise<()>>>>,
     correlation_id: Cell<usize>,
+    instantiation: Rc<TestInstantiationService>,
 }
 
 impl MoveBatches {
@@ -507,7 +579,7 @@ impl MoveBatches {
             ..ViewMock::default()
         };
         service.register_view(Rc::new(view));
-        Self { service, file_service, configuration, will_run, did_run, did_fail, source, target, refreshes, refresh, view_work, correlation_id: Cell::new(0) }
+        Self { service, file_service, configuration, will_run, did_run, did_fail, source, target, refreshes, refresh, view_work, correlation_id: Cell::new(0), instantiation }
     }
 
     /// `add(parent, name, directory = false)`.
@@ -718,6 +790,78 @@ fn move_batches_does_not_retain_an_empty_failed_batch_or_delay_single_file_moves
         assert_eq!(immediate, vec![refresh_of("source", false)]);
         assert_eq!(h.refreshes(), source_then_target());
     });
+}
+
+fn updates_explorer_after_a_bulk_edit(failure: bool) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let h = MoveBatches::new(&guard);
+    let token_source = CancellationTokenSource::new(None);
+    guard.add_rc(Rc::new(token_source.clone()));
+    run_with_faked_timers(async move {
+        let error = Error::new("move failed");
+        let events = vec![h.move_event(&h.add(&h.source, "a", false), None, None), h.move_event(&h.add(&h.source, "b", false), None, None)];
+        let operation = h.batch(&events);
+        let working_copy: Rc<dyn IWorkingCopyFileService> = Rc::new(MoveWorkingCopyFileService {
+            will_run: h.will_run.clone(),
+            did_run: h.did_run.clone(),
+            did_fail: h.did_fail.clone(),
+            file_service: h.file_service.clone(),
+            operation,
+            token_source: token_source.clone(),
+            failure,
+            error: error.clone(),
+        });
+        h.instantiation.stub(I_WORKING_COPY_FILE_SERVICE, working_copy);
+        let mut edits: Vec<ResourceFileEdit> = events
+            .iter()
+            .map(|event| ResourceFileEdit::new(Some(event.resource.clone()), event.target.as_ref().map(|target| target.resource.clone()), None, None))
+            .collect();
+        edits.push(ResourceFileEdit::new(
+            Some(join_path(&h.source.resource(), &["copy"])),
+            Some(join_path(&h.target.resource(), &["copy"])),
+            Some(WorkspaceFileEditOptions { copy: Some(true), ..WorkspaceFileEditOptions::default() }),
+            None,
+        ));
+        let bulk = h.instantiation.create_instance::<BulkFileEdits>(BulkFileEditsArgs {
+            label: "Move".to_string(),
+            code: "move".to_string(),
+            undo_redo_group: UndoRedoGroup::new(),
+            undo_redo_source: None,
+            confirm_before_undo: false,
+            progress: Progress::<()>::none(),
+            token: token_source.token(),
+            edits,
+        });
+        let applied = bulk.apply().await;
+        if failure {
+            assert_eq!(applied.err(), Some(error));
+        } else {
+            applied.unwrap();
+        }
+        h.settle().await.unwrap();
+
+        let (mut source, mut target) = (h.source.children_keys(), h.target.children_keys());
+        source.sort();
+        target.sort();
+        assert_eq!(
+            (source, target, h.refreshes()),
+            (
+                if failure { strings(&["b"]) } else { Vec::new() },
+                if failure { strings(&["a"]) } else { strings(&["a", "b"]) },
+                source_then_target(),
+            )
+        );
+    });
+}
+
+#[test]
+fn move_batches_updates_explorer_after_a_bulk_edit_stops_on_cancellation() {
+    updates_explorer_after_a_bulk_edit(false);
+}
+
+#[test]
+fn move_batches_updates_explorer_after_a_bulk_edit_rejects_a_partial_failure() {
+    updates_explorer_after_a_bulk_edit(true);
 }
 
 #[test]

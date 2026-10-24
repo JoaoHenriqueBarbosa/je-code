@@ -29,3 +29,6 @@ pub mod main_thread_telemetry;
 // Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
 pub mod main_thread_webview_panels;
 pub mod main_thread_webviews;
+
+// Edições em massa: `mainThreadBulkEdits.ts`.
+pub mod main_thread_bulk_edits;

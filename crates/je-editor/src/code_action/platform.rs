@@ -13,20 +13,24 @@
 //!   promessa do porte já implementa para saber quando assenta).
 //! - `Progress.None` é [`ProgressNone`], que aceita qualquer tipo de item.
 //! - `ActionSet<T>` é o trait [`ActionSet`], com os cinco membros do original e `IDisposable`.
-//! - `IBulkEditService.apply(edit: ResourceEdit[] | WorkspaceEdit, options?)` só tem a forma `WorkspaceEdit`;
-//!   `hasPreviewHandler` e `setPreviewHandler` não entram (o `codeAction` não os chama). `IBulkEditOptions.progress`,
-//!   `token`, `undoRedoSource`, `undoRedoGroupId` e `confirmBeforeUndo` são opcionais que o `codeAction` nunca
-//!   preenche e também ficam de fora.
+//! - `IBulkEditService.apply(edit: ResourceEdit[] | WorkspaceEdit, options?)` só tem a forma `WorkspaceEdit`.
+//!   `hasPreviewHandler` e `setPreviewHandler` têm corpo padrão (sem tratador), e o `BulkEditService` do workbench os
+//!   sobrescreve.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use je_base::lifecycle::IDisposable;
+use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::promise::{Promise, Thenable};
 
+use je_base::cancellation::CancellationToken;
+use je_platform::progress::progress::{IProgress as PlatformProgress, ProgressStep};
+
+use crate::bulk_edit_service::BulkEditPreviewHandler;
 use crate::code_action::languages::WorkspaceEdit;
 use crate::code_editor_widget::CodeEditorWidget;
 use crate::text_model_edit_source::TextModelEditSource;
+use crate::undo_redo::UndoRedoSource;
 
 /// `IProgress<T>`.
 pub trait IProgress<T> {
@@ -100,13 +104,22 @@ pub trait ActionSet<T>: IDisposable {
 }
 
 /// `IBulkEditOptions` (ver a nota do módulo).
+///
+/// `progress` é o `IProgress<IProgressStep>` da plataforma (o de `je_platform::progress`, o que o `withProgress`
+/// entrega), `undoRedoSource` é um `Rc` porque o [`UndoRedoSource`] é compartilhado por referência e `undoRedoGroupId`
+/// é o `id` de um [`crate::undo_redo::UndoRedoGroup`].
 #[derive(Clone, Default)]
 pub struct BulkEditOptions {
     pub editor: Option<Rc<CodeEditorWidget>>,
+    pub progress: Option<Rc<dyn PlatformProgress<ProgressStep>>>,
+    pub token: Option<CancellationToken>,
     pub show_preview: Option<bool>,
     pub label: Option<String>,
     pub code: Option<String>,
     pub quotable_label: Option<String>,
+    pub undo_redo_source: Option<Rc<UndoRedoSource>>,
+    pub undo_redo_group_id: Option<u64>,
+    pub confirm_before_undo: Option<bool>,
     pub respect_auto_save_config: Option<bool>,
     pub reason: Option<TextModelEditSource>,
 }
@@ -121,9 +134,28 @@ pub struct BulkEditResult {
 /// `IBulkEditService` (ver a nota do módulo).
 pub trait IBulkEditService {
     fn apply(&self, edit: &WorkspaceEdit, options: BulkEditOptions) -> Promise<BulkEditResult>;
+
+    /// `hasPreviewHandler()`. Sem tratador de pré-visualização (o caso dos dublês) é `false`.
+    fn has_preview_handler(&self) -> bool {
+        false
+    }
+
+    /// `setPreviewHandler(handler)`. Quem não guarda o tratador (o caso dos dublês) devolve um descarte vazio.
+    fn set_preview_handler(&self, _handler: BulkEditPreviewHandler) -> DisposableRef {
+        je_base::lifecycle::none()
+    }
 }
 
-je_instantiation::service_id!(pub I_BULK_EDIT_SERVICE: dyn IBulkEditService = "IWorkspaceEditService");
+je_instantiation::delayed_proxy!(pub BulkEditServiceProxy for dyn IBulkEditService {
+    methods {
+        fn apply(&self, edit: &WorkspaceEdit, options: BulkEditOptions) -> Promise<BulkEditResult>;
+        fn has_preview_handler(&self) -> bool;
+        fn set_preview_handler(&self, handler: BulkEditPreviewHandler) -> DisposableRef;
+    }
+    events {}
+});
+
+je_instantiation::service_id!(pub I_BULK_EDIT_SERVICE: dyn IBulkEditService = "IWorkspaceEditService", proxy BulkEditServiceProxy);
 
 /// Os sinais de `AccessibilitySignal` que o `codeAction` toca.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

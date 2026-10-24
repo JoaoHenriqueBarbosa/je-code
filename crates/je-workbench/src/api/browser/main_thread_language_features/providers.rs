@@ -13,9 +13,8 @@
 //!   compartilhado) é achado pelo conjunto (rótulo, texto inserido, `sortText`, `filterText`), com o último item de
 //!   mesma chave vencendo.
 //! - `$ident` de um comando (`ICommandDto`) não existe no `Command` do editor: o `Command` volta ao host sem ele.
-//! - `reviveWorkspaceEditDto`: o `revive<WorkspaceEdit>` é a identidade; a edição de célula de notebook, que o
-//!   `WorkspaceEdit` do editor não representa, viaja num [`NotebookCellEditCarrier`] (um `ICustomEdit` que só carrega a
-//!   edição para o serviço de edição em massa), e o `outputs.items.valueBytes` das células não é reescrito.
+//! - `reviveWorkspaceEditDto` (de `mainThreadBulkEdits.ts`) é reexportada de [`crate::api::browser::main_thread_bulk_edits`],
+//!   onde está o porte dela.
 //! - `FoldingRangeProvider.id` (o `extensionId.value`) não existe no provedor de dobra do editor.
 //! - `MultiDocumentHighlightProvider.selector` é o [`LanguageSelector`] do registro.
 
@@ -24,7 +23,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::async_::async_fn;
-use je_base::buffer::{VSBuffer, decode_base64};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
@@ -35,8 +33,7 @@ use je_base::map::ResourceMap;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::code_action::languages::{
-    CodeAction, CodeActionContext, CodeActionDocumentation, CodeActionList, CodeActionListObject, CodeActionProvider, CodeActionRef, Command, ICustomEdit,
-    IWorkspaceFileEdit, TextEdit, WorkspaceEdit, WorkspaceEditItem, WorkspaceEditMetadata, WorkspaceFileEditOptions,
+    CodeAction, CodeActionContext, CodeActionDocumentation, CodeActionList, CodeActionListObject, CodeActionProvider, CodeActionRef, Command, TextEdit,
 };
 use je_editor::code_editor_widget::SelectionOrRange;
 use je_editor::edit_operation::SingleEditOperation;
@@ -69,11 +66,9 @@ use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use crate::api::common::ext_host_protocol::{
     CodeActionDocumentationDto, FormattingOptions, HoverContextDto, HoverIdDto, HoverVerbosityRequestDto, HoverWithId, ICodeActionDto, ICodeLensDto,
     ICommandDto, IColorPresentationDto, IInlayHintDto, IInlineValueContextDto, ILinkDto, ILocationDto, ILocationLinkDto, IRawColorInfo, IRegExpDto,
-    ISignatureHelpContextDto, ISignatureHelpDto, ISuggestDataDto, ISuggestResultDto, IWorkspaceEditDto, InlayHintLabelDto, InlineValueDto,
-    LanguagesNewSymbolNameTriggerKind, RangeOrSelection, ReferenceContext, WorkspaceEditEntryDto, WorkspaceFileEditContentsDto,
-    WorkspaceFileEditOptionsDto, ExtHostLanguageFeaturesShape,
+    ISignatureHelpContextDto, ISignatureHelpDto, ISuggestDataDto, ISuggestResultDto, InlayHintLabelDto, InlineValueDto,
+    LanguagesNewSymbolNameTriggerKind, RangeOrSelection, ReferenceContext, ExtHostLanguageFeaturesShape,
 };
-use crate::contrib::notebook::common::notebook_common::IWorkspaceNotebookCellEdit;
 
 /// O `handle` e o proxy do host de extensões que o objeto literal de cada `$register*` captura.
 #[derive(Clone)]
@@ -114,87 +109,9 @@ pub(super) fn command_to_dto(command: &Command) -> ICommandDto {
     ICommandDto { ident: None, id: command.id.clone(), title: command.title.clone(), tooltip: command.tooltip.clone(), arguments: command.arguments.clone() }
 }
 
-/// O `ICustomEdit` que carrega uma edição de célula de notebook até o serviço de edição em massa (ver a nota do módulo).
-pub(super) struct NotebookCellEditCarrier(pub IWorkspaceNotebookCellEdit);
-
-impl ICustomEdit for NotebookCellEditCarrier {
-    fn resource(&self) -> URI {
-        self.0.resource.clone()
-    }
-
-    fn metadata(&self) -> Option<WorkspaceEditMetadata> {
-        self.0.metadata.clone()
-    }
-
-    fn undo(&self) -> Promise<()> {
-        Promise::rejected(Error::new("Uma edição de célula de notebook é desfeita pelo serviço de edição em massa"))
-    }
-
-    fn redo(&self) -> Promise<()> {
-        Promise::rejected(Error::new("Uma edição de célula de notebook é refeita pelo serviço de edição em massa"))
-    }
-}
-
-/// `resolveDataTransferFile?: (id: string) => Promise<VSBuffer>` de `reviveWorkspaceEditDto`.
-pub(super) type ResolveDataTransferFile = Rc<dyn Fn(&str) -> Promise<VSBuffer>>;
-
-fn revive_file_edit_options(options: &WorkspaceFileEditOptionsDto, resolve_data_transfer_file: Option<&ResolveDataTransferFile>) -> Result<WorkspaceFileEditOptions, Error> {
-    let contents = match &options.contents {
-        Some(WorkspaceFileEditContentsDto::Base64(value)) => Some(Promise::resolved(decode_base64(value))),
-        Some(WorkspaceFileEditContentsDto::DataTransferItem(id)) => match resolve_data_transfer_file {
-            Some(resolve) => Some(resolve(id)),
-            None => return Err(Error::new("Could not revive data transfer file")),
-        },
-        None => None,
-    };
-    Ok(WorkspaceFileEditOptions {
-        overwrite: options.overwrite,
-        ignore_if_not_exists: options.ignore_if_not_exists,
-        ignore_if_exists: options.ignore_if_exists,
-        recursive: options.recursive,
-        copy: options.copy,
-        folder: options.folder,
-        skip_trash_bin: options.skip_trash_bin,
-        max_size: options.max_size,
-        contents,
-    })
-}
-
-/// `reviveWorkspaceEditDto(data, uriIdentityService, resolveDataTransferFile?)`.
-pub(super) fn revive_workspace_edit_dto(
-    data: &IWorkspaceEditDto,
-    uri_identity_service: &Rc<dyn IUriIdentityService>,
-    resolve_data_transfer_file: Option<&ResolveDataTransferFile>,
-) -> Result<WorkspaceEdit, Error> {
-    let mut edits = Vec::with_capacity(data.edits.len());
-    for edit in &data.edits {
-        edits.push(match edit {
-            WorkspaceEditEntryDto::Text(text_edit) => {
-                let mut text_edit = text_edit.clone();
-                text_edit.resource = uri_identity_service.as_canonical_uri(&text_edit.resource);
-                WorkspaceEditItem::Text(text_edit)
-            }
-            WorkspaceEditEntryDto::File(file_edit) => {
-                let options = match &file_edit.options {
-                    Some(options) => Some(revive_file_edit_options(options, resolve_data_transfer_file)?),
-                    None => None,
-                };
-                WorkspaceEditItem::File(IWorkspaceFileEdit {
-                    old_resource: file_edit.old_resource.as_ref().map(|resource| uri_identity_service.as_canonical_uri(resource)),
-                    new_resource: file_edit.new_resource.as_ref().map(|resource| uri_identity_service.as_canonical_uri(resource)),
-                    options,
-                    metadata: file_edit.metadata.clone(),
-                })
-            }
-            WorkspaceEditEntryDto::Cell(cell_edit) => {
-                let mut cell_edit = cell_edit.clone();
-                cell_edit.resource = uri_identity_service.as_canonical_uri(&cell_edit.resource);
-                WorkspaceEditItem::Custom(Rc::new(NotebookCellEditCarrier(cell_edit)))
-            }
-        });
-    }
-    Ok(WorkspaceEdit { edits })
-}
+/// `reviveWorkspaceEditDto` e o tipo do `resolveDataTransferFile`: definidos em `mainThreadBulkEdits.ts` (ver
+/// [`crate::api::browser::main_thread_bulk_edits`]).
+pub(super) use crate::api::browser::main_thread_bulk_edits::{ResolveDataTransferFile, revive_workspace_edit_dto};
 
 /// `_reviveLinkDTO(data)`.
 pub(super) fn revive_link_dto(data: &ILinkDto) -> ILink {

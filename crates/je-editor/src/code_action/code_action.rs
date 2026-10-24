@@ -494,6 +494,7 @@ pub fn apply_code_action(
                         respect_auto_save_config: Some(code_action_reason != ApplyCodeActionReason::OnSave),
                         show_preview: options.as_ref().and_then(|options| options.preview),
                         reason: Some(EditSources::code_action(kind.as_deref(), None)),
+                        ..BulkEditOptions::default()
                     },
                 )
                 .await?;

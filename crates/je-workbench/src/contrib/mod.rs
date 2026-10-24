@@ -1,5 +1,6 @@
 //! Contribuições do workbench (`src/vs/workbench/contrib`).
 
+pub mod bulk_edit;
 pub mod files;
 pub mod markers;
 pub mod merge_editor;

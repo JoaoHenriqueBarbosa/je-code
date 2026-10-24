@@ -401,3 +401,96 @@ impl IQuickDiffModelService for StubQuickDiffModelService {
         None
     }
 }
+
+/// O `ITextFileService` de `mainThreadEditors.test.ts`: o [`StubTextFileService`] mais `create` (que registra os recursos em
+/// `createdResources` e devolve uma lista vazia, o `Object.create(null)` do original) e `getEncodedReadable` (que devolve
+/// `undefined`). O que o original não define segue como o [`StubTextFileService`].
+pub struct RecordingTextFileService {
+    inner: StubTextFileService,
+    /// `createdResources`.
+    pub created_resources: Rc<RefCell<Vec<URI>>>,
+}
+
+impl RecordingTextFileService {
+    pub fn new(created_resources: Rc<RefCell<Vec<URI>>>) -> Self {
+        Self { inner: StubTextFileService, created_resources }
+    }
+}
+
+impl ITextFileService for RecordingTextFileService {
+    fn files(&self) -> Rc<dyn ITextFileEditorModelManager> {
+        self.inner.files()
+    }
+
+    fn untitled(&self) -> Rc<dyn IUntitledTextEditorModelManager> {
+        self.inner.untitled()
+    }
+
+    fn encoding(&self) -> Rc<dyn IResourceEncodings> {
+        self.inner.encoding()
+    }
+
+    fn is_dirty(&self, resource: &URI) -> bool {
+        self.inner.is_dirty(resource)
+    }
+
+    fn save(&self, resource: &URI, options: Option<TextFileSaveOptions>) -> Promise<Option<URI>> {
+        self.inner.save(resource, options)
+    }
+
+    fn save_as(&self, resource: &URI, target_resource: Option<&URI>, options: Option<TextFileSaveAsOptions>) -> Promise<Option<URI>> {
+        self.inner.save_as(resource, target_resource, options)
+    }
+
+    fn revert(&self, resource: &URI, options: Option<RevertOptions>) -> Promise<()> {
+        self.inner.revert(resource, options)
+    }
+
+    fn read(&self, resource: &URI, options: Option<ReadTextFileOptions>) -> Promise<TextFileContent> {
+        self.inner.read(resource, options)
+    }
+
+    fn read_stream(&self, resource: &URI, options: Option<ReadTextFileOptions>) -> Promise<TextFileStreamContent> {
+        self.inner.read_stream(resource, options)
+    }
+
+    fn write(&self, resource: &URI, value: TextOrSnapshot, options: Option<WriteTextFileOptions>) -> Promise<FileStatWithMetadata> {
+        self.inner.write(resource, value, options)
+    }
+
+    fn create(&self, operations: Vec<TextFileCreateOperation>, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        for operation in operations {
+            self.created_resources.borrow_mut().push(operation.resource);
+        }
+        Promise::resolved(Vec::new())
+    }
+
+    fn get_encoded_readable(&self, _resource: Option<&URI>, _value: Option<TextOrSnapshot>, _options: Option<WriteTextFileOptions>) -> Promise<Option<EncodedContent>> {
+        Promise::resolved(None)
+    }
+
+    fn get_decoded_stream(
+        &self,
+        resource: Option<&URI>,
+        value: VSBufferReadableStream,
+        options: Option<ReadTextFileEncodingOptions>,
+    ) -> Promise<Rc<dyn je_base::stream::ReadableStream<String>>> {
+        self.inner.get_decoded_stream(resource, value, options)
+    }
+
+    fn get_encoding(&self, resource: &URI) -> String {
+        self.inner.get_encoding(resource)
+    }
+
+    fn resolve_decoding(&self, resource: Option<&URI>, options: Option<ReadTextFileEncodingOptions>) -> Promise<ResolvedDecoding> {
+        self.inner.resolve_decoding(resource, options)
+    }
+
+    fn resolve_encoding(&self, resource: Option<&URI>, options: Option<WriteTextFileOptions>) -> Promise<ResolvedEncoding> {
+        self.inner.resolve_encoding(resource, options)
+    }
+
+    fn validate_detected_encoding(&self, resource: Option<&URI>, detected_encoding: &str, options: Option<ReadTextFileEncodingOptions>) -> Promise<String> {
+        self.inner.validate_detected_encoding(resource, detected_encoding, options)
+    }
+}
