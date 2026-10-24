@@ -98,6 +98,30 @@ pub struct ClassSpec {
     pub statics: Vec<(String, u32, NativeCallback)>,
 }
 
+thread_local! {
+    /// Os módulos do hospedeiro (`require('vscode')`), pelo nome.
+    static HOST_MODULES: RefCell<HashMap<String, JsHandle>> = RefCell::new(HashMap::new());
+}
+
+/// O `exports` do módulo do hospedeiro `request`, que o `require` consulta antes dos embutidos do Node.
+pub(crate) fn host_module(request: &str) -> Option<JSValue> {
+    HOST_MODULES.with(|modules| modules.borrow().get(request).map(|handle| handle.0))
+}
+
+/// Esvazia o estado por programa quando o [`run_node`] termina, para o próximo programa da mesma thread não herdar nada.
+struct ProgramState;
+
+impl Drop for ProgramState {
+    fn drop(&mut self) {
+        let _ = BRIDGE.try_with(|slot| slot.borrow_mut().take());
+        let _ = NATIVES.try_with(|natives| natives.borrow_mut().clear());
+        let _ = CONSTRUCTORS.try_with(|constructors| constructors.borrow_mut().clear());
+        let _ = METHODS.try_with(|methods| methods.borrow_mut().clear());
+        let _ = CLASSES.try_with(|classes| classes.borrow_mut().clear());
+        let _ = HOST_MODULES.try_with(|modules| modules.borrow_mut().clear());
+    }
+}
+
 struct ClassEntry {
     name: String,
     construct: NativeCallback,
@@ -432,6 +456,13 @@ impl NodeRunner {
         handle
     }
 
+    /// Registra `exports` como o módulo `name` do hospedeiro: `require(name)` o devolve (e `require.resolve(name)` devolve
+    /// `name`), antes dos módulos embutidos do Node e de qualquer sonda de arquivo.
+    pub fn register_module(&self, name: &str, exports: &JsData) {
+        let handle = self.import(exports);
+        HOST_MODULES.with(|modules| modules.borrow_mut().insert(name.to_owned(), handle));
+    }
+
     /// Converte `data` em valor JavaScript e o guarda.
     pub fn import(&self, data: &JsData) -> JsHandle {
         JsHandle::new(write_value(&self.global_object, data))
@@ -479,6 +510,7 @@ pub fn run_node<T>(
     body: impl FnOnce(&NodeRunner) -> T,
 ) -> Result<T, String> {
     run_program(|| {
+        let _state = ProgramState;
         crate::runtime::process_system::begin_main_script(main_url);
         let (vm, global_object) = new_global_object();
         let _finalizer = VmFinalizer::new(&vm);

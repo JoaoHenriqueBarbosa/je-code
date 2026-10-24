@@ -1422,6 +1422,10 @@ fn require_module(global_object: &JSGlobalObject, specifier: JSValue, resolve: b
     // Os embutidos (`vm`, `node:vm`) vêm do registro, antes de qualquer sonda de arquivo e mesmo sem sistema de arquivos.
     if specifier.is_string() {
         let request = rust_string(&specifier.to_wtf_string());
+        // Os módulos do hospedeiro (`require('vscode')` do host de extensões) vêm antes dos embutidos.
+        if let Some(exports) = crate::api::embed_node::host_module(&request) {
+            return if resolve { Ok(js_text(global_object.vm(), &request)) } else { Ok(exports) };
+        }
         if let crate::api::builtin_modules::Resolved::Builtin(entry) = crate::api::builtin_modules::resolve(&request) {
             // `require.resolve("vm")` devolve o próprio pedido (medido no bun 1.4.2).
             return if resolve { Ok(js_text(global_object.vm(), &request)) } else { crate::api::builtin_modules::load(global_object, entry) };

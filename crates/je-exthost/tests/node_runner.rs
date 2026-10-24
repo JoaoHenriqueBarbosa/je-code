@@ -339,3 +339,18 @@ fn class_marker_carries_instances_across_the_boundary_in_both_directions() {
         assert_eq!((field(&received, "x"), field(&received, "y")), (6.0, 7.0));
     });
 }
+
+// ---- módulos do hospedeiro: `require('vscode')`
+
+#[test]
+fn host_module_is_reachable_from_commonjs_modules_loaded_from_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("extension.js"), "const vscode = require('vscode'); exports.activate = () => vscode.greet('mundo') + ':' + (require('vscode') === vscode) + ':' + require.resolve('vscode');").unwrap();
+    let base = dir.path().to_string_lossy().replace('\\', "/");
+    let main: &'static str = Box::leak(format!("globalThis.loadExtension = () => require('{base}/extension.js');").into_boxed_str());
+    with_runner(main, |runner, _| {
+        let greet = runner.make_function("greet", 1, Rc::new(|args| Ok(JsData::Str(format!("olá, {}", match &args[0] { JsData::Str(name) => name.as_str(), _ => "?" })))));
+        runner.register_module("vscode", &JsData::Object(vec![("greet".into(), JsData::Handle(Rc::new(greet)))]));
+        assert_eq!(text(runner, "loadExtension().activate()"), "olá, mundo:true:vscode");
+    });
+}
