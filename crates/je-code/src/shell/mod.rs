@@ -1045,9 +1045,8 @@ impl Shell {
                 if let Some(env) = &self.environment {
                     view.set_token_colors(&env.color_map());
                 }
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None, preview: false };
                 view.apply_configuration(&themes::user_settings());
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None };
+                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None, preview: false };
                 self.activate(index);
             }
             Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
@@ -3915,6 +3914,61 @@ impl Shell {
         }
     }
 
+    /// O comando do shell para um id do VS Code vindo de um atalho do `keybindings.json` (`workbench.action.quickOpen`...);
+    /// `None` se o shell não tem esse comando.
+    fn command_of_id(id: &str) -> Option<Command> {
+        Some(match id {
+            "workbench.action.files.newUntitledFile" => Command::NewUntitled,
+            "workbench.action.files.save" => Command::Save,
+            "workbench.action.files.saveAll" => Command::SaveAll,
+            "workbench.action.files.saveAs" => Command::PromptSaveAs,
+            "workbench.action.files.openFile" => Command::PromptOpenFile,
+            "workbench.action.files.revert" => Command::Revert,
+            "workbench.action.openRecent" => Command::OpenRecent,
+            "workbench.action.zoomIn" => Command::Zoom(1),
+            "workbench.action.zoomOut" => Command::Zoom(-1),
+            "workbench.action.zoomReset" => Command::Zoom(0),
+            "workbench.action.closeActiveEditor" => Command::CloseActiveEditor,
+            "workbench.action.closeAllEditors" => Command::CloseAll,
+            "workbench.action.quit" => Command::Exit,
+            "workbench.action.toggleSidebarVisibility" => Command::ToggleSidebar,
+            "workbench.action.toggleStatusbarVisibility" => Command::ToggleStatusBar,
+            "workbench.action.toggleFullScreen" => Command::ToggleFullScreen,
+            "workbench.action.quickOpen" | "workbench.action.quickOpenView" => Command::QuickOpen,
+            "workbench.action.showCommands" => Command::ShowCommands,
+            "actions.find" => Command::Find,
+            "editor.action.startFindReplace" => Command::FindAndReplace,
+            "editor.action.nextMatchFindAction" => Command::FindNext,
+            "editor.action.previousMatchFindAction" => Command::FindPrevious,
+            "workbench.action.togglePanel" => Command::TogglePanel,
+            "workbench.action.splitEditor" => Command::SplitEditor,
+            "workbench.action.focusFirstEditorGroup" => Command::FocusGroup(0),
+            "workbench.action.focusSecondEditorGroup" => Command::FocusGroup(1),
+            "workbench.action.focusThirdEditorGroup" => Command::FocusGroup(2),
+            "workbench.action.openSettingsJson" | "workbench.action.openSettings" => Command::OpenSettingsJson,
+            "workbench.action.openGlobalKeybindingsFile" | "workbench.action.openGlobalKeybindings" => Command::OpenKeybindingsJson,
+            "workbench.action.gotoLine" => Command::PromptGoToLine,
+            "workbench.action.terminal.toggleTerminal" => Command::ToggleTerminal,
+            "workbench.action.terminal.new" => Command::NewTerminal,
+            "workbench.view.explorer" => Command::ShowExplorer,
+            "workbench.view.search" | "workbench.action.findInFiles" => Command::ShowSearch,
+            "workbench.action.replaceInFiles" => Command::ShowSearchReplace,
+            "workbench.view.scm" => Command::ShowScm,
+            "workbench.view.extensions" => Command::ShowExtensions,
+            "workbench.actions.view.problems" => Command::ShowPanelTab(PanelTab::Problems),
+            "workbench.action.output.toggleOutput" => Command::ShowPanelTab(PanelTab::Output),
+            "workbench.debug.action.toggleRepl" => Command::ShowPanelTab(PanelTab::DebugConsole),
+            "workbench.action.nextEditor" => Command::NextEditor,
+            "workbench.action.previousEditor" => Command::PreviousEditor,
+            "workbench.action.selectTheme" => Command::PickTheme,
+            "workbench.action.editor.changeLanguageMode" => Command::PickLanguage,
+            "workbench.action.editor.changeEOL" => Command::PickEol,
+            "workbench.action.editor.changeIndentation" => Command::PickIndentation,
+            "editor.action.detectIndentation" => Command::DetectIndentation,
+            _ => return None,
+        })
+    }
+
     /// Os atalhos do workbench que valem com o foco no editor (os `KeybindingsRegistry` globais).
     fn workbench_shortcut(&self, key: KeyCode, mods: Modifiers) -> Option<Command> {
         let ctrl = mods.ctrl || mods.meta;
@@ -4095,6 +4149,14 @@ impl Shell {
         let Some(editor) = self.active_editor_mut() else { return };
         if let Some(key) = editor_key {
             editor.view.key_down(key, mods);
+            // Os atalhos do `keybindings.json` que apontam para comandos do workbench ficam na fila do editor.
+            let mut commands = Vec::new();
+            while let Some((id, _args)) = editor.view.take_workbench_command() {
+                commands.extend(Self::command_of_id(&id));
+            }
+            for command in commands {
+                self.run(command);
+            }
             return;
         }
         let ctrl = mods.ctrl || mods.meta;
