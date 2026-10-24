@@ -513,7 +513,7 @@ impl ExecutableDebugAdapter {
                 let matches = dbg.get("type").and_then(Value::as_str).is_some_and(|t| t.to_lowercase() == debug_type);
                 if matches {
                     // extract relevant attributes and make them absolute where needed
-                    let folder = URI::parse(&ed.extension_location, false).fs_path(je_platform::resources::host_platform()).to_string_lossy();
+                    let folder = URI::parse(ed.extension_location.as_str(), false).fs_path(je_platform::resources::host_platform()).to_string_lossy();
                     let extracted = Self::extract(&dbg, &folder);
 
                     // merge

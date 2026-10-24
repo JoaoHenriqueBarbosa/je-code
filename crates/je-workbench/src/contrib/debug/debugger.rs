@@ -243,11 +243,16 @@ impl Debugger {
         let eol_source = self.services.eol.as_ref().map(|eol| eol()).unwrap_or_default();
         let eol = if eol_source == "\r\n" { "\r\n" } else { "\n" };
         let configs = {
-            let mut buffer = Vec::new();
-            let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
-            let mut serializer = serde_json::Serializer::with_formatter(&mut buffer, formatter);
-            serde::Serialize::serialize(&Value::Array(initial_configurations), &mut serializer).expect("JSON serializável");
-            String::from_utf8(buffer).expect("utf-8").split('\n').map(|line| format!("\t{line}")).collect::<Vec<_>>().join(eol).trim().to_owned()
+            // `JSON.stringify(initialConfigurations, null, '\t')`: o `to_string_pretty` recua com 2 espaços, que viram tabulações.
+            let pretty = serde_json::to_string_pretty(&Value::Array(initial_configurations)).expect("JSON serializável");
+            let tabbed: Vec<String> = pretty
+                .split('\n')
+                .map(|line| {
+                    let spaces = line.len() - line.trim_start_matches(' ').len();
+                    format!("{}{}", "\t".repeat(spaces / 2), &line[spaces..])
+                })
+                .collect();
+            tabbed.iter().map(|line| format!("\t{line}")).collect::<Vec<_>>().join(eol).trim().to_owned()
         };
         let comment1 = localize("launch.config.comment1", "Use IntelliSense to learn about possible attributes.", &[]);
         let comment2 = localize("launch.config.comment2", "Hover to view descriptions of existing attributes.", &[]);
