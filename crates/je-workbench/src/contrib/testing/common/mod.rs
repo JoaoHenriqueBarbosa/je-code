@@ -20,4 +20,5 @@ pub mod test_result_storage;
 pub mod test_service;
 pub mod test_types;
 pub mod testing_context_keys;
+pub mod testing_continuous_run_service;
 pub mod testing_states;
