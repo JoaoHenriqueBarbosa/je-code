@@ -134,8 +134,8 @@ pub fn evaluate(global_object: &JSGlobalObjectRef, source: &SourceCode) -> Resul
 pub fn describe_exception(value: &JSValue) -> String {
     if let JSValue::Cell(cell_id) = value {
         if let Some(error) = ErrorInstance::from_cell_id(*cell_id) {
-            let message = error.message().latin1();
-            return format!("{}: {}", error.name(), String::from_utf8_lossy(&message));
+            // `rust_string` decodifica a string do motor inteira (Latin-1 ou UTF-16); `latin1()` + UTF-8 trocava os acentos.
+            return format!("{}: {}", error.name(), rust_string(&error.message()));
         }
     }
     // O bun mostra `null` e `undefined` em minúsculas (`throw null` é `error: null`).

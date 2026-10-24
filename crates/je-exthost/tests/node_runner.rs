@@ -268,7 +268,7 @@ fn field(data: &JsData, name: &str) -> f64 {
 }
 
 fn define_point(runner: &NodeRunner) {
-    runner.define_class(ClassSpec {
+    let constructor = runner.define_class(ClassSpec {
         name: "Point".into(),
         length: 2,
         construct: Rc::new(|args| Ok(JsData::Object(vec![("x".into(), args[0].clone()), ("y".into(), args[1].clone())]))),
@@ -279,6 +279,7 @@ fn define_point(runner: &NodeRunner) {
         )],
         statics: vec![("origin".into(), 0, Rc::new(|_| Ok(point(0.0, 0.0))))],
     });
+    runner.set_global("Point", &JsData::Handle(Rc::new(constructor)));
 }
 
 #[test]

@@ -4140,6 +4140,10 @@ name = "je-exthost"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "je-base",
+ "je-extensions",
+ "je-platform",
+ "je-workbench",
  "tempfile",
  "zjsc",
 ]

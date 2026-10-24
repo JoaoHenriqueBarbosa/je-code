@@ -375,6 +375,24 @@ impl NodeRunner {
         result.map_err(|exception| describe_exception(&exception))
     }
 
+    /// Como [`NodeRunner::call_data`], mas a exceção vem como valor copiado (um erro é um objeto com `name` e `message`),
+    /// não como texto: quem repassa o erro adiante não perde a mensagem original.
+    pub fn call_data_throwing(&self, function: &JsHandle, args: &[JsData]) -> Result<JsData, JsData> {
+        let values: Vec<JSValue> = args.iter().map(|arg| write_value(&self.global_object, arg)).collect();
+        let _arguments = RootScope::new(&values);
+        let result = call_function(&self.global_object, function.0, JSValue::undefined(), &values);
+        let outcome = match result {
+            Some(value) => Ok(read_value(&self.global_object, value, 0)),
+            None => {
+                let thrown = self.vm.exception().map(|exception| exception.value());
+                self.vm.clear_exception();
+                Err(thrown.map_or(JsData::Undefined, |value| read_value(&self.global_object, value, 0)))
+            }
+        };
+        self.vm.drain_microtasks();
+        outcome
+    }
+
     /// Chama `function` com `args` já como [`JsData`] (cada um vira valor JavaScript) e devolve o resultado copiado.
     pub fn call_data(&self, function: &JsHandle, args: &[JsData]) -> Result<JsData, String> {
         let values: Vec<JSValue> = args.iter().map(|arg| write_value(&self.global_object, arg)).collect();
@@ -431,7 +449,7 @@ impl NodeRunner {
         JsHandle::new(value)
     }
 
-    /// Define a classe `spec` e a instala em `globalThis[spec.name]`. As instâncias nascem pelo `new` do JavaScript (o
+    /// Define a classe `spec` e devolve o construtor (quem a quiser global usa [`NodeRunner::set_global`]; a API `vscode` a põe no módulo). As instâncias nascem pelo `new` do JavaScript (o
     /// construtor devolve os campos próprios) ou quando um [`JsData::Object`] com [`CLASS_KEY`] atravessa a fronteira.
     pub fn define_class(&self, spec: ClassSpec) -> JsHandle {
         let vm = &self.vm;
@@ -478,7 +496,6 @@ impl NodeRunner {
         }
         let handle = JsHandle::new(constructor_value);
         CLASSES.with(|classes| classes.borrow_mut().insert(spec.name.clone(), JsHandle::new(prototype.as_value())));
-        crate::runtime::native_class_support::install_global(global, &spec.name, constructor_value);
         handle
     }
 

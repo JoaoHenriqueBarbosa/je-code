@@ -9,6 +9,10 @@ description = "Host de extensões do je-code: o Host do zjsc sobre o sistema ope
 
 [dependencies]
 zjsc = { path = "../zjsc" }
+je-base = { path = "../je-base" }
+je-platform = { path = "../je-platform" }
+je-extensions = { path = "../je-extensions" }
+je-workbench = { path = "../je-workbench" }
 
 # Entropia do SO para `Host::random_fill` (no alvo web a aleatoriedade vem do navegador, fora desta crate).
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
