@@ -258,7 +258,7 @@ fn bom_for(encoding: &str) -> Option<&'static [u8]> {
 /// As opções de `toEncodeReadable` (`{ addBOM? }`).
 pub type EncodeOptions = EncoderOptions;
 
-pub fn to_encode_readable(mut readable: impl Readable<String> + 'static, encoding: &str, options: Option<EncodeOptions>) -> Result<impl Readable<VSBuffer>, Error> {
+pub fn to_encode_readable<R: Readable<String> + 'static>(mut readable: R, encoding: &str, options: Option<EncodeOptions>) -> Result<impl Readable<VSBuffer> + use<R>, Error> {
     let mut encoder = iconv_lite::get_encoder(to_node_encoding(Some(encoding)), options)?;
     let add_bom = options.is_some_and(|o| o.add_bom);
     let encoding = encoding.to_string();
