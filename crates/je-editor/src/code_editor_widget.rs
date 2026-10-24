@@ -82,8 +82,10 @@
 //! - Eventos que só a `View` produz: `onMouseUp`, `onMouseDown`, `onMouseDrag`, `onMouseDrop`,
 //!   `onMouseDropCanceled`, `onContextMenu`, `onMouseMove`, `onMouseLeave`, `onMouseWheel`, `onKeyUp`, `onKeyDown`,
 //!   `onWillCopy`, `onWillCut`, `onWillPaste`, `onDropIntoEditor`.
-//! - Serviços sem porte aqui: `ICodeEditorService` (`willCreateCodeEditor`, `addCodeEditor`, `removeCodeEditor`
-//!   e os tipos de decoração `setDecorationsByType`, `setDecorationsByTypeFast`, `removeDecorationsByType`,
+//! - `ICodeEditorService`: `willCreateCodeEditor`, `addCodeEditor` e `removeCodeEditor` chegam pelo
+//!   [`ICodeEditorRegistry`] opcional de [`CodeEditorWidgetServices`] (o construtor e o `dispose` os chamam, como o
+//!   original).
+//! - Serviços sem porte aqui: `ICodeEditorService` (os tipos de decoração `setDecorationsByType`, `setDecorationsByTypeFast`, `removeDecorationsByType`,
 //!   `_registerDecorationType`, `_removeDecorationType`, `_removeDecorationTypes`, `_resolveDecorationOptions`),
 //!   `IInstantiationService` (`invokeWithinContext`, o filho com o `IContextKeyService`),
 //!   `IContextKeyService` (`contextKeyService`, `setContextValue`, `contextKeyValues`, `EditorContextKeysManager`,
@@ -138,6 +140,7 @@ use crate::monospace_line_breaks_computer::MonospaceLineBreaksComputerFactory;
 use crate::position::Position;
 use crate::range::Range;
 use crate::selection::Selection;
+use crate::services::abstract_code_editor_service::ICodeEditorRegistry;
 use crate::text_model::{ModelDecorationsChangeAccessor, TextModel, TextSource};
 use crate::text_model_edit_source::{EditSources, TextModelEditSource};
 use crate::text_model_events as model_events;
@@ -947,6 +950,9 @@ pub struct CodeEditorWidgetServices {
     pub schedule_at_next_animation_frame: ScheduleAtNextAnimationFrame,
     /// `runWhenWindowIdle(window, callback, timeout)`.
     pub run_when_idle: RunWhenIdle,
+    /// `@ICodeEditorService`, só no que o widget chama (`willCreateCodeEditor`, `addCodeEditor`,
+    /// `removeCodeEditor`). O original sempre o injeta; `None` é o widget sem registro de editores.
+    pub code_editor_service: Option<Rc<dyn ICodeEditorRegistry>>,
 }
 
 /// `ICodeEditorWidgetOptions` (sem `isSimpleWidget`, `contextMenuId` e `contextKeyValues`, que pertencem à
@@ -992,6 +998,9 @@ impl CodeEditorWidget {
         options: CodeEditorWidgetOptions,
         services: CodeEditorWidgetServices,
     ) -> Rc<Self> {
+        if let Some(code_editor_service) = &services.code_editor_service {
+            code_editor_service.will_create_code_editor();
+        }
         let base = Disposable::new();
         let delivery_queue = EventDeliveryQueue::new();
         let contributions = CodeEditorContributions::new();
@@ -1059,6 +1068,10 @@ impl CodeEditorWidget {
             this.actions.borrow_mut().push((id, action));
         }
 
+        if let Some(code_editor_service) = &this.services.code_editor_service {
+            code_editor_service.add_code_editor(this.clone());
+        }
+
         this
     }
 
@@ -1076,6 +1089,11 @@ impl CodeEditorWidget {
     /// `isSimpleWidget`.
     pub fn is_simple_widget(&self) -> bool {
         self.configuration.is_simple_widget()
+    }
+
+    /// O `ICodeEditorService` injetado (`_codeEditorService`), se houver.
+    pub fn code_editor_service(&self) -> Option<Rc<dyn ICodeEditorRegistry>> {
+        self.services.code_editor_service.clone()
     }
 
     /// `contextMenuId`.
@@ -1558,6 +1576,10 @@ fn scroll_or_immediate(scroll_type: Option<ScrollType>) -> ScrollType {
 
 impl IDisposable for CodeEditorWidget {
     fn dispose(&self) {
+        if let Some(code_editor_service) = &self.services.code_editor_service {
+            code_editor_service.remove_code_editor(&ICodeEditor::get_id(self));
+        }
+
         self.actions.borrow_mut().clear();
 
         let detached_model = self.detach_model();

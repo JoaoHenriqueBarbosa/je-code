@@ -84,10 +84,11 @@ use je_editor::model::RelaxedTextModelCreationOptions;
 use je_editor::model_line_projection_data::LineBreaksComputerFactory;
 use je_editor::monospace_line_breaks_computer::MonospaceLineBreaksComputerFactory;
 use je_editor::piece_tree_text_buffer_builder::PieceTreeTextBufferFactory;
+use je_editor::services::abstract_code_editor_service::ICodeEditorRegistry;
 use je_editor::text_model::{TextModel, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
 use je_editor::view_model_types::IViewModel;
-use je_instantiation::{ServiceCollection, ServiceId, ServicesAccessor};
+use je_instantiation::{ServiceCollection, ServiceEntry, ServiceId, ServicesAccessor};
 use je_platform::commands::{ICommandService, I_COMMAND_SERVICE};
 use je_platform::notification::{INotificationService, I_NOTIFICATION_SERVICE};
 
@@ -102,6 +103,10 @@ use super::test_theme_service::TestThemeService;
 
 /// `ITestCodeEditor`: o editor de teste (ver o topo do módulo).
 pub type ITestCodeEditor = TestCodeEditor;
+
+/// O identificador de `ICodeEditorService` na `serviceCollection` dos testes (o `[ICodeEditorService, codeEditorService]` do
+/// original). O serviço que o chamador injeta por ele é o registro de editores do widget; sem ele o widget não registra.
+pub const I_CODE_EDITOR_SERVICE: ServiceId<TestCodeEditorService> = ServiceId::new("codeEditorService");
 
 /// `ITestEditorCommand`.
 pub trait ITestEditorCommand {
@@ -309,6 +314,9 @@ pub struct CodeEditorServices {
     pub theme_service: Rc<TestThemeService>,
     /// O `ICodeEditorService` (`TestCodeEditorService`).
     pub code_editor_service: Rc<TestCodeEditorService>,
+    /// O `code_editor_service` veio da `serviceCollection` do chamador: só então o widget o registra (o dublê
+    /// criado aqui não tem observador, e criar o registro à toa deixaria um `Disposable` sem dono).
+    code_editor_service_injected: bool,
 }
 
 impl Deref for CodeEditorServices {
@@ -339,6 +347,11 @@ pub fn create_code_editor_services(disposables: &DisposableStore, services: Opti
     let command_service_instance: Rc<dyn ICommandService> = command_service.clone();
     define(&services, I_COMMAND_SERVICE, command_service_instance);
 
+    let injected_code_editor_service = match services.get(I_CODE_EDITOR_SERVICE) {
+        Some(ServiceEntry::Instance(instance)) => Some(instance),
+        _ => None,
+    };
+
     let instantiation_service = TestInstantiationService::with_options(services, true, None, false);
     command_service.bind_instantiation_service(Rc::downgrade(&instantiation_service));
 
@@ -356,7 +369,8 @@ pub fn create_code_editor_services(disposables: &DisposableStore, services: Opti
         undo_redo_service: UndoRedoService::for_tests(),
         language_configuration_service,
         theme_service,
-        code_editor_service: Rc::new(TestCodeEditorService::default()),
+        code_editor_service_injected: injected_code_editor_service.is_some(),
+        code_editor_service: injected_code_editor_service.unwrap_or_else(|| Rc::new(TestCodeEditorService::default())),
     })
 }
 
@@ -406,6 +420,9 @@ pub fn instantiate_test_code_editor(
             dom_line_breaks_computer_factory,
             schedule_at_next_animation_frame: schedule_at_next_animation_frame(),
             run_when_idle: run_when_idle(),
+            code_editor_service: services
+                .code_editor_service_injected
+                .then(|| -> Rc<dyn ICodeEditorRegistry> { services.code_editor_service.registry().clone() }),
         },
     );
     let editor = Rc::new(TestCodeEditor {
