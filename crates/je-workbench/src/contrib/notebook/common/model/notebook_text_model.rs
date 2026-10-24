@@ -62,7 +62,7 @@ use je_editor::range::Range;
 use je_editor::services_model::IModelService;
 use je_editor::text_model::{TextSource, create_text_buffer};
 use je_editor::text_model_search::SearchParams;
-use je_editor::undo_redo::{UndoRedoElement, UndoRedoGroup};
+use je_editor::undo_redo::{IUndoRedoService, UndoRedoElement, UndoRedoElementRef, UndoRedoGroup};
 use je_editor::undo_redo_service::UndoRedoService;
 use je_platform::resources::ext_uri;
 
@@ -474,7 +474,7 @@ impl NotebookOperationManager {
         {
             pending.push_end_state(alternative_version_id, selection_state);
             if !self.is_appending.get() {
-                self.undo_service.push_element(Rc::new(pending.clone()), pending.undo_redo_group.as_ref(), None);
+                self.undo_service.push_element(UndoRedoElementRef::Resource(Rc::new(pending.clone())), pending.undo_redo_group.as_ref(), None);
             }
         }
         self.is_appending.set(false);

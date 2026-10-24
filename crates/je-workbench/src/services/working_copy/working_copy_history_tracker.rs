@@ -30,7 +30,7 @@ use je_base::map::{ResourceMap, ResourceMapKeyFn};
 use je_base::network::schemas;
 use je_base::resources::ExtUri;
 use je_base::uri::URI;
-use je_editor::undo_redo_service::UndoRedoService;
+use je_editor::undo_redo_service::{IUndoRedoService, UndoRedoService};
 use je_platform::configuration::ConfigurationOverrides;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::files::files::{FileOperation, FileOperationEvent, FileStatWithMetadata};

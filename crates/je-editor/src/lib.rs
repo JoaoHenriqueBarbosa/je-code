@@ -217,6 +217,7 @@ pub mod suggest;
 pub mod services;
 
 pub mod model_service;
+pub mod model_undo_redo_participant;
 pub mod language_providers;
 pub mod language_feature_registry;
 pub mod language_features_service;
