@@ -208,9 +208,11 @@ impl Explorer {
                 if secondary {
                     return;
                 }
+                // O clique único abre como pré-visualização; o duplo (`click_count` 2) fixa a aba.
+                let double = event.browser_event.as_ref().is_some_and(|b| b.click_count >= 2);
                 for path in event.elements.iter().flatten() {
                     if path.is_file() {
-                        queue.borrow_mut().push(Command::OpenFile(path.clone()));
+                        queue.borrow_mut().push(if double { Command::OpenFile(path.clone()) } else { Command::PreviewFile(path.clone()) });
                     }
                 }
             }

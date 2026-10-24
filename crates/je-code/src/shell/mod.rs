@@ -161,6 +161,9 @@ pub enum PromptAction {
 pub enum Command {
     NewUntitled,
     OpenFile(PathBuf),
+    /// Abre como pré-visualização (o clique único do explorador e do Quick Open em modo preview).
+    PreviewFile(PathBuf),
+    PinEditor(usize),
     Save,
     SaveAll,
     Revert,
@@ -305,6 +308,9 @@ pub struct OpenEditor {
     diff_version: i64,
     /// A data de modificação do arquivo no disco quando foi lido ou gravado (para notar mudanças de fora).
     disk_mtime: Option<std::time::SystemTime>,
+    /// A aba de pré-visualização (`workbench.editor.enablePreview`): título em itálico, trocada pela próxima
+    /// aberta do mesmo jeito; editar o texto ou clicar duas vezes a fixa.
+    preview: bool,
 }
 
 impl OpenEditor {
@@ -719,7 +725,7 @@ impl Shell {
         let saved_version = model.get_alternative_version_id();
         let index = self.active.map_or(self.editors.len(), |i| i + 1);
         let needs_head = path.is_some();
-        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None });
+        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None, preview: false });
         if needs_head {
             self.reload_heads();
         }
@@ -737,6 +743,22 @@ impl Shell {
         self.push_editor(Some(path.to_path_buf()), name, &String::from_utf8_lossy(&bytes));
         if let Some(editor) = self.active_editor_mut() {
             editor.disk_mtime = Self::mtime(path);
+        }
+        Ok(())
+    }
+
+    /// Abre `path` como pré-visualização: troca a aba de pré-visualização que houver (se ela não foi editada).
+    fn preview_file(&mut self, path: &Path) -> Result<(), String> {
+        if self.editors.iter().any(|e| e.path.as_deref() == Some(path)) {
+            return self.open_file(path);
+        }
+        let old = self.editors.iter().position(|e| e.preview && !e.is_modified());
+        self.open_file(path)?;
+        if let Some(active) = self.active {
+            self.editors[active].preview = true;
+            if let Some(old) = old.filter(|o| *o != active) {
+                self.close_editor(old);
+            }
         }
         Ok(())
     }
@@ -970,7 +992,7 @@ impl Shell {
                 if let Some(env) = &self.environment {
                     view.set_token_colors(&env.color_map());
                 }
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None };
+                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None, preview: false };
                 self.activate(index);
             }
             Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
@@ -1002,6 +1024,16 @@ impl Shell {
             Command::OpenFile(path) => {
                 if let Err(e) = self.open_file(&path) {
                     self.notify(Severity::Error, e);
+                }
+            }
+            Command::PreviewFile(path) => {
+                if let Err(e) = self.preview_file(&path) {
+                    self.notify(Severity::Error, e);
+                }
+            }
+            Command::PinEditor(index) => {
+                if let Some(editor) = self.editors.get_mut(index) {
+                    editor.preview = false;
                 }
             }
             Command::Save => {
@@ -2977,7 +3009,8 @@ impl Shell {
             }
             let label = tree.create(tab, Role::Generic);
             tree.set_bounds(label, Rect::new(6.0 + icon_width, 3.5, 6.0 + icon_width + text_width, 27.5));
-            tree.style_mut(label).content = Content::Text { text: editor.name.clone(), style: tab_font.clone(), color: fg, line_height: 24.0 };
+            let font = if editor.preview { je_text::TextStyle { italic: true, ..tab_font.clone() } } else { tab_font.clone() };
+            tree.style_mut(label).content = Content::Text { text: editor.name.clone(), style: font, color: fg, line_height: 24.0 };
             // O botão de fechar: visível na aba ativa e sob o ponteiro; o ponto de modificado no lugar dele.
             let close = tree.create(tab, Role::Button);
             let cx = width - 6.5 - 20.0;
@@ -3073,6 +3106,8 @@ impl Shell {
                 }
             });
             let queue = self.queue.clone();
+            let queue_pin = self.queue.clone();
+            let _ = self.ui.listen(tab, EventKind::DoubleClick, false, move |_| queue_pin.borrow_mut().push(Command::PinEditor(index)));
             let _ = self.ui.listen(close, EventKind::Click, false, move |e| {
                 e.stop_propagation();
                 queue.borrow_mut().push(Command::CloseEditor(index));
@@ -3690,6 +3725,14 @@ impl Shell {
     pub fn take_dirty(&mut self) -> bool {
         self.run_commands();
         let editor = self.active.is_some_and(|i| self.editors[i].view.take_dirty());
+        // Editar fixa a aba de pré-visualização.
+        if let Some(i) = self.active
+            && self.editors[i].preview
+            && self.editors[i].is_modified()
+        {
+            self.editors[i].preview = false;
+            self.needs_render = true;
+        }
         // `files.autoSave: afterDelay`: a aba ativa modificada salva depois do prazo sem novas edições.
         if self.auto_save.0 == "afterDelay"
             && let Some(index) = self.active

@@ -590,6 +590,8 @@ mod tests {
         click(&mut shell, 120.0, 96.0 + 22.0 + 11.0);
         snapshot(&mut shell, "1-open.png");
         assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("a.txt")));
+        // O clique único abriu em pré-visualização: fixar a aba mantém a.txt quando o próximo abrir.
+        shell.run(shell::Command::PinEditor(0));
         // A pasta src abre e mostra b.rs, que abre numa segunda aba.
         click(&mut shell, 120.0, 96.0 + 11.0);
         snapshot(&mut shell, "2-folder.png");
@@ -1145,6 +1147,28 @@ mod tests {
             assert!(!shell.active_editor().expect("aba").is_modified());
         });
         std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn single_click_opens_a_preview_tab_that_the_next_one_replaces() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-preview", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(n), n).expect("arquivo");
+        }
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        snapshot(&mut shell, "p-0.png");
+        // a.txt e depois b.txt pelo clique único: só uma aba, a de b.txt, em itálico.
+        click(&mut shell, 120.0, 96.0 + 11.0);
+        click(&mut shell, 120.0, 96.0 + 22.0 + 11.0);
+        snapshot(&mut shell, "p-1.png");
+        assert_eq!(shell.tab_paths(), vec![dir.join("b.txt")]);
+        // Editar fixa a aba: c.txt abre ao lado.
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        shell.take_dirty();
+        click(&mut shell, 120.0, 96.0 + 44.0 + 11.0);
+        assert_eq!(shell.tab_paths(), vec![dir.join("b.txt"), dir.join("c.txt")]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
