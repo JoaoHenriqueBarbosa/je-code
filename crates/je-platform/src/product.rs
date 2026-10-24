@@ -49,6 +49,9 @@ pub trait IProductService {
     /// `trustedExtensionAuthAccess`, quando o produto declara. Devolve uma cópia (e não uma referência)
     /// porque o original lê a propriedade a cada chamada e um produto de teste pode mudá-la entre elas.
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary>;
+    /// `trustedMcpAuthAccess`, quando o produto declara. Devolve cópia pelo mesmo motivo de
+    /// [`IProductService::trusted_extension_auth_access`].
+    fn trusted_mcp_auth_access(&self) -> Option<StringsOrDictionary>;
     /// `extensionKind`: o `ExtensionKind[]` que o produto fixa por identificador de extensão.
     fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>>;
     /// `extensionPointExtensionKind`: o `ExtensionKind[]` que o produto fixa por ponto de extensão.
@@ -89,6 +92,8 @@ pub struct ProductService {
     /// Mutável por dentro: o original lê a propriedade a cada chamada, e um produto de teste a reatribui
     /// depois que o serviço que a consome já existe.
     pub trusted_extension_auth_access: RefCell<Option<StringsOrDictionary>>,
+    /// Mutável por dentro, pelo mesmo motivo de `trusted_extension_auth_access`.
+    pub trusted_mcp_auth_access: RefCell<Option<StringsOrDictionary>>,
     pub extension_kind: Option<IStringDictionary<Vec<String>>>,
     pub extension_point_extension_kind: Option<IStringDictionary<Vec<String>>>,
     pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
@@ -113,6 +118,7 @@ impl Default for ProductService {
             msft_internal_domains: Vec::new(),
             enabled_telemetry_levels: Some(EnabledTelemetryLevels { error: true, usage: true }),
             trusted_extension_auth_access: RefCell::new(None),
+            trusted_mcp_auth_access: RefCell::new(None),
             extension_kind: None,
             extension_point_extension_kind: None,
             extension_untrusted_workspace_support: None,
@@ -126,6 +132,11 @@ impl ProductService {
     /// `productService.trustedExtensionAuthAccess = value`.
     pub fn set_trusted_extension_auth_access(&self, value: Option<StringsOrDictionary>) {
         *self.trusted_extension_auth_access.borrow_mut() = value;
+    }
+
+    /// `productService.trustedMcpAuthAccess = value`.
+    pub fn set_trusted_mcp_auth_access(&self, value: Option<StringsOrDictionary>) {
+        *self.trusted_mcp_auth_access.borrow_mut() = value;
     }
 }
 
@@ -171,6 +182,9 @@ impl IProductService for ProductService {
     }
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
         self.trusted_extension_auth_access.borrow().clone()
+    }
+    fn trusted_mcp_auth_access(&self) -> Option<StringsOrDictionary> {
+        self.trusted_mcp_auth_access.borrow().clone()
     }
     fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
         self.extension_kind.as_ref()
@@ -231,6 +245,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
         self.trusted_extension_auth_access.clone()
+    }
+    fn trusted_mcp_auth_access(&self) -> Option<StringsOrDictionary> {
+        self.trusted_mcp_auth_access.clone()
     }
     fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
         self.extension_kind.as_ref()

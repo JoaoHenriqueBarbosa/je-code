@@ -11,37 +11,33 @@
 //! - **Valores.** `AllowedExtension[]` é `Vec<AllowedExtension>` (cópia, como o `JSON.parse` fresco do
 //!   original) e `updateAllowedExtensions` recebe `&[AllowedExtension]`. `boolean | undefined` é
 //!   `Option<bool>`. `trustedExtensionAuthAccess` (`string[] | Record<string, string[]> | undefined`) é
-//!   [`StringsOrDictionary`] opcional, lido do `IProductService` a cada chamada.
+//!   `Option<StringsOrDictionary>`, lido do `IProductService` a cada chamada.
 //! - **`JSON.parse`.** Um erro de sintaxe ou de leitura no armazenamento dá lista vazia (o `catch` do
 //!   original). Um JSON válido que não é array deixa o original lançar `TypeError` em `.find`, fora do
-//!   `try`, e aqui lança o mesmo erro com [`errors::throw`].
+//!   `try`, e aqui lança o mesmo erro com [`je_base::errors::throw`] (ver [`read_stored_items`]).
+//! - **`onDidChangeExtensionSessionAccess`** emite o `{ providerId, accountName }` anônimo do original, que é
+//!   a struct [`AccountAccessChange`] (a mesma do serviço de acesso por MCP); [`ExtensionSessionAccessChange`]
+//!   é o nome que este serviço dá a ela.
 //! - **`isAccessAllowed`** usa a mesma lista de extensões confiáveis que `readAllowedExtensions` (`array`,
 //!   ou `dicionário[provedor]`, ou vazia): no original as duas formas leem a mesma propriedade, só escritas
 //!   de outro jeito (`includes` numa e laço na outra), e o resultado é idêntico.
 
 use std::rc::Rc;
 
-use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::json::Value;
 use je_base::json_formatter::json_stringify;
-use je_base::jsonc::json_parse;
 use je_base::lifecycle::{Disposable, IDisposable};
-use je_base::product::StringsOrDictionary;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_instantiation::{InstantiationType, Injectable, delayed_proxy, register_singleton, service_id, service_impl};
 use je_platform::product::IProductService;
 use je_platform::storage::{StorageScope, StorageService, StorageTarget};
 use je_storage::StorageValue;
 
-use super::authentication::AllowedExtension;
+use super::authentication::{AccountAccessChange, AllowedExtension, read_stored_items, trusted_auth_access_ids};
 
 /// O `{ providerId: string; accountName: string }` de `onDidChangeExtensionSessionAccess`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExtensionSessionAccessChange {
-    pub provider_id: String,
-    pub account_name: String,
-}
+pub type ExtensionSessionAccessChange = AccountAccessChange;
 
 /// `IAuthenticationAccessService`.
 pub trait IAuthenticationAccessService {
@@ -113,27 +109,15 @@ impl AuthenticationAccessService {
     /// A lista de `trustedExtensionAuthAccess` que vale para o provedor: o próprio array, ou o
     /// `dicionário[provedor]`, ou vazia.
     fn trusted_extension_ids(&self, provider_id: &str) -> Vec<String> {
-        match self.product_service.trusted_extension_auth_access() {
-            // Case 1: trustedExtensionAuthAccess is an array
-            Some(StringsOrDictionary::Strings(ids)) => ids,
-            // Case 2: trustedExtensionAuthAccess is an object
-            Some(StringsOrDictionary::Dictionary(dictionary)) => dictionary.get(provider_id).cloned().unwrap_or_default(),
-            None => Vec::new(),
-        }
+        trusted_auth_access_ids(self.product_service.trusted_extension_auth_access(), provider_id)
     }
 
     /// O trecho `try { ... JSON.parse ... } catch (err) { }` de `readAllowedExtensions`.
     fn read_stored_extensions(&self, provider_id: &str, account_name: &str) -> Vec<AllowedExtension> {
         let key = Self::storage_key(provider_id, account_name);
-        let Some(source) = self.storage_service.get(&key, StorageScope::Application, None).filter(|source| !source.is_empty()) else {
-            return Vec::new();
-        };
-        match json_parse(&source.encode_utf16().collect::<Vec<u16>>()) {
-            Ok(Value::Array(items)) => items.iter().filter_map(AllowedExtension::from_json).collect(),
-            // `trustedExtensions.find` não existe fora de um array.
-            Ok(_) => errors::throw(Error::new("trustedExtensions.find is not a function")),
-            Err(_) => Vec::new(),
-        }
+        // `trustedExtensions.find` não existe fora de um array.
+        let items = read_stored_items(self.storage_service.as_ref(), &key, "trustedExtensions.find is not a function");
+        items.iter().filter_map(AllowedExtension::from_json).collect()
     }
 
     fn fire_did_change(&self, provider_id: &str, account_name: &str) {
