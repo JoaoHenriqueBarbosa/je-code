@@ -1,15 +1,42 @@
-//! Porte parcial de `src/vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.ts`: só o
-//! `MultiDiffEditorItem`, o item de um editor de diff de vários arquivos (o `NotebookMultiDiffEditorItem` o estende). O
+//! Porte parcial de `src/vs/workbench/contrib/multiDiffEditor/browser/multiDiffSourceResolverService.ts`: o
+//! `MultiDiffEditorItem`, o item de um editor de diff de vários arquivos (o `NotebookMultiDiffEditorItem` o estende), e os
+//! contratos `IMultiDiffSourceResolver` e `IResolvedMultiDiffSource` que os resolvedores do SCM implementam. O
 //! `IMultiDiffSourceResolverService` e o `MultiDiffSourceResolverService` não são portados.
 //!
 //! Divergências:
+//! - `IResolvedMultiDiffSource.resources: IValueWithChangeEvent<readonly MultiDiffEditorItem[]>` é um
+//!   [`MultiDiffResources`], cujo valor é um `Rc<Vec<MultiDiffEditorItem>>` (a lista é imutável e compartilhada, e a identidade
+//!   do `Rc` faz o papel da identidade do array nos observáveis). `contextKeys` é [`IResolvedMultiDiffSource::context_keys`].
 //! - `contextKeys?: Record<string, ContextKeyValue>` é uma lista de pares `(chave, Dynamic)` na ordem de inserção; o
 //!   `ContextKeyValue` é um [`Dynamic`] (como em `EditorGroupContextKeyProvider`).
 //! - `BugIndicatingError('Invalid arguments')` do construtor é o `errors::throw` com o erro de bug.
 
+use std::rc::Rc;
+
 use je_base::dynamic::{Dynamic, json_stringify};
 use je_base::errors::{self, Error};
+use je_base::event::ValueWithChangeEventLike;
+use je_base::promise::Promise;
 use je_base::uri::URI;
+
+/// `IValueWithChangeEvent<readonly MultiDiffEditorItem[]>`.
+pub type MultiDiffResources = Rc<dyn ValueWithChangeEventLike<Rc<Vec<MultiDiffEditorItem>>>>;
+
+/// `IResolvedMultiDiffSource`.
+pub trait IResolvedMultiDiffSource {
+    fn resources(&self) -> MultiDiffResources;
+
+    /// `contextKeys?: Record<string, ContextKeyValue>`, na ordem de inserção.
+    fn context_keys(&self) -> Option<Vec<(String, Dynamic)>> {
+        None
+    }
+}
+
+/// `IMultiDiffSourceResolver`.
+pub trait IMultiDiffSourceResolver {
+    fn can_handle_uri(&self, uri: &URI) -> bool;
+    fn resolve_diff_source(&self, uri: &URI) -> Promise<Rc<dyn IResolvedMultiDiffSource>>;
+}
 
 /// `MultiDiffEditorItem`.
 #[derive(Clone, Debug)]
