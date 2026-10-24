@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
+je-instantiation = { path = "../je-instantiation" }
 
 [dev-dependencies]
 tempfile = "3"
