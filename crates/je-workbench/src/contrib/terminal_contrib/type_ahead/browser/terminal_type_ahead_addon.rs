@@ -991,7 +991,7 @@ impl IDisposable for PredictionStats {
 // ---------------------------------------------------------------------------------------------------------------------
 
 struct Expected {
-    gen: u32,
+    generation: u32,
     p: Rc<dyn IPrediction>,
 }
 
@@ -1070,7 +1070,7 @@ impl PredictionTimeline {
 
     fn current_generation_predictions(&self) -> Vec<Rc<dyn IPrediction>> {
         let expected = self.expected.borrow();
-        expected.iter().filter(|e| e.gen == expected[0].gen).map(|e| e.p.clone()).collect()
+        expected.iter().filter(|e| e.generation == expected[0].generation).map(|e| e.p.clone()).collect()
     }
 
     pub fn is_showing_predictions(&self) -> bool {
@@ -1141,7 +1141,7 @@ impl PredictionTimeline {
         let mut output = String::new();
 
         let mut reader = StringReader::new(&input);
-        let starting_gen = self.expected.borrow()[0].gen;
+        let starting_gen = self.expected.borrow()[0].generation;
         let emit_prediction_omitted = |reader: &mut StringReader, output: &mut String| {
             if let Some(omit) = reader.eat_re(&prediction_omit_re()) {
                 output.push_str(&text_of(omit[0].as_deref().unwrap_or_default()));
@@ -1151,9 +1151,9 @@ impl PredictionTimeline {
         'read_loop: while !self.expected.borrow().is_empty() && reader.remaining() > 0 {
             emit_prediction_omitted(&mut reader, &mut output);
 
-            let (prediction, gen) = {
+            let (prediction, generation) = {
                 let expected = self.expected.borrow();
-                (expected[0].p.clone(), expected[0].gen)
+                (expected[0].p.clone(), expected[0].generation)
             };
             let cursor = self.physical_cursor(&buffer);
             let before_test_reader_index = reader.index;
@@ -1163,7 +1163,7 @@ impl PredictionTimeline {
                     // if the input character matches what the next prediction expected, undo
                     // the prediction and write the real character out.
                     let eaten = text_of(&input[before_test_reader_index..reader.index]);
-                    if gen == starting_gen {
+                    if generation == starting_gen {
                         output.push_str(&prediction.roll_forwards(&cursor, &eaten));
                     } else {
                         prediction.apply(&buffer, &self.physical_cursor(&buffer)); // move cursor for additional apply
@@ -1184,7 +1184,7 @@ impl PredictionTimeline {
                 MatchResult::Failure => {
                     // on a failure, roll back all remaining items in this generation
                     // and clear predictions, since they are no longer valid
-                    let rollback: Vec<Rc<dyn IPrediction>> = self.expected.borrow().iter().filter(|e| e.gen == starting_gen).map(|e| e.p.clone()).rev().collect();
+                    let rollback: Vec<Rc<dyn IPrediction>> = self.expected.borrow().iter().filter(|e| e.generation == starting_gen).map(|e| e.p.clone()).rev().collect();
                     for p in &rollback {
                         output.push_str(&p.rollback(&self.physical_cursor(&buffer)));
                     }
@@ -1210,10 +1210,10 @@ impl PredictionTimeline {
         }
 
         // If we passed a generation boundary, apply the current generation's predictions
-        let snapshot: Vec<(u32, Rc<dyn IPrediction>)> = self.expected.borrow().iter().map(|e| (e.gen, e.p.clone())).collect();
+        let snapshot: Vec<(u32, Rc<dyn IPrediction>)> = self.expected.borrow().iter().map(|e| (e.generation, e.p.clone())).collect();
         if !snapshot.is_empty() && starting_gen != snapshot[0].0 {
-            for (gen, p) in &snapshot {
-                if *gen != snapshot[0].0 {
+            for (generation, p) in &snapshot {
+                if *generation != snapshot[0].0 {
                     break;
                 }
                 if p.affects_style() {
@@ -1251,10 +1251,10 @@ impl PredictionTimeline {
 
     /// Appends a typeahead prediction.
     pub fn add_prediction(&self, buffer: &Rc<dyn ITypeAheadBuffer>, prediction: Rc<dyn IPrediction>) -> bool {
-        self.expected.borrow_mut().push(Expected { gen: self.current_gen.get(), p: prediction.clone() });
+        self.expected.borrow_mut().push(Expected { generation: self.current_gen.get(), p: prediction.clone() });
         self.added_emitter.fire(prediction.clone());
 
-        if self.current_gen.get() != self.expected.borrow()[0].gen {
+        if self.current_gen.get() != self.expected.borrow()[0].generation {
             prediction.apply(buffer, &self.tentative_cursor(buffer));
             return false;
         }

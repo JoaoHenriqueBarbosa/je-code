@@ -70,7 +70,8 @@ use crate::contrib::terminal::common::terminal::{
 };
 use crate::contrib::terminal_contrib::links::links::ITerminalLinkProviderService;
 use crate::contrib::terminal_contrib::quick_fix::quick_fix::{
-    ITerminalQuickFix, ITerminalQuickFixOptions, ITerminalQuickFixProvider, ITerminalQuickFixService, TerminalQuickFixAction,
+    ITerminalQuickFixCommandAction, ITerminalQuickFixOpenerAction, ITerminalQuickFixOptions, ITerminalQuickFixProvider, ITerminalQuickFixService,
+    ITerminalQuickFixTerminalCommandAction, TerminalQuickFixActionInternal,
 };
 use crate::contrib::terminal_contrib::suggest::terminal_completion_item::{ITerminalCompletion, TerminalCompletionItemKind};
 use crate::contrib::terminal_contrib::suggest::terminal_completion_service::{
@@ -910,13 +911,16 @@ impl ITerminalQuickFixProvider for ExtensionQuickFixProvider {
         &self,
         terminal_command: Rc<dyn ITerminalCommand>,
         lines: Option<Vec<String>>,
-        options: &mut ITerminalQuickFixOptions,
+        options: &ITerminalQuickFixOptions,
         token: CancellationToken,
-    ) -> Promise<Option<OneOrMany<ITerminalQuickFix>>> {
+    ) -> Promise<Vec<TerminalQuickFixActionInternal>> {
         if token.is_cancellation_requested() {
-            return Promise::resolved(None);
+            return Promise::resolved(Vec::new());
         }
-        if let Some(output_matcher) = options.output_matcher.as_mut() {
+        // O original atribui `options.outputMatcher.length = 40` nas opções registradas; o contrato do porte passa as opções por
+        // referência compartilhada, então o limite vale para esta chamada (a mensagem e o resultado são os mesmos a cada chamada).
+        let mut output_matcher = options.output_matcher.clone();
+        if let Some(output_matcher) = output_matcher.as_mut() {
             if output_matcher.length != 0.0 && output_matcher.length > 40.0 {
                 output_matcher.length = 40.0;
                 self.log_service.warn("Cannot exceed output matcher length of 40");
@@ -925,18 +929,19 @@ impl ITerminalQuickFixProvider for ExtensionQuickFixProvider {
         let command_line = terminal_command.command();
         let command_line_match = match_line(&options.command_line_matcher, &JsString::from(command_line.as_str()));
         let (Some(command_line_match), Some(lines)) = (command_line_match, lines) else {
-            return Promise::resolved(None);
+            return Promise::resolved(Vec::new());
         };
-        let output_match = options.output_matcher.as_ref().and_then(|output_matcher| get_output_match_for_lines(&lines, output_matcher));
+        let output_match = output_matcher.as_ref().and_then(|output_matcher| get_output_match_for_lines(&lines, output_matcher));
         if output_match.is_none() {
-            return Promise::resolved(None);
+            return Promise::resolved(Vec::new());
         }
         let match_result = TerminalCommandMatchResultDto { command_line_match, output_match, command_line };
 
         let (id, source) = (self.id.clone(), self.extension_id.clone());
-        self.proxy.rpc_provide_terminal_quick_fixes(&self.id, match_result, token).then(move |result| match result? {
-            OneOrMany::Many(fixes) => Some(OneOrMany::Many(fixes.into_iter().map(|fix| parse_quick_fix(&id, &source, fix)).collect())),
-            OneOrMany::One(fix) => Some(OneOrMany::One(parse_quick_fix(&id, &source, fix))),
+        self.proxy.rpc_provide_terminal_quick_fixes(&self.id, match_result, token).then(move |result| match result {
+            None => Vec::new(),
+            Some(OneOrMany::Many(fixes)) => fixes.into_iter().map(|fix| parse_quick_fix(&id, &source, fix)).collect(),
+            Some(OneOrMany::One(fix)) => vec![parse_quick_fix(&id, &source, fix)],
         })
     }
 }
@@ -949,14 +954,19 @@ pub fn get_output_match_for_lines(lines: &[String], output_matcher: &ITerminalOu
 
 /// `parseQuickFix(id, source, fix)`. Num comando do VS Code o `id` da correção é o do comando (o espalhamento `...fix` o
 /// sobrescreve).
-pub fn parse_quick_fix(id: &str, source: &str, fix: TerminalQuickFix) -> ITerminalQuickFix {
+pub fn parse_quick_fix(id: &str, source: &str, fix: TerminalQuickFix) -> TerminalQuickFixActionInternal {
     match fix {
-        TerminalQuickFix::Opener(opener) => ITerminalQuickFix { id: id.to_owned(), source: source.to_owned(), action: TerminalQuickFixAction::Opener { uri: opener.uri } },
-        TerminalQuickFix::Command(command) => ITerminalQuickFix { id: command.id.clone(), source: source.to_owned(), action: TerminalQuickFixAction::VscodeCommand(command) },
-        TerminalQuickFix::TerminalCommand(command) => ITerminalQuickFix {
+        TerminalQuickFix::Opener(opener) => TerminalQuickFixActionInternal::Opener(ITerminalQuickFixOpenerAction { id: id.to_owned(), source: source.to_owned(), uri: opener.uri }),
+        TerminalQuickFix::Command(command) => TerminalQuickFixActionInternal::VscodeCommand(ITerminalQuickFixCommandAction {
+            id: command.id.clone(),
+            source: source.to_owned(),
+            title: command.title.clone(),
+        }),
+        TerminalQuickFix::TerminalCommand(command) => TerminalQuickFixActionInternal::TerminalCommand(ITerminalQuickFixTerminalCommandAction {
             id: id.to_owned(),
             source: source.to_owned(),
-            action: TerminalQuickFixAction::TerminalCommand { terminal_command: command.terminal_command, should_execute: command.should_execute },
-        },
+            terminal_command: command.terminal_command,
+            should_execute: command.should_execute,
+        }),
     }
 }

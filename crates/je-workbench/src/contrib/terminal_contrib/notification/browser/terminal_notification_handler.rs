@@ -465,7 +465,8 @@ impl Inner {
                 }
                 MaybePromise::Value(Dynamic::Undefined)
             });
-            secondary_actions.push(action_store.add_rc(Action::new("terminal.osc99.dismiss", &localize("terminalNotificationDismiss", "Dismiss", &[]), "", true, Some(callback))));
+            let dismiss_action = action_store.add_rc(Action::new("terminal.osc99.dismiss", &localize("terminalNotificationDismiss", "Dismiss", &[]), "", true, Some(callback)));
+            secondary_actions.push(dismiss_action);
         }
         {
             let (active_ref, handle_ref, weak) = (active_ref.clone(), handle_ref.clone(), weak.clone());
@@ -486,13 +487,14 @@ impl Inner {
                     Dynamic::Undefined
                 }))
             });
-            secondary_actions.push(action_store.add_rc(Action::new(
+            let disable_action = action_store.add_rc(Action::new(
                 "terminal.osc99.disable",
                 &localize("terminalNotificationDisable", "Disable Terminal Notifications", &[]),
                 "",
                 true,
                 Some(callback),
-            )));
+            ));
+            secondary_actions.push(disable_action);
         }
 
         let actions = NotificationActions { primary: primary_actions, secondary: secondary_actions };

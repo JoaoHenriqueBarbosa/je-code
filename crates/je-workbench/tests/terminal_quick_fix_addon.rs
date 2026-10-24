@@ -32,7 +32,7 @@ use indexmap::IndexMap;
 use je_base::event::Event;
 use je_base::js_regexp::JsRegExp;
 use je_base::js_string::JsString;
-use je_base::lifecycle::DisposableRef;
+use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::commands::commands::ICommandService;
