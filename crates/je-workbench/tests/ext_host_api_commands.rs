@@ -522,13 +522,14 @@ impl Env {
 
     /// `teardown(() => { disposables = dispose(disposables); return rpcProtocol.sync(); })` e o `suiteTeardown`.
     async fn teardown(self) {
+        // O timer de 100 ms que descarta o resultado de `_executeCodeLensProvider` dispara antes de o registro do provedor ser
+        // descartado (no mocha o relógio é o real e o caso seguinte demora mais do que isso): o adaptador ainda existe quando o
+        // `$releaseCodeLenses` chega ao host.
+        timeout_with_token(100, &CancellationToken::None).await.expect("timeout");
         for disposable in &self.disposables {
             disposable.dispose();
         }
         self.sync().await;
-        // O `suiteTeardown` roda depois de todos os casos: os timers de 100 ms que descartam os resultados de
-        // `_executeCodeLensProvider` já dispararam.
-        timeout_with_token(100, &CancellationToken::None).await.expect("timeout");
         // `suiteTeardown`
         self.model.dispose();
         self.main_thread.dispose();
