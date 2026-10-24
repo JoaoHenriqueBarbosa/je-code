@@ -973,6 +973,13 @@ mod tests {
         // O diff contra o HEAD aparece na margem do arquivo aberto.
         shell.run(shell::Command::ScmOpen("a.txt".to_owned()));
         snapshot(&mut shell, "g00-gutter.png");
+        // A Timeline do arquivo aberto mostra o commit dele.
+        shell.run(shell::Command::ShowExplorer);
+        shell.run(shell::Command::ToggleTimeline);
+        assert_eq!(shell.timeline_subjects(), vec!["first".to_owned()]);
+        snapshot(&mut shell, "g01-timeline.png");
+        shell.run(shell::Command::ToggleTimeline);
+        shell.run(shell::Command::ShowScm);
         // Stage de tudo, mensagem e commit pela Ctrl+Enter.
         shell.run(shell::Command::ScmOp(shell::git::Operation::Stage(vec!["a.txt".to_owned(), "b.txt".to_owned()])));
         wait(&mut shell, &|s| s.staged.len() == 2);

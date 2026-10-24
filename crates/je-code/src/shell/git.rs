@@ -102,6 +102,14 @@ pub fn head_text(root: &Path, path: &str) -> Option<String> {
     git(root, &["show", &format!("HEAD:{path}")]).ok()
 }
 
+/// O histórico de um arquivo para a Timeline: assunto e data relativa dos últimos 50 commits que o tocaram.
+pub fn file_history(root: &Path, path: &Path) -> Vec<(String, String)> {
+    let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+    git(root, &["log", "-n", "50", "--follow", "--format=%s%x09%ar", "--", &relative])
+        .map(|out| out.lines().filter_map(|l| l.split_once('\t')).map(|(s, d)| (s.to_owned(), d.to_owned())).collect())
+        .unwrap_or_default()
+}
+
 fn kind_of(code: char) -> Option<Kind> {
     Some(match code {
         'M' => Kind::Modified,

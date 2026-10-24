@@ -200,6 +200,7 @@ pub enum Command {
     ToggleWordWrap,
     ShowExplorer,
     ShowManageMenu,
+    ToggleTimeline,
     PickTheme,
     SetTheme(usize),
     OpenSettingsJson,
@@ -369,6 +370,10 @@ pub struct Shell {
     scm: ScmView,
     scm_focused: bool,
     git_root: Option<PathBuf>,
+    /// A Timeline aberta e as entradas dela (assunto e data relativa) para o arquivo ativo.
+    timeline_open: bool,
+    timeline_entries: Vec<(String, String)>,
+    timeline_path: Option<PathBuf>,
     /// As extensões instaladas (lidas na primeira abertura da vista Extensions) e o filtro e a rolagem dela.
     extensions: Option<Vec<extensions_view::ExtensionEntry>>,
     extensions_filter: Vec<char>,
@@ -534,6 +539,9 @@ impl Shell {
             scm,
             scm_focused: false,
             git_root: None,
+            timeline_open: false,
+            timeline_entries: Vec::new(),
+            timeline_path: None,
             extensions: None,
             extensions_filter: Vec::new(),
             extensions_scroll: 0.0,
@@ -816,6 +824,7 @@ impl Shell {
             explorer.reveal(editor.path.as_deref());
         }
         self.needs_render = true;
+        self.refresh_timeline();
         if self.find.is_some() {
             self.find_changed(false);
             if self.find_focused {
@@ -1426,6 +1435,11 @@ impl Shell {
             }
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
+            Command::ToggleTimeline => {
+                self.timeline_open = !self.timeline_open;
+                self.timeline_path = None;
+                self.refresh_timeline();
+            }
             Command::ShowManageMenu => {
                 // O menu da engrenagem (`Manage`): comandos, configurações, atalhos e temas.
                 use je_base::actions::{Action, ActionCallback, ActionRef, Separator};
@@ -1717,6 +1731,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn timeline_subjects(&self) -> Vec<String> {
+        self.timeline_entries.iter().map(|e| e.0.clone()).collect()
+    }
+
+    #[cfg(test)]
     pub fn toast_count(&self) -> usize {
         self.toasts.len()
     }
@@ -1840,6 +1859,20 @@ impl Shell {
         let period = settings.get("git.autofetchPeriod").and_then(serde_json::Value::as_u64).unwrap_or(180).max(30);
         let queue = self.queue.clone();
         je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::AutoFetch), period * 1000);
+    }
+
+    /// Relê o histórico do arquivo ativo para a Timeline (`git log`), quando ela está aberta e o arquivo mudou.
+    fn refresh_timeline(&mut self) {
+        let path = self.active_editor().and_then(|e| e.path.clone());
+        if !self.timeline_open || path == self.timeline_path {
+            return;
+        }
+        self.timeline_path = path.clone();
+        self.timeline_entries = match (&self.git_root, path) {
+            (Some(root), Some(path)) => git::file_history(root, &path),
+            _ => Vec::new(),
+        };
+        self.needs_render = true;
     }
 
     /// Detecta o repositório do workspace e pede o estado.
@@ -3003,8 +3036,9 @@ impl Shell {
                 let more = tree.create(bar, Role::Button);
                 tree.set_bounds(more, Rect::new(rect.width() - 27.0, 6.0, rect.width() - 5.0, 28.0));
                 tree.style_mut(more).content = Content::Codicon { id: "ellipsis".into(), size: 16.0, color: fg };
-                // A seção da pasta e, embaixo, Outline e Timeline recolhidas (`.pane-header`, 28 px, 11 px negrito).
-                let section = |tree: &mut Tree, y: f64, label: &str, expanded: bool| {
+                // A seção da pasta e, embaixo, Outline e Timeline (`.pane-header`, 28 px, 11 px negrito); a Timeline aberta
+                // ocupa um terço da altura com o histórico do git do arquivo ativo.
+                let section = |tree: &mut Tree, y: f64, label: &str, expanded: bool| -> NodeId {
                     let header = tree.create(bar, Role::Button);
                     tree.set_bounds(header, Rect::new(5.0, y, rect.width() - 6.0, y + 28.0));
                     let chevron = tree.create(header, Role::Generic);
@@ -3013,15 +3047,48 @@ impl Shell {
                     let text = tree.create(header, Role::Generic);
                     tree.set_bounds(text, Rect::new(25.0, 0.0, rect.width() - 30.0, 28.0));
                     tree.style_mut(text).content = Content::Text { text: label.to_owned(), style: ui_font(11.0, 700), color: fg, line_height: 28.0 };
+                    header
                 };
                 let bottom = rect.height() - 6.0;
                 if let Some(name) = self.workspace_name() {
                     section(&mut tree, 33.0, &name, true);
                 }
-                section(&mut tree, bottom - 56.0, "Outline", false);
-                section(&mut tree, bottom - 28.0, "Timeline", false);
+                let timeline_height = if self.timeline_open { (bottom / 3.0).round().max(80.0) } else { 0.0 };
+                let timeline_top = bottom - 28.0 - timeline_height;
+                section(&mut tree, timeline_top - 28.0, "Outline", false);
+                let timeline_header = section(&mut tree, timeline_top, "Timeline", self.timeline_open);
+                hits.push((timeline_header, Command::ToggleTimeline));
+                if self.timeline_open {
+                    let font = ui_font(13.0, 400);
+                    let muted = self.color("descriptionForeground");
+                    let entries = &self.timeline_entries;
+                    if entries.is_empty() {
+                        let note = tree.create(bar, Role::Status);
+                        tree.set_bounds(note, Rect::new(25.0, timeline_top + 30.0, rect.width() - 12.0, timeline_top + 52.0));
+                        tree.style_mut(note).content = Content::Text { text: "The active editor cannot provide timeline information.".to_owned(), style: ui_font(12.0, 400), color: muted, line_height: 22.0 };
+                    }
+                    let rows = ((timeline_height - 2.0) / 22.0).floor().max(0.0) as usize;
+                    for (i, entry) in entries.iter().take(rows).enumerate() {
+                        let y = timeline_top + 28.0 + 22.0 * i as f64;
+                        let row = tree.create(bar, Role::ListItem);
+                        tree.set_bounds(row, Rect::new(5.0, y, rect.width() - 6.0, y + 22.0));
+                        let icon = tree.create(row, Role::Image);
+                        tree.set_bounds(icon, Rect::new(14.0, 3.0, 30.0, 19.0));
+                        tree.style_mut(icon).content = Content::Codicon { id: "git-commit".into(), size: 16.0, color: fg };
+                        let when = je_widgets::text::ellipsize(&entry.1, &font, 90.0);
+                        let when_width = measure_text(&when, &font);
+                        let subject = je_widgets::text::ellipsize(&entry.0, &font, rect.width() - 60.0 - when_width - 8.0);
+                        let w = measure_text(&subject, &font);
+                        let label = tree.create(row, Role::Generic);
+                        tree.set_bounds(label, Rect::new(36.0, 0.0, 36.0 + w, 22.0));
+                        tree.style_mut(label).content = Content::Text { text: subject, style: font.clone(), color: fg, line_height: 22.0 };
+                        let date = tree.create(row, Role::Generic);
+                        tree.set_bounds(date, Rect::new(36.0 + w + 6.0, 0.0, 36.0 + w + 6.0 + when_width, 22.0));
+                        tree.style_mut(date).content = Content::Text { text: when, style: font.clone(), color: muted, line_height: 22.0 };
+                    }
+                }
                 // O explorador retido fica entre o cabeçalho da pasta e o Outline.
-                let list = Rect::new(rect.x0 + 5.0, rect.y0 + 61.0, rect.x1 - 6.0, rect.y0 + bottom - 56.0 - 1.0);
+                let list = Rect::new(rect.x0 + 5.0, rect.y0 + 61.0, rect.x1 - 6.0, rect.y0 + timeline_top - 28.0 - 1.0);
                 tree.set_bounds(self.nodes.explorer, list);
                 tree.style_mut(self.nodes.explorer).visible = self.explorer.is_some();
                 tree.style_mut(self.nodes.search).visible = false;
