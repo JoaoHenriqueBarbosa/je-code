@@ -17,9 +17,17 @@ OUT_OF_SCOPE = ['sessions', 'platform/agentHost', 'platform/github', 'platform/m
                 'platform/customizationMarketplace', 'workbench/contrib/chat', 'workbench/contrib/inlineChat',
                 'workbench/contrib/mcp', 'workbench/contrib/welcomeAgentSessions',
                 'workbench/contrib/remoteCodingAgents', 'workbench/contrib/agentsVoice']
-LAYERS = ['base', 'platform', 'editor', 'workbench/services', 'workbench/api', 'workbench/contrib', 'server', 'code']
+# Cada camada é (nome, pasta sob `ref/vscode`, chave das origens). `workbench/test` e o resto de `vs/workbench` fora de
+# `services`, `api` e `contrib` entram como `workbench (shell)`; as extensões embutidas (menos a `copilot`, fora de
+# escopo) entram à parte porque rodam no extension host.
+LAYERS = [(name, f'src/vs/{name}') for name in
+          ['base', 'platform', 'editor', 'workbench/services', 'workbench/api', 'workbench/contrib', 'server', 'code']]
+LAYERS.insert(6, ('workbench (shell)', 'src/vs/workbench'))
+LAYERS.append(('extensions', 'extensions'))
+SHELL_EXCLUDE = ['workbench/services', 'workbench/api', 'workbench/contrib']
+EXTENSIONS_OUT_OF_SCOPE = ['extensions/copilot/']
 TEST_RE = re.compile(r'^\s*test\(', re.M)
-PORT_RE = re.compile(r'Porte de `(src/vs/[^`]+\.test\.ts)`')
+PORT_RE = re.compile(r'Porte de `((?:src/vs|extensions)/[^`]+\.test\.ts)`')
 
 
 def ported():
@@ -41,18 +49,28 @@ def main():
              '| --- | --- | --- | --- | --- | --- |']
     total_cases = total_ported = 0
     detail = []
-    for layer in LAYERS:
-        files = sorted(p for p in (VS / layer).rglob('*.test.ts')
-                       if not any(str(p.relative_to(VS)).startswith(o + '/') for o in OUT_OF_SCOPE))
+    source = VS.parent.parent
+    for layer, folder in LAYERS:
+        def in_scope(p):
+            key = str(p.relative_to(source))
+            rel = str(p.relative_to(VS)) if key.startswith('src/vs/') else ''
+            if 'node_modules' in p.parts or any(key.startswith(o) for o in EXTENSIONS_OUT_OF_SCOPE):
+                return False
+            if layer == 'workbench (shell)' and any(rel.startswith(o + '/') for o in SHELL_EXCLUDE):
+                return False
+            return not any(rel.startswith(o + '/') for o in OUT_OF_SCOPE)
+        files = sorted(p for p in (source / folder).rglob('*.test.ts') if in_scope(p))
         cases = ported_cases = ported_files = 0
         for f in files:
             n = len(TEST_RE.findall(f.read_text(encoding='utf-8', errors='replace')))
             cases += n
-            key = 'src/vs/' + str(f.relative_to(VS))
+            key = str(f.relative_to(source))
             if key in done:
+                # Um laço do original que vira vários `#[test]` não conta além dos casos do oráculo.
+                counted = min(n, done[key][1])
                 ported_files += 1
-                ported_cases += done[key][1]
-                detail.append(f'| `{key}` | {n} | `{done[key][0]}` | {done[key][1]} |')
+                ported_cases += counted
+                detail.append(f'| `{key}` | {n} | `{done[key][0]}` | {counted} |')
         total_cases += cases
         total_ported += ported_cases
         pct = 100.0 * ported_cases / cases if cases else 0.0
