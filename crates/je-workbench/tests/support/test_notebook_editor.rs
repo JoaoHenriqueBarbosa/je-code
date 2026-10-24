@@ -236,6 +236,13 @@ pub struct TestNotebookExecutionStateService {
     pub did_change_execution: Option<Event<ExecutionStateChange>>,
 }
 
+impl TestNotebookExecutionStateService {
+    /// O dublê com o `onDidChangeExecution` sobrescrito.
+    pub fn with_did_change_execution(event: Event<ExecutionStateChange>) -> Self {
+        Self { did_change_execution: Some(event), ..Self::default() }
+    }
+}
+
 impl INotebookExecutionStateService for TestNotebookExecutionStateService {
     fn on_did_change_execution(&self) -> Event<ExecutionStateChange> {
         self.did_change_execution.clone().unwrap_or_else(Event::none)

@@ -235,7 +235,7 @@ fn setup(disposables: &DisposableStore) -> (NotebookTestServices, Fixture) {
 
     let execution_emitter = disposables.add_rc(Emitter::<ExecutionStateChange>::new());
     let execution_service: Rc<dyn INotebookExecutionStateService> =
-        Rc::new(TestNotebookExecutionStateService { did_change_execution: Some(execution_emitter.event()), ..Default::default() });
+        Rc::new(TestNotebookExecutionStateService::with_did_change_execution(execution_emitter.event()));
 
     let chat_agent_service: Rc<dyn IChatAgentService> = Rc::new(TestChatAgentService);
 
