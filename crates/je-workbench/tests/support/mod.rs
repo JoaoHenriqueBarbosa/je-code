@@ -26,6 +26,9 @@ pub mod fake_xterm;
 // Porte de `terminalLinkOpeners.test.ts` e `terminalLocalLinkDetector.test.ts`: os dublês dos serviços.
 pub mod terminal_link_support;
 
+// Porte de `terminalInstance.test.ts`: os dublês do processo, do serviço de instâncias e do resolvedor de perfil.
+pub mod terminal_instance_support;
+
 // Porte de `textFileEditorModelManager.test.ts`.
 pub mod text_file_support;
 

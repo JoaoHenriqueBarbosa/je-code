@@ -18,30 +18,46 @@
 //!
 //! Divergências (o que ainda falta do `terminal.ts`, a portar quando um consumidor pedir): `TerminalSettingPrefix`
 //! e `TerminalSettingId`; os tipos de layout (`IRawTerminalInstanceLayoutInfo`, `IPtyHostAttachTarget`...);
-//! `TerminalIpcChannels`; `ProcessPropertyType`, `IProcessProperty` e `IProcessPropertyMap`; `IPtyService`,
+//! `TerminalIpcChannels`; `IPtyService`,
 //! `IPtyServiceContribution`, `IPtyHostController`, `IPtyHostService`, `ILocalPtyService`; as constantes
-//! (`HeartbeatConstants`, `LocalReconnectConstants`, `FlowControlConstants`, `ShellIntegrationTimeoutOverride`)
-//! e `IHeartbeatService`; os estados de serialização (`ISerializedTerminalState`...); `ITerminalChildProcess` e
-//! os eventos de processo, e por isso o campo `customPtyImplementation` de `IShellLaunchConfig` não existe
-//! aqui; `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`; `ProfileSource`,
-//! `IBaseUnresolvedTerminalProfile`, `ITerminalExecutable`, `ITerminalProfileSource`, `ITerminalProfileObject`;
-//! `IShellIntegration` e `ShellIntegrationStatus`; `TerminalExitReason`; os seletores e casadores de saída; `ITerminalBackend`, o registro de backends
-//! (`TerminalExtensions`, `ITerminalBackendRegistry`) e `ITerminalLogService`.
+//! (`HeartbeatConstants`, `LocalReconnectConstants`) e `IHeartbeatService`; os estados de serialização
+//! (`ISerializedTerminalState`...); `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`;
+//! `ProfileSource`, `IBaseUnresolvedTerminalProfile`, `ITerminalExecutable`, `ITerminalProfileSource`,
+//! `ITerminalProfileObject`; os seletores de comando; o registro de backends (`TerminalExtensions`,
+//! `ITerminalBackendRegistry`). O `ITerminalBackend` fica em `je_workbench::contrib::terminal::common::terminal_backend`,
+//! porque herda o `ITerminalBackendWslPath` do workbench.
+//!
+//! Contratos do processo (porte de `ITerminalChildProcess` e companhia):
+//! - `IProcessProperty<T>` (`{ type, value }` com o valor tipado por `IProcessPropertyMap[T]`) é o enum
+//!   [`IProcessProperty`], uma variante por [`ProcessPropertyType`]; `refreshProperty` e `updateProperty` trocam esse enum.
+//! - Os métodos e eventos opcionais de `ITerminalChildProcess` (`onProcessReplayComplete?`, `onRestoreCommands?`, `detach?`,
+//!   `freePortKillProcess?`) devolvem `Option`: `None` é o membro ausente.
+//! - `string | IProcessDataEvent` é [`ProcessData`]. O [`IProcessDataEvent`] é compartilhado por `Rc` e tem campos mutáveis
+//!   (`data` e `writePromise`), porque o original muta o objeto que o evento carrega.
+//! - `ITerminalLaunchError | ITerminalLaunchResult | undefined` é `Option<`[`ITerminalLaunchOutcome`]`>`.
+//! - `customPtyImplementation` de `IShellLaunchConfig` é uma função que cria o [`ITerminalChildProcess`].
+//! - `ITerminalLogService` é um [`LogService`] (o `ILogService` do porte) com identificador próprio.
 //!
 //! Outra divergência: `ThemeIcon.color` é comparado por valor (o id da cor), enquanto o `terminalIconsEqual`
 //! do original compara a referência do objeto `ThemeColor` com `===`.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::arrays::OneOrMany;
 use je_base::dynamic::Dynamic;
+use je_base::event::Event;
+use je_base::promise::Promise;
 use je_base::themables::ThemeIcon;
 use je_base::uri::{URI, UriComponents, is_uri_components};
+use je_instantiation::service_id;
 
+use super::capabilities::capabilities::ISerializedCommandDetectionCapability;
 use super::environment_variable::ISerializableEnvironmentVariableCollections;
+use crate::log::LogService;
 use crate::workspace::WorkspaceFolder;
 
 /// Declara um `const enum` de string do original: as variantes e o `as_str()` com o valor.
@@ -299,9 +315,13 @@ pub struct IAttachPersistentProcess {
     pub tab_actions: Option<Vec<ITerminalTabAction>>,
 }
 
-/// `IShellLaunchConfig` (sem o `customPtyImplementation`, ver "Divergências").
+/// `IShellLaunchConfig`.
 #[derive(Clone, Default)]
 pub struct IShellLaunchConfig {
+    /// A custom implementation of the child process (`customPtyImplementation(terminalId, cols, rows)`): recebe o id da
+    /// instância, as colunas e as linhas, e devolve o processo.
+    pub custom_pty_implementation: Option<CustomPtyImplementation>,
+
     /// The name of the terminal, if this is not set the name of the process will be used.
     pub name: Option<String>,
 
@@ -614,3 +634,267 @@ pub struct ITerminalOutputMatcher {
     /// `regexMatch` from `offset` to `length`.
     pub multiple_matches: Option<bool>,
 }
+
+/// `(terminalId: number, cols: number, rows: number) => ITerminalChildProcess`.
+pub type CustomPtyImplementation = Rc<dyn Fn(u32, i32, i32) -> Rc<dyn ITerminalChildProcess>>;
+
+string_enum! {
+    /// `ProcessPropertyType`.
+    ProcessPropertyType {
+        Cwd = "cwd",
+        InitialCwd = "initialCwd",
+        FixedDimensions = "fixedDimensions",
+        Title = "title",
+        ShellType = "shellType",
+        HasChildProcesses = "hasChildProcesses",
+        ResolvedShellLaunchConfig = "resolvedShellLaunchConfig",
+        OverrideDimensions = "overrideDimensions",
+        FailedShellIntegrationActivation = "failedShellIntegrationActivation",
+        UsedShellIntegrationInjection = "usedShellIntegrationInjection",
+        ShellIntegrationInjectionFailureReason = "shellIntegrationInjectionFailureReason",
+    }
+}
+
+/// `IProcessProperty` com o valor de `IProcessPropertyMap[type]`: uma variante por [`ProcessPropertyType`].
+#[derive(Clone)]
+pub enum IProcessProperty {
+    Cwd(String),
+    InitialCwd(String),
+    FixedDimensions(IFixedTerminalDimensions),
+    Title(String),
+    ShellType(TerminalShellType),
+    HasChildProcesses(bool),
+    ResolvedShellLaunchConfig(IShellLaunchConfig),
+    OverrideDimensions(Option<ITerminalDimensionsOverride>),
+    FailedShellIntegrationActivation(Option<bool>),
+    UsedShellIntegrationInjection(Option<bool>),
+    ShellIntegrationInjectionFailureReason(Option<ShellIntegrationInjectionFailureReason>),
+}
+
+impl IProcessProperty {
+    /// O `type` do original.
+    pub fn property_type(&self) -> ProcessPropertyType {
+        match self {
+            Self::Cwd(_) => ProcessPropertyType::Cwd,
+            Self::InitialCwd(_) => ProcessPropertyType::InitialCwd,
+            Self::FixedDimensions(_) => ProcessPropertyType::FixedDimensions,
+            Self::Title(_) => ProcessPropertyType::Title,
+            Self::ShellType(_) => ProcessPropertyType::ShellType,
+            Self::HasChildProcesses(_) => ProcessPropertyType::HasChildProcesses,
+            Self::ResolvedShellLaunchConfig(_) => ProcessPropertyType::ResolvedShellLaunchConfig,
+            Self::OverrideDimensions(_) => ProcessPropertyType::OverrideDimensions,
+            Self::FailedShellIntegrationActivation(_) => ProcessPropertyType::FailedShellIntegrationActivation,
+            Self::UsedShellIntegrationInjection(_) => ProcessPropertyType::UsedShellIntegrationInjection,
+            Self::ShellIntegrationInjectionFailureReason(_) => ProcessPropertyType::ShellIntegrationInjectionFailureReason,
+        }
+    }
+}
+
+/// `ITerminalDimensions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ITerminalDimensions {
+    /// The columns of the terminal.
+    pub cols: i32,
+    /// The rows of the terminal.
+    pub rows: i32,
+}
+
+/// `ITerminalDimensionsOverride`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ITerminalDimensionsOverride {
+    pub cols: i32,
+    pub rows: i32,
+    /// Indicate that xterm must receive these exact dimensions, even if they overflow the ui!
+    pub force_exact_size: Option<bool>,
+}
+
+/// `ITerminalLaunchResult`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITerminalLaunchResult {
+    pub injected_args: Vec<String>,
+}
+
+/// `ITerminalLaunchError | ITerminalLaunchResult` (o `undefined` do retorno de `start` é o `None` do `Option`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ITerminalLaunchOutcome {
+    Error(ITerminalLaunchError),
+    Result(ITerminalLaunchResult),
+}
+
+/// O `backend` de `IProcessReadyWindowsPty` (o original só tem `'conpty'`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowsPtyBackend {
+    Conpty,
+}
+
+/// `IProcessReadyWindowsPty`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IProcessReadyWindowsPty {
+    /// What pty emulation backend is being used.
+    pub backend: WindowsPtyBackend,
+    /// The Windows build version (eg. 19045).
+    pub build_number: i32,
+}
+
+/// `IProcessReadyEvent`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IProcessReadyEvent {
+    pub pid: u32,
+    pub cwd: String,
+    pub windows_pty: Option<IProcessReadyWindowsPty>,
+}
+
+/// O `'6' | '11'` de `setUnicodeVersion` e de `createProcess`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnicodeVersion {
+    V6,
+    V11,
+}
+
+impl UnicodeVersion {
+    /// O texto do original (`'6'` ou `'11'`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V6 => "6",
+            Self::V11 => "11",
+        }
+    }
+
+    /// `'11'` é o `V11`, qualquer outro valor é o `V6` (o padrão do `terminal.integrated.unicodeVersion`).
+    pub fn from_config_text(text: &str) -> Self {
+        if text == "11" { Self::V11 } else { Self::V6 }
+    }
+}
+
+/// `FlowControlConstants`.
+pub struct FlowControlConstants;
+
+impl FlowControlConstants {
+    /// The number of _unacknowledged_ chars to have been sent before the pty is paused in order for the client to catch up.
+    pub const HIGH_WATERMARK_CHARS: usize = 100000;
+    /// After flow control pauses the pty for the client the catch up, this is the number of _unacknowledged_ chars to have
+    /// been caught up to on the client before resuming the pty again.
+    pub const LOW_WATERMARK_CHARS: usize = 5000;
+    /// The number characters that are accumulated on the client side before sending an ack event. This must be less than or
+    /// equal to `LOW_WATERMARK_CHARS` or the terminal max never unpause.
+    pub const CHAR_COUNT_ACK_SIZE: usize = 5000;
+}
+
+/// `IProcessDataEvent`: compartilhado por `Rc`, porque o consumidor muda o `data` e o produtor lê o `writePromise` depois do
+/// disparo.
+pub struct IProcessDataEvent {
+    pub data: RefCell<String>,
+    pub track_commit: bool,
+    /// When `trackCommit` is set, this will be set to a promise that resolves when the data is parsed.
+    pub write_promise: RefCell<Option<Promise<()>>>,
+}
+
+impl IProcessDataEvent {
+    pub fn new(data: impl Into<String>, track_commit: bool) -> Rc<Self> {
+        Rc::new(Self { data: RefCell::new(data.into()), track_commit, write_promise: RefCell::new(None) })
+    }
+}
+
+/// `string | IProcessDataEvent`.
+#[derive(Clone)]
+pub enum ProcessData {
+    Text(String),
+    Event(Rc<IProcessDataEvent>),
+}
+
+impl ProcessData {
+    /// `isString(e) ? e : e.data`.
+    pub fn data(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::Event(event) => event.data.borrow().clone(),
+        }
+    }
+}
+
+/// O resultado de `freePortKillProcess`: `{ port, processId }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IFreedPortProcess {
+    pub port: String,
+    pub process_id: String,
+}
+
+/// `TerminalExitReason`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TerminalExitReason {
+    Unknown = 0,
+    Shutdown = 1,
+    Process = 2,
+    User = 3,
+    Extension = 4,
+}
+
+/// An interface representing a raw terminal child process, this contains a subset of the `child_process.ChildProcess`
+/// node.js interface.
+pub trait ITerminalChildProcess {
+    /// A unique identifier for the terminal process. Note that the uniqueness only applies to a given pty service
+    /// connection, IDs will be duplicated for remote and local terminals for example. The ID will be 0 if it does not
+    /// support reconnection.
+    fn id(&self) -> u32;
+
+    /// Whether the process should be persisted across reloads.
+    fn should_persist(&self) -> bool;
+
+    fn on_process_data(&self) -> Event<ProcessData>;
+    fn on_process_ready(&self) -> Event<IProcessReadyEvent>;
+    fn on_process_replay_complete(&self) -> Option<Event<()>> {
+        None
+    }
+    fn on_did_change_property(&self) -> Event<IProcessProperty>;
+    /// `onProcessExit: Event<number | undefined>`.
+    fn on_process_exit(&self) -> Event<Option<i32>>;
+    fn on_restore_commands(&self) -> Option<Event<ISerializedCommandDetectionCapability>> {
+        None
+    }
+
+    /// Starts the process. Resolve `None` when the process was successfully started, otherwise an object containing
+    /// information on what went wrong.
+    fn start(&self) -> Promise<Option<ITerminalLaunchOutcome>>;
+
+    /// Detach the process from the UI and await reconnect (`detach?`). `None` quando o processo não suporta o desanexar.
+    fn detach(&self, _force_persist: Option<bool>) -> Option<Promise<()>> {
+        None
+    }
+
+    /// Frees the port and kills the process (`freePortKillProcess?`).
+    fn free_port_kill_process(&self, _port: &str) -> Option<Promise<IFreedPortProcess>> {
+        None
+    }
+
+    /// Shutdown the terminal process. When `immediate` is true the process will be killed immediately, otherwise the
+    /// process will be given some time to make sure no additional data comes through.
+    fn shutdown(&self, immediate: bool);
+    fn input(&self, data: &str);
+    fn send_signal(&self, signal: &str);
+    fn process_binary(&self, data: &str) -> Promise<()>;
+
+    /// `resize`: o `Err` é a exceção do original (por exemplo `EPIPE`, o `code` do erro fica em `props`).
+    fn resize(&self, cols: i32, rows: i32, pixel_width: Option<i32>, pixel_height: Option<i32>) -> Result<(), je_base::errors::Error>;
+    fn clear_buffer(&self) -> Promise<()>;
+
+    /// Acknowledge a data event has been parsed by the terminal, this is used to implement flow control to ensure remote
+    /// processes to not get too far ahead of the client and flood the connection.
+    fn acknowledge_data_event(&self, char_count: usize);
+
+    /// Sets the unicode version for the process, this drives the size of some characters in the xterm-headless instance.
+    fn set_unicode_version(&self, version: UnicodeVersion) -> Promise<()>;
+
+    fn get_initial_cwd(&self) -> Promise<String>;
+    fn get_cwd(&self) -> Promise<String>;
+    fn refresh_property(&self, property: ProcessPropertyType) -> Promise<IProcessProperty>;
+    fn update_property(&self, property: IProcessProperty) -> Promise<()>;
+}
+
+/// `ITerminalLogService`: um `ILogService` com marca própria (`_logBrand`), para o compilador distinguir os dois.
+pub trait ITerminalLogService: LogService {}
+
+service_id!(pub I_TERMINAL_LOG_SERVICE: dyn ITerminalLogService = "terminalLogService");
+
+/// O `NullLogService` também serve de `ITerminalLogService`: descarta tudo.
+impl ITerminalLogService for crate::log::NullLogService {}
+

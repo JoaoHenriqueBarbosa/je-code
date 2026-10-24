@@ -15,6 +15,7 @@ pub mod request_store;
 pub mod terminal;
 pub mod terminal_environment;
 pub mod terminal_profiles;
+pub mod terminal_strings;
 
 pub mod node_terminal_environment;
 

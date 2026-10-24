@@ -152,6 +152,12 @@ pub trait IXtermRaw: IHeadlessTerminal + IDisposable {
 
     /// `terminal.write(data, callback)`: o `callback` roda depois de o emulador interpretar o texto.
     fn write(&self, data: &str, callback: Option<Box<dyn FnOnce()>>);
+
+    /// `terminal.onTitleChange`: o título que o shell define por sequência (`OSC 0` e `OSC 2`).
+    fn on_title_change(&self) -> Event<JsString>;
+
+    /// `terminal.modes.bracketedPasteMode`: se o modo de colagem entre colchetes (`CSI ? 2004 h`) está ligado.
+    fn bracketed_paste_mode(&self) -> bool;
 }
 
 /// `xtermCtor`: constrói o emulador a partir das opções.
