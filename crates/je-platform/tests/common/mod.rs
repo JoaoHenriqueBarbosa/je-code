@@ -1,6 +1,7 @@
 //! Auxiliares dos testes portados: o `utils.ts` do VS Code (via o `common` do `je-base`), o
-//! `assert.deepStrictEqual` sobre valores dinâmicos, o `testWorkspace.ts`, o
+//! `assert.deepStrictEqual` sobre valores dinâmicos, o
 //! `configurationRegistryTestUtils.ts` e construtores de valores no estilo dos literais do original.
+//! (O `testWorkspace.ts` é `je_platform::workspace::new_test_workspace`.)
 #![allow(dead_code)]
 
 use std::cell::RefCell;
@@ -19,7 +20,7 @@ use je_platform::configuration::registry::{
 use je_platform::configuration::Overrides;
 use je_platform::js::from_json;
 use je_platform::log::NullLogService;
-use je_platform::workspace::{Workspace, WorkspaceFolder, to_workspace_folder};
+use je_platform::workspace::{WorkspaceFolder, to_workspace_folder};
 
 pub mod contextkey;
 pub mod keybinding;
@@ -157,11 +158,6 @@ pub fn test_configuration(
 
 pub fn empty_test_configuration() -> Configuration {
     test_configuration(empty_model(), empty_model(), empty_model(), empty_model(), None)
-}
-
-/// `Workspace` de `testWorkspace.ts` (`ignorePathCasing` padrão: `() => !isLinux`, falso no Linux).
-pub fn test_workspace_with_folders(id: &str, folders: Vec<WorkspaceFolder>) -> Rc<Workspace> {
-    Workspace::new(id, folders, false, None, Rc::new(|_: &URI| false), None)
 }
 
 pub fn workspace_folder(index: usize, name: &str, uri: URI) -> WorkspaceFolder {
