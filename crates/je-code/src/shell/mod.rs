@@ -231,6 +231,7 @@ pub enum Command {
     ScmRefresh,
     ScmOpen(String),
     ScmContextMenu(scm_view::Entry),
+    ScmMoreMenu,
     ScmOp(git::Operation),
     DismissToast(u64),
     /// Abre o arquivo na linha e seleciona de `column` a `end_column`.
@@ -1284,6 +1285,26 @@ impl Shell {
                 }
             }
             Command::ScmContextMenu(entry) => self.scm_menu(entry),
+            Command::ScmMoreMenu => {
+                // O `...` da vista Source Control: as operações com o remoto.
+                use je_base::actions::{Action, ActionCallback, ActionRef};
+                let queue = self.queue.clone();
+                let item = |label: &str, command: Command| -> ActionRef {
+                    let queue = queue.clone();
+                    let callback: ActionCallback = Rc::new(move |_| {
+                        queue.borrow_mut().push(command.clone());
+                        je_base::dynamic::Dynamic::Undefined.into()
+                    });
+                    Action::new(label, label, "", true, Some(callback)) as ActionRef
+                };
+                let actions = vec![
+                    item("Pull", Command::ScmOp(git::Operation::Pull)),
+                    item("Push", Command::ScmOp(git::Operation::Push)),
+                    item("Fetch", Command::ScmOp(git::Operation::Fetch)),
+                    item("Sync", Command::ScmOp(git::Operation::Sync)),
+                ];
+                self.open_menu(actions);
+            }
             Command::DismissToast(id) => {
                 self.toasts.retain(|t| t.id != id);
                 self.needs_render = true;
