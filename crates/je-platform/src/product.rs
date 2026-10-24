@@ -36,6 +36,8 @@ pub trait IProductService {
     fn shared_data_folder_name(&self) -> &str;
     /// `quality` (`stable`, `insider`), quando o produto declara.
     fn quality(&self) -> Option<&str>;
+    /// `trustedExtensionProtocolHandlers`: as extensões cujas URLs abrem sem confirmação (vazio quando o produto não declara).
+    fn trusted_extension_protocol_handlers(&self) -> Vec<String>;
     /// `commit`, quando o produto declara.
     fn commit(&self) -> Option<&str>;
     /// `enableTelemetry`.
@@ -123,6 +125,7 @@ pub struct ProductService {
     pub data_folder_name: String,
     pub shared_data_folder_name: String,
     pub quality: Option<String>,
+    pub trusted_extension_protocol_handlers: Vec<String>,
     pub commit: Option<String>,
     pub enable_telemetry: bool,
     pub ai_config_aria_key: Option<String>,
@@ -154,6 +157,7 @@ impl Default for ProductService {
             data_folder_name: ".vscode".to_owned(),
             shared_data_folder_name: ".vscode-shared".to_owned(),
             quality: Some("stable".to_owned()),
+            trusted_extension_protocol_handlers: Vec::new(),
             commit: None,
             enable_telemetry: true,
             ai_config_aria_key: None,
@@ -209,6 +213,9 @@ impl IProductService for ProductService {
     }
     fn quality(&self) -> Option<&str> {
         self.quality.as_deref()
+    }
+    fn trusted_extension_protocol_handlers(&self) -> Vec<String> {
+        self.trusted_extension_protocol_handlers.clone()
     }
     fn commit(&self) -> Option<&str> {
         self.commit.as_deref()
@@ -296,6 +303,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn quality(&self) -> Option<&str> {
         self.quality.as_deref()
+    }
+    fn trusted_extension_protocol_handlers(&self) -> Vec<String> {
+        self.trusted_extension_protocol_handlers.clone().unwrap_or_default()
     }
     fn commit(&self) -> Option<&str> {
         self.commit.as_deref()

@@ -72,6 +72,15 @@ pub fn check_proposed_api_enabled(extension: &ExtensionDescription, proposal: &s
 #[derive(Clone, Debug)]
 pub struct IExtensionDescription {
     pub extension_location: URI,
+    /// `displayName`, quando o manifesto declara.
+    pub display_name: Option<String>,
+}
+
+/// `ActivationKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationKind {
+    Normal = 0,
+    Immediate = 1,
 }
 
 /// `IExtensionService`.
@@ -87,6 +96,9 @@ pub trait IExtensionService {
 
     /// `extensions`: the descriptions of the extensions registered so far.
     fn extensions(&self) -> Vec<ExtensionDescription>;
+
+    /// `activateByEvent(activationEvent, activationKind?)`: activates the extensions that declare the event.
+    fn activate_by_event(&self, activation_event: &str, activation_kind: Option<ActivationKind>) -> Promise<()>;
 }
 
 service_id!(pub I_EXTENSION_SERVICE: dyn IExtensionService = "extensionService");
