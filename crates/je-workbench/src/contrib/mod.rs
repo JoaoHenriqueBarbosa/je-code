@@ -18,6 +18,7 @@ pub mod policy_export;
 pub mod preferences;
 pub mod scm;
 pub mod search;
+pub mod search_editor;
 pub mod testing;
 
 pub mod browser_view;
