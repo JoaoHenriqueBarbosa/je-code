@@ -19,8 +19,9 @@
 //!   (como o registro entrega a lista atual quando o tratador é instalado) e as aplica depois de `Restored`.
 //!
 //! Divergências:
-//! - `IFileService` do porte é reduzido (`file_service.rs` o descreve): o serviço usa o [`FileService`] concreto (que tem
-//!   `watch`, `createFolder` e `resolve`) e entrega ao `SnippetFile` o contrato [`IFileService`] dele.
+//! - `IFileService` do porte é o contrato de `i_file_service.rs` (reduzido aos membros que os consumidores portados leem,
+//!   entre eles `watch`, `createFolder` e `resolve`); o serviço o recebe como `Rc<dyn IFileService>` e o entrega ao
+//!   `SnippetFile`.
 //! - `ExtensionsRegistry.registerExtensionPoint({ extensionPoint: 'snippets', deps, jsonSchema })`: o registro do porte
 //!   não tem `deps` nem esquema JSON (ver `extensions_registry.rs`); [`snippet_ext::point`] registra o ponto com o nome, e
 //!   o `snippetsContribution` (a descrição do esquema) não tem onde ir. O `IExtensionPointUser` do porte não traz o
@@ -55,7 +56,6 @@ use je_editor::suggest::suggest::set_snippet_suggest_support;
 use je_editor::text_model::TextModel;
 use je_extensions::scanner::ExtensionDescription;
 use je_platform::environment::environment::EnvironmentService;
-use je_platform::files::file_service::FileService;
 use je_platform::files::files::FileChangeType;
 use je_platform::files::i_file_service::IFileService;
 use je_platform::log::{LogArg, LogMessage, LogServiceRef, Logger};
@@ -186,7 +186,7 @@ pub mod snippet_ext {
 use snippet_ext::SnippetsExtensionUser;
 
 /// `watch(service, resource, callback)`.
-fn watch(service: &Rc<FileService>, resource: &URI, callback: Rc<dyn Fn()>) -> DisposableRef {
+fn watch(service: &Rc<dyn IFileService>, resource: &URI, callback: Rc<dyn Fn()>) -> DisposableRef {
     let resource = resource.clone();
     combined_disposable(vec![
         service.watch(&resource, None),
@@ -295,7 +295,7 @@ pub struct SnippetsServices {
     pub context_service: Rc<dyn IWorkspaceContextService>,
     pub language_service: Rc<dyn ILanguageService>,
     pub log_service: LogServiceRef,
-    pub file_service: Rc<FileService>,
+    pub file_service: Rc<dyn IFileService>,
     pub textfile_service: Rc<dyn ITextFileService>,
     pub extension_resource_loader_service: Rc<dyn IExtensionResourceLoaderService>,
     pub lifecycle_service: Rc<dyn ILifecycleService>,
@@ -318,8 +318,7 @@ pub struct SnippetsService {
     context_service: Rc<dyn IWorkspaceContextService>,
     language_service: Rc<dyn ILanguageService>,
     log_service: LogServiceRef,
-    file_service: Rc<FileService>,
-    file_service_contract: Rc<dyn IFileService>,
+    file_service: Rc<dyn IFileService>,
     textfile_service: Rc<dyn ITextFileService>,
     extension_resource_loader_service: Rc<dyn IExtensionResourceLoaderService>,
 }
@@ -340,7 +339,6 @@ impl SnippetsService {
             language_configuration_service,
         } = services;
 
-        let file_service_contract: Rc<dyn IFileService> = Rc::new(Rc::clone(&file_service));
         let service = Rc::new_cyclic(|me| SnippetsService {
             me: me.clone(),
             disposables: DisposableStore::new(),
@@ -356,7 +354,6 @@ impl SnippetsService {
             language_service: Rc::clone(&language_service),
             log_service,
             file_service,
-            file_service_contract,
             textfile_service,
             extension_resource_loader_service,
         });
@@ -494,7 +491,7 @@ impl SnippetsService {
                         valid_contribution.location.clone(),
                         default_scopes,
                         Some(Rc::clone(&extension.description)),
-                        Rc::clone(&self.file_service_contract),
+                        Rc::clone(&self.file_service),
                         Rc::clone(&self.extension_resource_loader_service),
                     );
                     self.files.borrow_mut().set(file.location.clone(), Rc::clone(&file));
@@ -682,7 +679,7 @@ impl SnippetsService {
                     uri.clone(),
                     Some(SnippetScopes::new(vec![lang_name])),
                     None,
-                    Rc::clone(&self.file_service_contract),
+                    Rc::clone(&self.file_service),
                     Rc::clone(&self.extension_resource_loader_service),
                 ),
             );
@@ -694,7 +691,7 @@ impl SnippetsService {
                     uri.clone(),
                     None,
                     None,
-                    Rc::clone(&self.file_service_contract),
+                    Rc::clone(&self.file_service),
                     Rc::clone(&self.extension_resource_loader_service),
                 ),
             );

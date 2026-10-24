@@ -1150,6 +1150,21 @@ impl IFileService for TestFileService {
             value: je_base::buffer::VSBuffer::from_string("Hello Html"),
         })
     }
+
+    /// `resolve(resource, options?)` do `TestFileService`: o stat do `createFileStat(resource, readonly)`.
+    fn resolve(&self, resource: &URI, options: Option<je_platform::files::files::ResolveFileOptions>) -> Promise<je_platform::files::files::FileStat> {
+        self.resolve_with_metadata(resource, options).then(|stat| je_platform::files::files::FileStat::clone(&stat))
+    }
+
+    /// `createFolder(resource)` do `TestFileService`: o stat do `createFileStat(resource, readonly)`.
+    fn create_folder(&self, resource: &URI) -> Promise<je_platform::files::files::FileStatWithMetadata> {
+        self.resolve_with_metadata(resource, None)
+    }
+
+    /// `watch(resource)` do `TestFileService`: `Disposable.None`.
+    fn watch(&self, _resource: &URI, _options: Option<je_platform::files::files::WatchOptions>) -> DisposableRef {
+        lifecycle::none()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
