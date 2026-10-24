@@ -2,3 +2,4 @@
 //! (`common/decorations.ts`).
 
 pub mod decorations;
+pub mod decorations_service;

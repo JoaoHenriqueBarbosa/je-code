@@ -1,8 +1,8 @@
 //! Porte de `src/vs/workbench/services/decorations/common/decorations.ts`: os contratos do serviço de decorações de
 //! recursos (`IDecorationsService`), do provedor (`IDecorationsProvider`) e dos dados de uma decoração.
 //!
-//! A implementação (`DecorationsService`, que calcula as classes de CSS de cada decoração) não faz parte do porte
-//! ainda: o `TextFileService` só registra um provedor, e quem o implementar completa o contrato.
+//! A implementação (`DecorationsService`, que calcula as classes de CSS de cada decoração) é o
+//! [`decorations_service`](super::decorations_service).
 //!
 //! Divergências:
 //! - **`letter`** (`string | ThemeIcon`) é o [`DecorationLetter`].

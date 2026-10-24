@@ -432,7 +432,7 @@ impl ViewDescriptorService {
         }
     }
 
-    fn when_extensions_registered(&self) {
+    pub fn when_extensions_registered(&self) {
         // Handle those views whose custom parent view container does not exist anymore
         // May be the extension contributing this view container is no longer installed
         // Or the parent view container is generated and no longer available.
