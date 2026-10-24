@@ -242,6 +242,11 @@ impl Shell {
         self.needs_render = true;
     }
 
+    /// Os caminhos selecionados no explorador (para os testes).
+    pub fn explorer_selection(&self) -> Vec<PathBuf> {
+        self.explorer.as_ref().map(Explorer::selection).unwrap_or_default()
+    }
+
     pub fn active_editor(&self) -> Option<&OpenEditor> {
         self.active.map(|i| &self.editors[i])
     }

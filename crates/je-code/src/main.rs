@@ -561,6 +561,10 @@ mod tests {
         click(&mut shell, 120.0, 96.0 + 22.0 + 11.0);
         snapshot(&mut shell, "3-second.png");
         assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("src/b.rs")));
+        assert_eq!(shell.explorer_selection(), vec![dir.join("src/b.rs")], "o explorador seleciona o arquivo do editor ativo");
+        // Trocar de aba pela faixa leva a seleção do explorador junto (o `explorer.autoReveal`).
+        shell.run(shell::Command::ActivateEditor(0));
+        assert_eq!(shell.explorer_selection(), vec![dir.join("a.txt")]);
         // O menu File abre com o clique e "Close Editor" fecha a aba ativa.
         click(&mut shell, 54.0, 17.0);
         snapshot(&mut shell, "4-menu.png");

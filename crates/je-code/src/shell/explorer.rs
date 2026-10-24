@@ -182,6 +182,11 @@ impl Explorer {
         Self { tree, loaded, known, _listeners: listeners }
     }
 
+    /// Os arquivos selecionados na árvore.
+    pub fn selection(&self) -> Vec<PathBuf> {
+        self.tree.get_selection().into_iter().flatten().collect()
+    }
+
     pub fn layout(&self, width: f64, height: f64) {
         self.tree.layout(Some(height), Some(width));
     }
