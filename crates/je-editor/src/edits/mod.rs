@@ -3,5 +3,6 @@
 
 pub mod array_edit;
 pub mod edit;
+pub mod length_edit;
 pub mod string_edit;
 pub mod text_edit;
