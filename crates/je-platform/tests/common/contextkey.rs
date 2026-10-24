@@ -1,45 +1,11 @@
-//! O `TestConfigurationService` (só o que o `ContextKeyService` lê) e um nó de contexto no lugar do
-//! `document.createElement('div')` dos testes do `contextkey`.
+//! Um nó de contexto no lugar do `document.createElement('div')` dos testes do `contextkey`.
 #![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use je_base::dynamic::Dynamic;
-use je_base::event::{Emitter, Event};
 use je_platform::contextkey::IContextKeyServiceTarget;
-use je_platform::contextkey::service::{ContextKeyConfigurationChange, ContextKeyConfigurationService};
-
-/// `TestConfigurationService`: nenhum valor, e um emissor que o teste dispara.
-pub struct TestConfigurationService {
-    values: RefCell<HashMap<String, Dynamic>>,
-    emitter: Rc<Emitter<ContextKeyConfigurationChange>>,
-}
-
-impl TestConfigurationService {
-    pub fn new() -> Rc<Self> {
-        Rc::new(Self { values: RefCell::new(HashMap::new()), emitter: Emitter::new() })
-    }
-
-    pub fn set_user_configuration(&self, key: &str, value: Dynamic) {
-        self.values.borrow_mut().insert(key.to_string(), value);
-    }
-
-    pub fn fire_change(&self, change: ContextKeyConfigurationChange) {
-        self.emitter.fire(change);
-    }
-}
-
-impl ContextKeyConfigurationService for TestConfigurationService {
-    fn get_value(&self, section: &str) -> Dynamic {
-        self.values.borrow().get(section).cloned().unwrap_or(Dynamic::Undefined)
-    }
-
-    fn on_did_change_configuration(&self) -> Event<ContextKeyConfigurationChange> {
-        self.emitter.event()
-    }
-}
 
 /// O `HTMLElement` que só tem pai e atributos.
 pub struct TestTarget {

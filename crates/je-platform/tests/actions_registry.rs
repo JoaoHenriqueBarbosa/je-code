@@ -7,7 +7,7 @@ mod common;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use common::contextkey::TestConfigurationService;
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use common::*;
 use je_base::dynamic::Dynamic;
 use je_base::errors;
@@ -83,7 +83,7 @@ impl ICommandService for RecordingCommandService {
 #[test]
 fn menu_item_action_label_enablement_toggle_and_run() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let context = guard.add_rc(ContextKeyService::new(TestConfigurationService::new()));
+    let context = guard.add_rc(ContextKeyService::new(TestConfigurationService::new(None)));
     context.set_context("on", Dynamic::Bool(true));
     let calls = Rc::new(RefCell::new(Vec::new()));
     let command_service: Rc<dyn ICommandService> = Rc::new(RecordingCommandService { calls: calls.clone() });

@@ -17,7 +17,7 @@ mod common;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use common::contextkey::TestConfigurationService;
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use common::keybinding::MockKeybindingService;
 use common::*;
 use je_base::actions::IAction;
@@ -74,7 +74,7 @@ fn setup() -> Fixture {
     let commands = Rc::new(RecordingCommandService::default());
     let storage = guard.add_rc(InMemoryStorageService::new());
     let menu_service = guard.add_rc(MenuService::new(commands.clone(), Rc::new(MockKeybindingService), Rc::new(storage)));
-    let context_key_service = guard.add_rc(ContextKeyService::new(TestConfigurationService::new()));
+    let context_key_service = guard.add_rc(ContextKeyService::new(TestConfigurationService::new(None)));
     Fixture { guard, menu_service, commands, context_key_service, test_menu_id: MenuId::new(&format!("testo/{}", generate_uuid())) }
 }
 
@@ -126,7 +126,7 @@ fn get_menu_actions_evaluates_each_row_context_independently() {
     let mut action_ids: Vec<String> = Vec::new();
 
     for i in 0..100 {
-        let row_context = f.guard.add_rc(ContextKeyService::new(TestConfigurationService::new()));
+        let row_context = f.guard.add_rc(ContextKeyService::new(TestConfigurationService::new(None)));
         row_context.create_key("viewItem", Dynamic::string(if i % 2 == 0 { "file" } else { "folder" }));
         let groups = f.menu_service.get_menu_actions(&f.test_menu_id, &*row_context, None);
         action_ids.extend(flat_ids(&groups));
@@ -254,7 +254,7 @@ fn create_menu_still_emits_changes_for_nested_submenu_registrations() {
 #[test]
 fn get_menu_actions_reevaluates_enablement_toggled_state_and_alternate_actions() {
     let f = setup();
-    let context = f.guard.add_rc(ContextKeyService::new(TestConfigurationService::new()));
+    let context = f.guard.add_rc(ContextKeyService::new(TestConfigurationService::new(None)));
     let enabled = context.create_key("enabled", Dynamic::Bool(true));
     let toggled = context.create_key("toggled", Dynamic::Bool(false));
     let mut command = CommandAction::new("command", "Command");

@@ -9,7 +9,7 @@
 //! - O `inspect` do modelo devolve um [`InspectValue`] preguiçoso: `value`, `override`, `merged` e
 //!   `overrides` são métodos que calculam (e congelam, como o original) só quando chamados.
 //! - `IConfigurationValue` é o trait [`ConfigurationValue`]; o [`ConfigurationInspectValue`] o
-//!   implementa e expõe `default`, `user`, `workspace`... como métodos (`default` é `default_inspect`).
+//!   implementa e expõe `default`, `user`, `workspace`... como métodos do trait (`default` é `default_inspect`).
 //!   `policy` devolve só o valor (`{ value }` no original).
 //! - `UserSettings` (lê o `settings.json` pelo `IFileService` e observa mudanças) está em
 //!   [`super::user_settings`].
@@ -859,47 +859,47 @@ impl ConfigurationInspectValue {
     fn to_inspect_value(inspect_value: Option<InspectValue>) -> Option<InspectValue> {
         inspect_value.filter(InspectValue::is_configured)
     }
+}
 
-    pub fn default_inspect(&self) -> Option<InspectValue> {
+impl ConfigurationValue for ConfigurationInspectValue {
+    fn default_inspect(&self) -> Option<InspectValue> {
         Self::to_inspect_value(Some(self.inspect_in(&self.default_configuration, true)))
     }
 
     /// `policy`: só o valor (`{ value }` no original), se definido.
-    pub fn policy(&self) -> Option<Dynamic> {
+    fn policy(&self) -> Option<Dynamic> {
         let value = self.inspect_optional(self.policy_configuration.as_ref(), false)?.value();
         (!value.is_undefined()).then_some(value)
     }
 
-    pub fn application(&self) -> Option<InspectValue> {
+    fn application(&self) -> Option<InspectValue> {
         Self::to_inspect_value(self.inspect_optional(self.application_configuration.as_ref(), false))
     }
 
-    pub fn user(&self) -> Option<InspectValue> {
+    fn user(&self) -> Option<InspectValue> {
         Self::to_inspect_value(Some(self.inspect_in(&self.user_configuration, true)))
     }
 
-    pub fn user_local(&self) -> Option<InspectValue> {
+    fn user_local(&self) -> Option<InspectValue> {
         Self::to_inspect_value(Some(self.inspect_in(&self.local_user_configuration, true)))
     }
 
-    pub fn user_remote(&self) -> Option<InspectValue> {
+    fn user_remote(&self) -> Option<InspectValue> {
         Self::to_inspect_value(Some(self.inspect_in(&self.remote_user_configuration, true)))
     }
 
-    pub fn workspace(&self) -> Option<InspectValue> {
+    fn workspace(&self) -> Option<InspectValue> {
         Self::to_inspect_value(self.inspect_optional(self.workspace_configuration.as_ref(), true))
     }
 
-    pub fn workspace_folder(&self) -> Option<InspectValue> {
+    fn workspace_folder(&self) -> Option<InspectValue> {
         Self::to_inspect_value(self.inspect_optional(self.folder_configuration_model.as_ref(), true))
     }
 
-    pub fn memory(&self) -> Option<InspectValue> {
+    fn memory(&self) -> Option<InspectValue> {
         Self::to_inspect_value(Some(self.inspect_in(&self.memory_configuration_model, true)))
     }
-}
 
-impl ConfigurationValue for ConfigurationInspectValue {
     fn default_value(&self) -> Dynamic {
         self.inspect_in(&self.default_configuration, true).merged()
     }

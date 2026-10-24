@@ -37,7 +37,7 @@ use super::models::{Configuration, ConfigurationChangeEvent, ConfigurationInspec
 use super::policy_configuration::{NullPolicyConfiguration, PolicyConfiguration, PolicyConfigurationApi};
 use super::registry::key_from_override_identifiers;
 use super::user_settings::UserSettings;
-use super::{ConfigurationChange, ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides};
+use super::{ConfigurationChange, ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue};
 use crate::files::file_service::FileService;
 use crate::files::files::{FileOperationError, FileOperationResult};
 use crate::js::to_json;
@@ -83,12 +83,14 @@ pub struct ConfigurationService {
 /// - `reloadConfiguration(target?)` não recebe o alvo (`ConfigurationTarget | IWorkspaceFolder`): o serviço
 ///   desta camada lê só o `settings.json` do usuário e ignora o argumento, como o original.
 /// - `getConfigurationData()` devolve `Option` (o `IConfigurationData | null` do original).
+/// - `inspect` devolve o `IConfigurationValue<T>` do original, que é o trait [`ConfigurationValue`]: o serviço real
+///   devolve o [`ConfigurationInspectValue`] e os serviços de teste, um literal com as camadas que preenchem.
 pub trait IConfigurationService {
     fn on_did_change_configuration(&self) -> Event<Rc<ConfigurationChangeEvent>>;
     fn get_configuration_data(&self) -> Option<ConfigurationData>;
     fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic;
     fn update_value(&self, key: &str, value: Dynamic, overrides: Option<ConfigurationUpdateOverrides>, target: Option<ConfigurationTarget>) -> Promise<()>;
-    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> ConfigurationInspectValue;
+    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> Rc<dyn ConfigurationValue>;
     fn reload_configuration(&self) -> Promise<()>;
     fn keys(&self) -> ConfigurationKeys;
 }
@@ -111,8 +113,8 @@ impl IConfigurationService for ConfigurationService {
             None => Promise::rejected(Error::new("ConfigurationService is disposed")),
         }
     }
-    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> ConfigurationInspectValue {
-        ConfigurationService::inspect(self, key, overrides)
+    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> Rc<dyn ConfigurationValue> {
+        Rc::new(ConfigurationService::inspect(self, key, overrides))
     }
     fn reload_configuration(&self) -> Promise<()> {
         match self.this.upgrade() {

@@ -1,7 +1,7 @@
 //! Porte de `src/vs/platform/contextkey/test/browser/contextkey.test.ts` (suíte `ContextKeyService`), caso a caso e na mesma ordem.
 //!
 //! Divergências: o `document.createElement('div')` é o [`TestTarget`] (só pai e atributos); o
-//! `TestConfigurationService` é o mínimo que o serviço lê (`common/contextkey.rs`); os `DeferredPromise` do
+//! `TestConfigurationService` é o de `je_platform::configuration::test_configuration_service`; os `DeferredPromise` do
 //! original viram o registro do que o ouvinte viu, porque os eventos são síncronos; o `setContext` do teste
 //! `issue #147732` é chamado direto sobre o serviço (o `invokeFunction` do `TestInstantiationService` só
 //! entrega o acessor).
@@ -12,15 +12,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use common::contextkey::{TestConfigurationService, TestTarget};
+use common::contextkey::TestTarget;
 use common::*;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::{DisposableRef, IDisposable};
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::contextkey::service::{ContextKeyService, set_context};
 use je_platform::contextkey::{ContextKeyExpr, IContextKeyService};
 
 fn new_root() -> Rc<ContextKeyService> {
-    ContextKeyService::new(TestConfigurationService::new())
+    ContextKeyService::new(TestConfigurationService::new(None))
 }
 
 fn set(names: &[&str]) -> HashSet<String> {
