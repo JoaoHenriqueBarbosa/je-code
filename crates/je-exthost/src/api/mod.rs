@@ -15,6 +15,7 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS
 
 use crate::convert::field;
 
+pub mod authentication;
 pub mod commands;
 pub mod comments;
 pub mod debug;

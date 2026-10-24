@@ -11,7 +11,7 @@ use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::errors::Error;
 use je_base::uri::URI;
 use je_workbench::api::common::ext_host_values::ApiValue;
-use zjsc::api::embed_node::{JsData, JsHandle, CLASS_KEY};
+use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner, CLASS_KEY};
 
 /// `Dynamic` para o motor. `Function`, `RegExp`, `Date` e arrays tipados ainda não atravessam: viram `undefined`.
 pub fn dynamic_to_js(value: &Dynamic) -> JsData {
@@ -69,6 +69,14 @@ pub fn string_arg(args: &[JsData], index: usize, what: &str) -> Result<String, S
     match args.get(index) {
         Some(JsData::Str(text)) => Ok(text.clone()),
         _ => Err(format!("{what} precisa ser texto")),
+    }
+}
+
+/// O argumento por referência como dado: o objeto (um [`JsData::Handle`]) é copiado, o resto fica como veio.
+pub fn exported(runner: &NodeRunner, value: &JsData) -> JsData {
+    match value {
+        JsData::Handle(handle) => runner.export(handle),
+        other => other.clone(),
     }
 }
 

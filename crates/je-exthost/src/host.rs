@@ -12,6 +12,7 @@ use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::request::request::{AuthInfo, Credentials};
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
+use je_workbench::api::common::ext_host_authentication::ExtHostAuthentication;
 use je_workbench::api::common::ext_host_comments::create_ext_host_comments;
 use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
 use je_workbench::api::common::ext_host_debug_protocol::ExtHostDebugServiceShape;
@@ -30,7 +31,7 @@ use je_workbench::api::common::ext_host_languages::ExtHostLanguages;
 use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
-    CreateDocumentOptions, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
+    CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
     ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
@@ -53,7 +54,7 @@ use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
 use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
-use crate::api::{commands, comments, debug, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
 use crate::api::js_object::JsObjects;
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -461,6 +462,14 @@ impl ExtensionHost {
                 let comments_shape: Rc<dyn ExtHostCommentsShape> = comments_service.clone();
                 late.comments.0.bind(comments_shape);
                 members.push(("comments".to_owned(), comments::namespace(runner, &comments_service, &comment_objects)));
+            }
+
+            // `vscode.authentication` pede o cliente `MainThreadAuthentication`.
+            if provided(MainContext::MAIN_THREAD_AUTHENTICATION.sid) {
+                let authentication_service = ExtHostAuthentication::new(bridged_ref, log_service.clone());
+                let authentication_shape: Rc<dyn ExtHostAuthenticationShape> = authentication_service.clone();
+                late.authentication.0.bind(authentication_shape);
+                members.push(("authentication".to_owned(), authentication::namespace(runner, &JsObjects::new(runner), &authentication_service, &table)));
             }
 
             // `vscode.debug` pede o cliente `MainThreadDebugService`. O host não tem o `IConfigurationResolverService` nem o namespace

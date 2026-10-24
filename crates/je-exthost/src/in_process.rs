@@ -60,6 +60,10 @@ use je_workbench::api::common::ext_host_protocol::{
     SCMHistoryItemRefDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
 };
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
+use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
+use je_workbench::services::authentication::authentication::{
+    AuthenticationSession, IAuthenticationConstraint, IAuthenticationCreateSessionOptions, IAuthenticationGetSessionsOptions,
+};
 use je_workbench::common::views::ITreeItem;
 use je_workbench::contrib::debug::debug::{
     IAdapterDescriptor, IConfig, IDebugVisualization, IDebugVisualizationContext, IDebugVisualizationTreeItem, MainThreadDebugVisualization,
@@ -900,6 +904,41 @@ impl ExtHostCommentsShape for LateExtHostComments {
     }
 }
 
+/// O `ExtHostAuthenticationShape` que ainda não existe quando o cliente `MainThreadAuthentication` do workbench nasce. Todas as chamadas
+/// têm retorno, então só acontecem depois de montado o host.
+#[derive(Default)]
+pub struct LateExtHostAuthentication(pub Late<dyn ExtHostAuthenticationShape>);
+
+impl ExtHostAuthenticationShape for LateExtHostAuthentication {
+    fn rpc_get_sessions(&self, id: &str, scopes: Option<Vec<String>>, options: IAuthenticationGetSessionsOptions) -> Promise<Vec<AuthenticationSession>> {
+        self.0.bound().rpc_get_sessions(id, scopes, options)
+    }
+
+    fn rpc_create_session(&self, id: &str, scopes: Vec<String>, options: IAuthenticationCreateSessionOptions) -> Promise<AuthenticationSession> {
+        self.0.bound().rpc_create_session(id, scopes, options)
+    }
+
+    fn rpc_get_sessions_from_challenges(&self, id: &str, constraint: IAuthenticationConstraint, options: IAuthenticationGetSessionsOptions) -> Promise<Vec<AuthenticationSession>> {
+        self.0.bound().rpc_get_sessions_from_challenges(id, constraint, options)
+    }
+
+    fn rpc_create_session_from_challenges(&self, id: &str, constraint: IAuthenticationConstraint, options: IAuthenticationCreateSessionOptions) -> Promise<AuthenticationSession> {
+        self.0.bound().rpc_create_session_from_challenges(id, constraint, options)
+    }
+
+    fn rpc_remove_session(&self, id: &str, session_id: &str) -> Promise<()> {
+        self.0.bound().rpc_remove_session(id, session_id)
+    }
+
+    fn rpc_on_did_change_authentication_sessions(&self, id: &str, label: &str, extension_id_filter: Option<Vec<String>>) -> Promise<()> {
+        self.0.bound().rpc_on_did_change_authentication_sessions(id, label, extension_id_filter)
+    }
+
+    fn rpc_on_did_unregister_authentication_provider(&self, id: &str) -> Promise<()> {
+        self.0.bound().rpc_on_did_unregister_authentication_provider(id)
+    }
+}
+
 /// O `ExtHostDebugServiceShape` que ainda não existe quando o cliente `MainThreadDebugService` do workbench nasce. As chamadas sem
 /// retorno (`$sendDAMessage`, `$acceptBreakpointsDelta`, `$disposeDebugVisualizers`, `$disposeVisualizedTree`) ficam na fila se chegarem
 /// antes do `bind`; as com retorno só acontecem depois de montado o host.
@@ -1014,6 +1053,7 @@ impl ExtHostDebugServiceShape for LateExtHostDebugService {
 pub struct LateForwarders {
     pub scm: Rc<LateExtHostSCM>,
     pub comments: Rc<LateExtHostComments>,
+    pub authentication: Rc<LateExtHostAuthentication>,
     pub debug_service: Rc<LateExtHostDebugService>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
     pub tree_views: Rc<LateExtHostTreeViews>,
@@ -1059,6 +1099,9 @@ impl LateForwarders {
         let comments = Rc::new(LateExtHostComments::default());
         let as_comments: Rc<dyn ExtHostCommentsShape> = comments.clone();
         local.set_erased(ExtHostContext::EXT_HOST_COMMENTS.sid, Rc::new(as_comments));
+        let authentication = Rc::new(LateExtHostAuthentication::default());
+        let as_authentication: Rc<dyn ExtHostAuthenticationShape> = authentication.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_AUTHENTICATION.sid, Rc::new(as_authentication));
         let as_terminal_service: Rc<dyn ExtHostTerminalServiceShape> = terminal_service.clone();
         let as_tree_views: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
         local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SERVICE.sid, Rc::new(as_terminal_service));
@@ -1089,7 +1132,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, comments, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, comments, authentication, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

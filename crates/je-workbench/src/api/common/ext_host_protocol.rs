@@ -4605,10 +4605,34 @@ pub use self::authentication_region::*;
 
 /// Região de `extHost.protocol.ts` que `mainThreadAuthentication.ts` e `extHostAuthentication.ts` usam para as sessões:
 /// `Dto<AuthenticationSession>` e `Dto<AuthenticationSessionAccount>` (o `Dto<T>` de `proxyIdentifier.ts` troca cada `URI` por
-/// `UriComponents`). As formas `MainThreadAuthenticationShape` e `ExtHostAuthenticationShape` e os identificadores
-/// entram junto do porte do restante desses dois arquivos (ver o cabeçalho de `api/browser/main_thread_authentication.rs`).
+/// `UriComponents`), mais `MainThreadAuthenticationShape`, `ExtHostAuthenticationShape` e os identificadores
+/// `MainContext.MainThreadAuthentication` e `ExtHostContext.ExtHostAuthentication`.
+///
+/// Divergências:
+/// - `ExtHostAuthenticationShape` só tem os métodos que o `ExtHostAuthentication` portado atende: ficam de fora
+///   `$registerDynamicAuthProvider`, `$registerXaaAuthProvider` e `$onDidChangeDynamicAuthProviderTokens`, que pertencem ao
+///   `DynamicAuthProvider` (sem porte, ver `ext_host_authentication.rs`). `MainThreadAuthenticationShape` está completo.
+/// - O `Promise<ReadonlyArray<AuthenticationSession>>` das chamadas do host (`$getSessions`, `$createSession`...) é a
+///   [`AuthenticationSession`] do serviço (a `URI` no lugar de `UriComponents`: os dois lados dividem o processo e o `URI.revive` do
+///   destino é a identidade); o que atravessa para a thread principal (`$getSession`, `$getAccounts`, `$sendDidChangeSessions`) segue
+///   como `Dto`.
+/// - `IAuthorizationTokenResponse & { created_at: number }` é o [`IAuthorizationToken`]; o `{ clientId, clientSecret? }` de
+///   `$promptForClientRegistration` e o literal de `$sendDidChangeDynamicProviderInfo` são as structs [`ClientRegistration`] e
+///   [`DynamicProviderInfoChange`]; `IRegisterDynamicAuthenticationProviderDetails` (que estende
+///   `IRegisterAuthenticationProviderDetails`) guarda a base em `base`.
+/// - `boolean | AuthenticationInteractiveOptions` é [`AuthenticationInteractive`]; as chaves a mais de `Dto<IAuthenticationProviderSessionOptions>`
+///   (`[key: string]: any`) ficam em `extra`.
 mod authentication_region {
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
     use je_base::uri::UriComponents;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_authentication::IAuthorizationToken;
+    use crate::services::authentication::authentication::{
+        AuthenticationScopeListOrRequest, AuthenticationSession, IAuthenticationConstraint, IAuthenticationCreateSessionOptions, IAuthenticationGetSessionsOptions,
+    };
 
     /// `Dto<AuthenticationSessionAccount>`: `icon` chega como componentes e é revivido no destino.
     #[derive(Clone, Debug, PartialEq)]
@@ -4628,6 +4652,133 @@ mod authentication_region {
         pub id_token: Option<String>,
         pub expires_after: Option<f64>,
         pub authorization_server: Option<UriComponents>,
+    }
+
+    /// `Dto<AuthenticationSessionsChangeEvent>`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct AuthenticationSessionsChangeEventDto {
+        pub added: Option<Vec<AuthenticationSessionDto>>,
+        pub removed: Option<Vec<AuthenticationSessionDto>>,
+        pub changed: Option<Vec<AuthenticationSessionDto>>,
+    }
+
+    /// `AuthenticationInteractiveOptions`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct AuthenticationInteractiveOptions {
+        pub detail: Option<String>,
+        pub learn_more: Option<UriComponents>,
+        pub session_to_recreate: Option<AuthenticationSession>,
+    }
+
+    /// `boolean | AuthenticationInteractiveOptions` (`createIfNone` e `forceNewSession`).
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AuthenticationInteractive {
+        Flag(bool),
+        Options(AuthenticationInteractiveOptions),
+    }
+
+    /// `AuthenticationGetSessionOptions`: estende `Dto<IAuthenticationProviderSessionOptions>`.
+    #[derive(Clone, Default)]
+    pub struct AuthenticationGetSessionOptions {
+        /// Whether the provider must avoid user interaction while resolving existing sessions.
+        pub silent: Option<bool>,
+        pub account: Option<AuthenticationSessionAccountDto>,
+        pub authorization_server: Option<UriComponents>,
+        pub client_id: Option<String>,
+        pub resource: Option<String>,
+        pub audience: Option<String>,
+        /// As demais chaves (`[key: string]: any`).
+        pub extra: Option<Dynamic>,
+        pub clear_session_preference: Option<bool>,
+        pub create_if_none: Option<AuthenticationInteractive>,
+        pub force_new_session: Option<AuthenticationInteractive>,
+    }
+
+    /// `IRegisterAuthenticationProviderDetails`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct IRegisterAuthenticationProviderDetails {
+        pub id: String,
+        pub label: String,
+        pub supports_multiple_accounts: bool,
+        pub supported_authorization_servers: Option<Vec<UriComponents>>,
+        pub supports_challenges: Option<bool>,
+        pub resource_server: Option<UriComponents>,
+    }
+
+    /// `IRegisterDynamicAuthenticationProviderDetails`, que estende [`IRegisterAuthenticationProviderDetails`].
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct IRegisterDynamicAuthenticationProviderDetails {
+        pub base: IRegisterAuthenticationProviderDetails,
+        pub client_id: String,
+        pub client_secret: Option<String>,
+        pub authorization_server: UriComponents,
+    }
+
+    /// O `{ clientId: string; clientSecret?: string }` de `$promptForClientRegistration`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ClientRegistration {
+        pub client_id: String,
+        pub client_secret: Option<String>,
+    }
+
+    /// O literal de `$sendDidChangeDynamicProviderInfo`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct DynamicProviderInfoChange {
+        pub provider_id: String,
+        pub client_id: Option<String>,
+        pub authorization_server: Option<UriComponents>,
+        pub label: Option<String>,
+        pub client_secret: Option<String>,
+    }
+
+    /// `MainThreadAuthenticationShape`.
+    pub trait MainThreadAuthenticationShape: IDisposable {
+        fn rpc_register_authentication_provider(&self, details: IRegisterAuthenticationProviderDetails) -> Promise<()>;
+        fn rpc_unregister_authentication_provider(&self, id: &str) -> Promise<()>;
+        fn rpc_ensure_provider(&self, id: &str) -> Promise<()>;
+        fn rpc_send_did_change_sessions(&self, provider_id: &str, event: AuthenticationSessionsChangeEventDto) -> Promise<()>;
+        fn rpc_get_session(
+            &self,
+            provider_id: &str,
+            scope_list_or_request: AuthenticationScopeListOrRequest,
+            extension_id: &str,
+            extension_name: &str,
+            options: AuthenticationGetSessionOptions,
+        ) -> Promise<Option<AuthenticationSessionDto>>;
+        fn rpc_get_accounts(&self, provider_id: &str) -> Promise<Vec<AuthenticationSessionAccountDto>>;
+        fn rpc_remove_session(&self, provider_id: &str, session_id: &str) -> Promise<()>;
+        fn rpc_wait_for_uri_handler(&self, expected_uri: UriComponents) -> Promise<UriComponents>;
+        fn rpc_show_continue_notification(&self, message: &str) -> Promise<bool>;
+        fn rpc_show_device_code_modal(&self, user_code: &str, verification_uri: &str) -> Promise<bool>;
+        fn rpc_prompt_for_client_registration(&self, authorization_server_url: &str) -> Promise<Option<ClientRegistration>>;
+        fn rpc_prompt_for_resource_client_secret(&self, resource_client_id: &str, resource: &str) -> Promise<Option<String>>;
+        fn rpc_register_dynamic_authentication_provider(&self, details: IRegisterDynamicAuthenticationProviderDetails) -> Promise<()>;
+        fn rpc_set_sessions_for_dynamic_auth_provider(&self, auth_provider_id: &str, client_id: &str, sessions: Vec<IAuthorizationToken>) -> Promise<()>;
+        fn rpc_send_did_change_dynamic_provider_info(&self, info: DynamicProviderInfoChange) -> Promise<()>;
+    }
+
+    /// `ExtHostAuthenticationShape` (ver as divergências da região).
+    pub trait ExtHostAuthenticationShape {
+        fn rpc_get_sessions(&self, id: &str, scopes: Option<Vec<String>>, options: IAuthenticationGetSessionsOptions) -> Promise<Vec<AuthenticationSession>>;
+        fn rpc_create_session(&self, id: &str, scopes: Vec<String>, options: IAuthenticationCreateSessionOptions) -> Promise<AuthenticationSession>;
+        fn rpc_get_sessions_from_challenges(
+            &self,
+            id: &str,
+            constraint: IAuthenticationConstraint,
+            options: IAuthenticationGetSessionsOptions,
+        ) -> Promise<Vec<AuthenticationSession>>;
+        fn rpc_create_session_from_challenges(&self, id: &str, constraint: IAuthenticationConstraint, options: IAuthenticationCreateSessionOptions) -> Promise<AuthenticationSession>;
+        fn rpc_remove_session(&self, id: &str, session_id: &str) -> Promise<()>;
+        fn rpc_on_did_change_authentication_sessions(&self, id: &str, label: &str, extension_id_filter: Option<Vec<String>>) -> Promise<()>;
+        fn rpc_on_did_unregister_authentication_provider(&self, id: &str) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_AUTHENTICATION: ProxyIdentifier<dyn MainThreadAuthenticationShape> = ProxyIdentifier::new("MainThreadAuthentication");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_AUTHENTICATION: ProxyIdentifier<dyn ExtHostAuthenticationShape> = ProxyIdentifier::new("ExtHostAuthentication");
     }
 }
 
