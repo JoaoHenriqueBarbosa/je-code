@@ -4534,3 +4534,37 @@ mod decorations_region {
 }
 
 // #endregion
+
+// #region Authentication (DTOs de sessão)
+
+pub use self::authentication_region::*;
+
+/// Região de `extHost.protocol.ts` que `mainThreadAuthentication.ts` e `extHostAuthentication.ts` usam para as sessões:
+/// `Dto<AuthenticationSession>` e `Dto<AuthenticationSessionAccount>` (o `Dto<T>` de `proxyIdentifier.ts` troca cada `URI` por
+/// `UriComponents`). As formas `MainThreadAuthenticationShape` e `ExtHostAuthenticationShape` e os identificadores
+/// entram junto do porte do restante desses dois arquivos (ver o cabeçalho de `api/browser/main_thread_authentication.rs`).
+mod authentication_region {
+    use je_base::uri::UriComponents;
+
+    /// `Dto<AuthenticationSessionAccount>`: `icon` chega como componentes e é revivido no destino.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct AuthenticationSessionAccountDto {
+        pub label: String,
+        pub id: String,
+        pub icon: Option<UriComponents>,
+    }
+
+    /// `Dto<AuthenticationSession>`: `account.icon` e `authorizationServer` chegam como componentes.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct AuthenticationSessionDto {
+        pub id: String,
+        pub access_token: String,
+        pub account: AuthenticationSessionAccountDto,
+        pub scopes: Vec<String>,
+        pub id_token: Option<String>,
+        pub expires_after: Option<f64>,
+        pub authorization_server: Option<UriComponents>,
+    }
+}
+
+// #endregion
