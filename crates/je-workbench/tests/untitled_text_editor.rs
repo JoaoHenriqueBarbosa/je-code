@@ -281,15 +281,21 @@ impl ITextModelService for TestTextModelService {
                 }
                 references.borrow_mut().remove(&key);
 
-                // untitled file models have conditions that prevent them from dispose, so we have to wait until we can dispose
-                match IUntitledTextEditorService::can_dispose(untitled.as_ref(), &model_to_release) {
-                    None => model_to_release.dispose(),
-                    Some(can_dispose) => runtime::spawn_local(async move {
-                        if can_dispose.await.is_ok() {
+                // `destroyReferencedObject` é `async`: espera o `modelPromise` antes de consultar o `canDispose`, então a
+                // decisão acontece numa microtarefa (o `await modelPromise` do original).
+                let untitled = untitled.clone();
+                runtime::queue_microtask(move || {
+                    runtime::spawn_local(async move {
+                        // untitled file models have conditions that prevent them from dispose, so we have to wait until we can dispose
+                        let can_dispose = match IUntitledTextEditorService::can_dispose(untitled.as_ref(), &model_to_release) {
+                            None => true,
+                            Some(can_dispose) => can_dispose.await.is_ok(),
+                        };
+                        if can_dispose {
                             model_to_release.dispose();
                         }
-                    }),
-                }
+                    });
+                });
             });
 
             Ok(TextModelReference::new(model, release))
@@ -1304,7 +1310,8 @@ fn is_open_matches_non_untitled_text_editor_input_editors_with_same_untitled_res
     // A custom editor (or any other editor type) sharing the same untitled resource
     // should be recognized as representing this working copy to prevent duplicate
     // tabs on backup restoration.
-    let custom_editor_input: EditorInputRef = disposables.add_rc(TestEditorInput::new(untitled_resource, "customEditorType"));
+    let custom_editor_input_concrete = disposables.add_rc(TestEditorInput::new(untitled_resource, "customEditorType"));
+    let custom_editor_input: EditorInputRef = custom_editor_input_concrete;
     assert!(handler.is_open(&working_copy, &custom_editor_input));
 }
 
@@ -1317,7 +1324,8 @@ fn is_open_does_not_match_editors_with_different_resource() {
     let untitled_resource2 = untitled_resource_of("Untitled-2");
     let working_copy = WorkingCopyIdentifier { resource: untitled_resource1, type_id: NO_TYPE_ID.to_string() };
 
-    let other_input: EditorInputRef = disposables.add_rc(TestEditorInput::new(untitled_resource2, "customEditorType"));
+    let other_input_concrete = disposables.add_rc(TestEditorInput::new(untitled_resource2, "customEditorType"));
+    let other_input: EditorInputRef = other_input_concrete;
     assert!(!handler.is_open(&working_copy, &other_input));
 }
 
@@ -1329,6 +1337,7 @@ fn is_open_returns_false_for_non_untitled_working_copies() {
     let file_resource = uri_file("/test.txt");
     let working_copy = WorkingCopyIdentifier { resource: file_resource.clone(), type_id: NO_TYPE_ID.to_string() };
 
-    let editor: EditorInputRef = disposables.add_rc(TestEditorInput::new(file_resource, "testType"));
+    let editor_concrete = disposables.add_rc(TestEditorInput::new(file_resource, "testType"));
+    let editor: EditorInputRef = editor_concrete;
     assert!(!handler.is_open(&working_copy, &editor));
 }
