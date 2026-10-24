@@ -71,3 +71,5 @@ pub mod label;
 pub mod path;
 pub mod uri_identity;
 pub mod virtual_workspace;
+
+pub mod diagnostics;
