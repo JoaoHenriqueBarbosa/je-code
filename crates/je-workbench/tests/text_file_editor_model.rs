@@ -31,9 +31,8 @@
 //! - **Promessas do `testSaveFromSaveParticipant`.** `assert.strictEqual(savePromise, newSavePromise)` é `Promise::ptr_eq`; a
 //!   asserção que falha dentro do participante é um erro devolvido por ele (no original ela lança e o participante de salvar
 //!   a engole e registra), e `savePromise` ainda não atribuído (a zona morta temporal do `const`) é o mesmo erro.
-//!
-//! Caso fora do porte: `save() and isDirty() - proper with check for mtimes` (usa `createFileEditorInput`, e o
-//! `FileEditorInput` não está portado).
+//! - **`createFileEditorInput`** é [`TextFileTestAccessor::create_file_editor_input`], e `await input.resolve()` é o
+//!   `FileEditorInput::resolve_file` (o `as TextFileEditorModel` é o `downcast_ref` por `IEditorModel::as_any`).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -42,7 +41,7 @@ mod support;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, timeout};
+use common::{run_with_real_timers, LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, timeout};
 use je_base::JsString;
 use je_base::async_::async_fn;
 use je_base::buffer::{VSBuffer, encode_base64};
@@ -68,7 +67,7 @@ use je_workbench::services::textfile::encoding::UTF16BE;
 use je_workbench::services::textfile::text_file_editor_model::TextFileEditorModel;
 use je_workbench::services::textfile::text_file_editor_model_manager::TextFileEditorModelManager;
 use je_workbench::services::textfile::textfiles::{
-    EncodingMode, ITextFileEditorModel, ITextFileEditorModelManager, ITextFileSaveParticipant, TextBufferFactoryRef, TextFileEditorModelState, TextFileResolveOptions, TextFileSaveAsOptions,
+    EncodingMode, ITextFileEditorModel, ITextFileEditorModelManager, ITextFileSaveParticipant, ITextFileService, TextBufferFactoryRef, TextFileEditorModelState, TextFileResolveOptions, TextFileSaveAsOptions,
     TextFileSaveOptions, TextFileSaveParticipantContext, snapshot_to_string,
 };
 use je_workbench::services::working_copy::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
@@ -261,6 +260,17 @@ fn participant_of(participate: impl Fn(Rc<dyn ITextFileEditorModel>, TextFileSav
 /// `(model as TextFileEditorModel)`.
 fn as_text_file_editor_model(model: &Rc<dyn ITextFileEditorModel>) -> &TextFileEditorModel {
     model.as_any().downcast_ref::<TextFileEditorModel>().expect("o modelo é um TextFileEditorModel")
+}
+
+/// `(model as TextFileEditorModel)` do modelo que `FileEditorInput.resolve` devolve.
+fn as_resolved_text_file_editor_model(model: &Rc<dyn IEditorModel>) -> &TextFileEditorModel {
+    model.as_any().downcast_ref::<TextFileEditorModel>().expect("o modelo é um TextFileEditorModel")
+}
+
+/// `disposables.add(model)` do modelo que `FileEditorInput.resolve` devolve.
+fn track_editor_model(disposables: &LeakGuard, model: &Rc<dyn IEditorModel>) {
+    let model = model.clone();
+    disposables.add(to_disposable(move || model.dispose()));
 }
 
 /// `testSaveFromSaveParticipant(model, async, modelChange, force)`.
@@ -1022,6 +1032,51 @@ fn resolve_error_is_handled_gracefully_if_model_already_exists() {
         accessor.text_file_service.set_read_stream_error_once(FileOperationError::new("error", FileOperationResult::FileNotFound));
 
         model.resolve().await.unwrap();
+    });
+}
+
+#[test]
+fn save_and_is_dirty_proper_with_check_for_mtimes() {
+    const TITLE: &str = "save() and isDirty() - proper with check for mtimes";
+    // O original roda este caso no relógio real (sem `runWithFakedTimers`): o `mtime` é o `Date.now()` do sistema.
+    run_with_real_timers(async {
+        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let accessor = setup(&disposables);
+
+        let resource1 = to_resource(TITLE, "/path/index_async2.txt");
+        let resource2 = to_resource(TITLE, "/path/index_async.txt");
+
+        let input1 = disposables.add_rc(accessor.create_file_editor_input(&resource1));
+        let input2 = disposables.add_rc(accessor.create_file_editor_input(&resource2));
+
+        let resolved1 = input1.resolve_file(None).await.unwrap();
+        track_editor_model(&disposables, &resolved1);
+        let resolved2 = input2.resolve_file(None).await.unwrap();
+        track_editor_model(&disposables, &resolved2);
+        let (model1, model2) = (as_resolved_text_file_editor_model(&resolved1), as_resolved_text_file_editor_model(&resolved2));
+
+        update_model(model1, "foo");
+
+        let m1_mtime = model1.last_resolved_file_stat().expect("o modelo tem o stat resolvido").mtime();
+        let m2_mtime = model2.last_resolved_file_stat().expect("o modelo tem o stat resolvido").mtime();
+        assert!(m1_mtime > 0);
+        assert!(m2_mtime > 0);
+
+        assert!(accessor.text_file_service.is_dirty(&resource1));
+        assert!(!accessor.text_file_service.is_dirty(&resource2));
+
+        update_model(model2, "foo");
+        assert!(accessor.text_file_service.is_dirty(&resource2));
+
+        timeout(10).await.unwrap();
+        accessor.text_file_service.save(&resource2, None).await.unwrap();
+        accessor.text_file_service.save(&resource1, None).await.unwrap();
+        assert!(!accessor.text_file_service.is_dirty(&resource2));
+        assert!(!accessor.text_file_service.is_dirty(&resource1));
+
+        // on desktop we want to assert this condition more strictly (`isWeb` is false), the timeouts are respected
+        assert!(model1.last_resolved_file_stat().expect("o modelo tem o stat resolvido").mtime() > m1_mtime);
+        assert!(model2.last_resolved_file_stat().expect("o modelo tem o stat resolvido").mtime() > m2_mtime);
     });
 }
 

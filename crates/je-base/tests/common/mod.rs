@@ -118,6 +118,20 @@ pub fn timeout(ms: u64) -> Promise<()> {
     })
 }
 
+/// O caso assíncrono do mocha sem `runWithFakedTimers`: o corpo roda no relógio real e o laço espera os timers de verdade
+/// até não sobrar trabalho (o `Date.now()` é o do sistema).
+pub fn run_with_real_timers(body: impl Future<Output = ()> + 'static) {
+    let done = Rc::new(Cell::new(false));
+    let finished = done.clone();
+    runtime::spawn_local(async move {
+        body.await;
+        finished.set(true);
+    });
+    runtime::run_until_idle();
+    fail_on_unexpected_errors();
+    assert!(done.get(), "o teste assíncrono não terminou");
+}
+
 /// `runWithFakedTimers({}, async () => ...)`: roda o corpo com o relógio virtual, esvazia microtarefas e
 /// timers, e reprova se o corpo não terminou (ficou esperando algo que nunca acontece) ou se algo lançou.
 pub fn run_with_faked_timers(body: impl Future<Output = ()> + 'static) {

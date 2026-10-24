@@ -49,6 +49,7 @@ use crate::common::editor::editor_input::EditorInput;
 use crate::services::editor::editor_service::IEditorService;
 use crate::services::files_configuration::files_configuration_service::{EditorOriginalUri, ResourceOrEditor};
 
+pub mod binary_editor_model;
 pub mod diff_editor_input;
 pub mod diff_editor_model;
 pub mod editor_factory_registry;

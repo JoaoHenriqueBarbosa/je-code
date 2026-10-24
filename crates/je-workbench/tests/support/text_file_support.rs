@@ -43,6 +43,17 @@
 //!   uma struct sem herança, [`TextFileTestAccessor::create_readonly_model`] cria o modelo com um
 //!   `IFilesConfigurationService` que devolve somente leitura (todas as consultas de somente leitura do modelo passam por
 //!   `isReadonly()`, que é o que o serviço responde), e repassa o resto ao serviço real.
+//!
+//! Acrescentado para `fileEditorInput.test.ts` (e o caso `save() and isDirty() - proper with check for mtimes` de
+//! `textFileEditorModel.test.ts`):
+//! - **`createFileEditorInput`.** [`TextFileTestAccessor::create_file_editor_input`] é o `createFileEditorInput` de
+//!   `workbenchTestServices.ts`, sobre o [`TextFileTestAccessor::instantiation_service`] (o `instantiationService` do
+//!   `workbenchInstantiationService`), que passa a ter os serviços que a `FileEditorInput` injeta (`ITextFileService`,
+//!   `ITextModelService`, `ILabelService`, `IFileService`, `IFilesConfigurationService`, `IEditorService`, `IPathService`,
+//!   `ITextResourceConfigurationService` e `ICustomEditorLabelService`). O `ITextEditorService` entra pela
+//!   [`TextFileTestAccessor::collection`], como a sobrescrita `textEditorService` do `workbenchInstantiationService`.
+//! - **`ITextModelService`.** O [`TestTextModelService`] faz o que o `TextModelResolverService` faz para recursos de arquivo.
+//! - **`setReadStreamErrorOnce` e `setWriteErrorOnce`** aceitam também o erro já montado (o `TextFileOperationError`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -55,7 +66,7 @@ use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::Event;
-use je_base::lifecycle::{DisposableId, DisposableRef, DisposableStore, IDisposable, id_of, id_of_ref};
+use je_base::lifecycle::{DisposableId, DisposableRef, DisposableStore, IDisposable, id_of, id_of_ref, to_disposable};
 use je_base::network::schemas;
 use je_base::promise::{MaybePromise, Promise};
 use je_base::runtime;
@@ -80,18 +91,22 @@ use je_platform::files::files::{
     FileChange, FileDeleteOptions, FileOpenOptions, FileOperationError, FileOverwriteOptions, FileReadStreamOptions, FileStat, FileStatWithMetadata, FileSystemProvider,
     FileSystemProviderCapabilities, FileType, FileWriteOptions, Stat, WatchOptions,
 };
-use je_platform::files::i_file_service::IFileService;
+use je_platform::files::i_file_service::{IFileService, I_FILE_SERVICE};
 use je_platform::files::in_memory::InMemoryFileSystemProvider;
 use je_platform::label::label::{ILabelService, I_LABEL_SERVICE};
 use je_platform::log::NullLogService;
-use je_platform::path::path_service::IPathService;
+use je_platform::path::path_service::{IPathService, I_PATH_SERVICE};
+use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::uri_identity::uri_identity_service::UriIdentityService;
 use je_platform::workspace::IWorkspaceContextService;
 use je_workbench::common::editor::SaveReason;
+use je_workbench::contrib::files::browser::editors::file_editor_input::FileEditorInput;
+use je_workbench::services::editor::custom_editor_label_service::{CustomEditorLabelService, ICustomEditorLabelService, I_CUSTOM_EDITOR_LABEL_SERVICE};
 use je_workbench::services::editor::editor_service::{IEditorService, I_EDITOR_SERVICE};
 use je_workbench::services::files_configuration::files_configuration_service::{
-    IAutoSaveConfiguration, IAutoSaveMode, IFilesConfigurationService, Readonly, ReadonlyUpdate, ResourceOrEditor, SingleReadonlyUpdate,
+    IAutoSaveConfiguration, IAutoSaveMode, IFilesConfigurationService, Readonly, ReadonlyUpdate, ResourceOrEditor, SingleReadonlyUpdate, I_FILES_CONFIGURATION_SERVICE,
 };
+use je_workbench::services::textmodel_resolver::resolver_service::{ITextEditorModel, ITextModelService, TextModelReference, I_TEXT_MODEL_SERVICE};
 use je_workbench::services::working_copy::working_copy::{IWorkingCopy, WorkingCopyIdentifier};
 use je_workbench::services::working_copy::working_copy_backup::{IWorkingCopyBackupService, I_WORKING_COPY_BACKUP_SERVICE};
 use je_workbench::services::working_copy::working_copy_service::{IWorkingCopyService, WorkingCopySaveEvent, WorkingCopyService, I_WORKING_COPY_SERVICE};
@@ -108,9 +123,9 @@ use je_workbench::services::textfile::text_file_editor_model::{TextFileEditorMod
 use je_workbench::services::textfile::text_file_editor_model_manager::TextFileEditorModelManager;
 use je_workbench::services::textfile::text_file_save_participant::TextFileSaveParticipant;
 use je_workbench::services::textfile::textfiles::{
-    BaseTextFileContent, EncodedContent, I_TEXT_FILE_SERVICE, IResourceEncodings, ITextFileEditorModelManager, ITextFileService, ReadTextFileEncodingOptions, ReadTextFileOptions,
-    ResolvedDecoding, ResolvedEncoding, TextFileContent, TextFileCreateOperation, TextFileSaveAsOptions, TextFileSaveOptions, TextFileStreamContent, TextOrSnapshot,
-    WriteTextFileOptions,
+    BaseTextFileContent, EncodedContent, I_TEXT_FILE_SERVICE, IResourceEncodings, ITextFileEditorModel, ITextFileEditorModelManager, ITextFileService, ReadTextFileEncodingOptions,
+    ReadTextFileOptions, ResolvedDecoding, ResolvedEncoding, TextFileContent, TextFileCreateOperation, TextFileEditorModelResolveOrCreateOptions, TextFileResolveOptions,
+    TextFileResolveReason, TextFileSaveAsOptions, TextFileSaveOptions, TextFileStreamContent, TextOrSnapshot, WriteTextFileOptions,
 };
 use je_workbench::services::untitled::untitled_text_editor_service::{IUntitledTextEditorModelManager, UntitledTextEditorService};
 use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestExtensionService, TestPathService};
@@ -150,8 +165,8 @@ pub struct TestTextFileService {
     inner: Rc<AbstractTextFileService>,
     manager: Rc<TextFileEditorModelManager>,
     file_service: Rc<dyn IFileService>,
-    read_stream_error: RefCell<Option<FileOperationError>>,
-    write_error: RefCell<Option<FileOperationError>>,
+    read_stream_error: RefCell<Option<Error>>,
+    write_error: RefCell<Option<Error>>,
 }
 
 impl TestTextFileService {
@@ -198,14 +213,15 @@ impl TestTextFileService {
         self.inner.suggest_filename(language_id, untitled_name)
     }
 
-    /// `setReadStreamErrorOnce(error)`.
-    pub fn set_read_stream_error_once(&self, error: FileOperationError) {
-        *self.read_stream_error.borrow_mut() = Some(error);
+    /// `setReadStreamErrorOnce(error)`: aceita o `FileOperationError` e o erro já montado (o `TextFileOperationError`, que é um
+    /// [`Error`] com a propriedade `textFileOperationResult`).
+    pub fn set_read_stream_error_once(&self, error: impl Into<Error>) {
+        *self.read_stream_error.borrow_mut() = Some(error.into());
     }
 
     /// `setWriteErrorOnce(error)`.
-    pub fn set_write_error_once(&self, error: FileOperationError) {
-        *self.write_error.borrow_mut() = Some(error);
+    pub fn set_write_error_once(&self, error: impl Into<Error>) {
+        *self.write_error.borrow_mut() = Some(error.into());
     }
 }
 
@@ -241,7 +257,7 @@ impl ITextFileService for TestTextFileService {
 
         let error = self.read_stream_error.borrow_mut().take();
         if let Some(error) = error {
-            return Promise::rejected(error.into_error());
+            return Promise::rejected(error);
         }
 
         let (file_service, resource) = (self.file_service.clone(), resource.clone());
@@ -282,7 +298,7 @@ impl ITextFileService for TestTextFileService {
 
         let error = self.write_error.borrow_mut().take();
         if let Some(error) = error {
-            return Promise::rejected(error.into_error());
+            return Promise::rejected(error);
         }
 
         ITextFileService::write(&*self.inner, resource, value, options)
@@ -847,6 +863,173 @@ impl IFilesConfigurationService for ReadonlyFilesConfigurationService {
 
 //#endregion
 
+//#region TestTextModelService
+
+/// `ReferenceCollection`: o contador e o objeto de uma referência (`{ counter, object }`).
+struct ModelReference {
+    counter: Rc<Cell<usize>>,
+    object: Promise<Rc<TextFileEditorModel>>,
+}
+
+/// O `ITextModelService` do `workbenchInstantiationService` (o `TextModelResolverService` de
+/// `textModelResolverService.ts`) para recursos de arquivo: a `ReferenceCollection` com a contagem de referências por
+/// recurso canônico, o `files.resolve(resource, { reason: REFERENCE })` que cria o modelo (`doCreateReferencedObject`) e o
+/// descarte do modelo depois do `canDispose` quando a última referência é solta (`destroyReferencedObject`, com o
+/// `modelsToDispose` que cancela o descarte quando o recurso é adquirido de novo).
+///
+/// Divergências: o `TextModelResolverService` real ainda não foi portado. Os recursos `untitled`, em memória e de
+/// provedores de conteúdo, a ativação tardia de provedores e a sincronização do `ModelUndoRedoParticipant` não entram: as
+/// suítes de `FileEditorInput` só resolvem recursos de arquivo, e um recurso sem provedor de arquivo rejeita com o
+/// `Unable to resolve resource` do original.
+pub struct TestTextModelService {
+    files: Rc<TextFileEditorModelManager>,
+    file_service: Rc<dyn IFileService>,
+    uri_identity_service: Rc<dyn IUriIdentityService>,
+    references: Rc<RefCell<HashMap<String, ModelReference>>>,
+    models_to_dispose: Rc<RefCell<HashMap<String, Promise<Rc<TextFileEditorModel>>>>>,
+}
+
+impl TestTextModelService {
+    pub fn new(files: Rc<TextFileEditorModelManager>, file_service: Rc<dyn IFileService>, uri_identity_service: Rc<dyn IUriIdentityService>) -> Self {
+        Self { files, file_service, uri_identity_service, references: Rc::default(), models_to_dispose: Rc::default() }
+    }
+
+    /// `createReferencedObject(key)`: o `doCreateReferencedObject` para recursos de arquivo.
+    fn create_referenced_object(&self, key: &str, resource: &URI) -> Promise<Rc<TextFileEditorModel>> {
+        // Untrack as being disposed
+        self.models_to_dispose.borrow_mut().remove(key);
+
+        // File or remote file: go through text file service
+        if self.file_service.has_provider(resource) {
+            let resolve = self.files.resolve_model(
+                resource,
+                Some(TextFileEditorModelResolveOrCreateOptions {
+                    resolve: TextFileResolveOptions { reason: Some(TextFileResolveReason::Reference), ..TextFileResolveOptions::default() },
+                    ..TextFileEditorModelResolveOrCreateOptions::default()
+                }),
+            );
+
+            let key = key.to_string();
+            return async_fn(async move {
+                let model = resolve.await?;
+                if ITextFileEditorModel::text_editor_model(&*model).is_none() {
+                    return Err(Error::new(format!("Unable to resolve resource {key}")));
+                }
+
+                Ok(model)
+            });
+        }
+
+        Promise::rejected(Error::new(format!("Unable to resolve resource {key}")))
+    }
+
+    /// `destroyReferencedObject(key, modelPromise)`.
+    fn destroy_referenced_object(
+        files: Rc<TextFileEditorModelManager>,
+        models_to_dispose: Rc<RefCell<HashMap<String, Promise<Rc<TextFileEditorModel>>>>>,
+        key: String,
+        model_promise: Promise<Rc<TextFileEditorModel>>,
+    ) {
+        // Track as being disposed before waiting for model to load
+        // to handle the case that the reference is acquired again
+        models_to_dispose.borrow_mut().insert(key.clone(), model_promise.clone());
+
+        // O IIFE `async` do original espera o `modelPromise` antes de consultar o `modelsToDispose`: a decisão acontece numa
+        // microtarefa (o `await modelPromise`).
+        runtime::queue_microtask(move || {
+            runtime::spawn_local(async move {
+                // `catch` ignora o erro e o `finally` solta o recurso do `modelsToDispose`
+                let _ = Self::dispose_when_possible(&files, &models_to_dispose, &key, model_promise).await;
+                models_to_dispose.borrow_mut().remove(&key); // Untrack as being disposed
+            });
+        });
+    }
+
+    async fn dispose_when_possible(
+        files: &Rc<TextFileEditorModelManager>,
+        models_to_dispose: &Rc<RefCell<HashMap<String, Promise<Rc<TextFileEditorModel>>>>>,
+        key: &str,
+        model_promise: Promise<Rc<TextFileEditorModel>>,
+    ) -> Result<(), Error> {
+        let model = model_promise.await?;
+
+        if !models_to_dispose.borrow().contains_key(key) {
+            // return if model has been acquired again meanwhile
+            return Ok(());
+        }
+
+        // text file models have conditions that prevent them
+        // from dispose, so we have to wait until we can dispose
+        let model_contract: Rc<dyn ITextFileEditorModel> = model.clone();
+        if let Some(can_dispose) = ITextFileEditorModelManager::can_dispose(&**files, model_contract) {
+            can_dispose.await?;
+        }
+
+        if !models_to_dispose.borrow().contains_key(key) {
+            // return if model has been acquired again meanwhile
+            return Ok(());
+        }
+
+        // Finally we can dispose the model
+        model.dispose();
+
+        Ok(())
+    }
+}
+
+impl ITextModelService for TestTextModelService {
+    fn create_model_reference(&self, resource: &URI) -> Promise<TextModelReference> {
+        // From this moment on, only operate on the canonical resource
+        // to ensure we reduce the chance of resolving the same resource
+        // with different resource forms (e.g. path casing on Windows)
+        let resource = self.uri_identity_service.as_canonical_uri(resource);
+        let key = resource.to_string(false).to_string_lossy();
+
+        // `ReferenceCollection.acquire(key)`
+        let existing = self.references.borrow().get(&key).map(|reference| (reference.counter.clone(), reference.object.clone()));
+        let (counter, object) = match existing {
+            Some(existing) => existing,
+            None => {
+                let object = self.create_referenced_object(&key, &resource);
+                let counter = Rc::new(Cell::new(0));
+                self.references.borrow_mut().insert(key.clone(), ModelReference { counter: counter.clone(), object: object.clone() });
+
+                (counter, object)
+            }
+        };
+        counter.set(counter.get() + 1);
+
+        let release = {
+            let (files, models_to_dispose, references) = (self.files.clone(), self.models_to_dispose.clone(), self.references.clone());
+            let (key, counter, object) = (key.clone(), counter.clone(), object.clone());
+            to_disposable(move || {
+                counter.set(counter.get() - 1);
+                if counter.get() == 0 {
+                    Self::destroy_referenced_object(files, models_to_dispose, key.clone(), object);
+                    references.borrow_mut().remove(&key);
+                }
+            })
+        };
+
+        // `AsyncReferenceCollection.acquire`
+        async_fn(async move {
+            match object.await {
+                Ok(model) => {
+                    let object: Rc<dyn ITextEditorModel> = model;
+                    Ok(TextModelReference::new(object, release))
+                }
+                Err(error) => {
+                    release.dispose();
+
+                    Err(error)
+                }
+            }
+        })
+    }
+}
+
+//#endregion
+
 //#region TestServiceAccessor
 
 /// A fábrica de modelos: `instantiationService.createInstance(TextFileEditorModel, resource, encoding, languageId)`.
@@ -884,6 +1067,11 @@ pub struct TextFileTestAccessor {
     /// [`TestServiceAccessor`] em [`TextFileTestAccessor::new`], ou o que [`TextFileTestAccessor::with_working_copy_file_service`]
     /// criou (o `WorkingCopyFileService` real, que é o `accessor.workingCopyFileService` do original).
     pub working_copy_file_service_contract: Rc<dyn IWorkingCopyFileService>,
+    /// O `instantiationService` do `workbenchInstantiationService`: tem os serviços que a `FileEditorInput` injeta.
+    pub instantiation_service: Rc<InstantiationService>,
+    /// A coleção de serviços do [`TextFileTestAccessor::instantiation_service`] (o que `workbenchInstantiationService({ ... })`
+    /// recebe como sobrescritas, como o `textEditorService`).
+    pub collection: ServiceCollection,
 }
 
 impl Deref for TextFileTestAccessor {
@@ -951,7 +1139,7 @@ impl TextFileTestAccessor {
 
         let collection = ServiceCollection::new();
         let instantiation_service = disposables.add_rc(InstantiationService::new(collection.clone()));
-        let untitled_text_editor_service = disposables.add_rc(UntitledTextEditorService::new(instantiation_service, configuration_service.clone()));
+        let untitled_text_editor_service = disposables.add_rc(UntitledTextEditorService::new(instantiation_service.clone(), configuration_service.clone()));
 
         // Os modelos precisam do próprio `ITextFileService`, que só existe depois do gerenciador que os cria.
         let text_file_service_slot: Rc<RefCell<Weak<TestTextFileService>>> = Rc::new(RefCell::new(Weak::new()));
@@ -1019,10 +1207,10 @@ impl TextFileTestAccessor {
             environment_service,
             dialog_service: dialog_service.clone(),
             file_dialog_service: file_dialog_service.clone(),
-            text_resource_configuration_service,
+            text_resource_configuration_service: text_resource_configuration_service.clone(),
             files_configuration_service: base.files_configuration_service.clone(),
             code_editor_service: Rc::new(TestCodeEditorService::default()),
-            path_service,
+            path_service: path_service.clone(),
             working_copy_file_service: working_copy_file_service.clone(),
             uri_identity_service: base.uri_identity_service.clone(),
             workspace_context_service: context_service.clone() as Rc<dyn IWorkspaceContextService>,
@@ -1030,15 +1218,49 @@ impl TextFileTestAccessor {
             log_service: base.log_service.clone(),
             elevated_file_service: base.elevated_file_service.clone(),
             decorations_service: Rc::new(TestDecorationsService),
-            files: manager,
+            files: manager.clone(),
         };
         let text_file_service = disposables.add_rc(if child.is_some() { TestTextFileService::with_encoding_overrides(dependencies) } else { TestTextFileService::new(dependencies) });
         *text_file_service_slot.borrow_mut() = Rc::downgrade(&text_file_service);
 
+        let custom_editor_label_service = disposables.add_rc(CustomEditorLabelService::create((), (test_configuration_service.clone(), context_service.clone())));
+        let text_model_service = Rc::new(TestTextModelService::new(manager, base.file_service.clone(), base.uri_identity_service.clone()));
+
         collection.set(I_CONFIGURATION_SERVICE, configuration_service);
         collection.set(I_TEXT_FILE_SERVICE, text_file_service.clone() as Rc<dyn ITextFileService>);
+        collection.set(I_TEXT_MODEL_SERVICE, text_model_service as Rc<dyn ITextModelService>);
+        collection.set(I_TEXT_RESOURCE_CONFIGURATION_SERVICE, text_resource_configuration_service);
+        collection.set(I_LABEL_SERVICE, base.label_service.clone() as Rc<dyn ILabelService>);
+        collection.set(I_FILE_SERVICE, base.file_service.clone() as Rc<dyn IFileService>);
+        collection.set(I_FILES_CONFIGURATION_SERVICE, base.files_configuration_service.clone() as Rc<dyn IFilesConfigurationService>);
+        collection.set(I_EDITOR_SERVICE, base.editor_service.clone() as Rc<dyn IEditorService>);
+        collection.set(I_PATH_SERVICE, path_service);
+        collection.set(I_CUSTOM_EDITOR_LABEL_SERVICE, custom_editor_label_service as Rc<dyn ICustomEditorLabelService>);
 
-        Self { base, text_file_service, model_service, language_service, dialog_service, file_dialog_service, untitled_text_editor_service, context_service, test_configuration_service, working_copy_service, model_factory, services_factory, working_copy_file_service_contract: working_copy_file_service }
+        Self {
+            base,
+            text_file_service,
+            model_service,
+            language_service,
+            dialog_service,
+            file_dialog_service,
+            untitled_text_editor_service,
+            context_service,
+            test_configuration_service,
+            working_copy_service,
+            model_factory,
+            services_factory,
+            working_copy_file_service_contract: working_copy_file_service,
+            instantiation_service,
+            collection,
+        }
+    }
+
+    /// `createFileEditorInput(instantiationService, resource)` de `workbenchTestServices.ts`:
+    /// `instantiationService.createInstance(FileEditorInput, resource, undefined, undefined, undefined, undefined, undefined,
+    /// undefined)`.
+    pub fn create_file_editor_input(&self, resource: &URI) -> Rc<FileEditorInput> {
+        self.instantiation_service.create_instance::<FileEditorInput>((resource.clone(), None, None, None, None, None, None))
     }
 
     /// `instantiationService.createInstance(TestReadonlyTextFileEditorModel, resource, preferredEncoding, preferredLanguageId)`.
