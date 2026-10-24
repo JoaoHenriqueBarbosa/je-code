@@ -120,6 +120,7 @@ pub mod edit_context;
 pub mod view_layer;
 
 pub mod diff;
+pub mod diff_editor_view_model;
 pub mod link_computer;
 
 pub mod model_line_projection_data;

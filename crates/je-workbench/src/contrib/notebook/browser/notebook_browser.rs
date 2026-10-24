@@ -27,12 +27,14 @@ use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::js_string::JsString;
 use je_base::promise::Promise;
+use je_base::uri::URI;
 use je_editor::model::FindMatch;
 use je_editor::text_model::TextModel;
 
 use crate::common::editor::{IEditorPane, TextEditorOptions};
 use crate::contrib::notebook::browser::notebook_editor_widget::NotebookEditorWidget;
-use crate::contrib::notebook::common::notebook_common::{CellKind, INotebookTextModel, TextBufferRef};
+use crate::contrib::notebook::browser::view_model::cell_output_view_model::CellOutputViewModel;
+use crate::contrib::notebook::common::notebook_common::{CellKind, INotebookTextModel, NotebookCellMetadata, TextBufferRef};
 use crate::contrib::notebook::common::notebook_range::ICellRange;
 
 /// `CellEditState`.
@@ -163,4 +165,22 @@ impl INotebookEditorOptions {
         }
         options
     }
+}
+
+/// `IGenericCellViewModel`: o que o diff de notebooks lê de uma célula (`DiffNestedCellViewModel`). O `ICellOutputViewModel`
+/// do original é o [`CellOutputViewModel`], e `outputIsHovered` & cia. são um par `x()` / `set_x(...)`.
+pub trait IGenericCellViewModel {
+    fn id(&self) -> String;
+    fn handle(&self) -> i64;
+    fn uri(&self) -> URI;
+    fn metadata(&self) -> NotebookCellMetadata;
+    fn output_is_hovered(&self) -> bool;
+    fn set_output_is_hovered(&self, value: bool);
+    fn output_is_focused(&self) -> bool;
+    fn set_output_is_focused(&self, value: bool);
+    fn input_in_output_is_focused(&self) -> bool;
+    fn set_input_in_output_is_focused(&self, value: bool);
+    fn outputs_view_models(&self) -> Vec<Rc<CellOutputViewModel>>;
+    fn get_output_offset(&self, index: usize) -> f64;
+    fn update_output_height(&self, index: usize, height: f64, source: Option<&str>);
 }
