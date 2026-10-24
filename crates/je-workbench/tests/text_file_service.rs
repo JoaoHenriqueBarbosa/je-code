@@ -102,7 +102,7 @@ fn is_dirty_get_dirty_files_and_untitled() {
         model.resolve().await.unwrap();
 
         assert!(!accessor.text_file_service.is_dirty(&model.resource()));
-        model.text_editor_model().expect("o modelo de texto existe").set_value(TextSource::from("foo"));
+        ITextFileEditorModel::text_editor_model(&*model).expect("o modelo de texto existe").set_value(TextSource::from("foo"));
 
         assert!(accessor.text_file_service.is_dirty(&model.resource()));
 
@@ -127,7 +127,7 @@ fn save_file() {
         accessor.files().add(&model.resource(), &model);
 
         model.resolve().await.unwrap();
-        model.text_editor_model().expect("o modelo de texto existe").set_value(TextSource::from("foo"));
+        ITextFileEditorModel::text_editor_model(&*model).expect("o modelo de texto existe").set_value(TextSource::from("foo"));
         assert!(accessor.text_file_service.is_dirty(&model.resource()));
 
         let res = accessor.text_file_service.save(&model.resource(), None).await.unwrap();
@@ -147,7 +147,7 @@ fn save_all_file() {
         accessor.files().add(&model.resource(), &model);
 
         model.resolve().await.unwrap();
-        model.text_editor_model().expect("o modelo de texto existe").set_value(TextSource::from("foo"));
+        ITextFileEditorModel::text_editor_model(&*model).expect("o modelo de texto existe").set_value(TextSource::from("foo"));
         assert!(accessor.text_file_service.is_dirty(&model.resource()));
 
         let res = accessor.text_file_service.save(&model.resource(), None).await.unwrap();
@@ -168,7 +168,7 @@ fn save_as_file() {
         accessor.file_dialog_service.set_pick_file_to_save(model.resource());
 
         model.resolve().await.unwrap();
-        model.text_editor_model().expect("o modelo de texto existe").set_value(TextSource::from("foo"));
+        ITextFileEditorModel::text_editor_model(&*model).expect("o modelo de texto existe").set_value(TextSource::from("foo"));
         assert!(accessor.text_file_service.is_dirty(&model.resource()));
 
         let res = accessor.text_file_service.save_as(&model.resource(), None, None).await.unwrap();
@@ -189,7 +189,7 @@ fn revert_file() {
         accessor.file_dialog_service.set_pick_file_to_save(model.resource());
 
         model.resolve().await.unwrap();
-        model.text_editor_model().expect("o modelo de texto existe").set_value(TextSource::from("foo"));
+        ITextFileEditorModel::text_editor_model(&*model).expect("o modelo de texto existe").set_value(TextSource::from("foo"));
         assert!(accessor.text_file_service.is_dirty(&model.resource()));
 
         accessor.text_file_service.revert(&model.resource(), None).await.unwrap();
@@ -208,7 +208,7 @@ fn create_does_not_overwrite_existing_model() {
         accessor.files().add(&model.resource(), &model);
 
         model.resolve().await.unwrap();
-        model.text_editor_model().expect("o modelo de texto existe").set_value(TextSource::from("foo"));
+        ITextFileEditorModel::text_editor_model(&*model).expect("o modelo de texto existe").set_value(TextSource::from("foo"));
         assert!(accessor.text_file_service.is_dirty(&model.resource()));
 
         let event_counter = Rc::new(Cell::new(0usize));
