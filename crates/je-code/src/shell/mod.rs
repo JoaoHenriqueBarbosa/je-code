@@ -2773,23 +2773,53 @@ impl Shell {
         tree.set_bounds(crumbs, Rect::new(1.0, 1.0 + TABS_HEIGHT, 1.0 + inner_width, 1.0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT));
         tree.style_mut(crumbs).background = Some(self.color("breadcrumb.background"));
         let crumb_fg = self.color("breadcrumb.foreground");
-        let mut cx = 20.0;
+        let crumb_font = ui_font(13.0, 400);
+        // As pastas do caminho: relativas ao workspace, ou o caminho inteiro para um arquivo de fora dele (o
+        // `breadcrumbs.filePath: on` do VS Code), cada uma seguida da seta.
+        let folders: Vec<String> = match &active.path {
+            Some(path) => {
+                let parent = path.parent().unwrap_or(path);
+                let relative = self.workspace.as_deref().and_then(|w| parent.strip_prefix(w).ok());
+                let shown = relative.unwrap_or(parent);
+                shown
+                    .components()
+                    .filter_map(|c| match c {
+                        std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                        _ => None,
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        // Cada item é o texto seguido da seta de 16 px, sem respiro (`.monaco-breadcrumb-item`), a partir de 16 px.
+        let mut cx = 16.0;
+        let chevron = |tree: &mut Tree, cx: &mut f64| {
+            let node = tree.create(crumbs, Role::Generic);
+            tree.set_bounds(node, Rect::new(*cx, 3.0, *cx + 16.0, 19.0));
+            tree.style_mut(node).content = Content::Codicon { id: "chevron-right".into(), size: 16.0, color: crumb_fg };
+            *cx += 16.0;
+        };
+        for folder in &folders {
+            let w = measure_text(folder, &crumb_font);
+            let node = tree.create(crumbs, Role::Link);
+            tree.set_bounds(node, Rect::new(cx, 0.0, cx + w, BREADCRUMBS_HEIGHT));
+            tree.style_mut(node).content = Content::Text { text: folder.clone(), style: crumb_font.clone(), color: crumb_fg, line_height: BREADCRUMBS_HEIGHT };
+            cx += w;
+            chevron(&mut tree, &mut cx);
+        }
         if let Some(icons) = &self.icons {
             let language = active.view.model().get_language_id();
-            icons.decorate(&mut tree, crumbs, Rect::new(cx - 2.0, 0.0, cx + 16.0, BREADCRUMBS_HEIGHT), &active.name, Some(language.as_str()));
+            icons.decorate(&mut tree, crumbs, Rect::new(cx + 2.0, 0.0, cx + 20.0, BREADCRUMBS_HEIGHT), &active.name, Some(language.as_str()));
         }
-        cx += 18.0;
-        let crumb_font = ui_font(13.0, 400);
+        cx += 22.0;
         let name_width = measure_text(&active.name, &crumb_font);
         let name = tree.create(crumbs, Role::Link);
         tree.set_bounds(name, Rect::new(cx, 0.0, cx + name_width, BREADCRUMBS_HEIGHT));
         tree.style_mut(name).content = Content::Text { text: active.name.clone(), style: crumb_font.clone(), color: crumb_fg, line_height: BREADCRUMBS_HEIGHT };
-        cx += name_width + 1.0;
-        let chevron = tree.create(crumbs, Role::Generic);
-        tree.set_bounds(chevron, Rect::new(cx, 3.0, cx + 16.0, 19.0));
-        tree.style_mut(chevron).content = Content::Codicon { id: "chevron-right".into(), size: 16.0, color: crumb_fg };
+        cx += name_width;
+        chevron(&mut tree, &mut cx);
         let more = tree.create(crumbs, Role::Generic);
-        tree.set_bounds(more, Rect::new(cx + 17.0, 0.0, cx + 40.0, BREADCRUMBS_HEIGHT));
+        tree.set_bounds(more, Rect::new(cx, 0.0, cx + 23.0, BREADCRUMBS_HEIGHT));
         tree.style_mut(more).content = Content::Text { text: "\u{2026}".to_owned(), style: crumb_font, color: crumb_fg, line_height: BREADCRUMBS_HEIGHT };
         // A superfície do editor.
         let host = tree.create(frame, Role::TextInput);
