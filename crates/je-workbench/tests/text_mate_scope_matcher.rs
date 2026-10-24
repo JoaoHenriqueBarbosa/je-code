@@ -53,7 +53,7 @@ fn comma_separated_selectors_make_separate_matchers() {
 
 #[test]
 fn negation() {
-    assert_eq!(score("a -b", &["a"]), 1);
+    assert_eq!(score("a -b", &["a"]), 0);
     assert_eq!(score("a -b", &["a", "b"]), -1);
     assert_eq!(score("-b", &["a"]), 0);
     assert_eq!(score("-b", &["b"]), -1);

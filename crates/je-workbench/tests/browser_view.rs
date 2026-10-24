@@ -179,6 +179,7 @@ fn create_initial_state(storage_scope: BrowserViewStorageScope, audiences: Vec<B
 
 /// `new BrowserViewModel(id, { windowId: 1 }, { type: 'user' }, undefined, initialState, ...)`.
 fn new_model(
+    guard: &common::LeakGuard,
     id: &str,
     initial_state: BrowserViewState,
     emitters: BrowserViewEventEmitters,
@@ -196,7 +197,7 @@ fn new_model(
         Rc::new(workbench_service),
         Rc::new(NullTelemetryServiceShape),
         Rc::new(PartialDialogService),
-        Rc::new(InMemoryStorageService::new()),
+        Rc::new(guard.add_rc(InMemoryStorageService::new())),
         Rc::new(PartialBrowserZoomService),
         Rc::new(agent_network_filter_service),
         NullLogService::shared(),
@@ -212,6 +213,7 @@ fn only_blocks_disallowed_pages_that_cannot_be_shared_directly() {
         let emitters_store = DisposableStore::new();
         guard.add(emitters_store.clone());
         let model = new_model(
+            &guard,
             &id,
             create_initial_state(storage_scope, audiences),
             create_browser_view_event_emitters(&emitters_store),
@@ -240,6 +242,7 @@ fn mirrors_workbench_owned_events_before_notifying_local_consumers_without_subsc
     guard.add(event_store.clone());
     let emitters = create_browser_view_event_emitters(&event_store);
     let model = new_model(
+        &guard,
         "page",
         create_initial_state(BrowserViewStorageScope::Global, vec![]),
         emitters.clone(),
