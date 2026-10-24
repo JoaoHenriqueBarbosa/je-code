@@ -5,3 +5,6 @@ pub mod search_common_contribution;
 
 // Porte de `searchCompare.ts`.
 pub mod search_compare;
+
+// Porte de `searchActionsRemoveReplace.ts` (a navegação do foco depois de remover ou substituir).
+pub mod search_actions_remove_replace;
