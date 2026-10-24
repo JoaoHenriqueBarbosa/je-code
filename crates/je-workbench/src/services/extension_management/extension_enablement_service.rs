@@ -25,7 +25,7 @@
 //!   o mesmo em toda extensão válida).
 //! - `isWeb` é [`Platform::detect`]. `registerSingleton(..., InstantiationType.Delayed)` não tem equivalente: quem monta o
 //!   workbench cria o serviço com [`ExtensionEnablementService::new`].
-//! - O `IChatEntitlementService` e o `IHostService` são os recortes de [`super::service_contracts`], e o
+//! - O `IChatEntitlementService` é o recorte de [`super::service_contracts`] e o `IHostService` é o de [`crate::services::host::host`], e o
 //!   `IExtensionBisectService` o de [`super::extension_bisect`].
 //! - `Event.filter` e as inscrições seguram o serviço por referência fraca: o serviço é descartado quando o último
 //!   `Rc` some, e as promessas pendentes do laço da lista de maliciosas não o mantêm vivo.
@@ -78,7 +78,8 @@ use super::extension_management::{
     IGlobalExtensionEnablementService, IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService, WorkspaceTypeOverrides,
 };
 use super::global_extension_enablement_service::StorageManager;
-use super::service_contracts::{IChatEntitlementService, IHostService, ReloadOptions};
+use super::service_contracts::IChatEntitlementService;
+use crate::services::host::host::{IHostService, ReloadOptions};
 use crate::services::accounts::default_account::IDefaultAccountService;
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
 use crate::services::extensions::extension_manifest_properties_service::IExtensionManifestPropertiesService;

@@ -68,8 +68,7 @@ use je_workbench::contrib::terminal_contrib::history::history::{
     ITerminalPersistedHistory, ShellFileHistoryEntry, TerminalPersistedHistory, fetch_bash_history, fetch_fish_history, fetch_pwsh_history,
     fetch_zsh_history, sanitize_fish_history_cmd,
 };
-use je_workbench::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection;
-use je_workbench::services::remote::remote_agent_service::{I_REMOTE_AGENT_SERVICE, IRemoteAgentService};
+use je_workbench::services::remote::remote_agent_service::{I_REMOTE_AGENT_SERVICE, IRemoteAgentConnection, IRemoteAgentService};
 use je_workbench::test::common::workbench_test_services::{FileStatOptions, TestStorageService, create_file_stat};
 
 /// `isWindows`.

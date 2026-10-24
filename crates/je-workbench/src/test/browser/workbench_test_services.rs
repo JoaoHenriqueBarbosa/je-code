@@ -33,7 +33,7 @@ use je_platform::resources::{ext_uri, host_platform, join_path, uri_file};
 
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
 use crate::services::path::path_service::{IPathService, IResourcePathProvider, PathFlavor};
-use crate::services::remote::remote_agent_service::IRemoteAgentService;
+use crate::services::remote::remote_agent_service::{IRemoteAgentConnection, IRemoteAgentService};
 use crate::test::common::workbench_test_services::vscode_tests_resource;
 
 /// `TestPathService`.
@@ -120,7 +120,7 @@ impl IRemoteAgentService for TestRemoteAgentService {
         Promise::resolved(None)
     }
 
-    fn get_connection(&self) -> Option<Rc<dyn crate::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection>> {
+    fn get_connection(&self) -> Option<Rc<dyn IRemoteAgentConnection>> {
         None
     }
 }
@@ -1109,7 +1109,7 @@ mod remote_doubles {
     };
     use je_platform::remote::remote_agent_environment::{RemoteAgentEnvironment, RemoteAgentProfiles};
 
-    use crate::services::remote::remote_agent_service::IRemoteAgentService;
+    use crate::services::remote::remote_agent_service::{IRemoteAgentConnection, IRemoteAgentService};
 
     /// `RemoteFileSystemProvider`.
     pub struct TestRemoteFileSystemProvider {
@@ -1263,7 +1263,7 @@ mod remote_doubles {
             self.environment.promise.clone()
         }
 
-        fn get_connection(&self) -> Option<Rc<dyn crate::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection>> {
+        fn get_connection(&self) -> Option<Rc<dyn IRemoteAgentConnection>> {
             None
         }
     }
@@ -1378,8 +1378,8 @@ mod quick_input_and_extension {
 //   [`product_service`] é o [`ProductService`] padrão do porte com o `defaultChatAgent` desse `product.json`
 //   (`GitHub.copilot` e `GitHub.copilot-chat`), que é o que os serviços do workbench lêem dele. O
 //   `sessionsWindowAllowedExtensions` do `product.json` é uma lista vazia, o padrão do porte.
-// - `TestHostService` é o `IHostService` reduzido de `services::extension_management::service_contracts` (só o
-//   `reload`, que o original deixa sem efeito).
+// - `TestHostService` é o `IHostService` reduzido de `services::host::host` (`reload` e `restart`, que o original deixa
+//   sem efeito).
 // ---------------------------------------------------------------------------------------------------------------------
 
 pub use extension_enablement_test_services::{TestHostService, product_service};
@@ -1388,7 +1388,7 @@ mod extension_enablement_test_services {
     use je_base::promise::Promise;
     use je_platform::product::{DefaultChatAgentExtensions, ProductService};
 
-    use crate::services::extension_management::service_contracts::{IHostService, ReloadOptions};
+    use crate::services::host::host::{IHostService, ReloadOptions};
 
     /// `productService`.
     pub fn product_service() -> ProductService {
@@ -1403,6 +1403,11 @@ mod extension_enablement_test_services {
 
     impl IHostService for TestHostService {
         fn reload(&self, _options: Option<ReloadOptions>) -> Promise<()> {
+            Promise::resolved(())
+        }
+
+        /// `restart() { }`.
+        fn restart(&self) -> Promise<()> {
             Promise::resolved(())
         }
     }

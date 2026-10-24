@@ -184,6 +184,13 @@ pub struct FileAtomicOptions {
     pub postfix: String,
 }
 
+/// `IFileReadLimits`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileReadLimits {
+    /// If the file exceeds the given size, an error of kind `FILE_TOO_LARGE` will be thrown.
+    pub size: Option<u64>,
+}
+
 /// `IFileReadStreamOptions` (com `IFileReadLimits`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FileReadStreamOptions {

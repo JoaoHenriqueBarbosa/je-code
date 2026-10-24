@@ -18,6 +18,7 @@ pub mod layout;
 pub mod accounts;
 
 pub mod extension_management;
+pub mod host;
 
 // Contratos de serviço que os dublês de `test::common::workbench_test_services` implementam.
 pub mod lifecycle;
