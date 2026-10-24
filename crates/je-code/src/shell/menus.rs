@@ -227,7 +227,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, 
         Some(item("Go to &Definition", None, code(KeyCode::F12))),
         Some(item("Go to &References", None, SHIFT | code(KeyCode::F12))),
         None,
-        Some(item("Go to &Line/Column...", None, CTRL | code(KeyCode::KeyG))),
+        Some(item("Go to &Line/Column...", Some(C::PromptGoToLine), CTRL | code(KeyCode::KeyG))),
         Some(item("Go to &Bracket", None, CTRL | SHIFT | code(KeyCode::Backslash))),
     ];
     let run = vec![

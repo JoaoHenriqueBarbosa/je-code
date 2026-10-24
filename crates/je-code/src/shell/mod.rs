@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use je_base::key_codes::KeyCode;
 use je_base::lifecycle::IDisposable;
+use je_editor::cursor_common::CursorSimpleModel;
 use je_editor::model::EndOfLinePreference;
 use je_editor::text_model::{TextModel, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
@@ -54,6 +55,7 @@ pub enum PromptAction {
     OpenFile,
     OpenFolder,
     SaveAs(usize),
+    GoToLine,
 }
 
 /// O que os menus, botões e atalhos pedem ao shell. Roda depois do evento que o gerou, fora dos callbacks.
@@ -93,6 +95,7 @@ pub enum Command {
     PromptOpenFile,
     PromptOpenFolder,
     PromptSaveAs,
+    PromptGoToLine,
     PromptNewFile(PathBuf),
     PromptNewFolder(PathBuf),
     PromptRename(PathBuf),
@@ -667,6 +670,11 @@ impl Shell {
             Command::PickTheme => self.open_theme_picker(),
             Command::ExplorerContextMenu(path) => self.open_explorer_menu(&path),
             Command::CloseContextMenu => self.close_context_menu(),
+            Command::PromptGoToLine => {
+                if self.active.is_some() {
+                    self.open_prompt(PromptAction::GoToLine);
+                }
+            }
             Command::PromptSaveAs => {
                 if let Some(i) = self.active {
                     self.open_prompt(PromptAction::SaveAs(i));
@@ -880,6 +888,13 @@ impl Shell {
             PromptAction::NewFile(_) => ("Type file name. Press Enter to confirm or Escape to cancel.".to_owned(), String::new()),
             PromptAction::NewFolder(_) => ("Type folder name. Press Enter to confirm or Escape to cancel.".to_owned(), String::new()),
             PromptAction::Rename(path) => ("Type file name. Press Enter to confirm or Escape to cancel.".to_owned(), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            PromptAction::GoToLine => {
+                let (line, column, last) = self.active_editor().map_or((1, 1, 1), |e| {
+                    let p = e.view.cursor_position();
+                    (p.line_number, p.column, e.view.model().get_line_count())
+                });
+                (format!("Current Line: {line}, Character: {column}. Type a line number between 1 and {last} to navigate to."), String::new())
+            }
             PromptAction::SaveAs(index) => {
                 let base = self.workspace.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
                 let suggestion = self.editors.get(*index).map(|e| e.path.clone().unwrap_or_else(|| base.join(&e.name))).unwrap_or(base);
@@ -898,6 +913,23 @@ impl Shell {
             return;
         }
         let result = match &action {
+            PromptAction::GoToLine => {
+                // `linha` ou `linha:coluna` (o `:` inicial do Go to Line do VS Code também vale).
+                let mut parts = text.trim_start_matches(':').split(':').map(|p| p.trim().parse::<i32>());
+                match (parts.next(), parts.next()) {
+                    (Some(Ok(line)), column) => {
+                        if let Some(editor) = self.active_editor_mut() {
+                            let last = editor.view.model().get_line_count();
+                            let line = line.clamp(1, last);
+                            let max_column = editor.view.model().get_line_max_column(line);
+                            let column = column.and_then(Result::ok).unwrap_or(1).clamp(1, max_column);
+                            editor.view.select_range(je_editor::range::Range::new(line, column, line, column));
+                        }
+                        Ok(None)
+                    }
+                    _ => Err("Digite um número de linha válido.".to_owned()),
+                }
+            }
             PromptAction::SaveAs(index) => match file_ops::resolve(text, self.workspace.as_deref()) {
                 Ok(path) if path.is_dir() => Err(format!("'{}' é uma pasta.", path.display())),
                 Ok(path) => {
@@ -1928,6 +1960,7 @@ impl Shell {
             (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
             (true, false, false, KeyCode::KeyF) => Command::Find,
             (true, false, false, KeyCode::KeyJ) => Command::TogglePanel,
+            (true, false, false, KeyCode::KeyG) => Command::PromptGoToLine,
             (true, false, false, KeyCode::Backquote) => Command::ToggleTerminal,
             (true, true, false, KeyCode::Backquote) => Command::NewTerminal,
             (false, false, false, KeyCode::F3) => Command::FindNext,

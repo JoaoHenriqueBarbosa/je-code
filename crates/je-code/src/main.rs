@@ -815,6 +815,21 @@ mod tests {
     }
 
     #[test]
+    fn go_to_line_prompt_moves_the_cursor() {
+        let path = temp_file("goto.txt", "um\ndois\ntres\nquatro\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::PromptGoToLine);
+        for c in "3:2".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let p = shell.active_editor().expect("aba").view.cursor_position();
+        assert_eq!((p.line_number, p.column), (3, 2));
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");
