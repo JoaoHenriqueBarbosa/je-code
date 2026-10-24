@@ -5,22 +5,27 @@ use std::rc::Rc;
 use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
+use je_base::uri::URI;
 use je_platform::log::{LogServiceRef, NullLogService};
+use je_platform::request::request::{AuthInfo, Credentials};
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
 use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
+use je_workbench::api::common::ext_host_output::ExtHostOutputService;
+use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostStatusBarShape, ExtHostWorkspaceShape, ICommandMetadataDto, IExtHostTelemetry, IMainContext,
-    MainContext, MainThreadTelemetryShape,
+    ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape,
+    ExtHostWorkspaceShape, ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadTelemetryShape,
 };
+use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_status_bar::ExtHostStatusBar;
-use je_workbench::api::common::ext_host_workspace::{ExtHostWorkspace, IExtHostInitDataService, IURITransformerService};
+use je_workbench::api::common::ext_host_workspace::{ExtHostWorkspace, IExtHostInitDataService, IExtHostWorkspaceProvider, IURITransformerService, WorkspaceFolder};
 use je_workbench::services::extensions::extensions::IExtensionService;
 use zjsc::api::embed_node::{JsData, NodeRunner};
 
 use crate::api::events::EventTables;
-use crate::api::window::{StatusBarItems, WindowServices};
+use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
 use crate::api::{commands, disposable, enums, events, l10n, types, uri, window, workspace};
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -78,6 +83,40 @@ impl IURITransformerService for IdentityUriTransformer {
     }
 }
 
+/// O `IExtHostWorkspaceProvider` de um host sem os clientes de workspace: não há pastas abertas nem proxy ou certificados para
+/// consultar. O `ExtHostQuickOpen` só o usa em `showWorkspaceFolderPick`, que o `vscode` do host não expõe.
+struct NoWorkspaceProvider;
+
+impl IExtHostWorkspaceProvider for NoWorkspaceProvider {
+    fn get_workspace_folder2(&self, _uri: &URI, _resolve_parent: Option<bool>) -> Promise<Option<Rc<WorkspaceFolder>>> {
+        Promise::resolved(None)
+    }
+
+    fn resolve_workspace_folder(&self, _uri: &URI) -> Promise<Option<Rc<WorkspaceFolder>>> {
+        Promise::resolved(None)
+    }
+
+    fn get_workspace_folders2(&self) -> Promise<Option<Vec<Rc<WorkspaceFolder>>>> {
+        Promise::resolved(None)
+    }
+
+    fn resolve_proxy(&self, _url: &str) -> Promise<Option<String>> {
+        Promise::resolved(None)
+    }
+
+    fn lookup_authorization(&self, _auth_info: AuthInfo) -> Promise<Option<Credentials>> {
+        Promise::resolved(None)
+    }
+
+    fn lookup_kerberos_authorization(&self, _url: &str) -> Promise<Option<String>> {
+        Promise::resolved(None)
+    }
+
+    fn load_certificates(&self) -> Promise<Vec<String>> {
+        Promise::resolved(Vec::new())
+    }
+}
+
 /// Os serviços do workbench de que o host depende e que o chamador monta.
 pub struct WorkbenchServices {
     pub command_service: Rc<dyn je_platform::commands::commands::ICommandService>,
@@ -90,6 +129,9 @@ struct BridgedServices {
     workspace: Option<Rc<ExtHostWorkspace>>,
     configuration: Option<Rc<ExtHostConfiguration>>,
     status_bar: Option<Rc<ExtHostStatusBar>>,
+    quick_open: Option<Rc<ExtHostQuickOpen>>,
+    output: Option<Rc<ExtHostOutputService>>,
+    progress: Option<Rc<ExtHostProgress>>,
     main_thread: Vec<Rc<dyn IDisposable>>,
 }
 
@@ -135,8 +177,10 @@ impl ExtensionHost {
 
     /// Como [`ExtensionHost::with_context`], com o `binder` que monta, em processo, os clientes `MainThread*` do workbench
     /// (ver `crate::in_process`). Cada namespace entra em `vscode` se o `binder` registrou os clientes de que ele depende:
-    /// `workspace` pede `MainThreadWorkspace`, `MainThreadConfiguration` e `MainThreadMessageService`; `window` pede
-    /// `MainThreadMessageService` (e `MainThreadStatusBar` para a barra de status).
+    /// `workspace` pede `MainThreadWorkspace`, `MainThreadConfiguration` e `MainThreadMessageService`; `window` existe se houver ao
+    /// menos um destes: `MainThreadMessageService` (as mensagens), `MainThreadStatusBar` (a barra de status), `MainThreadQuickOpen`
+    /// (`showQuickPick` e `showInputBox`), `MainThreadOutputService` com [`IMainThreadBinder::output_environment`]
+    /// (`createOutputChannel`) e `MainThreadProgress` (`withProgress`).
     pub fn with_bridge(runner: &NodeRunner, context: &dyn IMainContext, binder: Option<&dyn IMainThreadBinder>, log_service: LogServiceRef) -> ExtensionHost {
         let commands = ExtHostCommands::new(context, NullLogService::shared(), Rc::new(NullTelemetry));
         let shape: Rc<dyn ExtHostCommandsShape> = commands.clone();
@@ -144,7 +188,7 @@ impl ExtensionHost {
 
         let table = disposable::DisposableTable::new();
         let event_tables = EventTables::new();
-        let status_items = StatusBarItems::new();
+        let window_state = WindowState::default();
         let disposable_class = disposable::define(runner, &table);
         let mut members = types::classes(runner);
         members.push(("Disposable".to_owned(), disposable_class));
@@ -152,7 +196,7 @@ impl ExtensionHost {
         members.push(uri::class(runner));
         members.extend(enums::enums());
         members.extend(workspace::classes(runner));
-        members.extend(window::classes(runner, &status_items, &table));
+        members.extend(window::classes(runner, &window_state, &table));
 
         let mut bridged = BridgedServices::default();
         if let Some(binder) = binder {
@@ -185,16 +229,58 @@ impl ExtensionHost {
                 bridged.configuration = Some(configuration);
             }
 
-            if provided(MainContext::MAIN_THREAD_MESSAGE_SERVICE.sid) {
-                let message_service = bridged_ref.get_proxy(&MainContext::MAIN_THREAD_MESSAGE_SERVICE);
-                if provided(MainContext::MAIN_THREAD_STATUS_BAR.sid) {
-                    let status_bar = ExtHostStatusBar::new(bridged_ref, commands.converter());
-                    let status_bar_shape: Rc<dyn ExtHostStatusBarShape> = status_bar.clone();
-                    late.status_bar.0.bind(status_bar_shape);
-                    bridged.status_bar = Some(status_bar);
-                }
-                let window_services = Rc::new(WindowServices { message_service, log_service: log_service.clone(), status_bar: bridged.status_bar.clone() });
-                members.push(("window".to_owned(), window::namespace(runner, window_services, &table, &status_items)));
+            if provided(MainContext::MAIN_THREAD_STATUS_BAR.sid) {
+                let status_bar = ExtHostStatusBar::new(bridged_ref, commands.converter());
+                let status_bar_shape: Rc<dyn ExtHostStatusBarShape> = status_bar.clone();
+                late.status_bar.0.bind(status_bar_shape);
+                bridged.status_bar = Some(status_bar);
+            }
+
+            if provided(MainContext::MAIN_THREAD_QUICK_OPEN.sid) {
+                let workspace_provider: Rc<dyn IExtHostWorkspaceProvider> = match &bridged.workspace {
+                    Some(workspace_service) => workspace_service.clone(),
+                    None => Rc::new(NoWorkspaceProvider),
+                };
+                let quick_open = ExtHostQuickOpen::new(bridged_ref, workspace_provider, commands.clone());
+                let quick_open_shape: Rc<dyn ExtHostQuickOpenShape> = quick_open.clone();
+                late.quick_open.0.bind(quick_open_shape);
+                bridged.quick_open = Some(quick_open);
+            }
+
+            if provided(MainContext::MAIN_THREAD_OUTPUT_SERVICE.sid)
+                && let Some(environment) = binder.output_environment()
+            {
+                let output = ExtHostOutputService::new(
+                    bridged_ref,
+                    environment.logs_location,
+                    environment.extension_log_levels,
+                    environment.directory_creator,
+                    environment.logger_service,
+                    log_service.clone(),
+                );
+                let output_shape: Rc<dyn ExtHostOutputServiceShape> = output.clone();
+                late.output.0.bind(output_shape);
+                bridged.output = Some(output);
+            }
+
+            if provided(MainContext::MAIN_THREAD_PROGRESS.sid) {
+                let progress = ExtHostProgress::new(bridged_ref);
+                let progress_shape: Rc<dyn ExtHostProgressShape> = progress.clone();
+                late.progress.0.bind(progress_shape);
+                bridged.progress = Some(progress);
+            }
+
+            let message_service = provided(MainContext::MAIN_THREAD_MESSAGE_SERVICE.sid).then(|| bridged_ref.get_proxy(&MainContext::MAIN_THREAD_MESSAGE_SERVICE));
+            if message_service.is_some() || bridged.status_bar.is_some() || bridged.quick_open.is_some() || bridged.output.is_some() || bridged.progress.is_some() {
+                let window_services = Rc::new(WindowServices {
+                    message_service,
+                    log_service: log_service.clone(),
+                    status_bar: bridged.status_bar.clone(),
+                    quick_open: bridged.quick_open.clone(),
+                    output: bridged.output.clone(),
+                    progress: bridged.progress.clone(),
+                });
+                members.push(("window".to_owned(), window::namespace(runner, window_services, &table, &event_tables, &window_state)));
             }
         }
 
