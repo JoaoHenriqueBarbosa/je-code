@@ -76,6 +76,7 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: décimo sexto lote: configurationService do workbench (175 de 186; a suíte `Default Overrides`, 17 casos, e 1 caso de política com objeto ficam pendentes com motivo), JSONEditingService, configurationResolver (59). Suíte: 9 694 passando, 0 falhas. Placar: 7 916 de 18 391 (43,04%); workbench/services 33,68% (eu).
 - 2026-10-24: décimo sétimo lote: extensionEnablementService (130 de 132 casos; os 2 de `built-in npm tasks` ficam não portados), GlobalExtensionEnablementService e contratos de extension_management. Suíte: 9 824 passando, 0 falhas (eu, crates do produto sem zjsc). Placar: 8 045 de 18 391 (43,74%); workbench/services 38,86% (eu).
+- 2026-10-24: décimo oitavo lote: customEditorLabelService (5), resourceEditorInput (2), textResourceEditorInput (5), BaseTextEditorModel e TextResourceEditorModel, textfile (TextFileEditorModel, manager e save participant, ainda sem testes), extHostConfiguration (19 de 21) e extHostWorkspace (42), breadcrumbsModel (15), modalEditorPart com navegação, resize, cabeçalho compacto e barra lateral (46). O guarda de vazamentos passou a esvaziar as microtarefas antes de conferir, como o `teardown` do mocha. Suíte: 9 958 passando, 0 falhas (eu). Placar: 8 178 de 18 391 (44,47%); workbench/api 16,68%, workbench (shell) 34,30% (eu).
 
 ## Pendência antes do primeiro push
 
