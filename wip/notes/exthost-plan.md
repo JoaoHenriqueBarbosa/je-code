@@ -140,3 +140,39 @@ construído em Rust. Consequências já decididas para o porte:
   ou pipe, `net`/`fs` do `Host` do zjsc) vem na Fase 5, depois dos testes do núcleo.
 - **Ponte JS**: cada membro do `vscode.d.ts` (202 de primeiro nível) é um binding do zjsc para a função Rust
   correspondente; a lista de nomes que as extensões embutidas pediram e faltaram (seção acima) é a fila.
+
+## Estado da Fase 5 (eu, 2026-10-24): a fundação existe e foi medida
+
+O que já roda, com teste (`crates/je-exthost`, 33 testes no Linux):
+
+- `os_host::OsHost`: o `Host` do zjsc sobre o SO (arquivos com descritores virtuais, rede de loopback, processos filhos
+  com pipe e socketpair), em Rust seguro; limites registrados no cabeçalho do arquivo.
+- `zjsc::api::embed_node::NodeRunner` (mudança local do zjsc, README da crate): um programa Node dirigido pelo Rust.
+  O hospedeiro avalia, guarda e chama funções JavaScript, e avança o laço de eventos com o tempo real medido
+  (`run_event_loop_for(ms)`): o relógio do laço é virtual e alimentá-lo com o tempo decorrido dispara os timers em tempo
+  real. Erro de timer ou promessa sem tratador vai ao stderr do console e não derruba o programa.
+- Valores que cruzam: `JsData` (undefined, null, bool, número, string, array e objeto por cópia, e `Handle` para função,
+  promessa, `Date` e o resto). `make_function` cria função JavaScript cujo corpo é um closure Rust. `define_class`
+  (`ClassSpec`) cria classe nativa com construtor, métodos e estáticos; a instância carrega a propriedade `$$class` não
+  enumerável, que no lado do Rust é o campo `("$$class", Str(nome))` do `JsData::Object` (o `instanceof` das classes da
+  API: `Position`, `Range`, `Uri`...). `class X extends NativeClass` em JavaScript funciona; chamar sem `new` lança.
+- `register_module("vscode", exports)`: `require('vscode')` devolve o objeto do hospedeiro, a partir do programa principal
+  e de qualquer módulo CommonJS em disco, antes dos embutidos do Node. Sem prelúdio em JavaScript no produto: o objeto
+  `vscode` é montado inteiro em Rust.
+
+O que falta para ativar uma extensão embutida de verdade (ordem de ataque, tamanhos do TypeScript do oráculo):
+
+1. `IMainContext` em processo (get_proxy devolve o `MainThreadXxx` registrado, sem serialização, porque os dois lados são
+   Rust): o `RPCProtocol` de `rpcProtocol.ts` só é necessário se o host rodar em outro processo.
+2. A fábrica da API: `extHost.api.impl.ts` (cerca de 2 200 linhas, os 202 membros de primeiro nível do `vscode.d.ts`),
+   cada namespace (`commands`, `window`, `workspace`, `languages`, `env`, `extensions`, `debug`, `tasks`, `l10n`...) como
+   `JsData::Object` com `make_function` apontando para os `ExtHost*` já portados, e cada classe de `extHostTypes.ts` como
+   `ClassSpec` (os tipos Rust de `ext_host_types` já têm `to_dynamic`/`from_dynamic`; falta ligar a `JsData`).
+3. `extHostExtensionService.ts` (ativação por evento, `ExtensionContext`, `require` do `main`, `subscriptions`) e o lado do
+   workbench (`abstractExtensionService.ts`, `extensionHostManager`).
+4. Lacunas do zjsc medidas na sonda: módulos `node:v8`, `worker_threads`, `readline`, `perf_hooks`, `inspector`,
+   `createRequire`/`_nodeModulePaths`; desempenho de 10x a 200x abaixo do Node (as saídas possíveis sem JIT estão na seção
+   anterior).
+5. Primeiro alvo de ativação: `gulp`, `grunt`, `jake`, `debug-auto-launch`, `debug-server-ready`, `tunnel-forwarding`
+   (40 a 76 KB, só `commands`, `tasks`, `debug`, `window`, `workspace`, `l10n`).
+
