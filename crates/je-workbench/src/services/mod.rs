@@ -63,3 +63,5 @@ pub mod assignment;
 
 // Contrato de `files/common/elevatedFileService.ts` (a escrita de arquivo com privilégios elevados).
 pub mod files;
+// Serviço de views (`views/common/viewContainerModel.ts` e `views/browser/viewDescriptorService.ts`).
+pub mod views;
