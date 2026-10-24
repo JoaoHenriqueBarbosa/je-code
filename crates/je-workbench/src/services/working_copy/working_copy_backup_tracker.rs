@@ -8,7 +8,8 @@
 //!   subclasses sobrescrevem (`onFinalBeforeShutdown`, abstrato, e `getBackupScheduleDelay`) são o trait
 //!   [`WorkingCopyBackupTrackerHooks`], que a struct recebe no construtor e chama passando a si mesma. O corpo base do
 //!   `getBackupScheduleDelay` é [`WorkingCopyBackupTracker::default_backup_schedule_delay`] (o `super.getBackupScheduleDelay`
-//!   das subclasses). `BrowserWorkingCopyBackupTracker` é o [`BrowserWorkingCopyBackupTracker`], um [`Injectable`] que guarda
+//!   das subclasses); o do `suspendBackupOperations` é [`WorkingCopyBackupTracker::default_suspend_backup_operations`], e
+//!   [`WorkingCopyBackupTracker::suspend_backup_operations`] passa pelos hooks. `BrowserWorkingCopyBackupTracker` é o [`BrowserWorkingCopyBackupTracker`], um [`Injectable`] que guarda
 //!   o rastreador criado com os [`BrowserWorkingCopyBackupTrackerHooks`].
 //! - **Membros `protected`** (`pendingBackupOperations`, `unrestoredBackups`, `whenReady`, `isReady`, `restoreBackups`,
 //!   `getContentVersion`, `cancelBackupOperations`, `suspendBackupOperations`, os serviços injetados) são métodos públicos:
@@ -71,6 +72,11 @@ pub trait WorkingCopyBackupTrackerHooks {
     fn get_backup_schedule_delay(&self, tracker: &WorkingCopyBackupTracker, working_copy: &dyn IWorkingCopy) -> u64 {
         tracker.default_backup_schedule_delay(working_copy)
     }
+
+    /// `protected suspendBackupOperations()`: o padrão é o corpo da classe base.
+    fn suspend_backup_operations(&self, tracker: &WorkingCopyBackupTracker) -> BackupOperationsResume {
+        tracker.default_suspend_backup_operations()
+    }
 }
 
 /// O valor do mapa de operações pendentes: `{ disposable: IDisposable; cancel: () => void }`, com o número de sequência que
@@ -84,13 +90,18 @@ struct PendingBackupOperation {
 
 /// O `{ resume: () => void }` que `suspendBackupOperations` devolve.
 pub struct BackupOperationsResume {
-    suspended: Rc<Cell<bool>>,
+    resume: Rc<dyn Fn()>,
 }
 
 impl BackupOperationsResume {
+    /// O objeto `{ resume }` com a função dada (as subclasses embrulham o `resume` da base).
+    pub fn new(resume: impl Fn() + 'static) -> Self {
+        Self { resume: Rc::new(resume) }
+    }
+
     /// `resume()`.
     pub fn resume(&self) {
-        self.suspended.set(false);
+        (self.resume)();
     }
 }
 
@@ -254,6 +265,11 @@ impl WorkingCopyBackupTracker {
                 drop(this.restore_backups(handler.clone()));
             }
         }));
+    }
+
+    /// O `this` do rastreador, para as subclasses (os `hooks`) o segurarem durante um `async`.
+    pub fn rc(&self) -> Rc<WorkingCopyBackupTracker> {
+        self.this.upgrade().expect("o rastreador está vivo enquanto os hooks rodam")
     }
 
     /// `workingCopyBackupService` (protegido).
@@ -586,11 +602,17 @@ impl WorkingCopyBackupTracker {
         }
     }
 
-    /// `suspendBackupOperations()` (protegido).
+    /// `suspendBackupOperations()` (protegido): passa pelos `hooks`, que podem sobrescrevê-lo.
     pub fn suspend_backup_operations(&self) -> BackupOperationsResume {
+        self.hooks.suspend_backup_operations(self)
+    }
+
+    /// `suspendBackupOperations()` da classe base (o `super.suspendBackupOperations` das subclasses).
+    pub fn default_suspend_backup_operations(&self) -> BackupOperationsResume {
         self.suspended.set(true);
 
-        BackupOperationsResume { suspended: self.suspended.clone() }
+        let suspended = self.suspended.clone();
+        BackupOperationsResume::new(move || suspended.set(false))
     }
 
     /// `pendingBackupOperations.size` (protegido, lido pelas subclasses de teste).

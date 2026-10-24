@@ -9,8 +9,7 @@
 //! - o `encoding_rs` segue o WHATWG: `gb2312` e `iso885911` valem `gbk` e `windows874`, `big5hkscs` vale
 //!   `big5` (que já traz o HKSCS), e `macroman` é o `macintosh`;
 //! - `iso88591` é Latin-1 de verdade (feito aqui), diferente do `windows-1252` que o WHATWG chama assim;
-//! - cp437, cp850, cp852, cp857 e cp865 vêm de [`super::code_pages`];
-//! - PENDENTES (sem tabela): cp1125, koi8ru e koi8t, então [`encoding_exists`] devolve `false` para eles;
+//! - cp437, cp850, cp852, cp857, cp865, cp1125, koi8ru e koi8t vêm de [`super::code_pages`];
 //! - só os apelidos listados em [`ALIASES`] são reconhecidos, não os do `iconv-lite` inteiro.
 
 use encoding_rs::{CoderResult, Decoder as RsDecoder, Encoder as RsEncoder, EncoderResult, Encoding, UTF_16BE, UTF_16LE, UTF_8};
@@ -161,6 +160,9 @@ fn resolve_codec(canonical: &str) -> Option<Codec> {
         "cp852" => Some(Codec::CodePage(&code_pages::CP852)),
         "cp857" => Some(Codec::CodePage(&code_pages::CP857)),
         "cp865" => Some(Codec::CodePage(&code_pages::CP865)),
+        "cp1125" | "ibm1125" | "csibm1125" | "1125" => Some(Codec::CodePage(&code_pages::CP1125)),
+        "koi8ru" => Some(Codec::CodePage(&code_pages::KOI8RU)),
+        "koi8t" => Some(Codec::CodePage(&code_pages::KOI8T)),
         _ => {
             let (_, label) = WHATWG_LABELS.iter().find(|(key, _)| *key == name)?;
             Encoding::for_label(label.as_bytes()).map(Codec::Whatwg)

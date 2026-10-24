@@ -1,9 +1,8 @@
-//! Páginas de código DOS de um byte que o `iconv-lite` tem e o `encoding_rs` (WHATWG) não: cp437, cp850,
-//! cp852, cp857 e cp865. Cada tabela guarda só a metade alta (bytes 0x80 a 0xFF); a baixa é ASCII.
+//! Páginas de código de um byte que o `iconv-lite` tem e o `encoding_rs` (WHATWG) não: cp437, cp850,
+//! cp852, cp857, cp865, cp1125, koi8ru e koi8t (as três últimas conferidas contra o
+//! `encodings/sbcs-data-generated.js` do `iconv-lite`). Cada tabela guarda só a metade alta (bytes 0x80 a 0xFF); a baixa é ASCII.
 //! Byte sem mapeamento decodifica como U+FFFD e o caractere sem byte codifica como `?`, como o
 //! `iconv-lite`.
-//!
-//! Pendentes (sem tabela conferida): cp1125, koi8ru, koi8t.
 
 use std::sync::OnceLock;
 
@@ -101,13 +100,46 @@ pub static CP865: CodePage = CodePage::new(concat!(
     "≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u{a0}",
 ));
 
+pub static CP1125: CodePage = CodePage::new(concat!(
+    "АБВГДЕЖЗИЙКЛМНОП",
+    "РСТУФХЦЧШЩЪЫЬЭЮЯ",
+    "абвгдежзийклмноп",
+    "░▒▓│┤╡╢╖╕╣║╗╝╜╛┐",
+    "└┴┬├─┼╞╟╚╔╩╦╠═╬╧",
+    "╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀",
+    "рстуфхцчшщъыьэюя",
+    "ЁёҐґЄєІіЇї·√№¤■\u{a0}",
+));
+
+pub static KOI8RU: CodePage = CodePage::new(concat!(
+    "─│┌┐└┘├┤┬┴┼▀▄█▌▐",
+    "░▒▓⌠■∙√≈≤≥\u{a0}⌡°²·÷",
+    "═║╒ёє╔ії╗╘╙╚╛ґў╞",
+    "╟╠╡ЁЄ╣ІЇ╦╧╨╩╪ҐЎ©",
+    "юабцдефгхийклмно",
+    "пярстужвьызшэщчъ",
+    "ЮАБЦДЕФГХИЙКЛМНО",
+    "ПЯРСТУЖВЬЫЗШЭЩЧЪ",
+));
+
+pub static KOI8T: CodePage = CodePage::new(concat!(
+    "қғ‚Ғ„…†‡\u{fffd}‰ҳ‹ҲҷҶ\u{fffd}",
+    "Қ‘’“”•\u{2013}\u{2014}\u{fffd}™\u{fffd}›\u{fffd}\u{fffd}\u{fffd}\u{fffd}",
+    "\u{fffd}ӯӮё¤ӣ¦§\u{fffd}\u{fffd}\u{fffd}«¬\u{ad}®\u{fffd}",
+    "°±²Ё\u{fffd}Ӣ¶·\u{fffd}№\u{fffd}»\u{fffd}\u{fffd}\u{fffd}©",
+    "юабцдефгхийклмно",
+    "пярстужвьызшэщчъ",
+    "ЮАБЦДЕФГХИЙКЛМНО",
+    "ПЯРСТУЖВЬЫЗШЭЩЧЪ",
+));
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn every_table_has_128_entries_and_round_trips() {
-        for page in [&CP437, &CP850, &CP852, &CP857, &CP865] {
+        for page in [&CP437, &CP850, &CP852, &CP857, &CP865, &CP1125, &KOI8RU, &KOI8T] {
             assert_eq!(page.high_half.chars().count(), 128);
             for byte in 0x80..=0xFFu8 {
                 let ch = page.decode(byte);
