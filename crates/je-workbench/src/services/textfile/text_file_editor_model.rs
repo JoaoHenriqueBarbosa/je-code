@@ -29,7 +29,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use je_base::async_::{TaskSequentializer, async_fn, timeout};
 use je_base::cancellation::{CancellationToken, CancellationTokenSource};
-use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::IDisposable;
@@ -68,7 +67,7 @@ use crate::services::textfile::textfiles::{
 };
 use crate::services::working_copy::working_copy::{IWorkingCopy, NO_TYPE_ID, WorkingCopyBackup, WorkingCopyBackupContent, WorkingCopyCapabilities, WorkingCopyIdentifier, WorkingCopySaveEvent};
 use crate::services::working_copy::working_copy_backup::{IWorkingCopyBackupService, ResolvedWorkingCopyBackup};
-use crate::services::working_copy::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
+use crate::services::working_copy::stored_file_working_copy::{StoredFileWorkingCopyBackupMetaData, StoredFileWorkingCopySaveEvent};
 use crate::services::working_copy::working_copy_service::IWorkingCopyService;
 
 /// `TextFileEditorModel.UNDO_REDO_SAVE_PARTICIPANTS_AUTO_SAVE_THROTTLE_THRESHOLD`.
@@ -98,43 +97,9 @@ pub struct TextFileEditorModelServices {
     pub progress_service: Rc<dyn IProgressService>,
 }
 
-/// `IBackupMetaData`: o `meta` do backup (`mtime`, `ctime`, `size`, `etag`, `orphaned`).
-struct BackupMetaData {
-    mtime: i64,
-    ctime: i64,
-    size: u64,
-    etag: String,
-    orphaned: bool,
-}
-
-impl BackupMetaData {
-    fn to_dynamic(&self) -> Dynamic {
-        Dynamic::object([
-            ("mtime", Dynamic::Number(self.mtime as f64)),
-            ("ctime", Dynamic::Number(self.ctime as f64)),
-            ("size", Dynamic::Number(self.size as f64)),
-            ("etag", Dynamic::string(&self.etag)),
-            ("orphaned", Dynamic::Bool(self.orphaned)),
-        ])
-    }
-
-    fn from_dynamic(meta: &Dynamic) -> Self {
-        let number = |key: &str| match meta.get_str(key) {
-            Dynamic::Number(value) => value,
-            _ => 0.0,
-        };
-        Self {
-            mtime: number("mtime") as i64,
-            ctime: number("ctime") as i64,
-            size: number("size") as u64,
-            etag: match meta.get_str("etag") {
-                Dynamic::String(value) => value.to_string_lossy(),
-                _ => ETAG_DISABLED.to_string(),
-            },
-            orphaned: matches!(meta.get_str("orphaned"), Dynamic::Bool(true)),
-        }
-    }
-}
+/// `IBackupMetaData`: o `meta` do backup (`mtime`, `ctime`, `size`, `etag`, `orphaned`), com a mesma forma do
+/// `IStoredFileWorkingCopyBackupMetaData` da working copy de arquivo armazenado.
+type BackupMetaData = StoredFileWorkingCopyBackupMetaData;
 
 /// `TextFileEditorModel`.
 pub struct TextFileEditorModel {

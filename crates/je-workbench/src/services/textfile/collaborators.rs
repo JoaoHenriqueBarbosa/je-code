@@ -17,12 +17,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use je_base::cancellation::CancellationToken;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::files::files::FileOperation;
 use je_platform::notification::notification::NotificationPriority;
 use je_platform::notification::notification_telemetry::NotificationTelemetryId;
+
+use crate::common::editor::{EditorIdentifier, EditorInputOrUntyped, SaveOptions, SaveReason};
+use crate::services::working_copy::stored_file_working_copy::IStoredFileWorkingCopy;
 
 //#region IProgressService
 
@@ -145,8 +149,66 @@ pub trait IWorkingCopyFileService {
 
     /// An event that is fired after a working copy file operation has been performed.
     fn on_did_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent>;
+
+    /// Whether save participants are present for stored file working copies. Sem participantes registrados (o caso do
+    /// serviço que ainda não os tem) é `false`.
+    fn has_save_participants(&self) -> bool {
+        false
+    }
+
+    /// Runs all available save participants for stored file working copies. Sem participantes não há o que rodar.
+    fn run_save_participants(
+        &self,
+        _working_copy: Rc<dyn IStoredFileWorkingCopy>,
+        _context: StoredFileWorkingCopySaveParticipantContext,
+        _progress: Rc<dyn IProgress<ProgressStep>>,
+        _token: CancellationToken,
+    ) -> Promise<()> {
+        Promise::resolved(())
+    }
 }
 
 je_instantiation::service_id!(pub I_WORKING_COPY_FILE_SERVICE: dyn IWorkingCopyFileService = "workingCopyFileService");
+
+/// `IStoredFileWorkingCopySaveParticipantContext`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredFileWorkingCopySaveParticipantContext {
+    /// The reason why the save was triggered.
+    pub reason: SaveReason,
+    /// Only applies to when a text file was saved as, for example when starting with untitled and saving. This provides
+    /// access to the initial resource the text file had before.
+    pub saved_from: Option<URI>,
+}
+
+//#endregion
+
+//#region IEditorService.save
+
+/// `ISaveEditorsOptions`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SaveEditorsOptions {
+    /// O `ISaveOptions` de que herda.
+    pub base: SaveOptions,
+    /// If true, will ask for a location of the editor to save to.
+    pub save_as: Option<bool>,
+}
+
+/// `ISaveEditorsResult`.
+#[derive(Clone)]
+pub struct SaveEditorsResult {
+    /// Whether the save operation was successful.
+    pub success: bool,
+    /// Resulting editors after the save operation.
+    pub editors: Vec<EditorInputOrUntyped>,
+}
+
+/// O recorte de `IEditorService` que a working copy de arquivo armazenado lê (`save`): o `IEditorService` reduzido de
+/// `services/editor/editor_service.rs` ainda não tem o método, e acrescentá-lo lá quebraria os dublês que o implementam.
+/// O `EditorService` completo implementa este trait, e o `save(editors: IEditorIdentifier | readonly IEditorIdentifier[])`
+/// aqui recebe só um identificador (o único uso).
+pub trait IEditorServiceSave {
+    /// `save(editors, options?)`: saves the provided editor.
+    fn save(&self, editor: EditorIdentifier, options: Option<SaveEditorsOptions>) -> Promise<SaveEditorsResult>;
+}
 
 //#endregion

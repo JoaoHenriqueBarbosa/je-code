@@ -60,3 +60,6 @@ pub mod untitled;
 pub mod telemetry;
 // Filtros do contexto de atribuição de experimentos (`assignmentContextFilter.ts` e o contrato `IAssignmentFilter`).
 pub mod assignment;
+
+// Contrato de `files/common/elevatedFileService.ts` (a escrita de arquivo com privilégios elevados).
+pub mod files;
