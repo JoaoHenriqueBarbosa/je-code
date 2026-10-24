@@ -15,12 +15,13 @@
 //!   (`_createConfiguration`) chega pronta, como `Rc<dyn IEditorConfiguration>`: quem constrói o widget cria o
 //!   `EditorConfiguration` com `isSimpleWidget`, `contextMenuId` e as opções, e o widget passa a ser o dono dela
 //!   (registra o `dispose`).
-//! - `EditorExtensionsRegistry` (`editorExtensions.ts`) não tem porte. O widget só consulta o registro por três
-//!   perguntas, que são o trait injetado [`IEditorExtensionsRegistry`]: as contribuições
-//!   (`getEditorContributions`), as ações (`getEditorActions`) e o comando de editor de um `handlerId`
-//!   (`getEditorCommand`). `EditorAction`/`EditorCommand` viram o [`EditorActionDescriptor`] e o trait
-//!   [`IEditorCommand`], sem o `ServicesAccessor` (o `invokeFunction` do original; o que o comando precisa de
-//!   serviço ele captura ao ser criado).
+//! - `EditorExtensionsRegistry` (`editorExtensions.ts`, porte em [`crate::editor_extensions`]) chega por
+//!   injeção. O widget só consulta o registro por três perguntas, que são o trait
+//!   [`IEditorExtensionsRegistry`]: as contribuições (`getEditorContributions`), as ações (`getEditorActions`)
+//!   e o comando de editor de um `handlerId` (`getEditorCommand`). `EditorAction`/`EditorCommand` viram o
+//!   [`EditorActionDescriptor`] e o trait [`IEditorCommand`]. O `ServicesAccessor` que o original recebe do
+//!   `invokeFunction` do `_instantiationService` é `Option<&ServicesAccessor>` e o widget, que não tem
+//!   serviço de instanciação, passa sempre `None`.
 //! - O `payload: unknown` de `trigger` é [`Dynamic`]. As cargas dos handlers internos (`TypePayload`...) têm
 //!   struct tipada com `to_dynamic`, e o widget as lê do `Dynamic` como o original lê o `Partial<...>` (cada
 //!   campo ausente vale o `||` do original: `''`, `0`, `false`, `null`).
@@ -106,6 +107,7 @@ use je_base::promise::Promise;
 use je_base::scrollable::{INewScrollPosition, ScheduleAtNextAnimationFrame};
 use je_base::severity::Severity;
 use je_base::uri::URI;
+use je_instantiation::ServicesAccessor;
 use je_platform::actions::MenuId;
 use je_platform::commands::{CommandMetadata, ICommandService};
 use je_platform::notification::notification_message::{NotificationPart, NotificationText};
@@ -435,6 +437,8 @@ pub enum EditorContributionInstantiation {
     BeforeFirstInteraction = 2,
     /// Criada só quando há tempo ocioso (com prazo de 5 s).
     Eventually = 3,
+    /// Criada só quando pedida de forma explícita por `getContribution`.
+    Lazy = 4,
 }
 
 /// `EditorContributionCtor`: cria a contribuição para um editor (o `createInstance(desc.ctor, editor)`). Um pânico
@@ -449,10 +453,11 @@ pub struct EditorContributionDescription {
     pub instantiation: EditorContributionInstantiation,
 }
 
-/// `EditorCommand`: o comando de editor do registro (`runEditorCommand(accessor, editor, args)`). Um comando
-/// síncrono devolve uma promessa já resolvida.
+/// `EditorCommand`: o comando de editor do registro (`runEditorCommand(accessor, editor, args)`). O `accessor`
+/// é `Option` porque o original aceita `null` (os testes chamam `runEditorCommand(null, editor, null)`) e o
+/// widget não tem serviço de instanciação para criá-lo. Um comando síncrono devolve uma promessa já resolvida.
 pub trait IEditorCommand {
-    fn run_editor_command(&self, editor: &Rc<CodeEditorWidget>, args: &Dynamic) -> Promise<()>;
+    fn run_editor_command(&self, accessor: Option<&ServicesAccessor>, editor: &Rc<CodeEditorWidget>, args: &Dynamic) -> Promise<()>;
 }
 
 /// A precondição de uma ação, no lugar da `ContextKeyExpression` avaliada pelo `IContextKeyService`
@@ -525,8 +530,8 @@ impl IEditorAction for InternalEditorAction {
             return Promise::resolved(());
         };
         match args {
-            Some(args) => self.command.run_editor_command(&editor, args),
-            None => self.command.run_editor_command(&editor, &Dynamic::Undefined),
+            Some(args) => self.command.run_editor_command(None, &editor, args),
+            None => self.command.run_editor_command(None, &editor, &Dynamic::Undefined),
         }
     }
 }
@@ -1417,7 +1422,7 @@ impl CodeEditorWidget {
             object.set(&JsString::from("source"), source.map_or(Dynamic::Undefined, |source| Dynamic::from(source)));
         }
         if let Some(editor) = self.me.upgrade() {
-            let _ = command.run_editor_command(&editor, payload).catch(|error| errors::on_unexpected_error(&error));
+            let _ = command.run_editor_command(None, &editor, payload).catch(|error| errors::on_unexpected_error(&error));
         }
         true
     }
