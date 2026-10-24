@@ -51,6 +51,8 @@ pub trait ILanguageService {
     fn request_rich_language_features(&self, language_id: &str);
 }
 
+je_instantiation::service_id!(pub I_LANGUAGE_SERVICE: dyn ILanguageService = "languageService");
+
 thread_local! {
     static INSTANCE_COUNT: Cell<i32> = const { Cell::new(0) };
 }
