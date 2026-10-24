@@ -32,6 +32,12 @@ pub trait IModelService {
     /// `onModelAdded`: disparado quando um modelo é criado.
     fn on_model_added(&self) -> Event<Rc<TextModel>>;
 
+    /// `onModelRemoved`: disparado quando um modelo é destruído. O padrão é um evento que nunca dispara, para quem não
+    /// tem o evento.
+    fn on_model_removed(&self) -> Event<Rc<TextModel>> {
+        Event::none()
+    }
+
     /// `createModel(value, languageSelection, resource?, isForSimpleWidget = false)`: o `BaseTextEditorModel` cria os
     /// modelos que ele guarda por aqui.
     fn create_model(&self, value: TextSource, language_selection: Option<&dyn ILanguageSelection>, resource: Option<&URI>, is_for_simple_widget: bool) -> Rc<TextModel>;

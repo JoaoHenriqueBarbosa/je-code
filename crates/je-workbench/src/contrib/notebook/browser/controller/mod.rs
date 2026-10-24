@@ -90,3 +90,12 @@ pub fn expand_cell_ranges_with_hidden_cells(editor: &dyn IActiveNotebookEditor, 
 
     crate::contrib::notebook::common::notebook_range::reduce_cell_ranges(&model_ranges)
 }
+
+/// `cellRangeToViewCells(editor, ranges)` de `notebookBrowser.ts`.
+pub fn cell_range_to_view_cells(editor: &dyn IActiveNotebookEditor, ranges: &[ICellRange]) -> Vec<CellViewModel> {
+    let mut cells: Vec<CellViewModel> = Vec::new();
+    for range in crate::contrib::notebook::common::notebook_range::reduce_cell_ranges(ranges) {
+        cells.extend(editor.get_cells_in_range(Some(range)));
+    }
+    cells
+}

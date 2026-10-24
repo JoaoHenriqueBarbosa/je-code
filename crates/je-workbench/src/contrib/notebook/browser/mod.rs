@@ -5,6 +5,7 @@ pub mod contrib;
 pub mod controller;
 pub mod diff;
 pub mod notebook_browser;
+pub mod notebook_cell_layout_manager;
 pub mod notebook_editor_widget;
 pub mod notebook_options;
 pub mod notebook_view_events;

@@ -1700,7 +1700,7 @@ mod quick_open_region {
     use je_base::themables::ThemeIcon;
     use je_base::uri::URI;
     use je_platform::quickinput::quick_input::{
-        IPickOptions, IQuickPickSeparator, InputValidationResult, QuickInputButtonLocation, QuickInputButtonToggle, QuickInputIconPath,
+        IPickOptions, IQuickPickSeparator, InputValidationResult, QuickInputButtonLocation, QuickInputButtonToggle, QuickInputIconPath, QuickPickTooltip,
     };
 
     use super::{ExtHostContext, MainContext, ProxyIdentifier};
@@ -1717,7 +1717,9 @@ mod quick_open_region {
     #[derive(Clone, Debug)]
     pub struct TransferQuickInputButton {
         pub handle: i64,
-        pub icon_path_dto: IconPathDto,
+        /// O `iconPathDto` é obrigatório no tipo do original, mas o `IconPath.from` do host devolve `undefined` para um caminho
+        /// vazio, e é isso que viaja: por isso é `Option`.
+        pub icon_path_dto: Option<IconPathDto>,
         pub toggle: Option<Rc<QuickInputButtonToggle>>,
         pub tooltip: Option<String>,
         pub always_visible: Option<bool>,
@@ -1730,7 +1732,7 @@ mod quick_open_region {
 
     impl TransferQuickInputButton {
         /// O botão só com o `handle` e o ícone, o resto ausente.
-        pub fn new(handle: i64, icon_path_dto: IconPathDto) -> Self {
+        pub fn new(handle: i64, icon_path_dto: Option<IconPathDto>) -> Self {
             Self {
                 handle,
                 icon_path_dto,
@@ -1758,6 +1760,8 @@ mod quick_open_region {
         pub always_show: Option<bool>,
         pub buttons: Option<Vec<TransferQuickInputButton>>,
         pub resource_uri: Option<URI>,
+        /// `tooltip` (`string | IMarkdownString`, de `IQuickPickItem`).
+        pub tooltip: Option<QuickPickTooltip>,
         pub icon_path: Option<QuickInputIconPath>,
         pub icon_class: Option<String>,
         /// A propriedade `iconClasses` que o `MainThreadQuickOpen` define (um getter preguiçoso no original).
@@ -5158,6 +5162,227 @@ mod terminal_service_region {
     impl ExtHostContext {
         pub const EXT_HOST_TERMINAL_SERVICE: ProxyIdentifier<dyn ExtHostTerminalServiceShape> = ProxyIdentifier::new("ExtHostTerminalService");
         pub const EXT_HOST_TERMINAL_SHELL_INTEGRATION: ProxyIdentifier<dyn ExtHostTerminalShellIntegrationShape> = ProxyIdentifier::new("ExtHostTerminalShellIntegration");
+    }
+}
+
+// #endregion
+
+// #region OutputService
+
+pub use self::output_region::*;
+
+/// `MainThreadOutputServiceShape` e `ExtHostOutputServiceShape` (de `extHost.protocol.ts`, usados por `mainThreadOutputService.ts` e
+/// `extHostOutput.ts`). `UriComponents` é [`URI`]; `OutputChannelUpdateMode` e `till?: number` são o enum do serviço de saída e
+/// `Option<u64>` (é um deslocamento em bytes); `string | null` de `$setVisibleChannel` é `Option<String>`.
+mod output_region {
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+    use crate::services::output::output::OutputChannelUpdateMode;
+
+    /// `MainThreadOutputServiceShape`.
+    pub trait MainThreadOutputServiceShape: IDisposable {
+        fn rpc_register(&self, label: &str, file: URI, language_id: Option<String>, extension_id: &str) -> Promise<String>;
+        fn rpc_update(&self, channel_id: &str, mode: OutputChannelUpdateMode, till: Option<u64>) -> Promise<()>;
+        fn rpc_reveal(&self, channel_id: &str, preserve_focus: bool) -> Promise<()>;
+        fn rpc_close(&self, channel_id: &str) -> Promise<()>;
+        fn rpc_dispose(&self, channel_id: &str) -> Promise<()>;
+    }
+
+    /// `ExtHostOutputServiceShape`.
+    pub trait ExtHostOutputServiceShape {
+        fn rpc_set_visible_channel(&self, visible_channel_id: Option<String>);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_OUTPUT_SERVICE: ProxyIdentifier<dyn MainThreadOutputServiceShape> = ProxyIdentifier::new("MainThreadOutputService");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_OUTPUT_SERVICE: ProxyIdentifier<dyn ExtHostOutputServiceShape> = ProxyIdentifier::new("ExtHostOutputService");
+    }
+}
+
+// #endregion
+
+// #region Languages
+
+pub use self::languages_region::*;
+
+/// `MainThreadLanguagesShape`, `ExtHostLanguagesShape`, `ILanguageStatus` e os DTOs de realce de sintaxe (de `extHost.protocol.ts` e
+/// `languageStatusService.ts`). `UriComponents` é [`URI`]; `IPosition` e `IRange` são o `Position` e o `Range` do editor; o `command` de
+/// `ILanguageStatus` é o [`ICommandDto`] que o `CommandsConverter` produz; o `type: StandardTokenType` de `$tokensAtPosition` é o
+/// número do enum.
+mod languages_region {
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::severity::Severity;
+    use je_base::uri::URI;
+    use je_editor::language_selector::LanguageSelector;
+    use je_editor::position::Position as EditorPosition;
+    use je_editor::range::Range as EditorRange;
+    use je_platform::accessibility::IAccessibilityInformation;
+
+    use super::{ExtHostContext, ICommandDto, MainContext, ProxyIdentifier};
+
+    /// `ISyntaxHighlightingTokenDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ISyntaxHighlightingTokenDto {
+        pub length: u32,
+        pub foreground: u32,
+        pub font_style: u32,
+    }
+
+    /// `ISyntaxHighlightingResultDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ISyntaxHighlightingResultDto {
+        pub tokens: Vec<ISyntaxHighlightingTokenDto>,
+        pub color_map: Vec<String>,
+    }
+
+    /// O `{ type: StandardTokenType; range: IRange }` de `$tokensAtPosition`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct TokenAtPositionDto {
+        pub token_type: u32,
+        pub range: EditorRange,
+    }
+
+    /// `ILanguageStatus`.
+    #[derive(Clone, Debug)]
+    pub struct ILanguageStatus {
+        pub id: String,
+        pub name: String,
+        pub source: String,
+        pub selector: Option<LanguageSelector>,
+        pub label: String,
+        pub detail: String,
+        pub severity: Severity,
+        pub command: Option<ICommandDto>,
+        pub accessibility_info: Option<IAccessibilityInformation>,
+        pub busy: bool,
+    }
+
+    /// `MainThreadLanguagesShape`.
+    pub trait MainThreadLanguagesShape: IDisposable {
+        fn rpc_change_language(&self, resource: URI, language_id: &str) -> Promise<()>;
+        fn rpc_tokens_at_position(&self, resource: URI, position: EditorPosition) -> Promise<Option<TokenAtPositionDto>>;
+        fn rpc_compute_full_syntax_highlighting(&self, source: &str, language_id: &str) -> Promise<ISyntaxHighlightingResultDto>;
+        fn rpc_set_language_status(&self, handle: u32, status: ILanguageStatus);
+        fn rpc_remove_language_status(&self, handle: u32);
+    }
+
+    /// `ExtHostLanguagesShape`.
+    pub trait ExtHostLanguagesShape {
+        fn rpc_accept_language_ids(&self, ids: Vec<String>);
+        fn rpc_accept_syntax_highlighting_theme_changed(&self);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_LANGUAGES: ProxyIdentifier<dyn MainThreadLanguagesShape> = ProxyIdentifier::new("MainThreadLanguages");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_LANGUAGES: ProxyIdentifier<dyn ExtHostLanguagesShape> = ProxyIdentifier::new("ExtHostLanguages");
+    }
+}
+
+// #endregion
+
+// #region Window, Storage e SecretState
+
+pub use self::host_state_region::*;
+
+/// `MainThreadWindowShape`, `ExtHostWindowShape`, `IOpenUriOptions`, `MainThreadStorageShape`, `ExtHostStorageShape`,
+/// `IExtensionIdWithVersion`, `MainThreadSecretStateShape` e `ExtHostSecretStateShape` (de `extHost.protocol.ts`). `UriComponents` é
+/// [`URI`]; `allowContributedOpeners?: boolean | string` é [`AllowContributedOpeners`]; o `value: object` de `$setValue` é um
+/// [`Dynamic`]; os `Promise<void>` de `ExtHostSecretStateShape` são promessas resolvidas.
+mod host_state_region {
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// `allowContributedOpeners?: boolean | string`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AllowContributedOpeners {
+        Flag(bool),
+        Id(String),
+    }
+
+    /// `IOpenUriOptions`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct IOpenUriOptions {
+        pub allow_tunneling: Option<bool>,
+        pub allow_contributed_openers: Option<AllowContributedOpeners>,
+    }
+
+    /// O `{ isFocused, isActive }` de `$getInitialState`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct WindowInitialState {
+        pub is_focused: bool,
+        pub is_active: bool,
+    }
+
+    /// `MainThreadWindowShape`.
+    pub trait MainThreadWindowShape: IDisposable {
+        fn rpc_get_initial_state(&self) -> Promise<WindowInitialState>;
+        fn rpc_open_uri(&self, uri: URI, uri_string: Option<String>, options: IOpenUriOptions) -> Promise<bool>;
+        fn rpc_as_external_uri(&self, uri: URI, options: IOpenUriOptions) -> Promise<URI>;
+    }
+
+    /// `ExtHostWindowShape`.
+    pub trait ExtHostWindowShape {
+        fn rpc_on_did_change_window_focus(&self, value: bool);
+        fn rpc_on_did_change_window_active(&self, value: bool);
+        fn rpc_on_did_change_active_native_window_handle(&self, handle: Option<String>);
+    }
+
+    /// `IExtensionIdWithVersion`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct IExtensionIdWithVersion {
+        pub id: String,
+        pub version: String,
+    }
+
+    /// `MainThreadStorageShape`.
+    pub trait MainThreadStorageShape: IDisposable {
+        fn rpc_initialize_extension_storage(&self, shared: bool, extension_id: &str) -> Promise<Option<String>>;
+        fn rpc_set_value(&self, shared: bool, extension_id: &str, value: Dynamic) -> Promise<()>;
+        fn rpc_register_extension_storage_keys_to_sync(&self, extension: IExtensionIdWithVersion, keys: Vec<String>);
+    }
+
+    /// `ExtHostStorageShape`.
+    pub trait ExtHostStorageShape {
+        fn rpc_accept_value(&self, shared: bool, extension_id: &str, value: &str);
+    }
+
+    /// `MainThreadSecretStateShape`.
+    pub trait MainThreadSecretStateShape: IDisposable {
+        fn rpc_get_password(&self, extension_id: &str, key: &str) -> Promise<Option<String>>;
+        fn rpc_set_password(&self, extension_id: &str, key: &str, value: &str) -> Promise<()>;
+        fn rpc_delete_password(&self, extension_id: &str, key: &str) -> Promise<()>;
+        fn rpc_get_keys(&self, extension_id: &str) -> Promise<Vec<String>>;
+    }
+
+    /// `ExtHostSecretStateShape`.
+    pub trait ExtHostSecretStateShape {
+        fn rpc_on_did_change_password(&self, extension_id: &str, key: &str) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_WINDOW: ProxyIdentifier<dyn MainThreadWindowShape> = ProxyIdentifier::new("MainThreadWindow");
+        pub const MAIN_THREAD_STORAGE: ProxyIdentifier<dyn MainThreadStorageShape> = ProxyIdentifier::new("MainThreadStorage");
+        pub const MAIN_THREAD_SECRET_STATE: ProxyIdentifier<dyn MainThreadSecretStateShape> = ProxyIdentifier::new("MainThreadSecretState");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_WINDOW: ProxyIdentifier<dyn ExtHostWindowShape> = ProxyIdentifier::new("ExtHostWindow");
+        pub const EXT_HOST_STORAGE: ProxyIdentifier<dyn ExtHostStorageShape> = ProxyIdentifier::new("ExtHostStorage");
+        pub const EXT_HOST_SECRET_STATE: ProxyIdentifier<dyn ExtHostSecretStateShape> = ProxyIdentifier::new("ExtHostSecretState");
     }
 }
 

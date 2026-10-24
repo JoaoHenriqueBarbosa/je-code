@@ -18,6 +18,12 @@ pub trait IClipboardService {
     /// `readText()`: o texto da área de transferência (vazio quando não há).
     fn read_text(&self) -> Promise<String>;
 
+    /// `readText(type)`: o texto de uma área de transferência nomeada (`'selection'`, a seleção primária do X11). O padrão lê
+    /// a área comum, que é o que um sistema sem área nomeada faz.
+    fn read_text_of_type(&self, _type: &str) -> Promise<String> {
+        self.read_text()
+    }
+
     /// `readFindText()`: reads text from the system find pasteboard.
     fn read_find_text(&self) -> Promise<JsString>;
 
