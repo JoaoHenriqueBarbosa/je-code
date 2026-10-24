@@ -3,6 +3,7 @@
 
 pub mod contrib;
 pub mod controller;
+pub mod diff;
 pub mod notebook_browser;
 pub mod notebook_editor_widget;
 pub mod notebook_options;

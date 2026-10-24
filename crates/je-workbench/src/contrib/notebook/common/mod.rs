@@ -4,6 +4,7 @@ pub mod model;
 pub mod notebook_cell_status_bar_service;
 pub mod notebook_common;
 pub mod notebook_diff;
+pub mod notebook_editor_model;
 pub mod notebook_editor_model_resolver_service;
 pub mod notebook_execution_service;
 pub mod notebook_execution_state_service;

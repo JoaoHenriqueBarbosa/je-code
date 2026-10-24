@@ -3,3 +3,4 @@
 
 pub mod notebook_cell_matching;
 pub mod notebook_web_worker;
+pub mod notebook_worker_service;

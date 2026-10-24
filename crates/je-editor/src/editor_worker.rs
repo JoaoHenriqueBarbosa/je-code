@@ -1,7 +1,8 @@
 //! Porte parcial de `src/vs/editor/common/services/editorWorker.ts`: `IEditorWorkerService`, só com o que o
 //! `WordDistance` do módulo `suggest` lê (`canComputeWordRanges` e `computeWordRanges`).
 //!
-//! As demais operações do serviço (cálculo de diferenças, edições de espaço em branco, links, cores, `navigateValueSet`,
+//! `computeDiff` entra só como contrato (ver o método), para a altura dos editores de diff de notebook. As demais operações do
+//! serviço (edições de espaço em branco, links, cores, `navigateValueSet`,
 //! sincronização de modelos) entram junto das contribuições que as usam. `computeMoreMinimalEdits` entra só como
 //! contrato (ver o método), para as funções de formatação.
 //!
@@ -18,6 +19,7 @@ use je_base::uri::URI;
 use je_instantiation::service_id;
 
 use crate::code_action::languages::TextEdit;
+use crate::diff::document_diff_provider::{DocumentDiff, DocumentDiffProviderOptions};
 use crate::edits::string_edit::StringEdit;
 use crate::range::Range;
 
@@ -44,6 +46,14 @@ pub trait IEditorWorkerService {
     /// `computeWordRanges(resource, range)`: as palavras de `range` e onde elas ocorrem, ou `None` quando o modelo
     /// não está no worker.
     fn compute_word_ranges(&self, resource: &URI, range: Range) -> Promise<Option<WordRanges>>;
+
+    /// `computeDiff(original, modified, options, algorithm)`: o diff de linhas entre dois recursos, ou `None` quando o
+    /// serviço não consegue calculá-lo. O `mock<IEditorWorkerService>()` do original deixa o membro ausente (chamá-lo lança
+    /// `TypeError`), e é isso que o corpo padrão faz: quem usa o cálculo (a altura dos editores de diff de notebook) o
+    /// sobrescreve.
+    fn compute_diff(&self, _original: &URI, _modified: &URI, _options: &DocumentDiffProviderOptions, _algorithm: DiffAlgorithmName) -> Promise<Option<DocumentDiff>> {
+        panic!("computeDiff is not a function")
+    }
 
     /// `computeMoreMinimalEdits(resource, edits, pretty?)`: o serviço real pede ao worker (que tem o modelo sincronizado) o
     /// diff de cada edição contra o texto atual, e ainda não tem porte. O `mock<IEditorWorkerService>()` do original deixa o
