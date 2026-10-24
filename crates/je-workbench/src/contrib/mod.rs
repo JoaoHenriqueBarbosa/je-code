@@ -4,6 +4,7 @@ pub mod bulk_edit;
 pub mod files;
 pub mod markers;
 pub mod merge_editor;
+pub mod output;
 pub mod terminal_contrib;
 pub mod update;
 
