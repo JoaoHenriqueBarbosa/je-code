@@ -18,8 +18,8 @@
 //!   verdadeiro que não é um objeto com `entries` em lista faz o original lançar `TypeError` ao iterar, e aqui
 //!   lança o mesmo erro com [`errors::throw`].
 //! - **`process.env`.** O ambiente do processo é mutável no Node e os testes o alteram (`env['HOME'] = ...`); em Rust
-//!   a edição 2024 exige `unsafe` para mudar o ambiente real e os testes rodam em paralelo. O ambiente é por isso a
-//!   cópia do ambiente do processo guardada por thread ([`env_var`] e [`set_env_var`]), que o histórico lê.
+//!   a edição 2024 exige `unsafe` para mudar o ambiente real e os testes rodam em paralelo. O histórico lê o `env` do
+//!   porte de `process.ts` ([`env_var`]), a cópia do ambiente do processo guardada por thread.
 //! - **`isFileWindows` de `fetchFileContents`.** O parâmetro nunca é lido no original e não existe aqui.
 //! - **`Map` e `Set`.** O `Set<string>` de cada leitor é um [`IndexSet`] (ordem de inserção); o `Map` do cache de
 //!   histórico de arquivos guarda `Option<entrada>`, em que `None` é o `null` do original.
@@ -45,7 +45,7 @@ use je_base::map::LRUCache;
 use je_base::network::schemas;
 use je_base::path::{PathModule, ProcessEnvironment};
 use je_base::platform::{OperatingSystem, Platform};
-use je_base::process::SafeProcess;
+use je_base::process::env_var;
 use je_base::promise::Promise;
 use je_base::runtime::date_now;
 use je_base::uri::{URI, UriComponents};
@@ -426,25 +426,6 @@ thread_local! {
     /// (o shell não tem arquivo de histórico).
     static SHELL_FILE_HISTORY: RefCell<HashMap<TerminalShellType, Option<ShellFileHistoryEntry>>> = RefCell::new(HashMap::new());
 
-    /// `process.env`, a cópia do ambiente do processo que o histórico lê (ver as divergências do módulo).
-    static ENV: RefCell<BTreeMap<String, String>> = RefCell::new(SafeProcess::detect().env);
-}
-
-/// `env[name]`.
-pub fn env_var(name: &str) -> Option<String> {
-    ENV.with(|env| env.borrow().get(name).cloned())
-}
-
-/// `env[name] = value`, ou `delete env[name]` com `None`.
-pub fn set_env_var(name: &str, value: Option<&str>) {
-    ENV.with(|env| match value {
-        Some(value) => {
-            env.borrow_mut().insert(name.to_owned(), value.to_owned());
-        }
-        None => {
-            env.borrow_mut().remove(name);
-        }
-    });
 }
 
 /// `getShellFileHistory(accessor, shellType)`.

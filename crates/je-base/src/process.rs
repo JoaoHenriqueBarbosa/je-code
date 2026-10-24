@@ -8,6 +8,7 @@
 //! caminho do sandbox. O ramo do `vscode.process` do Electron não tem equivalente em Rust: o renderer nativo
 //! monta o seu com [`SafeProcess::new`].
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use crate::platform::Platform;
@@ -78,4 +79,28 @@ fn node_arch(arch: &str) -> &str {
         "s390x" => "s390x",
         other => other,
     }
+}
+
+thread_local! {
+    /// O `env` exportado pelo módulo: a cópia do ambiente do processo que o código do workbench lê e, como no Node, pode
+    /// alterar (`env['HOME'] = ...`). Alterar o ambiente real do processo é `unsafe` em Rust (e os testes rodam em
+    /// paralelo), então a cópia é por thread, montada de [`SafeProcess::detect`] na primeira leitura.
+    static ENV: RefCell<ProcessEnvironment> = RefCell::new(SafeProcess::detect().env);
+}
+
+/// `env[name]`.
+pub fn env_var(name: &str) -> Option<String> {
+    ENV.with(|env| env.borrow().get(name).cloned())
+}
+
+/// `env[name] = value`, ou `delete env[name]` com `None`.
+pub fn set_env_var(name: &str, value: Option<&str>) {
+    ENV.with(|env| match value {
+        Some(value) => {
+            env.borrow_mut().insert(name.to_owned(), value.to_owned());
+        }
+        None => {
+            env.borrow_mut().remove(name);
+        }
+    });
 }

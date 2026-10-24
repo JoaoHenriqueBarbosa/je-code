@@ -63,9 +63,10 @@ use je_platform::files::i_file_service::{I_FILE_SERVICE, IFileService};
 use je_platform::remote::remote_agent_environment::{RemoteAgentEnvironment, RemoteAgentProfiles};
 use je_platform::resources::host_platform;
 use je_platform::storage::{I_STORAGE_SERVICE, StorageService};
+use je_base::process::{env_var, set_env_var};
 use je_workbench::contrib::terminal_contrib::history::history::{
-    ITerminalPersistedHistory, ShellFileHistoryEntry, TerminalPersistedHistory, env_var, fetch_bash_history, fetch_fish_history, fetch_pwsh_history,
-    fetch_zsh_history, sanitize_fish_history_cmd, set_env_var,
+    ITerminalPersistedHistory, ShellFileHistoryEntry, TerminalPersistedHistory, fetch_bash_history, fetch_fish_history, fetch_pwsh_history,
+    fetch_zsh_history, sanitize_fish_history_cmd,
 };
 use je_workbench::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection;
 use je_workbench::services::remote::remote_agent_service::{I_REMOTE_AGENT_SERVICE, IRemoteAgentService};
