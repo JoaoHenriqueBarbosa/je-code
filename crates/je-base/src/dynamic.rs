@@ -809,10 +809,30 @@ pub fn number_to_js_string(x: f64) -> String {
     format!("{sign}{body}")
 }
 
-/// `JSON.stringify(string)`: aspas, escapes curtos, `\u00xx` para controle e `\udxxx` para
-/// surrogate isolado (o `JSON.stringify` bem-formado do ES2019).
 /// `JSON.stringify(value)`: `None` onde o JavaScript devolve `undefined` (valor `undefined` ou função).
 pub fn json_stringify(value: &Dynamic) -> Option<String> {
+    json_stringify_with_gap(value, "", "")
+}
+
+/// `JSON.stringify(value, null, indent)` com `indent` espaços (no máximo 10, como o JavaScript).
+pub fn json_stringify_indented(value: &Dynamic, indent: usize) -> Option<String> {
+    json_stringify_with_gap(value, &" ".repeat(indent.min(10)), "")
+}
+
+/// O `SerializeJSONProperty` da especificação: `gap` é o recuo de um nível (vazio para o formato
+/// compacto) e `indent` o recuo acumulado do nível atual.
+fn json_stringify_with_gap(value: &Dynamic, gap: &str, indent: &str) -> Option<String> {
+    let inner_indent = format!("{indent}{gap}");
+    // `[a,b]` no formato compacto; um item por linha, recuado, com `gap`.
+    let wrap = |open: &str, close: &str, parts: Vec<String>| {
+        if parts.is_empty() {
+            format!("{open}{close}")
+        } else if gap.is_empty() {
+            format!("{open}{}{close}", parts.join(","))
+        } else {
+            format!("{open}\n{inner_indent}{}\n{indent}{close}", parts.join(&format!(",\n{inner_indent}")))
+        }
+    };
     match value {
         Dynamic::Undefined | Dynamic::Function(_) => None,
         Dynamic::Null => Some("null".to_string()),
@@ -821,22 +841,25 @@ pub fn json_stringify(value: &Dynamic) -> Option<String> {
         Dynamic::BigInt(_) => errors::throw(Error::type_error("Do not know how to serialize a BigInt".to_string())),
         Dynamic::String(text) => Some(json_quote(text)),
         Dynamic::Array(items) => {
-            let items: Vec<String> = items.to_vec().iter().map(|item| json_stringify(item).unwrap_or_else(|| "null".to_string())).collect();
-            Some(format!("[{}]", items.join(",")))
+            let parts = items.to_vec().iter().map(|item| json_stringify_with_gap(item, gap, &inner_indent).unwrap_or_else(|| "null".to_string())).collect();
+            Some(wrap("[", "]", parts))
         }
         Dynamic::Date(date) => Some(date_to_iso_string(date.time_value()).map_or_else(|| "null".to_string(), |iso| json_quote(&JsString::from(iso)))),
         Dynamic::RegExp(_) => Some("{}".to_string()),
         Dynamic::Object(_) | Dynamic::TypedArray(_) => {
-            let properties: Vec<String> = value
+            let separator = if gap.is_empty() { ":" } else { ": " };
+            let parts = value
                 .own_entries()
                 .iter()
-                .filter_map(|(key, item)| json_stringify(item).map(|item| format!("{}:{item}", json_quote(key))))
+                .filter_map(|(key, item)| json_stringify_with_gap(item, gap, &inner_indent).map(|item| format!("{}{separator}{item}", json_quote(key))))
                 .collect();
-            Some(format!("{{{}}}", properties.join(",")))
+            Some(wrap("{", "}", parts))
         }
     }
 }
 
+/// `JSON.stringify(string)`: aspas, escapes curtos, `\u00xx` para controle e `\udxxx` para
+/// surrogate isolado (o `JSON.stringify` bem-formado do ES2019).
 pub fn json_quote(text: &JsString) -> String {
     let units = text.units();
     let mut out = String::with_capacity(units.len() + 2);

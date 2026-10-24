@@ -3,3 +3,6 @@
 //! identificador opaco ou um trait implementado por quem desenha.
 
 pub mod parts;
+//! Porte de `src/vs/workbench/browser`: a parte do workbench que roda no processo de renderização.
+
+pub mod actions;
