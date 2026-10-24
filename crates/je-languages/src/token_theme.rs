@@ -9,76 +9,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
+use je_theme::theme_defaults::normalize_color;
 use serde_json::{Value, json};
 
 use crate::jsonc;
 
-/// `ColorThemeType`, só o que o `ColorThemeData` usa para os padrões de editor e de token.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThemeType {
-    Light,
-    Dark,
-    HcDark,
-    HcLight,
-}
-
-impl ThemeType {
-    /// `uiTheme` do `package.json` (`vs`, `vs-dark`, `hc-black`, `hc-light`).
-    pub fn from_ui_theme(ui_theme: &str) -> Self {
-        match ui_theme {
-            "vs" => Self::Light,
-            "hc-black" => Self::HcDark,
-            "hc-light" => Self::HcLight,
-            _ => Self::Dark,
-        }
-    }
-
-    fn editor_foreground(self) -> &'static str {
-        match self {
-            Self::Light => "#333333",
-            Self::Dark => "#BBBBBB",
-            Self::HcDark => "#FFFFFF",
-            Self::HcLight => "#292929",
-        }
-    }
-
-    fn editor_background(self) -> &'static str {
-        match self {
-            Self::Light | Self::HcLight => "#FFFFFF",
-            Self::Dark => "#1E1E1E",
-            Self::HcDark => "#000000",
-        }
-    }
-
-    /// `defaultThemeColors` de tokens (`token.info-token`...).
-    fn default_token_rules(self) -> [(&'static str, &'static str); 4] {
-        let (info, warn, error, debug) = match self {
-            Self::Light | Self::HcLight => ("#316bcd", "#cd9731", "#cd3131", "#800080"),
-            Self::Dark => ("#6796e6", "#cd9731", "#f44747", "#b267e6"),
-            Self::HcDark => ("#6796e6", "#008000", "#FF0000", "#b267e6"),
-        };
-        [("token.info-token", info), ("token.warn-token", warn), ("token.error-token", error), ("token.debug-token", debug)]
-    }
-}
-
-/// `normalizeColor` do `colorThemeData.ts`: `#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA` em maiúsculas.
-fn normalize_color(color: &str) -> Option<String> {
-    let digits = color.strip_prefix('#')?;
-    if ![3, 4, 6, 8].contains(&digits.len()) || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut out = String::from("#");
-    for c in digits.chars() {
-        out.push(c.to_ascii_uppercase());
-        if digits.len() <= 4 {
-            out.push(c.to_ascii_uppercase());
-        }
-    }
-    if out.len() == 9 && out.ends_with("FF") {
-        out.truncate(7);
-    }
-    Some(out)
-}
+/// O tipo do tema, com os padrões de editor e de token, definido uma vez no `je-theme`.
+pub use je_theme::ThemeType;
 
 #[derive(Clone)]
 struct Rule {

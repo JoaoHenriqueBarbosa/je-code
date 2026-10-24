@@ -9,6 +9,8 @@ description = "Temas de cor do VS Code: leitura de color themes (com include) e 
 [dependencies]
 je-base = { path = "../je-base" }
 je-render = { path = "../je-render" }
+# `IJSONSchema` do `tokenStylingSchema` como `serde_json::Value`, a mesma representação do `je-workbench`.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [lints]
 workspace = true
