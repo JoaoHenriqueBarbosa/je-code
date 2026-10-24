@@ -41,3 +41,9 @@ pub mod ext_host_test_item;
 pub mod ext_host_testing;
 pub mod ext_host_testing_converters;
 pub mod ext_host_testing_types;
+
+// Notebook: `extHostNotebook.ts` (o controlador), o documento, o editor e `extHostNotebookDocuments.ts`.
+pub mod ext_host_notebook;
+pub mod ext_host_notebook_document;
+pub mod ext_host_notebook_documents;
+pub mod ext_host_notebook_editor;

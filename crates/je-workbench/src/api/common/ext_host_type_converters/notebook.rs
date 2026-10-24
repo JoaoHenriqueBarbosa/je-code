@@ -13,11 +13,17 @@
 use je_base::buffer::VSBuffer;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
+use je_base::glob::{PatternItem, RelativePattern};
+use je_base::lifecycle::DisposableStore;
 
-use crate::api::common::ext_host_protocol::{NotebookCellDataDto, NotebookDataDto, NotebookOutputDto, NotebookOutputItemDto};
+use crate::api::common::ext_host_protocol::{INotebookCellStatusBarEntryDto, NotebookCellDataDto, NotebookDataDto, NotebookOutputDto, NotebookOutputItemDto};
+use crate::api::common::ext_host_type_converters::ICommandsConverter;
 use crate::api::common::ext_host_types as types;
 use crate::api::common::ext_host_types::IdOrMetadata;
-use crate::contrib::notebook::common::notebook_common::{CellKind, NotebookCellInternalMetadata};
+use crate::api::common::ext_host_workspace::{GlobPattern, GlobPatternDto, glob_pattern_from};
+use crate::contrib::notebook::common::notebook_common::{
+    CellKind, CellStatusbarAlignment, INotebookExclusiveDocumentFilter, NotebookCellInternalMetadata, NotebookFilenamePattern, TransientOptions,
+};
 
 /// `Object.create(null)`.
 fn empty_object() -> Dynamic {
@@ -133,6 +139,82 @@ impl NotebookCellData {
 
 /// `typeConverters.NotebookData`.
 pub struct NotebookData;
+
+/// `vscode.NotebookRegistrationData.filenamePattern[number]`: `GlobPattern | { include: GlobPattern; exclude: GlobPattern }`.
+#[derive(Clone, Debug)]
+pub enum NotebookFilenamePatternInput {
+    Glob(GlobPattern),
+    Exclusive { include: GlobPattern, exclude: GlobPattern },
+}
+
+/// `typeConverters.NotebookExclusiveDocumentPattern`.
+///
+/// Divergência: o `isExclusivePattern` (ter `include` e `exclude`) é a variante do tipo de entrada; o `?? undefined` e o
+/// `.filter(pattern => pattern !== undefined)` do chamador não existem, porque um padrão tipado nunca é `undefined`.
+/// O `IRelativePatternDto` volta como [`RelativePattern`] (`base` e `pattern`), que é o que o `INotebookContributionData` guarda.
+pub struct NotebookExclusiveDocumentPattern;
+
+impl NotebookExclusiveDocumentPattern {
+    pub fn from(pattern: &NotebookFilenamePatternInput) -> NotebookFilenamePattern {
+        match pattern {
+            NotebookFilenamePatternInput::Exclusive { include, exclude } => NotebookFilenamePattern::Exclusive(INotebookExclusiveDocumentFilter {
+                include: Some(Self::item(include)),
+                exclude: Some(Self::item(exclude)),
+            }),
+            NotebookFilenamePatternInput::Glob(glob) => match Self::item(glob) {
+                PatternItem::Str(text) => NotebookFilenamePattern::Pattern(text),
+                PatternItem::Relative(relative) => NotebookFilenamePattern::Relative(relative),
+            },
+        }
+    }
+
+    /// `GlobPattern.from(pattern)` como item de padrão.
+    fn item(pattern: &GlobPattern) -> PatternItem {
+        match glob_pattern_from(pattern) {
+            GlobPatternDto::Pattern(text) => PatternItem::Str(text),
+            GlobPatternDto::Relative(dto) => PatternItem::Relative(RelativePattern { base: dto.base, pattern: dto.pattern }),
+        }
+    }
+}
+
+/// `typeConverters.NotebookStatusBarItem`.
+pub struct NotebookStatusBarItem;
+
+impl NotebookStatusBarItem {
+    pub fn from(
+        item: &types::NotebookCellStatusBarItem,
+        commands_converter: &dyn ICommandsConverter,
+        disposables: &DisposableStore,
+    ) -> Result<INotebookCellStatusBarEntryDto, Error> {
+        let command = match &item.command {
+            Some(types::NotebookCellStatusBarCommand::Id(id)) => Some(types::Command::new("", id.as_str())),
+            Some(types::NotebookCellStatusBarCommand::Command(command)) => Some(command.clone()),
+            None => None,
+        };
+        Ok(INotebookCellStatusBarEntryDto {
+            alignment: if item.alignment == types::NotebookCellStatusBarAlignment::Left { CellStatusbarAlignment::Left } else { CellStatusbarAlignment::Right },
+            command: commands_converter.to_internal(command.as_ref(), disposables)?,
+            text: item.text.clone(),
+            tooltip: item.tooltip.clone(),
+            accessibility_information: item.accessibility_information.clone(),
+            priority: item.priority,
+        })
+    }
+}
+
+/// `typeConverters.NotebookDocumentContentOptions`.
+pub struct NotebookDocumentContentOptions;
+
+impl NotebookDocumentContentOptions {
+    pub fn from(options: Option<&types::NotebookDocumentContentOptions>) -> TransientOptions {
+        TransientOptions {
+            transient_outputs: options.and_then(|options| options.transient_outputs).unwrap_or(false),
+            transient_cell_metadata: options.and_then(|options| options.transient_cell_metadata.clone()).unwrap_or_default(),
+            transient_document_metadata: options.and_then(|options| options.transient_document_metadata.clone()).unwrap_or_default(),
+            cell_content_metadata: options.and_then(|options| options.cell_content_metadata.clone()).unwrap_or_default(),
+        }
+    }
+}
 
 impl NotebookData {
     pub fn from(data: &types::NotebookData) -> NotebookDataDto {

@@ -223,6 +223,39 @@ impl NotebookData {
     }
 }
 
+/// `string | vscode.Command`: o `command` de `NotebookCellStatusBarItem`.
+#[derive(Clone, Debug)]
+pub enum NotebookCellStatusBarCommand {
+    Id(String),
+    Command(super::Command),
+}
+
+/// `NotebookCellStatusBarItem`.
+#[derive(Clone, Debug)]
+pub struct NotebookCellStatusBarItem {
+    pub text: String,
+    pub alignment: super::NotebookCellStatusBarAlignment,
+    pub command: Option<NotebookCellStatusBarCommand>,
+    pub tooltip: Option<String>,
+    pub priority: Option<f64>,
+    pub accessibility_information: Option<je_platform::accessibility::IAccessibilityInformation>,
+}
+
+impl NotebookCellStatusBarItem {
+    pub fn new(text: impl Into<String>, alignment: super::NotebookCellStatusBarAlignment) -> NotebookCellStatusBarItem {
+        NotebookCellStatusBarItem { text: text.into(), alignment, command: None, tooltip: None, priority: None, accessibility_information: None }
+    }
+}
+
+/// `vscode.NotebookDocumentContentOptions`: os quatro campos são opcionais.
+#[derive(Clone, Debug, Default)]
+pub struct NotebookDocumentContentOptions {
+    pub transient_outputs: Option<bool>,
+    pub transient_cell_metadata: Option<std::collections::HashMap<String, bool>>,
+    pub transient_document_metadata: Option<std::collections::HashMap<String, bool>>,
+    pub cell_content_metadata: Option<std::collections::HashMap<String, bool>>,
+}
+
 /// `NotebookEdit`.
 #[derive(Clone)]
 pub struct NotebookEdit {
