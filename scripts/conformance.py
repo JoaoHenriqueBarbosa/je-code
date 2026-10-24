@@ -36,7 +36,9 @@ def ported():
         text = path.read_text(encoding='utf-8')
         match = PORT_RE.search(text)
         if match:
-            found[match.group(1)] = (path.relative_to(ROOT), len(re.findall(r'#\[test\]', text)))
+            # `#[test]` seguido de `#[ignore...]` é caso pendente (falha conhecida registrada): não conta como portado
+            active = len(re.findall(r'#\[test\]\n(?!\s*#\[ignore)', text))
+            found[match.group(1)] = (path.relative_to(ROOT), active)
     return found
 
 
