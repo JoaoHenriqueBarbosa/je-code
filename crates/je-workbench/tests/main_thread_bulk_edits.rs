@@ -52,6 +52,14 @@ impl IFileService for FakeFileService {
         not_defined("onDidFilesChange")
     }
 
+    fn on_will_activate_file_system_provider(&self) -> Event<je_platform::files::files::FileSystemProviderActivationEvent> {
+        not_defined("onWillActivateFileSystemProvider")
+    }
+
+    fn register_provider(&self, _scheme: &str, _provider: je_platform::files::files::FileSystemProviderRef) -> Result<je_base::lifecycle::DisposableRef, je_base::errors::Error> {
+        not_defined("registerProvider")
+    }
+
     fn get_provider(&self, _scheme: &str) -> Option<FileSystemProviderRef> {
         not_defined("getProvider")
     }

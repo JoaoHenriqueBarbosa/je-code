@@ -384,8 +384,11 @@ impl Fixture {
         instantiation.stub(I_FILE_SERVICE, file_service_contract);
         instantiation.stub(I_URI_IDENTITY_SERVICE, uri_identity_contract.clone());
         instantiation.stub(I_EDITOR_SERVICE, Rc::new(TestEditorService));
-        instantiation.stub(I_LIFECYCLE_SERVICE, TestLifecycleService::new());
-        let working_copy_service: Rc<dyn IWorkingCopyService> = WorkingCopyService::new();
+        // O `workbenchInstantiationService` do original descarta os serviços que cria; aqui o guarda os descarta no fim do caso.
+        let lifecycle_service = disposables.add_rc(TestLifecycleService::new());
+        instantiation.stub(I_LIFECYCLE_SERVICE, lifecycle_service);
+        let working_copy_service = disposables.add_rc(WorkingCopyService::new());
+        let working_copy_service: Rc<dyn IWorkingCopyService> = working_copy_service;
         instantiation.stub(I_WORKING_COPY_SERVICE, working_copy_service);
         instantiation.stub(I_TEXT_FILE_SERVICE, text_file_service.clone());
         instantiation.stub(I_WORKING_COPY_FILE_SERVICE, working_copy_file_service.clone());
