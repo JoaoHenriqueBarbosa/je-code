@@ -20,7 +20,7 @@
 //! - **Configuração.** `getValue(resource, 'files.encoding')` e `getValue(resource, 'workbench.editor.untitled.labelFormat')`
 //!   leem um [`Dynamic`]; só o texto conta (`typeof configuredEncoding === 'string'`), e o formato de rótulo só vale com
 //!   `content` ou `name`.
-//! - **Nome da primeira linha.** `trim().replace(/\s+/g, ' ')` e `replace(/‮/g, '')` trabalham sobre as unidades
+//! - **Nome da primeira linha.** `trim().replace(/\s+/g, ' ')` e `replace(/\u{202E}/g, '')` trabalham sobre as unidades
 //!   UTF-16 do texto, com o `\s` do JavaScript ([`is_js_whitespace`]); `substr(0, n)` é o corte das unidades.
 //! - **`try/finally`** do `revert` (`ignoreDirtyOnModelContentChange`) não precisa de guarda: um pânico no meio do
 //!   `updateTextEditorModel` já derruba o modelo.
@@ -132,7 +132,7 @@ const FIRST_LINE_NAME_CANDIDATE_MAX_LENGTH: usize = FIRST_LINE_NAME_MAX_LENGTH *
 /// the initial language and can be changed after the fact (either manually or through auto-detection).
 const ACTIVE_EDITOR_LANGUAGE_ID: &str = "${activeEditorLanguage}";
 
-/// `‮`: the Right-to-Left Override character (#190133).
+/// `\u{202E}`: the Right-to-Left Override character (#190133).
 const RIGHT_TO_LEFT_OVERRIDE: u16 = 0x202E;
 
 /// `UntitledTextEditorModel`.
