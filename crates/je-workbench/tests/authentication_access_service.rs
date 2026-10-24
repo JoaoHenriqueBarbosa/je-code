@@ -33,11 +33,12 @@ use je_workbench::services::authentication::authentication::AllowedExtension;
 use je_workbench::services::authentication::authentication_access_service::{
     AuthenticationAccessService, ExtensionSessionAccessChange, IAuthenticationAccessService,
 };
-use support::workbench_test_services::TestProductService;
+use je_platform::product::ProductService;
+use support::workbench_test_services::test_product_service;
 
 struct Fixture {
     storage_service: Rc<AbstractStorageService>,
-    product_service: Rc<TestProductService>,
+    product_service: Rc<ProductService>,
     authentication_access_service: Rc<AuthenticationAccessService>,
 }
 
@@ -47,7 +48,7 @@ fn setup(disposables: &LeakGuard) -> Fixture {
     let storage: Rc<dyn StorageService> = Rc::new(storage_service.clone());
 
     // Set up product service with no trusted extensions by default
-    let product_service = Rc::new(TestProductService::default());
+    let product_service = test_product_service();
     let product: Rc<dyn IProductService> = product_service.clone();
 
     let instantiation_service =

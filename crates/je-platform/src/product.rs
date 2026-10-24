@@ -10,7 +10,11 @@
 //! e cresce quando um serviço novo precisar de mais um. [`je_base::product::IProductConfiguration`], o
 //! `product.json` completo, também o implementa.
 
-use je_base::product::StringsOrDictionary;
+use je_base::product::{
+    ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IStringDictionary, StringsOrDictionary,
+};
+use std::cell::RefCell;
+
 use je_instantiation::service_id;
 
 /// `IProductService`, reduzido aos campos que os serviços portados leem.
@@ -44,6 +48,14 @@ pub trait IProductService {
     /// `trustedExtensionAuthAccess`, quando o produto declara. Devolve uma cópia (e não uma referência)
     /// porque o original lê a propriedade a cada chamada e um produto de teste pode mudá-la entre elas.
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary>;
+    /// `extensionKind`: o `ExtensionKind[]` que o produto fixa por identificador de extensão.
+    fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>>;
+    /// `extensionPointExtensionKind`: o `ExtensionKind[]` que o produto fixa por ponto de extensão.
+    fn extension_point_extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>>;
+    /// `extensionUntrustedWorkspaceSupport`.
+    fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>>;
+    /// `extensionVirtualWorkspacesSupport`.
+    fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>>;
 }
 
 /// `IEnabledTelemetryLevels`: o que o produto permite coletar.
@@ -56,7 +68,7 @@ pub struct EnabledTelemetryLevels {
 service_id!(pub I_PRODUCT_SERVICE: dyn IProductService = "productService");
 
 /// Uma implementação de [`IProductService`] com os valores do `product.json` do VS Code estável 1.143.1.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProductService {
     pub version: String,
     pub name_short: String,
@@ -71,7 +83,13 @@ pub struct ProductService {
     pub ai_config_aria_key: Option<String>,
     pub msft_internal_domains: Vec<String>,
     pub enabled_telemetry_levels: Option<EnabledTelemetryLevels>,
-    pub trusted_extension_auth_access: Option<StringsOrDictionary>,
+    /// Mutável por dentro: o original lê a propriedade a cada chamada, e um produto de teste a reatribui
+    /// depois que o serviço que a consome já existe.
+    pub trusted_extension_auth_access: RefCell<Option<StringsOrDictionary>>,
+    pub extension_kind: Option<IStringDictionary<Vec<String>>>,
+    pub extension_point_extension_kind: Option<IStringDictionary<Vec<String>>>,
+    pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
+    pub extension_virtual_workspaces_support: Option<IStringDictionary<ExtensionVirtualWorkspaceSupport>>,
 }
 
 impl Default for ProductService {
@@ -90,8 +108,19 @@ impl Default for ProductService {
             ai_config_aria_key: None,
             msft_internal_domains: Vec::new(),
             enabled_telemetry_levels: Some(EnabledTelemetryLevels { error: true, usage: true }),
-            trusted_extension_auth_access: None,
+            trusted_extension_auth_access: RefCell::new(None),
+            extension_kind: None,
+            extension_point_extension_kind: None,
+            extension_untrusted_workspace_support: None,
+            extension_virtual_workspaces_support: None,
         }
+    }
+}
+
+impl ProductService {
+    /// `productService.trustedExtensionAuthAccess = value`.
+    pub fn set_trusted_extension_auth_access(&self, value: Option<StringsOrDictionary>) {
+        *self.trusted_extension_auth_access.borrow_mut() = value;
     }
 }
 
@@ -136,7 +165,18 @@ impl IProductService for ProductService {
         self.enabled_telemetry_levels
     }
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
-        self.trusted_extension_auth_access.clone()
+        self.trusted_extension_auth_access.borrow().clone()
+    fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_kind.as_ref()
+    }
+    fn extension_point_extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_point_extension_kind.as_ref()
+    }
+    fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>> {
+        self.extension_untrusted_workspace_support.as_ref()
+    }
+    fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>> {
+        self.extension_virtual_workspaces_support.as_ref()
     }
 }
 
@@ -182,5 +222,16 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
         self.trusted_extension_auth_access.clone()
+    fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_kind.as_ref()
+    }
+    fn extension_point_extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_point_extension_kind.as_ref()
+    }
+    fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>> {
+        self.extension_untrusted_workspace_support.as_ref()
+    }
+    fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>> {
+        self.extension_virtual_workspaces_support.as_ref()
     }
 }

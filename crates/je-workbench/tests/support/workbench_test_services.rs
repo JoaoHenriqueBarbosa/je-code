@@ -1,59 +1,41 @@
-//! Porte do que o teste do `AuthenticationAccessService` usa de `src/vs/workbench/test/common/workbenchTestServices.ts`.
+//! Porte do que os testes usam de `src/vs/workbench/test/common/workbenchTestServices.ts`: o
+//! `TestProductService` e o `TestWorkspaceTrustEnablementService`.
 //!
-//! - `TestProductService` (`{ _serviceBrand: undefined, ...product }`) é [`TestProductService`]: o `ProductService`
-//!   padrão (o `product.json` do VS Code estável) mais `trustedExtensionAuthAccess` mutável, porque o teste
-//!   reatribui a propriedade depois de o serviço existir e o serviço a relê a cada chamada. Os demais campos
-//!   repassam ao produto padrão.
-//! - `TestStorageService` (`InMemoryStorageService` mais `testEmitWillSaveState`) não tem tipo próprio: este
-//!   teste só usa o que é do `InMemoryStorageService`, e `testEmitWillSaveState` é o
+//! Notas de tradução:
+//! - `TestProductService` (`{ _serviceBrand: undefined, ...product }`) é o [`ProductService`] padrão do porte.
+//!   O `product` do original, nos testes, não traz `extensionKind`, `extensionPointExtensionKind`,
+//!   `extensionUntrustedWorkspaceSupport` nem `extensionVirtualWorkspacesSupport`, e o padrão do porte também não.
+//!   O teste do `AuthenticationAccessService` reatribui `trustedExtensionAuthAccess` com
+//!   `ProductService::set_trusted_extension_auth_access`.
+//! - `TestStorageService` (`InMemoryStorageService` mais `testEmitWillSaveState`) não tem tipo próprio: os testes só
+//!   usam o que é do `InMemoryStorageService`, e `testEmitWillSaveState` é o
 //!   `AbstractStorageService::emit_will_save_state`, que já é público.
+#![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::rc::Rc;
 
-use je_base::product::StringsOrDictionary;
-use je_platform::product::{EnabledTelemetryLevels, IProductService, ProductService};
+use je_platform::product::ProductService;
+use je_platform::workspace_trust::IWorkspaceTrustEnablementService;
 
-#[derive(Default)]
-pub struct TestProductService {
-    product: ProductService,
-    /// `productService.trustedExtensionAuthAccess`.
-    trusted_extension_auth_access: RefCell<Option<StringsOrDictionary>>,
+/// `TestProductService`.
+pub fn test_product_service() -> Rc<ProductService> {
+    Rc::new(ProductService::default())
 }
 
-impl TestProductService {
-    /// `productService.trustedExtensionAuthAccess = value`.
-    pub fn set_trusted_extension_auth_access(&self, value: Option<StringsOrDictionary>) {
-        *self.trusted_extension_auth_access.borrow_mut() = value;
+/// `TestWorkspaceTrustEnablementService`.
+pub struct TestWorkspaceTrustEnablementService {
+    is_enabled: bool,
+}
+
+impl TestWorkspaceTrustEnablementService {
+    /// `constructor(isEnabled = true)`.
+    pub fn new(is_enabled: bool) -> Rc<Self> {
+        Rc::new(Self { is_enabled })
     }
 }
 
-/// Os métodos de [`IProductService`] que só repassam ao produto padrão, escritos uma vez.
-macro_rules! forward_to_product {
-    ($($name:ident -> $ret:ty),* $(,)?) => {
-        $(fn $name(&self) -> $ret {
-            self.product.$name()
-        })*
-    };
-}
-
-impl IProductService for TestProductService {
-    forward_to_product! {
-        version -> &str,
-        name_short -> &str,
-        name_long -> &str,
-        application_name -> &str,
-        url_protocol -> &str,
-        data_folder_name -> &str,
-        shared_data_folder_name -> &str,
-        quality -> Option<&str>,
-        commit -> Option<&str>,
-        enable_telemetry -> bool,
-        ai_config_aria_key -> Option<&str>,
-        msft_internal_domains -> &[String],
-        enabled_telemetry_levels -> Option<EnabledTelemetryLevels>,
-    }
-
-    fn trusted_extension_auth_access(&self) -> Option<StringsOrDictionary> {
-        self.trusted_extension_auth_access.borrow().clone()
+impl IWorkspaceTrustEnablementService for TestWorkspaceTrustEnablementService {
+    fn is_workspace_trust_enabled(&self) -> bool {
+        self.is_enabled
     }
 }
