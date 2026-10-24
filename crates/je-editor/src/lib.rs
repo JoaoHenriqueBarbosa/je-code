@@ -196,3 +196,5 @@ pub mod code_editor_widget;
 pub mod trigger_inline_edit_commands_registry;
 pub mod editor_extensions;
 pub mod core_commands;
+
+pub mod word_operations;

@@ -1083,6 +1083,13 @@ impl CodeEditorWidget {
         WordOperations::get_word_at_position(&model_data.model, &word_separators, options.get(WORD_SEGMENTER_LOCALES), position)
     }
 
+    /// O `@ILanguageConfigurationService` que o construtor recebeu. Os comandos de contribuição que o original lê do
+    /// `accessor` (`accessor.get(ILanguageConfigurationService)`) usam este, porque o serviço ainda não tem
+    /// identificador no porte (ver "Divergências" de `editor_extensions`).
+    pub fn language_configuration_service(&self) -> Rc<dyn ILanguageConfigurationService> {
+        self.services.language_configuration_service.clone()
+    }
+
     /// `edit(edit, reason)`.
     pub fn edit(&self, edit: &TextEdit, reason: TextModelEditSource) -> bool {
         let edits = edit
