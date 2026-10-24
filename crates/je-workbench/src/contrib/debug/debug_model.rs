@@ -493,6 +493,10 @@ impl IExpressionContainer for ExpressionContainer {
         self.value_changed.get()
     }
 
+    fn clear_value_changed(&self) {
+        self.value_changed.set(false);
+    }
+
     fn has_children(&self) -> bool {
         ExpressionContainer::has_children(self)
     }
@@ -527,9 +531,21 @@ impl IExpressionContainer for ExpressionContainer {
 }
 
 /// Os membros de [`IExpressionContainer`] de um tipo que guarda o contêiner em `base: Rc<ExpressionContainer>`.
+/// O segundo parâmetro é o `available` do tipo (uma função de `&Self` para `Option<bool>`).
 macro_rules! delegate_expression_container {
     ($holder:ty) => {
+        delegate_expression_container!($holder, |_this: &$holder| None);
+    };
+    ($holder:ty, $availability:expr) => {
         impl IExpressionContainer for $holder {
+            fn availability(&self) -> Option<bool> {
+                ($availability)(self)
+            }
+
+            fn clear_value_changed(&self) {
+                self.base.value_changed.set(false);
+            }
+
             fn get_id(&self) -> String {
                 self.base.get_id()
             }
@@ -682,11 +698,15 @@ impl Expression {
     }
 }
 
-delegate_expression_container!(Expression);
+delegate_expression_container!(Expression, |this: &Expression| Some(this.available.get()));
 
 impl IExpression for Expression {
     fn name(&self) -> String {
         self.name.borrow().clone()
+    }
+
+    fn into_expression(self: Rc<Self>) -> Option<Rc<Expression>> {
+        Some(self)
     }
 }
 
@@ -863,7 +883,7 @@ impl Variable {
     }
 }
 
-delegate_expression_container!(Variable);
+delegate_expression_container!(Variable, |this: &Variable| Some(this.available));
 
 impl IExpression for Variable {
     fn name(&self) -> String {
@@ -872,6 +892,14 @@ impl IExpression for Variable {
 
     fn is_variable(&self) -> bool {
         true
+    }
+
+    fn as_variable(&self) -> Option<&Variable> {
+        Some(self)
+    }
+
+    fn into_variable(self: Rc<Self>) -> Option<Rc<Variable>> {
+        Some(self)
     }
 
     // `display` é o `toString()`.

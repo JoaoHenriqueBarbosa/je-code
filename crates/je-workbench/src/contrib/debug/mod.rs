@@ -1,12 +1,18 @@
 //! Porte de `src/vs/workbench/contrib/debug`.
 
 pub mod abstract_debug_adapter;
+pub mod adapter_manager;
+pub mod base_debug_view;
+pub mod breakpoint_editor_contribution;
 pub mod breakpoints;
 pub mod breakpoints_view;
 pub mod call_stack;
+pub mod configuration_manager;
 pub mod debug;
 pub mod debug_ansi_handling;
 pub mod debug_adapter;
+pub mod debug_commands;
+pub mod debug_expression_renderer;
 pub mod debugger;
 pub mod debug_hover;
 pub mod debug_model;
@@ -23,3 +29,5 @@ pub mod repl_filter;
 pub mod repl_model;
 pub mod statusbar_color_provider;
 pub mod terminals;
+pub mod variables_view;
+pub mod watch_expressions_view;

@@ -30,7 +30,7 @@ use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::dynamic::Truthy;
-use je_base::lifecycle::{DisposableStore, to_disposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, to_disposable};
 use je_base::network::schemas;
 use je_base::nls::localize;
 use je_base::path::{PathModule, Platform as PathPlatform, ProcessEnvironment};
@@ -76,7 +76,7 @@ fn path_link_pattern(is_windows: bool) -> String {
 }
 
 /// O trecho `[start, end)` de `text` em unidades UTF-16 (`String#substring`, com `end` ausente até o fim).
-fn utf16_substring(text: &str, start: usize, end: Option<usize>) -> String {
+pub(crate) fn utf16_substring(text: &str, start: usize, end: Option<usize>) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
     let end = end.unwrap_or(units.len()).min(units.len());
     let start = start.min(end);
@@ -152,6 +152,9 @@ struct ElementState {
     children: Vec<LinkNode>,
     managed_hover: Option<String>,
     on_click: Option<ClickHandler>,
+    /// Os ouvintes de `addEventListener('click', ...)`, com o id que o descartável usa para sair.
+    click_listeners: Vec<(u64, Rc<dyn Fn()>)>,
+    next_listener_id: u64,
 }
 
 /// Um elemento da saída de `linkify`: o `<span>` (contêiner, trecho com realce) ou o `<a>` (link).
@@ -197,7 +200,17 @@ impl LinkNode {
 impl Element {
     /// `document.createElement(tag)`.
     pub fn new(tag_name: &'static str) -> Rc<Self> {
-        Rc::new(Self { tag_name, state: RefCell::new(ElementState { attributes: Vec::new(), children: Vec::new(), managed_hover: None, on_click: None }) })
+        Rc::new(Self {
+            tag_name,
+            state: RefCell::new(ElementState {
+                attributes: Vec::new(),
+                children: Vec::new(),
+                managed_hover: None,
+                on_click: None,
+                click_listeners: Vec::new(),
+                next_listener_id: 0,
+            }),
+        })
     }
 
     /// `tagName`, em maiúsculas como no HTML.
@@ -286,6 +299,98 @@ impl Element {
     /// `classList.contains(class)`.
     pub fn has_class(&self, class: &str) -> bool {
         self.class_list().iter().any(|existing| existing == class)
+    }
+
+    /// `dom.$(selector)` de `dom.ts`: `tag.classe1.classe2` (a marca padrão é `div`; o `#id` vira o atributo `id`).
+    pub fn create(selector: &str) -> Rc<Self> {
+        let (head, classes) = match selector.split_once('.') {
+            Some((head, classes)) => (head, classes),
+            None => (selector, ""),
+        };
+        let (tag, id) = match head.split_once('#') {
+            Some((tag, id)) => (tag, Some(id)),
+            None => (head, None),
+        };
+        let tag_name: &'static str = match tag {
+            "" | "div" => "div",
+            "span" => "span",
+            "pre" => "pre",
+            "a" => "a",
+            "input" => "input",
+            other => panic!("a marca `{other}` não é criada pelo `$` do porte"),
+        };
+        let element = Self::new(tag_name);
+        if let Some(id) = id {
+            element.set_attribute("id", id);
+        }
+        let classes: Vec<&str> = classes.split('.').filter(|class| !class.is_empty()).collect();
+        if !classes.is_empty() {
+            element.add_classes(classes);
+        }
+        element
+    }
+
+    /// `className`.
+    pub fn class_name(&self) -> String {
+        self.get_attribute("class").unwrap_or_default()
+    }
+
+    /// `textContent = text`: troca os filhos por um nó de texto (nenhum, se o texto é vazio).
+    pub fn set_text_content(&self, text: &str) {
+        self.reset(if text.is_empty() { Vec::new() } else { vec![LinkNode::Text(text.to_owned())] });
+    }
+
+    /// `dom.clearNode(element)`.
+    pub fn clear(&self) {
+        self.reset(Vec::new());
+    }
+
+    /// `childElementCount`.
+    pub fn child_element_count(&self) -> usize {
+        self.children().len()
+    }
+
+    /// `querySelector(tag)`: o primeiro descendente com a marca, em ordem de documento.
+    pub fn query_selector_tag(&self, tag: &str) -> Option<Rc<Element>> {
+        for child in self.children() {
+            if child.tag_name.eq_ignore_ascii_case(tag) {
+                return Some(child);
+            }
+            if let Some(found) = child.query_selector_tag(tag) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Grava o conteúdo do hover gerenciável (`setupManagedHover(..., element, content)`), para a camada de hover ler.
+    pub fn set_managed_hover(&self, content: Option<String>) {
+        self.state.borrow_mut().managed_hover = content;
+    }
+
+    /// `dom.addDisposableListener(element, 'click', handler)`.
+    pub fn add_click_listener(self: &Rc<Self>, handler: Rc<dyn Fn()>) -> DisposableRef {
+        let id = {
+            let mut state = self.state.borrow_mut();
+            state.next_listener_id += 1;
+            let id = state.next_listener_id;
+            state.click_listeners.push((id, handler));
+            id
+        };
+        let element = Rc::downgrade(self);
+        to_disposable(move || {
+            if let Some(element) = element.upgrade() {
+                element.state.borrow_mut().click_listeners.retain(|(listener_id, _)| *listener_id != id);
+            }
+        })
+    }
+
+    /// `dispatchEvent(new MouseEvent('click'))`: chama os ouvintes de `click` na ordem em que entraram.
+    pub fn dispatch_click(&self) {
+        let listeners: Vec<Rc<dyn Fn()>> = self.state.borrow().click_listeners.iter().map(|(_, handler)| handler.clone()).collect();
+        for handler in listeners {
+            handler();
+        }
     }
 
     fn class_list(&self) -> Vec<String> {
