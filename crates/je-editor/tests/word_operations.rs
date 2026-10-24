@@ -71,6 +71,7 @@ struct Suite {
 /// O que o mocha faz em volta de cada `test(...)` da suíte: o `ensureNoDisposablesAreLeakedInTestSuite()`, o `setup`, o
 /// corpo e o `teardown`, nessa ordem.
 fn run_test(body: impl FnOnce(&Suite)) {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     let disposables = DisposableStore::new();
     let instantiation_service = create_code_editor_services(&disposables, None);

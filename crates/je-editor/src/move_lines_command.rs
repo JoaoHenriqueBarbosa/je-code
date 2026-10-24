@@ -65,7 +65,7 @@ impl crate::auto_indent::IVirtualModel for MovedLinesVirtualModel<'_> {
         if let Some(custom_content) = self.content_override.as_ref().and_then(|content_override| content_override(line_number)) {
             return custom_content;
         }
-        self.model.get_line_content((self.line_number_mapper)(line_number))
+        CursorSimpleModel::get_line_content(&*self.model, (self.line_number_mapper)(line_number))
     }
 }
 

@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::lifecycle::Disposable;
+use je_editor::language_service::ILanguageService;
 use je_editor::config::editor_options::EditorAutoIndentStrategy;
 use je_editor::language_configuration::{IndentationRule, LanguageConfiguration};
 use je_editor::language_configuration_registry::ILanguageConfigurationService;
@@ -66,7 +67,7 @@ fn test_move_lines_up_or_down_command(
     expected_lines: &[&str],
     expected_selection: Selection,
 ) {
-    let language_configuration_service: Rc<dyn ILanguageConfigurationService> = ds.add_rc(TestLanguageConfigurationService::new());
+    let language_configuration_service: Rc<dyn ILanguageConfigurationService> = ds.add_rc(TestLanguageConfigurationService::new()) as Rc<TestLanguageConfigurationService>;
     test_command(
         lines,
         None,
@@ -324,7 +325,7 @@ mod editor_contrib_move_lines_command_honors_indentation_rules {
         let ds = ensure_no_disposables_are_leaked_in_test_suite();
 
         // `testMoveLinesUpWithIndentCommand(null!, ...)`: sem linguagem e com `EditorAutoIndentStrategy.Full`.
-        let language_configuration_service: Rc<dyn ILanguageConfigurationService> = ds.add_rc(TestLanguageConfigurationService::new());
+        let language_configuration_service: Rc<dyn ILanguageConfigurationService> = ds.add_rc(TestLanguageConfigurationService::new()) as Rc<TestLanguageConfigurationService>;
         test_command(
             &["if (true) {", "    var task = new Task(() => {", "        var work = 1234;", "    });", "}"],
             None,
