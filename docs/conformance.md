@@ -7,14 +7,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `base` | 150 | 2278 | 127 | 1879 | 82.48 |
 | `platform` | 192 | 2806 | 110 | 1886 | 67.21 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
-| `workbench/services` | 137 | 2491 | 77 | 1928 | 77.40 |
+| `workbench/services` | 137 | 2491 | 78 | 1951 | 78.32 |
 | `workbench/api` | 94 | 965 | 75 | 740 | 76.68 |
-| `workbench/contrib` | 370 | 4636 | 69 | 1213 | 26.16 |
+| `workbench/contrib` | 370 | 4636 | 70 | 1300 | 28.04 |
 | `workbench (shell)` | 69 | 621 | 20 | 223 | 35.91 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 10754 | 58.47 |
+| **total** | | 18391 | | 10864 | 59.07 |
 
 ## Arquivos portados
 
@@ -423,6 +423,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/extensions/test/common/extensions.test.ts` | 5 | `crates/je-workbench/tests/extensions.rs` | 5 |
 | `src/vs/workbench/services/extensions/test/common/rpcProtocol.test.ts` | 16 | `crates/je-workbench/tests/rpc_protocol.rs` | 16 |
 | `src/vs/workbench/services/filesConfiguration/test/browser/filesConfigurationService.test.ts` | 12 | `crates/je-workbench/tests/files_configuration_service.rs` | 12 |
+| `src/vs/workbench/services/history/test/browser/historyService.test.ts` | 23 | `crates/je-workbench/tests/history_service.rs` | 23 |
 | `src/vs/workbench/services/keybinding/test/browser/keybindingEditing.test.ts` | 24 | `crates/je-workbench/tests/keybinding_editing.rs` | 24 |
 | `src/vs/workbench/services/keybinding/test/browser/keybindingIO.test.ts` | 10 | `crates/je-workbench/tests/keybinding_io.rs` | 10 |
 | `src/vs/workbench/services/keybinding/test/node/fallbackKeyboardMapper.test.ts` | 16 | `crates/je-workbench/tests/fallback_keyboard_mapper.rs` | 16 |
@@ -560,6 +561,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/editTelemetry/test/node/arcTracker.test.ts` | 4 | `crates/je-base/tests/edit_arc_tracker.rs` | 4 |
 | `src/vs/workbench/contrib/extensions/test/common/extensionQuery.test.ts` | 5 | `crates/je-workbench/tests/extension_query.rs` | 5 |
 | `src/vs/workbench/contrib/extensions/test/electron-browser/extension.test.ts` | 15 | `crates/je-workbench/tests/extensions_extension.rs` | 15 |
+| `src/vs/workbench/contrib/extensions/test/electron-browser/extensionsWorkbenchService.test.ts` | 89 | `crates/je-workbench/tests/extensions_workbench_service.rs` | 87 |
 | `src/vs/workbench/contrib/files/test/browser/explorerFileNestingTrie.test.ts` | 26 | `crates/je-workbench/tests/explorer_file_nesting_trie.rs` | 26 |
 | `src/vs/workbench/contrib/files/test/browser/explorerModel.test.ts` | 10 | `crates/je-workbench/tests/explorer_model.rs` | 10 |
 | `src/vs/workbench/contrib/files/test/browser/explorerService.test.ts` | 24 | `crates/je-workbench/tests/explorer_service.rs` | 24 |

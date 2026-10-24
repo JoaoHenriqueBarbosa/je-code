@@ -483,18 +483,24 @@ fn truthy_property(configuration: &Dynamic, path: &[&str]) -> Option<Dynamic> {
 /// `getExcludes`: os `files.exclude` e, com `include_search_excludes`, os `search.exclude`, mesclados (os do `search`
 /// vencem). `configuration` é o objeto `ISearchConfiguration` que o serviço de configuração devolve.
 pub fn get_excludes(configuration: &Dynamic, include_search_excludes: bool) -> Option<Expression> {
+    get_excludes_value(configuration, include_search_excludes).map(|excludes| Expression::from_dynamic(&excludes))
+}
+
+/// O valor de [`get_excludes`] antes de virar [`Expression`]: o objeto de padrões, para quem o entrega a um
+/// `ResourceGlobMatcher` (que lê o objeto da configuração).
+pub fn get_excludes_value(configuration: &Dynamic, include_search_excludes: bool) -> Option<Dynamic> {
     let file_excludes = truthy_property(configuration, &["files", "exclude"]);
     let search_excludes = if include_search_excludes { truthy_property(configuration, &["search", "exclude"]) } else { None };
 
     match (file_excludes, search_excludes) {
         (None, None) => None,
-        (Some(excludes), None) | (None, Some(excludes)) => Some(Expression::from_dynamic(&excludes)),
+        (Some(excludes), None) | (None, Some(excludes)) => Some(excludes),
         (Some(file_excludes), Some(search_excludes)) => {
             // clone the config as it could be frozen
             let all_excludes = Dynamic::object(Vec::<(&str, Dynamic)>::new());
             let all_excludes = objects::mixin(&all_excludes, &objects::deep_clone(&file_excludes), true);
             let all_excludes = objects::mixin(&all_excludes, &objects::deep_clone(&search_excludes), true);
-            Some(Expression::from_dynamic(&all_excludes))
+            Some(all_excludes)
         }
     }
 }

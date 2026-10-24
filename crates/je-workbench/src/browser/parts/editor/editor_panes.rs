@@ -14,6 +14,12 @@
 //! - **`setInput` do painel.** O painel lógico se comporta como o `TestEditor` do original: atribui a entrada na hora
 //!   (`this._input = input`) e espera `input.resolve()`; um `resolve` que falha rejeita o `setInput`. O painel de erro
 //!   ([`ERROR_EDITOR_ID`], o `ErrorPlaceholderEditor`) não resolve a entrada.
+//! - **Seleção (`IEditorPaneWithSelection`).** O painel criado por [`EditorPaneDescriptor::new_with_selection`] (o
+//!   `TestTextFileEditor` dos testes) tem `onDidChangeSelection` e `getSelection`: as opções com que a entrada foi atribuída
+//!   ficam como `ITextEditorOptions` ([`TextEditorOptions`], com a seleção), `getSelection` devolve a [`TextEditorPaneSelection`]
+//!   dessa seleção, `setSelection` ([`EditorPane::set_selection`]) troca as opções e avisa a mudança, e a mudança de conteúdo do
+//!   modelo de texto da entrada avisa `EDIT` (o `onDidChangeModelContent` do controle de `AbstractTextEditor`, que o painel
+//!   lógico não tem).
 //! - **Sem foco, sem janela, sem confiança.** `pane.focus()`, `hostService.moveTop`, `getActiveElement`, o
 //!   `IWorkbenchLayoutService.isRestored` (só afeta o atraso do progresso), o `IWorkspaceTrustManagementService` (o painel de
 //!   "confiança necessária" nunca é escolhido: o espaço de trabalho é de confiança), `setVisible`, `layout`,
@@ -23,7 +29,7 @@
 //!   entrada; o diálogo modal (`doShowErrorDialog`, só para `source: USER`) depende do `IDialogService.prompt` com ações de
 //!   erro e não é portado: o erro vai sempre para o painel de erro.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
@@ -36,12 +42,18 @@ use je_base::lifecycle::{DisposableId, DisposableRef, DisposableStore, IDisposab
 use je_base::promise::Promise;
 use je_instantiation::InstantiationService;
 use je_platform::log::I_LOG_SERVICE;
-use je_platform::opener::editor_types::EditorOptions;
+use je_platform::opener::editor_types::{EditorOptions, TextEditorSelection};
 use je_platform::registry::registry;
+use je_editor::selection::Selection;
 
+use crate::browser::parts::editor::text_editor::TextEditorPaneSelection;
+use crate::common::editor::editor_model::IEditorModel;
 use crate::common::editor::{
-    EditorExtensions, EditorInputOrUntyped, EditorInputRef, EditorOpenContext, GroupIdentifier, IEditorDescriptor, IEditorPane, WillInstantiateEditorPaneEvent,
+    EditorExtensions, EditorInputOrUntyped, EditorInputRef, EditorOpenContext, EditorPaneSelectionChangeEvent, EditorPaneSelectionChangeReason, GroupIdentifier,
+    IEditorDescriptor, IEditorPane, IEditorPaneSelection, TextEditorOptions, WillInstantiateEditorPaneEvent,
 };
+use crate::services::textfile::text_file_editor_model::TextFileEditorModel;
+use crate::services::textfile::textfiles::ITextFileEditorModel;
 
 /// `ErrorPlaceholderEditor.ID`: o painel que mostra o erro de uma entrada que não abriu.
 pub const ERROR_EDITOR_ID: &str = "workbench.editors.errorEditor";
@@ -50,6 +62,8 @@ pub const ERROR_EDITOR_ID: &str = "workbench.editors.errorEditor";
 pub struct EditorPaneDescriptor {
     id: String,
     name: String,
+    /// Se o painel criado tem seleção (`IEditorPaneWithSelection`): o do editor de texto, que o histórico acompanha.
+    with_selection: bool,
 }
 
 thread_local! {
@@ -62,7 +76,14 @@ thread_local! {
 impl EditorPaneDescriptor {
     /// `EditorPaneDescriptor.create(ctor, id, name)`.
     pub fn new(id: &str, name: &str) -> Rc<Self> {
-        Rc::new(Self { id: id.to_string(), name: name.to_string() })
+        Rc::new(Self { id: id.to_string(), name: name.to_string(), with_selection: false })
+    }
+
+    /// Como [`EditorPaneDescriptor::new`], para um painel com seleção (`IEditorPaneWithSelection`, como o `TextFileEditor`): o
+    /// painel lógico guarda a seleção nas opções com que a entrada foi atribuída e avisa as mudanças dela
+    /// ([`EditorPane::set_selection`], o `setSelection` do `TestTextFileEditor`).
+    pub fn new_with_selection(id: &str, name: &str) -> Rc<Self> {
+        Rc::new(Self { id: id.to_string(), name: name.to_string(), with_selection: true })
     }
 
     /// `EditorPaneDescriptor.didInstantiateEditorPane(typeId)`.
@@ -79,7 +100,7 @@ impl EditorPaneDescriptor {
     fn instantiate(&self, group_id: GroupIdentifier) -> Rc<EditorPane> {
         ON_WILL_INSTANTIATE_EDITOR_PANE.with(|emitter| emitter.fire(WillInstantiateEditorPaneEvent { editor_type_id: self.id.clone() }));
 
-        let pane = EditorPane::new(&self.id, group_id);
+        let pane = EditorPane::new(&self.id, group_id, self.with_selection);
         INSTANTIATED_EDITOR_PANES.with(|instantiated| instantiated.borrow_mut().insert(self.id.clone()));
 
         pane
@@ -163,28 +184,63 @@ pub struct EditorPane {
     id: String,
     group_id: GroupIdentifier,
     input: RefCell<Option<EditorInputRef>>,
-    options: RefCell<Option<EditorOptions>>,
+    /// `options`: as opções com que a entrada foi atribuída, como `ITextEditorOptions` (a seleção do editor de texto fica
+    /// nelas, de onde o painel com seleção a lê).
+    options: RefCell<Option<TextEditorOptions>>,
     on_did_change_control: Rc<Emitter<()>>,
+    /// `onDidChangeSelection`: só existe nos painéis criados por [`EditorPaneDescriptor::new_with_selection`].
+    on_did_change_selection: Option<Rc<Emitter<EditorPaneSelectionChangeEvent>>>,
+    /// A assinatura do conteúdo do modelo de texto (só no painel com seleção).
+    model_listener: RefCell<Option<DisposableRef>>,
 }
 
 impl EditorPane {
-    fn new(id: &str, group_id: GroupIdentifier) -> Rc<Self> {
+    fn new(id: &str, group_id: GroupIdentifier, with_selection: bool) -> Rc<Self> {
         Rc::new(Self {
             id: id.to_string(),
             group_id,
             input: RefCell::new(None),
             options: RefCell::new(None),
             on_did_change_control: Emitter::new(),
+            on_did_change_selection: with_selection.then(Emitter::new),
+            model_listener: RefCell::new(None),
         })
     }
 
     /// `options`: as opções com que a entrada foi atribuída.
     pub fn options(&self) -> Option<EditorOptions> {
+        self.options.borrow().as_ref().map(|options| options.base.clone())
+    }
+
+    /// `options` como `ITextEditorOptions`.
+    pub fn text_options(&self) -> Option<TextEditorOptions> {
         self.options.borrow().clone()
     }
 
-    /// `setInput(input, options, context, token)`: a entrada vale já; a promessa assenta quando o modelo foi resolvido.
-    fn set_input(&self, editor: &EditorInputRef, options: Option<EditorOptions>) -> Promise<()> {
+    /// `setSelection(selection, reason)` do `TestTextFileEditor`: as opções passam a ser só a seleção (ou a nenhuma) e a
+    /// mudança é avisada com o motivo. Só vale para o painel com seleção ([`EditorPaneDescriptor::new_with_selection`]).
+    pub fn set_selection(&self, selection: Option<Selection>, reason: EditorPaneSelectionChangeReason) {
+        let emitter = self.on_did_change_selection.as_ref().expect("o painel não tem seleção");
+
+        *self.options.borrow_mut() = selection.map(|selection| TextEditorOptions {
+            selection: Some(TextEditorSelection {
+                start_line_number: f64::from(selection.start_line_number),
+                start_column: f64::from(selection.start_column),
+                end_line_number: Some(f64::from(selection.end_line_number)),
+                end_column: Some(f64::from(selection.end_column)),
+            }),
+            ..TextEditorOptions::default()
+        });
+
+        emitter.fire(EditorPaneSelectionChangeEvent { reason });
+    }
+
+    /// `setInput(input, options, context, token)`: a entrada vale já; a promessa assenta quando o modelo foi resolvido. O painel
+    /// com seleção passa a avisar `EDIT` a cada mudança de conteúdo do modelo de texto (o `onDidChangeModelContent` do controle
+    /// de `AbstractTextEditor`).
+    fn set_input(self: &Rc<Self>, editor: &EditorInputRef, options: Option<TextEditorOptions>) -> Promise<()> {
+        self.unbind_model();
+
         *self.input.borrow_mut() = Some(editor.clone());
         *self.options.borrow_mut() = options;
 
@@ -192,16 +248,50 @@ impl EditorPane {
             return Promise::resolved(());
         }
 
-        editor.resolve().then(|_| ())
+        let weak = Rc::downgrade(self);
+        editor.resolve().then(move |model| {
+            if let Some(pane) = weak.upgrade() {
+                pane.bind_model(model);
+            }
+        })
+    }
+
+    /// Liga o aviso de `EDIT` ao conteúdo do modelo de texto resolvido (só no painel com seleção).
+    fn bind_model(self: &Rc<Self>, model: Option<Rc<dyn IEditorModel>>) {
+        if self.on_did_change_selection.is_none() {
+            return;
+        }
+
+        let Some(text_model) = model.as_ref().and_then(|model| model.as_any().downcast_ref::<TextFileEditorModel>()).and_then(|model| ITextFileEditorModel::text_editor_model(model)) else {
+            return;
+        };
+
+        let weak = Rc::downgrade(self);
+        let listener = text_model.on_did_change_content().listen(move |_| {
+            if let Some(pane) = weak.upgrade()
+                && let Some(emitter) = &pane.on_did_change_selection
+            {
+                emitter.fire(EditorPaneSelectionChangeEvent { reason: EditorPaneSelectionChangeReason::Edit });
+            }
+        });
+        *self.model_listener.borrow_mut() = Some(listener);
+    }
+
+    fn unbind_model(&self) {
+        if let Some(listener) = self.model_listener.borrow_mut().take() {
+            listener.dispose();
+        }
     }
 
     /// `setOptions(options)`.
-    fn set_options(&self, options: Option<EditorOptions>) {
+    fn set_options(&self, options: Option<TextEditorOptions>) {
         *self.options.borrow_mut() = options;
     }
 
     /// `clearInput()`.
     fn clear_input(&self) {
+        self.unbind_model();
+
         *self.input.borrow_mut() = None;
         *self.options.borrow_mut() = None;
     }
@@ -235,11 +325,43 @@ impl IEditorPane for EditorPane {
     fn options(&self) -> Option<EditorOptions> {
         EditorPane::options(self)
     }
+
+    fn on_did_change_selection(&self) -> Option<Event<EditorPaneSelectionChangeEvent>> {
+        self.on_did_change_selection.as_ref().map(|emitter| emitter.event())
+    }
+
+    /// `getSelection()` do `TestTextFileEditor`: a seleção das opções atribuídas, como `TextEditorPaneSelection`.
+    fn get_selection(&self) -> Option<Rc<dyn IEditorPaneSelection>> {
+        self.on_did_change_selection.as_ref()?;
+
+        let text_selection = self.options.borrow().as_ref()?.selection?;
+        let end_line_number = text_selection.end_line_number.unwrap_or(text_selection.start_line_number);
+        let end_column = text_selection.end_column.unwrap_or(text_selection.start_column);
+
+        Some(Rc::new(TextEditorPaneSelection::new(Selection::new(
+            text_selection.start_line_number as i32,
+            text_selection.start_column as i32,
+            end_line_number as i32,
+            end_column as i32,
+        ))))
+    }
+
+    fn text_options(&self) -> Option<TextEditorOptions> {
+        EditorPane::text_options(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl IDisposable for EditorPane {
     fn dispose(&self) {
+        self.unbind_model();
         self.on_did_change_control.dispose();
+        if let Some(emitter) = &self.on_did_change_selection {
+            emitter.dispose();
+        }
     }
 }
 
@@ -302,6 +424,12 @@ impl EditorPanes {
 
     /// `openEditor(editor, options, internalOptions, context)`.
     pub fn open_editor(&self, editor: &EditorInputRef, options: Option<EditorOptions>, context: EditorOpenContext) -> Promise<OpenEditorResult> {
+        self.open_editor_with_text_options(editor, options.map(TextEditorOptions::from), context)
+    }
+
+    /// `openEditor(editor, options, internalOptions, context)` com as opções como `ITextEditorOptions` (a seleção do editor de
+    /// texto chega ao painel).
+    pub fn open_editor_with_text_options(&self, editor: &EditorInputRef, options: Option<TextEditorOptions>, context: EditorOpenContext) -> Promise<OpenEditorResult> {
         let (this, editor) = (self.rc(), editor.clone());
 
         async_fn(async move {
@@ -326,7 +454,7 @@ impl EditorPanes {
         })
     }
 
-    fn do_show_error(&self, error: Error, editor: &EditorInputRef, options: Option<EditorOptions>, context: EditorOpenContext) -> Promise<OpenEditorResult> {
+    fn do_show_error(&self, error: Error, editor: &EditorInputRef, options: Option<TextEditorOptions>, context: EditorOpenContext) -> Promise<OpenEditorResult> {
         let (this, editor) = (self.rc(), editor.clone());
 
         async_fn(async move {
@@ -341,7 +469,7 @@ impl EditorPanes {
         })
     }
 
-    fn do_open_editor(&self, descriptor: Rc<EditorPaneDescriptor>, editor: &EditorInputRef, options: Option<EditorOptions>, context: EditorOpenContext) -> Promise<OpenEditorResult> {
+    fn do_open_editor(&self, descriptor: Rc<EditorPaneDescriptor>, editor: &EditorInputRef, options: Option<TextEditorOptions>, context: EditorOpenContext) -> Promise<OpenEditorResult> {
         let (this, editor) = (self.rc(), editor.clone());
 
         async_fn(async move {
@@ -388,7 +516,7 @@ impl EditorPanes {
     }
 
     /// `doSetInput(editorPane, editor, options, context)`.
-    fn do_set_input(&self, editor_pane: &Rc<EditorPane>, editor: &EditorInputRef, options: Option<EditorOptions>, _context: EditorOpenContext) -> Promise<SetInputResult> {
+    fn do_set_input(&self, editor_pane: &Rc<EditorPane>, editor: &EditorInputRef, options: Option<TextEditorOptions>, _context: EditorOpenContext) -> Promise<SetInputResult> {
         let (this, editor_pane, editor) = (self.rc(), editor_pane.clone(), editor.clone());
 
         async_fn(async move {

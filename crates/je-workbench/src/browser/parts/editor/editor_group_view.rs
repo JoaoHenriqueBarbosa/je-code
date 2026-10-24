@@ -81,7 +81,7 @@ use crate::common::editor::editor_input::CanMove;
 use crate::common::editor::{
     ActiveEditorChangeEvent, CloseDirection, EditorCloseContext, EditorCloseEvent, EditorIdentifier, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef,
     EditorInputWithOptions, EditorOpenContext, EditorResourceAccessor, EditorResourceAccessorOptions, EditorWillMoveEvent, EditorWillOpenEvent, EditorsOrder,
-    FindEditorOptions, GroupIdentifier, GroupModelChangeKind, IEditorPane, MatchEditorOptions, RevertOptions, SaveOptions, SaveReason, SideBySideEditor,
+    FindEditorOptions, GroupIdentifier, GroupModelChangeKind, IEditorPane, MatchEditorOptions, RevertOptions, SaveOptions, SaveReason, SideBySideEditor, TextEditorOptions,
 };
 use crate::services::editor::editor_groups_service::{
     ActiveEditorActions, CloseAllEditorsOptions, CloseEditorOptions, CloseEditorsFilter, CloseEditorsTarget, EditorPartOptions, EditorPartOptionsChangeEvent,
@@ -139,6 +139,9 @@ pub struct InternalEditorOpenOptions {
     pub inactive_selection: Option<Vec<EditorInputRef>>,
     /// Allow to match on a side-by-side editor when same editor is opened on both sides.
     pub support_side_by_side: Option<SideBySideEditor>,
+    /// As opções do `openEditor` como `ITextEditorOptions` (a seleção do editor de texto, que o painel recebe junto com as
+    /// opções base).
+    pub text_options: Option<TextEditorOptions>,
 }
 
 /// `IInternalEditorCloseOptions`, sem `skipTitleUpdate`.
@@ -385,7 +388,7 @@ impl EditorGroupView {
         options.preserve_focus = Some(true); // handle focus after editor is restored
 
         // Show active editor (intentionally not using async to keep `restoreEditors` from executing in same stack)
-        Some(self.do_show_editor(&active_editor, true, false /* restored */, Some(options)).then(|_| ()))
+        Some(self.do_show_editor(&active_editor, true, false /* restored */, Some(options), None).then(|_| ()))
     }
 
     fn register_listeners(&self) {
@@ -757,7 +760,7 @@ impl EditorGroupView {
         }
 
         // Show editor
-        let show_editor_result = self.do_show_editor(&opened_editor, open_editor_options.active == Some(true), is_new, options);
+        let show_editor_result = self.do_show_editor(&opened_editor, open_editor_options.active == Some(true), is_new, options, internal_options.text_options.clone());
 
         // Finally make sure the group is active or restored as instructed
         if activate_group {
@@ -769,7 +772,7 @@ impl EditorGroupView {
         show_editor_result
     }
 
-    fn do_show_editor(&self, editor: &EditorInputRef, active: bool, is_new: bool, options: Option<EditorOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {
+    fn do_show_editor(&self, editor: &EditorInputRef, active: bool, is_new: bool, options: Option<EditorOptions>, text_options: Option<TextEditorOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {
         // Show in editor control if the active editor changed. Inactive: return `undefined` as result to signal this
         if !active {
             return Promise::resolved(None);
@@ -780,7 +783,13 @@ impl EditorGroupView {
             let is_explicit = options.as_ref().and_then(|options| options.is_explicit);
             let preserve_focus = options.as_ref().and_then(|options| options.preserve_focus);
 
-            let result = this.editor_panes.open_editor(&editor, options, EditorOpenContext { new_in_group: Some(is_new) }).await?;
+            // The editor pane receives the options as `ITextEditorOptions`: the text selection (if any) on top of the base options
+            let pane_options = match text_options {
+                Some(text_options) => Some(TextEditorOptions { base: options.unwrap_or_default(), ..text_options }),
+                None => options.map(TextEditorOptions::from),
+            };
+
+            let result = this.editor_panes.open_editor_with_text_options(&editor, pane_options, EditorOpenContext { new_in_group: Some(is_new) }).await?;
 
             // Return early if the operation was cancelled by another operation
             if result.cancelled {
@@ -1525,6 +1534,12 @@ impl IEditorGroup for EditorGroupView {
         self.open_editor_with_internal_options(editor, options, &InternalEditorOpenOptions::default())
     }
 
+    fn open_editor_with_text_options(&self, editor: &EditorInputRef, options: Option<TextEditorOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {
+        let base_options = options.as_ref().map(|options| options.base.clone());
+
+        self.open_editor_with_internal_options(editor, base_options, &InternalEditorOpenOptions { text_options: options, ..InternalEditorOpenOptions::default() })
+    }
+
     fn open_editors(&self, editors: Vec<EditorInputWithOptions>) -> Promise<Option<Rc<dyn IEditorPane>>> {
         let this = self.rc();
 
@@ -1543,6 +1558,7 @@ impl IEditorGroup for EditorGroupView {
                 // want to open a new editor but reuse that one.
                 support_side_by_side: Some(SideBySideEditor::Both),
                 inactive_selection: None,
+                text_options: None,
             };
 
             this.do_open_editor(&first_editor.editor, first_editor.options.as_ref().map(|options| options.base.clone()), &open_editors_options).await?;
@@ -1599,7 +1615,7 @@ impl IEditorGroup for EditorGroupView {
                 this.open_editor_with_internal_options(
                     &active_selected_editor,
                     Some(EditorOptions { activation: Some(EditorActivation::Activate), ..EditorOptions::default() }),
-                    &InternalEditorOpenOptions { inactive_selection: Some(inactive_selected_editors), support_side_by_side: None },
+                    &InternalEditorOpenOptions { inactive_selection: Some(inactive_selected_editors), support_side_by_side: None, text_options: None },
                 )
                 .await?;
 

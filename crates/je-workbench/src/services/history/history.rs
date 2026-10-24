@@ -1,8 +1,7 @@
 //! Porte de `src/vs/workbench/services/history/common/history.ts`: o contrato do serviço de histórico de editores
 //! (`IHistoryService`), com os filtros e os escopos da navegação (`GoFilter`, `GoScope`).
 //!
-//! A implementação (`HistoryService`, `browser/historyService.ts`) ainda não faz parte do porte: ela lê a seleção dos painéis
-//! de editor (`IEditorPane.getSelection` e `onDidChangeSelection`), que o `IEditorPane` lógico não tem.
+//! A implementação (`HistoryService`, `browser/historyService.ts`) está em [`history_service`](super::history_service).
 //!
 //! Divergências:
 //! - **`const enum`** (`GoFilter`, `GoScope`) são enums com o mesmo valor numérico dos membros.

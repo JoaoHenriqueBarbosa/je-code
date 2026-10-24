@@ -49,3 +49,9 @@ pub mod test_main_thread_notebook_kernels;
 
 // Porte dos testes de `contrib/extensions` (`extension.test.ts` e seguintes): os serviços de uma `Extension`.
 pub mod extension_services_support;
+
+// Porte de `extensionEnablementService.test.ts`: o `TestExtensionEnablementService` e os dublês que outros testes reaproveitam.
+pub mod extension_enablement_support;
+
+// Porte de `extensionsWorkbenchService.test.ts`: os serviços do `setup` da suíte `ExtensionsWorkbenchServiceTest`.
+pub mod extensions_workbench_service_support;
