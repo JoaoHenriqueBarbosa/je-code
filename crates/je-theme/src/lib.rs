@@ -110,6 +110,35 @@ impl ColorTheme {
         })
     }
 
+    /// Um tema sem arquivo, só com o `colorMap` dado (o `createUnloadedTheme` do `ColorThemeData`).
+    pub fn unloaded(name: impl Into<String>, theme_type: ThemeType, colors: HashMap<String, Color>) -> Self {
+        Self {
+            name: name.into(),
+            theme_type,
+            colors,
+            custom_colors: HashMap::new(),
+            transient_colors: None,
+        }
+    }
+
+    /// O `colorMap`: as cores do arquivo do tema, sem customização nem cores transientes.
+    pub fn colors(&self) -> &HashMap<String, Color> {
+        &self.colors
+    }
+
+    /// Se há um `transientColorMap` (`this.transientColorMap !== undefined`).
+    pub fn has_transient_colors(&self) -> bool {
+        self.transient_colors.is_some()
+    }
+
+    /// `getColorCustomization`: a cor da customização do usuário, se for uma cor (o `"default"` não conta).
+    pub fn get_color_customization(&self, id: &str) -> Option<&Color> {
+        match self.custom_colors.get(id) {
+            Some(CustomColor::Color(color)) => Some(color),
+            _ => None,
+        }
+    }
+
     /// Troca o tipo do tema (o `uiTheme` da contribuição).
     pub fn with_type(mut self, theme_type: ThemeType) -> Self {
         self.theme_type = theme_type;
