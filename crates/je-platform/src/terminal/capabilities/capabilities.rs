@@ -431,8 +431,7 @@ pub trait IMarker: IDisposable {
     fn on_dispose(&self) -> Event<()>;
 }
 
-/// `IPromptInputModel` de `commandDetection/promptInputModel.ts` (ainda não portado).
-pub trait IPromptInputModel {}
+pub use super::command_detection::prompt_input_model::IPromptInputModel;
 
 /// `ISerializedPromptInputModel` de `commandDetection/promptInputModel.ts` (ainda não portado).
 pub trait ISerializedPromptInputModel {}

@@ -333,10 +333,11 @@ fn create_label_computer(store: &LeakGuard, configuration: Dynamic) -> Rc<Termin
     store.add_rc(configuration_service.on_did_change_configuration_emitter.clone());
     let configuration: Rc<dyn IConfigurationService> = configuration_service.clone();
     let configuration_instantiation = store.add_rc(InstantiationService::new(ServiceCollection::new().with(I_CONFIGURATION_SERVICE, configuration.clone())));
-    let terminal_configuration_service: Rc<dyn ITerminalConfigurationService> =
-        store.add_rc(configuration_instantiation.create_instance::<TerminalConfigurationService>(()));
+    let terminal_configuration_concrete = store.add_rc(configuration_instantiation.create_instance::<TerminalConfigurationService>(()));
+    let terminal_configuration_service: Rc<dyn ITerminalConfigurationService> = terminal_configuration_concrete;
 
-    let file_service: Rc<dyn IFileService> = store.add_rc(TestFileService::new());
+    let file_service_concrete = store.add_rc(TestFileService::new());
+    let file_service: Rc<dyn IFileService> = file_service_concrete;
     let workspace_context_service: Rc<dyn IWorkspaceContextService> = TestContextService::new(None, None);
     let instantiation_service = store.add_rc(InstantiationService::new(
         ServiceCollection::new()

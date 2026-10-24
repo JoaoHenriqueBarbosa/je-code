@@ -287,7 +287,7 @@ impl TerminalLabelComputer {
 
         let executing_command = command_detection.as_ref().is_some_and(|command_detection| command_detection.executing_command().is_some_and(|command| !command.is_empty()));
         let workspace_folder_basename =
-            instance.workspace_folder.as_ref().map(|folder| native_path.basename(&folder.uri.fs_path(host.clone()).to_string_lossy(), None));
+            instance.workspace_folder.as_ref().map(|folder| native_path.basename(&folder.uri.fs_path(je_platform::resources::host_platform()).to_string_lossy(), None));
 
         let mut properties: HashMap<String, TemplateValue> = HashMap::new();
         let mut set = |key: &str, value: Option<String>| {
@@ -385,7 +385,7 @@ impl TerminalLabelComputer {
                 show_cwd = true;
             } else if let Some(workspace_folder) = &instance.workspace_folder {
                 let case_sensitive = self.file_service.has_capability(&workspace_folder.uri, FileSystemProviderCapabilities::PATH_CASE_SENSITIVE);
-                let (left, right) = (cwd_uri.fs_path(host.clone()).to_string_lossy(), workspace_folder.uri.fs_path(host.clone()).to_string_lossy());
+                let (left, right) = (cwd_uri.fs_path(je_platform::resources::host_platform()).to_string_lossy(), workspace_folder.uri.fs_path(je_platform::resources::host_platform()).to_string_lossy());
                 show_cwd = if case_sensitive { left != right } else { left.to_lowercase() != right.to_lowercase() };
             }
             if show_cwd {

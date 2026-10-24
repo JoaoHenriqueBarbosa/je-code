@@ -54,19 +54,19 @@ fn cell(lines: &[&str], lang: &'static str, kind: CellKind, outputs: Vec<IOutput
     MockCell { lines: lines.iter().map(|line| (*line).to_owned()).collect(), lang, kind, outputs, metadata }
 }
 
-/// `[lines, 'javascript', CellKind.Code, [], {}]`.
+/// `[lines, 'javascript', CellKind::Code, [], {}]`.
 fn js(lines: &[&str]) -> MockCell {
     cell(lines, "javascript", CellKind::Code, Vec::new(), Some(empty_metadata()))
 }
 
-/// `[lines, 'python', CellKind.Code, [], undefined]`.
+/// `[lines, 'python', CellKind::Code, [], undefined]`.
 fn py(lines: &[&str]) -> MockCell {
-    cell(lines, "python", CellKind.Code, Vec::new(), None)
+    cell(lines, "python", CellKind::Code, Vec::new(), None)
 }
 
-/// `[lines, 'markdown', CellKind.Markup, [], undefined]`.
+/// `[lines, 'markdown', CellKind::Markup, [], undefined]`.
 fn md(lines: &[&str]) -> MockCell {
-    cell(lines, "markdown", CellKind.Markup, Vec::new(), None)
+    cell(lines, "markdown", CellKind::Markup, Vec::new(), None)
 }
 
 /// `[{ outputId, outputs: [{ mime: Mimes.text, data: VSBuffer.wrap(new Uint8Array([byte])) }] }]`.
@@ -770,7 +770,7 @@ fn insert_a_md_cell_delete_a_cell_and_modify_the_next_2_code_cells() {
             py(&[r#"print("Hello world")"#]),
             md(&["# Foo Bar"]),
             md(&["# New Markdown cell"]),
-            // [['print("Foo BaZ")'], 'python', CellKind.Code, [], undefined],
+            // [['print("Foo BaZ")'], 'python', CellKind::Code, [], undefined],
             py(&[r#"print("bar baz Modified")"#]),
             py(&[r#"print("Fox Trots")"#]),
         ],
@@ -797,7 +797,7 @@ fn insert_a_md_cell_delete_a_code_cell_and_modify_the_next_2_code_cells_deleted_
             py(&[r#"print("Hello world")"#]),
             py(&["import sys"]),
             py(&["sys.executable"]),
-            // [['print("Foo BaZ")'], 'python', CellKind.Code, [], undefined],
+            // [['print("Foo BaZ")'], 'python', CellKind::Code, [], undefined],
             py(&[r#"print("bar baz Modified")"#]),
             py(&[r#"print("Fox Trot")"#]),
         ],
