@@ -5,3 +5,6 @@ pub mod search;
 
 pub mod suggest;
 pub mod policies;
+
+pub mod statusbar;
+pub mod layout;

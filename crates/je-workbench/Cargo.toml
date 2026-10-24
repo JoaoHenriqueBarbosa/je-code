@@ -18,3 +18,7 @@ je-editor = { path = "../je-editor" }
 zyarr = { path = "../zyarr" }
 # `Date.parse` e `toLocaleDateString` de `updateUtils` (mesmo `jiff` do je-base, fuso do sistema).
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
+# `StorageValue` do `IStorageService.store` (o modelo da barra de status grava a lista de entradas escondidas).
+je-storage = { path = "../je-storage" }
+# `Direction` e `IViewSize` do grid (`base/browser/ui/grid`) que o `IWorkbenchLayoutService` usa.
+je-widgets = { path = "../je-widgets" }
