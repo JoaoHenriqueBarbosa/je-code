@@ -67,8 +67,8 @@ impl EditSources {
     }
 
     /// `EditSources.suggest({ providerId })`: o `providerId` não tem campo nesta representação simplificada e não é
-    /// guardado (o `CompletionItem` do porte não tem `extensionId`, então o original o deixa `undefined`).
-    pub fn suggest() -> TextModelEditSource {
+    /// guardado; o parâmetro existe para o chamador passar o mesmo argumento do original.
+    pub fn suggest(_provider_id: &crate::code_action::languages::ProviderId) -> TextModelEditSource {
         Self::simple("suggest")
     }
 

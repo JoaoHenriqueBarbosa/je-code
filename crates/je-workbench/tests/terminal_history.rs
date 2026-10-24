@@ -357,6 +357,18 @@ impl IFileService for HistoryFileService {
         (self.check)(resource, &self.state);
         Promise::resolved(FileContent { stat: create_file_stat(resource, &FileStatOptions::default()), value: VSBuffer::from_string(&self.content) })
     }
+
+    fn resolve(&self, _resource: &URI, _options: Option<ResolveFileOptions>) -> Promise<je_platform::files::files::FileStat> {
+        Self::not_mocked("resolve")
+    }
+
+    fn create_folder(&self, _resource: &URI) -> Promise<FileStatWithMetadata> {
+        Self::not_mocked("createFolder")
+    }
+
+    fn watch(&self, _resource: &URI, _options: Option<je_platform::files::files::WatchOptions>) -> je_base::lifecycle::DisposableRef {
+        Self::not_mocked("watch")
+    }
 }
 
 /// `{ remoteAuthority }`, o `Pick<IRemoteAgentConnection, 'remoteAuthority'>`.

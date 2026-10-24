@@ -110,6 +110,7 @@ use je_platform::log::NullLogService;
 use je_platform::telemetry::telemetry_utils::null_telemetry_service;
 use je_platform::workspace::Workspace;
 use snippet_doubles::{ClosureLabelService, WorkspaceOnlyService};
+use support::null_command_service::NullCommandService;
 use support::test_clipboard_service::TestClipboardService;
 use support::test_code_editor::{TestCodeEditor, TestCodeEditorInstantiationOptions, create_test_code_editor};
 use support::test_text_model::{
@@ -1327,6 +1328,7 @@ fn text_changes_for_completion_code_action_are_affected_by_the_completion_39893(
                     widget,
                     SuggestControllerServices {
                         memory_service: Rc::new(NoMemoryService),
+                        command_service: Rc::new(NullCommandService),
                         context_key_service,
                         log_service: NullLogService::shared(),
                         model_services: services,

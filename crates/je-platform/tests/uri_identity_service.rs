@@ -81,6 +81,18 @@ impl IFileService for FakeFileService {
     fn read_file(&self, _resource: &URI, _options: Option<ReadFileOptions>, _token: Option<CancellationToken>) -> Promise<FileContent> {
         Self::not_mocked("readFile")
     }
+
+    fn resolve(&self, _resource: &URI, _options: Option<ResolveFileOptions>) -> Promise<je_platform::files::files::FileStat> {
+        Self::not_mocked("resolve")
+    }
+
+    fn create_folder(&self, _resource: &URI) -> Promise<FileStatWithMetadata> {
+        Self::not_mocked("createFolder")
+    }
+
+    fn watch(&self, _resource: &URI, _options: Option<je_platform::files::files::WatchOptions>) -> je_base::lifecycle::DisposableRef {
+        Self::not_mocked("watch")
+    }
 }
 
 /// O `setup` (o serviço) e o `ensureNoDisposablesAreLeakedInTestSuite()` (o guarda), com o `teardown` no `Drop`.

@@ -37,12 +37,13 @@
 //!   `forceRenderingAbove`, `stopForceRenderingAbove`) e os registros de ações e comandos
 //!   do fim do arquivo, que dependem do widget, do sistema de menus e do `ICommandService`. Entram com o porte do
 //!   `suggestWidget.ts`.
-//! - O `CompletionItem` de `languages.rs` não tem `command` nem `extensionId`: a execução do `command` do item
-//!   (e o `TriggerSuggestAction`) não existe, e o `extensionId` do `EditSources.suggest` e da telemetria é
-//!   `undefined`/`'unknown'`, como no original para um item sem extensão. Por isso o `ICommandService` não é
-//!   injetado e `_commandExectionDuration` fica em -1.
-//! - O `triggerSuggestAndAcceptBest` depende do `ICommandService` (o `fallback` executa um comando) e não é
-//!   portado.
+//! - O `CompletionItem` de `languages.rs` agora tem `command` e `extensionId`: a execução do `command` do item (com o
+//!   caso do `TriggerSuggestAction`, cujo `id` é [`TRIGGER_SUGGEST_ACTION_ID`] porque a ação não tem porte), o
+//!   `extensionId` do `EditSources.suggest` e o da telemetria são os do original. O `item.extensionId` é lido de
+//!   `item.completion.extension_id` (o `CompletionItem` do porte não o copia para um campo próprio). O `providerId`
+//!   do `EditSources.suggest` é aceito mas não guardado, porque o `TextModelEditSource` do porte não tem o campo.
+//! - O `triggerSuggestAndAcceptBest` depende do widget e não é portado (o `fallback` executa um comando pelo
+//!   `ICommandService`, que agora existe, mas o corpo usa o `SuggestWidget`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -52,6 +53,7 @@ use je_base::JsString;
 use je_base::async_::GlobalIdleValue;
 use je_base::cancellation::CancellationTokenSource;
 use je_base::dynamic::Dynamic;
+use je_base::errors::{on_unexpected_error, on_unexpected_external_error};
 use je_base::event::Emitter;
 use je_base::hash::hash;
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, MutableDisposable, to_disposable};
@@ -62,10 +64,12 @@ use je_base::random::random_f64;
 use je_base::resources::ExtUri;
 use je_base::stopwatch::StopWatch;
 use je_base::types::assert_type;
+use je_platform::commands::ICommandService;
 use je_platform::contextkey::{IContextKey, IContextKeyService};
 use je_platform::log::{LogArg, LogServiceRef};
 use je_platform::telemetry::telemetry::ITelemetryService;
 
+use crate::code_action::languages::ProviderId;
 use crate::code_editor_widget::{CodeEditorWidget, ExecuteEditsSource, ICodeEditor, IEditorContribution};
 use crate::config::editor_options::registry::ACCEPT_SUGGESTION_ON_ENTER;
 use crate::config::editor_options::suggest::{SUGGEST, SuggestInsertMode};
@@ -89,6 +93,9 @@ use crate::suggest::suggest_widget_contract::ISelectedSuggestion;
 use crate::suggest::word_context_key::WordContextKey;
 use crate::text_model::{ModelDecorationOptions, TextModel};
 use crate::text_model_edit_source::EditSources;
+
+/// `TriggerSuggestAction.id`: o comando do `item.completion.command` que redispara a sugestão.
+const TRIGGER_SUGGEST_ACTION_ID: &str = "editor.action.triggerSuggest";
 
 thread_local! {
     /// `LineSuffix._decorationOptions`.
@@ -189,6 +196,8 @@ pub struct OverwriteInfo {
 pub struct SuggestControllerServices {
     /// `@ISuggestMemoryService`.
     pub memory_service: Rc<dyn ISuggestMemoryService>,
+    /// `@ICommandService`.
+    pub command_service: Rc<dyn ICommandService>,
     /// `@IContextKeyService`.
     pub context_key_service: Rc<dyn IContextKeyService>,
     /// `@ILogService`.
@@ -207,6 +216,7 @@ pub struct SuggestController {
     pub model: Rc<SuggestModel>,
 
     memory_service: Rc<dyn ISuggestMemoryService>,
+    command_service: Rc<dyn ICommandService>,
     log_service: LogServiceRef,
     telemetry_service: Rc<dyn ITelemetryService>,
     aria_alert: Rc<dyn Fn(&str)>,
@@ -228,7 +238,8 @@ impl SuggestController {
     }
 
     pub fn new(editor: &Rc<CodeEditorWidget>, services: SuggestControllerServices) -> Rc<Self> {
-        let SuggestControllerServices { memory_service, context_key_service, log_service, model_services, aria_alert } = services;
+        let SuggestControllerServices { memory_service, command_service, context_key_service, log_service, model_services, aria_alert } =
+            services;
         let telemetry_service = Rc::clone(&model_services.telemetry_service);
         let model = SuggestModel::new(editor, model_services);
         let to_dispose = DisposableStore::new();
@@ -322,6 +333,7 @@ impl SuggestController {
             editor: Rc::downgrade(editor),
             model,
             memory_service,
+            command_service,
             log_service,
             telemetry_service,
             aria_alert,
@@ -391,7 +403,7 @@ impl SuggestController {
         let is_resolved = item.is_resolved();
 
         // telemetry data points: duration of command execution, info about async additional edits (-1=n/a, -2=none, 1=success, 0=failed)
-        let command_execution_duration: f64 = -1.0;
+        let command_execution_duration: Rc<Cell<f64>> = Rc::new(Cell::new(-1.0));
         let additional_edits_applied_async: Rc<Cell<i32>> = Rc::new(Cell::new(-1));
 
         let additional_text_edits = item.completion.borrow().additional_text_edits.clone();
@@ -551,6 +563,7 @@ impl SuggestController {
         self.model.cancel(false);
 
         let overtyping_capturer: Rc<dyn IOvertypingCapturer> = self.overtyping_capturer.value();
+        let provider_id = ProviderId::from_extension_id(item.completion.borrow().extension_id.as_ref().map(|id| id.value.as_str()));
         snippet_controller.insert(
             insert_text,
             Some(PartialSnippetInsertOptions {
@@ -561,12 +574,41 @@ impl SuggestController {
                 adjust_whitespace: Some(insert_text_rules & completion_item_insert_text_rule::KEEP_WHITESPACE == 0),
                 clipboard_text: event.model.clipboard_text.clone().map(JsString::from),
                 overtyping_capturer: Some(overtyping_capturer),
-                reason: Some(EditSources::suggest()),
+                reason: Some(EditSources::suggest(&provider_id)),
             }),
         );
 
         if flags & insert_flags::NO_AFTER_UNDO_STOP == 0 {
             editor.push_undo_stop();
+        }
+
+        let command = item.completion.borrow().command.clone();
+        if let Some(command) = command {
+            if command.id == TRIGGER_SUGGEST_ACTION_ID {
+                // retigger
+                self.model.trigger(SuggestTriggerOptions { auto: true, retrigger: Some(true), ..SuggestTriggerOptions::default() });
+            } else {
+                // exec command, done
+                let sw = StopWatch::new(Some(true));
+                let has_extension = item.completion.borrow().extension_id.is_some();
+                let duration = Rc::clone(&command_execution_duration);
+                tasks.borrow_mut().push(
+                    self.command_service
+                        .execute_command(&command.id, command.arguments.clone().unwrap_or_default())
+                        .catch(move |error| {
+                            if has_extension {
+                                on_unexpected_external_error(&error);
+                            } else {
+                                on_unexpected_error(&error);
+                            }
+                            Dynamic::Undefined
+                        })
+                        .finally(move || {
+                            duration.set(sw.elapsed());
+                        })
+                        .then(|_| ()),
+                );
+            }
         }
 
         if flags & insert_flags::KEEP_ALTERNATIVE_SUGGESTIONS != 0 {
@@ -612,7 +654,7 @@ impl SuggestController {
                     &item,
                     &model,
                     is_resolved,
-                    command_execution_duration,
+                    command_execution_duration.get(),
                     additional_edits_applied_async.get(),
                     event_index,
                     &event_items,
@@ -668,7 +710,7 @@ impl SuggestController {
             "suggest.acceptedSuggestion",
             Some(Dynamic::object([
                 // `item.extensionId?.value ?? 'unknown'`
-                ("extensionId", Dynamic::string("unknown")),
+                ("extensionId", Dynamic::string(item.completion.borrow().extension_id.as_ref().map_or("unknown", |id| id.value.as_str()))),
                 ("providerId", Dynamic::string(item.provider.debug_display_name())),
                 ("kind", Dynamic::Number(kind as f64)),
                 ("basenameHash", Dynamic::string(&to_js_hex_string(basename_hash))),
