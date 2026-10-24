@@ -24,6 +24,7 @@
 //!   leitura, então o `catch` não existe aqui.
 //! - `trim()` é o `trim` do JavaScript ([`js_trim`]).
 
+use crate::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
@@ -584,7 +585,7 @@ impl Deref for SettingsInitializer {
 
 impl SettingsInitializer {
     pub fn new(
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         environment_service: Rc<dyn EnvironmentService>,
         log_service: LogServiceRef,

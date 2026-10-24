@@ -4,6 +4,7 @@
 
 mod common;
 
+use je_platform::files::i_file_service::IFileService;
 use std::rc::Rc;
 
 use common::files::async_test;
@@ -17,7 +18,7 @@ use je_platform::files::in_memory::InMemoryFileSystemProvider;
 use je_platform::log::NullLogService;
 use je_platform::policy::NullPolicyService;
 
-async fn setup(d: &Rc<je_base::lifecycle::DisposableStore>, content: &str) -> (RegistryGuard, Rc<FileService>, Rc<ConfigurationService>, je_base::uri::URI) {
+async fn setup(d: &Rc<je_base::lifecycle::DisposableStore>, content: &str) -> (RegistryGuard, Rc<dyn IFileService>, Rc<ConfigurationService>, je_base::uri::URI) {
     let registry = RegistryGuard::new();
     let file_service = d.add_rc(FileService::new(NullLogService::shared()));
     let provider = d.add_rc(InMemoryFileSystemProvider::new());
@@ -29,7 +30,7 @@ async fn setup(d: &Rc<je_base::lifecycle::DisposableStore>, content: &str) -> (R
     (registry, file_service, service, resource)
 }
 
-async fn read(file_service: &Rc<FileService>, resource: &je_base::uri::URI) -> String {
+async fn read(file_service: &Rc<dyn IFileService>, resource: &je_base::uri::URI) -> String {
     file_service.read_file(resource, None, None).await.unwrap().value.to_string()
 }
 

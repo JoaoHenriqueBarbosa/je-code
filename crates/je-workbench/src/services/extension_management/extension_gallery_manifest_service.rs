@@ -22,6 +22,7 @@
 //!   O `await` de uma promessa cede como no JavaScript, e o trecho até o primeiro `await` roda na chamada.
 //! - O serviço segura a si mesmo por referência fraca nas inscrições de evento: ele é descartado quando o último `Rc` some.
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
@@ -193,7 +194,7 @@ fn manifest_of_response(response: &Dynamic) -> IExtensionGalleryManifest {
 pub struct WorkbenchExtensionGalleryManifestServiceParts {
     pub product_service: Rc<dyn IProductService>,
     pub environment_service: Rc<dyn EnvironmentService>,
-    pub file_service: Rc<FileService>,
+    pub file_service: Rc<dyn IFileService>,
     pub telemetry_service: Rc<dyn ITelemetryService>,
     pub storage_service: Rc<dyn StorageService>,
     pub remote_agent_service: Rc<dyn IRemoteAgentService>,

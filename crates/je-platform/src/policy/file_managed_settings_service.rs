@@ -8,6 +8,7 @@
 //! - `readFile(file, { limits: { size } })` é `ReadFileOptions.stream.limit_size`.
 //! - `JSON.parse` é `json_parse` (o `SyntaxError` do original), e o documento lido é um [`Dynamic`].
 
+use crate::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -37,7 +38,7 @@ const MANAGED_SETTINGS_MAX_FILE_SIZE: u64 = 1024 * 1024; // 1 MB
 pub struct FileManagedSettingsService {
     base: Rc<Disposable>,
     file: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
     raw_managed_settings: Rc<RefCell<RawManagedSettingsData>>,
     managed_settings: Rc<RefCell<ManagedSettingsData>>,
@@ -48,7 +49,7 @@ pub struct FileManagedSettingsService {
 }
 
 impl FileManagedSettingsService {
-    pub fn new(file: URI, file_service: Rc<FileService>, log_service: LogServiceRef) -> Rc<Self> {
+    pub fn new(file: URI, file_service: Rc<dyn IFileService>, log_service: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_change_raw_managed_settings: Rc<Emitter<RawManagedSettingsData>> = Emitter::new();
         base.register(on_did_change_raw_managed_settings.clone());

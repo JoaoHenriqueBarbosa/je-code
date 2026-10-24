@@ -199,12 +199,12 @@ struct NodeTestWorkingCopyBackupService {
     discarded_all_backups: Cell<bool>,
     pending_backups_arr: Rc<RefCell<Vec<Promise<()>>>>,
     /// `_fileService`.
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
 }
 
 #[allow(dead_code)]
 impl NodeTestWorkingCopyBackupService {
-    fn new(native: Rc<NativeWorkingCopyBackupService>, file_service: Rc<FileService>) -> Rc<Self> {
+    fn new(native: Rc<NativeWorkingCopyBackupService>, file_service: Rc<dyn IFileService>) -> Rc<Self> {
         Rc::new(Self {
             native,
             backup_resource_joiners: Rc::new(RefCell::new(Vec::new())),
@@ -346,7 +346,7 @@ struct Env {
     backup_home: URI,
     workspace_backup_path: URI,
     service: Rc<NodeTestWorkingCopyBackupService>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
 }
 
 impl Env {
@@ -366,7 +366,7 @@ impl Env {
 
         let app_settings_home = uri_file(&format!("{}/User", fs_path(&test_dir)));
         let user_roaming_data_home = app_settings_home.with(&UriChange { scheme: Field::from(schemas::VSCODE_USER_DATA), ..UriChange::default() });
-        let file_service_contract: Rc<dyn IFileService> = Rc::new(file_service.clone());
+        let file_service_contract: Rc<dyn IFileService> = file_service.clone();
         let native = NativeWorkingCopyBackupService::new(
             Some(&fs_path(&workspace_backup_path)),
             &user_roaming_data_home,

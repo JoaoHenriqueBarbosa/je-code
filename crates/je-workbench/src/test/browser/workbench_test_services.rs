@@ -16,6 +16,7 @@
 //! - **`TestPathService.defaultUriScheme`** é uma propriedade pública atribuível, aqui o campo com
 //!   [`TestPathService::set_default_uri_scheme`].
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -801,6 +802,7 @@ mod configuration_editing_doubles {
     use je_base::promise::Promise;
     use je_base::uri::URI;
     use je_platform::files::file_service::FileService;
+    use je_platform::files::i_file_service::IFileService;
     use je_platform::uri_identity::uri_identity::IUriIdentityService;
     use je_platform::user_data_profile::user_data_profile::IUserDataProfilesService;
     use je_platform::workspace::IWorkspaceContextService;
@@ -900,7 +902,7 @@ mod configuration_editing_doubles {
     /// `IEditorService` + `IFilesConfigurationService` que a escrita de configuração usa (ver a nota do módulo).
     pub struct TestConfigurationEditingServices {
         this: Weak<Self>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         models: RefCell<HashMap<String, Rc<TestTextModel>>>,
         /// As mensagens de `notificationService.error` e `notificationService.prompt`.
         pub notifications: RefCell<Vec<String>>,
@@ -910,7 +912,7 @@ mod configuration_editing_doubles {
     }
 
     impl TestConfigurationEditingServices {
-        pub fn new(file_service: Rc<FileService>) -> Rc<Self> {
+        pub fn new(file_service: Rc<dyn IFileService>) -> Rc<Self> {
             Rc::new_cyclic(|this| Self {
                 this: this.clone(),
                 file_service,
@@ -1021,7 +1023,7 @@ mod configuration_editing_doubles {
         workspace_service: Weak<WorkspaceService>,
         user_data_profile_service: Rc<dyn IUserDataProfileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         uri_identity_service: Rc<dyn IUriIdentityService>,
         services: Rc<TestConfigurationEditingServices>,
         json_editing_service: Rc<JsonEditingService>,
@@ -1034,7 +1036,7 @@ mod configuration_editing_doubles {
             workspace_service: &Rc<WorkspaceService>,
             user_data_profile_service: Rc<dyn IUserDataProfileService>,
             user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
-            file_service: Rc<FileService>,
+            file_service: Rc<dyn IFileService>,
             uri_identity_service: Rc<dyn IUriIdentityService>,
         ) -> Rc<TestConfigurationEditingServices> {
             let services = TestConfigurationEditingServices::new(file_service.clone());

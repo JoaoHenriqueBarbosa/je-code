@@ -27,7 +27,7 @@ use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::configuration::registry::{ConfigurationScope, configuration_registry, is_override_property, key_from_override_identifiers};
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationUpdateOptions, ConfigurationUpdateOverrides, HandleDirtyFile};
-use je_platform::files::file_service::FileService;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::files::files::{FileOperationError, FileOperationResult};
 use je_platform::js::to_json;
 use je_platform::resources::fs_path;
@@ -197,7 +197,7 @@ pub struct ConfigurationEditing {
     context_service: Rc<dyn IWorkspaceContextService>,
     user_data_profile_service: Rc<dyn IUserDataProfileService>,
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     services: Rc<dyn ConfigurationEditingServices>,
     uri_identity_service: Rc<dyn IUriIdentityService>,
 }
@@ -210,7 +210,7 @@ impl ConfigurationEditing {
         context_service: Rc<dyn IWorkspaceContextService>,
         user_data_profile_service: Rc<dyn IUserDataProfileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         services: Rc<dyn ConfigurationEditingServices>,
         uri_identity_service: Rc<dyn IUriIdentityService>,
     ) -> Rc<Self> {

@@ -27,6 +27,7 @@ use je_base::ternary_search_tree::TernarySearchTree;
 use je_base::uri::{Field, URI, UriChange};
 
 use super::files::*;
+use super::i_file_service::IFileService;
 use super::io::{CreateReadStreamOptions, read_file_into_stream};
 
 /// O que `writeFile` aceita: `VSBuffer | VSBufferReadable | VSBufferReadableStream`, mais o stream já
@@ -111,6 +112,7 @@ const BUFFER_SIZE: usize = 256 * 1024;
 
 /// `FileService`.
 pub struct FileService {
+    this: std::rc::Weak<FileService>,
     log_service: super::LogServiceRef,
     disposables: Rc<DisposableStore>,
     env: Rc<dyn Environment>,
@@ -129,11 +131,17 @@ pub struct FileService {
 }
 
 impl FileService {
+    /// O próprio serviço como `Rc` (os métodos que o original chama em `this` de dentro de fechos).
+    pub fn rc(&self) -> Rc<FileService> {
+        self.this.upgrade().expect("o serviço está vivo enquanto é usado")
+    }
+
     pub fn new(log_service: super::LogServiceRef) -> Rc<Self> {
         let env: Rc<dyn Environment> = Rc::new(ProcessEnvironment);
         let disposables = DisposableStore::new();
         let ext_uri = ExtUri::unbiased(env.clone());
-        Rc::new(Self {
+        Rc::new_cyclic(|this| Self {
+            this: this.clone(),
             log_service,
             ext_uri: ext_uri.clone(),
             ext_uri_ignore_path_case: ExtUri::ignore_path_case(env.clone()),
@@ -1747,7 +1755,7 @@ async fn do_pipe_buffered_queued(source_provider: &FileSystemProviderRef, source
 
 /// `whenProviderRegistered(file, fileService)`: resolve quando já há provider para o esquema do recurso,
 /// ou assim que um for registrado.
-pub fn when_provider_registered(file: &URI, file_service: &Rc<FileService>) -> Promise<()> {
+pub fn when_provider_registered(file: &URI, file_service: &dyn IFileService) -> Promise<()> {
     let scheme = file.scheme().to_string_lossy();
     if file_service.get_provider(&scheme).is_some() {
         return Promise::resolved(());

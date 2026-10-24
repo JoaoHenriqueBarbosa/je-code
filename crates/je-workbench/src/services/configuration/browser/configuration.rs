@@ -40,7 +40,8 @@ use je_platform::configuration::defaults::{DefaultConfiguration as BaseDefaultCo
 use je_platform::configuration::models::{ConfigurationModel, ConfigurationModelParser, ConfigurationParseOptions};
 use je_platform::configuration::registry::{ConfigurationDefaults, ConfigurationRegistry, ConfigurationScope, configuration_registry, is_override_property};
 use je_platform::configuration::user_settings::UserSettings;
-use je_platform::files::file_service::{FileService, when_provider_registered};
+use je_platform::files::file_service::when_provider_registered;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::files::files::{FileChangeType, FileChangesEvent, FileOperation, FileOperationError, FileOperationEvent, FileOperationResult, ReadFileOptions};
 use je_platform::js::{for_in_entries, from_json, object_keys};
 use je_platform::log::LogServiceRef;
@@ -318,7 +319,7 @@ pub struct ApplicationConfiguration {
 impl ApplicationConfiguration {
     pub fn new(
         user_data_profiles_service: &dyn IUserDataProfilesService,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         uri_identity_service: &dyn IUriIdentityService,
         log: LogServiceRef,
     ) -> Rc<Self> {
@@ -470,7 +471,7 @@ pub struct UserConfiguration {
     tasks_resource: RefCell<Option<URI>>,
     mcp_resource: RefCell<Option<URI>>,
     configuration_parse_options: RefCell<ConfigurationParseOptions>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     ext_uri: ExtUri,
     log: LogServiceRef,
 }
@@ -481,7 +482,7 @@ impl UserConfiguration {
         tasks_resource: Option<URI>,
         mcp_resource: Option<URI>,
         configuration_parse_options: ConfigurationParseOptions,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         uri_identity_service: &dyn IUriIdentityService,
         log: LogServiceRef,
     ) -> Rc<Self> {
@@ -656,7 +657,7 @@ struct FileServiceBasedConfiguration {
     stand_alone_configurations: RefCell<Vec<ConfigurationModel>>,
     cache: RefCell<ConfigurationModel>,
     on_did_change: Rc<Emitter<()>>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log: LogServiceRef,
 }
 
@@ -666,7 +667,7 @@ impl FileServiceBasedConfiguration {
         settings_resource: URI,
         stand_alone_configuration_resources: Vec<(String, URI)>,
         configuration_parse_options: ConfigurationParseOptions,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         ext_uri: ExtUri,
         log: LogServiceRef,
     ) -> Rc<Self> {
@@ -875,7 +876,7 @@ impl RemoteUserConfigurationSource {
 pub struct RemoteUserConfiguration {
     base: Rc<Disposable>,
     cached_configuration: Rc<CachedRemoteUserConfiguration>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     user_configuration: RefCell<RemoteUserConfigurationSource>,
     user_configuration_initialization_promise: RefCell<Option<Promise<ConfigurationModel>>>,
     on_did_change_configuration: Rc<Emitter<ConfigurationModel>>,
@@ -886,7 +887,7 @@ impl RemoteUserConfiguration {
     pub fn new(
         remote_authority: &str,
         configuration_cache: Rc<dyn IConfigurationCache>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         uri_identity_service: &dyn IUriIdentityService,
         remote_agent_service: &dyn IRemoteAgentService,
         log: LogServiceRef,
@@ -1037,13 +1038,13 @@ struct FileServiceBasedRemoteUserConfiguration {
     directory_watcher_disposable: Rc<MutableDisposable<dyn IDisposable>>,
     reload_configuration_scheduler: Rc<RunOnceScheduler>,
     configuration_resource: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     ext_uri: ExtUri,
     log: LogServiceRef,
 }
 
 impl FileServiceBasedRemoteUserConfiguration {
-    fn new(configuration_resource: URI, configuration_parse_options: ConfigurationParseOptions, file_service: Rc<FileService>, ext_uri: ExtUri, log: LogServiceRef) -> Rc<Self> {
+    fn new(configuration_resource: URI, configuration_parse_options: ConfigurationParseOptions, file_service: Rc<dyn IFileService>, ext_uri: ExtUri, log: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_change_configuration = Emitter::new();
         base.register(on_did_change_configuration.clone());
@@ -1316,7 +1317,7 @@ impl WorkspaceConfigurationSource {
 pub struct WorkspaceConfiguration {
     base: Rc<Disposable>,
     configuration_cache: Rc<dyn IConfigurationCache>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     ext_uri: ExtUri,
     log: LogServiceRef,
     cached_configuration: Rc<CachedWorkspaceConfiguration>,
@@ -1333,7 +1334,7 @@ fn workspace_parse_options(is_untrusted: bool) -> ConfigurationParseOptions {
 }
 
 impl WorkspaceConfiguration {
-    pub fn new(configuration_cache: Rc<dyn IConfigurationCache>, file_service: Rc<FileService>, uri_identity_service: &dyn IUriIdentityService, log: LogServiceRef) -> Rc<Self> {
+    pub fn new(configuration_cache: Rc<dyn IConfigurationCache>, file_service: Rc<dyn IFileService>, uri_identity_service: &dyn IUriIdentityService, log: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_update_configuration = Emitter::new();
         base.register(on_did_update_configuration.clone());
@@ -1455,7 +1456,7 @@ impl WorkspaceConfiguration {
     fn wait_and_initialize(self: &Rc<Self>, workspace_identifier: WorkspaceIdentifier) -> Promise<()> {
         let this = self.clone();
         async_fn(async move {
-            when_provider_registered(&workspace_identifier.config_path, &this.file_service).await?;
+            when_provider_registered(&workspace_identifier.config_path, this.file_service.as_ref()).await?;
             let is_file_service_based = matches!(&*this.workspace_configuration.borrow(), WorkspaceConfigurationSource::FileService(_));
             if !is_file_service_based {
                 let file_service_based_workspace_configuration = this.new_file_service_based_configuration();
@@ -1522,12 +1523,12 @@ struct FileServiceBasedWorkspaceConfiguration {
     workspace_identifier: Rc<RefCell<Option<WorkspaceIdentifier>>>,
     workspace_config_watcher: Rc<MutableDisposable<dyn IDisposable>>,
     on_did_change: Rc<Emitter<()>>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log: LogServiceRef,
 }
 
 impl FileServiceBasedWorkspaceConfiguration {
-    fn new(file_service: Rc<FileService>, ext_uri: ExtUri, log: LogServiceRef) -> Rc<Self> {
+    fn new(file_service: Rc<dyn IFileService>, ext_uri: ExtUri, log: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let workspace_identifier: Rc<RefCell<Option<WorkspaceIdentifier>>> = Rc::new(RefCell::new(None));
         let on_did_change = Emitter::new();
@@ -1793,7 +1794,7 @@ pub struct FolderConfiguration {
     cached_folder_configuration: Rc<CachedFolderConfiguration>,
     workspace_trusted: Cell<bool>,
     configuration_cache: Rc<dyn IConfigurationCache>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     ext_uri: ExtUri,
     log: LogServiceRef,
     /// `workspaceFolder`.
@@ -1808,7 +1809,7 @@ impl FolderConfiguration {
         config_folder_relative_path: &str,
         workbench_state: WorkbenchState,
         workspace_trusted: bool,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         uri_identity_service: &dyn IUriIdentityService,
         log: LogServiceRef,
         configuration_cache: Rc<dyn IConfigurationCache>,
@@ -1844,7 +1845,7 @@ impl FolderConfiguration {
         });
         if uses_cache {
             let target = this.clone();
-            let _ = when_provider_registered(&this.workspace_folder.uri, &this.file_service).then(move |()| {
+            let _ = when_provider_registered(&this.workspace_folder.uri, this.file_service.as_ref()).then(move |()| {
                 target.switch_to_file_service_based_configuration();
                 target.on_did_folder_configuration_change();
             });

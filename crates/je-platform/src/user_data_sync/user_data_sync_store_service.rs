@@ -21,6 +21,7 @@
 //! - Os métodos `async` do original viram [`Promise`], e `throw` dentro deles vira a promessa rejeitada. Os
 //!   erros do servidor são [`UserDataSyncStoreError`], convertidos em [`Error`] pelo `name` que o original compõe.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
@@ -418,7 +419,7 @@ pub struct UserDataSyncStoreClientServices {
     pub request_service: Rc<dyn IRequestService>,
     pub log_service: IUserDataSyncLogService,
     pub environment_service: Rc<dyn EnvironmentService>,
-    pub file_service: Rc<FileService>,
+    pub file_service: Rc<dyn IFileService>,
     pub storage_service: Rc<dyn StorageService>,
 }
 

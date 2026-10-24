@@ -550,7 +550,7 @@ struct Fixture {
     telemetry: Rc<RecordingTelemetryService>,
     restart_prompts: Rc<RefCell<Vec<String>>>,
     environment: Rc<dyn EnvironmentService>,
-    file_service: Rc<je_platform::files::file_service::FileService>,
+    file_service: Rc<dyn je_platform::files::i_file_service::IFileService>,
     /// `instantiationService.stub(IProductService, ...)`.
     product: RefCell<Rc<ProductService>>,
     /// `instantiationService.stub(IAuthenticationService, ...)`.

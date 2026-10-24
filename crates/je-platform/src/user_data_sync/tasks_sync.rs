@@ -9,6 +9,7 @@
 //! - `TasksInitializer.isEmpty` devolve `fileService.exists(tasksResource)`, ou seja, "vazio" quando o arquivo
 //!   EXISTE: o porte mantém a condição do original.
 
+use crate::files::i_file_service::IFileService;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
@@ -76,7 +77,7 @@ impl Deref for TasksInitializer {
 
 impl TasksInitializer {
     pub fn new(
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         environment_service: Rc<dyn EnvironmentService>,
         log_service: LogServiceRef,

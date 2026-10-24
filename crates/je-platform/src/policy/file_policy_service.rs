@@ -4,6 +4,7 @@
 //! Divergências: as chaves do arquivo cujo valor não é texto, número ou booleano (um objeto, uma lista ou
 //! `null`) são ignoradas; o original as guardaria como `PolicyValue` mesmo violando o tipo.
 
+use crate::files::i_file_service::IFileService;
 use std::rc::Rc;
 
 use je_base::async_::{ThrottledDelayer, async_fn};
@@ -35,7 +36,7 @@ fn keys_diff(a: &OrderedMap<String, PolicyValue>, b: &OrderedMap<String, PolicyV
 
 struct FileSource {
     file: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
 }
 
@@ -99,7 +100,7 @@ pub struct FilePolicyService {
 }
 
 impl FilePolicyService {
-    pub fn new(file: URI, file_service: Rc<FileService>, log_service: LogServiceRef) -> Rc<Self> {
+    pub fn new(file: URI, file_service: Rc<dyn IFileService>, log_service: LogServiceRef) -> Rc<Self> {
         let source = Rc::new(FileSource { file: file.clone(), file_service: file_service.clone(), log_service });
         let updater_source = source.clone();
         let updater: PolicyUpdater = Rc::new(move |service| updater_source.refresh(service));

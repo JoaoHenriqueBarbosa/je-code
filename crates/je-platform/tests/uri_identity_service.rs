@@ -114,6 +114,29 @@ impl IFileService for FakeFileService {
     fn del(&self, _resource: &URI, _options: Option<je_platform::files::files::PartialFileDeleteOptions>) -> Promise<()> {
         Self::not_mocked("del")
     }
+    fn on_did_run_operation(&self) -> je_base::event::Event<je_platform::files::files::FileOperationEvent> {
+        panic!("onDidRunOperation is not a function")
+    }
+
+    fn create_file(
+        &self,
+        _resource: &URI,
+        _content: Option<je_platform::files::file_service::FileContentSource>,
+        _options: Option<je_platform::files::files::CreateFileOptions>,
+    ) -> Promise<FileStatWithMetadata> {
+        Self::not_mocked("createFile")
+    }
+    fn on_will_activate_file_system_provider(&self) -> je_base::event::Event<je_platform::files::files::FileSystemProviderActivationEvent> {
+        panic!("onWillActivateFileSystemProvider is not a function")
+    }
+
+    fn register_provider(
+        &self,
+        _scheme: &str,
+        _provider: je_platform::files::files::FileSystemProviderRef,
+    ) -> Result<je_base::lifecycle::DisposableRef, je_base::errors::Error> {
+        panic!("registerProvider is not a function")
+    }
 }
 
 /// O `setup` (o serviço) e o `ensureNoDisposablesAreLeakedInTestSuite()` (o guarda), com o `teardown` no `Drop`.

@@ -6,6 +6,7 @@
 //! a escrita e solta a promessa, e [`FileLoggerSink::flush_async`] devolve a promessa para quem quiser
 //! esperar.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -97,7 +98,7 @@ const MAX_FILE_SIZE: u64 = 5 * byte_size::MB;
 struct FileLoggerInner {
     resource: URI,
     donot_use_formatters: bool,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     initialize_promise: Promise<()>,
     flush_delayer: ThrottledDelayer<()>,
     backup_index: Cell<u32>,
@@ -108,7 +109,7 @@ struct FileLoggerInner {
 pub struct FileLoggerSink(Rc<FileLoggerInner>);
 
 impl FileLoggerInner {
-    fn initialize(file_service: &Rc<FileService>, resource: &URI) -> Promise<()> {
+    fn initialize(file_service: &Rc<dyn IFileService>, resource: &URI) -> Promise<()> {
         let (file_service, resource) = (file_service.clone(), resource.clone());
         async_fn(async move {
             match file_service.create_file(&resource, None, None).await {
@@ -197,7 +198,7 @@ impl MessageSink for FileLoggerSink {
 pub type FileLogger = MessageLogger<FileLoggerSink>;
 
 impl FileLogger {
-    pub fn new_file(resource: &URI, level: LogLevel, donot_use_formatters: bool, file_service: &Rc<FileService>) -> Rc<Self> {
+    pub fn new_file(resource: &URI, level: LogLevel, donot_use_formatters: bool, file_service: &Rc<dyn IFileService>) -> Rc<Self> {
         let logger = MessageLogger::new(FileLoggerSink(Rc::new(FileLoggerInner {
             resource: resource.clone(),
             donot_use_formatters,
@@ -215,7 +216,7 @@ impl FileLogger {
 
 /// `FileLoggerService`: cria loggers que escrevem pelo `IFileService`, guardando as mensagens até o provider
 /// do esquema do recurso existir.
-pub fn file_logger_service(log_level: LogLevel, logs_home: URI, file_service: Rc<FileService>) -> Rc<AbstractLoggerService> {
+pub fn file_logger_service(log_level: LogLevel, logs_home: URI, file_service: Rc<dyn IFileService>) -> Rc<AbstractLoggerService> {
     AbstractLoggerService::new(
         log_level,
         logs_home,
@@ -224,7 +225,7 @@ pub fn file_logger_service(log_level: LogLevel, logs_home: URI, file_service: Rc
             let logger = BufferLogger::new_buffer(log_level);
             let (target, donot_use_formatters, file_service) = (resource.clone(), options.donot_use_formatters, file_service.clone());
             let buffer = logger.clone();
-            when_provider_registered(resource, &file_service).then(move |()| {
+            when_provider_registered(resource, file_service.as_ref()).then(move |()| {
                 let file_logger = FileLogger::new_file(&target, buffer.get_level(), donot_use_formatters, &file_service);
                 buffer.set_logger(file_logger);
             });

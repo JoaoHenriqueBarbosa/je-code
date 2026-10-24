@@ -30,6 +30,7 @@
 //! - `parseSyncData` de `AbstractSynchroniser` nunca devolve falso (lança), então o `if (!syncData)` de
 //!   `replace` não existe aqui; o de `AbstractInitializer.initialize` existe porque lá ele devolve `undefined`.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
@@ -376,7 +377,7 @@ impl SyncStrategy {
 /// `extUri` do `IUriIdentityService`.
 #[derive(Clone)]
 pub struct SynchroniserServices {
-    pub file_service: Rc<FileService>,
+    pub file_service: Rc<dyn IFileService>,
     pub environment_service: Rc<dyn EnvironmentService>,
     pub storage_service: Rc<dyn StorageService>,
     pub user_data_sync_store_service: Rc<dyn IUserDataSyncStoreService>,
@@ -1612,7 +1613,7 @@ pub struct AbstractInitializer {
     pub user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
     pub environment_service: Rc<dyn EnvironmentService>,
     pub log_service: crate::log::LogServiceRef,
-    pub file_service: Rc<FileService>,
+    pub file_service: Rc<dyn IFileService>,
     pub storage_service: Rc<dyn StorageService>,
     pub ext_uri: ExtUri,
     last_sync_resource: URI,
@@ -1624,7 +1625,7 @@ impl AbstractInitializer {
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         environment_service: Rc<dyn EnvironmentService>,
         log_service: crate::log::LogServiceRef,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         storage_service: Rc<dyn StorageService>,
         ext_uri: ExtUri,
     ) -> Rc<Self> {

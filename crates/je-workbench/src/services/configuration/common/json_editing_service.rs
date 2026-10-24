@@ -21,7 +21,7 @@ use je_base::json_formatter::{Edit, FormattingOptions};
 use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::uri::URI;
-use je_platform::files::file_service::FileService;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::js::to_json;
 
 use super::configuration_editing::{ConfigurationEditingModel, ConfigurationEditingServices};
@@ -31,12 +31,12 @@ use super::json_editing::{IJsonEditingService, JsonEditingErrorCode, JsonValue, 
 pub struct JsonEditingService {
     this: Weak<Self>,
     queue: Queue<()>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     services: Rc<dyn ConfigurationEditingServices>,
 }
 
 impl JsonEditingService {
-    pub fn new(file_service: Rc<FileService>, services: Rc<dyn ConfigurationEditingServices>) -> Rc<Self> {
+    pub fn new(file_service: Rc<dyn IFileService>, services: Rc<dyn ConfigurationEditingServices>) -> Rc<Self> {
         Rc::new_cyclic(|this| Self { this: this.clone(), queue: Queue::new(), file_service, services })
     }
 

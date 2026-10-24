@@ -12,6 +12,7 @@
 
 mod common;
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -70,7 +71,7 @@ struct Fixture {
     _registry: RegistryGuard,
     node: ConfigurationNode,
     default_configuration: Rc<DefaultConfiguration>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     policy_service: Rc<FilePolicyService>,
     test_object: Rc<PolicyConfiguration>,
     policy_file: URI,

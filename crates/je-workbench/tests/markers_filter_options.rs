@@ -29,7 +29,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     // setup
     let file_service = FileService::new(NullLogService::shared());
-    let uri_identity_service = UriIdentityService::create((), (Rc::new(file_service),));
+    let uri_identity_service = UriIdentityService::create((), (file_service,));
     // ensureNoDisposablesAreLeakedInTestSuite()
     Fixture { uri_identity_service, _guard: ensure_no_disposables_are_leaked_in_test_suite() }
 }

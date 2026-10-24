@@ -22,6 +22,7 @@
 //!   `insiders` nem `stable` (o `as` do original o deixaria passar) é `None`.
 //! - `IStorageService.storeAll` de `GlobalStateInitializer` recebe os [`StorageEntry`] do porte.
 
+use crate::files::i_file_service::IFileService;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
@@ -269,7 +270,7 @@ impl StorageUpdates {
 /// `LocalGlobalStateProvider`.
 #[derive(Clone)]
 pub struct LocalGlobalStateProvider {
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     environment_service: Rc<dyn EnvironmentService>,
     user_data_profile_storage_service: Rc<dyn IUserDataProfileStorageService>,
     log_service: IUserDataSyncLogService,
@@ -277,7 +278,7 @@ pub struct LocalGlobalStateProvider {
 
 impl LocalGlobalStateProvider {
     pub fn new(
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         environment_service: Rc<dyn EnvironmentService>,
         user_data_profile_storage_service: Rc<dyn IUserDataProfileStorageService>,
         log_service: IUserDataSyncLogService,
@@ -751,7 +752,7 @@ impl Deref for GlobalStateInitializer {
 impl GlobalStateInitializer {
     pub fn new(
         storage_service: Rc<dyn StorageService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         environment_service: Rc<dyn EnvironmentService>,
         log_service: LogServiceRef,
@@ -828,7 +829,7 @@ pub struct UserDataSyncStoreTypeSynchronizer {
     user_data_sync_store_client: Rc<UserDataSyncStoreClient>,
     storage_service: Rc<dyn StorageService>,
     environment_service: Rc<dyn EnvironmentService>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
 }
 
@@ -837,7 +838,7 @@ impl UserDataSyncStoreTypeSynchronizer {
         user_data_sync_store_client: Rc<UserDataSyncStoreClient>,
         storage_service: Rc<dyn StorageService>,
         environment_service: Rc<dyn EnvironmentService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         log_service: LogServiceRef,
     ) -> Self {
         Self { user_data_sync_store_client, storage_service, environment_service, file_service, log_service }

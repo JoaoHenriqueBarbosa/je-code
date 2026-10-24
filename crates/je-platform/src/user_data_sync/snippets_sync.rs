@@ -23,6 +23,7 @@
 //! - `fileService.watch(...)` e o filtro `Event.filter(onDidFilesChange, e => e.affects(snippetsFolder))` são o
 //!   ouvinte registrado no construtor.
 
+use crate::files::i_file_service::IFileService;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
@@ -704,7 +705,7 @@ impl Deref for SnippetsInitializer {
 
 impl SnippetsInitializer {
     pub fn new(
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         environment_service: Rc<dyn EnvironmentService>,
         log_service: LogServiceRef,

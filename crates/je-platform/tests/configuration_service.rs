@@ -9,6 +9,7 @@
 
 mod common;
 
+use je_platform::files::i_file_service::IFileService;
 use std::rc::Rc;
 
 use common::files::async_test;
@@ -28,7 +29,7 @@ use je_platform::policy::{FilePolicyService, NullPolicyService, PolicyService};
 
 struct Fixture {
     _registry: RegistryGuard,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     settings_resource: URI,
 }
 
@@ -41,7 +42,7 @@ fn setup(d: &Rc<DisposableStore>) -> Fixture {
     Fixture { _registry: registry, file_service, settings_resource: uri_file("settings.json") }
 }
 
-async fn write(file_service: &Rc<FileService>, resource: &URI, text: &str) {
+async fn write(file_service: &Rc<dyn IFileService>, resource: &URI, text: &str) {
     file_service.write_file(resource, VSBuffer::from_string(text).into(), None).await.unwrap();
 }
 

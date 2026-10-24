@@ -8,6 +8,7 @@
 //! - `IEnvironmentService.stateResource` entra como o recurso, não o serviço de ambiente.
 //! - `logService.error(error)` registra o erro como argumento.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -43,7 +44,7 @@ pub struct FileStorage {
     base: Rc<Disposable>,
     storage_path: URI,
     log_service: LogServiceRef,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     storage: RefCell<ObjectRef>,
     last_saved_storage_contents: RefCell<String>,
     flush_delayer: Rc<ThrottledDelayer<()>>,
@@ -54,7 +55,7 @@ pub struct FileStorage {
 }
 
 impl FileStorage {
-    pub fn new(storage_path: URI, save_strategy: SaveStrategy, log_service: LogServiceRef, file_service: Rc<FileService>) -> Rc<Self> {
+    pub fn new(storage_path: URI, save_strategy: SaveStrategy, log_service: LogServiceRef, file_service: Rc<dyn IFileService>) -> Rc<Self> {
         let base = Disposable::new();
         // buffer saves over a short time
         let flush_delayer = Rc::new(ThrottledDelayer::new(if save_strategy == SaveStrategy::Immediate { 0 } else { 100 }));
@@ -227,7 +228,7 @@ pub struct StateReadonlyService {
 }
 
 impl StateReadonlyService {
-    pub fn new(save_strategy: SaveStrategy, state_resource: URI, log_service: LogServiceRef, file_service: Rc<FileService>) -> Rc<Self> {
+    pub fn new(save_strategy: SaveStrategy, state_resource: URI, log_service: LogServiceRef, file_service: Rc<dyn IFileService>) -> Rc<Self> {
         let base = Disposable::new();
         let file_storage = FileStorage::new(state_resource, save_strategy, log_service, file_service);
         base.register(file_storage.clone());
@@ -258,7 +259,7 @@ pub struct StateServiceImpl {
 }
 
 impl StateServiceImpl {
-    pub fn new(save_strategy: SaveStrategy, state_resource: URI, log_service: LogServiceRef, file_service: Rc<FileService>) -> Rc<Self> {
+    pub fn new(save_strategy: SaveStrategy, state_resource: URI, log_service: LogServiceRef, file_service: Rc<dyn IFileService>) -> Rc<Self> {
         Rc::new(Self { readonly: StateReadonlyService::new(save_strategy, state_resource, log_service, file_service) })
     }
 

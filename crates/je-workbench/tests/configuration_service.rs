@@ -161,7 +161,7 @@ fn workspace_json(folders: &[(String, Option<&str>)]) -> String {
 }
 
 /// `fileService.writeFile(resource, VSBuffer.fromString(content))`.
-async fn write_file(file_service: &Rc<FileService>, resource: &URI, content: &str) {
+async fn write_file(file_service: &Rc<dyn IFileService>, resource: &URI, content: &str) {
     file_service.write_file(resource, VSBuffer::from_string(content).into(), None).await.unwrap();
 }
 
@@ -286,7 +286,7 @@ fn register_test_configuration(properties: Vec<(&str, PropertySchema)>) {
 /// `UriIdentityService`, o `UserDataProfilesService` e o `FileUserDataProvider` do esquema `vscode-userdata`.
 struct Env {
     disposables: Rc<DisposableStore>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     file_system_provider: Rc<InMemoryFileSystemProvider>,
     environment_service: Rc<TestEnvironmentService>,
     uri_identity_service: Rc<dyn IUriIdentityService>,
@@ -315,7 +315,7 @@ impl Env {
         disposables.add(file_service.register_provider(ROOT_SCHEME, file_system_provider.clone()).unwrap());
 
         let environment_service = TestEnvironmentService::new();
-        let file_service_contract: Rc<dyn IFileService> = Rc::new(file_service.clone());
+        let file_service_contract: Rc<dyn IFileService> = file_service.clone();
         let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (file_service_contract,)));
         let user_data_profiles_service = disposables.add_rc(UserDataProfilesService::new(
             UserDataProfilesEnvironment {
@@ -3763,7 +3763,7 @@ mod workspace_configuration_service_remote_folder {
     }
 
     /// `disposables.add(instantiationService.get(IFileService).registerProvider(Schemas.vscodeRemote, new RemoteFileSystemProvider(...)))`.
-    fn register_remote_file_system_provider_in(file_service: &Rc<FileService>, store: &DisposableStore, file_system_provider: &Rc<InMemoryFileSystemProvider>) {
+    fn register_remote_file_system_provider_in(file_service: &Rc<dyn IFileService>, store: &DisposableStore, file_system_provider: &Rc<InMemoryFileSystemProvider>) {
         store.add(file_service.register_provider(schemas::VSCODE_REMOTE, TestRemoteFileSystemProvider::new(file_system_provider.clone(), REMOTE_AUTHORITY)).unwrap());
     }
 

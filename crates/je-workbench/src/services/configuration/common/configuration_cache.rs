@@ -12,7 +12,7 @@ use je_base::buffer::VSBuffer;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::environment::environment::EnvironmentService;
-use je_platform::files::file_service::FileService;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::files::files::{FileOperationError, FileOperationResult, PartialFileDeleteOptions};
 use je_platform::resources::join_path;
 
@@ -23,11 +23,11 @@ pub struct ConfigurationCache {
     cache_home: URI,
     donot_cache_resources_with_schemes: Vec<String>,
     cached_configurations: RefCell<HashMap<String, Rc<CachedConfiguration>>>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
 }
 
 impl ConfigurationCache {
-    pub fn new(donot_cache_resources_with_schemes: Vec<String>, environment_service: &dyn EnvironmentService, file_service: Rc<FileService>) -> Self {
+    pub fn new(donot_cache_resources_with_schemes: Vec<String>, environment_service: &dyn EnvironmentService, file_service: Rc<dyn IFileService>) -> Self {
         Self { cache_home: environment_service.cache_home(), donot_cache_resources_with_schemes, cached_configurations: RefCell::new(HashMap::new()), file_service }
     }
 
@@ -64,11 +64,11 @@ struct CachedConfiguration {
     queue: Queue<()>,
     cached_configuration_folder_resource: URI,
     cached_configuration_file_resource: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
 }
 
 impl CachedConfiguration {
-    fn new(key: &ConfigurationKey, cache_home: &URI, file_service: Rc<FileService>) -> Self {
+    fn new(key: &ConfigurationKey, cache_home: &URI, file_service: Rc<dyn IFileService>) -> Self {
         let cached_configuration_folder_resource = join_path(cache_home, &["CachedConfigurations", key.type_.as_str(), key.key.as_str()]);
         let file_name = if key.type_ == ConfigurationKeyType::Workspaces { "workspace.json" } else { "configuration.json" };
         let cached_configuration_file_resource = join_path(&cached_configuration_folder_resource, &[file_name]);

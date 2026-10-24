@@ -14,6 +14,7 @@
 //! - **Valores dinâmicos** (`unknown`) são [`Dynamic`]; `undefined` em `updateValue` remove a chave.
 //! - **Erros**: o `throw new Error(...)` de um `async` é uma promessa rejeitada.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -58,7 +59,7 @@ pub fn update_overrides_of(overrides: &ConfigurationOverrides) -> ConfigurationU
 pub struct ConfigurationService {
     base: Rc<Disposable>,
     settings_resource: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
     configuration: RefCell<Rc<Configuration>>,
     default_configuration: Rc<DefaultConfiguration>,
@@ -128,7 +129,7 @@ impl IConfigurationService for ConfigurationService {
 }
 
 impl ConfigurationService {
-    pub fn new(settings_resource: URI, file_service: Rc<FileService>, policy_service: Rc<dyn PolicyService>, log_service: LogServiceRef) -> Rc<Self> {
+    pub fn new(settings_resource: URI, file_service: Rc<dyn IFileService>, policy_service: Rc<dyn PolicyService>, log_service: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let default_configuration = DefaultConfiguration::new(log_service.clone());
         base.register(default_configuration.clone());

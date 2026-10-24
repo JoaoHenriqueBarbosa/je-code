@@ -14,6 +14,7 @@
 //! - `new RegExp(`${escapeRegExpCharacters(namePrefix)}\\s#(\\d+)`).exec(name)` é a busca do prefixo seguido de um
 //!   espaço em branco, `#` e dígitos, na posição mais à esquerda onde casa.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
@@ -212,7 +213,7 @@ pub struct UserDataSyncMachinesService {
 impl UserDataSyncMachinesService {
     pub fn new(
         environment_service: Rc<dyn EnvironmentService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         storage_service: Rc<dyn StorageService>,
         user_data_sync_store_service: Rc<dyn IUserDataSyncStoreService>,
         log_service: IUserDataSyncLogService,

@@ -42,7 +42,7 @@ use je_platform::configuration::{
     ConfigurationChange, ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOptions, ConfigurationUpdateOverrides, ConfigurationValue,
     configuration_target_to_string,
 };
-use je_platform::files::file_service::FileService;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::log::LogServiceRef;
 use je_platform::policy::PolicyService;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
@@ -167,7 +167,7 @@ pub struct WorkspaceService {
     configuration_editing: RefCell<Option<Promise<Rc<ConfigurationEditing>>>>,
     user_data_profile_service: Rc<dyn IUserDataProfileService>,
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     remote_agent_service: Rc<dyn IRemoteAgentService>,
     uri_identity_service: Rc<dyn IUriIdentityService>,
     log: LogServiceRef,
@@ -181,7 +181,7 @@ impl WorkspaceService {
         configuration_defaults: Option<Dynamic>,
         user_data_profile_service: Rc<dyn IUserDataProfileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         remote_agent_service: Rc<dyn IRemoteAgentService>,
         uri_identity_service: Rc<dyn IUriIdentityService>,
         log: LogServiceRef,

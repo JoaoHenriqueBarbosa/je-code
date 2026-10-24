@@ -314,7 +314,7 @@ fn setup(guard: &LeakGuard) -> Fixture {
     let notebook_editor_service: Rc<dyn INotebookEditorService> = Rc::new(NoNotebookEditorService { on_did_add_notebook_editor });
 
     let file_service = guard.add_rc(FileService::new(NullLogService::shared()));
-    let file_service: Rc<dyn IFileService> = Rc::new(file_service);
+    let file_service: Rc<dyn IFileService> = file_service;
     let uri_identity_service = guard.add_rc(UriIdentityService::create((), (file_service,)));
     let uri_identity_service: Rc<dyn IUriIdentityService> = uri_identity_service;
 

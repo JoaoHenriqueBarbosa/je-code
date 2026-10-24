@@ -5,6 +5,7 @@
 //! [`Promise`] cujo trecho síncrono (`supportsTelemetry` e `getTelemetryLevel`, lidos antes do primeiro `await`) roda na
 //! chamada, como no JavaScript. `telemetryService.machineId || serviceMachineId` trata o identificador vazio como ausente.
 
+use crate::files::i_file_service::IFileService;
 use std::rc::Rc;
 
 use je_base::parts::request::{HeaderValue, IHeaders};
@@ -25,7 +26,7 @@ pub fn resolve_marketplace_headers(
     product_service: &dyn IProductService,
     environment_service: &dyn EnvironmentService,
     configuration_service: &dyn IConfigurationService,
-    file_service: &Rc<FileService>,
+    file_service: &Rc<dyn IFileService>,
     storage_service: Option<Rc<dyn StorageService>>,
     telemetry_service: Rc<dyn ITelemetryService>,
 ) -> Promise<IHeaders> {

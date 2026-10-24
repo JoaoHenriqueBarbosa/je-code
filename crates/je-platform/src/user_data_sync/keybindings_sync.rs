@@ -18,6 +18,7 @@
 //! - `JSON.parse(syncContent || '{}')` com um valor que não é objeto vale como objeto vazio (o original lançaria
 //!   `TypeError` ao atribuir).
 
+use crate::files::i_file_service::IFileService;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
@@ -375,7 +376,7 @@ impl Deref for KeybindingsInitializer {
 
 impl KeybindingsInitializer {
     pub fn new(
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         environment_service: Rc<dyn EnvironmentService>,
         log_service: LogServiceRef,

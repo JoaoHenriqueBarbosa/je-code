@@ -23,6 +23,7 @@
 //! - **`createDecorator('ITestResultStorage')`** (o original não tipa o decorador) é [`I_TEST_RESULT_STORAGE`].
 //! - **`HydratedTestResult`:** `Promise<HydratedTestResult[]>` é `Promise<Vec<Rc<HydratedTestResult>>>`.
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -320,7 +321,7 @@ impl IDisposable for InMemoryResultStorage {
 /// O armazenamento em arquivos do `TestResultStorage`.
 struct FileBackend {
     directory: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
 }
 
 impl FileBackend {
@@ -382,7 +383,7 @@ impl TestResultStorage {
         storage_service: Rc<dyn StorageService>,
         log_service: LogServiceRef,
         workspace_context: Rc<dyn IWorkspaceContextService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         environment_service: Rc<dyn EnvironmentService>,
     ) -> Rc<Self> {
         let directory = join_path(&environment_service.workspace_storage_home(), &[&workspace_context.get_workspace().id(), "testResults"]);

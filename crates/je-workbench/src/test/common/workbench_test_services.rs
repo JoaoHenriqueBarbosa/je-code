@@ -55,7 +55,7 @@ use je_editor::text_resource_configuration_service::{ITextResourceConfigurationC
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, ConfigurationValue};
 use je_platform::files::files::{
-    FileChangesEvent, FileStat, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
+    FileChangesEvent, FileOperationEvent, FileStat, FileSystemProviderActivationEvent, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent, FileSystemProviderRef,
     FileSystemProviderRegistrationEvent, ResolveFileOptions,
 };
 use je_platform::files::i_file_service::IFileService;
@@ -1052,12 +1052,14 @@ impl ITextResourceConfigurationService for TestTextResourceConfigurationService 
 pub struct TestFileService {
     base: Rc<Disposable>,
     on_did_files_change: Rc<Emitter<Rc<FileChangesEvent>>>,
+    on_did_run_operation: Rc<Emitter<FileOperationEvent>>,
     on_did_change_file_system_provider_capabilities: Rc<Emitter<FileSystemProviderCapabilitiesChangeEvent>>,
     /// `readonly`.
     pub readonly: Cell<bool>,
     /// `notExistsSet`.
     pub not_exists_set: RefCell<ResourceMap<bool>>,
-    providers: RefCell<HashMap<String, FileSystemProviderRef>>,
+    providers: Rc<RefCell<HashMap<String, FileSystemProviderRef>>>,
+    on_will_activate_file_system_provider: Rc<Emitter<FileSystemProviderActivationEvent>>,
     /// `content` (protected): o texto que as leituras devolvem.
     content: RefCell<String>,
     last_read_file_uri: RefCell<Option<URI>>,
@@ -1078,15 +1080,21 @@ impl TestFileService {
         let base = Disposable::new();
         let on_did_files_change = Emitter::new();
         base.register(on_did_files_change.clone());
+        let on_did_run_operation = Emitter::new();
+        base.register(on_did_run_operation.clone());
+        let on_will_activate_file_system_provider = Emitter::new();
+        base.register(on_will_activate_file_system_provider.clone());
         let on_did_change_file_system_provider_capabilities = Emitter::new();
         base.register(on_did_change_file_system_provider_capabilities.clone());
         Rc::new(Self {
             base,
             on_did_files_change,
+            on_did_run_operation,
             on_did_change_file_system_provider_capabilities,
             readonly: Cell::new(false),
             not_exists_set: RefCell::new(ResourceMap::new()),
-            providers: RefCell::new(HashMap::new()),
+            providers: Rc::default(),
+            on_will_activate_file_system_provider,
             content: RefCell::new("Hello Html".to_owned()),
             last_read_file_uri: RefCell::new(None),
             read_should_throw_error: RefCell::new(None),
@@ -1127,19 +1135,24 @@ impl TestFileService {
         self.on_did_files_change.fire(event);
     }
 
+    /// `fireAfterOperation(event)`.
+    pub fn fire_after_operation(&self, event: FileOperationEvent) {
+        self.on_did_run_operation.fire(event);
+    }
+
     /// `fireFileSystemProviderCapabilitiesChangeEvent(event)`.
     pub fn fire_file_system_provider_capabilities_change_event(&self, event: FileSystemProviderCapabilitiesChangeEvent) {
         self.on_did_change_file_system_provider_capabilities.fire(event);
     }
 
-    /// `registerProvider(scheme, provider)`.
-    pub fn register_provider(self: &Rc<Self>, scheme: &str, provider: FileSystemProviderRef) -> DisposableRef {
+    /// `registerProvider(scheme, provider)`: o dublê não rejeita um esquema repetido (o original só grava no `Map`).
+    fn register_provider_impl(&self, scheme: &str, provider: FileSystemProviderRef) -> DisposableRef {
         self.providers.borrow_mut().insert(scheme.to_string(), provider);
 
-        let this = self.clone();
+        let providers = self.providers.clone();
         let scheme = scheme.to_string();
         to_disposable(move || {
-            this.providers.borrow_mut().remove(&scheme);
+            providers.borrow_mut().remove(&scheme);
         })
     }
 }
@@ -1274,6 +1287,29 @@ impl IFileService for TestFileService {
 
             Ok(stat)
         })
+    }
+
+    fn on_did_run_operation(&self) -> Event<FileOperationEvent> {
+        self.on_did_run_operation.event()
+    }
+
+    fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent> {
+        self.on_will_activate_file_system_provider.event()
+    }
+
+    fn register_provider(&self, scheme: &str, provider: FileSystemProviderRef) -> Result<DisposableRef, Error> {
+        Ok(self.register_provider_impl(scheme, provider))
+    }
+
+    /// `createFile(resource, content?, options?)`: o original devolve `null` (`Promise.resolve(null!)`); o contrato do
+    /// porte devolve um stat, e o dublê devolve o do `createFileStat(resource, readonly)`.
+    fn create_file(
+        &self,
+        resource: &URI,
+        _content: Option<je_platform::files::file_service::FileContentSource>,
+        _options: Option<je_platform::files::files::CreateFileOptions>,
+    ) -> Promise<je_platform::files::files::FileStatWithMetadata> {
+        Promise::resolved(self.file_stat(resource))
     }
 
     /// `del(resource, options?)`: sem efeito.

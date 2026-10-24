@@ -1,6 +1,7 @@
 //! Porte de `src/vs/platform/externalServices/common/serviceMachineId.ts`: o identificador da máquina que os
 //! serviços externos (a sincronização de configurações, o marketplace) usam.
 
+use crate::files::i_file_service::IFileService;
 use std::rc::Rc;
 
 use je_base::async_::async_fn;
@@ -16,7 +17,7 @@ const SERVICE_MACHINE_ID_KEY: &str = "storage.serviceMachineId";
 
 /// `getServiceMachineId`: o UUID guardado no armazenamento ou no arquivo `serviceMachineIdResource`, criado
 /// (e gravado nos dois) quando não existe.
-pub fn get_service_machine_id(environment_service: &dyn EnvironmentService, file_service: &Rc<FileService>, storage_service: Option<Rc<dyn StorageService>>) -> Promise<String> {
+pub fn get_service_machine_id(environment_service: &dyn EnvironmentService, file_service: &Rc<dyn IFileService>, storage_service: Option<Rc<dyn StorageService>>) -> Promise<String> {
     let resource = environment_service.service_machine_id_resource();
     let file_service = file_service.clone();
     async_fn(async move {

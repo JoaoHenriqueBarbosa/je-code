@@ -8,6 +8,7 @@
 
 mod common;
 
+use je_platform::files::i_file_service::IFileService;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -44,7 +45,7 @@ impl Drop for TestDir {
     }
 }
 
-fn file_service(disposables: &Rc<DisposableStore>) -> Rc<FileService> {
+fn file_service(disposables: &Rc<DisposableStore>) -> Rc<dyn IFileService> {
     let log_service = NullLogService::shared();
     let file_service = disposables.add_rc(FileService::new(log_service.clone()));
     let disk_file_system_provider = disposables.add_rc(DiskFileSystemProvider::new(log_service, None));
@@ -52,7 +53,7 @@ fn file_service(disposables: &Rc<DisposableStore>) -> Rc<FileService> {
     file_service
 }
 
-fn storage(disposables: &Rc<DisposableStore>, file_service: &Rc<FileService>, storage_file: &Path, strategy: SaveStrategy) -> Rc<FileStorage> {
+fn storage(disposables: &Rc<DisposableStore>, file_service: &Rc<dyn IFileService>, storage_file: &Path, strategy: SaveStrategy) -> Rc<FileStorage> {
     disposables.add_rc(FileStorage::new(URI::file(&*storage_file.to_string_lossy(), je_base::path::Platform::Posix), strategy, NullLogService::shared(), file_service.clone()))
 }
 

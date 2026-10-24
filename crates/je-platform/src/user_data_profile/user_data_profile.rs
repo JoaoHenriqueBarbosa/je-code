@@ -9,6 +9,7 @@
 //! - `IUriIdentityService.extUri` é um [`ExtUri`] entregue ao construtor.
 //! - O `IEnvironmentService` que o serviço lê é [`UserDataProfilesEnvironment`]: só os caminhos que ele usa.
 
+use crate::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -498,7 +499,7 @@ pub struct UserDataProfilesService {
     me: std::rc::Weak<UserDataProfilesService>,
     base: Rc<Disposable>,
     environment: UserDataProfilesEnvironment,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     ext_uri: ExtUri,
     log_service: LogServiceRef,
     store: Rc<dyn ProfilesStore>,
@@ -514,7 +515,7 @@ pub struct UserDataProfilesService {
 impl UserDataProfilesService {
     pub fn new(
         environment: UserDataProfilesEnvironment,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         ext_uri: ExtUri,
         log_service: LogServiceRef,
         store: Rc<dyn ProfilesStore>,

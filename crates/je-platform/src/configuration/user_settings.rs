@@ -5,6 +5,7 @@
 //! microsoft/vscode#118134). `loadConfiguration` nunca falha: um arquivo ausente ou ilegível dá um modelo
 //! vazio. O `async` do original é uma [`Promise`].
 
+use crate::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -26,7 +27,7 @@ pub struct UserSettings {
     user_settings_resource: URI,
     parser: RefCell<ConfigurationModelParser>,
     parse_options: RefCell<ConfigurationParseOptions>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
     on_did_change: Rc<Emitter<()>>,
 }
@@ -36,7 +37,7 @@ impl UserSettings {
         user_settings_resource: URI,
         parse_options: ConfigurationParseOptions,
         ext_uri: ExtUri,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         log_service: LogServiceRef,
     ) -> Rc<Self> {
         let base = Disposable::new();

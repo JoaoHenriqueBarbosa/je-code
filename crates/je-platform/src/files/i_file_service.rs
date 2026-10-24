@@ -14,6 +14,7 @@
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
+use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::lifecycle::DisposableRef;
 use je_base::promise::Promise;
@@ -23,7 +24,7 @@ use je_instantiation::service_id;
 use super::file_service::{FileContentSource, FileService};
 use super::files::{
     FileChangesEvent, FileContent, FileStat, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent,
-    FileStreamContent, FileSystemProviderRef, FileSystemProviderRegistrationEvent, PartialFileDeleteOptions, ReadFileOptions, ResolveFileOptions,
+    CreateFileOptions, FileOperationEvent, FileStreamContent, FileSystemProviderActivationEvent, FileSystemProviderRef, FileSystemProviderRegistrationEvent, PartialFileDeleteOptions, ReadFileOptions, ResolveFileOptions,
     WatchOptions, WriteFileOptions,
 };
 
@@ -92,68 +93,101 @@ pub trait IFileService {
     ///
     /// Emits a `FileOperation.DELETE` file operation event when successful.
     fn del(&self, resource: &URI, options: Option<PartialFileDeleteOptions>) -> Promise<()>;
+
+    /// `onDidRunOperation`: an event that is fired after a file operation has been performed.
+    fn on_did_run_operation(&self) -> Event<FileOperationEvent>;
+
+    /// `createFile(resource, bufferOrReadableOrStream?, options?)`: creates a new file with the given path and optional
+    /// contents. The returned promise will have the stat model object as a result.
+    ///
+    /// Emits a `FileOperation.CREATE` file operation event when successful.
+    fn create_file(&self, resource: &URI, content: Option<FileContentSource>, options: Option<CreateFileOptions>) -> Promise<FileStatWithMetadata>;
+
+    /// `onWillActivateFileSystemProvider`: an event that is fired when a file system provider is about to be activated.
+    /// Listeners can feed into the event by registering a promise with the event.
+    fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent>;
+
+    /// `registerProvider(scheme, provider)`: registers a file system provider for a certain scheme. Rejects when a
+    /// provider is already registered for the scheme.
+    fn register_provider(&self, scheme: &str, provider: FileSystemProviderRef) -> Result<DisposableRef, Error>;
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
 
-impl IFileService for Rc<FileService> {
+impl IFileService for FileService {
     fn on_did_files_change(&self) -> Event<Rc<FileChangesEvent>> {
-        FileService::on_did_files_change(self)
+        FileService::on_did_files_change(&self.rc())
     }
 
     fn get_provider(&self, scheme: &str) -> Option<FileSystemProviderRef> {
-        FileService::get_provider(self, scheme)
+        FileService::get_provider(&self.rc(), scheme)
     }
 
     fn resolve_with_metadata(&self, resource: &URI, options: Option<ResolveFileOptions>) -> Promise<FileStatWithMetadata> {
-        FileService::resolve_with_metadata(self, resource, options)
+        FileService::resolve_with_metadata(&self.rc(), resource, options)
     }
 
     fn exists(&self, resource: &URI) -> Promise<bool> {
-        FileService::exists(self, resource)
+        FileService::exists(&self.rc(), resource)
     }
 
     fn on_did_change_file_system_provider_registrations(&self) -> Event<FileSystemProviderRegistrationEvent> {
-        FileService::on_did_change_file_system_provider_registrations(self)
+        FileService::on_did_change_file_system_provider_registrations(&self.rc())
     }
 
     fn on_did_change_file_system_provider_capabilities(&self) -> Event<FileSystemProviderCapabilitiesChangeEvent> {
-        FileService::on_did_change_file_system_provider_capabilities(self)
+        FileService::on_did_change_file_system_provider_capabilities(&self.rc())
     }
 
     fn has_provider(&self, resource: &URI) -> bool {
-        FileService::has_provider(self, resource)
+        FileService::has_provider(&self.rc(), resource)
     }
 
     fn has_capability(&self, resource: &URI, capability: FileSystemProviderCapabilities) -> bool {
-        FileService::has_capability(self, resource, capability)
+        FileService::has_capability(&self.rc(), resource, capability)
     }
 
     fn read_file(&self, resource: &URI, options: Option<ReadFileOptions>, token: Option<CancellationToken>) -> Promise<FileContent> {
-        FileService::read_file(self, resource, options, token)
+        FileService::read_file(&self.rc(), resource, options, token)
     }
 
     fn resolve(&self, resource: &URI, options: Option<ResolveFileOptions>) -> Promise<FileStat> {
-        FileService::resolve(self, resource, options)
+        FileService::resolve(&self.rc(), resource, options)
     }
 
     fn create_folder(&self, resource: &URI) -> Promise<FileStatWithMetadata> {
-        FileService::create_folder(self, resource)
+        FileService::create_folder(&self.rc(), resource)
     }
 
     fn watch(&self, resource: &URI, options: Option<WatchOptions>) -> DisposableRef {
-        FileService::watch(self, resource, options)
+        FileService::watch(&self.rc(), resource, options)
     }
 
     fn read_file_stream(&self, resource: &URI, options: Option<ReadFileOptions>, token: Option<CancellationToken>) -> Promise<FileStreamContent> {
-        FileService::read_file_stream(self, resource, options, token)
+        FileService::read_file_stream(&self.rc(), resource, options, token)
     }
 
     fn write_file(&self, resource: &URI, content: FileContentSource, options: Option<WriteFileOptions>) -> Promise<FileStatWithMetadata> {
-        FileService::write_file(self, resource, content, options)
+        FileService::write_file(&self.rc(), resource, content, options)
     }
 
     fn del(&self, resource: &URI, options: Option<PartialFileDeleteOptions>) -> Promise<()> {
-        FileService::del(self, resource, options)
+        FileService::del(&self.rc(), resource, options)
+    }
+
+    fn on_did_run_operation(&self) -> Event<FileOperationEvent> {
+        FileService::on_did_run_operation(&self.rc())
+    }
+
+    fn create_file(&self, resource: &URI, content: Option<FileContentSource>, options: Option<CreateFileOptions>) -> Promise<FileStatWithMetadata> {
+        FileService::create_file(&self.rc(), resource, content, options)
+    }
+
+    fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent> {
+        FileService::on_will_activate_file_system_provider(self)
+    }
+
+    fn register_provider(&self, scheme: &str, provider: FileSystemProviderRef) -> Result<DisposableRef, Error> {
+        FileService::register_provider(&self.rc(), scheme, provider)
     }
 }

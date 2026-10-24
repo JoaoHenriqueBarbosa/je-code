@@ -10,6 +10,7 @@
 //!   não forma uma data válida dá `NaN`, como no original.
 //! - `cleanUp`, chamado no construtor, é uma promessa que ninguém espera; como nunca rejeita, não há erro solto.
 
+use crate::files::i_file_service::IFileService;
 use std::rc::{Rc, Weak};
 
 use je_base::async_::{async_fn, promises};
@@ -36,7 +37,7 @@ pub struct UserDataSyncLocalStoreService {
     me: Weak<Self>,
     base: Rc<Disposable>,
     environment_service: Rc<dyn EnvironmentService>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     configuration_service: Rc<dyn IConfigurationService>,
     log_service: IUserDataSyncLogService,
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
@@ -65,7 +66,7 @@ fn get_creation_time(stat: &FileStat) -> f64 {
 impl UserDataSyncLocalStoreService {
     pub fn new(
         environment_service: Rc<dyn EnvironmentService>,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         configuration_service: Rc<dyn IConfigurationService>,
         log_service: IUserDataSyncLogService,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,

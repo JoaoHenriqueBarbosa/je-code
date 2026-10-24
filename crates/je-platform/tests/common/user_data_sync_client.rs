@@ -28,6 +28,7 @@
 //!   `Number.MAX_SAFE_INTEGER` do `rateLimit` padrão é `usize::MAX`.
 #![allow(dead_code)]
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -586,7 +587,7 @@ pub struct UserDataSyncClient {
     base: Rc<Disposable>,
     pub test_server: Rc<UserDataSyncTestServer>,
     pub environment_service: Rc<TestEnvironmentService>,
-    pub file_service: Rc<FileService>,
+    pub file_service: Rc<dyn IFileService>,
     pub user_data_profiles_service: Rc<UserDataProfilesService>,
     pub storage_service: Rc<dyn StorageService>,
     pub user_data_profile_storage_service: Rc<AbstractUserDataProfileStorageService>,

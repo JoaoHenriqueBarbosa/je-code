@@ -340,19 +340,19 @@ pub mod user_data_sync_client;
 
 /// `fileService.writeFile(resource, VSBuffer.fromString(text))`. Sem `await`, a promessa roda até o primeiro
 /// `await`, como no original.
-pub fn write_text(file_service: &Rc<je_platform::files::file_service::FileService>, resource: &URI, text: &str) -> je_base::promise::Promise<()> {
+pub fn write_text(file_service: &Rc<dyn je_platform::files::i_file_service::IFileService>, resource: &URI, text: &str) -> je_base::promise::Promise<()> {
     let (file_service, resource, text) = (file_service.clone(), resource.clone(), text.to_string());
     je_base::async_::async_fn(async move { file_service.write_file(&resource, je_platform::files::file_service::FileContentSource::from(text.as_str()), None).await.map(|_| ()) })
 }
 
 /// `fileService.createFile(resource, VSBuffer.fromString(text))`.
-pub fn create_text(file_service: &Rc<je_platform::files::file_service::FileService>, resource: &URI, text: &str) -> je_base::promise::Promise<()> {
+pub fn create_text(file_service: &Rc<dyn je_platform::files::i_file_service::IFileService>, resource: &URI, text: &str) -> je_base::promise::Promise<()> {
     let (file_service, resource, text) = (file_service.clone(), resource.clone(), text.to_string());
     je_base::async_::async_fn(async move { file_service.create_file(&resource, Some(je_platform::files::file_service::FileContentSource::from(text.as_str())), None).await.map(|_| ()) })
 }
 
 /// `(await fileService.readFile(resource)).value.toString()`.
-pub async fn read_text(file_service: &Rc<je_platform::files::file_service::FileService>, resource: &URI) -> String {
+pub async fn read_text(file_service: &Rc<dyn je_platform::files::i_file_service::IFileService>, resource: &URI) -> String {
     file_service.read_file(resource, None, None).await.unwrap().value.to_string()
 }
 

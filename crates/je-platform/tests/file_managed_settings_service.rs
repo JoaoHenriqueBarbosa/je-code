@@ -14,6 +14,7 @@
 
 mod common;
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -305,7 +306,7 @@ fn managed_settings_file() -> URI {
 }
 
 /// O `FileService` com o provider em memória do esquema `vscode-tests` e o `NullLogService`.
-fn setup(d: &Rc<DisposableStore>) -> (Rc<FileService>, LogServiceRef) {
+fn setup(d: &Rc<DisposableStore>) -> (Rc<dyn IFileService>, LogServiceRef) {
     let log_service = NullLogService::shared();
     let file_service = d.add_rc(FileService::new(log_service.clone()));
     let in_memory_provider = d.add_rc(InMemoryFileSystemProvider::new());
@@ -313,11 +314,11 @@ fn setup(d: &Rc<DisposableStore>) -> (Rc<FileService>, LogServiceRef) {
     (file_service, log_service)
 }
 
-async fn write_managed_settings_file(file_service: &Rc<FileService>, content: &str) {
+async fn write_managed_settings_file(file_service: &Rc<dyn IFileService>, content: &str) {
     file_service.write_file(&managed_settings_file(), VSBuffer::from_string(content).into(), None).await.unwrap();
 }
 
-fn new_service(d: &Rc<DisposableStore>, file_service: &Rc<FileService>, log_service: &LogServiceRef) -> Rc<FileManagedSettingsService> {
+fn new_service(d: &Rc<DisposableStore>, file_service: &Rc<dyn IFileService>, log_service: &LogServiceRef) -> Rc<FileManagedSettingsService> {
     d.add_rc(FileManagedSettingsService::new(managed_settings_file(), file_service.clone(), log_service.clone()))
 }
 

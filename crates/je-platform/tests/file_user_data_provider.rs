@@ -20,6 +20,7 @@
 
 mod common;
 
+use je_platform::files::i_file_service::IFileService;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -71,7 +72,7 @@ fn environment(app_settings_home: &URI) -> UserDataProfilesEnvironment {
 
 /// Os objetos do `setup` da suíte `FileUserDataProvider`.
 struct Setup {
-    test_object: Rc<FileService>,
+    test_object: Rc<dyn IFileService>,
     user_data_home_on_disk: URI,
     backup_workspace_home_on_disk: URI,
     environment: UserDataProfilesEnvironment,
@@ -92,7 +93,7 @@ async fn setup(disposables: &Rc<DisposableStore>) -> Setup {
     test_object.create_folder(&backup_workspace_home_on_disk).await.unwrap();
 
     let environment = environment(&user_data_home_on_disk);
-    let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (Rc::new(test_object.clone()),)));
+    let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (test_object.clone(),)));
     let user_data_profiles_service = disposables.add_rc(UserDataProfilesService::new(
         environment.clone(),
         test_object.clone(),
@@ -520,7 +521,7 @@ fn watching_setup(disposables: &Rc<DisposableStore>) -> WatchingSetup {
 
     let log_service = NullLogService::shared();
     let file_service = disposables.add_rc(FileService::new(log_service.clone()));
-    let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (Rc::new(file_service.clone()),)));
+    let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (file_service.clone(),)));
     let user_data_profiles_service = disposables.add_rc(UserDataProfilesService::new(
         environment(&root_file_resource),
         file_service,
