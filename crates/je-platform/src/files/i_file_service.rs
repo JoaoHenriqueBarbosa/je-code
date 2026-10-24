@@ -157,6 +157,12 @@ pub trait IFileService {
     fn realpath(&self, _resource: &URI) -> Promise<Option<URI>> {
         Promise::resolved(None)
     }
+
+    /// `activateProvider(scheme)`: gives listeners a chance to register a file system provider for the scheme and waits
+    /// for them. O padrão não ativa nada (resolve já), para que os dublês sem ativação de provedores continuem valendo.
+    fn activate_provider(&self, _scheme: &str) -> Promise<()> {
+        Promise::resolved(())
+    }
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
@@ -264,5 +270,9 @@ impl IFileService for FileService {
 
     fn realpath(&self, resource: &URI) -> Promise<Option<URI>> {
         FileService::realpath(&self.rc(), resource)
+    }
+
+    fn activate_provider(&self, scheme: &str) -> Promise<()> {
+        FileService::activate_provider(&self.rc(), scheme)
     }
 }

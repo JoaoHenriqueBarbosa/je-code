@@ -8,14 +8,18 @@
 //! `Default` cria o contêiner sem rastreio, para uso interno de tipos que não são `Disposable`.
 //!
 //! Ficam de fora o `GCBasedDisposableTracker` (depende de `FinalizationRegistry`, que não existe sem
-//! coletor de lixo), o `DisposableResourceMap` (depende de `URI`/`ResourceMap`) e o
-//! `AsyncReferenceCollection` (depende do `async.ts`).
+//! coletor de lixo) e o `DisposableResourceMap` (depende de `URI`/`ResourceMap`).
+//!
+//! O `ReferenceCollection.acquire(key, ...args)` repassa os argumentos extras ao `createReferencedObject`; aqui o
+//! `createReferencedObject(key)` do [`ReferencedObjects`] não recebe argumentos, e quem precisa deles chama
+//! [`ReferenceCollection::acquire_with`] com o fecho que cria o objeto.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::rc::Rc;
 
+use crate::async_::async_fn;
 use crate::errors::{self, Error};
 use crate::promise::Promise;
 use crate::stacktrace;
@@ -765,9 +769,21 @@ pub struct Reference<T> {
 }
 
 impl<T> Reference<T> {
+    /// `{ object, dispose }`: o `release` é de chamada única, como o `dispose` de uma `IReference`.
+    pub fn new(object: T, release: DisposableRef) -> Self {
+        Self { object, release }
+    }
+
     /// `ImmortalReference`: referência cujo descarte não faz nada.
     pub fn immortal(object: T) -> Self {
         Self { object, release: none() }
+    }
+}
+
+impl<T: Clone> Clone for Reference<T> {
+    /// A cópia divide o descarte (o mesmo `dispose` de chamada única).
+    fn clone(&self) -> Self {
+        Self { object: self.object.clone(), release: self.release.clone() }
     }
 }
 
@@ -791,17 +807,29 @@ pub struct ReferenceCollection<T: Clone + 'static, F: ReferencedObjects<T> + 'st
 
 impl<T: Clone + 'static, F: ReferencedObjects<T> + 'static> ReferenceCollection<T, F> {
     pub fn new(factory: F) -> Self {
-        Self { references: Rc::new(RefCell::new(HashMap::new())), factory: Rc::new(factory) }
+        Self::with_factory(Rc::new(factory))
+    }
+
+    /// Como [`ReferenceCollection::new`], com a fábrica compartilhada: quem a cria (a subclasse do original, que é a
+    /// coleção e a fábrica ao mesmo tempo) continua com o próprio `Rc` para ler o estado dela.
+    pub fn with_factory(factory: Rc<F>) -> Self {
+        Self { references: Rc::new(RefCell::new(HashMap::new())), factory }
     }
 
     /// `acquire(key)`. O descarte da referência é de chamada única (`createSingleCallFunction`).
     pub fn acquire(&self, key: &str) -> Reference<T> {
+        self.acquire_with(key, || self.factory.create_referenced_object(key))
+    }
+
+    /// `acquire(key, ...args)`: `create` é o `createReferencedObject(key, ...args)`, chamado só quando a chave ainda não
+    /// tem objeto.
+    pub fn acquire_with(&self, key: &str, create: impl FnOnce() -> T) -> Reference<T> {
         let object = {
             let existing = self.references.borrow().get(key).map(|(o, _)| o.clone());
             match existing {
                 Some(o) => o,
                 None => {
-                    let o = self.factory.create_referenced_object(key);
+                    let o = create();
                     self.references.borrow_mut().insert(key.to_owned(), (o.clone(), 0));
                     o
                 }
@@ -831,6 +859,43 @@ impl<T: Clone + 'static, F: ReferencedObjects<T> + 'static> ReferenceCollection<
             }
         });
         Reference { object, release }
+    }
+}
+
+/// `AsyncReferenceCollection<T>`: uma `ReferenceCollection` de promessas, com a referência já resolvida.
+pub struct AsyncReferenceCollection<T: Clone + 'static, F: ReferencedObjects<Promise<T>> + 'static> {
+    reference_collection: Rc<ReferenceCollection<Promise<T>, F>>,
+}
+
+impl<T: Clone + 'static, F: ReferencedObjects<Promise<T>> + 'static> AsyncReferenceCollection<T, F> {
+    pub fn new(reference_collection: Rc<ReferenceCollection<Promise<T>, F>>) -> Self {
+        Self { reference_collection }
+    }
+
+    /// `acquire(key)`: a referência é adquirida já (de forma síncrona) e a promessa resolve quando o objeto resolve.
+    pub fn acquire(&self, key: &str) -> Promise<Reference<T>> {
+        Self::await_object(self.reference_collection.acquire(key))
+    }
+
+    /// `acquire(key, ...args)`, com o `create` de [`ReferenceCollection::acquire_with`].
+    pub fn acquire_with(&self, key: &str, create: impl FnOnce() -> Promise<T>) -> Promise<Reference<T>> {
+        Self::await_object(self.reference_collection.acquire_with(key, create))
+    }
+
+    /// O corpo `async` do `acquire`: se o objeto falha, a referência é solta antes de o erro subir.
+    fn await_object(reference: Reference<Promise<T>>) -> Promise<Reference<T>> {
+        async_fn(async move {
+            match reference.object.clone().await {
+                Ok(object) => {
+                    let release: DisposableRef = Rc::new(reference);
+                    Ok(Reference::new(object, release))
+                }
+                Err(error) => {
+                    reference.dispose();
+                    Err(error)
+                }
+            }
+        })
     }
 }
 
