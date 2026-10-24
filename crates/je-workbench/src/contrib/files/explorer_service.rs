@@ -6,10 +6,10 @@
 //!   registra ainda não foram portados), então o `registerView` só guarda a vista. Por isso o serviço também ainda não
 //!   é registrado como singleton (`registerSingleton(IExplorerService, ExplorerService, ...)` é de
 //!   `explorer.contribution.ts`).
-//! - **`IBulkEditService.apply`.** O contrato do porte (`je_editor::code_action::platform`) aplica um `WorkspaceEdit` com
-//!   `label` e `code`; `undoRedoSource`, `progress`, `token` e `confirmBeforeUndo` não existem nele, então o
-//!   `applyBulkEdit` converte os `ResourceFileEdit` em `WorkspaceEdit` e passa o `label` e o `code`; o progresso, o
-//!   cancelamento e o `progressLocation` seguem como no original (o token é cancelado pelo `onDidCancel`).
+//! - **`IBulkEditService.apply`.** O contrato do porte (`je_editor::code_action::platform`) aplica um `WorkspaceEdit`, então o
+//!   `applyBulkEdit` converte os `ResourceFileEdit` em `WorkspaceEdit` e passa as opções do original (`undoRedoSource`,
+//!   `label`, `code`, `progress`, `token` e `confirmBeforeUndo`); o cancelamento segue como no original (o token é cancelado
+//!   pelo `onDidCancel`).
 //! - **`IProgressService`.** É o de `je_platform::progress::progress`; o `ProgressLocation` de `ExplorerBulkEditOptions`
 //!   (o do `collaborators`) é convertido para ele.
 //! - **Eventos e promessas.** Cada ouvinte captura um `Weak` do serviço (`Rc::new_cyclic`). O corpo `async` de cada
@@ -1005,11 +1005,21 @@ impl IExplorerService for ExplorerService {
         let workspace_edit = WorkspaceEdit { edits: edit.into_iter().map(|edit| WorkspaceEditItem::File(IWorkspaceFileEdit::from(edit))).collect() };
         let bulk_edit_service = self.bulk_edit_service.clone();
         let undo_label = options.undo_label.clone();
+        let confirm_before_undo = options.confirm_before_undo;
+        let token = cancellation_token_source.token();
         let promise = self.progress_service.with_progress(
             progress_options,
-            Box::new(move |_progress| {
+            Box::new(move |progress| {
                 async_fn(async move {
-                    let bulk_options = BulkEditOptions { label: Some(undo_label), code: Some("undoredo.explorerOperation".to_string()), ..BulkEditOptions::default() };
+                    let bulk_options = BulkEditOptions {
+                        undo_redo_source: Some(UNDO_REDO_SOURCE.with(Rc::clone)),
+                        label: Some(undo_label),
+                        code: Some("undoredo.explorerOperation".to_string()),
+                        progress: Some(progress),
+                        token: Some(token),
+                        confirm_before_undo,
+                        ..BulkEditOptions::default()
+                    };
                     bulk_edit_service.apply(&workspace_edit, bulk_options).await?;
                     Ok(())
                 })

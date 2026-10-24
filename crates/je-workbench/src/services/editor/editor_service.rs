@@ -42,6 +42,7 @@ use je_base::event::Event;
 use je_base::lifecycle::DisposableStore;
 use je_base::uri::URI;
 use je_base::promise::Promise;
+use je_editor::code_editor_widget::CodeEditorWidget;
 use je_editor::selection::Selection;
 use je_instantiation::service_id;
 
@@ -70,6 +71,12 @@ pub trait IActiveCodeEditor {
     /// `getModel()?.getLanguageId()`: `None` quando o editor não tem modelo. Tem implementação padrão (sem modelo) para
     /// não quebrar quem implementa só o recorte acima.
     fn get_language_id(&self) -> Option<String> {
+        None
+    }
+
+    /// O `ICodeEditor` completo por trás do recorte (o `BulkEditService` o passa ao `BulkTextEdits`). Tem implementação
+    /// padrão (sem editor completo) para não quebrar quem implementa só o recorte acima.
+    fn code_editor_widget(&self) -> Option<Rc<CodeEditorWidget>> {
         None
     }
 }

@@ -1075,6 +1075,12 @@ impl CodeEditorWidget {
         this
     }
 
+    /// O `Rc` do próprio editor: o `this` do original, que o JavaScript passa adiante por referência (o `BulkEditService`
+    /// o recebe como `ICodeEditor` do `IEditorService`).
+    pub fn rc(&self) -> Rc<CodeEditorWidget> {
+        self.me.upgrade().expect("o editor está vivo enquanto um método dele roda")
+    }
+
     /// `this._register(event(listener))`, com o callback recebendo o widget (o `this` do original) em vez de
     /// capturá-lo: o `Weak` sobe a cada chamada, e a chamada some se o widget já foi solto.
     fn register_listener<E: 'static>(&self, event: Event<E>, handler: impl Fn(&CodeEditorWidget, &E) + 'static) {
