@@ -83,3 +83,6 @@ pub mod configuration_models_support;
 
 // Porte de `workbench/services/textfile/test/browser/textEditorService.test.ts`: o `NullFileSystemProvider` e o `FileServiceProvider`.
 pub mod text_editor_service_support;
+
+// Porte de `openWithEditorPicker.test.ts`: o `TestQuickPick` e o `IQuickInputService` parcial.
+pub mod open_with_editor_picker_support;

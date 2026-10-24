@@ -30,3 +30,5 @@ pub mod implicit_activation_events;
 pub mod ext_host_customers;
 pub mod extension_host_manager;
 pub mod lazy_create_extension_host_manager;
+// `extensionStorageMigration.ts`: a migração do armazenamento de uma extensão para outro identificador.
+pub mod extension_storage_migration;

@@ -15,3 +15,6 @@ pub mod browser_editor_resolver_service;
 pub mod editor_group_column;
 pub mod editor_group_finder;
 pub mod editor_resolver_service;
+
+// `openWithEditorPicker.ts` do browser: o seletor "Abrir com" e o comando `_workbench.editor.configureDefaultEditor`.
+pub mod open_with_editor_picker;
