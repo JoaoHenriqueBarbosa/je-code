@@ -56,8 +56,10 @@ pub struct EncodedDebugData {
 /// `Source`.
 pub struct Source {
     pub uri: URI,
-    pub available: bool,
-    pub raw: ProtocolSource,
+    /// `available`: o `sourceIsNotAvailable` do modelo a muda (`Cell`, porque a `Source` é compartilhada por `Rc`).
+    pub available: std::cell::Cell<bool>,
+    /// `raw`: o `getSource` da sessão mistura os atributos novos nele (`RefCell` pelo mesmo motivo).
+    pub raw: std::cell::RefCell<ProtocolSource>,
 }
 
 impl Source {
@@ -75,23 +77,23 @@ impl Source {
         };
 
         let uri = get_uri_from_source(&raw, Some(&path), session_id, uri_identity_service, log_service);
-        Self { uri, available, raw }
+        Self { uri, available: std::cell::Cell::new(available), raw: std::cell::RefCell::new(raw) }
     }
 
     pub fn name(&self) -> String {
-        self.raw.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| ext_uri().basename_or_authority(&self.uri))
+        self.raw.borrow().name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| ext_uri().basename_or_authority(&self.uri))
     }
 
-    pub fn origin(&self) -> Option<&str> {
-        self.raw.origin.as_deref()
+    pub fn origin(&self) -> Option<String> {
+        self.raw.borrow().origin.clone()
     }
 
     pub fn presentation_hint(&self) -> Option<SourcePresentationHint> {
-        self.raw.presentation_hint
+        self.raw.borrow().presentation_hint
     }
 
     pub fn reference(&self) -> Option<i64> {
-        self.raw.source_reference
+        self.raw.borrow().source_reference
     }
 
     pub fn in_memory(&self) -> bool {

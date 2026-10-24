@@ -74,10 +74,8 @@ use crate::contrib::notebook::common::notebook_common::{INotebookKernelSourceAct
 use crate::contrib::notebook::common::notebook_execution_state_service::{
     CellExecutionErrorStack, ICellErrorStackFrame, ICellExecutionError, ICellExecutionStateUpdate,
 };
+use crate::contrib::notebook::common::notebook_kernel_service::VARIABLE_PAGE_SIZE;
 use crate::services::extensions::extensions::check_proposed_api_enabled;
-
-/// `variablePageSize` (`contrib/notebook/common/notebookKernelService.ts`).
-const VARIABLE_PAGE_SIZE: usize = 100;
 
 /// `types.NotebookRendererScript`.
 pub type NotebookRendererScript = NotebookRendererScriptDto;

@@ -4133,6 +4133,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "je-base",
+ "je-editor",
  "je-extensions",
  "je-platform",
  "je-workbench",
@@ -4253,6 +4254,7 @@ dependencies = [
  "je-base",
  "je-editor",
  "je-extensions",
+ "je-exthost",
  "je-instantiation",
  "je-platform",
  "je-storage",

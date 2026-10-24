@@ -276,6 +276,200 @@ pub fn convert_to_da_paths(message: &ProtocolMessage, to_uri: bool) -> ProtocolM
     msg
 }
 
+/// `formatPII(value, excludePII, args)`: troca cada `{grupo}` (`/{([^}]+)}/g`) pelo argumento de mesmo nome; com
+/// `exclude_pii`, os grupos que não começam por `_` ficam como estão.
+pub fn format_pii(value: &str, exclude_pii: bool, args: Option<&std::collections::HashMap<String, String>>) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut result = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '{'
+            && let Some(close) = chars[i + 1..].iter().position(|c| *c == '}')
+            && close > 0
+        {
+            let group: String = chars[i + 1..i + 1 + close].iter().collect();
+            let matched: String = chars[i..i + close + 2].iter().collect();
+            if exclude_pii && !group.is_empty() && !group.starts_with('_') {
+                result.push_str(&matched);
+            } else {
+                match args.and_then(|args| args.get(&group)) {
+                    Some(replacement) => result.push_str(replacement),
+                    None => result.push_str(&matched),
+                }
+            }
+            i += close + 2;
+            continue;
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// `filterExceptionsFromTelemetry(data)`: tira as chaves marcadas com `!`.
+pub fn filter_exceptions_from_telemetry(data: &Map<String, Value>) -> Map<String, Value> {
+    data.iter().filter(|(key, _)| !key.starts_with('!')).map(|(key, value)| (key.clone(), value.clone())).collect()
+}
+
+/// `getExactExpressionStartAndEnd(lineContent, looseStart, looseEnd)`: note, uses 1-indexed numbers (em unidades UTF-16,
+/// como o original). Devolve `(start, end)`.
+pub fn get_exact_expression_start_and_end(line_content: &str, loose_start: i64, loose_end: i64) -> (i64, i64) {
+    let units: Vec<u16> = line_content.encode_utf16().collect();
+    let mut matching_expression: Option<Vec<u16>> = None;
+    let mut start_offset: i64 = 0;
+
+    // Some example supported expressions: myVar.prop, a.b.c.d, myVar?.prop, myVar->prop, MyClass::StaticProp, *myVar, ...foo
+    // Match any character except a set of characters which often break interesting sub-expressions
+    let expression = zyarr::RegExp::from_str(r"([^()\[\]{}<>\s+\-/%~#^;=|,`!]|\->)+", "g").expect("a expressão é válida");
+
+    // First find the full expression under the cursor
+    let mut last_index = 0;
+    while let Some(found) = expression.exec(&units, last_index) {
+        let start = found.start() as i64 + 1;
+        let end = start + (found.end() - found.start()) as i64;
+
+        if start <= loose_start && end >= loose_end {
+            matching_expression = Some(units[found.start()..found.end()].to_vec());
+            start_offset = start;
+            break;
+        }
+        last_index = if found.end() == found.start() { found.end() + 1 } else { found.end() };
+    }
+
+    // Handle spread syntax: if the expression starts with '...', extract just the identifier
+    if let Some(expression) = &matching_expression
+        && expression.len() > 3
+        && expression[..3].iter().all(|unit| *unit == u16::from(b'.'))
+    {
+        matching_expression = Some(expression[3..].to_vec());
+        start_offset += 3; // Skip the '...' prefix
+    }
+
+    // If there are non-word characters after the cursor, we want to truncate the expression then.
+    // For example in expression 'a.b.c.d', if the focus was under 'b', 'a.b' would be evaluated.
+    if let Some(expression) = &matching_expression {
+        let sub_expression = zyarr::RegExp::from_str(r"(\w|\p{L})+", "gu").expect("a expressão é válida");
+        let mut last_index = 0;
+        let mut truncate_at: Option<usize> = None;
+        while let Some(found) = sub_expression.exec(expression, last_index) {
+            let sub_end = found.start() as i64 + 1 + start_offset + (found.end() - found.start()) as i64;
+            last_index = found.end();
+            if sub_end >= loose_end {
+                truncate_at = Some(found.end());
+                break;
+            }
+        }
+
+        if let Some(truncate_at) = truncate_at {
+            matching_expression = Some(expression[..truncate_at].to_vec());
+        }
+    }
+
+    match matching_expression {
+        Some(expression) => (start_offset, start_offset + expression.len() as i64 - 1),
+        None => (0, 0),
+    }
+}
+
+/// `getPlatformSpecificConfig(config, os)`: a seção `windows`, `osx` ou `linux` da configuração.
+fn get_platform_specific_config(config: &Value, os: je_base::platform::OperatingSystem) -> Option<&Value> {
+    let key = match os {
+        je_base::platform::OperatingSystem::Windows => "windows",
+        je_base::platform::OperatingSystem::Macintosh => "osx",
+        je_base::platform::OperatingSystem::Linux => "linux",
+    };
+    config.get(key).filter(|section| !matches!(section, Value::Null | Value::Bool(false)))
+}
+
+/// `getEffectiveConfigForPlatform(config, os = OS)`: a configuração com a seção da plataforma por cima; a `presentation` é a
+/// mescla das duas.
+pub fn get_effective_config_for_platform(config: &Value, os: Option<je_base::platform::OperatingSystem>) -> Value {
+    let os = os.unwrap_or_else(|| je_base::platform::Platform::detect().os);
+    let Some(platform_config) = get_platform_specific_config(config, os) else {
+        return config.clone();
+    };
+
+    let mut result = config.as_object().cloned().unwrap_or_default();
+    if let Some(platform_config) = platform_config.as_object() {
+        for (key, value) in platform_config {
+            result.insert(key.clone(), value.clone());
+        }
+    }
+    let platform_presentation = platform_config.get("presentation").filter(|p| !matches!(p, Value::Null | Value::Bool(false)));
+    match platform_presentation {
+        Some(platform_presentation) => {
+            let mut merged = config.get("presentation").and_then(Value::as_object).cloned().unwrap_or_default();
+            if let Some(platform_presentation) = platform_presentation.as_object() {
+                for (key, value) in platform_presentation {
+                    merged.insert(key.clone(), value.clone());
+                }
+            }
+            result.insert("presentation".to_owned(), Value::Object(merged));
+        }
+        None => match config.get("presentation") {
+            Some(presentation) => {
+                result.insert("presentation".to_owned(), presentation.clone());
+            }
+            None => {
+                result.remove("presentation");
+            }
+        },
+    }
+    Value::Object(result)
+}
+
+/// `getEffectivePresentationForConfig(config, os = OS)`.
+pub fn get_effective_presentation_for_config(config: &Value, os: Option<je_base::platform::OperatingSystem>) -> Option<Value> {
+    get_effective_config_for_platform(config, os).get("presentation").cloned()
+}
+
+/// `compareOrders(first, second)`.
+fn compare_orders(first: Option<f64>, second: Option<f64>) -> f64 {
+    match (first, second) {
+        (None, None) => 0.0,
+        (None, Some(_)) => 1.0,
+        (Some(_), None) => -1.0,
+        (Some(first), Some(second)) => first - second,
+    }
+}
+
+/// `getVisibleAndSorted(array)`: as configurações com `presentation` (`hidden`, `group`, `order`), sem as escondidas, na
+/// ordem do grupo e da ordem (as sem `presentation` por último), com a ordenação estável do V8.
+pub fn get_visible_and_sorted(array: &[Value]) -> Vec<Value> {
+    let mut visible: Vec<Value> = array
+        .iter()
+        .filter(|config| !config.get("presentation").and_then(|p| p.get("hidden")).is_some_and(|hidden| !matches!(hidden, Value::Null | Value::Bool(false))))
+        .cloned()
+        .collect();
+    let presentation = |config: &Value| config.get("presentation").filter(|p| !matches!(p, Value::Null | Value::Bool(false))).cloned();
+    let group = |presentation: &Value| presentation.get("group").and_then(Value::as_str).filter(|g| !g.is_empty()).map(str::to_owned);
+    let order = |presentation: &Value| presentation.get("order").and_then(Value::as_f64);
+    je_base::arrays::sort_by_compare(&mut visible, |first, second| {
+        let Some(first) = presentation(first) else {
+            return if presentation(second).is_none() { 0.0 } else { 1.0 };
+        };
+        let Some(second) = presentation(second) else {
+            return -1.0;
+        };
+        let Some(first_group) = group(&first) else {
+            return if group(&second).is_none() { compare_orders(order(&first), order(&second)) } else { 1.0 };
+        };
+        let Some(second_group) = group(&second) else {
+            return -1.0;
+        };
+        if first_group != second_group {
+            return match je_base::collator::locale_compare(&first_group, &second_group) {
+                std::cmp::Ordering::Less => -1.0,
+                std::cmp::Ordering::Equal => 0.0,
+                std::cmp::Ordering::Greater => 1.0,
+            };
+        }
+
+        compare_orders(order(&first), order(&second))
+    });
+    visible
+}
+
 /// `convertToVSCPaths(message, toUri)`: since we modify Source.paths in the message in place, we need to make a copy of it
 /// (see #61129).
 pub fn convert_to_vsc_paths(message: &ProtocolMessage, to_uri: bool) -> ProtocolMessage {

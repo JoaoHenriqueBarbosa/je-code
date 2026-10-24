@@ -20,6 +20,8 @@ pub mod cell_operations;
 
 /// `IActiveNotebookEditor`, só com o que `cellOperations.ts` lê.
 pub trait IActiveNotebookEditor {
+    /// `getId()`.
+    fn get_id(&self) -> String;
     fn text_model(&self) -> Rc<NotebookTextModel>;
     fn is_read_only(&self) -> bool;
     fn get_selections(&self) -> Vec<ICellRange>;

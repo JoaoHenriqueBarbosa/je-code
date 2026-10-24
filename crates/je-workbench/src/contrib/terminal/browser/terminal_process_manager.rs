@@ -197,7 +197,7 @@ pub struct TerminalProcessManager {
 
     process_state: Cell<ProcessState>,
     pty_process_ready: RefCell<Option<Promise<()>>>,
-    shell_process_id: Cell<Option<u32>>,
+    shell_process_id: Cell<Option<i32>>,
     remote_authority: Option<String>,
     os: Cell<Option<OperatingSystem>>,
     user_home: RefCell<Option<String>>,
@@ -942,7 +942,7 @@ impl ITerminalProcessInfo for TerminalProcessManager {
         self.pty_process_ready.borrow().clone().unwrap_or_else(|| Promise::resolved(()))
     }
 
-    fn shell_process_id(&self) -> Option<u32> {
+    fn shell_process_id(&self) -> Option<i32> {
         self.shell_process_id.get()
     }
 

@@ -33,7 +33,11 @@ use je_platform::files::files::{
 use je_platform::files::i_file_service::IFileService;
 use je_platform::opener::editor_types::TextEditorSelection;
 use je_workbench::common::editor::{EditorIdentifier, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorsOrder, IEditorPane, UntypedEditorInput};
+use je_workbench::contrib::terminal::xterm_buffer::{IBuffer, IBufferCellPosition, IBufferLine, IBufferRange};
+use je_workbench::contrib::terminal_contrib::links::links::{ITerminalLinkDetector, TerminalBuiltinLinkType};
 use je_workbench::contrib::terminal_contrib::links::terminal_link_openers::{IFileQueryBuilder, IQuickAccessController};
+
+use super::fake_xterm::FakeXterm;
 use je_workbench::services::editor::editor_service::{
     ActiveTextEditorControl, FindEditorOptions, IEditorService, SaveAllEditorsOptions, SaveEditorsOptions, SaveEditorsResult,
 };
@@ -53,11 +57,19 @@ fn not_mocked(method: &str) -> ! {
 pub struct LinkTestFileService {
     /// `_files: URI[] | '*'`: `None` é o `'*'`.
     files: RefCell<Option<Vec<URI>>>,
+    /// `true` no `stat` do `terminalUriLinkDetector.test.ts` (`validResources.map(e => e.path).includes(resource.path)`): só o
+    /// caminho conta. `false` no dos demais (`_files.some(e => e.toString() === resource.toString())`).
+    match_by_path: bool,
 }
 
 impl LinkTestFileService {
     pub fn new() -> Rc<Self> {
-        Rc::new(Self { files: RefCell::new(None) })
+        Rc::new(Self { files: RefCell::new(None), match_by_path: false })
+    }
+
+    /// O `IFileService` de `terminalUriLinkDetector.test.ts`: existe o recurso cujo `path` está na lista (a lista começa vazia).
+    pub fn with_path_matching() -> Rc<Self> {
+        Rc::new(Self { files: RefCell::new(Some(Vec::new())), match_by_path: true })
     }
 
     /// `setFiles(files)`.
@@ -83,6 +95,7 @@ impl IFileService for LinkTestFileService {
     fn stat(&self, resource: &URI) -> Promise<FileStatWithMetadata> {
         let exists = match &*self.files.borrow() {
             None => true,
+            Some(files) if self.match_by_path => files.iter().any(|file| file.path() == resource.path()),
             Some(files) => files.iter().any(|file| file.to_string(false) == resource.to_string(false)),
         };
         if exists {
@@ -320,4 +333,47 @@ impl IEditorService for RecordingEditorService {
     fn is_visible(&self, _editor: &EditorInputRef) -> bool {
         unreachable!("o stub do IEditorService só define openEditor")
     }
+}
+
+/// `assertLinkHelper(text, expected, detector, expectedType)` de `linkTestUtils.ts`: escreve o texto no terminal, monta as linhas
+/// até a do cursor, detecta sempre na última linha com conteúdo e compara `{ link, type, bufferRange }`. `expected` é a lista de
+/// `(texto ou uri, [início, fim])`, com o intervalo em coordenadas (x, y) de 1.
+pub async fn assert_link_helper(
+    xterm: &FakeXterm,
+    detector: &dyn ITerminalLinkDetector,
+    text: &str,
+    expected: &[(String, [(i32, i32); 2])],
+    expected_type: TerminalBuiltinLinkType,
+) {
+    xterm.reset();
+
+    // Write the text and wait for the parser to finish
+    xterm.write(text);
+    let text_split: Vec<&str> = text.split("\r\n").collect();
+    let last_line_index: i32 = text_split[..text_split.len() - 1].iter().map(|c| ((c.encode_utf16().count() as f64 / 80.0).ceil() as i32).max(1)).sum();
+
+    // Ensure all links are provided
+    let cursor_y = xterm.cursor_y();
+    let buffer = xterm.buffer();
+    let lines: Vec<Rc<dyn IBufferLine>> = (0..=cursor_y).map(|i| IBuffer::get_line(&buffer, i).expect("a linha existe")).collect();
+
+    // Detect links always on the last line with content
+    let actual_links: Vec<(String, TerminalBuiltinLinkType, IBufferRange)> = detector
+        .detect(&lines, last_line_index, cursor_y)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.uri.as_ref().map_or_else(|| e.text.clone(), |uri| uri.to_string(false).to_string_lossy()), expected_type, e.buffer_range))
+        .collect();
+    let expected_links: Vec<(String, TerminalBuiltinLinkType, IBufferRange)> = expected
+        .iter()
+        .map(|(link, range)| {
+            (
+                link.clone(),
+                expected_type,
+                IBufferRange { start: IBufferCellPosition { x: range[0].0, y: range[0].1 }, end: IBufferCellPosition { x: range[1].0, y: range[1].1 } },
+            )
+        })
+        .collect();
+    assert_eq!(actual_links, expected_links, "links de \"{text}\"");
 }

@@ -548,6 +548,25 @@ pub enum TerminalLocation {
     Editor = 2,
 }
 
+/// `TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean }`: o `location` de
+/// `ICreateContributedTerminalProfileOptions`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TerminalProfileLocation {
+    Location(TerminalLocation),
+    ViewColumn { view_column: f64, preserve_state: Option<bool> },
+    SplitActiveTerminal(bool),
+}
+
+/// `ICreateContributedTerminalProfileOptions`.
+#[derive(Clone, Debug, Default)]
+pub struct ICreateContributedTerminalProfileOptions {
+    pub icon: Option<ContributedIcon>,
+    pub color: Option<String>,
+    pub location: Option<TerminalProfileLocation>,
+    pub cwd: Option<ShellCwd>,
+    pub title_template: Option<String>,
+}
+
 string_enum! {
     /// `TerminalLocationConfigValue`.
     TerminalLocationConfigValue {
@@ -736,10 +755,10 @@ pub struct IProcessReadyWindowsPty {
     pub build_number: i32,
 }
 
-/// `IProcessReadyEvent`.
+/// `IProcessReadyEvent`. O `pid` é `i32` porque o processo de um terminal de extensão anuncia `-1`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IProcessReadyEvent {
-    pub pid: u32,
+    pub pid: i32,
     pub cwd: String,
     pub windows_pty: Option<IProcessReadyWindowsPty>,
 }

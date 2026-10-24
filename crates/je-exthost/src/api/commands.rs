@@ -8,7 +8,7 @@ use je_workbench::api::common::ext_host_commands::{CommandCallback, ExtHostComma
 use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner};
 
 use crate::api::disposable::DisposableTable;
-use crate::convert::{dynamic_to_js, error_to_js, js_to_dynamic, js_to_error};
+use crate::convert::{dynamic_to_js, error_to_js, js_to_dynamic, js_to_error, string_arg};
 
 /// Um resultado JavaScript como o valor ou a promessa que o `ExtHostCommands` espera: um objeto com `then` é adotado.
 pub fn settle_js_result(runner: &NodeRunner, result: JsData) -> MaybePromise<Dynamic> {
@@ -45,13 +45,6 @@ pub fn promise_to_js<T: Clone + 'static>(runner: &NodeRunner, promise: Promise<T
         Ok(())
     });
     JsData::Handle(target)
-}
-
-fn string_arg(args: &[JsData], index: usize, what: &str) -> Result<String, String> {
-    match args.get(index) {
-        Some(JsData::Str(text)) => Ok(text.clone()),
-        _ => Err(format!("{what} precisa ser texto")),
-    }
 }
 
 /// O namespace `commands`.

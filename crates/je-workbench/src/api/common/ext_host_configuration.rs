@@ -231,6 +231,13 @@ impl ExtHostConfiguration {
         let this = self.this.upgrade().expect("o ExtHostConfiguration está vivo enquanto um método dele roda");
         self.barrier.wait().then(move |_| this.actual.borrow().clone().expect("a barreira só abre depois de $initializeConfiguration"))
     }
+
+    /// O provedor, se `$initializeConfiguration` já chegou. O original monta a API `vscode` só depois do `await getConfigProvider()`
+    /// (o provedor sempre existe para a extensão); a API do host em Rust lê o provedor no instante da chamada, sem esperar uma
+    /// microtarefa, porque `getConfiguration` é síncrona.
+    pub fn initialized_provider(&self) -> Option<Rc<ExtHostConfigProvider>> {
+        self.actual.borrow().clone()
+    }
 }
 
 impl ExtHostConfigurationShape for ExtHostConfiguration {
@@ -248,9 +255,11 @@ impl ExtHostConfigurationShape for ExtHostConfiguration {
     }
 }
 
-/// O `vscode.ConfigurationChangeEvent`.
+/// O `vscode.ConfigurationChangeEvent`. Clonar é barato (o evento da plataforma é compartilhado): a ponte com o zjsc guarda o
+/// evento num closure que o JavaScript pode chamar depois do listener.
+#[derive(Clone)]
 pub struct ExtHostConfigurationChangeEvent {
-    event: ConfigurationChangeEvent,
+    event: Rc<ConfigurationChangeEvent>,
 }
 
 impl ExtHostConfigurationChangeEvent {
@@ -359,7 +368,7 @@ impl ExtHostConfigProvider {
 
     fn to_configuration_change_event(&self, change: ConfigurationChange, previous: PreviousConfiguration) -> ExtHostConfigurationChangeEvent {
         ExtHostConfigurationChangeEvent {
-            event: ConfigurationChangeEvent::new(change, Some(previous), self.configuration.borrow().clone(), self.platform_workspace(), self.log_service.clone()),
+            event: Rc::new(ConfigurationChangeEvent::new(change, Some(previous), self.configuration.borrow().clone(), self.platform_workspace(), self.log_service.clone())),
         }
     }
 
