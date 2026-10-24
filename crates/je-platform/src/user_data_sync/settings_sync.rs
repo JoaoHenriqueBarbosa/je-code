@@ -43,7 +43,7 @@ use je_instantiation::service_id;
 
 use super::abstract_json_synchronizer::{FileMergePreviewExtra, IJsonResourcePreview, PreviewResources};
 use super::abstract_synchronizer::{
-    AbstractInitializer, AbstractJsonFileSynchroniser, IAcceptResult, IMergeResult, IResourcePreview, InitializerImpl, SynchroniserImpl, SynchroniserServices, parse_json, stringify_json,
+    AbstractInitializer, AbstractJsonFileSynchroniser, AbstractSynchroniser, IAcceptResult, IMergeResult, IResourcePreview, InitializerImpl, SynchroniserImpl, SynchroniserServices, parse_json, stringify_json,
 };
 use super::keybindings_sync::js_trim;
 use super::settings_merge::{get_ignored_settings, is_empty as is_settings_empty, merge, update_ignored_settings};
@@ -198,7 +198,10 @@ impl SettingsSynchroniser {
         let this = self.clone();
         async_fn(async move {
             let last_sync_user_data = this.get_last_sync_user_data().await?;
-            let remote_user_data = this.get_latest_remote_user_data(ref_or_latest_data, last_sync_user_data).await?;
+            // O despacho virtual do original: a base chama o gancho do sincronizador concreto (o método do trait
+            // `SynchroniserImpl` esconderia o da base pelo `Deref`).
+            let base: &AbstractSynchroniser<SettingsSynchroniser> = &this;
+            let remote_user_data = base.get_latest_remote_user_data(ref_or_latest_data, last_sync_user_data).await?;
             let remote_settings_sync_content = this.get_settings_sync_content(&remote_user_data);
             let mut parser = ConfigurationModelParser::new(USER_DATA_SYNC_CONFIGURATION_SCOPE, this.services.log_service.clone());
             if let Some(remote_settings_sync_content) = remote_settings_sync_content.filter(|content| !content.settings.is_empty()) {

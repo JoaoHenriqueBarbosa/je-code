@@ -53,7 +53,7 @@ use je_base::uri::URI;
 use je_platform::files::file_service::FileContentSource;
 use je_platform::log::NullLogService;
 use je_platform::resources::host_environment;
-use je_platform::storage::{StorageScope, StorageService};
+use je_platform::storage::StorageScope;
 use je_platform::telemetry::null_telemetry_service;
 use je_platform::user_data_profile::IUserDataProfilesService;
 use je_platform::user_data_sync::abstract_synchronizer::{
@@ -911,7 +911,7 @@ async fn preview_accept_remote_discard_accept_local_apply(d: Rc<DisposableStore>
     let preview = sync_latest(client, test_object, true).await.unwrap();
     let preview = test_object.accept(&first_preview(&preview).remote_resource, None).await.unwrap();
     let preview = discard(test_object, &first_preview(&preview).preview_resource).await.unwrap();
-    let preview = test_object.accept(&first_preview(&preview).local_resource, None).await.unwrap();
+    let _preview = test_object.accept(&first_preview(&preview).local_resource, None).await.unwrap();
     let preview = apply(test_object).await.unwrap();
 
     assert_eq!(test_object.status(), SyncStatus::Idle);
