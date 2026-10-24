@@ -1095,6 +1095,22 @@ mod tests {
     }
 
     #[test]
+    fn activity_bar_shows_a_hover_after_the_delay() {
+        je_base::runtime::with_faked_timers(|| {
+            let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+            snapshot(&mut shell, "h-before.png");
+            shell.pointer(PointerInput::new(PointerInputKind::Move, 26.0, 100.0));
+            je_base::runtime::advance_fake_time(600);
+            shell.take_dirty();
+            assert!(shell.has_hover(), "a dica aparece depois de 500 ms");
+            snapshot(&mut shell, "h0-hover.png");
+            shell.pointer(PointerInput::new(PointerInputKind::Move, 600.0, 400.0));
+            shell.take_dirty();
+            assert!(!shell.has_hover(), "e some ao sair");
+        });
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

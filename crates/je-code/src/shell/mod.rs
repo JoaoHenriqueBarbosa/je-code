@@ -211,6 +211,9 @@ pub enum Command {
     ShowScm,
     ShowExtensions,
     OpenRecent,
+    /// Mostra a dica do nó depois da espera (`workbench.hover.delay`), se o ponteiro ainda estiver nele.
+    ShowHover(u64),
+    HideHover,
     OpenFolderPath(PathBuf),
     ExtensionsFocus,
     ScmFocus,
@@ -356,10 +359,16 @@ pub struct Shell {
     exiting: bool,
     /// O Save As veio do `Save` de um fechamento: a aba fecha depois de gravar.
     close_after_save_as: bool,
+    /// A dica (hover) na tela e o pedido pendente: geração, nó alvo, texto e posição.
+    hover: Option<Rc<je_widgets::hover_widget::WorkbenchHoverWidget>>,
+    context_view: Option<Rc<je_widgets::context_view::ContextView>>,
+    hover_request: Rc<RefCell<Option<(u64, NodeId, String, je_widgets::hover_api::HoverPosition)>>>,
     /// O diálogo modal aberto: enquanto existe, teclado e ponteiro vão só para ele.
     dialog: Option<Rc<je_widgets::dialog::Dialog>>,
     fullscreen_requested: bool,
     needs_render: bool,
+    /// Pede um quadro sem remontar a moldura.
+    redraw: bool,
     quick_pick: Option<QuickPick>,
     /// O menu de contexto aberto (o widget `Menu`) e o nó onde ele pinta.
     context_menu: Option<(Rc<je_widgets::menu::Menu>, NodeId)>,
@@ -495,8 +504,12 @@ impl Shell {
             exiting: false,
             close_after_save_as: false,
             dialog: None,
+            hover: None,
+            hover_request: Rc::new(RefCell::new(None)),
+            context_view: None,
             fullscreen_requested: false,
             needs_render: true,
+            redraw: false,
             quick_pick: None,
             context_menu: None,
             last_pointer: (0.0, 0.0),
@@ -1125,6 +1138,22 @@ impl Shell {
                 }
                 self.start_search();
             }
+            // As dicas não mexem na moldura: saem antes do `needs_render` do fim.
+            Command::ShowHover(generation) => {
+                let request = self.hover_request.borrow().clone();
+                if let Some((g, node, text, position)) = request
+                    && g == generation
+                    && self.ui.tree().is_alive(node)
+                {
+                    self.show_hover(node, &text, position);
+                }
+                return;
+            }
+            Command::HideHover => {
+                *self.hover_request.borrow_mut() = None;
+                self.hide_hover();
+                return;
+            }
             Command::OpenRecent => {
                 let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
                 let tidy = |p: &Path| -> String {
@@ -1437,6 +1466,11 @@ impl Shell {
     #[cfg(test)]
     pub fn explorer_lists(&self, path: &Path) -> bool {
         self.explorer.as_ref().is_some_and(|e| e.contains(path))
+    }
+
+    #[cfg(test)]
+    pub fn has_hover(&self) -> bool {
+        self.hover.is_some()
     }
 
     #[cfg(test)]
@@ -2215,6 +2249,52 @@ impl Shell {
         Rect::new(part.x0, part.y0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT, part.x1, part.y1)
     }
 
+    /// Mostra a dica de `text` junto de `node` (o `IHoverService.showDelayedHover` com o estilo de ponteiro).
+    fn show_hover(&mut self, node: NodeId, text: &str, position: je_widgets::hover_api::HoverPosition) {
+        use je_widgets::hover_api::{HoverContent, HoverStyle, HoverTarget, IHoverOptions, IHoverPositionOptions};
+        self.hide_hover();
+        let mut options = IHoverOptions::new(HoverContent::Text(text.to_owned()), HoverTarget::Node(node));
+        options.style = Some(HoverStyle::Pointer);
+        options.position = Some(IHoverPositionOptions { hover_position: Some(position), anchor_alignment: None, force_position: None, clipping_element: None });
+        let hover = je_widgets::hover_widget::WorkbenchHoverWidget::new(&self.ui, options, je_widgets::hover_widget::default_hover_styles(&self.theme), None);
+        // A dica vai numa `ContextView` sobre a janela, como o `HoverService` faz: ela posiciona a caixa pela âncora.
+        let view = self.context_view.get_or_insert_with(|| {
+            let root = self.ui.root();
+            je_widgets::context_view::ContextView::new(&self.ui, root, je_widgets::context_view_api::ContextViewDOMPosition::Absolute)
+        });
+        view.show(je_widgets::hover_widget::HoverContextViewDelegate::new(hover.clone(), false, 0));
+        self.hover = Some(hover);
+        // Só um quadro novo: remontar a moldura mataria o nó alvo da dica.
+        self.redraw = true;
+    }
+
+    fn hide_hover(&mut self) {
+        if let Some(hover) = self.hover.take() {
+            if let Some(view) = &self.context_view {
+                view.hide();
+            }
+            IDisposable::dispose(&*hover);
+            self.redraw = true;
+        }
+    }
+
+    /// Liga a dica `text` ao nó: aparece depois de 500 ms com o ponteiro parado nele e some ao sair.
+    fn listen_hover(&self, node: NodeId, text: String, position: je_widgets::hover_api::HoverPosition) {
+        let (request, queue) = (self.hover_request.clone(), self.queue.clone());
+        let _ = self.ui.listen(node, EventKind::PointerEnter, false, move |_| {
+            let generation = request.borrow().as_ref().map_or(0, |r| r.0) + 1;
+            *request.borrow_mut() = Some((generation, node, text.clone(), position));
+            let queue = queue.clone();
+            je_base::runtime::set_timeout(move || queue.borrow_mut().push(Command::ShowHover(generation)), 500);
+        });
+        let (request, queue) = (self.hover_request.clone(), self.queue.clone());
+        let _ = self.ui.listen(node, EventKind::PointerLeave, false, move |_| {
+            if request.borrow().as_ref().is_some_and(|r| r.1 == node) {
+                queue.borrow_mut().push(Command::HideHover);
+            }
+        });
+    }
+
     fn listen_command(&self, node: NodeId, command: Command) {
         let queue = self.queue.clone();
         // Os nós da moldura morrem no próximo `render`, e com eles o ouvinte.
@@ -2224,6 +2304,9 @@ impl Shell {
     /// Remonta a moldura para o estado atual.
     pub fn render(&mut self) {
         self.needs_render = false;
+        // A moldura é remontada e o nó alvo da dica morre com ela: a dica some junto.
+        *self.hover_request.borrow_mut() = None;
+        self.hide_hover();
         let (width, height) = self.size;
         let old = self.nodes.chrome;
         let chrome = {
@@ -2375,6 +2458,17 @@ impl Shell {
         }
         for (button, view) in view_buttons {
             self.listen_command(button, Command::ShowView(view));
+            let shortcut = match view {
+                SideView::Explorer => "Ctrl+Shift+E",
+                SideView::Search => "Ctrl+Shift+F",
+                SideView::SourceControl => "Ctrl+Shift+G",
+                SideView::Debug => "Ctrl+Shift+D",
+                SideView::Extensions => "Ctrl+Shift+X",
+            };
+            self.listen_hover(button, format!("{} ({shortcut})", view.title()), je_widgets::hover_api::HoverPosition::Right);
+        }
+        if let Some(button) = manage_button {
+            self.listen_hover(button, "Manage".to_owned(), je_widgets::hover_api::HoverPosition::Right);
         }
     }
 
@@ -2867,6 +2961,8 @@ impl Shell {
         drop(tree);
         self.nodes.editor_host = Some(host);
         for (index, tab, close) in tab_nodes {
+            let title = self.editors[index].path.as_ref().map_or_else(|| self.editors[index].name.clone(), |p| p.display().to_string());
+            self.listen_hover(tab, title, je_widgets::hover_api::HoverPosition::Below);
             let queue = self.queue.clone();
             let _ = self.ui.listen(tab, EventKind::PointerDown, false, move |e| {
                 match e.pointer.map(|p| p.button) {
@@ -3484,7 +3580,7 @@ impl Shell {
         if search {
             self.needs_render = true;
         }
-        editor || terminal || self.needs_render || self.ui.has_pending_animation_frame()
+        editor || terminal || self.needs_render || std::mem::take(&mut self.redraw) || self.ui.has_pending_animation_frame()
     }
 
     pub fn next_blink_deadline(&self, now: Instant) -> Option<Instant> {
