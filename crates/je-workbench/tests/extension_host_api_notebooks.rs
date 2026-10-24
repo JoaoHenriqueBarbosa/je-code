@@ -14,6 +14,9 @@
 //! entrega. Os documentos de texto (cada célula é um) vêm do mesmo suporte dos testes de `languages`, e a célula do notebook vem do suporte
 //! de testes de `ExtHostNotebook` (`cell_dto`).
 
+#[allow(dead_code)]
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
 #[path = "support/extension_host_api_harness.rs"]
 mod harness;
 #[allow(dead_code, unused_imports)]
