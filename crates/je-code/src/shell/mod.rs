@@ -712,6 +712,7 @@ impl Shell {
         if let Some(env) = &self.environment {
             view.set_token_colors(&env.color_map());
         }
+        view.apply_configuration(&themes::user_settings());
         let saved_version = model.get_alternative_version_id();
         let index = self.active.map_or(self.editors.len(), |i| i + 1);
         let needs_head = path.is_some();
@@ -935,6 +936,8 @@ impl Shell {
             self.open_prompt(PromptAction::SaveAs(index));
             return;
         };
+        // `files.trimTrailingWhitespace`, `files.insertFinalNewline` e `files.trimFinalNewlines`.
+        editor.view.run_save_participants(false);
         let model = editor.view.model().clone();
         let text = model.get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy();
         let result = std::fs::write(&path, text.as_bytes());
@@ -945,7 +948,8 @@ impl Shell {
         editor.view.mark_dirty();
         if result.is_ok() {
             self.git_op(git::Operation::Refresh);
-            if themes::user_data_dir().map(|d| d.join("User/settings.json")).as_deref() == Some(path.as_path()) {
+            let user = themes::user_data_dir().map(|d| d.join("User"));
+            if [user.as_ref().map(|u| u.join("settings.json")), user.map(|u| u.join("keybindings.json"))].iter().any(|p| p.as_deref() == Some(path.as_path())) {
                 self.apply_user_settings();
             }
         }
@@ -966,6 +970,7 @@ impl Shell {
                 if let Some(env) = &self.environment {
                     view.set_token_colors(&env.color_map());
                 }
+                view.apply_configuration(&themes::user_settings());
                 self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None };
                 self.activate(index);
             }
@@ -1613,6 +1618,15 @@ impl Shell {
         if let Some(level) = settings.get("window.zoomLevel").and_then(serde_json::Value::as_f64) {
             self.zoom_level = level.clamp(-8.0, 8.0);
             self.resize_editors();
+        }
+        // As configurações do editor (`editor.*`, `files.*` e os blocos de linguagem) e os atalhos do usuário.
+        for editor in &mut self.editors {
+            editor.view.apply_configuration(&settings);
+        }
+        if let Some(text) = themes::user_data_dir().and_then(|d| std::fs::read_to_string(d.join("User/keybindings.json")).ok())
+            && let Err(e) = je_editor_view::set_user_keybindings(&text)
+        {
+            self.notify(Severity::Error, format!("keybindings.json: {e}"));
         }
         let wanted = settings.get("workbench.colorTheme").and_then(|v| v.as_str());
         if let Some(index) = themes::resolve(&self.themes, wanted)
