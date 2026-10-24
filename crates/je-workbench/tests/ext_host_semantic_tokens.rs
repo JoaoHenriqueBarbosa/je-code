@@ -184,7 +184,6 @@ fn dto_id(buffer: &VSBuffer) -> u32 {
 fn over_rpc(use_edits: bool, cancel: bool) {
     run_with_faked_timers(async move {
         let env = ExtHostEnv::new(&resource());
-        let handle = env.handle();
         let pending_tokens: DeferredPromise<Option<SemanticTokens>> = DeferredPromise::new();
         let pending_edits: DeferredPromise<Option<ApiSemanticTokensResult>> = DeferredPromise::new();
         let requests: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -211,6 +210,7 @@ fn over_rpc(use_edits: bool, cancel: bool) {
             }),
             legend(),
         ));
+        let handle = env.handle();
         let active = env
             .ext_host
             .rpc_provide_document_semantic_tokens(handle, &resource(), 0, CancellationToken::None)
