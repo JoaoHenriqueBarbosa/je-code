@@ -120,3 +120,25 @@ impl Random {
         TextEdit::new(single_text_edits).normalize()
     }
 }
+
+impl Random {
+    /// `nextRandomValues(data)`: preenche o vetor com bytes aleatórios.
+    pub fn next_random_values(&mut self, data: &mut [u8]) {
+        for byte in data.iter_mut() {
+            *byte = self.next_int_range(0, 256) as u8;
+        }
+    }
+
+    /// `nextUuid()`.
+    pub fn next_uuid(&mut self) -> String {
+        let mut data = [0u8; 16];
+        self.next_random_values(&mut data);
+
+        // set version bits
+        data[6] = (data[6] & 0x0f) | 0x40;
+        data[8] = (data[8] & 0x3f) | 0x80;
+
+        let hex = |range: std::ops::Range<usize>| data[range].iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        format!("{}-{}-{}-{}-{}", hex(0..4), hex(4..6), hex(6..8), hex(8..10), hex(10..16))
+    }
+}

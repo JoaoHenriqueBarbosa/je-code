@@ -13,8 +13,8 @@
 //!
 //! Falta (depende de serviços do host ainda não ligados, sem fachada): `createQuickPick` e `createInputBox` (o `ExtHostQuickOpen` os
 //! tem, falta expor os objetos de sessão); `createTextEditorDecorationType` e `TextEditor#insertSnippet`/`setDecorations` (ver o
-//! cabeçalho de `text_editors.rs`); `tabGroups`, `createTreeView`, `createWebviewPanel`, `createTerminal` e os registros de
-//! provedores.
+//! cabeçalho de `text_editors.rs`); `tabGroups`, `createTreeView`, `createWebviewPanel` e `createTerminal`. Os registros de provedores de
+//! linguagem (`registerHoverProvider`...) e os diagnósticos não são de `window`: estão em `vscode.languages` (módulo `languages`).
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões: a `source` da notificação (`{ identifier, label }`) não é preenchida, porque o host

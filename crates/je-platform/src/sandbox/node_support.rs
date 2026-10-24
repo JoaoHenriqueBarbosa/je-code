@@ -1,95 +1,15 @@
 //! O que o `sandboxHelper.ts` importa de `src/vs/base/node` e que o `je-base` ainda não porta:
-//! `findExecutable` (`processes.ts`), `getOSReleaseInfo` (`osReleaseInfo.ts`) e o `execFile` do Node
-//! (`child_process`), mais a leitura do uid do processo.
+//! `getOSReleaseInfo` (`osReleaseInfo.ts`) e o `execFile` do Node (`child_process`), mais a leitura do
+//! uid do processo. O `findExecutable` vive em `je_base::node::processes`.
 //!
-//! Divergências: tudo é síncrono (o original usa `Promise`); em `find_executable` os candidatos de
-//! `PATHEXT` são testados em sequência, parando no primeiro achado (o original dispara todos e lê na
-//! ordem, com o mesmo resultado).
+//! Divergências: tudo é síncrono (o original usa `Promise`).
 
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use je_base::path::{Environment, PathModule, Platform as PathPlatform, ProcessEnvironment};
 use je_base::platform::Platform;
-
-/// `process.env`, como pares na ordem do sistema.
-pub fn process_env() -> Vec<(String, String)> {
-    std::env::vars_os().map(|(key, value)| (key.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())).collect()
-}
-
-/// `getCaseInsensitive` (`objects.ts`) sobre o ambiente.
-fn get_case_insensitive<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    let lowercase_key = key.to_lowercase();
-    env.iter().find(|(candidate, _)| candidate.to_lowercase() == lowercase_key).map(|(_, value)| value.as_str())
-}
-
-/// `fileExistsDefault`: existe e não é diretório (um `EACCES` no `stat` tenta o `lstat`, por causa de symlink).
-fn file_exists_default(path: &str) -> bool {
-    match std::fs::metadata(path) {
-        Ok(metadata) => !metadata.is_dir(),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir()),
-        Err(_) => false,
-    }
-}
-
-/// `findExecutable`. Os argumentos opcionais têm os mesmos padrões do original: o diretório atual do
-/// processo, o `PATH` do ambiente do processo e a existência de arquivo no disco.
-pub fn find_executable(
-    command: &str,
-    cwd: Option<&str>,
-    paths: Option<Vec<String>>,
-    env: Option<&[(String, String)]>,
-    file_exists: Option<&dyn Fn(&str) -> bool>,
-) -> Option<String> {
-    let process_environment = ProcessEnvironment;
-    let path = PathModule::native(&process_environment);
-    let default_env;
-    let env = match env {
-        Some(env) => env,
-        None => {
-            default_env = process_env();
-            &default_env
-        }
-    };
-    let file_exists = file_exists.unwrap_or(&file_exists_default);
-    let exists_or_none = |candidate: String| file_exists(&candidate).then_some(candidate);
-
-    // If we have an absolute path then we take it.
-    if path.is_absolute(command) {
-        return exists_or_none(command.to_owned());
-    }
-    let cwd = cwd.map_or_else(|| process_environment.cwd(), str::to_owned);
-    let dir = path.dirname(command);
-    if dir != "." {
-        // We have a directory and the directory is relative (see above). Make the path absolute
-        // to the current working directory.
-        return exists_or_none(path.join(&[&cwd, command]));
-    }
-    let paths = paths.or_else(|| get_case_insensitive(env, "PATH").map(|env_path| env_path.split(path.delimiter()).map(str::to_owned).collect()));
-    // No PATH environment. Make path absolute to the cwd.
-    let Some(paths) = paths.filter(|paths| !paths.is_empty()) else {
-        return exists_or_none(path.join(&[&cwd, command]));
-    };
-
-    // We have a simple file name. We get the path variable from the env
-    // and try to find the executable on the path.
-    for path_entry in &paths {
-        // The path entry is absolute.
-        let full_path = if path.is_absolute(path_entry) { path.join(&[path_entry, command]) } else { path.join(&[&cwd, path_entry, command]) };
-        if process_environment.platform() == PathPlatform::Win32 {
-            let path_ext = get_case_insensitive(env, "PATHEXT").filter(|ext| !ext.is_empty()).unwrap_or(".COM;.EXE;.BAT;.CMD");
-            if let Some(found) = path_ext.split(';').find_map(|ext| exists_or_none(format!("{full_path}{ext}"))) {
-                return Some(found);
-            }
-        }
-        if file_exists(&full_path) {
-            return Some(full_path);
-        }
-    }
-    exists_or_none(path.join(&[&cwd, command]))
-}
 
 /// `ReleaseInfo` de `osReleaseInfo.ts`.
 #[derive(Clone, Debug, PartialEq, Eq)]

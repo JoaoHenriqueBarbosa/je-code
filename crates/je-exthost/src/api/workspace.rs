@@ -15,6 +15,9 @@
 //! - `updateWorkspaceFolders`, `findTextInFiles`, `save`, `saveAll`, `requestWorkspaceTrust`, `getCanonicalUri`, `decode`/`encode`,
 //!   `registerTaskProvider` e as propostas: o serviço do host os tem, falta só a ponte.
 //!
+//! `vscode.languages` (diagnósticos, `getLanguages`, `match` e os provedores de linguagem) é o módulo `languages`; `glob_of` daqui é
+//! reaproveitado por ele para o `pattern` de um `DocumentFilter`.
+//!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões (um único `require('vscode')`), então o host não sabe qual extensão chama: o
 //!   `getConfiguration` não passa a extensão ao aviso de escopo e o `findFiles` usa o identificador `je.exthost` no log de traço.
@@ -114,7 +117,7 @@ fn target_of(value: Option<&JsData>) -> Result<Option<ConfigurationTargetArg>, S
 }
 
 /// Um `vscode.GlobPattern` (`string | RelativePattern`) do motor.
-fn glob_of(value: &JsData) -> Result<GlobPattern, String> {
+pub(crate) fn glob_of(value: &JsData) -> Result<GlobPattern, String> {
     match value {
         JsData::Str(pattern) => Ok(GlobPattern::Pattern(pattern.clone())),
         JsData::Object(_) => {

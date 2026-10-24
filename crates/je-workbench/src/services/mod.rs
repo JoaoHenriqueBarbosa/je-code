@@ -84,3 +84,6 @@ pub mod panecomposite;
 
 // `CommandService` (`commands/common/commandService.ts`).
 pub mod commands;
+
+// `BrowserStorageService` e `IndexedDBStorageDatabase` (`storage/browser/storageService.ts`).
+pub mod storage;
