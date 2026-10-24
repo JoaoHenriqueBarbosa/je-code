@@ -9,12 +9,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
 | `workbench/services` | 137 | 2491 | 38 | 1112 | 44.64 |
 | `workbench/api` | 94 | 965 | 8 | 196 | 20.31 |
-| `workbench/contrib` | 370 | 4636 | 29 | 472 | 10.18 |
+| `workbench/contrib` | 370 | 4636 | 30 | 531 | 11.45 |
 | `workbench (shell)` | 69 | 621 | 19 | 213 | 34.30 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 8605 | 46.79 |
+| **total** | | 18391 | | 8664 | 47.11 |
 
 ## Arquivos portados
 
@@ -457,6 +457,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/preferences/test/common/smartSnippetInserter.test.ts` | 7 | `crates/je-workbench/tests/smart_snippet_inserter.rs` | 7 |
 | `src/vs/workbench/contrib/search/test/common/extractRange.test.ts` | 5 | `crates/je-workbench/tests/extract_range.rs` | 5 |
 | `src/vs/workbench/contrib/tasks/test/common/problemMatcher.test.ts` | 24 | `crates/je-workbench/tests/problem_matcher.rs` | 24 |
+| `src/vs/workbench/contrib/tasks/test/common/taskConfiguration.test.ts` | 59 | `crates/je-workbench/tests/task_configuration.rs` | 59 |
 | `src/vs/workbench/contrib/terminal/test/browser/capabilities/terminalCapabilityStore.test.ts` | 13 | `crates/je-platform/tests/terminal_capability_store.rs` | 13 |
 | `src/vs/workbench/contrib/terminal/test/browser/terminalUri.test.ts` | 7 | `crates/je-workbench/tests/terminal_uri.rs` | 7 |
 | `src/vs/workbench/contrib/terminal/test/common/environmentVariableCollection.test.ts` | 18 | `crates/je-platform/tests/environment_variable_collection.rs` | 18 |
