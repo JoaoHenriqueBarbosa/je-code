@@ -273,7 +273,7 @@ impl PastePayload {
 }
 
 /// `payload || {}`: o objeto vazio no lugar de um valor falso.
-fn payload_or_empty(payload: Option<Dynamic>) -> Dynamic {
+pub fn payload_or_empty(payload: Option<Dynamic>) -> Dynamic {
     match payload {
         Some(payload) if payload.is_truthy() => payload,
         _ => Dynamic::object(std::iter::empty::<(&str, Dynamic)>()),
@@ -281,7 +281,7 @@ fn payload_or_empty(payload: Option<Dynamic>) -> Dynamic {
 }
 
 /// `args.<key> || ''`.
-fn payload_text(payload: &Dynamic, key: &str) -> JsString {
+pub fn payload_text(payload: &Dynamic, key: &str) -> JsString {
     match payload.get_str(key) {
         Dynamic::String(text) => text,
         _ => JsString::default(),
@@ -289,7 +289,7 @@ fn payload_text(payload: &Dynamic, key: &str) -> JsString {
 }
 
 /// `args.<key> || 0`.
-fn payload_count(payload: &Dynamic, key: &str) -> i32 {
+pub fn payload_count(payload: &Dynamic, key: &str) -> i32 {
     match payload.get_str(key) {
         Dynamic::Number(n) if !n.is_nan() => n as i32,
         _ => 0,
@@ -297,12 +297,12 @@ fn payload_count(payload: &Dynamic, key: &str) -> i32 {
 }
 
 /// `args.<key> || false`.
-fn payload_flag(payload: &Dynamic, key: &str) -> bool {
+pub fn payload_flag(payload: &Dynamic, key: &str) -> bool {
     payload.get_str(key).is_truthy()
 }
 
 /// `args.multicursorText || null`.
-fn payload_lines(payload: &Dynamic, key: &str) -> Option<Vec<JsString>> {
+pub fn payload_lines(payload: &Dynamic, key: &str) -> Option<Vec<JsString>> {
     match payload.get_str(key) {
         Dynamic::Array(lines) => Some(
             lines

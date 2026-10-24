@@ -7,8 +7,8 @@
 //!   recebe) não existem na camada lógica; o [`CellOutputViewModel`] não precisa do `INotebookService` (ver a divergência dele).
 //! - `set editorHeight`/`get editorHeight` (que lança) são [`CodeCellViewModel::set_editor_height`] e nenhum leitor (o `get`
 //!   que lançava não existe); o mesmo vale para `chatHeight`, que lê.
-//! - `executionErrorDiagnostic = observableValue(...)` é um `RefCell<Option<ICellExecutionError>>`
-//!   ([`CodeCellViewModel::execution_error_diagnostic`]).
+//! - `executionErrorDiagnostic = observableValue(...)` é um `ISettableObservable<Option<Rc<ICellExecutionError>>>`
+//!   ([`CodeCellViewModel::execution_error_diagnostic`]); o objeto do erro é um `Rc` para que o `===` do observável seja a identidade.
 //! - `cell.layoutInfo` é uma cópia (`CodeCellLayoutInfo` é `Clone`); `layoutChange(state, source)` recebe o
 //!   [`CellLayoutChangeEvent`] com `source` dentro do evento (o `{ ...state, source }` do original).
 //! - `Uint32Array` do `PrefixSumComputer` é `Vec<u32>`: as alturas são truncadas para inteiro sem sinal.
@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use je_base::event::{Emitter, Event, PauseableEmitter};
 use je_base::lifecycle::IDisposable;
+use je_base::observable::{ISettableObservable, SettableExt, observable_value};
 use je_base::uuid::generate_uuid;
 use je_editor::prefix_sum_computer::PrefixSumComputer;
 use je_editor::undo_redo_service::IUndoRedoService;
@@ -63,7 +64,7 @@ pub struct CodeCellViewModel {
     output_min_height: Cell<f64>,
     layout_info: RefCell<CodeCellLayoutInfo>,
     output_view_models: RefCell<Vec<Rc<CellOutputViewModel>>>,
-    execution_error_diagnostic: RefCell<Option<ICellExecutionError>>,
+    execution_error_diagnostic: ISettableObservable<Option<Rc<ICellExecutionError>>>,
 }
 
 impl Deref for CodeCellViewModel {
@@ -146,7 +147,7 @@ impl CodeCellViewModel {
                 bottom_margin: layout_configuration.cell_bottom_margin,
             }),
             output_view_models: RefCell::new(output_view_models),
-            execution_error_diagnostic: RefCell::new(None),
+            execution_error_diagnostic: observable_value::<Option<Rc<ICellExecutionError>>, ()>("executionErrorDiagnostic", None),
         });
         this.layout_info.borrow_mut().total_height = this.compute_total_height(17.0, 0.0, 0.0, 0.0);
 
@@ -183,7 +184,7 @@ impl CodeCellViewModel {
                     this.layout_change(CellLayoutChangeEvent { output_height: true, source: Some("CodeCellViewModel#model.onDidChangeOutputs".to_string()), ..Default::default() });
                 }
                 if this.output_collection.borrow().is_empty() {
-                    *this.execution_error_diagnostic.borrow_mut() = None;
+                    this.execution_error_diagnostic.set(None, None);
                 }
                 for removed in &removed_outputs {
                     removed.dispose();
@@ -310,17 +311,14 @@ impl CodeCellViewModel {
         self.output_view_models.borrow().clone()
     }
 
-    pub fn execution_error_diagnostic(&self) -> Option<ICellExecutionError> {
-        self.execution_error_diagnostic.borrow().clone()
-    }
-
-    pub fn set_execution_error_diagnostic(&self, value: Option<ICellExecutionError>) {
-        *self.execution_error_diagnostic.borrow_mut() = value;
+    /// `executionErrorDiagnostic`: o observável, que quem lê (`.get()`, `.read(reader)`) e escreve (`.set(valor, None)`) compartilha.
+    pub fn execution_error_diagnostic(&self) -> ISettableObservable<Option<Rc<ICellExecutionError>>> {
+        self.execution_error_diagnostic.clone()
     }
 
     pub fn update_execution_state(&self, e: &Rc<dyn ICellExecutionStateChangedEvent>) {
         if e.changed().is_some() {
-            *self.execution_error_diagnostic.borrow_mut() = None;
+            self.execution_error_diagnostic.set(None, None);
             self.on_did_start_execution.fire(e.clone());
         } else {
             self.on_did_stop_execution.fire(e.clone());
