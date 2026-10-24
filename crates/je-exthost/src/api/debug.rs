@@ -35,7 +35,7 @@ use std::rc::Rc;
 use je_base::cancellation::CancellationToken;
 use je_base::errors::Error;
 use je_base::event::Event;
-use je_base::promise::{MaybePromise, Promise};
+use je_base::promise::Promise;
 use je_workbench::api::common::ext_host_debug_protocol::{MainThreadDebugServiceShape, NameOrConfig};
 use je_workbench::api::common::ext_host_debug_service::{
     DebugSession, ExtHostDebugServiceBase, IConfigurationResolver, IExtHostDebugExtensionService, IExtHostDebugTesting, IExtHostVariableResolverProvider,
@@ -53,7 +53,7 @@ use serde_json::{Map, Number, Value};
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
 
 use crate::api::accessor_namespace;
-use crate::api::commands::promise_to_js;
+use crate::api::commands::{convert_maybe, promise_to_js};
 use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::extensions::{json_to_js, ExtensionServiceSlot};
@@ -61,7 +61,7 @@ use crate::api::js_object::{JsObjects, JsResult};
 use crate::api::language_types::location_from_js;
 use crate::api::languages::host_extension;
 use crate::api::workspace::folder_to_js;
-use crate::convert::{api_to_js, class_name, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, uri_from_js};
+use crate::convert::{api_to_js, class_name, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js};
 
 // ---- as dependências do `ExtHostDebugService` que o host não tem
 
@@ -144,17 +144,6 @@ fn config_of(runner: &NodeRunner, value: &JsData) -> IConfig {
     js_to_json(&exported(runner, value))
 }
 
-/// `MaybePromise<T>` com `convert` (que pode falhar) aplicado ao valor quando ele chegar.
-fn convert_maybe<T: Clone + 'static, U: Clone + 'static>(value: MaybePromise<T>, convert: impl Fn(T) -> Result<U, Error> + 'static) -> MaybePromise<U> {
-    match value {
-        MaybePromise::Value(value) => match convert(value) {
-            Ok(converted) => MaybePromise::Value(converted),
-            Err(error) => MaybePromise::Promise(Promise::rejected(error)),
-        },
-        MaybePromise::Promise(promise) => MaybePromise::Promise(promise.then_result(move |outcome| convert(outcome?))),
-    }
-}
-
 // ---- os objetos vivos
 
 fn object_of(class: &str, id: &str) -> JsData {
@@ -216,10 +205,6 @@ impl DebugObjects {
 }
 
 // ---- as classes
-
-fn text_or_undefined(value: Option<String>) -> JsData {
-    value.map_or(JsData::Undefined, JsData::Str)
-}
 
 fn define_session_class(runner: &NodeRunner, objects: &Rc<DebugObjects>) {
     let get = |name: &str, read: fn(&DebugObjects, &DebugSession) -> JsData| -> (String, MethodCallback) {

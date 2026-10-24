@@ -14,7 +14,8 @@ use je_platform::log::LogLevel;
 use je_workbench::api::common::ext_host_debug_types::DebugConsoleMode;
 use je_workbench::contrib::debug::debug::DebugConfigurationProviderTriggerKind;
 use je_workbench::api::common::ext_host_types::{
-    CodeActionTriggerKind, CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, ExtensionKind,
+    CodeActionTriggerKind, CommentMode, CommentState, CommentThreadApplicability, CommentThreadCollapsibleState, CommentThreadFocus, CommentThreadState,
+    CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, ExtensionKind,
     InputBoxValidationSeverity, ProgressLocation, QuickPickItemKind, StatusBarAlignment, SymbolKind, SymbolTag,
 };
 use zjsc::api::embed_node::JsData;
@@ -181,6 +182,23 @@ pub fn enums() -> Vec<(String, JsData)> {
         ("TreeItemCheckboxState".to_owned(), enum_object(&[("Unchecked", 0), ("Checked", 1)])),
         ("TerminalExitReason".to_owned(), enum_object(&[("Unknown", 0), ("Shutdown", 1), ("Process", 2), ("User", 3), ("Extension", 4)])),
         ("TerminalLocation".to_owned(), enum_object(&[("Panel", 1), ("Editor", 2)])),
+        // Os enums de comentários (`extHostTypes.ts`): `CommentThreadCollapsibleState`, `CommentMode`, `CommentState`,
+        // `CommentThreadState`, `CommentThreadApplicability` e `CommentThreadFocus`.
+        (
+            "CommentThreadCollapsibleState".to_owned(),
+            enum_object(&[("Collapsed", CommentThreadCollapsibleState::Collapsed.value()), ("Expanded", CommentThreadCollapsibleState::Expanded.value())]),
+        ),
+        ("CommentMode".to_owned(), enum_object(&[("Editing", CommentMode::Editing.value()), ("Preview", CommentMode::Preview.value())])),
+        ("CommentState".to_owned(), enum_object(&[("Published", CommentState::Published.value()), ("Draft", CommentState::Draft.value())])),
+        (
+            "CommentThreadState".to_owned(),
+            enum_object(&[("Unresolved", CommentThreadState::Unresolved.value()), ("Resolved", CommentThreadState::Resolved.value())]),
+        ),
+        (
+            "CommentThreadApplicability".to_owned(),
+            enum_object(&[("Current", CommentThreadApplicability::Current.value()), ("Outdated", CommentThreadApplicability::Outdated.value())]),
+        ),
+        ("CommentThreadFocus".to_owned(), enum_object(&[("Reply", CommentThreadFocus::Reply.value()), ("Comment", CommentThreadFocus::Comment.value())])),
         // `DebugConsoleMode` (`extHostTypes.ts`) e `DebugConfigurationProviderTriggerKind` (`debug.ts`).
         ("DebugConsoleMode".to_owned(), enum_object(&[("Separate", DebugConsoleMode::Separate as i32), ("MergeWithParent", DebugConsoleMode::MergeWithParent as i32)])),
         (
