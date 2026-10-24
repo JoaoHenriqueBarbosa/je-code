@@ -94,7 +94,7 @@ fn is_blank(text: &[u16]) -> bool {
 }
 
 /// `strings.getLeadingWhitespace(text)`.
-fn leading_whitespace(text: &[u16]) -> JsString {
+pub(crate) fn leading_whitespace(text: &[u16]) -> JsString {
     JsString::from(get_leading_whitespace(text, 0, text.len()))
 }
 
