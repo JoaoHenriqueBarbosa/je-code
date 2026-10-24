@@ -318,3 +318,320 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
         None
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `TestEditorService`, `TestEditorInput` e `TestFileEditorInput`: os dublês que os testes do modelo de editores usam.
+//
+// - `TestEditorService` é o `IEditorService` reduzido do porte (`visibleEditorPanes`, que o original deixa `[]`).
+// - `TestEditorInput` e `TestFileEditorInput` herdam de `EditorInput`: cada um guarda o [`EditorInputBase`], como as
+//   demais entradas do porte. O `super.matches(other)` do `TestFileEditorInput` é [`matches_by_default`]. As propriedades
+//   atribuíveis do original (`dirty`, `capabilities`, `movedEditor`...) são campos com `Cell`/`RefCell`.
+// - `IFileEditorInput` (que o `TestFileEditorInput` implementa) ainda não foi portado: os setters dele
+//   (`setPreferredName`, `setEncoding`...) não fazem nada, como no original, e entram como métodos da struct.
+// - `registerTestEditor`, `registerTestFileEditor` e os demais `registerTest*` dependem do `Registry` de plataforma e do
+//   `EditorPane` (interface), e não são portados aqui.
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use editor_inputs::{TestEditorInput, TestEditorService, TestFileEditorInput, TestForceRevealFileEditorInput};
+
+mod editor_inputs {
+    use std::any::Any;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use je_base::errors::Error;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_platform::opener::editor_types::EditorOverride;
+    use je_platform::resources::ext_uri;
+
+    use crate::common::editor::editor_input::{CanMove, EditorInput, EditorInputBase, matches_by_default};
+    use crate::common::editor::editor_model::IEditorModel;
+    use crate::common::editor::{
+        EditorInputCapabilities, EditorInputOrUntyped, GroupIdentifier, IEditorPane, MoveResult, RevertOptions, SaveOptions, UntypedEditorInput,
+    };
+    use crate::services::editor::editor_service::IEditorService;
+
+    /// `TestEditorService`.
+    pub struct TestEditorService;
+
+    impl IEditorService for TestEditorService {
+        fn visible_editor_panes(&self) -> Vec<Rc<dyn IEditorPane>> {
+            Vec::new()
+        }
+    }
+
+    /// `TestEditorInput`.
+    pub struct TestEditorInput {
+        base: EditorInputBase,
+        /// `resource`.
+        pub resource: URI,
+        type_id: String,
+    }
+
+    impl TestEditorInput {
+        /// `constructor(resource, _typeId)`.
+        pub fn new(resource: URI, type_id: &str) -> Rc<Self> {
+            Rc::new_cyclic(|this| Self { base: EditorInputBase::new(this.clone()), resource, type_id: type_id.to_string() })
+        }
+    }
+
+    impl IDisposable for TestEditorInput {
+        fn dispose(&self) {
+            self.base.dispose();
+        }
+    }
+
+    impl EditorInput for TestEditorInput {
+        fn base(&self) -> &EditorInputBase {
+            &self.base
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn editor_type_id(&self) -> String {
+            self.type_id.clone()
+        }
+
+        fn editor_id(&self) -> Option<String> {
+            Some(self.type_id.clone())
+        }
+
+        fn resource(&self) -> Option<URI> {
+            Some(self.resource.clone())
+        }
+
+        fn resolve(&self) -> Promise<Option<Rc<dyn IEditorModel>>> {
+            Promise::resolved(None)
+        }
+    }
+
+    /// `TestFileEditorInput`.
+    pub struct TestFileEditorInput {
+        base: EditorInputBase,
+        /// `resource`.
+        pub resource: URI,
+        preferred_resource: URI,
+        type_id: String,
+        force_reveal: bool,
+
+        /// `gotDisposed`.
+        pub got_disposed: Cell<bool>,
+        /// `gotSaved`.
+        pub got_saved: Cell<bool>,
+        /// `gotSavedAs`.
+        pub got_saved_as: Cell<bool>,
+        /// `gotReverted`.
+        pub got_reverted: Cell<bool>,
+        /// `dirty`.
+        pub dirty: Cell<bool>,
+        /// `modified`.
+        pub modified: Cell<Option<bool>>,
+        fails: Cell<bool>,
+
+        /// `disableToUntyped`.
+        pub disable_to_untyped: Cell<bool>,
+
+        capabilities: Cell<EditorInputCapabilities>,
+
+        /// `movedEditor`.
+        pub moved_editor: RefCell<Option<MoveResult>>,
+        move_disabled_reason: RefCell<Option<String>>,
+    }
+
+    impl TestFileEditorInput {
+        /// `constructor(resource, _typeId)`.
+        pub fn new(resource: URI, type_id: &str) -> Rc<Self> {
+            Self::create(resource, type_id, false)
+        }
+
+        /// `new TestForceRevealFileEditorInput(resource, _typeId)`: `capabilities` é sempre `ForceReveal`.
+        pub fn new_force_reveal(resource: URI, type_id: &str) -> Rc<Self> {
+            Self::create(resource, type_id, true)
+        }
+
+        fn create(resource: URI, type_id: &str, force_reveal: bool) -> Rc<Self> {
+            Rc::new_cyclic(|this| Self {
+                base: EditorInputBase::new(this.clone()),
+                preferred_resource: resource.clone(),
+                resource,
+                type_id: type_id.to_string(),
+                force_reveal,
+                got_disposed: Cell::new(false),
+                got_saved: Cell::new(false),
+                got_saved_as: Cell::new(false),
+                got_reverted: Cell::new(false),
+                dirty: Cell::new(false),
+                modified: Cell::new(None),
+                fails: Cell::new(false),
+                disable_to_untyped: Cell::new(false),
+                capabilities: Cell::new(EditorInputCapabilities::NONE),
+                moved_editor: RefCell::new(None),
+                move_disabled_reason: RefCell::new(None),
+            })
+        }
+
+        /// `set capabilities(capabilities)`.
+        pub fn set_capabilities(&self, capabilities: EditorInputCapabilities) {
+            if self.capabilities.get() != capabilities {
+                self.capabilities.set(capabilities);
+                self.base.fire_did_change_capabilities();
+            }
+        }
+
+        pub fn set_preferred_resource(&self, _resource: &URI) {}
+
+        pub fn set_encoding(&self, _encoding: &str) {}
+
+        pub fn get_encoding(&self) -> Option<String> {
+            None
+        }
+
+        pub fn set_preferred_name(&self, _name: &str) {}
+
+        pub fn set_preferred_description(&self, _description: &str) {}
+
+        pub fn set_preferred_encoding(&self, _encoding: &str) {}
+
+        pub fn set_preferred_contents(&self, _contents: &str) {}
+
+        pub fn set_language_id(&self, _language_id: &str, _source: Option<&str>) {}
+
+        pub fn set_preferred_language_id(&self, _language_id: &str) {}
+
+        pub fn set_force_open_as_binary(&self) {}
+
+        pub fn set_fail_to_open(&self) {
+            self.fails.set(true);
+        }
+
+        pub fn set_modified(&self) {
+            self.modified.set(Some(true));
+        }
+
+        pub fn set_dirty(&self) {
+            self.dirty.set(true);
+        }
+
+        pub fn is_resolved(&self) -> bool {
+            false
+        }
+
+        pub fn set_move_disabled(&self, reason: &str) {
+            *self.move_disabled_reason.borrow_mut() = Some(reason.to_string());
+        }
+    }
+
+    impl IDisposable for TestFileEditorInput {
+        fn dispose(&self) {
+            self.base.dispose();
+            self.got_disposed.set(true);
+        }
+    }
+
+    impl EditorInput for TestFileEditorInput {
+        fn base(&self) -> &EditorInputBase {
+            &self.base
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn editor_type_id(&self) -> String {
+            self.type_id.clone()
+        }
+
+        fn editor_id(&self) -> Option<String> {
+            Some(self.type_id.clone())
+        }
+
+        fn resource(&self) -> Option<URI> {
+            Some(self.resource.clone())
+        }
+
+        fn preferred_resource(&self) -> Option<URI> {
+            Some(self.preferred_resource.clone())
+        }
+
+        fn capabilities(&self) -> EditorInputCapabilities {
+            if self.force_reveal { EditorInputCapabilities::FORCE_REVEAL } else { self.capabilities.get() }
+        }
+
+        fn resolve(&self) -> Promise<Option<Rc<dyn IEditorModel>>> {
+            if self.fails.get() { Promise::rejected(Error::new("fails")) } else { Promise::resolved(None) }
+        }
+
+        fn matches(&self, other: &EditorInputOrUntyped) -> bool {
+            if matches_by_default(self, other) {
+                return true;
+            }
+
+            match other {
+                EditorInputOrUntyped::Typed(other) => other.resource().is_some_and(|other_resource| {
+                    self.resource.to_string(false).to_string_lossy() == other_resource.to_string(false).to_string_lossy()
+                        && other.as_any().downcast_ref::<TestFileEditorInput>().is_some_and(|other| other.type_id == self.type_id)
+                }),
+                EditorInputOrUntyped::Untyped(untyped) => {
+                    let override_ = untyped.options.as_ref().and_then(|options| options.base.override_.as_ref());
+
+                    ext_uri().is_equal(Some(&self.resource), untyped.resource.as_ref(), false)
+                        && (override_.is_none() || matches!(override_, Some(EditorOverride::Id(id)) if id.to_string_lossy() == self.type_id))
+                }
+            }
+        }
+
+        fn save(&self, _group: GroupIdentifier, _options: Option<SaveOptions>) -> Promise<Option<EditorInputOrUntyped>> {
+            self.got_saved.set(true);
+            self.dirty.set(false);
+            Promise::resolved(Some(EditorInputOrUntyped::Typed(self.base.this())))
+        }
+
+        fn save_as(&self, _group: GroupIdentifier, _options: Option<SaveOptions>) -> Promise<Option<EditorInputOrUntyped>> {
+            self.got_saved_as.set(true);
+            Promise::resolved(Some(EditorInputOrUntyped::Typed(self.base.this())))
+        }
+
+        fn revert(&self, _group: GroupIdentifier, _options: Option<RevertOptions>) -> Promise<()> {
+            self.got_reverted.set(true);
+            self.got_saved.set(false);
+            self.got_saved_as.set(false);
+            self.dirty.set(false);
+            Promise::resolved(())
+        }
+
+        fn to_untyped(&self, _options: Option<&crate::common::editor::editor_input::UntypedEditorOptions>) -> Option<UntypedEditorInput> {
+            if self.disable_to_untyped.get() {
+                return None;
+            }
+
+            Some(UntypedEditorInput::from_resource(self.resource.clone()))
+        }
+
+        fn is_modified(&self) -> bool {
+            self.modified.get().unwrap_or_else(|| self.dirty.get())
+        }
+
+        fn is_dirty(&self) -> bool {
+            self.dirty.get()
+        }
+
+        fn rename(&self, _group: GroupIdentifier, _target: &URI) -> Promise<Option<MoveResult>> {
+            Promise::resolved(self.moved_editor.borrow().clone())
+        }
+
+        fn can_move(&self, _source_group: GroupIdentifier, _target_group: GroupIdentifier) -> CanMove {
+            match &*self.move_disabled_reason.borrow() {
+                Some(reason) => CanMove::No(reason.clone()),
+                None => CanMove::Yes,
+            }
+        }
+    }
+
+    /// `TestForceRevealFileEditorInput`: o `TestFileEditorInput` com `capabilities` sempre `ForceReveal`
+    /// ([`TestFileEditorInput::new_force_reveal`]).
+    pub type TestForceRevealFileEditorInput = TestFileEditorInput;
+}

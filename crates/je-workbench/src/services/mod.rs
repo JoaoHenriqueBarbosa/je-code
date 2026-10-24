@@ -31,3 +31,6 @@ pub mod path;
 pub mod remote;
 // Serviço de arquivos de texto: codificação (`textfile/common/encoding.ts`).
 pub mod textfile;
+
+// `IEditorService` reduzido (o que o `findViewStateForEditor` e o `SideBySideEditorInput` leem).
+pub mod editor;
