@@ -12,8 +12,8 @@
 //! - **`setDefaultAccountProvider`**, que lança quando já há um provedor, devolve `Result<(), Error>`.
 //! - **`new DefaultAccountService(productService)`** lê só `productService.defaultChatAgent.provider.default`
 //!   (o provedor padrão usado enquanto não há um provedor de conta); o porte recebe esse [`IChatProvider`] direto.
-//! - **`@IDefaultAccountService` do contrato reduzido** de `extension_management::service_contracts` (só
-//!   `getDefaultAccountAuthenticationProvider`) continua como está: o [`DefaultAccountService`] também o implementa.
+//! - **`IDefaultAccountService`** é o único contrato do serviço: os consumidores (habilitação de extensões, conta da
+//!   galeria, política de conta) o usam por inteiro, sem recortes.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -30,7 +30,6 @@ use je_instantiation::service_id;
 use je_platform::policy::managed_settings_freshness::{IManagedSettingsFreshness, ManagedSettingsFreshnessState};
 
 use super::managed_settings::IManagedSettingsCompatibilityError;
-use crate::services::extension_management::service_contracts::{self as reduced, IDefaultAccountService as IReducedDefaultAccountService};
 
 /// `GitHubPaths.copilotSettings`.
 pub const GITHUB_PATH_COPILOT_SETTINGS: &str = "settings/copilot/features";
@@ -387,13 +386,6 @@ impl IDefaultAccountService for DefaultAccountService {
             Some(provider) => provider.resolve_git_hub_url(path),
             None => Some(format!("https://github.com/{path}")),
         }
-    }
-}
-
-impl IReducedDefaultAccountService for DefaultAccountService {
-    fn get_default_account_authentication_provider(&self) -> reduced::IDefaultAccountAuthenticationProvider {
-        let provider = IDefaultAccountService::get_default_account_authentication_provider(self);
-        reduced::IDefaultAccountAuthenticationProvider { id: provider.id, name: provider.name, enterprise: provider.enterprise }
     }
 }
 

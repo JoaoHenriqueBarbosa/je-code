@@ -7,15 +7,12 @@
 //!
 //! Divergências:
 //! - **O que falta de `authentication.ts`** (entra quando o `AuthenticationService` for portado):
-//!   `ACCOUNTS_AVATAR_SETTING`, `AuthenticationSession`, `AuthenticationSessionsChangeEvent`,
-//!   `IAuthenticationCreateSessionOptions`, `IAuthenticationProviderSessionOptions`,
-//!   `IAuthenticationConstraint`, `IAuthenticationWwwAuthenticateRequest`,
-//!   `IAuthenticationGetSessionsOptions`, `IAuthenticationProvider`, `IAuthenticationProviderHostDelegate`,
-//!   `getDynamicAuthenticationProviderId`, `isAuthenticationSession`,
+//!   `ACCOUNTS_AVATAR_SETTING`, `IAuthenticationConstraint`, `IAuthenticationProvider`,
+//!   `IAuthenticationProviderHostDelegate`, `getDynamicAuthenticationProviderId`, `isAuthenticationSession`,
 //!   `isAuthenticationWwwAuthenticateRequest`, `WORKBENCH_ONLY_SESSION_OPTION_PREFIX`,
 //!   `withoutWorkbenchOnlySessionOptions`, `getAuthenticationSessionRequestKey`, e os membros de
-//!   `IAuthenticationService` (`onDidUnregisterAuthenticationProvider`, `onDidChangeSessions`,
-//!   `declaredProviders`, `getSessions`, `createSession`...) e de `IAuthenticationExtensionsService`
+//!   `IAuthenticationService` (`onDidUnregisterAuthenticationProvider`,
+//!   `declaredProviders`, `removeSession`...) e de `IAuthenticationExtensionsService`
 //!   (preferência de sessão, `selectSession`, `requestSessionAccess`...) que nenhum serviço portado chama.
 //!   Os dois traits crescem com eles.
 //! - **`IAuthenticationService.getAccounts`** devolve `Promise<Vec<AuthenticationSessionAccount>>` (o
@@ -34,6 +31,7 @@
 //!   ausente vira texto vazio, que é falso como o `undefined` nas conferências do serviço.
 
 use je_base::JsString;
+use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::json::{Object, Value};
@@ -63,6 +61,91 @@ impl AuthenticationSessionAccount {
     }
 }
 
+/// `AuthenticationSession`.
+#[derive(Clone)]
+pub struct AuthenticationSession {
+    pub id: String,
+    pub access_token: String,
+    pub account: AuthenticationSessionAccount,
+    pub scopes: Vec<String>,
+    /// `idToken?`.
+    pub id_token: Option<String>,
+    /// `expiresAfter?`.
+    pub expires_after: Option<f64>,
+    /// The issuing OAuth server, not a REST API endpoint or resource audience.
+    pub authorization_server: Option<URI>,
+}
+
+impl AuthenticationSession {
+    /// Uma sessão sem `idToken`, `expiresAfter` e `authorizationServer`.
+    pub fn new(id: impl Into<String>, access_token: impl Into<String>, account: AuthenticationSessionAccount, scopes: Vec<String>) -> Self {
+        Self { id: id.into(), access_token: access_token.into(), account, scopes, id_token: None, expires_after: None, authorization_server: None }
+    }
+}
+
+/// `AuthenticationSessionsChangeEvent`: `added`, `removed` e `changed` são `ReadonlyArray | undefined`.
+#[derive(Clone, Default)]
+pub struct AuthenticationSessionsChangeEvent {
+    pub added: Option<Vec<AuthenticationSession>>,
+    pub removed: Option<Vec<AuthenticationSession>>,
+    pub changed: Option<Vec<AuthenticationSession>>,
+}
+
+/// O `{ providerId, label, event }` de `IAuthenticationService.onDidChangeSessions`.
+#[derive(Clone)]
+pub struct AuthenticationSessionsChange {
+    pub provider_id: String,
+    pub label: String,
+    pub event: AuthenticationSessionsChangeEvent,
+}
+
+/// `IAuthenticationProviderSessionOptions`: as opções passadas ao provedor ao pedir sessões.
+#[derive(Clone, Default)]
+pub struct IAuthenticationProviderSessionOptions {
+    /// Whether the provider must avoid user interaction while resolving existing sessions.
+    pub silent: Option<bool>,
+    /// The account that is being asked about. If this is passed in, the provider should attempt to return the
+    /// sessions that are only related to this account.
+    pub account: Option<AuthenticationSessionAccount>,
+    /// The authorization server that is being asked about.
+    pub authorization_server: Option<URI>,
+    /// The OAuth client identifier to use instead of the provider's default client.
+    pub client_id: Option<String>,
+    /// When specified, the authentication provider will request a token bound to this resource URI
+    /// (RFC 8707 resource indicator).
+    pub resource: Option<String>,
+    /// The audience for the requested access token.
+    pub audience: Option<String>,
+    /// As demais chaves (`[key: string]: any`), específicas de cada provedor.
+    pub extra: Option<Dynamic>,
+}
+
+/// `IAuthenticationCreateSessionOptions`, que estende [`IAuthenticationProviderSessionOptions`].
+#[derive(Clone, Default)]
+pub struct IAuthenticationCreateSessionOptions {
+    pub session_options: IAuthenticationProviderSessionOptions,
+    pub activate_immediate: Option<bool>,
+}
+
+/// `IAuthenticationGetSessionsOptions`.
+pub type IAuthenticationGetSessionsOptions = IAuthenticationProviderSessionOptions;
+
+/// `IAuthenticationWwwAuthenticateRequest`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IAuthenticationWwwAuthenticateRequest {
+    /// The raw WWW-Authenticate header value that triggered this challenge.
+    pub www_authenticate: String,
+    /// Optional scopes for the session.
+    pub fallback_scopes: Option<Vec<String>>,
+}
+
+/// `ReadonlyArray<string> | IAuthenticationWwwAuthenticateRequest` (`scopeListOrRequest`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthenticationScopeListOrRequest {
+    Scopes(Vec<String>),
+    Request(IAuthenticationWwwAuthenticateRequest),
+}
+
 /// `AuthenticationProviderInformation`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthenticationProviderInformation {
@@ -90,6 +173,9 @@ pub trait IAuthenticationService {
     /// Fires when an authentication provider has been registered.
     fn on_did_register_authentication_provider(&self) -> Event<AuthenticationProviderInformation>;
 
+    /// Fires when the list of sessions for a provider has been added, removed or changed.
+    fn on_did_change_sessions(&self) -> Event<AuthenticationSessionsChange>;
+
     /// Gets the provider ids of all registered authentication providers.
     fn get_provider_ids(&self) -> Vec<String>;
 
@@ -97,6 +183,32 @@ pub trait IAuthenticationService {
     ///
     /// - `id`: the id of the provider to ask for accounts.
     fn get_accounts(&self, id: &str) -> Promise<Vec<AuthenticationSessionAccount>>;
+
+    /// Gets all sessions that satisfy the given scopes from the provider with the given id.
+    ///
+    /// - `id`: the id of the provider to ask for a session.
+    /// - `scope_list_or_request`: the scopes for the session.
+    /// - `options`: additional options for getting sessions.
+    /// - `activate_immediate`: if true, the provider should activate immediately if it is not already.
+    fn get_sessions(
+        &self,
+        id: &str,
+        scope_list_or_request: Option<AuthenticationScopeListOrRequest>,
+        options: Option<IAuthenticationGetSessionsOptions>,
+        activate_immediate: Option<bool>,
+    ) -> Promise<Vec<AuthenticationSession>>;
+
+    /// Creates an AuthenticationSession with the given provider and scopes.
+    ///
+    /// - `provider_id`: the id of the provider.
+    /// - `scope_list_or_request`: the scopes to request.
+    /// - `options`: additional options for creating the session.
+    fn create_session(
+        &self,
+        provider_id: &str,
+        scope_list_or_request: AuthenticationScopeListOrRequest,
+        options: Option<IAuthenticationCreateSessionOptions>,
+    ) -> Promise<AuthenticationSession>;
 }
 
 service_id!(pub I_AUTHENTICATION_SERVICE: dyn IAuthenticationService = "IAuthenticationService");

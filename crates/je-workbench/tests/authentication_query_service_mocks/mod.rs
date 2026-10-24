@@ -25,14 +25,16 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::Rc;
 
+use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::map::OrderedMap;
 use je_base::promise::Promise;
 use je_base::runtime::date_now;
 use je_workbench::services::authentication::authentication::{
-    AccountAccessChange, AccountPreferenceChange, AllowedExtension, AuthenticationProviderInformation, AuthenticationSessionAccount,
-    IAuthenticationExtensionsService, IAuthenticationService,
+    AccountAccessChange, AccountPreferenceChange, AllowedExtension, AuthenticationProviderInformation, AuthenticationScopeListOrRequest, AuthenticationSession,
+    AuthenticationSessionAccount, AuthenticationSessionsChange, IAuthenticationCreateSessionOptions, IAuthenticationExtensionsService,
+    IAuthenticationGetSessionsOptions, IAuthenticationService,
 };
 use je_workbench::services::authentication::authentication_access_service::IAuthenticationAccessService;
 use je_workbench::services::authentication::authentication_mcp_access_service::{
@@ -558,6 +560,29 @@ impl IAuthenticationService for TestAuthenticationService {
 
     fn get_accounts(&self, id: &str) -> Promise<Vec<AuthenticationSessionAccount>> {
         Promise::resolved(self.accounts_map.borrow().get(id).cloned().unwrap_or_default())
+    }
+
+    fn on_did_change_sessions(&self) -> Event<AuthenticationSessionsChange> {
+        errors::throw(Error::new("not implemented"))
+    }
+
+    fn get_sessions(
+        &self,
+        _id: &str,
+        _scope_list_or_request: Option<AuthenticationScopeListOrRequest>,
+        _options: Option<IAuthenticationGetSessionsOptions>,
+        _activate_immediate: Option<bool>,
+    ) -> Promise<Vec<AuthenticationSession>> {
+        errors::throw(Error::new("not implemented"))
+    }
+
+    fn create_session(
+        &self,
+        _provider_id: &str,
+        _scope_list_or_request: AuthenticationScopeListOrRequest,
+        _options: Option<IAuthenticationCreateSessionOptions>,
+    ) -> Promise<AuthenticationSession> {
+        errors::throw(Error::new("not implemented"))
     }
 }
 

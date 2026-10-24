@@ -10,7 +10,7 @@
 //!   `impl` de [`IExtensionGalleryAccountProvider`], para qualquer tipo que implemente o trait abstrato.
 //! - Os provedores são `Clone` (todos os campos são `Rc`): o corpo `async` de cada método leva uma cópia.
 //! - As dependências por injeção entram nos construtores. `IAuthenticationService` e `IDefaultAccountService` são os
-//!   recortes de [`super::extension_gallery_contracts`].
+//!   contratos portados em `services::authentication::authentication` e `services::accounts::default_account`.
 //! - A contribuição (`ExtensionGalleryAccountProviderContribution`) recebe, no lugar do `IInstantiationService`, as duas
 //!   funções que criam os provedores (o `createInstance` de cada um). `registerSingleton` e
 //!   `registerWorkbenchContribution2` não têm equivalente: quem monta o workbench cria o serviço e a contribuição.
@@ -46,8 +46,11 @@ use je_storage::StorageValue;
 use super::extension_gallery_account::{
     ExtensionGalleryAccountStatus, IExtensionGalleryAccount, IExtensionGalleryAccountProvider, IExtensionGalleryAccountService,
 };
-use super::extension_gallery_contracts::{AuthenticationSession, IGalleryAuthenticationService, IGalleryDefaultAccountService};
-use crate::services::authentication::authentication::AuthenticationSessionAccount;
+use crate::services::accounts::default_account::IDefaultAccountService;
+use crate::services::authentication::authentication::{
+    AuthenticationScopeListOrRequest, AuthenticationSession, AuthenticationSessionAccount, IAuthenticationCreateSessionOptions, IAuthenticationProviderSessionOptions,
+    IAuthenticationService,
+};
 
 const PREFERRED_ACCOUNT_KEY: &str = "marketplace.account";
 
@@ -147,13 +150,13 @@ impl<T: AbstractGalleryAccountProvider> IExtensionGalleryAccountProvider for T {
 #[derive(Clone)]
 pub struct GitHubGalleryAccountProvider {
     state: Rc<GalleryAccountProviderState>,
-    default_account_service: Rc<dyn IGalleryDefaultAccountService>,
+    default_account_service: Rc<dyn IDefaultAccountService>,
     product_service: Rc<dyn IProductService>,
 }
 
 impl GitHubGalleryAccountProvider {
     pub fn new(
-        default_account_service: Rc<dyn IGalleryDefaultAccountService>,
+        default_account_service: Rc<dyn IDefaultAccountService>,
         product_service: Rc<dyn IProductService>,
         telemetry_service: Rc<dyn ITelemetryService>,
         log_service: LogServiceRef,
@@ -201,7 +204,7 @@ impl AbstractGalleryAccountProvider for GitHubGalleryAccountProvider {
     }
 
     fn do_sign_in(&self) -> Promise<()> {
-        self.default_account_service.sign_in().then(|_| ())
+        self.default_account_service.sign_in(None).then(|_| ())
     }
 }
 
@@ -216,7 +219,7 @@ impl IDisposable for GitHubGalleryAccountProvider {
 #[derive(Clone)]
 pub struct MicrosoftGalleryAccountProvider {
     state: Rc<GalleryAccountProviderState>,
-    authentication_service: Rc<dyn IGalleryAuthenticationService>,
+    authentication_service: Rc<dyn IAuthenticationService>,
     quick_input_service: Rc<dyn IQuickInputService>,
     product_service: Rc<dyn IProductService>,
     storage_service: Rc<dyn StorageService>,
@@ -224,7 +227,7 @@ pub struct MicrosoftGalleryAccountProvider {
 
 impl MicrosoftGalleryAccountProvider {
     pub fn new(
-        authentication_service: Rc<dyn IGalleryAuthenticationService>,
+        authentication_service: Rc<dyn IAuthenticationService>,
         quick_input_service: Rc<dyn IQuickInputService>,
         product_service: Rc<dyn IProductService>,
         storage_service: Rc<dyn StorageService>,
@@ -291,7 +294,7 @@ impl MicrosoftGalleryAccountProvider {
                 this.state.log_service.error("[Marketplace] extensionsGallery.accessScopes is not configured - the Microsoft marketplace path cannot request a session.");
                 return Ok(None);
             };
-            let sessions = this.authentication_service.get_sessions("microsoft", &scopes).await?;
+            let sessions = this.authentication_service.get_sessions("microsoft", Some(AuthenticationScopeListOrRequest::Scopes(scopes)), None, None).await?;
             if sessions.is_empty() {
                 return Ok(None);
             }
@@ -317,7 +320,13 @@ impl MicrosoftGalleryAccountProvider {
             self.store_preferred_account_id(&account.id);
         }
         let this = self.clone();
-        self.authentication_service.create_session("microsoft", scopes, account).then(move |session| this.store_preferred_account_id(&session.account.id))
+        let options = account.map(|account| IAuthenticationCreateSessionOptions {
+            session_options: IAuthenticationProviderSessionOptions { account: Some(account.clone()), ..Default::default() },
+            activate_immediate: None,
+        });
+        self.authentication_service
+            .create_session("microsoft", AuthenticationScopeListOrRequest::Scopes(scopes.to_vec()), options)
+            .then(move |session| this.store_preferred_account_id(&session.account.id))
     }
 
     fn read_preferred_account_id(&self) -> Option<String> {

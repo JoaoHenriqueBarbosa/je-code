@@ -40,7 +40,7 @@ use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with
 use je_base::JsString;
 use je_base::buffer::{VSBuffer, buffer_to_stream, encode_base64};
 use je_base::cancellation::CancellationToken;
-use je_base::default_account::{IDefaultAccount, IDefaultAccountAuthenticationProvider, IEntitlementsData};
+use je_base::default_account::{ICopilotTokenInfo, IDefaultAccount, IDefaultAccountAuthenticationProvider, IEntitlementsData, IPolicyData};
 use je_base::dynamic::{Dynamic, json_stringify};
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
@@ -60,19 +60,26 @@ use je_platform::extension_management::extension_gallery_manifest::{
     EXTENSION_GALLERY_AUTH_PROVIDER_CONFIG_KEY, EXTENSION_GALLERY_SERVICE_URL_CONFIG_KEY, ExtensionGalleryManifestStatus, IExtensionGalleryManifestService,
 };
 use je_platform::log::NullLogService;
+use je_platform::policy::managed_settings_freshness::IManagedSettingsFreshness;
 use je_platform::product::{IProductService, ProductService};
 use je_platform::quickinput::quick_input::{IInputOptions, IPickOptions, IQuickInputService, IQuickPickItem};
 use je_platform::request::{AuthInfo, Credentials, IRequestService, RequestCompleteEvent};
 use je_platform::storage::{InMemoryStorageService, StorageScope, StorageService, StorageTarget};
 use je_platform::telemetry::{CommonPropertyValue, ITelemetryData, ITelemetryService, NullTelemetryServiceShape, TelemetryLevel};
 use je_storage::StorageValue;
-use je_workbench::services::authentication::authentication::AuthenticationSessionAccount;
+use je_workbench::services::accounts::default_account::{
+    IDefaultAccountProvider, IDefaultAccountRefreshOptions, IDefaultAccountService, ISignInOptions, ManagedSettingsFetchStatus,
+};
+use je_workbench::services::accounts::managed_settings::IManagedSettingsCompatibilityError;
+use je_workbench::services::authentication::authentication::{
+    AuthenticationScopeListOrRequest, AuthenticationSession, AuthenticationSessionAccount, AuthenticationSessionsChange, AuthenticationSessionsChangeEvent,
+    IAuthenticationCreateSessionOptions, IAuthenticationGetSessionsOptions, IAuthenticationService, AuthenticationProviderInformation,
+};
 use je_workbench::services::extension_management::extension_gallery_account::{IExtensionGalleryAccountProvider, IExtensionGalleryAccountService};
 use je_workbench::services::extension_management::extension_gallery_account_service::{
     ExtensionGalleryAccountService, GitHubGalleryAccountProvider, MicrosoftGalleryAccountProvider, uses_microsoft_auth_provider,
 };
 use je_workbench::services::extension_management::extension_gallery_contracts::{
-    AuthenticationSession, AuthenticationSessionsChange, AuthenticationSessionsChangeEvent, IGalleryAuthenticationService, IGalleryDefaultAccountService,
     IHostRestartService, IRemoteAgentConnection, IRemoteAgentConnectionProvider, ISharedProcessService,
 };
 use je_workbench::services::extension_management::extension_gallery_manifest_service::{
@@ -144,11 +151,13 @@ fn make_jwt(claims: Value) -> String {
 /// carry an ID token to be classified.
 fn create_microsoft_session_with(access_token: &str, account_id: &str, session_id: &str, tid: &str) -> AuthenticationSession {
     AuthenticationSession {
-        id: session_id.to_owned(),
-        access_token: access_token.to_owned(),
-        account: AuthenticationSessionAccount::new(format!("{account_id}@contoso.com"), account_id),
-        scopes: ["openid", "profile", "email", "offline_access"].map(str::to_owned).to_vec(),
         id_token: Some(make_jwt(json!({ "tid": tid, "oid": account_id }))),
+        ..AuthenticationSession::new(
+            session_id,
+            access_token,
+            AuthenticationSessionAccount::new(format!("{account_id}@contoso.com"), account_id),
+            ["openid", "profile", "email", "offline_access"].map(str::to_owned).to_vec(),
+        )
     }
 }
 
@@ -228,7 +237,7 @@ struct TestDefaultAccountService {
     throws: bool,
 }
 
-impl IGalleryDefaultAccountService for TestDefaultAccountService {
+impl IDefaultAccountService for TestDefaultAccountService {
     fn on_did_change_default_account(&self) -> Event<Option<IDefaultAccount>> {
         self.on_did_change_default_account.event()
     }
@@ -240,8 +249,76 @@ impl IGalleryDefaultAccountService for TestDefaultAccountService {
         Promise::resolved(self.default_account.borrow().clone())
     }
 
-    fn sign_in(&self) -> Promise<Option<IDefaultAccount>> {
+    fn sign_in(&self, _options: Option<ISignInOptions>) -> Promise<Option<IDefaultAccount>> {
         not_mocked("signIn")
+    }
+
+    fn on_did_change_policy_data(&self) -> Event<Option<IPolicyData>> {
+        not_mocked("onDidChangePolicyData")
+    }
+
+    fn policy_data(&self) -> Option<IPolicyData> {
+        not_mocked("policyData")
+    }
+
+    fn current_default_account(&self) -> Option<IDefaultAccount> {
+        not_mocked("currentDefaultAccount")
+    }
+
+    fn copilot_token_info(&self) -> Option<ICopilotTokenInfo> {
+        not_mocked("copilotTokenInfo")
+    }
+
+    fn on_did_change_copilot_token_info(&self) -> Event<Option<ICopilotTokenInfo>> {
+        not_mocked("onDidChangeCopilotTokenInfo")
+    }
+
+    fn managed_settings_fetch_status(&self) -> Option<ManagedSettingsFetchStatus> {
+        not_mocked("managedSettingsFetchStatus")
+    }
+
+    fn managed_settings_fetched_at(&self) -> Option<f64> {
+        not_mocked("managedSettingsFetchedAt")
+    }
+
+    fn managed_settings_raw_response(&self) -> Dynamic {
+        not_mocked("managedSettingsRawResponse")
+    }
+
+    fn managed_settings_compatibility_error(&self) -> Option<IManagedSettingsCompatibilityError> {
+        not_mocked("managedSettingsCompatibilityError")
+    }
+
+    fn on_did_change_managed_settings_compatibility_error(&self) -> Event<Option<IManagedSettingsCompatibilityError>> {
+        not_mocked("onDidChangeManagedSettingsCompatibilityError")
+    }
+
+    fn managed_settings_freshness(&self) -> IManagedSettingsFreshness {
+        not_mocked("managedSettingsFreshness")
+    }
+
+    fn on_did_change_managed_settings_freshness(&self) -> Event<IManagedSettingsFreshness> {
+        not_mocked("onDidChangeManagedSettingsFreshness")
+    }
+
+    fn get_default_account_authentication_provider(&self) -> IDefaultAccountAuthenticationProvider {
+        not_mocked("getDefaultAccountAuthenticationProvider")
+    }
+
+    fn set_default_account_provider(&self, _provider: Rc<dyn IDefaultAccountProvider>) -> Result<(), Error> {
+        not_mocked("setDefaultAccountProvider")
+    }
+
+    fn refresh(&self, _options: Option<IDefaultAccountRefreshOptions>) -> Promise<Option<IDefaultAccount>> {
+        not_mocked("refresh")
+    }
+
+    fn sign_out(&self) -> Promise<()> {
+        not_mocked("signOut")
+    }
+
+    fn resolve_git_hub_url(&self, _path: &str) -> Option<String> {
+        not_mocked("resolveGitHubUrl")
     }
 }
 
@@ -253,20 +330,43 @@ struct TestAuthenticationService {
     creates_session: bool,
 }
 
-impl IGalleryAuthenticationService for TestAuthenticationService {
+impl IAuthenticationService for TestAuthenticationService {
+    fn on_did_register_authentication_provider(&self) -> Event<AuthenticationProviderInformation> {
+        not_mocked("onDidRegisterAuthenticationProvider")
+    }
+
     fn on_did_change_sessions(&self) -> Event<AuthenticationSessionsChange> {
         self.on_did_change_sessions.event()
+    }
+
+    fn get_provider_ids(&self) -> Vec<String> {
+        not_mocked("getProviderIds")
     }
 
     fn get_accounts(&self, _id: &str) -> Promise<Vec<AuthenticationSessionAccount>> {
         not_mocked("getAccounts")
     }
 
-    fn get_sessions(&self, id: &str, scopes: &[String]) -> Promise<Vec<AuthenticationSession>> {
-        (self.get_sessions)(id, scopes)
+    fn get_sessions(
+        &self,
+        id: &str,
+        scope_list_or_request: Option<AuthenticationScopeListOrRequest>,
+        _options: Option<IAuthenticationGetSessionsOptions>,
+        _activate_immediate: Option<bool>,
+    ) -> Promise<Vec<AuthenticationSession>> {
+        let scopes = match scope_list_or_request {
+            Some(AuthenticationScopeListOrRequest::Scopes(scopes)) => scopes,
+            _ => Vec::new(),
+        };
+        (self.get_sessions)(id, &scopes)
     }
 
-    fn create_session(&self, _provider_id: &str, _scopes: &[String], _account: Option<&AuthenticationSessionAccount>) -> Promise<AuthenticationSession> {
+    fn create_session(
+        &self,
+        _provider_id: &str,
+        _scope_list_or_request: AuthenticationScopeListOrRequest,
+        _options: Option<IAuthenticationCreateSessionOptions>,
+    ) -> Promise<AuthenticationSession> {
         if !self.creates_session {
             not_mocked("createSession");
         }
@@ -474,9 +574,9 @@ struct Fixture {
     /// `instantiationService.stub(IProductService, ...)`.
     product: RefCell<Rc<ProductService>>,
     /// `instantiationService.stub(IAuthenticationService, ...)`.
-    authentication_service: RefCell<Rc<dyn IGalleryAuthenticationService>>,
+    authentication_service: RefCell<Rc<dyn IAuthenticationService>>,
     /// `instantiationService.stub(IDefaultAccountService, ...)`.
-    default_account_service: RefCell<Rc<dyn IGalleryDefaultAccountService>>,
+    default_account_service: RefCell<Rc<dyn IDefaultAccountService>>,
 }
 
 impl Fixture {
@@ -498,7 +598,7 @@ impl Fixture {
         let storage: Rc<dyn StorageService> = Rc::new(storage_core);
 
         let sessions_of_microsoft = microsoft_sessions.clone();
-        let authentication_service: Rc<dyn IGalleryAuthenticationService> = Rc::new(TestAuthenticationService {
+        let authentication_service: Rc<dyn IAuthenticationService> = Rc::new(TestAuthenticationService {
             on_did_change_sessions: on_did_change_sessions.clone(),
             get_sessions: Rc::new(move |provider_id, _scopes| {
                 if provider_id == "microsoft" {
@@ -508,7 +608,7 @@ impl Fixture {
             }),
             creates_session: true,
         });
-        let default_account_service: Rc<dyn IGalleryDefaultAccountService> = Rc::new(TestDefaultAccountService {
+        let default_account_service: Rc<dyn IDefaultAccountService> = Rc::new(TestDefaultAccountService {
             on_did_change_default_account: on_did_change_default_account.clone(),
             default_account: default_account.clone(),
             throws: false,
