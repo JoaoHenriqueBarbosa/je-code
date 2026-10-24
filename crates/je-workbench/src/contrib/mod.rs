@@ -23,3 +23,5 @@ pub mod notebook;
 pub mod onboarding;
 
 pub mod tasks;
+
+pub mod snippets;
