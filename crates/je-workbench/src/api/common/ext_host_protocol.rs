@@ -836,12 +836,7 @@ pub struct ResolvedEncodingDto {
 }
 
 /// `EditSessionIdentityMatch` (`platform/workspace/common/editSessions.ts`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EditSessionIdentityMatch {
-    Complete = 100,
-    Partial = 50,
-    None = 0,
-}
+pub use je_platform::edit_sessions::EditSessionIdentityMatch;
 
 /// `MainThreadWorkspaceShape`. Os `UriComponents` do original são [`URI`]; o `string | undefined` é `Option<String>`.
 pub trait MainThreadWorkspaceShape: IDisposable {
@@ -1347,6 +1342,51 @@ mod file_system_event_region {
     impl ExtHostContext {
         pub const EXT_HOST_FILE_SYSTEM_EVENT_SERVICE: ProxyIdentifier<dyn ExtHostFileSystemEventServiceShape> = ProxyIdentifier::new("ExtHostFileSystemEventService");
         pub const EXT_HOST_FILE_SYSTEM_INFO: ProxyIdentifier<dyn ExtHostFileSystemInfoShape> = ProxyIdentifier::new("ExtHostFileSystemInfo");
+    }
+}
+
+// #endregion
+
+// #region ManagedSockets
+
+pub use self::managed_sockets_region::*;
+
+/// `MainThreadManagedSocketsShape` e `ExtHostManagedSocketsShape` (de `extHost.protocol.ts`, usadas por
+/// `mainThreadManagedSockets.ts`) e os identificadores `MainContext.MainThreadManagedSockets` e
+/// `ExtHostContext.ExtHostManagedSockets`.
+///
+/// Divergências: `socketFactoryId` e `socketId` (`number`) são `u64`, como os demais identificadores de registro do protocolo;
+/// o `error: string | undefined` de `$onDidManagedSocketClose` é `Option<String>`.
+mod managed_sockets_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// `MainThreadManagedSocketsShape`.
+    pub trait MainThreadManagedSocketsShape: IDisposable {
+        fn rpc_register_socket_factory(&self, socket_factory_id: u64) -> Promise<()>;
+        fn rpc_unregister_socket_factory(&self, socket_factory_id: u64) -> Promise<()>;
+        fn rpc_on_did_managed_socket_have_data(&self, socket_id: u64, data: VSBuffer);
+        fn rpc_on_did_managed_socket_close(&self, socket_id: u64, error: Option<String>);
+        fn rpc_on_did_managed_socket_end(&self, socket_id: u64);
+    }
+
+    /// `ExtHostManagedSocketsShape`.
+    pub trait ExtHostManagedSocketsShape {
+        fn rpc_open_remote_socket(&self, socket_factory_id: u64) -> Promise<u64>;
+        fn rpc_remote_socket_write(&self, socket_id: u64, buffer: VSBuffer);
+        fn rpc_remote_socket_end(&self, socket_id: u64);
+        fn rpc_remote_socket_drain(&self, socket_id: u64) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_MANAGED_SOCKETS: ProxyIdentifier<dyn MainThreadManagedSocketsShape> = ProxyIdentifier::new("MainThreadManagedSockets");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_MANAGED_SOCKETS: ProxyIdentifier<dyn ExtHostManagedSocketsShape> = ProxyIdentifier::new("ExtHostManagedSockets");
     }
 }
 

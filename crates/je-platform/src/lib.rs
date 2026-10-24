@@ -10,7 +10,9 @@
 pub mod accessibility;
 pub mod action;
 pub mod actions;
+pub mod canonical_uri;
 pub mod commands;
+pub mod edit_sessions;
 pub mod backup;
 pub mod configuration;
 pub mod dialogs;
