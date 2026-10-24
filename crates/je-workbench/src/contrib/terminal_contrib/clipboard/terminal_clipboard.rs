@@ -13,7 +13,7 @@
 use std::rc::Rc;
 
 use je_base::async_::async_fn;
-use je_base::dynamic::Dynamic;
+use je_base::dynamic::{Dynamic, Truthy};
 use je_base::js_string::{self, JsString};
 use je_base::nls::localize;
 use je_base::promise::{MaybePromise, Promise};
