@@ -49,7 +49,7 @@ fn create_part(guard: &LeakGuard) -> Rc<EditorPart> {
     let configuration: Rc<dyn IConfigurationService> = TestConfigurationService::new(None);
     let instantiation_service = InstantiationService::new(ServiceCollection::new().with(I_CONFIGURATION_SERVICE, configuration.clone()));
     let storage = InMemoryStorageService::new();
-    let storage_service: Rc<dyn StorageService> = storage.clone();
+    let storage_service: Rc<dyn StorageService> = Rc::new(storage.clone());
     let context_key_service = MockContextKeyService::scopable();
 
     let part = guard.add_rc(EditorPart::new(
