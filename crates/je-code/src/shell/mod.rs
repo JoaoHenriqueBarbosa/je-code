@@ -1198,7 +1198,7 @@ impl Shell {
                             recent::Recent::File(p) => (p.clone(), Command::OpenFile(p)),
                         };
                         let label = path.file_name()?.to_string_lossy().into_owned();
-                        let description = path.parent().map(&tidy);
+                        let description = path.parent().map(tidy);
                         Some(PickItem { label, description, keybinding: None, command, recent: false })
                     })
                     .collect();
