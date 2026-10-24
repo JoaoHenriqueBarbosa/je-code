@@ -19,10 +19,6 @@
 //! - O contrato `IExtensionResourceLoaderService` é o de `contrib::snippets::snippets_file` (migra para a
 //!   plataforma quando o serviço for portado).
 //!
-//! Fora deste porte (dependem de módulos ainda sem porte):
-//! - `fromExtensionTheme` (`IThemeExtensionPoint`, `ExtensionData`), `extensionData` (inclusive a gravação no
-//!   armazenamento) e `setCustomizations` (`ThemeConfiguration`).
-//!
 //! Divergências:
 //! - A ordem das chaves do `colorMap` gravado no armazenamento é a alfabética (o `ColorTheme` guarda o mapa sem
 //!   ordem de inserção), para o texto gravado ser determinístico.
@@ -57,6 +53,7 @@ use je_base::errors::Error;
 use je_base::json::{self as js_json, NodeType, ParseOptions};
 use je_base::json_error_messages::parse_error_message;
 use je_base::nls::localize;
+use je_base::path::{Environment, PathModule, ProcessEnvironment};
 use je_base::uri::URI;
 use je_editor::encoded_token_attributes::{color_id, font_style, metadata_consts};
 use je_editor::token_theme::{IFontTokenOptions, to_standard_token_type};
@@ -77,12 +74,11 @@ use serde_json::{Map, Value};
 use super::plist_parser;
 use super::text_mate_scope_matcher::{MatchesName, Matcher, create_matchers};
 use super::theme_compatibility::{ConvertedSettings, TextMateScope, TextMateThemingRule, convert_settings};
+use super::theme_configuration::ThemeConfiguration;
+use super::workbench_theme_service::{
+    ExtensionData, IThemeExtensionPoint, IWorkbenchTheme, THEME_SCOPE_CLOSE_PAREN, THEME_SCOPE_OPEN_PAREN, THEME_SCOPE_WILDCARD,
+};
 use crate::contrib::snippets::snippets_file::IExtensionResourceLoaderService;
-
-/// `THEME_SCOPE_OPEN_PAREN`, `THEME_SCOPE_CLOSE_PAREN` e `THEME_SCOPE_WILDCARD` do `workbenchThemeService.ts`.
-const THEME_SCOPE_OPEN_PAREN: char = '[';
-const THEME_SCOPE_CLOSE_PAREN: char = ']';
-const THEME_SCOPE_WILDCARD: char = '*';
 
 const EDITOR_FOREGROUND: &str = "editor.foreground";
 const EDITOR_BACKGROUND: &str = "editor.background";
@@ -235,6 +231,8 @@ pub struct ColorThemeData {
     /// Só definido para tema de extensão do registro, não para o restaurado do armazenamento.
     pub location: Option<URI>,
     pub watch: Option<bool>,
+    /// A extensão que contribuiu o tema (`extensionData`).
+    pub extension_data: Option<ExtensionData>,
 
     theme_semantic_highlighting: Option<bool>,
     custom_semantic_highlighting: Option<bool>,
@@ -275,6 +273,7 @@ impl ColorThemeData {
             is_loaded: false,
             location: None,
             watch: None,
+            extension_data: None,
             theme_semantic_highlighting: None,
             custom_semantic_highlighting: None,
             custom_semantic_highlighting_deprecated: None,
@@ -694,6 +693,13 @@ impl ColorThemeData {
         None
     }
 
+    /// `setCustomizations`: as customizações de cor, de token e de semantic token das configurações.
+    pub fn set_customizations(&mut self, settings: &ThemeConfiguration) {
+        self.set_custom_colors(&settings.color_customizations());
+        self.set_custom_token_colors(&settings.token_color_customizations());
+        self.set_custom_semantic_token_colors(settings.semantic_token_color_customizations().as_ref());
+    }
+
     /// Replaces runtime-only colors; these are deliberately excluded from theme storage.
     pub fn set_transient_colors(&mut self, colors: Option<HashMap<String, Color>>) {
         if self.colors.has_transient_colors() || colors.is_some() {
@@ -930,6 +936,9 @@ impl ColorThemeData {
             "semanticTokenRules".into(),
             Value::Array(self.semantic_token_rules.iter().map(SemanticTokenRule::to_json_object).collect()),
         );
+        if let Some(extension_data) = ExtensionData::to_json_object(self.extension_data.as_ref()) {
+            value.insert("extensionData".into(), extension_data);
+        }
         if let Some(flag) = self.theme_semantic_highlighting {
             value.insert("themeSemanticHighlighting".into(), Value::Bool(flag));
         }
@@ -975,6 +984,28 @@ impl ColorThemeData {
         theme_data
     }
 
+    /// `fromExtensionTheme`: o tema contribuído por uma extensão, ainda não carregado.
+    pub fn from_extension_theme(theme: &IThemeExtensionPoint, color_theme_location: URI, extension_data: ExtensionData) -> ColorThemeData {
+        let base_theme = theme.ui_theme.as_deref().filter(|ui_theme| !ui_theme.is_empty()).unwrap_or("vs-dark");
+        let theme_selector = to_css_selector(&extension_data.extension_id, &theme.path);
+        let id = format!("{base_theme} {theme_selector}");
+        let label = match theme.label.as_deref().filter(|label| !label.is_empty()) {
+            Some(label) => label.to_owned(),
+            None => {
+                let env = ProcessEnvironment;
+                PathModule::native(&env as &dyn Environment).basename(&theme.path, None)
+            }
+        };
+        let settings_id = if theme.id.is_empty() { label.clone() } else { theme.id.clone() };
+        let mut theme_data = Self::new(&id, &label, &settings_id);
+        theme_data.description = theme.description.clone();
+        theme_data.watch = Some(theme.watch);
+        theme_data.location = Some(color_theme_location);
+        theme_data.extension_data = Some(extension_data);
+        theme_data.is_loaded = false;
+        theme_data
+    }
+
     /// `fromStorageData`: o tema gravado por `to_storage`, ou `None` se não há, não é válido ou falta `id` ou
     /// `settingsId`.
     pub fn from_storage_data(storage_service: &dyn StorageService) -> Option<ColorThemeData> {
@@ -1009,7 +1040,8 @@ impl ColorThemeData {
                         );
                     }
                 }
-                // location: no longer restore; extensionData: sem porte
+                "extensionData" => theme.extension_data = ExtensionData::from_json_object(value),
+                // location: no longer restore
                 _ => {}
             }
         }
@@ -1417,4 +1449,33 @@ async fn load_syntax_tokens(
     };
     convert_settings(settings.iter().filter_map(rule_from_json).collect(), result);
     Ok(())
+}
+
+/// `toCSSSelector`: o `extensionId` e o caminho do tema como uma classe de CSS (só `_`, letras, dígitos e `-`; um
+/// começo com dígito ou `-` ganha `_` na frente).
+fn to_css_selector(extension_id: &str, path: &str) -> String {
+    let path = path.strip_prefix("./").unwrap_or(path);
+    let selector: String = format!("{extension_id}-{path}")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .collect();
+    if selector.starts_with(|c: char| c.is_ascii_digit() || c == '-') { format!("_{selector}") } else { selector }
+}
+
+impl IWorkbenchTheme for ColorThemeData {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn extension_data(&self) -> Option<&ExtensionData> {
+        self.extension_data.as_ref()
+    }
+    fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    fn settings_id(&self) -> Option<&str> {
+        Some(&self.settings_id)
+    }
 }
