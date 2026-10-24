@@ -18,7 +18,7 @@ use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::promise::Promise;
-use je_base::resources::ext_uri;
+use je_platform::resources::ext_uri;
 use je_base::uri::URI;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::markers::markers::IMarkerService;
