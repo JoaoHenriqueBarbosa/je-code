@@ -101,12 +101,13 @@ fn describe(edit: &WorkspaceEditEntryDto) -> String {
             let range = text.text_edit.range;
             let metadata = text.metadata.as_ref().map_or_else(String::new, |metadata| format!(":{}/{}", metadata.needs_confirmation, metadata.label));
             format!(
-                "text:{}:{}:{}-{}:{}:{}{metadata}",
+                "text:{}:{}:{}-{}:{}-{}:{}{metadata}",
                 text.resource.to_string(false).to_string_lossy(),
                 text.version_id.map_or_else(|| "none".to_owned(), |version| version.to_string()),
                 range.start_line_number,
                 range.start_column,
                 range.end_line_number,
+                range.end_column,
                 text.text_edit.text,
             )
         }
