@@ -3008,10 +3008,10 @@ impl Shell {
                     let header = tree.create(bar, Role::Button);
                     tree.set_bounds(header, Rect::new(5.0, y, rect.width() - 6.0, y + 28.0));
                     let chevron = tree.create(header, Role::Generic);
-                    tree.set_bounds(chevron, Rect::new(2.0, 6.0, 18.0, 22.0));
+                    tree.set_bounds(chevron, Rect::new(7.0, 6.0, 23.0, 22.0));
                     tree.style_mut(chevron).content = Content::Codicon { id: if expanded { "chevron-down" } else { "chevron-right" }.into(), size: 16.0, color: fg };
                     let text = tree.create(header, Role::Generic);
-                    tree.set_bounds(text, Rect::new(20.0, 0.0, rect.width() - 30.0, 28.0));
+                    tree.set_bounds(text, Rect::new(25.0, 0.0, rect.width() - 30.0, 28.0));
                     tree.style_mut(text).content = Content::Text { text: label.to_owned(), style: ui_font(11.0, 700), color: fg, line_height: 28.0 };
                 };
                 let bottom = rect.height() - 6.0;
