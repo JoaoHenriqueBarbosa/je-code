@@ -16,6 +16,7 @@ use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
 use je_workbench::api::common::ext_host_diagnostics::ExtHostDiagnostics;
 use je_workbench::api::common::ext_host_document_data::IExtHostDocumentSaveDelegate;
 use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
+use je_workbench::api::common::ext_host_bulk_edits::ExtHostBulkEdits;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_editors::ExtHostEditors;
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
@@ -47,7 +48,7 @@ use crate::api::languages::{LanguagesServices, LanguagesState};
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
-use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace};
+use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
 use crate::local_context::LocalContext;
@@ -275,6 +276,8 @@ impl ExtensionHost {
         members.push(uri::class(runner));
         members.extend(enums::enums());
         members.extend(workspace::classes(runner));
+        let workspace_edit_objects = Rc::new(workspace_edit::WorkspaceEditObjects::default());
+        members.extend(workspace_edit::classes(runner, &workspace_edit_objects));
         members.extend(window::classes(runner, &window_state, &table));
         members.extend(languages::classes(runner, &languages_state));
         let scm_objects = Rc::new(scm::ScmObjects::default());
@@ -333,10 +336,23 @@ impl ExtensionHost {
 
             // `vscode.workspace` existe se houver os clientes de workspace ou os de documentos e editores (o original sempre o tem).
             let workspace_pair = bridged.workspace.clone().zip(bridged.configuration.clone());
-            if workspace_pair.is_some() || text_editor_api.is_some() {
+            // `applyEdit` pede o cliente `MainThreadBulkEdits` e o `ExtHostDocumentsAndEditors` (a versão de cada documento aberto).
+            let bulk_edits = provided(MainContext::MAIN_THREAD_BULK_EDITS.sid).then(|| {
+                let documents_and_editors = match &text_editor_api {
+                    Some(api) => api.services.documents_and_editors.clone(),
+                    None => Rc::new(ExtHostDocumentsAndEditors::new(LocalContext::new(), log_service.clone())),
+                };
+                (Rc::new(ExtHostBulkEdits::new(bridged_ref, documents_and_editors)), workspace_edit_objects.clone())
+            });
+            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() {
                 members.push((
                     "workspace".to_owned(),
-                    workspace::namespace(runner, &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone() }, &table, &event_tables),
+                    workspace::namespace(
+                        runner,
+                        &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone(), bulk_edits },
+                        &table,
+                        &event_tables,
+                    ),
                 ));
             }
 
