@@ -14,3 +14,8 @@ pub mod policy_export;
 pub mod preferences;
 pub mod search;
 pub mod testing;
+
+pub mod browser_view;
+pub mod issue;
+pub mod multi_diff_editor;
+pub mod onboarding;
