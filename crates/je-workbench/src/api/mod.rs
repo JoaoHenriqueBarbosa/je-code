@@ -3,3 +3,6 @@
 
 pub mod browser;
 pub mod common;
+
+// Porte de `src/vs/workbench/api/node`.
+pub mod node;
