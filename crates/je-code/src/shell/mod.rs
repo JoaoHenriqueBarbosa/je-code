@@ -83,6 +83,23 @@ impl SideView {
     }
 }
 
+/// A gravidade de uma notificação (`Severity`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// `Info` e `Warning` são as gravidades que o serviço de notificações do workbench vai usar (extensões, git).
+#[allow(dead_code)]
+pub enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+/// Uma notificação na tela (`NotificationsToasts`).
+struct Toast {
+    id: u64,
+    severity: Severity,
+    message: String,
+}
+
 /// O que um prompt de nome faz com o texto digitado.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PromptAction {
@@ -136,6 +153,7 @@ pub enum Command {
     SearchToggleCase,
     SearchToggleWord,
     SearchToggleRegex,
+    DismissToast(u64),
     /// Abre o arquivo na linha e seleciona de `column` a `end_column`.
     OpenAt(PathBuf, i32, i32, i32),
     /// Um nome digitado no prompt (Enter) para a ação dele.
@@ -242,7 +260,8 @@ pub struct Shell {
     /// O caminho de pintura, para a barra de status (`GPU ...` ou `CPU ...`).
     backend: String,
     /// Falha da última operação de arquivo, mostrada na barra de status.
-    notice: Option<String>,
+    toasts: Vec<Toast>,
+    next_toast_id: u64,
     /// O botão do mouse foi apertado no editor e o arraste segue para ele até soltar.
     editor_drag: bool,
     /// O arraste do sash da side bar: a largura no início e o x do ponteiro.
@@ -361,7 +380,8 @@ impl Shell {
             statusbar_visible: true,
             size: (width, height),
             backend: String::new(),
-            notice: None,
+            toasts: Vec::new(),
+            next_toast_id: 0,
             editor_drag: false,
             sash_drag: None,
             hovered_tab: Rc::new(RefCell::new(None)),
@@ -428,14 +448,14 @@ impl Shell {
         let theme = match ColorTheme::load(path) {
             Ok(theme) => theme,
             Err(e) => {
-                self.notice = Some(format!("tema inválido: {e}"));
+                self.notify(Severity::Error, format!("tema inválido: {e}"));
                 return;
             }
         };
         if let Some(env) = &self.environment
             && let Err(e) = env.set_theme(path, ui_theme)
         {
-            self.notice = Some(format!("tema de tokens inválido: {e}"));
+            self.notify(Severity::Error, format!("tema de tokens inválido: {e}"));
         }
         self.theme = theme;
         self.theme_index = index;
@@ -619,14 +639,14 @@ impl Shell {
         };
         let model = editor.view.model().clone();
         let text = model.get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy();
-        match std::fs::write(&path, text.as_bytes()) {
-            Ok(()) => {
-                editor.saved_version = model.get_alternative_version_id();
-                self.notice = None;
-            }
-            Err(e) => self.notice = Some(format!("falha ao salvar: {e}")),
+        let result = std::fs::write(&path, text.as_bytes());
+        if result.is_ok() {
+            editor.saved_version = model.get_alternative_version_id();
         }
         editor.view.mark_dirty();
+        if let Err(e) = result {
+            self.notify(Severity::Error, format!("Falha ao salvar '{}': {e}", path.display()));
+        }
         self.needs_render = true;
     }
 
@@ -644,7 +664,7 @@ impl Shell {
                 self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id() };
                 self.activate(index);
             }
-            Err(e) => self.notice = Some(format!("falha ao reverter: {e}")),
+            Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
         }
     }
 
@@ -672,7 +692,7 @@ impl Shell {
             Command::NewUntitled => self.new_untitled(),
             Command::OpenFile(path) => {
                 if let Err(e) = self.open_file(&path) {
-                    self.notice = Some(e);
+                    self.notify(Severity::Error, e);
                 }
             }
             Command::Save => {
@@ -775,9 +795,13 @@ impl Shell {
                 }
                 self.start_search();
             }
+            Command::DismissToast(id) => {
+                self.toasts.retain(|t| t.id != id);
+                self.needs_render = true;
+            }
             Command::OpenAt(path, line, column, end_column) => {
                 if let Err(e) = self.open_file(&path) {
-                    self.notice = Some(e);
+                    self.notify(Severity::Error, e);
                 } else if let Some(editor) = self.active_editor_mut() {
                     editor.view.select_range(je_editor::range::Range::new(line, column, line, end_column));
                     self.search_focused = false;
@@ -842,11 +866,11 @@ impl Shell {
                     }
                     self.refresh_explorer();
                 }
-                Err(e) => self.notice = Some(e),
+                Err(e) => self.notify(Severity::Error, e),
             },
             Command::RevealInFileManager(path) => {
                 if let Err(e) = file_ops::reveal(&path) {
-                    self.notice = Some(e);
+                    self.notify(Severity::Error, e);
                 }
             }
             Command::OpenInTerminal(path) => {
@@ -912,6 +936,11 @@ impl Shell {
             Command::Exit => self.exit_requested = true,
         }
         self.needs_render = true;
+    }
+
+    #[cfg(test)]
+    pub fn toast_count(&self) -> usize {
+        self.toasts.len()
     }
 
     #[cfg(test)]
@@ -1226,13 +1255,12 @@ impl Shell {
         };
         match result {
             Ok(opened) => {
-                self.notice = None;
                 self.refresh_explorer();
                 if let Some(path) = opened {
                     let _ = self.open_file(&path);
                 }
             }
-            Err(e) => self.notice = Some(e),
+            Err(e) => self.notify(Severity::Error, e),
         }
         self.needs_render = true;
     }
@@ -1542,6 +1570,7 @@ impl Shell {
             self.render_status_bar(chrome);
         }
         self.render_find(chrome);
+        self.render_toasts(chrome);
         self.render_quick_pick(chrome);
     }
 
@@ -1814,7 +1843,7 @@ impl Shell {
             Some(terminal) => terminal.resize(columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16),
             None => match je_terminal::Terminal::new(self.workspace_for_terminal.take().or_else(|| self.workspace.clone()), None, columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16, self.wake.clone()) {
                 Ok(terminal) => self.terminal = Some(terminal),
-                Err(e) => self.notice = Some(format!("não foi possível abrir o terminal: {e}")),
+                Err(e) => self.notify(Severity::Error, format!("não foi possível abrir o terminal: {e}")),
             },
         }
     }
@@ -2050,6 +2079,83 @@ impl Shell {
         }
     }
 
+    /// Mostra uma notificação no canto inferior direito; some sozinha em 15 s, exceto erro (fica até fechar).
+    fn notify(&mut self, severity: Severity, message: String) {
+        self.next_toast_id += 1;
+        let id = self.next_toast_id;
+        self.toasts.push(Toast { id, severity, message });
+        if self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
+        if severity != Severity::Error {
+            let queue = self.queue.clone();
+            je_base::runtime::set_timeout(Box::new(move || queue.borrow_mut().push(Command::DismissToast(id))), 15_000);
+        }
+        self.needs_render = true;
+    }
+
+    /// As notificações empilhadas acima da barra de status (`.notifications-toasts`, 452 px, canto inferior direito).
+    fn render_toasts(&self, chrome: NodeId) {
+        const WIDTH: f64 = 452.0;
+        let font = ui_font(13.0, 400);
+        let (width, height) = self.size;
+        let mut bottom = height - STATUS_HEIGHT - 8.0;
+        let mut hits = Vec::new();
+        let mut tree = self.ui.tree_mut();
+        for toast in self.toasts.iter().rev() {
+            // A mensagem quebrada em linhas de 22 px na largura útil (452 - 17 - 33 - 64).
+            let max = WIDTH - 33.0 - 64.0;
+            let mut lines: Vec<String> = Vec::new();
+            for paragraph in toast.message.lines() {
+                let mut current = String::new();
+                for word in paragraph.split_whitespace() {
+                    let candidate = if current.is_empty() { word.to_owned() } else { format!("{current} {word}") };
+                    if measure_text(&candidate, &font) > max && !current.is_empty() {
+                        lines.push(std::mem::take(&mut current));
+                        current = word.to_owned();
+                    } else {
+                        current = candidate;
+                    }
+                }
+                lines.push(current);
+            }
+            let rect_height = 14.0 + 22.0 * lines.len() as f64 + 14.0;
+            let rect = Rect::new(width - 8.0 - WIDTH, bottom - rect_height, width - 8.0, bottom);
+            let node = tree.create(chrome, Role::Alert);
+            tree.set_bounds(node, rect);
+            let style = tree.style_mut(node);
+            style.background = Some(self.color("notifications.background"));
+            style.border = Some(Border { width: 1.0, color: self.color("notificationToast.border") });
+            style.radius = 8.0;
+            let (icon, icon_id) = match toast.severity {
+                Severity::Info => ("info", "notificationsInfoIcon.foreground"),
+                Severity::Warning => ("warning", "notificationsWarningIcon.foreground"),
+                Severity::Error => ("error", "notificationsErrorIcon.foreground"),
+            };
+            let icon_node = tree.create(node, Role::Image);
+            tree.set_bounds(icon_node, Rect::new(8.0, 14.0, 26.0, 32.0));
+            tree.style_mut(icon_node).content = Content::Codicon { id: icon.into(), size: 16.0, color: self.color(icon_id) };
+            for (i, line) in lines.iter().enumerate() {
+                let text = tree.create(node, Role::Generic);
+                let w = measure_text(line, &font);
+                tree.set_bounds(text, Rect::new(33.0, 14.0 + 22.0 * i as f64, 33.0 + w, 14.0 + 22.0 * (i + 1) as f64));
+                tree.style_mut(text).content = Content::Text { text: line.clone(), style: font.clone(), color: self.color("notifications.foreground"), line_height: 22.0 };
+            }
+            let close = tree.create(node, Role::Button);
+            tree.set_bounds(close, Rect::new(WIDTH - 32.0, 12.0, WIDTH - 10.0, 34.0));
+            let style = tree.style_mut(close);
+            style.content = Content::Codicon { id: "close".into(), size: 16.0, color: self.color("icon.foreground") };
+            style.radius = 5.0;
+            style.cursor = Some(Cursor::Pointer);
+            hits.push((close, Command::DismissToast(toast.id)));
+            bottom = rect.y0 - 8.0;
+        }
+        drop(tree);
+        for (node, command) in hits {
+            self.listen_command(node, command);
+        }
+    }
+
     fn render_status_bar(&self, chrome: NodeId) {
         let (width, height) = self.size;
         let fg = self.color("statusBar.foreground");
@@ -2100,10 +2206,7 @@ impl Shell {
         };
         let mut left = 6.0;
         left += place(&mut tree, left, &[Piece::Icon("remote")], None);
-        left += place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())], None);
-        if let Some(notice) = &self.notice {
-            place(&mut tree, left, &[Piece::Text(notice.clone())], None);
-        }
+        place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())], None);
         let mut items: Vec<(Vec<Piece>, Option<Command>)> = Vec::new();
         if let Some(editor) = self.active_editor() {
             let model = editor.view.model();

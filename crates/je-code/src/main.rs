@@ -885,6 +885,29 @@ mod tests {
     }
 
     #[test]
+    fn failed_operations_show_a_toast_that_can_be_closed() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-toast", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "a").expect("a");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        // Criar um arquivo que já existe falha com uma notificação de erro.
+        shell.run(shell::Command::PromptNewFile(dir.clone()));
+        for c in "a.txt".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.toast_count(), 1);
+        snapshot(&mut shell, "n0-toast.png");
+        // O botão de fechar (canto superior direito do aviso) o dispensa.
+        let (width, height) = (1200.0, 800.0);
+        let toast_top = height - 28.0 - 8.0 - (14.0 + 22.0 * 2.0 + 14.0);
+        click(&mut shell, width - 8.0 - 21.0, toast_top + 23.0);
+        assert_eq!(shell.toast_count(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");
