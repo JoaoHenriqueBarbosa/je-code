@@ -79,6 +79,11 @@ impl UrlSearchParams {
     }
 
     /// `get`: o primeiro valor do nome.
+    /// `getAll(name)`: todos os valores do nome, na ordem em que aparecem.
+    pub fn get_all(&self, name: &str) -> Vec<&str> {
+        self.pairs.iter().filter(|(key, _)| key == name).map(|(_, value)| value.as_str()).collect()
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         self.pairs.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
     }
