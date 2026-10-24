@@ -36,3 +36,6 @@ pub mod global_state_sync;
 pub mod settings_sync;
 
 pub mod snippets_sync;
+
+pub mod user_data_auto_sync_service;
+pub mod user_data_sync_machines;

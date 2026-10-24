@@ -76,3 +76,5 @@ pub mod uri_identity;
 pub mod virtual_workspace;
 
 pub mod diagnostics;
+
+pub mod metered_connection;

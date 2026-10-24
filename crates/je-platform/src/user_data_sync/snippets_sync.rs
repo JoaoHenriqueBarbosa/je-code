@@ -175,9 +175,70 @@ impl PreviewSources<'_> {
 // endregion
 
 /// `SnippetsSynchroniser`. Dá `Deref` para a [`AbstractSynchroniser`].
+///
+/// O `PromptsSynchronizer` de `promptsSync/promptsSync.ts` ("Adopted from SnippetsSynchroniser") é este mesmo
+/// sincronizador com outro [`SnippetsKind`]: o recurso `prompts`, a pasta `promptsHome`, o filtro de extensões dos
+/// arquivos e as palavras do log mudam; o merge, o preview e a aplicação são os mesmos (o `promptsMerge.ts` é o
+/// `snippetsMerge.ts` com os nomes trocados).
 pub struct SnippetsSynchroniser {
     pub base: Rc<AbstractSynchroniser<SnippetsSynchroniser>>,
+    kind: SnippetsKind,
+    /// A pasta de snippets (ou de prompts) do perfil.
     snippets_folder: URI,
+}
+
+/// O que distingue o sincronizador de snippets do de prompts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnippetsKind {
+    Snippets,
+    Prompts,
+}
+
+impl SnippetsKind {
+    fn sync_resource(self) -> SyncResource {
+        match self {
+            Self::Snippets => SyncResource::Snippets,
+            Self::Prompts => SyncResource::Prompts,
+        }
+    }
+
+    /// `snippet` ou `prompt`, como o original escreve nas mensagens de log.
+    fn singular(self) -> &'static str {
+        match self {
+            Self::Snippets => "snippet",
+            Self::Prompts => "prompt",
+        }
+    }
+
+    fn plural(self) -> &'static str {
+        match self {
+            Self::Snippets => "snippets",
+            Self::Prompts => "prompts",
+        }
+    }
+
+    /// `profile.snippetsHome` ou `profile.promptsHome`.
+    fn folder(self, profile: &UserDataProfile) -> URI {
+        match self {
+            Self::Snippets => profile.snippets_home.clone(),
+            Self::Prompts => profile.prompts_home.clone(),
+        }
+    }
+
+    /// Se o arquivo entra na sincronização: `.json` e `.code-snippets` (extensão do nome) para snippets;
+    /// `.prompt.md`, `.instructions.md`, `.chatmode.md` e `.agent.md` (fim do caminho) para prompts.
+    fn includes(self, ext_uri: &ExtUri, resource: &URI) -> bool {
+        match self {
+            Self::Snippets => {
+                let extension = ext_uri.extname(resource);
+                extension == ".json" || extension == ".code-snippets"
+            }
+            Self::Prompts => {
+                let path = resource.path().to_string_lossy();
+                [".prompt.md", ".instructions.md", ".chatmode.md", ".agent.md"].iter().any(|extension| path.ends_with(extension))
+            }
+        }
+    }
 }
 
 impl Deref for SnippetsSynchroniser {
@@ -196,9 +257,18 @@ impl IDisposable for SnippetsSynchroniser {
 
 impl SnippetsSynchroniser {
     pub fn new(profile: UserDataProfile, collection: Option<String>, services: SynchroniserServices) -> Rc<Self> {
-        let snippets_folder = profile.snippets_home.clone();
-        let base = AbstractSynchroniser::<Self>::new(IUserDataSyncResource { sync_resource: SyncResource::Snippets, profile }, collection, services);
-        let this = Rc::new(Self { base: base.clone(), snippets_folder: snippets_folder.clone() });
+        Self::for_kind(SnippetsKind::Snippets, profile, collection, services)
+    }
+
+    /// `new PromptsSynchronizer(profile, collection)`.
+    pub fn new_prompts(profile: UserDataProfile, collection: Option<String>, services: SynchroniserServices) -> Rc<Self> {
+        Self::for_kind(SnippetsKind::Prompts, profile, collection, services)
+    }
+
+    fn for_kind(kind: SnippetsKind, profile: UserDataProfile, collection: Option<String>, services: SynchroniserServices) -> Rc<Self> {
+        let snippets_folder = kind.folder(&profile);
+        let base = AbstractSynchroniser::<Self>::new(IUserDataSyncResource { sync_resource: kind.sync_resource(), profile }, collection, services);
+        let this = Rc::new(Self { base: base.clone(), kind, snippets_folder: snippets_folder.clone() });
         base.bind(Rc::downgrade(&this));
 
         let file_service = base.services.file_service.clone();
@@ -408,6 +478,7 @@ impl SnippetsSynchroniser {
     async fn update_local_snippets(&self, resource_previews: &[(ISnippetsResourcePreview, IAcceptResult<()>)], force: bool) -> Result<(), Error> {
         let (label, file_service) = (&self.sync_resource_log_label, &self.services.file_service);
         let log_service = &self.services.log_service;
+        let noun = self.kind.singular();
         for (resource_preview, accept_result) in resource_previews {
             let local_change = resource_preview.local_change;
             if local_change == Change::None {
@@ -420,20 +491,20 @@ impl SnippetsSynchroniser {
 
             // Removed
             if local_change == Change::Deleted {
-                log_service.trace_args(&format!("{label}: Deleting snippet..."), &args);
+                log_service.trace_args(&format!("{label}: Deleting {noun}..."), &args);
                 file_service.del(&resource, None).await?;
-                log_service.info_args(&format!("{label}: Deleted snippet"), &args);
+                log_service.info_args(&format!("{label}: Deleted {noun}"), &args);
             }
             // Added
             else if local_change == Change::Added {
-                log_service.trace_args(&format!("{label}: Creating snippet..."), &args);
+                log_service.trace_args(&format!("{label}: Creating {noun}..."), &args);
                 let content = accepted_content(accept_result)?;
                 file_service.create_file(&resource, Some(FileContentSource::from(content.as_str())), Some(CreateFileOptions { overwrite: force })).await?;
-                log_service.info_args(&format!("{label}: Created snippet"), &args);
+                log_service.info_args(&format!("{label}: Created {noun}"), &args);
             }
             // Updated
             else {
-                log_service.trace_args(&format!("{label}: Updating snippet..."), &args);
+                log_service.trace_args(&format!("{label}: Updating {noun}..."), &args);
                 let content = accepted_content(accept_result)?;
                 let options = if force {
                     None
@@ -441,7 +512,7 @@ impl SnippetsSynchroniser {
                     resource_preview.extra.file_content.as_ref().map(|file_content| WriteFileOptions { mtime: Some(file_content.mtime()), etag: Some(file_content.etag().to_string()), ..WriteFileOptions::default() })
                 };
                 file_service.write_file(&resource, FileContentSource::from(content.as_str()), options).await?;
-                log_service.info_args(&format!("{label}: Updated snippet"), &args);
+                log_service.info_args(&format!("{label}: Updated {noun}"), &args);
             }
         }
         Ok(())
@@ -469,9 +540,9 @@ impl SnippetsSynchroniser {
 
         if !are_same(&current_snippets, &new_snippets) {
             // update remote
-            self.services.log_service.trace(&format!("{}: Updating remote snippets...", self.sync_resource_log_label));
+            self.services.log_service.trace(&format!("{}: Updating remote {}...", self.sync_resource_log_label, self.kind.plural()));
             remote_user_data = self.update_remote_user_data(stringify_json(&dictionary_to_json(&new_snippets)), if force_push { None } else { Some(remote_user_data.r#ref.clone()) }).await?;
-            self.services.log_service.info(&format!("{}: Updated remote snippets", self.sync_resource_log_label));
+            self.services.log_service.info(&format!("{}: Updated remote {}", self.sync_resource_log_label, self.kind.plural()));
         }
         Ok(remote_user_data)
     }
@@ -491,8 +562,7 @@ impl SnippetsSynchroniser {
         };
         for entry in stat.children.unwrap_or_default() {
             let resource = entry.resource;
-            let extension = self.ext_uri().extname(&resource);
-            if extension == ".json" || extension == ".code-snippets" {
+            if self.kind.includes(self.ext_uri(), &resource) {
                 let key = self.ext_uri().relative_path(&self.snippets_folder, &resource).expect("o snippet está dentro da pasta de snippets");
                 let content = self.services.file_service.read_file(&resource, None, None).await?;
                 snippets.insert(JsString::from(key), content);
@@ -534,9 +604,9 @@ impl SynchroniserImpl for SnippetsSynchroniser {
             };
 
             if remote_snippets.is_some() {
-                self.services.log_service.trace(&format!("{}: Merging remote snippets with local snippets...", self.sync_resource_log_label));
+                self.services.log_service.trace(&format!("{}: Merging remote {1} with local {1}...", self.sync_resource_log_label, self.kind.plural()));
             } else {
-                self.services.log_service.trace(&format!("{}: Remote snippets does not exist. Synchronizing snippets for the first time.", self.sync_resource_log_label));
+                self.services.log_service.trace(&format!("{}: Remote {1} does not exist. Synchronizing {1} for the first time.", self.sync_resource_log_label, self.kind.plural()));
             }
 
             let merge_result = merge(&local_snippets, remote_snippets.as_ref(), last_sync_snippets.as_ref());
@@ -573,8 +643,9 @@ impl SynchroniserImpl for SnippetsSynchroniser {
         async_fn(async move {
             let mut remote_user_data = remote_user_data;
             let label = &self.sync_resource_log_label;
+            let plural = self.kind.plural();
             if resource_previews.iter().all(|(resource_preview, _)| resource_preview.local_change == Change::None && resource_preview.remote_change == Change::None) {
-                self.services.log_service.info(&format!("{label}: No changes found during synchronizing snippets."));
+                self.services.log_service.info(&format!("{label}: No changes found during synchronizing {plural}."));
             }
 
             if resource_previews.iter().any(|(resource_preview, _)| resource_preview.local_change != Change::None) {
@@ -589,9 +660,9 @@ impl SynchroniserImpl for SnippetsSynchroniser {
 
             if last_sync_user_data.as_ref().map(|last_sync_user_data| &last_sync_user_data.r#ref) != Some(&remote_user_data.r#ref) {
                 // update last sync
-                self.services.log_service.trace(&format!("{label}: Updating last synchronized snippets..."));
+                self.services.log_service.trace(&format!("{label}: Updating last synchronized {plural}..."));
                 self.update_last_sync_user_data(remote_user_data, Vec::new()).await?;
-                self.services.log_service.info(&format!("{label}: Updated last synchronized snippets"));
+                self.services.log_service.info(&format!("{label}: Updated last synchronized {plural}"));
             }
 
             for (resource_preview, _) in &resource_previews {

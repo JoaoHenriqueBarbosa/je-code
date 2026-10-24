@@ -37,6 +37,7 @@ use je_base::JsString;
 use je_base::async_::async_fn;
 use je_base::buffer::{VSBuffer, buffer_to_stream};
 use je_base::cancellation::CancellationToken;
+use je_base::dynamic::number_to_js_string;
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::json::{Object, Value};
@@ -59,7 +60,7 @@ use je_platform::product::ProductService;
 use je_platform::request::{AuthInfo, Credentials, IRequestService, RequestCompleteEvent};
 use je_platform::resources::{host_environment, uri_file};
 use je_platform::storage::{InMemoryStorageService, StorageService};
-use je_platform::telemetry::null_telemetry_service;
+use je_platform::telemetry::{ITelemetryService, null_telemetry_service};
 use je_platform::user_data_profile::user_data_profile_storage_service::{AbstractUserDataProfileStorageService, ProfileStorageChanges, UserDataProfileStorageBackend};
 use je_platform::user_data_profile::{IUserDataProfilesService, InMemoryProfilesStore, UserDataProfile, UserDataProfilesEnvironment, UserDataProfilesService};
 use je_platform::user_data_sync::abstract_synchronizer::{SynchroniserServices, stringify_json};
@@ -71,6 +72,7 @@ use je_platform::user_data_sync::user_data_sync::{
 use je_platform::user_data_sync::user_data_sync_account::{IUserDataSyncAccount, IUserDataSyncAccountService, UserDataSyncAccountService};
 use je_platform::user_data_sync::user_data_sync_enablement_service::UserDataSyncEnablementService;
 use je_platform::user_data_sync::user_data_sync_local_store_service::UserDataSyncLocalStoreService;
+use je_platform::user_data_sync::user_data_sync_machines::UserDataSyncMachinesService;
 use je_platform::user_data_sync::user_data_sync_service::{Synchroniser, SynchroniserExtraServices, UserDataSyncService};
 use je_platform::user_data_sync::user_data_sync_store_service::{UserDataSyncStoreClientServices, UserDataSyncStoreManagementService, UserDataSyncStoreService};
 use je_storage::{InMemoryStorageDatabase, ItemMap, Recovery, StorageDatabase, StorageItemsChangeEvent, UpdateRequest};
@@ -152,7 +154,8 @@ fn latest_json(data: &IndexMap<String, IUserData>) -> Value {
 pub struct UserDataSyncTestServer {
     pub url: String,
     rate_limit: usize,
-    retry_after: Option<u32>,
+    /// Em segundos (o `retryAfter?: number` do original, que os testes usam com `0.25`).
+    retry_after: Option<f64>,
     state: RefCell<ServerState>,
 }
 
@@ -168,7 +171,17 @@ impl UserDataSyncTestServer {
     }
 
     pub fn with_rate_limit(rate_limit: usize, retry_after: Option<u32>) -> Self {
+        Self::with_rate_limit_seconds(rate_limit, retry_after.map(f64::from))
+    }
+
+    /// `new UserDataSyncTestServer(rateLimit, retryAfter)` com o `retryAfter` fracionário.
+    pub fn with_rate_limit_seconds(rate_limit: usize, retry_after: Option<f64>) -> Self {
         Self { url: "http://host:3000".to_string(), rate_limit, retry_after, state: RefCell::new(ServerState::default()) }
+    }
+
+    /// `clear()`: apaga os dados e a sessão do servidor (o `DELETE resource` sem passar pelo cliente).
+    pub fn clear_data(&self) {
+        Self::clear(&mut self.state.borrow_mut());
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
@@ -311,7 +324,7 @@ impl IRequestService for UserDataSyncTestServer {
     fn request(&self, options: IRequestOptions, _token: CancellationToken) -> Promise<IRequestContext> {
         let mut state = self.state.borrow_mut();
         if state.requests.len() == self.rate_limit {
-            let retry_after = self.retry_after.filter(|retry_after| *retry_after != 0).map(|retry_after| retry_after.to_string());
+            let retry_after = self.retry_after.filter(|retry_after| *retry_after != 0.0).map(number_to_js_string);
             return Promise::resolved(match &retry_after {
                 Some(retry_after) => to_response(429, &[("retry-after", retry_after.as_str())], ""),
                 None => to_response(429, &[], ""),
@@ -581,6 +594,9 @@ pub struct UserDataSyncClient {
     pub user_data_sync_store_management_service: Rc<UserDataSyncStoreManagementService>,
     pub user_data_sync_store_service: Rc<UserDataSyncStoreService>,
     pub user_data_sync_account_service: Rc<UserDataSyncAccountService>,
+    pub user_data_sync_machines_service: Rc<UserDataSyncMachinesService>,
+    pub product_service: Rc<ProductService>,
+    pub telemetry_service: Rc<dyn ITelemetryService>,
     pub user_data_sync_local_store_service: Rc<UserDataSyncLocalStoreService>,
     pub user_data_sync_util_service: Rc<TestUserDataSyncUtilService>,
     pub user_data_sync_enablement_service: Rc<UserDataSyncEnablementService>,
@@ -670,6 +686,16 @@ impl UserDataSyncClient {
         base.register(user_data_sync_account_service.clone());
         user_data_sync_account_service.update_account(Some(IUserDataSyncAccount { authentication_provider_id: "authenticationProviderId".to_string(), token: "token".to_string() })).await?;
 
+        let user_data_sync_machines_service = UserDataSyncMachinesService::new(
+            environment_service.clone(),
+            file_service.clone(),
+            storage_service.clone(),
+            user_data_sync_store_service.clone(),
+            log_service.clone(),
+            product_service.clone(),
+        );
+        base.register(user_data_sync_machines_service.clone());
+
         let user_data_sync_local_store_service = UserDataSyncLocalStoreService::new(
             environment_service.clone(),
             file_service.clone(),
@@ -691,7 +717,7 @@ impl UserDataSyncClient {
                 user_data_sync_store_service: user_data_sync_store_service.clone(),
                 user_data_sync_local_store_service: user_data_sync_local_store_service.clone(),
                 user_data_sync_enablement_service: user_data_sync_enablement_service.clone(),
-                telemetry_service,
+                telemetry_service: telemetry_service.clone(),
                 log_service,
                 configuration_service: configuration_service.clone(),
                 ext_uri,
@@ -736,6 +762,9 @@ impl UserDataSyncClient {
             user_data_sync_store_management_service,
             user_data_sync_store_service,
             user_data_sync_account_service,
+            user_data_sync_machines_service,
+            product_service,
+            telemetry_service,
             user_data_sync_local_store_service,
             user_data_sync_util_service,
             user_data_sync_enablement_service,
