@@ -1172,8 +1172,6 @@ impl TextFileTestAccessor {
         let instantiation_service = disposables.add_rc(InstantiationService::new(collection.clone()));
         let untitled_text_editor_service = disposables.add_rc(UntitledTextEditorService::new(instantiation_service.clone(), configuration_service.clone()));
 
-        // Os modelos precisam do próprio `ITextFileService`, que só existe depois do gerenciador que os cria.
-        let text_file_service_slot: Rc<RefCell<Weak<TestTextFileService>>> = Rc::new(RefCell::new(Weak::new()));
         let working_copy_service = TestWorkingCopyService::new(base.working_copy_service.clone());
 
         // Os serviços que o `UntitledTextEditorModel` injeta (o `UntitledTextEditorService` o cria por `createInstance`).
@@ -1187,8 +1185,7 @@ impl TextFileTestAccessor {
         collection.set(I_LANGUAGE_DETECTION_SERVICE, language_detection_service.clone());
         collection.set(I_ACCESSIBILITY_SERVICE, accessibility_service.clone());
 
-        let make_services_factory = |file_service: Rc<dyn IFileService>| -> ServicesFactory {
-            let slot = text_file_service_slot.clone();
+        let make_services_factory = |file_service: Rc<dyn IFileService>, slot: Rc<RefCell<Weak<TestTextFileService>>>| -> ServicesFactory {
             let (language_service, model_service) = (language_service.clone(), model_service.clone());
             let log_service = base.log_service.clone();
             let (working_copy_backup_service, working_copy_service) = (base.working_copy_backup_service.clone(), working_copy_service.clone());
@@ -1221,54 +1218,61 @@ impl TextFileTestAccessor {
             })
         };
 
-        // O gerenciador cria os modelos na `createChild(collection)` (o `IFileService` dela, quando há).
-        let manager_model_factory = make_model_factory(make_services_factory(file_service.clone()));
+        // Um serviço de arquivos de texto completo sobre `file_service` e `working_copy_file_service`: o gerenciador que cria os
+        // modelos (com o mesmo `IFileService`), o serviço e o `ServicesFactory` dos modelos que apontam para ele.
+        let build_text_file_service = |kind: TestServiceKind, file_service: Rc<dyn IFileService>, working_copy_file_service: Rc<dyn IWorkingCopyFileService>| {
+            let slot: Rc<RefCell<Weak<TestTextFileService>>> = Rc::new(RefCell::new(Weak::new()));
+            let services_factory = make_services_factory(file_service.clone(), slot.clone());
+            let manager = TextFileEditorModelManager::new(
+                file_service.clone(),
+                base.notification_service.clone(),
+                working_copy_file_service.clone(),
+                base.uri_identity_service.clone(),
+                TextFileSaveParticipant::new(base.log_service.clone(), base.progress_service.clone()),
+                make_model_factory(services_factory.clone()),
+            );
+            let dependencies = TextFileServiceDependencies {
+                file_service,
+                untitled_text_editor_service: untitled_text_editor_service.clone(),
+                lifecycle_service: base.lifecycle_service.clone() as Rc<dyn ILifecycleService>,
+                model_service: model_service.clone(),
+                environment_service: environment_service.clone(),
+                dialog_service: dialog_service.clone(),
+                file_dialog_service: file_dialog_service.clone(),
+                text_resource_configuration_service: text_resource_configuration_service.clone(),
+                files_configuration_service: base.files_configuration_service.clone(),
+                code_editor_service: Rc::new(TestCodeEditorService::default()),
+                path_service: path_service.clone(),
+                working_copy_file_service,
+                uri_identity_service: base.uri_identity_service.clone(),
+                workspace_context_service: context_service.clone() as Rc<dyn IWorkspaceContextService>,
+                language_service: language_service.clone(),
+                log_service: base.log_service.clone(),
+                elevated_file_service: base.elevated_file_service.clone(),
+                decorations_service: Rc::new(TestDecorationsService),
+                files: manager.clone(),
+            };
+            let text_file_service = disposables.add_rc(match kind {
+                TestServiceKind::Test => TestTextFileService::new(dependencies),
+                TestServiceKind::BrowserWithEncodingOverrides => TestTextFileService::with_encoding_overrides(dependencies),
+                TestServiceKind::NativeWithEncodingOverrides => TestTextFileService::with_native_encoding_overrides(dependencies),
+            });
+            *slot.borrow_mut() = Rc::downgrade(&text_file_service);
+            (text_file_service, services_factory, manager)
+        };
+
+        let (text_file_service, primary_services_factory, manager) = build_text_file_service(service_kind, file_service.clone(), working_copy_file_service.clone());
 
         // Os modelos que o caso cria por `instantiationService.createInstance(TextFileEditorModel, ...)` usam os serviços do pai
-        // (o `TestFileService`) quando o serviço de arquivos de texto é o do filho nativo (ver as divergências do módulo).
+        // (o `TestTextFileService` sobre o `TestFileService`) quando o serviço de arquivos de texto do caso é o do filho nativo.
         let services_factory = match service_kind {
-            TestServiceKind::NativeWithEncodingOverrides => make_services_factory(base.file_service.clone() as Rc<dyn IFileService>),
-            TestServiceKind::Test | TestServiceKind::BrowserWithEncodingOverrides => make_services_factory(file_service.clone()),
+            TestServiceKind::NativeWithEncodingOverrides => {
+                let parent_working_copy_file_service: Rc<dyn IWorkingCopyFileService> = base.working_copy_file_service.clone();
+                build_text_file_service(TestServiceKind::Test, base.file_service.clone() as Rc<dyn IFileService>, parent_working_copy_file_service).1
+            }
+            TestServiceKind::Test | TestServiceKind::BrowserWithEncodingOverrides => primary_services_factory,
         };
         let model_factory = make_model_factory(services_factory.clone());
-
-        let manager = TextFileEditorModelManager::new(
-            file_service.clone(),
-            base.notification_service.clone(),
-            working_copy_file_service.clone(),
-            base.uri_identity_service.clone(),
-            TextFileSaveParticipant::new(base.log_service.clone(), base.progress_service.clone()),
-            manager_model_factory,
-        );
-
-
-        let dependencies = TextFileServiceDependencies {
-            file_service,
-            untitled_text_editor_service: untitled_text_editor_service.clone(),
-            lifecycle_service: base.lifecycle_service.clone() as Rc<dyn ILifecycleService>,
-            model_service: model_service.clone(),
-            environment_service,
-            dialog_service: dialog_service.clone(),
-            file_dialog_service: file_dialog_service.clone(),
-            text_resource_configuration_service: text_resource_configuration_service.clone(),
-            files_configuration_service: base.files_configuration_service.clone(),
-            code_editor_service: Rc::new(TestCodeEditorService::default()),
-            path_service: path_service.clone(),
-            working_copy_file_service: working_copy_file_service.clone(),
-            uri_identity_service: base.uri_identity_service.clone(),
-            workspace_context_service: context_service.clone() as Rc<dyn IWorkspaceContextService>,
-            language_service: language_service.clone(),
-            log_service: base.log_service.clone(),
-            elevated_file_service: base.elevated_file_service.clone(),
-            decorations_service: Rc::new(TestDecorationsService),
-            files: manager.clone(),
-        };
-        let text_file_service = disposables.add_rc(match service_kind {
-            TestServiceKind::Test => TestTextFileService::new(dependencies),
-            TestServiceKind::BrowserWithEncodingOverrides => TestTextFileService::with_encoding_overrides(dependencies),
-            TestServiceKind::NativeWithEncodingOverrides => TestTextFileService::with_native_encoding_overrides(dependencies),
-        });
-        *text_file_service_slot.borrow_mut() = Rc::downgrade(&text_file_service);
 
         let custom_editor_label_service = disposables.add_rc(CustomEditorLabelService::create((), (test_configuration_service.clone(), context_service.clone())));
         let text_model_service = Rc::new(TestTextModelService::new(manager, base.file_service.clone(), base.uri_identity_service.clone()));
