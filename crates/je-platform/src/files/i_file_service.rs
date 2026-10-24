@@ -20,10 +20,11 @@ use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_instantiation::service_id;
 
-use super::file_service::FileService;
+use super::file_service::{FileContentSource, FileService};
 use super::files::{
     FileChangesEvent, FileContent, FileStat, FileStatWithMetadata, FileSystemProviderCapabilities, FileSystemProviderCapabilitiesChangeEvent,
-    FileSystemProviderRef, FileSystemProviderRegistrationEvent, ReadFileOptions, ResolveFileOptions, WatchOptions,
+    FileStreamContent, FileSystemProviderRef, FileSystemProviderRegistrationEvent, PartialFileDeleteOptions, ReadFileOptions, ResolveFileOptions,
+    WatchOptions, WriteFileOptions,
 };
 
 /// `IFileService`.
@@ -77,6 +78,20 @@ pub trait IFileService {
     ///
     /// Note: watching a folder does not report events recursively. Dispose the returned value to stop watching.
     fn watch(&self, resource: &URI, options: Option<WatchOptions>) -> DisposableRef;
+
+    /// `readFileStream(resource, options?, token?)`: read the contents of the provided resource buffered as stream.
+    fn read_file_stream(&self, resource: &URI, options: Option<ReadFileOptions>, token: Option<CancellationToken>) -> Promise<FileStreamContent>;
+
+    /// `writeFile(resource, bufferOrReadableOrStream, options?)`: updates the content replacing its previous value.
+    ///
+    /// Emits a `FileOperation.WRITE` file operation event when successful.
+    fn write_file(&self, resource: &URI, content: FileContentSource, options: Option<WriteFileOptions>) -> Promise<FileStatWithMetadata>;
+
+    /// `del(resource, options?)`: deletes the provided file. The optional useTrash parameter allows to move the file to
+    /// trash. The optional recursive parameter allows to delete non-empty folders recursively.
+    ///
+    /// Emits a `FileOperation.DELETE` file operation event when successful.
+    fn del(&self, resource: &URI, options: Option<PartialFileDeleteOptions>) -> Promise<()>;
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
@@ -128,5 +143,17 @@ impl IFileService for Rc<FileService> {
 
     fn watch(&self, resource: &URI, options: Option<WatchOptions>) -> DisposableRef {
         FileService::watch(self, resource, options)
+    }
+
+    fn read_file_stream(&self, resource: &URI, options: Option<ReadFileOptions>, token: Option<CancellationToken>) -> Promise<FileStreamContent> {
+        FileService::read_file_stream(self, resource, options, token)
+    }
+
+    fn write_file(&self, resource: &URI, content: FileContentSource, options: Option<WriteFileOptions>) -> Promise<FileStatWithMetadata> {
+        FileService::write_file(self, resource, content, options)
+    }
+
+    fn del(&self, resource: &URI, options: Option<PartialFileDeleteOptions>) -> Promise<()> {
+        FileService::del(self, resource, options)
     }
 }

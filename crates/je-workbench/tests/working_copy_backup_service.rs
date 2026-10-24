@@ -216,7 +216,7 @@ impl NodeTestWorkingCopyBackupService {
         })
     }
 
-    fn test_get_file_service(&self) -> &Rc<FileService> {
+    fn test_get_file_service(&self) -> &Rc<dyn IFileService> {
         self.native.file_service()
     }
 
@@ -366,17 +366,17 @@ impl Env {
 
         let app_settings_home = uri_file(&format!("{}/User", fs_path(&test_dir)));
         let user_roaming_data_home = app_settings_home.with(&UriChange { scheme: Field::from(schemas::VSCODE_USER_DATA), ..UriChange::default() });
+        let file_service_contract: Rc<dyn IFileService> = Rc::new(file_service.clone());
         let native = NativeWorkingCopyBackupService::new(
             Some(&fs_path(&workspace_backup_path)),
             &user_roaming_data_home,
-            file_service.clone(),
+            file_service_contract.clone(),
             log.clone(),
             lifecycle_service.clone(),
         );
 
         let file_system_provider = disposables.add_rc(InMemoryFileSystemProvider::new());
         disposables.add(file_service.register_provider(schemas::IN_MEMORY, file_system_provider.clone()).unwrap());
-        let file_service_contract: Rc<dyn IFileService> = Rc::new(file_service.clone());
         let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (file_service_contract,)));
         let user_data_profiles_service = disposables.add_rc(UserDataProfilesService::new(
             UserDataProfilesEnvironment {

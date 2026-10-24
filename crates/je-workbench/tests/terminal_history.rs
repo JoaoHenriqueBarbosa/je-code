@@ -369,6 +369,27 @@ impl IFileService for HistoryFileService {
     fn watch(&self, _resource: &URI, _options: Option<je_platform::files::files::WatchOptions>) -> je_base::lifecycle::DisposableRef {
         Self::not_mocked("watch")
     }
+    fn read_file_stream(
+        &self,
+        _resource: &URI,
+        _options: Option<je_platform::files::files::ReadFileOptions>,
+        _token: Option<je_base::cancellation::CancellationToken>,
+    ) -> Promise<je_platform::files::files::FileStreamContent> {
+        Self::not_mocked("readFileStream")
+    }
+
+    fn write_file(
+        &self,
+        _resource: &URI,
+        _content: je_platform::files::file_service::FileContentSource,
+        _options: Option<je_platform::files::files::WriteFileOptions>,
+    ) -> Promise<FileStatWithMetadata> {
+        Self::not_mocked("writeFile")
+    }
+
+    fn del(&self, _resource: &URI, _options: Option<je_platform::files::files::PartialFileDeleteOptions>) -> Promise<()> {
+        Self::not_mocked("del")
+    }
 }
 
 /// `{ remoteAuthority }`, o `Pick<IRemoteAgentConnection, 'remoteAuthority'>`.

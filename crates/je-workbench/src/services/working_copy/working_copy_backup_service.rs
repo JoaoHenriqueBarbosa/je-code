@@ -4,9 +4,7 @@
 //! `WorkingCopyBackupService`, que escolhe uma das duas conforme exista uma pasta de backup do workspace.
 //!
 //! Divergências:
-//! - **Injeção e `FileService`.** `@IFileService` é o [`FileService`] concreto (`Rc<FileService>`): o contrato
-//!   `IFileService` reduzido de `je_platform::files::i_file_service` não traz `resolve`, `writeFile`, `del` nem
-//!   `readFileStream`, que este serviço lê. `@ILogService` é o [`LogServiceRef`].
+//! - **Injeção.** `@IFileService` é o `Rc<dyn IFileService>` e `@ILogService` é o [`LogServiceRef`].
 //! - **Classe abstrata e implementações.** `WorkingCopyBackupService` é uma struct concreta (a subclasse
 //!   `NativeWorkingCopyBackupService` a guarda por composição, ver `native_working_copy_backup_service.rs`) que
 //!   delega a um [`BackupServiceImpl`], o que o campo `impl` (união de `WorkingCopyBackupServiceImpl` e
@@ -43,7 +41,8 @@ use je_base::promise::Promise;
 use je_base::stream::{Readable, peek_stream};
 use je_base::types::is_empty_object;
 use je_base::uri::{Field, URI, UriChange, UriComponents};
-use je_platform::files::file_service::{FileContentSource, FileService};
+use je_platform::files::file_service::FileContentSource;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::files::files::{FileOperationError, FileOperationResult, FileReadStreamOptions, PartialFileDeleteOptions, ReadFileOptions, to_radix};
 use je_platform::log::{LogServiceRef, Logger};
 use je_platform::resources::{ext_uri, host_platform, join_path};
@@ -66,12 +65,12 @@ struct BackupEntry {
 pub struct WorkingCopyBackupsModel {
     cache: RefCell<ResourceMap<BackupEntry>>,
     backup_root: URI,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
 }
 
 impl WorkingCopyBackupsModel {
     /// `static async create(backupRoot, fileService)`.
-    pub fn create(backup_root: &URI, file_service: &Rc<FileService>) -> Promise<Rc<WorkingCopyBackupsModel>> {
+    pub fn create(backup_root: &URI, file_service: &Rc<dyn IFileService>) -> Promise<Rc<WorkingCopyBackupsModel>> {
         let model = Rc::new(Self::new(backup_root.clone(), file_service.clone()));
 
         async_fn(async move {
@@ -81,7 +80,7 @@ impl WorkingCopyBackupsModel {
         })
     }
 
-    fn new(backup_root: URI, file_service: Rc<FileService>) -> Self {
+    fn new(backup_root: URI, file_service: Rc<dyn IFileService>) -> Self {
         Self { cache: RefCell::new(ResourceMap::new()), backup_root, file_service }
     }
 
@@ -209,13 +208,13 @@ enum ImplHandle {
 /// `WorkingCopyBackupService` (abstrata no original): delega a uma implementação em disco ou em memória.
 pub struct WorkingCopyBackupService {
     base: Rc<Disposable>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
     impl_handle: RefCell<ImplHandle>,
 }
 
 impl WorkingCopyBackupService {
-    pub fn new(backup_workspace_home: Option<URI>, file_service: Rc<FileService>, log_service: LogServiceRef) -> Rc<Self> {
+    pub fn new(backup_workspace_home: Option<URI>, file_service: Rc<dyn IFileService>, log_service: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let impl_handle = match backup_workspace_home {
             Some(backup_workspace_home) => {
@@ -234,7 +233,7 @@ impl WorkingCopyBackupService {
     }
 
     /// `fileService` (protegido no original).
-    pub fn file_service(&self) -> &Rc<FileService> {
+    pub fn file_service(&self) -> &Rc<dyn IFileService> {
         &self.file_service
     }
 
@@ -323,14 +322,14 @@ struct WorkingCopyBackupServiceImpl {
     /// Queue IO operations to ensure write/delete file order.
     io_operation_queues: Rc<ResourceQueue>,
     backup_workspace_home: RefCell<URI>,
-    file_service: Rc<FileService>,
+    file_service: Rc<dyn IFileService>,
     log_service: LogServiceRef,
     ready: RefCell<Option<Promise<Rc<WorkingCopyBackupsModel>>>>,
     model: RefCell<Option<Rc<WorkingCopyBackupsModel>>>,
 }
 
 impl WorkingCopyBackupServiceImpl {
-    fn new(backup_workspace_home: URI, file_service: Rc<FileService>, log_service: LogServiceRef) -> Rc<Self> {
+    fn new(backup_workspace_home: URI, file_service: Rc<dyn IFileService>, log_service: LogServiceRef) -> Rc<Self> {
         let base = Disposable::new();
         let io_operation_queues = Rc::new(ResourceQueue::new(ext_uri()));
         base.register(io_operation_queues.clone());

@@ -1058,6 +1058,19 @@ pub struct TestFileService {
     /// `notExistsSet`.
     pub not_exists_set: RefCell<ResourceMap<bool>>,
     providers: RefCell<HashMap<String, FileSystemProviderRef>>,
+    /// `content` (protected): o texto que as leituras devolvem.
+    content: RefCell<String>,
+    last_read_file_uri: RefCell<Option<URI>>,
+    /// `readShouldThrowError`.
+    pub read_should_throw_error: RefCell<Option<Error>>,
+    /// `writeShouldThrowError`.
+    pub write_should_throw_error: RefCell<Option<Error>>,
+    /// `writeOperations`: `{ resource, content }` de cada escrita.
+    pub write_operations: Rc<RefCell<Vec<(URI, String)>>>,
+    /// `readOperations`: `{ resource }` de cada leitura.
+    pub read_operations: RefCell<Vec<URI>>,
+    /// `watches`.
+    pub watches: Rc<RefCell<Vec<URI>>>,
 }
 
 impl TestFileService {
@@ -1074,7 +1087,39 @@ impl TestFileService {
             readonly: Cell::new(false),
             not_exists_set: RefCell::new(ResourceMap::new()),
             providers: RefCell::new(HashMap::new()),
+            content: RefCell::new("Hello Html".to_owned()),
+            last_read_file_uri: RefCell::new(None),
+            read_should_throw_error: RefCell::new(None),
+            write_should_throw_error: RefCell::new(None),
+            write_operations: Rc::default(),
+            read_operations: RefCell::new(Vec::new()),
+            watches: Rc::default(),
         })
+    }
+
+    /// `setContent(content)`.
+    pub fn set_content(&self, content: &str) {
+        *self.content.borrow_mut() = content.to_owned();
+    }
+
+    /// `getContent()`.
+    pub fn get_content(&self) -> String {
+        self.content.borrow().clone()
+    }
+
+    /// `getLastReadFileUri()`.
+    pub fn get_last_read_file_uri(&self) -> Option<URI> {
+        self.last_read_file_uri.borrow().clone()
+    }
+
+    /// `clearTracking()`.
+    pub fn clear_tracking(&self) {
+        self.write_operations.borrow_mut().clear();
+        self.read_operations.borrow_mut().clear();
+    }
+
+    fn file_stat(&self, resource: &URI) -> FileStatWithMetadata {
+        create_file_stat(resource, &FileStatOptions { readonly: self.readonly.get(), ..FileStatOptions::default() })
     }
 
     /// `fireFileChanges(event)`.
@@ -1141,29 +1186,99 @@ impl IFileService for TestFileService {
         self.get_provider(&resource.scheme().to_string_lossy()).is_some_and(|provider| provider.capabilities().intersects(capability))
     }
 
-    /// `readFile(resource, options?)` do original sem o `readShouldThrowError` e sem o rastreio de leituras (`content`,
-    /// `lastReadFileUri`, `readOperations`), que o porte do `TestFileService` ainda não tem: devolve o stat do
-    /// `createFileStat(resource, readonly)` e o conteúdo padrão `'Hello Html'` da classe.
+    /// `readFile(resource, options?)`.
     fn read_file(&self, resource: &URI, _options: Option<je_platform::files::files::ReadFileOptions>, _token: Option<CancellationToken>) -> Promise<je_platform::files::files::FileContent> {
+        if let Some(error) = self.read_should_throw_error.borrow().clone() {
+            return Promise::rejected(error);
+        }
+
+        *self.last_read_file_uri.borrow_mut() = Some(resource.clone());
+        self.read_operations.borrow_mut().push(resource.clone());
+
         Promise::resolved(je_platform::files::files::FileContent {
-            stat: create_file_stat(resource, &FileStatOptions { readonly: self.readonly.get(), ..FileStatOptions::default() }),
-            value: je_base::buffer::VSBuffer::from_string("Hello Html"),
+            stat: self.file_stat(resource),
+            value: je_base::buffer::VSBuffer::from_string(&self.content.borrow()),
         })
     }
 
-    /// `resolve(resource, options?)` do `TestFileService`: o stat do `createFileStat(resource, readonly)`.
-    fn resolve(&self, resource: &URI, options: Option<je_platform::files::files::ResolveFileOptions>) -> Promise<je_platform::files::files::FileStat> {
-        self.resolve_with_metadata(resource, options).then(|stat| je_platform::files::files::FileStat::clone(&stat))
+    /// `resolve(resource, options?)`: o stat do `createFileStat(resource, readonly)`.
+    fn resolve(&self, resource: &URI, _options: Option<je_platform::files::files::ResolveFileOptions>) -> Promise<je_platform::files::files::FileStat> {
+        Promise::resolved(je_platform::files::files::FileStat::clone(&self.file_stat(resource)))
     }
 
-    /// `createFolder(resource)` do `TestFileService`: o stat do `createFileStat(resource, readonly)`.
+    /// `createFolder(resource)`: o original devolve `null` (`Promise.resolve(null!)`); o contrato do porte devolve um stat,
+    /// e o dublê devolve o do `createFileStat(resource, readonly)`.
     fn create_folder(&self, resource: &URI) -> Promise<je_platform::files::files::FileStatWithMetadata> {
-        self.resolve_with_metadata(resource, None)
+        Promise::resolved(self.file_stat(resource))
     }
 
-    /// `watch(resource)` do `TestFileService`: `Disposable.None`.
-    fn watch(&self, _resource: &URI, _options: Option<je_platform::files::files::WatchOptions>) -> DisposableRef {
-        lifecycle::none()
+    /// `watch(resource)`: registra o recurso em `watches` e o tira ao descartar.
+    fn watch(&self, resource: &URI, _options: Option<je_platform::files::files::WatchOptions>) -> DisposableRef {
+        self.watches.borrow_mut().push(resource.clone());
+
+        let (watches, resource) = (self.watches.clone(), resource.clone());
+        to_disposable(move || {
+            let mut watches = watches.borrow_mut();
+            if let Some(index) = watches.iter().position(|watched| watched == &resource) {
+                watches.remove(index);
+            }
+        })
+    }
+
+    /// `readFileStream(resource, options?)`.
+    fn read_file_stream(
+        &self,
+        resource: &URI,
+        _options: Option<je_platform::files::files::ReadFileOptions>,
+        _token: Option<CancellationToken>,
+    ) -> Promise<je_platform::files::files::FileStreamContent> {
+        if let Some(error) = self.read_should_throw_error.borrow().clone() {
+            return Promise::rejected(error);
+        }
+
+        *self.last_read_file_uri.borrow_mut() = Some(resource.clone());
+
+        let value: je_base::buffer::VSBufferReadableStream = je_base::buffer::buffer_to_stream(je_base::buffer::VSBuffer::from_string(&self.content.borrow()));
+        Promise::resolved(je_platform::files::files::FileStreamContent { stat: self.file_stat(resource), value })
+    }
+
+    /// `writeFile(resource, bufferOrReadable, options?)`: espera um tique (`await timeout(0)`), lança o
+    /// `writeShouldThrowError` e registra a escrita em `writeOperations`.
+    fn write_file(
+        &self,
+        resource: &URI,
+        content: je_platform::files::file_service::FileContentSource,
+        _options: Option<je_platform::files::files::WriteFileOptions>,
+    ) -> Promise<je_platform::files::files::FileStatWithMetadata> {
+        use je_platform::files::file_service::FileContentSource;
+
+        let write_should_throw_error = self.write_should_throw_error.borrow().clone();
+        let content = match content {
+            FileContentSource::Buffer(buffer) => Some(buffer),
+            FileContentSource::Readable(mut readable) => Some(je_base::buffer::readable_to_buffer(readable.as_mut())),
+            // `readableToBuffer` de um stream lança no original (o `catch` deixa `content` indefinido).
+            FileContentSource::Stream(_) | FileContentSource::BufferedStream(_) => None,
+        };
+        let stat = self.file_stat(resource);
+        let (resource, operations) = (resource.clone(), self.write_operations.clone());
+        je_base::async_::async_fn(async move {
+            je_base::async_::timeout(0).await?;
+
+            if let Some(error) = write_should_throw_error {
+                return Err(error);
+            }
+
+            if let Some(content) = content {
+                operations.borrow_mut().push((resource, content.to_string()));
+            }
+
+            Ok(stat)
+        })
+    }
+
+    /// `del(resource, options?)`: sem efeito.
+    fn del(&self, _resource: &URI, _options: Option<je_platform::files::files::PartialFileDeleteOptions>) -> Promise<()> {
+        Promise::resolved(())
     }
 }
 

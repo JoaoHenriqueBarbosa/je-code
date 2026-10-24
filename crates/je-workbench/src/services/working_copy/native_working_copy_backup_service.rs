@@ -8,12 +8,11 @@
 //!   o `Rc<dyn IWorkingCopyBackupService>` a quem o consome).
 //! - **`INativeWorkbenchEnvironmentService`.** O serviço de ambiente nativo do workbench não foi portado: o construtor
 //!   recebe os dois valores que o original lê dele, `backupPath` (`Option<&str>`) e `userRoamingDataHome`.
-//! - **`@IFileService` e `@ILogService`.** O [`FileService`] concreto e o [`LogServiceRef`] (ver
-//!   `working_copy_backup_service.rs`).
+//! - **`@IFileService` e `@ILogService`.** O `Rc<dyn IFileService>` e o [`LogServiceRef`].
 //! - **Registro.** `registerSingleton(IWorkingCopyBackupService, NativeWorkingCopyBackupService, Eager)` e
-//!   `registerWorkbenchContribution2(NativeWorkingCopyBackupTracker.ID, ...)` ficam para a montagem do workbench: o
-//!   `FileService` concreto não é um serviço injetável (o `IFileService` reduzido não traz o que este serviço usa) e o
-//!   `NativeWorkingCopyBackupTracker` (`workingCopyBackupTracker.ts`) não foi portado.
+//!   `registerWorkbenchContribution2(NativeWorkingCopyBackupTracker.ID, ...)` ficam para a montagem do workbench (o
+//!   `INativeWorkbenchEnvironmentService` e o `NativeWorkingCopyBackupTracker` de `workingCopyBackupTracker.ts` não
+//!   foram portados).
 //! - **`localize`.** A chave e a mensagem são as do original; o `localize` do porte devolve a mensagem em inglês.
 
 use std::ops::Deref;
@@ -22,7 +21,7 @@ use std::rc::Rc;
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::nls::localize;
 use je_base::uri::{Field, URI, UriChange};
-use je_platform::files::file_service::FileService;
+use je_platform::files::i_file_service::IFileService;
 use je_platform::log::LogServiceRef;
 use je_platform::resources::uri_file;
 
@@ -42,7 +41,7 @@ impl NativeWorkingCopyBackupService {
     pub fn new(
         backup_path: Option<&str>,
         user_roaming_data_home: &URI,
-        file_service: Rc<FileService>,
+        file_service: Rc<dyn IFileService>,
         log_service: LogServiceRef,
         lifecycle_service: Rc<dyn ILifecycleService>,
     ) -> Rc<Self> {
