@@ -3479,3 +3479,10 @@ impl CursorSimpleModel for TextModel {
         position
     }
 }
+
+/// `TextModel extends Disposable`: o descarte pelo contrato comum (o mesmo `dispose` do modelo).
+impl IDisposable for TextModel {
+    fn dispose(&self) {
+        TextModel::dispose(self);
+    }
+}

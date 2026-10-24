@@ -46,7 +46,7 @@ use je_instantiation::Injectable;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::files::file_service::FileContentSource;
-use je_platform::files::files::{FileOperation, FileStat, FileStatWithMetadata, WriteFileOptions};
+use je_platform::files::files::{CreateFileOptions, FileOperation, FileStat, FileStatWithMetadata, WriteFileOptions};
 use je_platform::files::i_file_service::IFileService;
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::log::{LogServiceRef, NullLogService};
@@ -58,8 +58,8 @@ use je_workbench::common::editor::{EditorIdentifier, RevertOptions};
 use je_workbench::services::files::elevated_file_service::IElevatedFileService;
 use je_workbench::services::label::label_service::LabelService;
 use je_workbench::services::textfile::collaborators::{
-    IProgress, IProgressService, IWorkingCopyFileService, ProgressOptions, ProgressStep, ProgressTask, StoredFileWorkingCopySaveParticipantContext, WorkingCopyFileEvent,
-    WorkingCopyFileEventFile,
+    CreateFileOperation, FileOperationUndoRedoInfo, IProgress, IProgressService, IWorkingCopyFileService, ProgressOptions, ProgressStep, ProgressTask,
+    StoredFileWorkingCopySaveParticipantContext, WorkingCopyFileEvent, WorkingCopyFileEventFile,
 };
 use je_workbench::services::working_copy::file_working_copy::{IFileWorkingCopyModel, IFileWorkingCopyModelFactory, SnapshotContext};
 use je_workbench::services::working_copy::stored_file_working_copy::{
@@ -320,6 +320,29 @@ impl IFileWorkingCopyModelFactory<TestStoredFileWorkingCopyModel> for TestStored
 
 //#region Serviços que faltavam
 
+/// `IWorkingCopyFileOperationParticipant`: `participate(files, operation, undoInfo, timeout, progress, token)` sem o tempo
+/// limite e o progresso, que os participantes de teste não leem.
+pub trait IWorkingCopyFileOperationParticipant {
+    fn participate(&self, files: &[WorkingCopyFileEventFile], operation: FileOperation, undo_info: Option<FileOperationUndoRedoInfo>, token: &CancellationToken) -> Promise<()>;
+}
+
+/// O participante do teste: `{ participate: async files => { ... } }`.
+struct FnFileOperationParticipant<F>(F);
+
+impl<F> IWorkingCopyFileOperationParticipant for FnFileOperationParticipant<F>
+where
+    F: Fn(&[WorkingCopyFileEventFile]) -> Promise<()>,
+{
+    fn participate(&self, files: &[WorkingCopyFileEventFile], _operation: FileOperation, _undo_info: Option<FileOperationUndoRedoInfo>, _token: &CancellationToken) -> Promise<()> {
+        (self.0)(files)
+    }
+}
+
+/// O objeto literal `{ participate: async files => { ... } }` que os casos passam ao `addFileOperationParticipant`.
+pub fn file_operation_participant(participate: impl Fn(&[WorkingCopyFileEventFile]) -> Promise<()> + 'static) -> Rc<dyn IWorkingCopyFileOperationParticipant> {
+    Rc::new(FnFileOperationParticipant(participate))
+}
+
 /// O participante do teste: `{ participate: async (wc, context) => { ... } }`.
 struct FnSaveParticipant<F>(F);
 
@@ -351,14 +374,18 @@ pub fn save_participant(
 /// `canCreateFile`, `canMove`, `canCopy`, `canDelete`, `move` e `copy`).
 ///
 /// Divergências do `WorkingCopyFileService`:
-/// - Sem os participantes de operação de arquivo (`addFileOperationParticipant`: nenhum registrado, então não fazem nada)
-///   e sem o `CancellationToken` das operações (só era repassado a eles).
+/// - Os participantes de operação de arquivo (`addFileOperationParticipant`) rodam em sequência só na `create` do contrato
+///   (a que o `TextFileService.create` chama), sem o tempo limite e sem o progresso (os participantes de teste não os
+///   leem), e o erro de um participante é engolido (o original o registra no log e segue para o próximo).
 /// - A validação (`canXxx`) é sempre `true` no `TestFileService`; `move` e `copy` do `TestFileService` devolvem `null` e
 ///   `createFile` o stat que ninguém lê, então as operações devolvem `()`. `move` e `copy` não tocam o serviço de arquivos.
 /// - `fireAsync` é disparar o evento e esperar as promessas que os ouvintes entregaram a `waitUntil`.
 /// - `getDirty` e o provider de working copies padrão (o único) leem o `IWorkingCopyService`.
 pub struct TestWorkingCopyFileService {
+    this: Weak<TestWorkingCopyFileService>,
     base: Rc<Disposable>,
+    file_operation_participants: RefCell<Vec<(usize, Rc<dyn IWorkingCopyFileOperationParticipant>)>>,
+    next_participant_id: Cell<usize>,
     save_participants: Rc<StoredFileWorkingCopySaveParticipant>,
     on_will_run_working_copy_file_operation: Rc<Emitter<WorkingCopyFileEvent>>,
     on_did_fail_working_copy_file_operation: Rc<Emitter<WorkingCopyFileEvent>>,
@@ -387,8 +414,11 @@ impl TestWorkingCopyFileService {
         let save_participants = StoredFileWorkingCopySaveParticipant::new(log_service, progress_service);
         base.register(save_participants.clone());
 
-        Rc::new(Self {
+        Rc::new_cyclic(|this| Self {
+            this: this.clone(),
             base,
+            file_operation_participants: RefCell::new(Vec::new()),
+            next_participant_id: Cell::new(0),
             save_participants,
             on_will_run_working_copy_file_operation,
             on_did_fail_working_copy_file_operation,
@@ -397,6 +427,49 @@ impl TestWorkingCopyFileService {
             file_service,
             working_copy_service,
             uri_identity_service,
+        })
+    }
+
+    fn rc(&self) -> Rc<Self> {
+        self.this.upgrade().expect("o serviço está vivo enquanto é usado")
+    }
+
+    /// `addFileOperationParticipant(participant)`.
+    pub fn add_file_operation_participant(&self, participant: Rc<dyn IWorkingCopyFileOperationParticipant>) -> DisposableRef {
+        let id = self.next_participant_id.get();
+        self.next_participant_id.set(id + 1);
+        self.file_operation_participants.borrow_mut().push((id, participant));
+
+        let this = self.this.clone();
+        to_disposable(move || {
+            if let Some(this) = this.upgrade() {
+                this.file_operation_participants.borrow_mut().retain(|(candidate, _)| *candidate != id);
+            }
+        })
+    }
+
+    /// `runFileOperationParticipants(files, operation, undoInfo, token)`.
+    fn run_file_operation_participants(
+        &self,
+        files: &[WorkingCopyFileEventFile],
+        operation: FileOperation,
+        undo_info: Option<FileOperationUndoRedoInfo>,
+        token: &CancellationToken,
+    ) -> Promise<()> {
+        let participants: Vec<Rc<dyn IWorkingCopyFileOperationParticipant>> = self.file_operation_participants.borrow().iter().map(|(_, participant)| participant.clone()).collect();
+        let (files, token) = (files.to_vec(), token.clone());
+
+        async_fn(async move {
+            for participant in participants {
+                if token.is_cancellation_requested() {
+                    break;
+                }
+
+                // o original registra o erro do participante no log e segue para o próximo
+                let _ = participant.participate(&files, operation, undo_info, &token).await;
+            }
+
+            Ok(())
         })
     }
 
@@ -574,6 +647,49 @@ impl IWorkingCopyFileService for TestWorkingCopyFileService {
 
     fn has_save_participants(&self) -> bool {
         !self.save_participants.is_empty()
+    }
+
+    /// `create(operations, token, undoInfo)`: os participantes, os eventos e a criação em disco com o conteúdo de cada
+    /// operação (a validação `canCreateFile` não existe no `IFileService` reduzido).
+    fn create(&self, operations: Vec<CreateFileOperation>, token: CancellationToken, undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        let this = self.rc();
+
+        async_fn(async move {
+            let files: Vec<WorkingCopyFileEventFile> = operations.iter().map(|operation| WorkingCopyFileEventFile { source: None, target: operation.resource.clone() }).collect();
+
+            // file operation participant
+            this.run_file_operation_participants(&files, FileOperation::Create, undo_info, &token).await?;
+
+            // before events
+            let event = this.new_event(FileOperation::Create, files);
+            this.fire_async(&this.on_will_run_working_copy_file_operation, &event).await?;
+
+            // now actually create on disk
+            let created = promises::settled(
+                operations
+                    .iter()
+                    .map(|operation| {
+                        let contents = operation.contents.clone().map_or_else(|| FileContentSource::Buffer(VSBuffer::from_string("")), FileContentSource::from);
+                        this.file_service.create_file(&operation.resource, Some(contents), Some(CreateFileOptions { overwrite: operation.overwrite.unwrap_or(false) }))
+                    })
+                    .collect(),
+            )
+            .await;
+            let stats = match created {
+                Ok(stats) => stats,
+                Err(error) => {
+                    // error event
+                    this.fire_async(&this.on_did_fail_working_copy_file_operation, &event).await?;
+
+                    return Err(error);
+                }
+            };
+
+            // after event
+            this.on_did_run_working_copy_file_operation.fire(event);
+
+            Ok(stats)
+        })
     }
 
     fn run_save_participants(
