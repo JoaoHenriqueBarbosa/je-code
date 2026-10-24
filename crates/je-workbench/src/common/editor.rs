@@ -148,6 +148,14 @@ pub trait IEditorPane {
         None
     }
 
+    /// O que `getNotebookEditorFromEditorPane(editorPane)` (`notebookBrowser.ts`) acha no painel: o `INotebookEditor` do painel
+    /// do editor de notebook, o do editor embutido do diff de notebook ou o do editor de notebook composto, ou `None` para
+    /// qualquer outro painel (o padrão). As três ramificações do original (por `getId()` e por `isCompositeNotebookEditorInput`)
+    /// ficam com quem implementa o painel, que é quem conhece o controle.
+    fn notebook_editor(&self) -> Option<Rc<dyn crate::contrib::notebook::browser::notebook_browser::INotebookEditor>> {
+        None
+    }
+
     /// `editorPane instanceof SideBySideEditorPane`: devolve `getPrimaryEditorPane()` e `getSecondaryEditorPane()` quando o
     /// painel é o do editor lado a lado, senão `None` (o padrão).
     fn side_by_side_panes(&self) -> Option<(Option<Rc<dyn IEditorPane>>, Option<Rc<dyn IEditorPane>>)> {

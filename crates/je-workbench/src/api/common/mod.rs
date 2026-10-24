@@ -62,6 +62,13 @@ pub mod ext_host_api_commands;
 pub mod hierarchy_execute_commands;
 pub mod ext_host_notebook_kernels;
 
+// Notebook (restante do host): `extHostNotebookEditors.ts`, `extHostNotebookRenderers.ts`,
+// `extHostNotebookDocumentSaveParticipant.ts` e o `_registerApiCommands` de `extHostNotebook.ts`.
+pub mod ext_host_notebook_api_commands;
+pub mod ext_host_notebook_document_save_participant;
+pub mod ext_host_notebook_editors;
+pub mod ext_host_notebook_renderers;
+
 // BulkEdits e Decorations: `extHostBulkEdits.ts` e `extHostDecorations.ts`.
 pub mod ext_host_bulk_edits;
 pub mod ext_host_decorations;

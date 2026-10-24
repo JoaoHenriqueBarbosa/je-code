@@ -4,10 +4,10 @@
 //! Divergências:
 //! - **`@extHostNamedCustomer(MainContext.MainThreadBulkEdits)` e o `IExtHostContext` do construtor:** o registro de
 //!   clientes não existe ainda; o construtor recebe o [`IMainContext`], que (como no original) não é usado.
-//! - **`revive<WorkspaceEdit>(data)`.** É a identidade: o DTO do porte já guarda as [`URI`] revividas. A edição de
-//!   célula de notebook, que o `WorkspaceEdit` do editor não representa, viaja num [`NotebookCellEditCarrier`] (um
-//!   `ICustomEdit` que só carrega a edição até o serviço de edição em massa; como o `BulkCellEdits` não foi portado, o
-//!   `redo` dela rejeita), e o `outputs.items.valueBytes` das células não é reescrito.
+//! - **`revive<WorkspaceEdit>(data)`.** É a identidade: o DTO do porte já guarda as `URI` revividas. A edição de
+//!   célula de notebook, que o `WorkspaceEdit` do editor não representa, viaja como a [`ResourceNotebookCellEdit`] (um
+//!   `ICustomEdit` que o `BulkEditService` reconhece e aplica pelo `BulkCellEdits`), e o `outputs.items.valueBytes` das células
+//!   não é reescrito.
 //! - **`reviveWorkspaceEditDto` com dois tipos de retorno.** As duas sobrecargas (`IWorkspaceEditDto` e `IWorkspaceEditDto |
 //!   undefined`) são uma função só; o `data` nulo (que devolve o próprio `undefined`) é o `Option` de quem chama.
 //!   `Dto`s sem `edits` não existem (o campo é um `Vec`).
@@ -21,10 +21,7 @@ use je_base::buffer::{VSBuffer, decode_base64};
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
-use je_base::uri::URI;
-use je_editor::code_action::languages::{
-    ICustomEdit, IWorkspaceFileEdit, WorkspaceEdit, WorkspaceEditItem, WorkspaceEditMetadata, WorkspaceFileEditOptions,
-};
+use je_editor::code_action::languages::{IWorkspaceFileEdit, WorkspaceEdit, WorkspaceEditItem, WorkspaceFileEditOptions};
 use je_editor::code_action::platform::{BulkEditOptions, IBulkEditService};
 use je_platform::log::{LogService, Logger};
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
@@ -33,7 +30,7 @@ use crate::api::common::ext_host_protocol::{
     IMainContext, IWorkspaceEditDto, MainThreadBulkEditsShape, SerializableObjectWithBuffers, WorkspaceEditEntryDto, WorkspaceFileEditContentsDto,
     WorkspaceFileEditOptionsDto,
 };
-use crate::contrib::notebook::common::notebook_common::IWorkspaceNotebookCellEdit;
+use crate::contrib::bulk_edit::browser::bulk_cell_edits::ResourceNotebookCellEdit;
 
 /// `MainThreadBulkEdits`.
 pub struct MainThreadBulkEdits {
@@ -81,27 +78,6 @@ impl MainThreadBulkEditsShape for MainThreadBulkEdits {
                     Ok(false)
                 }
             })
-    }
-}
-
-/// O `ICustomEdit` que carrega uma edição de célula de notebook até o serviço de edição em massa (ver a nota do módulo).
-pub struct NotebookCellEditCarrier(pub IWorkspaceNotebookCellEdit);
-
-impl ICustomEdit for NotebookCellEditCarrier {
-    fn resource(&self) -> URI {
-        self.0.resource.clone()
-    }
-
-    fn metadata(&self) -> Option<WorkspaceEditMetadata> {
-        self.0.metadata.clone()
-    }
-
-    fn undo(&self) -> Promise<()> {
-        Promise::rejected(Error::new("A edição de célula de notebook não é desfeita: o BulkCellEdits não foi portado"))
-    }
-
-    fn redo(&self) -> Promise<()> {
-        Promise::rejected(Error::new("A edição de célula de notebook não é aplicada: o BulkCellEdits não foi portado"))
     }
 }
 
@@ -159,7 +135,7 @@ pub fn revive_workspace_edit_dto(
             WorkspaceEditEntryDto::Cell(cell_edit) => {
                 let mut cell_edit = cell_edit.clone();
                 cell_edit.resource = uri_identity_service.as_canonical_uri(&cell_edit.resource);
-                WorkspaceEditItem::Custom(Rc::new(NotebookCellEditCarrier(cell_edit)))
+                WorkspaceEditItem::Custom(Rc::new(ResourceNotebookCellEdit::lift(&cell_edit)))
             }
         });
     }

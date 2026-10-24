@@ -42,3 +42,11 @@ pub mod main_thread_webviews;
 pub mod main_thread_bulk_edits;
 // Openers externos de URI: `mainThreadUriOpeners.ts`.
 pub mod main_thread_uri_openers;
+
+// Notebooks: `mainThreadNotebook.ts`, `mainThreadNotebookDocuments.ts`, `mainThreadNotebookEditors.ts`,
+// `mainThreadNotebookDocumentsAndEditors.ts` e `mainThreadNotebookDto.ts`.
+pub mod main_thread_notebook;
+pub mod main_thread_notebook_documents;
+pub mod main_thread_notebook_documents_and_editors;
+pub mod main_thread_notebook_dto;
+pub mod main_thread_notebook_editors;
