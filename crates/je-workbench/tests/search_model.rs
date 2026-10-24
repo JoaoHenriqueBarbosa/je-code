@@ -229,8 +229,11 @@ struct FakeCellViewModel {
 }
 
 impl FakeCellViewModel {
-    fn new(id: &str, cell_kind: CellKind, line_one: &str) -> Rc<dyn ICellViewModel> {
-        let text_buffer: TextBufferRef = Rc::new(RefCell::new(create_text_buffer(line_one.into(), DefaultEndOfLine::Lf)));
+    fn new(guard: &LeakGuard, id: &str, cell_kind: CellKind, line_one: &str) -> Rc<dyn ICellViewModel> {
+        let buffer = create_text_buffer(line_one.into(), DefaultEndOfLine::Lf);
+        // O buffer real é rastreado pelo guarda (o `textBuffer` falso do original é um objeto simples): descartar ao fim.
+        guard.add(buffer.disposable());
+        let text_buffer: TextBufferRef = Rc::new(RefCell::new(buffer));
         Rc::new(Self { id: id.to_string(), cell_kind, text_buffer })
     }
 }
@@ -602,10 +605,10 @@ fn search_model_search_can_return_notebook_results() {
         a_raw_match("/3", vec![text_match("test", line_one_range())]),
     ];
 
-    let md_input_cell = FakeCellViewModel::new("mdInputCell", CellKind::Markup, "# Test");
+    let md_input_cell = FakeCellViewModel::new(&guard, "mdInputCell", CellKind::Markup, "# Test");
     let find_match_mds = vec![FindMatch { range: Range::new(1, 3, 1, 7), matches: Some(vec![Some("Test".into())]) }];
 
-    let code_cell = FakeCellViewModel::new("codeCell", CellKind::Code, "print(\"test! testing!!\")");
+    let code_cell = FakeCellViewModel::new(&guard, "codeCell", CellKind::Code, "print(\"test! testing!!\")");
     let find_match_code_cells = vec![
         FindMatch { range: Range::new(1, 8, 1, 12), matches: Some(vec![Some("test".into())]) },
         FindMatch { range: Range::new(1, 14, 1, 18), matches: Some(vec![Some("test".into())]) },
