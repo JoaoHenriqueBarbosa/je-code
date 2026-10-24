@@ -5,8 +5,7 @@
 //! Divergências:
 //! - O `extends ExtensionGalleryManifestService` é o campo `base`; `this._register` é o [`ExtensionGalleryManifestService::store`]
 //!   dele. Como o serviço não sobrescreve nada, o trait [`IExtensionGalleryManifestService`] só repassa ao `base`.
-//! - As dependências por injeção entram em [`WebExtensionGalleryManifestService::new`]. O `IRemoteAgentService` é o recorte
-//!   [`IRemoteAgentConnectionProvider`] de [`super::extension_gallery_contracts`]. `registerSingleton(..., InstantiationType.Delayed)`
+//! - As dependências por injeção entram em [`WebExtensionGalleryManifestService::new`]. `registerSingleton(..., InstantiationType.Delayed)`
 //!   não tem equivalente: quem monta o workbench cria o serviço.
 
 use std::rc::Rc;
@@ -22,8 +21,8 @@ use je_platform::extension_management::extension_gallery_manifest::{
 use je_platform::extension_management::extension_gallery_manifest_service::ExtensionGalleryManifestService;
 use je_platform::product::IProductService;
 
-use super::extension_gallery_contracts::IRemoteAgentConnectionProvider;
 use super::extension_gallery_manifest_service::EXTENSION_GALLERY_MANIFEST_CHANNEL;
+use crate::services::remote::remote_agent_service::IRemoteAgentService;
 
 /// `WebExtensionGalleryManifestService`.
 pub struct WebExtensionGalleryManifestService {
@@ -31,7 +30,7 @@ pub struct WebExtensionGalleryManifestService {
 }
 
 impl WebExtensionGalleryManifestService {
-    pub fn new(product_service: Rc<dyn IProductService>, remote_agent_service: &dyn IRemoteAgentConnectionProvider) -> Self {
+    pub fn new(product_service: Rc<dyn IProductService>, remote_agent_service: &dyn IRemoteAgentService) -> Self {
         let base = ExtensionGalleryManifestService::new(product_service);
         if let Some(remote_connection) = remote_agent_service.get_connection() {
             let channel = remote_connection.get_channel(EXTENSION_GALLERY_MANIFEST_CHANNEL);

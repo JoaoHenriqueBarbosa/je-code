@@ -14,8 +14,8 @@
 //! - **Escutas.** Os eventos de formatador, de registro e de capacidades do provider, do rótulo customizado e da
 //!   configuração de somente leitura limpam os rótulos e avisam a entrada pelo `Weak`; o estado que eles limpam (os
 //!   rótulos em cache e o recurso preferido) é compartilhado por `Rc`, porque as escutas vivem além do `&self`.
-//! - **`IFileReadLimits` e `IFileLimitedEditorInputOptions`** (de `files.ts` e `editor.ts`) são [`FileReadLimits`] e
-//!   [`FileLimitedEditorInputOptions`]; `size` é o número de bytes (`u64`, como o `limitSize` das opções de leitura),
+//! - **`IFileReadLimits` e `IFileLimitedEditorInputOptions`** (de `files.ts` e `editor.ts`) são [`FileReadLimits`] (da
+//!   plataforma, `je_platform::files::files`) e [`FileLimitedEditorInputOptions`]; `size` é o número de bytes (`u64`, como o `limitSize` das opções de leitura),
 //!   e o produto `valor * ByteSize.MB` do limite configurado é truncado para bytes inteiros.
 //! - **Rótulos em cache.** `typeof this._name !== 'string'` é `Option::is_none` (os campos só guardam texto).
 
@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use je_base::uri::URI;
 use je_platform::configuration::{ConfigurationValue, is_configured};
-use je_platform::files::files::{byte_size, get_large_file_confirmation_limit};
+use je_platform::files::files::{FileReadLimits, byte_size, get_large_file_confirmation_limit};
 use je_platform::files::i_file_service::IFileService;
 use je_platform::js::to_number;
 use je_platform::label::label::{ILabelService, UriLabelOptions};
@@ -35,13 +35,6 @@ use crate::common::editor::editor_input::{EditorInput, EditorInputBase};
 use crate::common::editor::{EditorInputCapabilities, Verbosity};
 use crate::services::editor::custom_editor_label_service::ICustomEditorLabelService;
 use crate::services::files_configuration::files_configuration_service::{IFilesConfigurationService, Readonly};
-
-/// `IFileReadLimits`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FileReadLimits {
-    /// If the file exceeds the given size, an error of kind `FILE_TOO_LARGE` will be thrown.
-    pub size: Option<u64>,
-}
 
 /// `IFileLimitedEditorInputOptions`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

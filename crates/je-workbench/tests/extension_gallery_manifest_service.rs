@@ -79,13 +79,11 @@ use je_workbench::services::extension_management::extension_gallery_account::{IE
 use je_workbench::services::extension_management::extension_gallery_account_service::{
     ExtensionGalleryAccountService, GitHubGalleryAccountProvider, MicrosoftGalleryAccountProvider, uses_microsoft_auth_provider,
 };
-use je_workbench::services::extension_management::extension_gallery_contracts::{
-    IHostRestartService, IRemoteAgentConnection, IRemoteAgentConnectionProvider, ISharedProcessService,
-};
+use je_workbench::services::extension_management::extension_gallery_contracts::ISharedProcessService;
 use je_workbench::services::extension_management::extension_gallery_manifest_service::{
     WorkbenchExtensionGalleryManifestService, WorkbenchExtensionGalleryManifestServiceParts,
 };
-use je_workbench::test::browser::workbench_test_services::TestEnvironmentService;
+use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestHostService, TestRemoteAgentService};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -418,24 +416,6 @@ impl IDialogService for TestDialogService {
     }
 }
 
-/// `mock<IHostService>()` com `restart` sobrescrito (`async restart() { }`).
-struct TestHostRestartService;
-
-impl IHostRestartService for TestHostRestartService {
-    fn restart(&self) -> Promise<()> {
-        Promise::resolved(())
-    }
-}
-
-/// `mock<IRemoteAgentService>()` com `getConnection() { return null; }`.
-struct NoRemoteConnection;
-
-impl IRemoteAgentConnectionProvider for NoRemoteConnection {
-    fn get_connection(&self) -> Option<Rc<dyn IRemoteAgentConnection>> {
-        None
-    }
-}
-
 /// O canal `{ call: () => Promise.resolve(), listen: () => Event.None }`.
 struct NoopChannel;
 
@@ -710,14 +690,14 @@ impl Fixture {
             file_service: self.file_service.clone(),
             telemetry_service: telemetry,
             storage_service: self.storage.clone(),
-            remote_agent_service: Rc::new(NoRemoteConnection),
+            remote_agent_service: Rc::new(TestRemoteAgentService),
             shared_process_service: Rc::new(TestSharedProcessService),
             configuration_service: self.configuration.clone(),
             request_service: Rc::new(TestRequestService { handler: self.request_handler.clone() }),
             gallery_account_service,
             log_service,
             dialog_service: Rc::new(TestDialogService { restart_prompts: self.restart_prompts.clone() }),
-            host_service: Rc::new(TestHostRestartService),
+            host_service: Rc::new(TestHostService),
         }))
     }
 

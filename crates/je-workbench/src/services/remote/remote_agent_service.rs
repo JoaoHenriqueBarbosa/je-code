@@ -9,18 +9,24 @@
 //! `Promise<IRemoteAgentEnvironment | null>` é `Promise<Option<RemoteAgentEnvironment>>`; o `null` do ambiente que
 //! não resolveu (sem conexão ou com erro) é `None`.
 //!
-//! `getConnection(): IRemoteAgentConnection | null` é `Option<Rc<dyn IRemoteAgentConnection>>`, com o recorte
-//! `IRemoteAgentConnection` de `services::extension_management::extension_gallery_contracts` (que lá tem só `getChannel`
-//! e aqui ganhou `remoteAuthority`). O trait `IRemoteAgentConnectionProvider` do mesmo arquivo repete o `getConnection`
-//! para a galeria e se funde a este quando o serviço for portado por inteiro.
+//! `getConnection(): IRemoteAgentConnection | null` é `Option<Rc<dyn IRemoteAgentConnection>>`, com o
+//! `IRemoteAgentConnection` reduzido a `remoteAuthority` e `getChannel`, o que os serviços portados leem dele.
 
 use std::rc::Rc;
 
+use je_base::parts::ipc::IChannel;
 use je_base::promise::Promise;
 use je_instantiation::service_id;
 use je_platform::remote::remote_agent_environment::RemoteAgentEnvironment;
 
-use crate::services::extension_management::extension_gallery_contracts::IRemoteAgentConnection;
+/// `IRemoteAgentConnection`, reduzido a `remoteAuthority` e `getChannel`.
+pub trait IRemoteAgentConnection {
+    /// `remoteAuthority`: a autoridade do servidor remoto (por exemplo `ssh-remote+host`).
+    fn remote_authority(&self) -> String;
+
+    /// `getChannel(channelName)`: o canal de nome dado, no servidor remoto.
+    fn get_channel(&self, channel_name: &str) -> Rc<dyn IChannel>;
+}
 
 /// `IRemoteAgentService`.
 pub trait IRemoteAgentService {

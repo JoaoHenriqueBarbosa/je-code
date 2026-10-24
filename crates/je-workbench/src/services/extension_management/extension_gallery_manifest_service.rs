@@ -9,8 +9,8 @@
 //!   é o `get_extension_gallery_manifest` dele. `this._register` e `this._store` são o [`ExtensionGalleryManifestService::store`]
 //!   dele, que o descarte do serviço descarta.
 //! - As dependências por injeção entram numa struct, [`WorkbenchExtensionGalleryManifestServiceParts`]. Os recortes
-//!   `ISharedProcessService`, o `getConnection` do `IRemoteAgentService` e o `restart` do `IHostService` são os de
-//!   [`super::extension_gallery_contracts`]; o `IEnvironmentService` é o `EnvironmentService` da plataforma. `registerSingleton`
+//!   `ISharedProcessService` é o recorte de [`super::extension_gallery_contracts`]; o `IRemoteAgentService` e o `IHostService`
+//!   são os dos módulos `services::remote` e `services::host`; o `IEnvironmentService` é o `EnvironmentService` da plataforma. `registerSingleton`
 //!   não tem equivalente: quem monta o workbench cria o serviço com [`WorkbenchExtensionGalleryManifestService::new`].
 //! - `this.extensionGalleryManifest !== manifest` compara objetos por identidade, e todo manifesto recebido é um objeto
 //!   novo: o manifesto muda sempre que algum dos dois (o atual ou o novo) existe, e só `null` por `null` não muda.
@@ -53,7 +53,9 @@ use je_platform::storage::StorageService;
 use je_platform::telemetry::telemetry::ITelemetryService;
 
 use super::extension_gallery_account::{ExtensionGalleryAccountStatus, IExtensionGalleryAccountService};
-use super::extension_gallery_contracts::{IHostRestartService, IRemoteAgentConnectionProvider, ISharedProcessService};
+use super::extension_gallery_contracts::ISharedProcessService;
+use crate::services::host::host::IHostService;
+use crate::services::remote::remote_agent_service::IRemoteAgentService;
 
 /// O nome do canal do manifesto da galeria, no processo compartilhado e no servidor remoto.
 pub const EXTENSION_GALLERY_MANIFEST_CHANNEL: &str = "extensionGalleryManifest";
@@ -194,14 +196,14 @@ pub struct WorkbenchExtensionGalleryManifestServiceParts {
     pub file_service: Rc<FileService>,
     pub telemetry_service: Rc<dyn ITelemetryService>,
     pub storage_service: Rc<dyn StorageService>,
-    pub remote_agent_service: Rc<dyn IRemoteAgentConnectionProvider>,
+    pub remote_agent_service: Rc<dyn IRemoteAgentService>,
     pub shared_process_service: Rc<dyn ISharedProcessService>,
     pub configuration_service: Rc<dyn IConfigurationService>,
     pub request_service: Rc<dyn IRequestService>,
     pub gallery_account_service: Rc<dyn IExtensionGalleryAccountService>,
     pub log_service: LogServiceRef,
     pub dialog_service: Rc<dyn IDialogService>,
-    pub host_service: Rc<dyn IHostRestartService>,
+    pub host_service: Rc<dyn IHostService>,
 }
 
 /// `WorkbenchExtensionGalleryManifestService`.
@@ -227,7 +229,7 @@ pub struct WorkbenchExtensionGalleryManifestService {
     gallery_account_service: Rc<dyn IExtensionGalleryAccountService>,
     log_service: LogServiceRef,
     dialog_service: Rc<dyn IDialogService>,
-    host_service: Rc<dyn IHostRestartService>,
+    host_service: Rc<dyn IHostService>,
 }
 
 impl WorkbenchExtensionGalleryManifestService {
