@@ -1347,6 +1347,82 @@ mod file_system_event_region {
 
 // #endregion
 
+// #region File system (`extHostFileSystem.ts` e `extHostFileSystemConsumer.ts`)
+
+pub use self::file_system_region::*;
+
+/// `IFileChangeDto`, `MainThreadFileSystemShape` e `ExtHostFileSystemShape`.
+///
+/// Divergências: as `UriComponents` já chegam revividas como [`URI`]; o `handle: number` é `u32` (o contador de
+/// `ExtHostFileSystem`) e o descritor de arquivo (`fd`) também; `pos` é `u64` e `length` é `usize`. Os métodos `$` de
+/// `ExtHostFileSystemShape` lançam de forma síncrona no original (`_getFsProvider`), e aqui devolvem a promessa rejeitada,
+/// que é o que o RPC faz com a exceção. `readonlyMessage?: IMarkdownString` é `Option<IMarkdownString>`.
+mod file_system_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::html_content::IMarkdownString;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_platform::files::files::{
+        FileChangeType, FileDeleteOptions, FileOpenOptions, FileOverwriteOptions, FileSystemProviderCapabilities, FileType, FileWriteOptions, Stat, WatchOptions,
+    };
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// `IFileChangeDto`.
+    #[derive(Clone, Debug)]
+    pub struct FileChangeDto {
+        pub resource: URI,
+        pub change_type: FileChangeType,
+    }
+
+    /// `MainThreadFileSystemShape`.
+    pub trait MainThreadFileSystemShape: IDisposable {
+        fn rpc_register_file_system_provider(&self, handle: u32, scheme: &str, capabilities: FileSystemProviderCapabilities, readonly_message: Option<IMarkdownString>) -> Promise<()>;
+        fn rpc_unregister_provider(&self, handle: u32);
+        fn rpc_on_file_system_change(&self, handle: u32, resource: Vec<FileChangeDto>);
+
+        fn rpc_stat(&self, resource: &URI) -> Promise<Stat>;
+        fn rpc_readdir(&self, resource: &URI) -> Promise<Vec<(String, FileType)>>;
+        fn rpc_read_file(&self, resource: &URI) -> Promise<VSBuffer>;
+        fn rpc_write_file(&self, resource: &URI, content: VSBuffer) -> Promise<()>;
+        fn rpc_rename(&self, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()>;
+        fn rpc_copy(&self, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()>;
+        fn rpc_mkdir(&self, resource: &URI) -> Promise<()>;
+        fn rpc_delete(&self, resource: &URI, opts: FileDeleteOptions) -> Promise<()>;
+
+        fn rpc_ensure_activation(&self, scheme: &str) -> Promise<()>;
+    }
+
+    /// `ExtHostFileSystemShape`.
+    pub trait ExtHostFileSystemShape {
+        fn rpc_stat(&self, handle: u32, resource: &URI) -> Promise<Stat>;
+        fn rpc_readdir(&self, handle: u32, resource: &URI) -> Promise<Vec<(String, FileType)>>;
+        fn rpc_read_file(&self, handle: u32, resource: &URI) -> Promise<VSBuffer>;
+        fn rpc_write_file(&self, handle: u32, resource: &URI, content: VSBuffer, opts: FileWriteOptions) -> Promise<()>;
+        fn rpc_rename(&self, handle: u32, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()>;
+        fn rpc_copy(&self, handle: u32, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()>;
+        fn rpc_mkdir(&self, handle: u32, resource: &URI) -> Promise<()>;
+        fn rpc_delete(&self, handle: u32, resource: &URI, opts: FileDeleteOptions) -> Promise<()>;
+        fn rpc_watch(&self, handle: u32, session: u32, resource: &URI, opts: WatchOptions);
+        fn rpc_unwatch(&self, handle: u32, session: u32);
+        fn rpc_open(&self, handle: u32, resource: &URI, opts: FileOpenOptions) -> Promise<u32>;
+        fn rpc_close(&self, handle: u32, fd: u32) -> Promise<()>;
+        fn rpc_read(&self, handle: u32, fd: u32, pos: u64, length: usize) -> Promise<VSBuffer>;
+        fn rpc_write(&self, handle: u32, fd: u32, pos: u64, data: VSBuffer) -> Promise<usize>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_FILE_SYSTEM: ProxyIdentifier<dyn MainThreadFileSystemShape> = ProxyIdentifier::new("MainThreadFileSystem");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_FILE_SYSTEM: ProxyIdentifier<dyn ExtHostFileSystemShape> = ProxyIdentifier::new("ExtHostFileSystem");
+    }
+}
+
+// #endregion
+
 // #region Progress (bloco próprio: `extHostProgress.ts` e `mainThreadProgress.ts`)
 
 pub use self::progress_region::*;
