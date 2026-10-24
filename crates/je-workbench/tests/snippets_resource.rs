@@ -215,7 +215,8 @@ impl Setup {
             .with(I_LOG_SERVICE, self.log_service.clone())
             .with(I_URI_IDENTITY_SERVICE, self.uri_identity_service.clone());
         if let Some(profile) = current_profile {
-            let profile_service: Rc<dyn IUserDataProfileService> = self.disposables.add_rc(UserDataProfileService::create(profile.clone(), ()));
+            let concrete = self.disposables.add_rc(UserDataProfileService::create(profile.clone(), ()));
+            let profile_service: Rc<dyn IUserDataProfileService> = concrete;
             services = services.with(I_USER_DATA_PROFILE_SERVICE, profile_service);
         }
         self.disposables.add_rc(InstantiationService::new(services))
