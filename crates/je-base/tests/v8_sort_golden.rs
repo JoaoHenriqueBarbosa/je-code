@@ -2,7 +2,7 @@
 //! determinísticos que não são ordem total (`random`: resultado arbitrário; `noisy`: ordem por chave com 10% dos pares
 //! invertidos) e com uma ordem total com empates (`consistent`, que confere a estabilidade).
 //!
-//! O arquivo `golden/v8_sort.jsonl` é gerado por `testbench/v8-sort/gen.js`, e a primeira linha registra as versões do
+//! O arquivo `golden/v8_sort.jsonl` é gerado por `oracle-harness/v8-sort/gen.js`, e a primeira linha registra as versões do
 //! Node e do V8. Para cada modo, tamanho (0 a 70, e 100 a 2000) e semente, o porte tem de reproduzir a quantidade de
 //! chamadas ao comparador, o hash FNV-1a da sequência de pares passados a ele e o hash do vetor final.
 
