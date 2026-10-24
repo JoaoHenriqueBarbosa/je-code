@@ -730,6 +730,9 @@ impl Shell {
             }
         }
         self.needs_render = true;
+        if self.theme_before_preview.is_some() {
+            self.preview_theme();
+        }
         true
     }
 

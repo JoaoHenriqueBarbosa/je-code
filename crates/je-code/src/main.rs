@@ -701,24 +701,33 @@ mod tests {
         let path = temp_file("theme.ts", "const answer = 42;\n");
         let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
         let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
-        let dark = snapshot(&mut shell, "th0-dark.png");
+        // O cursor pisca com o relógio: o teste o apaga das imagens.
+        let blank_cursor = |mut rgba: Vec<u8>| {
+            for y in 88..112 {
+                for x in 120..130 {
+                    rgba[(y * 1200 + x) * 4..(y * 1200 + x) * 4 + 3].fill(0);
+                }
+            }
+            rgba
+        };
+        let dark = blank_cursor(snapshot(&mut shell, "th0-dark.png"));
         shell.run(shell::Command::PickTheme);
         for c in "light modern".chars() {
             key(&mut shell, None, Some(&c.to_string()));
         }
-        // Pré-visualiza o tema em foco sem aplicar de vez.
+        // Pré-visualiza o tema em foco sem aplicar de vez: o fundo do editor já é o do Light Modern.
         let preview = snapshot(&mut shell, "th1-preview.png");
-        assert!(dark != preview, "o tema em foco já aparece na janela");
+        let at = (400 * 1200 + 900) * 4;
+        assert_eq!(&preview[at..at + 3], &[0xff, 0xff, 0xff], "o tema em foco já aparece na janela");
         key(&mut shell, Some(EditorKey::Escape), None);
-        assert!(snapshot(&mut shell, "th2-reverted.png") == dark, "Esc volta ao tema de antes");
+        assert!(blank_cursor(snapshot(&mut shell, "th2-reverted.png")) == dark, "Esc volta ao tema de antes");
         shell.run(shell::Command::PickTheme);
         for c in "light modern".chars() {
             key(&mut shell, None, Some(&c.to_string()));
         }
         key(&mut shell, Some(EditorKey::Enter), None);
-        let applied = snapshot(&mut shell, "th3-applied.png");
+        let applied = blank_cursor(snapshot(&mut shell, "th3-applied.png"));
         assert!(applied != dark, "Enter aplica o tema escolhido");
-        let at = (400 * 1200 + 900) * 4;
         assert_eq!(&applied[at..at + 3], &[0xff, 0xff, 0xff], "o fundo do editor é o do Light Modern");
         std::fs::remove_file(&path).expect("remove");
     }

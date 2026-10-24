@@ -124,7 +124,6 @@ impl EditorView {
         let (top, size) = self.scrollbar_slider();
         let left = self.layout.width - crate::layout::ViewLayout::SCROLLBAR_WIDTH;
         let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());
-        let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());
         let color = match self.drag {
             Some(crate::view::DragMode::Scrollbar(_)) => self.colors.scrollbar_slider_active,
             _ => self.colors.scrollbar_slider,
