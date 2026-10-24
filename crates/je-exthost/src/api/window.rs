@@ -16,9 +16,12 @@
 //! `terminal`, sobre o `ExtHostTerminalService`; as árvores (`createTreeView`, `registerTreeDataProvider`, `vscode.TreeView`,
 //! `vscode.TreeItem`) são o módulo `tree_views`, sobre o `ExtHostTreeViews`. As funções que recebem objetos da extensão (o `pty`, o
 //! provedor de árvore) são funções POR REFERÊNCIA, próprias do namespace (o objeto de `accessor_namespace` com campos de função).
+//! `createQuickPick` e `createInputBox` (`vscode.QuickPick`, `vscode.InputBox`, com `items`, `activeItems`, `selectedItems`, `value`,
+//! `placeholder`, `busy`, `canSelectMany`, `buttons`, `show`, `hide`, `dispose` e os eventos de aceitação, valor, seleção, ocultação e
+//! botão) são o módulo `quick_session`, sobre as sessões do `ExtHostQuickOpen`.
 //!
-//! Falta (depende de serviços do host ainda não ligados, sem fachada): `createQuickPick` e `createInputBox` (o `ExtHostQuickOpen` os
-//! tem, falta expor os objetos de sessão); `createTextEditorDecorationType` e `TextEditor#insertSnippet`/`setDecorations` (ver o
+//! Falta (depende de serviços do host ainda não ligados, sem fachada): `createTextEditorDecorationType` e
+//! `TextEditor#insertSnippet`/`setDecorations` (ver o
 //! cabeçalho de `text_editors.rs`); `tabGroups` e `createWebviewPanel`; o que falta de terminal e de árvore está nos cabeçalhos de
 //! `terminal.rs` e `tree_views.rs`. Os registros de provedores de
 //! linguagem (`registerHoverProvider`...) e os diagnósticos não são de `window`: estão em `vscode.languages` (módulo `languages`).
@@ -63,6 +66,7 @@ use crate::api::js_object::JsObjects;
 use crate::api::output_channel::{self, OutputChannels};
 use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
+use crate::api::quick_session::{self, QuickSessions};
 use crate::api::terminal::{self, TerminalObjects};
 use crate::api::text_editors::{self, TextEditorApi, TextObjects};
 use crate::api::tree_views::{self, TreeViewObjects};
@@ -190,7 +194,7 @@ fn status_bar_color_to_js(color: StatusBarColor) -> JsData {
     }
 }
 
-fn theme_color_of(value: &JsData) -> Result<ThemeColor, String> {
+pub(crate) fn theme_color_of(value: &JsData) -> Result<ThemeColor, String> {
     ThemeColor::from_dynamic(&js_to_dynamic(value)).map_err(|error| error.message)
 }
 
@@ -352,6 +356,8 @@ pub struct WindowState {
     pub terminal_objects: Rc<TerminalObjects>,
     /// As visões de árvore que o JavaScript segura.
     pub tree_view_objects: Rc<TreeViewObjects>,
+    /// As sessões de `createQuickPick` e `createInputBox` que o JavaScript segura.
+    pub quick_sessions: Rc<QuickSessions>,
 }
 
 /// O namespace `window`.
@@ -372,8 +378,12 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
     if let Some(quick_open) = services.quick_open.clone() {
         let (pick_runner, pick_quick_open, pick_events) = (runner.clone(), quick_open.clone(), events.clone());
         add("showQuickPick", 3, Rc::new(move |args| quick_input::show_quick_pick(&pick_runner, &pick_quick_open, &pick_events, args)));
-        let (input_runner, input_events) = (runner.clone(), events.clone());
-        add("showInputBox", 2, Rc::new(move |args| quick_input::show_input_box(&input_runner, &quick_open, &input_events, args)));
+        let (input_runner, input_quick_open, input_events) = (runner.clone(), quick_open.clone(), events.clone());
+        add("showInputBox", 2, Rc::new(move |args| quick_input::show_input_box(&input_runner, &input_quick_open, &input_events, args)));
+        let (create_quick_open, create_sessions) = (quick_open.clone(), state.quick_sessions.clone());
+        add("createQuickPick", 0, Rc::new(move |_| quick_session::create_quick_pick(&create_quick_open, &create_sessions)));
+        let create_sessions = state.quick_sessions.clone();
+        add("createInputBox", 0, Rc::new(move |_| quick_session::create_input_box(&quick_open, &create_sessions)));
     }
 
     if let Some(output) = services.output.clone() {
@@ -456,6 +466,7 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
     text_editors::define_classes(runner, &state.text_objects);
     terminal::define_classes(runner, &state.terminal_objects);
     tree_views::define_classes(runner, &state.tree_view_objects, table);
+    quick_session::define_classes(runner, &state.quick_sessions, table);
     let theme_color = runner.define_class(ClassSpec {
         name: "ThemeColor".to_owned(),
         length: 1,

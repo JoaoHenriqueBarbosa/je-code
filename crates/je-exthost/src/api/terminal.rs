@@ -45,7 +45,7 @@ use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::js_object::JsObjects;
 use crate::api::languages::host_extension;
-use crate::convert::{dynamic_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, uri_from_js, uri_to_js};
+use crate::convert::{dynamic_to_js, field, is_nullish, opt_bool, opt_number, opt_string, uri_from_js, uri_to_js};
 
 // ---- os objetos `Terminal`
 
@@ -132,7 +132,7 @@ fn icon_from_js(value: Option<&JsData>) -> Result<Option<TerminalIconPath>, Stri
 
 fn color_from_js(value: Option<&JsData>) -> Result<Option<ThemeColor>, String> {
     match value {
-        Some(color @ JsData::Object(_)) => ThemeColor::from_dynamic(&js_to_dynamic(color)).map(Some).map_err(|error| error.message),
+        Some(color @ JsData::Object(_)) => crate::api::window::theme_color_of(color).map(Some),
         _ => Ok(None),
     }
 }
@@ -399,7 +399,12 @@ impl TerminalContext {
                 (terminal, Some(options.clone()))
             }
             _ => {
-                let (name, shell_path, shell_args) = (opt_string(args.first()), opt_string(args.get(1)), shell_args_from_js(args.get(2)));
+                // A função é por referência: um array (`shellArgs`) chega como `Handle` e atravessa por valor aqui.
+                let by_value = |value: Option<&JsData>| match value {
+                    Some(JsData::Handle(handle)) => Some(self.js.runner().export(handle)),
+                    other => other.cloned(),
+                };
+                let (name, shell_path, shell_args) = (opt_string(args.first()), opt_string(args.get(1)), shell_args_from_js(by_value(args.get(2)).as_ref()));
                 let terminal = self.service.create_terminal(name, shell_path, shell_args).map_err(|error| error.message)?;
                 (terminal, None)
             }

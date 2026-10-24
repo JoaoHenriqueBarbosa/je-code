@@ -426,7 +426,25 @@ fn extension_pseudoterminal_opens_writes_receives_input_and_closes() {
         workbench.pump();
         assert_eq!(*renderer.process_exits.borrow(), vec![(1, Some(7))]);
 
-        // `$acceptProcessShutdown`: a thread principal fecha o terminal e o `close` do pty roda.
+        // O `onDidClose` do pty já encerrou o processo: o ExtHost o esquece (`_onProcessExit` apaga a referência), então um
+        // `$acceptProcessShutdown` depois da saída não chama o `close` do pty (o `?.shutdown` do original não acha o processo).
+        renderer.ext_host().rpc_accept_process_shutdown(1, true);
+        workbench.pump();
+        assert_eq!(workbench.probe("String(globalThis.__ptyClosed)"), "undefined");
+    });
+}
+
+#[test]
+fn extension_pseudoterminal_close_runs_when_the_main_thread_shuts_the_terminal_down() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        run(workbench, "t.pty");
+        open_pending(workbench, &renderer);
+        let started = renderer.ext_host().rpc_start_extension_terminal(1, None);
+        settle(workbench);
+        assert!(matches!(started.result(), Some(Ok(None))), "sem erro de lançamento");
+        assert_eq!(workbench.probe("String(globalThis.__ptyOpened)"), "none", "sem dimensões iniciais o pty abre com undefined");
+
+        // `$acceptProcessShutdown` com o processo vivo: o `close` do pty roda.
         renderer.ext_host().rpc_accept_process_shutdown(1, true);
         workbench.pump();
         assert_eq!(workbench.probe("String(globalThis.__ptyClosed)"), "true");

@@ -54,8 +54,9 @@ use je_base::arrays::OneOrMany;
 use je_platform::terminal::environment_variable::ISerializableEnvironmentVariableCollection;
 use je_platform::terminal::terminal::{ITerminalLaunchError, ITerminalProfile, TerminalExitReason as PlatformExitReason, TerminalShellType};
 use je_workbench::api::common::ext_host_protocol::{
-    CheckboxUpdate, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ICreateContributedTerminalProfileOptions, ITerminalCommandDto, ITerminalCompletionContextDto,
-    ITerminalDimensionsDto, ITerminalLinkDto, IShellLaunchConfigDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
+    CheckboxUpdate, ExtHostSCMShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ICreateContributedTerminalProfileOptions, ISCMHistoryOptions, ITerminalCommandDto,
+    ITerminalCompletionContextDto, ITerminalDimensionsDto, ITerminalLinkDto, IShellLaunchConfigDto, SCMArtifactDto, SCMArtifactGroupDto, SCMHistoryItemChangeDto, SCMHistoryItemDto,
+    SCMHistoryItemRefDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
 };
 use je_workbench::common::views::ITreeItem;
 use je_workbench::api::common::ext_host_protocol::{
@@ -751,8 +752,90 @@ impl ExtHostTreeViewsShape for LateExtHostTreeViews {
     }
 }
 
+/// O `ExtHostSCMShape` que ainda não existe quando o cliente `MainThreadSCM` do workbench nasce. Todas as chamadas dele têm retorno (a
+/// thread principal só as faz depois de montado o host), exceto o valor da caixa de entrada, que fica na fila se chegar antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostSCM(pub Late<dyn ExtHostSCMShape>);
+
+impl ExtHostSCMShape for LateExtHostSCM {
+    fn rpc_provide_original_resource(&self, source_control_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<URI>> {
+        self.0.bound().rpc_provide_original_resource(source_control_handle, uri, token)
+    }
+
+    fn rpc_provide_secondary_original_resource(&self, source_control_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<URI>> {
+        self.0.bound().rpc_provide_secondary_original_resource(source_control_handle, uri, token)
+    }
+
+    fn rpc_on_input_box_value_change(&self, source_control_handle: u32, value: &str) {
+        let value = value.to_owned();
+        self.0.call_void(move |target| target.rpc_on_input_box_value_change(source_control_handle, &value));
+    }
+
+    fn rpc_execute_resource_command(&self, source_control_handle: u32, group_handle: u32, handle: u32, preserve_focus: bool) -> Promise<()> {
+        self.0.bound().rpc_execute_resource_command(source_control_handle, group_handle, handle, preserve_focus)
+    }
+
+    fn rpc_validate_input(&self, source_control_handle: u32, value: &str, cursor_position: f64) -> Promise<Option<(StringOrMarkdown, f64)>> {
+        self.0.bound().rpc_validate_input(source_control_handle, value, cursor_position)
+    }
+
+    fn rpc_set_selected_source_control(&self, selected_source_control_handle: Option<u32>) -> Promise<()> {
+        self.0.bound().rpc_set_selected_source_control(selected_source_control_handle)
+    }
+
+    fn rpc_provide_history_item_refs(&self, source_control_handle: u32, history_item_refs: Option<Vec<String>>, token: CancellationToken) -> Promise<Option<Vec<SCMHistoryItemRefDto>>> {
+        self.0.bound().rpc_provide_history_item_refs(source_control_handle, history_item_refs, token)
+    }
+
+    fn rpc_provide_history_items(&self, source_control_handle: u32, options: ISCMHistoryOptions, token: CancellationToken) -> Promise<Option<Vec<SCMHistoryItemDto>>> {
+        self.0.bound().rpc_provide_history_items(source_control_handle, options, token)
+    }
+
+    fn rpc_provide_history_item_changes(
+        &self,
+        source_control_handle: u32,
+        history_item_id: &str,
+        history_item_parent_id: Option<&str>,
+        token: CancellationToken,
+    ) -> Promise<Option<Vec<SCMHistoryItemChangeDto>>> {
+        self.0.bound().rpc_provide_history_item_changes(source_control_handle, history_item_id, history_item_parent_id, token)
+    }
+
+    fn rpc_resolve_history_item(&self, source_control_handle: u32, history_item_id: &str, token: CancellationToken) -> Promise<Option<SCMHistoryItemDto>> {
+        self.0.bound().rpc_resolve_history_item(source_control_handle, history_item_id, token)
+    }
+
+    fn rpc_resolve_history_item_chat_context(&self, source_control_handle: u32, history_item_id: &str, token: CancellationToken) -> Promise<Option<String>> {
+        self.0.bound().rpc_resolve_history_item_chat_context(source_control_handle, history_item_id, token)
+    }
+
+    fn rpc_resolve_history_item_change_range_chat_context(
+        &self,
+        source_control_handle: u32,
+        history_item_id: &str,
+        history_item_parent_id: &str,
+        path: &str,
+        token: CancellationToken,
+    ) -> Promise<Option<String>> {
+        self.0.bound().rpc_resolve_history_item_change_range_chat_context(source_control_handle, history_item_id, history_item_parent_id, path, token)
+    }
+
+    fn rpc_resolve_history_item_refs_common_ancestor(&self, source_control_handle: u32, history_item_refs: Vec<String>, token: CancellationToken) -> Promise<Option<String>> {
+        self.0.bound().rpc_resolve_history_item_refs_common_ancestor(source_control_handle, history_item_refs, token)
+    }
+
+    fn rpc_provide_artifact_groups(&self, source_control_handle: u32, token: CancellationToken) -> Promise<Option<Vec<SCMArtifactGroupDto>>> {
+        self.0.bound().rpc_provide_artifact_groups(source_control_handle, token)
+    }
+
+    fn rpc_provide_artifacts(&self, source_control_handle: u32, group: &str, token: CancellationToken) -> Promise<Option<Vec<SCMArtifactDto>>> {
+        self.0.bound().rpc_provide_artifacts(source_control_handle, group, token)
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
+    pub scm: Rc<LateExtHostSCM>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
     pub tree_views: Rc<LateExtHostTreeViews>,
     pub workspace: Rc<LateExtHostWorkspace>,
@@ -786,6 +869,9 @@ impl LateForwarders {
         let language_features = Rc::new(LateExtHostLanguageFeatures::default());
         let terminal_service = Rc::new(LateExtHostTerminalService::default());
         let tree_views = Rc::new(LateExtHostTreeViews::default());
+        let scm = Rc::new(LateExtHostSCM::default());
+        let as_scm: Rc<dyn ExtHostSCMShape> = scm.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_SCM.sid, Rc::new(as_scm));
         let as_terminal_service: Rc<dyn ExtHostTerminalServiceShape> = terminal_service.clone();
         let as_tree_views: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
         local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SERVICE.sid, Rc::new(as_terminal_service));
@@ -814,7 +900,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

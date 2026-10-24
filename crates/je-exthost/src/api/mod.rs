@@ -26,6 +26,8 @@ pub mod languages;
 pub mod output_channel;
 pub mod progress;
 pub mod quick_input;
+pub mod quick_session;
+pub mod scm;
 pub mod terminal;
 pub mod text_editors;
 pub mod tree_views;

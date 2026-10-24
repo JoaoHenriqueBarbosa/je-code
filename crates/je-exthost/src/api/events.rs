@@ -8,8 +8,10 @@
 //!   isso `thisArgs` só vale quando é um [`JsData::Handle`] (uma função, por exemplo); um objeto comum como `thisArgs` é ignorado e
 //!   o listener roda sem `this`. O argumento `disposables` (a lista onde o original empurra o `Disposable`) também chegaria copiado,
 //!   então não é preenchido: o chamador guarda o `Disposable` devolvido.
-//! - O valor de `EventEmitter#fire(data)` chega ao listener como a mesma cópia que atravessou a fronteira (objeto comum e array
-//!   perdem a identidade; função e instância de classe nativa ficam).
+//! - O valor de `EventEmitter#fire(data)` chega ao listener com a identidade que a extensão deu: `fire` é uma função por referência
+//!   (própria de cada instância, sombreando a do protótipo), então um objeto ou array passado a ela é o mesmo do lado do listener.
+//!   Um valor que um namespace do host dispara por um `Event` do Rust (`onDidX`) segue como cópia (objeto comum e array perdem a
+//!   identidade; função e instância de classe nativa ficam).
 //! - `emitter.event` devolve uma função nova a cada leitura (no original é uma só por emitter, mas ela é só um atalho para o
 //!   `Emitter`, então escutar por qualquer das duas é o mesmo).
 //! - `CancellationToken` não é exportada em `vscode` (é uma interface no `vscode.d.ts`): a classe nativa existe para o protótipo
@@ -122,6 +124,7 @@ fn define_event_emitter(runner: &NodeRunner, table: &Rc<DisposableTable>, tables
         }
     };
     let construct_tables = tables.clone();
+    let construct_runner = runner.clone();
     let fire_of = emitter_of.clone();
     let dispose_of = emitter_of.clone();
     let dispose_tables = tables.clone();
@@ -156,8 +159,19 @@ fn define_event_emitter(runner: &NodeRunner, table: &Rc<DisposableTable>, tables
         length: 0,
         construct: Rc::new(move |_| {
             let id = construct_tables.next_id();
-            construct_tables.emitters.borrow_mut().insert(id, Emitter::new());
-            Ok(JsData::Object(vec![("_id".to_owned(), JsData::Num(id as f64))]))
+            let emitter: Rc<Emitter<JsData>> = Emitter::new();
+            construct_tables.emitters.borrow_mut().insert(id, emitter.clone());
+            // `fire` é uma função por referência, própria da instância: um objeto passado a `fire(data)` chega ao listener com a
+            // identidade que a extensão deu (o elemento de uma árvore, por exemplo), não como cópia.
+            let fire = construct_runner.make_function_by_reference(
+                "fire",
+                1,
+                Rc::new(move |args| {
+                    emitter.fire(args.first().cloned().unwrap_or(JsData::Undefined));
+                    Ok(JsData::Undefined)
+                }),
+            );
+            Ok(JsData::Object(vec![("_id".to_owned(), JsData::Num(id as f64)), ("fire".to_owned(), JsData::Handle(Rc::new(fire)))]))
         }),
         methods,
         getters,

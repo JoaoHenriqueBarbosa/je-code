@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use je_base::event::Event;
+use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
@@ -13,6 +14,7 @@ use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
 use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
 use je_workbench::api::common::ext_host_diagnostics::ExtHostDiagnostics;
+use je_workbench::api::common::ext_host_document_data::IExtHostDocumentSaveDelegate;
 use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_editors::ExtHostEditors;
@@ -23,12 +25,13 @@ use je_workbench::api::common::ext_host_languages::ExtHostLanguages;
 use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape, ExtHostEditorsShape,
-    ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostTerminalServiceShape,
-    ExtHostTreeViewsShape, ExtHostWorkspaceShape,
-    ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadTelemetryShape,
+    CreateDocumentOptions, ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
+    ExtHostEditorsShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
+    ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
+    ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
 };
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
+use je_workbench::api::common::ext_host_scm::ExtHostSCM;
 use je_workbench::api::common::ext_host_status_bar::ExtHostStatusBar;
 use je_workbench::api::common::ext_host_terminal_service::WorkerExtHostTerminalService;
 use je_workbench::api::common::ext_host_tree_views::ExtHostTreeViews;
@@ -44,7 +47,7 @@ use crate::api::languages::{LanguagesServices, LanguagesState};
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
-use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, types, uri, window, workspace};
+use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace};
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
 use crate::local_context::LocalContext;
@@ -144,6 +147,42 @@ impl IExtHostWorkspaceProvider for NoWorkspaceProvider {
     }
 }
 
+/// O `MainThreadDocuments` de um host que tem o controle de código-fonte mas não os documentos de texto: o `ExtHostSCM` guarda o
+/// `ExtHostDocuments` (só o usa em `SourceControlInputBox#document`, que é uma proposta de API), e este rejeita o que pedir à
+/// thread principal, por não haver cliente de documentos para atendê-lo.
+struct NoDocuments;
+
+const NO_DOCUMENTS: &str = "o host não tem o cliente MainThreadDocuments: os documentos de texto não estão disponíveis";
+
+impl IDisposable for NoDocuments {
+    fn dispose(&self) {}
+}
+
+impl IExtHostDocumentSaveDelegate for NoDocuments {
+    fn rpc_try_save_document(&self, _uri: &URI) -> Promise<bool> {
+        Promise::rejected(Error::new(NO_DOCUMENTS))
+    }
+}
+
+impl MainThreadDocumentsShape for NoDocuments {
+    fn rpc_try_create_document(&self, _options: Option<CreateDocumentOptions>) -> Promise<URI> {
+        Promise::rejected(Error::new(NO_DOCUMENTS))
+    }
+
+    fn rpc_try_open_document(&self, _uri: &URI, _options: Option<OpenDocumentOptions>) -> Promise<URI> {
+        Promise::rejected(Error::new(NO_DOCUMENTS))
+    }
+}
+
+/// O `ExtHostDocuments` de um host sem os clientes de documentos e de editores (ver [`NoDocuments`]).
+fn detached_documents(log_service: &LogServiceRef) -> Rc<ExtHostDocuments> {
+    let context: Rc<dyn IMainContext> = LocalContext::new();
+    let main_thread: Rc<dyn MainThreadDocumentsShape> = Rc::new(NoDocuments);
+    context.set(&MainContext::MAIN_THREAD_DOCUMENTS, main_thread);
+    let documents_and_editors = Rc::new(ExtHostDocumentsAndEditors::new(context.clone(), log_service.clone()));
+    ExtHostDocuments::new(&*context, documents_and_editors)
+}
+
 /// Os serviços do workbench de que o host depende e que o chamador monta.
 pub struct WorkbenchServices {
     pub command_service: Rc<dyn je_platform::commands::commands::ICommandService>,
@@ -238,6 +277,8 @@ impl ExtensionHost {
         members.extend(workspace::classes(runner));
         members.extend(window::classes(runner, &window_state, &table));
         members.extend(languages::classes(runner, &languages_state));
+        let scm_objects = Rc::new(scm::ScmObjects::default());
+        scm::define_classes(runner, &scm_objects, &event_tables);
         let extension_slot = ExtensionServiceSlot::new();
         extensions::define_class(runner, &extension_slot);
 
@@ -353,6 +394,18 @@ impl ExtensionHost {
                 let tree_views_shape: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
                 late.tree_views.0.bind(tree_views_shape);
                 bridged.tree_views = Some(tree_views);
+            }
+
+            // `vscode.scm` pede o cliente `MainThreadSCM`; os documentos de texto são opcionais (só a proposta `scmTextDocument` os lê).
+            if provided(MainContext::MAIN_THREAD_SCM.sid) {
+                let documents = match &text_editor_api {
+                    Some(api) => api.services.documents.clone(),
+                    None => detached_documents(&log_service),
+                };
+                let scm_service = ExtHostSCM::new(bridged_ref, commands.clone(), documents, log_service.clone());
+                let scm_shape: Rc<dyn ExtHostSCMShape> = scm_service.clone();
+                late.scm.0.bind(scm_shape);
+                members.push(("scm".to_owned(), scm::namespace(runner, &scm_service, &scm_objects)));
             }
 
             // `vscode.languages` pede os documentos de texto e, por grupo, o cliente `MainThread*` dele; os provedores pedem também os
