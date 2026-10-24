@@ -125,6 +125,7 @@ use crate::config::editor_options::{ComputedEditorOptions, ConfigurationChangedE
 use crate::config::editor_configuration::IEditorConfiguration;
 use crate::cursor::SavedCursorState;
 use crate::cursor_columns;
+use crate::editor_decorations_collection::EditorDecorationsCollection;
 use crate::cursor_common::CursorSimpleModel;
 use crate::cursor_events::{CursorChangeReason, ICursorPositionChangedEvent, ICursorSelectionChangedEvent};
 use crate::cursor_word_operations::WordOperations;
@@ -880,116 +881,7 @@ impl CodeEditorWidget {
 
 // #endregion
 
-// #region EditorDecorationsCollection
 
-/// `try { this._isChangingDecorations = true; ... } finally { this._isChangingDecorations = false; }`.
-struct ChangingDecorations<'a>(&'a Cell<bool>);
-
-impl<'a> ChangingDecorations<'a> {
-    fn begin(flag: &'a Cell<bool>) -> Self {
-        flag.set(true);
-        Self(flag)
-    }
-}
-
-impl Drop for ChangingDecorations<'_> {
-    fn drop(&mut self) {
-        self.0.set(false);
-    }
-}
-
-/// `EditorDecorationsCollection` (`IEditorDecorationsCollection`): um conjunto de decorações do editor, que o dono
-/// troca, acrescenta e limpa de uma vez. Guarda o editor como `Weak` (a coleção costuma viver numa contribuição do
-/// próprio editor); sem o editor ou sem modelo, lê e muda nada, como o original sem modelo.
-pub struct EditorDecorationsCollection {
-    editor: Weak<CodeEditorWidget>,
-    decoration_ids: RefCell<Vec<String>>,
-    /// `_isChangingDecorations`: compartilhado com os ouvintes de `onDidChange`.
-    is_changing_decorations: Rc<Cell<bool>>,
-}
-
-impl EditorDecorationsCollection {
-    fn new(editor: Weak<CodeEditorWidget>, decorations: Option<Vec<ModelDeltaDecoration>>) -> Self {
-        let collection = Self { editor, decoration_ids: RefCell::new(Vec::new()), is_changing_decorations: Rc::new(Cell::new(false)) };
-        if let Some(decorations) = decorations.filter(|decorations| !decorations.is_empty()) {
-            collection.set(&decorations);
-        }
-        collection
-    }
-
-    /// `length`.
-    pub fn length(&self) -> usize {
-        self.decoration_ids.borrow().len()
-    }
-
-    /// `onDidChange(listener)`: não avisa das mudanças que a própria coleção faz.
-    pub fn on_did_change(&self, listener: impl Fn(&model_events::ModelDecorationsChangedEvent) + 'static) -> DisposableRef {
-        let is_changing_decorations = self.is_changing_decorations.clone();
-        match self.editor.upgrade() {
-            Some(editor) => editor.on_did_change_model_decorations().listen(move |e| {
-                if is_changing_decorations.get() {
-                    return;
-                }
-                listener(e);
-            }),
-            None => je_base::lifecycle::none(),
-        }
-    }
-
-    /// `getRange(index)`.
-    pub fn get_range(&self, index: usize) -> Option<Range> {
-        let model = self.editor.upgrade()?.get_model()?;
-        let decoration_ids = self.decoration_ids.borrow();
-        model.get_decoration_range(decoration_ids.get(index)?)
-    }
-
-    /// `getRanges()`.
-    pub fn get_ranges(&self) -> Vec<Range> {
-        let Some(model) = self.editor.upgrade().and_then(|editor| editor.get_model()) else {
-            return Vec::new();
-        };
-        self.decoration_ids.borrow().iter().filter_map(|decoration_id| model.get_decoration_range(decoration_id)).collect()
-    }
-
-    /// `has(decoration)`.
-    pub fn has(&self, decoration: &ModelDecoration) -> bool {
-        self.decoration_ids.borrow().contains(&decoration.id)
-    }
-
-    /// `clear()`.
-    pub fn clear(&self) {
-        if self.decoration_ids.borrow().is_empty() {
-            // nothing to do
-            return;
-        }
-        self.set(&[]);
-    }
-
-    /// `set(newDecorations)`: troca as decorações da coleção pelas novas e devolve os ids.
-    pub fn set(&self, new_decorations: &[ModelDeltaDecoration]) -> Vec<String> {
-        if let Some(editor) = self.editor.upgrade() {
-            let old_decoration_ids = self.decoration_ids.borrow().clone();
-            let _changing = ChangingDecorations::begin(&self.is_changing_decorations);
-            if let Some(new_ids) = editor.change_decorations(|accessor| accessor.delta_decorations(&old_decoration_ids, new_decorations)) {
-                *self.decoration_ids.borrow_mut() = new_ids;
-            }
-        }
-        self.decoration_ids.borrow().clone()
-    }
-
-    /// `append(newDecorations)`: acrescenta decorações à coleção e devolve só os ids novos.
-    pub fn append(&self, new_decorations: &[ModelDeltaDecoration]) -> Vec<String> {
-        let Some(editor) = self.editor.upgrade() else {
-            return Vec::new();
-        };
-        let _changing = ChangingDecorations::begin(&self.is_changing_decorations);
-        let new_decoration_ids = editor.change_decorations(|accessor| accessor.delta_decorations(&[], new_decorations)).unwrap_or_default();
-        self.decoration_ids.borrow_mut().extend(new_decoration_ids.iter().cloned());
-        new_decoration_ids
-    }
-}
-
-// #endregion
 
 // #region Modelo e visão ligados
 
@@ -1207,29 +1099,10 @@ impl CodeEditorWidget {
         self.in_composition.get()
     }
 
-    /// `onDidFocusEditorText`.
-    pub fn on_did_focus_editor_text(&self) -> Event<()> {
-        self.editor_text_focus.on_did_change_to_true()
-    }
-
-    /// `onDidBlurEditorText`.
-    pub fn on_did_blur_editor_text(&self) -> Event<()> {
-        self.editor_text_focus.on_did_change_to_false()
-    }
-
-    /// `onDidFocusEditorWidget`.
-    pub fn on_did_focus_editor_widget(&self) -> Event<()> {
-        self.editor_widget_focus.on_did_change_to_true()
-    }
-
-    /// `onDidBlurEditorWidget`.
-    pub fn on_did_blur_editor_widget(&self) -> Event<()> {
-        self.editor_widget_focus.on_did_change_to_false()
-    }
-
-    /// `createDecorationsCollection(decorations?)`.
+    /// `createDecorationsCollection(decorations?)`: a coleção é [`EditorDecorationsCollection`] (módulo próprio).
     pub fn create_decorations_collection(&self, decorations: Option<Vec<ModelDeltaDecoration>>) -> EditorDecorationsCollection {
-        EditorDecorationsCollection::new(self.me.clone(), decorations)
+        let editor = self.me.upgrade().expect("o editor está vivo enquanto cria a coleção de decorações");
+        EditorDecorationsCollection::new(&editor, decorations.as_deref())
     }
 
     /// `_getViewModel()`: o `ViewModel` do modelo atual.

@@ -132,6 +132,7 @@ fn test_multicursor(
     options: Dynamic,
     callback: impl FnOnce(&Rc<TestCodeEditor>, &Rc<TestFindController>, &LeakGuard),
 ) {
+    je_editor::core_commands::register_core_commands();
     let ds = ensure_no_disposables_are_leaked_in_test_suite();
     let has_text_focus = !matches!(options.get_str("hasTextFocus"), Dynamic::Bool(false));
     with_test_code_editor(text, TestCodeEditorInstantiationOptions::new(options), |editor, view_model, _| {

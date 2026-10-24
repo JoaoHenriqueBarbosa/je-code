@@ -71,8 +71,9 @@ use je_platform::commands::CommandMetadata;
 use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression};
 use je_platform::keybinding::keybindings_registry::{KeybindingWeight, Keybindings};
 
+use crate::editor_decorations_collection::EditorDecorationsCollection;
 use crate::code_editor_widget::{
-    CodeEditorWidget, EditorContributionCtor, EditorContributionInstantiation, EditorDecorationsCollection, ICodeEditor,
+    CodeEditorWidget, EditorContributionCtor, EditorContributionInstantiation, ICodeEditor,
     IEditorContribution,
 };
 use crate::config::editor_options::registry::{
