@@ -194,7 +194,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, 
             "view.a",
         );
         actions.push(SubmenuAction::new("view.appearance", "&Appearance", to_actions(appearance, queue, &ctx, "view.appearance"), None) as ActionRef);
-        actions.push(SubmenuAction::new("view.layout", "Editor &Layout", Vec::new(), None) as ActionRef);
+        actions.push(SubmenuAction::new("view.layout", "Editor &Layout", to_actions(vec![Some(item("Split &Right", Some(C::SplitEditor), CTRL | code(KeyCode::Backslash)))], queue, &ctx, "view.layout"), None) as ActionRef);
         actions.extend(to_actions(
             vec![
                 None,

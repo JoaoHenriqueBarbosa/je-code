@@ -1172,6 +1172,29 @@ mod tests {
     }
 
     #[test]
+    fn split_editor_shows_two_groups_sharing_the_document() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("split.ts", "const a = 1;\nconst b = 2;\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        shell.run(shell::Command::SplitEditor);
+        snapshot(&mut shell, "sp0-split.png");
+        assert_eq!(shell.group_count(), 2);
+        // Digitar no grupo da direita aparece no da esquerda (o modelo é o mesmo).
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        shell.run(shell::Command::FocusGroup(0));
+        assert!(shell.active_editor().expect("aba").view.model().get_line_content(1).to_string_lossy().starts_with('X'));
+        // Clicar no grupo da direita o foca; fechar a aba dele fecha o grupo.
+        click(&mut shell, 1000.0, 300.0);
+        shell.run(shell::Command::CloseEditor(0));
+        // A aba está modificada: o diálogo pergunta; Don't Save fecha.
+        shell.run(shell::Command::DiscardAndClose(0));
+        snapshot(&mut shell, "sp1-closed.png");
+        assert_eq!(shell.group_count(), 1, "o grupo vazio fechou");
+        assert!(shell.active_editor().is_some(), "o grupo que sobrou mantém a aba");
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

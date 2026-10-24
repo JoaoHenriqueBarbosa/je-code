@@ -169,6 +169,10 @@ pub enum Command {
     Revert,
     CloseActiveEditor,
     CloseEditor(usize),
+    SplitEditor,
+    FocusGroup(usize),
+    /// Clique numa aba de um grupo fora de foco: foca o grupo e ativa a aba.
+    FocusGroupEditor(usize, usize),
     TabContextMenu(usize),
     CloseOthers(usize),
     CloseToTheRight(usize),
@@ -319,6 +323,12 @@ impl OpenEditor {
     }
 }
 
+/// Um grupo de editores fora de foco (o grupo em foco vive em `Shell::editors` e `Shell::active`).
+pub struct Group {
+    editors: Vec<OpenEditor>,
+    active: Option<usize>,
+}
+
 /// Os nós retidos e os que [`Shell::render`] remonta.
 struct Nodes {
     /// Remontado a cada `render`: tudo menos a barra de menus e o explorador.
@@ -355,6 +365,10 @@ pub struct Shell {
     nodes: Nodes,
     editors: Vec<OpenEditor>,
     active: Option<usize>,
+    /// Os grupos da esquerda para a direita; a vaga do grupo em foco fica `None` (o conteúdo dele está em
+    /// `editors` e `active`).
+    groups: Vec<Option<Group>>,
+    group_index: usize,
     workspace: Option<PathBuf>,
     sidebar_visible: bool,
     sidebar_width: f64,
@@ -513,6 +527,8 @@ impl Shell {
             nodes: Nodes { chrome, menubar: menubar_node, explorer: explorer_node, search: search_node, scm: scm_node, editor_host: None },
             editors: Vec::new(),
             active: None,
+            groups: vec![None],
+            group_index: 0,
             sidebar_visible: workspace.is_some(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             workspace,
@@ -615,7 +631,7 @@ impl Shell {
         self.theme_file = (path.to_path_buf(), ui_theme.to_owned());
         let colors = EditorColors::from_theme(&self.theme);
         let token_colors = self.environment.as_ref().map(|env| env.color_map());
-        for editor in &mut self.editors {
+        for editor in self.all_editors_mut() {
             editor.view.set_colors(colors.clone());
             if let Some(map) = &token_colors {
                 editor.view.set_token_colors(map);
@@ -951,6 +967,7 @@ impl Shell {
             self.activate(active);
         }
         *self.hovered_tab.borrow_mut() = None;
+        self.close_empty_group();
         self.needs_render = true;
     }
 
@@ -964,11 +981,15 @@ impl Shell {
         let model = editor.view.model().clone();
         let text = model.get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy();
         let result = std::fs::write(&path, text.as_bytes());
-        if result.is_ok() {
-            editor.saved_version = model.get_alternative_version_id();
-            editor.disk_mtime = Self::mtime(&path);
-        }
         editor.view.mark_dirty();
+        if result.is_ok() {
+            // O mesmo arquivo aberto em outros grupos também fica salvo (o modelo é um só).
+            let (version, mtime) = (model.get_alternative_version_id(), Self::mtime(&path));
+            for other in self.all_editors_mut().filter(|e| e.path.as_deref() == Some(path.as_path())) {
+                other.saved_version = version;
+                other.disk_mtime = mtime;
+            }
+        }
         if result.is_ok() {
             self.git_op(git::Operation::Refresh);
             if themes::user_data_dir().map(|d| d.join("User/settings.json")).as_deref() == Some(path.as_path()) {
@@ -1059,6 +1080,14 @@ impl Shell {
                 }
             }
             Command::CloseEditor(i) => self.request_close(i),
+            Command::SplitEditor => self.split_editor(),
+            Command::FocusGroup(i) => self.focus_group(i),
+            Command::FocusGroupEditor(group, index) => {
+                self.focus_group(group);
+                if index < self.editors.len() {
+                    self.activate(index);
+                }
+            }
             Command::TabContextMenu(index) => self.tab_menu(index),
             Command::CloseOthers(index) | Command::CloseToTheRight(index) => {
                 // Fecha de trás para a frente para os índices não andarem; as modificadas perguntam uma por vez.
@@ -1573,6 +1602,11 @@ impl Shell {
     #[cfg(test)]
     pub fn set_auto_save(&mut self, mode: &str, delay: u64) {
         self.auto_save = (mode.to_owned(), delay);
+    }
+
+    #[cfg(test)]
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
     }
 
     #[cfg(test)]
@@ -2356,7 +2390,7 @@ impl Shell {
         self.sidebar_visible.then(|| Rect::new(left, TITLE_HEIGHT, left + self.sidebar_width, self.parts_bottom()))
     }
 
-    /// O painel do grupo de editores, com a borda de 1 px.
+    /// A área de todos os grupos de editores.
     fn editor_part_rect(&self) -> Rect {
         let left = self.sidebar_rect().map_or(ACTIVITY_LEFT + ACTIVITY_WIDTH + SASH, |r| r.x1 + SASH);
         let bottom = if self.panel_visible { self.parts_bottom() - self.panel_height - SASH } else { self.parts_bottom() };
@@ -2376,10 +2410,78 @@ impl Shell {
         self.panel_rect().map(|p| Rect::new(p.x0 + 1.0, p.y0 + 1.0 + PANEL_TITLE_HEIGHT, p.x1 - 1.0, p.y1 - 1.0))
     }
 
-    /// A área do editor de texto: abaixo das abas e dos breadcrumbs, dentro da borda.
-    fn editor_rect(&self) -> Rect {
-        let part = self.editor_part_rect().inset(-1.0);
+    /// O painel do grupo `index`, com a borda de 1 px: as colunas dividem a área por igual, com o sash entre elas.
+    fn group_part_rect(&self, index: usize) -> Rect {
+        let part = self.editor_part_rect();
+        let n = self.groups.len().max(1) as f64;
+        let width = (part.width() - SASH * (n - 1.0)) / n;
+        let x0 = (part.x0 + (width + SASH) * index as f64).round();
+        let x1 = if index + 1 == self.groups.len() { part.x1 } else { (part.x0 + (width + SASH) * index as f64 + width).round() };
+        Rect::new(x0, part.y0, x1, part.y1)
+    }
+
+    /// A área de texto de um grupo: abaixo das abas e dos breadcrumbs, dentro da borda.
+    fn group_editor_rect(&self, index: usize) -> Rect {
+        let part = self.group_part_rect(index).inset(-1.0);
         Rect::new(part.x0, part.y0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT, part.x1, part.y1)
+    }
+
+    /// A área do editor de texto do grupo em foco.
+    fn editor_rect(&self) -> Rect {
+        self.group_editor_rect(self.group_index)
+    }
+
+    /// Põe o foco no grupo `index`: o conteúdo do grupo em foco volta para a vaga dele e o do novo sai dela.
+    fn focus_group(&mut self, index: usize) {
+        if index == self.group_index || index >= self.groups.len() {
+            return;
+        }
+        let Some(incoming) = self.groups[index].take() else { return };
+        if let Some(editor) = self.active_editor_mut() {
+            editor.view.set_focus(false);
+        }
+        let outgoing = Group { editors: std::mem::replace(&mut self.editors, incoming.editors), active: incoming.active };
+        let outgoing = Group { active: std::mem::replace(&mut self.active, outgoing.active), editors: outgoing.editors };
+        self.groups[self.group_index] = Some(outgoing);
+        self.group_index = index;
+        if let Some(active) = self.active {
+            self.activate(active);
+        }
+        self.needs_render = true;
+    }
+
+    /// `workbench.action.splitEditor`: um grupo novo à direita com o mesmo documento (o mesmo modelo).
+    fn split_editor(&mut self) {
+        let Some(editor) = self.active_editor() else { return };
+        let rect = self.editor_rect();
+        let mut view = EditorView::new(editor.view.model().clone(), rect.width(), rect.height(), EditorColors::from_theme(&self.theme));
+        if let Some(env) = &self.environment {
+            view.set_token_colors(&env.color_map());
+        }
+        let copy = OpenEditor { path: editor.path.clone(), name: editor.name.clone(), language_name: editor.language_name.clone(), view, saved_version: editor.saved_version, head: editor.head.clone(), diff_version: -1, disk_mtime: editor.disk_mtime, preview: false };
+        self.groups.insert(self.group_index + 1, Some(Group { editors: vec![copy], active: Some(0) }));
+        self.focus_group(self.group_index + 1);
+        self.resize_editors();
+    }
+
+    /// Fecha o grupo em foco quando ele fica sem editores e há outro (o `workbench.editor.closeEmptyGroups`).
+    fn close_empty_group(&mut self) {
+        if !self.editors.is_empty() || self.groups.len() < 2 {
+            return;
+        }
+        let closing = self.group_index;
+        let next = if closing + 1 < self.groups.len() { closing + 1 } else { closing - 1 };
+        self.focus_group(next);
+        self.groups.remove(closing);
+        if self.group_index > closing {
+            self.group_index -= 1;
+        }
+        self.resize_editors();
+    }
+
+    /// Todos os editores abertos, de todos os grupos.
+    fn all_editors_mut(&mut self) -> impl Iterator<Item = &mut OpenEditor> {
+        self.editors.iter_mut().chain(self.groups.iter_mut().flatten().flat_map(|g| g.editors.iter_mut()))
     }
 
     /// Mostra a dica de `text` junto de `node` (o `IHoverService.showDelayedHover` com o estilo de ponteiro).
@@ -2959,8 +3061,87 @@ impl Shell {
         }
     }
 
+    /// Um grupo fora de foco: a moldura, as abas (sem a de destaque do foco) e a superfície do editor ativo dele.
+    /// Clicar nele põe o foco no grupo.
+    fn render_other_group(&self, chrome: NodeId, index: usize) {
+        let Some(group) = self.groups[index].as_ref() else { return };
+        let part = self.group_part_rect(index);
+        let tab_font = ui_font(13.0, 400);
+        let inactive_fg = self.color("tab.inactiveForeground");
+        let unfocused_active_fg = self.color("tab.unfocusedActiveForeground");
+        let mut hits = Vec::new();
+        let mut tree = self.ui.tree_mut();
+        let frame = tree.create(chrome, Role::Region);
+        tree.set_bounds(frame, part);
+        let style = tree.style_mut(frame);
+        style.background = Some(self.color("editor.background"));
+        style.border = Some(Border { width: 1.0, color: self.color("editorGroup.border") });
+        style.radius = RADIUS;
+        style.clip = true;
+        hits.push((frame, Command::FocusGroup(index)));
+        let inner_width = part.width() - 2.0;
+        let strip = tree.create(frame, Role::TabList);
+        tree.set_bounds(strip, Rect::new(1.0, 1.0, 1.0 + inner_width, 1.0 + TABS_HEIGHT));
+        tree.style_mut(strip).background = Some(self.color("editorGroupHeader.connectedTabsBackground"));
+        let mut x = 0.0;
+        for (i, editor) in group.editors.iter().enumerate() {
+            let active = Some(i) == group.active;
+            let text_width = measure_text(&editor.name, &tab_font);
+            let width = (6.0 + 22.0 + text_width + 4.0 + 20.0 + 6.5).max(80.0).round();
+            let tab = tree.create(strip, Role::Tab);
+            tree.set_bounds(tab, Rect::new(x, 0.0, x + width, 31.0));
+            let style = tree.style_mut(tab);
+            style.corner_radii = Some([4.0, 4.0, 0.0, 0.0]);
+            style.cursor = Some(Cursor::Pointer);
+            if active {
+                style.background = Some(self.color("tab.unfocusedActiveBackground"));
+                let tail = tree.create(strip, Role::Generic);
+                tree.set_bounds(tail, Rect::new(x, 31.0, x + width, TABS_HEIGHT));
+                tree.style_mut(tail).background = Some(self.color("tab.unfocusedActiveBackground"));
+            }
+            if let Some(icons) = &self.icons {
+                let language = editor.view.model().get_language_id();
+                icons.decorate(&mut tree, tab, Rect::new(6.0, 3.5, 28.0, 27.5), &editor.name, Some(language.as_str()));
+            }
+            let label = tree.create(tab, Role::Generic);
+            tree.set_bounds(label, Rect::new(28.0, 3.5, 28.0 + text_width, 27.5));
+            let font = if editor.preview { je_text::TextStyle { italic: true, ..tab_font.clone() } } else { tab_font.clone() };
+            tree.style_mut(label).content = Content::Text { text: editor.name.clone(), style: font, color: if active { unfocused_active_fg } else { inactive_fg }, line_height: 24.0 };
+            if editor.is_modified() {
+                let dot = tree.create(tab, Role::Generic);
+                tree.set_bounds(dot, Rect::new(width - 26.5, 5.5, width - 6.5, 25.5));
+                tree.style_mut(dot).content = Content::Codicon { id: "circle-filled".into(), size: 12.0, color: inactive_fg };
+            }
+            hits.push((tab, Command::FocusGroupEditor(index, i)));
+            x += width;
+        }
+        if let Some(active) = group.active.and_then(|a| group.editors.get(a)) {
+            let crumbs = tree.create(frame, Role::Group);
+            tree.set_bounds(crumbs, Rect::new(1.0, 1.0 + TABS_HEIGHT, 1.0 + inner_width, 1.0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT));
+            tree.style_mut(crumbs).background = Some(self.color("breadcrumb.background"));
+            let name = tree.create(crumbs, Role::Link);
+            tree.set_bounds(name, Rect::new(38.0, 0.0, inner_width, BREADCRUMBS_HEIGHT));
+            tree.style_mut(name).content = Content::Text { text: active.name.clone(), style: tab_font.clone(), color: self.color("breadcrumb.foreground"), line_height: BREADCRUMBS_HEIGHT };
+            let host = tree.create(frame, Role::TextInput);
+            tree.set_bounds(host, Rect::new(1.0, 1.0 + TABS_HEIGHT + BREADCRUMBS_HEIGHT, 1.0 + inner_width, part.height() - 1.0));
+            let style = tree.style_mut(host);
+            style.content = Content::Host(100 + index as u32);
+            style.cursor = Some(Cursor::Text);
+        }
+        drop(tree);
+        for (node, command) in hits {
+            let queue = self.queue.clone();
+            let _ = self.ui.listen(node, EventKind::PointerDown, false, move |_| queue.borrow_mut().push(command.clone()));
+        }
+    }
+
     fn render_editor_part(&mut self, chrome: NodeId) {
-        let part = self.editor_part_rect();
+        for index in 0..self.groups.len() {
+            if index != self.group_index {
+                self.render_other_group(chrome, index);
+            }
+        }
+        let part = self.group_part_rect(self.group_index);
         let tab_font = ui_font(13.0, 400);
         let active_fg = self.color("tab.activeForeground");
         let inactive_fg = self.color("tab.inactiveForeground");
@@ -3026,11 +3207,18 @@ impl Shell {
             x += width;
         }
         // As ações do grupo à direita: dividir e mais.
+        let mut split_button = None;
         for (i, id) in ["split-horizontal", "ellipsis"].iter().enumerate() {
             let button = tree.create(strip, Role::Button);
             let bx = inner_width - 4.0 - 22.0 * (2 - i) as f64 - 4.0 * (1 - i) as f64;
             tree.set_bounds(button, Rect::new(bx, 4.5, bx + 22.0, 26.5));
-            tree.style_mut(button).content = Content::Codicon { id: (*id).into(), size: 16.0, color: active_fg };
+            let style = tree.style_mut(button);
+            style.content = Content::Codicon { id: (*id).into(), size: 16.0, color: active_fg };
+            style.radius = 5.0;
+            if i == 0 {
+                style.cursor = Some(Cursor::Pointer);
+                split_button = Some(button);
+            }
         }
         // Os breadcrumbs do editor ativo: ícone, nome e o `…` dos símbolos.
         let active = &self.editors[self.active.unwrap_or(0)];
@@ -3094,6 +3282,9 @@ impl Shell {
         style.cursor = Some(Cursor::Text);
         drop(tree);
         self.nodes.editor_host = Some(host);
+        if let Some(button) = split_button {
+            self.listen_command(button, Command::SplitEditor);
+        }
         for (index, tab, close) in tab_nodes {
             let title = self.editors[index].path.as_ref().map_or_else(|| self.editors[index].name.clone(), |p| p.display().to_string());
             self.listen_hover(tab, title, je_widgets::hover_api::HoverPosition::Below);
@@ -3324,7 +3515,19 @@ impl Shell {
             e.view.resize(rect.width(), rect.height());
         }
         let (terminal, palette, terminal_focused) = (&self.terminal, &self.terminal_palette, self.terminal_focused);
+        let groups = &mut self.groups;
         tree.paint_hosted(list, scale, &mut |surface, area, list| {
+            if surface >= 100 {
+                // O editor ativo de um grupo fora de foco, sem cursor piscando.
+                let Some(view) = groups.get_mut((surface - 100) as usize).and_then(Option::as_mut).and_then(|g| g.active.and_then(|a| g.editors.get_mut(a))).map(|e| &mut e.view) else { return };
+                view.resize(area.width(), area.height());
+                view.set_focus(false);
+                let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
+                list.push_clip(Shape::RoundedRect(RoundedRect::from_rect(device, RoundedRectRadii::new(0.0, 0.0, 7.0 * scale, 7.0 * scale))));
+                view.paint(list, (area.x0, area.y0), scale, now);
+                list.pop_clip();
+                return;
+            }
             if surface == 1 {
                 if let Some(terminal) = terminal {
                     let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
@@ -3433,6 +3636,13 @@ impl Shell {
             self.needs_render = true;
             return;
         }
+        if input.kind == PointerInputKind::Down
+            && let Some(group) = (0..self.groups.len()).find(|i| *i != self.group_index && self.group_part_rect(*i).contains(je_render::kurbo::Point::new(x, y)))
+        {
+            // O clique num grupo fora de foco o foca antes; a moldura nova vale para o resto do clique.
+            self.focus_group(group);
+            self.render();
+        }
         if input.kind == PointerInputKind::Down {
             let in_terminal = self.panel_tab == PanelTab::Terminal && self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y)));
             if in_terminal != self.terminal_focused {
@@ -3526,6 +3736,10 @@ impl Shell {
             (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
             (true, false, false, KeyCode::KeyF) => Command::Find,
             (true, false, false, KeyCode::KeyJ) => Command::TogglePanel,
+            (true, false, false, KeyCode::Backslash) => Command::SplitEditor,
+            (true, false, false, KeyCode::Digit1) => Command::FocusGroup(0),
+            (true, false, false, KeyCode::Digit2) => Command::FocusGroup(1),
+            (true, false, false, KeyCode::Digit3) => Command::FocusGroup(2),
             (true, false, false, KeyCode::Comma) => Command::OpenSettingsJson,
             (true, false, false, KeyCode::KeyG) => Command::PromptGoToLine,
             (true, false, false, KeyCode::Backquote) => Command::ToggleTerminal,
