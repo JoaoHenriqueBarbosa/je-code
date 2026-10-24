@@ -219,6 +219,7 @@ pub mod services;
 pub mod model_service;
 pub mod language_providers;
 pub mod language_feature_registry;
+pub mod language_features_service;
 pub mod smart_select;
 pub mod language_feature_debounce;
 pub mod outline_model;

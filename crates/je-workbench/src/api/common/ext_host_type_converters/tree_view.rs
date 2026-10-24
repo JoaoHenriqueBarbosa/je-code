@@ -85,6 +85,51 @@ impl DataTransferItem {
     }
 }
 
+impl DataTransferItem {
+    /// `from(mime, item, id)` sobre o `IDataTransferItem` interno de `je_base::data_transfer` (o que `fromList` usa):
+    /// a mesma conversão de [`DataTransferItem::from`], com o arquivo do `asFile()` interno.
+    pub fn from_internal(mime: &str, item: &je_base::data_transfer::DataTransferItem, id: Option<String>) -> Promise<DataTransferItemDto> {
+        let (mime, item) = (mime.to_owned(), item.clone());
+        async_fn(async move {
+            let id = id.unwrap_or_else(generate_uuid);
+            let string_value = item.as_string().await?;
+
+            if mime == mimes::URI_LIST {
+                return Ok(DataTransferItemDto { id, uri_list_data: Some(serialize_uri_list(&string_value)), as_string: string_value, file_data: None });
+            }
+
+            let file_value = item.as_file();
+            Ok(DataTransferItemDto {
+                id,
+                as_string: string_value,
+                file_data: file_value.map(|file| DataTransferFileDto { name: file.name.clone(), uri: file.uri.clone(), id: file.id.clone() }),
+                uri_list_data: None,
+            })
+        })
+    }
+}
+
+impl DataTransfer {
+    /// `fromList(dataTransfer)`: o `id` de cada item é o do próprio item interno.
+    pub fn from_list(data_transfer: &je_base::data_transfer::VSDataTransfer) -> Promise<DataTransferDto> {
+        let entries: Vec<(String, je_base::data_transfer::DataTransferItem)> =
+            data_transfer.iter().map(|(mime, item)| (mime.to_owned(), item.clone())).collect();
+        async_fn(async move {
+            let promises: Vec<Promise<(String, DataTransferItemDto)>> = entries
+                .into_iter()
+                .map(|(mime, value)| {
+                    async_fn(async move {
+                        let id = value.id.clone();
+                        let item = DataTransferItem::from_internal(&mime, &value, id).await?;
+                        Ok((mime, item))
+                    })
+                })
+                .collect();
+            Ok(DataTransferDto { items: Promise::all(promises).await? })
+        })
+    }
+}
+
 fn serialize_uri_list(string_value: &str) -> Vec<UriListPart> {
     uri_list::split(string_value)
         .into_iter()
