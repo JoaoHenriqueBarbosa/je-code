@@ -20,12 +20,18 @@
 //! (`drop_paste`), com os `register*`, `$provide*`, `$resolve*` e `$release*` correspondentes, o `_serializeRegExp` e o
 //! `ExtHostDiagnostics` e o `IExtHostApiDeprecationService` do construtor.
 //!
-//! PENDENTES para a parte 3: `InlineCompletionAdapter` e `ReferenceMap` (que só ele usa), `registerInlineCompletionsProvider`
-//! e os `$provideInlineCompletions`, `$handleInlineCompletion*`, `$freeInlineCompletionsList` e
-//! `$acceptInlineCompletionsUnificationState`, o estado de unificação das completações em linha
-//! (`inlineCompletionsUnificationState` e o seu evento) e, junto dele, a base `Disposable` de `ExtHostLanguageFeatures` (o
-//! único `_register` do original é o emissor desse evento), `setLanguageConfiguration` (com os `_serialize*` de
-//! configuração) e `$setWordDefinitions`.
+//! PARTE 3. Portado: `setLanguageConfiguration` com os `_serialize*` de configuração (`_serializeIndentationRule`,
+//! `_serializeOnEnterRule(s)`, `_serializeAutoClosingPair(s)` e o `_serializeRegExp` do `RegExp` do editor), `$setWordDefinitions`,
+//! a base `Disposable` de `ExtHostLanguageFeatures` (o único `_register` do original é o emissor do estado de unificação) e o
+//! estado de unificação das completações em linha (`inlineCompletionsUnificationState`, o seu evento e
+//! `$acceptInlineCompletionsUnificationState`).
+//!
+//! PENDENTES: `InlineCompletionAdapter` e `ReferenceMap` (que só ele usa), `registerInlineCompletionsProvider` e os
+//! `$provideInlineCompletions`, `$handleInlineCompletion*` e `$freeInlineCompletionsList`. O editor ainda não tem os tipos de
+//! `languages.InlineCompletionsProvider` (contexto, lista, item, motivos de fim de vida, resumo de vida, `EditDeltaInfo`), a API
+//! `vscode.InlineCompletionItemProvider` com a proposta `inlineCompletionsAdditions` não está em
+//! [`super::ext_host_language_features_api`] e faltam os conversores `CompletionCommand`, `InlineCompletionHintStyle`,
+//! `IconPath.fromThemeIcon`, `PartialAcceptInfo` e `InlineCompletionEndOfLifeReason`.
 //!
 //! Divergências:
 //! - **Provedores.** Um `vscode.XProvider` é um trait de [`super::ext_host_language_features_api`]; o `ProviderResult<T>`
@@ -57,6 +63,11 @@
 //! - **Parte 2, `$provide*` sem corrida.** Os que o original chama com `undefined` no `tokenToRaceAgainst`
 //!   (`$resolveCodeAction`, `$resolveWorkspaceSymbol`, `$provideDocumentOnDropEdits`...) passam `None`.
 //! - **Parte 2, `_serializeRegExp`.** Recebe o `RegExp` (o [`Dynamic`] dele) e devolve `None` para outro valor.
+//! - **Parte 3, `setLanguageConfiguration`.** O `throw` (API proposta ausente e `wordPattern` que casa a cadeia vazia) é o
+//!   `Err`. O `vscode.LanguageConfiguration` é o [`ApiLanguageConfiguration`] e os `RegExp` dele são o `Rc<JsRegExp>` que o
+//!   editor usa; por isso há um segundo `_serializeRegExp` ([`ExtHostLanguageFeatures::serialize_js_reg_exp`]) além do do
+//!   [`Dynamic`]. O `${wordPattern}` da mensagem é `/fonte/flags`. O `$setWordDefinitions` com um `regexSource` inválido lança,
+//!   como o `new RegExp(...)` do original.
 
 mod code_action;
 mod completions;
@@ -79,13 +90,16 @@ use je_base::buffer::VSBuffer;
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error, is_cancellation_error};
-use je_base::event::Event;
-use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
+use je_base::event::{Emitter, Event};
+use je_base::js_regexp::JsRegExp;
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable};
 use je_base::promise::Promise;
+use je_base::strings::reg_exp_leads_to_endless_loop;
 use je_base::uri::URI;
 use je_base::uri_ipc::IURITransformer;
 use je_editor::code_action::languages::{CodeActionContext, TextEdit as EditorTextEdit};
 use je_editor::folding::syntax_range_provider::{FoldingContext, FoldingRange as EditorFoldingRange};
+use je_editor::language_configuration::{IndentationRule, OnEnterRule};
 use je_editor::language_providers::{
     DocumentHighlight as EditorDocumentHighlight, DocumentSymbol as EditorDocumentSymbol, SelectionRange as EditorSelectionRange,
 };
@@ -107,6 +121,9 @@ use self::semantic_tokens::{DocumentRangeSemanticTokensAdapter, DocumentSemantic
 use super::cache::Cache;
 use super::ext_host_commands::ExtHostCommands;
 use super::ext_host_diagnostics::ExtHostDiagnostics;
+use super::ext_host_document_data::set_word_definition_for;
+use crate::services::extensions::extensions::check_proposed_api_enabled;
+use crate::services::inline_completions::inline_completions_unification::IInlineCompletionsUnificationState;
 use super::ext_host_documents::ExtHostDocuments;
 use super::ext_host_language_features_api::{
     ApiCallHierarchyProvider, ApiCodeActionProvider, ApiCodeLensProvider, ApiCompletionItemProvider, ApiDocumentColorProvider,
@@ -117,7 +134,7 @@ use super::ext_host_language_features_api::{
     ApiNewSymbolNamesProvider, ApiOnTypeFormattingEditProvider, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider,
     ApiSignatureHelpProvider, ApiTypeHierarchyProvider, ApiWorkspaceSymbolProvider, CodeActionProviderMetadata, CodeLensRef,
     DocumentDropEditProviderMetadata, DocumentPasteProviderMetadata, DocumentSymbolProviderMetadata, IExtHostApiDeprecationService,
-    SignatureHelpMetadataOrTriggerChars,
+    SignatureHelpMetadataOrTriggerChars, ApiAutoClosingPair, ApiLanguageConfiguration,
 };
 use super::ext_host_language_features_converters::{DefinitionLink, DocumentSelector, Hover, MultiDocumentHighlight};
 use super::ext_host_protocol::{
@@ -129,6 +146,7 @@ use super::ext_host_protocol::{
     ICallHierarchyItemDto, IIncomingCallDto, IOutgoingCallDto, ITypeHierarchyItemDto, IPasteEditProviderMetadataDto, InlineValueDto,
     LanguagesNewSymbolNameTriggerKind, MainContext, MainThreadLanguageFeaturesShape, MultiDocumentHighlightDto, NewSymbolNameDto, RangeOrSelection,
     ReferenceContext, RenameEditsDto, RenameLocationDto, ResolvedCodeActionDto, ResolvedDropEditDto, ResolvedPasteEditDto,
+    IAutoClosingPairDto, IIndentationRuleDto, ILanguageConfigurationDto, ILanguageWordDefinitionDto, IOnEnterRuleDto,
 };
 use super::ext_host_type_converters::{self as type_convert, DocumentSelectorInput, ICommandsConverter};
 use super::ext_host_types::{self as types, SemanticTokensLegend, SymbolInformation, VerboseHover};
@@ -647,8 +665,13 @@ thread_local! {
 
 /// `ExtHostLanguageFeatures`.
 pub struct ExtHostLanguageFeatures {
+    /// A base `Disposable` (`extends CoreDisposable`): o único `_register` do original é o emissor de
+    /// `_onDidChangeInlineCompletionsUnificationState`.
+    base: Rc<Disposable>,
     proxy: Rc<dyn MainThreadLanguageFeaturesShape>,
     adapters: Rc<RefCell<HashMap<u32, AdapterData>>>,
+    inline_completions_unification_state: RefCell<IInlineCompletionsUnificationState>,
+    on_did_change_inline_completions_unification_state: Rc<Emitter<()>>,
     uri_transformer: Option<Rc<dyn IURITransformer>>,
     documents: Rc<ExtHostDocuments>,
     commands: Rc<ExtHostCommands>,
@@ -670,9 +693,20 @@ impl ExtHostLanguageFeatures {
         api_deprecation: Rc<dyn IExtHostApiDeprecationService>,
         extension_telemetry: Rc<dyn IExtHostTelemetry>,
     ) -> Rc<Self> {
+        let base = Disposable::new();
+        let on_did_change_inline_completions_unification_state = Emitter::<()>::new();
+        base.register(on_did_change_inline_completions_unification_state.clone());
         Rc::new(Self {
+            base,
             proxy: main_context.get_proxy(&MainContext::MAIN_THREAD_LANGUAGE_FEATURES),
             adapters: Rc::new(RefCell::new(HashMap::new())),
+            inline_completions_unification_state: RefCell::new(IInlineCompletionsUnificationState {
+                code_unification: false,
+                model_unification: false,
+                extension_unification: false,
+                exp_assignments: Vec::new(),
+            }),
+            on_did_change_inline_completions_unification_state,
             uri_transformer,
             documents,
             commands,
@@ -681,6 +715,16 @@ impl ExtHostLanguageFeatures {
             api_deprecation,
             extension_telemetry,
         })
+    }
+
+    /// `inlineCompletionsUnificationState`.
+    pub fn inline_completions_unification_state(&self) -> IInlineCompletionsUnificationState {
+        self.inline_completions_unification_state.borrow().clone()
+    }
+
+    /// `onDidChangeInlineCompletionsUnificationState`.
+    pub fn on_did_change_inline_completions_unification_state(&self) -> Event<()> {
+        self.on_did_change_inline_completions_unification_state.event()
     }
 
     fn transform_document_selector(&self, selector: &DocumentSelectorInput, extension: &ExtensionDescription) -> Vec<IDocumentFilterDto> {
@@ -949,6 +993,100 @@ impl ExtHostLanguageFeatures {
             Dynamic::RegExp(reg_exp) => Some(IRegExpDto { pattern: reg_exp.source().to_string_lossy(), flags: Some(reg_exp.flags().to_string_lossy()) }),
             _ => None,
         }
+    }
+
+    // --- configuration
+
+    /// `_serializeRegExp`, para o `RegExp` da configuração de linguagem (o [`JsRegExp`] que o editor usa).
+    fn serialize_js_reg_exp(reg_exp: &JsRegExp) -> IRegExpDto {
+        IRegExpDto { pattern: String::from_utf16_lossy(reg_exp.source()), flags: Some(reg_exp.flags().to_flags_string()) }
+    }
+
+    /// `_serializeIndentationRule`.
+    fn serialize_indentation_rule(indentation_rule: &IndentationRule) -> IIndentationRuleDto {
+        IIndentationRuleDto {
+            decrease_indent_pattern: Self::serialize_js_reg_exp(&indentation_rule.decrease_indent_pattern),
+            increase_indent_pattern: Self::serialize_js_reg_exp(&indentation_rule.increase_indent_pattern),
+            indent_next_line_pattern: indentation_rule.indent_next_line_pattern.as_deref().map(Self::serialize_js_reg_exp),
+            un_indented_line_pattern: indentation_rule.un_indented_line_pattern.as_deref().map(Self::serialize_js_reg_exp),
+        }
+    }
+
+    /// `_serializeOnEnterRule`.
+    fn serialize_on_enter_rule(on_enter_rule: &OnEnterRule) -> IOnEnterRuleDto {
+        IOnEnterRuleDto {
+            before_text: Self::serialize_js_reg_exp(&on_enter_rule.before_text),
+            after_text: on_enter_rule.after_text.as_deref().map(Self::serialize_js_reg_exp),
+            previous_line_text: on_enter_rule.previous_line_text.as_deref().map(Self::serialize_js_reg_exp),
+            action: on_enter_rule.action.clone(),
+        }
+    }
+
+    /// `_serializeOnEnterRules`.
+    fn serialize_on_enter_rules(on_enter_rules: &[OnEnterRule]) -> Vec<IOnEnterRuleDto> {
+        on_enter_rules.iter().map(Self::serialize_on_enter_rule).collect()
+    }
+
+    /// `_serializeAutoClosingPair`.
+    fn serialize_auto_closing_pair(auto_closing_pair: &ApiAutoClosingPair) -> IAutoClosingPairDto {
+        IAutoClosingPairDto {
+            open: auto_closing_pair.open.clone(),
+            close: auto_closing_pair.close.clone(),
+            not_in: auto_closing_pair.not_in.as_ref().map(|not_in| not_in.iter().map(|v| types::SyntaxTokenType::label(Some(v.value())).to_owned()).collect()),
+            before_text: auto_closing_pair.before_text.as_deref().map(Self::serialize_js_reg_exp),
+        }
+    }
+
+    /// `_serializeAutoClosingPairs`.
+    fn serialize_auto_closing_pairs(auto_closing_pairs: &[ApiAutoClosingPair]) -> Vec<IAutoClosingPairDto> {
+        auto_closing_pairs.iter().map(Self::serialize_auto_closing_pair).collect()
+    }
+
+    /// `setLanguageConfiguration`. Lança (devolve o erro) com `beforeText` sem a API proposta `autoClosingPairBeforeText` e
+    /// com um `wordPattern` que casa a cadeia vazia.
+    pub fn set_language_configuration(&self, extension: &ExtensionDescription, language_id: &str, configuration: &ApiLanguageConfiguration) -> Result<DisposableRef, Error> {
+        if configuration.auto_closing_pairs.as_ref().is_some_and(|pairs| pairs.iter().any(|pair| pair.before_text.is_some())) {
+            check_proposed_api_enabled(extension, "autoClosingPairBeforeText")?;
+        }
+
+        let word_pattern = configuration.word_pattern.as_ref();
+
+        // check for a valid word pattern
+        if let Some(word_pattern) = word_pattern
+            && reg_exp_leads_to_endless_loop(word_pattern)
+        {
+            return Err(Error::new(format!(
+                "Invalid language configuration: wordPattern '/{}/{}' is not allowed to match the empty string.",
+                String::from_utf16_lossy(word_pattern.source()),
+                word_pattern.flags().to_flags_string()
+            )));
+        }
+
+        // word definition
+        set_word_definition_for(language_id, word_pattern.cloned());
+
+        if configuration.electric_character_support.is_some() {
+            self.api_deprecation.report("LanguageConfiguration.__electricCharacterSupport", extension, "Do not use.");
+        }
+
+        if configuration.character_pair_support.is_some() {
+            self.api_deprecation.report("LanguageConfiguration.__characterPairSupport", extension, "Do not use.");
+        }
+
+        let handle = Self::next_handle();
+        let serialized_configuration = ILanguageConfigurationDto {
+            comments: configuration.comments.clone(),
+            brackets: configuration.brackets.clone(),
+            word_pattern: configuration.word_pattern.as_deref().map(Self::serialize_js_reg_exp),
+            indentation_rules: configuration.indentation_rules.as_ref().map(Self::serialize_indentation_rule),
+            on_enter_rules: configuration.on_enter_rules.as_deref().map(Self::serialize_on_enter_rules),
+            electric_character_support: configuration.electric_character_support.clone(),
+            character_pair_support: configuration.character_pair_support.clone(),
+            auto_closing_pairs: configuration.auto_closing_pairs.as_deref().map(Self::serialize_auto_closing_pairs),
+        };
+
+        self.proxy.rpc_set_language_configuration(handle, language_id, serialized_configuration);
+        Ok(self.create_disposable(handle))
     }
 
     // --- debug hover
@@ -2183,5 +2321,24 @@ impl ExtHostLanguageFeaturesShape for ExtHostLanguageFeatures {
             None,
             false,
         );
+    }
+
+    fn rpc_set_word_definitions(&self, word_definitions: Vec<ILanguageWordDefinitionDto>) {
+        for word_definition in word_definitions {
+            let reg_exp = JsRegExp::from_str(&word_definition.regex_source, &word_definition.regex_flags)
+                .unwrap_or_else(|error| errors::throw(Error::named("SyntaxError", error.to_string())));
+            set_word_definition_for(&word_definition.language_id, Some(Rc::new(reg_exp)));
+        }
+    }
+
+    fn rpc_accept_inline_completions_unification_state(&self, state: IInlineCompletionsUnificationState) {
+        *self.inline_completions_unification_state.borrow_mut() = state;
+        self.on_did_change_inline_completions_unification_state.fire(());
+    }
+}
+
+impl IDisposable for ExtHostLanguageFeatures {
+    fn dispose(&self) {
+        self.base.dispose();
     }
 }

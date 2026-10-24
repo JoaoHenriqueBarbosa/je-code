@@ -3,18 +3,25 @@
 //! `providers`, e as classes de colar e soltar, em `paste_drop`) e o registra no `ILanguageFeaturesService` do editor
 //! ([`LanguageFeaturesService`]).
 //!
+//! PARTE 3. Portado: o construtor com `updateAllWordDefinitions` (`$setWordDefinitions` do host para cada linguagem registrada
+//! e a cada mudança do `ILanguageConfigurationService`), a assinatura do `IInlineCompletionsUnificationService`
+//! (`$acceptInlineCompletionsUnificationState`), `$setLanguageConfiguration` e os `_revive*` de configuração (`_reviveRegExp`,
+//! `_reviveIndentationRule`, `_reviveOnEnterRule(s)` e `_reviveAutoClosingPairs`).
+//!
 //! PENDENTES: `$registerInlineCompletionsSupport`, `$emitInlineCompletionsChange`, `$emitInlineCompletionModelInfoChange`,
 //! `$emitInlineCompletionProviderOptionsChange` e a classe `ExtensionBackedInlineCompletionsProvider` (o editor não tem as
-//! completações em linha nem a telemetria de edição de IA); `$setLanguageConfiguration` e os `_revive*` de configuração
-//! (o `ILanguageConfigurationService` não é injetado); `$setWordDefinitions` e o `updateAllWordDefinitions` do construtor; o
-//! `IInlineCompletionsUnificationService` do construtor. Nenhum deles está no `MainThreadLanguageFeaturesShape` do protocolo.
+//! completações em linha, o `registerInlineCompletionsProvider` do `ILanguageFeaturesService` nem a telemetria de edição de IA).
+//! Nenhum deles está no `MainThreadLanguageFeaturesShape` do protocolo.
 //!
 //! Divergências:
+//! - `ILanguageService`, `ILanguageConfigurationService` e `IInlineCompletionsUnificationService` são `Option` no construtor: o
+//!   `TestInstantiationService` do original não é estrito e resolve o serviço ausente como `undefined` (o `if (this._languageService)`
+//!   do original testa isso). O `$setLanguageConfiguration` sem eles lança `TypeError`, como o original. A implementação do
+//!   `IInlineCompletionsUnificationService` não tem porte (só o contrato).
+//! - `_reviveRegExp` com um padrão inválido lança (`SyntaxError`), como o `new RegExp(...)`; o `flags` ausente é vazio.
 //! - `@extHostNamedCustomer(...)` e o `IExtHostContext` do construtor: o construtor recebe o [`IMainContext`] (por `Rc`) e
 //!   pede o proxy de `ExtHostLanguageFeatures` a cada uso (ver [`MainThreadLanguageFeatures::proxy`]). `ILanguageFeaturesService` é o [`LanguageFeaturesService`] do editor (os registros
-//!   são compartilhados por `Rc`) e `IUriIdentityService` é um `Rc<dyn IUriIdentityService>`. `ILanguageService`,
-//!   `ILanguageConfigurationService`, `IInstantiationService` e `IInlineCompletionsUnificationService` não entram
-//!   (ver os pendentes).
+//!   são compartilhados por `Rc`) e `IUriIdentityService` é um `Rc<dyn IUriIdentityService>`. `IInstantiationService` não entra.
 //! - O `selector: IDocumentFilterDto[]` do registro é o [`LanguageSelector::Array`] de [`LanguageFilter`]; o `pattern` de
 //!   `IRelativePattern` é o [`RelativePattern`] de `base` e `pattern`, e o `hasAccessToAllModels` nunca vem do DTO (`false`).
 //! - `_registrations` (`DisposableMap<number>`) guarda registros e emissores. O `obj instanceof Emitter` dos
@@ -40,15 +47,19 @@ use std::rc::Rc;
 use je_base::async_::async_fn;
 use je_base::buffer::VSBuffer;
 use je_base::cancellation::CancellationToken;
-use je_base::errors::Error;
+use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::glob::RelativePattern;
-use je_base::lifecycle::{DisposableMap, DisposableRef, IDisposable, combined_disposable, to_disposable};
+use je_base::js_regexp::JsRegExp;
+use je_base::lifecycle::{Disposable, DisposableMap, DisposableRef, IDisposable, combined_disposable, to_disposable};
 use je_base::promise::Promise;
 use je_editor::code_action::languages::CodeActionProvider;
+use je_editor::language_configuration::{AutoClosingPairConditional, DocComment, ElectricCharacterSupportConfig, IndentationRule, LanguageConfiguration, OnEnterRule};
+use je_editor::language_configuration_registry::ILanguageConfigurationService;
 use je_editor::language_features_service::{LanguageFeaturesService, SemanticTokensLegend as EditorLegend};
 use je_editor::language_providers::{DocumentHighlightProvider, DocumentSymbolProvider, MultiDocumentHighlightProvider, ProviderResult, SelectionRangeProvider};
 use je_editor::language_selector::{FilterPattern, LanguageFilter, LanguageSelector};
+use je_editor::language_service::ILanguageService;
 use je_editor::languages::CompletionItemProvider;
 use je_editor::parameter_hints::languages::SignatureHelpProvider;
 use je_editor::position::Position;
@@ -63,18 +74,24 @@ use self::registries::{
     TypeHierarchySession, WorkspaceSymbolProviderRegistry, call_hierarchy_provider_registry, type_hierarchy_provider_registry,
 };
 use crate::api::common::ext_host_protocol::{
-    ExtHostContext, ExtHostLanguageFeaturesShape, IDocumentDropEditProviderMetadata, IDocumentFilterDto, IIncomingCallDto, IMainContext, IOutgoingCallDto,
-    IPasteEditProviderMetadataDto, ISignatureHelpProviderMetadataDto, IWorkspaceSymbolDto, ICodeActionProviderMetadataDto, MainThreadLanguageFeaturesShape,
+    ExtHostContext, ExtHostLanguageFeaturesShape, IAutoClosingPairDto, IDocumentDropEditProviderMetadata, IDocumentFilterDto, IIncomingCallDto, IIndentationRuleDto,
+    ILanguageConfigurationDto, ILanguageWordDefinitionDto, IMainContext, IOnEnterRuleDto, IOutgoingCallDto, IPasteEditProviderMetadataDto, IRegExpDto,
+    ISignatureHelpProviderMetadataDto, IWorkspaceSymbolDto, ICodeActionProviderMetadataDto, MainThreadLanguageFeaturesShape,
 };
 use crate::api::common::ext_host_types::SemanticTokensLegend;
 use crate::api::common::ext_host_workspace::GlobPatternDto;
+use crate::services::inline_completions::inline_completions_unification::IInlineCompletionsUnificationService;
 
 /// `MainThreadLanguageFeatures`.
 pub struct MainThreadLanguageFeatures {
+    /// A base `Disposable` (`extends Disposable`): guarda o mapa `_registrations` e as assinaturas do construtor.
+    base: Rc<Disposable>,
     ext_host_context: Rc<dyn IMainContext>,
     registrations: Rc<DisposableMap<u32, dyn IDisposable>>,
     /// Os emissores de `_registrations` por `eventHandle` (ver as divergências).
     emitters: RefCell<HashMap<u32, Rc<dyn Any>>>,
+    language_service: Option<Rc<dyn ILanguageService>>,
+    language_configuration_service: Option<Rc<dyn ILanguageConfigurationService>>,
     language_features_service: LanguageFeaturesService,
     uri_identity_service: Rc<dyn IUriIdentityService>,
     paste_edit_providers: Rc<RefCell<HashMap<u32, Rc<MainThreadPasteEditProvider>>>>,
@@ -109,15 +126,60 @@ fn legend_to_editor(legend: &SemanticTokensLegend) -> EditorLegend {
 }
 
 impl MainThreadLanguageFeatures {
+    /// Os serviços opcionais são os que o `TestInstantiationService` não estrito resolve como `undefined` (ver as divergências).
     pub fn new(
         ext_host_context: Rc<dyn IMainContext>,
+        language_service: Option<Rc<dyn ILanguageService>>,
+        language_configuration_service: Option<Rc<dyn ILanguageConfigurationService>>,
         language_features_service: LanguageFeaturesService,
         uri_identity_service: Rc<dyn IUriIdentityService>,
+        inline_completions_unification_service: Option<Rc<dyn IInlineCompletionsUnificationService>>,
     ) -> Rc<Self> {
+        let base = Disposable::new();
+        let registrations = DisposableMap::new();
+        base.register(Rc::clone(&registrations) as DisposableRef);
+
+        if let Some(language_service) = &language_service {
+            let configuration_service = language_configuration_service
+                .clone()
+                .unwrap_or_else(|| errors::throw(Error::type_error("Cannot read properties of undefined (reading 'getLanguageConfiguration')")));
+            let update_all_word_definitions: Rc<dyn Fn()> = {
+                let (context, language_service, configuration_service) = (Rc::clone(&ext_host_context), Rc::clone(language_service), Rc::clone(&configuration_service));
+                Rc::new(move || {
+                    let word_definition_dtos = language_service
+                        .get_registered_language_ids()
+                        .iter()
+                        .map(|language_id| word_definition_dto(configuration_service.as_ref(), language_id))
+                        .collect();
+                    context.get_proxy(&ExtHostContext::EXT_HOST_LANGUAGE_FEATURES).rpc_set_word_definitions(word_definition_dtos);
+                })
+            };
+            let (context, listener_service, update_all) = (Rc::clone(&ext_host_context), Rc::clone(&configuration_service), Rc::clone(&update_all_word_definitions));
+            base.register(configuration_service.on_did_change().listen(move |event| match event.language_id.as_deref() {
+                None | Some("") => update_all(),
+                Some(language_id) => {
+                    let dto = word_definition_dto(listener_service.as_ref(), language_id);
+                    context.get_proxy(&ExtHostContext::EXT_HOST_LANGUAGE_FEATURES).rpc_set_word_definitions(vec![dto]);
+                }
+            }));
+            update_all_word_definitions();
+        }
+
+        if let Some(service) = &inline_completions_unification_service {
+            let (context, listener_service) = (Rc::clone(&ext_host_context), Rc::clone(service));
+            base.register(service.on_did_state_change().listen(move |_| {
+                context.get_proxy(&ExtHostContext::EXT_HOST_LANGUAGE_FEATURES).rpc_accept_inline_completions_unification_state(listener_service.state());
+            }));
+            ext_host_context.get_proxy(&ExtHostContext::EXT_HOST_LANGUAGE_FEATURES).rpc_accept_inline_completions_unification_state(service.state());
+        }
+
         Rc::new(Self {
+            base,
             ext_host_context,
-            registrations: DisposableMap::new(),
+            registrations,
             emitters: RefCell::new(HashMap::new()),
+            language_service,
+            language_configuration_service,
             language_features_service,
             uri_identity_service,
             paste_edit_providers: Rc::new(RefCell::new(HashMap::new())),
@@ -162,7 +224,17 @@ impl MainThreadLanguageFeatures {
 
 impl IDisposable for MainThreadLanguageFeatures {
     fn dispose(&self) {
-        self.registrations.dispose();
+        self.base.dispose();
+    }
+}
+
+/// O `{ languageId, regexSource, regexFlags }` da definição de palavra de uma linguagem, como `updateAllWordDefinitions` monta.
+fn word_definition_dto(configuration_service: &dyn ILanguageConfigurationService, language_id: &str) -> ILanguageWordDefinitionDto {
+    let word_definition = configuration_service.get_language_configuration(language_id).get_word_definition();
+    ILanguageWordDefinitionDto {
+        language_id: language_id.to_owned(),
+        regex_source: String::from_utf16_lossy(word_definition.source()),
+        regex_flags: word_definition.flags().to_flags_string(),
     }
 }
 
@@ -661,4 +733,95 @@ impl MainThreadLanguageFeaturesShape for MainThreadLanguageFeatures {
             None => Promise::rejected(Error::new("Could not find provider")),
         }
     }
+
+    // --- configuration
+
+    fn rpc_set_language_configuration(&self, handle: u32, language_id: &str, configuration: ILanguageConfigurationDto) {
+        let mut revived = LanguageConfiguration {
+            comments: configuration.comments.clone(),
+            brackets: configuration.brackets.clone(),
+            word_pattern: configuration.word_pattern.as_ref().map(revive_reg_exp),
+            indentation_rules: configuration.indentation_rules.as_ref().map(revive_indentation_rule),
+            on_enter_rules: configuration.on_enter_rules.as_deref().map(revive_on_enter_rules),
+
+            auto_closing_pairs: None,
+            surrounding_pairs: None,
+            electric_character_support: None,
+            ..LanguageConfiguration::default()
+        };
+
+        if let Some(auto_closing_pairs) = &configuration.auto_closing_pairs {
+            revived.auto_closing_pairs = Some(revive_auto_closing_pairs(auto_closing_pairs));
+        } else if let Some(character_pair_support) = &configuration.character_pair_support {
+            // backwards compatibility
+            revived.auto_closing_pairs = Some(
+                character_pair_support
+                    .auto_closing_pairs
+                    .iter()
+                    .map(|pair| AutoClosingPairConditional { open: pair.open.clone(), close: pair.close.clone(), not_in: pair.not_in.clone(), before_text: None })
+                    .collect(),
+            );
+        }
+
+        if let Some(doc_comment) = configuration.electric_character_support.as_ref().and_then(|support| support.doc_comment.as_ref()) {
+            revived.electric_character_support = Some(ElectricCharacterSupportConfig {
+                doc_comment: Some(DocComment { open: doc_comment.open.clone(), close: doc_comment.close.clone() }),
+            });
+        }
+
+        let (Some(language_service), Some(language_configuration_service)) = (&self.language_service, &self.language_configuration_service) else {
+            errors::throw(Error::type_error("Cannot read properties of undefined (reading 'isRegisteredLanguageId')"));
+        };
+        if language_service.is_registered_language_id(Some(language_id)) {
+            self.set_registration(handle, language_configuration_service.register(language_id, revived, Some(100)));
+        }
+    }
+}
+
+// ---- configuração de linguagem (os `_revive*`) ------------------------------------------------------
+
+/// `_reviveRegExp`: `new RegExp(regExp.pattern, regExp.flags)`; um padrão inválido lança, como o `SyntaxError` do original.
+fn revive_reg_exp(reg_exp: &IRegExpDto) -> Rc<JsRegExp> {
+    match JsRegExp::from_str(&reg_exp.pattern, reg_exp.flags.as_deref().unwrap_or("")) {
+        Ok(reg_exp) => Rc::new(reg_exp),
+        Err(error) => errors::throw(Error::named("SyntaxError", error.to_string())),
+    }
+}
+
+/// `_reviveIndentationRule`.
+fn revive_indentation_rule(indentation_rule: &IIndentationRuleDto) -> IndentationRule {
+    IndentationRule {
+        decrease_indent_pattern: revive_reg_exp(&indentation_rule.decrease_indent_pattern),
+        increase_indent_pattern: revive_reg_exp(&indentation_rule.increase_indent_pattern),
+        indent_next_line_pattern: indentation_rule.indent_next_line_pattern.as_ref().map(revive_reg_exp),
+        un_indented_line_pattern: indentation_rule.un_indented_line_pattern.as_ref().map(revive_reg_exp),
+    }
+}
+
+/// `_reviveOnEnterRule`.
+fn revive_on_enter_rule(on_enter_rule: &IOnEnterRuleDto) -> OnEnterRule {
+    OnEnterRule {
+        before_text: revive_reg_exp(&on_enter_rule.before_text),
+        after_text: on_enter_rule.after_text.as_ref().map(revive_reg_exp),
+        previous_line_text: on_enter_rule.previous_line_text.as_ref().map(revive_reg_exp),
+        action: on_enter_rule.action.clone(),
+    }
+}
+
+/// `_reviveOnEnterRules`.
+fn revive_on_enter_rules(on_enter_rules: &[IOnEnterRuleDto]) -> Vec<OnEnterRule> {
+    on_enter_rules.iter().map(revive_on_enter_rule).collect()
+}
+
+/// `_reviveAutoClosingPairs`.
+fn revive_auto_closing_pairs(auto_closing_pairs: &[IAutoClosingPairDto]) -> Vec<AutoClosingPairConditional> {
+    auto_closing_pairs
+        .iter()
+        .map(|auto_closing_pair| AutoClosingPairConditional {
+            open: auto_closing_pair.open.clone(),
+            close: auto_closing_pair.close.clone(),
+            not_in: auto_closing_pair.not_in.clone(),
+            before_text: auto_closing_pair.before_text.as_ref().map(revive_reg_exp),
+        })
+        .collect()
 }
