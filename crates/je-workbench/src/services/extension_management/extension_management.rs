@@ -49,9 +49,20 @@ pub type ILocalExtension = LocalExtension;
 /// Uma extensão compartilhada: o original passa o mesmo objeto de mão em mão e compara por identidade.
 pub type ExtensionRef = Rc<LocalExtension>;
 
+/// `^[a-zA-Z][a-zA-Z0-9+.-]+:`: um esquema de URI de pelo menos dois caracteres (a letra de unidade do Windows, `C:`, não conta).
+fn has_uri_scheme(location: &str) -> bool {
+    let Some((scheme, _)) = location.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    scheme.chars().count() >= 2
+        && characters.next().is_some_and(|first| first.is_ascii_alphabetic())
+        && characters.all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '.' | '-'))
+}
+
 /// O `location` de uma extensão local como `URI` (ver a nota do módulo sobre o esquema).
 pub fn local_extension_uri(extension: &LocalExtension) -> URI {
-    if extension.location.contains("://") {
+    if has_uri_scheme(extension.location.as_str()) {
         URI::parse(extension.location.as_str(), false)
     } else {
         URI::file(extension.location.as_str(), je_platform::resources::host_platform())
