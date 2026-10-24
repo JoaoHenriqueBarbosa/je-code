@@ -163,7 +163,7 @@ pub fn dynamic_to_json(value: &Dynamic) -> Option<Value> {
 }
 
 /// `vscode.Command`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Command {
     pub title: String,
     pub command: String,
