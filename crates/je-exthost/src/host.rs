@@ -617,7 +617,7 @@ impl ExtensionHost {
                 });
                 if languages.is_some() || diagnostics.is_some() || features.is_some() {
                     bridged.language_features = features.clone();
-                    let services = LanguagesServices { languages, diagnostics, features, text_editors: text_editor_api.clone() };
+                    let services = LanguagesServices { languages, diagnostics, features, text_editors: text_editor_api.clone(), workspace_edits: workspace_edit_objects.clone() };
                     members.push(("languages".to_owned(), languages::namespace(runner, &services, &table, &event_tables, &languages_state)));
                 }
             }
