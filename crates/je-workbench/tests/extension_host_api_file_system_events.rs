@@ -272,15 +272,15 @@ fn will_run_file_operation_collects_only_workspace_edits_from_wait_until() {
     run_extension(EXTENSION_SOURCE, setup, |workbench, panel| {
         assert_eq!(run(workbench, "t.will"), "ok");
 
-        let created = participation(workbench, panel, FileOperation::Create, vec![pair(None, "/w/new.txt")]).expect("o participante devolveu uma edição");
+        let created = participation(workbench, &panel, FileOperation::Create, vec![pair(None, "/w/new.txt")]).expect("o participante devolveu uma edição");
         assert_eq!(created.0, strings(&["je.exthost"]), "o nome da extensão que participou");
         assert_eq!(created.1, strings(&["file:///w/a.txt:1:hdr"]), "o valor 42 do segundo ouvinte é ignorado, só a WorkspaceEdit entra");
 
-        let renamed = participation(workbench, panel, FileOperation::Move, vec![pair(Some("/w/old.txt"), "/w/renamed.txt")]).expect("o participante devolveu uma edição");
+        let renamed = participation(workbench, &panel, FileOperation::Move, vec![pair(Some("/w/old.txt"), "/w/renamed.txt")]).expect("o participante devolveu uma edição");
         assert_eq!(renamed.1, strings(&["file:///w/r.txt:2:ren"]));
 
-        assert!(participation(workbench, panel, FileOperation::Delete, vec![pair(None, "/w/gone.txt")]).is_none(), "sem waitUntil não há participação");
-        assert!(participation(workbench, panel, FileOperation::Write, vec![pair(None, "/w/saved.txt")]).is_none(), "gravar não tem participante");
+        assert!(participation(workbench, &panel, FileOperation::Delete, vec![pair(None, "/w/gone.txt")]).is_none(), "sem waitUntil não há participação");
+        assert!(participation(workbench, &panel, FileOperation::Write, vec![pair(None, "/w/saved.txt")]).is_none(), "gravar não tem participante");
 
         assert_eq!(global(workbench, "__will"), r#"["create:/w/new.txt:false","rename:/w/old.txt>/w/renamed.txt","delete:/w/gone.txt"]"#);
     });
@@ -290,7 +290,7 @@ fn will_run_file_operation_collects_only_workspace_edits_from_wait_until() {
 fn wait_until_outside_the_dispatch_throws() {
     run_extension(EXTENSION_SOURCE, setup, |workbench, panel| {
         run(workbench, "t.will");
-        participation(workbench, panel, FileOperation::Create, vec![pair(None, "/w/new.txt")]);
+        participation(workbench, &panel, FileOperation::Create, vec![pair(None, "/w/new.txt")]);
         assert_eq!(run(workbench, "t.lateWaitUntil"), "erro:waitUntil can NOT be called asynchronous");
     });
 }

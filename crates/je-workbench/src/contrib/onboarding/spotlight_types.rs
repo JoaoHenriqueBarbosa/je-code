@@ -177,6 +177,33 @@ fn function_eq<T: ?Sized>(a: &Option<Rc<T>>, b: &Option<Rc<T>>) -> bool {
     }
 }
 
+/// Os dados do passo; os ganchos (`on_before_show`, `on_did_show`, `run` da ação primária) são funções e só aparecem como presentes ou
+/// ausentes.
+impl std::fmt::Debug for SpotlightStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpotlightStep")
+            .field("id", &self.id)
+            .field("target_id", &self.target_id)
+            .field("title", &self.title)
+            .field("description", &self.description)
+            .field("next_button_label", &self.next_button_label)
+            .field("primary_action_label", &self.primary_action.as_ref().map(|action| &action.label))
+            .field("placement", &self.placement)
+            .field("has_when", &self.when.is_some())
+            .field("missing_target", &self.missing_target)
+            .field("open_target", &self.open_target)
+            .field("allow_target_interaction", &self.allow_target_interaction)
+            .field("advance_on_target_click", &self.advance_on_target_click)
+            .field("advance_on_target_selection", &self.advance_on_target_selection)
+            .field("hide_next", &self.hide_next)
+            .field("has_advance_when", &self.advance_when.is_some())
+            .field("padding", &self.padding)
+            .field("has_on_before_show", &self.on_before_show.is_some())
+            .field("has_on_did_show", &self.on_did_show.is_some())
+            .finish()
+    }
+}
+
 impl PartialEq for SpotlightStep {
     fn eq(&self, other: &Self) -> bool {
         let primary_action_eq = match (&self.primary_action, &other.primary_action) {
