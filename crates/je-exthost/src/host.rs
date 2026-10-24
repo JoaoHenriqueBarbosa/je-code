@@ -6,21 +6,26 @@ use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_extensions::scanner::ExtensionDescription;
 use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::request::request::{AuthInfo, Credentials};
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
 use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
+use je_workbench::api::common::ext_host_diagnostics::ExtHostDiagnostics;
 use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_editors::ExtHostEditors;
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
+use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
+use je_workbench::api::common::ext_host_language_features_api::IExtHostApiDeprecationService;
+use je_workbench::api::common::ext_host_languages::ExtHostLanguages;
 use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape, ExtHostEditorsShape, ExtHostOutputServiceShape,
-    ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext,
-    MainThreadTelemetryShape,
+    ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape, ExtHostEditorsShape,
+    ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape,
+    ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadTelemetryShape,
 };
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_status_bar::ExtHostStatusBar;
@@ -32,10 +37,11 @@ use zjsc::api::embed_node::{JsData, NodeRunner};
 use crate::api::env::EnvServices;
 use crate::api::events::EventTables;
 use crate::api::extensions::ExtensionServiceSlot;
+use crate::api::languages::{LanguagesServices, LanguagesState};
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
-use crate::api::{commands, disposable, enums, env, events, extensions, l10n, types, uri, window, workspace};
+use crate::api::{commands, disposable, enums, env, events, extensions, l10n, languages, types, uri, window, workspace};
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
 use crate::local_context::LocalContext;
@@ -70,6 +76,15 @@ impl MainThreadTelemetryShape for NullTelemetry {
 impl IExtHostTelemetry for NullTelemetry {
     fn on_extension_error(&self, _extension: &je_extensions::manifest::ExtensionIdentifier, _error: &je_base::errors::Error) -> bool {
         false
+    }
+}
+
+/// O `IExtHostApiDeprecationService` do host: registra o aviso no log (o `extHostApiDeprecationService.ts` ainda não tem porte).
+struct HostApiDeprecation(LogServiceRef);
+
+impl IExtHostApiDeprecationService for HostApiDeprecation {
+    fn report(&self, api_id: &str, extension: &ExtensionDescription, migration_suggestion: &str) {
+        self.0.warn(&format!("[{}] Extension '{}' uses a deprecated API '{api_id}': {migration_suggestion}", extension.identifier.value, extension.identifier.value));
     }
 }
 
@@ -142,6 +157,7 @@ struct BridgedServices {
     output: Option<Rc<ExtHostOutputService>>,
     progress: Option<Rc<ExtHostProgress>>,
     text_editors: Option<TextEditorServices>,
+    language_features: Option<Rc<ExtHostLanguageFeatures>>,
     main_thread: Vec<Rc<dyn IDisposable>>,
 }
 
@@ -196,7 +212,9 @@ impl ExtensionHost {
     /// `MainThreadTextEditors` (o `MainThreadDocumentsAndEditors` registra os dois). `vscode.env` existe se o binder entrega
     /// [`IMainThreadBinder::host_environment`], [`IMainThreadBinder::clipboard_service`] ou o cliente `MainThreadWindow`
     /// (`openExternal`); `vscode.extensions` sempre existe e lê o `ExtHostExtensionService` que
-    /// [`ExtensionHost::bind_extension_service`] liga.
+    /// [`ExtensionHost::bind_extension_service`] liga. `vscode.languages` existe se há os documentos de texto e ao menos um destes:
+    /// `MainThreadLanguages` (`getLanguages`, `setTextDocumentLanguage`), `MainThreadDiagnostics` (coleções, `getDiagnostics`) e
+    /// `MainThreadLanguageFeatures` junto de `MainThreadDiagnostics` (os `register*Provider`).
     pub fn with_bridge(runner: &NodeRunner, context: &dyn IMainContext, binder: Option<&dyn IMainThreadBinder>, log_service: LogServiceRef) -> ExtensionHost {
         let commands = ExtHostCommands::new(context, NullLogService::shared(), Rc::new(NullTelemetry));
         let shape: Rc<dyn ExtHostCommandsShape> = commands.clone();
@@ -205,6 +223,7 @@ impl ExtensionHost {
         let table = disposable::DisposableTable::new();
         let event_tables = EventTables::new();
         let window_state = WindowState::default();
+        let languages_state = LanguagesState::default();
         let disposable_class = disposable::define(runner, &table);
         let mut members = types::classes(runner);
         members.push(("Disposable".to_owned(), disposable_class));
@@ -213,6 +232,7 @@ impl ExtensionHost {
         members.extend(enums::enums());
         members.extend(workspace::classes(runner));
         members.extend(window::classes(runner, &window_state, &table));
+        members.extend(languages::classes(runner, &languages_state));
         let extension_slot = ExtensionServiceSlot::new();
         extensions::define_class(runner, &extension_slot);
 
@@ -315,6 +335,49 @@ impl ExtensionHost {
                 bridged.progress = Some(progress);
             }
 
+            // `vscode.languages` pede os documentos de texto e, por grupo, o cliente `MainThread*` dele; os provedores pedem também os
+            // diagnósticos (o `ExtHostLanguageFeatures` os usa nas ações de código).
+            if let Some(text_editor_api) = &text_editor_api {
+                let documents = text_editor_api.services.documents.clone();
+                let languages = provided(MainContext::MAIN_THREAD_LANGUAGES.sid).then(|| {
+                    let service = ExtHostLanguages::new(bridged_ref, documents.clone(), commands.converter());
+                    let shape: Rc<dyn ExtHostLanguagesShape> = service.clone();
+                    late.languages.0.bind(shape);
+                    service
+                });
+                let diagnostics = provided(MainContext::MAIN_THREAD_DIAGNOSTICS.sid).then(|| {
+                    let service = Rc::new(ExtHostDiagnostics::new(
+                        bridged_ref,
+                        log_service.clone(),
+                        Rc::new(ExtHostFileSystemInfo::new()),
+                        text_editor_api.services.documents_and_editors.clone(),
+                    ));
+                    let shape: Rc<dyn ExtHostDiagnosticsShape> = service.clone();
+                    late.diagnostics.0.bind(shape);
+                    service
+                });
+                let features = diagnostics.clone().filter(|_| provided(MainContext::MAIN_THREAD_LANGUAGE_FEATURES.sid)).map(|diagnostics| {
+                    let service = ExtHostLanguageFeatures::new(
+                        bridged_ref,
+                        None,
+                        documents.clone(),
+                        commands.clone(),
+                        diagnostics,
+                        log_service.clone(),
+                        Rc::new(HostApiDeprecation(log_service.clone())),
+                        Rc::new(NullTelemetry),
+                    );
+                    let shape: Rc<dyn ExtHostLanguageFeaturesShape> = service.clone();
+                    late.language_features.0.bind(shape);
+                    service
+                });
+                if languages.is_some() || diagnostics.is_some() || features.is_some() {
+                    bridged.language_features = features.clone();
+                    let services = LanguagesServices { languages, diagnostics, features, text_editors: text_editor_api.clone() };
+                    members.push(("languages".to_owned(), languages::namespace(runner, &services, &table, &event_tables, &languages_state)));
+                }
+            }
+
             let message_service = provided(MainContext::MAIN_THREAD_MESSAGE_SERVICE.sid).then(|| bridged_ref.get_proxy(&MainContext::MAIN_THREAD_MESSAGE_SERVICE));
             if message_service.is_some()
                 || bridged.status_bar.is_some()
@@ -391,6 +454,9 @@ impl ExtensionHost {
         if let Some(text_editors) = &self.bridged.text_editors {
             text_editors.editors.dispose();
             text_editors.documents.dispose();
+        }
+        if let Some(language_features) = &self.bridged.language_features {
+            language_features.dispose();
         }
         for client in &self.bridged.main_thread {
             client.dispose();

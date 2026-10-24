@@ -23,17 +23,33 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
+use je_base::buffer::VSBuffer;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
-use je_editor::languages::StringOrMarkdown;
+use je_editor::code_action::languages::{CodeActionContext, TextEdit as EditorTextEdit};
+use je_editor::folding::syntax_range_provider::{FoldingContext, FoldingRange as EditorFoldingRange};
+use je_editor::language_providers::{DocumentHighlight as EditorDocumentHighlight, DocumentSymbol as EditorDocumentSymbol, SelectionRange as EditorSelectionRange};
+use je_editor::languages::{CompletionContext as EditorCompletionContext, StringOrMarkdown};
+use je_editor::position::Position as EditorPosition;
+use je_editor::range::Range as EditorRange;
 use je_editor::services::clipboard_service::IClipboardService;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_platform::configuration::ConfigurationChange;
 use je_platform::edit_sessions::EditSessionIdentityMatch;
 use je_platform::log::{LogLevel, LoggerService};
+use je_platform::markers::markers::MarkerData;
 use je_platform::quickinput::quick_input::InputValidationResult;
 use je_workbench::api::common::ext_host_output::IDirectoryCreator;
+use je_workbench::api::common::ext_host_protocol::{
+    ChainedCacheId, DataTransferDto, EvaluatableExpressionDto, ExtHostDiagnosticsShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, FormattingOptions, HoverContextDto,
+    HoverWithId, IColorPresentationDto, ICallHierarchyItemDto, ICodeActionListDto, ICodeLensDto, ICodeLensListDto, IDocumentDropEditDto, IDocumentPasteContextDto, IIncomingCallDto,
+    IInlayHintDto, IInlayHintsDto, IInlineValueContextDto, ILanguageWordDefinitionDto, ILinkDto, ILinkedEditingRangesDto, ILinksListDto, ILocationDto, ILocationLinkDto,
+    IOutgoingCallDto, IPasteEditDto, IRawColorInfo, ISignatureHelpContextDto, ISignatureHelpDto, ISuggestDataDto, ISuggestResultDto, ITypeHierarchyItemDto, IWorkspaceSymbolDto,
+    IWorkspaceSymbolsDto, InlineValueDto, LanguagesNewSymbolNameTriggerKind, MultiDocumentHighlightDto, NewSymbolNameDto, RangeOrSelection, ReferenceContext, RenameEditsDto,
+    RenameLocationDto, ResolvedCodeActionDto, ResolvedDropEditDto, ResolvedPasteEditDto,
+};
+use je_workbench::services::inline_completions::inline_completions_unification::IInlineCompletionsUnificationState;
 use je_workbench::api::common::ext_host_protocol::{
     DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
     ExtHostEditorsShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
@@ -316,6 +332,203 @@ impl ExtHostEditorsShape for LateExtHostEditors {
     }
 }
 
+/// O `ExtHostDiagnosticsShape` que ainda não existe quando `MainThreadDiagnostics` nasce.
+#[derive(Default)]
+pub struct LateExtHostDiagnostics(pub Late<dyn ExtHostDiagnosticsShape>);
+
+impl ExtHostDiagnosticsShape for LateExtHostDiagnostics {
+    fn rpc_accept_markers_change(&self, data: Vec<(URI, Vec<MarkerData>)>) {
+        self.0.call_void(move |target| target.rpc_accept_markers_change(data));
+    }
+}
+
+/// O `ExtHostLanguagesShape` que ainda não existe quando `MainThreadLanguages` nasce (o construtor dele já entrega os ids de
+/// linguagem).
+#[derive(Default)]
+pub struct LateExtHostLanguages(pub Late<dyn ExtHostLanguagesShape>);
+
+impl ExtHostLanguagesShape for LateExtHostLanguages {
+    fn rpc_accept_language_ids(&self, ids: Vec<String>) {
+        self.0.call_void(move |target| target.rpc_accept_language_ids(ids));
+    }
+
+    fn rpc_accept_syntax_highlighting_theme_changed(&self) {
+        self.0.call_void(|target| target.rpc_accept_syntax_highlighting_theme_changed());
+    }
+}
+
+/// Repassa ao serviço real as chamadas COM retorno do `ExtHostLanguageFeaturesShape` (só valem depois do `bind`).
+macro_rules! late_language_features_calls {
+    ($($method:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
+        $(
+            fn $method(&self, $($arg: $ty),*) -> $ret {
+                self.0.bound().$method($($arg),*)
+            }
+        )*
+    };
+}
+
+/// Guarda na fila as chamadas SEM retorno (e sem referência) do `ExtHostLanguageFeaturesShape` feitas antes do `bind`.
+macro_rules! late_language_features_queued {
+    ($($method:ident($($arg:ident: $ty:ty),*);)*) => {
+        $(
+            fn $method(&self, $($arg: $ty),*) {
+                self.0.call_void(move |target| target.$method($($arg),*));
+            }
+        )*
+    };
+}
+
+/// O `ExtHostLanguageFeaturesShape` que ainda não existe quando `MainThreadLanguageFeatures` nasce (o construtor dele, com o serviço de
+/// linguagem, já entrega as definições de palavra).
+#[derive(Default)]
+pub struct LateExtHostLanguageFeatures(pub Late<dyn ExtHostLanguageFeaturesShape>);
+
+impl ExtHostLanguageFeaturesShape for LateExtHostLanguageFeatures {
+    late_language_features_calls! {
+        rpc_provide_document_symbols(handle: u32, resource: &URI, token: CancellationToken) -> Promise<Option<Vec<EditorDocumentSymbol>>>;
+        rpc_provide_code_lenses(handle: u32, resource: &URI, token: CancellationToken) -> Promise<Option<ICodeLensListDto>>;
+        rpc_resolve_code_lens(handle: u32, symbol: ICodeLensDto, token: CancellationToken) -> Promise<Option<ICodeLensDto>>;
+        rpc_provide_definition(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        rpc_provide_declaration(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        rpc_provide_implementation(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        rpc_provide_type_definition(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Vec<ILocationLinkDto>>;
+        rpc_provide_hover(handle: u32, resource: &URI, position: EditorPosition, context: Option<HoverContextDto>, token: CancellationToken) -> Promise<Option<HoverWithId>>;
+        rpc_provide_document_highlights(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<Vec<EditorDocumentHighlight>>>;
+        rpc_provide_multi_document_highlights(
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            other_models: Vec<URI>,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<MultiDocumentHighlightDto>>>;
+        rpc_provide_references(handle: u32, resource: &URI, position: EditorPosition, context: ReferenceContext, token: CancellationToken) -> Promise<Option<Vec<ILocationDto>>>;
+        rpc_provide_evaluatable_expression(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<EvaluatableExpressionDto>>;
+        rpc_provide_inline_values(handle: u32, resource: &URI, range: EditorRange, context: IInlineValueContextDto, token: CancellationToken) -> Promise<Option<Vec<InlineValueDto>>>;
+        rpc_provide_linked_editing_ranges(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<ILinkedEditingRangesDto>>;
+        rpc_provide_code_actions(
+            handle: u32,
+            resource: &URI,
+            range_or_selection: RangeOrSelection,
+            context: CodeActionContext,
+            token: CancellationToken
+        ) -> Promise<Option<ICodeActionListDto>>;
+        rpc_resolve_code_action(handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedCodeActionDto>;
+        rpc_prepare_document_paste(handle: u32, uri: &URI, ranges: Vec<EditorRange>, data_transfer: DataTransferDto, token: CancellationToken) -> Promise<Option<DataTransferDto>>;
+        rpc_provide_paste_edits(
+            handle: u32,
+            request_id: u32,
+            uri: &URI,
+            ranges: Vec<EditorRange>,
+            data_transfer: DataTransferDto,
+            context: IDocumentPasteContextDto,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<IPasteEditDto>>>;
+        rpc_resolve_paste_edit(handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedPasteEditDto>;
+        rpc_provide_document_formatting_edits(handle: u32, resource: &URI, options: FormattingOptions, token: CancellationToken) -> Promise<Option<Vec<EditorTextEdit>>>;
+        rpc_provide_document_range_formatting_edits(
+            handle: u32,
+            resource: &URI,
+            range: EditorRange,
+            options: FormattingOptions,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        rpc_provide_document_ranges_formatting_edits(
+            handle: u32,
+            resource: &URI,
+            ranges: Vec<EditorRange>,
+            options: FormattingOptions,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        rpc_provide_on_type_formatting_edits(
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            ch: &str,
+            options: FormattingOptions,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        rpc_provide_workspace_symbols(handle: u32, search: &str, token: CancellationToken) -> Promise<IWorkspaceSymbolsDto>;
+        rpc_resolve_workspace_symbol(handle: u32, symbol: IWorkspaceSymbolDto, token: CancellationToken) -> Promise<Option<IWorkspaceSymbolDto>>;
+        rpc_provide_rename_edits(handle: u32, resource: &URI, position: EditorPosition, new_name: &str, token: CancellationToken) -> Promise<Option<RenameEditsDto>>;
+        rpc_resolve_rename_location(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<RenameLocationDto>>;
+        rpc_supports_automatic_new_symbol_names_trigger_kind(handle: u32) -> Promise<Option<bool>>;
+        rpc_provide_new_symbol_names(
+            handle: u32,
+            resource: &URI,
+            range: EditorRange,
+            trigger_kind: LanguagesNewSymbolNameTriggerKind,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<NewSymbolNameDto>>>;
+        rpc_provide_document_semantic_tokens(handle: u32, resource: &URI, previous_result_id: u32, token: CancellationToken) -> Promise<Option<VSBuffer>>;
+        rpc_provide_document_range_semantic_tokens(handle: u32, resource: &URI, range: EditorRange, token: CancellationToken) -> Promise<Option<VSBuffer>>;
+        rpc_provide_completion_items(
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            context: EditorCompletionContext,
+            token: CancellationToken
+        ) -> Promise<Option<ISuggestResultDto>>;
+        rpc_resolve_completion_item(handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<Option<ISuggestDataDto>>;
+        rpc_provide_signature_help(
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            context: ISignatureHelpContextDto,
+            token: CancellationToken
+        ) -> Promise<Option<ISignatureHelpDto>>;
+        rpc_provide_inlay_hints(handle: u32, resource: &URI, range: EditorRange, token: CancellationToken) -> Promise<Option<IInlayHintsDto>>;
+        rpc_resolve_inlay_hint(handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<Option<IInlayHintDto>>;
+        rpc_provide_document_links(handle: u32, resource: &URI, token: CancellationToken) -> Promise<Option<ILinksListDto>>;
+        rpc_resolve_document_link(handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<Option<ILinkDto>>;
+        rpc_provide_document_colors(handle: u32, resource: &URI, token: CancellationToken) -> Promise<Vec<IRawColorInfo>>;
+        rpc_provide_color_presentations(handle: u32, resource: &URI, color_info: IRawColorInfo, token: CancellationToken) -> Promise<Option<Vec<IColorPresentationDto>>>;
+        rpc_provide_folding_ranges(handle: u32, resource: &URI, context: FoldingContext, token: CancellationToken) -> Promise<Option<Vec<EditorFoldingRange>>>;
+        rpc_provide_selection_ranges(handle: u32, resource: &URI, positions: Vec<EditorPosition>, token: CancellationToken) -> Promise<Vec<Vec<EditorSelectionRange>>>;
+        rpc_prepare_call_hierarchy(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<Vec<ICallHierarchyItemDto>>>;
+        rpc_provide_call_hierarchy_incoming_calls(handle: u32, session_id: &str, item_id: &str, token: CancellationToken) -> Promise<Option<Vec<IIncomingCallDto>>>;
+        rpc_provide_call_hierarchy_outgoing_calls(handle: u32, session_id: &str, item_id: &str, token: CancellationToken) -> Promise<Option<Vec<IOutgoingCallDto>>>;
+        rpc_prepare_type_hierarchy(handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<Vec<ITypeHierarchyItemDto>>>;
+        rpc_provide_type_hierarchy_supertypes(handle: u32, session_id: &str, item_id: &str, token: CancellationToken) -> Promise<Option<Vec<ITypeHierarchyItemDto>>>;
+        rpc_provide_type_hierarchy_subtypes(handle: u32, session_id: &str, item_id: &str, token: CancellationToken) -> Promise<Option<Vec<ITypeHierarchyItemDto>>>;
+        rpc_provide_document_on_drop_edits(
+            handle: u32,
+            request_id: u32,
+            resource: &URI,
+            position: EditorPosition,
+            data_transfer: DataTransferDto,
+            token: CancellationToken
+        ) -> Promise<Option<Vec<IDocumentDropEditDto>>>;
+        rpc_resolve_drop_edit(handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedDropEditDto>;
+    }
+
+    late_language_features_queued! {
+        rpc_release_code_lenses(handle: u32, cache_id: u32);
+        rpc_release_hover(handle: u32, id: u32);
+        rpc_release_code_actions(handle: u32, cache_id: u32);
+        rpc_release_paste_edits(handle: u32, cache_id: u32);
+        rpc_release_workspace_symbols(handle: u32, id: u32);
+        rpc_release_document_semantic_tokens(handle: u32, semantic_coloring_result_id: u32);
+        rpc_release_completion_items(handle: u32, id: u32);
+        rpc_release_signature_help(handle: u32, id: u32);
+        rpc_release_inlay_hints(handle: u32, id: u32);
+        rpc_release_document_links(handle: u32, id: u32);
+        rpc_release_document_on_drop_edits(handle: u32, cache_id: u32);
+        rpc_set_word_definitions(word_definitions: Vec<ILanguageWordDefinitionDto>);
+        rpc_accept_inline_completions_unification_state(state: IInlineCompletionsUnificationState);
+    }
+
+    fn rpc_release_call_hierarchy(&self, handle: u32, session_id: &str) {
+        let session_id = session_id.to_owned();
+        self.0.call_void(move |target| target.rpc_release_call_hierarchy(handle, &session_id));
+    }
+
+    fn rpc_release_type_hierarchy(&self, handle: u32, session_id: &str) {
+        let session_id = session_id.to_owned();
+        self.0.call_void(move |target| target.rpc_release_type_hierarchy(handle, &session_id));
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
     pub workspace: Rc<LateExtHostWorkspace>,
@@ -327,6 +540,9 @@ pub struct LateForwarders {
     pub documents_and_editors: Rc<LateExtHostDocumentsAndEditors>,
     pub documents: Rc<LateExtHostDocuments>,
     pub editors: Rc<LateExtHostEditors>,
+    pub diagnostics: Rc<LateExtHostDiagnostics>,
+    pub languages: Rc<LateExtHostLanguages>,
+    pub language_features: Rc<LateExtHostLanguageFeatures>,
 }
 
 impl LateForwarders {
@@ -341,6 +557,9 @@ impl LateForwarders {
         let documents_and_editors = Rc::new(LateExtHostDocumentsAndEditors::default());
         let documents = Rc::new(LateExtHostDocuments::default());
         let editors = Rc::new(LateExtHostEditors::default());
+        let diagnostics = Rc::new(LateExtHostDiagnostics::default());
+        let languages = Rc::new(LateExtHostLanguages::default());
+        let language_features = Rc::new(LateExtHostLanguageFeatures::default());
         let as_workspace: Rc<dyn ExtHostWorkspaceShape> = workspace.clone();
         let as_configuration: Rc<dyn ExtHostConfigurationShape> = configuration.clone();
         let as_status_bar: Rc<dyn ExtHostStatusBarShape> = status_bar.clone();
@@ -350,6 +569,9 @@ impl LateForwarders {
         let as_documents_and_editors: Rc<dyn ExtHostDocumentsAndEditorsShape> = documents_and_editors.clone();
         let as_documents: Rc<dyn ExtHostDocumentsShape> = documents.clone();
         let as_editors: Rc<dyn ExtHostEditorsShape> = editors.clone();
+        let as_diagnostics: Rc<dyn ExtHostDiagnosticsShape> = diagnostics.clone();
+        let as_languages: Rc<dyn ExtHostLanguagesShape> = languages.clone();
+        let as_language_features: Rc<dyn ExtHostLanguageFeaturesShape> = language_features.clone();
         local.set_erased(ExtHostContext::EXT_HOST_WORKSPACE.sid, Rc::new(as_workspace));
         local.set_erased(ExtHostContext::EXT_HOST_CONFIGURATION.sid, Rc::new(as_configuration));
         local.set_erased(ExtHostContext::EXT_HOST_STATUS_BAR.sid, Rc::new(as_status_bar));
@@ -359,7 +581,10 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS_AND_EDITORS.sid, Rc::new(as_documents_and_editors));
         local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS.sid, Rc::new(as_documents));
         local.set_erased(ExtHostContext::EXT_HOST_EDITORS.sid, Rc::new(as_editors));
-        LateForwarders { workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors }
+        local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
+        local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
+        local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
+        LateForwarders { workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors, diagnostics, languages, language_features }
     }
 }
 

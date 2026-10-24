@@ -84,6 +84,30 @@ fn native_trampoline_body(global_object: &JSGlobalObject, call: &HostCall) -> Ho
 }
 host_function!(native_trampoline, native_trampoline_body);
 
+thread_local! {
+    /// As funções nativas que recebem os objetos por referência ([`NodeRunner::make_function_by_reference`]), pelo id da célula.
+    static REFERENCE_NATIVES: RefCell<HashMap<usize, NativeCallback>> = RefCell::new(HashMap::new());
+}
+
+/// O argumento de uma função por referência: um objeto (comum, array, instância de classe de usuário) vira [`JsData::Handle`] e
+/// mantém a identidade e o protótipo; o que não é objeto viaja por cópia, como em [`read_value`].
+fn read_reference(global: &JSGlobalObjectRef, value: JSValue) -> JsData {
+    if value.is_object() { JsData::Handle(Rc::new(JsHandle::new(value))) } else { read_value(global, value, 0) }
+}
+
+fn reference_trampoline_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResult {
+    let Some(callback) = REFERENCE_NATIVES.with(|natives| natives.borrow().get(&call.callee()).cloned()) else {
+        return Err(Thrown::type_error("função nativa sem implementação registrada"));
+    };
+    let Some(global) = global_object.to_ref() else { return Ok(JSValue::undefined()) };
+    let arguments: Vec<JsData> = call.arguments().iter().map(|argument| read_reference(&global, *argument)).collect();
+    match callback(&arguments) {
+        Ok(data) => Ok(write_value(&global, &data)),
+        Err(message) => Err(Thrown::TypeError(message)),
+    }
+}
+host_function!(reference_trampoline, reference_trampoline_body);
+
 /// A chave reservada que marca o objeto como instância de uma classe registrada: não enumerável no lado JavaScript, e no
 /// lado do Rust um campo `("$$class", Str(nome))` de [`JsData::Object`] (o equivalente de `instanceof`).
 pub const CLASS_KEY: &str = "$$class";
@@ -122,6 +146,7 @@ impl Drop for ProgramState {
     fn drop(&mut self) {
         let _ = BRIDGE.try_with(|slot| slot.borrow_mut().take());
         let _ = NATIVES.try_with(|natives| natives.borrow_mut().clear());
+        let _ = REFERENCE_NATIVES.try_with(|natives| natives.borrow_mut().clear());
         let _ = CONSTRUCTORS.try_with(|constructors| constructors.borrow_mut().clear());
         let _ = METHODS.try_with(|methods| methods.borrow_mut().clear());
         let _ = CLASSES.try_with(|classes| classes.borrow_mut().clear());
@@ -453,6 +478,28 @@ impl NodeRunner {
         let value = function.as_value();
         if let JSValue::Cell(id) = value {
             NATIVES.with(|natives| natives.borrow_mut().insert(id, callback));
+        }
+        JsHandle::new(value)
+    }
+
+    /// Como [`NodeRunner::make_function`], mas os argumentos que são objetos chegam como [`JsData::Handle`] (a identidade, o
+    /// protótipo e os métodos da classe do usuário ficam intactos) em vez de uma cópia das propriedades próprias. É o que um
+    /// `registerXProvider(selector, provider)` precisa: o provedor é um objeto cujos métodos usam `this`. [`NodeRunner::export`]
+    /// copia um desses handles quando só os dados interessam.
+    pub fn make_function_by_reference(&self, name: &str, length: u32, callback: NativeCallback) -> JsHandle {
+        let function = JSFunction::create_native(
+            &self.vm,
+            &self.global_object,
+            length,
+            &WtfString::from_utf8(name.as_bytes()),
+            reference_trampoline,
+            ImplementationVisibility::Public,
+            crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+            crate::runtime::js_function::call_host_function_as_constructor,
+        );
+        let value = function.as_value();
+        if let JSValue::Cell(id) = value {
+            REFERENCE_NATIVES.with(|natives| natives.borrow_mut().insert(id, callback));
         }
         JsHandle::new(value)
     }

@@ -185,3 +185,36 @@ serviço do workbench.
 Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): o item de seletor devolvido à extensão é a cópia que
 atravessou a fronteira (comparar por `label`, não por identidade); `tooltip` de item só aceita texto; os argumentos extras de `trace` a
 `error` são ignorados; a extensão chamadora é sempre `je.exthost`, então o progresso não é atribuído a extensão nenhuma.
+
+## Estado da entrega de `languages` (2026-10-24, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `api/languages.rs`, `api/language_types.rs` e dos serviços `ExtHostDiagnostics`, `ExtHostLanguages` e
+`ExtHostLanguageFeatures`). Nenhum número de ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `createDiagnosticCollection(name?)` com `set` (Uri, lista de entradas, `undefined`), `get`, `has`, `delete`, `clear`, `forEach`, `dispose`, `name` | entregue | `api/languages.rs`, sobre `ExtHostDiagnostics` e o `MainThreadDiagnostics` real |
+| `getDiagnostics()`, `getDiagnostics(uri)`, `onDidChangeDiagnostics` | entregue | `api/languages.rs` |
+| `getLanguages`, `setTextDocumentLanguage`, `match` | entregue | `api/languages.rs`, sobre `ExtHostLanguages` |
+| `registerCompletionItemProvider`, `registerHoverProvider`, `registerDefinitionProvider`, `registerDeclarationProvider`, `registerImplementationProvider`, `registerTypeDefinitionProvider`, `registerCodeActionsProvider`, `registerDocumentFormattingEditProvider`, `registerDocumentRangeFormattingEditProvider`, `registerDocumentSymbolProvider` | entregue | `api/languages.rs`, sobre `ExtHostLanguageFeatures` |
+| `Diagnostic`, `DiagnosticRelatedInformation`, `Location`, `TextEdit`, `MarkdownString` (construtor e propriedades), `SnippetString` (construtor e `value`), `CompletionItem`, `CompletionList`, `Hover`, `CodeAction`, `DocumentSymbol`, `CodeActionKind` (membros estáticos e `append`, `contains`, `intersects`) | entregue | `api/language_types.rs` |
+| `DiagnosticSeverity`, `DiagnosticTag`, `SymbolKind`, `SymbolTag`, `CompletionItemKind`, `CompletionItemTag`, `CompletionTriggerKind`, `CodeActionTriggerKind` | entregue | `api/enums.rs` |
+| `MarkdownString#appendText`, `appendMarkdown`, `appendCodeblock`, `SnippetString#append*`, `WorkspaceEdit`, `CodeAction#edit` | falta | o motor entrega objeto comum por cópia, então um método não altera o receptor; pede uma API de referência no `zjsc` para o `this` (a função por referência de provedor já existe) |
+| `resolveCompletionItem`, `resolveCodeAction`, `provideDocumentRangesFormattingEdits`, `HoverContext#previousHover` | falta | o host não consegue perguntar se o provedor tem o método (`typeof provider.x === 'function'`), então os `has_*` valem `false` |
+| `registerReferenceProvider`, `registerRenameProvider`, `registerSignatureHelpProvider`, `registerFoldingRangeProvider`, `registerCodeLensProvider`, `registerInlayHintsProvider`, `registerDocumentLinkProvider`, `registerDocumentHighlightProvider`, `registerOnTypeFormattingEditProvider`, `registerWorkspaceSymbolProvider`, `setLanguageConfiguration`, `createLanguageStatusItem` | falta | o serviço do host os tem, falta só a ponte |
+
+Como entra em `vscode.languages`: o `IMainThreadBinder` registra `MainThreadDiagnostics`, `MainThreadLanguages` e `MainThreadLanguageFeatures` (os
+registros de provedor também pedem `MainThreadDiagnostics`, porque o `ExtHostLanguageFeatures` lê os diagnósticos nas ações de código), além dos
+documentos de texto. Os encaminhadores `Late` de `ExtHostDiagnostics`, `ExtHostLanguages` e `ExtHostLanguageFeatures` (este com os 65 métodos
+do trait) entregam ao serviço real as chamadas que os clientes fazem nos construtores.
+
+Mudança no `zjsc` (`crates/zjsc/src/api/embed_node.rs`): `NodeRunner::make_function_by_reference`, uma função nativa cujos argumentos que são objetos chegam
+como `JsData::Handle` (identidade, protótipo e métodos de classe do usuário intactos), usada por todo `register*Provider` para o `this` do provedor funcionar.
+
+Os testes de ponta a ponta estão em `crates/je-workbench/tests/extension_host_api_languages_diagnostics.rs` (`MainThreadDiagnostics` real sobre o
+`MarkerService` real) e `extension_host_api_languages_providers.rs` (provedores chamados pelo proxy `ExtHostLanguageFeaturesShape` do host), com o
+binder em `tests/support/extension_host_api_languages_support.rs`.
+
+Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): `Event` precisa ser `Clone` (o `onDidChangeDiagnostics` o clona);
+`FormattingOptions` é lido por `tab_size` e `insert_spaces`; as instâncias de `DiagnosticCollection` são identificadas por `_id` (a identidade `a === b`
+falha); `CodeActionKind` não é construtível (`new CodeActionKind(x)` não existe).
