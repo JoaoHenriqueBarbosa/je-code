@@ -1,0 +1,706 @@
+//! Infraestrutura de teste de `src/vs/workbench/services/workingCopy/test/browser/storedFileWorkingCopy.test.ts`: o
+//! modelo e as fábricas do teste (`TestStoredFileWorkingCopyModel`, `TestStoredFileWorkingCopyModelWithCustomSave` e as duas
+//! fábricas), o `TestServiceAccessor` com o `workbenchInstantiationService` que o alimenta, e os dublês de serviço que
+//! faltavam (`IWorkingCopyFileService` com os participantes de salvar, `IWorkingCopyEditorService`, `IElevatedFileService` do
+//! navegador e `IProgressService`).
+//!
+//! Divergências:
+//! - **Herança.** `TestStoredFileWorkingCopyModelWithCustomSave extends TestStoredFileWorkingCopyModel` é o mesmo tipo
+//!   ([`TestStoredFileWorkingCopyModel`]) com o estado do `save` customizado presente (`saveCounter`, `throwOnSave`,
+//!   `saveOperation`). Sem esse estado o `save` do contrato devolve `None` (o `model.save` indefinido da classe base), então a
+//!   working copy cai no `snapshot` mais a escrita do serviço de arquivos. As duas fábricas são o mesmo tipo
+//!   ([`TestStoredFileWorkingCopyModelFactory::new`] e [`TestStoredFileWorkingCopyModelFactory::with_custom_save`]): a working
+//!   copy genérica no modelo fica com um tipo só, e um modelo por classe obrigaria a repassar cada membro da base.
+//! - **`workbenchInstantiationService` e `TestServiceAccessor`.** O contêiner de injeção não entra: o
+//!   [`TestServiceAccessor`] cria só os serviços que a working copy de arquivo armazenado lê (os mesmos dublês do original:
+//!   `TestFileService`, `FilesConfigurationService`, `WorkingCopyService`, `InMemoryWorkingCopyBackupService`,
+//!   `TestNotificationService`, `TestEditorService`, `NullLogService`) e os registra no `DisposableStore` dado, no lugar do
+//!   `disposables.add(...)`. O `UriIdentityService` é o real, como no original.
+//! - **`TestWorkingCopyBackupService`.** Os membros extras dele (`resolved`, `parseBackupContent`) não são lidos por esta suíte:
+//!   o serviço é o `InMemoryWorkingCopyBackupService` que ele estende.
+//! - **`WorkingCopyFileService`.** O serviço real ainda não foi portado: o [`TestWorkingCopyFileService`] traz os eventos de
+//!   operação sem disparo e os participantes de salvar do `StoredFileWorkingCopySaveParticipant` (`addSaveParticipant`,
+//!   `hasSaveParticipants`, `runSaveParticipants`), com a mesma lógica de ordem, cancelamento e progresso. O participante é
+//!   o trait [`IStoredFileWorkingCopySaveParticipant`] (o `ordinal` opcional é um método com valor padrão).
+//! - **`WorkingCopyEditorService`.** O real lê `editorService.getEditors(...)`, que no `TestEditorService` é sempre `[]`: o
+//!   [`TestWorkingCopyEditorService`] guarda os handlers e o `findEditor` devolve `None`.
+//! - **`BrowserElevatedFileService`.** Não existe no porte de produção: [`BrowserElevatedFileService`] tem o comportamento da
+//!   classe do navegador (`isSupported` falso, `writeFileElevated` rejeita com `Unsupported`).
+//! - **Teardown.** O laço `for (const workingCopy of accessor.workingCopyService.workingCopies) workingCopy.dispose()` é
+//!   [`TestServiceAccessor::dispose_registered_working_copies`]: o `IWorkingCopy` registrado não expõe `dispose`, então ele
+//!   cruza o registro do serviço com as working copies que o acessor criou.
+
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
+
+use je_base::async_::{async_fn, race_cancellation};
+use je_base::buffer::{VSBuffer, VSBufferReadableStream, new_writeable_buffer_stream, stream_to_buffer};
+use je_base::cancellation::{CancellationToken, CancellationTokenSource};
+use je_base::dynamic::Dynamic;
+use je_base::errors::{self, Error};
+use je_base::event::{Emitter, Event};
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
+use je_base::nls::localize;
+use je_base::promise::Promise;
+use je_base::stream::WriteableStream;
+use je_base::uri::URI;
+use je_instantiation::Injectable;
+use je_platform::configuration::service::IConfigurationService;
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
+use je_platform::files::file_service::FileContentSource;
+use je_platform::files::files::{FileStat, FileStatWithMetadata, WriteFileOptions};
+use je_platform::files::i_file_service::IFileService;
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
+use je_platform::log::{LogServiceRef, NullLogService};
+use je_platform::notification::notification::NotificationPriority;
+use je_platform::notification::notification_telemetry::NotificationTelemetryId;
+use je_platform::resources::ext_uri;
+use je_platform::uri_identity::uri_identity_service::UriIdentityService;
+use je_workbench::common::editor::EditorIdentifier;
+use je_workbench::services::files::elevated_file_service::IElevatedFileService;
+use je_workbench::services::textfile::collaborators::{
+    IProgress, IProgressService, IWorkingCopyFileService, ProgressCancellable, ProgressLocation, ProgressOptions, ProgressStep, ProgressTask,
+    StoredFileWorkingCopySaveParticipantContext, WorkingCopyFileEvent,
+};
+use je_workbench::services::working_copy::file_working_copy::{IFileWorkingCopyModel, IFileWorkingCopyModelFactory, SnapshotContext};
+use je_workbench::services::working_copy::resource_working_copy::IResourceWorkingCopy;
+use je_workbench::services::working_copy::stored_file_working_copy::{
+    IStoredFileWorkingCopy, IStoredFileWorkingCopyModel, IStoredFileWorkingCopyModelFactory, StoredFileWorkingCopy, StoredFileWorkingCopyModelContentChangedEvent,
+    StoredFileWorkingCopyResolveOptions, StoredFileWorkingCopyResolver, StoredFileWorkingCopyServices,
+};
+use je_workbench::services::working_copy::working_copy::IWorkingCopy;
+use je_workbench::services::working_copy::working_copy_backup_service::InMemoryWorkingCopyBackupService;
+use je_workbench::services::working_copy::working_copy_editor_service::{IWorkingCopyEditorHandler, IWorkingCopyEditorService};
+use je_workbench::services::working_copy::working_copy_service::{IWorkingCopyService, WorkingCopyService};
+use je_workbench::test::browser::workbench_test_services::{TestEditorService, TestEnvironmentService};
+use je_workbench::test::common::workbench_test_services::{
+    TestContextService, TestFileService, TestFilesConfigurationService, TestMarkerService, TestNotificationService, TestTextResourceConfigurationService,
+};
+
+//#region TestStoredFileWorkingCopyModel
+
+/// O estado do `save` customizado de `TestStoredFileWorkingCopyModelWithCustomSave`.
+#[derive(Default)]
+struct CustomSave {
+    save_counter: Cell<usize>,
+    throw_on_save: Cell<bool>,
+    save_operation: RefCell<Option<Promise<()>>>,
+}
+
+/// `TestStoredFileWorkingCopyModel` (e, com o estado do `save` presente, `TestStoredFileWorkingCopyModelWithCustomSave`).
+pub struct TestStoredFileWorkingCopyModel {
+    this: Weak<TestStoredFileWorkingCopyModel>,
+    base: Rc<Disposable>,
+    on_did_change_stored_content: Rc<Emitter<StoredFileWorkingCopyModelContentChangedEvent>>,
+    on_will_dispose: Rc<Emitter<()>>,
+    resource: URI,
+    contents: RefCell<String>,
+    throw_on_snapshot: Cell<bool>,
+    version_id: Cell<usize>,
+    pushed_stack_element: Cell<bool>,
+    custom_save: Option<CustomSave>,
+}
+
+impl TestStoredFileWorkingCopyModel {
+    /// `constructor(resource, contents)`; `custom_save` liga o estado da subclasse `...WithCustomSave`.
+    pub fn new(resource: URI, contents: String, custom_save: bool) -> Rc<Self> {
+        let base = Disposable::new();
+        let on_did_change_stored_content: Rc<Emitter<StoredFileWorkingCopyModelContentChangedEvent>> = Emitter::new();
+        let on_will_dispose: Rc<Emitter<()>> = Emitter::new();
+        base.register(on_did_change_stored_content.clone());
+        base.register(on_will_dispose.clone());
+
+        Rc::new_cyclic(|this| Self {
+            this: this.clone(),
+            base,
+            on_did_change_stored_content,
+            on_will_dispose,
+            resource,
+            contents: RefCell::new(contents),
+            throw_on_snapshot: Cell::new(false),
+            version_id: Cell::new(0),
+            pushed_stack_element: Cell::new(false),
+            custom_save: custom_save.then(CustomSave::default),
+        })
+    }
+
+    fn rc(&self) -> Rc<Self> {
+        self.this.upgrade().expect("o modelo está vivo enquanto é usado")
+    }
+
+    /// `resource`.
+    pub fn resource(&self) -> &URI {
+        &self.resource
+    }
+
+    /// `contents`.
+    pub fn contents(&self) -> String {
+        self.contents.borrow().clone()
+    }
+
+    /// `fireContentChangeEvent(event)`.
+    pub fn fire_content_change_event(&self, event: StoredFileWorkingCopyModelContentChangedEvent) {
+        self.on_did_change_stored_content.fire(event);
+    }
+
+    /// `updateContents(newContents)`.
+    pub fn update_contents(&self, new_contents: &str) {
+        self.do_update(new_contents);
+    }
+
+    /// `setThrowOnSnapshot()`.
+    pub fn set_throw_on_snapshot(&self) {
+        self.throw_on_snapshot.set(true);
+    }
+
+    /// `versionId--`.
+    pub fn decrement_version_id(&self) {
+        self.version_id.set(self.version_id.get() - 1);
+    }
+
+    /// `pushedStackElement`.
+    pub fn pushed_stack_element(&self) -> bool {
+        self.pushed_stack_element.get()
+    }
+
+    fn custom(&self) -> &CustomSave {
+        self.custom_save.as_ref().expect("o modelo não é o de salvar customizado")
+    }
+
+    /// `saveCounter`.
+    pub fn save_counter(&self) -> usize {
+        self.custom().save_counter.get()
+    }
+
+    /// `throwOnSave = value`.
+    pub fn set_throw_on_save(&self, value: bool) {
+        self.custom().throw_on_save.set(value);
+    }
+
+    /// `saveOperation = promise`.
+    pub fn set_save_operation(&self, operation: Promise<()>) {
+        *self.custom().save_operation.borrow_mut() = Some(operation);
+    }
+
+    fn do_update(&self, new_contents: &str) {
+        *self.contents.borrow_mut() = new_contents.to_string();
+
+        self.version_id.set(self.version_id.get() + 1);
+
+        self.on_did_change_stored_content.fire(StoredFileWorkingCopyModelContentChangedEvent { is_redoing: false, is_undoing: false });
+    }
+}
+
+impl IDisposable for TestStoredFileWorkingCopyModel {
+    fn dispose(&self) {
+        self.on_will_dispose.fire(());
+
+        self.base.dispose();
+    }
+}
+
+impl IFileWorkingCopyModel for TestStoredFileWorkingCopyModel {
+    fn on_did_change_content(&self) -> Event<()> {
+        self.on_did_change_stored_content.event().map(|_| (), None)
+    }
+
+    fn on_will_dispose(&self) -> Event<()> {
+        self.on_will_dispose.event()
+    }
+
+    fn snapshot(&self, _context: SnapshotContext, _token: CancellationToken) -> Promise<VSBufferReadableStream> {
+        if self.throw_on_snapshot.get() {
+            return Promise::rejected(Error::new("Fail"));
+        }
+
+        let stream = new_writeable_buffer_stream(None);
+        stream.end(Some(VSBuffer::from_string(&self.contents.borrow())));
+
+        let stream: VSBufferReadableStream = stream;
+        Promise::resolved(stream)
+    }
+
+    fn update(&self, contents: VSBufferReadableStream, _token: CancellationToken) -> Promise<()> {
+        let this = self.rc();
+
+        async_fn(async move {
+            let buffer = stream_to_buffer(&*contents).await?;
+            this.do_update(&buffer.to_string());
+
+            Ok(())
+        })
+    }
+}
+
+impl IStoredFileWorkingCopyModel for TestStoredFileWorkingCopyModel {
+    fn on_did_change_stored_content(&self) -> Event<StoredFileWorkingCopyModelContentChangedEvent> {
+        self.on_did_change_stored_content.event()
+    }
+
+    fn version_id(&self) -> Dynamic {
+        Dynamic::Number(self.version_id.get() as f64)
+    }
+
+    fn push_stack_element(&self) {
+        self.pushed_stack_element.set(true);
+    }
+
+    /// `save(options, token)` da subclasse; sem o estado customizado é o `model.save` indefinido da base (`None`).
+    fn save(&self, _options: WriteFileOptions, token: CancellationToken) -> Option<Promise<FileStatWithMetadata>> {
+        self.custom_save.as_ref()?;
+
+        let this = self.rc();
+        Some(async_fn(async move {
+            let custom = this.custom();
+            if custom.throw_on_save.get() {
+                return Err(Error::new("Fail"));
+            }
+
+            let save_operation = custom.save_operation.borrow().clone();
+            if let Some(save_operation) = save_operation {
+                save_operation.await?;
+            }
+
+            if token.is_cancellation_requested() {
+                return Err(Error::new("Canceled"));
+            }
+
+            custom.save_counter.set(custom.save_counter.get() + 1);
+
+            Ok(FileStatWithMetadata::new(FileStat {
+                resource: this.resource.clone(),
+                name: "resource2".to_string(),
+                size: Some(0),
+                mtime: Some(0),
+                ctime: Some(0),
+                etag: Some(String::new()),
+                readonly: Some(false),
+                locked: Some(false),
+                executable: Some(false),
+                is_file: true,
+                is_directory: false,
+                is_symbolic_link: false,
+                children: None,
+            }))
+        }))
+    }
+}
+
+/// `TestStoredFileWorkingCopyModelFactory` e `TestStoredFileWorkingCopyModelWithCustomSaveFactory`.
+pub struct TestStoredFileWorkingCopyModelFactory {
+    custom_save: bool,
+}
+
+impl TestStoredFileWorkingCopyModelFactory {
+    /// `new TestStoredFileWorkingCopyModelFactory()`.
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self { custom_save: false })
+    }
+
+    /// `new TestStoredFileWorkingCopyModelWithCustomSaveFactory()`.
+    pub fn with_custom_save() -> Rc<Self> {
+        Rc::new(Self { custom_save: true })
+    }
+}
+
+impl IFileWorkingCopyModelFactory<TestStoredFileWorkingCopyModel> for TestStoredFileWorkingCopyModelFactory {
+    fn create_model(&self, resource: &URI, contents: VSBufferReadableStream, _token: CancellationToken) -> Promise<Rc<TestStoredFileWorkingCopyModel>> {
+        let (resource, custom_save) = (resource.clone(), self.custom_save);
+
+        async_fn(async move {
+            let contents = stream_to_buffer(&*contents).await?.to_string();
+
+            Ok(TestStoredFileWorkingCopyModel::new(resource, contents, custom_save))
+        })
+    }
+}
+
+//#endregion
+
+//#region Serviços que faltavam
+
+/// `IStoredFileWorkingCopySaveParticipant`.
+pub trait IStoredFileWorkingCopySaveParticipant {
+    /// The ordinal number which determines the order of participation. Lower values mean to participate earlier.
+    fn ordinal(&self) -> Option<i32> {
+        None
+    }
+
+    /// Participate in a save of a working copy. Implementors can update the working copy with changes that should be part
+    /// of the save.
+    fn participate(
+        &self,
+        working_copy: Rc<dyn IStoredFileWorkingCopy>,
+        context: StoredFileWorkingCopySaveParticipantContext,
+        progress: Rc<dyn IProgress<ProgressStep>>,
+        token: CancellationToken,
+    ) -> Promise<()>;
+}
+
+/// O participante do teste: `{ participate: async (wc, context) => { ... } }`.
+struct FnSaveParticipant<F>(F);
+
+impl<F> IStoredFileWorkingCopySaveParticipant for FnSaveParticipant<F>
+where
+    F: Fn(Rc<dyn IStoredFileWorkingCopy>, StoredFileWorkingCopySaveParticipantContext) -> Promise<()>,
+{
+    fn participate(
+        &self,
+        working_copy: Rc<dyn IStoredFileWorkingCopy>,
+        context: StoredFileWorkingCopySaveParticipantContext,
+        _progress: Rc<dyn IProgress<ProgressStep>>,
+        _token: CancellationToken,
+    ) -> Promise<()> {
+        (self.0)(working_copy, context)
+    }
+}
+
+/// O objeto literal `{ participate: async (wc, context) => { ... } }` que os casos passam ao `addSaveParticipant`.
+pub fn save_participant(
+    participate: impl Fn(Rc<dyn IStoredFileWorkingCopy>, StoredFileWorkingCopySaveParticipantContext) -> Promise<()> + 'static,
+) -> Rc<dyn IStoredFileWorkingCopySaveParticipant> {
+    Rc::new(FnSaveParticipant(participate))
+}
+
+type SaveParticipants = Rc<RefCell<Vec<(u64, Rc<dyn IStoredFileWorkingCopySaveParticipant>)>>>;
+
+/// O `IWorkingCopyFileService` do teste: os eventos de operação não disparam e os participantes de salvar são os do
+/// `StoredFileWorkingCopySaveParticipant`.
+pub struct TestWorkingCopyFileService {
+    save_participants: SaveParticipants,
+    next_participant_id: Cell<u64>,
+    log_service: LogServiceRef,
+    progress_service: Rc<dyn IProgressService>,
+}
+
+impl TestWorkingCopyFileService {
+    pub fn new(log_service: LogServiceRef, progress_service: Rc<dyn IProgressService>) -> Rc<Self> {
+        Rc::new(Self { save_participants: Rc::default(), next_participant_id: Cell::new(0), log_service, progress_service })
+    }
+
+    /// `addSaveParticipant(participant)`.
+    pub fn add_save_participant(&self, participant: Rc<dyn IStoredFileWorkingCopySaveParticipant>) -> DisposableRef {
+        let id = self.next_participant_id.get();
+        self.next_participant_id.set(id + 1);
+        self.save_participants.borrow_mut().push((id, participant));
+
+        let save_participants = self.save_participants.clone();
+        to_disposable(move || save_participants.borrow_mut().retain(|(candidate, _)| *candidate != id))
+    }
+
+    /// `StoredFileWorkingCopySaveParticipant.participate(workingCopy, context, progress, token)`.
+    fn participate(
+        &self,
+        working_copy: Rc<dyn IStoredFileWorkingCopy>,
+        context: StoredFileWorkingCopySaveParticipantContext,
+        progress: Rc<dyn IProgress<ProgressStep>>,
+        token: CancellationToken,
+    ) -> Promise<()> {
+        let cts = CancellationTokenSource::new(Some(&token));
+
+        // undoStop before participation
+        if let Some(model) = working_copy.stored_model() {
+            model.push_stack_element();
+        }
+
+        // report to the "outer" progress
+        progress.report(ProgressStep { message: Some(localize("saveParticipants1", "Running Code Actions and Formatters...", &[])), ..ProgressStep::default() });
+
+        let bubble_cancel = Rc::new(Cell::new(false));
+
+        let (save_participants, log_service, progress_service) = (self.save_participants.clone(), self.log_service.clone(), self.progress_service.clone());
+
+        async_fn(async move {
+            let (task_working_copy, task_cts, task_bubble_cancel, cancel_cts) = (working_copy.clone(), cts.clone(), bubble_cancel.clone(), cts.clone());
+
+            // create an "inner" progress to allow to skip over long running save participants
+            progress_service
+                .with_progress(
+                    ProgressOptions {
+                        title: None,
+                        cancellable: Some(ProgressCancellable::Label(localize("skip", "Skip", &[]))),
+                        delay: Some(if working_copy.is_dirty() { 5000 } else { 3000 }),
+                        priority: Some(NotificationPriority::Urgent),
+                        telemetry: Some(NotificationTelemetryId::WorkingCopySaveParticipants),
+                        ..ProgressOptions::at(ProgressLocation::Notification)
+                    },
+                    Box::new(move |progress| {
+                        async_fn(async move {
+                            let mut participants: Vec<Rc<dyn IStoredFileWorkingCopySaveParticipant>> =
+                                save_participants.borrow().iter().map(|(_, participant)| participant.clone()).collect();
+                            participants.sort_by_key(|participant| participant.ordinal().unwrap_or(0));
+
+                            for save_participant in participants {
+                                if task_cts.token().is_cancellation_requested() || task_working_copy.is_disposed() {
+                                    break;
+                                }
+
+                                let promise = save_participant.participate(task_working_copy.clone(), context.clone(), progress.clone(), task_cts.token());
+                                if let Err(err) = race_cancellation(&promise, &task_cts.token()).await {
+                                    if !errors::is_cancellation_error(&err) {
+                                        log_service.error(&err.to_string());
+                                    } else if !task_cts.token().is_cancellation_requested() {
+                                        // we see a cancellation error BUT the token didn't signal it
+                                        // this means the participant wants the save operation to be cancelled
+                                        task_cts.cancel();
+                                        task_bubble_cancel.set(true);
+                                    }
+                                }
+                            }
+                            Ok(())
+                        })
+                    }),
+                    Some(Rc::new(move || cancel_cts.cancel())),
+                )
+                .await?;
+
+            // undoStop after participation
+            if let Some(model) = working_copy.stored_model() {
+                model.push_stack_element();
+            }
+
+            cts.dispose_with(false);
+
+            if bubble_cancel.get() {
+                return Err(Error::cancellation());
+            }
+            Ok(())
+        })
+    }
+}
+
+impl IDisposable for TestWorkingCopyFileService {
+    fn dispose(&self) {
+        self.save_participants.borrow_mut().clear();
+    }
+}
+
+impl IWorkingCopyFileService for TestWorkingCopyFileService {
+    fn on_will_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
+        Event::none()
+    }
+
+    fn on_did_fail_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
+        Event::none()
+    }
+
+    fn on_did_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
+        Event::none()
+    }
+
+    fn has_save_participants(&self) -> bool {
+        !self.save_participants.borrow().is_empty()
+    }
+
+    fn run_save_participants(
+        &self,
+        working_copy: Rc<dyn IStoredFileWorkingCopy>,
+        context: StoredFileWorkingCopySaveParticipantContext,
+        progress: Rc<dyn IProgress<ProgressStep>>,
+        token: CancellationToken,
+    ) -> Promise<()> {
+        self.participate(working_copy, context, progress, token)
+    }
+}
+
+/// `Progress.None` do contrato de progresso do workbench.
+struct NoProgress;
+
+impl IProgress<ProgressStep> for NoProgress {
+    fn report(&self, _item: ProgressStep) {}
+}
+
+/// `TestProgressService`: roda a tarefa com `Progress.None`.
+pub struct TestProgressService;
+
+impl IProgressService for TestProgressService {
+    fn with_progress(&self, _options: ProgressOptions, task: ProgressTask, _on_did_cancel: Option<Rc<dyn Fn()>>) -> Promise<()> {
+        task(Rc::new(NoProgress))
+    }
+}
+
+/// `BrowserElevatedFileService`.
+pub struct BrowserElevatedFileService;
+
+impl IElevatedFileService for BrowserElevatedFileService {
+    fn is_supported(&self, _resource: &URI) -> bool {
+        // Saving elevated is currently not supported in web for as
+        // long as we have no generic support from the file service
+        // (https://github.com/microsoft/vscode/issues/48659)
+        false
+    }
+
+    fn write_file_elevated(&self, _resource: &URI, _value: FileContentSource, _options: Option<WriteFileOptions>) -> Promise<FileStatWithMetadata> {
+        Promise::rejected(Error::new("Unsupported"))
+    }
+}
+
+/// `WorkingCopyEditorService` sobre o `TestEditorService`: guarda os handlers e não acha editor (o `getEditors()` do dublê é `[]`).
+pub struct TestWorkingCopyEditorService {
+    on_did_register_handler: Rc<Emitter<Rc<dyn IWorkingCopyEditorHandler>>>,
+    handlers: Rc<RefCell<Vec<Rc<dyn IWorkingCopyEditorHandler>>>>,
+}
+
+impl TestWorkingCopyEditorService {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self { on_did_register_handler: Emitter::new(), handlers: Rc::default() })
+    }
+}
+
+impl IDisposable for TestWorkingCopyEditorService {
+    fn dispose(&self) {
+        self.on_did_register_handler.dispose();
+        self.handlers.borrow_mut().clear();
+    }
+}
+
+impl IWorkingCopyEditorService for TestWorkingCopyEditorService {
+    fn on_did_register_handler(&self) -> Event<Rc<dyn IWorkingCopyEditorHandler>> {
+        self.on_did_register_handler.event()
+    }
+
+    fn register_handler(&self, handler: Rc<dyn IWorkingCopyEditorHandler>) -> DisposableRef {
+        self.handlers.borrow_mut().push(handler.clone());
+        self.on_did_register_handler.fire(handler.clone());
+
+        let handlers = self.handlers.clone();
+        to_disposable(move || handlers.borrow_mut().retain(|candidate| !std::ptr::addr_eq(Rc::as_ptr(candidate), Rc::as_ptr(&handler))))
+    }
+
+    fn find_editor(&self, _working_copy: &dyn IWorkingCopy) -> Option<EditorIdentifier> {
+        None
+    }
+}
+
+//#endregion
+
+//#region TestServiceAccessor
+
+/// O `typeId` que o teste dá às working copies.
+pub const STORED_FILE_WORKING_COPY_TYPE_ID: &str = "testStoredFileWorkingCopyType";
+
+/// A working copy do teste.
+pub type TestStoredFileWorkingCopy = StoredFileWorkingCopy<TestStoredFileWorkingCopyModel>;
+
+/// `workbenchInstantiationService(undefined, disposables)` mais o `TestServiceAccessor`, com os serviços que a working copy de
+/// arquivo armazenado lê.
+pub struct TestServiceAccessor {
+    pub file_service: Rc<TestFileService>,
+    pub log_service: LogServiceRef,
+    pub working_copy_file_service: Rc<TestWorkingCopyFileService>,
+    pub files_configuration_service: Rc<TestFilesConfigurationService>,
+    pub working_copy_backup_service: Rc<InMemoryWorkingCopyBackupService>,
+    pub working_copy_service: Rc<WorkingCopyService>,
+    pub notification_service: Rc<TestNotificationService>,
+    pub working_copy_editor_service: Rc<TestWorkingCopyEditorService>,
+    pub editor_service: Rc<TestEditorService>,
+    pub elevated_file_service: Rc<BrowserElevatedFileService>,
+    pub progress_service: Rc<TestProgressService>,
+    created: RefCell<Vec<Rc<TestStoredFileWorkingCopy>>>,
+}
+
+impl TestServiceAccessor {
+    /// `workbenchInstantiationService(undefined, disposables)` e `instantiationService.createInstance(TestServiceAccessor)`.
+    pub fn new(disposables: &Rc<DisposableStore>) -> Self {
+        let test_configuration_service = TestConfigurationService::new(Some(Dynamic::object([(
+            "files",
+            Dynamic::object([("participants", Dynamic::object([("timeout", Dynamic::from(60000))]))]),
+        )])));
+        disposables.add_rc(test_configuration_service.on_did_change_configuration_emitter.clone());
+        let configuration_service: Rc<dyn IConfigurationService> = test_configuration_service;
+
+        let log_service = NullLogService::shared();
+        let progress_service = Rc::new(TestProgressService);
+        let context_key_service = disposables.add_rc(MockContextKeyService::new());
+        let file_service = disposables.add_rc(TestFileService::new());
+        let file_service_contract: Rc<dyn IFileService> = file_service.clone();
+        let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (file_service_contract.clone(),)));
+        let files_configuration_service = disposables.add_rc(TestFilesConfigurationService::create(
+            (),
+            (
+                context_key_service,
+                configuration_service.clone(),
+                TestContextService::new(None, None),
+                TestEnvironmentService::new(),
+                uri_identity_service,
+                file_service_contract,
+                Rc::new(TestMarkerService),
+                TestTextResourceConfigurationService::new(configuration_service),
+            ),
+        ));
+        let working_copy_file_service = disposables.add_rc(TestWorkingCopyFileService::new(log_service.clone(), progress_service.clone()));
+
+        Self {
+            file_service,
+            log_service,
+            working_copy_file_service,
+            files_configuration_service,
+            working_copy_backup_service: disposables.add_rc(InMemoryWorkingCopyBackupService::new()),
+            working_copy_service: disposables.add_rc(WorkingCopyService::new()),
+            notification_service: Rc::new(TestNotificationService),
+            working_copy_editor_service: disposables.add_rc(TestWorkingCopyEditorService::new()),
+            editor_service: Rc::new(TestEditorService),
+            elevated_file_service: Rc::new(BrowserElevatedFileService),
+            progress_service,
+            created: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Os 11 serviços injetados do construtor da `StoredFileWorkingCopy`.
+    pub fn services(&self) -> StoredFileWorkingCopyServices {
+        StoredFileWorkingCopyServices {
+            file_service: self.file_service.clone(),
+            log_service: self.log_service.clone(),
+            working_copy_file_service: self.working_copy_file_service.clone(),
+            files_configuration_service: self.files_configuration_service.clone(),
+            working_copy_backup_service: self.working_copy_backup_service.clone(),
+            working_copy_service: self.working_copy_service.clone(),
+            notification_service: self.notification_service.clone(),
+            working_copy_editor_service: self.working_copy_editor_service.clone(),
+            editor_service: self.editor_service.clone(),
+            elevated_file_service: self.elevated_file_service.clone(),
+            progress_service: self.progress_service.clone(),
+        }
+    }
+
+    /// `new StoredFileWorkingCopy('testStoredFileWorkingCopyType', resource, basename(resource), factory, options =>
+    /// workingCopy.resolve(options), accessor.fileService, ...)`. O resolvedor externo segura a working copy por `Weak`
+    /// (no original o coletor de lixo resolve o ciclo).
+    pub fn create_stored_file_working_copy(&self, resource: &URI, factory: Rc<TestStoredFileWorkingCopyModelFactory>) -> Rc<TestStoredFileWorkingCopy> {
+        let slot: Rc<RefCell<Weak<TestStoredFileWorkingCopy>>> = Rc::default();
+
+        let resolver_slot = slot.clone();
+        let external_resolver: StoredFileWorkingCopyResolver = Rc::new(move |options: Option<StoredFileWorkingCopyResolveOptions>| {
+            let working_copy = resolver_slot.borrow().upgrade();
+            match working_copy {
+                Some(working_copy) => working_copy.resolve_stored(options),
+                None => Promise::resolved(()),
+            }
+        });
+
+        let working_copy = StoredFileWorkingCopy::new(
+            STORED_FILE_WORKING_COPY_TYPE_ID.to_string(),
+            resource.clone(),
+            ext_uri().basename(resource, None),
+            factory as Rc<dyn IStoredFileWorkingCopyModelFactory<TestStoredFileWorkingCopyModel>>,
+            external_resolver,
+            self.services(),
+        );
+        *slot.borrow_mut() = Rc::downgrade(&working_copy);
+        self.created.borrow_mut().push(working_copy.clone());
+
+        working_copy
+    }
+
+    /// `for (const workingCopy of accessor.workingCopyService.workingCopies) workingCopy.dispose()`.
+    pub fn dispose_registered_working_copies(&self) {
+        for registered in self.working_copy_service.working_copies() {
+            let created = self.created.borrow().iter().find(|candidate| std::ptr::addr_eq(Rc::as_ptr(candidate), Rc::as_ptr(&registered))).cloned();
+            if let Some(working_copy) = created {
+                working_copy.dispose();
+            }
+        }
+    }
+}
+
+//#endregion
