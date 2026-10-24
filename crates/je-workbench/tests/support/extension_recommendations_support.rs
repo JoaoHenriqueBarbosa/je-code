@@ -584,31 +584,14 @@ impl ToggleGallery {
 async fn run_case<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<RecommendationsFixture>) -> F) {
     let fixture = RecommendationsFixture::new();
     body(fixture.clone()).await;
-    // No mocha o `teardown` roda numa macrotarefa depois do corpo: as microtarefas pendentes (o `registerP` de
-    // `promptWorkspaceRecommendations`) esvaziam antes do descarte.
-    timeout(0).await;
     fixture.base.guard.store().dispose();
     timeout(0).await;
     drop(fixture);
 }
 
-/// `runWithFakedTimers<void>({ useFakeTimers: true }, async () => ...)` com o `setup` e o `teardown` da suíte. O
-/// `runWithFakedTimers` esvazia os timers (o `timeout(5000)` de `promptWorkspaceRecommendations`) ao fim do corpo, e só
-/// depois vem o `teardown`.
+/// `runWithFakedTimers<void>({ useFakeTimers: true }, async () => ...)` com o `setup` e o `teardown` da suíte.
 pub fn run<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<RecommendationsFixture>) -> F + 'static) {
-    let slot: Rc<RefCell<Option<Rc<RecommendationsFixture>>>> = Rc::default();
-    let keep = slot.clone();
-    run_with_faked_timers(async move {
-        let fixture = RecommendationsFixture::new();
-        *keep.borrow_mut() = Some(fixture.clone());
-        body(fixture).await;
-    });
-    // `teardown`: `disposableStore.dispose(); await timeout(0);`
-    let fixture = slot.borrow_mut().take().expect("fixture");
-    fixture.base.guard.store().dispose();
-    je_base::runtime::turn();
-    fail_on_unexpected_errors();
-    drop(fixture);
+    run_with_faked_timers(run_case(body));
 }
 
 /// O caso sem `runWithFakedTimers` (o `Date.now()` é o do sistema): o laço roda as microtarefas e só os timers já vencidos,
