@@ -27,18 +27,34 @@
 //!   união `CDPResponse | CDPEvent` é [`CdpMessage`].
 //! - `EditorGroupColumn` e `IEditorOptions` vêm de [`super::ext_host_type_converters`] e de
 //!   [`je_platform::opener::editor_types::EditorOptions`].
+//! - Regiões `Configuration`, `Workspace` e `MessageService` (de `extHostConfiguration.ts`, `extHostWorkspace.ts`):
+//!   os `UriComponents` são [`URI`]; `IConfigurationInitData` é o `IConfigurationData` mais `configurationScopes`
+//!   (struct com `data`); `IRawFileMatch2`, `ITextSearchComplete` e `IRelativePatternDto` (que moram em `search.ts`
+//!   e em `extHost.protocol.ts`) ficam aqui, junto de quem os usa; `ITextSearchComplete.message` é sempre lista; o
+//!   `$requestResourceTrust(ResourceTrustRequestOptionsDto)` usa o [`ResourceTrustRequestOptions`] da plataforma.
 
 use std::any::Any;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
+use je_base::severity::Severity;
+use je_base::uri::URI;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_platform::commands::commands::CommandDescription;
+use je_platform::configuration::registry::ConfigurationScope;
+use je_platform::configuration::{ConfigurationChange, ConfigurationData, ConfigurationOverrides, ConfigurationTarget};
 use je_platform::opener::editor_types::EditorOptions;
+use je_platform::request::request::{AuthInfo, Credentials};
+use je_platform::workspace_trust::{ResourceTrustRequestOptions, WorkspaceTrustRequestOptions};
+
+use crate::services::search::query_builder::{IFileQueryBuilderOptions, ITextQueryBuilderOptions};
+use crate::services::search::search::{ITextSearchResult, PatternInfo};
+use crate::services::search::search_ext_types::TextSearchCompleteMessage2;
 
 pub use super::ext_host_type_converters::EditorGroupColumn;
 
@@ -274,13 +290,223 @@ pub trait IExtHostTelemetry {
 
 // #endregion
 
+// #region Configuration
+
+/// `IConfigurationInitData`: o `IConfigurationData` (em `data`) mais `configurationScopes`, os escopos
+/// declarados por chave (`undefined` quando a chave não declara um).
+#[derive(Clone)]
+pub struct IConfigurationInitData {
+    pub data: ConfigurationData,
+    pub configuration_scopes: Vec<(String, Option<ConfigurationScope>)>,
+}
+
+/// `MainThreadConfigurationShape`. O `IConfigurationOverrides | undefined` é um `Option`; o `null` e o `undefined`
+/// de `resource` são ambos `None` em [`ConfigurationOverrides`] (ver `ext_host_configuration`).
+pub trait MainThreadConfigurationShape: IDisposable {
+    fn rpc_update_configuration_option(
+        &self,
+        target: Option<ConfigurationTarget>,
+        key: &str,
+        value: Dynamic,
+        overrides: Option<ConfigurationOverrides>,
+        scope_to_language: Option<bool>,
+    ) -> Promise<()>;
+    fn rpc_remove_configuration_option(
+        &self,
+        target: Option<ConfigurationTarget>,
+        key: &str,
+        overrides: Option<ConfigurationOverrides>,
+        scope_to_language: Option<bool>,
+    ) -> Promise<()>;
+}
+
+/// `ExtHostConfigurationShape`.
+pub trait ExtHostConfigurationShape {
+    fn rpc_initialize_configuration(&self, data: IConfigurationInitData);
+    fn rpc_accept_configuration_changed(&self, data: IConfigurationInitData, change: ConfigurationChange);
+}
+
+// #endregion
+
+// #region Workspace
+
+/// Uma pasta de `IWorkspaceData.folders` (`{ uri, name, index }`). O `UriComponents` do original é o próprio
+/// [`URI`] (a conversão é da camada de RPC, como no resto deste arquivo).
+#[derive(Clone, Debug)]
+pub struct WorkspaceFolderDataDto {
+    pub uri: URI,
+    pub name: String,
+    pub index: usize,
+}
+
+/// `IWorkspaceData` (que estende `IStaticWorkspaceData`, de `extensionHostProtocol.ts`).
+#[derive(Clone, Debug, Default)]
+pub struct IWorkspaceData {
+    pub id: String,
+    pub name: String,
+    pub transient: Option<bool>,
+    pub configuration: Option<URI>,
+    pub is_untitled: Option<bool>,
+    pub folders: Vec<WorkspaceFolderDataDto>,
+}
+
+/// `IRelativePatternDto`: `{ pattern, base, baseUri }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IRelativePatternDto {
+    pub pattern: String,
+    pub base: String,
+    pub base_uri: URI,
+}
+
+/// `TextSearchCompleteMessage` (de `searchExtTypes.ts`): o mesmo formato de [`TextSearchCompleteMessage2`].
+pub type TextSearchCompleteMessage = TextSearchCompleteMessage2;
+
+/// `ITextSearchComplete`. O `message?: TextSearchCompleteMessage | TextSearchCompleteMessage[]` é sempre uma lista
+/// (um valor só é uma lista de um elemento).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ITextSearchComplete {
+    pub limit_hit: Option<bool>,
+    pub message: Option<Vec<TextSearchCompleteMessage>>,
+}
+
+/// `IRawFileMatch2` (`IFileMatch<UriComponents>` de `search.ts`).
+#[derive(Clone, Debug)]
+pub struct IRawFileMatch2 {
+    pub resource: URI,
+    pub results: Option<Vec<ITextSearchResult>>,
+}
+
+/// `{ saveAs: boolean }` de `$save`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SaveOptionsDto {
+    pub save_as: bool,
+}
+
+/// `{ uri: UriComponents; name?: string }` de `$updateWorkspaceFolders`.
+#[derive(Clone, Debug)]
+pub struct WorkspaceFolderToAdd {
+    pub uri: URI,
+    pub name: Option<String>,
+}
+
+/// O `{ encoding: string }` opcional de `$resolveDecoding`, `$validateDetectedEncoding` e `$resolveEncoding`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodingOptionDto {
+    pub encoding: String,
+}
+
+/// O retorno de `$resolveDecoding`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedDecodingDto {
+    pub preferred_encoding: String,
+    pub guess_encoding: bool,
+    pub candidate_guess_encodings: Vec<String>,
+}
+
+/// O retorno de `$resolveEncoding`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedEncodingDto {
+    pub encoding: String,
+    pub add_bom: bool,
+}
+
+/// `EditSessionIdentityMatch` (`platform/workspace/common/editSessions.ts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditSessionIdentityMatch {
+    Complete = 100,
+    Partial = 50,
+    None = 0,
+}
+
+/// `MainThreadWorkspaceShape`. Os `UriComponents` do original são [`URI`]; o `string | undefined` é `Option<String>`.
+pub trait MainThreadWorkspaceShape: IDisposable {
+    fn rpc_start_file_search(&self, include_folder: Option<URI>, options: IFileQueryBuilderOptions, token: CancellationToken) -> Promise<Option<Vec<URI>>>;
+    fn rpc_start_text_search(
+        &self,
+        query: PatternInfo,
+        folder: Option<URI>,
+        options: ITextQueryBuilderOptions,
+        request_id: u64,
+        token: CancellationToken,
+    ) -> Promise<Option<ITextSearchComplete>>;
+    fn rpc_check_exists(&self, folders: Vec<URI>, includes: Vec<String>, token: CancellationToken) -> Promise<bool>;
+    fn rpc_save(&self, uri: &URI, options: SaveOptionsDto) -> Promise<Option<URI>>;
+    fn rpc_save_all(&self, include_untitled: Option<bool>) -> Promise<bool>;
+    fn rpc_update_workspace_folders(&self, extension_name: &str, index: f64, delete_count: f64, workspace_folders_to_add: Vec<WorkspaceFolderToAdd>) -> Promise<()>;
+    fn rpc_resolve_proxy(&self, url: &str) -> Promise<Option<String>>;
+    fn rpc_lookup_authorization(&self, auth_info: AuthInfo) -> Promise<Option<Credentials>>;
+    fn rpc_lookup_kerberos_authorization(&self, url: &str) -> Promise<Option<String>>;
+    fn rpc_load_certificates(&self) -> Promise<Vec<String>>;
+    fn rpc_request_resource_trust(&self, options: ResourceTrustRequestOptions) -> Promise<Option<bool>>;
+    fn rpc_request_workspace_trust(&self, options: Option<WorkspaceTrustRequestOptions>) -> Promise<Option<bool>>;
+    fn rpc_is_resource_trusted(&self, resource: &URI) -> Promise<bool>;
+    fn rpc_register_edit_session_identity_provider(&self, handle: u64, scheme: &str);
+    fn rpc_unregister_edit_session_identity_provider(&self, handle: u64);
+    fn rpc_register_canonical_uri_provider(&self, handle: u64, scheme: &str);
+    fn rpc_unregister_canonical_uri_provider(&self, handle: u64);
+    fn rpc_resolve_decoding(&self, resource: Option<URI>, options: Option<EncodingOptionDto>) -> Promise<ResolvedDecodingDto>;
+    fn rpc_validate_detected_encoding(&self, resource: Option<URI>, detected_encoding: &str, options: Option<EncodingOptionDto>) -> Promise<String>;
+    fn rpc_resolve_encoding(&self, resource: Option<URI>, options: Option<EncodingOptionDto>) -> Promise<ResolvedEncodingDto>;
+}
+
+/// `ExtHostWorkspaceShape`.
+pub trait ExtHostWorkspaceShape {
+    fn rpc_initialize_workspace(&self, workspace: Option<IWorkspaceData>, trusted: bool);
+    fn rpc_accept_workspace_data(&self, workspace: Option<IWorkspaceData>);
+    fn rpc_handle_text_search_result(&self, result: IRawFileMatch2, request_id: u64);
+    fn rpc_on_did_grant_workspace_trust(&self);
+    fn rpc_on_did_change_workspace_trusted_folders(&self);
+    fn rpc_get_edit_session_identifier(&self, folder: URI, token: CancellationToken) -> Promise<Option<String>>;
+    fn rpc_provide_edit_session_identity_match(&self, folder: URI, identity1: &str, identity2: &str, token: CancellationToken) -> Promise<Option<EditSessionIdentityMatch>>;
+    fn rpc_on_will_create_edit_session_identity(&self, folder: URI, token: CancellationToken, timeout: f64) -> Promise<()>;
+    fn rpc_provide_canonical_uri(&self, uri: URI, target_scheme: &str, token: CancellationToken) -> Promise<Option<URI>>;
+}
+
+// #endregion
+
+// #region MessageService
+
+/// A `source` de `MainThreadMessageOptions`: `{ identifier: ExtensionIdentifier; label: string }`.
+#[derive(Clone, Debug)]
+pub struct MainThreadMessageSource {
+    pub identifier: ExtensionIdentifier,
+    pub label: String,
+}
+
+/// `MainThreadMessageOptions`.
+#[derive(Clone, Debug, Default)]
+pub struct MainThreadMessageOptions {
+    pub source: Option<MainThreadMessageSource>,
+    pub modal: Option<bool>,
+    pub detail: Option<String>,
+    pub use_custom: Option<bool>,
+}
+
+/// Um item de `commands` de `$showMessage`: `{ title, isCloseAffordance, handle }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageCommandDto {
+    pub title: String,
+    pub is_close_affordance: bool,
+    pub handle: f64,
+}
+
+/// `MainThreadMessageServiceShape`. O retorno `number | undefined` é o `handle` do comando escolhido.
+pub trait MainThreadMessageServiceShape: IDisposable {
+    fn rpc_show_message(&self, severity: Severity, message: &str, options: MainThreadMessageOptions, commands: Vec<MessageCommandDto>) -> Promise<Option<f64>>;
+}
+
+// #endregion
+
 /// `MainContext`: os identificadores dos proxies da thread principal.
 pub struct MainContext;
 
 impl MainContext {
     pub const MAIN_THREAD_BROWSERS: ProxyIdentifier<dyn MainThreadBrowsersShape> = ProxyIdentifier::new("MainThreadBrowsers");
     pub const MAIN_THREAD_COMMANDS: ProxyIdentifier<dyn MainThreadCommandsShape> = ProxyIdentifier::new("MainThreadCommands");
+    pub const MAIN_THREAD_CONFIGURATION: ProxyIdentifier<dyn MainThreadConfigurationShape> = ProxyIdentifier::new("MainThreadConfiguration");
+    pub const MAIN_THREAD_MESSAGE_SERVICE: ProxyIdentifier<dyn MainThreadMessageServiceShape> = ProxyIdentifier::new("MainThreadMessageService");
     pub const MAIN_THREAD_TELEMETRY: ProxyIdentifier<dyn MainThreadTelemetryShape> = ProxyIdentifier::new("MainThreadTelemetry");
+    pub const MAIN_THREAD_WORKSPACE: ProxyIdentifier<dyn MainThreadWorkspaceShape> = ProxyIdentifier::new("MainThreadWorkspace");
 }
 
 /// `ExtHostContext`: os identificadores dos proxies do lado das extensões.
@@ -288,4 +514,6 @@ pub struct ExtHostContext;
 
 impl ExtHostContext {
     pub const EXT_HOST_COMMANDS: ProxyIdentifier<dyn ExtHostCommandsShape> = ProxyIdentifier::new("ExtHostCommands");
+    pub const EXT_HOST_CONFIGURATION: ProxyIdentifier<dyn ExtHostConfigurationShape> = ProxyIdentifier::new("ExtHostConfiguration");
+    pub const EXT_HOST_WORKSPACE: ProxyIdentifier<dyn ExtHostWorkspaceShape> = ProxyIdentifier::new("ExtHostWorkspace");
 }
