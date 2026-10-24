@@ -8,7 +8,7 @@
 //!   `InstantiationService` sobre um `ServiceCollection` com os dois serviços; `createInstance` é o
 //!   `create_instance` real.
 //! - `TestStorageService` é o `InMemoryStorageService` e `TestProductService` é o `ProductService` de
-//!   `support::workbench_test_services`, com `trustedMcpAuthAccess` mutável por dentro
+//!   `je_workbench::test::common::workbench_test_services`, com `trustedMcpAuthAccess` mutável por dentro
 //!   (`set_trusted_mcp_auth_access`). O `productService = { ...TestProductService }` de cada `setup` é o
 //!   produto novo de cada caso.
 //! - `AllowedMcpServer` sem `allowed` (`allowed property is undefined`) é `allowed: None`.
@@ -26,7 +26,6 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
-mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -42,7 +41,7 @@ use je_storage::StorageValue;
 use je_workbench::services::authentication::authentication_mcp_access_service::{
     AgentHost, AllowedMcpServer, AuthenticationMcpAccessService, IAuthenticationMcpAccessService, McpSessionAccessChange,
 };
-use support::workbench_test_services::test_product_service;
+use je_workbench::test::common::workbench_test_services::TestProductService;
 
 struct Fixture {
     storage_service: Rc<AbstractStorageService>,
@@ -56,7 +55,7 @@ fn setup(disposables: &LeakGuard) -> Fixture {
     let storage: Rc<dyn StorageService> = Rc::new(storage_service.clone());
 
     // Set up product service with no trusted servers by default
-    let product_service = test_product_service();
+    let product_service = Rc::new(TestProductService::default());
     let product: Rc<dyn IProductService> = product_service.clone();
 
     let instantiation_service =

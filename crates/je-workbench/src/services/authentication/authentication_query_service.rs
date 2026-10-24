@@ -37,7 +37,7 @@ use je_base::map::OrderedMap;
 use je_base::promise::Promise;
 use je_extensions::manifest::ExtensionIdentifier;
 use je_instantiation::{InstantiationType, Injectable, register_singleton, service_impl};
-use je_platform::log::{LogArg, LogMessage, LogService, Logger};
+use je_platform::log::{LogArg, LogMessage, LogService};
 
 use super::authentication::{
     AllowedExtension, AuthenticationSessionAccount, IAuthenticationExtensionsService, IAuthenticationService, INTERNAL_AUTH_PROVIDER_PREFIX,

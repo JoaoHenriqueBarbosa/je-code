@@ -41,7 +41,7 @@ use je_base::product::StringsOrDictionary;
 use je_base::promise::Promise;
 use je_base::runtime::date_now;
 use je_instantiation::{InstantiationType, Injectable, delayed_proxy, register_singleton, service_id, service_impl};
-use je_platform::log::{LogMessage, LogService, Logger};
+use je_platform::log::{LogMessage, LogService};
 use je_platform::product::IProductService;
 use je_platform::storage::{StorageScope, StorageService, StorageTarget};
 use je_storage::StorageValue;
