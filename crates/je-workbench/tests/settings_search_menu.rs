@@ -23,7 +23,8 @@ use je_editor::suggest::suggest_controller::SuggestController;
 use je_ui::Ui;
 use je_widgets::action_view_items::IActionViewItemOptions;
 use je_widgets::context_view_api::{IContextMenuDelegate, IContextMenuProvider};
-use je_workbench::contrib::preferences::settings_search_menu::{ISuggestEnabledInput, SettingsSearchFilterDropdownMenuActionViewItem};
+use je_workbench::contrib::code_editor::suggest_enabled_input::ISuggestEnabledInput;
+use je_workbench::contrib::preferences::settings_search_menu::SettingsSearchFilterDropdownMenuActionViewItem;
 
 struct StubSearchInput {
     query: RefCell<String>,

@@ -174,6 +174,16 @@ impl CompletionItemProvider for SuggestEnabledInputCompletionProvider {
     }
 }
 
+/// O `SuggestEnabledInput` como o menu de busca das configurações (`settingsSearchMenu.ts`) o enxerga: o widget com editor, foco e
+/// controlador de sugestões, que o porte sem DOM ainda não monta.
+pub trait ISuggestEnabledInput {
+    fn get_value(&self) -> String;
+    fn set_value(&self, value: &str);
+    fn focus(&self);
+    /// `SuggestController.get(this.inputWidget)`.
+    fn suggest_controller(&self) -> Option<Rc<je_editor::suggest::suggest_controller::SuggestController>>;
+}
+
 /// `SuggestEnabledInput` (a parte sem DOM).
 pub struct SuggestEnabledInput {
     base: Rc<Disposable>,

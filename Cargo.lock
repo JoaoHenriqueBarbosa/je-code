@@ -4295,6 +4295,7 @@ dependencies = [
  "je-exthost",
  "je-instantiation",
  "je-platform",
+ "je-render",
  "je-storage",
  "je-text",
  "je-theme",

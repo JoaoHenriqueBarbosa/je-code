@@ -115,7 +115,7 @@ impl SettingIndicatorElement for SettingsTreeSettingElement {
     }
 
     fn settings_target(&self) -> SettingsTarget {
-        self.settings_target
+        self.settings_target.clone()
     }
 
     fn setting_key(&self) -> String {

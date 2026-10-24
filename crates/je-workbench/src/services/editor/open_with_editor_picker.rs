@@ -26,7 +26,7 @@ use std::rc::Rc;
 use je_base::JsString;
 use je_base::async_::async_fn;
 use je_base::dynamic::{Dynamic, ObjectRef};
-use je_base::lifecycle::{DisposableRef, DisposableStore};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::network::schemas;
 use je_base::nls::localize;
 use je_base::promise::Promise;

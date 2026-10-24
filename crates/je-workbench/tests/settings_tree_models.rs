@@ -403,7 +403,7 @@ fn explains_the_overridden_value_in_scope_and_restores_it_when_policy_is_removed
                 ("value", element.value()),
                 ("managed", boolean(element.has_policy_value())),
                 ("description", element.policy_value_description().map_or(Dynamic::Undefined, |description| s(&description))),
-                ("accessible", s(&get_indicators_label_aria_label(&element, &*configuration, &*services.language_service))),
+                ("accessible", s(&get_indicators_label_aria_label(&*element, &*configuration, &*services.language_service))),
             ])
         };
         let managed = read();

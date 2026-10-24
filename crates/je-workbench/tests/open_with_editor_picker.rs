@@ -29,6 +29,8 @@
 mod common;
 mod support;
 
+use je_base::lifecycle::IDisposable;
+use je_workbench::services::editor::editor_groups_service::{IEditorGroupsService, IEditorPart};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -110,7 +112,8 @@ struct Fixture {
 fn factory(disposables: &Rc<DisposableStore>, editor_id: &'static str) -> EditorInputFactoryObject {
     let create = |disposables: Rc<DisposableStore>, resource_of: fn(&UntypedEditorInput) -> URI| -> EditorInputFactoryFunction {
         Rc::new(move |editor: &UntypedEditorInput, _group: &Rc<dyn IEditorGroup>| {
-            let created: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource_of(editor), editor_id));
+            let created = disposables.add_rc(TestFileEditorInput::new(resource_of(editor), editor_id));
+            let created: EditorInputRef = created;
             MaybePromise::Value(EditorInputWithOptions { editor: created, options: None })
         })
     };

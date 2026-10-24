@@ -30,7 +30,8 @@ use je_extensions::util::{adopt_to_gallery_extension_id, are_same_extensions, ge
 use je_instantiation::{Injectable, service_id, service_impl};
 use je_platform::log::{LogService, Logger};
 use je_platform::product::IProductService;
-use je_platform::storage::{StorageScope, StorageService, StorageTarget, StorageValue, StorageValueChangeEvent};
+use je_platform::storage::{StorageScope, StorageService, StorageTarget, StorageValueChangeEvent};
+use je_storage::StorageValue;
 use serde_json::Value;
 
 use super::extension_management::IExtensionManagementService;

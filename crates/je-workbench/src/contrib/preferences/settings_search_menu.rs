@@ -29,19 +29,11 @@ use je_widgets::context_view_api::IContextMenuProvider;
 use je_widgets::dropdown::IActionProvider;
 use je_widgets::dropdown_action_view_item::{DropdownMenuActionViewItem, IDropdownMenuActionViewItemOptions, MenuActions};
 
+use crate::contrib::code_editor::suggest_enabled_input::ISuggestEnabledInput;
 use crate::contrib::preferences::common::preferences::{
     ADVANCED_SETTING_TAG, EXP_ASSIGNMENT_SETTING_TAG, EXTENSION_SETTING_TAG, FEATURE_SETTING_TAG, GENERAL_TAG_SETTING_TAG, ID_SETTING_TAG, LANGUAGE_SETTING_TAG,
     MODIFIED_SETTING_TAG, POLICY_SETTING_TAG,
 };
-
-/// A parte do `SuggestEnabledInput` que o menu usa.
-pub trait ISuggestEnabledInput {
-    fn get_value(&self) -> String;
-    fn set_value(&self, value: &str);
-    fn focus(&self);
-    /// `SuggestController.get(this.inputWidget)`.
-    fn suggest_controller(&self) -> Option<Rc<SuggestController>>;
-}
 
 /// Uma ação do menu, que roda `run` e devolve `undefined` (as `run` do original não devolvem nada).
 fn menu_action(id: &str, label: String, tooltip: String, checked: Option<bool>, run: impl Fn() + 'static) -> ActionRef {
