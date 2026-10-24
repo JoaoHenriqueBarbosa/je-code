@@ -12,6 +12,7 @@ mod file_icons;
 mod find;
 mod menus;
 mod quick_pick;
+mod terminal_panel;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -65,7 +66,10 @@ pub enum Command {
     ToggleFullScreen,
     ShowExplorer,
     QuickOpen,
-    CommandPalette,
+    ShowCommands,
+    TogglePanel,
+    ToggleTerminal,
+    NewTerminal,
     Find,
     FindNext,
     FindPrevious,
@@ -77,7 +81,6 @@ pub enum Command {
     FindInSelection,
     /// Aceita a linha de índice dado do Quick Open ou da paleta.
     QuickPickAccept(usize),
-    QuickPickClose,
     Exit,
 }
 
@@ -95,6 +98,8 @@ mod metrics {
     pub const TABS_HEIGHT: f64 = 32.0;
     pub const BREADCRUMBS_HEIGHT: f64 = 22.0;
     pub const RADIUS: f64 = 8.0;
+    pub const DEFAULT_PANEL_HEIGHT: f64 = 258.0;
+    pub const PANEL_TITLE_HEIGHT: f64 = 32.0;
 }
 
 use metrics::*;
@@ -156,6 +161,14 @@ pub struct Shell {
     needs_render: bool,
     quick_pick: Option<QuickPick>,
     find: Option<FindWidget>,
+    panel_visible: bool,
+    panel_height: f64,
+    terminal: Option<je_terminal::Terminal>,
+    terminal_focused: bool,
+    terminal_palette: je_terminal::Palette,
+    /// Acorda o laço de eventos da janela (o pty do terminal chama quando há saída).
+    wake: je_terminal::Wake,
+    sash_panel_drag: Option<(f64, f64)>,
     /// O campo da busca tem o foco do teclado.
     find_focused: bool,
     /// O último valor da busca, para reabrir o widget com ele.
@@ -226,6 +239,7 @@ impl Shell {
             None => Rc::new(|_: &str| None),
         };
         let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
+        let terminal_palette = terminal_panel::palette(&theme);
         let mut shell = Self {
             ui,
             theme,
@@ -252,6 +266,13 @@ impl Shell {
             needs_render: true,
             quick_pick: None,
             find: None,
+            panel_visible: false,
+            panel_height: DEFAULT_PANEL_HEIGHT,
+            terminal: None,
+            terminal_focused: false,
+            terminal_palette,
+            wake: std::sync::Arc::new(|| {}),
+            sash_panel_drag: None,
             find_focused: false,
             last_find: None,
             palette_items,
@@ -278,6 +299,7 @@ impl Shell {
     }
 
     /// Os caminhos selecionados no explorador (para os testes).
+    #[cfg(test)]
     pub fn explorer_selection(&self) -> Vec<PathBuf> {
         self.explorer.as_ref().map(Explorer::selection).unwrap_or_default()
     }
@@ -498,12 +520,15 @@ impl Shell {
                     }
                 }
             }
-            Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Command::ToggleSidebar => {
+                self.sidebar_visible = !self.sidebar_visible;
+                self.resize_editors();
+            }
             Command::ShowExplorer => self.sidebar_visible = !self.sidebar_visible || self.explorer.is_none(),
             Command::ToggleStatusBar => self.statusbar_visible = !self.statusbar_visible,
             Command::ToggleFullScreen => self.fullscreen_requested = true,
             Command::QuickOpen => self.open_quick_pick(""),
-            Command::CommandPalette => self.open_quick_pick(">"),
+            Command::ShowCommands => self.open_quick_pick(">"),
             Command::QuickPickAccept(index) => {
                 let command = self.quick_pick.as_ref().and_then(|pick| pick.accept(Some(index)));
                 self.quick_pick = None;
@@ -511,7 +536,26 @@ impl Shell {
                     self.run(command);
                 }
             }
-            Command::QuickPickClose => self.quick_pick = None,
+            Command::TogglePanel => {
+                self.panel_visible = !self.panel_visible;
+                self.set_terminal_focus(self.panel_visible);
+                self.ensure_terminal();
+                self.resize_editors();
+            }
+            Command::ToggleTerminal | Command::NewTerminal => {
+                if command == Command::NewTerminal {
+                    self.terminal = None;
+                }
+                if self.panel_visible && self.terminal_focused && command == Command::ToggleTerminal {
+                    self.panel_visible = false;
+                    self.set_terminal_focus(false);
+                } else {
+                    self.panel_visible = true;
+                    self.set_terminal_focus(true);
+                }
+                self.ensure_terminal();
+                self.resize_editors();
+            }
             Command::Find => self.open_find(),
             Command::FindNext => self.find_step(1),
             Command::FindPrevious => self.find_step(-1),
@@ -739,6 +783,15 @@ impl Shell {
         }
     }
 
+    /// A área do editor mudou (painel, barra lateral): cada editor se ajusta.
+    fn resize_editors(&mut self) {
+        let rect = self.editor_rect();
+        for editor in &mut self.editors {
+            editor.view.resize(rect.width(), rect.height());
+        }
+        self.needs_render = true;
+    }
+
     pub fn take_exit(&mut self) -> bool {
         std::mem::take(&mut self.exit_requested)
     }
@@ -768,7 +821,21 @@ impl Shell {
     /// O painel do grupo de editores, com a borda de 1 px.
     fn editor_part_rect(&self) -> Rect {
         let left = self.sidebar_rect().map_or(ACTIVITY_LEFT + ACTIVITY_WIDTH + SASH, |r| r.x1 + SASH);
-        Rect::new(left, TITLE_HEIGHT, self.size.0 - 4.0, self.parts_bottom())
+        let bottom = if self.panel_visible { self.parts_bottom() - self.panel_height - SASH } else { self.parts_bottom() };
+        Rect::new(left, TITLE_HEIGHT, self.size.0 - 4.0, bottom)
+    }
+
+    /// O painel inferior (abas Problems, Output, Debug Console, Terminal, Ports), debaixo do grupo de editores.
+    fn panel_rect(&self) -> Option<Rect> {
+        self.panel_visible.then(|| {
+            let editor = self.editor_part_rect();
+            Rect::new(editor.x0, self.parts_bottom() - self.panel_height, editor.x1, self.parts_bottom())
+        })
+    }
+
+    /// A área da grade do terminal: abaixo da faixa de título do painel, dentro da borda de 1 px.
+    fn terminal_area(&self) -> Option<Rect> {
+        self.panel_rect().map(|p| Rect::new(p.x0 + 1.0, p.y0 + 1.0 + PANEL_TITLE_HEIGHT, p.x1 - 1.0, p.y1 - 1.0))
     }
 
     /// A área do editor de texto: abaixo das abas e dos breadcrumbs, dentro da borda.
@@ -802,6 +869,7 @@ impl Shell {
         self.render_activity_bar(chrome);
         self.render_sidebar(chrome);
         self.render_editor_part(chrome);
+        self.render_panel(chrome);
         if self.statusbar_visible {
             self.render_status_bar(chrome);
         }
@@ -960,6 +1028,112 @@ impl Shell {
         if let Some(explorer) = &self.explorer {
             explorer.layout(list.width(), list.height());
         }
+    }
+
+    fn render_panel(&mut self, chrome: NodeId) {
+        let Some(rect) = self.panel_rect() else { return };
+        let active_fg = self.color("panelTitle.activeForeground");
+        let inactive_fg = self.color("panelTitle.inactiveForeground");
+        let font = ui_font(13.0, 400);
+        let label = self.terminal.as_ref().map_or("zsh".to_owned(), |t| t.shell_name().to_owned());
+        let mut tree = self.ui.tree_mut();
+        let panel = tree.create(chrome, Role::Region);
+        tree.set_bounds(panel, rect);
+        let style = tree.style_mut(panel);
+        style.background = Some(self.color("panel.background"));
+        style.border = Some(Border { width: 1.0, color: self.color("panel.border") });
+        style.radius = RADIUS;
+        style.clip = true;
+        // As abas (`.composite-bar`): cada uma com 10 px de respiro de cada lado, 24 px de altura, a ativa com fundo.
+        let tabs = ["Problems", "Output", "Debug Console", "Terminal", "Ports"];
+        let mut x = 2.0;
+        for name in tabs {
+            let active = name == "Terminal";
+            let text_width = measure_text(name, &font);
+            let width = text_width + 20.0 + if name == "Problems" { 0.0 } else { 0.0 };
+            let tab = tree.create(panel, Role::Tab);
+            tree.set_bounds(tab, Rect::new(x + 2.0, 5.0, x + 2.0 + width, 29.0));
+            let style = tree.style_mut(tab);
+            style.radius = 5.0;
+            style.cursor = Some(Cursor::Pointer);
+            if active {
+                style.background = Some(self.color("list.inactiveSelectionBackground"));
+            }
+            let text = tree.create(tab, Role::Generic);
+            tree.set_bounds(text, Rect::new(10.0, 0.0, 10.0 + text_width, 24.0));
+            tree.style_mut(text).content = Content::Text { text: name.to_owned(), style: font.clone(), color: if active { self.color("panelTitle.activeForeground") } else { inactive_fg }, line_height: 24.0 };
+            x += width + 4.0;
+        }
+        // À direita: o terminal ativo (ícone e nome), novo, dividir, apagar, mais, maximizar e fechar.
+        let inner = rect.width() - 2.0;
+        let icons = [("close", inner - 28.0), ("screen-full", inner - 54.0), ("ellipsis", inner - 80.0), ("trash", inner - 106.0), ("split-horizontal", inner - 132.0)];
+        for (icon, bx) in icons {
+            let button = tree.create(panel, Role::Button);
+            tree.set_bounds(button, Rect::new(bx, 5.0, bx + 22.0, 27.0));
+            let style = tree.style_mut(button);
+            style.content = Content::Codicon { id: icon.into(), size: 16.0, color: active_fg };
+            style.radius = 5.0;
+            style.cursor = Some(Cursor::Pointer);
+        }
+        let new = tree.create(panel, Role::Button);
+        tree.set_bounds(new, Rect::new(inner - 175.0, 5.0, inner - 140.0, 27.0));
+        tree.style_mut(new).content = Content::Codicon { id: "add".into(), size: 16.0, color: active_fg };
+        let label_width = measure_text(&label, &font);
+        let name = tree.create(panel, Role::Generic);
+        let name_x = inner - 175.0 - 8.0 - label_width;
+        tree.set_bounds(name, Rect::new(name_x, 4.0, name_x + label_width, 28.0));
+        tree.style_mut(name).content = Content::Text { text: label, style: font, color: active_fg, line_height: 24.0 };
+        let icon = tree.create(panel, Role::Image);
+        tree.set_bounds(icon, Rect::new(name_x - 26.0, 5.0, name_x - 6.0, 27.0));
+        tree.style_mut(icon).content = Content::Codicon { id: "terminal".into(), size: 16.0, color: active_fg };
+        // A superfície do terminal.
+        let host = tree.create(panel, Role::Generic);
+        tree.set_bounds(host, Rect::new(0.0, PANEL_TITLE_HEIGHT, inner, rect.height() - 2.0));
+        let style = tree.style_mut(host);
+        style.content = Content::Host(1);
+        style.cursor = Some(Cursor::Text);
+        drop(tree);
+        self.ensure_terminal();
+    }
+
+    /// Abre o terminal (um shell no workspace) na primeira vez que o painel aparece.
+    fn ensure_terminal(&mut self) {
+        let Some(area) = self.terminal_area() else { return };
+        let (columns, rows) = terminal_panel::grid_size(area.width(), area.height());
+        let cw = terminal_panel::cell_width();
+        match &mut self.terminal {
+            Some(terminal) => terminal.resize(columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16),
+            None => match je_terminal::Terminal::new(self.workspace.clone(), None, columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16, self.wake.clone()) {
+                Ok(terminal) => self.terminal = Some(terminal),
+                Err(e) => self.notice = Some(format!("não foi possível abrir o terminal: {e}")),
+            },
+        }
+    }
+
+    /// O texto da grade do terminal, linha a linha (para os testes).
+    #[cfg(test)]
+    pub fn terminal_text(&self) -> String {
+        self.terminal.as_ref().map_or_else(String::new, |t| {
+            let snapshot = t.snapshot(&self.terminal_palette);
+            snapshot.rows.iter().map(|r| r.iter().map(|c| c.ch).collect::<String>().trim_end().to_owned()).collect::<Vec<_>>().join("\n")
+        })
+    }
+
+    pub fn set_wake(&mut self, wake: je_terminal::Wake) {
+        self.wake = wake;
+    }
+
+    fn set_terminal_focus(&mut self, focused: bool) {
+        self.terminal_focused = focused;
+        if focused {
+            self.find_focused = false;
+            if let Some(editor) = self.active_editor_mut() {
+                editor.view.set_focus(false);
+            }
+        } else if let Some(editor) = self.active_editor_mut() {
+            editor.view.set_focus(true);
+        }
+        self.needs_render = true;
     }
 
     fn render_editor_part(&mut self, chrome: NodeId) {
@@ -1189,7 +1363,18 @@ impl Shell {
         if let Some(e) = editor.as_deref_mut() {
             e.view.resize(rect.width(), rect.height());
         }
-        tree.paint_hosted(list, scale, &mut |_, area, list| {
+        let (terminal, palette, terminal_focused) = (&self.terminal, &self.terminal_palette, self.terminal_focused);
+        tree.paint_hosted(list, scale, &mut |surface, area, list| {
+            if surface == 1 {
+                if let Some(terminal) = terminal {
+                    let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
+                    let radii = RoundedRectRadii::new(0.0, 0.0, 7.0 * scale, 7.0 * scale);
+                    list.push_clip(Shape::RoundedRect(RoundedRect::from_rect(device, radii)));
+                    terminal_panel::paint(list, area, scale, &terminal.snapshot(palette), palette, terminal_focused, true);
+                    list.pop_clip();
+                }
+                return;
+            }
             let Some(e) = editor.as_deref_mut() else { return };
             let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
             let radii = RoundedRectRadii::new(0.0, 0.0, 7.0 * scale, 7.0 * scale);
@@ -1207,6 +1392,12 @@ impl Shell {
         (self.active.is_some() && rect.contains(je_render::kurbo::Point::new(x, y))).then_some((x - rect.x0, y - rect.y0))
     }
 
+    /// O sash entre o grupo de editores e o painel inferior.
+    fn panel_sash_hit(&self, x: f64, y: f64) -> bool {
+        let (Some(panel), true) = (self.panel_rect(), self.panel_visible) else { return false };
+        x >= panel.x0 && x < panel.x1 && y >= panel.y0 - SASH && y < panel.y0
+    }
+
     fn sash_hit(&self, x: f64, y: f64) -> bool {
         self.sidebar_rect().is_some_and(|r| x >= r.x1 && x < r.x1 + SASH && y >= r.y0 && y < r.y1)
     }
@@ -1215,6 +1406,20 @@ impl Shell {
     /// do `Ui` sempre (menus fecham no clique fora, abas reagem).
     pub fn pointer(&mut self, input: PointerInput) {
         let (x, y) = (input.x, input.y);
+        if let Some((start_height, start_y)) = self.sash_panel_drag {
+            // O painel: do mínimo de 80 px até deixar 80 px ao grupo de editores.
+            let max = (self.parts_bottom() - TITLE_HEIGHT - SASH - 80.0).max(80.0);
+            self.panel_height = (start_height + start_y - y).clamp(80.0, max).round();
+            if input.kind == PointerInputKind::Up {
+                self.sash_panel_drag = None;
+            }
+            self.resize_editors();
+            return;
+        }
+        if input.kind == PointerInputKind::Down && self.panel_sash_hit(x, y) {
+            self.sash_panel_drag = Some((self.panel_height, y));
+            return;
+        }
         if let Some((start_width, start_x)) = self.sash_drag {
             // O sash da side bar: limites do `SidebarPart` (170 px a 75% da janela).
             self.sidebar_width = (start_width + x - start_x).clamp(170.0, (self.size.0 * 0.75).max(170.0)).round();
@@ -1250,6 +1455,12 @@ impl Shell {
             self.needs_render = true;
             return;
         }
+        if input.kind == PointerInputKind::Down {
+            let in_terminal = self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y)));
+            if in_terminal != self.terminal_focused {
+                self.set_terminal_focus(in_terminal);
+            }
+        }
         let target = self.ui.pointer_input(input);
         if input.kind == PointerInputKind::Down && Some(target) == self.nodes.editor_host && input.button == PointerButton::Primary {
             self.ui.blur();
@@ -1274,6 +1485,9 @@ impl Shell {
         if self.sash_drag.is_some() || self.sash_hit(x, y) {
             return Cursor::EwResize;
         }
+        if self.sash_panel_drag.is_some() || self.panel_sash_hit(x, y) {
+            return Cursor::NsResize;
+        }
         self.ui.cursor_at(x, y)
     }
 
@@ -1283,6 +1497,12 @@ impl Shell {
             && self.sidebar_rect().is_some_and(|r| r.contains(je_render::kurbo::Point::new(x, y)))
         {
             explorer.scroll_by(dy);
+            return;
+        }
+        if self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y))) {
+            if let Some(terminal) = &self.terminal {
+                terminal.scroll((-dy / terminal_panel::ROW_HEIGHT).round() as i32);
+            }
             return;
         }
         if self.editor_local(x, y).is_some()
@@ -1303,9 +1523,12 @@ impl Shell {
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
             (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
             (true, false, false, KeyCode::KeyF) => Command::Find,
+            (true, false, false, KeyCode::KeyJ) => Command::TogglePanel,
+            (true, false, false, KeyCode::Backquote) => Command::ToggleTerminal,
+            (true, true, false, KeyCode::Backquote) => Command::NewTerminal,
             (false, false, false, KeyCode::F3) => Command::FindNext,
             (false, true, false, KeyCode::F3) => Command::FindPrevious,
-            (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::CommandPalette,
+            (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::ShowCommands,
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
@@ -1317,10 +1540,44 @@ impl Shell {
     /// Entrega uma tecla: primeiro à árvore do `Ui` (a barra de menus escuta Alt e os mnemônicos na raiz); se nenhum
     /// widget tem o foco e ninguém consumiu, aos atalhos do workbench e então ao editor.
     pub fn key(&mut self, down: bool, key_code: KeyCode, mods: Modifiers, text: Option<&str>, editor_key: Option<EditorKey>) {
-        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::CommandPalette))) {
+        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) {
             if self.quick_pick_key(down, text, editor_key, mods) {
                 return;
             }
+        }
+        if self.terminal_focused && self.panel_visible && self.terminal.is_some() && self.quick_pick.is_none() {
+            if down {
+                let allowed = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::QuickOpen | Command::ShowCommands | Command::TogglePanel | Command::ToggleTerminal | Command::NewTerminal | Command::ToggleSidebar | Command::NewUntitled | Command::ShowExplorer | Command::ToggleFullScreen | Command::Exit));
+                if let Some(command) = allowed {
+                    self.run(command);
+                    return;
+                }
+                let ctrl = mods.ctrl || mods.meta;
+                // Colar e copiar do terminal: Ctrl+Shift+V / Ctrl+Shift+C (e Ctrl+V no Windows).
+                if ctrl && key_code == KeyCode::KeyV && (mods.shift || cfg!(windows)) {
+                    let text = je_editor_view::clipboard::Clipboard::new().text();
+                    if let Some(terminal) = &self.terminal {
+                        let bracketed = terminal.bracketed_paste();
+                        let mut bytes = Vec::new();
+                        if bracketed {
+                            bytes.extend_from_slice(b"\x1b[200~");
+                        }
+                        bytes.extend_from_slice(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
+                        if bracketed {
+                            bytes.extend_from_slice(b"\x1b[201~");
+                        }
+                        terminal.write(bytes);
+                    }
+                    return;
+                }
+                if let Some(terminal) = &self.terminal
+                    && let Some(bytes) = terminal_panel::encode_key(terminal, editor_key, key_code, text, mods)
+                {
+                    terminal.scroll_to_bottom();
+                    terminal.write(bytes);
+                }
+            }
+            return;
         }
         if self.find_focused && self.find.is_some() && down {
             let toggles = match (mods.alt, key_code) {
@@ -1329,7 +1586,7 @@ impl Shell {
                 (true, KeyCode::KeyR) => Some(Command::FindToggleRegex),
                 _ => None,
             };
-            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::QuickOpen | Command::CommandPalette | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
+            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::QuickOpen | Command::ShowCommands | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
             if let Some(command) = toggles.or(shortcut) {
                 self.run(command);
                 return;
@@ -1384,7 +1641,8 @@ impl Shell {
     pub fn take_dirty(&mut self) -> bool {
         self.run_commands();
         let editor = self.active.is_some_and(|i| self.editors[i].view.take_dirty());
-        editor || self.needs_render || self.ui.has_pending_animation_frame()
+        let terminal = self.terminal.as_ref().is_some_and(je_terminal::Terminal::take_dirty);
+        editor || terminal || self.needs_render || self.ui.has_pending_animation_frame()
     }
 
     pub fn next_blink_deadline(&self, now: Instant) -> Option<Instant> {

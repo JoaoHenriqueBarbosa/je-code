@@ -1,0 +1,12 @@
+[package]
+name = "je-terminal"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# O emulador de terminal e o pty do Alacritty (Rust puro; no Windows usa o ConPTY).
+alacritty_terminal = "0.25"
+
+[lints]
+workspace = true

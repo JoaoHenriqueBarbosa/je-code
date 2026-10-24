@@ -175,12 +175,12 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, 
         Some(item("&Primary Side Bar", Some(C::ToggleSidebar), CTRL | code(KeyCode::KeyB))),
         Some(item("Secondary Si&de Bar", None, CTRL | ALT | code(KeyCode::KeyB))),
         Some(item("&Status Bar", Some(C::ToggleStatusBar), 0)),
-        Some(item("&Panel", None, CTRL | code(KeyCode::KeyJ))),
+        Some(item("&Panel", Some(C::TogglePanel), CTRL | code(KeyCode::KeyJ))),
     ];
     let view_actions = {
         let mut actions = to_actions(
             vec![
-                Some(item("&Command Palette...", Some(C::CommandPalette), CTRL | SHIFT | code(KeyCode::KeyP))),
+                Some(item("&Command Palette...", Some(C::ShowCommands), CTRL | SHIFT | code(KeyCode::KeyP))),
                 Some(item("&Open View...", None, 0)),
                 None,
             ],
@@ -202,7 +202,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, 
                 Some(item("&Problems", None, CTRL | SHIFT | code(KeyCode::KeyM))),
                 Some(item("&Output", None, CTRL | SHIFT | code(KeyCode::KeyU))),
                 Some(item("De&bug Console", None, CTRL | SHIFT | code(KeyCode::KeyY))),
-                Some(item("&Terminal", None, CTRL | code(KeyCode::Backquote))),
+                Some(item("&Terminal", Some(C::ToggleTerminal), CTRL | code(KeyCode::Backquote))),
                 None,
                 Some(item("&Word Wrap", None, ALT | code(KeyCode::KeyZ))),
             ],
@@ -242,7 +242,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, 
         Some(item("Toggle &Breakpoint", None, code(KeyCode::F9))),
     ];
     let terminal = vec![
-        Some(item("&New Terminal", None, CTRL | SHIFT | code(KeyCode::Backquote))),
+        Some(item("&New Terminal", Some(C::NewTerminal), CTRL | SHIFT | code(KeyCode::Backquote))),
         Some(item("&Split Terminal", None, CTRL | SHIFT | code(KeyCode::Digit5))),
         None,
         Some(item("Run &Task...", None, 0)),
@@ -250,7 +250,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, 
     ];
     let help = vec![
         Some(item("&Welcome", None, 0)),
-        Some(item("Show All &Commands", Some(C::CommandPalette), CTRL | SHIFT | code(KeyCode::KeyP))),
+        Some(item("Show All &Commands", Some(C::ShowCommands), CTRL | SHIFT | code(KeyCode::KeyP))),
         Some(item("&Documentation", None, 0)),
         None,
         Some(item("&Keyboard Shortcuts Reference", None, key_chord(CTRL | code(KeyCode::KeyK), CTRL | code(KeyCode::KeyR)))),

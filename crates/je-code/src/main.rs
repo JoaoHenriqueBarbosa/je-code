@@ -301,6 +301,14 @@ impl ApplicationHandler for App {
         self.window = Some(window);
     }
 
+    /// O pty do terminal avisa que há saída nova.
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        self.tick(event_loop);
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -469,6 +477,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let proxy = event_loop.create_proxy();
+    shell.set_wake(Arc::new(move || {
+        let _ = proxy.send_event(());
+    }));
     let mut app = App { shell, list: DisplayList::new(), window: None, presenter: None, backend_label: String::new(), modifiers: Modifiers::default(), pointer: PointerState::default(), bench, split: Vec::new() };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("je-code: {e}");
@@ -647,6 +659,36 @@ mod tests {
         key(&mut shell, None, Some("z"));
         assert_eq!(shell.active_editor().expect("aba").view.model().get_line_content(3).to_string_lossy().chars().filter(|c| *c == 'z').count(), 1, "Escape fecha a busca e devolve o teclado ao editor");
         std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_panel_runs_a_shell_and_takes_the_keyboard() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-term", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "abc").expect("arquivo");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[dir.join("a.txt")], 1200.0, 800.0).expect("abre");
+        shell.set_wake(Arc::new(|| {}));
+        shell.run(shell::Command::TogglePanel);
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        // O teclado vai ao terminal: digita um comando e dá Enter.
+        for c in "echo ola-terminal".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            snapshot(&mut shell, "t0-terminal.png");
+            if shell.terminal_text().matches("ola-terminal").count() >= 2 || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(shell.terminal_text().matches("ola-terminal").count() >= 2, "o comando e a saída dele estão na grade: {}", shell.terminal_text());
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_value_length(), 3, "o texto do editor não mudou");
+        // Ctrl+J fecha o painel e devolve o teclado ao editor.
+        shell.run(shell::Command::TogglePanel);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

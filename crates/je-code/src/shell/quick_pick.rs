@@ -217,12 +217,6 @@ impl QuickPick {
         }
     }
 
-    pub fn focus_row(&mut self, index: usize) {
-        if index < self.results.len() {
-            self.focus = index;
-        }
-    }
-
     /// O comando da linha `index` (o focado se `None`).
     pub fn accept(&self, index: Option<usize>) -> Option<Command> {
         self.results.get(index.unwrap_or(self.focus)).map(|(item, _)| item.command.clone())
@@ -317,7 +311,7 @@ impl QuickPick {
             let mut spans = score.label_match.clone().unwrap_or_default();
             spans.sort_by_key(|m| m.start);
             let mut cursor = 0usize;
-            let mut piece = |tree: &mut Tree, x: &mut f64, text: String, style: &TextStyle, color: Rgba| {
+            let piece = |tree: &mut Tree, x: &mut f64, text: String, style: &TextStyle, color: Rgba| {
                 if text.is_empty() {
                     return;
                 }

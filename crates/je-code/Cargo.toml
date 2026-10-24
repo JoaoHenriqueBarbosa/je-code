@@ -20,6 +20,7 @@ je-editor = { path = "../je-editor" }
 je-editor-view = { path = "../je-editor-view" }
 je-platform = { path = "../je-platform" }
 je-render = { path = "../je-render" }
+je-terminal = { path = "../je-terminal" }
 je-theme = { path = "../je-theme" }
 je-ui = { path = "../je-ui" }
 je-widgets = { path = "../je-widgets" }

@@ -183,6 +183,7 @@ impl Explorer {
     }
 
     /// Os arquivos selecionados na árvore.
+    #[cfg(test)]
     pub fn selection(&self) -> Vec<PathBuf> {
         self.tree.get_selection().into_iter().flatten().collect()
     }
