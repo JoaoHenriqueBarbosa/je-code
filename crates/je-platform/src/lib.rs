@@ -55,3 +55,5 @@ pub mod quickinput;
 pub mod remote_tunnel;
 pub mod otel;
 pub mod web_content_extractor;
+
+pub mod agent_host;
