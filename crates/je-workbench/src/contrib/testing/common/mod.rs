@@ -5,6 +5,7 @@
 pub mod constants;
 pub mod get_computed_state;
 pub mod main_thread_test_collection;
+pub mod observable_utils;
 pub mod observable_value;
 pub mod serialized_json;
 pub mod stored_value;
