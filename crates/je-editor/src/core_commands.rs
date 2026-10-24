@@ -1,13 +1,12 @@
-//! Porte de `src/vs/editor/browser/coreCommands.ts`, linhas 1 a 1003 (parte A): `CoreEditorCommand`,
-//! `EditorScroll_`, `RevealLine_`, `EditorOrNativeTextInputCommand`, `NavigationCommandRevealType` e o
-//! namespace `CoreNavigationCommands` do início até `LastCursorMoveToSelect` (`MoveTo`, `MoveToSelect`,
-//! `ColumnSelect`, `CursorColumnSelect*`, `CursorMove`, `CursorLeft`...`CursorPageDownSelect`, `CreateCursor`,
-//! `LastCursorMoveToSelect`). A parte B (do `HomeCommand` em diante) acrescenta a este arquivo o que está
-//! listado no comentário final.
+//! Porte de `src/vs/editor/browser/coreCommands.ts`: `CoreEditorCommand`, `EditorScroll_`, `RevealLine_`,
+//! `EditorOrNativeTextInputCommand`, `NavigationCommandRevealType`, o namespace `CoreNavigationCommands` (de
+//! `MoveTo` até `SetSelection`), `registerColumnSelection`, o namespace `CoreEditingCommands`,
+//! `EditorHandlerCommand`, `registerOverwritableCommand` e as chamadas de registro do fim do arquivo.
 //!
 //! Os comandos chamam as funções de [`crate::cursor_move_commands`] (`CursorMoveCommands`),
 //! [`crate::cursor_column_selection`] (`ColumnSelection`) e o `ViewModel` do editor
-//! ([`EditorViewModel`]); o registro é o de [`crate::editor_extensions`].
+//! ([`EditorViewModel`]); o registro é o de [`crate::editor_extensions`]. O que o carregamento do módulo faz no
+//! original (criar os comandos, `registerColumnSelection`, `registerOverwritableCommand`) é [`register_core_commands`].
 //!
 //! Representação:
 //! - `abstract class CoreEditorCommand<T>` é a struct [`CoreEditorCommand<T>`], que guarda o `runCoreEditorCommand`
@@ -16,6 +15,14 @@
 //!   comando com o fechamento certo; o que a subclasse guarda em campo (`_inSelectionMode`, `_isPaged`,
 //!   `_staticArgs`) o fechamento captura. O `IViewModel` do `runCoreEditorCommand` é o [`EditorViewModel`]
 //!   concreto, porque o trait [`crate::view_model_types::IViewModel`] tem tipos associados e não vira objeto.
+//! - `HomeCommand`, `LineStartCommand`, `EndCommand`, `LineEndCommand`, `TopCommand`, `BottomCommand`, `WordCommand`,
+//!   `LineCommand`, `LastCursorLineCommand` e os `ScrollLineUp`... (classes que só diferem em dados e em uma
+//!   chamada) são funções que montam o comando por um corpo comum (`cursor_states_command`,
+//!   `selection_gesture_command`, `last_cursor_command`, `scroll_command`), com a diferença virando parâmetro.
+//! - `abstract class CoreEditingCommand` é a struct [`CoreEditingCommand`], com o `runCoreEditingCommand` como
+//!   fechamento. `UndoCommand`/`RedoCommand` do namespace `CoreEditingCommands` são um tipo só,
+//!   [`core_editing_commands::UndoRedoCommand`], com a direção como campo. `Undo`/`Redo`/`SelectAll`
+//!   (`EditorOrNativeTextInputCommand`) são os structs que implementam o trait.
 //! - O `Partial<T>` dos argumentos é uma struct por comando (`MoveCommandOptions`, `ColumnSelectCommandOptions`,
 //!   `CursorMoveCommandOptions`, `CreateCursorCommandOptions`, `BaseCommandOptions`, [`CursorMoveArgs`]), com
 //!   todos os campos opcionais. O trait [`CoreCommandArgs`] os lê do `Dynamic` do `runEditorCommand` (`args || {}`),
@@ -39,34 +46,55 @@
 //!   registrada e nunca trata, e `runDOMCommand(activeElement)` perde o parâmetro e nunca é chamado. A decisão
 //!   da primeira implementação (`code-editor`) é o foco do próprio editor (`hasTextFocus()`, que o widget guarda
 //!   em `has_text_focus`) e a da terceira (`generic-dom`) é o editor ativo. `isFirefox` e `aria.status` (usados
-//!   pelos comandos da parte B) também são DOM.
+//!   pelos comandos da parte B) também são DOM: o `status(...)` de `RemoveSecondaryCursors` (a mensagem de
+//!   acessibilidade "Removed secondary cursors") não é emitido.
 //! - **Serviços.** `ICodeEditorService` é o [`crate::editor_extensions::ICodeEditorLookup`] (ver
 //!   `editor_extensions`). `EditorContextKeys` (`editorContextKeys.ts`) ainda não tem porte; uma `RawContextKey`
-//!   é a expressão `has(chave)`, que [`text_input_focus`] monta (sem o registro de metadados da chave).
+//!   é a expressão `has(chave)` (e `toNegated()` é `not(chave)`), que [`text_input_focus`] e as demais funções
+//!   de chave montam (sem o registro de metadados da chave).
 //! - `TextEditorSelectionSource` (`platform/editor/common/editor.ts`, só os três valores de texto) é o módulo
 //!   [`text_editor_selection_source`], porque `cursorMove` com `noHistory` usa o `PROGRAMMATIC`.
 //! - `viewModel.model` (o `ITextModel`) é o `Rc<TextModel>` de [`crate::view_model_types::IViewModel::model`].
+//! - `ISelection` (o `selection` de `setSelection`) é lida do `Dynamic` pelos quatro números; um objeto sem os
+//!   quatro números não é uma seleção e o comando não faz nada. `parseInt` de `revealLine` é [`js_parse_int`]; um
+//!   `lineNumber` de texto sem dígitos (`NaN`) faria o `getLineMaxColumn` do original lançar, e aqui o comando
+//!   não faz nada. `executeCommands` aceita `(ICommand | null)[]` como no original (o `Vec<Option<...>>`).
 
 use std::rc::Rc;
 
 use je_base::dynamic::{Dynamic, FunctionRef, Truthy};
 use je_base::key_codes::{KeyCode, KeyMod};
+use je_base::nls::localize;
 use je_base::promise::{MaybePromise, Promise};
+use je_base::scrollable::INewScrollPosition;
 use je_base::types::{is_boolean, is_number, is_object, is_string, is_undefined};
 use je_platform::commands::{CommandArgument, CommandDescription, CommandMetadata};
 use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression};
-use je_platform::keybinding::keybindings_registry::{KeybindingWeight, Keybindings, PlatformKeybindings};
+use je_platform::keybinding::keybindings_registry::{
+    KeybindingRule, KeybindingWeight, Keybindings, PlatformKeybindings, keybindings_registry,
+};
 
-use crate::code_editor_widget::{CodeEditorWidget, EditorViewModel, IEditorCommand, ICodeEditor};
+use crate::code_editor_widget::{CodeEditorWidget, EditorViewModel, Handler, IEditorCommand, ICodeEditor};
+use crate::config::editor_options::registry::READ_ONLY;
 use crate::cursor_column_selection::{self as column_selection, ColumnSelectResult};
-use crate::cursor_common::{ColumnSelectData, CursorConfiguration, CursorSimpleModel, CursorState, PartialCursorState};
+use crate::cursor_common::{
+    ColumnSelectData, CursorConfiguration, CursorSimpleModel, CursorState, EditOperationType, PartialCursorState,
+};
+use crate::cursor_delete_operations::DeleteOperations;
 use crate::cursor_move_commands::{self as move_commands, cursor_move};
+use crate::cursor_type_edit_operations::{EnterOperation, TabOperation};
+use crate::cursor_type_operations::TypeOperations;
+use crate::editor_common::{Command as EditCommand, ScrollType};
 use crate::editor_extensions::{
     Command, CommandImplementationResult, CommandKeybindingsOptions, CommandOptions, EditorCommand, I_CODE_EDITOR_LOOKUP,
-    MultiCommand, ServicesAccessor, position_from_dynamic, register_editor_command,
+    ICommand, MultiCommand, ServicesAccessor, position_from_dynamic, redo_command, register_command, register_editor_command,
+    select_all_command, undo_command,
 };
 use crate::position::Position;
-use crate::view_model_types::{CursorChangeReason, IViewModel};
+use crate::range::Range;
+use crate::selection::Selection;
+use crate::text_model::TextModel;
+use crate::view_model_types::{CursorChangeReason, IViewModel, VerticalRevealType};
 
 /// `const CORE_WEIGHT = KeybindingWeight.EditorCore`.
 pub const CORE_WEIGHT: i64 = KeybindingWeight::EDITOR_CORE;
@@ -100,6 +128,61 @@ pub fn text_input_keybindings(keybindings: Keybindings) -> Vec<CommandKeybinding
 /// `{ primary }` ou `{ primary, secondary }` de uma plataforma (`mac: {...}`, `linux: {...}`).
 pub fn platform_keybindings(primary: u32, secondary: Option<Vec<u32>>) -> Option<PlatformKeybindings> {
     Some(PlatformKeybindings { primary: Some(primary), secondary })
+}
+
+/// As opções de um comando do núcleo com atalhos de `text_input_keybindings` e sem precondição nem metadados.
+fn text_input_command_options(id: &str, keybindings: Keybindings) -> CommandOptions {
+    CommandOptions { kb_opts: text_input_keybindings(keybindings), ..CommandOptions::new(id) }
+}
+
+/// `EditorContextKeys.hasNonEmptySelection` (a chave `editorHasSelection`).
+pub fn has_non_empty_selection() -> ContextKeyExpression {
+    ContextKeyExpr::has("editorHasSelection")
+}
+
+/// `EditorContextKeys.hasMultipleSelections` (a chave `editorHasMultipleSelections`).
+pub fn has_multiple_selections() -> ContextKeyExpression {
+    ContextKeyExpr::has("editorHasMultipleSelections")
+}
+
+/// `EditorContextKeys.writable`: `readOnly.toNegated()` (a chave `editorReadonly`).
+pub fn writable() -> ContextKeyExpression {
+    ContextKeyExpr::not("editorReadonly")
+}
+
+/// `EditorContextKeys.editorTextFocus` (a chave `editorTextFocus`).
+pub fn editor_text_focus() -> ContextKeyExpression {
+    ContextKeyExpr::has("editorTextFocus")
+}
+
+/// `EditorContextKeys.tabDoesNotMoveFocus`: `tabMovesFocus.toNegated()` (a chave `editorTabMovesFocus`).
+pub fn tab_does_not_move_focus() -> ContextKeyExpression {
+    ContextKeyExpr::not("editorTabMovesFocus")
+}
+
+/// `EditorContextKeys.columnSelection` (a chave `editorColumnSelection`).
+pub fn column_selection_enabled() -> ContextKeyExpression {
+    ContextKeyExpr::has("editorColumnSelection")
+}
+
+/// `parseInt(text)` (base 10, ou 16 com o prefixo `0x`): `NaN` se não há dígito no começo do texto (depois dos
+/// espaços e do sinal).
+fn js_parse_int(text: &str) -> f64 {
+    let trimmed = text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    let (sign, unsigned) = match trimmed.as_bytes().first().copied() {
+        Some(b'-') => (-1.0, &trimmed[1..]),
+        Some(b'+') => (1.0, &trimmed[1..]),
+        _ => (1.0, trimmed),
+    };
+    let (radix, digits) = match unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X")) {
+        Some(rest) => (16, rest),
+        None => (10, unsigned),
+    };
+    let mut value: Option<f64> = None;
+    for digit in digits.chars().map_while(|c| c.to_digit(radix)) {
+        value = Some(value.unwrap_or(0.0) * f64::from(radix) + f64::from(digit));
+    }
+    value.map_or(f64::NAN, |value| sign * value)
 }
 
 // #region Leitura dos argumentos (`Partial<T>`)
@@ -296,6 +379,89 @@ impl CoreCommandArgs for CursorMoveArgs {
     }
 }
 
+/// `args.<key>` como `ISelection` (ver "Divergências").
+fn selection_property(args: &Dynamic, key: &str) -> Option<Selection> {
+    let selection = property(args, key);
+    if !matches!(selection, Dynamic::Object(_)) {
+        return None;
+    }
+    let number = |name: &str| number_property(&selection, name).map(|number| number as i32);
+    Some(Selection::new(
+        number("selectionStartLineNumber")?,
+        number("selectionStartColumn")?,
+        number("positionLineNumber")?,
+        number("positionColumn")?,
+    ))
+}
+
+/// `CoreNavigationCommands.EndCommandOptions`: o `BaseCommandOptions` mais `sticky`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EndCommandOptions {
+    pub source: Option<String>,
+    pub sticky: bool,
+}
+
+impl CoreCommandArgs for EndCommandOptions {
+    fn from_dynamic(args: &Dynamic) -> Self {
+        Self { source: text_property(args, "source"), sticky: flag_property(args, "sticky").unwrap_or(false) }
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+}
+
+/// `CoreNavigationCommands.EditorScrollCommandOptions`: `EditorScroll_.RawArguments & BaseCommandOptions`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditorScrollCommandOptions {
+    pub source: Option<String>,
+    pub arguments: editor_scroll::RawArguments,
+}
+
+impl CoreCommandArgs for EditorScrollCommandOptions {
+    fn from_dynamic(args: &Dynamic) -> Self {
+        Self { source: text_property(args, "source"), arguments: editor_scroll::RawArguments::from_dynamic(args) }
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+}
+
+/// `CoreNavigationCommands.RevealLineCommandOptions`: `RevealLine_.RawArguments & BaseCommandOptions`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RevealLineCommandOptions {
+    pub source: Option<String>,
+    pub arguments: reveal_line::RawArguments,
+}
+
+impl CoreCommandArgs for RevealLineCommandOptions {
+    fn from_dynamic(args: &Dynamic) -> Self {
+        Self { source: text_property(args, "source"), arguments: reveal_line::RawArguments::from_dynamic(args) }
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+}
+
+/// `CoreNavigationCommands.SetSelectionCommandOptions`: o `BaseCommandOptions` mais `selection`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SetSelectionCommandOptions {
+    pub source: Option<String>,
+    pub selection: Option<Selection>,
+}
+
+impl CoreCommandArgs for SetSelectionCommandOptions {
+    fn from_dynamic(args: &Dynamic) -> Self {
+        Self { source: text_property(args, "source"), selection: selection_property(args, "selection") }
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+}
+
 // #endregion
 
 // #region CoreEditorCommand
@@ -385,6 +551,14 @@ fn metadata_with_argument(description: &str, argument: CommandArgument) -> Comma
     let mut metadata = CommandMetadata::new(CommandDescription::Plain(description.to_string()));
     metadata.args = Some(vec![argument]);
     metadata
+}
+
+/// `CommandMetadata` com o argumento `{ name: 'args', schema }` (sem descrição nem restrição de tipo).
+fn args_metadata(description: &str, schema: Dynamic) -> CommandMetadata {
+    metadata_with_argument(
+        description,
+        CommandArgument { name: "args".to_string(), is_optional: false, description: None, constraint: None, schema: Some(schema) },
+    )
 }
 
 /// `CursorMove_.metadata` (o tipo próprio de `cursor_move_commands`) no `ICommandMetadata` de plataforma.
@@ -1025,23 +1199,366 @@ pub mod core_navigation_commands {
         view_model.set_cursor_states(args.source(), CursorChangeReason::Explicit, Some(states));
     }
 
-    /// `LastCursorMoveToSelect.runCoreEditorCommand`.
-    fn run_last_cursor_move_to_select(view_model: &EditorViewModel, args: &MoveCommandOptions) {
-        let Some(position) = args.position else {
-            return;
-        };
-        let last_added_cursor_index = view_model.get_last_added_cursor_index();
+    /// `LastCursorMoveToSelect`, `LastCursorWordSelect` e `LastCursorLineCommand`: trocam o estado do último cursor
+    /// adicionado pelo que `compute` devolve (que recebe o estado atual e a posição do argumento).
+    fn last_cursor_command(
+        id: &str,
+        compute: impl Fn(&EditorViewModel, &CursorState, &MoveCommandOptions, Position) -> PartialCursorState + 'static,
+    ) -> CoreEditorCommand<MoveCommandOptions> {
+        CoreEditorCommand::new(CommandOptions::new(id), move |view_model: &EditorViewModel, args: &MoveCommandOptions| {
+            let Some(position) = args.position else {
+                return;
+            };
+            let last_added_cursor_index = view_model.get_last_added_cursor_index();
 
-        let states = view_model.get_cursor_states();
-        let mut new_states: Vec<PartialCursorState> = states.iter().copied().map(PartialCursorState::Full).collect();
-        new_states[last_added_cursor_index] =
-            move_commands::move_to(view_model, &states[last_added_cursor_index], true, position, args.view_position);
+            let states = view_model.get_cursor_states();
+            let mut new_states: Vec<PartialCursorState> = states.iter().copied().map(PartialCursorState::Full).collect();
+            new_states[last_added_cursor_index] = compute(view_model, &states[last_added_cursor_index], args, position);
 
-        view_model.model().push_stack_element();
-        view_model.set_cursor_states(args.source(), CursorChangeReason::Explicit, Some(new_states));
+            view_model.model().push_stack_element();
+            view_model.set_cursor_states(args.source(), CursorChangeReason::Explicit, Some(new_states));
+        })
     }
 
-    /// Os comandos de navegação registrados (`MoveTo` até `LastCursorMoveToSelect`).
+    /// `HomeCommand`, `LineStartCommand`, `EndCommand`, `LineEndCommand`, `TopCommand`, `BottomCommand`,
+    /// `CancelSelection` e `RemoveSecondaryCursors`: empilha um ponto de desfazer, troca os estados dos cursores
+    /// pelos que `compute` devolve e revela os cursores.
+    fn cursor_states_command<T: CoreCommandArgs>(
+        opts: CommandOptions,
+        compute: impl Fn(&EditorViewModel, &T) -> Vec<PartialCursorState> + 'static,
+    ) -> CoreEditorCommand<T> {
+        CoreEditorCommand::new(opts, move |view_model: &EditorViewModel, args: &T| {
+            view_model.model().push_stack_element();
+            view_model.set_cursor_states(args.source(), CursorChangeReason::Explicit, Some(compute(view_model, args)));
+            view_model.reveal_all_cursors(args.source(), true, None);
+        })
+    }
+
+    /// `HomeCommand`, `TopCommand` e `BottomCommand`: um `CursorMoveCommands.moveTo...` que só recebe o modo de seleção.
+    fn move_to_boundary_command(
+        id: &str,
+        in_selection_mode: bool,
+        keybindings: Keybindings,
+        move_to_boundary: fn(&EditorViewModel, &[CursorState], bool) -> Vec<PartialCursorState>,
+    ) -> CoreEditorCommand<BaseCommandOptions> {
+        cursor_states_command(
+            text_input_command_options(id, keybindings),
+            move |view_model: &EditorViewModel, _args: &BaseCommandOptions| {
+                move_to_boundary(view_model, &view_model.get_cursor_states(), in_selection_mode)
+            },
+        )
+    }
+
+    /// `LineStartCommand` e `LineEndCommand`: move cada cursor para a coluna que `column_of` calcula na linha do
+    /// modelo (a coluna 1, ou a coluna máxima).
+    fn model_line_column_command(
+        id: &str,
+        in_selection_mode: bool,
+        keybindings: Keybindings,
+        column_of: fn(&TextModel, i32) -> i32,
+    ) -> CoreEditorCommand<BaseCommandOptions> {
+        cursor_states_command(
+            text_input_command_options(id, keybindings),
+            move |view_model: &EditorViewModel, _args: &BaseCommandOptions| {
+                let model = view_model.model();
+                view_model
+                    .get_cursor_states()
+                    .iter()
+                    .map(|cursor| {
+                        let line_number = cursor.model_state.position.line_number;
+                        PartialCursorState::Model(CursorState::from_model_state(cursor.model_state.move_to(
+                            in_selection_mode,
+                            line_number,
+                            column_of(&model, line_number),
+                            0,
+                        )))
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    /// `EndCommand`: `moveToEndOfLine` com o argumento `sticky` (e a descrição do comando nos metadados).
+    fn end_command(id: &str, in_selection_mode: bool, description: &str, keybindings: Keybindings) -> CoreEditorCommand<EndCommandOptions> {
+        let sticky_description = localize("stickydesc", "Stick to the end even when going to longer lines", &[]);
+        let schema = Dynamic::object([
+            ("type", Dynamic::from("object")),
+            (
+                "properties",
+                Dynamic::object([(
+                    "sticky",
+                    Dynamic::object([
+                        ("description", Dynamic::from(sticky_description.as_str())),
+                        ("type", Dynamic::from("boolean")),
+                        ("default", Dynamic::Bool(false)),
+                    ]),
+                )]),
+            ),
+        ]);
+        let opts = CommandOptions {
+            kb_opts: text_input_keybindings(keybindings)
+                .into_iter()
+                .map(|opts| CommandKeybindingsOptions { args: Dynamic::object([("sticky", Dynamic::Bool(false))]), ..opts })
+                .collect(),
+            metadata: Some(args_metadata(description, schema)),
+            ..CommandOptions::new(id)
+        };
+        cursor_states_command(opts, move |view_model: &EditorViewModel, args: &EndCommandOptions| {
+            move_commands::move_to_end_of_line(view_model, &view_model.get_cursor_states(), in_selection_mode, args.sticky)
+        })
+    }
+
+    /// `WordCommand` e `LineCommand`: a seleção por gesto (duplo clique, clique no número da linha) do cursor
+    /// primário, na posição do argumento.
+    fn selection_gesture_command(
+        id: &str,
+        reveal_horizontal: bool,
+        select: impl Fn(&EditorViewModel, &MoveCommandOptions, Position) -> PartialCursorState + 'static,
+    ) -> CoreEditorCommand<MoveCommandOptions> {
+        CoreEditorCommand::new(CommandOptions::new(id), move |view_model: &EditorViewModel, args: &MoveCommandOptions| {
+            let Some(position) = args.position else {
+                return;
+            };
+            view_model.model().push_stack_element();
+            view_model.set_cursor_states(args.source(), CursorChangeReason::Explicit, Some(vec![select(view_model, args, position)]));
+            if args.reveal_type != Some(NavigationCommandRevealType::None) {
+                view_model.reveal_all_cursors(args.source(), reveal_horizontal, Some(true));
+            }
+        })
+    }
+
+    /// O método de rolagem (vertical ou horizontal) que `determineScrollMethod` escolhe.
+    type ScrollMethod = fn(&EditorViewModel, Option<&str>, &editor_scroll::ParsedArguments);
+
+    /// `EditorScrollImpl.determineScrollMethod`: `None` (o `null` do original) se a unidade e a direção não combinam.
+    fn determine_scroll_method(args: &editor_scroll::ParsedArguments) -> Option<ScrollMethod> {
+        use editor_scroll::{Direction, Unit};
+
+        let horizontal_units = [Unit::Column];
+        let vertical_units = [Unit::Line, Unit::WrappedLine, Unit::Page, Unit::HalfPage, Unit::Editor];
+        let horizontal_directions = [Direction::Left, Direction::Right];
+        let vertical_directions = [Direction::Up, Direction::Down];
+
+        if horizontal_units.contains(&args.unit) && horizontal_directions.contains(&args.direction) {
+            return Some(run_horizontal_editor_scroll);
+        }
+        if vertical_units.contains(&args.unit) && vertical_directions.contains(&args.direction) {
+            return Some(run_vertical_editor_scroll);
+        }
+        None
+    }
+
+    /// `EditorScrollImpl._runVerticalEditorScroll`.
+    fn run_vertical_editor_scroll(view_model: &EditorViewModel, source: Option<&str>, args: &editor_scroll::ParsedArguments) {
+        let desired_scroll_top = compute_desired_scroll_top(view_model, args);
+
+        if args.reveal_cursor {
+            // must ensure cursor is in new visible range
+            let desired_visible_view_range = view_model.get_completely_visible_view_range_at_scroll_top(desired_scroll_top);
+            let padded_range = view_model.get_view_range_with_cursor_padding(desired_visible_view_range);
+
+            view_model.set_cursor_states(
+                source,
+                CursorChangeReason::Explicit,
+                Some(vec![move_commands::find_position_in_viewport_if_outside(
+                    view_model,
+                    &view_model.get_primary_cursor_state(),
+                    &padded_range,
+                    args.select,
+                )]),
+            );
+        }
+
+        view_model
+            .view_layout()
+            .set_scroll_position(INewScrollPosition { scroll_left: None, scroll_top: Some(desired_scroll_top) }, ScrollType::Smooth);
+    }
+
+    /// `EditorScrollImpl._computeDesiredScrollTop`.
+    fn compute_desired_scroll_top(view_model: &EditorViewModel, args: &editor_scroll::ParsedArguments) -> f64 {
+        use editor_scroll::{Direction, Unit};
+
+        let view_layout = view_model.view_layout();
+        let cursor_config = view_model.cursor_config();
+
+        if args.unit == Unit::Line {
+            // scrolling by model lines
+            let future_viewport = view_layout.get_future_viewport();
+            let visible_view_range = view_model.get_completely_visible_view_range_at_scroll_top(future_viewport.top);
+            let coordinates_converter = view_model.coordinates_converter();
+            let visible_model_range = coordinates_converter.convert_view_range_to_model_range(visible_view_range);
+            let visible_start_line_number = f64::from(visible_model_range.start_line_number);
+
+            let desired_top_model_line_number = if args.direction == Direction::Up {
+                // must go x model lines up
+                1.0_f64.max(visible_start_line_number - args.value)
+            } else {
+                // must go x model lines down
+                f64::from(view_model.model().get_line_count()).min(visible_start_line_number + args.value)
+            };
+
+            let view_position = coordinates_converter.convert_model_position_to_view_position(
+                Position::new(desired_top_model_line_number as i32, 1),
+                None,
+                None,
+                None,
+            );
+            return view_layout.get_vertical_offset_for_line_number(view_position.line_number, None);
+        }
+
+        if args.unit == Unit::Editor {
+            let mut desired_top_model_line_number = 0.0;
+            if args.direction == Direction::Down {
+                desired_top_model_line_number = f64::from(view_model.model().get_line_count()) - cursor_config.page_size;
+            }
+            return view_layout.get_vertical_offset_for_line_number(desired_top_model_line_number as i32, None);
+        }
+
+        let no_of_lines = match args.unit {
+            Unit::Page => cursor_config.page_size * args.value,
+            // `Math.round(pageSize / 2)`
+            Unit::HalfPage => (cursor_config.page_size / 2.0 + 0.5).floor() * args.value,
+            _ => args.value,
+        };
+        let delta_lines = (if args.direction == Direction::Up { -1.0 } else { 1.0 }) * no_of_lines;
+        view_layout.get_current_scroll_top() + delta_lines * cursor_config.line_height
+    }
+
+    /// `EditorScrollImpl._runHorizontalEditorScroll` (o `source` não é lido, como no original).
+    fn run_horizontal_editor_scroll(view_model: &EditorViewModel, _source: Option<&str>, args: &editor_scroll::ParsedArguments) {
+        let desired_scroll_left = compute_desired_scroll_left(view_model, args);
+        view_model
+            .view_layout()
+            .set_scroll_position(INewScrollPosition { scroll_left: Some(desired_scroll_left), scroll_top: None }, ScrollType::Smooth);
+    }
+
+    /// `EditorScrollImpl._computeDesiredScrollLeft`.
+    fn compute_desired_scroll_left(view_model: &EditorViewModel, args: &editor_scroll::ParsedArguments) -> f64 {
+        let delta_columns = (if args.direction == editor_scroll::Direction::Left { -1.0 } else { 1.0 }) * args.value;
+        view_model.view_layout().get_current_scroll_left() + delta_columns * view_model.cursor_config().typical_halfwidth_character_width
+    }
+
+    /// `EditorScrollImpl`: o comando `editorScroll`.
+    fn editor_scroll_command() -> CoreEditorCommand<EditorScrollCommandOptions> {
+        CoreEditorCommand::new(
+            CommandOptions { metadata: Some(editor_scroll::metadata()), ..CommandOptions::new("editorScroll") },
+            |view_model: &EditorViewModel, args: &EditorScrollCommandOptions| {
+                let Some(parsed) = editor_scroll::parse(&args.arguments) else {
+                    // illegal arguments
+                    return;
+                };
+                let Some(run_editor_scroll) = determine_scroll_method(&parsed) else {
+                    // Incompatible unit and direction
+                    return;
+                };
+                run_editor_scroll(view_model, args.source(), &parsed);
+            },
+        )
+    }
+
+    /// `ScrollLineUp`, `ScrollPageUp`, `ScrollEditorTop`, `ScrollLineDown`, `ScrollPageDown`, `ScrollEditorBottom`,
+    /// `ScrollLeft` e `ScrollRight`: chamam o `EditorScroll` (`scroller`) com a direção, a unidade e o valor fixos.
+    fn scroll_command(
+        id: &str,
+        keybindings: Keybindings,
+        to: &'static str,
+        by: &'static str,
+        value: f64,
+        scroller: Rc<CoreEditorCommand<EditorScrollCommandOptions>>,
+    ) -> CoreEditorCommand<BaseCommandOptions> {
+        CoreEditorCommand::new(
+            text_input_command_options(id, keybindings),
+            move |view_model: &EditorViewModel, args: &BaseCommandOptions| {
+                scroller.run_core_editor_command(
+                    view_model,
+                    &EditorScrollCommandOptions {
+                        source: args.source.clone(),
+                        arguments: editor_scroll::RawArguments {
+                            to: Some(to.to_string()),
+                            by: Some(by.to_string()),
+                            value: Some(value),
+                            reveal_cursor: Some(false),
+                            select: Some(false),
+                        },
+                    },
+                );
+            },
+        )
+    }
+
+    /// `RevealLine`: o comando `revealLine`.
+    fn reveal_line_command() -> CoreEditorCommand<RevealLineCommandOptions> {
+        CoreEditorCommand::new(
+            CommandOptions { metadata: Some(reveal_line::metadata()), ..CommandOptions::new("revealLine") },
+            |view_model: &EditorViewModel, args: &RevealLineCommandOptions| {
+                use reveal_line::{LineNumber, raw_at_argument};
+
+                // `revealLineArg.lineNumber || 0`, e `typeof lineNumberArg === 'number' ? n + 1 : parseInt(n) + 1`
+                let mut line_number = match &args.arguments.line_number {
+                    Some(LineNumber::Number(number)) if *number != 0.0 && !number.is_nan() => *number + 1.0,
+                    Some(LineNumber::Text(text)) if !text.is_empty() => js_parse_int(text) + 1.0,
+                    _ => 1.0,
+                };
+                if line_number.is_nan() {
+                    // ver "Divergências"
+                    return;
+                }
+                if line_number < 1.0 {
+                    line_number = 1.0;
+                }
+                let model = view_model.model();
+                let line_count = model.get_line_count();
+                if line_number > f64::from(line_count) {
+                    line_number = f64::from(line_count);
+                }
+                let line_number = line_number as i32;
+
+                let range = Range::new(line_number, 1, line_number, model.get_line_max_column(line_number));
+
+                let reveal_at = match args.arguments.at.as_deref() {
+                    Some(raw_at_argument::TOP) => VerticalRevealType::Top,
+                    Some(raw_at_argument::CENTER) => VerticalRevealType::Center,
+                    Some(raw_at_argument::BOTTOM) => VerticalRevealType::Bottom,
+                    _ => VerticalRevealType::Simple,
+                };
+
+                let view_range = view_model.coordinates_converter().convert_model_range_to_view_range(range, None);
+
+                view_model.reveal_range(args.source(), false, view_range, reveal_at, ScrollType::Smooth);
+            },
+        )
+    }
+
+    /// `SelectAll`: o `EditorOrNativeTextInputCommand` do `SelectAllCommand`.
+    pub struct SelectAll;
+
+    impl SelectAll {
+        /// `runCoreEditorCommand(viewModel, args)`.
+        pub fn run_core_editor_command(&self, view_model: &EditorViewModel, _args: &Dynamic) {
+            view_model.model().push_stack_element();
+            view_model.set_cursor_states(
+                Some("keyboard"),
+                CursorChangeReason::Explicit,
+                Some(vec![move_commands::select_all(view_model, &view_model.get_primary_cursor_state())]),
+            );
+        }
+    }
+
+    impl EditorOrNativeTextInputCommand for SelectAll {
+        fn run_dom_command(&self) {
+            // `execCommand('selectAll')` é DOM (ver "Divergências"): nunca é chamado.
+        }
+
+        fn run_editor_command(&self, _accessor: Option<&ServicesAccessor>, editor: &Rc<CodeEditorWidget>, args: &Dynamic) -> MaybePromise<()> {
+            if let Some(view_model) = editor.get_view_model() {
+                self.run_core_editor_command(&view_model, args);
+            }
+            // else: the editor has no view => has no cursors
+            MaybePromise::Value(())
+        }
+    }
+
+    /// Os comandos de navegação registrados (`MoveTo` até `SetSelection`).
     pub struct CoreNavigationCommands {
         pub move_to: Rc<CoreEditorCommand<MoveCommandOptions>>,
         pub move_to_select: Rc<CoreEditorCommand<MoveCommandOptions>>,
@@ -1067,6 +1584,39 @@ pub mod core_navigation_commands {
         pub cursor_page_down_select: Rc<CoreEditorCommand<CursorMoveCommandOptions>>,
         pub create_cursor: Rc<CoreEditorCommand<CreateCursorCommandOptions>>,
         pub last_cursor_move_to_select: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub cursor_home: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_home_select: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_line_start: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_line_start_select: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_end: Rc<CoreEditorCommand<EndCommandOptions>>,
+        pub cursor_end_select: Rc<CoreEditorCommand<EndCommandOptions>>,
+        pub cursor_line_end: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_line_end_select: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_top: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_top_select: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_bottom: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub cursor_bottom_select: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub editor_scroll: Rc<CoreEditorCommand<EditorScrollCommandOptions>>,
+        pub scroll_line_up: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_page_up: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_editor_top: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_line_down: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_page_down: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_editor_bottom: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_left: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub scroll_right: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub word_select: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub word_select_drag: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub last_cursor_word_select: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub line_select: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub line_select_drag: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub last_cursor_line_select: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub last_cursor_line_select_drag: Rc<CoreEditorCommand<MoveCommandOptions>>,
+        pub cancel_selection: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub remove_secondary_cursors: Rc<CoreEditorCommand<BaseCommandOptions>>,
+        pub reveal_line: Rc<CoreEditorCommand<RevealLineCommandOptions>>,
+        pub select_all: Rc<SelectAll>,
+        pub set_selection: Rc<CoreEditorCommand<SetSelectionCommandOptions>>,
     }
 
     thread_local! {
@@ -1247,8 +1797,309 @@ pub mod core_navigation_commands {
         ));
 
         let create_cursor = register_core_command(CoreEditorCommand::new(CommandOptions::new("createCursor"), run_create_cursor));
-        let last_cursor_move_to_select =
-            register_core_command(CoreEditorCommand::new(CommandOptions::new("_lastCursorMoveToSelect"), run_last_cursor_move_to_select));
+        let last_cursor_move_to_select = register_core_command(last_cursor_command(
+            "_lastCursorMoveToSelect",
+            |view_model, state, args, position| move_commands::move_to(view_model, state, true, position, args.view_position),
+        ));
+
+        let alt = KeyMod::ALT;
+        let left_arrow = KeyCode::LeftArrow;
+        let right_arrow = KeyCode::RightArrow;
+        let up_arrow = KeyCode::UpArrow;
+        let down_arrow = KeyCode::DownArrow;
+
+        let cursor_home = register_core_command(move_to_boundary_command(
+            "cursorHome",
+            false,
+            Keybindings {
+                primary: Some(KeyCode::Home.bits()),
+                mac: platform_keybindings(KeyCode::Home.bits(), Some(vec![key(ctrl_cmd, left_arrow)])),
+                ..Keybindings::default()
+            },
+            move_commands::move_to_beginning_of_line,
+        ));
+        let cursor_home_select = register_core_command(move_to_boundary_command(
+            "cursorHomeSelect",
+            true,
+            Keybindings {
+                primary: Some(key(shift, KeyCode::Home)),
+                mac: platform_keybindings(key(shift, KeyCode::Home), Some(vec![key(ctrl_cmd | shift, left_arrow)])),
+                ..Keybindings::default()
+            },
+            move_commands::move_to_beginning_of_line,
+        ));
+
+        let cursor_line_start = register_core_command(model_line_column_command(
+            "cursorLineStart",
+            false,
+            Keybindings {
+                primary: Some(0),
+                mac: platform_keybindings(key(win_ctrl, KeyCode::KeyA), None),
+                ..Keybindings::default()
+            },
+            |_model, _line_number| 1,
+        ));
+        let cursor_line_start_select = register_core_command(model_line_column_command(
+            "cursorLineStartSelect",
+            true,
+            Keybindings {
+                primary: Some(0),
+                mac: platform_keybindings(key(win_ctrl | shift, KeyCode::KeyA), None),
+                ..Keybindings::default()
+            },
+            |_model, _line_number| 1,
+        ));
+
+        let cursor_end = register_core_command(end_command(
+            "cursorEnd",
+            false,
+            "Go to End",
+            Keybindings {
+                primary: Some(KeyCode::End.bits()),
+                mac: platform_keybindings(KeyCode::End.bits(), Some(vec![key(ctrl_cmd, right_arrow)])),
+                ..Keybindings::default()
+            },
+        ));
+        let cursor_end_select = register_core_command(end_command(
+            "cursorEndSelect",
+            true,
+            "Select to End",
+            Keybindings {
+                primary: Some(key(shift, KeyCode::End)),
+                mac: platform_keybindings(key(shift, KeyCode::End), Some(vec![key(ctrl_cmd | shift, right_arrow)])),
+                ..Keybindings::default()
+            },
+        ));
+
+        let cursor_line_end = register_core_command(model_line_column_command(
+            "cursorLineEnd",
+            false,
+            Keybindings {
+                primary: Some(0),
+                mac: platform_keybindings(key(win_ctrl, KeyCode::KeyE), None),
+                ..Keybindings::default()
+            },
+            |model, line_number| model.get_line_max_column(line_number),
+        ));
+        let cursor_line_end_select = register_core_command(model_line_column_command(
+            "cursorLineEndSelect",
+            true,
+            Keybindings {
+                primary: Some(0),
+                mac: platform_keybindings(key(win_ctrl | shift, KeyCode::KeyE), None),
+                ..Keybindings::default()
+            },
+            |model, line_number| model.get_line_max_column(line_number),
+        ));
+
+        let cursor_top = register_core_command(move_to_boundary_command(
+            "cursorTop",
+            false,
+            Keybindings {
+                primary: Some(key(ctrl_cmd, KeyCode::Home)),
+                mac: platform_keybindings(key(ctrl_cmd, up_arrow), None),
+                ..Keybindings::default()
+            },
+            move_commands::move_to_beginning_of_buffer,
+        ));
+        let cursor_top_select = register_core_command(move_to_boundary_command(
+            "cursorTopSelect",
+            true,
+            Keybindings {
+                primary: Some(key(ctrl_cmd | shift, KeyCode::Home)),
+                mac: platform_keybindings(key(ctrl_cmd | shift, up_arrow), None),
+                ..Keybindings::default()
+            },
+            move_commands::move_to_beginning_of_buffer,
+        ));
+        let cursor_bottom = register_core_command(move_to_boundary_command(
+            "cursorBottom",
+            false,
+            Keybindings {
+                primary: Some(key(ctrl_cmd, KeyCode::End)),
+                mac: platform_keybindings(key(ctrl_cmd, down_arrow), None),
+                ..Keybindings::default()
+            },
+            move_commands::move_to_end_of_buffer,
+        ));
+        let cursor_bottom_select = register_core_command(move_to_boundary_command(
+            "cursorBottomSelect",
+            true,
+            Keybindings {
+                primary: Some(key(ctrl_cmd | shift, KeyCode::End)),
+                mac: platform_keybindings(key(ctrl_cmd | shift, down_arrow), None),
+                ..Keybindings::default()
+            },
+            move_commands::move_to_end_of_buffer,
+        ));
+
+        let editor_scroll = register_core_command(editor_scroll_command());
+
+        let scroll_line_up = register_core_command(scroll_command(
+            "scrollLineUp",
+            Keybindings {
+                primary: Some(key(ctrl_cmd, up_arrow)),
+                mac: platform_keybindings(key(win_ctrl, KeyCode::PageUp), None),
+                ..Keybindings::default()
+            },
+            editor_scroll::raw_direction::UP,
+            editor_scroll::raw_unit::WRAPPED_LINE,
+            1.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_page_up = register_core_command(scroll_command(
+            "scrollPageUp",
+            Keybindings {
+                primary: Some(key(ctrl_cmd, KeyCode::PageUp)),
+                win: platform_keybindings(key(alt, KeyCode::PageUp), None),
+                linux: platform_keybindings(key(alt, KeyCode::PageUp), None),
+                ..Keybindings::default()
+            },
+            editor_scroll::raw_direction::UP,
+            editor_scroll::raw_unit::PAGE,
+            1.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_editor_top = register_core_command(scroll_command(
+            "scrollEditorTop",
+            Keybindings::default(),
+            editor_scroll::raw_direction::UP,
+            editor_scroll::raw_unit::EDITOR,
+            1.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_line_down = register_core_command(scroll_command(
+            "scrollLineDown",
+            Keybindings {
+                primary: Some(key(ctrl_cmd, down_arrow)),
+                mac: platform_keybindings(key(win_ctrl, KeyCode::PageDown), None),
+                ..Keybindings::default()
+            },
+            editor_scroll::raw_direction::DOWN,
+            editor_scroll::raw_unit::WRAPPED_LINE,
+            1.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_page_down = register_core_command(scroll_command(
+            "scrollPageDown",
+            Keybindings {
+                primary: Some(key(ctrl_cmd, KeyCode::PageDown)),
+                win: platform_keybindings(key(alt, KeyCode::PageDown), None),
+                linux: platform_keybindings(key(alt, KeyCode::PageDown), None),
+                ..Keybindings::default()
+            },
+            editor_scroll::raw_direction::DOWN,
+            editor_scroll::raw_unit::PAGE,
+            1.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_editor_bottom = register_core_command(scroll_command(
+            "scrollEditorBottom",
+            Keybindings::default(),
+            editor_scroll::raw_direction::DOWN,
+            editor_scroll::raw_unit::EDITOR,
+            1.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_left = register_core_command(scroll_command(
+            "scrollLeft",
+            Keybindings::default(),
+            editor_scroll::raw_direction::LEFT,
+            editor_scroll::raw_unit::COLUMN,
+            2.0,
+            Rc::clone(&editor_scroll),
+        ));
+        let scroll_right = register_core_command(scroll_command(
+            "scrollRight",
+            Keybindings::default(),
+            editor_scroll::raw_direction::RIGHT,
+            editor_scroll::raw_unit::COLUMN,
+            2.0,
+            Rc::clone(&editor_scroll),
+        ));
+
+        let word_select = register_core_command(selection_gesture_command("_wordSelect", true, |view_model, _args, position| {
+            move_commands::word(view_model, &view_model.get_primary_cursor_state(), false, position)
+        }));
+        let word_select_drag = register_core_command(selection_gesture_command("_wordSelectDrag", true, |view_model, _args, position| {
+            move_commands::word(view_model, &view_model.get_primary_cursor_state(), true, position)
+        }));
+        let last_cursor_word_select = register_core_command(last_cursor_command(
+            "lastCursorWordSelect",
+            |view_model, last_added_state, _args, position| {
+                move_commands::word(view_model, last_added_state, last_added_state.model_state.has_selection(), position)
+            },
+        ));
+
+        let line_select = register_core_command(selection_gesture_command("_lineSelect", false, |view_model, args, position| {
+            move_commands::line(view_model, &view_model.get_primary_cursor_state(), false, position, args.view_position)
+        }));
+        let line_select_drag = register_core_command(selection_gesture_command("_lineSelectDrag", false, |view_model, args, position| {
+            move_commands::line(view_model, &view_model.get_primary_cursor_state(), true, position, args.view_position)
+        }));
+        let last_cursor_line_select = register_core_command(last_cursor_command(
+            "lastCursorLineSelect",
+            |view_model, state, args, position| move_commands::line(view_model, state, false, position, args.view_position),
+        ));
+        let last_cursor_line_select_drag = register_core_command(last_cursor_command(
+            "lastCursorLineSelectDrag",
+            |view_model, state, args, position| move_commands::line(view_model, state, true, position, args.view_position),
+        ));
+
+        let cancel_selection = register_core_command(cursor_states_command(
+            CommandOptions {
+                precondition: Some(has_non_empty_selection()),
+                kb_opts: text_input_keybindings(Keybindings {
+                    primary: Some(KeyCode::Escape.bits()),
+                    secondary: Some(vec![key(shift, KeyCode::Escape)]),
+                    ..Keybindings::default()
+                }),
+                ..CommandOptions::new("cancelSelection")
+            },
+            |view_model: &EditorViewModel, _args: &BaseCommandOptions| {
+                vec![move_commands::cancel_selection(view_model, &view_model.get_primary_cursor_state())]
+            },
+        ));
+
+        let remove_secondary_cursors = register_core_command(cursor_states_command(
+            CommandOptions {
+                precondition: Some(has_multiple_selections()),
+                kb_opts: vec![CommandKeybindingsOptions::new(
+                    CORE_WEIGHT + 1,
+                    Some(text_input_focus()),
+                    Keybindings {
+                        primary: Some(KeyCode::Escape.bits()),
+                        secondary: Some(vec![key(shift, KeyCode::Escape)]),
+                        ..Keybindings::default()
+                    },
+                )],
+                ..CommandOptions::new("removeSecondaryCursors")
+            },
+            |view_model: &EditorViewModel, _args: &BaseCommandOptions| {
+                // o `status("Removed secondary cursors")` do original é DOM (ver "Divergências")
+                vec![PartialCursorState::Full(view_model.get_primary_cursor_state())]
+            },
+        ));
+
+        let reveal_line = register_core_command(reveal_line_command());
+
+        let select_all = Rc::new(SelectAll);
+        register_editor_or_native_text_input_command(Rc::clone(&select_all), &select_all_command());
+
+        let set_selection = register_core_command(CoreEditorCommand::new(
+            CommandOptions::new("setSelection"),
+            |view_model: &EditorViewModel, args: &SetSelectionCommandOptions| {
+                let Some(selection) = args.selection else {
+                    return;
+                };
+                view_model.model().push_stack_element();
+                view_model.set_cursor_states(
+                    args.source(),
+                    CursorChangeReason::Explicit,
+                    Some(vec![PartialCursorState::Model(CursorState::from_model_selection(selection))]),
+                );
+            },
+        ));
 
         CoreNavigationCommands {
             move_to,
@@ -1275,27 +2126,379 @@ pub mod core_navigation_commands {
             cursor_page_down_select,
             create_cursor,
             last_cursor_move_to_select,
+            cursor_home,
+            cursor_home_select,
+            cursor_line_start,
+            cursor_line_start_select,
+            cursor_end,
+            cursor_end_select,
+            cursor_line_end,
+            cursor_line_end_select,
+            cursor_top,
+            cursor_top_select,
+            cursor_bottom,
+            cursor_bottom_select,
+            editor_scroll,
+            scroll_line_up,
+            scroll_page_up,
+            scroll_editor_top,
+            scroll_line_down,
+            scroll_page_down,
+            scroll_editor_bottom,
+            scroll_left,
+            scroll_right,
+            word_select,
+            word_select_drag,
+            last_cursor_word_select,
+            line_select,
+            line_select_drag,
+            last_cursor_line_select,
+            last_cursor_line_select_drag,
+            cancel_selection,
+            remove_secondary_cursors,
+            reveal_line,
+            select_all,
+            set_selection,
         }
     }
 }
 
 // #endregion
 
-// A parte B (linhas 1004 a 2178 do coreCommands.ts) acrescenta a este arquivo, depois do módulo acima:
-// - dentro de `core_navigation_commands` (e como campos de `CoreNavigationCommands`, com o registro em `register`):
-//   o `HomeCommand` (`CursorHome`, `CursorHomeSelect`, `CursorLineStart`, `CursorLineStartSelect`...) e os
-//   comandos seguintes na ordem do original: `CursorEnd`, `CursorEndSelect`, `CursorLineEnd`..., `CursorTop`,
-//   `CursorTopSelect`, `CursorBottom`, `CursorBottomSelect`, `EditorScrollImpl` e os `EditorScroll*`
-//   (`EditorScrollUp`, `EditorScrollDown`, `ScrollLineUp`...), `RevealLine` (com `reveal_line::RawArguments`),
-//   `SelectAll`, `SetSelection`, `ExpandLineSelection`, `CancelSelection`, `RemoveSecondaryCursors`,
-//   `LineSelect`, `LineSelectDrag`, `LastCursorLineSelect`, `LastCursorLineSelectDrag`, `WordSelect`,
-//   `WordSelectDrag`, `LastCursorWordSelect`, `CursorUndo`, `CursorRedo` e os demais até `RemoveSecondaryCursors`;
-// - `registerColumnSelection` (a seleção por coluna do mouse);
-// - o módulo `core_editing_commands` (`CoreEditingCommands`): `LineBreakInsert`, `Outdent`, `Tab`, `DeleteLeft`,
-//   `DeleteRight`, `Undo`, `Redo`, `SelectAll`..., criados com `EditorHandlerCommand` e
-//   `registerOverwritableCommand`;
-// - `EditorHandlerCommand` (o `Command` que despacha `handlerId` para `editor.trigger`) e
-//   `registerOverwritableCommand(handlerId, description?)`, que usam o trait
-//   [`EditorOrNativeTextInputCommand`] e [`register_editor_or_native_text_input_command`] acima para
-//   `Undo`, `Redo` e `SelectAll` (alvos `undo_command()`, `redo_command()`, `select_all_command()` de
-//   `editor_extensions`).
+// #region registerColumnSelection
+
+/// `columnSelectionCondition`: `ContextKeyExpr.and(textInputFocus, columnSelection)`.
+fn column_selection_condition() -> Option<ContextKeyExpression> {
+    ContextKeyExpr::and([text_input_focus(), column_selection_enabled()])
+}
+
+/// `registerColumnSelection(id, keybinding)`.
+fn register_column_selection(id: &str, keybinding: u32) {
+    keybindings_registry().register_keybinding_rule(KeybindingRule {
+        keybindings: Keybindings { primary: Some(keybinding), ..Keybindings::default() },
+        id: id.to_string(),
+        weight: CORE_WEIGHT + 1,
+        args: Dynamic::Undefined,
+        when: column_selection_condition(),
+    });
+}
+
+// #endregion
+
+// #region CoreEditingCommands
+
+/// `CoreEditingCommands`: os comandos de edição do núcleo (o namespace do original).
+pub mod core_editing_commands {
+    use super::*;
+
+    /// `abstract class CoreEditingCommand extends EditorCommand`: um comando que edita pelo editor e pelo
+    /// `ViewModel`; `run` é o `runCoreEditingCommand(editor, viewModel, args)` (e recebe também o `id`, que o
+    /// original lê de `this.id` para `executeCommands`).
+    pub struct CoreEditingCommand {
+        base: Command,
+        run: Box<dyn Fn(&str, &Rc<CodeEditorWidget>, &EditorViewModel, &Dynamic)>,
+    }
+
+    impl CoreEditingCommand {
+        /// Cria o comando; `run` é o `runCoreEditingCommand`.
+        pub fn new(
+            opts: CommandOptions,
+            run: impl Fn(&str, &Rc<CodeEditorWidget>, &EditorViewModel, &Dynamic) + 'static,
+        ) -> Self {
+            Self { base: Command::new(opts), run: Box::new(run) }
+        }
+    }
+
+    impl IEditorCommand for CoreEditingCommand {
+        /// `runEditorCommand(accessor, editor, args)`.
+        fn run_editor_command(&self, _accessor: Option<&ServicesAccessor>, editor: &Rc<CodeEditorWidget>, args: &Dynamic) -> Promise<()> {
+            let Some(view_model) = editor.get_view_model() else {
+                // the editor has no view => has no cursors
+                return Promise::resolved(());
+            };
+            // `args || {}`
+            let args = if args.is_truthy() { args.clone() } else { Dynamic::object(Vec::<(&str, Dynamic)>::new()) };
+            (self.run)(&self.base.id, editor, &*view_model, &args);
+            Promise::resolved(())
+        }
+    }
+
+    impl EditorCommand for CoreEditingCommand {
+        fn base(&self) -> &Command {
+            &self.base
+        }
+    }
+
+    /// `registerEditorCommand(new class extends CoreEditingCommand { ... })`.
+    fn register_core_editing_command(command: CoreEditingCommand) -> Rc<CoreEditingCommand> {
+        register_editor_command(Rc::new(command))
+    }
+
+    /// `viewModel.getCursorStates().map(s => s.modelState.selection)`.
+    fn model_selections(view_model: &EditorViewModel) -> Vec<Selection> {
+        view_model.get_cursor_states().iter().map(|state| state.model_state.selection).collect()
+    }
+
+    /// `ICommand[]` como o `(ICommand | null)[]` de `executeCommands`.
+    fn nullable_commands(commands: Vec<Box<dyn EditCommand>>) -> Vec<Option<Box<dyn EditCommand>>> {
+        commands.into_iter().map(Some).collect()
+    }
+
+    /// `Outdent` e `Tab`: o atalho só vale com o texto em foco e a tecla Tab sem mover o foco.
+    fn tab_options(id: &str, primary: u32) -> CommandOptions {
+        CommandOptions {
+            precondition: Some(writable()),
+            kb_opts: vec![CommandKeybindingsOptions::new(
+                CORE_WEIGHT,
+                ContextKeyExpr::and([editor_text_focus(), tab_does_not_move_focus()]),
+                Keybindings { primary: Some(primary), ..Keybindings::default() },
+            )],
+            ..CommandOptions::new(id)
+        }
+    }
+
+    /// `UndoCommand` e `RedoCommand` do `CoreEditingCommands.Undo`/`Redo` (um `EditorOrNativeTextInputCommand`).
+    pub struct UndoRedoCommand {
+        is_redo: bool,
+    }
+
+    impl EditorOrNativeTextInputCommand for UndoRedoCommand {
+        fn run_dom_command(&self) {
+            // `execCommand('undo')`/`execCommand('redo')` são DOM (ver "Divergências"): nunca é chamado.
+        }
+
+        fn run_editor_command(&self, _accessor: Option<&ServicesAccessor>, editor: &Rc<CodeEditorWidget>, _args: &Dynamic) -> MaybePromise<()> {
+            if !editor.has_model() || *editor.get_option(READ_ONLY) {
+                return MaybePromise::Value(());
+            }
+            if let Some(model) = editor.get_model() {
+                if self.is_redo {
+                    model.redo();
+                } else {
+                    model.undo();
+                }
+            }
+            MaybePromise::Value(())
+        }
+    }
+
+    /// Os comandos de edição registrados.
+    pub struct CoreEditingCommands {
+        pub line_break_insert: Rc<CoreEditingCommand>,
+        pub outdent: Rc<CoreEditingCommand>,
+        pub tab: Rc<CoreEditingCommand>,
+        pub delete_left: Rc<CoreEditingCommand>,
+        pub delete_right: Rc<CoreEditingCommand>,
+        pub undo: Rc<UndoRedoCommand>,
+        pub redo: Rc<UndoRedoCommand>,
+    }
+
+    thread_local! {
+        static COMMANDS: Rc<CoreEditingCommands> = Rc::new(register());
+    }
+
+    /// Os comandos registrados (o registro acontece no primeiro acesso).
+    pub fn instance() -> Rc<CoreEditingCommands> {
+        COMMANDS.with(Rc::clone)
+    }
+
+    /// Cria e registra cada comando, na ordem do original.
+    fn register() -> CoreEditingCommands {
+        let line_break_insert = register_core_editing_command(CoreEditingCommand::new(
+            CommandOptions {
+                precondition: Some(writable()),
+                kb_opts: text_input_keybindings(Keybindings {
+                    primary: Some(0),
+                    mac: platform_keybindings(key(KeyMod::WIN_CTRL, KeyCode::KeyO), None),
+                    ..Keybindings::default()
+                }),
+                ..CommandOptions::new("lineBreakInsert")
+            },
+            |id, editor, view_model, _args| {
+                editor.push_undo_stop();
+                let model = view_model.model();
+                editor.execute_commands(
+                    Some(id),
+                    nullable_commands(EnterOperation::line_break_insert(&view_model.cursor_config(), &model, &model_selections(view_model))),
+                );
+            },
+        ));
+
+        let outdent = register_core_editing_command(CoreEditingCommand::new(
+            tab_options("outdent", key(KeyMod::SHIFT, KeyCode::Tab)),
+            |id, editor, view_model, _args| {
+                editor.push_undo_stop();
+                let model = view_model.model();
+                editor.execute_commands(
+                    Some(id),
+                    nullable_commands(TypeOperations::outdent(&view_model.cursor_config(), &*model, &model_selections(view_model))),
+                );
+                editor.push_undo_stop();
+            },
+        ));
+
+        let tab = register_core_editing_command(CoreEditingCommand::new(
+            tab_options("tab", KeyCode::Tab.bits()),
+            |id, editor, view_model, _args| {
+                editor.push_undo_stop();
+                let model = view_model.model();
+                editor.execute_commands(
+                    Some(id),
+                    nullable_commands(TabOperation::get_commands(&view_model.cursor_config(), &model, &model_selections(view_model))),
+                );
+                editor.push_undo_stop();
+            },
+        ));
+
+        let delete_left = register_core_editing_command(CoreEditingCommand::new(
+            text_input_command_options(
+                "deleteLeft",
+                Keybindings {
+                    primary: Some(KeyCode::Backspace.bits()),
+                    secondary: Some(vec![key(KeyMod::SHIFT, KeyCode::Backspace)]),
+                    mac: platform_keybindings(
+                        KeyCode::Backspace.bits(),
+                        Some(vec![
+                            key(KeyMod::SHIFT, KeyCode::Backspace),
+                            key(KeyMod::WIN_CTRL, KeyCode::KeyH),
+                            key(KeyMod::WIN_CTRL, KeyCode::Backspace),
+                        ]),
+                    ),
+                    ..Keybindings::default()
+                },
+            ),
+            |id, editor, view_model, _args| {
+                let model = view_model.model();
+                let (should_push_stack_element_before, commands) = DeleteOperations::delete_left(
+                    view_model.get_prev_edit_operation_type(),
+                    &view_model.cursor_config(),
+                    &*model,
+                    &model_selections(view_model),
+                    &view_model.get_cursor_auto_closed_characters(),
+                );
+                if should_push_stack_element_before {
+                    editor.push_undo_stop();
+                }
+                editor.execute_commands(Some(id), commands);
+                view_model.set_prev_edit_operation_type(EditOperationType::DeletingLeft);
+            },
+        ));
+
+        let delete_right = register_core_editing_command(CoreEditingCommand::new(
+            text_input_command_options(
+                "deleteRight",
+                Keybindings {
+                    primary: Some(KeyCode::Delete.bits()),
+                    mac: platform_keybindings(
+                        KeyCode::Delete.bits(),
+                        Some(vec![key(KeyMod::WIN_CTRL, KeyCode::KeyD), key(KeyMod::WIN_CTRL, KeyCode::Delete)]),
+                    ),
+                    ..Keybindings::default()
+                },
+            ),
+            |id, editor, view_model, _args| {
+                let model = view_model.model();
+                let (should_push_stack_element_before, commands) = DeleteOperations::delete_right(
+                    view_model.get_prev_edit_operation_type(),
+                    &view_model.cursor_config(),
+                    &*model,
+                    &model_selections(view_model),
+                );
+                if should_push_stack_element_before {
+                    editor.push_undo_stop();
+                }
+                editor.execute_commands(Some(id), commands);
+                view_model.set_prev_edit_operation_type(EditOperationType::DeletingRight);
+            },
+        ));
+
+        let undo = Rc::new(UndoRedoCommand { is_redo: false });
+        register_editor_or_native_text_input_command(Rc::clone(&undo), &undo_command());
+
+        let redo = Rc::new(UndoRedoCommand { is_redo: true });
+        register_editor_or_native_text_input_command(Rc::clone(&redo), &redo_command());
+
+        CoreEditingCommands { line_break_insert, outdent, tab, delete_left, delete_right, undo, redo }
+    }
+}
+
+// #endregion
+
+// #region EditorHandlerCommand
+
+/// `class EditorHandlerCommand extends Command`: um comando que chama um comando (`handlerId`) do editor com foco.
+struct EditorHandlerCommand {
+    base: Command,
+    handler_id: String,
+}
+
+impl EditorHandlerCommand {
+    fn new(id: &str, handler_id: &str, metadata: Option<CommandMetadata>) -> Self {
+        Self { base: Command::new(CommandOptions { metadata, ..CommandOptions::new(id) }), handler_id: handler_id.to_string() }
+    }
+}
+
+impl ICommand for EditorHandlerCommand {
+    fn base(&self) -> &Command {
+        &self.base
+    }
+
+    fn run_command(&self, accessor: &ServicesAccessor, args: &Dynamic) -> Promise<()> {
+        let Some(editor) = accessor.get(I_CODE_EDITOR_LOOKUP).get_focused_code_editor() else {
+            return Promise::resolved(());
+        };
+
+        editor.trigger(Some("keyboard"), &self.handler_id, Some(args.clone()));
+        Promise::resolved(())
+    }
+}
+
+/// `registerOverwritableCommand(handlerId, metadata?)`: registra `default:<handlerId>` e `<handlerId>`.
+fn register_overwritable_command(handler_id: &str, metadata: Option<CommandMetadata>) {
+    register_command(Rc::new(EditorHandlerCommand::new(&format!("default:{handler_id}"), handler_id, None)));
+    register_command(Rc::new(EditorHandlerCommand::new(handler_id, handler_id, metadata)));
+}
+
+// #endregion
+
+thread_local! {
+    /// O que o carregamento do módulo faz no original: criar os comandos de navegação e de edição e fazer os
+    /// registros do fim do arquivo (`registerColumnSelection`, `registerOverwritableCommand`).
+    static CORE_COMMANDS_REGISTERED: () = register_all();
+}
+
+/// Registra os comandos do núcleo do editor (uma vez por thread): `CoreNavigationCommands`,
+/// `registerColumnSelection`, `CoreEditingCommands` e `registerOverwritableCommand`, na ordem do original.
+pub fn register_core_commands() {
+    CORE_COMMANDS_REGISTERED.with(|_| {});
+}
+
+fn register_all() {
+    let navigation = core_navigation_commands::instance();
+
+    for (command, keybinding) in [
+        (navigation.cursor_column_select_left.base().id.as_str(), KeyMod::SHIFT | KeyCode::LeftArrow.bits()),
+        (navigation.cursor_column_select_right.base().id.as_str(), KeyMod::SHIFT | KeyCode::RightArrow.bits()),
+        (navigation.cursor_column_select_up.base().id.as_str(), KeyMod::SHIFT | KeyCode::UpArrow.bits()),
+        (navigation.cursor_column_select_page_up.base().id.as_str(), KeyMod::SHIFT | KeyCode::PageUp.bits()),
+        (navigation.cursor_column_select_down.base().id.as_str(), KeyMod::SHIFT | KeyCode::DownArrow.bits()),
+        (navigation.cursor_column_select_page_down.base().id.as_str(), KeyMod::SHIFT | KeyCode::PageDown.bits()),
+    ] {
+        register_column_selection(command, keybinding);
+    }
+
+    core_editing_commands::instance();
+
+    let type_schema = Dynamic::object([
+        ("type", Dynamic::from("object")),
+        ("required", json_strings(&["text"])),
+        ("properties", Dynamic::object([("text", Dynamic::object([("type", Dynamic::from("string"))]))])),
+    ]);
+    register_overwritable_command(Handler::TYPE, Some(args_metadata("Type", type_schema)));
+    register_overwritable_command(Handler::REPLACE_PREVIOUS_CHAR, None);
+    register_overwritable_command(Handler::COMPOSITION_TYPE, None);
+    register_overwritable_command(Handler::COMPOSITION_START, None);
+    register_overwritable_command(Handler::COMPOSITION_END, None);
+    register_overwritable_command(Handler::PASTE, None);
+    register_overwritable_command(Handler::CUT, None);
+}

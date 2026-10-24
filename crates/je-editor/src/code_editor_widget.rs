@@ -1735,7 +1735,7 @@ pub trait ICodeEditor {
     fn execute_command(&self, source: Option<&str>, command: Box<dyn Command>);
 
     /// `executeCommands(source, commands)`.
-    fn execute_commands(&self, source: Option<&str>, commands: Vec<Box<dyn Command>>);
+    fn execute_commands(&self, source: Option<&str>, commands: Vec<Option<Box<dyn Command>>>);
 
     /// `changeDecorations(callback)`.
     fn change_decorations<T>(&self, callback: impl FnOnce(&ModelDecorationsChangeAccessor<'_>) -> T) -> Option<T>
@@ -2335,7 +2335,7 @@ impl ICodeEditor for CodeEditorWidget {
         }
     }
 
-    fn execute_commands(&self, source: Option<&str>, commands: Vec<Box<dyn Command>>) {
+    fn execute_commands(&self, source: Option<&str>, commands: Vec<Option<Box<dyn Command>>>) {
         if let Some(model_data) = self.model_data() {
             model_data.view_model.execute_commands(commands, source);
         }

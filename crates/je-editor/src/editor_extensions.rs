@@ -319,8 +319,9 @@ pub trait ICommand {
     }
 }
 
-/// `registerCommand(command)` (privada no original): registra e devolve o comando.
-fn register_command<C: ICommand + 'static>(command: Rc<C>) -> Rc<C> {
+/// `registerCommand(command)` (privada em `editorExtensions.ts` e repetida em `coreCommands.ts`): registra e
+/// devolve o comando.
+pub fn register_command<C: ICommand + 'static>(command: Rc<C>) -> Rc<C> {
     command.register();
     command
 }

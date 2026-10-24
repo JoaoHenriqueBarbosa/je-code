@@ -238,6 +238,10 @@ pub struct ViewModel<T: IBatchableTarget + 'static> {
     /// `previousHiddenAreas`: `None` é o `[]` inicial do original, que não é a mesma instância do `[]` do
     /// `HiddenAreasModel` (então a primeira chamada de `setHiddenAreas` nunca sai cedo).
     pub(crate) previous_hidden_areas: RefCell<Option<Vec<Range>>>,
+    /// O que os testes de `cursorMoveCommand.test.ts` fazem por atribuição (`viewModel.getCompletelyVisibleViewRange =
+    /// () => new Range(...)`): quando preenchido, é o valor de `getCompletelyVisibleViewRange` (ver
+    /// [`ViewModel::override_completely_visible_view_range`]).
+    pub(crate) completely_visible_view_range_override: RefCell<Option<Range>>,
 }
 
 /// O que o `CursorsController` enxerga do view model: um `Weak`, para o controlador (que o view model possui) não
@@ -285,6 +289,13 @@ impl<T: IBatchableTarget + 'static> CursorSimpleModel for CursorViewModel<T> {
 }
 
 impl<T: IBatchableTarget + 'static> ViewModel<T> {
+    /// Substitui o resultado de `getCompletelyVisibleViewRange` pelo intervalo dado (`None` devolve o cálculo
+    /// normal): a atribuição `viewModel.getCompletelyVisibleViewRange = () => range` que os testes do original
+    /// fazem no objeto.
+    pub fn override_completely_visible_view_range(&self, range: Option<Range>) {
+        *self.completely_visible_view_range_override.borrow_mut() = range;
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         editor_id: i32,
@@ -367,6 +378,7 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
                 transactional_target,
                 hidden_areas_model: RefCell::new(HiddenAreasModel::default()),
                 previous_hidden_areas: RefCell::new(None),
+                completely_visible_view_range_override: RefCell::new(None),
             }
         });
         this.base.register(this.update_configuration_view_line_count.clone());

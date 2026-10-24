@@ -490,6 +490,9 @@ impl<T: IBatchableTarget + 'static> IViewModel for ViewModel<T> {
     }
 
     fn get_completely_visible_view_range(&self) -> Range {
+        if let Some(range) = *self.completely_visible_view_range_override.borrow() {
+            return range;
+        }
         self.completely_visible_view_range(&self.layout().get_lines_viewport_data())
     }
 
@@ -1217,7 +1220,7 @@ impl<T: IBatchableTarget + 'static> ViewModel<T> {
         self.execute_cursor_edit(|events_collector| self.cursor().execute_command(events_collector, command, source));
     }
 
-    pub fn execute_commands(&self, commands: Vec<Box<dyn Command>>, source: Option<&str>) {
+    pub fn execute_commands(&self, commands: Vec<Option<Box<dyn Command>>>, source: Option<&str>) {
         self.execute_cursor_edit(|events_collector| self.cursor().execute_commands(events_collector, commands, source));
     }
 

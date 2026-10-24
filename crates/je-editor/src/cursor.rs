@@ -1045,7 +1045,7 @@ impl CursorsController {
             || {
                 self.cursors.borrow_mut().kill_secondary_cursors();
 
-                self.execute_edit_operation(Some(Self::commands_result(vec![command])), &reason);
+                self.execute_edit_operation(Some(Self::commands_result(vec![Some(command)])), &reason);
             },
             events_collector,
             source,
@@ -1056,7 +1056,7 @@ impl CursorsController {
     pub fn execute_commands(
         &self,
         events_collector: &ViewModelEventsCollector,
-        commands: Vec<Box<dyn Command>>,
+        commands: Vec<Option<Box<dyn Command>>>,
         source: Option<&str>,
     ) {
         let reason = EditSources::cursor("executeCommands", source);
@@ -1073,10 +1073,10 @@ impl CursorsController {
 
     /// `new EditOperationResult(EditOperationType.Other, commands, { shouldPushStackElementBefore: false,
     /// shouldPushStackElementAfter: false })`, o resultado de `executeCommand` e de `executeCommands`.
-    fn commands_result(commands: Vec<Box<dyn Command>>) -> EditOperationResult {
+    fn commands_result(commands: Vec<Option<Box<dyn Command>>>) -> EditOperationResult {
         EditOperationResult::new(
             EditOperationType::Other,
-            commands.into_iter().map(Some).collect(),
+            commands,
             EditOperationResultOptions {
                 should_push_stack_element_before: false,
                 should_push_stack_element_after: false,
