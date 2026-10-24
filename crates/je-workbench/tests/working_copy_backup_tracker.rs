@@ -85,8 +85,10 @@ impl InMemoryTestWorkingCopyBackupService {
         let environment_service = TestEnvironmentService::new();
         let log_service: LogServiceRef = NullLogService::shared();
         let file_service = disposables.add_rc(FileService::new(log_service.clone()));
-        disposables.add(file_service.register_provider(schemas::FILE, disposables.add_rc(InMemoryFileSystemProvider::new())).unwrap());
-        disposables.add(file_service.register_provider(schemas::VSCODE_USER_DATA, disposables.add_rc(InMemoryFileSystemProvider::new())).unwrap());
+        let file_provider = disposables.add_rc(InMemoryFileSystemProvider::new());
+        disposables.add(file_service.register_provider(schemas::FILE, file_provider).unwrap());
+        let vscode_user_data_provider = disposables.add_rc(InMemoryFileSystemProvider::new());
+        disposables.add(file_service.register_provider(schemas::VSCODE_USER_DATA, vscode_user_data_provider).unwrap());
 
         let context_service = TestContextService::new(None, None);
         let backup_workspace_home = join_path(&environment_service.user_roaming_data_home(), &["Backups", &context_service.get_workspace().id()]);
