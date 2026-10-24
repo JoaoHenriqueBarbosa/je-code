@@ -572,6 +572,34 @@ use crate::contrib::search::notebook_search::search_notebook_helpers::INotebookC
 /// `DEFAULT_MAX_SEARCH_RESULTS`.
 pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 20000;
 
+/// `SEARCH_EXCLUDE_CONFIG`.
+pub const SEARCH_EXCLUDE_CONFIG: &str = "search.exclude";
+
+/// `SearchSortOrder` (`search.sortOrder`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchSortOrder {
+    Default,
+    FileNames,
+    Type,
+    Modified,
+    CountDescending,
+    CountAscending,
+}
+
+impl SearchSortOrder {
+    /// O valor de texto do `const enum`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SearchSortOrder::Default => "default",
+            SearchSortOrder::FileNames => "fileNames",
+            SearchSortOrder::Type => "type",
+            SearchSortOrder::Modified => "modified",
+            SearchSortOrder::CountDescending => "countDescending",
+            SearchSortOrder::CountAscending => "countAscending",
+        }
+    }
+}
+
 /// `IFileMatch`: um arquivo com os resultados de texto e, para notebooks, os resultados por célula.
 #[derive(Clone)]
 pub struct IFileMatch {

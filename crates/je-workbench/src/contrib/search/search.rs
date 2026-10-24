@@ -1,4 +1,5 @@
-//! Porte de `extractRangeFromFilter` de `src/vs/workbench/contrib/search/common/search.ts`: separa de um filtro
+//! Porte de `extractRangeFromFilter` e de `searchConfigurationNode` de `src/vs/workbench/contrib/search/common/search.ts`:
+//! separa de um filtro
 //! de arquivo (`/caminho/arquivo.txt:20:3-40:5`) o caminho e o intervalo de linha e coluna.
 //!
 //! Notas de tradução:
@@ -15,10 +16,26 @@
 
 use std::rc::Rc;
 
+use je_base::dynamic::Dynamic;
 use je_base::js_string::{index_of, substring};
 use je_base::lazy::Lazy;
+use je_base::nls::localize;
 use je_editor::range::Range;
+use je_platform::configuration::registry::ConfigurationNodeData;
 use zyarr::RegExp;
+
+/// `searchConfigurationNode`: o nó `search` (o `{ id, order, title, type, properties: {} }` do original). Quem o registra
+/// espalha o nó e preenche as `properties` (ver `search_common_contribution`), então o nó devolve as propriedades vazias,
+/// e como o [`ConfigurationNodeData`] não se clona, cada chamada monta o nó de novo.
+pub fn search_configuration_node() -> ConfigurationNodeData {
+    ConfigurationNodeData {
+        id: Some("search".to_owned()),
+        order: Some(13.0),
+        title: Some(localize("searchConfigurationTitle", "Search", &[])),
+        type_: Some(Dynamic::string("object")),
+        ..Default::default()
+    }
+}
 
 thread_local! {
     /// Padrões aceitos: `<caminho><#|:|(><linha><#|:|,><coluna?>>`, opcionalmente seguidos de um intervalo

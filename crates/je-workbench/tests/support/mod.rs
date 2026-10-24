@@ -89,3 +89,6 @@ pub mod text_editor_service_support;
 // `registerDecoration` do `TestTerminal`, e os dublês do `DecorationAddon`.
 pub mod fake_xterm_decoration;
 pub mod terminal_decoration_support;
+
+// Porte de `TestEditorGroupView` (`workbenchTestServices.ts`), usado por `openEditorsView.test.ts`.
+pub mod test_editor_group_view;
