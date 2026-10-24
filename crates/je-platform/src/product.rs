@@ -13,8 +13,8 @@
 use std::cell::RefCell;
 
 use je_base::product::{
-    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IExtensionRecommendations, IExtensionsGallery, IStringDictionary,
-    StringsOrDictionary,
+    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExtensionRecommendations, IExtensionsGallery,
+    IStringDictionary, StringsOrDictionary,
 };
 use je_instantiation::service_id;
 
@@ -94,6 +94,10 @@ pub trait IProductService {
     fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
         None
     }
+    /// `copilotVersions`: as versões do runtime e do SDK do Copilot empacotados, quando o produto declara. Padrão: nenhuma.
+    fn copilot_versions(&self) -> Option<&ICopilotVersions> {
+        None
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -144,6 +148,8 @@ pub struct ProductService {
     pub default_chat_agent: Option<DefaultChatAgentExtensions>,
     pub sessions_window_allowed_extensions: Vec<String>,
     pub extensions_gallery: Option<IExtensionsGallery>,
+    /// `copilotVersions`: as versões do runtime e do SDK do Copilot empacotados.
+    pub copilot_versions: Option<ICopilotVersions>,
 }
 
 impl Default for ProductService {
@@ -173,6 +179,7 @@ impl Default for ProductService {
             default_chat_agent: None,
             sessions_window_allowed_extensions: Vec::new(),
             extensions_gallery: None,
+            copilot_versions: None,
         }
     }
 }
@@ -261,6 +268,9 @@ impl IProductService for ProductService {
     }
     fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
         self.extensions_gallery.as_ref()
+    }
+    fn copilot_versions(&self) -> Option<&ICopilotVersions> {
+        self.copilot_versions.as_ref()
     }
 }
 
@@ -354,5 +364,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn extension_recommendations(&self) -> Option<&IStringDictionary<IExtensionRecommendations>> {
         self.extension_recommendations.as_ref()
+    }
+    fn copilot_versions(&self) -> Option<&ICopilotVersions> {
+        self.copilot_versions.as_ref()
+    }
     }
 }

@@ -11,8 +11,7 @@
 //!   `IAuthenticationProviderHostDelegate`, `getDynamicAuthenticationProviderId`, `isAuthenticationSession`,
 //!   `isAuthenticationWwwAuthenticateRequest`, `WORKBENCH_ONLY_SESSION_OPTION_PREFIX`,
 //!   `withoutWorkbenchOnlySessionOptions`, `getAuthenticationSessionRequestKey`, e os membros de
-//!   `IAuthenticationService` (`onDidUnregisterAuthenticationProvider`,
-//!   `declaredProviders`, `removeSession`...) e de `IAuthenticationExtensionsService`
+//!   `IAuthenticationService` (`removeSession`...) e de `IAuthenticationExtensionsService`
 //!   (preferência de sessão, `selectSession`, `requestSessionAccess`...) que nenhum serviço portado chama.
 //!   Os dois traits crescem com eles.
 //! - **`IAuthenticationService.getAccounts`** devolve `Promise<Vec<AuthenticationSessionAccount>>` (o
@@ -209,6 +208,29 @@ pub trait IAuthenticationService {
         scope_list_or_request: AuthenticationScopeListOrRequest,
         options: Option<IAuthenticationCreateSessionOptions>,
     ) -> Promise<AuthenticationSession>;
+
+    /// `declaredProviders`: the providers that extensions declare in their manifests, registered or not. O padrão
+    /// (nenhum declarado) é o dos dublês que só conhecem os provedores registrados.
+    fn declared_providers(&self) -> Vec<AuthenticationProviderInformation> {
+        Vec::new()
+    }
+
+    /// `onDidChangeDeclaredProviders`: fires when the list of declared providers changes. O padrão nunca dispara.
+    fn on_did_change_declared_providers(&self) -> Event<Vec<AuthenticationProviderInformation>> {
+        Event::none()
+    }
+
+    /// `onDidUnregisterAuthenticationProvider`: fires when an authentication provider has been unregistered. O
+    /// padrão nunca dispara.
+    fn on_did_unregister_authentication_provider(&self) -> Event<AuthenticationProviderInformation> {
+        Event::none()
+    }
+
+    /// `isAuthenticationProviderRegistered(id)`: whether a provider with that id is registered. O padrão consulta
+    /// [`get_provider_ids`](Self::get_provider_ids), que é o que o serviço real faz.
+    fn is_authentication_provider_registered(&self, id: &str) -> bool {
+        self.get_provider_ids().iter().any(|provider_id| provider_id == id)
+    }
 }
 
 service_id!(pub I_AUTHENTICATION_SERVICE: dyn IAuthenticationService = "IAuthenticationService");
