@@ -35,6 +35,7 @@ use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::event::Event;
+use je_base::lifecycle::IDisposable;
 use je_platform::log::NullLogService;
 use je_platform::terminal::capabilities::capabilities::{
     CommandDetection, CwdDetection, ICommandDetectionCapability, ICommandInvalidationRequest, ICurrentPartialCommand, ICwdDetectionCapability, IHandleCommandOptions,
