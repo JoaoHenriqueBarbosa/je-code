@@ -361,3 +361,44 @@ pub mod disk;
 pub mod watcher;
 
 pub mod user_data_sync_client;
+
+// ---- Auxiliares dos testes de sincronização de arquivos (keybindings, tasks) ----
+
+/// `fileService.writeFile(resource, VSBuffer.fromString(text))`. Sem `await`, a promessa roda até o primeiro
+/// `await`, como no original.
+pub fn write_text(file_service: &Rc<je_platform::files::file_service::FileService>, resource: &URI, text: &str) -> je_base::promise::Promise<()> {
+    let (file_service, resource, text) = (file_service.clone(), resource.clone(), text.to_string());
+    je_base::async_::async_fn(async move { file_service.write_file(&resource, je_platform::files::file_service::FileContentSource::from(text.as_str()), None).await.map(|_| ()) })
+}
+
+/// `fileService.createFile(resource, VSBuffer.fromString(text))`.
+pub fn create_text(file_service: &Rc<je_platform::files::file_service::FileService>, resource: &URI, text: &str) -> je_base::promise::Promise<()> {
+    let (file_service, resource, text) = (file_service.clone(), resource.clone(), text.to_string());
+    je_base::async_::async_fn(async move { file_service.create_file(&resource, Some(je_platform::files::file_service::FileContentSource::from(text.as_str())), None).await.map(|_| ()) })
+}
+
+/// `(await fileService.readFile(resource)).value.toString()`.
+pub async fn read_text(file_service: &Rc<je_platform::files::file_service::FileService>, resource: &URI) -> String {
+    file_service.read_file(resource, None, None).await.unwrap().value.to_string()
+}
+
+/// `synchroniser.sync(manifest, preview)` com a configuração e os cabeçalhos padrão do original.
+pub async fn sync_synchroniser(
+    synchroniser: &dyn je_platform::user_data_sync::user_data_sync::IUserDataSynchroniser,
+    manifest: Option<String>,
+    preview: bool,
+) -> Result<Option<je_platform::user_data_sync::user_data_sync::IUserDataSyncResourcePreview>, je_base::errors::Error> {
+    synchroniser
+        .sync(
+            manifest.map(je_platform::user_data_sync::user_data_sync::RefOrUserData::Ref),
+            preview,
+            je_platform::user_data_sync::user_data_sync::IUserDataSyncConfiguration::default(),
+            je_base::parts::request::IHeaders::new(),
+        )
+        .await
+}
+
+/// `{ 'If-Match': ref }`.
+pub fn if_match_headers(reference: &str) -> je_base::parts::request::IHeaders {
+    je_base::parts::request::IHeaders::from([("If-Match".to_string(), je_base::parts::request::HeaderValue::One(reference.to_string()))])
+}
