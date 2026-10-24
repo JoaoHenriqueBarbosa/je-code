@@ -1033,6 +1033,224 @@ pub trait ExtHostTreeViewsShape {
 
 // #endregion
 
+// #region Editores personalizados (webview)
+
+pub use self::custom_editors_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostCustomEditors.ts` usa: `MainThreadCustomEditorsShape`,
+/// `ExtHostCustomEditorsShape`, os DTOs de webview e de editor personalizado e os identificadores
+/// `MainContext.MainThreadCustomEditors` e `ExtHostContext.ExtHostCustomEditors`.
+///
+/// Divergências:
+/// - `UriComponents` é a [`URI`]; `IRange` e `ISelection` são o `Range` e o `Selection` do editor; `VSBuffer` é o
+///   [`VSBuffer`]. `WebviewHandle` é `String`.
+/// - O tipo anônimo de `initData` de `$resolveCustomEditor` tem os mesmos campos de `CustomEditorDiffInitData`, e os
+///   dois são o mesmo struct ([`CustomEditorResolveInitData`] é o alias).
+/// - `enableCommandUris?: boolean | readonly string[]` é [`EnableCommandUris`]. Os campos opcionais são `Option`.
+/// - `$resolveCustomTextEditorNavigation` devolve `{ selection: ISelection | undefined } | undefined`:
+///   `Option<CustomTextEditorNavigationResult>`. O `$createCustomDocument` devolve [`CreateCustomDocumentResult`].
+/// - `$disposeEdits` e `$disposeCustomTextEditorNavigation` lançam no original (documento inexistente): o `Err` é o
+///   lançamento de `$disposeEdits`.
+mod custom_editors_region {
+    use je_base::buffer::VSBuffer;
+    use je_base::cancellation::CancellationToken;
+    use je_base::errors::Error;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::range::Range as EditorRange;
+    use je_editor::selection::Selection as EditorSelection;
+    use je_extensions::manifest::ExtensionIdentifier;
+
+    use super::{EditorGroupColumn, ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// `WebviewHandle`.
+    pub type WebviewHandle = String;
+
+    /// `WebviewExtensionDescription`.
+    #[derive(Clone, Debug)]
+    pub struct WebviewExtensionDescription {
+        pub id: ExtensionIdentifier,
+        pub location: URI,
+    }
+
+    /// `IWebviewPortMapping`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct WebviewPortMapping {
+        pub webview_port: f64,
+        pub extension_host_port: f64,
+    }
+
+    /// `enableCommandUris?: boolean | readonly string[]`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum EnableCommandUris {
+        All(bool),
+        Commands(Vec<String>),
+    }
+
+    /// `IWebviewContentOptions`: cada campo ausente é `undefined`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct WebviewContentOptions {
+        pub enable_scripts: Option<bool>,
+        pub enable_forms: Option<bool>,
+        pub enable_command_uris: Option<EnableCommandUris>,
+        pub local_resource_roots: Option<Vec<URI>>,
+        pub port_mapping: Option<Vec<WebviewPortMapping>>,
+    }
+
+    /// `IWebviewPanelOptions`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct WebviewPanelOptions {
+        pub enable_find_widget: Option<bool>,
+        pub retain_context_when_hidden: Option<bool>,
+    }
+
+    /// `CustomEditorProviderCapabilities`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct CustomEditorProviderCapabilities {
+        pub supports_move: Option<bool>,
+        pub supports_navigation: Option<bool>,
+        pub supports_inline_diff: Option<bool>,
+        pub supports_side_by_side_diff: Option<bool>,
+    }
+
+    /// `CustomEditorDiffInitData`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct CustomEditorDiffInitData {
+        pub title: String,
+        pub content_options: WebviewContentOptions,
+        pub options: WebviewPanelOptions,
+        pub active: bool,
+    }
+
+    /// O `initData` anônimo de `$resolveCustomEditor`, de mesma forma que [`CustomEditorDiffInitData`].
+    pub type CustomEditorResolveInitData = CustomEditorDiffInitData;
+
+    /// `CustomEditorSideBySideDiffWebviewHandles`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct CustomEditorSideBySideDiffWebviewHandles {
+        pub original: WebviewHandle,
+        pub modified: WebviewHandle,
+    }
+
+    /// `CustomEditorSideBySideDiffInitData`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct CustomEditorSideBySideDiffInitData {
+        pub original: CustomEditorDiffInitData,
+        pub modified: CustomEditorDiffInitData,
+    }
+
+    /// O `{ editable: boolean }` de `$createCustomDocument`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct CreateCustomDocumentResult {
+        pub editable: bool,
+    }
+
+    /// O `{ selection: ISelection | undefined }` de `$resolveCustomTextEditorNavigation`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct CustomTextEditorNavigationResult {
+        pub selection: Option<EditorSelection>,
+    }
+
+    /// `MainThreadCustomEditorsShape`.
+    #[allow(clippy::too_many_arguments)]
+    pub trait MainThreadCustomEditorsShape: IDisposable {
+        fn rpc_on_did_change_custom_text_editor_selection(&self, handle: &str, selection: Option<EditorSelection>);
+        fn rpc_register_text_editor_provider(
+            &self,
+            extension: WebviewExtensionDescription,
+            view_type: &str,
+            options: WebviewPanelOptions,
+            capabilities: CustomEditorProviderCapabilities,
+            serialize_buffers_for_post_message: bool,
+        );
+        fn rpc_register_custom_editor_provider(
+            &self,
+            extension: WebviewExtensionDescription,
+            view_type: &str,
+            options: WebviewPanelOptions,
+            capabilities: CustomEditorProviderCapabilities,
+            supports_multiple_editors_per_document: bool,
+            serialize_buffers_for_post_message: bool,
+        );
+        fn rpc_unregister_editor_provider(&self, view_type: &str);
+
+        fn rpc_on_did_edit(&self, resource: &URI, view_type: &str, edit_id: u32, label: Option<&str>);
+        fn rpc_on_content_change(&self, resource: &URI, view_type: &str);
+    }
+
+    /// `ExtHostCustomEditorsShape`.
+    #[allow(clippy::too_many_arguments)]
+    pub trait ExtHostCustomEditorsShape {
+        fn rpc_resolve_custom_text_editor_navigation(&self, handle: &str, view_type: &str, resource: &URI, token: CancellationToken) -> Promise<Option<CustomTextEditorNavigationResult>>;
+        fn rpc_dispose_custom_text_editor_navigation(&self, handle: &str);
+        fn rpc_reveal_custom_text_editor_range(&self, handle: &str, range: EditorRange, selection: Option<EditorSelection>, preserve_focus: bool, token: CancellationToken) -> Promise<()>;
+        fn rpc_capture_custom_text_editor_view_state(&self, handle: &str, state_id: u32) -> Promise<()>;
+        fn rpc_restore_custom_text_editor_view_state(&self, handle: &str, state_id: u32, token: CancellationToken) -> Promise<()>;
+        fn rpc_release_custom_text_editor_view_state(&self, handle: &str, state_id: u32);
+        fn rpc_resolve_custom_editor(
+            &self,
+            resource: &URI,
+            new_webview_handle: &str,
+            view_type: &str,
+            init_data: CustomEditorResolveInitData,
+            position: EditorGroupColumn,
+            cancellation: CancellationToken,
+        ) -> Promise<()>;
+        fn rpc_resolve_custom_editor_inline_diff(
+            &self,
+            original_resource: &URI,
+            modified_resource: &URI,
+            new_webview_handle: &str,
+            view_type: &str,
+            init_data: CustomEditorDiffInitData,
+            position: EditorGroupColumn,
+            cancellation: CancellationToken,
+        ) -> Promise<()>;
+        fn rpc_resolve_custom_editor_side_by_side_diff(
+            &self,
+            original_resource: &URI,
+            modified_resource: &URI,
+            webview_handles: CustomEditorSideBySideDiffWebviewHandles,
+            view_type: &str,
+            init_data: CustomEditorSideBySideDiffInitData,
+            position: EditorGroupColumn,
+            cancellation: CancellationToken,
+        ) -> Promise<()>;
+        fn rpc_create_custom_document(
+            &self,
+            resource: &URI,
+            view_type: &str,
+            backup_id: Option<String>,
+            untitled_document_data: Option<VSBuffer>,
+            cancellation: CancellationToken,
+        ) -> Promise<CreateCustomDocumentResult>;
+        fn rpc_dispose_custom_document(&self, resource: &URI, view_type: &str) -> Promise<()>;
+
+        fn rpc_undo(&self, resource: &URI, view_type: &str, edit_id: u32, is_dirty: bool) -> Promise<()>;
+        fn rpc_redo(&self, resource: &URI, view_type: &str, edit_id: u32, is_dirty: bool) -> Promise<()>;
+        fn rpc_revert(&self, resource: &URI, view_type: &str, cancellation: CancellationToken) -> Promise<()>;
+        fn rpc_dispose_edits(&self, resource: &URI, view_type: &str, edit_ids: Vec<u32>) -> Result<(), Error>;
+
+        fn rpc_on_save(&self, resource: &URI, view_type: &str, cancellation: CancellationToken) -> Promise<()>;
+        fn rpc_on_save_as(&self, resource: &URI, view_type: &str, target_resource: &URI, cancellation: CancellationToken) -> Promise<()>;
+
+        fn rpc_backup(&self, resource: &URI, view_type: &str, cancellation: CancellationToken) -> Promise<String>;
+
+        fn rpc_on_move_custom_editor(&self, handle: &str, new_resource: &URI, view_type: &str) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_CUSTOM_EDITORS: ProxyIdentifier<dyn MainThreadCustomEditorsShape> = ProxyIdentifier::new("MainThreadCustomEditors");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_CUSTOM_EDITORS: ProxyIdentifier<dyn ExtHostCustomEditorsShape> = ProxyIdentifier::new("ExtHostCustomEditors");
+    }
+}
+
+// #endregion
+
 /// `MainContext`: os identificadores dos proxies da thread principal.
 pub struct MainContext;
 
