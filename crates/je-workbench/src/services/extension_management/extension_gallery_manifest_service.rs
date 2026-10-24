@@ -46,7 +46,6 @@ use je_platform::extension_management::extension_gallery_manifest::{
 };
 use je_platform::extension_management::extension_gallery_manifest_service::ExtensionGalleryManifestService;
 use je_platform::external_services::marketplace::resolve_marketplace_headers;
-use je_platform::files::file_service::FileService;
 use je_platform::log::{LogArg, LogMessage, LogServiceRef, Logger};
 use je_platform::product::IProductService;
 use je_platform::request::request::{IRequestService, as_json};

@@ -38,7 +38,7 @@ use je_base::stream::WriteableStreamImpl;
 use je_base::uri::URI;
 use je_instantiation::service_id;
 use je_platform::environment::environment::EnvironmentService;
-use je_platform::files::file_service::{FileContentSource, FileService};
+use je_platform::files::file_service::FileContentSource;
 use je_platform::files::files::{CreateFileOptions, FileReadStreamOptions, PartialFileDeleteOptions, ReadFileOptions};
 use je_platform::log::{LogArg, LogMessage, LogServiceRef, Logger};
 use je_platform::resources::join_path;

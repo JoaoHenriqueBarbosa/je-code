@@ -28,7 +28,7 @@
 //! - **`connection.remoteAuthority`.** É [`IRemoteAgentService::get_connection`] seguido de `remote_authority()`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use indexmap::IndexSet;
