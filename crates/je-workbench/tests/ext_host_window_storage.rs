@@ -77,7 +77,7 @@ fn window() -> (Rc<ExtHostWindow>, Rc<RecordingWindow>) {
     let proxy = Rc::new(RecordingWindow { calls: RefCell::new(Vec::new()) });
     let shape: Rc<dyn MainThreadWindowShape> = proxy.clone();
     rpc.set(&MainContext::MAIN_THREAD_WINDOW, shape);
-    (ExtHostWindow::new(&rpc, Some("AQID")), proxy)
+    (ExtHostWindow::new(&*rpc, Some("AQID")), proxy)
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn window_state_starts_focused_and_active_then_takes_the_initial_state_and_fires
     let proxy = Rc::new(RecordingWindow { calls: RefCell::new(Vec::new()) });
     let shape: Rc<dyn MainThreadWindowShape> = proxy.clone();
     rpc.set(&MainContext::MAIN_THREAD_WINDOW, shape);
-    let window = ExtHostWindow::new(&rpc, None);
+    let window = ExtHostWindow::new(&*rpc, None);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
     let _subscription = window.on_did_change_window_state().listen(move |state| sink.borrow_mut().push(*state));
@@ -165,7 +165,7 @@ fn storage(stored: Option<&str>) -> (Rc<ExtHostStorage>, Rc<RecordingStorage>) {
     let proxy = Rc::new(RecordingStorage { stored: RefCell::new(stored.map(str::to_owned)), calls: RefCell::new(Vec::new()) });
     let shape: Rc<dyn MainThreadStorageShape> = proxy.clone();
     rpc.set(&MainContext::MAIN_THREAD_STORAGE, shape);
-    (ExtHostStorage::new(&rpc, NullLogService::shared()), proxy)
+    (ExtHostStorage::new(&*rpc, NullLogService::shared()), proxy)
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn secret_state_forwards_to_the_workbench_and_relays_password_changes() {
     let proxy = Rc::new(RecordingSecrets { calls: RefCell::new(Vec::new()) });
     let shape: Rc<dyn MainThreadSecretStateShape> = proxy.clone();
     rpc.set(&MainContext::MAIN_THREAD_SECRET_STATE, shape);
-    let secrets = ExtHostSecretState::new(&rpc);
+    let secrets = ExtHostSecretState::new(&*rpc);
 
     assert_eq!(secrets.get("pub.ext", "token").result().expect("assentou").expect("sem erro"), Some("segredo".to_owned()));
     let _ = secrets.store("pub.ext", "token", "novo");
@@ -298,7 +298,7 @@ fn deprecated_api_usage_is_reported_once_per_api_extension_and_usage() {
     let telemetry = Rc::new(RecordingTelemetry { events: RefCell::new(Vec::new()) });
     let shape: Rc<dyn MainThreadTelemetryShape> = telemetry.clone();
     rpc.set(&MainContext::MAIN_THREAD_TELEMETRY, shape);
-    let service = ExtHostApiDeprecationService::new(&rpc, NullLogService::shared());
+    let service = ExtHostApiDeprecationService::new(&*rpc, NullLogService::shared());
 
     service.report("api.x", &extension(), "use y", None);
     service.report("api.x", &extension(), "use y", None);

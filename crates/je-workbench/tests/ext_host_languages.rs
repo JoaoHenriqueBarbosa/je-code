@@ -217,12 +217,12 @@ fn change_language_returns_the_document_or_fails_when_it_is_unknown() {
 
     let missing = fixture.languages.change_language(&URI::parse("file:///outro.txt", false), "rust");
     pump();
-    assert_eq!(missing.result().expect("assentou").expect_err("rejeita").message, "document 'file:///outro.txt' NOT found");
+    assert_eq!(missing.result().expect("assentou").err().expect("rejeita").message, "document 'file:///outro.txt' NOT found");
 
     *fixture.proxy.change_error.borrow_mut() = Some("Unknown language id: x".to_owned());
     let failed = fixture.languages.change_language(&uri(), "x");
     pump();
-    assert_eq!(failed.result().expect("assentou").expect_err("rejeita").message, "Unknown language id: x");
+    assert_eq!(failed.result().expect("assentou").err().expect("rejeita").message, "Unknown language id: x");
 }
 
 #[test]

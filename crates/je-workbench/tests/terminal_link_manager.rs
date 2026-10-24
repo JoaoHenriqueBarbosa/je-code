@@ -23,6 +23,7 @@
 mod common;
 mod support;
 
+use je_instantiation::Injectable;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -131,7 +132,8 @@ impl Fixture {
         let configuration: Rc<dyn IConfigurationService> = configuration_service.clone();
 
         let configuration_instantiation = guard.add_rc(InstantiationService::new(ServiceCollection::new().with(I_CONFIGURATION_SERVICE, configuration.clone())));
-        let terminal_configuration_service: Rc<dyn ITerminalConfigurationService> = guard.add_rc(configuration_instantiation.create_instance::<TerminalConfigurationService>(()));
+        let terminal_configuration_service_concrete = guard.add_rc(configuration_instantiation.create_instance::<TerminalConfigurationService>(()));
+        let terminal_configuration_service: Rc<dyn ITerminalConfigurationService> = terminal_configuration_service_concrete;
 
         let file_service = LinkTestFileService::new();
         let uri_identity_service = guard.add_rc(UriIdentityService::create((), (file_service.clone() as Rc<dyn IFileService>,)));
@@ -139,10 +141,11 @@ impl Fixture {
         let link_resolver = Rc::new(TerminalLinkResolver::new(file_service));
 
         let xterm = guard.add_rc(FakeXterm::new(80, 30));
+        let capabilities = guard.add_rc(TerminalCapabilityStore::new());
         let link_manager = guard.add_rc(TerminalLinkManager::new(
             xterm.clone() as Rc<dyn IXtermRawTerminal>,
             Rc::new(PartialProcessInfo { initial_cwd: String::new() }),
-            guard.add_rc(TerminalCapabilityStore::new()),
+            capabilities,
             link_resolver,
             Vec::new(),
             TerminalLinkManagerServices {

@@ -319,7 +319,7 @@ pub fn spawn_local(future: impl Future<Output = ()> + 'static) {
 
 /// Dispara o próximo timer vencido (ou, no relógio virtual, avança até ele). Devolve `false` se não
 /// há timer pendente.
-fn run_next_timer(advance_fake_clock: bool) -> bool {
+pub fn run_next_timer(advance_fake_clock: bool) -> bool {
     let next = LOOP.with(|l| {
         let now = l.now();
         let mut timers = l.timers.borrow_mut();

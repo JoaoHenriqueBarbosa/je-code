@@ -15,6 +15,7 @@ use je_platform::log::{
     DidChangeLoggersEvent, LogArg, LogLevel, LogMessage, LogServiceRef, Logger, LoggerRef, LoggerResource, LoggerService, LoggerServiceLogLevelChange, NullLogService,
     ResourceOrId, LoggerOptions,
 };
+use je_workbench::api::common::ext_host_protocol::IMainContext;
 use je_workbench::api::common::ext_host_output::{ExtHostOutputService, IDirectoryCreator, OutputChannelOptions};
 use je_workbench::api::common::ext_host_protocol::{ExtHostOutputServiceShape, MainContext, MainThreadOutputServiceShape};
 use je_workbench::services::output::output::OutputChannelUpdateMode;

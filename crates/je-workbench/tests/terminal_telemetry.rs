@@ -246,13 +246,14 @@ fn cancels_the_shell_integration_timeout_when_the_terminal_or_contribution_is_di
             telemetry_service.clone(),
         ));
 
+        let capability_store = guard.add_rc(TerminalCapabilityStore::new());
         let instance: Rc<dyn ITerminalInstance> = Rc::new(PartialTerminalInstance {
             resource: Some(URI::parse("terminal:test", false)),
             target: Some(TerminalLocation::Panel),
             process_ready: Some(Promise::resolved(())),
             on_disposed: Some(on_disposed.clone()),
             shell_launch_config: Some(Rc::new(RefCell::new(IShellLaunchConfig::default()))),
-            capabilities: Some(guard.add_rc(TerminalCapabilityStore::new())),
+            capabilities: Some(capability_store),
             has_remote_authority: Some(false),
             used_shell_integration_injection: Some(false),
             session_id: Some("test".to_owned()),

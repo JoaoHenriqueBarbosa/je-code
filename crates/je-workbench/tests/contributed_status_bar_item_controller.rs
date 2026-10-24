@@ -6,7 +6,7 @@
 //! - `accessor.get(INotebookCellStatusBarService)` é o `NotebookCellStatusBarService` real, e `editor` (`INotebookEditor`) é o
 //!   [`VisibleCellsEditor`] sobre o editor de teste, com os eventos que o original nunca dispara como `Event::none()`.
 //! - `asPromise(event, message)` (que rejeita em 1 s) é o [`ProvideWatcher`]: um ouvinte que guarda o valor do evento, e `await` é o
-//!   dreno dos timers simulados seguido da leitura do valor (se não chegou, o caso falha com a mensagem).
+//!   avanço dos timers simulados um a um até o valor chegar, seguido da leitura dele (se não chegou, o caso falha com a mensagem).
 //! - `provideCalls`, `onProvideCalled` e `_onDidChangeStatusBarItems` são os `Cell` e emissores do [`TestProvider`].
 //! - `cell0.metadata = { ...cell0.metadata, ...{ newMetadata: true } }` é o `set_metadata` com o objeto acrescido da chave nova.
 
@@ -119,9 +119,10 @@ impl ProvideWatcher {
         Self { value, listener, message }
     }
 
-    /// `await promise`.
+    /// `await promise`: avança os timers simulados um a um só até o evento chegar, como o `await` do original, que retoma
+    /// logo após o primeiro disparo e deixa os timers seguintes para o próximo `await`.
     fn wait(&self) -> i32 {
-        runtime::drain_fake_timers();
+        while self.value.get().is_none() && runtime::run_next_timer(true) {}
         self.listener.dispose();
         self.value.get().unwrap_or_else(|| panic!("asPromise TIMEOUT reached: {}", self.message))
     }

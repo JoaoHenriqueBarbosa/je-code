@@ -11,6 +11,7 @@
 //! - **`upcastPartial`/`mock`.** Os métodos que o original deixa de fora (o objeto parcial lança `TypeError` ao ser chamado)
 //!   falham com `panic!`.
 
+use je_instantiation::Injectable;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -570,20 +571,23 @@ impl AnythingFixture {
         let uri_identity_service = store.add_rc(UriIdentityService::create((), (file_service.clone(),)));
         let uri_identity_service: Rc<dyn IUriIdentityService> = uri_identity_service;
         let language_service = store.add_rc(LanguageService::new(false));
-        let model_service: Rc<dyn IModelService> = store.add_rc(ModelService::new(
+        let model_service = store.add_rc(ModelService::new(
             configuration.clone(),
             je_workbench::test::common::workbench_test_services::TestTextResourcePropertiesService::new(configuration.clone()),
             UndoRedoService::for_tests(),
         ));
+        let model_service: Rc<dyn IModelService> = model_service;
         let context_service: Rc<dyn IWorkspaceContextService> = TestContextService::new(None, None);
         let path_service = TestPathService::new(None, None);
+        let working_copy_service = store.add_rc(WorkingCopyService::new());
+        let working_copy_service: Rc<dyn je_workbench::services::working_copy::working_copy_service::IWorkingCopyService> = working_copy_service;
 
         let services = ServiceCollection::new()
             .with(I_CONFIGURATION_SERVICE, configuration.clone())
             .with(I_LOG_SERVICE, NullLogService::shared())
             .with(I_URI_IDENTITY_SERVICE, uri_identity_service.clone())
             .with(je_platform::workspace::I_WORKSPACE_CONTEXT_SERVICE, context_service.clone())
-            .with(je_workbench::services::path::path_service::I_PATH_SERVICE, path_service.clone())
+            .with(je_workbench::services::path::path_service::I_PATH_SERVICE, path_service.clone() as Rc<dyn je_workbench::services::path::path_service::IPathService>)
             .with(je_workbench::services::editor::editor_groups_service::I_EDITOR_GROUPS_SERVICE, groups_service.clone())
             .with(I_TEXT_MODEL_SERVICE, Rc::new(TestTextModelService) as Rc<dyn ITextModelService>);
         let instantiation_service = InstantiationService::new(services);
@@ -600,7 +604,7 @@ impl AnythingFixture {
             label_service: MockLabelService::new(None),
             model_service,
             language_service,
-            working_copy_service: WorkingCopyService::new(),
+            working_copy_service,
             configuration_service: configuration,
             editor_service,
             history_service: Rc::new(TestHistoryService),

@@ -37,8 +37,9 @@ use je_editor::range::Range;
 use je_editor::word_helper::USUAL_WORD_SEPARATORS;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
+use je_platform::configuration::models::{ConfigurationChangeEvent, ConfigurationKeys};
 use je_platform::configuration::{
-    ConfigurationChangeEvent, ConfigurationData, ConfigurationKeys, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue,
+    ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue,
 };
 use je_workbench::contrib::notebook::browser::contrib::find::find_filters::NotebookFindFilters;
 use je_workbench::contrib::notebook::browser::contrib::find::find_model::{CellFindMatchModel, CellMatch};

@@ -30,6 +30,7 @@ use je_platform::configuration::service::IConfigurationService;
 use je_platform::files::i_file_service::IFileService;
 use je_platform::storage::{InMemoryStorageService, StorageService};
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
+use je_workbench::services::editor::editor_groups_service::IEditorPart;
 use je_workbench::common::editor::{EditorInputRef, UntypedEditorInput};
 use je_workbench::contrib::notebook::browser::services::notebook_provider_info_store::{INotebookEditorInputFactory, NotebookProviderInfoStore};
 use je_workbench::contrib::notebook::common::notebook_provider::{NotebookEditorDescriptor, NotebookEditorDescriptorSelector, NotebookProviderInfo};

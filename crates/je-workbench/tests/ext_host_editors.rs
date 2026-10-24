@@ -276,10 +276,10 @@ fn show_text_document_resolves_the_editor_the_workbench_names() {
     *fixture.proxy.show_result.borrow_mut() = Some("outro".to_owned());
     let stale = fixture.editors.show_text_document(&document, ShowTextDocumentArgument::Undefined, None);
     pump();
-    assert!(stale.result().expect("assentou").expect_err("rejeita").message.contains("because another editor opened in the meantime"));
+    assert!(stale.result().expect("assentou").err().expect("rejeita").message.contains("because another editor opened in the meantime"));
 
     *fixture.proxy.show_result.borrow_mut() = None;
     let none = fixture.editors.show_text_document(&document, ShowTextDocumentArgument::Undefined, None);
     pump();
-    assert!(none.result().expect("assentou").expect_err("rejeita").message.ends_with("a.txt\"."));
+    assert!(none.result().expect("assentou").err().expect("rejeita").message.ends_with("a.txt\"."));
 }
