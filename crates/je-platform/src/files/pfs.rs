@@ -483,7 +483,7 @@ fn biased_ignore_path_case() -> ExtUri {
 /// garantir que as mudanças chegaram ao disco. Várias escritas no mesmo caminho entram numa fila.
 pub fn write_file(path: &str, data: impl Into<Vec<u8>>, options: Option<WriteFileOptions>) -> Promise<()> {
     let (path, data) = (path.to_string(), data.into());
-    let resource = URI::file(&path, ProcessEnvironment.platform());
+    let resource = URI::file(path.as_str(), ProcessEnvironment.platform());
     WRITE_QUEUES.with(|queues| {
         queues.queue_for(&resource, move || match write_file_and_flush(&path, &data, options.as_ref()) {
             Ok(()) => Promise::resolved(()),
