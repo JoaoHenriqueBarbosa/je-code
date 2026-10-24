@@ -11,9 +11,9 @@
 //!   devolve uma cópia dos `Rc<Link>`. `LinksList.Empty` é [`LinksList::empty`], uma lista nova e vazia a cada chamada.
 //! - O `lists[i] = [result, provider]` do original é esparso e o `coalesce(lists)` depois dos `await` descarta as
 //!   posições vazias, na ordem dos provedores invertida; o vetor de `Option` faz o mesmo.
-//! - `toJSON()` de `Link` fica de fora (só serve à serialização do comando).
+//! - `toJSON()` de `Link` é [`Link::to_json`], o `ILink` que o comando `_executeLinkProvider` entrega.
 //! - O comando `_executeLinkProvider` (`CommandsRegistry.registerCommand`) lê `ILanguageFeaturesService` e `IModelService`
-//!   de um `ServicesAccessor`, que o porte não tem: fica de fora.
+//!   de um `ServicesAccessor`: fica no workbench (`editor_execute_commands`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -62,6 +62,11 @@ impl Link {
     /// `tooltip`.
     pub fn tooltip(&self) -> Option<String> {
         self.link.borrow().tooltip.clone()
+    }
+
+    /// `toJSON()`: o `_link` (o que o comando `_executeLinkProvider` entrega ao RPC).
+    pub fn to_json(&self) -> ILink {
+        self.link.borrow().clone()
     }
 
     /// `resolve(token)`.

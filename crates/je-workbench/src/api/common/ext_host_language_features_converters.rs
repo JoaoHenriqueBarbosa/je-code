@@ -366,10 +366,21 @@ impl DocumentLink {
     }
 }
 
-/// `typeConverters.ColorPresentation` (só o `from`).
+/// `typeConverters.ColorPresentation`.
 pub struct ColorPresentation;
 
 impl ColorPresentation {
+    pub fn to(color_presentation: &IColorPresentationDto) -> Result<types::ColorPresentation, Error> {
+        let mut cp = types::ColorPresentation::new(&color_presentation.label)?;
+        if let Some(text_edit) = &color_presentation.text_edit {
+            cp.text_edit = Some(TextEdit::to(text_edit)?);
+        }
+        if let Some(additional_text_edits) = &color_presentation.additional_text_edits {
+            cp.additional_text_edits = Some(additional_text_edits.iter().map(TextEdit::to).collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(cp)
+    }
+
     pub fn from(color_presentation: &types::ColorPresentation) -> IColorPresentationDto {
         IColorPresentationDto {
             label: color_presentation.label.clone(),

@@ -9,7 +9,7 @@
 //! - `isValid(result)`: `range` presente e `contents` não vazio (`typeof result.contents !== 'undefined' && result.contents
 //!   && result.contents.length > 0`; `contents` nunca é `undefined` num `Vec`).
 //! - Os comandos `_executeHoverProvider` e `_executeHoverProvider_recursive` (`registerModelAndPositionCommand`)
-//!   dependem de `ServicesAccessor` e do `IModelService`: ficam de fora.
+//!   ficam no workbench (`editor_execute_commands`), onde existem o `ServicesAccessor` e o `IModelService`.
 
 use std::ops::ControlFlow;
 use std::rc::Rc;

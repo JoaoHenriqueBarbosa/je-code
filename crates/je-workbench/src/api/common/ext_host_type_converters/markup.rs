@@ -10,8 +10,9 @@
 //! - `isCodeblock`/`isMarkdownString`/`typeof markup === 'string'` (duck typing) são as variantes de
 //!   [`types::MarkedString`]; o ramo final `{ value: '' }` (valor que não é nenhum dos três) não existe.
 
+use je_base::dynamic::Dynamic;
 use je_base::errors;
-use je_base::html_content::{IMarkdownString, parse_href_and_dimensions};
+use je_base::html_content::{IMarkdownString, IsTrusted, MarkdownStringTrustedOptions, parse_href_and_dimensions};
 use je_base::map::OrderedMap;
 use je_base::marshalling::{Marshalled, json_stringify, parse};
 use je_base::uri::{Field, URI, UriChange};
@@ -23,6 +24,7 @@ use je_base::JsString;
 use je_editor::languages::StringOrMarkdown;
 
 use crate::api::common::ext_host_types as types;
+use crate::api::common::ext_host_values::{ApiValue, is_instance_of};
 
 /// `typeConverters.MarkdownString`.
 pub struct MarkdownString;
@@ -140,5 +142,65 @@ impl MarkdownString {
             types::Documentation::Text(text) => Some(StringOrMarkdown::String(text.clone())),
             types::Documentation::Markdown(markdown) => Some(StringOrMarkdown::Markdown(MarkdownString::from_markdown(markdown))),
         }
+    }
+}
+
+impl MarkdownString {
+    /// O `IMarkdownString` como o DTO do RPC. O `uris` não cruza: `MarkdownString.to` não o lê.
+    pub fn to_dto(markdown: &IMarkdownString) -> Dynamic {
+        let is_trusted = markdown.is_trusted.as_ref().map(|trusted| match trusted {
+            IsTrusted::Bool(flag) => Dynamic::Bool(*flag),
+            IsTrusted::Options(options) => {
+                Dynamic::object([("enabledCommands", Dynamic::array(options.enabled_commands.iter().map(|command| Dynamic::string(command))))])
+            }
+        });
+        let entries = [
+            ("value", Some(Dynamic::String(markdown.value.clone()))),
+            ("isTrusted", is_trusted),
+            ("supportThemeIcons", markdown.support_theme_icons.map(Dynamic::Bool)),
+            ("supportHtml", markdown.support_html.map(Dynamic::Bool)),
+            ("supportAlertSyntax", markdown.support_alert_syntax.map(Dynamic::Bool)),
+            ("baseUri", markdown.base_uri.as_ref().map(ApiValue::to_dynamic)),
+        ];
+        Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+    }
+
+    /// A leitura do DTO de [`MarkdownString::to_dto`]; `None` se o valor não é um objeto com o `value` em texto.
+    pub fn from_dto(value: &Dynamic) -> Option<IMarkdownString> {
+        let Dynamic::String(text) = value.get_str("value") else {
+            return None;
+        };
+        let flag = |key: &str| match value.get_str(key) {
+            Dynamic::Bool(flag) => Some(flag),
+            _ => None,
+        };
+        let is_trusted = match value.get_str("isTrusted") {
+            Dynamic::Bool(flag) => Some(IsTrusted::Bool(flag)),
+            options @ Dynamic::Object(_) => match options.get_str("enabledCommands") {
+                Dynamic::Array(commands) => {
+                    let enabled_commands = commands
+                        .to_vec()
+                        .into_iter()
+                        .filter_map(|command| match command {
+                            Dynamic::String(command) => Some(command.to_string_lossy()),
+                            _ => None,
+                        })
+                        .collect();
+                    Some(IsTrusted::Options(MarkdownStringTrustedOptions { enabled_commands }))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let base_uri = value.get_str("baseUri");
+        Some(IMarkdownString {
+            value: text,
+            is_trusted,
+            support_theme_icons: flag("supportThemeIcons"),
+            support_html: flag("supportHtml"),
+            support_alert_syntax: flag("supportAlertSyntax"),
+            base_uri: if is_instance_of(&base_uri, "Uri") { URI::from_dynamic(&base_uri).ok() } else { None },
+            uris: None,
+        })
     }
 }

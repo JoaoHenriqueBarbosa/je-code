@@ -23,6 +23,7 @@
 //!   `TestRunProfileBase` (testing) ainda não existem no porte.
 //! - A validação por duck typing dos argumentos de API (`Position.isPosition`, `Range.isRange`,
 //!   `Selection.isSelection`) aceita a classe marcada ou um objeto com as propriedades certas, como o original.
+//! - O `languages.Command` do editor não carrega o `$ident`: `fromInternal` o recupera do argumento do comando delegante.
 //! - O `Promise.reject(string)` de `_executeConvertedCommand` rejeita com um [`Error`] com essa mensagem.
 //! - O `CommandError` anônimo (com `id` e `source`) é um [`Error`] com as propriedades `id` e `source`.
 //! - `IExtensionDescription` é o `ExtensionDescription` de `je_extensions`.
@@ -624,8 +625,19 @@ impl ICommandsConverter for CommandsConverter {
     }
 
     fn from_internal(&self, command: &ICommandDto) -> Option<Command> {
-        match &command.ident {
-            Some(ident) => self.cache.borrow().get(ident).cloned(),
+        // O `languages.Command` do editor não tem o `$ident` (ver as divergências do módulo): o comando delegante, que
+        // `to_internal` monta com o mesmo identificador como único argumento, o devolve.
+        let ident = command.ident.clone().or_else(|| {
+            if command.id != self.delegating_command_id {
+                return None;
+            }
+            match command.arguments.as_ref()?.first()? {
+                Dynamic::String(ident) => Some(ident.to_string_lossy()),
+                _ => None,
+            }
+        });
+        match ident {
+            Some(ident) => self.cache.borrow().get(&ident).cloned(),
             None => Some(Command { title: command.title.clone(), command: command.id.clone(), tooltip: None, arguments: command.arguments.clone() }),
         }
     }

@@ -23,13 +23,13 @@
 
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
-use je_base::html_content::{IMarkdownString, IsTrusted};
 use je_base::nls::localize;
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;
 use je_editor::languages::StringOrMarkdown;
 
 use crate::api::common::ext_host_protocol::ICommandDto;
+use crate::api::common::ext_host_type_converters::MarkdownString as MarkdownStringConverter;
 use crate::api::common::ext_host_values::ApiValue;
 
 /// `IViewBadge`.
@@ -143,25 +143,10 @@ fn object_of(entries: Vec<(&str, Option<Dynamic>)>) -> Dynamic {
     Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
 }
 
-fn markdown_to_dynamic(markdown: &IMarkdownString) -> Dynamic {
-    let is_trusted = markdown.is_trusted.as_ref().map(|trusted| match trusted {
-        IsTrusted::Bool(flag) => Dynamic::Bool(*flag),
-        IsTrusted::Options(options) => Dynamic::object([("enabledCommands", Dynamic::array(options.enabled_commands.iter().map(|command| Dynamic::string(command))))]),
-    });
-    object_of(vec![
-        ("value", Some(Dynamic::String(markdown.value.clone()))),
-        ("isTrusted", is_trusted),
-        ("supportThemeIcons", markdown.support_theme_icons.map(Dynamic::Bool)),
-        ("supportHtml", markdown.support_html.map(Dynamic::Bool)),
-        ("supportAlertSyntax", markdown.support_alert_syntax.map(Dynamic::Bool)),
-        ("baseUri", markdown.base_uri.as_ref().map(ApiValue::to_dynamic)),
-    ])
-}
-
 fn string_or_markdown_to_dynamic(value: &StringOrMarkdown) -> Dynamic {
     match value {
         StringOrMarkdown::String(text) => Dynamic::string(text),
-        StringOrMarkdown::Markdown(markdown) => markdown_to_dynamic(markdown),
+        StringOrMarkdown::Markdown(markdown) => MarkdownStringConverter::to_dto(markdown),
     }
 }
 

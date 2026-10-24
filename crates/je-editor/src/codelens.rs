@@ -12,7 +12,7 @@
 //!   trait devolve: a rejeição (inclusive a exceção síncrona do provedor, que o RPC já entrega como rejeição) vai para
 //!   `onUnexpectedExternalError`.
 //! - O comando `_executeCodeLensProvider` (`CommandsRegistry.registerCommand`) lê `ILanguageFeaturesService` e
-//!   `IModelService` de um `ServicesAccessor`, que o porte não tem: fica de fora.
+//!   `IModelService` de um `ServicesAccessor`: fica no workbench (`editor_execute_commands`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
