@@ -433,9 +433,12 @@ pub fn register_test_resource_editor() -> DisposableRef {
 }
 
 /// `registerTestFileEditor()`: o painel `TestTextFileEditor` para o `FileEditorInput`. O `TestTextFileEditor` do original cria
-/// um `TestCodeEditor`; o painel lógico não tem controle, só a identidade (`getId()`).
+/// um `TestCodeEditor`; o painel lógico não tem controle, só a identidade (`getId()`) e a seleção (`getSelection`,
+/// `onDidChangeSelection` e `setSelection` do `TestTextFileEditor`, que o histórico de navegação lê: ver
+/// `EditorPaneDescriptor::new_with_selection`).
 pub fn register_test_file_editor() -> DisposableRef {
-    editor_pane_registry().register_editor_pane(EditorPaneDescriptor::new(TEST_TEXT_FILE_EDITOR_ID, "Text File Editor"), vec![TypeId::of::<FileEditorInput>()])
+    editor_pane_registry()
+        .register_editor_pane(EditorPaneDescriptor::new_with_selection(TEST_TEXT_FILE_EDITOR_ID, "Text File Editor"), vec![TypeId::of::<FileEditorInput>()])
 }
 
 /// `registerTestSideBySideEditor()`: o painel lado a lado para o `SideBySideEditorInput`.

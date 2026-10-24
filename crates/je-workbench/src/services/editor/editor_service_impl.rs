@@ -16,9 +16,10 @@
 //!   retorno; aqui cada forma é um método, que repete a mesma ordem de checagens (o atalho do `EditorsObserver`, o grupo
 //!   dado, a busca por todos os grupos), e a busca por todos os grupos chama a busca do grupo, que no original chama
 //!   `findEditors` outra vez (a segunda checagem do `EditorsObserver` dá o mesmo resultado e é omitida).
-//! - **Opções.** O `IEditorOptions` do `openEditor` tipado é o [`TextEditorOptions`] (que o inclui). O grupo
-//!   ([`IEditorGroup::open_editor`]) recebe só as [`EditorOptions`], então a seleção do editor de texto (`ITextEditorOptions`)
-//!   não atravessa o `group.openEditor`, a mesma restrição do contrato de [`IEditorGroup`].
+//! - **Opções.** O `IEditorOptions` do `openEditor` tipado é o [`TextEditorOptions`] (que o inclui). O grupo recebe as
+//!   [`EditorOptions`] pelo [`IEditorGroup::open_editor`] e as [`TextEditorOptions`] (com a seleção do editor de texto, o
+//!   `ITextEditorOptions`) pelo [`IEditorGroup::open_editor_with_text_options`], que é o que o `openEditor` usa: a seleção
+//!   chega ao painel.
 //! - **`getValue<IWorkbenchEditorConfiguration>()`.** `configuration.workbench?.editor?.closeOnFileDelete` é a leitura da
 //!   seção `workbench.editor.closeOnFileDelete` (booleano ou o padrão `false`).
 //! - **`handleWorkspaceTrust`.** As checagens `URI.isUri(editor.input1)` (e `input2`, `base`, `result`) do ramo de merge do
@@ -672,7 +673,7 @@ impl EditorService {
                 options.preserve_focus = Some(false);
             }
 
-            Ok(MaybePromise::Promise(group.open_editor(&typed_editor, options.map(|options| options.base))))
+            Ok(MaybePromise::Promise(group.open_editor_with_text_options(&typed_editor, options)))
         })
     }
 

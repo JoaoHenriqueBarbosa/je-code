@@ -161,6 +161,34 @@ pub trait IEditorPane {
     fn side_by_side_panes(&self) -> Option<(Option<Rc<dyn IEditorPane>>, Option<Rc<dyn IEditorPane>>)> {
         None
     }
+
+    /// `onDidChangeSelection` (`IEditorPaneWithSelection`): o evento de mudança de seleção do painel, ou `None` quando o painel
+    /// não tem seleção (o padrão). `isEditorPaneWithSelection` é `Some` aqui (ver [`is_editor_pane_with_selection`]).
+    fn on_did_change_selection(&self) -> Option<je_base::event::Event<EditorPaneSelectionChangeEvent>> {
+        None
+    }
+
+    /// `getSelection()` (`IEditorPaneWithSelection`): a seleção atual do painel, ou `None` quando não há (o padrão).
+    fn get_selection(&self) -> Option<Rc<dyn IEditorPaneSelection>> {
+        None
+    }
+
+    /// `options` como `ITextEditorOptions`: as opções com que a entrada foi atribuída, com a seleção do editor de texto, ou
+    /// `None` quando não há (o padrão).
+    fn text_options(&self) -> Option<TextEditorOptions> {
+        None
+    }
+
+    /// O painel como `Any`, para o `instanceof` de quem conhece o painel concreto (o padrão é um valor que nenhuma classe de
+    /// painel reconhece).
+    fn as_any(&self) -> &dyn std::any::Any {
+        &()
+    }
+}
+
+/// `isEditorPaneWithSelection`: o painel tem `getSelection` e `onDidChangeSelection`.
+pub fn is_editor_pane_with_selection(editor_pane: Option<&Rc<dyn IEditorPane>>) -> bool {
+    editor_pane.is_some_and(|pane| pane.on_did_change_selection().is_some())
 }
 
 /// `EditorPaneSelectionChangeReason`.
