@@ -262,7 +262,7 @@ impl IExplorerService for TestExplorerService {
     }
 
     fn select(&self, resource: &URI, reveal: Option<ExplorerReveal>) -> Promise<()> {
-        self.calls.borrow_mut().push(Call::Select { select: resource.to_string(false), reveal, auto_reveal: self.view.auto_reveal() });
+        self.calls.borrow_mut().push(Call::Select { select: resource.to_string(false).to_string_lossy(), reveal, auto_reveal: self.view.auto_reveal() });
         match &self.select_error {
             Some(error) => Promise::rejected(error.clone()),
             None => Promise::resolved(()),
@@ -323,7 +323,7 @@ fn reveals_in_the_applications_explorer(view_id: &str) {
         vec![
             Call::View { view: view_id.to_string(), focus: false },
             Call::Expanded(true),
-            Call::Select { select: resource.to_string(false), reveal: Some(ExplorerReveal::Mode("force".to_string())), auto_reveal: ExplorerReveal::Flag(false) },
+            Call::Select { select: resource.to_string(false).to_string_lossy(), reveal: Some(ExplorerReveal::Mode("force".to_string())), auto_reveal: ExplorerReveal::Flag(false) },
             Call::Focus,
         ]
     );
