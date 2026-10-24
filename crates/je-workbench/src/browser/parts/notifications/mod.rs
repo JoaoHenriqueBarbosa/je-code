@@ -2,3 +2,4 @@
 //! (os ícones e as escolhas por posição), sem os widgets.
 
 pub mod notifications_actions;
+pub mod notifications_commands;

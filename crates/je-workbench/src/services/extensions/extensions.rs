@@ -113,6 +113,19 @@ pub trait IExtensionService {
 
     /// `extensions`: the descriptions of the extensions registered so far.
     fn extensions(&self) -> Vec<ExtensionDescription>;
+
+    /// `onDidChangeExtensions`: fired when extensions are added or removed. A implementação padrão é o `Event.None` do
+    /// `NullExtensionService` (que o `TestExtensionService` herda).
+    fn on_did_change_extensions(&self) -> Event<IExtensionsChangeEvent> {
+        Event::none()
+    }
+}
+
+/// `IExtensionsChangeEvent`: `{ added, removed }`, as descrições completas das extensões.
+#[derive(Clone, Debug, Default)]
+pub struct IExtensionsChangeEvent {
+    pub added: Vec<ExtensionDescription>,
+    pub removed: Vec<ExtensionDescription>,
 }
 
 service_id!(pub I_EXTENSION_SERVICE: dyn IExtensionService = "extensionService");
