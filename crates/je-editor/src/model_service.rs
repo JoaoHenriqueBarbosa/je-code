@@ -4,10 +4,10 @@
 //! caso de ele ser aberto de novo com o mesmo conteúdo.
 //!
 //! Diferenças do original, nenhuma de comportamento:
-//! - O [`IModelService`] de `services_model.rs` segue sendo o recorte com `getModel` (o que o
-//!   `TextResourceConfigurationService` lê); o [`ModelService`] o implementa e traz o resto do contrato como
-//!   métodos próprios (`createModel`, `updateModel`, `destroyModel`, `getModels`, `getCreationOptions` e os
-//!   eventos), para os consumidores que não precisam do trait inteiro não mudarem.
+//! - O [`IModelService`] de `services_model.rs` é o recorte do contrato (`getModel`, `getCreationOptions`, `createModel`,
+//!   `updateModel` e `destroyModel`, o que os consumidores portados leem); o [`ModelService`] o implementa (o `createModel`
+//!   e o `updateModel` do trait recebem o [`TextSource`], e os métodos próprios aceitam qualquer `Into<TextSource>`) e
+//!   traz o resto do contrato (`getModels` e os eventos) como métodos próprios.
 //! - Não há injeção de dependências: [`ModelService::new`] recebe `IConfigurationService`,
 //!   `ITextResourcePropertiesService` e o `UndoRedoService`. O `IInstantiationService` do original só criava o
 //!   `TextModel`, que aqui se constrói direto com o `UndoRedoService`.
@@ -737,6 +737,22 @@ impl IModelService for ModelService {
     /// `getModel(resource)`.
     fn get_model(&self, resource: &URI) -> Option<Rc<TextModel>> {
         self.models.borrow().get(&model_id(resource)).map(|model_data| model_data.model.clone())
+    }
+
+    /// `createModel(value, languageSelection, resource?, isForSimpleWidget)`: o método genérico do `ModelService`, com o
+    /// tipo de conteúdo que o contrato `dyn` aceita.
+    fn create_model(&self, value: TextSource, language_selection: Option<&dyn ILanguageSelection>, resource: Option<&URI>, is_for_simple_widget: bool) -> Rc<TextModel> {
+        ModelService::create_model(self, value, language_selection, resource, is_for_simple_widget)
+    }
+
+    /// `updateModel(model, value, reason)`.
+    fn update_model(&self, model: &TextModel, value: TextSource, reason: Option<TextModelEditSource>) {
+        ModelService::update_model(self, model, value, reason);
+    }
+
+    /// `destroyModel(resource)`.
+    fn destroy_model(&self, resource: &URI) {
+        ModelService::destroy_model(self, resource);
     }
 }
 
