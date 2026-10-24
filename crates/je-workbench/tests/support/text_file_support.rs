@@ -87,7 +87,7 @@ use je_workbench::services::language_detection::language_detection_worker_servic
 use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
 use je_workbench::services::textfile::abstract_text_file_service::{AbstractTextFileService, TextFileServiceDependencies};
 use je_workbench::services::textfile::browser_text_file_service::BrowserTextFileService;
-use je_workbench::services::textfile::collaborators::{FileOperationUndoRedoInfo, ICodeEditorTransientProperties};
+use je_workbench::services::textfile::collaborators::{FileOperationUndoRedoInfo, ICodeEditorTransientProperties, IWorkingCopyFileService};
 use je_workbench::services::textfile::text_buffer_factory::create_text_buffer_factory_from_stream;
 use je_workbench::services::textfile::text_file_editor_model::{TextFileEditorModel, TextFileEditorModelServices};
 use je_workbench::services::textfile::text_file_editor_model_manager::TextFileEditorModelManager;
@@ -660,6 +660,10 @@ pub struct TextFileTestAccessor {
     pub working_copy_service: Rc<TestWorkingCopyService>,
     model_factory: ModelFactory,
     services_factory: ServicesFactory,
+    /// O `IWorkingCopyFileService` que o gerenciador e o serviço de arquivos de texto leem: o dublê do
+    /// [`TestServiceAccessor`] em [`TextFileTestAccessor::new`], ou o que [`TextFileTestAccessor::with_working_copy_file_service`]
+    /// criou (o `WorkingCopyFileService` real, que é o `accessor.workingCopyFileService` do original).
+    pub working_copy_file_service_contract: Rc<dyn IWorkingCopyFileService>,
 }
 
 impl Deref for TextFileTestAccessor {
@@ -673,7 +677,17 @@ impl Deref for TextFileTestAccessor {
 impl TextFileTestAccessor {
     /// `workbenchInstantiationService(undefined, disposables)` e `instantiationService.createInstance(TestServiceAccessor)`.
     pub fn new(disposables: &Rc<DisposableStore>) -> Self {
+        Self::with_working_copy_file_service(disposables, |base| -> Rc<dyn IWorkingCopyFileService> { base.working_copy_file_service.clone() })
+    }
+
+    /// Como [`TextFileTestAccessor::new`], com o `IWorkingCopyFileService` que `make_working_copy_file_service` cria sobre os
+    /// serviços do [`TestServiceAccessor`] no lugar do dublê dele (o `WorkingCopyFileService` real, nas suítes que o testam).
+    pub fn with_working_copy_file_service(
+        disposables: &Rc<DisposableStore>,
+        make_working_copy_file_service: impl FnOnce(&TestServiceAccessor) -> Rc<dyn IWorkingCopyFileService>,
+    ) -> Self {
         let base = TestServiceAccessor::new(disposables);
+        let working_copy_file_service = make_working_copy_file_service(&base);
 
         let test_configuration_service = TestConfigurationService::new(None);
         disposables.add_rc(test_configuration_service.on_did_change_configuration_emitter.clone());
@@ -739,7 +753,7 @@ impl TextFileTestAccessor {
         let manager = TextFileEditorModelManager::new(
             base.file_service.clone(),
             base.notification_service.clone(),
-            base.working_copy_file_service.clone(),
+            working_copy_file_service.clone(),
             base.uri_identity_service.clone(),
             TextFileSaveParticipant::new(base.log_service.clone(), base.progress_service.clone()),
             model_factory.clone(),
@@ -757,7 +771,7 @@ impl TextFileTestAccessor {
             files_configuration_service: base.files_configuration_service.clone(),
             code_editor_service: Rc::new(TestCodeEditorService::default()),
             path_service,
-            working_copy_file_service: base.working_copy_file_service.clone(),
+            working_copy_file_service: working_copy_file_service.clone(),
             uri_identity_service: base.uri_identity_service.clone(),
             workspace_context_service: context_service.clone() as Rc<dyn IWorkspaceContextService>,
             language_service: language_service.clone(),
@@ -771,7 +785,7 @@ impl TextFileTestAccessor {
         collection.set(I_CONFIGURATION_SERVICE, configuration_service);
         collection.set(I_TEXT_FILE_SERVICE, text_file_service.clone() as Rc<dyn ITextFileService>);
 
-        Self { base, text_file_service, model_service, language_service, dialog_service, file_dialog_service, untitled_text_editor_service, context_service, test_configuration_service, working_copy_service, model_factory, services_factory }
+        Self { base, text_file_service, model_service, language_service, dialog_service, file_dialog_service, untitled_text_editor_service, context_service, test_configuration_service, working_copy_service, model_factory, services_factory, working_copy_file_service_contract: working_copy_file_service }
     }
 
     /// `instantiationService.createInstance(TestReadonlyTextFileEditorModel, resource, preferredEncoding, preferredLanguageId)`.
