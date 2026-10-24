@@ -51,12 +51,12 @@ use je_base::errors::{self, Error};
 use je_base::key_codes::{KeyCode, KeyMod};
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::nls::localize;
-use je_base::observable::{IObservable, ISettableObservable, Observable, Settable, SettableExt, observable_value};
+use je_base::observable::{IObservable, ISettableObservable, Settable, SettableExt, observable_value};
 use je_base::path::{Environment, ProcessEnvironment};
 use je_base::runtime::queue_microtask;
 use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression, IContextKey, IContextKeyService, RawContextKey};
 use je_platform::keybinding::keybindings_registry::{KeybindingRule, KeybindingWeight, Keybindings, keybindings_registry};
-use je_platform::log::{LogArg, LogMessage, LogServiceRef, Logger};
+use je_platform::log::{LogArg, LogMessage, LogServiceRef};
 
 use super::snippet_parser::MarkerRef;
 use super::snippet_session::{SnippetEdit, SnippetServices, SnippetSession, SnippetSessionInsertOptions, SnippetTemplate};

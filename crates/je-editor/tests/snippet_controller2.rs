@@ -165,6 +165,7 @@ impl Fixture {
 }
 
 fn with_fixture(test: impl FnOnce(&Fixture)) {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
 
     let context_keys = ContextKeyService::new(TestConfigurationService::new(None));

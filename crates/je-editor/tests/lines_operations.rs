@@ -27,7 +27,6 @@ use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::dynamic::Dynamic;
-use je_base::lifecycle::IDisposable as _;
 use je_base::promise::MaybePromise;
 use je_editor::code_editor_widget::{CodeEditorWidget, Handler, ICodeEditor, IEditorCommand};
 use je_editor::core_commands::EditorOrNativeTextInputCommand;

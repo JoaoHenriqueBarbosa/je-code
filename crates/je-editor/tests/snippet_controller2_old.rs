@@ -29,6 +29,7 @@ use std::rc::Rc;
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::JsString;
 use je_base::lifecycle::IDisposable;
+use je_editor::cursor_common::CursorSimpleModel as _;
 use je_editor::code_editor_widget::{Handler, ICodeEditor, IEditorContribution, TypePayload};
 use je_editor::model::TextModelUpdateOptions;
 use je_editor::position::Position;
@@ -171,6 +172,7 @@ fn type_text(editor: &TestCodeEditor, text: &str) {
 
 #[test]
 fn simple_accepted() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, template, snippet_controller| {
@@ -212,6 +214,7 @@ fn simple_accepted() {
 
 #[test]
 fn simple_canceled() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, template, snippet_controller| {
@@ -235,6 +238,7 @@ fn simple_canceled() {
 
 #[test]
 fn stops_when_calling_model_set_value() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, code_snippet, snippet_controller| {
@@ -251,6 +255,7 @@ fn stops_when_calling_model_set_value() {
 
 #[test]
 fn stops_when_undoing() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, code_snippet, snippet_controller| {
@@ -267,6 +272,7 @@ fn stops_when_undoing() {
 
 #[test]
 fn stops_when_moving_cursor_outside() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, code_snippet, snippet_controller| {
@@ -283,6 +289,7 @@ fn stops_when_moving_cursor_outside() {
 
 #[test]
 fn stops_when_disconnecting_editor_model() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, code_snippet, snippet_controller| {
@@ -299,6 +306,7 @@ fn stops_when_disconnecting_editor_model() {
 
 #[test]
 fn stops_when_disposing_editor() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, code_snippet, snippet_controller| {
@@ -315,6 +323,7 @@ fn stops_when_disposing_editor() {
 
 #[test]
 fn final_tabstop_with_multiple_selections() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, snippet_controller| {
@@ -413,6 +422,7 @@ fn final_tabstop_with_multiple_selections() {
 
 #[test]
 fn final_tabstop_11742_simple() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
@@ -476,6 +486,7 @@ fn final_tabstop_11742_simple() {
 
 #[test]
 fn final_tabstop_11742_different_indents() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
@@ -498,6 +509,7 @@ fn final_tabstop_11742_different_indents() {
 
 #[test]
 fn final_tabstop_11890_stay_at_the_beginning() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
@@ -519,6 +531,7 @@ fn final_tabstop_11890_stay_at_the_beginning() {
 
 #[test]
 fn final_tabstop_no_tabstop() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
@@ -536,6 +549,7 @@ fn final_tabstop_no_tabstop() {
 
 #[test]
 fn multiple_cursor_and_overwrite_before_after_issue_11060() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
@@ -630,6 +644,7 @@ fn multiple_cursor_and_overwrite_before_after_issue_11060() {
 
 #[test]
 fn multiple_cursor_and_overwrite_before_after_16277() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
@@ -645,6 +660,7 @@ fn multiple_cursor_and_overwrite_before_after_16277() {
 
 #[test]
 fn insert_snippet_twice_19449() {
+    je_editor::core_commands::register_core_commands();
     let _ds = ensure_no_disposables_are_leaked_in_test_suite();
     snippet_test(
         |editor, _code_snippet, controller| {
