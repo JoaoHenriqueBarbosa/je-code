@@ -110,6 +110,10 @@ impl IEditorService for TestEditorServiceWithActiveEditor {
     fn active_text_editor_control(&self) -> Option<ActiveTextEditorControl> {
         Some(ActiveTextEditorControl::Code(code_editor()))
     }
+
+    fn open_editor(&self, _editor: UntypedEditorInput) -> Promise<Option<Rc<dyn je_workbench::common::editor::IEditorPane>>> {
+        unreachable!("TestEditorServiceWithActiveEditor.openEditor não é exercitado por esta suíte")
+    }
 }
 
 /// `MockCommandService`.

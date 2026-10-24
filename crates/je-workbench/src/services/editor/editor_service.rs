@@ -15,10 +15,11 @@
 use std::rc::Rc;
 
 use je_base::JsString;
+use je_base::promise::Promise;
 use je_editor::selection::Selection;
 use je_instantiation::service_id;
 
-use crate::common::editor::{EditorInputOrUntyped, IEditorPane};
+use crate::common::editor::{EditorInputOrUntyped, IEditorPane, UntypedEditorInput};
 
 /// O recorte de `ICodeEditor` que o resolvedor de variáveis lê: a seleção, o texto dentro dela e o foco do widget.
 pub trait IActiveCodeEditor {
@@ -51,6 +52,10 @@ pub trait IEditorService {
     /// The currently active text editor control or `None`. There can only be one active editor control and only one
     /// editor control can be active.
     fn active_text_editor_control(&self) -> Option<ActiveTextEditorControl>;
+
+    /// `openEditor(editor: IUntypedEditorInput, group?: PreferredGroup)` sem o grupo preferido (o grupo ativo): opens an
+    /// editor in a group and resolves with the editor pane that is showing it, or `None` when it was not opened.
+    fn open_editor(&self, editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>>;
 }
 
 service_id!(pub I_EDITOR_SERVICE: dyn IEditorService = "editorService");
