@@ -11,7 +11,7 @@ use je_base::promise::Promise;
 use je_instantiation::service_id;
 
 use super::user_data_sync::{IUserDataSyncLogService, IUserDataSyncStoreService, UserDataSyncErrorCode};
-use crate::log::{LogArg, Logger};
+use crate::log::{LogArg};
 
 /// `IUserDataSyncAccount`.
 #[derive(Clone, Debug, PartialEq, Eq)]

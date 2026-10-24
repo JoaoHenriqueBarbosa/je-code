@@ -27,7 +27,7 @@ use crate::configuration::service::IConfigurationService;
 use crate::environment::environment::EnvironmentService;
 use crate::files::file_service::{FileContentSource, FileService};
 use crate::files::files::{FileOperationResult, FileStat, PartialFileDeleteOptions, to_file_operation_result};
-use crate::log::{LogMessage, Logger};
+use crate::log::{LogMessage};
 use crate::resources::join_path;
 use crate::user_data_profile::IUserDataProfilesService;
 

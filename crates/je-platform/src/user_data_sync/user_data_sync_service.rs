@@ -54,7 +54,7 @@ use super::user_data_sync::{
     IUserDataSyncStoreManagementService, IUserDataSyncTask, IUserDataSynchroniser, ISyncUserDataProfile, RefOrUserData, SyncResource, SyncStatus, USER_DATA_SYNC_CONFIGURATION_SCOPE, UserDataSyncError,
     UserDataSyncErrorCode, UserDataSyncStoreError, create_sync_headers, to_user_data_sync_error,
 };
-use crate::log::{LogArg, LogMessage, Logger};
+use crate::log::{LogArg, LogMessage};
 use crate::storage::{StorageScope, StorageTarget};
 use crate::user_data_profile::{IUserDataProfilesService, UseDefaultProfileFlags, UserDataProfile};
 

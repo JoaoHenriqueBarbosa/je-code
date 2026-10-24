@@ -64,7 +64,7 @@ use crate::environment::environment::EnvironmentService;
 use crate::external_services::service_machine_id::get_service_machine_id;
 use crate::files::file_service::{FileContentSource, FileService};
 use crate::files::files::{CreateFileOptions, FileContent, FileOperationError, FileOperationResult, PartialFileDeleteOptions, WriteFileOptions, to_file_operation_result};
-use crate::log::{LogArg, LogMessage, Logger};
+use crate::log::{LogArg, LogMessage};
 use crate::storage::{StorageScope, StorageService, StorageTarget};
 use crate::telemetry::ITelemetryService;
 use crate::user_data_profile::{IUserDataProfilesService, UserDataProfile};

@@ -52,7 +52,7 @@ use super::user_data_sync::{
 use crate::environment::environment::EnvironmentService;
 use crate::external_services::service_machine_id::get_service_machine_id;
 use crate::files::file_service::FileService;
-use crate::log::{LogArg, Logger};
+use crate::log::{LogArg};
 use crate::product::IProductService;
 use crate::request::{IRequestService, as_json, as_text, as_text_or_error, has_no_content, is_success, read_header, retry_after_from_headers};
 use crate::resources::{host_environment, join_path};
