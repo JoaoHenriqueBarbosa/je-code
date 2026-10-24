@@ -11,13 +11,12 @@ workspace = true
 
 [dependencies]
 je-base = { path = "../je-base" }
-# Os contratos do `platform/opener` e `platform/commands` que o `OpenerService` do editor usa.
-je-platform = { path = "../je-platform" }
 # `Color`, `Srgba` e `Hsla` do `color.ts` (cores padrão do documento).
 je-theme = { path = "../je-theme" }
 # `RegExp` ECMAScript da busca no buffer (`findMatchesLineByLine`).
 zyarr = { path = "../zyarr" }
-# `IConfigurationService`, `ConfigurationTarget` e os valores de configuração (`textResourceConfigurationService`).
+# Contratos de plataforma: `IConfigurationService` e os valores de configuração
+# (`textResourceConfigurationService`), `platform/opener` e `platform/commands` (`OpenerService`).
 je-platform = { path = "../je-platform" }
 # Os identificadores de serviço e o `Injectable` (`createDecorator` e os parâmetros `@IFoo`).
 je-instantiation = { path = "../je-instantiation" }

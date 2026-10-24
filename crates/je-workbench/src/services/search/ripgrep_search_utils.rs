@@ -6,7 +6,7 @@
 //!   original, com a mensagem como argumento extra, é `debug_args` com um [`LogArg`].
 //! - As linhas do stderr são `&str` (UTF-8): nenhum índice é usado, só `split('\n')` e `includes`.
 
-use je_platform::log::{LogArg, LogServiceRef, Logger};
+use je_platform::log::{LogArg, LogServiceRef};
 
 use super::search::SearchRange;
 use super::search_ext_types::Range;
