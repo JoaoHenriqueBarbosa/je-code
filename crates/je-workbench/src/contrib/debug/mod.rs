@@ -5,5 +5,6 @@ pub mod debug;
 pub mod debug_protocol;
 pub mod debug_source;
 pub mod debug_utils;
+pub mod debug_visualizers;
 pub mod link_detector;
 pub mod terminals;

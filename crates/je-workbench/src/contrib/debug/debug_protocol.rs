@@ -142,3 +142,40 @@ pub struct Source {
     /// The checksums associated with this file.
     pub checksums: Option<Vec<Checksum>>,
 }
+
+/// `DataBreakpointAccessType`: `'read' | 'write' | 'readWrite'`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataBreakpointAccessType {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+/// `Variable`: uma variável ou expressão. O `presentationHint` (`VariablePresentationHint`) é o objeto JSON cru, porque
+/// nenhum chamador do porte olha os campos dele.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Variable {
+    /// The variable's name.
+    pub name: String,
+    /// The variable's value.
+    pub value: String,
+    /// The type of the variable's value.
+    pub r#type: Option<String>,
+    /// Properties of a variable that can be used to determine how to render the variable in the UI.
+    pub presentation_hint: Option<Value>,
+    /// The evaluatable name of this variable which can be passed to the `evaluate` request to fetch the variable's value.
+    pub evaluate_name: Option<String>,
+    /// If `variablesReference` is > 0, the variable is structured and its children can be retrieved by passing
+    /// `variablesReference` to the `variables` request.
+    pub variables_reference: i64,
+    /// The number of named child variables.
+    pub named_variables: Option<i64>,
+    /// The number of indexed child variables.
+    pub indexed_variables: Option<i64>,
+    /// A memory reference associated with this variable.
+    pub memory_reference: Option<String>,
+    /// A reference that allows the client to request the location where the variable is declared.
+    pub declaration_location_reference: Option<i64>,
+    /// A reference that allows the client to request the location where the variable's value is declared.
+    pub value_location_reference: Option<i64>,
+}

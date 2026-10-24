@@ -25,6 +25,12 @@ pub mod main_thread_diagnostics;
 pub mod main_thread_document_content_providers;
 pub mod main_thread_editor_tabs;
 pub mod main_thread_telemetry;
+// Depuração: `mainThreadDebugService.ts`.
+pub mod main_thread_debug_service;
+
+// Kernels de notebook: `mainThreadNotebookKernels.ts` e as conversões de `mainThreadNotebookDto.ts` que ele usa.
+pub mod main_thread_notebook_dto;
+pub mod main_thread_notebook_kernels;
 
 // Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
 pub mod main_thread_webview_panels;

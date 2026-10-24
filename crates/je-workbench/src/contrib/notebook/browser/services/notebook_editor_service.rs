@@ -21,6 +21,16 @@ pub struct IBorrowValue<T: ?Sized> {
 pub trait INotebookEditorService {
     fn on_did_add_notebook_editor(&self) -> Event<Rc<dyn NotebookEditorWidget>>;
     fn retrieve_existing_widget_from_uri(&self, resource: &URI) -> Option<IBorrowValue<dyn NotebookEditorWidget>>;
+
+    /// `onDidRemoveNotebookEditor` (usado pelo `MainThreadNotebookKernels`). Corpo padrão: o serviço não remove editores.
+    fn on_did_remove_notebook_editor(&self) -> Event<Rc<dyn NotebookEditorWidget>> {
+        Event::none()
+    }
+
+    /// `listNotebookEditors()` (usado pelo `MainThreadNotebookKernels`). Corpo padrão: nenhum editor aberto.
+    fn list_notebook_editors(&self) -> Vec<Rc<dyn NotebookEditorWidget>> {
+        Vec::new()
+    }
 }
 
 service_id!(pub I_NOTEBOOK_EDITOR_SERVICE: dyn INotebookEditorService = "INotebookEditorWidgetService");

@@ -4628,3 +4628,9 @@ mod authentication_region {
 }
 
 // #endregion
+
+// #region Debug
+
+pub use super::ext_host_debug_protocol::*;
+
+// #endregion
