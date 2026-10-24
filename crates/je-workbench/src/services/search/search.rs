@@ -537,3 +537,244 @@ pub fn path_included_in_query(query_props: &ICommonQueryProps<URI>, path_to_chec
 
     true
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Resultados da busca e o serviço (`IFileMatch`, `ISearchProgressItem`, `ISearchComplete`, `ISearchService`...)
+//
+// Divergências:
+// - `IFileMatch<U>` é não genérico (`U = URI`), e as extensões estruturais do TypeScript `INotebookFileMatchNoModel` e
+//   `INotebookFileMatchWithModel` (um `IFileMatch` com `cellResults`) são o campo `cell_results`: o `'cellResults' in
+//   object` do original é `cell_results.is_some()`.
+// - `ISearchConfigurationProperties` é o objeto [`Dynamic`] que o serviço de configuração devolve para a seção `search`
+//   (como `get_excludes` faz com o `ISearchConfiguration`); só `searchOnType` é lido pelo modelo da árvore de resultados.
+// - `ResourceSet` (que o original compartilha por referência) é o [`SharedResourceSet`].
+// - Os callbacks `onProgress?: (result) => void` são `Option<SearchProgressCallback>`.
+// ---------------------------------------------------------------------------------------------------------
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use je_base::cancellation::CancellationToken;
+use je_base::lifecycle::DisposableRef;
+use je_base::map::ResourceSet;
+use je_base::promise::Promise;
+use je_instantiation::service_id;
+
+use super::search_ext_types::{AISearchKeyword, TextSearchCompleteMessageType};
+use crate::contrib::search::notebook_search::search_notebook_helpers::INotebookCellMatch;
+
+/// `DEFAULT_MAX_SEARCH_RESULTS`.
+pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 20000;
+
+/// `IFileMatch`: um arquivo com os resultados de texto e, para notebooks, os resultados por célula.
+#[derive(Clone)]
+pub struct IFileMatch {
+    pub resource: URI,
+    pub results: Option<Vec<ITextSearchResult>>,
+    pub cell_results: Option<Vec<INotebookCellMatch>>,
+}
+
+impl IFileMatch {
+    /// Um `{ resource, results }` (sem `cellResults`).
+    pub fn new(resource: URI, results: Option<Vec<ITextSearchResult>>) -> Self {
+        Self { resource, results, cell_results: None }
+    }
+}
+
+/// `IProgressMessage`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IProgressMessage {
+    pub message: String,
+}
+
+/// `ISearchProgressItem = IFileMatch | IProgressMessage | AISearchKeyword`.
+#[derive(Clone)]
+pub enum ISearchProgressItem {
+    FileMatch(IFileMatch),
+    Message(IProgressMessage),
+    AiKeyword(AISearchKeyword),
+}
+
+impl ISearchProgressItem {
+    /// `isFileMatch`.
+    pub fn as_file_match(&self) -> Option<&IFileMatch> {
+        match self {
+            ISearchProgressItem::FileMatch(file_match) => Some(file_match),
+            _ => None,
+        }
+    }
+
+    /// `isAIKeyword`.
+    pub fn as_ai_keyword(&self) -> Option<&AISearchKeyword> {
+        match self {
+            ISearchProgressItem::AiKeyword(keyword) => Some(keyword),
+            _ => None,
+        }
+    }
+
+    /// `isProgressMessage`: a mensagem existe e não é vazia.
+    pub fn as_progress_message(&self) -> Option<&IProgressMessage> {
+        match self {
+            ISearchProgressItem::Message(message) if !message.message.is_empty() => Some(message),
+            _ => None,
+        }
+    }
+}
+
+/// `ITextSearchCompleteMessage`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITextSearchCompleteMessage {
+    pub text: String,
+    pub message_type: TextSearchCompleteMessageType,
+    pub trusted: Option<bool>,
+}
+
+/// `SearchCompletionExitCode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchCompletionExitCode {
+    Normal = 0,
+    NewSearchStarted = 1,
+}
+
+/// O `type` de `ITextSearchStats`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextSearchStatsType {
+    TextSearchProvider,
+    SearchProcess,
+    AiTextSearchProvider,
+}
+
+impl TextSearchStatsType {
+    /// O texto do `type` no original.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TextSearchStatsType::TextSearchProvider => "textSearchProvider",
+            TextSearchStatsType::SearchProcess => "searchProcess",
+            TextSearchStatsType::AiTextSearchProvider => "aiTextSearchProvider",
+        }
+    }
+}
+
+/// `ITextSearchStats`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ITextSearchStats {
+    pub stats_type: TextSearchStatsType,
+}
+
+/// `ICachedSearchStats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ICachedSearchStats {
+    pub cache_was_resolved: bool,
+    pub cache_lookup_time: f64,
+    pub cache_filter_time: f64,
+    pub cache_entry_count: f64,
+}
+
+/// `ISearchEngineStats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ISearchEngineStats {
+    pub file_walk_time: f64,
+    pub directories_walked: f64,
+    pub files_walked: f64,
+    pub cmd_time: f64,
+    pub cmd_result_count: Option<f64>,
+}
+
+/// `IFileSearchProviderStats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IFileSearchProviderStats {
+    pub provider_time: f64,
+    pub post_process_time: f64,
+}
+
+/// `ISearchEngineStats | ICachedSearchStats | IFileSearchProviderStats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FileSearchDetailStats {
+    Engine(ISearchEngineStats),
+    Cached(ICachedSearchStats),
+    Provider(IFileSearchProviderStats),
+}
+
+/// O `type` de `IFileSearchStats`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileSearchStatsType {
+    FileSearchProvider,
+    SearchProcess,
+}
+
+/// `IFileSearchStats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IFileSearchStats {
+    pub from_cache: bool,
+    pub detail_stats: FileSearchDetailStats,
+    pub result_count: f64,
+    pub stats_type: FileSearchStatsType,
+    pub sorting_time: Option<f64>,
+}
+
+/// `IFileSearchStats | ITextSearchStats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ISearchStats {
+    File(IFileSearchStats),
+    Text(ITextSearchStats),
+}
+
+/// `ISearchComplete` (com os campos de `ISearchCompleteStats`).
+#[derive(Clone)]
+pub struct ISearchComplete {
+    pub limit_hit: Option<bool>,
+    pub messages: Vec<ITextSearchCompleteMessage>,
+    pub stats: Option<ISearchStats>,
+    pub results: Vec<IFileMatch>,
+    pub exit: Option<SearchCompletionExitCode>,
+    pub ai_keywords: Option<Vec<AISearchKeyword>>,
+}
+
+/// `ResourceSet` compartilhado: o original passa a mesma instância entre a busca de notebooks e a de texto.
+pub type SharedResourceSet = Rc<RefCell<ResourceSet>>;
+
+/// O `onProgress?: (result: ISearchProgressItem) => void` do original.
+pub type SearchProgressCallback = Rc<dyn Fn(&ISearchProgressItem)>;
+
+/// `SearchProviderType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchProviderType {
+    File,
+    Text,
+    AiText,
+}
+
+/// `ISearchResultProvider`.
+pub trait ISearchResultProvider {
+    fn get_ai_name(&self) -> Promise<Option<String>>;
+    fn text_search(&self, query: &ITextQuery, on_progress: Option<SearchProgressCallback>, token: Option<CancellationToken>) -> Promise<ISearchComplete>;
+    fn file_search(&self, query: &IFileQuery, token: Option<CancellationToken>) -> Promise<ISearchComplete>;
+    fn clear_cache(&self, cache_key: &str) -> Promise<()>;
+}
+
+/// O `{ syncResults, asyncResults }` de `textSearchSplitSyncAsync`.
+pub struct TextSearchSplitSyncAsync {
+    pub sync_results: ISearchComplete,
+    pub async_results: Promise<ISearchComplete>,
+}
+
+/// `ISearchService`: um serviço que permite buscar arquivos ou dentro de arquivos.
+pub trait ISearchService {
+    fn text_search(&self, query: &ITextQuery, token: Option<CancellationToken>, on_progress: Option<SearchProgressCallback>) -> Promise<ISearchComplete>;
+    fn ai_text_search(&self, query: &IAITextQuery, token: Option<CancellationToken>, on_progress: Option<SearchProgressCallback>) -> Promise<ISearchComplete>;
+    fn get_ai_name(&self) -> Promise<Option<String>>;
+    fn text_search_split_sync_async(
+        &self,
+        query: &ITextQuery,
+        token: Option<CancellationToken>,
+        on_progress: Option<SearchProgressCallback>,
+        notebook_files_to_ignore: Option<SharedResourceSet>,
+        async_notebook_files_to_ignore: Option<Promise<SharedResourceSet>>,
+    ) -> TextSearchSplitSyncAsync;
+    fn file_search(&self, query: &IFileQuery, token: Option<CancellationToken>) -> Promise<ISearchComplete>;
+    fn scheme_has_file_search_provider(&self, scheme: &str) -> bool;
+    fn clear_cache(&self, cache_key: &str) -> Promise<()>;
+    fn register_search_result_provider(&self, scheme: &str, provider_type: SearchProviderType, provider: Rc<dyn ISearchResultProvider>) -> DisposableRef;
+}
+
+service_id!(pub I_SEARCH_SERVICE: dyn ISearchService = "searchService");

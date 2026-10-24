@@ -162,6 +162,14 @@ impl IModelService for ModelServiceStub {
         None
     }
 
+    fn get_models(&self) -> Vec<Rc<TextModel>> {
+        absent("getModels")
+    }
+
+    fn on_model_added(&self) -> Event<Rc<TextModel>> {
+        absent("onModelAdded")
+    }
+
     fn get_creation_options(&self, _language: &str, _resource: Option<&URI>, _is_for_simple_widget: bool) -> TextModelCreationOptions {
         absent("getCreationOptions")
     }
