@@ -122,11 +122,15 @@ impl PreviewResources {
 
     /// `resolveContent`: o conteúdo das URIs virtuais vem do preview; as outras não têm conteúdo.
     pub fn resolve_content<I: SynchroniserImpl>(&self, synchroniser: &AbstractSynchroniser<I>, uri: &URI) -> Promise<Option<String>> {
-        let ext_uri = &synchroniser.services.ext_uri;
-        if [&self.remote, &self.base, &self.local, &self.accepted].into_iter().any(|resource| ext_uri.is_equal(Some(resource), Some(uri), false)) {
+        if self.is_virtual_resource(&synchroniser.services.ext_uri, uri) {
             return synchroniser.resolve_preview_content(uri);
         }
         Promise::resolved(None)
+    }
+
+    /// `uri` é uma das URIs virtuais (`remote`, `base`, `local`, `accepted`), as que o `resolveContent` resolve.
+    pub fn is_virtual_resource(&self, ext_uri: &ExtUri, uri: &URI) -> bool {
+        [&self.remote, &self.base, &self.local, &self.accepted].into_iter().any(|resource| ext_uri.is_equal(Some(resource), Some(uri), false))
     }
 }
 

@@ -12,20 +12,21 @@
 //!   `userDataSyncMachines.ts`), `saveRemoteActivityData` e `extractActivityData`: nenhum entra no caminho de
 //!   `createSyncTask().run()`. Por isso [`UserDataSyncService`] não implementa o trait
 //!   [`super::user_data_sync::IUserDataSyncService`] inteiro: expõe os métodos portados.
-//! - Os sincronizadores de `settings`, `snippets`, `prompts`, `mcp`, `extensions` e `globalState` ainda não
-//!   existem no porte: [`ProfileSynchronizer::create_synchronizer`] devolve `None` para eles e o
-//!   `registerSynchronizer` os pula (o de extensões também pediria o `IExtensionGalleryService`). Existem os de
-//!   perfis, `keybindings` e `tasks`. Com isso a leitura remota de `settingsSync` de `getUserDataSyncConfiguration`
-//!   (que vem do `SettingsSynchroniser`) é só a configuração local.
+//! - Os sincronizadores de `snippets`, `prompts`, `mcp` e `extensions` ainda não existem no porte:
+//!   [`ProfileSynchronizer::create_synchronizer`] devolve `None` para eles e o `registerSynchronizer` os pula (o de
+//!   extensões também pediria o `IExtensionGalleryService`). Existem os de perfis, `settings`, `keybindings`,
+//!   `tasks` e estado global.
 //!
 //! Decisões de tradução:
 //! - `IUserDataManifest | IUserDataSyncLatestData | null` é `Option<`[`ManifestOrLatestData`]`>`: o
 //!   `isUserDataManifest` do original é a variante.
 //! - Os sincronizadores de um perfil são [`Synchroniser`], um `enum` com uma variante por sincronizador portado;
 //!   o `as UserDataProfilesManifestSynchroniser` do original é [`Synchroniser::into_profiles_manifest`] (e
-//!   [`Synchroniser::into_keybindings`], [`Synchroniser::into_tasks`] para os outros).
+//!   [`Synchroniser::into_settings`], [`Synchroniser::into_keybindings`], [`Synchroniser::into_tasks`] e
+//!   [`Synchroniser::into_global_state`] para os outros).
 //! - `instantiationService.createInstance(X, ...)` é o construtor direto, com os serviços do
-//!   [`SynchroniserServices`] e o `IUserDataSyncUtilService` que o `UserDataSyncService` recebe.
+//!   [`SynchroniserServices`], o `IUserDataSyncUtilService` e os [`SynchroniserExtraServices`] que o
+//!   `UserDataSyncService` recebe.
 //! - Os `Promise` da tarefa de sincronização são `async_fn`; `finally` é o resultado guardado e o fim executado
 //!   antes de devolvê-lo.
 
@@ -48,7 +49,9 @@ use je_base::uuid::generate_uuid;
 use je_storage::StorageValue;
 
 use super::abstract_synchronizer::SynchroniserServices;
+use super::global_state_sync::GlobalStateSynchroniser;
 use super::keybindings_sync::KeybindingsSynchroniser;
+use super::settings_sync::{IExtensionManagementService, SettingsSynchroniser};
 use super::tasks_sync::TasksSynchroniser;
 use super::user_data_profiles_manifest_sync::UserDataProfilesManifestSynchroniser;
 use super::user_data_sync::{
@@ -58,6 +61,7 @@ use super::user_data_sync::{
 };
 use crate::log::{LogArg, LogMessage};
 use crate::storage::{StorageScope, StorageTarget};
+use crate::user_data_profile::user_data_profile_storage_service::IUserDataProfileStorageService;
 use crate::user_data_profile::{IUserDataProfilesService, UseDefaultProfileFlags, UserDataProfile};
 
 const LAST_SYNC_TIME_KEY: &str = "sync.lastSyncTime";
@@ -153,16 +157,20 @@ fn report_user_data_sync_error(
 #[derive(Clone)]
 pub enum Synchroniser {
     Profiles(Rc<UserDataProfilesManifestSynchroniser>),
+    Settings(Rc<SettingsSynchroniser>),
     Keybindings(Rc<KeybindingsSynchroniser>),
     Tasks(Rc<TasksSynchroniser>),
+    GlobalState(Rc<GlobalStateSynchroniser>),
 }
 
 impl Synchroniser {
     pub fn resource(&self) -> SyncResource {
         match self {
             Self::Profiles(_) => SyncResource::Profiles,
+            Self::Settings(_) => SyncResource::Settings,
             Self::Keybindings(_) => SyncResource::Keybindings,
             Self::Tasks(_) => SyncResource::Tasks,
+            Self::GlobalState(_) => SyncResource::GlobalState,
         }
     }
 
@@ -170,8 +178,10 @@ impl Synchroniser {
     pub fn as_dyn(&self) -> Rc<dyn IUserDataSynchroniser> {
         match self {
             Self::Profiles(synchroniser) => synchroniser.base.clone(),
+            Self::Settings(synchroniser) => synchroniser.base(),
             Self::Keybindings(synchroniser) => synchroniser.base(),
             Self::Tasks(synchroniser) => synchroniser.base(),
+            Self::GlobalState(synchroniser) => synchroniser.base.clone(),
         }
     }
 
@@ -179,7 +189,15 @@ impl Synchroniser {
     pub fn into_profiles_manifest(self) -> Option<Rc<UserDataProfilesManifestSynchroniser>> {
         match self {
             Self::Profiles(synchroniser) => Some(synchroniser),
-            Self::Keybindings(_) | Self::Tasks(_) => None,
+            _ => None,
+        }
+    }
+
+    /// `as SettingsSynchroniser`.
+    pub fn into_settings(self) -> Option<Rc<SettingsSynchroniser>> {
+        match self {
+            Self::Settings(synchroniser) => Some(synchroniser),
+            _ => None,
         }
     }
 
@@ -187,7 +205,7 @@ impl Synchroniser {
     pub fn into_keybindings(self) -> Option<Rc<KeybindingsSynchroniser>> {
         match self {
             Self::Keybindings(synchroniser) => Some(synchroniser),
-            Self::Profiles(_) | Self::Tasks(_) => None,
+            _ => None,
         }
     }
 
@@ -195,7 +213,15 @@ impl Synchroniser {
     pub fn into_tasks(self) -> Option<Rc<TasksSynchroniser>> {
         match self {
             Self::Tasks(synchroniser) => Some(synchroniser),
-            Self::Profiles(_) | Self::Keybindings(_) => None,
+            _ => None,
+        }
+    }
+
+    /// `as GlobalStateSynchroniser`.
+    pub fn into_global_state(self) -> Option<Rc<GlobalStateSynchroniser>> {
+        match self {
+            Self::GlobalState(synchroniser) => Some(synchroniser),
+            _ => None,
         }
     }
 
@@ -205,14 +231,28 @@ impl Synchroniser {
             Self::Profiles(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
+            Self::Settings(synchroniser) => {
+                store.add_rc(synchroniser.clone());
+            }
             Self::Keybindings(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
             Self::Tasks(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
+            Self::GlobalState(synchroniser) => {
+                store.add_rc(synchroniser.clone());
+            }
         }
     }
+}
+
+/// Os serviços que só os sincronizadores de `settings` e de estado global leem (`IExtensionManagementService` e
+/// `IUserDataProfileStorageService`), além dos de [`SynchroniserServices`].
+#[derive(Clone)]
+pub struct SynchroniserExtraServices {
+    pub user_data_profile_storage_service: Rc<dyn IUserDataProfileStorageService>,
+    pub extension_management_service: Rc<dyn IExtensionManagementService>,
 }
 
 /// `this.profile.useDefaultFlags?.[syncResource]`.
@@ -269,6 +309,7 @@ pub struct ProfileSynchronizer {
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
     user_data_sync_store_management_service: Rc<dyn IUserDataSyncStoreManagementService>,
     user_data_sync_util_service: Rc<dyn IUserDataSyncUtilService>,
+    extra_services: SynchroniserExtraServices,
     enabled: RefCell<Vec<EnabledSynchroniser>>,
     state: RefCell<ProfileState>,
     on_did_change_status: Rc<Emitter<SyncStatus>>,
@@ -284,6 +325,7 @@ impl ProfileSynchronizer {
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         user_data_sync_store_management_service: Rc<dyn IUserDataSyncStoreManagementService>,
         user_data_sync_util_service: Rc<dyn IUserDataSyncUtilService>,
+        extra_services: SynchroniserExtraServices,
     ) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_change_status = Emitter::new();
@@ -302,6 +344,7 @@ impl ProfileSynchronizer {
             user_data_profiles_service,
             user_data_sync_store_management_service,
             user_data_sync_util_service,
+            extra_services,
             enabled: RefCell::new(Vec::new()),
             state: RefCell::new(ProfileState { status: SyncStatus::Idle, conflicts: Vec::new() }),
             on_did_change_status,
@@ -447,6 +490,13 @@ impl ProfileSynchronizer {
                 self.user_data_profiles_service.clone(),
                 self.services.clone(),
             ))),
+            SyncResource::Settings => Some(Synchroniser::Settings(SettingsSynchroniser::new(
+                self.profile.clone(),
+                self.collection.clone(),
+                self.services.clone(),
+                self.user_data_sync_util_service.clone(),
+                self.extra_services.extension_management_service.clone(),
+            ))),
             SyncResource::Keybindings => Some(Synchroniser::Keybindings(KeybindingsSynchroniser::new(
                 self.profile.clone(),
                 self.collection.clone(),
@@ -454,6 +504,12 @@ impl ProfileSynchronizer {
                 self.user_data_sync_util_service.clone(),
             ))),
             SyncResource::Tasks => Some(Synchroniser::Tasks(TasksSynchroniser::for_profile(self.profile.clone(), self.collection.clone(), self.services.clone()))),
+            SyncResource::GlobalState => Some(Synchroniser::GlobalState(GlobalStateSynchroniser::new(
+                self.profile.clone(),
+                self.collection.clone(),
+                self.services.clone(),
+                self.extra_services.user_data_profile_storage_service.clone(),
+            ))),
             _ => None,
         }
     }
@@ -488,7 +544,7 @@ impl ProfileSynchronizer {
     ) -> Result<Vec<(SyncResource, UserDataSyncError)>, Error> {
         let mut sync_errors = Vec::new();
         let sync_headers = create_sync_headers(execution_id);
-        let user_data_sync_configuration = if preview { self.get_user_data_sync_configuration() } else { self.get_local_user_data_sync_configuration() };
+        let user_data_sync_configuration = if preview { self.get_user_data_sync_configuration(manifest_or_latest_data.as_ref()).await? } else { self.get_local_user_data_sync_configuration() };
         for synchroniser in synchronizers {
             // Return if cancellation is requested
             if token.is_cancellation_requested() {
@@ -549,13 +605,23 @@ impl ProfileSynchronizer {
         })
     }
 
-    /// `getUserDataSyncConfiguration`. A leitura remota de `settingsSync` pede o `SettingsSynchroniser`, que
-    /// não foi portado: sobra a configuração local.
-    fn get_user_data_sync_configuration(&self) -> IUserDataSyncConfiguration {
+    /// `getUserDataSyncConfiguration`: a configuração local com a que está no servidor (a da seção `settingsSync`
+    /// das settings sincronizadas) por cima.
+    async fn get_user_data_sync_configuration(self: &Rc<Self>, manifest_or_latest_data: Option<&ManifestOrLatestData>) -> Result<IUserDataSyncConfiguration, Error> {
         if !self.profile.is_default {
-            return IUserDataSyncConfiguration::default();
+            return Ok(IUserDataSyncConfiguration::default());
         }
-        self.get_local_user_data_sync_configuration()
+        let local = self.get_local_user_data_sync_configuration();
+        let settings_synchronizer = self.enabled().into_iter().find(|synchroniser| synchroniser.resource() == SyncResource::Settings).and_then(Synchroniser::into_settings);
+        let Some(settings_synchronizer) = settings_synchronizer else { return Ok(local) };
+        let ref_or_user_data = get_ref_or_user_data(manifest_or_latest_data, self.collection.as_deref(), SyncResource::Settings);
+        let remote = settings_synchronizer.get_remote_user_data_sync_configuration(ref_or_user_data).await?;
+        // `{ ...local, ...remote }`
+        Ok(IUserDataSyncConfiguration {
+            keybindings_per_platform: remote.keybindings_per_platform.or(local.keybindings_per_platform),
+            ignored_extensions: remote.ignored_extensions.or(local.ignored_extensions),
+            ignored_settings: remote.ignored_settings.or(local.ignored_settings),
+        })
     }
 
     fn get_local_user_data_sync_configuration(&self) -> IUserDataSyncConfiguration {
@@ -634,6 +700,7 @@ pub struct UserDataSyncService {
     user_data_sync_store_management_service: Rc<dyn IUserDataSyncStoreManagementService>,
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
     user_data_sync_util_service: Rc<dyn IUserDataSyncUtilService>,
+    extra_services: SynchroniserExtraServices,
     state: RefCell<ServiceState>,
     on_did_change_status: Rc<Emitter<SyncStatus>>,
     on_did_change_local: Rc<Emitter<SyncResource>>,
@@ -651,6 +718,7 @@ impl UserDataSyncService {
         user_data_sync_store_management_service: Rc<dyn IUserDataSyncStoreManagementService>,
         user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
         user_data_sync_util_service: Rc<dyn IUserDataSyncUtilService>,
+        extra_services: SynchroniserExtraServices,
     ) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_change_status = Emitter::new();
@@ -677,6 +745,7 @@ impl UserDataSyncService {
             user_data_sync_store_management_service,
             user_data_profiles_service,
             user_data_sync_util_service,
+            extra_services,
             state: RefCell::new(ServiceState { status, conflicts: Vec::new(), sync_errors: Vec::new(), last_sync_time }),
             on_did_change_status,
             on_did_change_local,
@@ -1147,6 +1216,7 @@ impl UserDataSyncService {
             self.user_data_profiles_service.clone(),
             self.user_data_sync_store_management_service.clone(),
             self.user_data_sync_util_service.clone(),
+            self.extra_services.clone(),
         )
     }
 
