@@ -28,3 +28,5 @@ pub mod environment;
 pub mod label;
 pub mod path;
 pub mod remote;
+// Serviço de arquivos de texto: codificação (`textfile/common/encoding.ts`).
+pub mod textfile;
