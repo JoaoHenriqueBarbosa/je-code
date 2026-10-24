@@ -21,6 +21,7 @@ pub mod search;
 pub mod testing;
 
 pub mod browser_view;
+pub mod code_editor;
 pub mod issue;
 pub mod multi_diff_editor;
 pub mod notebook;
