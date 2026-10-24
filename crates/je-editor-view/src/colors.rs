@@ -19,6 +19,8 @@ pub struct EditorColors {
     pub selection: Rgba,
     pub selection_inactive: Rgba,
     pub cursor: Rgba,
+    /// `editorCursor.background`: o caractere sob o cursor de bloco (sem tema, o fundo do editor).
+    pub cursor_text: Rgba,
     pub indent_guide: Rgba,
     pub indent_guide_active: Rgba,
     pub bracket_match_background: Rgba,
@@ -28,6 +30,8 @@ pub struct EditorColors {
     pub unexpected_bracket: Rgba,
     /// `editorWhitespace.foreground`, dos espaços e tabulações da seleção.
     pub whitespace: Rgba,
+    /// `editorRuler.foreground`, das réguas de `editor.rulers`.
+    pub ruler: Rgba,
     /// `editor.findMatchBackground` (a ocorrência atual) e `editor.findMatchHighlightBackground` (as outras).
     pub find_match: Rgba,
     pub find_match_highlight: Rgba,
@@ -71,6 +75,7 @@ impl EditorColors {
             selection: color("editor.selectionBackground"),
             selection_inactive: color("editor.inactiveSelectionBackground"),
             cursor: color("editorCursor.foreground"),
+            cursor_text: theme.get_color("editorCursor.background").unwrap_or_else(|| color("editor.background")),
             indent_guide: color("editorIndentGuide.background1"),
             indent_guide_active: color("editorIndentGuide.activeBackground1"),
             bracket_match_background: color("editorBracketMatch.background"),
@@ -78,6 +83,7 @@ impl EditorColors {
             bracket_colors,
             unexpected_bracket: color("editorBracketHighlight.unexpectedBracket.foreground"),
             whitespace: color("editorWhitespace.foreground"),
+            ruler: color("editorRuler.foreground"),
             find_match: color("editor.findMatchBackground"),
             find_match_highlight: color("editor.findMatchHighlightBackground"),
             find_match_ruler: color("editorOverviewRuler.findMatchForeground"),

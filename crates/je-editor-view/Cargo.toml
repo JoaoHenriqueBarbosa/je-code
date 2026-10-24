@@ -19,6 +19,10 @@ je-render = { path = "../je-render" }
 je-text = { path = "../je-text" }
 je-theme = { path = "../je-theme" }
 je-ui = { path = "../je-ui" }
+# O `settings.json` do usuário chega como o objeto JSON que o shell leu.
+serde_json = { version = "1", features = ["preserve_order"] }
+# `KeybindingIO.readUserKeybindingItem`: a leitura de cada item do `keybindings.json` do usuário.
+je-workbench = { path = "../je-workbench" }
 # `Instant` que também funciona no wasm (o winit usa o mesmo tipo no `ControlFlow::WaitUntil`).
 web-time = "1"
 

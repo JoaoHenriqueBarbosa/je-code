@@ -158,6 +158,14 @@ pub struct EditorView {
     gutter_changes: Vec<GutterChange>,
     pub(crate) find_matches: Vec<Range>,
     find_current: Option<usize>,
+    /// As configurações do usuário em vigor (as do `settings.json`, resolvidas para a linguagem do modelo).
+    pub(crate) settings: crate::settings::EditorSettings,
+    /// O `settings.json` de onde vieram e a linguagem para a qual foram resolvidas (trocar a linguagem reaplica).
+    user_settings: Option<Rc<serde_json::Map<String, serde_json::Value>>>,
+    settings_language: String,
+    settings_applied: bool,
+    /// Os comandos de atalho que não são do editor, para o shell (`take_workbench_command`).
+    pub(crate) workbench_commands: std::collections::VecDeque<(String, je_base::dynamic::Dynamic)>,
     subscriptions: Vec<DisposableRef>,
 }
 
@@ -253,7 +261,82 @@ impl EditorView {
             gutter_changes: Vec::new(),
             find_matches: Vec::new(),
             find_current: None,
+            settings: crate::settings::EditorSettings::default(),
+            user_settings: None,
+            settings_language: String::new(),
+            settings_applied: false,
+            workbench_commands: std::collections::VecDeque::new(),
             subscriptions,
+        }
+    }
+
+    /// Aplica o `settings.json` do usuário (o objeto inteiro: as chaves gerais e os blocos de linguagem). O editor
+    /// guarda o objeto e resolve de novo quando a linguagem do modelo muda.
+    pub fn apply_configuration(&mut self, user: &serde_json::Map<String, serde_json::Value>) {
+        let user = Rc::new(user.clone());
+        let language = self.model.get_language_id();
+        self.user_settings = Some(user.clone());
+        self.settings_language = language.clone();
+        self.apply_settings(crate::settings::EditorSettings::resolve(&user, &language));
+    }
+
+    /// As configurações em vigor.
+    pub fn settings(&self) -> &crate::settings::EditorSettings {
+        &self.settings
+    }
+
+    /// Aplica configurações já resolvidas: a fonte, a indentação do modelo, a quebra, a margem e o resto da pintura,
+    /// e as opções do núcleo (`updateOptions` do widget). Só o que mudou é refeito.
+    pub fn apply_settings(&mut self, settings: crate::settings::EditorSettings) {
+        if settings == self.settings && self.settings_applied {
+            return;
+        }
+        self.settings_applied = true;
+        let previous = std::mem::replace(&mut self.settings, settings);
+        let s = &self.settings;
+        let metrics_changed = s.font_family != self.metrics.families || s.font_size != self.metrics.size || s.font_weight != self.metrics.weight || s.line_height != self.metrics.line_height;
+        if metrics_changed {
+            self.metrics = FontMetrics::measure_weighted(&s.font_family, s.font_size, s.font_weight, s.line_height);
+            self.layout.metrics = self.metrics.clone();
+            self.max_line_width = 0.0;
+        }
+        self.layout.show_line_numbers = s.line_numbers != crate::settings::LineNumbers::Off;
+        self.layout.minimap_enabled = s.minimap;
+        // As chaves que saíram do `settings.json` voltam ao padrão (`undefined` no `applyUpdate`).
+        let removed: Vec<String> = previous.editor_keys().filter(|k| !self.settings.editor_keys().any(|n| n == *k)).cloned().collect();
+        let options = self.settings.editor_options(&removed);
+        let wrap = self.settings.word_wrap;
+        self.core.update_options(&self.metrics, &options);
+        self.word_wrap = wrap;
+        if wrap != crate::folding::WordWrap::Off {
+            let top = self.scroll_top();
+            self.scroll_by(-self.scroll_left(), 0.0);
+            self.set_scroll_top(top);
+        }
+        // A indentação do modelo (`ModelService._setModelOptionsForModel`).
+        let s = &self.settings;
+        let bracket = je_editor::model::BracketPairColorizationOptions { enabled: s.bracket_pair_colorization, independent_color_pool_per_bracket_type: false };
+        if s.detect_indentation {
+            self.model.detect_indentation(s.insert_spaces, s.tab_size);
+            self.model.update_options(je_editor::model::TextModelUpdateOptions { bracket_colorization_options: Some(bracket), ..Default::default() });
+        } else {
+            let indent_size = Some(s.indent_size.map_or(je_editor::model::IndentSize::TabSize, je_editor::model::IndentSize::Size));
+            self.model.update_options(je_editor::model::TextModelUpdateOptions { tab_size: Some(s.tab_size), insert_spaces: Some(s.insert_spaces), indent_size, bracket_colorization_options: Some(bracket), ..Default::default() });
+        }
+        self.layout.tab_size = self.model.get_options().tab_size;
+        self.reset_blink();
+        self.shared.invalid_all.set(true);
+        self.reveal_cursor();
+        self.mark_dirty();
+    }
+
+    /// A linguagem do modelo mudou depois da configuração: os blocos `[linguagem]` são outros.
+    fn refresh_language_settings(&mut self) {
+        let Some(user) = self.user_settings.clone() else { return };
+        let language = self.model.get_language_id();
+        if language != self.settings_language {
+            self.settings_language = language.clone();
+            self.apply_settings(crate::settings::EditorSettings::resolve(&user, &language));
         }
     }
 
@@ -336,12 +419,18 @@ impl EditorView {
 
     /// O cursor está na fase visível do piscar em `now`.
     pub fn cursor_visible_at(&self, now: Instant) -> bool {
+        if self.settings.cursor_blinking == crate::settings::CursorBlinking::Solid {
+            return true;
+        }
         let phase = now.saturating_duration_since(self.blink_epoch).as_millis() / BLINK_PERIOD.as_millis();
         phase.is_multiple_of(2)
     }
 
     /// Quando o cursor muda de fase pela próxima vez (para o loop de eventos dormir até lá).
     pub fn next_blink_deadline(&self, now: Instant) -> Instant {
+        if self.settings.cursor_blinking == crate::settings::CursorBlinking::Solid {
+            return now + Duration::from_secs(3600);
+        }
         let elapsed = now.saturating_duration_since(self.blink_epoch).as_millis();
         let period = BLINK_PERIOD.as_millis();
         let next = (elapsed / period + 1) * period;
@@ -441,7 +530,7 @@ impl EditorView {
         }
         let tokens = data.tokens.clone();
         let mut brackets: Vec<(usize, usize, Rgba)> = Vec::new();
-        if !self.colors.bracket_colors.is_empty() && !units.is_empty() {
+        if self.settings.bracket_pair_colorization && !self.colors.bracket_colors.is_empty() && !units.is_empty() {
             // Os colchetes da linha do modelo que caem nesta linha da view, em colunas da view.
             let model_line = model_start.line_number;
             let range = Range::new(model_line, 1, model_line, self.model.get_line_max_column(model_line));
@@ -635,6 +724,7 @@ impl EditorView {
     /// Prepara um quadro: aplica as invalidações, ajusta as dimensões de rolagem e liga as linhas visíveis
     /// ao tokenizador.
     fn prepare(&mut self, scale: f64) {
+        self.refresh_language_settings();
         if (scale - self.layout_scale).abs() > f64::EPSILON {
             self.layout_scale = scale;
             self.shared.invalid_all.set(true);
@@ -708,8 +798,11 @@ impl EditorView {
         // Área de conteúdo, recortada (a rolagem horizontal não pode invadir a margem).
         list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, text_right, view_height)));
 
-        // 1. Realce da linha de cada cursor (só com todas as seleções vazias, como o `CurrentLineHighlightOverlay`).
-        if all_empty {
+        // 1. Realce da linha de cada cursor (só com todas as seleções vazias, como o `CurrentLineHighlightOverlay`), no
+        // conteúdo com `renderLineHighlight` `line` ou `all` e na margem com `gutter` ou `all`.
+        let highlight = self.settings.render_line_highlight;
+        let mut highlighted_lines: Vec<i32> = Vec::new();
+        if all_empty && highlight != crate::settings::RenderLineHighlight::None {
             // Com a quebra de linha todas as linhas da view da linha do modelo do cursor recebem o realce.
             let mut lines: Vec<i32> = Vec::new();
             for selection in &selections {
@@ -720,7 +813,8 @@ impl EditorView {
             }
             lines.sort_unstable();
             lines.dedup();
-            for line in lines {
+            highlighted_lines.clone_from(&lines);
+            for line in lines.into_iter().filter(|_| highlight.content()) {
                 let top = self.layout.line_top(line, scroll_top);
                 if let Some(bg) = colors.line_highlight {
                     list.fill_rect(rect(content_left, top, text_right, top + lh), bg);
@@ -806,8 +900,8 @@ impl EditorView {
             }
         }
 
-        // 4. Guias de indentação.
-        if !self.model.is_too_large_for_tokenization() {
+        // 4. Guias de indentação (`editor.guides.indentation`).
+        if self.settings.indent_guides && !self.model.is_too_large_for_tokenization() {
             let levels = self.core.view_model.get_lines_indent_guides(first, last);
             let active = self.core.view_model.get_active_indent_guide(cursor_line, first, last);
             let indent_size = self.model.get_options().indent_size.max(1);
@@ -824,6 +918,14 @@ impl EditorView {
                     list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + scale.round().max(1.0), r.y1), color);
                 }
             }
+        }
+
+        // 4a. As réguas (`editor.rulers`): 1 px na coluna vezes a largura do caractere típico, a altura inteira.
+        for ruler in &self.settings.rulers {
+            let x = content_left + ruler.column * self.metrics.char_width - scroll_left;
+            let color = ruler.color.as_deref().and_then(parse_css_color).unwrap_or(colors.ruler);
+            let r = rect(x, 0.0, x, view_height);
+            list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + scale.round().max(1.0), r.y1), color);
         }
 
         // 4b. O fundo da primeira linha das regiões dobradas (`folded-background`).
@@ -851,32 +953,37 @@ impl EditorView {
             }
         }
 
-        // 5b. Espaços e tabulações dentro da seleção: `·` e `→` na cor de `editorWhitespace.foreground`.
-        for &(l, start_col, end_col) in &selected {
-            let layout = &laid_out[(l - first) as usize].1;
-            let top = self.layout.line_top(l, scroll_top);
+        // 5b. Espaços e tabulações (`editor.renderWhitespace`): `·` e `→` na cor de `editorWhitespace.foreground`.
+        let mode = self.settings.render_whitespace;
+        if mode != crate::settings::RenderWhitespace::None {
             let style = self.metrics.style(scale, false, false);
-            for column in start_col..end_col.min(layout.units.len() as i32 + 1) {
-                let unit = layout.units[(column - 1) as usize];
-                let mark = match unit {
-                    0x20 => "\u{00B7}",
-                    0x09 => "\u{2192}",
-                    _ => continue,
-                };
-                let line = with_text_system(|t| t.line(mark, &style));
-                let x0 = content_left + self.column_x_in(layout, column) - scroll_left;
-                let cell = (self.column_x_in(layout, column + 1) - self.column_x_in(layout, column)) * scale;
-                let x_dev = snap((origin.0 + x0) * scale + if unit == 0x20 { (cell - f64::from(line.width)) / 2.0 } else { 0.0 }) as f32;
-                let baseline = text_baseline((origin.1 + top) * scale, lh * scale, &line);
-                line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, colors.whitespace);
+            for (l, layout) in &laid_out {
+                let l = *l;
+                let in_selection: Vec<(i32, i32)> = selected.iter().filter(|s| s.0 == l).map(|s| (s.1, s.2)).collect();
+                if mode == crate::settings::RenderWhitespace::Selection && in_selection.is_empty() {
+                    continue;
+                }
+                let top = self.layout.line_top(l, scroll_top);
+                for column in whitespace_columns(&layout.units, layout.min_column, mode, &in_selection) {
+                    let unit = layout.units[(column - 1) as usize];
+                    let mark = if unit == 0x20 { "\u{00B7}" } else { "\u{2192}" };
+                    let line = with_text_system(|t| t.line(mark, &style));
+                    let x0 = content_left + self.column_x_in(layout, column) - scroll_left;
+                    let cell = (self.column_x_in(layout, column + 1) - self.column_x_in(layout, column)) * scale;
+                    let x_dev = snap((origin.0 + x0) * scale + if unit == 0x20 { (cell - f64::from(line.width)) / 2.0 } else { 0.0 }) as f32;
+                    let baseline = text_baseline((origin.1 + top) * scale, lh * scale, &line);
+                    line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, colors.whitespace);
+                }
             }
         }
 
         // 5c. A reticência depois da linha dobrada (`inline-folded`).
         self.paint_fold_ellipsis(list, origin, scale, &laid_out, scroll_top, scroll_left);
 
-        // 6. Cursores (um por seleção).
+        // 6. Cursores (um por seleção), na forma de `editor.cursorStyle` (`ViewCursor`).
         if self.focused && self.cursor_visible_at(now) {
+            use crate::settings::CursorStyle;
+            let thin = scale.round().max(1.0);
             for selection in &selections {
                 let p = selection.get_position();
                 let p = Position::new(p.line_number, p.column);
@@ -886,8 +993,28 @@ impl EditorView {
                 let layout = &laid_out[(p.line_number - first) as usize].1;
                 let x = content_left + self.column_x_in(layout, p.column) - scroll_left;
                 let top = self.layout.line_top(p.line_number, scroll_top);
-                let r = rect(x, top, x + 2.0, top + lh);
-                list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + 2.0 * scale, r.y1), colors.cursor);
+                // A largura do caractere sob o cursor (no fim da linha, a de um caractere típico).
+                let index = (p.column - 1) as usize;
+                let under = layout.units.get(index).copied();
+                let char_width = if under.is_some() { self.column_x_in(layout, p.column + 1) - self.column_x_in(layout, p.column) } else { self.metrics.char_width };
+                let r = rect(x, top, x + char_width, top + lh);
+                match self.settings.cursor_style {
+                    CursorStyle::Line => list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + 2.0 * scale, r.y1), colors.cursor),
+                    CursorStyle::LineThin => list.fill_rect(Rect::new(r.x0, r.y0, r.x0 + thin, r.y1), colors.cursor),
+                    CursorStyle::Underline => list.fill_rect(Rect::new(r.x0, r.y1 - 2.0 * scale, r.x1, r.y1), colors.cursor),
+                    CursorStyle::UnderlineThin => list.fill_rect(Rect::new(r.x0, r.y1 - thin, r.x1, r.y1), colors.cursor),
+                    CursorStyle::BlockOutline => list.stroke(je_render::Shape::Rect(r.inset(-0.5 * thin)), thin, colors.cursor),
+                    CursorStyle::Block => {
+                        list.fill_rect(r, colors.cursor);
+                        // O caractere sob o bloco sai na cor de `editorCursor.background` (o fundo do editor).
+                        if let Some(unit) = under.filter(|u| *u != 0x20 && *u != 0x09) {
+                            let text = String::from_utf16_lossy(&[unit]);
+                            let line = with_text_system(|t| t.line(&text, &self.metrics.style(scale, false, false)));
+                            let baseline = text_baseline((origin.1 + top) * scale, lh * scale, &line);
+                            line.paint(list, r.x0 as f32, (baseline - f64::from(line.baseline)) as f32, colors.cursor_text);
+                        }
+                    }
+                }
             }
         }
         list.pop_clip();
@@ -896,18 +1023,43 @@ impl EditorView {
         let ln_left = self.layout.line_numbers_left();
         let ln_width = self.layout.line_numbers_width();
         list.fill_rect(rect(0.0, 0.0, content_left, view_height), colors.gutter_background);
+        // O realce da linha do cursor na margem (`CurrentLineMarginHighlightOverlay`, de 0 até o `contentLeft`).
+        if highlight.gutter() {
+            for &line in &highlighted_lines {
+                let top = self.layout.line_top(line, scroll_top);
+                if let Some(bg) = colors.line_highlight {
+                    list.fill_rect(rect(0.0, top, content_left, top + lh), bg);
+                }
+                if let Some(border) = colors.line_highlight_border {
+                    list.stroke(je_render::Shape::Rect(rect(1.0, top + 1.0, content_left - 1.0, top + lh - 1.0)), 2.0 * scale, border);
+                }
+            }
+        }
         let style = self.metrics.style(scale, false, false);
+        let numbers = self.settings.line_numbers;
+        let last_model_line = self.model.get_line_count();
         for (l, layout) in &laid_out {
             let l = *l;
             // Só a primeira linha da view de cada linha do modelo leva o número.
             if !layout.first {
                 continue;
             }
-            let label = layout.model_line.to_string();
+            // `_getLineRenderLineNumber`: o texto conforme `editor.lineNumbers`.
+            let current = layout.model_line == primary_model_line;
+            let label = match numbers {
+                crate::settings::LineNumbers::Off => continue,
+                crate::settings::LineNumbers::On => layout.model_line.to_string(),
+                crate::settings::LineNumbers::Relative if current => layout.model_line.to_string(),
+                crate::settings::LineNumbers::Relative => (layout.model_line - primary_model_line).abs().to_string(),
+                crate::settings::LineNumbers::Interval if current || layout.model_line % 10 == 0 || layout.model_line == last_model_line => layout.model_line.to_string(),
+                crate::settings::LineNumbers::Interval => continue,
+            };
             let line = with_text_system(|t| t.line(&label, &style));
             let top = self.layout.line_top(l, scroll_top);
-            let color = if layout.model_line == primary_model_line { colors.line_number_active } else { colors.line_number };
-            let x_dev = snap((origin.0 + ln_left + ln_width) * scale - f64::from(line.width)) as f32;
+            let color = if current { colors.line_number_active } else { colors.line_number };
+            // A linha do cursor no modo relativo fica alinhada à esquerda (`.relative-current-line-number`).
+            let left_aligned = current && numbers == crate::settings::LineNumbers::Relative;
+            let x_dev = if left_aligned { snap((origin.0 + ln_left) * scale) as f32 } else { snap((origin.0 + ln_left + ln_width) * scale - f64::from(line.width)) as f32 };
             let top_dev = (origin.1 + top) * scale;
             let baseline = text_baseline(top_dev, lh * scale, &line);
             line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, color);
@@ -977,6 +1129,58 @@ impl EditorView {
         self.paint_overview_ruler(list, origin, scale);
         list.pop_clip();
     }
+}
+
+/// As colunas (1) dos espaços e tabulações a desenhar numa linha da view (`_applyRenderWhitespace`): `units` é o
+/// texto da linha da view, `min_column` a primeira coluna depois do recuo de uma continuação quebrada e `selected`
+/// as faixas `[início, fim)` selecionadas na linha (o modo `selection`).
+fn whitespace_columns(units: &[u16], min_column: i32, mode: crate::settings::RenderWhitespace, selected: &[(i32, i32)]) -> Vec<i32> {
+    use crate::settings::RenderWhitespace as Mode;
+    let start = (min_column - 1).max(0) as usize;
+    let is_ws = |u: u16| u == 0x20 || u == 0x09;
+    let first_non_ws = units.iter().skip(start).position(|u| !is_ws(*u)).map(|i| i + start);
+    let last_non_ws = units.iter().rposition(|u| !is_ws(*u)).filter(|i| *i >= start);
+    let empty = first_non_ws.is_none();
+    let (first_non_ws, last_non_ws) = (first_non_ws.unwrap_or(units.len()), last_non_ws.unwrap_or(units.len()));
+    let mut result = Vec::new();
+    let mut was_in_whitespace = false;
+    for (index, &unit) in units.iter().enumerate().skip(start) {
+        let mut in_whitespace = if index < first_non_ws || index > last_non_ws {
+            true
+        } else if unit == 0x09 {
+            true
+        } else if unit == 0x20 {
+            if mode == Mode::Boundary {
+                was_in_whitespace || units.get(index + 1).is_some_and(|n| is_ws(*n))
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if in_whitespace && mode == Mode::Selection {
+            let column = index as i32 + 1;
+            in_whitespace = selected.iter().any(|&(from, to)| from <= column && column < to);
+        }
+        if in_whitespace && mode == Mode::Trailing {
+            in_whitespace = empty || index > last_non_ws;
+        }
+        if in_whitespace && is_ws(unit) {
+            result.push(index as i32 + 1);
+        }
+        was_in_whitespace = in_whitespace;
+    }
+    result
+}
+
+/// Uma cor de CSS em hexadecimal (`#rgb`, `#rrggbb`, `#rrggbbaa`), a das réguas com cor própria.
+fn parse_css_color(text: &str) -> Option<Rgba> {
+    let hex = text.strip_prefix('#')?;
+    if hex.len() == 3 || hex.len() == 4 {
+        let expanded: String = hex.chars().flat_map(|c| [c, c]).collect();
+        return parse_hex_color(&format!("#{expanded}"));
+    }
+    parse_hex_color(text)
 }
 
 /// A linha de base de uma linha de texto numa caixa de altura `box_height` que começa em `top`: o

@@ -355,7 +355,7 @@ impl EditorView {
             }
         }
         let selections = self.core.selections();
-        let context = EditorContext { has_selection: selections.iter().any(|s| !s.is_empty()), has_multiple_selections: selections.len() > 1 };
+        let context = EditorContext { has_selection: selections.iter().any(|s| !s.is_empty()), has_multiple_selections: selections.len() > 1, language_id: self.model.get_language_id() };
         match self.shortcuts.resolve(chord_of(key, mods), &context) {
             Resolution::Command(id, args) => {
                 self.run_shortcut(&id, args);
@@ -372,20 +372,32 @@ impl EditorView {
         }
     }
 
-    /// Roda o comando de um atalho: os que o VS Code liga ao `MultiCommand` (desfazer, refazer, selecionar tudo) vão
-    /// pelas implementações do núcleo, os outros pelo `trigger` do widget.
+    /// Roda o comando de um atalho: os que o VS Code liga ao `MultiCommand` (desfazer, refazer, selecionar tudo e a
+    /// área de transferência) e os que a view trata vão pelas implementações dela, os do editor pelo `trigger` do
+    /// widget, e os que não são do editor (um `workbench.*` do `keybindings.json`) ficam para o shell
+    /// ([`EditorView::take_workbench_command`]).
     fn run_shortcut(&mut self, id: &str, args: Dynamic) {
         match id {
             "undo" | "default:undo" => self.undo(),
             "redo" | "default:redo" => self.redo(),
             "editor.action.selectAll" => self.select_all(),
+            "editor.action.clipboardCopyAction" => self.copy(),
+            "editor.action.clipboardCutAction" => self.cut(),
+            "editor.action.clipboardPasteAction" => self.paste(),
             "editor.fold" => self.fold(),
             "editor.unfold" => self.unfold(),
             "editor.foldAll" => self.fold_all(),
             "editor.unfoldAll" => self.unfold_all(),
             "editor.action.toggleWordWrap" => self.toggle_word_wrap(),
-            other => self.trigger(other, if args.is_nullish() { None } else { Some(args) }),
+            other if self.core.knows_command(other) => self.trigger(other, if args.is_nullish() { None } else { Some(args) }),
+            other => self.workbench_commands.push_back((other.to_owned(), args)),
         }
+    }
+
+    /// O próximo comando de atalho que não é do editor (o shell roda: `workbench.action.quickOpen`...), com os
+    /// argumentos do `keybindings.json`.
+    pub fn take_workbench_command(&mut self) -> Option<(String, Dynamic)> {
+        self.workbench_commands.pop_front()
     }
 
     // #endregion
@@ -399,6 +411,61 @@ impl EditorView {
         }
         self.shortcuts.cancel();
         self.run_command(|core| core.type_text(text));
+    }
+
+    // #endregion
+
+    // #region participantes do salvamento
+
+    /// Os participantes do salvamento do VS Code (`saveParticipants.ts`), na ordem em que ele os registra:
+    /// `files.trimTrailingWhitespace`, `files.insertFinalNewline` e `files.trimFinalNewlines`, cada um como uma
+    /// edição que o desfazer volta. O shell chama antes de gravar; `auto_saved` é o salvamento automático, que não
+    /// mexe nas linhas dos cursores.
+    pub fn run_save_participants(&mut self, auto_saved: bool) {
+        use je_editor::edit_operation::EditOperation;
+        let settings = self.settings.clone();
+        let model = self.model.clone();
+        let before = self.core.selections();
+        let mut changed = false;
+        if settings.trim_trailing_whitespace {
+            let mut cursors: Vec<Position> = if auto_saved { before.iter().map(|s| s.get_position()).collect() } else { Vec::new() };
+            let ops = je_editor::trim_trailing_whitespace_command::trim_trailing_whitespace(&model, &mut cursors, settings.trim_in_regex_and_strings);
+            if !ops.is_empty() {
+                let keep = before.clone();
+                let mut computer = move |_: &[je_editor::model::ValidEditOperation]| Some(keep.clone());
+                model.push_edit_operations(Some(before.clone()), &ops, Some(&mut computer), None, None);
+                changed = true;
+            }
+        }
+        if settings.insert_final_newline {
+            let line_count = model.get_line_count();
+            let last = model.get_line_content(line_count);
+            if je_base::strings::last_non_whitespace_index(last.units(), last.len() as i64 - 1).is_some() {
+                let eol = JsString::from_units(model.get_eol().as_units().to_vec());
+                let edits = vec![EditOperation::insert(Position::new(line_count, model.get_line_max_column(line_count)), eol)];
+                let selections = self.core.selections();
+                self.core.widget.execute_edits(je_editor::code_editor_widget::ExecuteEditsSource::Name(Some("insertFinalNewLine")), edits, Some(je_editor::code_editor_widget::EndCursorState::Selections(selections)));
+                changed = true;
+            }
+        }
+        if settings.trim_final_newlines && model.get_line_count() > 1 {
+            let line_count = model.get_line_count();
+            let selections = self.core.selections();
+            let cannot_touch = if auto_saved { selections.iter().map(|s| s.position_line_number).max().unwrap_or(0) } else { 0 };
+            let last_non_empty = (1..=line_count).rev().find(|l| model.get_line_length(*l) > 0).unwrap_or(0);
+            let from = (last_non_empty + 1).max(cannot_touch + 1);
+            let range = model.validate_range(&Range::new(from, 1, line_count, model.get_line_max_column(line_count)));
+            if !range.is_empty() {
+                let keep = selections.clone();
+                let mut computer = move |_: &[je_editor::model::ValidEditOperation]| Some(keep.clone());
+                model.push_edit_operations(Some(selections.clone()), &[EditOperation::delete(range)], Some(&mut computer), None, None);
+                self.core.widget.set_selections(&selections, Some("api"), None);
+                changed = true;
+            }
+        }
+        if changed {
+            self.mark_dirty();
+        }
     }
 
     // #endregion

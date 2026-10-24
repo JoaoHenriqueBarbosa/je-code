@@ -8,10 +8,18 @@
 use je_editor::cursor_columns::next_render_tab_stop;
 use je_text::{TextStyle, with_text_system};
 
-/// A lista de famílias padrão do editor (`EDITOR_FONT_DEFAULTS.fontFamily` no Linux).
+/// A lista de famílias padrão do editor: o padrão de `editor.fontFamily` de cada sistema (no Linux, a lista que o
+/// oráculo resolve, `"Droid Sans Mono", "monospace", monospace`).
+#[cfg(target_os = "windows")]
+pub const DEFAULT_FONT_FAMILY: &str = "Consolas, \"Courier New\", monospace";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FONT_FAMILY: &str = "Menlo, Monaco, \"Courier New\", monospace";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub const DEFAULT_FONT_FAMILY: &str = "\"Droid Sans Mono\", \"monospace\", monospace";
-pub const DEFAULT_FONT_SIZE: f32 = 14.0;
-pub const DEFAULT_LINE_HEIGHT: f64 = 19.0;
+/// `editor.fontSize` padrão (`EDITOR_FONT_DEFAULTS.fontSize`: 12 no macOS, 14 nos outros).
+pub const DEFAULT_FONT_SIZE: f32 = if cfg!(target_os = "macos") { 12.0 } else { 14.0 };
+/// A altura de linha que `editor.lineHeight: 0` dá com a fonte padrão (`GOLDEN_LINE_HEIGHT_RATIO` vezes o tamanho).
+pub const DEFAULT_LINE_HEIGHT: f64 = if cfg!(target_os = "macos") { 18.0 } else { 19.0 };
 /// `lineNumbersMinChars` do editor de texto do workbench.
 pub const LINE_NUMBERS_MIN_CHARS: usize = 3;
 /// `lineDecorationsWidth` (10) mais o controle de dobra (16).
@@ -22,6 +30,8 @@ pub const LINE_DECORATIONS_WIDTH: f64 = 26.0;
 pub struct FontMetrics {
     pub families: String,
     pub size: f32,
+    /// `editor.fontWeight` do texto normal (o negrito dos tokens é sempre 700).
+    pub weight: u16,
     pub line_height: f64,
     /// A largura de um caractere, medida como o `CharWidthReader` do Monaco (256 repetições divididas por 256).
     pub char_width: f64,
@@ -31,18 +41,23 @@ pub struct FontMetrics {
 
 impl FontMetrics {
     pub fn measure(families: &str, size: f32, line_height: f64) -> Self {
-        let style = TextStyle::new(families, size, 400);
+        Self::measure_weighted(families, size, 400, line_height)
+    }
+
+    /// Como [`FontMetrics::measure`], com o peso da fonte (`editor.fontWeight`).
+    pub fn measure_weighted(families: &str, size: f32, weight: u16, line_height: f64) -> Self {
+        let style = TextStyle::new(families, size, weight);
         let width_of = |ch: char| {
             let text: String = std::iter::repeat_n(ch, 256).collect();
             f64::from(with_text_system(|t| t.line(&text, &style)).width) / 256.0
         };
         let char_width = width_of('a');
         let digit_width = ('0'..='9').map(width_of).fold(0.0, f64::max);
-        Self { families: families.to_owned(), size, line_height, char_width, digit_width }
+        Self { families: families.to_owned(), size, weight, line_height, char_width, digit_width }
     }
 
     pub fn style(&self, scale: f64, bold: bool, italic: bool) -> TextStyle {
-        TextStyle::new(self.families.as_str(), (f64::from(self.size) * scale) as f32, if bold { 700 } else { 400 }).italic(italic)
+        TextStyle::new(self.families.as_str(), (f64::from(self.size) * scale) as f32, if bold { 700 } else { self.weight }).italic(italic)
     }
 }
 
@@ -57,11 +72,15 @@ pub struct ViewLayout {
     pub line_count: i32,
     /// As linhas do modelo, de onde sai a largura dos números de linha (`lineNumbersDigitCount`).
     pub model_line_count: i32,
+    /// `editor.lineNumbers` diferente de `off`: a margem reserva a coluna dos números.
+    pub show_line_numbers: bool,
+    /// `editor.minimap.enabled`.
+    pub minimap_enabled: bool,
 }
 
 impl ViewLayout {
     pub fn new(metrics: FontMetrics, tab_size: i32, width: f64, height: f64, line_count: i32) -> Self {
-        Self { metrics, tab_size, width, height, line_count, model_line_count: line_count }
+        Self { metrics, tab_size, width, height, line_count, model_line_count: line_count, show_line_numbers: true, minimap_enabled: true }
     }
 
     pub fn glyph_margin_width(&self) -> f64 {
@@ -70,6 +89,9 @@ impl ViewLayout {
 
     /// `Math.round(max(dígitos, minChars) * maxDigitWidth)`.
     pub fn line_numbers_width(&self) -> f64 {
+        if !self.show_line_numbers {
+            return 0.0;
+        }
         let digits = self.model_line_count.max(1).to_string().len().max(LINE_NUMBERS_MIN_CHARS);
         (digits as f64 * self.metrics.digit_width).round()
     }
@@ -96,6 +118,9 @@ impl ViewLayout {
     /// A largura do minimapa (`computeMinimapLayout` no modo `proportional`, com `maxColumn` 120): a fração da
     /// largura externa que deixa cada coluna do minimapa com a largura de um caractere típico do editor.
     pub fn minimap_width(&self) -> f64 {
+        if !self.minimap_enabled {
+            return 0.0;
+        }
         let outer = self.width - Self::SCROLLBAR_WIDTH;
         let fraction = (outer * Self::MINIMAP_CHAR_WIDTH / (self.metrics.char_width + Self::MINIMAP_CHAR_WIDTH)).floor();
         // `maxColumn` 120 mais a margem do minimapa.
@@ -168,7 +193,7 @@ mod tests {
     use super::*;
 
     fn layout(lines: i32) -> ViewLayout {
-        let metrics = FontMetrics { families: String::new(), size: 14.0, line_height: 19.0, char_width: 8.4296875, digit_width: 8.4296875 };
+        let metrics = FontMetrics { families: String::new(), size: 14.0, weight: 400, line_height: 19.0, char_width: 8.4296875, digit_width: 8.4296875 };
         ViewLayout::new(metrics, 4, 1000.0, 400.0, lines)
     }
 
