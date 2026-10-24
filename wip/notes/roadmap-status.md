@@ -74,6 +74,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: décimo quinto lote: editorGroupModel (49), filteredEditorGroupModel (18), browserSearch (17), testReporterModel (10), onboardingRegistry (2), multiDiffEditorLayoutDebug (4), núcleo do extension host (valores `$$class`, conversores, extHostCommands). Suíte: 9 460 passando, 0 falhas. Placar: 7 682 de 18 391 (41,77%) (eu).
 
+- 2026-10-24: décimo sexto lote: configurationService do workbench (175 de 186; a suíte `Default Overrides`, 17 casos, e 1 caso de política com objeto ficam pendentes com motivo), JSONEditingService, configurationResolver (59). Suíte: 9 694 passando, 0 falhas. Placar: 7 916 de 18 391 (43,04%); workbench/services 33,68% (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
