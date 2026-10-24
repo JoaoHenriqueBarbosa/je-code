@@ -1,0 +1,79 @@
+[package]
+name = "zjsc"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-2.0-or-later AND BSD-2-Clause"
+publish = false
+description = "JavaScriptCore (WebKit do Bun 1.4.2) traduzido para Rust sem unsafe, com comportamento idêntico"
+
+
+[dependencies]
+# O fuso do processo do `Date` (a variável `TZ` como o Debian resolve): `ul_common::time::zone` entrega um
+# `jiff::tz::TimeZone`, e o `jiff` entra aqui só para nomear o tipo e converter instantes.
+ul-common = { path = "../ul-common", features = ["zone"] }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+# `String.prototype.normalize` (o `unorm2` do ICU no C++), dados do Unicode 16 compilados.
+icu_normalizer = "2"
+# Dados de locale do `Intl` (CLDR) compilados: ver `wip-notes/intl-icu4x-plan.md`.
+icu_locale_core = "2"
+icu_locale = "2"
+icu_plurals = { version = "2", features = ["unstable"] }
+icu_provider = "2"
+fixed_decimal = "0.7"
+# `Intl.NumberFormat`: símbolos, agrupamento, dígitos por sistema numérico e notação compacta (curta e longa).
+# A feature `unstable` liga o `CompactDecimalFormatter`.
+icu_decimal = { version = "2.3.0", features = ["unstable"] }
+writeable = "0.6"
+# `Intl.Segmenter`: grafemas, palavras (dicionário CJK e LSTM tailandês, features `auto` e `compiled_data` por padrão) e sentenças.
+icu_segmenter = "2.3"
+# `Intl.Collator`: colação CLDR compilada. Vendorizado em `vendor/icu_collator` para comparar surrogate solitário
+# como o ICU4C (peso implícito de code point não atribuído), não como U+FFFD.
+icu_collator = { path = "../../vendor/icu_collator", features = ["latin1"] }
+# `Intl.DateTimeFormat`: conversão do instante para os calendários não gregorianos (dados compilados).
+icu_calendar = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+
+# `uidna_nameToASCII` do ICU em `URLParser::domainToASCII`: UTS46 não transicional com CheckBidi e CheckJoiners
+# (o `idna` os aplica sempre), sobre os dados compilados do ICU4X.
+idna = { version = "1", default-features = false, features = ["std", "compiled_data"] }
+# `SubtleCrypto` (os `CryptoAlgorithmAES*` do WebCore, que no bun chamam o BoringSSL): as primitivas RustCrypto.
+aes = "0.8"
+aes-gcm = "0.10"
+ctr = "0.9"
+aes-kw = { version = "0.2", features = ["std"] }
+# Os demais algoritmos do `SubtleCrypto` (RSA, curvas NIST, Ed25519/X25519, ChaCha20-Poly1305). HKDF e PBKDF2 usam o
+# `ul_common::hash`.
+rsa = { version = "0.9", features = ["sha2", "hazmat"] }
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
+p521 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+sha2 = "0.10"
+sha1 = "0.10"
+chacha20poly1305 = "0.10"
+# ML-KEM-768/1024 e ML-DSA-44/65/87 do `SubtleCrypto` (wip/notes/crypto-pq-plan.md); o DER de spki e pkcs8 é feito à mão.
+ml-kem = "0.3.2"
+ml-dsa = "0.1.1"
+# `CompressionStream` e `DecompressionStream` (gzip, deflate, deflate-raw): o zlib do bun, em Rust puro.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# `Bun.hash.xxHash32`, `xxHash64` e `xxHash3` (o xxHash de referência que o bun chama pelo Highway), bit a bit iguais.
+twox-hash = { version = "2", default-features = false, features = ["xxhash32", "xxhash64", "xxhash3_64"] }
+# O deflate de `CompressionStream`: o `deflate.c` e o `trees.c` do zlib 1.3.1, byte a byte (os bytes do bun).
+zdeflate = { path = "../zdeflate" }
+# `brotli` do mesmo par de classes: rust-brotli (port do google/brotli); o zstd é próprio (`runtime::zstd`).
+brotli = "9"
+
+
+# Alvo web (wasm32-unknown-unknown): as primitivas do `SubtleCrypto` pedem aleatoriedade do SO por duas versões do
+# `getrandom`; no navegador ela vem do `crypto.getRandomValues` (a 0.4 também precisa do `--cfg getrandom_backend`
+# de `.cargo/config.toml`).
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+non_snake_case = "allow"
+non_camel_case_types = "allow"
+non_upper_case_globals = "allow"
+unused = "allow"

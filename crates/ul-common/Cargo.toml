@@ -1,0 +1,22 @@
+[package]
+name = "ul-common"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "O que os programas do pseudo-linus repetiam cada um por si: getopt, calendário e fusos, números e ctype da libc, citação do gnulib, caminhos e modos"
+
+[features]
+# Fusos e formatação de data pelo `jiff` com o banco da tzdata embutido (`time::zone`).
+zone = ["dep:jiff"]
+
+[dependencies]
+sysabi = { path = "../sysabi" }
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"], optional = true }
+
+[dev-dependencies]
+sysabi = { path = "../sysabi", features = ["testkit"] }
+
+[lints]
+workspace = true

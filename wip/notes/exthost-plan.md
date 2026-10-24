@@ -22,8 +22,8 @@ Electron do VS Code em `ref/oracle`, rodado com `ELECTRON_RUN_AS_NODE=1`.
   ignorado: (1) `exclude = ["ref"]` no `Cargo.toml` raiz (versionado); (2) em
   `ref/pseudo-linus/crates/zjsc/Cargo.toml`, o `icu_collator` vendorizado aponta para o `vendor/icu_collator`
   do je-code (`../../../../vendor/icu_collator`), porque as duas cópias da mesma versão colidem no
-  `Cargo.lock`. Esta segunda precisa virar cópia versionada de `crates/zjsc` (regra de
-  `docs/reuse-pseudo-linus.md`) antes da Fase 5, senão a compilação depende de um patch num diretório ignorado.
+  `Cargo.lock`. Esta segunda JÁ virou cópia versionada em `crates/zjsc` (2026-10-24, eu; lista de mudanças no README
+  da crate), e a sonda aponta para ela.
 - Dimensão: 600 736 linhas de Rust em `zjsc/src`; build de release em 2 min 57 s com `CARGO_BUILD_JOBS=4`
   (opt-level 3, `debug = 0` só para o zjsc); binário de 92 MB com `debug = 1` no resto.
 - A árvore de dependências do zjsc tem 224 pacotes e nenhum crate de fonte C da lista do

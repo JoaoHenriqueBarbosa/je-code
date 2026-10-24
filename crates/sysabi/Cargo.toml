@@ -1,0 +1,23 @@
+[package]
+name = "sysabi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "A interface que os programas do pseudo-linus enxergam: syscalls, tipos do Linux, errno, sinais e o Ctx dos builtins"
+build = "build.rs"
+
+[features]
+default = []
+# Kernel de teste em memória, de um processo por vez, pra testar programas antes do kernel real.
+testkit = []
+
+[dependencies]
+bitflags = "2"
+
+[build-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

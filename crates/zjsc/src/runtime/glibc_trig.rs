@@ -1,0 +1,418 @@
+//! Porte de `sin` e `cos` do glibc 2.41 (`sysdeps/ieee754/dbl-64/s_sin.c`, `sincostab.c`, `branred.c`,
+//! `usncs.h`), sem `unsafe`.
+//!
+//! O bun usa a libm do glibc; a biblioteca padrão do Rust chama a libm do sistema (no release estático
+//! musl seria outro algoritmo), então o resultado só é idêntico bit a bit com porte próprio.
+//!
+//! Estado do porte: este é o caminho escalar sem contração em FMA. No x86_64 moderno o ifunc do glibc
+//! escolhe `__sin_fma`/`__cos_fma` (o mesmo C compilado com `-mfma -mavx2`, onde o GCC contrai alguns
+//! `a * b + c`). Não foi medido contra o golden qual variante bate; se algum caso divergir por um bit,
+//! o candidato é a contração em FMA dos polinômios de `do_sin`/`do_cos`.
+//!
+//! Ainda não portados (ver `wip-notes/math-audit.md`): `tan`, `asin`, `acos`, `atan`, `atan2` e as
+//! hiperbólicas, que dependem de tabelas grandes (`utan.tbl`, `uatan.tbl`) e de `mpa`.
+
+const S1: f64 = -f64::from_bits(0x3FC5555555555555);
+const S2: f64 = f64::from_bits(0x3F81111111110ECE);
+const S3: f64 = -f64::from_bits(0x3F2A01A019DB08B8);
+const S4: f64 = f64::from_bits(0x3EC71DE27B9A7ED9);
+const S5: f64 = -f64::from_bits(0x3E5ADDFFC2FCDF59);
+const BIG: f64 = f64::from_bits(0x42C8000000000000);
+const HP0: f64 = f64::from_bits(0x3FF921FB54442D18);
+const HP1: f64 = f64::from_bits(0x3C91A62633145C07);
+const MP1: f64 = f64::from_bits(0x3FF921FB58000000);
+const MP2: f64 = -f64::from_bits(0x3E4DDE973C000000);
+const PP3: f64 = -f64::from_bits(0x3C8CB3B398000000);
+const PP4: f64 = -f64::from_bits(0x3ACD747F23E32ED7);
+const HPINV: f64 = f64::from_bits(0x3FE45F306DC9C883);
+const TOINT: f64 = f64::from_bits(0x4338000000000000);
+
+const SN3: f64 = -1.66666666666664880952546298448555E-01;
+const SN5: f64 = 8.33333214285722277379541354343671E-03;
+const CS2: f64 = 4.99999999999999999999950396842453E-01;
+const CS4: f64 = -4.16666666666664434524222570944589E-02;
+const CS6: f64 = 1.38888874007937613028114285595617E-03;
+
+// Constantes locais de `branred.h` (o `mp2` dali difere do de `usncs.h`).
+const T576: f64 = f64::from_bits(0x63F0000000000000);
+const TM600: f64 = f64::from_bits(0x1A70000000000000);
+const TM24: f64 = f64::from_bits(0x3E70000000000000);
+const BR_BIG: f64 = f64::from_bits(0x4338000000000000);
+const BR_BIG1: f64 = f64::from_bits(0x4358000000000000);
+const BR_MP2: f64 = f64::from_bits(0xBE4DDE9740000000);
+const SPLIT: f64 = 134217729.0;
+
+/// `toverp`: 2/pi em base 2^24.
+const TOVERP: [f64; 75] = [
+    10680707.0, 7228996.0, 1387004.0, 2578385.0, 16069853.0,
+    12639074.0, 9804092.0, 4427841.0, 16666979.0, 11263675.0,
+    12935607.0, 2387514.0, 4345298.0, 14681673.0, 3074569.0,
+    13734428.0, 16653803.0, 1880361.0, 10960616.0, 8533493.0,
+    3062596.0, 8710556.0, 7349940.0, 6258241.0, 3772886.0,
+    3769171.0, 3798172.0, 8675211.0, 12450088.0, 3874808.0,
+    9961438.0, 366607.0, 15675153.0, 9132554.0, 7151469.0,
+    3571407.0, 2607881.0, 12013382.0, 4155038.0, 6285869.0,
+    7677882.0, 13102053.0, 15825725.0, 473591.0, 9065106.0,
+    15363067.0, 6271263.0, 9264392.0, 5636912.0, 4652155.0,
+    7056368.0, 13614112.0, 10155062.0, 1944035.0, 9527646.0,
+    15080200.0, 6658437.0, 6231200.0, 6832269.0, 16767104.0,
+    5075751.0, 3212806.0, 1398474.0, 7579849.0, 6349435.0,
+    12618859.0, 4703257.0, 12806093.0, 14477321.0, 2786137.0,
+    12875403.0, 9837734.0, 14528324.0, 13719321.0, 343717.0,
+];
+
+/// `__sincostab`: 110 linhas de `sn, ssn, cs, ccs`, em bits de `f64`.
+#[rustfmt::skip]
+const SINCOSTAB: [u64; 440] = [
+    0x0000000000000000, 0x0000000000000000, 0x3FF0000000000000, 0x0000000000000000,
+    0x3F7FFFEAAAAEEEEF, 0xBC1E45E2EC67B77C, 0x3FEFFFC000155552, 0x3C8F4A01A0196DAE,
+    0x3F8FFFAAAAEEEED5, 0xBC02AB639A9F0777, 0x3FEFFF000155549F, 0x3C828A28A03A5EF3,
+    0x3F97FF7001033255, 0x3BFEFE2B51527336, 0x3FEFFDC006BFF7E6, 0x3C8AE6DAE86977BD,
+    0x3F9FFEAAAEEEE86F, 0xBC3CD406FB224AE2, 0x3FEFFC00155527D3, 0xBC83B54492D89B5B,
+    0x3FA3FEB2B12D45D5, 0x3C34EC54203D1C11, 0x3FEFF9C03414A7BA, 0x3C6991F4BE6C59BF,
+    0x3FA7FDC01032FBA9, 0xBC4599BDF46E997A, 0x3FEFF7006BFDF99F, 0xBC78B3B560648D5F,
+    0x3FABFC6D78586DAC, 0x3C18E4FD03DBF236, 0x3FEFF3C0C8103A31, 0x3C74856DBDDC0E66,
+    0x3FAFFAAAEEED4EDB, 0xBC42D16D32684B69, 0x3FEFF0015549F4D3, 0x3C8328387B99426F,
+    0x3FB1FC343D808BEF, 0xBC5F3D32E6F3BE4F, 0x3FEFEBC222A8EF9F, 0x3C57934934F54C77,
+    0x3FB3FACB12D1755B, 0xBC5921915299468C, 0x3FEFE7034129EF6F, 0xBC6CBF4337C96F97,
+    0x3FB5F911FD10B737, 0xBC50184F02BE9102, 0x3FEFE1C4C3C873EB, 0xBC35A9C9057C4A02,
+    0x3FB7F701032550E4, 0x3C3AFC2D1800501A, 0x3FEFDC06BF7E6B9B, 0x3C831902B535F8DB,
+    0x3FB9F4902D55D1F9, 0x3C52696D7EAC1DC1, 0x3FEFD5C94B43E000, 0xBC62E768CB4F92F9,
+    0x3FBBF1B78568391D, 0x3C5E91841DEA4CC8, 0x3FEFCF0C800E99B1, 0x3C6EA3D786D186AC,
+    0x3FBDEE6F16C1CCE6, 0xBC450F8E2FB71673, 0x3FEFC7D078D1BC88, 0x3C8075D2447DB685,
+    0x3FBFEAAEEE86EE36, 0xBC4AFCB2BCC6F03B, 0x3FEFC015527D5BD3, 0x3C8B68F35094EFB8,
+    0x3FC0F3378DDD71D1, 0x3C6D8468724F0F9E, 0x3FEFB7DB2BFE0695, 0x3C821DADF4F65AB1,
+    0x3FC1F0D3D7AFCEAF, 0xBC66EF95099769A5, 0x3FEFAF22263C4BD3, 0xBC552ACE133A2769,
+    0x3FC2EE285E4AB88F, 0xBC6E4D0F05DEE058, 0x3FEFA5EA641C36F2, 0x3C404DA6ED17CC7C,
+    0x3FC3EB312C5D66CB, 0x3C647D666B66CB91, 0x3FEF9C340A7CC428, 0x3C8C5B6B063B7462,
+    0x3FC4E7EA4DC5F27B, 0x3C5949DB2AC072FC, 0x3FEF91FF40374D01, 0xBC67D03F4D3A9E4C,
+    0x3FC5E44FCFA126F3, 0xBC66F443063F89B6, 0x3FEF874C2E1EECF6, 0xBC8C6514E1332B16,
+    0x3FC6E05DC05A4D4C, 0xBBD32C5C8B81C940, 0x3FEF7C1AFEFFDE24, 0xBC78F55BC47540B1,
+    0x3FC7DC102FBAF2B5, 0x3C45AB50E23C97C3, 0x3FEF706BDF9ECE1C, 0xBC8698C80C36DCB4,
+    0x3FC8D7632EFAA944, 0xBC620FA262CBB953, 0x3FEF643EFEB82ACD, 0x3C76B00AC1FE28AC,
+    0x3FC9D252D0CEC312, 0x3C59C43D80B1137D, 0x3FEF57948CFF6797, 0x3C6E3A0D3E03B1D5,
+    0x3FCACCDB297A0765, 0xBC59883B57D6CDEB, 0x3FEF4A6CBD1E3A79, 0x3C813DF0EDAEBB57,
+    0x3FCBC6F84EDC6199, 0x3C69C1A56A7B0CAB, 0x3FEF3CC7C3B3D16E, 0xBC621A3AD28A3494,
+    0x3FCCC0A6588289A3, 0xBC6868D09BC87C6B, 0x3FEF2EA5D753FFED, 0x3C8CC4215F56D583,
+    0x3FCDB9E15FB5A5D0, 0xBC632E20D6CC6FC2, 0x3FEF20073086649F, 0x3C7B940416C1984B,
+    0x3FCEB2A57F8AE5A3, 0xBC60BE06AF572CEB, 0x3FEF10EC09C5873B, 0x3C8D9072762C1283,
+    0x3FCFAAEED4F31577, 0xBC615D88508E32B8, 0x3FEF01549F7DEEA1, 0x3C8D3C1E99E5CAFD,
+    0x3FD0515CBF65155C, 0xBC79B8C29DFD8EC8, 0x3FEEF141300D2F26, 0xBC82AA1B08DED372,
+    0x3FD0CD00CEF36436, 0xBC79FB0A0C93E2B5, 0x3FEEE0B1FBC0F11C, 0xBC4BFD2380BBC3B1,
+    0x3FD14861AA94DDEB, 0xBC6BE881B5B615A4, 0x3FEECFA744D5EFA1, 0xBC556D0A4AF541D0,
+    0x3FD1C37D64C6B876, 0x3C746076FE0DCFF5, 0x3FEEBE214F76EFA8, 0xBC802F9F12BA543E,
+    0x3FD23E52111AAF36, 0xBC74F080334EFF18, 0x3FEEAC2061BBAF4F, 0x3C62C1D53E94658D,
+    0x3FD2B8DDC43EB49F, 0x3C61553899F2D807, 0x3FEE99A4C3A7CD83, 0xBC82264B1BC53CE8,
+    0x3FD3331E94049F87, 0x3C7E0CB6B40C302C, 0x3FEE86AEBF29A9ED, 0x3C89397AFDBB58A7,
+    0x3FD3AD129769D3D8, 0x3C003D5504878398, 0x3FEE733EA0193D40, 0xBC86428B3546CE13,
+    0x3FD426B7E69EE697, 0xBC7F09C75705C59F, 0x3FEE5F54B436E9D0, 0x3C87EB0FD02FC8BC,
+    0x3FD4A00C9B0F3D20, 0x3C7823BA6BB08EAD, 0x3FEE4AF14B2A449C, 0xBC868CA02E8A6833,
+    0x3FD5190ECF68A77A, 0x3C7B357155EEF0F3, 0x3FEE3614B680D6A5, 0xBC727793AA015237,
+    0x3FD591BC9FA2F597, 0x3C67C74BAC3FE0CB, 0x3FEE20BF49ACD6C1, 0xBC5660AEC7EF636C,
+    0x3FD60A1429078775, 0x3C5B1FD80BA89133, 0x3FEE0AF15A03DBCE, 0x3C5FE8E702771AE6,
+    0x3FD682138A38D7F7, 0xBC7D889202444AAD, 0x3FEDF4AB3EBD875E, 0xBC8E2D8A7E6736C4,
+    0x3FD6F9B8E33A0255, 0x3C742BC14EE9DA0D, 0x3FEDDDED50F228D6, 0xBC6E80C8D42BA2BF,
+    0x3FD7710255764214, 0xBC66EAD7314BB6CE, 0x3FEDC6B7EB995912, 0x3C54B364776DCD35,
+    0x3FD7E7EE03C86D4E, 0xBC7B63BCDABF5AF2, 0x3FEDAF0B6B888E83, 0x3C8A249E2B5E5CEA,
+    0x3FD85E7A12826949, 0x3C78A40E9B5FACE0, 0x3FED96E82F71A9DC, 0x3C8FF61BD5D2039D,
+    0x3FD8D4A4A774992F, 0x3C744A02EA766326, 0x3FED7E4E97E17B4A, 0xBC63B770352BED94,
+    0x3FD94A6BE9F546C5, 0xBC769CE13E683F58, 0x3FED653F073E4040, 0xBC876236434BEC37,
+    0x3FD9BFCE02E80510, 0x3C709E39A320B0A4, 0x3FED4BB9E1C619E0, 0x3C8F34BB77858F61,
+    0x3FDA34C91CC50CCA, 0xBC5A310E3B50CECD, 0x3FED31BF8D8D7C06, 0x3C7E60DD3089CBDD,
+    0x3FDAA95B63A09277, 0xBC66293EB13C0381, 0x3FED1750727D94F0, 0x3C80D52B1EC1A48E,
+    0x3FDB1D8305321617, 0xBC7AE242CB99F519, 0x3FECFC6CFA52AD9F, 0x3C88B5B5508F2A0D,
+    0x3FDB913E30DBAC43, 0xBC7E38AD2F6C3FF1, 0x3FECE115909A82E5, 0x3C81F139BB31109A,
+    0x3FDC048B17B140A3, 0x3C619FE6757E9FA7, 0x3FECC54AA2B2972E, 0x3C64EE162BA83A98,
+    0x3FDC7767EC7FD19E, 0xBC5EB14D1A3D5826, 0x3FECA90C9FC67D0B, 0xBC646A81485E3462,
+    0x3FDCE9D2E3D4A51F, 0xBC62FC8A12DAE298, 0x3FEC8C5BF8CE1A84, 0x3C7AB3D1A1590123,
+    0x3FDD5BCA34047661, 0x3C728A44A75FC29C, 0x3FEC6F39208BE53B, 0xBC8741DBFBAADB42,
+    0x3FDDCD4C15329C9A, 0x3C70D4C6E171FD9A, 0x3FEC51A48B8B175E, 0xBC61BBB43B9AA880,
+    0x3FDE3E56C1582A69, 0xBC50A4821099F88F, 0x3FEC339EB01DDD81, 0xBC8CAAF5EE82C5C0,
+    0x3FDEAEE8744B05F0, 0xBC5789B43C9B027D, 0x3FEC1528065B7D50, 0xBC8892111312E828,
+    0x3FDF1EFF6BC4F97B, 0x3C717212F8A7525C, 0x3FEBF641081E7536, 0x3C8B7BD71628A9A1,
+    0x3FDF8E99E76ABC97, 0x3C59D950AF2D00A3, 0x3FEBD6EA310294F5, 0x3C731BBCC88C109D,
+    0x3FDFFDB628D2F57A, 0x3C6F4A992E905B6A, 0x3FEBB723FE630F32, 0x3C772BD2452D0A39,
+    0x3FE0362939C69955, 0xBC82D8CD78397B01, 0x3FEB96EEEF58840E, 0x3C545A3CC78FADE0,
+    0x3FE06D3686946E5B, 0x3C83F5AE4538FF1B, 0x3FEB764B84B704C2, 0xBC8F5848C21B389B,
+    0x3FE0A4021E9E1001, 0xBC86F643A13914F6, 0x3FEB553A410C104E, 0x3C58FF7947027A16,
+    0x3FE0DA8B26B5672E, 0xBC8A58DEF0BEE909, 0x3FEB33BBA89C8948, 0x3C8EA6A51D1F6CA9,
+    0x3FE110D0C4B69C3B, 0x3C8D918998809981, 0x3FEB11D04162A4C6, 0x3C71DD561EFBC0C2,
+    0x3FE146D21F8B7F82, 0x3C7BF9535E2739A8, 0x3FEAEF78930BD275, 0xBC7F836279746F94,
+    0x3FE17C8E5F2EEDB0, 0x3C635E57102E2488, 0x3FEACCB526F69DE5, 0x3C88FB6A8DD6B6CC,
+    0x3FE1B204ACB02FDD, 0xBC5F190C70CBB5FF, 0x3FEAA98688308913, 0xBC0B83D607CD5070,
+    0x3FE1E7343236574C, 0x3C722A3FA4F41D5A, 0x3FEA85ED4373E02D, 0x3C69BE06385EC792,
+    0x3FE21C1C1B0394CF, 0x3C5E5B324B23AA31, 0x3FEA61E9E72586AF, 0x3C858330E2FD453F,
+    0x3FE250BB93788BBB, 0x3C7EA3D02457BCCE, 0x3FEA3D7D0352BDCF, 0xBC868DBAECA19669,
+    0x3FE28511C917A067, 0xBC801DF1D9A16B70, 0x3FEA18A729AEE445, 0x3C395E25736C0358,
+    0x3FE2B91DEA88421E, 0xBC8FA371DB216AB0, 0x3FE9F368ED912F85, 0xBC81D200C5791606,
+    0x3FE2ECDF279A3082, 0x3C8D3557E0E7E37E, 0x3FE9CDC2E3F25E5C, 0x3C83F99112993F62,
+    0x3FE32054B148BC4F, 0x3C8F6B42095A135B, 0x3FE9A7B5A36A6514, 0x3C8722CFCC9FA7A9,
+    0x3FE3537DB9BE0367, 0x3C6B327E7AF040F0, 0x3FE98141C42E1310, 0x3C8D1FF80488F08D,
+    0x3FE386597456282B, 0xBC710FADA93B07A8, 0x3FE95A67E00CB1FD, 0xBC80BEFDA21F862D,
+    0x3FE3B8E715A2840A, 0xBC797653A7D2F07B, 0x3FE93328926D9E92, 0xBC8BB77003600CDA,
+    0x3FE3EB25D36CD53A, 0xBC5BE570E1570FC0, 0x3FE90B84784DDAF7, 0xBC70FEB10AB93B87,
+    0x3FE41D14E4BA6790, 0x3C84608FD287ECF5, 0x3FE8E37C303D9AD1, 0xBC6463A4B53D4BF8,
+    0x3FE44EB381CF386B, 0xBC83ED6C1E6A5505, 0x3FE8BB105A5DC900, 0x3C8863E03E9474C1,
+    0x3FE48000E431159F, 0xBC8B194A7463ED10, 0x3FE89241985D871F, 0x3C8C48D9C413ED84,
+    0x3FE4B0FC46AAB761, 0x3C20DA05738CC59A, 0x3FE869108D77A6C6, 0x3C7338FFE2BFE9DD,
+    0x3FE4E1A4E54ED51B, 0xBC8A492F89B7C76A, 0x3FE83F7DDE701CA0, 0xBC4152CF609BC6E8,
+    0x3FE511F9FD7B351C, 0xBC85C0E861C48831, 0x3FE8158A31916D5D, 0xBC6DE8B90B8228DE,
+    0x3FE541FACDDBB724, 0x3C7232C28520D391, 0x3FE7EB362EAA1488, 0x3C5A1D65A4A5959F,
+    0x3FE571A6966D59B3, 0x3C5C843B4D0FB198, 0x3FE7C0827F09E54F, 0xBC6C73D6D72AEE68,
+    0x3FE5A0FC98813A12, 0xBC8D82E2B7D4227B, 0x3FE7956FCD7F6543, 0xBC8AB276E9D45AE4,
+    0x3FE5CFFC16BF8F0D, 0x3C896CB370EB578A, 0x3FE769FEC655211F, 0xBC6827D5CF8C68C5,
+    0x3FE5FEA4552A9E57, 0x3C80B6CEF7EE20B7, 0x3FE73E30174EFBA1, 0xBC65D3AE3D94AD5F,
+    0x3FE62CF49921AC79, 0xBC8EDD9855B6241A, 0x3FE712046FA77678, 0x3C8425B0A5029C81,
+    0x3FE65AEC2963E755, 0x3C8126F96B71053C, 0x3FE6E57C800CF55E, 0x3C860286DEDBD0A6,
+    0x3FE6888A4E134B2F, 0xBC86B7D37644D5E6, 0x3FE6B898FA9EFB5D, 0x3C715AC786CCF4B2,
+    0x3FE6B5CE50B7821A, 0xBC65D5158F702E0F, 0x3FE68B5A92EB6253, 0xBC89A91AD985F89C,
+    0x3FE6E2B77C40BDE1, 0xBC70E729857FAD53, 0x3FE65DC1FDEB8CBA, 0xBC597C1B47337C77,
+    0x3FE70F451D0A8C40, 0x3C697EDE3885770D, 0x3FE62FCFF20191C7, 0x3C6D9143895756EF,
+    0x3FE73B7680DEA578, 0xBC72248306DC12A2, 0x3FE6018526F563DF, 0x3C846CA5E0E432D0,
+    0x3FE7674AF6F7B524, 0x3C7E9D3F94AC84A8, 0x3FE5D2E255F1F17A, 0x3C80314104C8892B,
+    0x3FE792C1D0041D52, 0xBC8ABF05EEB354EB, 0x3FE5A3E839824077, 0x3C8428AA2759BE62,
+    0x3FE7BDDA5E28B3C2, 0x3C4AD1197CCD0393, 0x3FE574978D8E83F2, 0x3C8F4714AF282D23,
+    0x3FE7E893F5037959, 0x3C80EEFBAA650C4C, 0x3FE544F10F592CA5, 0xBC8E7AE8E6C7A62F,
+    0x3FE812EDE9AE4BA4, 0xBC87830ADF402DDA, 0x3FE514F57D7BF3DA, 0x3C747A108073C259,
+];
+
+use ul_common::libm::words::{high_word, low_word};
+
+/// `SINCOS_TABLE_LOOKUP`: `(sn, ssn, cs, ccs)` pela metade baixa de `u.x = big + |x|`.
+#[inline]
+fn sincos_table_lookup(u: f64) -> (f64, f64, f64, f64) {
+    let k = (low_word(u) as usize) << 2;
+    let at = |i: usize| f64::from_bits(SINCOSTAB[k + i]);
+    (at(0), at(1), at(2), at(3))
+}
+
+fn polynomial2(xx: f64) -> f64 {
+    (((S5 * xx + S4) * xx + S3) * xx + S2) * xx
+}
+
+fn taylor_sin(xx: f64, x: f64, dx: f64) -> f64 {
+    let t = ((polynomial2(xx) + S1) * x - 0.5 * dx) * xx + dx;
+    x + t
+}
+
+fn do_cos(x: f64, dx: f64) -> f64 {
+    let dx = if x < 0.0 { -dx } else { dx };
+    let u = BIG + x.abs();
+    let x = x.abs() - (u - BIG) + dx;
+    let xx = x * x;
+    let s = x + x * xx * (SN3 + xx * SN5);
+    let c = xx * (CS2 + xx * (CS4 + xx * CS6));
+    let (sn, ssn, cs, ccs) = sincos_table_lookup(u);
+    let cor = (ccs - s * ssn - cs * c) - sn * s;
+    cs + cor
+}
+
+fn do_sin(x: f64, dx: f64) -> f64 {
+    let xold = x;
+    if x.abs() < 0.126 {
+        return taylor_sin(x * x, x, dx);
+    }
+    let dx = if x <= 0.0 { -dx } else { dx };
+    let u = BIG + x.abs();
+    let x = x.abs() - (u - BIG);
+    let xx = x * x;
+    let s = x + (dx + x * xx * (SN3 + xx * SN5));
+    let c = x * dx + xx * (CS2 + xx * (CS4 + xx * CS6));
+    let (sn, ssn, cs, ccs) = sincos_table_lookup(u);
+    let cor = (ssn + s * ccs - sn * c) + cs * s;
+    (sn + cor).copysign(xold)
+}
+
+/// `reduce_sincos`: devolve `(n mod 4, a, da)` com `x = n * pi/2 + (a + da)`.
+pub(super) fn reduce_sincos(x: f64) -> (i32, f64, f64) {
+    let t = x * HPINV + TOINT;
+    let xn = t - TOINT;
+    let y = (x - xn * MP1) - xn * MP2;
+    let n = (low_word(t) & 3) as i32;
+    let t1 = xn * PP3;
+    let t2 = y - t1;
+    let mut db = (y - t2) - t1;
+    let t1 = xn * PP4;
+    let b = t2 - t1;
+    db += (t2 - b) - t1;
+    (n, b, db)
+}
+
+fn do_sincos(a: f64, da: f64, n: i32) -> f64 {
+    let value = if n & 1 != 0 { do_cos(a, da) } else { do_sin(a, da) };
+    if n & 2 != 0 { -value } else { value }
+}
+
+/// Uma das duas metades (`x1` e `x2`) da redução de `__branred`: `(b, bb, sum)`.
+fn branred_part(x: f64) -> (f64, f64, f64) {
+    let mut k = ((high_word(x) >> 20) & 2047) as i32;
+    k = (k - 450) / 24;
+    if k < 0 {
+        k = 0;
+    }
+    let mut gor = f64::from_bits(T576.to_bits() - (((k * 24) as u64) << 52));
+    let mut r = [0.0f64; 6];
+    for (i, slot) in r.iter_mut().enumerate() {
+        *slot = x * TOVERP[k as usize + i] * gor;
+        gor *= TM24;
+    }
+    let mut sum = 0.0;
+    for slot in r.iter_mut().take(3) {
+        let s = (*slot + BR_BIG) - BR_BIG;
+        sum += s;
+        *slot -= s;
+    }
+    let mut t = 0.0;
+    for i in 0..6 {
+        t += r[5 - i];
+    }
+    let mut bb = (((((r[0] - t) + r[1]) + r[2]) + r[3]) + r[4]) + r[5];
+    let s = (t + BR_BIG) - BR_BIG;
+    sum += s;
+    t -= s;
+    let b = t + bb;
+    bb = (t - b) + bb;
+    let s = (sum + BR_BIG1) - BR_BIG1;
+    sum -= s;
+    (b, bb, sum)
+}
+
+/// `__branred`: redução de argumento grande; devolve `(n mod 4, a, aa)`.
+pub(super) fn branred(x: f64) -> (i32, f64, f64) {
+    let x = x * TM600;
+    let t = x * SPLIT;
+    let x1 = t - (t - x);
+    let x2 = x - x1;
+    let (b1, bb1, sum1) = branred_part(x1);
+    let (b2, bb2, sum2) = branred_part(x2);
+
+    let mut sum = sum1 + sum2;
+    let mut b = b1 + b2;
+    let bb = if b1.abs() > b2.abs() { (b1 - b) + b2 } else { (b2 - b) + b1 };
+    if b > 0.5 {
+        b -= 1.0;
+        sum += 1.0;
+    } else if b < -0.5 {
+        b += 1.0;
+        sum -= 1.0;
+    }
+    let s = b + (bb + bb1 + bb2);
+    let t = ((b - s) + bb) + (bb1 + bb2);
+    let b = s * SPLIT;
+    let t1 = b - (b - s);
+    let t2 = s - t1;
+    let b = s * HP0;
+    let bb = (((t1 * MP1 - b) + t1 * BR_MP2) + t2 * MP1) + (t2 * BR_MP2 + s * HP1 + t * HP0);
+    let s = b + bb;
+    let t = (b - s) + bb;
+    ((sum as i32) & 3, s, t)
+}
+
+/// `__sin` do glibc 2.41.
+pub fn sin(x: f64) -> f64 {
+    let k = high_word(x) & 0x7fff_ffff;
+    if k < 0x3e50_0000 {
+        x
+    } else if k < 0x3feb_6000 {
+        do_sin(x, 0.0)
+    } else if k < 0x4003_68fd {
+        let t = HP0 - x.abs();
+        do_cos(t, HP1).copysign(x)
+    } else if k < 0x4199_21FB {
+        let (n, a, da) = reduce_sincos(x);
+        do_sincos(a, da, n)
+    } else if k < 0x7ff0_0000 {
+        let (n, a, da) = branred(x);
+        do_sincos(a, da, n)
+    } else {
+        x / x
+    }
+}
+
+/// `__cos` do glibc 2.41.
+pub fn cos(x: f64) -> f64 {
+    let k = high_word(x) & 0x7fff_ffff;
+    if k < 0x3e40_0000 {
+        1.0
+    } else if k < 0x3feb_6000 {
+        do_cos(x, 0.0)
+    } else if k < 0x4003_68fd {
+        let y = HP0 - x.abs();
+        let a = y + HP1;
+        let da = (y - a) + HP1;
+        do_sin(a, da)
+    } else if k < 0x4199_21FB {
+        let (n, a, da) = reduce_sincos(x);
+        do_sincos(a, da, n + 1)
+    } else if k < 0x7ff0_0000 {
+        let (n, a, da) = branred(x);
+        do_sincos(a, da, n + 1)
+    } else {
+        x / x
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Casos de `tests/golden/math_bun.tsv` (bun 1.4.2, glibc 2.41): (bits da entrada, bits do resultado).
+    const SIN_CASES: [(u64, u64); 14] = [
+        (0x3fe0000000000000, 0x3fdeaee8744b05f0),
+        (0x0000000000000001, 0x0000000000000001),
+        (0xc087480000000000, 0x3fdb683ccbc86662),
+        (0x40f86a0000000000, 0x3fa24daa9c527e96),
+        (0x40c81cd6e631f8a1, 0xbfe68298a1cec146),
+        (0x8d219e6f63680239, 0x8d219e6f63680239),
+        (0x211591aaf7339f7a, 0x211591aaf7339f7a),
+        (0xc418430543682219, 0x3feff39ac9f74123),
+        (0x845ac858776578f0, 0x845ac858776578f0),
+        (0x2762bce06f2e177f, 0x2762bce06f2e177f),
+        (0xc7ce4096f44c6878, 0x3fe0f4504b035e40),
+        (0x279e7adff078391d, 0x279e7adff078391d),
+        (0xc1196b7000000000, 0xbfef303c99b20ed1),
+        (0xc098f151eb851eb8, 0xbfd8fa4a9f0b7c6e),
+    ];
+
+    const COS_CASES: [(u64, u64); 14] = [
+        (0x4008000000000000, 0xbfefae04be85e5d2),
+        (0x000012688b70e62b, 0x3ff0000000000000),
+        (0x01a56e1fc2f8f359, 0x3ff0000000000000),
+        (0x4341c37937e08000, 0xbfe40991e398dbfc),
+        (0xf2adbbaffed75123, 0xbfe67ad18107bb0f),
+        (0xdd9e740c70e04de3, 0xbfdf184f3e70501c),
+        (0xb390f5fe08c30e49, 0x3ff0000000000000),
+        (0x175447456829bbfb, 0x3ff0000000000000),
+        (0x71b917ef3bdf17ed, 0x3feff8a87b458696),
+        (0xd8bfff2acc0f3c67, 0xbfec1995cd9fd5ff),
+        (0x90b972cb62e9fadb, 0x3ff0000000000000),
+        (0xc11c26f000000000, 0xbfb4333ca951ea00),
+        (0xc0e129699999999a, 0x3fe56456ddcf17c3),
+        (0xc088403f7ced9168, 0xbfeff26847a0c5d6),
+    ];
+
+    #[test]
+    fn sin_matches_glibc_golden() {
+        for (input, expected) in SIN_CASES {
+            let got = sin(f64::from_bits(input)).to_bits();
+            assert_eq!(got, expected, "sin({input:016x})");
+        }
+    }
+
+    #[test]
+    fn cos_matches_glibc_golden() {
+        for (input, expected) in COS_CASES {
+            let got = cos(f64::from_bits(input)).to_bits();
+            assert_eq!(got, expected, "cos({input:016x})");
+        }
+    }
+
+    #[test]
+    fn special_values() {
+        assert!(sin(f64::INFINITY).is_nan());
+        assert!(cos(f64::NEG_INFINITY).is_nan());
+        assert!(sin(f64::NAN).is_nan());
+        assert_eq!(sin(-0.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(cos(0.0), 1.0);
+    }
+}

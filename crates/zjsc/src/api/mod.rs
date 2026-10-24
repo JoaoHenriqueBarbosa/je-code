@@ -1,0 +1,24 @@
+//! API de alto nível (equivalente ao que `JSC::evaluate` oferece a quem embute o motor).
+pub mod builtin_modules;
+pub mod builtin_source_texts;
+pub mod browser_modules;
+pub mod bun_options;
+pub mod embed;
+pub mod eval;
+pub mod fs_module_host;
+pub mod main_module_kind;
+pub mod module;
+pub mod module_probe;
+pub mod node_assert;
+pub mod node_async_hooks;
+pub mod node_events;
+pub mod node_js_host;
+pub mod node_stream;
+pub mod node_url;
+pub mod node_parse_args;
+pub mod node_util;
+pub mod node_util_types;
+pub mod package_exports;
+pub mod package_json;
+pub mod source_transpiler;
+pub mod test262;

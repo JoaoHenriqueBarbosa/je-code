@@ -5,8 +5,8 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-# O zjsc do pseudo-linus por caminho (ref/ fica fora do git): H15 e H16.
-zjsc = { path = "../../ref/pseudo-linus/crates/zjsc" }
+# O zjsc versionado em crates/zjsc (cópia do pseudo-linus): H15 e H16.
+zjsc = { path = "../../crates/zjsc" }
 
 [lints]
 workspace = true

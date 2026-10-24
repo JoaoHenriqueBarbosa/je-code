@@ -1,0 +1,785 @@
+{
+  "bash_exit_codes": {
+    "INT": "130",
+    "KILL": "137",
+    "NOEXEC": "126",
+    "NOTFOUND": "127",
+    "PIPESTATUS": "141 0",
+    "TERM": "143"
+  },
+  "errno": {
+    "1": {
+      "name": "EPERM",
+      "strerror": "Operation not permitted"
+    },
+    "10": {
+      "name": "ECHILD",
+      "strerror": "No child processes"
+    },
+    "100": {
+      "name": "ENETDOWN",
+      "strerror": "Network is down"
+    },
+    "101": {
+      "name": "ENETUNREACH",
+      "strerror": "Network is unreachable"
+    },
+    "102": {
+      "name": "ENETRESET",
+      "strerror": "Network dropped connection on reset"
+    },
+    "103": {
+      "name": "ECONNABORTED",
+      "strerror": "Software caused connection abort"
+    },
+    "104": {
+      "name": "ECONNRESET",
+      "strerror": "Connection reset by peer"
+    },
+    "105": {
+      "name": "ENOBUFS",
+      "strerror": "No buffer space available"
+    },
+    "106": {
+      "name": "EISCONN",
+      "strerror": "Transport endpoint is already connected"
+    },
+    "107": {
+      "name": "ENOTCONN",
+      "strerror": "Transport endpoint is not connected"
+    },
+    "108": {
+      "name": "ESHUTDOWN",
+      "strerror": "Cannot send after transport endpoint shutdown"
+    },
+    "109": {
+      "name": "ETOOMANYREFS",
+      "strerror": "Too many references: cannot splice"
+    },
+    "11": {
+      "name": "EAGAIN",
+      "strerror": "Resource temporarily unavailable"
+    },
+    "110": {
+      "name": "ETIMEDOUT",
+      "strerror": "Connection timed out"
+    },
+    "111": {
+      "name": "ECONNREFUSED",
+      "strerror": "Connection refused"
+    },
+    "112": {
+      "name": "EHOSTDOWN",
+      "strerror": "Host is down"
+    },
+    "113": {
+      "name": "EHOSTUNREACH",
+      "strerror": "No route to host"
+    },
+    "114": {
+      "name": "EALREADY",
+      "strerror": "Operation already in progress"
+    },
+    "115": {
+      "name": "EINPROGRESS",
+      "strerror": "Operation now in progress"
+    },
+    "116": {
+      "name": "ESTALE",
+      "strerror": "Stale file handle"
+    },
+    "117": {
+      "name": "EUCLEAN",
+      "strerror": "Structure needs cleaning"
+    },
+    "118": {
+      "name": "ENOTNAM",
+      "strerror": "Not a XENIX named type file"
+    },
+    "119": {
+      "name": "ENAVAIL",
+      "strerror": "No XENIX semaphores available"
+    },
+    "12": {
+      "name": "ENOMEM",
+      "strerror": "Cannot allocate memory"
+    },
+    "120": {
+      "name": "EISNAM",
+      "strerror": "Is a named type file"
+    },
+    "121": {
+      "name": "EREMOTEIO",
+      "strerror": "Remote I/O error"
+    },
+    "122": {
+      "name": "EDQUOT",
+      "strerror": "Disk quota exceeded"
+    },
+    "123": {
+      "name": "ENOMEDIUM",
+      "strerror": "No medium found"
+    },
+    "124": {
+      "name": "EMEDIUMTYPE",
+      "strerror": "Wrong medium type"
+    },
+    "125": {
+      "name": "ECANCELED",
+      "strerror": "Operation canceled"
+    },
+    "126": {
+      "name": "ENOKEY",
+      "strerror": "Required key not available"
+    },
+    "127": {
+      "name": "EKEYEXPIRED",
+      "strerror": "Key has expired"
+    },
+    "128": {
+      "name": "EKEYREVOKED",
+      "strerror": "Key has been revoked"
+    },
+    "129": {
+      "name": "EKEYREJECTED",
+      "strerror": "Key was rejected by service"
+    },
+    "13": {
+      "name": "EACCES",
+      "strerror": "Permission denied"
+    },
+    "130": {
+      "name": "EOWNERDEAD",
+      "strerror": "Owner died"
+    },
+    "131": {
+      "name": "ENOTRECOVERABLE",
+      "strerror": "State not recoverable"
+    },
+    "132": {
+      "name": "ERFKILL",
+      "strerror": "Operation not possible due to RF-kill"
+    },
+    "133": {
+      "name": null,
+      "strerror": "Memory page has hardware error"
+    },
+    "14": {
+      "name": "EFAULT",
+      "strerror": "Bad address"
+    },
+    "15": {
+      "name": "ENOTBLK",
+      "strerror": "Block device required"
+    },
+    "16": {
+      "name": "EBUSY",
+      "strerror": "Device or resource busy"
+    },
+    "17": {
+      "name": "EEXIST",
+      "strerror": "File exists"
+    },
+    "18": {
+      "name": "EXDEV",
+      "strerror": "Invalid cross-device link"
+    },
+    "19": {
+      "name": "ENODEV",
+      "strerror": "No such device"
+    },
+    "2": {
+      "name": "ENOENT",
+      "strerror": "No such file or directory"
+    },
+    "20": {
+      "name": "ENOTDIR",
+      "strerror": "Not a directory"
+    },
+    "21": {
+      "name": "EISDIR",
+      "strerror": "Is a directory"
+    },
+    "22": {
+      "name": "EINVAL",
+      "strerror": "Invalid argument"
+    },
+    "23": {
+      "name": "ENFILE",
+      "strerror": "Too many open files in system"
+    },
+    "24": {
+      "name": "EMFILE",
+      "strerror": "Too many open files"
+    },
+    "25": {
+      "name": "ENOTTY",
+      "strerror": "Inappropriate ioctl for device"
+    },
+    "26": {
+      "name": "ETXTBSY",
+      "strerror": "Text file busy"
+    },
+    "27": {
+      "name": "EFBIG",
+      "strerror": "File too large"
+    },
+    "28": {
+      "name": "ENOSPC",
+      "strerror": "No space left on device"
+    },
+    "29": {
+      "name": "ESPIPE",
+      "strerror": "Illegal seek"
+    },
+    "3": {
+      "name": "ESRCH",
+      "strerror": "No such process"
+    },
+    "30": {
+      "name": "EROFS",
+      "strerror": "Read-only file system"
+    },
+    "31": {
+      "name": "EMLINK",
+      "strerror": "Too many links"
+    },
+    "32": {
+      "name": "EPIPE",
+      "strerror": "Broken pipe"
+    },
+    "33": {
+      "name": "EDOM",
+      "strerror": "Numerical argument out of domain"
+    },
+    "34": {
+      "name": "ERANGE",
+      "strerror": "Numerical result out of range"
+    },
+    "35": {
+      "name": "EDEADLOCK",
+      "strerror": "Resource deadlock avoided"
+    },
+    "36": {
+      "name": "ENAMETOOLONG",
+      "strerror": "File name too long"
+    },
+    "37": {
+      "name": "ENOLCK",
+      "strerror": "No locks available"
+    },
+    "38": {
+      "name": "ENOSYS",
+      "strerror": "Function not implemented"
+    },
+    "39": {
+      "name": "ENOTEMPTY",
+      "strerror": "Directory not empty"
+    },
+    "4": {
+      "name": "EINTR",
+      "strerror": "Interrupted system call"
+    },
+    "40": {
+      "name": "ELOOP",
+      "strerror": "Too many levels of symbolic links"
+    },
+    "41": {
+      "name": null,
+      "strerror": "Unknown error 41"
+    },
+    "42": {
+      "name": "ENOMSG",
+      "strerror": "No message of desired type"
+    },
+    "43": {
+      "name": "EIDRM",
+      "strerror": "Identifier removed"
+    },
+    "44": {
+      "name": "ECHRNG",
+      "strerror": "Channel number out of range"
+    },
+    "45": {
+      "name": "EL2NSYNC",
+      "strerror": "Level 2 not synchronized"
+    },
+    "46": {
+      "name": "EL3HLT",
+      "strerror": "Level 3 halted"
+    },
+    "47": {
+      "name": "EL3RST",
+      "strerror": "Level 3 reset"
+    },
+    "48": {
+      "name": "ELNRNG",
+      "strerror": "Link number out of range"
+    },
+    "49": {
+      "name": "EUNATCH",
+      "strerror": "Protocol driver not attached"
+    },
+    "5": {
+      "name": "EIO",
+      "strerror": "Input/output error"
+    },
+    "50": {
+      "name": "ENOCSI",
+      "strerror": "No CSI structure available"
+    },
+    "51": {
+      "name": "EL2HLT",
+      "strerror": "Level 2 halted"
+    },
+    "52": {
+      "name": "EBADE",
+      "strerror": "Invalid exchange"
+    },
+    "53": {
+      "name": "EBADR",
+      "strerror": "Invalid request descriptor"
+    },
+    "54": {
+      "name": "EXFULL",
+      "strerror": "Exchange full"
+    },
+    "55": {
+      "name": "ENOANO",
+      "strerror": "No anode"
+    },
+    "56": {
+      "name": "EBADRQC",
+      "strerror": "Invalid request code"
+    },
+    "57": {
+      "name": "EBADSLT",
+      "strerror": "Invalid slot"
+    },
+    "58": {
+      "name": null,
+      "strerror": "Unknown error 58"
+    },
+    "59": {
+      "name": "EBFONT",
+      "strerror": "Bad font file format"
+    },
+    "6": {
+      "name": "ENXIO",
+      "strerror": "No such device or address"
+    },
+    "60": {
+      "name": "ENOSTR",
+      "strerror": "Device not a stream"
+    },
+    "61": {
+      "name": "ENODATA",
+      "strerror": "No data available"
+    },
+    "62": {
+      "name": "ETIME",
+      "strerror": "Timer expired"
+    },
+    "63": {
+      "name": "ENOSR",
+      "strerror": "Out of streams resources"
+    },
+    "64": {
+      "name": "ENONET",
+      "strerror": "Machine is not on the network"
+    },
+    "65": {
+      "name": "ENOPKG",
+      "strerror": "Package not installed"
+    },
+    "66": {
+      "name": "EREMOTE",
+      "strerror": "Object is remote"
+    },
+    "67": {
+      "name": "ENOLINK",
+      "strerror": "Link has been severed"
+    },
+    "68": {
+      "name": "EADV",
+      "strerror": "Advertise error"
+    },
+    "69": {
+      "name": "ESRMNT",
+      "strerror": "Srmount error"
+    },
+    "7": {
+      "name": "E2BIG",
+      "strerror": "Argument list too long"
+    },
+    "70": {
+      "name": "ECOMM",
+      "strerror": "Communication error on send"
+    },
+    "71": {
+      "name": "EPROTO",
+      "strerror": "Protocol error"
+    },
+    "72": {
+      "name": "EMULTIHOP",
+      "strerror": "Multihop attempted"
+    },
+    "73": {
+      "name": "EDOTDOT",
+      "strerror": "RFS specific error"
+    },
+    "74": {
+      "name": "EBADMSG",
+      "strerror": "Bad message"
+    },
+    "75": {
+      "name": "EOVERFLOW",
+      "strerror": "Value too large for defined data type"
+    },
+    "76": {
+      "name": "ENOTUNIQ",
+      "strerror": "Name not unique on network"
+    },
+    "77": {
+      "name": "EBADFD",
+      "strerror": "File descriptor in bad state"
+    },
+    "78": {
+      "name": "EREMCHG",
+      "strerror": "Remote address changed"
+    },
+    "79": {
+      "name": "ELIBACC",
+      "strerror": "Can not access a needed shared library"
+    },
+    "8": {
+      "name": "ENOEXEC",
+      "strerror": "Exec format error"
+    },
+    "80": {
+      "name": "ELIBBAD",
+      "strerror": "Accessing a corrupted shared library"
+    },
+    "81": {
+      "name": "ELIBSCN",
+      "strerror": ".lib section in a.out corrupted"
+    },
+    "82": {
+      "name": "ELIBMAX",
+      "strerror": "Attempting to link in too many shared libraries"
+    },
+    "83": {
+      "name": "ELIBEXEC",
+      "strerror": "Cannot exec a shared library directly"
+    },
+    "84": {
+      "name": "EILSEQ",
+      "strerror": "Invalid or incomplete multibyte or wide character"
+    },
+    "85": {
+      "name": "ERESTART",
+      "strerror": "Interrupted system call should be restarted"
+    },
+    "86": {
+      "name": "ESTRPIPE",
+      "strerror": "Streams pipe error"
+    },
+    "87": {
+      "name": "EUSERS",
+      "strerror": "Too many users"
+    },
+    "88": {
+      "name": "ENOTSOCK",
+      "strerror": "Socket operation on non-socket"
+    },
+    "89": {
+      "name": "EDESTADDRREQ",
+      "strerror": "Destination address required"
+    },
+    "9": {
+      "name": "EBADF",
+      "strerror": "Bad file descriptor"
+    },
+    "90": {
+      "name": "EMSGSIZE",
+      "strerror": "Message too long"
+    },
+    "91": {
+      "name": "EPROTOTYPE",
+      "strerror": "Protocol wrong type for socket"
+    },
+    "92": {
+      "name": "ENOPROTOOPT",
+      "strerror": "Protocol not available"
+    },
+    "93": {
+      "name": "EPROTONOSUPPORT",
+      "strerror": "Protocol not supported"
+    },
+    "94": {
+      "name": "ESOCKTNOSUPPORT",
+      "strerror": "Socket type not supported"
+    },
+    "95": {
+      "name": "ENOTSUP",
+      "strerror": "Operation not supported"
+    },
+    "96": {
+      "name": "EPFNOSUPPORT",
+      "strerror": "Protocol family not supported"
+    },
+    "97": {
+      "name": "EAFNOSUPPORT",
+      "strerror": "Address family not supported by protocol"
+    },
+    "98": {
+      "name": "EADDRINUSE",
+      "strerror": "Address already in use"
+    },
+    "99": {
+      "name": "EADDRNOTAVAIL",
+      "strerror": "Cannot assign requested address"
+    }
+  },
+  "error_messages": [
+    "cat: missing: No such file or directory",
+    "mkdir: cannot create directory ‘d’: File exists",
+    "bash: line 38: cd: f: Not a directory",
+    "rmdir: failed to remove 'e': Directory not empty",
+    "cat: d: Is a directory",
+    "cat: loop1: Too many levels of symbolic links",
+    "cat: f/x: Not a directory",
+    "bash: line 43: echo: write error: No space left on device",
+    "ls: cannot access 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa': File name too long",
+    "rm: cannot remove 'd': Is a directory",
+    "mv: cannot stat 'missing': No such file or directory",
+    "cp: cannot stat 'missing': No such file or directory",
+    "rmdir: failed to remove 'missing': No such file or directory",
+    "ln: failed to create symbolic link 'f': File exists"
+  ],
+  "kill_l": " 1) SIGHUP\t 2) SIGINT\t 3) SIGQUIT\t 4) SIGILL\t 5) SIGTRAP\n 6) SIGABRT\t 7) SIGBUS\t 8) SIGFPE\t 9) SIGKILL\t10) SIGUSR1\n11) SIGSEGV\t12) SIGUSR2\t13) SIGPIPE\t14) SIGALRM\t15) SIGTERM\n16) SIGSTKFLT\t17) SIGCHLD\t18) SIGCONT\t19) SIGSTOP\t20) SIGTSTP\n21) SIGTTIN\t22) SIGTTOU\t23) SIGURG\t24) SIGXCPU\t25) SIGXFSZ\n26) SIGVTALRM\t27) SIGPROF\t28) SIGWINCH\t29) SIGIO\t30) SIGPWR\n31) SIGSYS\t34) SIGRTMIN\t35) SIGRTMIN+1\t36) SIGRTMIN+2\t37) SIGRTMIN+3\n38) SIGRTMIN+4\t39) SIGRTMIN+5\t40) SIGRTMIN+6\t41) SIGRTMIN+7\t42) SIGRTMIN+8\n43) SIGRTMIN+9\t44) SIGRTMIN+10\t45) SIGRTMIN+11\t46) SIGRTMIN+12\t47) SIGRTMIN+13\n48) SIGRTMIN+14\t49) SIGRTMIN+15\t50) SIGRTMAX-14\t51) SIGRTMAX-13\t52) SIGRTMAX-12\n53) SIGRTMAX-11\t54) SIGRTMAX-10\t55) SIGRTMAX-9\t56) SIGRTMAX-8\t57) SIGRTMAX-7\n58) SIGRTMAX-6\t59) SIGRTMAX-5\t60) SIGRTMAX-4\t61) SIGRTMAX-3\t62) SIGRTMAX-2\n63) SIGRTMAX-1\t64) SIGRTMAX\t",
+  "limits": {
+    "ARG_MAX": "2097152",
+    "CLK_TCK": "100",
+    "MAXSYMLINKS": 40,
+    "NAME_MAX": 255,
+    "PAGESIZE": "4096",
+    "PATH_MAX": 4096,
+    "PIPE_BUF": 4096,
+    "pid_max": "4194304",
+    "pipe_default_capacity": 65536
+  },
+  "ls_time_format": "Oct 4 2026 future\nMar 2 2026 old\nMay 2 23:40 recent",
+  "root_bypass": {
+    "cat_mode_000_as_root": "0",
+    "write_into_mode_000_dir_as_root": "0"
+  },
+  "signals": {
+    "1": {
+      "description": "Hangup",
+      "names": [
+        "SIGHUP"
+      ]
+    },
+    "10": {
+      "description": "User defined signal 1",
+      "names": [
+        "SIGUSR1"
+      ]
+    },
+    "11": {
+      "description": "Segmentation fault",
+      "names": [
+        "SIGSEGV"
+      ]
+    },
+    "12": {
+      "description": "User defined signal 2",
+      "names": [
+        "SIGUSR2"
+      ]
+    },
+    "13": {
+      "description": "Broken pipe",
+      "names": [
+        "SIGPIPE"
+      ]
+    },
+    "14": {
+      "description": "Alarm clock",
+      "names": [
+        "SIGALRM"
+      ]
+    },
+    "15": {
+      "description": "Terminated",
+      "names": [
+        "SIGTERM"
+      ]
+    },
+    "16": {
+      "description": "Stack fault",
+      "names": [
+        "SIGSTKFLT"
+      ]
+    },
+    "17": {
+      "description": "Child exited",
+      "names": [
+        "SIGCHLD"
+      ]
+    },
+    "18": {
+      "description": "Continued",
+      "names": [
+        "SIGCONT"
+      ]
+    },
+    "19": {
+      "description": "Stopped (signal)",
+      "names": [
+        "SIGSTOP"
+      ]
+    },
+    "2": {
+      "description": "Interrupt",
+      "names": [
+        "SIGINT"
+      ]
+    },
+    "20": {
+      "description": "Stopped",
+      "names": [
+        "SIGTSTP"
+      ]
+    },
+    "21": {
+      "description": "Stopped (tty input)",
+      "names": [
+        "SIGTTIN"
+      ]
+    },
+    "22": {
+      "description": "Stopped (tty output)",
+      "names": [
+        "SIGTTOU"
+      ]
+    },
+    "23": {
+      "description": "Urgent I/O condition",
+      "names": [
+        "SIGURG"
+      ]
+    },
+    "24": {
+      "description": "CPU time limit exceeded",
+      "names": [
+        "SIGXCPU"
+      ]
+    },
+    "25": {
+      "description": "File size limit exceeded",
+      "names": [
+        "SIGXFSZ"
+      ]
+    },
+    "26": {
+      "description": "Virtual timer expired",
+      "names": [
+        "SIGVTALRM"
+      ]
+    },
+    "27": {
+      "description": "Profiling timer expired",
+      "names": [
+        "SIGPROF"
+      ]
+    },
+    "28": {
+      "description": "Window changed",
+      "names": [
+        "SIGWINCH"
+      ]
+    },
+    "29": {
+      "description": "I/O possible",
+      "names": [
+        "SIGIO"
+      ]
+    },
+    "3": {
+      "description": "Quit",
+      "names": [
+        "SIGQUIT"
+      ]
+    },
+    "30": {
+      "description": "Power failure",
+      "names": [
+        "SIGPWR"
+      ]
+    },
+    "31": {
+      "description": "Bad system call",
+      "names": [
+        "SIGSYS"
+      ]
+    },
+    "34": {
+      "description": "Real-time signal 0",
+      "names": [
+        "SIGRTMIN"
+      ]
+    },
+    "4": {
+      "description": "Illegal instruction",
+      "names": [
+        "SIGILL"
+      ]
+    },
+    "5": {
+      "description": "Trace/breakpoint trap",
+      "names": [
+        "SIGTRAP"
+      ]
+    },
+    "6": {
+      "description": "Aborted",
+      "names": [
+        "SIGABRT"
+      ]
+    },
+    "64": {
+      "description": "Real-time signal 30",
+      "names": [
+        "SIGRTMAX"
+      ]
+    },
+    "7": {
+      "description": "Bus error",
+      "names": [
+        "SIGBUS"
+      ]
+    },
+    "8": {
+      "description": "Floating point exception",
+      "names": [
+        "SIGFPE"
+      ]
+    },
+    "9": {
+      "description": "Killed",
+      "names": [
+        "SIGKILL"
+      ]
+    }
+  },
+  "source": {
+    "glibc": "2.41 (Debian 13)",
+    "kernel": "6.12.101+deb13-amd64",
+    "oracle_image": "pseudo-linus-oracle:26acb3609f54"
+  },
+  "ulimit_a": "real-time non-blocking time  (microseconds, -R) unlimited\ncore file size              (blocks, -c) unlimited\ndata seg size               (kbytes, -d) unlimited\nscheduling priority                 (-e) 0\nfile size                   (blocks, -f) unlimited\npending signals                     (-i) 127077\nmax locked memory           (kbytes, -l) 8192\nmax memory size             (kbytes, -m) unlimited\nopen files                          (-n) 1073741816\npipe size                (512 bytes, -p) 8\nPOSIX message queues         (bytes, -q) 819200\nreal-time priority                  (-r) 0\nstack size                  (kbytes, -s) 8192\ncpu time                   (seconds, -t) unlimited\nmax user processes                  (-u) unlimited\nvirtual memory              (kbytes, -v) unlimited\nfile locks                          (-x) unlimited",
+  "umask": "0022",
+  "uname": "Linux\nx86_64\nGNU/Linux"
+}
