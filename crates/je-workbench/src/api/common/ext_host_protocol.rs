@@ -2349,3 +2349,314 @@ mod timeline_region {
 }
 
 // #endregion
+
+// #region SCM
+
+pub use self::scm_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostSCM.ts` usa: `SCMProviderFeatures`, `SCMActionButtonDto`, `SCMGroupFeatures`,
+/// `SCMRawResource` e as junções dele, os DTOs de histórico e de artefatos, `MainThreadSCMShape`, `ExtHostSCMShape` e os
+/// identificadores `MainContext.MainThreadSCM` e `ExtHostContext.ExtHostSCM`.
+///
+/// Divergências:
+/// - Os handles (`number`) são `u32` e os `UriComponents` são [`URI`]. O `IconPathDto` é o de `quick_open_region`
+///   (`UriComponents | { light, dark } | ThemeIcon`), que tem a forma exata de `SCMHistoryItemRefDto.icon` e de
+///   `SCMArtifactDto.icon`.
+/// - `SCMProviderFeatures` é um struct com um `Option` por chave (a chave existe ou não, como o objeto parcial do original).
+///   Onde a chave pode existir com o valor `undefined` (`count`, `commitTemplate`, `contextValue`, `quickDiffLabel`,
+///   `secondaryQuickDiffLabel`, `acceptInputCommand`) ou com `null` (`actionButton`, `activeRepositoryName`), o campo é
+///   `Option<Option<_>>`: `Some(None)` é a chave presente sem valor (`undefined`) e, nos dois campos que aceitam `null`,
+///   é o `null`.
+/// - As tuplas `SCMRawResource`, `SCMRawResourceSplice` e `SCMRawResourceSplices` são structs com os mesmos campos, na ordem
+///   do original; as `icons: [light, dark]` são uma tupla. `UriComponents | ThemeIcon` é [`SCMIconDto`]. O `strikeThrough`
+///   e o `faded` de um recurso sem `decorations` são `false` (o original manda `undefined`, que a thread principal lê como falso).
+/// - `ICommandDto & { shortTitle?: string }` de `SCMActionButtonDto.command` é [`SCMActionButtonCommandDto`]. O `languages.Command`
+///   de `acceptInputCommand` é o [`ICommandDto`] (o `toInternal` do conversor produz o `ident` junto).
+/// - `InputValidationType` (de `contrib/scm/common/scm.ts`) e `ISCMHistoryOptions` (de `contrib/scm/common/history.ts`) ficam
+///   aqui, junto de quem os cita. O `limit: number | { id?: string }` é [`SCMHistoryLimit`].
+/// - O `tooltip: IMarkdownString | Array<IMarkdownString> | undefined` de `SCMHistoryItemDto` é [`SCMHistoryItemTooltipDto`].
+/// - `$onInputBoxValueChange` devolve `void` no `ExtHostSCMShape` (o `ExtHostSCM` do original devolve uma promessa resolvida, que
+///   ninguém lê): aqui devolve `()`. O `[string | IMarkdownString, number]` de `$validateInput` é uma tupla com o
+///   [`StringOrMarkdown`] e o valor numérico do `InputValidationType`.
+mod scm_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::html_content::IMarkdownString;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::themables::ThemeIcon;
+    use je_base::uri::URI;
+    use je_editor::languages::StringOrMarkdown;
+
+    use super::{ExtHostContext, ICommandDto, IconPathDto, MainContext, ProxyIdentifier};
+
+    /// `InputValidationType`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum InputValidationType {
+        Error = 0,
+        Warning = 1,
+        Information = 2,
+    }
+
+    /// `UriComponents | ThemeIcon`: um dos lados de `SCMRawResource.icons`.
+    #[derive(Clone, Debug)]
+    pub enum SCMIconDto {
+        Uri(URI),
+        ThemeIcon(ThemeIcon),
+    }
+
+    /// `SCMActionButtonDto.command`: `ICommandDto & { shortTitle?: string }`.
+    #[derive(Clone, Debug)]
+    pub struct SCMActionButtonCommandDto {
+        pub command: ICommandDto,
+        pub short_title: Option<String>,
+    }
+
+    /// `SCMActionButtonDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMActionButtonDto {
+        pub command: SCMActionButtonCommandDto,
+        pub secondary_commands: Option<Vec<Vec<ICommandDto>>>,
+        pub enabled: bool,
+    }
+
+    /// `SCMProviderFeatures` (ver as divergências da região).
+    #[derive(Clone, Debug, Default)]
+    pub struct SCMProviderFeatures {
+        pub has_artifact_provider: Option<bool>,
+        pub has_history_provider: Option<bool>,
+        pub has_quick_diff_provider: Option<bool>,
+        pub quick_diff_label: Option<Option<String>>,
+        pub has_secondary_quick_diff_provider: Option<bool>,
+        pub secondary_quick_diff_label: Option<Option<String>>,
+        pub count: Option<Option<f64>>,
+        pub commit_template: Option<Option<String>>,
+        pub accept_input_command: Option<Option<ICommandDto>>,
+        pub action_button: Option<Option<SCMActionButtonDto>>,
+        pub status_bar_commands: Option<Vec<ICommandDto>>,
+        pub context_value: Option<Option<String>>,
+        pub active_repository_name: Option<Option<String>>,
+    }
+
+    /// `SCMGroupFeatures`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct SCMGroupFeatures {
+        pub hide_when_empty: Option<bool>,
+        pub context_value: Option<String>,
+    }
+
+    /// `SCMRawResource`.
+    #[derive(Clone, Debug)]
+    pub struct SCMRawResource {
+        pub handle: u32,
+        pub resource_uri: URI,
+        /// `[light, dark]`.
+        pub icons: (Option<SCMIconDto>, Option<SCMIconDto>),
+        pub tooltip: String,
+        pub strike_through: bool,
+        pub faded: bool,
+        pub context_value: String,
+        pub command: Option<ICommandDto>,
+        pub multi_file_diff_editor_original_uri: Option<URI>,
+        pub multi_file_diff_editor_modified_uri: Option<URI>,
+    }
+
+    /// `SCMRawResourceSplice`: `[start, deleteCount, resources]`.
+    #[derive(Clone, Debug)]
+    pub struct SCMRawResourceSplice {
+        pub start: usize,
+        pub delete_count: usize,
+        pub to_insert: Vec<SCMRawResource>,
+    }
+
+    /// `SCMRawResourceSplices`: `[handle, splices]`.
+    #[derive(Clone, Debug)]
+    pub struct SCMRawResourceSplices {
+        pub handle: u32,
+        pub splices: Vec<SCMRawResourceSplice>,
+    }
+
+    /// Um grupo de `$registerGroups`: `[handle, id, label, features, multiDiffEditorEnableViewChanges]`.
+    pub type SCMGroupRegistration = (u32, String, String, SCMGroupFeatures, bool);
+
+    /// `SCMHistoryItemRefDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMHistoryItemRefDto {
+        pub id: String,
+        pub name: String,
+        pub revision: Option<String>,
+        pub category: Option<String>,
+        pub description: Option<String>,
+        pub icon: Option<IconPathDto>,
+    }
+
+    /// `SCMHistoryItemRefsChangeEventDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMHistoryItemRefsChangeEventDto {
+        pub added: Vec<SCMHistoryItemRefDto>,
+        pub modified: Vec<SCMHistoryItemRefDto>,
+        pub removed: Vec<SCMHistoryItemRefDto>,
+        pub silent: bool,
+    }
+
+    /// `SCMHistoryItemDto.statistics`.
+    #[derive(Clone, Debug)]
+    pub struct SCMHistoryItemStatisticsDto {
+        pub files: f64,
+        pub insertions: f64,
+        pub deletions: f64,
+    }
+
+    /// `IMarkdownString | Array<IMarkdownString>`: o `tooltip` de um item de histórico.
+    #[derive(Clone, Debug)]
+    pub enum SCMHistoryItemTooltipDto {
+        One(IMarkdownString),
+        Many(Vec<IMarkdownString>),
+    }
+
+    /// `SCMHistoryItemDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMHistoryItemDto {
+        pub id: String,
+        pub parent_ids: Vec<String>,
+        pub subject: String,
+        pub message: String,
+        pub display_id: Option<String>,
+        pub author: Option<String>,
+        pub author_icon: Option<IconPathDto>,
+        pub author_email: Option<String>,
+        pub timestamp: Option<f64>,
+        pub statistics: Option<SCMHistoryItemStatisticsDto>,
+        pub references: Option<Vec<SCMHistoryItemRefDto>>,
+        pub tooltip: Option<SCMHistoryItemTooltipDto>,
+    }
+
+    /// `SCMHistoryItemChangeDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMHistoryItemChangeDto {
+        pub uri: URI,
+        pub original_uri: Option<URI>,
+        pub modified_uri: Option<URI>,
+    }
+
+    /// `SCMArtifactGroupDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMArtifactGroupDto {
+        pub id: String,
+        pub name: String,
+        pub icon: Option<IconPathDto>,
+        pub supports_folders: Option<bool>,
+    }
+
+    /// `SCMArtifactDto`.
+    #[derive(Clone, Debug)]
+    pub struct SCMArtifactDto {
+        pub id: String,
+        pub name: String,
+        pub description: Option<String>,
+        pub icon: Option<IconPathDto>,
+        pub timestamp: Option<f64>,
+        pub command: Option<ICommandDto>,
+    }
+
+    /// `ISCMHistoryOptions.limit`: `number | { id?: string }`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum SCMHistoryLimit {
+        Count(f64),
+        Id(Option<String>),
+    }
+
+    /// `ISCMHistoryOptions` (e `vscode.SourceControlHistoryOptions`, que tem a mesma forma).
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct ISCMHistoryOptions {
+        pub skip: Option<f64>,
+        pub limit: Option<SCMHistoryLimit>,
+        pub history_item_refs: Option<Vec<String>>,
+        pub filter_text: Option<String>,
+    }
+
+    /// `MainThreadSCMShape`.
+    pub trait MainThreadSCMShape: IDisposable {
+        #[allow(clippy::too_many_arguments)]
+        fn rpc_register_source_control(
+            &self,
+            handle: u32,
+            parent_handle: Option<u32>,
+            id: &str,
+            label: &str,
+            root_uri: Option<URI>,
+            icon_path: Option<IconPathDto>,
+            is_hidden: Option<bool>,
+            input_box_document_uri: URI,
+        ) -> Promise<()>;
+        fn rpc_update_source_control(&self, handle: u32, features: SCMProviderFeatures) -> Promise<()>;
+        fn rpc_unregister_source_control(&self, handle: u32) -> Promise<()>;
+
+        fn rpc_register_groups(&self, source_control_handle: u32, groups: Vec<SCMGroupRegistration>, splices: Vec<SCMRawResourceSplices>) -> Promise<()>;
+        fn rpc_update_group(&self, source_control_handle: u32, handle: u32, features: SCMGroupFeatures) -> Promise<()>;
+        fn rpc_update_group_label(&self, source_control_handle: u32, handle: u32, label: &str) -> Promise<()>;
+        fn rpc_unregister_group(&self, source_control_handle: u32, handle: u32) -> Promise<()>;
+
+        fn rpc_splice_resource_states(&self, source_control_handle: u32, splices: Vec<SCMRawResourceSplices>) -> Promise<()>;
+
+        fn rpc_set_input_box_value(&self, source_control_handle: u32, value: &str) -> Promise<()>;
+        fn rpc_set_input_box_placeholder(&self, source_control_handle: u32, placeholder: &str) -> Promise<()>;
+        fn rpc_set_input_box_enablement(&self, source_control_handle: u32, enabled: bool) -> Promise<()>;
+        fn rpc_set_input_box_visibility(&self, source_control_handle: u32, visible: bool) -> Promise<()>;
+        fn rpc_show_validation_message(&self, source_control_handle: u32, message: StringOrMarkdown, validation_type: InputValidationType) -> Promise<()>;
+        fn rpc_set_validation_provider_is_enabled(&self, source_control_handle: u32, enabled: bool) -> Promise<()>;
+
+        fn rpc_on_did_change_history_provider_current_history_item_refs(
+            &self,
+            source_control_handle: u32,
+            history_item_ref: Option<SCMHistoryItemRefDto>,
+            history_item_remote_ref: Option<SCMHistoryItemRefDto>,
+            history_item_base_ref: Option<SCMHistoryItemRefDto>,
+        ) -> Promise<()>;
+        fn rpc_on_did_change_history_provider_history_item_refs(&self, source_control_handle: u32, history_item_refs: SCMHistoryItemRefsChangeEventDto) -> Promise<()>;
+
+        fn rpc_on_did_change_artifacts(&self, source_control_handle: u32, groups: Vec<String>) -> Promise<()>;
+    }
+
+    /// `ExtHostSCMShape`.
+    pub trait ExtHostSCMShape {
+        fn rpc_provide_original_resource(&self, source_control_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<URI>>;
+        fn rpc_provide_secondary_original_resource(&self, source_control_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<URI>>;
+        fn rpc_on_input_box_value_change(&self, source_control_handle: u32, value: &str);
+        fn rpc_execute_resource_command(&self, source_control_handle: u32, group_handle: u32, handle: u32, preserve_focus: bool) -> Promise<()>;
+        fn rpc_validate_input(&self, source_control_handle: u32, value: &str, cursor_position: f64) -> Promise<Option<(StringOrMarkdown, f64)>>;
+        fn rpc_set_selected_source_control(&self, selected_source_control_handle: Option<u32>) -> Promise<()>;
+        fn rpc_provide_history_item_refs(&self, source_control_handle: u32, history_item_refs: Option<Vec<String>>, token: CancellationToken) -> Promise<Option<Vec<SCMHistoryItemRefDto>>>;
+        fn rpc_provide_history_items(&self, source_control_handle: u32, options: ISCMHistoryOptions, token: CancellationToken) -> Promise<Option<Vec<SCMHistoryItemDto>>>;
+        fn rpc_provide_history_item_changes(
+            &self,
+            source_control_handle: u32,
+            history_item_id: &str,
+            history_item_parent_id: Option<&str>,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<SCMHistoryItemChangeDto>>>;
+        fn rpc_resolve_history_item(&self, source_control_handle: u32, history_item_id: &str, token: CancellationToken) -> Promise<Option<SCMHistoryItemDto>>;
+        fn rpc_resolve_history_item_chat_context(&self, source_control_handle: u32, history_item_id: &str, token: CancellationToken) -> Promise<Option<String>>;
+        fn rpc_resolve_history_item_change_range_chat_context(
+            &self,
+            source_control_handle: u32,
+            history_item_id: &str,
+            history_item_parent_id: &str,
+            path: &str,
+            token: CancellationToken,
+        ) -> Promise<Option<String>>;
+        fn rpc_resolve_history_item_refs_common_ancestor(&self, source_control_handle: u32, history_item_refs: Vec<String>, token: CancellationToken) -> Promise<Option<String>>;
+
+        fn rpc_provide_artifact_groups(&self, source_control_handle: u32, token: CancellationToken) -> Promise<Option<Vec<SCMArtifactGroupDto>>>;
+        fn rpc_provide_artifacts(&self, source_control_handle: u32, group: &str, token: CancellationToken) -> Promise<Option<Vec<SCMArtifactDto>>>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_SCM: ProxyIdentifier<dyn MainThreadSCMShape> = ProxyIdentifier::new("MainThreadSCM");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_SCM: ProxyIdentifier<dyn ExtHostSCMShape> = ProxyIdentifier::new("ExtHostSCM");
+    }
+}
+
+// #endregion

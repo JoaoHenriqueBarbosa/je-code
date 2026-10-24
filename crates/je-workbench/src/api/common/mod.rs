@@ -13,6 +13,7 @@ pub mod ext_host_documents;
 pub mod ext_host_documents_and_editors;
 pub mod ext_host_commands;
 pub mod ext_host_comments;
+pub mod ext_host_scm;
 pub mod ext_host_values;
 
 pub mod ext_host_configuration;
