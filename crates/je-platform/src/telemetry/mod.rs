@@ -15,5 +15,7 @@ pub use telemetry_log_appender::*;
 pub use telemetry_service::*;
 pub use telemetry_utils::*;
 
+pub mod edit_arc_telemetry;
+pub mod edit_telemetry;
 pub mod error_telemetry;
 pub mod one_ds_appender;
