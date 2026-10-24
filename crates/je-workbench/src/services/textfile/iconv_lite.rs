@@ -238,7 +238,14 @@ impl Decoder {
 
     pub fn end(&mut self) -> Option<String> {
         let text = match &mut self.kind {
-            DecoderKind::Whatwg(decoder) => decode_chunk(decoder, &[], true),
+            DecoderKind::Whatwg(decoder) => {
+                let text = decode_chunk(decoder, &[], true);
+                // Os decoders do iconv-lite voltam ao estado inicial no `end` e aceitam `write` e `end` de novo (o
+                // `resume` do stream do original reemite o fim se o fluxo é pausado e retomado depois de terminar); o
+                // `encoding_rs` termina de vez, então o decoder é recriado.
+                *decoder = decoder.encoding().new_decoder_without_bom_handling();
+                text
+            }
             DecoderKind::Base64(pending) => base64_encode(&std::mem::take(pending)),
             DecoderKind::Latin1 | DecoderKind::CodePage(_) => String::new(),
         };
