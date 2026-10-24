@@ -1413,6 +1413,10 @@ impl IEditorGroup for EditorGroupView {
         self.on_will_open_editor.event()
     }
 
+    fn on_did_open_editor_fail(&self) -> Event<EditorInputRef> {
+        self.on_did_open_editor_fail.event()
+    }
+
     fn index(&self) -> usize {
         self.index.get()
     }

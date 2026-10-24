@@ -6,6 +6,7 @@
 
 use je_base::event::Event;
 use je_base::promise::Promise;
+use je_base::uri::URI;
 use je_instantiation::service_id;
 
 /// O `{ disableExtensions?: boolean }` de `IReloadOptions`.
@@ -14,8 +15,47 @@ pub struct ReloadOptions {
     pub disable_extensions: Option<bool>,
 }
 
-/// `IHostService`, reduzido a `reload` e `restart`.
+/// `IWindowOpenable` (`IWorkspaceToOpen | IFolderToOpen | IFileToOpen`), com o `label` opcional de `IBaseWindowOpenable`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowOpenable {
+    /// `IWorkspaceToOpen`.
+    Workspace { workspace_uri: URI, label: Option<String> },
+    /// `IFolderToOpen`.
+    Folder { folder_uri: URI, label: Option<String> },
+    /// `IFileToOpen`.
+    File { file_uri: URI, label: Option<String> },
+}
+
+/// `IOpenWindowOptions` (com o `IBaseOpenWindowsOptions` de que herda).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpenWindowOptions {
+    /// Whether to reuse the window or open a new one (`forceReuseWindow`).
+    pub force_reuse_window: Option<bool>,
+    /// The remote authority to use when windows are opened with either no workspace (empty window) or a workspace that is
+    /// neither `file://` nor `vscode-remote://`. `Some(None)` é o `null` do original (janela local); `None` é o `undefined`.
+    pub remote_authority: Option<Option<String>>,
+    pub force_profile: Option<String>,
+    pub force_temp_profile: Option<bool>,
+    pub force_new_window: Option<bool>,
+    pub prefer_new_window: Option<bool>,
+    pub no_recent_entry: Option<bool>,
+    pub add_mode: Option<bool>,
+    pub remove_mode: Option<bool>,
+    pub diff_mode: Option<bool>,
+    pub merge_mode: Option<bool>,
+    pub goto_line_mode: Option<bool>,
+    pub wait_marker_file_uri: Option<URI>,
+    pub chat_session_to_open: Option<URI>,
+}
+
+/// `IHostService`, reduzido a `reload`, `restart` e `openWindow`.
 pub trait IHostService {
+    /// `openWindow(toOpen, options?)`: opens the provided windowable list. Tem implementação padrão (lança o erro
+    /// `Method not implemented.` do dublê do original) para não quebrar quem implementa só o recorte portado.
+    fn open_window(&self, _to_open: Vec<WindowOpenable>, _options: Option<OpenWindowOptions>) -> Promise<()> {
+        je_base::errors::throw(je_base::errors::Error::new("Method not implemented."))
+    }
+
     /// `reload(options?)`.
     fn reload(&self, options: Option<ReloadOptions>) -> Promise<()>;
 

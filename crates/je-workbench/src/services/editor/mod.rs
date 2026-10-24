@@ -5,6 +5,10 @@ pub mod custom_editor_label_service;
 pub mod editor_groups_service;
 pub mod editor_service;
 
+// O `EditorService` (`editorService.ts` do browser) e o container de grupos que ele e o observador de editores recebem.
+pub mod editor_groups_container;
+pub mod editor_service_impl;
+
 // Resolvedor de editores (`editorResolverService.ts` comum e do browser), `editorGroupColumn.ts` e `editorGroupFinder.ts`.
 pub mod browser_editor_resolver_service;
 pub mod editor_group_column;

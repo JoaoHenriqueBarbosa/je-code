@@ -46,7 +46,7 @@ use je_base::uri::URI;
 use je_platform::opener::editor_types::{EditorOptions, EditorOverride, TextEditorSelection};
 
 use crate::common::editor::editor_input::EditorInput;
-use crate::services::editor::editor_service::IEditorService;
+use crate::services::editor::editor_service::{EditorControl, IEditorService};
 use crate::services::files_configuration::files_configuration_service::{EditorOriginalUri, ResourceOrEditor};
 
 pub mod binary_editor_model;
@@ -134,6 +134,18 @@ pub trait IEditorPane {
     /// implementa só o recorte acima: lança o erro `Method not implemented.` do dublê do original.
     fn get_id(&self) -> String {
         je_base::errors::throw(je_base::errors::Error::new("Method not implemented."))
+    }
+
+    /// `getControl()`: the control of the editor pane (o `IEditorControl` do original), ou `None` quando o painel não tem
+    /// controle. Tem implementação padrão (sem controle) para não quebrar quem implementa só o recorte acima.
+    fn get_control(&self) -> Option<EditorControl> {
+        None
+    }
+
+    /// `editorPane instanceof SideBySideEditorPane`: devolve `getPrimaryEditorPane()` e `getSecondaryEditorPane()` quando o
+    /// painel é o do editor lado a lado, senão `None` (o padrão).
+    fn side_by_side_panes(&self) -> Option<(Option<Rc<dyn IEditorPane>>, Option<Rc<dyn IEditorPane>>)> {
+        None
     }
 }
 
@@ -644,6 +656,12 @@ impl Not for EditorInputCapabilities {
 /// `isSideBySideEditorInput`: `isEditorInput(candidate?.primary) && isEditorInput(candidate?.secondary)`.
 pub fn is_side_by_side_editor_input(editor: Option<&EditorInputOrUntyped>) -> bool {
     matches!(editor, Some(EditorInputOrUntyped::Typed(editor)) if editor.side_by_side_editors().is_some())
+}
+
+/// `editor instanceof SideBySideEditorInput`: o `(primary, secondary)` da entrada lado a lado, e também o da entrada de diff
+/// (`DiffEditorInput` herda `SideBySideEditorInput`: o `primary` é o lado modificado e o `secondary` o original).
+pub fn side_by_side_input_sides(editor: &EditorInputRef) -> Option<(EditorInputRef, EditorInputRef)> {
+    editor.side_by_side_editors().or_else(|| editor.diff_editors())
 }
 
 /// `isDiffEditorInput`: `isEditorInput(candidate?.modified) && isEditorInput(candidate?.original)`.
