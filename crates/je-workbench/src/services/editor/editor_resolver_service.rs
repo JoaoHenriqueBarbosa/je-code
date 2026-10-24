@@ -101,7 +101,7 @@ fn associations_to_dynamic(associations: Vec<(String, String)>) -> Dynamic {
 }
 
 /// `workbenchConfigurationNodeBase` (`common/configuration.ts`).
-fn workbench_configuration_node_base() -> ConfigurationNodeData {
+pub(crate) fn workbench_configuration_node_base() -> ConfigurationNodeData {
     ConfigurationNodeData {
         id: Some("workbench".to_string()),
         order: Some(7.0),

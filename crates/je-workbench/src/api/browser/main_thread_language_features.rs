@@ -39,6 +39,8 @@ mod paste_drop;
 mod providers;
 pub mod registries;
 
+pub use self::providers::MainThreadDocumentSemanticTokensProvider;
+
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -576,7 +578,7 @@ impl MainThreadLanguageFeaturesShape for MainThreadLanguageFeatures {
         event_handle: Option<u32>,
     ) {
         let on_did_change = self.register_emitter(event_handle);
-        let provider = Rc::new(MainThreadDocumentSemanticTokensProvider { remote: self.remote(handle), legend: legend_to_editor(&legend), on_did_change });
+        let provider = Rc::new(MainThreadDocumentSemanticTokensProvider::new(self.proxy(), handle, legend_to_editor(&legend), on_did_change));
         self.set_registration(handle, self.language_features_service.document_semantic_tokens_provider.register(to_selector(&selector), provider));
     }
 

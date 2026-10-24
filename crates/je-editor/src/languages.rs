@@ -451,3 +451,32 @@ pub struct ILink {
     /// O `cacheId` do `ILinkDto` (`CachedSessionItem`) que o host de extensões põe no link: `[cacheId, itemIdx]`.
     pub cache_id: Option<(u32, u32)>,
 }
+
+// `ExternalUriOpenerPriority` de `src/vs/editor/common/languages.ts` (linhas 2603 a 2611 do original).
+
+/// `ExternalUriOpenerPriority`: o quanto um opener externo de URI quer tratar um endereço. É `@internal` no original.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalUriOpenerPriority {
+    None = 0,
+    Option = 1,
+    Default = 2,
+    Preferred = 3,
+}
+
+impl ExternalUriOpenerPriority {
+    /// O valor numérico do membro (`ExternalUriOpenerPriority.X`).
+    pub fn value(self) -> i32 {
+        self as i32
+    }
+
+    /// O membro de um valor numérico, se existir.
+    pub fn from_value(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::Option),
+            2 => Some(Self::Default),
+            3 => Some(Self::Preferred),
+            _ => None,
+        }
+    }
+}

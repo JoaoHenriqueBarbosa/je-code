@@ -687,11 +687,20 @@ impl NewSymbolNamesProvider for MainThreadNewSymbolNamesProvider {
 
 // ---- tokens semânticos --------------------------------------------------------------------------------
 
-/// `MainThreadDocumentSemanticTokensProvider`.
-pub(super) struct MainThreadDocumentSemanticTokensProvider {
-    pub remote: Remote,
-    pub legend: SemanticTokensLegend,
-    pub on_did_change: Option<Event<()>>,
+/// `MainThreadDocumentSemanticTokensProvider`. É `pub` (e reexportado por `main_thread_language_features`) porque o original a
+/// exporta e o `extHostSemanticTokens.test.ts` a cria direto, sobre um `RPCProtocol` real; o restante dos provedores deste
+/// arquivo é interno ao `MainThreadLanguageFeatures`.
+pub struct MainThreadDocumentSemanticTokensProvider {
+    pub(super) remote: Remote,
+    pub(super) legend: SemanticTokensLegend,
+    pub(super) on_did_change: Option<Event<()>>,
+}
+
+impl MainThreadDocumentSemanticTokensProvider {
+    /// `new MainThreadDocumentSemanticTokensProvider(proxy, handle, legend, onDidChange)`.
+    pub fn new(proxy: Rc<dyn ExtHostLanguageFeaturesShape>, handle: u32, legend: SemanticTokensLegend, on_did_change: Option<Event<()>>) -> Self {
+        Self { remote: Remote { handle, proxy }, legend, on_did_change }
+    }
 }
 
 impl DocumentSemanticTokensProvider for MainThreadDocumentSemanticTokensProvider {

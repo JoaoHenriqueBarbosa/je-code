@@ -1,7 +1,8 @@
 //! Porte parcial de `src/vs/workbench/api/test/common/testRPCProtocol.ts`.
 //!
 //! Divergências: só `SingleProxyRPCProtocol` é portado, que é o que `extHostBrowsers.test.ts` usa;
-//! `AnyCallRPCProtocol` e `TestRPCProtocol` entram junto do primeiro teste que os pedir. O contexto
+//! `AnyCallRPCProtocol` entra junto do primeiro teste que o pedir, e o `TestRPCProtocol` (com `sync()` e as chamadas
+//! adiadas) está em `test_rpc_protocol_deferred.rs`, que os testes que o usam incluem com `#[path]`. O contexto
 //! devolvido é um [`IMainContext`] (as partes de `IExtHostContext` e `IExtHostRpcService` que o original
 //! deixa em `undefined!` ou fixas não existem no trait parcial). `mock<T>()` de `base/test/common/mock.ts`
 //! cria um objeto vazio que o TypeScript trata como `T`; isso não existe em Rust, então cada teste

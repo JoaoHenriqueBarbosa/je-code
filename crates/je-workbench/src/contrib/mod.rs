@@ -46,3 +46,6 @@ pub mod share;
 
 // Telemetria de edições (`contrib/editTelemetry`): a base do rastreamento da origem de cada trecho.
 pub mod edit_telemetry;
+
+// Openers externos de URI (`contrib/externalUriOpener`): a configuração, o armazém de openers contribuídos e o serviço.
+pub mod external_uri_opener;

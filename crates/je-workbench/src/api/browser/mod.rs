@@ -40,3 +40,5 @@ pub mod main_thread_webviews;
 
 // Edições em massa: `mainThreadBulkEdits.ts`.
 pub mod main_thread_bulk_edits;
+// Openers externos de URI: `mainThreadUriOpeners.ts`.
+pub mod main_thread_uri_openers;
