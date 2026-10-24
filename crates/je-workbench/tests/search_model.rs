@@ -41,6 +41,7 @@ use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, DisposableStore};
+use je_instantiation::Injectable;
 use je_base::map::{ResourceMap, ResourceSet};
 use je_base::promise::{DeferredPromise, Promise};
 use je_base::runtime;

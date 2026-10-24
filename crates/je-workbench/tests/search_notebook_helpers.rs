@@ -42,7 +42,7 @@ use je_editor::range::Range;
 use je_editor::services_model::{I_MODEL_SERVICE, IModelService};
 use je_editor::text_model::create_text_buffer;
 use je_editor::undo_redo_service::UndoRedoService;
-use je_instantiation::{InstantiationService, ServiceCollection};
+use je_instantiation::{Injectable, InstantiationService, ServiceCollection};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::files::file_service::FileService;

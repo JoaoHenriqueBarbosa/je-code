@@ -100,7 +100,7 @@ fn uri_builds_parses_joins_and_changes_like_the_original() {
         assert_eq!(text(&uri, "parsedPath"), "/a b", "o caminho vem decodificado");
         assert_eq!(text(&uri, "parsedQuery"), "q=1");
         assert_eq!(text(&uri, "parsedFragment"), "frag");
-        assert_eq!(text(&uri, "parsedText"), "https://example.com:8080/a%20b?q=1#frag", "o toString recodifica");
+        assert_eq!(text(&uri, "parsedText"), "https://example.com:8080/a%20b?q%3D1#frag", "o toString recodifica (o VS Code escreve o = da consulta como %3D)");
         assert_eq!(text(&uri, "joined"), "/work/app/src/lib.rs");
         assert_eq!(text(&uri, "changedScheme"), "untitled");
         assert_eq!(text(&uri, "changedFragment"), "x");

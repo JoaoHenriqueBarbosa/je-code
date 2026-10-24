@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use doubles::{TestDialogService, TestRemoteAuthorityResolverService, TestWorkbenchExtensionEnablementService, TestWorkbenchExtensionManagementService};
 use je_base::dynamic::Dynamic;
-use je_base::lifecycle::DisposableStore;
+use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_exthost::in_process::IMainThreadBinder;
@@ -231,14 +231,14 @@ pub fn run_extension<State: 'static>(
                     environment_service,
                     telemetry_service: Rc::new(NullTelemetryServiceShape),
                     extension_enablement_service: Rc::new(TestWorkbenchExtensionEnablementService),
-                    file_service: disposables.add_rc(TestFileService::new()),
+                    file_service: { let concrete = disposables.add_rc(TestFileService::new()); concrete },
                     extension_management_service: Rc::new(TestWorkbenchExtensionManagementService),
                     context_service: TestContextService::new(None, None),
                     configuration_service,
                     extension_manifest_properties_service,
                     log_service: log_service.clone(),
                     remote_agent_service: Rc::new(TestRemoteAgentService),
-                    lifecycle_service: disposables.add_rc(TestLifecycleService::new()),
+                    lifecycle_service: { let concrete = disposables.add_rc(TestLifecycleService::new()); concrete },
                     remote_authority_resolver_service: Rc::new(TestRemoteAuthorityResolverService),
                     dialog_service: Rc::new(TestDialogService),
                 },
