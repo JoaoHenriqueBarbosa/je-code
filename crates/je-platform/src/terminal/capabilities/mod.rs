@@ -6,3 +6,5 @@
 #[allow(clippy::module_inception)] // `capabilities.rs` é o porte de `capabilities.ts`, como no original
 pub mod capabilities;
 pub mod terminal_capability_store;
+
+pub mod command_detection;
