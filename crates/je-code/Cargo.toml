@@ -18,6 +18,7 @@ path = "src/main.rs"
 je-base = { path = "../je-base" }
 je-editor = { path = "../je-editor" }
 je-editor-view = { path = "../je-editor-view" }
+je-extensions = { path = "../je-extensions" }
 je-platform = { path = "../je-platform" }
 je-render = { path = "../je-render" }
 je-terminal = { path = "../je-terminal" }

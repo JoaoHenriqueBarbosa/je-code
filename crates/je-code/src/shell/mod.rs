@@ -14,6 +14,7 @@ mod menus;
 mod search_backend;
 mod scm_view;
 mod search_view;
+mod extensions_view;
 mod file_ops;
 pub mod git;
 mod quick_pick;
@@ -207,6 +208,8 @@ pub enum Command {
     SearchToggleWord,
     SearchToggleRegex,
     ShowScm,
+    ShowExtensions,
+    ExtensionsFocus,
     ScmFocus,
     ScmCommit,
     ScmRefresh,
@@ -318,6 +321,11 @@ pub struct Shell {
     scm: ScmView,
     scm_focused: bool,
     git_root: Option<PathBuf>,
+    /// As extensões instaladas (lidas na primeira abertura da vista Extensions) e o filtro e a rolagem dela.
+    extensions: Option<Vec<extensions_view::ExtensionEntry>>,
+    extensions_filter: Vec<char>,
+    extensions_scroll: f64,
+    extensions_focused: bool,
     git_rx: Option<std::sync::mpsc::Receiver<Result<git::Status, String>>>,
     search_focused: bool,
     search_generation: u64,
@@ -459,6 +467,10 @@ impl Shell {
             scm,
             scm_focused: false,
             git_root: None,
+            extensions: None,
+            extensions_filter: Vec::new(),
+            extensions_scroll: 0.0,
+            extensions_focused: false,
             git_rx: None,
             search_focused: false,
             search_generation: 0,
@@ -1109,6 +1121,19 @@ impl Shell {
                     _ => self.search.regex = !self.search.regex,
                 }
                 self.start_search();
+            }
+            Command::ShowExtensions => {
+                self.show_view(SideView::Extensions);
+                self.extensions_focused = self.sidebar_visible;
+            }
+            Command::ExtensionsFocus => {
+                self.extensions_focused = true;
+                self.search_focused = false;
+                self.scm_focused = false;
+                self.set_terminal_focus_off();
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(false);
+                }
             }
             Command::ShowScm => {
                 self.show_view(SideView::SourceControl);
@@ -2418,6 +2443,39 @@ impl Shell {
                     self.scm.layout(list.width(), list.height());
                 }
             }
+            SideView::Extensions => {
+                if self.extensions.is_none() {
+                    self.extensions = Some(find_builtin_extensions().map(|d| extensions_view::scan(&d)).unwrap_or_default());
+                }
+                // O campo de busca do marketplace filtra as instaladas (o marketplace precisa de rede).
+                let input = tree.create(bar, Role::TextInput);
+                tree.set_bounds(input, Rect::new(13.0, 39.0, rect.width() - 12.0, 65.0));
+                hits.push((input, Command::ExtensionsFocus));
+                let style = tree.style_mut(input);
+                style.background = Some(self.color("input.background"));
+                style.border = Some(Border { width: 1.0, color: if self.extensions_focused { self.color("focusBorder") } else { self.color("input.border") } });
+                style.radius = 4.0;
+                let text = tree.create(input, Role::Generic);
+                tree.set_bounds(text, Rect::new(7.0, 1.0, rect.width() - 40.0, 24.0));
+                let filter: String = self.extensions_filter.iter().collect();
+                if filter.is_empty() {
+                    tree.style_mut(text).content = Content::Text { text: "Search Extensions in Marketplace".to_owned(), style: ui_font(13.0, 400), color: self.color("input.placeholderForeground"), line_height: 24.0 };
+                } else {
+                    tree.style_mut(text).content = Content::Text { text: filter.clone(), style: ui_font(13.0, 400), color: fg, line_height: 24.0 };
+                }
+                if self.extensions_focused {
+                    let x = 7.0 + measure_text(&filter, &ui_font(13.0, 400));
+                    let caret = tree.create(input, Role::Generic);
+                    tree.set_bounds(caret, Rect::new(x, 5.0, x + 1.0, 20.0));
+                    tree.style_mut(caret).background = Some(fg);
+                }
+                let entries = self.extensions.clone().unwrap_or_default();
+                let total = extensions_view::render(&mut tree, bar, &entries, &filter, rect.width(), 72.0, rect.height() - 6.0, self.extensions_scroll, &self.theme);
+                self.extensions_scroll = self.extensions_scroll.min((total - (rect.height() - 78.0)).max(0.0));
+                tree.style_mut(self.nodes.explorer).visible = false;
+                tree.style_mut(self.nodes.search).visible = false;
+                tree.style_mut(self.nodes.scm).visible = false;
+            }
             other => {
                 // As vistas ainda sem implementação mostram só o título e um aviso honesto.
                 let note = tree.create(bar, Role::Status);
@@ -3076,6 +3134,7 @@ impl Shell {
             self.find_focused = false;
             self.search_focused = false;
             self.scm_focused = false;
+            self.extensions_focused = false;
             if let Some((lx, ly)) = self.editor_local(x, y)
                 && let Some(editor) = self.active_editor_mut()
             {
@@ -3109,6 +3168,10 @@ impl Shell {
                 (SideView::Explorer, Some(explorer)) => explorer.scroll_by(dy),
                 (SideView::Search, _) => self.search.scroll_by(dy),
                 (SideView::SourceControl, _) => self.scm.scroll_by(dy),
+                (SideView::Extensions, _) => {
+                    self.extensions_scroll = (self.extensions_scroll + dy).max(0.0);
+                    self.needs_render = true;
+                }
                 _ => {}
             }
             return;
@@ -3150,6 +3213,7 @@ impl Shell {
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, true, false, KeyCode::KeyF) => Command::ShowSearch,
             (true, true, false, KeyCode::KeyG) => Command::ShowScm,
+            (true, true, false, KeyCode::KeyX) => Command::ShowExtensions,
             (true, true, false, KeyCode::KeyM) => Command::ShowPanelTab(PanelTab::Problems),
             (true, true, false, KeyCode::KeyU) => Command::ShowPanelTab(PanelTab::Output),
             (true, true, false, KeyCode::KeyY) => Command::ShowPanelTab(PanelTab::DebugConsole),
@@ -3210,6 +3274,33 @@ impl Shell {
                     terminal.write(bytes);
                 }
             }
+            return;
+        }
+        if self.extensions_focused && self.sidebar_visible && self.side_view == SideView::Extensions && down {
+            let ctrl = mods.ctrl || mods.meta;
+            if let Some(command) = self.workbench_shortcut(key_code, mods) {
+                self.run(command);
+                return;
+            }
+            match editor_key {
+                Some(EditorKey::Escape) => {
+                    self.extensions_focused = false;
+                    if let Some(editor) = self.active_editor_mut() {
+                        editor.view.set_focus(true);
+                    }
+                }
+                Some(EditorKey::Backspace) => {
+                    self.extensions_filter.pop();
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(text) = text.filter(|_| !ctrl || mods.alt) {
+                        self.extensions_filter.extend(text.chars().filter(|c| !c.is_control()));
+                    }
+                }
+            }
+            self.extensions_scroll = 0.0;
+            self.needs_render = true;
             return;
         }
         if self.scm_focused && self.sidebar_visible && self.side_view == SideView::SourceControl && down {

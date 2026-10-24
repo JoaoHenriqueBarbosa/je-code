@@ -4091,6 +4091,7 @@ dependencies = [
  "je-base",
  "je-editor",
  "je-editor-view",
+ "je-extensions",
  "je-platform",
  "je-render",
  "je-terminal",

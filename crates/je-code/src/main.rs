@@ -1073,6 +1073,17 @@ mod tests {
     }
 
     #[test]
+    fn extensions_view_lists_and_filters_installed_extensions() {
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, &[], 1200.0, 800.0).expect("abre");
+        shell.run(shell::Command::ShowExtensions);
+        snapshot(&mut shell, "x0-extensions.png");
+        for c in "rust".chars() {
+            shell.key(true, KeyCode::Unknown, Modifiers::default(), Some(&c.to_string()), None);
+        }
+        snapshot(&mut shell, "x1-filtered.png");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");
