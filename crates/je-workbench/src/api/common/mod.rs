@@ -57,3 +57,6 @@ pub mod ext_host_notebook_editor;
 pub mod editor_execute_commands;
 pub mod ext_host_api_commands;
 pub mod ext_host_notebook_kernels;
+// Ativação de extensões: `extHostExtensionActivator.ts` e `extensionHostMain.ts` (o tratador de erros do host).
+pub mod ext_host_extension_activator;
+pub mod extension_host_main;

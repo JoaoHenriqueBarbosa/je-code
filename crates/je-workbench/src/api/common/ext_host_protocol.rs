@@ -4465,3 +4465,63 @@ mod notebook_kernels_region {
 }
 
 // #endregion
+
+// #region Errors e ExtensionService (host de extensões)
+
+pub use self::extension_host_errors_region::*;
+
+/// `MainThreadErrorsShape` e `MainThreadExtensionServiceShape` com os identificadores `MainContext.MainThreadErrors` e
+/// `MainContext.MainThreadExtensionService`.
+///
+/// Divergências: `$onUnexpectedError(err: any | SerializedError)` recebe o [`SerializedError`] (o ramo `any` do original só
+/// existe porque o chamador pode passar qualquer valor); `Dto<IExtensionDescription>` é o `ExtensionDescription`;
+/// `performance.PerformanceMark` é o `PerformanceMark` do `je-base`; as `UriComponents` já chegam revividas como [`URI`].
+mod extension_host_errors_region {
+    use je_base::errors::SerializedError;
+    use je_base::lifecycle::IDisposable;
+    use je_base::performance::PerformanceMark;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_extensions::manifest::ExtensionIdentifier;
+    use je_extensions::scanner::ExtensionDescription;
+
+    use super::{MainContext, ProxyIdentifier};
+    use crate::services::extensions::extension_activation::{ExtensionActivationReason, MissingExtensionDependency};
+
+    /// `MainThreadErrorsShape`.
+    pub trait MainThreadErrorsShape: IDisposable {
+        fn rpc_on_unexpected_error(&self, err: SerializedError);
+    }
+
+    /// `MainThreadExtensionServiceShape`.
+    pub trait MainThreadExtensionServiceShape: IDisposable {
+        fn rpc_get_extension(&self, extension_id: &str) -> Promise<Option<ExtensionDescription>>;
+        fn rpc_activate_extension(&self, extension_id: &ExtensionIdentifier, reason: &ExtensionActivationReason) -> Promise<()>;
+        fn rpc_on_will_activate_extension(&self, extension_id: &ExtensionIdentifier) -> Promise<()>;
+        fn rpc_on_did_activate_extension(
+            &self,
+            extension_id: &ExtensionIdentifier,
+            code_loading_time: f64,
+            activate_call_time: f64,
+            activate_resolved_time: f64,
+            activation_reason: &ExtensionActivationReason,
+        );
+        fn rpc_on_extension_activation_error(
+            &self,
+            extension_id: &ExtensionIdentifier,
+            error: SerializedError,
+            missing_extension_dependency: Option<MissingExtensionDependency>,
+        ) -> Promise<()>;
+        fn rpc_on_extension_runtime_error(&self, extension_id: &ExtensionIdentifier, error: SerializedError);
+        fn rpc_set_performance_marks(&self, marks: Vec<PerformanceMark>) -> Promise<()>;
+        fn rpc_as_browser_uri(&self, uri: &URI) -> Promise<URI>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_ERRORS: ProxyIdentifier<dyn MainThreadErrorsShape> = ProxyIdentifier::new("MainThreadErrors");
+        pub const MAIN_THREAD_EXTENSION_SERVICE: ProxyIdentifier<dyn MainThreadExtensionServiceShape> =
+            ProxyIdentifier::new("MainThreadExtensionService");
+    }
+}
+
+// #endregion
