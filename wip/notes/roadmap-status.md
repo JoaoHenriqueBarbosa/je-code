@@ -70,6 +70,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: décimo terceiro lote: EditorInput (modelo de editores: editorInput, editorModel, sideBySide, diff, `IEditorService` reduzido; 17 casos), queryBuilder (36 + 3), extHostTypes (42, classes da API `vscode`), e a produção da configuração do workbench (`WorkspaceService`, sem testes: faltam UriIdentityService, FileUserDataProvider, UserDataProfileService concretos, em andamento). Suíte: 9 178 passando, 0 falhas. Placar: 7 478 de 18 391 (40,66%) (eu).
 
+- 2026-10-24: décimo quarto lote: completionModel (13), wordDistance, suggest (6), parameterHintsModel (10), extHostDocumentData (27), UriIdentityService (7), FileUserDataProvider (36), UserDataProfileService. Decisão de arquitetura do extension host registrada em `wip/notes/exthost-plan.md` (host em Rust, `$$class` no lugar de `instanceof`). Suíte: 9 278 passando, 0 falhas. Placar: 7 578 de 18 391 (41,20%) (eu).
+
 ## Pendência antes do primeiro push
 
 - O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.

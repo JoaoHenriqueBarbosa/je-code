@@ -5,16 +5,16 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
-| `platform` | 192 | 2806 | 105 | 1772 | 63.15 |
-| `editor` | 182 | 3144 | 134 | 2799 | 89.03 |
+| `platform` | 192 | 2806 | 107 | 1815 | 64.68 |
+| `editor` | 182 | 3144 | 138 | 2829 | 89.98 |
 | `workbench/services` | 137 | 2491 | 31 | 605 | 24.29 |
-| `workbench/api` | 94 | 965 | 2 | 70 | 7.25 |
+| `workbench/api` | 94 | 965 | 3 | 97 | 10.05 |
 | `workbench/contrib` | 370 | 4636 | 20 | 284 | 6.13 |
 | `workbench (shell)` | 69 | 621 | 10 | 78 | 12.56 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 7478 | 40.66 |
+| **total** | | 18391 | | 7578 | 41.20 |
 
 ## Arquivos portados
 
@@ -229,9 +229,11 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/undoRedo/test/common/undoRedoService.test.ts` | 4 | `crates/je-editor/tests/undo_redo_service.rs` | 3 |
 | `src/vs/platform/update/test/electron-main/updateRelaunchArguments.test.ts` | 10 | `crates/je-platform/tests/update_relaunch_arguments.rs` | 10 |
 | `src/vs/platform/update/test/electron-main/win32UpdateType.test.ts` | 2 | `crates/je-platform/tests/win32_update_type.rs` | 2 |
+| `src/vs/platform/uriIdentity/test/common/uriIdentityService.test.ts` | 7 | `crates/je-platform/tests/uri_identity_service.rs` | 7 |
 | `src/vs/platform/url/test/common/trustedDomains.test.ts` | 33 | `crates/je-platform/tests/trusted_domains.rs` | 33 |
 | `src/vs/platform/url/test/common/urlGlob.test.ts` | 31 | `crates/je-platform/tests/url_glob.rs` | 31 |
 | `src/vs/platform/url/test/common/urlPathNormalization.test.ts` | 20 | `crates/je-platform/tests/url_path_normalization.rs` | 20 |
+| `src/vs/platform/userData/test/browser/fileUserDataProvider.test.ts` | 36 | `crates/je-platform/tests/file_user_data_provider.rs` | 36 |
 | `src/vs/platform/userDataProfile/test/common/userDataProfileService.test.ts` | 30 | `crates/je-platform/tests/user_data_profile_service.rs` | 24 |
 | `src/vs/platform/userDataSync/test/common/extensionsMerge.test.ts` | 73 | `crates/je-extensions/tests/extensions_merge.rs` | 73 |
 | `src/vs/platform/userDataSync/test/common/globalStateMerge.test.ts` | 25 | `crates/je-platform/tests/global_state_merge.rs` | 25 |
@@ -288,13 +290,17 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/contrib/linesOperations/test/browser/moveLinesCommand.test.ts` | 14 | `crates/je-editor/tests/move_lines_command.rs` | 14 |
 | `src/vs/editor/contrib/linesOperations/test/browser/sortLinesCommand.test.ts` | 7 | `crates/je-editor/tests/sort_lines_command.rs` | 7 |
 | `src/vs/editor/contrib/multicursor/test/browser/multicursor.test.ts` | 76 | `crates/je-editor/tests/multicursor.rs` | 76 |
+| `src/vs/editor/contrib/parameterHints/test/browser/parameterHintsModel.test.ts` | 10 | `crates/je-editor/tests/parameter_hints_model.rs` | 10 |
 | `src/vs/editor/contrib/smartSelect/test/browser/smartSelect.test.ts` | 14 | `crates/je-editor/tests/smart_select.rs` | 14 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetController2.old.test.ts` | 15 | `crates/je-editor/tests/snippet_controller2_old.rs` | 15 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetController2.test.ts` | 41 | `crates/je-editor/tests/snippet_controller2.rs` | 41 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetParser.test.ts` | 54 | `crates/je-editor/tests/snippet_parser.rs` | 54 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetSession.test.ts` | 47 | `crates/je-editor/tests/snippet_session.rs` | 47 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetVariables.test.ts` | 17 | `crates/je-editor/tests/snippet_variables.rs` | 17 |
+| `src/vs/editor/contrib/suggest/test/browser/completionModel.test.ts` | 13 | `crates/je-editor/tests/completion_model.rs` | 13 |
+| `src/vs/editor/contrib/suggest/test/browser/suggest.test.ts` | 6 | `crates/je-editor/tests/suggest.rs` | 6 |
 | `src/vs/editor/contrib/suggest/test/browser/suggestMemory.test.ts` | 7 | `crates/je-editor/tests/suggest_memory.rs` | 7 |
+| `src/vs/editor/contrib/suggest/test/browser/wordDistance.test.ts` | 1 | `crates/je-editor/tests/word_distance.rs` | 1 |
 | `src/vs/editor/contrib/wordHighlighter/test/browser/wordHighlighter.test.ts` | 14 | `crates/je-editor/tests/word_highlighter.rs` | 14 |
 | `src/vs/editor/contrib/wordOperations/test/browser/wordOperations.test.ts` | 56 | `crates/je-editor/tests/word_operations.rs` | 54 |
 | `src/vs/editor/contrib/wordPartOperations/test/browser/wordPartOperations.test.ts` | 15 | `crates/je-editor/tests/word_part_operations.rs` | 15 |
@@ -417,6 +423,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/workingCopy/test/browser/resourceWorkingCopy.test.ts` | 2 | `crates/je-workbench/tests/resource_working_copy.rs` | 2 |
 | `src/vs/workbench/services/workingCopy/test/common/workingCopyService.test.ts` | 3 | `crates/je-workbench/tests/working_copy_service.rs` | 3 |
 | `src/vs/workbench/api/test/browser/extHostBrowsers.test.ts` | 28 | `crates/je-workbench/tests/ext_host_browsers.rs` | 28 |
+| `src/vs/workbench/api/test/browser/extHostDocumentData.test.ts` | 27 | `crates/je-workbench/tests/ext_host_document_data.rs` | 27 |
 | `src/vs/workbench/api/test/browser/extHostTypes.test.ts` | 42 | `crates/je-workbench/tests/ext_host_types.rs` | 42 |
 | `src/vs/workbench/contrib/debug/test/node/terminals.test.ts` | 7 | `crates/je-workbench/tests/debug_terminals.rs` | 7 |
 | `src/vs/workbench/contrib/editTelemetry/test/node/arcTracker.test.ts` | 4 | `crates/je-base/tests/edit_arc_tracker.rs` | 4 |
