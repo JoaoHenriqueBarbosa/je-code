@@ -1164,13 +1164,15 @@ impl AbstractExtensionService {
     /// `_initialize()`.
     pub fn initialize_base(&self) -> Promise<()> {
         let this = self.me();
+        // No original `this` é a própria subclasse, que a continuação mantém viva; aqui a continuação segura a subclasse (os hooks).
+        let hooks = self.hooks();
         async_fn(async move {
             mark("code/willLoadExtensions", None);
             this.start_extension_hosts_if_necessary(true, Vec::new());
 
             let lock = this.registry.acquire_lock("_initialize").await?;
             let result: Result<(), Error> = async {
-                Self::resolve_and_process_extensions(&this, &lock).await?;
+                Self::resolve_and_process_extensions(&this, &hooks, &lock).await?;
                 // Start extension hosts which are not automatically started
                 this.start_on_demand_extension_hosts();
                 Ok(())
@@ -1186,7 +1188,7 @@ impl AbstractExtensionService {
             // This is done after the barrier is released to avoid blocking initialization
             let _ = this.activate_deferred_remote_events();
 
-            this.handle_extension_tests().await
+            this.handle_extension_tests(hooks).await
         })
     }
 
@@ -1219,12 +1221,12 @@ impl AbstractExtensionService {
         })
     }
 
-    async fn resolve_and_process_extensions(this: &Rc<Self>, lock: &ExtensionDescriptionRegistryLock) -> Result<(), Error> {
+    async fn resolve_and_process_extensions(this: &Rc<Self>, hooks: &Rc<dyn AbstractExtensionServiceHooks>, lock: &ExtensionDescriptionRegistryLock) -> Result<(), Error> {
         let mut resolver_extensions: Vec<SharedExtensionDescription> = Vec::new();
         let mut local_extensions: Vec<SharedExtensionDescription> = Vec::new();
         let mut remote_extensions: Vec<SharedExtensionDescription> = Vec::new();
 
-        let stream = this.hooks().resolve_extensions();
+        let stream = hooks.resolve_extensions();
         while let Some(extensions) = stream.next().await? {
             match extensions {
                 ResolvedExtensions::Resolver(extensions) => {
@@ -1316,7 +1318,7 @@ impl AbstractExtensionService {
         self.notification_service.notify(notification);
     }
 
-    fn handle_extension_tests(&self) -> Promise<()> {
+    fn handle_extension_tests(&self, hooks: Rc<dyn AbstractExtensionServiceHooks>) -> Promise<()> {
         let this = self.me();
         async_fn(async move {
             if !this.environment_service.is_extension_development() {
@@ -1353,7 +1355,7 @@ impl AbstractExtensionService {
                 }
             };
 
-            let _ = this.hooks().on_extension_host_exit(exit_code);
+            let _ = hooks.on_extension_host_exit(exit_code);
             Ok(())
         })
     }
