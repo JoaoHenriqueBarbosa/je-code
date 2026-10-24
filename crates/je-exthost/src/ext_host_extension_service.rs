@@ -39,7 +39,6 @@ use je_base::buffer::VSBuffer;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{Error, transform_error_for_serialization};
 use je_base::lifecycle::{DisposableRef, to_disposable};
-use je_base::platform::Platform;
 use je_base::promise::{MaybePromise, Promise};
 use je_base::stopwatch::StopWatch;
 use je_base::uri::URI;
@@ -137,7 +136,7 @@ fn file_system_path(location: &str) -> Result<String, Error> {
     if uri.scheme().to_string_lossy() != "file" {
         return Err(Error::new(format!("Cannot load URI: '{location}', must be of file-scheme")));
     }
-    Ok(uri.fs_path(Platform::detect()).to_string_lossy())
+    Ok(je_platform::resources::fs_path(&uri))
 }
 
 /// `_isESM(extensionDescription, modulePath)`.

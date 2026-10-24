@@ -1016,7 +1016,7 @@ impl UnifiedEnvironmentVariableCollection {
     }
 
     fn get_workspace_key(workspace_folder: Option<&je_platform::workspace::WorkspaceFolder>) -> Option<String> {
-        workspace_folder.map(|folder| folder.uri.to_string(false))
+        workspace_folder.map(|folder| folder.uri.to_string(false).to_string_lossy())
     }
 
     /// `getVariableMap(scope)`.

@@ -17,8 +17,7 @@ use std::rc::Rc;
 
 use doubles::{TestDialogService, TestRemoteAuthorityResolverService, TestWorkbenchExtensionEnablementService, TestWorkbenchExtensionManagementService};
 use je_base::dynamic::Dynamic;
-use je_base::lifecycle::DisposableStore;
-use je_base::platform::Platform;
+use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_exthost::local_extension_host::{ILocalExtensionHostDataProvider, LocalExtensionHost};
@@ -176,7 +175,7 @@ fn probe(runner: &NodeRunner, source: &str) -> String {
 fn scenario(runner: &NodeRunner, startup: ExtensionHostStartup, init_with_extension: bool) {
     let dir = tempfile::tempdir().expect("diretório temporário");
     std::fs::write(dir.path().join("extension.js"), EXTENSION_SOURCE).expect("grava a extensão");
-    let location = URI::file(dir.path().to_string_lossy().into_owned(), Platform::detect()).to_string(false).to_string_lossy();
+    let location = URI::file(dir.path().to_string_lossy().into_owned(), je_platform::resources::host_platform()).to_string(false).to_string_lossy();
     let description = Rc::new(extension_description(&location));
 
     let initial_extensions = if init_with_extension {

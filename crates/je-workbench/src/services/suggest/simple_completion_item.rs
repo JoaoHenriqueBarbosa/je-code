@@ -17,13 +17,8 @@ use je_base::filters::{FUZZY_SCORE_DEFAULT, FuzzyScore};
 use je_base::themables::ThemeIcon;
 use je_editor::languages::StringOrMarkdown;
 
-/// `CompletionItemLabel`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompletionItemLabel {
-    pub label: String,
-    pub detail: Option<String>,
-    pub description: Option<String>,
-}
+/// `CompletionItemLabel` (o mesmo tipo do editor: `string | CompletionItemLabel` é o rótulo de qualquer item de sugestão).
+pub use je_editor::languages::CompletionItemLabel;
 
 /// `string | CompletionItemLabel`.
 #[derive(Clone, Debug, PartialEq, Eq)]

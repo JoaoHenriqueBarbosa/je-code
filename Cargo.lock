@@ -4253,6 +4253,7 @@ dependencies = [
  "je-base",
  "je-editor",
  "je-extensions",
+ "je-exthost",
  "je-instantiation",
  "je-platform",
  "je-storage",
