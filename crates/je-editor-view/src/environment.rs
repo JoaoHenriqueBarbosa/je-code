@@ -118,6 +118,17 @@ impl EditorEnvironment {
         self.service.guess_language_id_by_filepath_or_first_line(Some(&uri), first.as_ref()).unwrap_or_else(|| "plaintext".to_owned())
     }
 
+    /// Todas as linguagens registradas (id e nome de exibição), por nome, para o seletor de modo de linguagem.
+    pub fn languages(&self) -> Vec<(String, String)> {
+        self.service.get_sorted_registered_language_names().into_iter().map(|p| (p.language_id, p.language_name)).collect()
+    }
+
+    /// Muda a linguagem de um modelo aberto (`Select Language Mode`), carregando antes o que ela precisa.
+    pub fn set_language(&self, model: &TextModel, language_id: &str) {
+        self.service.request_basic_language_features(language_id);
+        model.set_language(language_id, Some("api"));
+    }
+
     /// O nome de exibição da linguagem (`TypeScript`).
     pub fn language_name(&self, language_id: &str) -> String {
         self.service.get_language_name(language_id).unwrap_or_else(|| "Plain Text".to_owned())

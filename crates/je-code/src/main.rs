@@ -830,6 +830,27 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_pickers_change_language_and_eol() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("mode.txt", "fn main() {}\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::PickLanguage);
+        for c in "rust".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        let editor = shell.active_editor().expect("aba");
+        assert_eq!(editor.view.model().get_language_id(), "rust");
+        assert_eq!(editor.language_name, "Rust");
+        shell.run(shell::Command::PickEol);
+        key(&mut shell, Some(EditorKey::Down), None);
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_eol(), je_editor::model::Eol::CrLf);
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

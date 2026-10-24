@@ -83,6 +83,10 @@ pub enum Command {
     ShowExplorer,
     PickTheme,
     SetTheme(usize),
+    PickEol,
+    SetEol(bool),
+    PickLanguage,
+    SetLanguage(String),
     /// O botão direito num item do explorador.
     ExplorerContextMenu(PathBuf),
     /// Um nome digitado no prompt (Enter) para a ação dele.
@@ -668,6 +672,30 @@ impl Shell {
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
             Command::PickTheme => self.open_theme_picker(),
+            Command::PickEol => {
+                let items = [("LF", false), ("CRLF", true)].map(|(label, crlf)| PickItem { label: label.to_owned(), description: None, keybinding: None, command: Command::SetEol(crlf), recent: false }).to_vec();
+                self.quick_pick = Some(QuickPick::list(items, "Select End of Line Sequence"));
+                self.ui.blur();
+            }
+            Command::SetEol(crlf) => {
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.model().set_eol(if crlf { je_editor::model::EndOfLineSequence::CrLf } else { je_editor::model::EndOfLineSequence::Lf });
+                    editor.view.mark_dirty();
+                }
+            }
+            Command::PickLanguage => {
+                let Some(env) = &self.environment else { return };
+                let items = env.languages().into_iter().map(|(id, name)| PickItem { label: name, description: Some(format!("({id})")), keybinding: None, command: Command::SetLanguage(id), recent: false }).collect();
+                self.quick_pick = Some(QuickPick::list(items, "Select Language Mode"));
+                self.ui.blur();
+            }
+            Command::SetLanguage(id) => {
+                if let (Some(env), Some(editor)) = (self.environment.clone(), self.active.map(|i| &mut self.editors[i])) {
+                    env.set_language(editor.view.model(), &id);
+                    editor.language_name = env.language_name(&id);
+                    editor.view.mark_dirty();
+                }
+            }
             Command::ExplorerContextMenu(path) => self.open_explorer_menu(&path),
             Command::CloseContextMenu => self.close_context_menu(),
             Command::PromptGoToLine => {
@@ -1712,9 +1740,14 @@ impl Shell {
                 Piece::Text(t) => measure_text(t, &font),
             }).sum::<f64>() + 14.0
         };
-        let place = |tree: &mut Tree, x: f64, pieces: &[Piece]| -> f64 {
+        let hits: RefCell<Vec<(NodeId, Command)>> = RefCell::new(Vec::new());
+        let place = |tree: &mut Tree, x: f64, pieces: &[Piece], command: Option<Command>| -> f64 {
             let item_width = measure(pieces);
             let item = tree.create(bar, Role::Button);
+            if let Some(command) = command {
+                tree.style_mut(item).cursor = Some(Cursor::Pointer);
+                hits.borrow_mut().push((item, command));
+            }
             tree.set_bounds(item, Rect::new(x, 2.0, x + item_width, 26.0));
             tree.style_mut(item).radius = 4.0;
             let mut px = 7.0;
@@ -1737,29 +1770,33 @@ impl Shell {
             item_width
         };
         let mut left = 6.0;
-        left += place(&mut tree, left, &[Piece::Icon("remote")]);
-        left += place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())]);
+        left += place(&mut tree, left, &[Piece::Icon("remote")], None);
+        left += place(&mut tree, left, &[Piece::Icon("error"), Piece::Text(" 0 ".to_owned()), Piece::Icon("warning"), Piece::Text(" 0".to_owned())], None);
         if let Some(notice) = &self.notice {
-            place(&mut tree, left, &[Piece::Text(notice.clone())]);
+            place(&mut tree, left, &[Piece::Text(notice.clone())], None);
         }
-        let mut items: Vec<Vec<Piece>> = Vec::new();
+        let mut items: Vec<(Vec<Piece>, Option<Command>)> = Vec::new();
         if let Some(editor) = self.active_editor() {
             let model = editor.view.model();
             let options = model.get_options();
             let eol = if model.get_eol() == je_editor::model::Eol::CrLf { "CRLF" } else { "LF" };
             let indent = if options.insert_spaces { format!("Spaces: {}", options.indent_size) } else { format!("Tab Size: {}", options.tab_size) };
-            items.push(vec![Piece::Text(editor.view.status_text())]);
-            items.push(vec![Piece::Text(indent)]);
-            items.push(vec![Piece::Text("UTF-8".to_owned())]);
-            items.push(vec![Piece::Text(eol.to_owned())]);
-            items.push(vec![Piece::Icon("json")]);
-            items.push(vec![Piece::Text(editor.language_name.clone())]);
+            items.push((vec![Piece::Text(editor.view.status_text())], Some(Command::PromptGoToLine)));
+            items.push((vec![Piece::Text(indent)], None));
+            items.push((vec![Piece::Text("UTF-8".to_owned())], None));
+            items.push((vec![Piece::Text(eol.to_owned())], Some(Command::PickEol)));
+            items.push((vec![Piece::Icon("json")], Some(Command::PickLanguage)));
+            items.push((vec![Piece::Text(editor.language_name.clone())], Some(Command::PickLanguage)));
         }
-        items.push(vec![Piece::Icon("bell")]);
+        items.push((vec![Piece::Icon("bell")], None));
         let mut right = width - 6.0;
-        for pieces in items.iter().rev() {
+        for (pieces, command) in items.iter().rev() {
             right -= measure(pieces);
-            place(&mut tree, right, pieces);
+            place(&mut tree, right, pieces, command.clone());
+        }
+        drop(tree);
+        for (node, command) in hits.into_inner() {
+            self.listen_command(node, command);
         }
     }
 
