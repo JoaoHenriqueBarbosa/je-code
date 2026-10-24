@@ -267,7 +267,7 @@ impl NotebookProviderInfoStore {
                         display_name: notebook_contribution.display_name.clone(),
                         selectors: notebook_contribution.selector.clone(),
                         priority: Self::convert_priority(notebook_contribution.priority.as_deref()),
-                        provider_display_name: extension.description.display_name.clone().unwrap_or_else(|| extension.description.identifier.value.clone()),
+                        provider_display_name: extension.description.manifest.display_name.clone().unwrap_or_else(|| extension.description.identifier.value.clone()),
                     })),
                     true,
                 );
@@ -343,7 +343,7 @@ impl NotebookProviderInfoStore {
                     MaybePromise::Promise(input_factory.create_untitled_notebook_editor_input(&resource, &view_type).then(move |editor| EditorInputWithOptions { editor, options }))
                 })
             };
-            let notebook_diff_editor_input_factory = {
+            let notebook_diff_editor_input_factory: crate::services::editor::editor_resolver_service::DiffEditorInputFactoryFunction = {
                 let input_factory = self.input_factory.clone();
                 let configuration_service = self.configuration_service.clone();
                 let view_type = notebook_provider_info.id.clone();

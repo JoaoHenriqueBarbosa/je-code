@@ -130,7 +130,7 @@ impl FindModel {
         let weak = this.this.clone();
         this.base.add(state.on_find_replace_state_change().listen(move |e| {
             let Some(this) = weak.upgrade() else { return };
-            this.update_cell_states(e);
+            this.update_cell_states(e.clone());
 
             if e.search_string
                 || e.is_regex
@@ -392,7 +392,7 @@ impl FindModel {
         if let Some(notebook_text_model) = notebook_text_model {
             let weak = self.this.clone();
             self.model_disposable.add(notebook_text_model.on_did_change_content().listen(move |e| {
-                if !e.raw_events.iter().any(|event| matches!(event.kind(), NotebookCellsChangeType::ChangeCellContent | NotebookCellsChangeType::ModelChange)) {
+                if !e.raw_events.iter().any(|event| matches!(event.event.kind(), NotebookCellsChangeType::ChangeCellContent | NotebookCellsChangeType::ModelChange)) {
                     return;
                 }
 

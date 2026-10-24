@@ -58,7 +58,7 @@ pub struct NotebookProviderInfo {
 }
 
 fn basename(resource: &URI) -> String {
-    let fs_path = resource.fs_path(Platform::detect()).to_string_lossy();
+    let fs_path = je_platform::resources::fs_path(&resource);
     fs_path.rsplit(['/', '\\']).next().unwrap_or("").to_string()
 }
 
