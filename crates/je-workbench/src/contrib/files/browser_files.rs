@@ -1,7 +1,11 @@
 //! Porte parcial de `src/vs/workbench/contrib/files/browser/files.ts`: o `IExplorerService` e o `IExplorerView`.
 //!
-//! As funções livres do módulo (`getResourceForCommand`, `getMultiSelectedResources`,
-//! `getOpenEditorsViewMultiSelection`) entram com os comandos que as usam.
+//! As funções livres do módulo: `getResourceForCommand` (e o `getFocus` dela) está aqui; `getMultiSelectedResources` e
+//! `getOpenEditorsViewMultiSelection` entram com os comandos que as usam.
+//!
+//! `getResourceForCommand`: o `commandArg: unknown` é um [`Dynamic`] e `URI.isUri(commandArg)` é a leitura do `URI` na
+//! forma de valor da API ([`ApiValue`], `$$class` `Uri`); o `focus instanceof ExplorerItem` e `instanceof OpenEditor`
+//! são `downcast_ref` sobre o elemento que o [`IListWidget`](je_platform::list::list_service::IListWidget) devolve.
 //!
 //! O `IEditableData` é de `src/vs/workbench/common/views.ts` e vive aqui até esse módulo ser portado.
 //!
@@ -17,6 +21,7 @@
 //!   método devolve `Result` e o `getContext` do serviço trata o `Err` como o `try/catch` do original.
 //! - **`IExplorerView.autoReveal`.** A propriedade de leitura e escrita é o par `auto_reveal` e `set_auto_reveal`.
 
+use std::any::Any;
 use std::rc::Rc;
 
 use je_base::errors::{self, Error};
@@ -26,8 +31,14 @@ use je_base::uri::URI;
 use je_editor::bulk_edit_service::ResourceFileEdit;
 use je_instantiation::service_id;
 
-use super::common_files::SortOrderConfiguration;
+use je_base::dynamic::Dynamic;
+use je_platform::list::list_service::IListService;
+
+use super::common_files::{OpenEditor, SortOrderConfiguration};
 use super::explorer_model::ExplorerItem;
+use crate::api::common::ext_host_values::ApiValue;
+use crate::common::editor::{EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor};
+use crate::services::editor::editor_service::IEditorService;
 use crate::services::textfile::collaborators::ProgressLocation;
 
 /// O `{ content: string; severity: Severity }` de `IEditableData.validationMessage`.
@@ -203,4 +214,33 @@ pub trait IExplorerView {
 
     /// `hasPhantomElements()`.
     fn has_phantom_elements(&self) -> bool;
+}
+
+/// `getFocus(listService)`: o elemento em foco da última lista focada, se a lista tem o foco do documento.
+fn get_focus(list_service: &dyn IListService) -> Option<Rc<dyn Any>> {
+    let list = list_service.last_focused_list()?;
+    if list.is_active_element() { list.get_focused_element() } else { None }
+}
+
+/// `getResourceForCommand(commandArg, editorService, listService)`: commands can get executed from a command palette, from
+/// a context menu or from some list using a keybinding. To cover all these cases we need to properly compute the resource
+/// on which the command is being executed.
+pub fn get_resource_for_command(command_arg: Option<&Dynamic>, editor_service: &dyn IEditorService, list_service: &dyn IListService) -> Option<URI> {
+    if let Some(resource) = command_arg.and_then(|arg| <URI as ApiValue>::from_dynamic(arg).ok()) {
+        return Some(resource);
+    }
+
+    let focus = get_focus(list_service);
+    if let Some(focus) = focus.as_deref() {
+        if let Some(item) = focus.downcast_ref::<ExplorerItem>() {
+            return Some(item.resource());
+        } else if let Some(open_editor) = focus.downcast_ref::<OpenEditor>() {
+            return open_editor.get_resource();
+        }
+    }
+
+    EditorResourceAccessor::get_original_uri(
+        editor_service.active_editor().as_ref(),
+        Some(&EditorResourceAccessorOptions { support_side_by_side: Some(SideBySideEditor::Primary), filter_by_scheme: None }),
+    )
 }
