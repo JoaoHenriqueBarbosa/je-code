@@ -11,9 +11,19 @@
 //! módulo `text_editors`, sobre o `ExtHostDocumentsAndEditors` e o `ExtHostEditors`; como eles têm acessores, o namespace é uma
 //! instância de classe nativa (`accessor_namespace`) com as funções no protótipo.
 //!
-//! Falta (depende de serviços do host ainda não ligados, sem fachada): `createQuickPick` e `createInputBox` (o `ExtHostQuickOpen` os
-//! tem, falta expor os objetos de sessão); `createTextEditorDecorationType` e `TextEditor#insertSnippet`/`setDecorations` (ver o
-//! cabeçalho de `text_editors.rs`); `tabGroups`, `createTreeView`, `createWebviewPanel` e `createTerminal`. Os registros de provedores de
+//! Os terminais (`createTerminal`, `terminals`, `activeTerminal`, `onDidOpenTerminal`, `onDidCloseTerminal`,
+//! `onDidChangeActiveTerminal`, `onDidChangeTerminalState`, `registerTerminalProfileProvider`, `vscode.Terminal`) são o módulo
+//! `terminal`, sobre o `ExtHostTerminalService`; as árvores (`createTreeView`, `registerTreeDataProvider`, `vscode.TreeView`,
+//! `vscode.TreeItem`) são o módulo `tree_views`, sobre o `ExtHostTreeViews`. As funções que recebem objetos da extensão (o `pty`, o
+//! provedor de árvore) são funções POR REFERÊNCIA, próprias do namespace (o objeto de `accessor_namespace` com campos de função).
+//! `createQuickPick` e `createInputBox` (`vscode.QuickPick`, `vscode.InputBox`, com `items`, `activeItems`, `selectedItems`, `value`,
+//! `placeholder`, `busy`, `canSelectMany`, `buttons`, `show`, `hide`, `dispose` e os eventos de aceitação, valor, seleção, ocultação e
+//! botão) são o módulo `quick_session`, sobre as sessões do `ExtHostQuickOpen`.
+//!
+//! Falta (depende de serviços do host ainda não ligados, sem fachada): `createTextEditorDecorationType` e
+//! `TextEditor#insertSnippet`/`setDecorations` (ver o
+//! cabeçalho de `text_editors.rs`); `tabGroups` e `createWebviewPanel`; o que falta de terminal e de árvore está nos cabeçalhos de
+//! `terminal.rs` e `tree_views.rs`. Os registros de provedores de
 //! linguagem (`registerHoverProvider`...) e os diagnósticos não são de `window`: estão em `vscode.languages` (módulo `languages`).
 //!
 //! Divergências:
@@ -43,6 +53,8 @@ use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{MainThreadMessageOptions, MainThreadMessageServiceShape, MessageCommandDto, StatusBarColor};
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_status_bar::{ExtHostStatusBar, ExtHostStatusBarEntry, StatusBarCommand, TimeoutOrThenable};
+use je_workbench::api::common::ext_host_terminal_service::WorkerExtHostTerminalService;
+use je_workbench::api::common::ext_host_tree_views::ExtHostTreeViews;
 use je_workbench::api::common::ext_host_types::{Command, Documentation, StatusBarAlignment};
 use je_workbench::api::common::ext_host_values::ApiValue;
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
@@ -50,10 +62,14 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, N
 use crate::api::commands::{promise_to_js, settle_js_result};
 use crate::api::disposable::DisposableTable;
 use crate::api::events::EventTables;
+use crate::api::js_object::JsObjects;
 use crate::api::output_channel::{self, OutputChannels};
 use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
+use crate::api::quick_session::{self, QuickSessions};
+use crate::api::terminal::{self, TerminalObjects};
 use crate::api::text_editors::{self, TextEditorApi, TextObjects};
+use crate::api::tree_views::{self, TreeViewObjects};
 use crate::api::accessor_namespace;
 use crate::convert::{api_to_js, dynamic_to_js, field, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg};
 
@@ -71,6 +87,10 @@ pub struct WindowServices {
     pub output: Option<Rc<ExtHostOutputService>>,
     /// Sem o cliente `MainThreadProgress` não há `withProgress`.
     pub progress: Option<Rc<ExtHostProgress>>,
+    /// Sem o cliente `MainThreadTerminalService` não há `createTerminal`, `terminals` nem os eventos de terminal.
+    pub terminal: Option<Rc<WorkerExtHostTerminalService>>,
+    /// Sem o cliente `MainThreadTreeViews` não há `createTreeView` nem `registerTreeDataProvider`.
+    pub tree_views: Option<Rc<ExtHostTreeViews>>,
     /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `activeTextEditor`, `visibleTextEditors`,
     /// `showTextDocument` nem os eventos de editor.
     pub text_editors: Option<TextEditorApi>,
@@ -174,7 +194,7 @@ fn status_bar_color_to_js(color: StatusBarColor) -> JsData {
     }
 }
 
-fn theme_color_of(value: &JsData) -> Result<ThemeColor, String> {
+pub(crate) fn theme_color_of(value: &JsData) -> Result<ThemeColor, String> {
     ThemeColor::from_dynamic(&js_to_dynamic(value)).map_err(|error| error.message)
 }
 
@@ -332,6 +352,12 @@ pub struct WindowState {
     pub progress_reporters: Rc<ProgressReporters>,
     /// Os documentos, editores e construtores de edição de texto (compartilhados com `workspace`).
     pub text_objects: Rc<TextObjects>,
+    /// Os terminais que o JavaScript segura.
+    pub terminal_objects: Rc<TerminalObjects>,
+    /// As visões de árvore que o JavaScript segura.
+    pub tree_view_objects: Rc<TreeViewObjects>,
+    /// As sessões de `createQuickPick` e `createInputBox` que o JavaScript segura.
+    pub quick_sessions: Rc<QuickSessions>,
 }
 
 /// O namespace `window`.
@@ -352,8 +378,12 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
     if let Some(quick_open) = services.quick_open.clone() {
         let (pick_runner, pick_quick_open, pick_events) = (runner.clone(), quick_open.clone(), events.clone());
         add("showQuickPick", 3, Rc::new(move |args| quick_input::show_quick_pick(&pick_runner, &pick_quick_open, &pick_events, args)));
-        let (input_runner, input_events) = (runner.clone(), events.clone());
-        add("showInputBox", 2, Rc::new(move |args| quick_input::show_input_box(&input_runner, &quick_open, &input_events, args)));
+        let (input_runner, input_quick_open, input_events) = (runner.clone(), quick_open.clone(), events.clone());
+        add("showInputBox", 2, Rc::new(move |args| quick_input::show_input_box(&input_runner, &input_quick_open, &input_events, args)));
+        let (create_quick_open, create_sessions) = (quick_open.clone(), state.quick_sessions.clone());
+        add("createQuickPick", 0, Rc::new(move |_| quick_session::create_quick_pick(&create_quick_open, &create_sessions)));
+        let create_sessions = state.quick_sessions.clone();
+        add("createInputBox", 0, Rc::new(move |_| quick_session::create_input_box(&quick_open, &create_sessions)));
     }
 
     if let Some(output) = services.output.clone() {
@@ -407,7 +437,24 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
         methods.extend(editor_methods);
         getters.extend(editor_getters);
     }
-    accessor_namespace(runner, "window", methods, getters)
+    // Os membros que recebem objetos da extensão (o `pty`, o provedor de árvore) são funções por referência, próprias do namespace.
+    let mut references: Vec<(String, JsData)> = Vec::new();
+    let js = JsObjects::new(runner);
+    if let Some(service) = &services.terminal {
+        let members = terminal::window_members(runner, &js, service, &state.terminal_objects, table, events);
+        references.extend(members.references);
+        getters.extend(members.getters);
+    }
+    if let Some(views) = &services.tree_views {
+        references.extend(tree_views::window_members(runner, &js, views, &state.tree_view_objects, table, events));
+    }
+    match accessor_namespace(runner, "window", methods, getters) {
+        JsData::Object(mut fields) => {
+            fields.extend(references);
+            JsData::Object(fields)
+        }
+        other => other,
+    }
 }
 
 /// As classes deste módulo: `ThemeColor`, o protótipo de `StatusBarItem`, os de `OutputChannel` e `LogOutputChannel`, o de `Progress` e
@@ -417,6 +464,9 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
     output_channel::define_classes(runner, &state.output_channels, table);
     progress::define_class(runner, &state.progress_reporters);
     text_editors::define_classes(runner, &state.text_objects);
+    terminal::define_classes(runner, &state.terminal_objects);
+    tree_views::define_classes(runner, &state.tree_view_objects, table);
+    quick_session::define_classes(runner, &state.quick_sessions, table);
     let theme_color = runner.define_class(ClassSpec {
         name: "ThemeColor".to_owned(),
         length: 1,
@@ -429,5 +479,9 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
         statics: vec![],
         parent: None,
     });
-    vec![("ThemeColor".to_owned(), JsData::Handle(Rc::new(theme_color)))]
+    vec![
+        ("ThemeColor".to_owned(), JsData::Handle(Rc::new(theme_color))),
+        ("TerminalProfile".to_owned(), terminal::terminal_profile_class(runner)),
+        ("TreeItem".to_owned(), tree_views::tree_item_class(runner)),
+    ]
 }

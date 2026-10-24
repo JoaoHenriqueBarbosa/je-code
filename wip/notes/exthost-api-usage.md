@@ -139,15 +139,61 @@ Fonte: **eu** (leitura de `crates/je-exthost/src/api/window.rs` e dos módulos c
 | `createOutputChannel` (canal comum, `languageId`, `{ log: true }`, `append`, `appendLine`, `replace`, `clear`, `show`, `hide`, `dispose`, `logLevel`, `onDidChangeLogLevel`, `trace` a `error`) | entregue | `api/output_channel.rs`, sobre `ExtHostOutputService` |
 | `withProgress` (`ProgressLocation`, `{ viewId }`, `title`, `cancellable`, `progress.report`, token) | entregue | `api/progress.rs`, sobre `ExtHostProgress` |
 | `QuickPickItemKind`, `InputBoxValidationSeverity`, `QuickInputButtons`, `ProgressLocation`, `LogLevel` | entregue | `api/enums.rs` |
-| `createQuickPick`, `createInputBox` | falta | o `ExtHostQuickOpen` os tem; faltam os objetos de sessão com acessores de leitura e escrita |
+| `createQuickPick`, `createInputBox` (`QuickPick`: `title`, `step`, `totalSteps`, `enabled`, `busy`, `ignoreFocusOut`, `value`, `placeholder`, `buttons`, `items` com `buttons` de item, `canSelectMany`, `matchOnDescription`, `matchOnDetail`, `sortByLabel`, `keepScrollPosition`, `activeItems`, `selectedItems`; `InputBox`: as comuns mais `password`, `prompt`, `valueSelection`, `validationMessage`; `show`, `hide`, `dispose`; `onDidAccept`, `onDidChangeValue`, `onDidChangeActive`, `onDidChangeSelection`, `onDidTriggerButton`, `onDidTriggerItemButton`, `onDidHide`) | entregue | `api/quick_session.rs`, sobre as sessões do `ExtHostQuickOpen` |
 | `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`, `onDidChangeVisibleTextEditors`, `showTextDocument` | entregue | `api/text_editors.rs`, sobre `ExtHostDocumentsAndEditors`, `ExtHostEditors` e `MainThreadDocumentsAndEditors` |
 | `onDidChangeTextEditorSelection`, `onDidChangeTextEditorOptions`, `onDidChangeTextEditorVisibleRanges`, `onDidChangeTextEditorViewColumn` | entregue | `api/text_editors.rs` |
 | `TextEditor` (`document`, `selection`, `selections`, `options`, `visibleRanges`, `viewColumn`, `edit` com `TextEditorEdit`, `revealRange`, `show`, `hide`) | entregue | `api/text_editors.rs` |
 | `TextEditor#insertSnippet`, `setDecorations`, `createTextEditorDecorationType` | falta | pedem `SnippetString` e as decorações de ponta a ponta |
-| `tabGroups`, `createTreeView`, `createWebviewPanel`, `createTerminal` e os provedores | falta | |
+| `tabGroups`, `createWebviewPanel` | falta | |
+| `createTerminal(name, shellPath, shellArgs)`, `createTerminal(options)` (`name`, `shellPath`, `shellArgs`, `cwd`, `env`, `iconPath` como `Uri` ou `{ light, dark }`, `color`, `message`, `strictEnv`, `hideFromUser`, `isTransient`) e `createTerminal({ name, pty })` com `Pseudoterminal` (`onDidWrite`, `onDidClose`, `onDidOverrideDimensions`, `onDidChangeName`, `open`, `close`, `handleInput`, `setDimensions`, com o `this` do objeto) | entregue | `api/terminal.rs`, sobre o `ExtHostTerminalService` (`WorkerExtHostTerminalService::new_local`) |
+| `terminals`, `activeTerminal`, `onDidOpenTerminal`, `onDidCloseTerminal`, `onDidChangeActiveTerminal`, `onDidChangeTerminalState`, `Terminal` (`name`, `processId`, `creationOptions`, `exitStatus`, `state`, `sendText`, `show`, `hide`, `dispose`), `registerTerminalProfileProvider`, `TerminalProfile` | entregue | `api/terminal.rs` |
+| `TerminalOptions#location`, `iconPath` como `ThemeIcon`, `Terminal#shellIntegration`, `onDidChangeTerminalDimensions`, `onDidWriteTerminalData`, `onDidExecuteTerminalCommand`, `registerTerminalLinkProvider`, `registerTerminalQuickFixProvider`, `environmentVariableCollection` | falta | o serviço tem; falta a ponte (`TerminalLocation` tem o enum em `api/enums.rs`, falta ler `location`) |
+| `createTreeView(viewId, { treeDataProvider, showCollapseAll, canSelectMany, manageCheckboxStateManually })`, `registerTreeDataProvider`, `TreeDataProvider` de classe (`getTreeItem`, `getChildren`, `getParent`, `resolveTreeItem`, `onDidChangeTreeData`, com `this` e elementos por identidade), `TreeItem`, `TreeItemCollapsibleState` | entregue | `api/tree_views.rs`, sobre o `ExtHostTreeViews` |
+| `TreeView` (`selection`, `visible`, `message`, `title`, `description`, `onDidChangeSelection`, `onDidChangeVisibility`, `onDidExpandElement`, `onDidCollapseElement`, `reveal`, `dispose`) | entregue | `api/tree_views.rs` |
+| `TreeView#badge`, `onDidChangeCheckboxState`, `dragAndDropController`, `activeItem` (proposta) e a mensagem em markdown | falta | o serviço tem; falta a ponte |
+| `scm.createSourceControl(id, label, rootUri?)` com `SourceControl` (`id`, `label`, `rootUri`, `inputBox` com `value`, `placeholder`, `enabled`, `visible`; `count`, `commitTemplate`, `statusBarCommands`, `acceptInputCommand`, `quickDiffProvider`, `createResourceGroup`, `dispose`) e `SourceControlResourceGroup` (`id`, `label`, `hideWhenEmpty`, `contextValue`, `resourceStates` com `command`, `contextValue` e `decorations`, `dispose`) | entregue | `api/scm.rs`, sobre o `ExtHostSCM`; sem `MainThreadSCM` em `api/browser/` o teste usa um dublê do `MainThreadSCMShape` |
+| `SourceControl#actionButton`, `historyProvider`, `artifactProvider`, `secondaryQuickDiffProvider`, `selected`, `SourceControlInputBox#validateInput`, `scm.inputBox` | falta | propostas de API (o `ExtHostSCM` as tem) ou obsoleto |
+
+Terminais e árvores usam o mecanismo novo `api/js_object.rs` (`JsObjects`): leitura de propriedades, chamada de método e escuta de evento POR
+REFERÊNCIA (um leitor em JavaScript entrega o valor a uma função nativa por referência), mais `identify` (um `WeakMap` dá um número estável a cada
+objeto), porque o motor copia objetos comuns e o `ExtHostTreeViews` compara os elementos por identidade. As funções de `window` que recebem objetos da
+extensão (`createTerminal`, `registerTerminalProfileProvider`, `createTreeView`, `registerTreeDataProvider`) são campos de função do próprio namespace,
+não métodos do protótipo (que recebem cópias). Os encaminhadores `LateExtHostTerminalService` e `LateExtHostTreeViews` (`in_process.rs`) entregam ao
+serviço real as chamadas que o cliente faz no construtor.
+
+Os testes de ponta a ponta são `crates/je-workbench/tests/extension_host_api_terminal.rs` e `extension_host_api_tree_views.rs`. Em ambos o lado do
+workbench é um DUBLÊ do `MainThread*Shape` (o `MainThreadTerminalService` real pede doze serviços do terminal e o `MainThreadTreeViews` real a camada de
+visões, sem dublês prontos): o dublê anota os pedidos da extensão e devolve ao `ExtHost*` real o que o cliente real devolveria.
+
+Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): `ITerminalDimensionsDto`, `TerminalLaunchConfig` e
+`TreeViewRegistrationOptions` precisam ter campos públicos; `ICreateContributedTerminalProfileOptions` precisa de `Default`; os nomes
+`ExtHostContext::EXT_HOST_TREE_VIEWS` e `MainContext::MAIN_THREAD_TREE_VIEWS`; `Promise::then` com `Fn`; a ordem dos eventos de seleção e visibilidade no
+teste de árvore; o `TreeItem` que `getTreeItem` devolve e o `Pseudoterminal` devolvido por um provedor de perfil atravessam como cópia (o `this` do
+`pty` de um perfil não vale; o `pty` passado direto a `createTerminal` vai por referência e vale).
 
 Em `workspace` (mesmo módulo de ponte): `textDocuments`, `openTextDocument` (`Uri`, caminho e opções `{ language, content, encoding }`), `onDidOpenTextDocument`,
 `onDidCloseTextDocument`, `onDidChangeTextDocument` e `onDidSaveTextDocument` entregues; `onWillSaveTextDocument` e `registerTextDocumentContentProvider` faltam.
+
+## Estado da entrega de `scm` e das sessões de seletor (2026-10-24, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `api/scm.rs`, `api/quick_session.rs`, `ext_host_scm.rs`, `ext_host_quick_open.rs` e do oráculo). Nada foi medido em execução.
+
+`scm` entra em `vscode` quando o binder registra `MainThreadSCM`; os documentos de texto são opcionais (sem eles o host usa um `MainThreadDocuments` que rejeita,
+`NoDocuments` em `host.rs`, porque só a proposta `scmTextDocument` lê documentos). O encaminhador `LateExtHostSCM` (`in_process.rs`) entrega ao `ExtHostSCM` real as
+chamadas do cliente. O `quickDiffProvider` chega como cópia (função `provideOriginalResource` própria do objeto, sem `this`). `createQuickPick` e `createInputBox` guardam
+os itens e os botões da extensão por cópia: `activeItems` e `selectedItems` casam por igualdade estrutural e os eventos devolvem a cópia guardada (com as propriedades
+extras); `QuickInputButtons.Back` é reconhecido pelo `ThemeIcon` `arrow-left`.
+
+Testes: `extension_host_api_scm.rs` (dublê do `MainThreadSCMShape`, `debounce` de 100 ms esperado com `sleep`) e `extension_host_api_window_quick_pick_session.rs`
+(dublê do `MainThreadQuickOpenShape` que anota cada `$createOrUpdate`).
+
+Correções da rodada anterior (medidas pelo integrador): `createTerminal(name, shellPath, shellArgs)` agora exporta o array `shellArgs` (a função é por referência, o
+array chegava como `Handle`); `EventEmitter#fire` virou função por referência própria de cada instância, então o elemento que um `TreeDataProvider` dispara em
+`onDidChangeTreeData` chega ao `$refresh` com a identidade certa; o caso do pty esperava `close` depois de a saída do processo, mas o oráculo apaga o processo em
+`_onProcessExit` (o `shutdown` seguinte não faz nada), então o teste agora espera `undefined` e um caso novo cobre o `shutdown` com o processo vivo.
+
+Pendências conhecidas (a confirmar na primeira compilação): `ExtHostContext::EXT_HOST_SCM` e `MainContext::MAIN_THREAD_SCM`; campos públicos de `SCMRawResourceSplices`,
+`SCMRawResource`, `TransferQuickInput`; `InputBoxValidationSeverity::value`; `QuickInputButton` com `toggle: Option<QuickInputButtonToggle>`; `Rc::try_unwrap` do item.
 
 ## Estado da entrega de `env` e `extensions` (2026-10-24, escrito sem compilar: o integrador confirma)
 

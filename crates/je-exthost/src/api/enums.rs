@@ -174,5 +174,10 @@ pub fn enums() -> Vec<(String, JsData)> {
             "CodeActionTriggerKind".to_owned(),
             enum_object(&[("Invoke", CodeActionTriggerKind::Invoke.value()), ("Automatic", CodeActionTriggerKind::Automatic.value())]),
         ),
+        // `TreeItemCollapsibleState`, `TreeItemCheckboxState`, `TerminalExitReason` e `TerminalLocation` (`extHostTypes.ts`).
+        ("TreeItemCollapsibleState".to_owned(), enum_object(&[("None", 0), ("Collapsed", 1), ("Expanded", 2)])),
+        ("TreeItemCheckboxState".to_owned(), enum_object(&[("Unchecked", 0), ("Checked", 1)])),
+        ("TerminalExitReason".to_owned(), enum_object(&[("Unknown", 0), ("Shutdown", 1), ("Process", 2), ("User", 3), ("Extension", 4)])),
+        ("TerminalLocation".to_owned(), enum_object(&[("Panel", 1), ("Editor", 2)])),
     ]
 }

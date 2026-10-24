@@ -2269,4 +2269,11 @@ impl WorkerExtHostTerminalService {
         let has_remote_authority = init_data.remote_authority().is_some_and(|authority| !authority.is_empty());
         Self::with_creation(false, ext_host_commands, ext_host_rpc, WorkerTerminalCreation { has_remote_authority })
     }
+
+    /// O serviço do host de extensões em processo: cria os terminais pelo cliente `MainThreadTerminalService` (o mesmo caminho do
+    /// worker com autoridade remota, sem exigi-la) e registra o suporte a processos. É o papel do `ExtHostTerminalService` de Node
+    /// (de fora deste porte) para o host local, sem a resolução de shell e de ambiente, que o lado do workbench faz.
+    pub fn new_local(ext_host_commands: Rc<dyn IExtHostCommands>, ext_host_rpc: &dyn IMainContext) -> Rc<Self> {
+        Self::with_creation(true, ext_host_commands, ext_host_rpc, WorkerTerminalCreation { has_remote_authority: true })
+    }
 }
