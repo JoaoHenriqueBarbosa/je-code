@@ -24,9 +24,12 @@
 //! - Entram com o `AbstractExtensionService`: `toExtension`, `toExtensionDescription`, `IMessage`, `ActivationTimes`,
 //!   `IExtensionsStatus`, `ExtensionPointContribution`, `ExtensionHostStartup`, `IExtensionInspectInfo`, `IExtensionHost`,
 //!   `IWillActivateEvent`, `IResponsiveStateChangeEvent` e `IInternalExtensionService`. `ExtensionPointContribution.value` é o
-//!   JSON da contribuição. `ExtensionHostExtensions`, `IExtensionHostProfile`, `ProfileSession` e `NullExtensionService` não
-//!   foram portados (os dois primeiros dependem do gerenciador de host concreto e do perfilador, o último não tem leitor).
+//!   JSON da contribuição. `ExtensionHostExtensions` ([`ExtensionHostExtensions`], com `toSnapshot`) foi portado com o
+//!   `ExtensionHostManager`. `IExtensionHostProfile`, `ProfileSession` e `NullExtensionService` não foram portados (os dois
+//!   primeiros dependem do perfilador, o último não tem leitor).
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use je_base::event::Event;
@@ -35,7 +38,9 @@ use je_base::parts::ipc::IMessagePassingProtocol;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_extensions::management::{InstallSource, LocalExtension};
-use je_extensions::manifest::{ExtensionIdentifier, ExtensionIdentifierInfo, ExtensionManifest, ExtensionType, TargetPlatform};
+use je_extensions::manifest::{
+    ExtensionIdentifier, ExtensionIdentifierInfo, ExtensionIdentifierMap, ExtensionIdentifierSet, ExtensionManifest, ExtensionType, TargetPlatform,
+};
 use je_extensions::scanner::ExtensionDescription;
 use je_extensions::util::{get_extension_id, get_gallery_extension_id};
 use je_instantiation::service_id;
@@ -44,7 +49,9 @@ use je_platform::notification::notification::Severity;
 use super::extension_activation::ExtensionActivationReason;
 use super::extension_description_registry::SharedExtensionDescription;
 use super::extension_host_kind::ExtensionHostKind;
+use super::extension_host_protocol::{IExtensionDescriptionDelta, IExtensionDescriptionSnapshot};
 use super::extension_running_location::ExtensionRunningLocation;
+use super::implicit_activation_events::implicit_activation_events;
 
 /// `nullExtensionDescription`: a descrição de extensão que os testes e o código sem extensão de origem usam.
 pub fn null_extension_description() -> ExtensionDescription {
@@ -344,14 +351,19 @@ pub struct IExtensionInspectInfo {
 /// gerencia por trás de um `IExtensionHostManager`.
 ///
 /// Divergências:
-/// - `extensions: ExtensionHostExtensions | null` fica de fora: só o `ExtensionHostManager` o lê (ele guarda a versão do
-///   registro que o host já recebeu), e o gerenciador concreto não está portado.
+/// - `extensions: ExtensionHostExtensions | null` tem corpo padrão `None` (o `undefined` de um `mock<IExtensionHost>()`); quem
+///   executa extensões de verdade o implementa, e o `ExtensionHostManager` o lê.
 /// - `disconnect?()` é opcional no original: o padrão devolve `None`, o `undefined` de quem não o declara.
 pub trait IExtensionHost {
     fn pid(&self) -> Option<u32>;
     fn running_location(&self) -> ExtensionRunningLocation;
     fn remote_authority(&self) -> Option<String>;
     fn startup(&self) -> ExtensionHostStartup;
+    /// `extensions: ExtensionHostExtensions | null`: a coleção de extensões que o host executa (ou vai executar). O corpo
+    /// padrão é o `null` do `mock<IExtensionHost>()` do original. Reflete as extensões corretamente só depois de `start()`.
+    fn extensions(&self) -> Option<Rc<ExtensionHostExtensions>> {
+        None
+    }
     fn on_exit(&self) -> Event<(i32, Option<String>)>;
 
     fn start(&self) -> Promise<Rc<dyn IMessagePassingProtocol>>;
@@ -361,6 +373,185 @@ pub trait IExtensionHost {
         None
     }
     fn dispose(&self);
+}
+
+struct ExtensionHostExtensionsState {
+    version_id: i64,
+    all_extensions: Vec<SharedExtensionDescription>,
+    my_extensions: Vec<ExtensionIdentifier>,
+    my_activation_events: Option<HashSet<String>>,
+}
+
+/// `ExtensionHostExtensions`: as extensões que um host recebeu (todas as do registro, e as que ele mesmo executa). Os métodos são
+/// `&self` porque o host e o gerenciador compartilham a coleção (`Rc`), como a referência do JavaScript.
+pub struct ExtensionHostExtensions {
+    state: RefCell<ExtensionHostExtensionsState>,
+}
+
+/// `extensionDescriptionArrayToMap`.
+fn extension_description_array_to_map(extensions: &[SharedExtensionDescription]) -> ExtensionIdentifierMap<SharedExtensionDescription> {
+    let mut result = ExtensionIdentifierMap::new();
+    for extension in extensions {
+        result.set(&extension.identifier.value, extension.clone());
+    }
+    result
+}
+
+impl ExtensionHostExtensions {
+    pub fn new(version_id: i64, all_extensions: &[SharedExtensionDescription], my_extensions: &[ExtensionIdentifier]) -> Rc<Self> {
+        Rc::new(Self {
+            state: RefCell::new(ExtensionHostExtensionsState {
+                version_id,
+                all_extensions: all_extensions.to_vec(),
+                my_extensions: my_extensions.to_vec(),
+                my_activation_events: None,
+            }),
+        })
+    }
+
+    pub fn version_id(&self) -> i64 {
+        self.state.borrow().version_id
+    }
+
+    pub fn all_extensions(&self) -> Vec<SharedExtensionDescription> {
+        self.state.borrow().all_extensions.clone()
+    }
+
+    pub fn my_extensions(&self) -> Vec<ExtensionIdentifier> {
+        self.state.borrow().my_extensions.clone()
+    }
+
+    /// `toSnapshot()`.
+    pub fn to_snapshot(&self) -> IExtensionDescriptionSnapshot {
+        let state = self.state.borrow();
+        IExtensionDescriptionSnapshot {
+            version_id: state.version_id,
+            all_extensions: state.all_extensions.clone(),
+            my_extensions: state.my_extensions.clone(),
+            activation_events: implicit_activation_events().create_activation_events_map(&state.all_extensions),
+        }
+    }
+
+    /// `set(versionId, allExtensions, myExtensions)`: o delta que leva a coleção ao novo estado (já aplicado nela). O `throw` do
+    /// original é o `Err`.
+    pub fn set(&self, version_id: i64, all_extensions: &[SharedExtensionDescription], my_extensions: &[ExtensionIdentifier]) -> Result<IExtensionDescriptionDelta, Error> {
+        let (old_all_extensions, old_my_extensions) = {
+            let state = self.state.borrow();
+            if state.version_id > version_id {
+                return Err(Error::new(format!("ExtensionHostExtensions: invalid versionId {version_id} (current: {})", state.version_id)));
+            }
+            (state.all_extensions.clone(), state.my_extensions.clone())
+        };
+        let mut to_remove: Vec<ExtensionIdentifier> = Vec::new();
+        let mut to_add: Vec<SharedExtensionDescription> = Vec::new();
+        let mut my_to_remove: Vec<ExtensionIdentifier> = Vec::new();
+        let mut my_to_add: Vec<ExtensionIdentifier> = Vec::new();
+
+        let mut old_extensions_map = extension_description_array_to_map(&old_all_extensions);
+        let new_extensions_map = extension_description_array_to_map(all_extensions);
+        // O `||` do original (e não `&&`): uma coincidência em qualquer campo basta para considerar as duas iguais.
+        let extensions_are_the_same = |a: &ExtensionDescription, b: &ExtensionDescription| {
+            a.extension_location == b.extension_location
+                || a.is_builtin == b.is_builtin
+                || a.is_user_builtin == b.is_user_builtin
+                || a.is_under_development == b.is_under_development
+        };
+
+        for old_extension in &old_all_extensions {
+            let Some(new_extension) = new_extensions_map.get(&old_extension.identifier.value) else {
+                to_remove.push(old_extension.identifier.clone());
+                old_extensions_map.delete(&old_extension.identifier.value);
+                continue;
+            };
+            if !extensions_are_the_same(old_extension, new_extension) {
+                // The new extension is different than the old one (e.g. maybe it executes in a different location)
+                to_remove.push(old_extension.identifier.clone());
+                old_extensions_map.delete(&old_extension.identifier.value);
+                continue;
+            }
+        }
+        for new_extension in all_extensions {
+            let Some(old_extension) = old_extensions_map.get(&new_extension.identifier.value).cloned() else {
+                to_add.push(new_extension.clone());
+                continue;
+            };
+            if !extensions_are_the_same(&old_extension, new_extension) {
+                // The new extension is different than the old one (e.g. maybe it executes in a different location)
+                to_remove.push(old_extension.identifier.clone());
+                old_extensions_map.delete(&old_extension.identifier.value);
+                continue;
+            }
+        }
+
+        let my_old_extensions_set = ExtensionIdentifierSet::new(old_my_extensions.iter().map(|id| id.value.as_str()));
+        let my_new_extensions_set = ExtensionIdentifierSet::new(my_extensions.iter().map(|id| id.value.as_str()));
+        for old_extension_id in &old_my_extensions {
+            if !my_new_extensions_set.has(&old_extension_id.value) {
+                my_to_remove.push(old_extension_id.clone());
+            }
+        }
+        for new_extension_id in my_extensions {
+            if !my_old_extensions_set.has(&new_extension_id.value) {
+                my_to_add.push(new_extension_id.clone());
+            }
+        }
+
+        let add_activation_events = implicit_activation_events().create_activation_events_map(&to_add);
+        let delta = IExtensionDescriptionDelta { version_id, to_remove, to_add, add_activation_events, my_to_remove, my_to_add };
+        self.delta(&delta);
+        Ok(delta)
+    }
+
+    /// `delta(extensionsDelta)`: `None` quando o delta é antigo demais (a coleção já o tem).
+    pub fn delta(&self, extensions_delta: &IExtensionDescriptionDelta) -> Option<IExtensionDescriptionDelta> {
+        let mut state = self.state.borrow_mut();
+        if state.version_id >= extensions_delta.version_id {
+            // ignore older deltas
+            return None;
+        }
+
+        // First handle removals
+        let to_remove_set = ExtensionIdentifierSet::new(extensions_delta.to_remove.iter().map(|id| id.value.as_str()));
+        let my_to_remove_set = ExtensionIdentifierSet::new(extensions_delta.my_to_remove.iter().map(|id| id.value.as_str()));
+        state.all_extensions.retain(|extension| !to_remove_set.has(&extension.identifier.value));
+        state.my_extensions.retain(|extension_id| !my_to_remove_set.has(&extension_id.value));
+        // Then handle additions
+        for extension in &extensions_delta.to_add {
+            state.all_extensions.push(extension.clone());
+        }
+        for extension_id in &extensions_delta.my_to_add {
+            state.my_extensions.push(extension_id.clone());
+        }
+
+        // clear cached activation events
+        state.my_activation_events = None;
+        Some(extensions_delta.clone())
+    }
+
+    pub fn contains_extension(&self, extension_id: &ExtensionIdentifier) -> bool {
+        self.state.borrow().my_extensions.iter().any(|my_extension_id| my_extension_id == extension_id)
+    }
+
+    pub fn contains_activation_event(&self, activation_event: &str) -> bool {
+        if self.state.borrow().my_activation_events.is_none() {
+            let events = self.read_my_activation_events();
+            self.state.borrow_mut().my_activation_events = Some(events);
+        }
+        self.state.borrow().my_activation_events.as_ref().is_some_and(|events| events.contains(activation_event))
+    }
+
+    fn read_my_activation_events(&self) -> HashSet<String> {
+        let mut result = HashSet::new();
+        for extension_description in self.all_extensions() {
+            if !self.contains_extension(&extension_description.identifier) {
+                continue;
+            }
+            for activation_event in implicit_activation_events().read_activation_events(&extension_description) {
+                result.insert(activation_event);
+            }
+        }
+        result
+    }
 }
 
 /// `IWillActivateEvent`.

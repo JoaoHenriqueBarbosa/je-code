@@ -18,6 +18,7 @@
 //! Os tamanhos e ids são `u32`/`i32` quando vêm de `number` no original; uma mensagem malformada (cabeçalho que
 //! não é um array) é ignorada em vez de lançar `TypeError`.
 
+pub mod mp;
 pub mod net;
 pub mod node_net;
 pub mod protocol;

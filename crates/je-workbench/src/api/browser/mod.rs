@@ -2,6 +2,10 @@
 //! extensões (cada classe implementa o `MainThreadXxxShape` do protocolo e fala com o `ExtHostXxxShape` pelo proxy).
 
 pub mod main_thread_commands;
+// `mainThreadExtensionService.ts` (reduzido): o cliente que liga o `IExtensionHostProxy` ao `ExtensionHostManager`.
+pub mod main_thread_extension_service;
+// Os clientes `MainThreadCommands` e `MainThreadTelemetry` registrados no `ExtHostCustomersRegistry`.
+pub mod main_thread_customers;
 pub mod main_thread_configuration;
 pub mod main_thread_custom_editors;
 pub mod main_thread_custom_text_editor_navigation;
