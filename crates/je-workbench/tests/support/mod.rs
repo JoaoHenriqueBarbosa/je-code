@@ -97,3 +97,6 @@ pub mod terminal_decoration_support;
 pub mod test_editor_group_view;
 // Porte de `searchResult.test.ts` e `searchViewlet.test.ts`: o `setup` e os `aSearchResult`, `aFileMatch` e `aFolderMatch`.
 pub mod search_support;
+
+// Porte de `openWithEditorPicker.test.ts`: o `TestQuickPick` e o `IQuickInputService` parcial.
+pub mod open_with_editor_picker_support;
