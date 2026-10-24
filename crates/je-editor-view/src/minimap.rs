@@ -122,17 +122,31 @@ impl EditorView {
 
     pub(crate) fn paint_scrollbar(&mut self, list: &mut DisplayList, origin: (f64, f64), scale: f64) {
         let (top, size) = self.scrollbar_slider();
-        if self.layout.max_scroll_top() <= 0.0 {
-            return;
-        }
         let left = self.layout.width - crate::layout::ViewLayout::SCROLLBAR_WIDTH;
+        let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());
+        let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());
         let color = match self.drag {
             Some(crate::view::DragMode::Scrollbar(_)) => self.colors.scrollbar_slider_active,
             _ => self.colors.scrollbar_slider,
         };
-        let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());
+        if self.layout.max_scroll_top() <= 0.0 {
+            return;
+        }
         let (x0, y0) = device(left, top);
         let (x1, y1) = device(self.layout.width, top + size);
         list.fill_rect(Rect::new(x0, y0, x1, y1), color);
+    }
+
+    /// As marcas da régua da barra (`decorationsOverviewRuler`): uma por ocorrência da busca, na faixa do meio.
+    pub(crate) fn paint_overview_ruler(&self, list: &mut DisplayList, origin: (f64, f64), scale: f64) {
+        let left = self.layout.width - crate::layout::ViewLayout::SCROLLBAR_WIDTH;
+        let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());
+        let scroll_height = self.layout.scroll_height();
+        for m in &self.find_matches {
+            let y = (f64::from(m.start_line_number - 1) * self.layout.line_height() / scroll_height * self.layout.height).floor();
+            let (x0, y0) = device(left + 5.0, y);
+            let (x1, y1) = device(left + 9.0, y + 6.0);
+            list.fill_rect(Rect::new(x0, y0, x1, y1), self.colors.find_match_ruler);
+        }
     }
 }

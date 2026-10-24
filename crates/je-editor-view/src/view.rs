@@ -114,6 +114,9 @@ pub struct EditorView {
     max_line_width: f64,
     last_visible: Option<(i32, i32)>,
     bracket_match: RefCell<Option<BracketMatchCache>>,
+    /// As ocorrências da busca (o widget de busca do shell) e o índice da atual.
+    pub(crate) find_matches: Vec<Range>,
+    find_current: Option<usize>,
     subscriptions: Vec<DisposableRef>,
 }
 
@@ -203,8 +206,17 @@ impl EditorView {
             max_line_width: 0.0,
             last_visible: None,
             bracket_match: RefCell::new(None),
+            find_matches: Vec::new(),
+            find_current: None,
             subscriptions,
         }
+    }
+
+    /// Define as ocorrências da busca a destacar (`FindDecorations`): todas com o fundo de realce e a atual por cima.
+    pub fn set_find_matches(&mut self, matches: Vec<Range>, current: Option<usize>) {
+        self.find_matches = matches;
+        self.find_current = current;
+        self.mark_dirty();
     }
 
     /// Troca a área de transferência (os testes usam só a cópia interna).
@@ -641,6 +653,25 @@ impl EditorView {
             }
         }
 
+        // 2b. Ocorrências da busca (`.findMatch` e `.currentFindMatch`), recortadas às linhas visíveis.
+        for (i, m) in self.find_matches.iter().enumerate() {
+            if m.end_line_number < first || m.start_line_number > last {
+                continue;
+            }
+            let color = if self.find_current == Some(i) { colors.find_match } else { colors.find_match_highlight };
+            for l in m.start_line_number.max(first)..=m.end_line_number.min(last) {
+                let layout = &laid_out[(l - first) as usize].1;
+                let start_col = if l == m.start_line_number { m.start_column } else { 1 };
+                let end_col = if l == m.end_line_number { m.end_column } else { layout.units.len() as i32 + 1 };
+                let top = self.layout.line_top(l, scroll_top);
+                let x0 = content_left + self.column_x_in(layout, start_col) - scroll_left;
+                let x1 = content_left + self.column_x_in(layout, end_col) - scroll_left;
+                if x1 > x0 {
+                    list.fill_rect(rect(x0, top, x1, top + lh), color);
+                }
+            }
+        }
+
         // 3. Colchetes casando.
         if let Some((a, b)) = self.bracket_match() {
             for r in [a, b] {
@@ -748,6 +779,7 @@ impl EditorView {
         }
         self.paint_minimap(list, origin, scale);
         self.paint_scrollbar(list, origin, scale);
+        self.paint_overview_ruler(list, origin, scale);
         list.pop_clip();
     }
 }

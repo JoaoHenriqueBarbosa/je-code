@@ -612,6 +612,44 @@ mod tests {
     }
 
     #[test]
+    fn find_widget_selects_and_steps_through_matches() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("find.ts", "const a = 1;\nconst b = a + a;\nlet C = 2;\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        let selection = |shell: &Shell| {
+            let r = shell.active_editor().expect("aba").view.cursor_selection_range();
+            (r.start_line_number, r.start_column, r.end_line_number, r.end_column)
+        };
+        shell.run(shell::Command::Find);
+        for c in ["c", "o"] {
+            key(&mut shell, None, Some(c));
+        }
+        snapshot(&mut shell, "f0-co.png");
+        assert_eq!(selection(&shell), (1, 1, 1, 3), "a primeira ocorrência a partir do cursor");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(selection(&shell), (2, 1, 2, 3), "Enter vai para a próxima");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(selection(&shell), (1, 1, 1, 3), "e dá a volta no documento");
+        shell.run(shell::Command::FindPrevious);
+        assert_eq!(selection(&shell), (2, 1, 2, 3), "Shift+Enter volta");
+        // Maiúsculas: `C` sem a chave acha `const` duas vezes e `C` de `let C`; com a chave, só o último.
+        shell.run(shell::Command::FindClose);
+        shell.run(shell::Command::Find);
+        for _ in 0..2 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        key(&mut shell, None, Some("C"));
+        snapshot(&mut shell, "f1-c.png");
+        shell.run(shell::Command::FindToggleCase);
+        assert_eq!(shell.active_editor().expect("aba").view.model().find_matches("C", je_editor::text_model::FindScope::Whole, false, true, None, false, 100).len(), 1);
+        key(&mut shell, Some(EditorKey::Escape), None);
+        key(&mut shell, None, Some("z"));
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_line_content(3).to_string_lossy().chars().filter(|c| *c == 'z').count(), 1, "Escape fecha a busca e devolve o teclado ao editor");
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

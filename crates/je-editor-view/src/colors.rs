@@ -28,6 +28,11 @@ pub struct EditorColors {
     pub unexpected_bracket: Rgba,
     /// `editorWhitespace.foreground`, dos espaços e tabulações da seleção.
     pub whitespace: Rgba,
+    /// `editor.findMatchBackground` (a ocorrência atual) e `editor.findMatchHighlightBackground` (as outras).
+    pub find_match: Rgba,
+    pub find_match_highlight: Rgba,
+    /// `editorOverviewRuler.findMatchForeground`, das marcas na régua da barra de rolagem.
+    pub find_match_ruler: Rgba,
     pub scrollbar_slider: Rgba,
     pub scrollbar_slider_hover: Rgba,
     pub scrollbar_slider_active: Rgba,
@@ -63,6 +68,9 @@ impl EditorColors {
             bracket_colors,
             unexpected_bracket: color("editorBracketHighlight.unexpectedBracket.foreground"),
             whitespace: color("editorWhitespace.foreground"),
+            find_match: color("editor.findMatchBackground"),
+            find_match_highlight: color("editor.findMatchHighlightBackground"),
+            find_match_ruler: color("editorOverviewRuler.findMatchForeground"),
             scrollbar_slider: color("scrollbarSlider.background"),
             scrollbar_slider_hover: color("scrollbarSlider.hoverBackground"),
             scrollbar_slider_active: color("scrollbarSlider.activeBackground"),

@@ -93,6 +93,29 @@ impl EditorView {
         self.mark_dirty();
     }
 
+    /// Seleciona `range` (âncora no começo) e o revela: no centro se a linha está fora da janela, como o
+    /// `revealRangeInCenterIfOutsideViewport` da busca.
+    pub fn select_range(&mut self, range: Range) {
+        let (first, last) = self.layout.visible_lines(self.scroll_top());
+        self.set_selection(select(range.get_start_position(), range.get_end_position()), None);
+        if range.start_line_number < first || range.end_line_number > last {
+            self.scroll_to_center_line(range.start_line_number);
+        }
+    }
+
+    /// O texto que a busca usa de semente (`seedSearchStringFromSelection: always`): a seleção de uma linha ou, sem
+    /// seleção, a palavra sob o cursor.
+    pub fn seed_search_string(&self) -> String {
+        let selection = self.cursor.selection;
+        let range = if selection.is_empty() { cursor::word_range_at(&self.model, self.cursor.position()) } else { Range::new(selection.start_line_number, selection.start_column, selection.end_line_number, selection.end_column) };
+        if range.start_line_number != range.end_line_number || range.is_empty() {
+            return String::new();
+        }
+        let text = self.model.get_value_in_range(&range).to_string_lossy();
+        // Uma "palavra" de pontuação ou de espaço não serve de semente.
+        if selection.is_empty() && !text.chars().any(char::is_alphanumeric) { String::new() } else { text }
+    }
+
     /// Rola o mínimo para o cursor aparecer.
     pub fn reveal_cursor(&mut self) {
         let p = self.cursor.position();
