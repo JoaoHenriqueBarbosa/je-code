@@ -378,6 +378,7 @@ pub trait ITunnelService {
 }
 
 /// O destino de um `resolveLocationReference`: o `Source` e a posição.
+#[derive(Clone)]
 pub struct DebugLocation {
     pub source: Rc<dyn IDebugSourceOpener>,
     pub line: f64,
