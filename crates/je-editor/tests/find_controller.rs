@@ -124,6 +124,13 @@ impl Suite {
 /// O que o mocha faz em volta de cada `test(...)`: o `ensureNoDisposablesAreLeakedInTestSuite()`, os serviços da suíte
 /// (com o estado do `InMemoryStorageService` que o original teria ao chegar no caso), o corpo e o descarte.
 fn run_test(stored: StoredOptions, body: impl FnOnce(&Suite)) {
+    // O carregamento dos módulos `coreCommands` e `findController` (que registram comandos e ações) acontece antes do
+    // guarda, como o `import` do original.
+    je_editor::core_commands::register_core_commands();
+    je_editor::find::find_controller::start_find_action();
+    je_editor::find::find_controller::next_match_find_action();
+    je_editor::find::find_controller::previous_match_find_action();
+    je_editor::find::find_controller::start_find_replace_action();
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     let disposables = DisposableStore::new();
     let storage_service = disposables.add_rc(InMemoryStorageService::new());
@@ -367,7 +374,7 @@ fn issue_41027_dont_replace_find_input_value_on_replace_action_if_find_input_is_
 
             find_controller.toggle_regex();
             find_controller.set_search_string(JsString::from(test_regex_string));
-            settle_promise(&find_controller.start(start_options(FindStartFocusAction::FocusFindInput, false), None));
+            settle_promise(&find_controller.controller.start(start_options(FindStartFocusAction::FocusFindInput, false), None));
             settle(run_action(editor, &*next_match_find_action));
             settle_promise(&execute_action(services, editor, &*start_find_replace_action()));
 
@@ -456,7 +463,7 @@ fn issue_9043_clear_search_scope_when_find_widget_is_hidden() {
             suite.options(vec![]),
             |editor, _, _| {
                 let find_controller = create_test_find_controller(editor);
-                settle_promise(&find_controller.start(start_options(FindStartFocusAction::NoFocusChange, false), None));
+                settle_promise(&find_controller.controller.start(start_options(FindStartFocusAction::NoFocusChange, false), None));
 
                 assert_eq!(find_controller.get_state().search_scope(), None);
 
@@ -731,13 +738,13 @@ fn issue_27083_update_search_scope_once_find_widget_becomes_visible() {
                 let find_config = start_options(FindStartFocusAction::NoFocusChange, true);
 
                 editor.set_selection(Range::new(1, 1, 2, 1).into(), None);
-                let _ = find_controller.start(find_config, None);
+                let _ = find_controller.controller.start(find_config, None);
                 assert_eq!(find_controller.get_state().search_scope(), Some(vec![Range::new(1, 1, 2, 1)]));
 
                 find_controller.close_find_widget();
 
                 editor.set_selections(&[Selection::new(1, 1, 2, 1), Selection::new(2, 1, 2, 5)], None, None);
-                let _ = find_controller.start(find_config, None);
+                let _ = find_controller.controller.start(find_config, None);
                 assert_eq!(
                     find_controller.get_state().search_scope(),
                     Some(vec![Range::new(1, 1, 2, 1), Range::new(2, 1, 2, 5)])
@@ -759,7 +766,7 @@ fn issue_58604_do_not_update_search_scope_if_it_is_empty() {
                 editor.set_selection(Range::new(1, 2, 1, 2).into(), None);
                 let find_controller = create_test_find_controller(editor);
 
-                settle_promise(&find_controller.start(start_options(FindStartFocusAction::NoFocusChange, true), None));
+                settle_promise(&find_controller.controller.start(start_options(FindStartFocusAction::NoFocusChange, true), None));
 
                 assert_eq!(find_controller.get_state().search_scope(), None);
             },
@@ -778,7 +785,7 @@ fn issue_58604_update_search_scope_if_it_is_not_empty() {
                 editor.set_selection(Range::new(1, 2, 1, 3).into(), None);
                 let find_controller = create_test_find_controller(editor);
 
-                settle_promise(&find_controller.start(start_options(FindStartFocusAction::NoFocusChange, true), None));
+                settle_promise(&find_controller.controller.start(start_options(FindStartFocusAction::NoFocusChange, true), None));
 
                 assert_eq!(find_controller.get_state().search_scope(), Some(vec![Range::new(1, 2, 1, 3)]));
             },
@@ -797,7 +804,7 @@ fn issue_27083_find_in_selection_when_multiple_lines_are_selected() {
                 editor.set_selection(Range::new(1, 6, 2, 1).into(), None);
                 let find_controller = create_test_find_controller(editor);
 
-                settle_promise(&find_controller.start(start_options(FindStartFocusAction::NoFocusChange, true), None));
+                settle_promise(&find_controller.controller.start(start_options(FindStartFocusAction::NoFocusChange, true), None));
 
                 assert_eq!(find_controller.get_state().search_scope(), Some(vec![Range::new(1, 6, 2, 1)]));
             },
