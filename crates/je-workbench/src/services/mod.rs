@@ -2,6 +2,7 @@
 
 pub mod keybinding;
 pub mod search;
+pub mod editor;
 
 pub mod suggest;
 pub mod policies;
@@ -33,4 +34,3 @@ pub mod remote;
 pub mod textfile;
 
 // `IEditorService` reduzido (o que o `findViewStateForEditor` e o `SideBySideEditorInput` leem).
-pub mod editor;

@@ -7,8 +7,8 @@
 //!   `Disposable` fica no campo `base`.
 //! - **`IExpression`.** A expressão que a configuração devolve é um [`Dynamic`] objeto (`getExpression` devolve
 //!   `Option<Dynamic>`); o `equals` do original é o `objects::equals` sobre ele e o `parse` compila as entradas para
-//!   [`Expression`]: `false`/`true` são [`ExprValue::Bool`], `{ when: string }` é [`ExprValue::When`] e qualquer outro
-//!   valor é [`ExprValue::Other`] (vale como `true`).
+//!   [`Expression`] (`Expression::from_dynamic`): `false`/`true` são `ExprValue::Bool`, `{ when: string }` é
+//!   `ExprValue::When` e qualquer outro valor é `ExprValue::Other` (vale como `true`).
 //! - **`Map<string | null, ...>`.** A chave `NO_FOLDER` (`null`) é `None` e as pastas são `Some(uri.toString())`.
 //! - **`hasSibling`.** É o [`HasSibling`] do glob (`boolean | Promise<boolean>`); um resultado pendente conta como casamento
 //!   (a promessa do original é truthy).
@@ -21,7 +21,7 @@ use std::rc::{Rc, Weak};
 use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
 use je_base::extpath::get_drive_letter;
-use je_base::glob::{self, ExprMatch, ExprValue, Expression, GlobOptions, HasSibling, ParsedExpression};
+use je_base::glob::{self, ExprMatch, Expression, GlobOptions, HasSibling, ParsedExpression};
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::map::ResourceSet;
 use je_base::network::schemas;
@@ -281,16 +281,5 @@ fn uri_to_path(uri: &URI) -> String {
 
 /// `parse(expression)` sobre o objeto da configuração.
 fn parse_expression(expression: &Dynamic) -> ParsedExpression {
-    let entries = expression.own_entries().into_iter().map(|(pattern, value)| {
-        let value = match &value {
-            Dynamic::Bool(enabled) => ExprValue::Bool(*enabled),
-            Dynamic::Object(_) => match value.get_str("when") {
-                Dynamic::String(when) => ExprValue::When(when.to_string_lossy()),
-                _ => ExprValue::Other,
-            },
-            _ => ExprValue::Other,
-        };
-        (pattern.to_string_lossy(), value)
-    });
-    glob::parse_expression(&Expression::from_entries(entries), &GlobOptions::default())
+    glob::parse_expression(&Expression::from_dynamic(expression), &GlobOptions::default())
 }

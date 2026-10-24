@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::arrays;
+use crate::dynamic::Dynamic;
 use crate::extpath;
 use crate::js_string::{self, is_js_whitespace};
 use crate::map::LRUCache;
@@ -93,6 +94,32 @@ impl Expression {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// As entradas na ordem de inserção (`Object.entries` sem a regra dos índices de array).
+    pub fn entries(&self) -> &[(String, ExprValue)] {
+        &self.entries
+    }
+
+    /// `expression[pattern]`.
+    pub fn get(&self, pattern: &str) -> Option<&ExprValue> {
+        self.entries.iter().find(|(key, _)| key == pattern).map(|(_, value)| value)
+    }
+
+    /// A expressão a partir de um objeto de configuração (`files.exclude`, `search.exclude`): `true` e `false` são
+    /// [`ExprValue::Bool`], `{ when: string }` é [`ExprValue::When`] e qualquer outro valor é [`ExprValue::Other`].
+    pub fn from_dynamic(value: &Dynamic) -> Self {
+        Self::from_entries(value.own_entries().into_iter().map(|(pattern, value)| {
+            let value = match &value {
+                Dynamic::Bool(enabled) => ExprValue::Bool(*enabled),
+                Dynamic::Object(_) => match value.get_str("when") {
+                    Dynamic::String(when) => ExprValue::When(when.to_string_lossy()),
+                    _ => ExprValue::Other,
+                },
+                _ => ExprValue::Other,
+            };
+            (pattern.to_string_lossy(), value)
+        }))
     }
 
     /// As entradas na ordem de `Object.getOwnPropertyNames`.
