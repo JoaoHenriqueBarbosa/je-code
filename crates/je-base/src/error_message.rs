@@ -167,6 +167,13 @@ pub struct ErrorWithActions {
     pub actions: Vec<ActionRef>,
 }
 
+/// As ações são `Rc<dyn IAction>`, sem `Debug`: o formato mostra só o erro e quantas ações ele carrega.
+impl std::fmt::Debug for ErrorWithActions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ErrorWithActions").field("error", &self.error).field("actions", &self.actions.len()).finish()
+    }
+}
+
 /// `isErrorWithActions(obj)`: o `obj` é um [`ErrorWithActions`]?
 pub fn is_error_with_actions(obj: &dyn Any) -> bool {
     as_error_with_actions(obj).is_some()
