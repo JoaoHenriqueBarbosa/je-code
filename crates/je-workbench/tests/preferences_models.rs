@@ -12,6 +12,7 @@
 #[path = "../../je-platform/tests/common/mod.rs"]
 mod common;
 
+use je_base::lifecycle::IDisposable;
 use std::rc::Rc;
 
 use common::{RegistryGuard, ensure_no_disposables_are_leaked_in_test_suite, prop};

@@ -20,6 +20,7 @@
 #[path = "../../je-platform/tests/common/mod.rs"]
 mod common;
 
+use je_base::lifecycle::IDisposable;
 use std::cell::Cell;
 use std::future::Future;
 use std::rc::Rc;

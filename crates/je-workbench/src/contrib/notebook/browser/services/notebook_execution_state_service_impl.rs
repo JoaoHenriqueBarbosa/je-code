@@ -165,13 +165,15 @@ impl NotebookExecutionStateService {
 
     fn on_execution_did_complete(&self, notebook_uri: &URI) {
         let disposables = self.notebook_executions.borrow().get(notebook_uri).cloned();
-        let Some((_, disposable)) = disposables else {
+        let Some((exe, disposable)) = disposables else {
             self.log_service.debug(&format!("NotebookExecutionStateService#_onCellExecutionDidComplete - unknown notebook {}", notebook_uri.to_string(false).to_string_lossy()));
             return;
         };
 
         self.notebook_executions.borrow_mut().delete(notebook_uri);
         self.on_did_change_execution.fire(ExecutionStateChange::Notebook(Rc::new(NotebookExecutionEvent { notebook: notebook_uri.clone(), changed: None })));
+        // `disposables.forEach(d => d.dispose())`: a tupla `[NotebookExecution, IDisposable]` descarta a execução e as inscrições.
+        exe.dispose();
         disposable.dispose();
     }
 

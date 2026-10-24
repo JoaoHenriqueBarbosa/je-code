@@ -46,7 +46,7 @@ use je_platform::uri_identity::uri_identity_service::UriIdentityService;
 use je_platform::window::IPath;
 use je_platform::workspace::{IWorkspaceContextService, new_test_workspace, to_workspace_folder};
 use je_platform::workspace_trust::{
-    IWorkspaceTrustEnablementService, IWorkspaceTrustManagementService, IWorkspaceTrustTransitionParticipant, ResourceTrustRequestOptions,
+    IWorkspaceTrustEnablementService, IWorkspaceTrustManagementService, IWorkspaceTrustRequestService, IWorkspaceTrustTransitionParticipant, ResourceTrustRequestOptions,
 };
 use je_instantiation::Injectable;
 use je_storage::StorageValue;
@@ -120,8 +120,10 @@ impl Fixture {
         let configuration_service = TestConfigurationService::new(None);
         let file_service = store.add_rc(FileService::new(null_log()));
         let file_service_contract: Rc<dyn IFileService> = file_service.clone();
-        let uri_identity_service: Rc<dyn IUriIdentityService> = store.add_rc(UriIdentityService::create((), (file_service_contract,)));
-        let storage_service: Rc<dyn StorageService> = store.add_rc(InMemoryStorageService::new());
+        let uri_identity_concrete = store.add_rc(UriIdentityService::create((), (file_service_contract,)));
+        let uri_identity_service: Rc<dyn IUriIdentityService> = uri_identity_concrete;
+        let storage = store.add_rc(InMemoryStorageService::new());
+        let storage_service: Rc<dyn StorageService> = Rc::new(storage);
         let workspace_service = TestContextService::new(None, None);
         Fixture { store, configuration_service, file_service, uri_identity_service, storage_service, workspace_service }
     }

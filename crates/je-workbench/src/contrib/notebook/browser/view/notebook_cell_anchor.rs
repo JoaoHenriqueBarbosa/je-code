@@ -122,8 +122,9 @@ impl NotebookCellAnchor {
     }
 
     pub fn dispose(&self) {
-        self.execution_watcher.clear();
-        self.scroll_watcher.clear();
+        // `this.executionWatcher?.dispose(); this.scrollWatcher?.dispose();`: os contêineres saem junto com o valor.
+        self.execution_watcher.dispose();
+        self.scroll_watcher.dispose();
     }
 }
 

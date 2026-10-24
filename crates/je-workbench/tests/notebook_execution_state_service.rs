@@ -81,8 +81,9 @@ impl Suite {
         let kernel_service_dyn: Rc<dyn INotebookKernelService> = kernel_service.clone();
         let kernel_history_service: Rc<dyn INotebookKernelHistoryService> = Rc::new(KernelHistoryServiceMock { kernel_service: kernel_service_dyn.clone() });
         let command_service: Rc<dyn ICommandService> = Rc::new(MockCommandService::default());
-        let workspace_trust_request_service: Rc<dyn IWorkspaceTrustRequestService> = disposables.add_rc(TestWorkspaceTrustRequestService::new(true));
-        let execution_service: Rc<dyn INotebookExecutionService> = disposables.add_rc(NotebookExecutionService::new(
+        let workspace_trust_request_service_concrete = disposables.add_rc(TestWorkspaceTrustRequestService::new(true));
+        let workspace_trust_request_service: Rc<dyn IWorkspaceTrustRequestService> = workspace_trust_request_service_concrete;
+        let execution_service_concrete = disposables.add_rc(NotebookExecutionService::new(
             command_service,
             kernel_service_dyn.clone(),
             kernel_history_service,
@@ -90,6 +91,7 @@ impl Suite {
             services.notebook_logging_service(),
             services.notebook_execution_state_service(),
         ));
+        let execution_service: Rc<dyn INotebookExecutionService> = execution_service_concrete;
         let accessibility_signal_service: Rc<dyn IAccessibilitySignalService> = Rc::new(AccessibilitySignalServiceMock);
         let execution_state_service = disposables.add_rc(NotebookExecutionStateService::new(
             notebook_service,

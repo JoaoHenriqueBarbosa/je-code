@@ -74,7 +74,8 @@ impl Suite {
         let command_service: Rc<dyn ICommandService> =
             Rc::new(MockCommandService { execute_command: Some(Box::new(|_| Promise::resolved(Dynamic::Undefined))) });
         let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
-        let workspace_trust_request_service: Rc<dyn IWorkspaceTrustRequestService> = disposables.add_rc(TestWorkspaceTrustRequestService::new(true));
+        let workspace_trust_request_service_concrete = disposables.add_rc(TestWorkspaceTrustRequestService::new(true));
+        let workspace_trust_request_service: Rc<dyn IWorkspaceTrustRequestService> = workspace_trust_request_service_concrete;
         Self { disposables, services, kernel_service, context_key_service, command_service, kernel_history_service, workspace_trust_request_service, _store: store }
     }
 
