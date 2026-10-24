@@ -1,11 +1,11 @@
 //! Porte de `src/vs/platform/uriIdentity/common/uriIdentity.ts`: o contrato `IUriIdentityService`.
 //!
-//! A implementação (`UriIdentityService`, com o cache de URIs canônicas e a leitura do sistema de arquivos) não faz
-//! parte deste arquivo do original.
+//! A implementação (`UriIdentityService`, com o cache de URIs canônicas e a leitura do sistema de arquivos) é o
+//! [`uri_identity_service`](super::uri_identity_service).
 
 use je_base::resources::ExtUri;
 use je_base::uri::URI;
-use je_instantiation::service_id;
+use je_instantiation::{delayed_proxy, service_id};
 
 /// `IUriIdentityService`.
 pub trait IUriIdentityService {
@@ -37,4 +37,12 @@ pub trait IUriIdentityService {
     fn as_canonical_uri(&self, uri: &URI) -> URI;
 }
 
-service_id!(pub I_URI_IDENTITY_SERVICE: dyn IUriIdentityService = "IUriIdentityService");
+delayed_proxy!(pub UriIdentityServiceProxy for dyn IUriIdentityService {
+    methods {
+        fn ext_uri(&self) -> ExtUri;
+        fn as_canonical_uri(&self, uri: &URI) -> URI;
+    }
+    events {}
+});
+
+service_id!(pub I_URI_IDENTITY_SERVICE: dyn IUriIdentityService = "IUriIdentityService", proxy UriIdentityServiceProxy);

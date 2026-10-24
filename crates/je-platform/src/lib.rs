@@ -30,6 +30,7 @@ pub mod state;
 pub mod telemetry;
 pub mod url;
 pub mod storage;
+pub mod user_data;
 pub mod user_data_profile;
 pub mod workspace;
 pub mod workspace_trust;
