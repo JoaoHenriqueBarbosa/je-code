@@ -1,0 +1,12 @@
+[package]
+name = "jschardet"
+version = "3.1.4"
+edition.workspace = true
+rust-version.workspace = true
+# Porte do `jschardet` 3.1.4 (npm), que é por sua vez um porte do chardet do Python/Mozilla.
+license = "LGPL-2.1-or-later"
+publish = false
+description = "Detecção automática de codificação de caracteres: porte fiel do jschardet 3.1.4 em Rust seguro"
+
+[lints]
+workspace = true
