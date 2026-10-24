@@ -3,3 +3,5 @@
 pub mod terminal_environment;
 
 pub mod terminal_configuration;
+
+pub mod terminal;

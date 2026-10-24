@@ -23,8 +23,7 @@
 //! (`HeartbeatConstants`, `LocalReconnectConstants`, `FlowControlConstants`, `ShellIntegrationTimeoutOverride`)
 //! e `IHeartbeatService`; os estados de serialização (`ISerializedTerminalState`...); `ITerminalChildProcess` e
 //! os eventos de processo, e por isso o campo `customPtyImplementation` de `IShellLaunchConfig` não existe
-//! aqui; `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`, `TerminalLocation` e
-//! `TerminalLocationConfigValue`; `ITerminalLaunchError`; `ProfileSource`,
+//! aqui; `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`; `ProfileSource`,
 //! `IBaseUnresolvedTerminalProfile`, `ITerminalExecutable`, `ITerminalProfileSource`, `ITerminalProfileObject`;
 //! `IShellIntegration` e `ShellIntegrationStatus`; `TerminalExitReason`; os seletores e casadores de saída; `ITerminalBackend`, o registro de backends
 //! (`TerminalExtensions`, `ITerminalBackendRegistry`) e `ITerminalLogService`.
@@ -520,4 +519,26 @@ impl Deref for IExtensionTerminalProfile {
     fn deref(&self) -> &ITerminalProfileContribution {
         &self.contribution
     }
+}
+
+/// `TerminalLocation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TerminalLocation {
+    Panel = 1,
+    Editor = 2,
+}
+
+string_enum! {
+    /// `TerminalLocationConfigValue`.
+    TerminalLocationConfigValue {
+        TerminalView = "view",
+        Editor = "editor",
+    }
+}
+
+/// `ITerminalLaunchError`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITerminalLaunchError {
+    pub message: String,
+    pub code: Option<i32>,
 }
