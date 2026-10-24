@@ -5,8 +5,8 @@
 //! JavaScript no produto: as funções chamam os mesmos `ExtHost*` portados do `extHost*.ts`.
 //!
 //! O que existe, namespace a namespace, e o que falta de cada um está no cabeçalho do módulo dele (`commands`, `workspace`,
-//! `window`, `l10n`) e na lista medida de `wip/notes/exthost-api-usage.md`. Os namespaces que dependem de um cliente
-//! `MainThread*` do workbench (`workspace`, `window`) só entram no objeto `vscode` quando o host é montado com um
+//! `window`, `languages`, `l10n`) e na lista medida de `wip/notes/exthost-api-usage.md`. Os namespaces que dependem de um cliente
+//! `MainThread*` do workbench (`workspace`, `window`, `languages`) só entram no objeto `vscode` quando o host é montado com um
 //! [`IMainThreadBinder`](crate::in_process::IMainThreadBinder) que os fornece.
 
 use std::rc::Rc;
@@ -20,6 +20,8 @@ pub mod env;
 pub mod events;
 pub mod extensions;
 pub mod l10n;
+pub mod language_types;
+pub mod languages;
 pub mod output_channel;
 pub mod progress;
 pub mod quick_input;

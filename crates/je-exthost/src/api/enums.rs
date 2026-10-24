@@ -1,5 +1,7 @@
 //! As enumerações numéricas da API `vscode` que os namespaces entregues usam (`StatusBarAlignment`, `ConfigurationTarget`, `UIKind`,
-//! `ExtensionKind`, `QuickPickItemKind`, `InputBoxValidationSeverity`, `ProgressLocation`, `LogLevel`) e o objeto `QuickInputButtons`.
+//! `ExtensionKind`, `QuickPickItemKind`, `InputBoxValidationSeverity`, `ProgressLocation`, `LogLevel`, `ViewColumn` e as do editor, e as de
+//! linguagem: `DiagnosticSeverity`, `DiagnosticTag`, `SymbolKind`, `SymbolTag`, `CompletionItemKind`, `CompletionItemTag`,
+//! `CompletionTriggerKind`, `CodeActionTriggerKind`) e o objeto `QuickInputButtons`.
 //! Cada enumeração é o objeto que o TypeScript gera para um `enum`: nome para valor e valor para nome (`StatusBarAlignment.Left === 1` e
 //! `StatusBarAlignment[1] === 'Left'`). Os valores são os de `ext_host_types::enums`.
 //!
@@ -9,7 +11,10 @@
 
 use je_base::themables::ThemeIcon;
 use je_platform::log::LogLevel;
-use je_workbench::api::common::ext_host_types::{ConfigurationTarget, ExtensionKind, InputBoxValidationSeverity, ProgressLocation, QuickPickItemKind, StatusBarAlignment};
+use je_workbench::api::common::ext_host_types::{
+    CodeActionTriggerKind, CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, ExtensionKind,
+    InputBoxValidationSeverity, ProgressLocation, QuickPickItemKind, StatusBarAlignment, SymbolKind, SymbolTag,
+};
 use zjsc::api::embed_node::JsData;
 
 use crate::convert::api_to_js;
@@ -24,6 +29,30 @@ fn enum_object(members: &[(&str, i32)]) -> JsData {
         fields.push((value.to_string(), JsData::Str((*name).to_owned())));
     }
     JsData::Object(fields)
+}
+
+/// Os membros de `vscode.SymbolKind`, do `symbols.rs` de `ext_host_types`.
+fn symbol_kind_members() -> Vec<(&'static str, i32)> {
+    use SymbolKind::*;
+    [
+        File, Module, Namespace, Package, Class, Method, Property, Field, Constructor, Enum, Interface, Function, Variable, Constant, String, Number, Boolean, Array,
+        Object, Key, Null, EnumMember, Struct, Event, Operator, TypeParameter,
+    ]
+    .into_iter()
+    .map(|kind| (kind.name(), kind.value()))
+    .collect()
+}
+
+/// Os membros de `vscode.CompletionItemKind`.
+fn completion_item_kind_members() -> Vec<(&'static str, i32)> {
+    use CompletionItemKind::*;
+    [
+        Text, Method, Function, Constructor, Field, Variable, Class, Interface, Module, Property, Unit, Value, Enum, Keyword, Snippet, Color, File, Reference, Folder,
+        EnumMember, Constant, Struct, Event, Operator, TypeParameter, User, Issue,
+    ]
+    .into_iter()
+    .map(|kind| (kind.name(), kind.value()))
+    .collect()
 }
 
 /// O valor numérico de `vscode.LogLevel` (`Off = 0`, `Trace = 1`, `Debug = 2`, `Info = 3`, `Warning = 4`, `Error = 5`).
@@ -117,5 +146,33 @@ pub fn enums() -> Vec<(String, JsData)> {
         ),
         ("TextEditorSelectionChangeKind".to_owned(), enum_object(&[("Keyboard", 1), ("Mouse", 2), ("Command", 3)])),
         ("TextDocumentChangeReason".to_owned(), enum_object(&[("Undo", 1), ("Redo", 2)])),
+        // Os enums de linguagem (`DiagnosticSeverity`, `DiagnosticTag`, `SymbolKind`, `SymbolTag`, `CompletionItemKind`,
+        // `CompletionItemTag`, `CompletionTriggerKind`, `CodeActionTriggerKind`): os valores de `ext_host_types`.
+        (
+            "DiagnosticSeverity".to_owned(),
+            enum_object(&[
+                ("Error", DiagnosticSeverity::Error.value()),
+                ("Warning", DiagnosticSeverity::Warning.value()),
+                ("Information", DiagnosticSeverity::Information.value()),
+                ("Hint", DiagnosticSeverity::Hint.value()),
+            ]),
+        ),
+        ("DiagnosticTag".to_owned(), enum_object(&[("Unnecessary", DiagnosticTag::Unnecessary.value()), ("Deprecated", DiagnosticTag::Deprecated.value())])),
+        ("SymbolKind".to_owned(), enum_object(&symbol_kind_members())),
+        ("SymbolTag".to_owned(), enum_object(&[("Deprecated", SymbolTag::Deprecated.value())])),
+        ("CompletionItemKind".to_owned(), enum_object(&completion_item_kind_members())),
+        ("CompletionItemTag".to_owned(), enum_object(&[("Deprecated", CompletionItemTag::Deprecated.value())])),
+        (
+            "CompletionTriggerKind".to_owned(),
+            enum_object(&[
+                ("Invoke", CompletionTriggerKind::Invoke.value()),
+                ("TriggerCharacter", CompletionTriggerKind::TriggerCharacter.value()),
+                ("TriggerForIncompleteCompletions", CompletionTriggerKind::TriggerForIncompleteCompletions.value()),
+            ]),
+        ),
+        (
+            "CodeActionTriggerKind".to_owned(),
+            enum_object(&[("Invoke", CodeActionTriggerKind::Invoke.value()), ("Automatic", CodeActionTriggerKind::Automatic.value())]),
+        ),
     ]
 }

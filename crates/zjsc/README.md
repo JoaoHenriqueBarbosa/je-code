@@ -35,6 +35,10 @@ extensões do VS Code no host de extensões do je-code (Fase 5, `wip/notes/extho
    protótipo; `define_class` passou a chamá-la sem setters). É o que o `StatusBarItem` e os demais objetos da API `vscode` com
    propriedades graváveis pedem.
 
+5. `src/api/embed_node.rs`: `NodeRunner::make_function_by_reference` (a `make_function` em que os argumentos que são objetos chegam
+   como `Handle` em vez de cópia). É o que os `register*Provider` da API `vscode` pedem: o provedor é um objeto da extensão, e só
+   por referência o `this` e os métodos de classe dele sobrevivem à chamada.
+
 ## Pendência de DRY
 
 `crates/zyarr` é o YARR extraído deste `src/yarr`: o código existe nas duas crates. Fundir (o zjsc dependendo do

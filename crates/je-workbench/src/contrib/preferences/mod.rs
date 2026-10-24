@@ -11,4 +11,5 @@ pub mod preferences_widgets;
 pub mod settings_editor2;
 pub mod settings_editor_setting_indicators;
 pub mod settings_layout;
+pub mod settings_search_menu;
 pub mod settings_tree_models;

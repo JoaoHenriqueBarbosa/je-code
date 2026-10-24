@@ -22,7 +22,6 @@
 //! `IPtyServiceContribution`, `IPtyHostController`, `IPtyHostService`, `ILocalPtyService`; as constantes
 //! (`HeartbeatConstants`, `LocalReconnectConstants`) e `IHeartbeatService`; os estados de serialização
 //! (`ISerializedTerminalState`...); `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`;
-//! `ProfileSource`, `IBaseUnresolvedTerminalProfile`, `ITerminalExecutable`, `ITerminalProfileSource`,
 //! `ITerminalProfileObject`; os seletores de comando; o registro de backends (`TerminalExtensions`,
 //! `ITerminalBackendRegistry`). O `ITerminalBackend` fica em `je_workbench::contrib::terminal::common::terminal_backend`,
 //! porque herda o `ITerminalBackendWslPath` do workbench.
@@ -507,6 +506,97 @@ pub struct ITerminalProfile {
     pub override_name: Option<bool>,
     pub color: Option<String>,
     pub icon: Option<TerminalIcon>,
+}
+
+string_enum! {
+    /// `ProfileSource`.
+    ProfileSource {
+        GitBash = "Git Bash",
+        Pwsh = "PowerShell",
+    }
+}
+
+/// `ITerminalUnsafePath`: um caminho que qualquer usuário de uma máquina compartilhada poderia ter criado.
+/// O `isUnsafe: true` do original é o campo `is_unsafe`, que fica falso só num objeto vindo de configuração
+/// que traga `isUnsafe` falso.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ITerminalUnsafePath {
+    pub path: String,
+    pub is_unsafe: bool,
+}
+
+/// `string | ITerminalUnsafePath`: um elemento de `path` de `ITerminalExecutable` e o `requiresPath`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfilePath {
+    Plain(String),
+    Unsafe(ITerminalUnsafePath),
+}
+
+impl ProfilePath {
+    /// `isString(e) ? e : e.path`.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Plain(path) => path,
+            Self::Unsafe(unsafe_path) => &unsafe_path.path,
+        }
+    }
+
+    /// Um caminho inseguro (`{ path, isUnsafe: true }`).
+    pub fn unsafe_path(path: impl Into<String>) -> Self {
+        Self::Unsafe(ITerminalUnsafePath { path: path.into(), is_unsafe: true })
+    }
+}
+
+/// `IBaseUnresolvedTerminalProfile`. O `icon?: string | ThemeIcon | URI | { light; dark }` é o
+/// [`ContributedIcon`] (texto ou [`TerminalIcon`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IBaseUnresolvedTerminalProfile {
+    pub args: Option<OneOrMany<String>>,
+    pub is_auto_detected: Option<bool>,
+    pub override_name: Option<bool>,
+    pub icon: Option<ContributedIcon>,
+    pub color: Option<String>,
+    pub env: Option<ITerminalEnvironment>,
+    pub requires_path: Option<ProfilePath>,
+}
+
+/// `ITerminalExecutable`. O `path: SingleOrMany<string | ITerminalUnsafePath>` fica sempre como lista (o original
+/// o normaliza com `Array.isArray(path) ? path : [path]` antes de usar).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ITerminalExecutable {
+    pub base: IBaseUnresolvedTerminalProfile,
+    pub path: Vec<ProfilePath>,
+}
+
+/// `ITerminalProfileSource`. O `source` é o texto de `ProfileSource` que a configuração trouxe (um valor
+/// desconhecido não casa com nenhuma fonte e o perfil é descartado, como no original).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ITerminalProfileSource {
+    pub base: IBaseUnresolvedTerminalProfile,
+    pub source: String,
+}
+
+/// `ITerminalExecutable | ITerminalProfileSource` (o `null` do `IUnresolvedTerminalProfile` é o perfil ausente).
+#[derive(Clone, Debug, PartialEq)]
+pub enum IUnresolvedTerminalProfile {
+    Executable(ITerminalExecutable),
+    Source(ITerminalProfileSource),
+}
+
+impl IUnresolvedTerminalProfile {
+    pub fn base(&self) -> &IBaseUnresolvedTerminalProfile {
+        match self {
+            Self::Executable(executable) => &executable.base,
+            Self::Source(source) => &source.base,
+        }
+    }
+
+    pub fn base_mut(&mut self) -> &mut IBaseUnresolvedTerminalProfile {
+        match self {
+            Self::Executable(executable) => &mut executable.base,
+            Self::Source(source) => &mut source.base,
+        }
+    }
 }
 
 /// O `icon?: URI | { light: URI; dark: URI } | string` de `ITerminalProfileContribution`.

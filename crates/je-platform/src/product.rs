@@ -150,6 +150,11 @@ pub trait IProductService {
     fn extension_enabled_api_proposals(&self) -> Option<&IStringDictionary<Vec<String>>> {
         None
     }
+    /// `extensionSyncedKeys`: as chaves de estado que o produto sincroniza por identificador de extensão em minúsculas (lido
+    /// pelo `ExtensionStorageService`). Padrão: o produto não declara nenhuma.
+    fn extension_synced_keys(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        None
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.

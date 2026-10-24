@@ -15,3 +15,7 @@ pub mod windows_version;
 pub mod node_streams;
 
 pub mod nls;
+
+pub mod pfs;
+pub mod powershell;
+pub mod processes;

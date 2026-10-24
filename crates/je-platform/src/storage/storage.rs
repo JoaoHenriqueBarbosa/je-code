@@ -262,6 +262,24 @@ pub trait StorageBackend {
     fn should_flush_when_idle(&self) -> bool {
         true
     }
+
+    /// `readApplicationSharedValue(key)` sobrescrito pela subclasse (o `BrowserStorageService` lê direto do banco). `None`
+    /// mantém o corpo da classe base, que lê o cache do escopo.
+    fn read_application_shared_value(&self, _service: &Rc<AbstractStorageService>, _key: &str) -> Option<Promise<Option<String>>> {
+        None
+    }
+
+    /// `compareAndSwapApplicationSharedValue(key, expectedValue, newValue)` sobrescrito pela subclasse. `None` mantém o
+    /// corpo da classe base.
+    fn compare_and_swap_application_shared_value(
+        &self,
+        _service: &Rc<AbstractStorageService>,
+        _key: &str,
+        _expected_value: Option<&str>,
+        _new_value: &str,
+    ) -> Option<Promise<CompareAndSwapResult>> {
+        None
+    }
 }
 
 /// `IStorageServiceOptions`.
@@ -561,10 +579,16 @@ impl StorageService for Rc<AbstractStorageService> {
     }
 
     fn read_application_shared_value(&self, key: &str) -> Promise<Option<String>> {
+        if let Some(overridden) = self.backend.read_application_shared_value(self, key) {
+            return overridden;
+        }
         Promise::resolved(StorageService::get(self, key, StorageScope::ApplicationShared, None))
     }
 
     fn compare_and_swap_application_shared_value(&self, key: &str, expected_value: Option<&str>, new_value: &str) -> Promise<CompareAndSwapResult> {
+        if let Some(overridden) = self.backend.compare_and_swap_application_shared_value(self, key, expected_value, new_value) {
+            return overridden;
+        }
         let current_value = StorageService::get(self, key, StorageScope::ApplicationShared, None);
         if current_value.as_deref() != expected_value {
             return Promise::resolved(CompareAndSwapResult { swapped: false, current_value });
