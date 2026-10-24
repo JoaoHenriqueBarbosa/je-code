@@ -12,6 +12,7 @@ use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::request::request::{AuthInfo, Credentials};
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
+use je_workbench::api::common::ext_host_comments::create_ext_host_comments;
 use je_workbench::api::common::ext_host_configuration::ExtHostConfiguration;
 use je_workbench::api::common::ext_host_debug_protocol::ExtHostDebugServiceShape;
 use je_workbench::api::common::ext_host_debug_service::{ExtHostDebugServiceBase, ExtHostDebugServiceDeps, WorkerExtHostDebugService};
@@ -29,7 +30,7 @@ use je_workbench::api::common::ext_host_languages::ExtHostLanguages;
 use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
-    CreateDocumentOptions, ExtHostCommandsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
+    CreateDocumentOptions, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
     ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
@@ -52,7 +53,7 @@ use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
 use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
-use crate::api::{commands, debug, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::{commands, comments, debug, disposable, enums, env, events, extensions, l10n, languages, scm, types, uri, window, workspace, workspace_edit};
 use crate::api::js_object::JsObjects;
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -288,6 +289,8 @@ impl ExtensionHost {
         members.extend(languages::classes(runner, &languages_state));
         let scm_objects = Rc::new(scm::ScmObjects::default());
         scm::define_classes(runner, &scm_objects, &event_tables);
+        let comment_objects = Rc::new(comments::CommentObjects::default());
+        comments::define_classes(runner, &comment_objects, &event_tables, &window_state.text_objects);
         let debug_objects = Rc::new(debug::DebugObjects::default());
         members.extend(debug::classes(runner, &debug_objects));
         let extension_slot = ExtensionServiceSlot::new();
@@ -446,6 +449,18 @@ impl ExtensionHost {
                 let scm_shape: Rc<dyn ExtHostSCMShape> = scm_service.clone();
                 late.scm.0.bind(scm_shape);
                 members.push(("scm".to_owned(), scm::namespace(runner, &scm_service, &scm_objects)));
+            }
+
+            // `vscode.comments` pede o cliente `MainThreadComments`; os documentos de texto são opcionais (só o `commentingRangeProvider` os lê).
+            if provided(MainContext::MAIN_THREAD_COMMENTS.sid) {
+                let documents = match &text_editor_api {
+                    Some(api) => api.services.documents.clone(),
+                    None => detached_documents(&log_service),
+                };
+                let comments_service = create_ext_host_comments(bridged_ref, &commands, documents);
+                let comments_shape: Rc<dyn ExtHostCommentsShape> = comments_service.clone();
+                late.comments.0.bind(comments_shape);
+                members.push(("comments".to_owned(), comments::namespace(runner, &comments_service, &comment_objects)));
             }
 
             // `vscode.debug` pede o cliente `MainThreadDebugService`. O host não tem o `IConfigurationResolverService` nem o namespace

@@ -328,3 +328,25 @@ Teste: `crates/je-workbench/tests/extension_host_api_debug.rs` (dublê do `MainT
 Os dublês de workspace e de configuração dos testes `extension_host_api_*` moram só em `tests/support/extension_host_workspace_doubles.rs` (`WorkspaceClient`,
 `StaticConfigurationService` semeável, `bind_workspace_clients`); `extension_host_api_workspace.rs` e `extension_host_api_file_system_events.rs` os usam.
 
+## Estado da entrega de `comments` (2026-10-25, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `api/comments.rs`, `ext_host_comments.rs`, `ext_host_types/comments.rs` e do oráculo `extHostComments.ts`). Nenhum número de ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `comments.createCommentController(id, label)` com `id`, `label`, `options` (`prompt`, `placeHolder`), `commentingRangeProvider` (`provideCommentingRanges`, `Range[]` ou `{ ranges, enableFileComments }`, direto ou por promessa), `reactionHandler`, `createCommentThread(uri, range, comments)` e `dispose` | entregue, ligado ao `ExtHostComments` (precisa do cliente `MainThreadComments`) | `api/comments.rs`, `host.rs` |
+| `CommentThread` com `uri`, `range`, `comments`, `collapsibleState`, `canReply` (booleano ou `{ name, iconPath }`), `contextValue`, `label`, `state` e `dispose` | entregue | `api/comments.rs` |
+| `CommentThreadCollapsibleState`, `CommentMode`, `CommentState`, `CommentThreadState`, `CommentThreadApplicability`, `CommentThreadFocus` | entregue | `api/enums.rs` |
+| `CommentThread#reveal` e `hide`, `applicability`, `CommentController#activeComment` e `activeCommentThread`, `resourceHints`, `timestamp` como `Date` | falta | propostas que o host nunca habilita (`commentReveal`, `commentThreadApplicability`, `activeComment`, `commentingRangeHint`); `Date` não atravessa o motor (só número) |
+| argumentos de comando `CommentThread`, `CommentNode`... com o `this` da thread | falta | o `ArgumentProcessor` do `ExtHostCommentsImpl` está registrado, mas o `Dynamic` que ele devolve chega ao comando da extensão como objeto de dados |
+
+O `commentingRangeProvider` e o `reactionHandler` chegam como cópia (a atribuição a uma propriedade não é por referência): o provedor vale como objeto literal com `provideCommentingRanges` PRÓPRIA, sem `this`; o comentário que o `reactionHandler` recebe é uma cópia. `comments` devolve o que a extensão atribuiu.
+
+Mudanças fora de `api/comments.rs`, todas por DRY ou ligação: `convert::text_or_undefined`, `commands::call_settled` e `commands::convert_maybe` (antes locais em `scm.rs`, `debug.rs` e `quick_session.rs`, agora compartilhados), `api::{handle_object, handle_field, getter, setter}` (antes locais em `scm.rs`; o texto do erro de `this` inválido de `SourceControl` agora é gerado por `handle_field`, mesma frase), `LateExtHostComments` e o campo `comments` de `LateForwarders` em `in_process.rs`.
+
+Teste: `crates/je-workbench/tests/extension_host_api_comments.rs` (dublê do `MainThreadCommentsShape` que anota cada pedido; os documentos de texto vêm de `languages_setup` do suporte de `languages`; `debounce` de 100 ms esperado com `sleep`). Pendências a confirmar na primeira compilação: os reexports de `CommentData`, `CommentingRanges` e `CommentMode` em `ext_host_types`; `define_accessor_class` com o getter de um objeto que carrega só `_id`; a mensagem exata do erro de `this` descartado; a ordem dos quatro primeiros pedidos de `t.commentsCreate`.
+
+## BLOQUEIO: `vscode.authentication` (2026-10-25)
+
+Fonte: **eu** (leitura de `ext_host_authentication.rs`, `main_thread_authentication.rs`, `ext_host_protocol.rs` e do oráculo `extHostAuthentication.ts`, 1118 linhas). A tarefa pedia a ponte para o `ExtHostAuthentication` portado, mas ele NÃO está portado: `ext_host_authentication.rs` só tem `reviveAccountIcon`, `IAuthorizationToken` e o `TokenStore`; `ExtHostAuthentication` e `DynamicAuthProvider` estão listados no cabeçalho como "Ainda sem porte", e `MainThreadAuthenticationShape` e `ExtHostAuthenticationShape` (e os DTOs `IRegisterAuthenticationProviderDetails`, `IAuthenticationGetSessionsOptions`, `IAuthenticationWwwAuthenticateRequest`...) não existem em `ext_host_protocol.rs`. Sem os dois traits e o serviço, `getSession`, `getAccounts`, `registerAuthenticationProvider` e `onDidChangeSessions` não têm no que se ligar. Pré-requisito: portar os dois shapes e a parte não dinâmica de `ExtHostAuthentication` (`getSession`, `getAccounts`, `registerAuthenticationProvider`, `onDidChangeSessions`, `$getSessions`, `$createSession`, `$removeSession`, `$onDidChangeAuthenticationSessions`) em `je-workbench`, deixando `DynamicAuthProvider` (que depende de `fetchDynamicRegistration` e `fetch`) rejeitando com mensagem explícita; só então a ponte e o teste `extension_host_api_authentication.rs`.
+

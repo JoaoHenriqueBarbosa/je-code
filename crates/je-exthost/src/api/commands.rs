@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
+use je_base::errors::Error;
 use je_base::promise::{MaybePromise, Promise};
 use je_workbench::api::common::ext_host_commands::{CommandCallback, ExtHostCommands};
 use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner};
@@ -29,6 +30,26 @@ pub fn settle_js_result(runner: &NodeRunner, result: JsData) -> MaybePromise<Dyn
         Ok(_) => MaybePromise::Promise(promise),
         // Sem `then` chamável: é um valor comum (uma `Date`, por exemplo).
         Err(_) => MaybePromise::Value(js_to_dynamic(&result)),
+    }
+}
+
+/// Chama a função JavaScript `function` e entrega o resultado como o valor ou a promessa que o `ExtHost*` espera; um `throw` vira promessa
+/// rejeitada.
+pub fn call_settled(runner: &NodeRunner, function: &JsHandle, args: &[JsData]) -> MaybePromise<Dynamic> {
+    match runner.call_data_throwing(function, args) {
+        Ok(result) => settle_js_result(runner, result),
+        Err(thrown) => MaybePromise::Promise(Promise::rejected(js_to_error(&thrown))),
+    }
+}
+
+/// `MaybePromise<T>` com `convert` (que pode falhar) aplicado ao valor quando ele chegar.
+pub fn convert_maybe<T: Clone + 'static, U: Clone + 'static>(value: MaybePromise<T>, convert: impl Fn(T) -> Result<U, Error> + 'static) -> MaybePromise<U> {
+    match value {
+        MaybePromise::Value(value) => match convert(value) {
+            Ok(converted) => MaybePromise::Value(converted),
+            Err(error) => MaybePromise::Promise(Promise::rejected(error)),
+        },
+        MaybePromise::Promise(promise) => MaybePromise::Promise(promise.then_result(move |outcome| convert(outcome?))),
     }
 }
 
@@ -59,10 +80,7 @@ pub fn namespace(runner: &NodeRunner, commands: &Rc<ExtHostCommands>, table: &Rc
                 let callback: Rc<JsHandle> = callback;
                 Rc::new(move |command_args: &[Dynamic]| {
                     let js_args: Vec<JsData> = command_args.iter().map(dynamic_to_js).collect();
-                    match runner.call_data_throwing(&callback, &js_args) {
-                        Ok(result) => settle_js_result(&runner, result),
-                        Err(thrown) => MaybePromise::Promise(Promise::rejected(js_to_error(&thrown))),
-                    }
+                    call_settled(&runner, &callback, &js_args)
                 })
             };
             let disposable = commands.register_command(true, &id, callback, None, None).map_err(|error| error.message)?;

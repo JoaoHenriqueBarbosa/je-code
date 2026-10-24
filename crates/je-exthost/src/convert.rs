@@ -96,6 +96,11 @@ pub fn opt_bool(value: Option<&JsData>) -> Option<bool> {
     }
 }
 
+/// O texto de uma propriedade opcional: `undefined` quando ausente.
+pub fn text_or_undefined(value: Option<String>) -> JsData {
+    value.map_or(JsData::Undefined, JsData::Str)
+}
+
 /// `value === undefined || value === null` (um argumento ausente conta como `undefined`).
 pub fn is_nullish(value: Option<&JsData>) -> bool {
     matches!(value, None | Some(JsData::Undefined) | Some(JsData::Null))

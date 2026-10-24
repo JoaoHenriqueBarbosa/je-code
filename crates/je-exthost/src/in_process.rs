@@ -54,7 +54,8 @@ use je_base::arrays::OneOrMany;
 use je_platform::terminal::environment_variable::ISerializableEnvironmentVariableCollection;
 use je_platform::terminal::terminal::{ITerminalLaunchError, ITerminalProfile, TerminalExitReason as PlatformExitReason, TerminalShellType};
 use je_workbench::api::common::ext_host_protocol::{
-    CheckboxUpdate, ExtHostSCMShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ICreateContributedTerminalProfileOptions, ISCMHistoryOptions, ITerminalCommandDto,
+    ActiveCommentInfo, CheckboxUpdate, CommentChanges, CommentReaction, CommentThreadChanges, CommentingRangesDto, ExtHostCommentsShape, ExtHostSCMShape, ExtHostTerminalServiceShape,
+    ExtHostTreeViewsShape, ICreateContributedTerminalProfileOptions, ISCMHistoryOptions, ITerminalCommandDto,
     ITerminalCompletionContextDto, ITerminalDimensionsDto, ITerminalLinkDto, IShellLaunchConfigDto, SCMArtifactDto, SCMArtifactGroupDto, SCMHistoryItemChangeDto, SCMHistoryItemDto,
     SCMHistoryItemRefDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
 };
@@ -864,6 +865,41 @@ impl ExtHostSCMShape for LateExtHostSCM {
     }
 }
 
+/// O `ExtHostCommentsShape` que ainda não existe quando o cliente `MainThreadComments` do workbench nasce. `$deleteCommentThread` (a
+/// única chamada sem retorno) fica na fila se chegar antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostComments(pub Late<dyn ExtHostCommentsShape>);
+
+impl ExtHostCommentsShape for LateExtHostComments {
+    fn rpc_create_comment_thread_template(&self, comment_controller_handle: u32, uri: &URI, range: Option<EditorRange>, editor_id: Option<&str>) -> Promise<()> {
+        self.0.bound().rpc_create_comment_thread_template(comment_controller_handle, uri, range, editor_id)
+    }
+
+    fn rpc_update_comment_thread_template(&self, comment_controller_handle: u32, thread_handle: u32, range: EditorRange) -> Promise<()> {
+        self.0.bound().rpc_update_comment_thread_template(comment_controller_handle, thread_handle, range)
+    }
+
+    fn rpc_update_comment_thread(&self, comment_controller_handle: u32, thread_handle: u32, changes: CommentThreadChanges) -> Promise<()> {
+        self.0.bound().rpc_update_comment_thread(comment_controller_handle, thread_handle, changes)
+    }
+
+    fn rpc_delete_comment_thread(&self, comment_controller_handle: u32, comment_thread_handle: u32) {
+        self.0.call_void(move |target| target.rpc_delete_comment_thread(comment_controller_handle, comment_thread_handle));
+    }
+
+    fn rpc_provide_commenting_ranges(&self, comment_controller_handle: u32, uri: &URI, token: CancellationToken) -> Promise<Option<CommentingRangesDto>> {
+        self.0.bound().rpc_provide_commenting_ranges(comment_controller_handle, uri, token)
+    }
+
+    fn rpc_toggle_reaction(&self, comment_controller_handle: u32, thread_handle: u32, uri: &URI, comment: CommentChanges, reaction: CommentReaction) -> Promise<()> {
+        self.0.bound().rpc_toggle_reaction(comment_controller_handle, thread_handle, uri, comment, reaction)
+    }
+
+    fn rpc_set_active_comment(&self, controller_handle: u32, comment_info: Option<ActiveCommentInfo>) -> Promise<()> {
+        self.0.bound().rpc_set_active_comment(controller_handle, comment_info)
+    }
+}
+
 /// O `ExtHostDebugServiceShape` que ainda não existe quando o cliente `MainThreadDebugService` do workbench nasce. As chamadas sem
 /// retorno (`$sendDAMessage`, `$acceptBreakpointsDelta`, `$disposeDebugVisualizers`, `$disposeVisualizedTree`) ficam na fila se chegarem
 /// antes do `bind`; as com retorno só acontecem depois de montado o host.
@@ -977,6 +1013,7 @@ impl ExtHostDebugServiceShape for LateExtHostDebugService {
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
     pub scm: Rc<LateExtHostSCM>,
+    pub comments: Rc<LateExtHostComments>,
     pub debug_service: Rc<LateExtHostDebugService>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
     pub tree_views: Rc<LateExtHostTreeViews>,
@@ -1019,6 +1056,9 @@ impl LateForwarders {
         let scm = Rc::new(LateExtHostSCM::default());
         let as_scm: Rc<dyn ExtHostSCMShape> = scm.clone();
         local.set_erased(ExtHostContext::EXT_HOST_SCM.sid, Rc::new(as_scm));
+        let comments = Rc::new(LateExtHostComments::default());
+        let as_comments: Rc<dyn ExtHostCommentsShape> = comments.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_COMMENTS.sid, Rc::new(as_comments));
         let as_terminal_service: Rc<dyn ExtHostTerminalServiceShape> = terminal_service.clone();
         let as_tree_views: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
         local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SERVICE.sid, Rc::new(as_terminal_service));
@@ -1049,7 +1089,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, comments, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 
