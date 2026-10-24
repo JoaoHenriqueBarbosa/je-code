@@ -5,10 +5,12 @@
 //! salvo, os conjuntos de trabalho (`applyState`) e o provedor de chave de contexto. Ainda NÃO portado (o placar conta só os
 //! `#[test]`):
 //! - `closeAllGroups action - cannot close editor handling`: usa a `CloseAllEditorGroupsAction` de `editorActions.ts`, que
-//!   não foi portada. A ação lê o `IEditorService.getEditors(order, { excludeSticky })`, o `IEditorService.revert` e o
-//!   `IEditorService.save` com razão, o `IProgressService` e o `ILogService`, dos quais o porte só tem o `getEditors(order)`
-//!   (sem `excludeSticky`) e o `save`; o `TestEditorService` do porte é uma casca que não lista editores. Portar a ação
-//!   exige primeiro o `EditorService` real e o `IProgressService`.
+//!   não foi portada. A ação é uma `Action2` com `category: Categories.View` (o `Categories` de `workbench/common/actions` não
+//!   existe no porte) e o `Action2::run` do porte devolve `()`, enquanto o caso espera a promessa de `run`; o corpo (as faixas
+//!   de confirmação de editor sujo) lê ainda o `IProgressService` da plataforma, o `ILogService`, o `closeHandler` das entradas
+//!   e o `IEditorService.revert`/`save` com razão, e o `TestEditorService` do porte (que o `workbenchInstantiationService`
+//!   registra aqui) não registra nenhum desses serviços nem implementa `getEditors(order, { excludeSticky })`. Portá-la fiel
+//!   pede esses pontos de extensão primeiro.
 //!
 //! Notas de tradução:
 //! - **`createParts` e `createPart`.** `workbenchInstantiationService` com o `MockScopableContextKeyService` é um

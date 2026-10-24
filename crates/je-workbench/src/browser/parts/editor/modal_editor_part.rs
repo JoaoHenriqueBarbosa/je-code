@@ -8,26 +8,73 @@
 //!   escutar mouse e teclado, `ResourceLabel`, barras de ferramentas) é desenho e eventos da árvore de widgets nativa, e
 //!   fica com ela. As decisões que esses trechos tomam são as funções deste módulo: quem desenha chama `default_modal_size`,
 //!   `modal_layout_size`, `modal_position`, `drag_position`, `clamp_resize`, e os `sidebar_*`, e aplica o resultado.
-//! - **`ModalEditorPartImpl`** estende `EditorPart`, que ainda não foi portada: o que ele guarda de dados e de eventos é o
-//!   [`ModalEditorPartState`] (o construtor, `updateOptions`, `toggleMaximized`, `toggleSidebar` e `handleHeaderDoubleClick`).
-//!   `enforceModalPartOptions`, `removeGroup`, `close` e `mergeGroupsToMainPart` agem sobre os grupos da `EditorPart`.
+//! - **`ModalEditorPartImpl`** estende `EditorPart`, e o Rust não tem herança: o [`EditorPart`] guarda um
+//!   [`ModalEditorPartImpl`] (o que a subclasse acrescenta e sobrescreve) e implementa `IModalEditorPart` sobre ele, de modo
+//!   que o próprio `Rc<EditorPart>` é a parte modal. O que ele guarda de dados e de eventos é o [`ModalEditorPartState`] (o
+//!   construtor, `updateOptions`, `toggleMaximized`, `toggleSidebar` e `handleHeaderDoubleClick`). As sobrescritas que o
+//!   `EditorPart` consulta são `removeGroup` ([`ModalEditorPartImpl::remove_group`]), `saveState` (desligado),
+//!   `handleContextKeys` ([`ModalEditorPartImpl::handle_context_keys`]) e `dispose`; `enforceModalPartOptions`, `close` e
+//!   `mergeGroupsToMainPart` agem sobre os grupos da parte.
+//! - **`ModalEditorPart.create`** é [`ModalEditorPart::create`]: monta a parte, a registra no `EditorParts`, cria o
+//!   `IEditorService` escopado e liga o que é lógica (opções impostas a cada mudança de editores, chave de contexto
+//!   `editorPartModalCanMoveToEditorArea`, descarte de tudo quando a parte avisa que vai fechar). Fica de fora o que é a
+//!   árvore de widgets: o elemento modal e o `ResizableHTMLElement`, o cabeçalho, os botões, a barra lateral e o `Sash`, o
+//!   `ResourceLabel`, as barras de ferramentas, o menu de contexto, o arrasto, os ouvintes de teclado e de mouse, o
+//!   escurecimento da janela (`setWindowDimmed`) e o `layoutModal` (que lê o `mainContainerDimension` do layout e chama as
+//!   funções puras deste módulo, `modal_layout_size`, `modal_position` e `editor_part_layout`).
+//! - **Foco ao fechar.** `previousMainWindowActiveElement` (o `activeElement` do DOM que o `create` guarda) não existe: ao
+//!   remover o último grupo a parte principal passa a ativa (`PART_CLOSE`) e devolver o foco ao widget anterior é da árvore
+//!   de widgets.
+//! - **`canMoveModalEditorToEditorArea(activeEditor)`.** Nenhuma entrada de editor do porte implementa
+//!   `ModalEditorOptionsProvider`, então o valor sai sempre de `can_move_modal_editor_to_editor_area(None)`.
+//! - **`close(options)`** é [`ModalEditorPartImpl::close`] (uma promessa); o `IModalEditorPart::close()` síncrono do contrato
+//!   só dispara o fechamento e devolve se ele já terminou (ou `true`, a promessa pendente que o `applyState` do original
+//!   também trata como verdadeira).
 //! - **`IDimension`** é o [`EditorSize`], e `IPosition` é o [`EditorPosition`], ambos de `je_platform::opener::editor_types`.
 //! - **Eventos.** `Emitter<IModalEditorNavigation | undefined>` é `Emitter<Option<ModalEditorNavigation>>`.
 //! - **`defaultModalEditorAllowableCommands`** é [`DEFAULT_MODAL_EDITOR_ALLOWABLE_COMMANDS`], e a decisão do `keydown`
 //!   (`useModalMode !== 'all'`, `startsWith('workbench.')`, fora do conjunto) é [`is_command_blocked_in_modal_editor`].
 //! - **Constantes de outros arquivos.** `CLOSE_MODAL_EDITOR_COMMAND_ID` e os demais ids de comando são de
-//!   `editorCommands.ts`; `USE_MODAL_EDITOR_SETTING` e `UseModalEditorMode` são de `editorService.ts`. Entram aqui
-//!   porque este módulo é quem os lê, com o valor do original.
+//!   `editorCommands.ts`; `USE_MODAL_EDITOR_SETTING` e `UseModalEditorMode` são de `editorService.ts` e vêm de
+//!   [`editor_groups_service`](crate::services::editor::editor_groups_service), onde já estavam.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
+use je_base::async_::async_fn;
+use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, MutableDisposable};
 use je_base::nls::localize;
+use je_base::promise::Promise;
+use je_instantiation::{InstantiationService, ServiceCollection};
+use je_platform::configuration::service::IConfigurationService;
+use je_platform::contextkey::contextkey::{IContextKeyService, IScopedContextKeyService};
 use je_platform::opener::editor_types::{
     EditorPosition, EditorSize, LayoutDimension, ModalEditorNavigation, ModalEditorOptionsProvider, ModalEditorPartOptions,
+    can_move_modal_editor_to_editor_area,
 };
+use je_platform::storage::StorageService;
+use je_ui::Ui;
+
+use crate::browser::parts::editor::editor_group_view::{ContextKeyTarget, EditorGroupView};
+use crate::browser::parts::editor::editor_part::EditorPart;
+use crate::browser::parts::editor::editor_parts::EditorParts;
+use crate::common::contextkeys::{
+    editor_part_modal_can_move_to_editor_area_context, editor_part_modal_context, editor_part_modal_maximized_context, editor_part_modal_navigation_context,
+    editor_part_modal_sidebar_context, editor_part_modal_sidebar_visible_context,
+};
+pub use crate::services::editor::editor_groups_service::{USE_MODAL_EDITOR_SETTING, UseModalEditorMode};
+use crate::services::editor::editor_groups_container::EditorGroupsContainer;
+use crate::services::editor::editor_groups_service::{
+    GroupActivationReason, GroupDirection, GroupRef, GroupsOrder, IEditorGroup, IEditorPart, IModalEditorPart, MergeGroupOptions, ModalEditorPartCloseOptions,
+    OpenSideBySideDirection, use_modal_editor_mode,
+};
+use crate::services::editor::editor_service::I_EDITOR_SERVICE;
+use crate::services::layout::layout_service::MAIN_WINDOW;
+
+/// O id do memento e do componente da parte modal: estável para recriar o modal não crescer o cache global de mementos.
+const MODAL_EDITOR_PART_ID: &str = "workbench.parts.modalEditor";
 
 pub const MODAL_MIN_WIDTH: f64 = 400.0;
 pub const MODAL_MIN_HEIGHT: f64 = 300.0;
@@ -61,29 +108,6 @@ pub const NAVIGATE_MODAL_EDITOR_PREVIOUS_COMMAND_ID: &str = "workbench.action.na
 pub const NAVIGATE_MODAL_EDITOR_NEXT_COMMAND_ID: &str = "workbench.action.navigateModalEditorNext";
 /// `TOGGLE_MODAL_EDITOR_SIDEBAR_COMMAND_ID` (`editorCommands.ts`).
 pub const TOGGLE_MODAL_EDITOR_SIDEBAR_COMMAND_ID: &str = "workbench.action.toggleModalEditorSidebar";
-
-/// `USE_MODAL_EDITOR_SETTING` (`editorService.ts`).
-pub const USE_MODAL_EDITOR_SETTING: &str = "workbench.editor.useModal";
-
-/// `UseModalEditorMode` (`editorService.ts`): `'off' | 'some' | 'all'`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UseModalEditorMode {
-    Off,
-    Some,
-    All,
-}
-
-impl UseModalEditorMode {
-    /// O modo que o texto da configuração representa.
-    pub fn from_text(text: &str) -> Option<Self> {
-        match text {
-            "off" => Some(Self::Off),
-            "some" => Some(Self::Some),
-            "all" => Some(Self::All),
-            _ => None,
-        }
-    }
-}
 
 /// `defaultModalEditorAllowableCommands`.
 pub const DEFAULT_MODAL_EDITOR_ALLOWABLE_COMMANDS: &[&str] = &[
@@ -164,6 +188,7 @@ pub struct ModalEditorPartState {
     on_did_request_layout: Rc<Emitter<()>>,
     on_did_change_navigation: Rc<Emitter<Option<ModalEditorNavigation>>>,
     on_did_toggle_sidebar: Rc<Emitter<()>>,
+    on_will_close: Rc<Emitter<()>>,
 }
 
 impl ModalEditorPartState {
@@ -178,6 +203,8 @@ impl ModalEditorPartState {
         base.register(on_did_request_layout.clone());
         base.register(on_did_change_navigation.clone());
         base.register(on_did_toggle_sidebar.clone());
+        let on_will_close: Rc<Emitter<()>> = Emitter::new();
+        base.register(on_will_close.clone());
 
         let maximized = options.and_then(|options| options.maximized).unwrap_or(false);
         let size = options.and_then(|options| options.size);
@@ -203,7 +230,18 @@ impl ModalEditorPartState {
             on_did_request_layout,
             on_did_change_navigation,
             on_did_toggle_sidebar,
+            on_will_close,
         })
+    }
+
+    /// `onWillClose`: fired when this modal editor part is about to close.
+    pub fn on_will_close(&self) -> Event<()> {
+        self.on_will_close.event()
+    }
+
+    /// `_onWillClose.fire()`.
+    pub fn fire_will_close(&self) {
+        self.on_will_close.fire(());
     }
 
     pub fn on_did_change_maximized(&self) -> Event<bool> {
@@ -594,4 +632,318 @@ pub fn sidebar_layout_dimension(height: f64, sidebar_width: f64, visible: bool) 
         height: height - MODAL_SIDEBAR_PADDING * 2.0,
         width: sidebar_width - MODAL_SIDEBAR_PADDING * 2.0 - MODAL_SIDEBAR_BORDER_RIGHT,
     })
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A parte (`ModalEditorPartImpl`)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// `ModalEditorPartImpl`, no que ela acrescenta e sobrescreve do [`EditorPart`] (ver o cabeçalho): o estado, as opções
+/// impostas, `removeGroup`, `handleContextKeys`, `close` e `mergeGroupsToMainPart`. O [`EditorPart`] o guarda
+/// ([`EditorPart::set_modal`]) e consulta nas sobrescritas.
+pub struct ModalEditorPartImpl {
+    this: Weak<ModalEditorPartImpl>,
+    part: Weak<EditorPart>,
+    /// `editorPartsView.mainPart`.
+    main_part: Rc<EditorPart>,
+    state: Rc<ModalEditorPartState>,
+    configuration_service: Rc<dyn IConfigurationService>,
+    /// `modalContextKeyService`: o contexto escopado ao modal inteiro, onde as chaves `editorPartModal*` são ligadas.
+    modal_context_key_service: Rc<dyn IScopedContextKeyService>,
+    /// `optionsDisposable`.
+    options_disposable: Rc<MutableDisposable<dyn IDisposable>>,
+    store: Rc<DisposableStore>,
+}
+
+impl ModalEditorPartImpl {
+    /// O construtor de `ModalEditorPartImpl`: lê as `options`, impõe as opções do modal e escuta a configuração
+    /// `workbench.editor.useModal`. A `part` passa a guardá-lo.
+    pub fn new(
+        part: &Rc<EditorPart>,
+        main_part: Rc<EditorPart>,
+        options: Option<&ModalEditorPartOptions>,
+        configuration_service: Rc<dyn IConfigurationService>,
+        modal_context_key_service: Rc<dyn IScopedContextKeyService>,
+    ) -> Rc<Self> {
+        let this = Rc::new_cyclic(|this| Self {
+            this: this.clone(),
+            part: Rc::downgrade(part),
+            main_part,
+            state: ModalEditorPartState::new(options),
+            configuration_service: configuration_service.clone(),
+            modal_context_key_service,
+            options_disposable: MutableDisposable::new(),
+            store: DisposableStore::new(),
+        });
+        part.set_modal(this.clone());
+
+        this.enforce_modal_part_options();
+
+        let weak = this.this.clone();
+        this.store.add(configuration_service.on_did_change_configuration().listen(move |event| {
+            if event.affects_configuration(USE_MODAL_EDITOR_SETTING, None)
+                && let Some(modal) = weak.upgrade()
+            {
+                modal.enforce_modal_part_options();
+            }
+        }));
+
+        this
+    }
+
+    /// Os dados e eventos da parte.
+    pub fn state(&self) -> &Rc<ModalEditorPartState> {
+        &self.state
+    }
+
+    /// `enforceModalPartOptions()`: o modal não mostra abas, a menos que todos os editores abram nele e haja mais de um.
+    pub fn enforce_modal_part_options(&self) {
+        let Some(part) = self.part.upgrade() else { return };
+
+        let use_modal_for_all = use_modal_editor_mode(self.configuration_service.as_ref()) == Some(UseModalEditorMode::All);
+        let editor_count: usize = part.get_group_views(GroupsOrder::CreationTime).iter().map(|group| IEditorGroup::count(&**group)).sum();
+        let show_tabs = if use_modal_for_all && editor_count > 1 { "multiple" } else { "none" };
+
+        let options = Dynamic::object([
+            ("showTabs", Dynamic::string(show_tabs)),
+            ("enablePreview", Dynamic::Bool(true)),
+            ("closeEmptyGroups", Dynamic::Bool(true)),
+            ("tabActionCloseVisibility", Dynamic::Bool(show_tabs != "none")),
+            ("editorActionsLocation", Dynamic::string("hidden")),
+            ("tabHeight", Dynamic::string("default")),
+            ("wrapTabs", Dynamic::Bool(false)),
+            ("allowDropIntoGroup", Dynamic::Bool(false)),
+        ]);
+        self.options_disposable.set(Some(IEditorPart::enforce_part_options(&*part, options)));
+    }
+
+    /// `handleContextKeys()` (a parte acima da chamada a `super.handleContextKeys()`): liga as chaves do modal ao contexto
+    /// escopado ao modal inteiro (e não só ao contêiner da parte), para que continuem valendo com o foco em qualquer lugar do
+    /// modal, inclusive na barra lateral.
+    pub fn handle_context_keys(&self) {
+        let context_key_service = self.modal_context_key_service.as_ref();
+
+        let is_modal_editor_part_context = editor_part_modal_context().bind_to(context_key_service);
+        is_modal_editor_part_context.set(Dynamic::Bool(true));
+
+        let is_maximized_context = editor_part_modal_maximized_context().bind_to(context_key_service);
+        is_maximized_context.set(Dynamic::Bool(self.state.maximized()));
+        self.store.add(self.state.on_did_change_maximized().listen(move |maximized| is_maximized_context.set(Dynamic::Bool(*maximized))));
+
+        let has_navigation_context = editor_part_modal_navigation_context().bind_to(context_key_service);
+        has_navigation_context.set(Dynamic::Bool(self.state.has_navigation_context()));
+        self.store.add(
+            self.state.on_did_change_navigation().listen(move |navigation| has_navigation_context.set(Dynamic::Bool(is_navigation_visible(navigation.as_ref())))),
+        );
+
+        let sidebar_context = editor_part_modal_sidebar_context().bind_to(context_key_service);
+        sidebar_context.set(Dynamic::Bool(self.state.has_sidebar()));
+
+        let sidebar_visible_context = editor_part_modal_sidebar_visible_context().bind_to(context_key_service);
+        sidebar_visible_context.set(Dynamic::Bool(self.state.is_sidebar_visible()));
+        let state = self.state.clone();
+        self.store.add(self.state.on_did_toggle_sidebar().listen(move |_| sidebar_visible_context.set(Dynamic::Bool(state.is_sidebar_visible()))));
+    }
+
+    /// `removeGroup(group)` (a sobrescrita): fechar o último grupo fecha o modal. Devolve `true` quando tratou a remoção, e
+    /// `false` quando o `EditorPart` deve seguir com a implementação dele.
+    pub fn remove_group(&self, group: &Rc<EditorGroupView>) -> bool {
+        let Some(part) = self.part.upgrade() else { return false };
+
+        if part.group_count() == 1 && Rc::ptr_eq(&part.active_view(), group) {
+            self.do_remove_last_group();
+
+            return true;
+        }
+
+        false
+    }
+
+    /// `doRemoveLastGroup()`.
+    fn do_remove_last_group(&self) {
+        // Activate main editor group when closing
+        let active_main_group = IEditorPart::active_group(&*self.main_part);
+        self.main_part.activate_group_with_reason(&GroupRef::Group(active_main_group), GroupActivationReason::PartClose);
+
+        self.state.fire_will_close();
+    }
+
+    /// `close(options)`: com `mergeAllEditorsToMainPart` os editores passam para a parte principal (ficam abertos, sem
+    /// confirmação); senão cada grupo fecha todos os editores, pela confirmação de editores sujos. Devolve `false` se o
+    /// usuário cancelou.
+    pub fn close(&self, options: Option<ModalEditorPartCloseOptions>) -> Promise<bool> {
+        let this = self.this.upgrade().expect("a parte modal está viva enquanto é usada");
+        let part = self.part.upgrade().expect("a parte de editor está viva enquanto o modal é usado");
+
+        async_fn(async move {
+            // Merge all editors to main part (editors stay open, no confirmation needed)
+            if options.is_some_and(|options| options.merge_all_editors_to_main_part == Some(true)) {
+                let result = this.merge_groups_to_main_part();
+                if !result {
+                    return Ok(false);
+                }
+            }
+            // Close all editors in each group, leveraging the existing confirmation infrastructure for dirty editors
+            else {
+                for group in part.get_group_views(GroupsOrder::CreationTime) {
+                    let closed = IEditorGroup::close_all_editors(&*group, None).await?;
+                    if !closed {
+                        return Ok(false); // user cancelled
+                    }
+                }
+            }
+
+            this.state.fire_will_close();
+
+            Ok(true)
+        })
+    }
+
+    /// `mergeGroupsToMainPart()`.
+    fn merge_groups_to_main_part(&self) -> bool {
+        let Some(part) = self.part.upgrade() else { return true };
+
+        if !part.get_group_views(GroupsOrder::CreationTime).iter().any(|group| IEditorGroup::count(&**group) > 0) {
+            return true; // skip if we have no editors opened
+        }
+
+        // Find the most recent group that is not locked
+        let target_group = self
+            .main_part
+            .get_group_views(GroupsOrder::MostRecentlyActive)
+            .into_iter()
+            .find(|group| !IEditorGroup::is_locked(&**group))
+            .map(|group| group.as_group())
+            .unwrap_or_else(|| {
+                let direction = if self.main_part.part_options().open_side_by_side_direction == OpenSideBySideDirection::Right {
+                    GroupDirection::Right
+                } else {
+                    GroupDirection::Down
+                };
+
+                self.main_part.add_group(Some(GroupRef::Group(self.main_part.active_group())), direction)
+            });
+
+        let result = part.merge_all_groups_with_options(
+            &GroupRef::Group(target_group.clone()),
+            // Try to reduce the impact of closing the modal as much as possible by not changing existing editors in the main
+            // window.
+            Some(MergeGroupOptions { preserve_existing_index: Some(true), ..MergeGroupOptions::default() }),
+        );
+        target_group.focus();
+
+        result
+    }
+}
+
+impl IDisposable for ModalEditorPartImpl {
+    fn dispose(&self) {
+        self.options_disposable.dispose();
+        self.store.dispose();
+
+        // ensure to free the reference to the navigation closure
+        self.state.dispose();
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A fábrica (`ModalEditorPart`)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// `ICreateModalEditorPartResult`.
+#[derive(Clone)]
+pub struct CreateModalEditorPartResult {
+    pub part: Rc<EditorPart>,
+    pub instantiation_service: Rc<InstantiationService>,
+    pub disposables: Rc<DisposableStore>,
+}
+
+/// `ModalEditorPart`: a classe que monta a parte modal e a registra no [`EditorParts`].
+#[derive(Clone)]
+pub struct ModalEditorPart {
+    parts: Rc<EditorParts>,
+    ui: Ui,
+    instantiation_service: Rc<InstantiationService>,
+    configuration_service: Rc<dyn IConfigurationService>,
+    storage_service: Rc<dyn StorageService>,
+    context_key_service: Rc<dyn IContextKeyService>,
+}
+
+impl ModalEditorPart {
+    pub fn new(
+        parts: Rc<EditorParts>,
+        ui: Ui,
+        instantiation_service: Rc<InstantiationService>,
+        configuration_service: Rc<dyn IConfigurationService>,
+        storage_service: Rc<dyn StorageService>,
+        context_key_service: Rc<dyn IContextKeyService>,
+    ) -> Self {
+        Self { parts, ui, instantiation_service, configuration_service, storage_service, context_key_service }
+    }
+
+    /// `create(options)`: `async` sem nenhum `await`, a promessa já nasce resolvida.
+    pub fn create(&self, options: Option<ModalEditorPartOptions>) -> Promise<CreateModalEditorPartResult> {
+        let this = self.clone();
+
+        async_fn(async move {
+            let disposables = DisposableStore::new();
+
+            // Context key service scoped to the entire modal element so that the modal-level context keys (e.g.
+            // `editorPartModal`) are active when focus is anywhere inside the modal. Both the editor part and the sidebar
+            // content are wired up to descend from this service.
+            let modal_context_key_service = this.context_key_service.create_scoped(ContextKeyTarget::new());
+            disposables.add(modal_context_key_service.clone());
+            let can_move_to_editor_area_context = editor_part_modal_can_move_to_editor_area_context().bind_to(modal_context_key_service.as_ref());
+
+            // Create the editor part (scoped to the modal context key service so that the editor area also descends from it)
+            let editor_part = disposables.add_rc(EditorPart::new(
+                &this.ui,
+                this.instantiation_service.clone(),
+                this.configuration_service.clone(),
+                this.storage_service.clone(),
+                modal_context_key_service.as_ref(),
+                MODAL_EDITOR_PART_ID,
+                &localize("modalEditorPart", "Modal Editor Area", &[]),
+                MAIN_WINDOW,
+            ));
+            let modal = ModalEditorPartImpl::new(
+                &editor_part,
+                this.parts.main_editor_part(),
+                options.as_ref(),
+                this.configuration_service.clone(),
+                modal_context_key_service.clone(),
+            );
+
+            // `(part as IAuxiliaryEditorPart).close()` do `applyState`: uma promessa, sempre verdadeira para o original.
+            let weak_part = Rc::downgrade(&editor_part);
+            let close: Rc<dyn Fn() -> bool> = Rc::new(move || weak_part.upgrade().is_none_or(|part| IModalEditorPart::close(&*part)));
+            disposables.add(this.parts.register_part(editor_part.clone(), Some(close)));
+            editor_part.create(None);
+
+            let store = disposables.clone();
+            disposables.add(modal.state().on_will_close().once().listen(move |_| store.dispose()));
+
+            // Create scoped instantiation service
+            let editor_service = this.instantiation_service.invoke_function(|accessor| accessor.get(I_EDITOR_SERVICE));
+            let part_container: Rc<dyn IEditorPart> = editor_part.clone();
+            let modal_editor_service = editor_service.create_scoped(EditorGroupsContainer::Part(part_container), &disposables);
+            let scoped_instantiation_service = this
+                .instantiation_service
+                .create_child(ServiceCollection::new().with(I_EDITOR_SERVICE, modal_editor_service.clone()), Some(&*disposables));
+
+            disposables.add(modal_editor_service.on_did_editors_change().listen(move |_| modal.enforce_modal_part_options()));
+
+            // Reflect the modal options of the active editor (`canMoveToEditorArea`). Nenhuma entrada do porte implementa o
+            // `ModalEditorOptionsProvider`, ver o cabeçalho.
+            disposables.add(modal_editor_service.on_did_active_editor_change().run_and_subscribe(
+                move |_| can_move_to_editor_area_context.set(Dynamic::Bool(can_move_modal_editor_to_editor_area(None))),
+                None,
+            ));
+
+            // Focus
+            editor_part.active_group().focus();
+
+            Ok(CreateModalEditorPartResult { part: editor_part, instantiation_service: scoped_instantiation_service, disposables })
+        })
+    }
 }

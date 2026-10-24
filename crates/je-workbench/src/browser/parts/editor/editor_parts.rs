@@ -11,17 +11,20 @@
 //!   `activePart` é a parte mais recentemente ativa (o primeiro de `mostRecentActiveParts`, que o foco de cada parte atualiza):
 //!   sem janelas do DOM, `getPartByDocument(getActiveDocument())` é essa lista. `getPart(element)`, `getPartByDocument` e
 //!   `createEditorDropTarget` (que usam o DOM) ficam com o padrão que lança do contrato.
-//! - **Sem janela auxiliar nem modal.** `AuxiliaryEditorPart`, `ModalEditorPart` e o `IAuxiliaryWindowService` não existem
-//!   no porte. `createAuxiliaryEditorPart` e `createModalEditorPart` devolvem uma promessa rejeitada (o `restoreState` do
-//!   original usa `Promise.allSettled` sobre a primeira), `activeModalEditorPart` é sempre `None`, e `createState` devolve
-//!   `auxiliary` vazio (nenhuma parte tem janela auxiliar). Quando uma parte auxiliar existir ela entra por
-//!   [`EditorParts::register_part`], cujo segundo argumento é o `close()` do `IAuxiliaryEditorPart` que o `applyState` chama.
-//!   O estado modal (`maximized`, `size`, `position`, `sidebarWidth`, `sidebarHidden`) é lido e gravado no memento do perfil
-//!   como no original, mas só o que veio do memento (nenhuma parte modal o atualiza).
+//! - **Sem janela auxiliar.** `AuxiliaryEditorPart` e o `IAuxiliaryWindowService` não existem no porte.
+//!   `createAuxiliaryEditorPart` devolve uma promessa rejeitada (o `restoreState` do original usa `Promise.allSettled` sobre a
+//!   primeira) e `createState` devolve `auxiliary` vazio (nenhuma parte tem janela auxiliar). Quando uma parte auxiliar existir
+//!   ela entra por [`EditorParts::register_part`], cujo segundo argumento é o `close()` do `IAuxiliaryEditorPart` que o
+//!   `applyState` chama.
+//! - **Parte modal.** `createModalEditorPart` monta a [`ModalEditorPart`](crate::browser::parts::editor::modal_editor_part)
+//!   (reaproveitando uma já aberta, ou a criação em andamento) e lembra o estado dela (`maximized`, `size`, `position`,
+//!   `sidebarWidth`, `sidebarHidden`) ao fechar, para a próxima abertura; o estado é lido e gravado no memento do perfil
+//!   (`editorparts.modalState`), inclusive o da parte que estiver aberta ao gravar.
 //! - **A parte principal.** `createMainEditorPart()` (o gancho que o `TestEditorParts` sobrescreve) não existe: o
 //!   `TestEditorParts` embrulha a parte principal que este tipo cria ([`EditorParts::main_editor_part`]).
-//! - **Instanciação escopada.** `getScopedInstantiationService` devolve o próprio `InstantiationService` para toda parte: o
-//!   filho com o `IEditorService` e o `IStatusbarService` escopados (`createScoped`) não existe.
+//! - **Instanciação escopada.** `getScopedInstantiationService` devolve o próprio `InstantiationService` para toda parte, menos
+//!   para a parte modal aberta: o filho com o `IEditorService` escopado (`createScoped`) que o `ModalEditorPart` criou. O
+//!   filho da parte principal (com o `IEditorService` e o `IStatusbarService` escopados) não existe.
 //! - **Grupos como `Rc<dyn IEditorGroup>`.** O contrato do porte devolve o grupo como `dyn IEditorGroup`, e a identidade de
 //!   grupo é o `id`. As chaves de contexto trabalham sobre o `dyn IEditorGroup` (`id`, `scopedContextKeyService`,
 //!   `onDidActiveEditorChange`), que é tudo que o original lê do grupo.
@@ -33,7 +36,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use je_base::JsString;
-use je_base::async_::{async_fn, await_maybe};
+use je_base::async_::{async_fn, async_fn_maybe, await_maybe};
 use je_base::dynamic::{Dynamic, Truthy, json_stringify};
 use je_base::errors::{Error, throw};
 use je_base::event::{Emitter, Event};
@@ -46,7 +49,7 @@ use je_editor::core_2d::dimension::Dimension;
 use je_instantiation::InstantiationService;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::contextkey::contextkey::{IContextKey, IContextKeyService, RawContextKey};
-use je_platform::opener::editor_types::{AuxiliaryEditorOptions, ModalEditorPartOptions};
+use je_platform::opener::editor_types::{AuxiliaryEditorOptions, EditorPosition, EditorSize, ModalEditorPartOptions, ModalEditorSidebar};
 use je_platform::storage::{StorageScope, StorageService, StorageTarget};
 use je_storage::StorageValue;
 use je_ui::Ui;
@@ -54,6 +57,7 @@ use je_ui::Ui;
 use crate::browser::parts::editor::editor::EditorPartsView;
 use crate::browser::parts::editor::editor_group_view::EditorGroupView;
 use crate::browser::parts::editor::editor_part::{ApplyStateTarget, EditorPart, EditorPartUiState, number_of, prop, state_from_dynamic, state_to_dynamic};
+use crate::browser::parts::editor::modal_editor_part::{CreateModalEditorPartResult, ModalEditorPart};
 use crate::common::contextkeys::editor_part_modal_visible_context;
 use crate::common::memento::Memento;
 use crate::common::editor::GroupIdentifier;
@@ -198,9 +202,9 @@ fn modal_state_to_dynamic(state: &ModalEditorState) -> Dynamic {
     Dynamic::object(entries)
 }
 
-/// `getPart` não achou o que o original acharia: a parte auxiliar ainda não existe.
+/// `createAuxiliaryEditorPart` não pode criar o que o original criaria: a parte auxiliar ainda não existe.
 fn unsupported(what: &str) -> Error {
-    Error::new(format!("{what} is not supported yet: the auxiliary and modal editor parts are not ported"))
+    Error::new(format!("{what} is not supported yet: the auxiliary editor part is not ported"))
 }
 
 /// O `IContextKey` que o `bind` do original devolve: escreve no contexto escopado do grupo e, se o grupo é o ativo, também no
@@ -248,6 +252,12 @@ struct PartsState {
     is_ready: bool,
     editor_working_sets: Vec<WorkingSetState>,
     modal: ModalEditorState,
+    /// `modalEditorPart`: a parte modal aberta.
+    modal_editor_part: Option<Rc<EditorPart>>,
+    /// `modalPartInstantiationService`.
+    modal_part_instantiation_service: Option<Rc<InstantiationService>>,
+    /// `modalEditorPartCreatePromise`: a criação em andamento, que chamadas concorrentes esperam em vez de criar a sua.
+    modal_editor_part_create_promise: Option<Promise<Rc<dyn IModalEditorPart>>>,
     global_context_keys: HashMap<String, Rc<dyn IContextKey>>,
     scoped_context_keys: HashMap<GroupIdentifier, HashMap<String, Rc<dyn IContextKey>>>,
     /// `contextKeyProviders`, na ordem de registro.
@@ -259,7 +269,9 @@ struct PartsState {
 /// `EditorParts`.
 pub struct EditorParts {
     this: Weak<EditorParts>,
+    ui: Ui,
     instantiation_service: Rc<InstantiationService>,
+    configuration_service: Rc<dyn IConfigurationService>,
     storage_service: Rc<dyn StorageService>,
     context_key_service: Rc<dyn IContextKeyService>,
     memento: Memento,
@@ -311,7 +323,7 @@ impl EditorParts {
         let main_part = EditorPart::new(
             ui,
             instantiation_service.clone(),
-            configuration_service,
+            configuration_service.clone(),
             storage_service.clone(),
             context_key_service.as_ref(),
             MAIN_EDITOR_PART_ID,
@@ -324,7 +336,9 @@ impl EditorParts {
 
         let this = Rc::new_cyclic(|this| Self {
             this: this.clone(),
+            ui: ui.clone(),
             instantiation_service,
+            configuration_service,
             storage_service,
             context_key_service,
             memento,
@@ -337,6 +351,9 @@ impl EditorParts {
                 is_ready: false,
                 editor_working_sets,
                 modal,
+                modal_editor_part: None,
+                modal_part_instantiation_service: None,
+                modal_editor_part_create_promise: None,
                 global_context_keys: HashMap::new(),
                 scoped_context_keys: HashMap::new(),
                 context_key_providers: Vec::new(),
@@ -358,9 +375,6 @@ impl EditorParts {
             store,
         });
 
-        let parts_view_rc: Rc<dyn EditorPartsView> = this.clone();
-        let parts_view: Weak<dyn EditorPartsView> = Rc::downgrade(&parts_view_rc);
-        main_part.set_parts_view(parts_view);
         this.register_part(main_part.clone(), None);
 
         this.state.borrow_mut().most_recent_active_parts = vec![main_part];
@@ -444,6 +458,10 @@ impl EditorParts {
     /// `registerPart(part)`: registra a parte e os ouvintes dos eventos dela. `close` é o `close()` de uma parte auxiliar (a
     /// principal não tem). O disposable que volta retira a parte.
     pub fn register_part(&self, part: Rc<EditorPart>, close: Option<Rc<dyn Fn() -> bool>>) -> DisposableRef {
+        // O `editorPartsView` da parte: este `EditorParts`
+        let parts_view_rc: Rc<dyn EditorPartsView> = self.rc();
+        part.set_parts_view(Rc::downgrade(&parts_view_rc));
+
         let disposables = self.store.add_rc(DisposableStore::new());
 
         {
@@ -629,10 +647,16 @@ impl EditorParts {
         self.save_modal_state();
     }
 
-    /// `saveModalState()`, sem a captura da parte modal aberta (que não existe).
+    /// `saveModalState()`: também captura o estado da parte modal que estiver aberta.
     fn save_modal_state(&self) {
         let profile_memento = self.memento.get_memento(StorageScope::Profile, StorageTarget::Machine);
         let key = JsString::from(MODAL_EDITOR_STATE_STORAGE_KEY);
+
+        // Also capture state from any currently open modal editor part
+        let modal_editor_part = self.state.borrow().modal_editor_part.clone();
+        if let Some(modal_editor_part) = modal_editor_part {
+            self.remember_modal_state(&modal_editor_part);
+        }
         let modal = self.state.borrow().modal.clone();
 
         // Only persist when there is meaningful state to restore. When all values are at their defaults (not maximized, no
@@ -641,6 +665,23 @@ impl EditorParts {
             profile_memento.set(&key, modal_state_to_dynamic(&modal));
         } else {
             profile_memento.delete(&key);
+        }
+    }
+
+    /// Guarda o estado da parte modal (`modalEditorMaximized`, `modalEditorSize`...) para a próxima abertura.
+    fn remember_modal_state(&self, part: &Rc<EditorPart>) {
+        let maximized = IModalEditorPart::maximized(&**part);
+        let size = IModalEditorPart::size(&**part).map(|size| (size.width, size.height));
+        let position = IModalEditorPart::position(&**part).map(|position| (position.left, position.top));
+        let sidebar = IModalEditorPart::has_sidebar(&**part).then(|| (IModalEditorPart::sidebar_width(&**part), IModalEditorPart::sidebar_hidden(&**part)));
+
+        let mut state = self.state.borrow_mut();
+        state.modal.maximized = maximized;
+        state.modal.size = size;
+        state.modal.position = position;
+        if let Some((sidebar_width, sidebar_hidden)) = sidebar {
+            state.modal.sidebar_width = sidebar_width;
+            state.modal.sidebar_hidden = sidebar_hidden.then_some(true);
         }
     }
 
@@ -731,6 +772,81 @@ impl EditorParts {
         if let Some(serialized) = json_stringify(&working_sets) {
             self.storage_service.store(EDITOR_WORKING_SETS_STORAGE_KEY, StorageValue::String(serialized), StorageScope::Workspace, StorageTarget::Machine);
         }
+    }
+
+    // endregion
+
+    // region: parte modal
+
+    /// `doCreateModalEditorPart(options)`: cria a parte com as opções dadas e, no que faltar, o estado lembrado da última
+    /// abertura.
+    fn do_create_modal_editor_part(&self, options: Option<ModalEditorPartOptions>) -> Promise<Rc<dyn IModalEditorPart>> {
+        let parts = self.rc();
+
+        async_fn(async move {
+            parts.modal_editor_visible_context.set(Dynamic::Bool(true));
+
+            let remembered = parts.state.borrow().modal.clone();
+            let requested = options.as_ref();
+            let create_options = ModalEditorPartOptions {
+                maximized: Some(requested.and_then(|options| options.maximized).unwrap_or(remembered.maximized)),
+                size: requested.and_then(|options| options.size).or(remembered.size.map(|(width, height)| EditorSize { width, height })),
+                position: requested.and_then(|options| options.position).or(remembered.position.map(|(left, top)| EditorPosition { left, top })),
+                navigation: requested.and_then(|options| options.navigation.clone()),
+                sidebar: requested.and_then(|options| options.sidebar.as_ref()).map(|sidebar| ModalEditorSidebar {
+                    sidebar_width: sidebar.sidebar_width.or(remembered.sidebar_width),
+                    sidebar_hidden: sidebar.sidebar_hidden.or(remembered.sidebar_hidden),
+                    render: sidebar.render.clone(),
+                }),
+            };
+
+            let modal_editor_part = ModalEditorPart::new(
+                parts.clone(),
+                parts.ui.clone(),
+                parts.instantiation_service.clone(),
+                parts.configuration_service.clone(),
+                parts.storage_service.clone(),
+                parts.context_key_service.clone(),
+            );
+            let result = match modal_editor_part.create(Some(create_options)).await {
+                Ok(result) => result,
+                Err(error) => {
+                    parts.modal_editor_visible_context.set(Dynamic::Bool(false));
+
+                    return Err(error);
+                }
+            };
+            let CreateModalEditorPartResult { part, instantiation_service, disposables } = result;
+
+            // Keep instantiation service and reference to reuse
+            {
+                let mut state = parts.state.borrow_mut();
+                state.modal_editor_part = Some(part.clone());
+                state.modal_part_instantiation_service = Some(instantiation_service);
+            }
+
+            // Remember state on dispose to restore when opening next time
+            let (weak, remembered_part) = (parts.this.clone(), part.clone());
+            disposables.add(to_disposable(move || {
+                let Some(parts) = weak.upgrade() else { return };
+
+                parts.remember_modal_state(&remembered_part);
+
+                {
+                    let mut state = parts.state.borrow_mut();
+                    state.modal_part_instantiation_service = None;
+                    state.modal_editor_part = None;
+                }
+                parts.modal_editor_visible_context.set(Dynamic::Bool(false));
+            }));
+
+            // Events
+            parts.on_did_add_group.fire(part.active_group());
+
+            let part: Rc<dyn IModalEditorPart> = part;
+
+            Ok(part)
+        })
     }
 
     // endregion
@@ -988,15 +1104,43 @@ impl IEditorGroupsService for EditorParts {
         Promise::rejected(unsupported("createAuxiliaryEditorPart"))
     }
 
-    fn create_modal_editor_part(&self, _options: Option<ModalEditorPartOptions>) -> Promise<Rc<dyn IModalEditorPart>> {
-        // Também sinaliza que nenhuma parte modal ficou visível.
-        self.modal_editor_visible_context.set(Dynamic::Bool(false));
+    fn create_modal_editor_part(&self, options: Option<ModalEditorPartOptions>) -> Promise<Rc<dyn IModalEditorPart>> {
+        let parts = self.rc();
 
-        Promise::rejected(unsupported("createModalEditorPart"))
+        async_fn_maybe(async move {
+            // Reuse existing modal editor part if it exists
+            let existing = parts.state.borrow().modal_editor_part.clone();
+            if let Some(modal_editor_part) = existing {
+                let part: Rc<dyn IModalEditorPart> = modal_editor_part;
+                part.update_options(options);
+
+                return Ok(MaybePromise::Value(part));
+            }
+
+            // Another creation is already in flight: await it instead of starting a second one, then apply this call's options
+            // to the shared instance
+            let in_flight = parts.state.borrow().modal_editor_part_create_promise.clone();
+            if let Some(create_promise) = in_flight {
+                let part = create_promise.await?;
+                part.update_options(options);
+
+                return Ok(MaybePromise::Value(part));
+            }
+
+            let weak = parts.this.clone();
+            let create_promise = parts.do_create_modal_editor_part(options).finally(move || {
+                if let Some(parts) = weak.upgrade() {
+                    parts.state.borrow_mut().modal_editor_part_create_promise = None;
+                }
+            });
+            parts.state.borrow_mut().modal_editor_part_create_promise = Some(create_promise.clone());
+
+            Ok(MaybePromise::Promise(create_promise))
+        })
     }
 
     fn active_modal_editor_part(&self) -> Option<Rc<dyn IModalEditorPart>> {
-        None
+        self.state.borrow().modal_editor_part.clone().map(|part| -> Rc<dyn IModalEditorPart> { part })
     }
 
     fn on_did_change_active_group(&self) -> Event<Rc<dyn IEditorGroup>> {
@@ -1141,8 +1285,14 @@ impl IEditorGroupsService for EditorParts {
         self.part_of(&group)
     }
 
-    fn get_scoped_instantiation_service(&self, _part: &Rc<dyn IEditorPart>) -> Rc<InstantiationService> {
-        self.instantiation_service.clone()
+    fn get_scoped_instantiation_service(&self, part: &Rc<dyn IEditorPart>) -> Rc<InstantiationService> {
+        let state = self.state.borrow();
+
+        // Modal Part (if opened)
+        match (&state.modal_editor_part, &state.modal_part_instantiation_service) {
+            (Some(modal_editor_part), Some(instantiation_service)) if std::ptr::addr_eq(Rc::as_ptr(modal_editor_part), Rc::as_ptr(part)) => instantiation_service.clone(),
+            _ => self.instantiation_service.clone(),
+        }
     }
 
     fn save_working_set(&self, name: &str) -> EditorWorkingSet {
