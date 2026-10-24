@@ -78,9 +78,9 @@ pub fn select_top_preselected(items: &[CompletionItem]) -> usize {
     if items.is_empty() {
         return 0;
     }
-    let top_score = items[0].score[0];
+    let top_score = items[0].score.borrow()[0];
     for (i, item) in items.iter().enumerate() {
-        if item.score[0] != top_score {
+        if item.score.borrow()[0] != top_score {
             // stop when leaving the group of top matches
             break;
         }
@@ -226,12 +226,12 @@ impl Memory for LruMemory {
             return select_top_preselected(items);
         }
 
-        let top_score = items[0].score[0];
+        let top_score = items[0].score.borrow()[0];
         let mut index_preselect: Option<usize> = None;
         let mut index_recency: Option<usize> = None;
         let mut seq: i64 = -1;
         for (i, item) in items.iter().enumerate() {
-            if item.score[0] != top_score {
+            if item.score.borrow()[0] != top_score {
                 // consider only top items
                 break;
             }

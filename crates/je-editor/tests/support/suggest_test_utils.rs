@@ -76,6 +76,11 @@ pub fn create_suggest_item_with(label: CompletionLabel, overwrite_before: i32, o
         insert_text_rules: None,
         commit_characters: None,
     };
-    let container = Rc::new(CompletionList { suggestions: vec![suggestion.clone()], incomplete: Some(incomplete), dispose: None });
+    let container = Rc::new(CompletionList {
+        suggestions: vec![suggestion.clone()],
+        incomplete: Some(incomplete),
+        dispose: None,
+        duration: None,
+    });
     CompletionItem::new(position, suggestion, container, Rc::new(TestProvider))
 }
