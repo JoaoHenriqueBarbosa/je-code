@@ -11,9 +11,8 @@
 //!   depende disso): [`Fixture::add_entry_promise`] é um `async_fn`, que roda o corpo até o primeiro `await` como o JavaScript.
 //!   Os dois overloads (`expectEntryAdded` verdadeiro, que devolve a entrada e confere o arquivo, e `false`, que pode devolver
 //!   `undefined`) são [`Fixture::add_entry`] e [`Fixture::add_entry_unchecked`].
-//! - **`assert.notStrictEqual(entries[n].location, entryN.location)`.** Compara a identidade dos objetos `URI` (sempre
-//!   diferentes no original); aqui compara os valores (o texto da `URI`), uma afirmação mais forte e verdadeira (a pasta
-//!   da entrada depende do recurso da working copy, que mudou).
+//! - **`assert.notStrictEqual(entries[n].location, entryN.location)`.** Compara a identidade dos objetos `URI`; aqui é a
+//!   identidade das entradas (`Rc::ptr_eq`): a entrada movida é um objeto novo mesmo quando a pasta não muda.
 //! - **`assert.ok(!entries[n].sourceDescription)` e `assert.ok(entries[n].sourceDescription)`.** São a ausência (ou texto
 //!   vazio) e a presença de texto não vazio em `source_description()`.
 //! - **`setUserConfiguration(key, value)`.** O valor é um [`Dynamic`] (`undefined` é `Dynamic::Undefined`).

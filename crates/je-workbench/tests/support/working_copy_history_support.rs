@@ -139,7 +139,9 @@ pub fn assert_moved_entry(moved: &WorkingCopyHistoryEntryRef, original: &Working
     assert_eq!(moved.id, original.id);
     assert_eq!(moved.timestamp(), original.timestamp());
     assert_eq!(moved.source(), original.source());
-    assert_ne!(text(&moved.location), text(&original.location));
+    // `assert.notStrictEqual(entries[n].location, entryN.location)` compara objetos `URI` por identidade: a entrada movida é
+    // um objeto novo, ainda que a pasta não mude (o rename para um alvo que já tinha histórico).
+    assert!(!Rc::ptr_eq(moved, original), "a entrada movida é um objeto novo");
     assert_eq!(text(&moved.working_copy.resource), text(target_resource));
 }
 
