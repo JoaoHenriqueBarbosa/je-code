@@ -2,4 +2,6 @@
 
 pub mod ignore_file;
 pub mod replace;
+pub mod ripgrep_search_utils;
 pub mod search;
+pub mod search_ext_types;

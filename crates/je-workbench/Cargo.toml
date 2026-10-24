@@ -14,6 +14,10 @@ je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
 # Tipos do editor (`Position`, `Range`, `TextLength`) que o workbench usa, como no original.
 je-editor = { path = "../je-editor" }
+# Injeção de dependência (`IInstantiationService`, `registerSingleton`) dos serviços do workbench.
+je-instantiation = { path = "../je-instantiation" }
+# `Color.Format.CSS.parseHex` da validação de settings (`format: color-hex`).
+je-theme = { path = "../je-theme" }
 # `RegExp` ECMAScript do `terminalLinkParsing` e do padrão de busca do usuário (`ReplacePattern`).
 zyarr = { path = "../zyarr" }
 # `Date.parse` e `toLocaleDateString` de `updateUtils` (mesmo `jiff` do je-base, fuso do sistema).
