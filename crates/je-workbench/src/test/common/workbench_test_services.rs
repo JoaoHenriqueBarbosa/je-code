@@ -84,7 +84,7 @@ fn unbiased_ext_uri() -> ExtUri {
 }
 
 /// `URI.file('tests').with({ scheme: 'vscode-tests' })`.
-fn vscode_tests_resource() -> URI {
+pub(crate) fn vscode_tests_resource() -> URI {
     uri_file("tests").with(&UriChange { scheme: Field::from("vscode-tests"), ..Default::default() })
 }
 

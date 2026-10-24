@@ -2,3 +2,5 @@
 //! acima dele usarem (ver `common::workbench_test_services`).
 
 pub mod common;
+
+pub mod browser;
