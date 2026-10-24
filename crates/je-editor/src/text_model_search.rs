@@ -20,7 +20,8 @@ use crate::range::Range;
 use crate::text_model::TextModel;
 use crate::word_character_classifier::{WordCharacterClass, WordCharacterClassifier, get_map_for_word_separators};
 
-const LIMIT_FIND_COUNT: usize = 999;
+/// `LIMIT_FIND_COUNT`: o `limitResultCount` padrão de `TextModel.findMatches`.
+pub const LIMIT_FIND_COUNT: usize = 999;
 
 // TODO(integração): mover para je_base::strings (`RegExpOptions`, `createRegExp` e
 // `regExpLeadsToEndlessLoop`), junto do `JsRegExp`.
