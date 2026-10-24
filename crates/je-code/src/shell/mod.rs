@@ -1050,7 +1050,7 @@ impl Shell {
         for name in tabs {
             let active = name == "Terminal";
             let text_width = measure_text(name, &font);
-            let width = text_width + 20.0 + if name == "Problems" { 0.0 } else { 0.0 };
+            let width = text_width + 20.0;
             let tab = tree.create(panel, Role::Tab);
             tree.set_bounds(tab, Rect::new(x + 2.0, 5.0, x + 2.0 + width, 29.0));
             let style = tree.style_mut(tab);

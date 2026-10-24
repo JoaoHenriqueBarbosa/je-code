@@ -607,7 +607,7 @@ mod tests {
         key(&mut shell, Some(EditorKey::Enter), None);
         assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("src/index.ts")));
         // A paleta lista os comandos do menu e roda o escolhido.
-        shell.run(shell::Command::CommandPalette);
+        shell.run(shell::Command::ShowCommands);
         snapshot(&mut shell, "q2-palette.png");
         for c in ["c", "l", "o", "s", "e"] {
             key(&mut shell, None, Some(c));
