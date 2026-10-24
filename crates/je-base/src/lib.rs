@@ -111,6 +111,7 @@ pub mod equals;
 pub mod error_message;
 pub mod marked;
 pub mod markdown_links;
+pub mod markdown_plaintext;
 pub mod process;
 pub mod processes;
 pub mod performance;

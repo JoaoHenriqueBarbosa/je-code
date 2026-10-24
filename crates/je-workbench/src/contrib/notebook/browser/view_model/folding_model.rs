@@ -7,9 +7,8 @@
 //!   que o `FoldingRegion` precisa para virar região (`toRegion`).
 //! - `getRegionsInside(region, filter)` com `filter.length === 2` (filtro com nível) é o método separado
 //!   [`FoldingModel::get_regions_inside_with_level`]; sem nível é [`FoldingModel::get_regions_inside`].
-//! - `getMarkdownHeadersInCell` usa o lexer `marked` do porte (`je_base::marked`) e devolve `depth` e `text`; o `text` do original
-//!   passa pelo `renderAsPlaintext` (renderizador de markdown para texto, ainda não portado), então aqui é o `text` do token de
-//!   cabeçalho com `trim()`. O `FoldingModel` só lê o `depth`.
+//! - `getMarkdownHeadersInCell` usa o lexer `marked` do porte (`je_base::marked`) e devolve `depth` e `text`; o `text` é o
+//!   `renderAsPlaintext` do `raw` do cabeçalho (`je_base::markdown_plaintext`) com `trim()`, como no original.
 //! - O erro do lexer (que o JavaScript lançaria) é tratado como "sem cabeçalhos".
 //! - `foldingRangeLimit` é o [`FoldingLimitReporter`] com `limit: 5000` e `update` vazio.
 
@@ -20,6 +19,7 @@ use je_base::event::{Emitter, Event};
 use je_base::js_string::JsString;
 use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::marked::{Options, Token, lexer_with};
+use je_base::markdown_plaintext::render_as_plaintext;
 use je_editor::folding::FoldingLimitReporter;
 use je_editor::folding::folding_ranges::{FoldingRegion, FoldingRegions, ILineRange};
 use je_editor::folding::syntax_range_provider::{FoldingRangeData, sanitize_ranges};
@@ -385,7 +385,7 @@ pub fn get_markdown_headers_in_cell(cell_content: &str) -> Vec<MarkdownHeader> {
         .tokens
         .iter()
         .filter_map(|token| match token {
-            Token::Heading(heading) => Some(MarkdownHeader { depth: heading.depth, text: heading.text.to_string_lossy().trim().to_string() }),
+            Token::Heading(heading) => Some(MarkdownHeader { depth: heading.depth, text: render_as_plaintext(&heading.raw.to_string_lossy()).trim().to_string() }),
             _ => None,
         })
         .collect()
