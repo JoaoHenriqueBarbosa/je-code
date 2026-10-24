@@ -7,14 +7,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `base` | 150 | 2278 | 127 | 1879 | 82.48 |
 | `platform` | 192 | 2806 | 110 | 1885 | 67.18 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
-| `workbench/services` | 137 | 2491 | 66 | 1714 | 68.81 |
-| `workbench/api` | 94 | 965 | 36 | 480 | 49.74 |
+| `workbench/services` | 137 | 2491 | 69 | 1817 | 72.94 |
+| `workbench/api` | 94 | 965 | 36 | 533 | 55.23 |
 | `workbench/contrib` | 370 | 4636 | 56 | 944 | 20.36 |
 | `workbench (shell)` | 69 | 621 | 20 | 223 | 35.91 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 10010 | 54.43 |
+| **total** | | 18391 | | 10166 | 55.28 |
 
 ## Arquivos portados
 
@@ -410,6 +410,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/configurationResolver/test/electron-browser/configurationResolverService.test.ts` | 59 | `crates/je-workbench/tests/configuration_resolver_service.rs` | 59 |
 | `src/vs/workbench/services/editor/test/browser/customEditorLabelService.test.ts` | 5 | `crates/je-workbench/tests/custom_editor_label_service.rs` | 5 |
 | `src/vs/workbench/services/editor/test/browser/editorGroupsService.test.ts` | 69 | `crates/je-workbench/tests/editor_groups_service.rs` | 68 |
+| `src/vs/workbench/services/editor/test/browser/editorService.test.ts` | 53 | `crates/je-workbench/tests/editor_service.rs` | 50 |
+| `src/vs/workbench/services/editor/test/browser/modalEditorGroup.test.ts` | 44 | `crates/je-workbench/tests/modal_editor_group.rs` | 40 |
 | `src/vs/workbench/services/extensionManagement/test/browser/extensionEnablementService.test.ts` | 129 | `crates/je-workbench/tests/extension_enablement_service.rs` | 129 |
 | `src/vs/workbench/services/extensionManagement/test/electron-browser/extensionGalleryManifestService.test.ts` | 42 | `crates/je-workbench/tests/extension_gallery_manifest_service.rs` | 42 |
 | `src/vs/workbench/services/extensions/test/browser/extensionUrlHandler.test.ts` | 4 | `crates/je-workbench/tests/extension_url_handler.rs` | 4 |
@@ -459,6 +461,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/workingCopy/test/browser/workingCopyFileService.test.ts` | 17 | `crates/je-workbench/tests/working_copy_file_service.rs` | 17 |
 | `src/vs/workbench/services/workingCopy/test/common/workingCopyService.test.ts` | 3 | `crates/je-workbench/tests/working_copy_service.rs` | 3 |
 | `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyBackupService.test.ts` | 57 | `crates/je-workbench/tests/working_copy_backup_service.rs` | 57 |
+| `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyBackupTracker.test.ts` | 76 | `crates/je-workbench/tests/native_working_copy_backup_tracker.rs` | 13 |
 | `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyHistoryService.test.ts` | 19 | `crates/je-workbench/tests/working_copy_history_service.rs` | 19 |
 | `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyHistoryTracker.test.ts` | 6 | `crates/je-workbench/tests/working_copy_history_tracker.rs` | 6 |
 | `src/vs/workbench/services/workspaces/test/browser/workspaceEditingService.test.ts` | 4 | `crates/je-workbench/tests/workspace_editing_service.rs` | 4 |
@@ -472,7 +475,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/api/test/browser/extHostDocumentsAndEditors.test.ts` | 1 | `crates/je-workbench/tests/ext_host_documents_and_editors.rs` | 1 |
 | `src/vs/workbench/api/test/browser/extHostEditorTabs.test.ts` | 16 | `crates/je-workbench/tests/ext_host_editor_tabs.rs` | 16 |
 | `src/vs/workbench/api/test/browser/extHostFileSystemEventService.test.ts` | 4 | `crates/je-workbench/tests/ext_host_file_system_event_service.rs` | 4 |
-| `src/vs/workbench/api/test/browser/extHostLanguageFeatures.test.ts` | 61 | `crates/je-workbench/tests/ext_host_language_features.rs` | 5 |
+| `src/vs/workbench/api/test/browser/extHostLanguageFeatures.test.ts` | 61 | `crates/je-workbench/tests/ext_host_language_features.rs` | 58 |
 | `src/vs/workbench/api/test/browser/extHostMessagerService.test.ts` | 6 | `crates/je-workbench/tests/ext_host_messager_service.rs` | 6 |
 | `src/vs/workbench/api/test/browser/extHostStatusBar.test.ts` | 7 | `crates/je-workbench/tests/ext_host_status_bar.rs` | 7 |
 | `src/vs/workbench/api/test/browser/extHostTelemetry.test.ts` | 10 | `crates/je-workbench/tests/ext_host_telemetry.rs` | 10 |
