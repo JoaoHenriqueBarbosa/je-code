@@ -223,6 +223,7 @@ impl LinkComputer {
                 &line[link_begin_index..(last_included_char_index + 1) as usize],
             ))),
             tooltip: None,
+            cache_id: None,
         }
     }
 

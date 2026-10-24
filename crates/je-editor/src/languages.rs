@@ -446,4 +446,6 @@ pub struct ILink {
     pub range: crate::range::Range,
     pub url: Option<LinkUrl>,
     pub tooltip: Option<String>,
+    /// O `cacheId` do `ILinkDto` (`CachedSessionItem`) que o host de extensões põe no link: `[cacheId, itemIdx]`.
+    pub cache_id: Option<(u32, u32)>,
 }
