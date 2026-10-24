@@ -29,6 +29,8 @@ pub mod test_theme_service;
 
 pub mod test_view_model;
 
+pub mod word_test_utils;
+
 use std::rc::Rc;
 
 use je_base::JsString;
