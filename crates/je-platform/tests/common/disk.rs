@@ -98,12 +98,11 @@ pub fn file_uri(path: impl AsRef<Path>) -> URI {
     URI::file(path.as_ref().to_string_lossy().into_owned(), ProcessEnvironment.platform())
 }
 
-/// A pasta das fixtures do VS Code (`ref/` fica fora do git, o caminho é relativo à raiz do repositório).
-/// O caminho sai normalizado (sem `..`), como o `FileAccess.asFileUri` do original: o serviço de arquivos compara
-/// os URIs dos filhos (que o `joinPath` normaliza) com o da raiz.
-pub fn fixtures_dir() -> PathBuf {
+/// `FileAccess.asFileUri(relative).fsPath` para um caminho sob `src` do VS Code (`ref/` fica fora do git, o
+/// caminho é relativo à raiz do repositório). O caminho sai normalizado (sem `..`), como o do original.
+pub fn vscode_source_path(relative: &str) -> PathBuf {
     let mut dir = PathBuf::new();
-    for component in Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ref/vscode/src/vs/platform/files/test/node/fixtures").components() {
+    for component in Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ref/vscode/src").join(relative).components() {
         match component {
             std::path::Component::ParentDir => {
                 dir.pop();
@@ -112,6 +111,12 @@ pub fn fixtures_dir() -> PathBuf {
         }
     }
     dir
+}
+
+/// A pasta das fixtures do VS Code. O serviço de arquivos compara os URIs dos filhos (que o `joinPath`
+/// normaliza) com o da raiz, por isso o caminho sai sem `..`.
+pub fn fixtures_dir() -> PathBuf {
+    vscode_source_path("vs/platform/files/test/node/fixtures")
 }
 
 /// `FileAccess.asFileUri('vs/platform/files/test/node/fixtures/<relative>').fsPath`.
