@@ -59,17 +59,15 @@ use crate::services::files_configuration::files_configuration_service::{IFilesCo
 use crate::services::path::path_service::IPathService;
 use crate::services::language_detection::language_detection_worker_service::ILanguageDetectionService;
 use je_platform::accessibility::IAccessibilityService;
-use crate::services::textfile::collaborators::{
-    IProgress, IProgressService, IWorkingCopyBackupService, ProgressCancellable, ProgressLocation,
-    ProgressOptions, ProgressStep, ResolvedWorkingCopyBackup,
-};
+use crate::services::textfile::collaborators::{IProgress, IProgressService, ProgressCancellable, ProgressLocation, ProgressOptions, ProgressStep};
 use crate::services::textfile::encoding::{UTF16BE, UTF16LE, UTF8, UTF8_WITH_BOM};
 use crate::services::textfile::textfiles::{
     BaseTextFileContent, EncodingMode, ILanguageSupport, ITextFileEditorModel, ITextFileService, ReadTextFileEncodingOptions, ReadTextFileOptions, TextBufferFactoryRef,
     TextFileEditorModelState, TextFileResolveOptions, TextFileResolveReason, TextFileSaveAsOptions, TextFileSaveParticipantContext, TextFileStreamContent,
     TextOrSnapshot, WriteTextFileOptions,
 };
-use crate::services::working_copy::working_copy::{IWorkingCopy, NO_TYPE_ID, WorkingCopyBackup, WorkingCopyBackupContent, WorkingCopyCapabilities, WorkingCopySaveEvent};
+use crate::services::working_copy::working_copy::{IWorkingCopy, NO_TYPE_ID, WorkingCopyBackup, WorkingCopyBackupContent, WorkingCopyCapabilities, WorkingCopyIdentifier, WorkingCopySaveEvent};
+use crate::services::working_copy::working_copy_backup::{IWorkingCopyBackupService, ResolvedWorkingCopyBackup};
 use crate::services::working_copy::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
 use crate::services::working_copy::working_copy_service::IWorkingCopyService;
 
@@ -531,7 +529,7 @@ impl TextFileEditorModel {
         async_fn(async move {
             // Resolve backup if any
             let working_copy: Rc<dyn IWorkingCopy> = this.clone();
-            let backup = this.services.working_copy_backup_service.resolve(working_copy.as_ref()).await?;
+            let backup = this.services.working_copy_backup_service.resolve(&WorkingCopyIdentifier::of(working_copy.as_ref())).await?;
 
             // Resolve preferred encoding if we need it
             let mut encoding = UTF8.to_string();
