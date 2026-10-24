@@ -7,4 +7,6 @@
 pub mod capabilities;
 pub mod terminal_capability_store;
 
+pub mod shell_env_detection_capability;
+
 pub mod command_detection;

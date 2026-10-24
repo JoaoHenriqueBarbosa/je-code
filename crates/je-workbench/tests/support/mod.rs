@@ -16,3 +16,6 @@ pub mod stored_file_working_copy_support;
 
 // Porte de `keybindingEditing.test.ts`.
 pub mod keybinding_editing_support;
+
+// Porte de `terminalCompletionService.test.ts`.
+pub mod terminal_completion_support;

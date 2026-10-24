@@ -110,6 +110,13 @@ pub trait IFileService {
     /// `registerProvider(scheme, provider)`: registers a file system provider for a certain scheme. Rejects when a
     /// provider is already registered for the scheme.
     fn register_provider(&self, scheme: &str, provider: FileSystemProviderRef) -> Result<DisposableRef, Error>;
+
+    /// `realpath(resource)`: resolves the real path of a resource (following symbolic links). Resolves to `None` (the
+    /// `undefined` of the original) when the provider has no `FILE_REALPATH` capability. O padrão é esse resultado, para
+    /// que os dublês que não leem o `realpath` continuem valendo.
+    fn realpath(&self, _resource: &URI) -> Promise<Option<URI>> {
+        Promise::resolved(None)
+    }
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
@@ -189,5 +196,9 @@ impl IFileService for FileService {
 
     fn register_provider(&self, scheme: &str, provider: FileSystemProviderRef) -> Result<DisposableRef, Error> {
         FileService::register_provider(&self.rc(), scheme, provider)
+    }
+
+    fn realpath(&self, resource: &URI) -> Promise<Option<URI>> {
+        FileService::realpath(&self.rc(), resource)
     }
 }
