@@ -25,15 +25,16 @@
 //! - `TestLifecycleService`: o `_phase` e o `startupKind` do original nascem `undefined`; aqui nascem em
 //!   `Starting` e `NewWindow`, porque o contrato [`ILifecycleService`] devolve o valor, não um `Option`.
 //!
-//! Fora deste módulo (e por quê): `TestHistoryService` e `NullFilesConfigurationService` precisam do `EditorInput`
-//! (`IHistoryService.getHistory` e `IFilesConfigurationService.enableAutoSaveAfterShortDelay`), `TestActivityService`
-//! do `ViewContainer` (`onDidChangeActivity: Event<string | ViewContainer>`), `TestWorkingCopyFileService`,
-//! `TestFileService` e `InMemoryTestFileService` do contrato `IWorkingCopyFileService` e `IFileService` (o porte do
+//! Fora deste módulo (e por quê): `TestHistoryService` precisa do `EditorInput` (`IHistoryService.getHistory`),
+//! `TestActivityService` do `ViewContainer` (`onDidChangeActivity: Event<string | ViewContainer>`),
+//! `TestWorkingCopyFileService` do contrato `IWorkingCopyFileService`, `InMemoryTestFileService` do contrato
+//! `IFileService` completo (o `TestFileService` deste módulo implementa o `IFileService` reduzido, porque o porte do
 //! `FileService` é uma struct concreta, sem trait), `TestExtensionService` do `IExtensionService` e
 //! `TestChatEntitlementService` do `IChatEntitlementService` (o chat está fora do escopo do porte). Cada um entra aqui
 //! quando o contrato de que depende for portado.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::JsString;
@@ -42,16 +43,18 @@ use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{self, Disposable, DisposableRef, IDisposable, to_disposable};
-use je_base::map::ResourceSet;
+use je_base::map::{ResourceMap, ResourceSet};
 use je_base::path::PathModule;
 use je_base::platform::Platform;
 use je_base::promise::{DeferredPromise, Promise};
 use je_base::resources::ExtUri;
 use je_base::uri::{Field, URI, UriChange};
-use je_editor::text_resource_configuration_service::ITextResourcePropertiesService;
-use je_platform::configuration::ConfigurationOverrides;
+use je_editor::position::Position;
+use je_editor::text_resource_configuration_service::{ITextResourceConfigurationChangeEvent, ITextResourceConfigurationService, ITextResourcePropertiesService};
 use je_platform::configuration::service::IConfigurationService;
-use je_platform::files::files::{FileStat, FileStatWithMetadata};
+use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, ConfigurationValue};
+use je_platform::files::files::{FileChangesEvent, FileStat, FileStatWithMetadata, FileSystemProviderRef, ResolveFileOptions};
+use je_platform::files::i_file_service::IFileService;
 use je_platform::log::{AbstractLoggerService, LogLevel, LoggerRef, NullLogger};
 use je_platform::markers::{IMarkerService, Marker, MarkerChangeOptions, MarkerData, MarkerReadOptions, MarkerStatistics, ResourceMarker};
 use je_platform::product::ProductService;
@@ -68,6 +71,9 @@ use je_platform::workspace_trust::{
 };
 
 use crate::common::editor::{RevertOptions, SaveOptions, SaveReason};
+use crate::services::files_configuration::files_configuration_service::{
+    IAutoSaveConfiguration, IAutoSaveMode, IFilesConfigurationService, Readonly, ReadonlyUpdate, ResourceOrEditor, SingleReadonlyUpdate,
+};
 use crate::services::lifecycle::lifecycle::{
     BeforeShutdownErrorEvent, BeforeShutdownEvent, ILifecycleService, InternalBeforeShutdownEvent, LifecyclePhase, ShutdownReason, StartupKind,
     WillShutdownEvent, WillShutdownEventJoiner, WillShutdownJoin,
@@ -889,5 +895,199 @@ impl ILifecycleService for TestLifecycleService {
     fn shutdown(&self) -> Promise<()> {
         self.fire_shutdown(None);
         Promise::resolved(())
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `TestFileService`, `TestTextResourceConfigurationService` e `TestFilesConfigurationService`.
+//
+// - `TestFileService` implementa o `IFileService` reduzido de `je_platform::files::i_file_service` (o porte do serviço de
+//   arquivos é uma struct concreta): os métodos que o contrato não tem (`readFile`, `writeFile`, `move`, `watch`...)
+//   entram junto com o contrato. O `resolve` com metadados devolve o `createFileStat(resource, this.readonly)` do original.
+//   O `TestFileService` do original não herda de `Disposable` mas é registrado por `disposables.add(...)`: aqui o
+//   `IDisposable` descarta os emissores.
+// - `TestTextResourceConfigurationService` é do `test/browser/workbenchTestServices.ts`; mora aqui porque os testes de
+//   `common` e de `browser` o usam do mesmo jeito.
+// - `TestFilesConfigurationService` só expõe o `onFilesConfigurationChange` protegido como `testOnFilesConfigurationChange`;
+//   como o `onFilesConfigurationChange` já é público aqui, o tipo é o próprio serviço.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// `TestFilesConfigurationService`.
+pub type TestFilesConfigurationService = crate::services::files_configuration::files_configuration_service::FilesConfigurationService;
+
+/// `NullFilesConfigurationService`: o `IFilesConfigurationService` que não faz nada (os métodos que o original deixa com
+/// `throw new Error('Method not implemented.')` lançam, e `isReadonly` e `updateReadonly` não fazem nada).
+pub struct NullFilesConfigurationService;
+
+impl IFilesConfigurationService for NullFilesConfigurationService {
+    fn on_did_change_auto_save_configuration(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn on_did_change_auto_save_disabled(&self) -> Event<URI> {
+        Event::none()
+    }
+
+    fn get_auto_save_configuration(&self, _resource_or_editor: Option<&ResourceOrEditor>) -> IAutoSaveConfiguration {
+        not_implemented()
+    }
+
+    fn has_short_auto_save_delay(&self, _resource_or_editor: Option<&ResourceOrEditor>) -> bool {
+        not_implemented()
+    }
+
+    fn get_auto_save_mode(&self, _resource_or_editor: Option<&ResourceOrEditor>, _save_reason: Option<SaveReason>) -> IAutoSaveMode {
+        not_implemented()
+    }
+
+    fn toggle_auto_save(&self) -> Promise<()> {
+        not_implemented()
+    }
+
+    fn enable_auto_save_after_short_delay(&self, _resource_or_editor: &ResourceOrEditor) -> DisposableRef {
+        not_implemented()
+    }
+
+    fn disable_auto_save(&self, _resource_or_editor: &ResourceOrEditor) -> DisposableRef {
+        not_implemented()
+    }
+
+    fn on_did_change_readonly(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn is_readonly(&self, _resource: &URI, _stat: Option<&FileStat>) -> Readonly {
+        Readonly::Bool(false)
+    }
+
+    fn update_readonly(&self, _resource: &URI, _readonly: SingleReadonlyUpdate) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn update_readonly_all(&self, _resources: &[URI], _readonly: ReadonlyUpdate) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn on_did_change_files_association(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn is_hot_exit_enabled(&self) -> bool {
+        false
+    }
+
+    fn hot_exit_configuration(&self) -> Option<String> {
+        None
+    }
+
+    fn prevent_save_conflicts(&self, _resource: &URI, _language: Option<&str>) -> bool {
+        not_implemented()
+    }
+}
+
+/// `TestTextResourceConfigurationService`.
+pub struct TestTextResourceConfigurationService {
+    configuration_service: Rc<dyn IConfigurationService>,
+}
+
+impl TestTextResourceConfigurationService {
+    /// `constructor(private configurationService = new TestConfigurationService())`.
+    pub fn new(configuration_service: Rc<dyn IConfigurationService>) -> Rc<Self> {
+        Rc::new(Self { configuration_service })
+    }
+
+    /// `{ resource }`.
+    fn overrides_of(resource: Option<&URI>) -> ConfigurationOverrides {
+        ConfigurationOverrides { resource: resource.cloned(), override_identifier: None }
+    }
+}
+
+impl ITextResourceConfigurationService for TestTextResourceConfigurationService {
+    fn on_did_change_configuration(&self) -> Event<Rc<dyn ITextResourceConfigurationChangeEvent>> {
+        Event::none()
+    }
+
+    fn get_value(&self, resource: Option<&URI>, section: Option<&str>) -> Dynamic {
+        self.configuration_service.get_value(section, Some(&Self::overrides_of(resource)))
+    }
+
+    fn get_value_at(&self, resource: Option<&URI>, position: Option<&Position>, section: Option<&str>) -> Dynamic {
+        // A seção só vale quando a posição vem junto: sem posição o `arg2` do original não é uma seção.
+        let section = if position.is_some() { section } else { None };
+        self.configuration_service.get_value(section, Some(&Self::overrides_of(resource)))
+    }
+
+    fn inspect(&self, resource: Option<&URI>, _position: Option<&Position>, section: &str) -> Rc<dyn ConfigurationValue> {
+        self.configuration_service.inspect(section, &Self::overrides_of(resource))
+    }
+
+    fn update_value(&self, _resource: Option<&URI>, key: &str, value: Dynamic, _configuration_target: Option<ConfigurationTarget>) -> Promise<()> {
+        self.configuration_service.update_value(key, value, None, None)
+    }
+}
+
+/// `TestFileService`.
+pub struct TestFileService {
+    base: Rc<Disposable>,
+    on_did_files_change: Rc<Emitter<Rc<FileChangesEvent>>>,
+    /// `readonly`.
+    pub readonly: Cell<bool>,
+    /// `notExistsSet`.
+    pub not_exists_set: RefCell<ResourceMap<bool>>,
+    providers: RefCell<HashMap<String, FileSystemProviderRef>>,
+}
+
+impl TestFileService {
+    pub fn new() -> Rc<Self> {
+        let base = Disposable::new();
+        let on_did_files_change = Emitter::new();
+        base.register(on_did_files_change.clone());
+        Rc::new(Self {
+            base,
+            on_did_files_change,
+            readonly: Cell::new(false),
+            not_exists_set: RefCell::new(ResourceMap::new()),
+            providers: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// `fireFileChanges(event)`.
+    pub fn fire_file_changes(&self, event: Rc<FileChangesEvent>) {
+        self.on_did_files_change.fire(event);
+    }
+
+    /// `registerProvider(scheme, provider)`.
+    pub fn register_provider(self: &Rc<Self>, scheme: &str, provider: FileSystemProviderRef) -> DisposableRef {
+        self.providers.borrow_mut().insert(scheme.to_string(), provider);
+
+        let this = self.clone();
+        let scheme = scheme.to_string();
+        to_disposable(move || {
+            this.providers.borrow_mut().remove(&scheme);
+        })
+    }
+}
+
+impl IDisposable for TestFileService {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+}
+
+impl IFileService for TestFileService {
+    fn on_did_files_change(&self) -> Event<Rc<FileChangesEvent>> {
+        self.on_did_files_change.event()
+    }
+
+    fn get_provider(&self, scheme: &str) -> Option<FileSystemProviderRef> {
+        self.providers.borrow().get(scheme).cloned()
+    }
+
+    fn resolve_with_metadata(&self, resource: &URI, _options: Option<ResolveFileOptions>) -> Promise<FileStatWithMetadata> {
+        Promise::resolved(create_file_stat(resource, &FileStatOptions { readonly: self.readonly.get(), ..FileStatOptions::default() }))
+    }
+
+    fn exists(&self, resource: &URI) -> Promise<bool> {
+        Promise::resolved(!self.not_exists_set.borrow().has(resource))
     }
 }

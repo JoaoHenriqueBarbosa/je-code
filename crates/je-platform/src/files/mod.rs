@@ -5,6 +5,7 @@ pub mod disk_provider_base;
 pub mod file_service;
 #[allow(clippy::module_inception)] // `files.rs` é o porte de `files.ts`, como no original
 pub mod files;
+pub mod i_file_service;
 pub mod in_memory;
 pub mod io;
 pub mod node_watcher;

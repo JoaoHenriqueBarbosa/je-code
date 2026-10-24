@@ -73,6 +73,14 @@ pub struct WorkingCopyIdentifier {
     pub resource: URI,
 }
 
+impl WorkingCopyIdentifier {
+    /// Uma working copy É um `IWorkingCopyIdentifier` no original (tipagem estrutural): aqui o identificador é montado
+    /// a partir do `typeId` e do `resource` dela.
+    pub fn of(working_copy: &dyn IWorkingCopy) -> Self {
+        Self { type_id: working_copy.working_copy_type_id(), resource: working_copy.resource() }
+    }
+}
+
 /// `IWorkingCopySaveEvent`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkingCopySaveEvent {

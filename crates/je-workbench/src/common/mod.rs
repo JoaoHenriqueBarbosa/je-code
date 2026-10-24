@@ -6,3 +6,5 @@ pub mod notifications;
 pub mod editor;
 
 pub mod memento;
+
+pub mod resources;

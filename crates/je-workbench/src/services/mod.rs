@@ -22,6 +22,7 @@ pub mod extension_management;
 pub mod lifecycle;
 pub mod user_data_profile;
 pub mod working_copy;
+pub mod files_configuration;
 
 // `LabelService`, `AbstractPathService` e os contratos de ambiente e de agente remoto de que eles dependem.
 pub mod environment;
