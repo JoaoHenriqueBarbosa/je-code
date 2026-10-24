@@ -19,7 +19,7 @@ use je_base::event::{Emitter, Event};
 use je_base::hash::StringSha1;
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::uri::URI;
-use je_editor::model::{DefaultEndOfLine, EndOfLinePreference, Eol};
+use je_editor::model::{DefaultEndOfLine, EndOfLinePreference, Eol, TextSnapshot};
 use je_editor::range::Range;
 use je_editor::text_model::{TextSource, create_text_buffer};
 use je_platform::js::to_json;

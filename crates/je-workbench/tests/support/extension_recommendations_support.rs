@@ -584,6 +584,9 @@ impl ToggleGallery {
 async fn run_case<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<RecommendationsFixture>) -> F) {
     let fixture = RecommendationsFixture::new();
     body(fixture.clone()).await;
+    // O `teardown` do mocha roda numa macrotarefa seguinte ao corpo, depois que o `_registerP` de `promptWorkspaceRecommendations`
+    // já registrou o cancelamento do timer de 5 s.
+    timeout(0).await;
     fixture.base.guard.store().dispose();
     timeout(0).await;
     drop(fixture);
@@ -598,6 +601,7 @@ pub fn run<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<Recommendation
 /// como o mocha que espera uma promessa, e os timers de horas do `ExtensionsWorkbenchService` nunca vencem dentro do caso.
 pub fn run_real_clock<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<RecommendationsFixture>) -> F + 'static) {
     const MAX_TURNS: usize = 100_000;
+    super::extension_enablement_support::common::use_wall_clock_date_now();
     let done = Rc::new(Cell::new(false));
     let finished = done.clone();
     je_base::runtime::spawn_local(async move {
