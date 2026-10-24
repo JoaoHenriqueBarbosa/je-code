@@ -104,7 +104,7 @@ fn normalize_color_value(color: &Color) -> Option<String> {
 }
 
 /// A veracidade (`if (value)`) de um valor JSON em JavaScript.
-fn is_truthy(value: &Value) -> bool {
+pub(super) fn is_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(flag) => *flag,
@@ -1275,7 +1275,7 @@ impl Default for LoadResult {
 }
 
 /// `JSON.parse`-like: o valor de `je_base::json` como `serde_json::Value`.
-fn to_serde(value: &js_json::Value) -> Value {
+pub(super) fn to_serde(value: &js_json::Value) -> Value {
     match value {
         js_json::Value::Null => Value::Null,
         js_json::Value::Bool(flag) => Value::Bool(*flag),
