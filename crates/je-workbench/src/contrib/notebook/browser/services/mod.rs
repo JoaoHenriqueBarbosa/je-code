@@ -4,3 +4,4 @@ pub mod notebook_editor_service;
 pub mod notebook_execution_service_impl;
 pub mod notebook_execution_state_service_impl;
 pub mod notebook_kernel_service_impl;
+pub mod notebook_renderer_messaging_service_impl;

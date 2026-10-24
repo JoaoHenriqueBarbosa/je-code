@@ -453,6 +453,10 @@ impl ActiveTestNotebookEditorDelegate {
 }
 
 impl IActiveNotebookEditor for ActiveTestNotebookEditorDelegate {
+    fn get_id(&self) -> String {
+        self.id.clone()
+    }
+
     fn text_model(&self) -> Rc<NotebookTextModel> {
         self.text_model.clone()
     }

@@ -188,6 +188,9 @@ pub trait INotebookKernelService {
 
 service_id!(pub I_NOTEBOOK_KERNEL_SERVICE: dyn INotebookKernelService = "INotebookKernelService");
 
+/// `variablePageSize`: quantas variáveis cabem numa página de filhos.
+pub const VARIABLE_PAGE_SIZE: usize = 100;
+
 /// `INotebookKernelHistoryService`: `getKernels(notebook)` devolve `{ selected, all }`, o mesmo formato do
 /// [`INotebookKernelMatchResult`] nos campos que ele lê.
 pub trait INotebookKernelHistoryService {

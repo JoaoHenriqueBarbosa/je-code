@@ -40,7 +40,7 @@ pub struct IFileIconTheme {
 /// `IReference<INotebookCellOutlineDataSource> | undefined`.
 pub type OutlineDataSourceRef = Option<Reference<Rc<dyn INotebookCellOutlineDataSource>>>;
 
-fn read_bool(configuration_service: &dyn IConfigurationService, key: &str) -> bool {
+pub(super) fn read_bool(configuration_service: &dyn IConfigurationService, key: &str) -> bool {
     matches!(configuration_service.get_value(Some(key), None), Dynamic::Bool(true))
 }
 
