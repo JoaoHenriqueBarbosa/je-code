@@ -111,6 +111,8 @@ pub struct ArrayRef(Rc<ArrayData>);
 
 struct ObjectData {
     class: Option<FunctionRef>,
+    /// O objeto nativo do porte que este objeto representa (ver [`ObjectRef::host`]).
+    host: Option<Rc<dyn std::any::Any>>,
     entries: RefCell<Vec<(JsString, Dynamic)>>,
     frozen: Cell<bool>,
 }
@@ -262,12 +264,12 @@ impl Default for ObjectRef {
 impl ObjectRef {
     /// `{}`.
     pub fn new() -> Self {
-        Self(Rc::new(ObjectData { class: None, entries: RefCell::new(Vec::new()), frozen: Cell::new(false) }))
+        Self(Rc::new(ObjectData { class: None, host: None, entries: RefCell::new(Vec::new()), frozen: Cell::new(false) }))
     }
 
     /// `new Class()`: um objeto vazio cuja classe é `class`.
     pub fn with_class(class: &FunctionRef) -> Self {
-        Self(Rc::new(ObjectData { class: Some(class.clone()), entries: RefCell::new(Vec::new()), frozen: Cell::new(false) }))
+        Self(Rc::new(ObjectData { class: Some(class.clone()), host: None, entries: RefCell::new(Vec::new()), frozen: Cell::new(false) }))
     }
 
     /// Objeto com as propriedades dadas, na ordem do JavaScript.
@@ -281,6 +283,18 @@ impl ObjectRef {
 
     pub fn class(&self) -> Option<&FunctionRef> {
         self.0.class.as_ref()
+    }
+
+    /// Um objeto que carrega um valor nativo do porte. No JavaScript um argumento de comando (um `EditorInput`, um
+    /// grupo) é o próprio objeto vivo; no porte o `Dynamic` não tem como guardar um tipo Rust, então o objeto leva o
+    /// valor como carga opaca, e quem o recebe o recupera com [`ObjectRef::host`] pelo tipo concreto.
+    pub fn with_host<T: 'static>(host: Rc<T>) -> Self {
+        Self(Rc::new(ObjectData { class: None, host: Some(host), entries: RefCell::new(Vec::new()), frozen: Cell::new(false) }))
+    }
+
+    /// A carga nativa de um objeto criado por [`ObjectRef::with_host`], se for do tipo `T`.
+    pub fn host<T: 'static>(&self) -> Option<Rc<T>> {
+        self.0.host.clone()?.downcast::<T>().ok()
     }
 
     /// `object[key]` próprio, `None` se não existe.

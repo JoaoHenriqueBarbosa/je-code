@@ -7,7 +7,7 @@
 //!   [`FindGroupResult`] (`MaybePromise` de uma tupla). O `accessor` é o [`ServicesAccessor`]. As sobrecargas que só
 //!   diferem no tipo estático do grupo preferido (`AUX_WINDOW_GROUP`, `MODAL_GROUP` sempre assíncronas) colapsam numa
 //!   função: o `MaybePromise` carrega a diferença.
-//! - **Grupos e serviço de grupos** vêm de [`editor_group_contracts`](super::editor_group_contracts), o recorte que o
+//! - **Grupos e serviço de grupos** vêm de [`editor_groups_service`](super::editor_groups_service), o recorte que o
 //!   porte tem do `IEditorGroupsService`.
 //! - **Comparações de grupo** (`editorGroupService.activeGroup !== group`) comparam o `id` do grupo.
 //! - **`handleModalEditorPart`** é `async`: o `await modalEditorPart.close()` (um `boolean`) custa uma rodada de
@@ -23,7 +23,7 @@ use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfiguratio
 use je_platform::opener::editor_types::EditorActivation;
 
 use crate::common::editor::{EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, TextEditorOptions, UntypedEditorInput};
-use crate::services::editor::editor_group_contracts::{
+use crate::services::editor::editor_groups_service::{
     AUX_WINDOW_GROUP, FindGroupScope, GroupRef, GroupsOrder, I_EDITOR_GROUPS_SERVICE, IEditorGroup, IEditorGroupsService, IEditorPart, IModalEditorPart, MODAL_GROUP,
     PreferredGroup, SIDE_GROUP, UseModalEditorMode, preferred_side_by_side_group_direction, use_modal_editor_mode,
 };

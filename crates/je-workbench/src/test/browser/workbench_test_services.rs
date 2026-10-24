@@ -679,27 +679,81 @@ mod editor_inputs {
     pub type TestForceRevealFileEditorInput = TestFileEditorInput;
 }
 
-// `TestEditorGroupsService`, reduzido ao contrato `IEditorGroupsService` do porte (só os `groups`). A classe do original
-// recebe os `IEditorGroupView[]` e acrescenta dezenas de membros de layout, que entram junto com o contrato.
+// `TestEditorGroupsService` sobre o contrato `IEditorGroupsService` do porte. Como no original, `activeGroup` é o
+// primeiro grupo, `getGroups` devolve os grupos na ordem de criação, `mainPart` é o próprio serviço, não há parte modal
+// ativa, e os membros que o dublê do original não implementa lançam `not implemented`.
 // ---------------------------------------------------------------------------------------------------------------------
 
-use crate::services::editor::editor_groups_service::{IEditorGroup, IEditorGroupsService};
+use je_base::errors::{Error, throw};
+use je_platform::opener::editor_types::{AuxiliaryEditorOptions, ModalEditorPartOptions};
+
+use crate::common::editor::GroupIdentifier;
+use crate::services::editor::editor_groups_service::{
+    FindGroupScope, GroupDirection, GroupRef, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart, IModalEditorPart,
+};
 
 /// `TestEditorGroupsService`.
 pub struct TestEditorGroupsService {
+    this: std::rc::Weak<TestEditorGroupsService>,
     groups: Vec<Rc<dyn IEditorGroup>>,
 }
 
 impl TestEditorGroupsService {
-    /// `constructor(public groups: IEditorGroupView[] = [])`.
+    /// `constructor(public groups: TestEditorGroupView[] = [])`.
     pub fn new(groups: Option<Vec<Rc<dyn IEditorGroup>>>) -> Rc<Self> {
-        Rc::new(Self { groups: groups.unwrap_or_default() })
+        Rc::new_cyclic(|this| Self { this: this.clone(), groups: groups.unwrap_or_default() })
+    }
+}
+
+impl IEditorPart for TestEditorGroupsService {
+    fn active_group(&self) -> Rc<dyn IEditorGroup> {
+        self.groups[0].clone()
+    }
+
+    fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
+        self.groups.clone()
     }
 }
 
 impl IEditorGroupsService for TestEditorGroupsService {
+    fn active_group(&self) -> Rc<dyn IEditorGroup> {
+        self.groups[0].clone()
+    }
+
     fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
         self.groups.clone()
+    }
+
+    fn get_groups(&self, _order: GroupsOrder) -> Vec<Rc<dyn IEditorGroup>> {
+        self.groups.clone()
+    }
+
+    fn get_group(&self, identifier: GroupIdentifier) -> Option<Rc<dyn IEditorGroup>> {
+        self.groups.iter().find(|group| group.id() == identifier).cloned()
+    }
+
+    fn find_group(&self, _scope: &FindGroupScope) -> Option<Rc<dyn IEditorGroup>> {
+        throw(Error::new("not implemented"))
+    }
+
+    fn add_group(&self, _location: Option<GroupRef>, _direction: GroupDirection) -> Rc<dyn IEditorGroup> {
+        throw(Error::new("not implemented"))
+    }
+
+    fn main_part(&self) -> Rc<dyn IEditorPart> {
+        self.this.upgrade().expect("o serviço está vivo enquanto é usado")
+    }
+
+    fn create_auxiliary_editor_part(&self, _options: Option<AuxiliaryEditorOptions>) -> Promise<Rc<dyn IEditorPart>> {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn create_modal_editor_part(&self, _options: Option<ModalEditorPartOptions>) -> Promise<Rc<dyn IModalEditorPart>> {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn active_modal_editor_part(&self) -> Option<Rc<dyn IModalEditorPart>> {
+        None
     }
 }
 
@@ -1222,6 +1276,7 @@ mod quick_input_and_extension {
 
     use je_base::JsString;
     use je_base::dynamic::Dynamic;
+    use je_base::event::Event;
     use je_base::promise::Promise;
     use je_platform::quickinput::quick_input::{IInputOptions, IPickOptions, IQuickInputService, IQuickItem, IQuickPickItem};
 
@@ -1285,6 +1340,16 @@ mod quick_input_and_extension {
         fn get_extension(&self, id: &str) -> Promise<Option<IExtensionDescription>> {
             let stubbed = self.extensions.borrow().iter().rfind(|(stubbed_id, _)| stubbed_id == id).map(|(_, description)| description.clone());
             Promise::resolved(stubbed)
+        }
+
+        /// `onDidRegisterExtensions = Event.None`.
+        fn on_did_register_extensions(&self) -> Event<()> {
+            Event::none()
+        }
+
+        /// `whenInstalledExtensionsRegistered() { return Promise.resolve(true); }`.
+        fn when_installed_extensions_registered(&self) -> Promise<bool> {
+            Promise::resolved(true)
         }
     }
 }

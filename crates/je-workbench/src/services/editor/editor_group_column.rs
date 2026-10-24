@@ -7,13 +7,13 @@
 //!   passar a importar daqui. Uma coluna que não é um índice inteiro dentro da lista (`editorGroups[1.5]`, `NaN`,
 //!   negativa) não acha grupo, como o acesso por índice do JavaScript.
 //! - **`column = ACTIVE_GROUP`** (parâmetro com valor padrão) é `Option<EditorGroupColumn>`, em que `None` é o `undefined`.
-//! - **`indexOf`** compara o `id` do grupo (ver [`editor_group_contracts`](super::editor_group_contracts)) e o `-1` de "não
+//! - **`indexOf`** compara o `id` do grupo (ver [`editor_groups_service`](super::editor_groups_service)) e o `-1` de "não
 //!   achou" é `-1.0`.
 
 use je_platform::configuration::service::IConfigurationService;
 
 use crate::common::editor::GroupIdentifier;
-use crate::services::editor::editor_group_contracts::{
+use crate::services::editor::editor_groups_service::{
     ACTIVE_GROUP, AUX_WINDOW_GROUP, GroupRef, GroupsOrder, IEditorGroup, IEditorGroupsService, MODAL_GROUP, SIDE_GROUP, preferred_side_by_side_group_direction,
 };
 

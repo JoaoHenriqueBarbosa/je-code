@@ -6,7 +6,7 @@
 //! - **Injeção.** Os parâmetros decorados do construtor são a tupla `Deps` do [`Injectable`], na ordem do original; a classe
 //!   herda de `Disposable`, aqui um `Disposable` guardado no campo `base`. `registerSingleton(..., Eager)` é [`register`].
 //!   Os contratos que o porte ainda não tem por inteiro são os reduzidos de
-//!   [`editor_group_contracts`](super::editor_group_contracts) (`IEditorGroupsService`) e de
+//!   [`editor_groups_service`](super::editor_groups_service) (`IEditorGroupsService`) e de
 //!   [`extension_service_contract`](super::extension_service_contract) (`IExtensionService`).
 //! - **`invokeFunction(findGroup, ...)`** é `invoke_function` do serviço de instanciação chamando
 //!   [`find_group`](super::editor_group_finder::find_group); o `createInstance(SideBySideEditorInput, ...)` busca o
@@ -36,14 +36,12 @@
 //!   configurações (`user_data_sync::abstract_synchronizer`). O cache, que o original lê com `new Set(JSON.parse(...))`, só
 //!   guarda os textos (os padrões são sempre texto) e lança `TypeError` quando o valor guardado não é uma lista.
 //! - **Comando `_workbench.editor.configureDefaultEditor`.** O `executeCommand(CONFIGURE_DEFAULT_EDITOR_COMMAND_ID,
-//!   untypedInput, currentEditor, group.id)` passa objetos vivos, e o `Dynamic` dos argumentos de comando não carrega
-//!   objetos do porte. Os três argumentos viajam numa [`ConfigureDefaultEditorArgs`] guardada numa tabela da thread e o
-//!   comando recebe um só argumento, o número que a identifica: o tratador (que fica no `openWithEditorPicker`) lê
-//!   [`ConfigureDefaultEditorArgs::from_command_args`], e a entrada é solta quando a promessa do comando assenta. A
-//!   constante do identificador mora aqui até o `openWithEditorPicker.ts` ser portado.
+//!   untypedInput, currentEditor, group.id)` passa objetos vivos: o `untypedInput` e o `currentEditor` viajam como
+//!   objetos com carga nativa ([`ObjectRef::with_host`]) e o `group.id` como número, e o tratador (que fica no
+//!   `openWithEditorPicker`) os lê com [`ConfigureDefaultEditorArgs::from_command_args`]. A constante do identificador
+//!   mora aqui até o `openWithEditorPicker.ts` ser portado.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use je_base::JsString;
@@ -63,7 +61,7 @@ use je_instantiation::{Injectable, InstantiationService, InstantiationType, regi
 use je_platform::commands::commands::ICommandService;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::ConfigurationOverrides;
-use je_platform::log::{LogServiceRef, Logger};
+use je_platform::log::LogServiceRef;
 use je_platform::notification::notification::{BasePromptChoice, INotificationService, PromptChoice, PromptChoiceKind, Severity};
 use je_platform::opener::editor_types::{EditorActivation, EditorOverride, EditorResolution};
 use je_platform::resources::ext_uri;
@@ -72,13 +70,12 @@ use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::user_data_sync::abstract_synchronizer::{parse_json, stringify_json};
 use je_storage::StorageValue;
 
-use crate::common::editor::editor_input::EditorInput;
 use crate::common::editor::side_by_side_editor_input::SideBySideEditorInput;
 use crate::common::editor::{
     DEFAULT_EDITOR_ASSOCIATION_ID, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorResourceAccessor, EditorResourceAccessorOptions, GroupIdentifier,
     SideBySideEditor, TextEditorOptions, UntypedEditorInput, default_editor_association, is_same_editor,
 };
-use crate::services::editor::editor_group_contracts::{EditorInputWithOptionsAndGroup, IEditorGroup, IEditorGroupsService, PreferredGroup};
+use crate::services::editor::editor_groups_service::{EditorInputWithOptionsAndGroup, IEditorGroup, IEditorGroupsService, PreferredGroup};
 use crate::services::editor::editor_group_finder::{FindGroupEditor, find_group};
 use crate::services::editor::editor_service::I_EDITOR_SERVICE;
 use crate::services::editor::editor_resolver_service::{
@@ -88,7 +85,7 @@ use crate::services::editor::editor_resolver_service::{
     RegisteredEditorRegistrationPriority, ResolvedEditor, ResolvedStatus, SinglePerResource, glob_matches_resource, is_unconfigured_universal_optional_editor_match,
     priority_to_rank, to_registered_editor_priority_info,
 };
-use crate::services::editor::extension_service_contract::IExtensionService;
+use crate::services::extensions::extensions::IExtensionService;
 
 /// `CONFIGURE_DEFAULT_EDITOR_COMMAND_ID` de `openWithEditorPicker.ts`.
 pub const CONFIGURE_DEFAULT_EDITOR_COMMAND_ID: &str = "_workbench.editor.configureDefaultEditor";
@@ -101,30 +98,26 @@ pub struct ConfigureDefaultEditorArgs {
     pub group_id: GroupIdentifier,
 }
 
-thread_local! {
-    static PENDING_CONFIGURE_DEFAULT_EDITOR_ARGS: RefCell<HashMap<u64, ConfigureDefaultEditorArgs>> = RefCell::default();
-    static NEXT_CONFIGURE_DEFAULT_EDITOR_TOKEN: Cell<u64> = const { Cell::new(1) };
-}
-
 impl ConfigureDefaultEditorArgs {
-    /// Guarda os argumentos e devolve o número que os identifica (o único argumento do comando).
-    fn stash(self) -> u64 {
-        let token = NEXT_CONFIGURE_DEFAULT_EDITOR_TOKEN.with(|next| next.replace(next.get() + 1));
-        PENDING_CONFIGURE_DEFAULT_EDITOR_ARGS.with(|pending| pending.borrow_mut().insert(token, self));
-        token
+    /// `untypedInput, currentEditor, group.id`: os argumentos do `executeCommand`.
+    fn to_command_args(&self) -> Vec<Dynamic> {
+        vec![
+            Dynamic::Object(ObjectRef::with_host(Rc::new(self.untyped_editor.clone()))),
+            Dynamic::Object(ObjectRef::with_host(Rc::new(self.current_editor.clone()))),
+            Dynamic::Number(self.group_id as f64),
+        ]
     }
 
-    /// Solta os argumentos guardados sob o número.
-    fn release(token: u64) {
-        PENDING_CONFIGURE_DEFAULT_EDITOR_ARGS.with(|pending| pending.borrow_mut().remove(&token));
-    }
-
-    /// Lê os argumentos do comando que o resolvedor executa: `None` quando o primeiro argumento não é um número guardado.
+    /// Lê os argumentos do comando que o resolvedor executa: `None` quando eles não têm essa forma.
     pub fn from_command_args(args: &[Dynamic]) -> Option<ConfigureDefaultEditorArgs> {
-        let Some(Dynamic::Number(token)) = args.first() else {
+        let [Dynamic::Object(untyped_editor), Dynamic::Object(current_editor), Dynamic::Number(group_id), ..] = args else {
             return None;
         };
-        PENDING_CONFIGURE_DEFAULT_EDITOR_ARGS.with(|pending| pending.borrow().get(&(*token as u64)).cloned())
+        Some(ConfigureDefaultEditorArgs {
+            untyped_editor: (*untyped_editor.host::<UntypedEditorInput>()?).clone(),
+            current_editor: (*current_editor.host::<EditorInputRef>()?).clone(),
+            group_id: *group_id as GroupIdentifier,
+        })
     }
 }
 
@@ -1190,13 +1183,8 @@ impl EditorResolverService {
                 let command_service = this.command_service.clone();
                 let args = ConfigureDefaultEditorArgs { untyped_editor: untyped_input, current_editor, group_id: group.id() };
                 Rc::new(move || {
-                    let token = args.clone().stash();
                     // O resultado não é lido, como no original.
-                    drop(
-                        command_service
-                            .execute_command(CONFIGURE_DEFAULT_EDITOR_COMMAND_ID, vec![Dynamic::Number(token as f64)])
-                            .finally(move || ConfigureDefaultEditorArgs::release(token)),
-                    );
+                    drop(command_service.execute_command(CONFIGURE_DEFAULT_EDITOR_COMMAND_ID, args.to_command_args()));
                 })
             };
             let choice = |label: String, run: Rc<dyn Fn()>| {

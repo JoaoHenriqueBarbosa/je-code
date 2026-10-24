@@ -43,7 +43,7 @@ use je_platform::configuration::registry::{ConfigurationNode, ConfigurationNodeD
 use je_platform::resources::ext_uri;
 
 use crate::common::editor::{EditorInputWithOptions, UntypedEditorInput};
-use crate::services::editor::editor_group_contracts::{EditorInputWithOptionsAndGroup, IEditorGroup, PreferredGroup};
+use crate::services::editor::editor_groups_service::{EditorInputWithOptionsAndGroup, IEditorGroup, PreferredGroup};
 
 // region: Editor Associations
 
