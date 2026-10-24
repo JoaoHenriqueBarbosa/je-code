@@ -182,7 +182,17 @@ impl AbstractPolicyService {
         self.policy_definitions.borrow().iter().find(|(n, _)| n == name).map(|(_, d)| d.clone())
     }
 
-    fn get_policy_values(&self) -> PolicyValues {
+    /// `this.policyDefinitions[name] = definition`: troca a definição (ou acrescenta ao fim) sem avisar ninguém.
+    pub fn set_definition(&self, name: &str, definition: PolicyDefinitionRef) {
+        let mut definitions = self.policy_definitions.borrow_mut();
+        match definitions.iter_mut().find(|(existing, _)| existing == name) {
+            Some(entry) => entry.1 = definition,
+            None => definitions.push((name.to_owned(), definition)),
+        }
+    }
+
+    /// `getPolicyValues()`.
+    pub fn get_policy_values(&self) -> PolicyValues {
         self.policies.borrow().iter().map(|(name, value)| (name.clone(), value.clone())).collect()
     }
 

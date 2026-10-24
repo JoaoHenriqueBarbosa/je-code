@@ -131,24 +131,25 @@ impl IDisposable for FileManagedSettingsChannel {
 }
 
 /// Um valor recebido do servidor: o atual, se já chegou algum, e o evento de mudança.
-struct Snapshot<T: Clone + 'static> {
+/// Compartilhado com o cliente do canal das configurações nativas (`native_managed_settings_ipc`), que tem a mesma lógica.
+pub(super) struct Snapshot<T: Clone + 'static> {
     value: RefCell<T>,
     has_received: Cell<bool>,
-    on_did_change: Rc<Emitter<T>>,
+    pub(super) on_did_change: Rc<Emitter<T>>,
     equal: fn(&T, &T) -> bool,
 }
 
 impl<T: Clone + 'static> Snapshot<T> {
-    fn new(initial: T, equal: fn(&T, &T) -> bool) -> Rc<Self> {
+    pub(super) fn new(initial: T, equal: fn(&T, &T) -> bool) -> Rc<Self> {
         Rc::new(Self { value: RefCell::new(initial), has_received: Cell::new(false), on_did_change: Emitter::new(), equal })
     }
 
-    fn get(&self) -> T {
+    pub(super) fn get(&self) -> T {
         self.value.borrow().clone()
     }
 
     /// `updateRawManagedSettings` / `updateManagedSettings`.
-    fn update(&self, value: T, fire_event: bool) {
+    pub(super) fn update(&self, value: T, fire_event: bool) {
         self.has_received.set(true);
         if (self.equal)(&self.value.borrow(), &value) {
             return;
@@ -161,7 +162,7 @@ impl<T: Clone + 'static> Snapshot<T> {
     }
 
     /// O instantâneo inicial só vale se nenhum evento chegou antes dele.
-    fn update_unless_received(&self, value: T, fire_event: bool) {
+    pub(super) fn update_unless_received(&self, value: T, fire_event: bool) {
         if !self.has_received.get() {
             self.update(value, fire_event);
         }

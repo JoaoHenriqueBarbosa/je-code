@@ -1,11 +1,10 @@
-//! Porte PARCIAL de `src/vs/platform/policy/common/copilotManagedSettings.ts`: só o que o
-//! `fileManagedSettingsService` e o `managedSettingsFreshness` exigem (e que o teste
-//! `fileManagedSettingsService.test.ts` exercita): as chaves, a normalização do documento
-//! ([`normalize_managed_settings`]), a resolução entre os canais de entrega ([`pick_managed_settings`]), o
-//! `value` da política do modelo ([`managed_model_value`]) e o serviço de arquivo
-//! ([`IFileManagedSettingsService`]). O resto do original (o serviço efetivo, o serviço nativo, a projeção
-//! por declaração, `requiresCopilotAgentHost`, `resolveForceRemoteSettingsRefresh`...) fica para a fatia que
-//! porta o arquivo inteiro e estende este.
+//! Porte de `src/vs/platform/policy/common/copilotManagedSettings.ts`: as chaves das configurações
+//! gerenciadas, a normalização do documento ([`normalize_managed_settings`]), a resolução entre os canais de
+//! entrega ([`pick_managed_settings`], [`resolve_force_remote_settings_refresh`]), os callbacks `value` das
+//! políticas ([`managed_setting_value`], [`managed_model_value`], [`managed_settings_disabled_value`],
+//! [`third_party_agent_enabled_value`]), o serviço efetivo ([`IManagedSettingsService`]), o serviço nativo
+//! ([`INativeManagedSettingsService`]), o serviço de arquivo ([`IFileManagedSettingsService`]) e a projeção
+//! por declaração ([`collect_managed_settings_definitions`], [`project_managed_settings`]).
 //!
 //! Decisões de tradução:
 //! - **`RawManagedSettingsData`** (`Readonly<Record<string, unknown>>`) é um [`Dynamic`] que é sempre um
@@ -18,22 +17,39 @@
 //!   propriedades próprias: o [`Dynamic`] não tem protótipos, e o documento vem do JSON.
 //! - `ref` de uma origem de marketplace só vale se for texto não vazio (o tipo do original é `string`).
 //! - `managedModelValue()` devolve sempre o mesmo [`PolicyValueFn`] (a mesma função por `Rc::ptr_eq`), como
-//!   o original memoiza o callback.
+//!   o original memoiza o callback; o mesmo vale para [`managed_setting_value`], memoizado por chave.
+//! - **`ManagedSettingsData`** não tem o buraco `undefined` do original (`{ a: undefined }`): uma chave ausente
+//!   e uma chave indefinida se comportam igual na resolução, e o mapa só guarda valores definidos.
+//! - **`managedSettings` de uma `PolicyDefinition`** é um [`Dynamic`] (o tipo da definição de política não
+//!   conhece `IManagedSettingsPolicyDefinitions`); [`collect_managed_settings_definitions`] o converte para o
+//!   mapa tipado de `je_base::policy`, ignorando uma declaração cujo `type` não é `string`, `number` nem
+//!   `boolean` (o tipo do original impede essa forma).
+//! - **`MANAGED_SETTINGS_CONTROL_DEFINITIONS`** é um `LazyLock` (o literal constante do original).
+//! - **`managedSettingsDisabledValue` e `thirdPartyAgentEnabledValue`** devolvem `Option<PolicyValue>` (o
+//!   `boolean | undefined` do original) para plugarem direto em `PolicyValueFn::new`, como o original os passa
+//!   como `value` de uma política.
+//! - **`IManagedSettingsService.onDidChangeManagedSettings`** (`Event<void>`) é `Event<()>`.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 use je_base::JsString;
 use je_base::default_account::IPolicyData;
 use je_base::dynamic::{Dynamic, json_stringify, number_to_js_string};
 use je_base::event::Event;
+use je_base::json::{self, ParseOptions, Value};
 use je_base::managed_settings::{ExtraKnownMarketplace, ExtraKnownMarketplaceSource, IExtraKnownMarketplaceEntry, extra_known_marketplaces_to_config_dict};
 pub use je_base::policy::ManagedSettingsData;
-use je_base::policy::{ManagedSettingValue, PolicyValue, PolicyValueFn};
+use je_base::policy::{IManagedSettingPolicyDefinition, IManagedSettingsPolicyDefinitions, ManagedSettingType, ManagedSettingValue, PolicyValue, PolicyValueFn};
 use je_base::promise::Promise;
-use je_base::types::is_object;
+use je_base::types::{is_empty_object, is_object};
 use je_instantiation::service_id;
 
+use super::policy::{PolicyDefinitionRef, PolicyDefinitions};
+use crate::configuration::service::IConfigurationService;
+use crate::configuration::{ConfigurationOverrides, ConfigurationValue};
 use crate::js::{to_js_string, trim};
 
 /// `RawManagedSettingsData`: o documento como veio do arquivo, sempre um objeto.
@@ -63,6 +79,15 @@ pub fn has_raw_managed_settings(data: Option<&RawManagedSettingsData>) -> bool {
         is_managed_setting_governance_active(&key)
     })
 }
+
+/// Windows registry root for GitHub Copilot policies.
+pub const GITHUB_COPILOT_WIN32_REGISTRY_PATH: &str = "SOFTWARE\\Policies\\GitHubCopilot";
+
+/// Windows product name passed to the native policy watcher.
+pub const GITHUB_COPILOT_WIN32_POLICY_NAME: &str = "GitHubCopilot";
+
+/// macOS CFPreferences application ID for GitHub Copilot managed preferences.
+pub const GITHUB_COPILOT_MACOS_BUNDLE_ID: &str = "com.github.copilot";
 
 /// MDM key for the V0 managed setting.
 pub const COPILOT_DISABLE_BYPASS_PERMISSIONS_MODE_KEY: &str = "permissions.disableBypassPermissionsMode";
@@ -94,8 +119,17 @@ pub const COPILOT_ALLOW_MANAGED_MCP_SERVERS_ONLY_KEY: &str = "allowManagedMcpSer
 /// Managed-settings key that allows hooks only from managed sources.
 pub const COPILOT_ALLOW_MANAGED_HOOKS_ONLY_KEY: &str = "allowManagedHooksOnly";
 
+/// Managed-settings transport control that requires a fresh server fetch on startup.
+pub const COPILOT_FORCE_REMOTE_SETTINGS_REFRESH_KEY: &str = "forceRemoteSettingsRefresh";
+
+/// Enterprise escape hatch for automatic Copilot harness routing in VS Code.
+pub const COPILOT_TEMPORARY_DEFAULT_TO_LOCAL_HARNESS_KEY: &str = "vscode.temporaryDefaultToLocalHarness";
+
 /// Temporary managed permission for Local, Claude, and Codex harnesses; only false prohibits them.
 pub const COPILOT_TEMPORARY_ALLOW_LOCAL_HARNESS_KEY: &str = "vscode.temporaryAllowLocalHarness";
+
+/// Policy-only configuration projection of the Local harness escape hatch.
+pub const TEMPORARY_DEFAULT_TO_LOCAL_HARNESS_SETTING_ID: &str = "chat.temporaryDefaultToLocalHarness";
 
 /// Enterprise-mandated sandbox floor (`sandbox.enabled` in the runtime's managed-settings schema).
 /// The runtime owns composing and enforcing this floor: it is `force-on-wins`, so a managed `true`
@@ -142,6 +176,58 @@ pub const COPILOT_SANDBOX_ALLOW_DEV_TOOL_ACCESS_KEY: &str = "sandbox.allowDevToo
 /// Auto startup default, read as one atomic value across managed delivery channels.
 pub const COPILOT_AUTO_TIER_KEY: &str = "autoTier";
 
+/// `IManagedSettingPolicyDefinition` com o `type` dado.
+pub fn managed_setting_definition(type_: ManagedSettingType) -> IManagedSettingPolicyDefinition {
+    IManagedSettingPolicyDefinition { r#type: type_, extra: Default::default() }
+}
+
+/// Managed-settings controls consumed by the delivery pipeline itself rather than by a
+/// configuration policy. Native MDM must watch these even though no setting declares them.
+pub static MANAGED_SETTINGS_CONTROL_DEFINITIONS: LazyLock<IManagedSettingsPolicyDefinitions> = LazyLock::new(|| {
+    use ManagedSettingType::{Boolean, String as Text};
+    let permission_rules = COPILOT_PERMISSION_RULES_KEYS.into_iter().map(|key| (key, Text));
+    let controls = [
+        ("permissions.defaultMode", Text),
+        ("permissions.disableAssistedPermissionsMode", Boolean),
+        (COPILOT_DISABLE_BYPASS_PERMISSIONS_MODE_KEY, Text),
+        ("permissions.limitTo", Text),
+        ("permissions.model", Text),
+        (COPILOT_FORCE_REMOTE_SETTINGS_REFRESH_KEY, Boolean),
+        (COPILOT_STRICT_MARKETPLACES_KEY, Text),
+        (COPILOT_TEMPORARY_ALLOW_LOCAL_HARNESS_KEY, Boolean),
+        (COPILOT_SANDBOX_ENABLED_KEY, Boolean),
+        (COPILOT_SANDBOX_MCP_SERVERS_KEY, Boolean),
+        (COPILOT_SANDBOX_LSP_SERVERS_KEY, Boolean),
+        (COPILOT_SANDBOX_AUTH_GIT_KEY, Boolean),
+        (COPILOT_SANDBOX_AUTH_GH_KEY, Boolean),
+        (COPILOT_SANDBOX_ALLOW_BYPASS_KEY, Boolean),
+        (COPILOT_SANDBOX_ALLOW_OUTBOUND_KEY, Boolean),
+        (COPILOT_SANDBOX_ALLOW_LOCAL_NETWORK_KEY, Boolean),
+        (COPILOT_SANDBOX_ALLOWED_HOSTS_KEY, Text),
+        (COPILOT_SANDBOX_READWRITE_PATHS_KEY, Text),
+        (COPILOT_SANDBOX_READONLY_PATHS_KEY, Text),
+        (COPILOT_SANDBOX_DENIED_PATHS_KEY, Text),
+        (COPILOT_SANDBOX_ALLOW_DEV_TOOL_ACCESS_KEY, Boolean),
+        (COPILOT_AUTO_TIER_KEY, Text),
+        // Observe these only for whole-block source selection; Local does not implement their capture semantics.
+        ("telemetry.capture.prompts", Boolean),
+        ("telemetry.capture.responses", Boolean),
+        ("telemetry.capture.toolArguments", Boolean),
+        ("telemetry.capture.toolOutput", Boolean),
+        ("telemetry.capture.policyDetail", Boolean),
+    ];
+    permission_rules.chain(controls).map(|(key, type_)| (key.to_owned(), managed_setting_definition(type_))).collect()
+});
+
+/// Policy-only configuration delivery slot for [`COPILOT_STRICT_PLUGIN_ONLY_CUSTOMIZATION_KEY`].
+pub const COPILOT_STRICT_PLUGIN_ONLY_CUSTOMIZATION_CONFIG: &str = "chat.customizations.strictPluginOnlyCustomization";
+
+/// Policy-only configuration delivery slot for [`COPILOT_ALLOW_MANAGED_MCP_SERVERS_ONLY_KEY`].
+pub const COPILOT_ALLOW_MANAGED_MCP_SERVERS_ONLY_CONFIG: &str = "chat.mcp.allowManagedServersOnly";
+
+/// Policy-only configuration delivery slot for [`COPILOT_ALLOW_MANAGED_HOOKS_ONLY_KEY`].
+pub const COPILOT_ALLOW_MANAGED_HOOKS_ONLY_CONFIG: &str = "chat.hooks.allowManagedOnly";
+
 /// Legacy managed-settings key for the default chat model, nested under `permissions` so it flattens
 /// to `permissions.model`. Retained for original-schema deployments; superseded by the top-level
 /// [`COPILOT_TOP_LEVEL_MODEL_KEY`], which wins when both are present (see [`managed_model_value`]).
@@ -150,6 +236,36 @@ pub const COPILOT_MODEL_KEY: &str = "permissions.model";
 /// Canonical top-level managed-settings key for the default chat model (flattens to the bag key
 /// `model`). Supersedes the legacy nested [`COPILOT_MODEL_KEY`] when both are present.
 pub const COPILOT_TOP_LEVEL_MODEL_KEY: &str = "model";
+
+/// Enterprise OTel managed-settings keys. These are the scalar leaves of the canonical
+/// `telemetry` block from the cross-client managed-settings schema; they flatten to dot-path bag keys via
+/// [`normalize_managed_settings`], so no structured-table entry is needed. The
+/// `telemetry.resourceAttributes` and `telemetry.headers` map fields are structured (rows of the structured
+/// table carry them as JSON-encoded objects under their nested keys); `telemetry.serviceName` is a scalar.
+///
+/// Managed-settings key for enterprise OTel enablement.
+pub const COPILOT_OTEL_ENABLED_KEY: &str = "telemetry.enabled";
+
+/// Managed-settings key for the enterprise OTLP collector endpoint.
+pub const COPILOT_OTEL_ENDPOINT_KEY: &str = "telemetry.endpoint";
+
+/// Managed-settings key for the enterprise OTel file export destination.
+pub const COPILOT_OTEL_FILE_PATH_KEY: &str = "telemetry.filePath";
+
+/// Managed-settings key for the enterprise OTLP protocol (`http/json`, `http/protobuf`, or `grpc`).
+pub const COPILOT_OTEL_PROTOCOL_KEY: &str = "telemetry.protocol";
+
+/// Managed-settings key for enterprise OTel content capture.
+pub const COPILOT_OTEL_CAPTURE_CONTENT_KEY: &str = "telemetry.captureContent";
+
+/// Managed-settings key for independently governed OTel identity capture.
+pub const COPILOT_OTEL_CAPTURE_IDENTITY_KEY: &str = "telemetry.capture.identity";
+
+/// Managed-settings key that prevents users from enabling OTel content capture themselves.
+pub const COPILOT_OTEL_LOCK_CAPTURE_CONTENT_KEY: &str = "telemetry.lockCaptureContent";
+
+/// Managed-settings key for the OTel `service.name` resource attribute.
+pub const COPILOT_OTEL_SERVICE_NAME_KEY: &str = "telemetry.serviceName";
 
 /// Managed-settings key for the OTel `resourceAttributes` map (a `{ [k]: string }` map).
 pub const COPILOT_OTEL_RESOURCE_ATTRIBUTES_KEY: &str = "telemetry.resourceAttributes";
@@ -165,6 +281,122 @@ const TELEMETRY_BLOCK_KEY: &str = "telemetry";
 /// Whether a canonical bag key belongs to the telemetry block.
 fn is_telemetry_setting_key(key: &str) -> bool {
     key == TELEMETRY_BLOCK_KEY || key.starts_with(&format!("{TELEMETRY_BLOCK_KEY}."))
+}
+
+thread_local! {
+    static MANAGED_SETTING_VALUE_CALLBACKS: RefCell<HashMap<String, PolicyValueFn>> = RefCell::new(HashMap::new());
+}
+
+/// Standard pass-through `value` callback for a managed-settings-driven policy: locks the setting
+/// to the managed value when the enterprise has set it, and returns `undefined` otherwise so the
+/// user's own setting falls through. Use for the common case; policies that combine the managed
+/// value with other conditions (e.g. `chat_preview_features_enabled`) keep a custom callback.
+///
+/// The callback is memoized per key, so repeated calls for the same key return the SAME function
+/// (the same `Rc`, compared with `==`). That identity is what lets `isSamePolicyDefinition` skip needless
+/// re-registration, and memoizing makes the guarantee hold regardless of where the helper is called.
+pub fn managed_setting_value(key: &str) -> PolicyValueFn {
+    MANAGED_SETTING_VALUE_CALLBACKS.with(|callbacks| {
+        callbacks
+            .borrow_mut()
+            .entry(key.to_owned())
+            .or_insert_with(|| {
+                let key = key.to_owned();
+                PolicyValueFn::new(move |policy_data: &IPolicyData| policy_data.managed_settings.as_ref().and_then(|settings| settings.get(&key)).cloned())
+            })
+            .clone()
+    })
+}
+
+/// `IForceRemoteSettingsRefreshResolution`: `{ effective: true, source } | { effective: false }`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IForceRemoteSettingsRefreshResolution {
+    Effective { source: ManagedSettingsChannel },
+    NotEffective,
+}
+
+/// Resolve the fail-closed startup refresh control across every delivery channel, reusing
+/// [`pick_managed_settings`] precedence rather than re-implementing it. A non-boolean value is
+/// treated as absent, so a malformed high-precedence value cannot mask a well-formed lower one.
+pub fn resolve_force_remote_settings_refresh(
+    native_mdm: Option<&ManagedSettingsData>,
+    server: Option<&ManagedSettingsData>,
+    file: Option<&ManagedSettingsData>,
+) -> IForceRemoteSettingsRefreshResolution {
+    let pick = pick_managed_settings(native_mdm, server, file);
+    let contribution = pick
+        .resolutions
+        .get(COPILOT_FORCE_REMOTE_SETTINGS_REFRESH_KEY)
+        .and_then(|resolution| resolution.contributions.iter().find(|candidate| matches!(candidate.value, PolicyValue::Boolean(_))));
+    match contribution {
+        Some(contribution) if contribution.value == PolicyValue::Boolean(true) => IForceRemoteSettingsRefreshResolution::Effective { source: contribution.channel },
+        _ => IForceRemoteSettingsRefreshResolution::NotEffective,
+    }
+}
+
+service_id!(pub I_MANAGED_SETTINGS_SERVICE: dyn IManagedSettingsService = "managedSettingsService");
+
+/// Read-only access to effective managed settings after channel resolution.
+pub trait IManagedSettingsService {
+    fn on_did_change_managed_settings(&self) -> Event<()>;
+    fn get_managed_settings(&self) -> ManagedSettingsData;
+    fn get_managed_setting_value(&self, key: &str) -> Option<ManagedSettingValue>;
+}
+
+/// `NullManagedSettingsService`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NullManagedSettingsService;
+
+impl IManagedSettingsService for NullManagedSettingsService {
+    fn on_did_change_managed_settings(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn get_managed_settings(&self) -> ManagedSettingsData {
+        ManagedSettingsData::new()
+    }
+
+    fn get_managed_setting_value(&self, _key: &str) -> Option<ManagedSettingValue> {
+        None
+    }
+}
+
+/// Non-empty or malformed managed deny lists require runtime enforcement; rule interpretation remains runtime-owned.
+pub fn has_managed_permission_denials(service: &dyn IManagedSettingsService) -> bool {
+    let Some(value) = service.get_managed_setting_value("permissions.deny") else { return false };
+    let PolicyValue::String(text) = value else { return true };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut errors = Vec::new();
+    let rules = json::parse(&units, &mut errors, ParseOptions { disallow_comments: true, allow_trailing_comma: false, allow_empty_content: false });
+    !errors.is_empty() || !matches!(rules, Some(Value::Array(ref items)) if items.is_empty())
+}
+
+/// O `policyValue` da configuração do escape hatch Local: `undefined` quando nenhuma política o define.
+fn temporary_default_to_local_harness_policy_value(configuration_service: &dyn IConfigurationService) -> Dynamic {
+    configuration_service.inspect(TEMPORARY_DEFAULT_TO_LOCAL_HARNESS_SETTING_ID, &ConfigurationOverrides::default()).policy_value()
+}
+
+/// Whether an administrator has enabled the temporary Local harness escape hatch.
+pub fn is_temporary_default_to_local_harness_enabled(configuration_service: &dyn IConfigurationService) -> bool {
+    temporary_default_to_local_harness_policy_value(configuration_service).strict_equals(&Dynamic::Bool(true))
+}
+
+/// Whether effective policy requires Agent Host; explicit Local disablement overrides the temporary Local escape hatch.
+pub fn requires_copilot_agent_host(service: &dyn IManagedSettingsService, configuration_service: &dyn IConfigurationService) -> bool {
+    if service.get_managed_setting_value(COPILOT_TEMPORARY_ALLOW_LOCAL_HARNESS_KEY) == Some(PolicyValue::Boolean(false)) {
+        return true;
+    }
+    // `policyValue ?? managedSettingValue`: um `policyValue` nulo ou `undefined` cai para o valor gerenciado.
+    let policy_value = temporary_default_to_local_harness_policy_value(configuration_service);
+    let temporary_default_to_local = if policy_value.is_nullish() {
+        service.get_managed_setting_value(COPILOT_TEMPORARY_DEFAULT_TO_LOCAL_HARNESS_KEY) == Some(PolicyValue::Boolean(true))
+    } else {
+        policy_value.strict_equals(&Dynamic::Bool(true))
+    };
+    if temporary_default_to_local {
+        return false;
+    }
+    service.get_managed_setting_value(COPILOT_SANDBOX_ENABLED_KEY) == Some(PolicyValue::Boolean(true)) || has_managed_permission_denials(service)
 }
 
 /// Normalize a managed-settings model value: trim, treating a blank/whitespace-only string as unset.
@@ -189,6 +421,135 @@ pub fn managed_model_value() -> PolicyValueFn {
     MANAGED_MODEL_VALUE.with(PolicyValueFn::clone)
 }
 
+/// Forces a boolean setting off while the user is governed by managed settings.
+pub fn managed_settings_disabled_value(policy_data: &IPolicyData) -> Option<PolicyValue> {
+    (policy_data.managed_settings_active == Some(true)).then_some(PolicyValue::Boolean(false))
+}
+
+/// `value` callback shared by the third-party agent harness policies (`Claude3PIntegration`,
+/// `Codex3PIntegration`): forces the harness off when the account disables chat preview features,
+/// when the user is governed by managed settings, or when Local harnesses are explicitly prohibited.
+///
+/// Managed settings are composed and enforced by the Copilot runtime and never reach the Claude or
+/// Codex harnesses, so leaving them available would hand a governed user an ungoverned path around
+/// every managed control the enterprise set.
+pub fn third_party_agent_enabled_value(policy_data: &IPolicyData) -> Option<PolicyValue> {
+    let local_harness_prohibited = policy_data.managed_settings.as_ref().and_then(|settings| settings.get(COPILOT_TEMPORARY_ALLOW_LOCAL_HARNESS_KEY)) == Some(&PolicyValue::Boolean(false));
+    if policy_data.chat_preview_features_enabled == Some(false) || local_harness_prohibited {
+        Some(PolicyValue::Boolean(false))
+    } else {
+        managed_settings_disabled_value(policy_data)
+    }
+}
+
+service_id!(pub I_NATIVE_MANAGED_SETTINGS_SERVICE: dyn INativeManagedSettingsService = "nativeManagedSettingsService");
+
+pub trait INativeManagedSettingsService {
+    fn managed_settings(&self) -> ManagedSettingsData;
+    fn on_did_change_managed_settings(&self) -> Event<ManagedSettingsData>;
+    fn initialize(&self) -> Promise<ManagedSettingsData>;
+    fn update_policy_definitions(&self, policy_definitions: PolicyDefinitions) -> Promise<ManagedSettingsData>;
+}
+
+/// `NullNativeManagedSettingsService`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NullNativeManagedSettingsService;
+
+impl INativeManagedSettingsService for NullNativeManagedSettingsService {
+    fn managed_settings(&self) -> ManagedSettingsData {
+        ManagedSettingsData::new()
+    }
+
+    fn on_did_change_managed_settings(&self) -> Event<ManagedSettingsData> {
+        Event::none()
+    }
+
+    fn initialize(&self) -> Promise<ManagedSettingsData> {
+        Promise::resolved(self.managed_settings())
+    }
+
+    fn update_policy_definitions(&self, _policy_definitions: PolicyDefinitions) -> Promise<ManagedSettingsData> {
+        Promise::resolved(self.managed_settings())
+    }
+}
+
+/// O `type` declarado de uma entrada de `managedSettings`; `None` para uma forma que o tipo do original não admite.
+fn declared_managed_setting_type(declared: &Dynamic) -> Option<ManagedSettingType> {
+    match declared.get_str("type") {
+        Dynamic::String(text) => match text.to_string_lossy().as_str() {
+            "string" => Some(ManagedSettingType::String),
+            "number" => Some(ManagedSettingType::Number),
+            "boolean" => Some(ManagedSettingType::Boolean),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `typeof` de um valor gerenciado e o `type` declarado: o mesmo vocabulário (`string`, `number`, `boolean`).
+fn managed_setting_type_name(type_: ManagedSettingType) -> &'static str {
+    match type_ {
+        ManagedSettingType::String => "string",
+        ManagedSettingType::Number => "number",
+        ManagedSettingType::Boolean => "boolean",
+    }
+}
+
+fn managed_setting_value_type_name(value: &ManagedSettingValue) -> &'static str {
+    match value {
+        PolicyValue::String(_) => "string",
+        PolicyValue::Number(_) => "number",
+        PolicyValue::Boolean(_) => "boolean",
+    }
+}
+
+/// Aggregate the `managedSettings` declarations of every policy definition into a single
+/// key -> definition map. This is the single source of truth for policy-backed Copilot
+/// managed-settings keys and drives both server projection and the declaration-driven portion of
+/// the native MDM watcher. Transport controls are declared separately.
+pub fn collect_managed_settings_definitions(policy_definitions: &[(String, PolicyDefinitionRef)]) -> IManagedSettingsPolicyDefinitions {
+    let mut definitions = IManagedSettingsPolicyDefinitions::new();
+    for (_, definition) in policy_definitions {
+        let Some(policy_managed_settings) = &definition.managed_settings else { continue };
+        for (key, declared) in policy_managed_settings.own_entries() {
+            if let Some(type_) = declared_managed_setting_type(&declared) {
+                definitions.insert(key.to_string_lossy(), managed_setting_definition(type_));
+            }
+        }
+    }
+    definitions
+}
+
+/// Whether any policy in `policy_definitions` declares at least one managed-settings key. Cheap
+/// existence check (short-circuits) used to decide whether the declaration-driven portion of the
+/// native MDM watcher needs updating, without aggregating the full
+/// [`collect_managed_settings_definitions`] map.
+pub fn has_managed_settings_definitions(policy_definitions: &[(String, PolicyDefinitionRef)]) -> bool {
+    policy_definitions.iter().any(|(_, definition)| definition.managed_settings.as_ref().is_some_and(|managed_settings| !is_empty_object(managed_settings)))
+}
+
+/// Project a raw managed-settings bag onto the declared schema: keep only keys declared by a
+/// policy definition whose runtime value matches the declared type. Undeclared keys and
+/// type-mismatched values are dropped (with an optional warning). Values are validated, never
+/// coerced, so a key declared as `string` keeps its string value untouched.
+///
+/// This keeps the server endpoint and native MDM delivery aligned on the same
+/// declaration-driven key set and value types.
+pub fn project_managed_settings(values: &ManagedSettingsData, definitions: &IManagedSettingsPolicyDefinitions, on_warn: OnWarn) -> ManagedSettingsData {
+    let mut projected = ManagedSettingsData::new();
+    for (key, definition) in definitions {
+        let Some(value) = values.get(key) else { continue };
+        let expected = managed_setting_type_name(definition.r#type);
+        let actual = managed_setting_value_type_name(value);
+        if actual == expected {
+            projected.insert(key.clone(), value.clone());
+        } else if let Some(on_warn) = on_warn {
+            on_warn(&format!("Ignoring managed setting \"{key}\": expected {expected}, got {actual}"));
+        }
+    }
+    projected
+}
+
 /// A delivery channel that can provide managed settings. Managed settings can be delivered by more
 /// than one channel, so this names the known sources to give policy evaluation and the Policy
 /// Diagnostics report one shared vocabulary.
@@ -211,6 +572,14 @@ impl ManagedSettingsChannel {
             Self::File => "file",
         }
     }
+}
+
+/// The source attributed to an effective managed setting (or to the overall report). A
+/// [`ManagedSettingsChannel`] once a channel has won, or `None` (`'none'`) when no channel contributes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ManagedSettingsSource {
+    Channel(ManagedSettingsChannel),
+    None,
 }
 
 /// The delivery channels in fixed precedence order (highest first): native MDM, server-delivered,
@@ -376,6 +745,18 @@ fn flatten_managed_settings_value(value: &Dynamic, prefix: Option<&str>, result:
         flatten_managed_settings_value(&child, Some(&path), result);
     }
 }
+
+/// macOS well-known path for file-based managed settings.
+pub const MANAGED_SETTINGS_MACOS_FILE_PATH: &str = "/Library/Application Support/GitHubCopilot/managed-settings.json";
+
+/// Linux well-known path for file-based managed settings.
+pub const MANAGED_SETTINGS_LINUX_FILE_PATH: &str = "/etc/github-copilot/managed-settings.json";
+
+/// Windows directory name under %ProgramFiles% for file-based managed settings.
+pub const MANAGED_SETTINGS_WINDOWS_DIR: &str = "GitHubCopilot";
+
+/// Managed settings file name.
+pub const MANAGED_SETTINGS_FILE_NAME: &str = "managed-settings.json";
 
 /// `(value, onWarn) => unknown`: o valor canônico antes do `JSON.stringify`; `undefined` omite a chave.
 type Encode = for<'a> fn(&Dynamic, OnWarn<'a>) -> Dynamic;
