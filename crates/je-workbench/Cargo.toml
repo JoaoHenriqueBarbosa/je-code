@@ -12,6 +12,13 @@ workspace = true
 [dependencies]
 je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
+# A injeção de dependência: os identificadores dos serviços (`createDecorator`).
+je-instantiation = { path = "../je-instantiation" }
+# O manifesto de extensão (`IExtensionManifest`) e os identificadores de extensão que o
+# `extensionManifestPropertiesService` lê (je-extensions não depende do je-workbench).
+je-extensions = { path = "../je-extensions" }
+# O JSON do manifesto (`capabilities`, `contributes`) e os literais dos testes.
+serde_json = { version = "1", features = ["preserve_order"] }
 # Tipos do editor (`Position`, `Range`, `TextLength`) que o workbench usa, como no original.
 je-editor = { path = "../je-editor" }
 # `RegExp` ECMAScript do `terminalLinkParsing` e do padrão de busca do usuário (`ReplacePattern`).

@@ -10,6 +10,7 @@
 //! e cresce quando um serviço novo precisar de mais um. [`je_base::product::IProductConfiguration`], o
 //! `product.json` completo, também o implementa.
 
+use je_base::product::{ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IStringDictionary};
 use je_instantiation::service_id;
 
 /// `IProductService`, reduzido aos campos que os serviços portados leem.
@@ -40,6 +41,14 @@ pub trait IProductService {
     fn msft_internal_domains(&self) -> &[String];
     /// `enabledTelemetryLevels`, quando o produto declara.
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels>;
+    /// `extensionKind`: o `ExtensionKind[]` que o produto fixa por identificador de extensão.
+    fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>>;
+    /// `extensionPointExtensionKind`: o `ExtensionKind[]` que o produto fixa por ponto de extensão.
+    fn extension_point_extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>>;
+    /// `extensionUntrustedWorkspaceSupport`.
+    fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>>;
+    /// `extensionVirtualWorkspacesSupport`.
+    fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>>;
 }
 
 /// `IEnabledTelemetryLevels`: o que o produto permite coletar.
@@ -52,7 +61,7 @@ pub struct EnabledTelemetryLevels {
 service_id!(pub I_PRODUCT_SERVICE: dyn IProductService = "productService");
 
 /// Uma implementação de [`IProductService`] com os valores do `product.json` do VS Code estável 1.143.1.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProductService {
     pub version: String,
     pub name_short: String,
@@ -67,6 +76,10 @@ pub struct ProductService {
     pub ai_config_aria_key: Option<String>,
     pub msft_internal_domains: Vec<String>,
     pub enabled_telemetry_levels: Option<EnabledTelemetryLevels>,
+    pub extension_kind: Option<IStringDictionary<Vec<String>>>,
+    pub extension_point_extension_kind: Option<IStringDictionary<Vec<String>>>,
+    pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
+    pub extension_virtual_workspaces_support: Option<IStringDictionary<ExtensionVirtualWorkspaceSupport>>,
 }
 
 impl Default for ProductService {
@@ -85,6 +98,10 @@ impl Default for ProductService {
             ai_config_aria_key: None,
             msft_internal_domains: Vec::new(),
             enabled_telemetry_levels: Some(EnabledTelemetryLevels { error: true, usage: true }),
+            extension_kind: None,
+            extension_point_extension_kind: None,
+            extension_untrusted_workspace_support: None,
+            extension_virtual_workspaces_support: None,
         }
     }
 }
@@ -129,6 +146,18 @@ impl IProductService for ProductService {
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels> {
         self.enabled_telemetry_levels
     }
+    fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_kind.as_ref()
+    }
+    fn extension_point_extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_point_extension_kind.as_ref()
+    }
+    fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>> {
+        self.extension_untrusted_workspace_support.as_ref()
+    }
+    fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>> {
+        self.extension_virtual_workspaces_support.as_ref()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
@@ -170,5 +199,17 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn enabled_telemetry_levels(&self) -> Option<EnabledTelemetryLevels> {
         self.enabled_telemetry_levels.as_ref().map(|levels| EnabledTelemetryLevels { error: levels.error, usage: levels.usage })
+    }
+    fn extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_kind.as_ref()
+    }
+    fn extension_point_extension_kind(&self) -> Option<&IStringDictionary<Vec<String>>> {
+        self.extension_point_extension_kind.as_ref()
+    }
+    fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>> {
+        self.extension_untrusted_workspace_support.as_ref()
+    }
+    fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>> {
+        self.extension_virtual_workspaces_support.as_ref()
     }
 }

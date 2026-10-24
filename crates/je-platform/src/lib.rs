@@ -32,6 +32,7 @@ pub mod url;
 pub mod storage;
 pub mod user_data_profile;
 pub mod workspace;
+pub mod workspace_trust;
 pub mod workspaces;
 
 #[doc(hidden)]
