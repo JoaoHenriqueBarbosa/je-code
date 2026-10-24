@@ -34,10 +34,10 @@ je-widgets = { path = "../je-widgets" }
 # O nó (`NodeId`) e a árvore (`Ui`) em que o `EditorPart` e o `EditorGroupView` se apoiam para o grid e o layout centralizado.
 je-ui = { path = "../je-ui" }
 
-# `textfile/encoding`: o `iconv-lite` (codificações WHATWG) e o `jschardet` (detecção) do original, em
-# Rust puro. Versões fora do `Cargo.lock` da raiz, que ainda não tinha nenhuma das duas.
+# `textfile/encoding`: o `iconv-lite` (codificações WHATWG) do original, em Rust puro, e o `jschardet`
+# (detecção), a crate do workspace que porta o 3.1.4.
 encoding_rs = "0.8"
-chardetng = "0.1"
+jschardet = { path = "../jschardet" }
 # Mapa com ordem de inserção, para os objetos JS iterados em ordem (`accountPolicyService`).
 indexmap = "2"
 

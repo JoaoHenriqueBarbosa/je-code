@@ -1,7 +1,8 @@
 //! Porte de `src/vs/workbench/services/textfile/common/encoding.ts`.
 //!
 //! O original usa `iconv-lite` (codificações) e `jschardet` (detecção). Aqui as codificações vêm de
-//! [`super::iconv_lite`] (`encoding_rs`) e a detecção do `chardetng`, ambos Rust puro.
+//! [`super::iconv_lite`] (`encoding_rs`) e a detecção da crate `jschardet` (porte fiel do `jschardet` 3.1.4),
+//! ambos Rust puro.
 //!
 //! Diferenças de forma, sem mudança de resultado:
 //! - o `import` assíncrono do `iconv-lite` era a única razão de `DecoderStream.create`, `toEncodeReadable`,
@@ -13,20 +14,14 @@
 //!   `decodeStreamErrorKind`; [`DecodeStreamError::from_error`] é o `instanceof`.
 //!
 //! Diferenças de comportamento:
-//! - o `jschardet` não existe em Rust: o `chardetng` o substitui, e a confiança dele dita o resultado.
-//!   Texto só ASCII dá `ascii` (ignorado); UTF-8 válido com bytes altos dá `utf8`; um palpite sem
-//!   confiança cai em `windows-1252` (o que o prober Latin-1 do `jschardet` fazia). Com candidatos, só
-//!   vale um palpite confiante que esteja entre eles; senão vale o recuo por candidatos do original.
-//!   Os casos que dependem da estatística do `jschardet` (textos curtos) podem divergir: conferir nos testes;
-//! - PENDENTES: cp1125, koi8ru e koi8t (ver [`super::iconv_lite`]); `chardetng` não detecta ISO-2022-JP
-//!   (o `jschardet` o reportava por sequências ESC).
+//! - o `jschardet.detect` é a crate `jschardet` (porte do 3.1.4, com as mesmas tabelas e probers), que devolve
+//!   `None` onde o original lança uma exceção, e o `guessEncodingByBuffer` trata os dois casos como o original;
+//! - PENDENTES: cp1125, koi8ru e koi8t (ver [`super::iconv_lite`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use chardetng::EncodingDetector;
-use encoding_rs::UTF_8;
 use je_base::buffer::{VSBuffer, VSBufferReadableStream};
 use je_base::cancellation::CancellationTokenSource;
 use je_base::errors::Error;
@@ -376,61 +371,34 @@ pub fn detect_encoding_by_bom_from_buffer(buffer: Option<&VSBuffer>, bytes_read:
 // - UTF-32: we do not support this encoding in VSCode
 const IGNORE_ENCODINGS: [&str; 3] = ["ascii", "utf-16", "utf-32"];
 
-/// O `jschardet.detect`: o nome (no estilo do `jschardet`) que o `chardetng` acha, ou `None` se o
-/// `jschardet` não acharia nada. `candidates` são os nomes `guessableName`, e restringem o resultado.
-fn detect_with_chardet(bytes: &[u8], candidates: Option<&[&'static str]>) -> Option<String> {
-    if bytes.is_empty() {
-        return None;
-    }
-    if bytes.is_ascii() {
-        return Some("ascii".to_string());
-    }
-
-    let mut detector = EncodingDetector::new();
-    detector.feed(bytes, true);
-    let (encoding, confident) = detector.guess_assess(None, true);
-
-    if confident || encoding == UTF_8 {
-        let guessed = to_iconv_lite_encoding(encoding.name());
-        return match candidates {
-            None => Some(encoding.name().to_string()),
-            // GB2312 é um subconjunto do GBK, que é o que o `chardetng` reporta.
-            Some(list) => list
-                .iter()
-                .find(|candidate| {
-                    let candidate = to_iconv_lite_encoding(candidate);
-                    candidate == guessed || (candidate == "gb2312" && (guessed == "gbk" || guessed == "gb18030"))
-                })
-                .map(|candidate| (*candidate).to_string()),
-        };
-    }
-
-    // Sem confiança em nenhum prober: o `jschardet` ficava com o Latin-1 (windows-1252).
-    match candidates {
-        None => Some("windows-1252".to_string()),
-        Some(list) => list.iter().find(|candidate| to_iconv_lite_encoding(candidate) == "windows1252").map(|candidate| (*candidate).to_string()),
-    }
-}
-
 /// Guesses the encoding from buffer.
 fn guess_encoding_by_buffer(buffer: &VSBuffer, candidate_guess_encodings: Option<&[String]>) -> Option<String> {
-    // ensure to limit buffer for guessing
+    // ensure to limit buffer for guessing due to https://github.com/aadsm/jschardet/issues/53
     let limited_buffer = buffer.slice(Some(0), i64::try_from(AUTO_ENCODING_GUESS_MAX_BYTES).ok());
 
-    // ensure to convert candidate encodings to detector encoding names if provided
+    // ensure to convert candidate encodings to jschardet encoding names if provided
     let candidates: Option<Vec<&'static str>> = candidate_guess_encodings
         .map(|list| list.iter().filter_map(|e| to_jschardet_encoding(e)).collect::<Vec<_>>())
         .filter(|list| !list.is_empty());
 
-    let Some(guessed) = limited_buffer.with_bytes(|bytes| detect_with_chardet(bytes, candidates.as_deref())) else {
+    let detect_options = candidates.as_ref().map(|list| jschardet::DetectOptions {
+        detect_encodings: Some(list.iter().map(|candidate| (*candidate).to_string()).collect()),
+        min_confidence: None,
+    });
+    let Ok(guessed) = limited_buffer.with_bytes(|bytes| jschardet::try_detect(bytes, detect_options.as_ref())) else {
+        return None; // jschardet throws for unknown encodings (https://github.com/microsoft/vscode/issues/239928)
+    };
+
+    let Some(guessed) = guessed else {
         return candidates.and_then(|list| guess_encoding_by_candidates(&limited_buffer, &list));
     };
 
-    if IGNORE_ENCODINGS.contains(&guessed.to_lowercase().as_str()) {
+    let enc = guessed.encoding.to_lowercase();
+    if IGNORE_ENCODINGS.contains(&enc.as_str()) {
         return None; // see comment above why we ignore some encodings
     }
 
-    Some(to_iconv_lite_encoding(&guessed))
+    Some(to_iconv_lite_encoding(&guessed.encoding))
 }
 
 fn guess_encoding_by_candidates(buffer: &VSBuffer, candidates: &[&str]) -> Option<String> {
@@ -468,8 +436,8 @@ fn guess_encoding_by_candidates(buffer: &VSBuffer, candidates: &[&str]) -> Optio
     guessed_encoding
 }
 
-/// Nomes de `chardetng` (WHATWG) e do `jschardet` que o `iconv-lite` chama de outra coisa.
-const JSCHARDET_TO_ICONV_ENCODINGS: [(&str, &str); 3] = [("ibm866", "cp866"), ("big5", "cp950"), ("macintosh", "macroman")];
+/// Nomes do `jschardet` que o `iconv-lite` chama de outra coisa.
+const JSCHARDET_TO_ICONV_ENCODINGS: [(&str, &str); 2] = [("ibm866", "cp866"), ("big5", "cp950")];
 
 fn normalize_encoding(encoding_name: &str) -> String {
     encoding_name.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_lowercase()
