@@ -568,7 +568,7 @@ pub struct EditorPartOptionsChangeEvent {
 // region: editorGroupsService.ts (funções e contratos)
 
 /// O erro que o dublê `TestEditorGroupsService` do original lança nos membros que não implementa.
-fn not_implemented() -> ! {
+pub(crate) fn not_implemented() -> ! {
     throw(Error::new("Method not implemented."))
 }
 
@@ -658,6 +658,12 @@ pub trait IEditorGroup {
 
     /// `onWillOpenEditor`: an event that is fired when an editor is about to open in the group.
     fn on_will_open_editor(&self) -> Event<EditorWillOpenEvent> {
+        Event::none()
+    }
+
+    /// `onDidOpenEditorFail` (de `IEditorGroupView`): an event that is fired when opening an editor failed. O
+    /// `EditorService` o lê de cada grupo; o `EditorGroupView` o sobrescreve.
+    fn on_did_open_editor_fail(&self) -> Event<EditorInputRef> {
         Event::none()
     }
 
