@@ -71,6 +71,11 @@ impl LeakGuard {
 impl Drop for LeakGuard {
     fn drop(&mut self) {
         self.store.dispose();
+        // No mocha o `teardown` que confere os vazamentos roda depois das microtarefas que o descarte enfileirou
+        // (`modelReference.then(ref => ref.dispose())`), então elas esvaziam antes da conferência.
+        if !std::thread::panicking() {
+            runtime::run_microtasks();
+        }
         set_disposable_tracker(None);
         if std::thread::panicking() {
             return;

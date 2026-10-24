@@ -45,7 +45,7 @@ use je_editor::text_model::{TextModel, TextSource};
 use je_editor::text_model_edit_source::TextModelEditSource;
 use je_platform::accessibility::IAccessibilityService;
 
-use crate::common::editor::editor_model::EditorModel;
+use crate::common::editor::editor_model::{EditorModel, IEditorModel as _};
 use crate::services::files_configuration::files_configuration_service::Readonly;
 use crate::services::language_detection::language_detection_worker_service::{ILanguageDetectionService, LANGUAGE_DETECTION_LANGUAGE_EVENT_SOURCE};
 
