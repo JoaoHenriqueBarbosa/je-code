@@ -121,16 +121,31 @@ impl IRemoteAgentService for TestRemoteAgentService {
     }
 }
 
+/// Os valores do ambiente que um teste troca (`instantiationService.stub(IWorkbenchEnvironmentService, { ... })`):
+/// `disableExtensions`, `enableExtensions` e `isSessionsWindow`. O que fica no padrão é o do `TestEnvironmentService`.
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentOverrides {
+    pub disable_extensions: Option<DisableExtensions>,
+    pub enable_extensions: Option<Vec<String>>,
+    pub is_sessions_window: bool,
+}
+
 /// `TestEnvironmentService`.
 pub struct TestEnvironmentService {
     workspace_id: String,
     logs_home: URI,
     is_built: bool,
+    overrides: EnvironmentOverrides,
 }
 
 impl TestEnvironmentService {
     pub fn new() -> Rc<Self> {
-        Rc::new(Self { workspace_id: String::new(), logs_home: vscode_tests_resource(), is_built: ProductService::default().commit.is_some_and(|commit| !commit.is_empty()) })
+        Self::with_overrides(EnvironmentOverrides::default())
+    }
+
+    /// O `TestEnvironmentService` com os valores trocados por `overrides`.
+    pub fn with_overrides(overrides: EnvironmentOverrides) -> Rc<Self> {
+        Rc::new(Self { workspace_id: String::new(), logs_home: vscode_tests_resource(), is_built: ProductService::default().commit.is_some_and(|commit| !commit.is_empty()), overrides })
     }
 
     /// `joinPath(this.userRoamingDataHome, ...fragments)`.
@@ -204,7 +219,11 @@ impl EnvironmentService for TestEnvironmentService {
     }
 
     fn disable_extensions(&self) -> DisableExtensions {
-        DisableExtensions::All(false)
+        self.overrides.disable_extensions.clone().unwrap_or(DisableExtensions::All(false))
+    }
+
+    fn enable_extensions(&self) -> Option<Vec<String>> {
+        self.overrides.enable_extensions.clone()
     }
 
     fn skip_builtin_extensions(&self) -> Vec<String> {
@@ -299,7 +318,7 @@ impl IWorkbenchEnvironmentService for TestEnvironmentService {
     }
 
     fn is_sessions_window(&self) -> bool {
-        false
+        self.overrides.is_sessions_window
     }
 
     fn debug_renderer(&self) -> bool {
@@ -657,5 +676,42 @@ impl TestEditorGroupsService {
 impl IEditorGroupsService for TestEditorGroupsService {
     fn groups(&self) -> Vec<Rc<dyn IEditorGroup>> {
         self.groups.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `productService` e `TestHostService`, os dublês do teste do `ExtensionEnablementService`.
+//
+// - `productService` (`{ _serviceBrand: undefined, ...product }`) é o `product.json` do VS Code do repositório, e
+//   [`product_service`] é o [`ProductService`] padrão do porte com o `defaultChatAgent` desse `product.json`
+//   (`GitHub.copilot` e `GitHub.copilot-chat`), que é o que os serviços do workbench lêem dele. O
+//   `sessionsWindowAllowedExtensions` do `product.json` é uma lista vazia, o padrão do porte.
+// - `TestHostService` é o `IHostService` reduzido de `services::extension_management::service_contracts` (só o
+//   `reload`, que o original deixa sem efeito).
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use extension_enablement_test_services::{TestHostService, product_service};
+
+mod extension_enablement_test_services {
+    use je_base::promise::Promise;
+    use je_platform::product::{DefaultChatAgentExtensions, ProductService};
+
+    use crate::services::extension_management::service_contracts::{IHostService, ReloadOptions};
+
+    /// `productService`.
+    pub fn product_service() -> ProductService {
+        ProductService {
+            default_chat_agent: Some(DefaultChatAgentExtensions { extension_id: "GitHub.copilot".to_owned(), chat_extension_id: "GitHub.copilot-chat".to_owned() }),
+            ..ProductService::default()
+        }
+    }
+
+    /// `TestHostService`.
+    pub struct TestHostService;
+
+    impl IHostService for TestHostService {
+        fn reload(&self, _options: Option<ReloadOptions>) -> Promise<()> {
+            Promise::resolved(())
+        }
     }
 }

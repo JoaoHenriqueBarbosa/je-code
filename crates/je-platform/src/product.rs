@@ -62,6 +62,24 @@ pub trait IProductService {
     fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>>;
     /// `configurationSync.store`: o servidor do Settings Sync, quando o produto declara.
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore>;
+    /// `defaultChatAgent`, só com os dois identificadores de extensão que o `ExtensionEnablementService` lê
+    /// (`extensionId` e `chatExtensionId`). Padrão: o produto não declara o agente de chat.
+    fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
+        None
+    }
+    /// `sessionsWindowAllowedExtensions`: as extensões sempre habilitadas na janela de sessões. Padrão: nenhuma.
+    fn sessions_window_allowed_extensions(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultChatAgentExtensions {
+    /// `extensionId`: a extensão de completions.
+    pub extension_id: String,
+    /// `chatExtensionId`: a extensão de chat.
+    pub chat_extension_id: String,
 }
 
 /// `IEnabledTelemetryLevels`: o que o produto permite coletar.
@@ -99,6 +117,8 @@ pub struct ProductService {
     pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
     pub extension_virtual_workspaces_support: Option<IStringDictionary<ExtensionVirtualWorkspaceSupport>>,
     pub configuration_sync_store: Option<ConfigurationSyncStore>,
+    pub default_chat_agent: Option<DefaultChatAgentExtensions>,
+    pub sessions_window_allowed_extensions: Vec<String>,
 }
 
 impl Default for ProductService {
@@ -124,6 +144,8 @@ impl Default for ProductService {
             extension_untrusted_workspace_support: None,
             extension_virtual_workspaces_support: None,
             configuration_sync_store: None,
+            default_chat_agent: None,
+            sessions_window_allowed_extensions: Vec::new(),
         }
     }
 }
@@ -201,6 +223,12 @@ impl IProductService for ProductService {
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
         self.configuration_sync_store.as_ref()
     }
+    fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
+        self.default_chat_agent.clone()
+    }
+    fn sessions_window_allowed_extensions(&self) -> Vec<String> {
+        self.sessions_window_allowed_extensions.clone()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
@@ -263,5 +291,11 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
         self.configuration_sync_store.as_ref()
+    }
+    fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
+        Some(DefaultChatAgentExtensions { extension_id: self.default_chat_agent.extension_id.clone(), chat_extension_id: self.default_chat_agent.chat_extension_id.clone() })
+    }
+    fn sessions_window_allowed_extensions(&self) -> Vec<String> {
+        self.sessions_window_allowed_extensions.clone().unwrap_or_default()
     }
 }

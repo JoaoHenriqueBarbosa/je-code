@@ -184,6 +184,9 @@ pub struct TestContextService {
     on_will_change_workspace_folders: Rc<Emitter<WorkspaceFoldersWillChangeEvent>>,
     on_did_change_workspace_folders: Rc<Emitter<WorkspaceFoldersChangeEvent>>,
     on_did_change_workbench_state: Rc<Emitter<WorkbenchState>>,
+    /// O `instantiationService.stub(IWorkspaceContextService, 'getWorkbenchState', state)` dos testes: troca o resultado de
+    /// `get_workbench_state` no serviço que já foi entregue a quem o usa.
+    workbench_state_override: Cell<Option<WorkbenchState>>,
 }
 
 impl TestContextService {
@@ -196,7 +199,13 @@ impl TestContextService {
             on_will_change_workspace_folders: Emitter::new(),
             on_did_change_workspace_folders: Emitter::new(),
             on_did_change_workbench_state: Emitter::new(),
+            workbench_state_override: Cell::new(None),
         })
+    }
+
+    /// `stub(IWorkspaceContextService, 'getWorkbenchState', state)`; `None` desfaz o stub.
+    pub fn stub_workbench_state(&self, state: Option<WorkbenchState>) {
+        self.workbench_state_override.set(state);
     }
 
     pub fn get_folders(&self) -> Vec<WorkspaceFolder> {
@@ -251,6 +260,9 @@ impl IWorkspaceContextService for TestContextService {
     }
 
     fn get_workbench_state(&self) -> WorkbenchState {
+        if let Some(state) = self.workbench_state_override.get() {
+            return state;
+        }
         let workspace = self.workspace.borrow();
         if workspace.configuration().is_some() {
             return WorkbenchState::Workspace;
@@ -1121,5 +1133,102 @@ impl IFileService for TestFileService {
             return true;
         }
         self.get_provider(&resource.scheme().to_string_lossy()).is_some_and(|provider| provider.capabilities().intersects(capability))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Dublês do teste do `ExtensionEnablementService`: `TestChatEntitlementService` (deste arquivo no original, sobre o
+// recorte `IChatEntitlementService` de `services::extension_management::service_contracts`) e
+// `TestNotificationService` (de `platform/notification/test/common/testNotificationService.ts`, que não mostra nada).
+//
+// - `TestChatEntitlementService.context` (um `Lazy<ChatEntitlementContext> | undefined` atribuível) é o
+//   [`TestChatEntitlementService::set_context`]; os demais membros do original (cotas, sentimento, entitlement...)
+//   pertencem ao contrato completo do chat, que está fora do escopo do porte.
+// - No original `info`, `warn` e `error` do `TestNotificationService` chamam `notify` e descartam o resultado; o
+//   [`INotificationService`] do porte os declara sem retorno e, como `notify` não tem efeito, eles não fazem nada.
+// ---------------------------------------------------------------------------------------------------------------------
+
+pub use extension_enablement_test_services::{TestChatEntitlementService, TestNotificationService};
+
+mod extension_enablement_test_services {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use je_base::event::Event;
+    use je_platform::notification::{
+        INotificationService, NoOpNotification, Notification, NotificationFilterSetting, NotificationHandle, NotificationMessage, NotificationSource,
+        NotificationSourceFilter, NotificationsFilter, PromptChoiceKind, PromptOptions, Severity, StatusHandle, StatusMessageOptions,
+    };
+
+    use crate::services::extension_management::service_contracts::{ChatEntitlementContext, IChatEntitlementService};
+
+    /// `TestChatEntitlementService`.
+    #[derive(Default)]
+    pub struct TestChatEntitlementService {
+        context: RefCell<Option<ChatEntitlementContext>>,
+    }
+
+    impl TestChatEntitlementService {
+        pub fn new() -> Rc<Self> {
+            Rc::new(Self::default())
+        }
+
+        /// `service.context = ...`.
+        pub fn set_context(&self, context: Option<ChatEntitlementContext>) {
+            *self.context.borrow_mut() = context;
+        }
+    }
+
+    impl IChatEntitlementService for TestChatEntitlementService {
+        fn context(&self) -> Option<ChatEntitlementContext> {
+            *self.context.borrow()
+        }
+    }
+
+    /// O handle de status que não faz nada (o `Disposable.None` do original).
+    struct NoOpStatus;
+
+    impl StatusHandle for NoOpStatus {
+        fn close(&self) {}
+    }
+
+    /// `TestNotificationService`.
+    #[derive(Default)]
+    pub struct TestNotificationService;
+
+    impl INotificationService for TestNotificationService {
+        fn on_did_change_filter(&self) -> Event<()> {
+            Event::none()
+        }
+
+        fn set_filter(&self, _filter: NotificationFilterSetting) {}
+
+        fn get_filter(&self, _source: Option<&NotificationSource>) -> NotificationsFilter {
+            NotificationsFilter::Off
+        }
+
+        fn get_filters(&self) -> Vec<NotificationSourceFilter> {
+            Vec::new()
+        }
+
+        fn remove_filter(&self, _source_id: &str) {}
+
+        fn notify(&self, _notification: Notification) -> Rc<dyn NotificationHandle> {
+            Rc::new(NoOpNotification::new())
+        }
+
+        fn info(&self, _message: Vec<NotificationMessage>) {}
+
+        fn warn(&self, _message: Vec<NotificationMessage>) {}
+
+        fn error(&self, _message: Vec<NotificationMessage>) {}
+
+        fn prompt(&self, _severity: Severity, _message: NotificationMessage, _choices: Vec<PromptChoiceKind>, _options: Option<PromptOptions>) -> Rc<dyn NotificationHandle> {
+            Rc::new(NoOpNotification::new())
+        }
+
+        fn status(&self, _message: NotificationMessage, _options: Option<StatusMessageOptions>) -> Rc<dyn StatusHandle> {
+            Rc::new(NoOpStatus)
+        }
     }
 }

@@ -8,7 +8,7 @@ use crate::js::compare_ignore_case;
 use crate::management::{
     ExtensionOrPublisher, HostPlatform, MaliciousExtensionInfo, current_arch, get_target_platform,
 };
-use crate::manifest::{ExtensionIdentifierInfo, TargetPlatform, UNDEFINED_PUBLISHER};
+use crate::manifest::{ExtensionIdentifierInfo, ExtensionManifest, TargetPlatform, UNDEFINED_PUBLISHER};
 
 /// `areSameExtensions`: o `uuid` decide quando os dois têm; senão o `id`, sem diferenciar caixa.
 pub fn are_same_extensions(a: &ExtensionIdentifierInfo, b: &ExtensionIdentifierInfo) -> bool {
@@ -180,4 +180,32 @@ pub fn find_matching_malicious_entry<'a>(
 /// `isMalicious`.
 pub fn is_malicious(identifier: &ExtensionIdentifierInfo, malicious: &[MaliciousExtensionInfo]) -> bool {
     find_matching_malicious_entry(identifier, malicious).is_some()
+}
+
+/// `getExtensionDependencies`: as dependências (diretas e transitivas) de uma extensão entre as instaladas, na ordem
+/// em que são descobertas. Uma dependência que não está instalada, ou que casa com mais de uma instalada, não entra
+/// (e as dependências dela também não). O original trabalha sobre `IExtension` e só lê o manifesto da extensão cujas
+/// dependências se querem (`extension`, o manifesto dela); aqui o tipo das instaladas é qualquer um de que se leiam o
+/// manifesto e o identificador (`manifest_of` e `identifier_of`).
+pub fn get_extension_dependencies<T: Clone>(
+    installed_extensions: &[T],
+    extension: &ExtensionManifest,
+    manifest_of: impl Fn(&T) -> &ExtensionManifest,
+    identifier_of: impl Fn(&T) -> &ExtensionIdentifierInfo,
+) -> Vec<T> {
+    let mut dependencies: Vec<T> = Vec::new();
+    let mut extensions: std::collections::VecDeque<String> = extension.extension_dependencies.clone().unwrap_or_default().into();
+
+    while let Some(id) = extensions.pop_front() {
+        let wanted = ExtensionIdentifierInfo::new(id.clone());
+        if !id.is_empty() && dependencies.iter().all(|e| !are_same_extensions(identifier_of(e), &wanted)) {
+            let matching: Vec<&T> = installed_extensions.iter().filter(|e| are_same_extensions(identifier_of(e), &wanted)).collect();
+            if let [only] = matching.as_slice() {
+                dependencies.push((*only).clone());
+                extensions.extend(manifest_of(*only).extension_dependencies.clone().unwrap_or_default());
+            }
+        }
+    }
+
+    dependencies
 }
