@@ -103,6 +103,15 @@ pub trait IFileService {
     /// Emits a `FileOperation.CREATE` file operation event when successful.
     fn create_file(&self, resource: &URI, content: Option<FileContentSource>, options: Option<CreateFileOptions>) -> Promise<FileStatWithMetadata>;
 
+    /// `copy(source, target, overwrite?)`: copies the file or folder to the target location, across providers when
+    /// needed. Rejects when the target exists and `overwrite` is not set.
+    ///
+    /// Emits a `FileOperation.COPY` file operation event when successful. O padrão rejeita: os dublês que não copiam
+    /// não precisam implementá-lo, e o `FileService` o sobrescreve com a cópia de verdade.
+    fn copy(&self, _source: &URI, _target: &URI, _overwrite: Option<bool>) -> Promise<FileStatWithMetadata> {
+        Promise::rejected(Error::new("IFileService.copy não é suportado por esta implementação"))
+    }
+
     /// `onWillActivateFileSystemProvider`: an event that is fired when a file system provider is about to be activated.
     /// Listeners can feed into the event by registering a promise with the event.
     fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent>;
@@ -188,6 +197,10 @@ impl IFileService for FileService {
 
     fn create_file(&self, resource: &URI, content: Option<FileContentSource>, options: Option<CreateFileOptions>) -> Promise<FileStatWithMetadata> {
         FileService::create_file(&self.rc(), resource, content, options)
+    }
+
+    fn copy(&self, source: &URI, target: &URI, overwrite: Option<bool>) -> Promise<FileStatWithMetadata> {
+        FileService::copy(&self.rc(), source, target, overwrite)
     }
 
     fn on_will_activate_file_system_provider(&self) -> Event<FileSystemProviderActivationEvent> {

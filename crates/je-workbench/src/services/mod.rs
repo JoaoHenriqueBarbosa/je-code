@@ -33,6 +33,8 @@ pub mod path;
 pub mod remote;
 // Serviço de arquivos de texto: codificação (`textfile/common/encoding.ts`).
 pub mod textfile;
+// Contrato do serviço de decorações de recursos (`decorations/common/decorations.ts`), que o `TextFileService` lê.
+pub mod decorations;
 
 // `ILanguageDetectionService` e o `ITextEditorModel`/`ITextModelService` que os modelos de texto do workbench leem.
 pub mod language_detection;

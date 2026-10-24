@@ -2,12 +2,16 @@
 //! `iconv-lite` que ele usa em [`iconv_lite`] e as tabelas das páginas de código DOS em [`code_pages`];
 //! `common/textfiles.ts` em [`textfiles`], `common/textFileEditorModel.ts` em [`text_file_editor_model`],
 //! `common/textFileEditorModelManager.ts` em [`text_file_editor_model_manager`] e
-//! `common/textFileSaveParticipant.ts` em [`text_file_save_participant`].
+//! `common/textFileSaveParticipant.ts` em [`text_file_save_participant`]; `browser/textFileService.ts` (o
+//! `AbstractTextFileService` e o `EncodingOracle`) em [`abstract_text_file_service`] e
+//! `browser/browserTextFileService.ts` em [`browser_text_file_service`].
 //!
 //! [`collaborators`] traz os contratos reduzidos dos serviços que esses arquivos leem e que ainda não foram portados
 //! (progresso, backup de working copy, detecção de linguagem, acessibilidade e operações de arquivo de working copy), e
 //! [`text_buffer_factory`] o `createTextBufferFactoryFromStream` do `textModel.ts`.
 
+pub mod abstract_text_file_service;
+pub mod browser_text_file_service;
 pub mod code_pages;
 pub mod collaborators;
 pub mod encoding;

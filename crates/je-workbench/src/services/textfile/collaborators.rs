@@ -18,14 +18,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
+use je_base::dynamic::Dynamic;
+use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
-use je_platform::files::files::FileOperation;
+use je_editor::text_model::TextModel;
+use je_platform::files::files::{FileOperation, FileStatWithMetadata};
 use je_platform::notification::notification::NotificationPriority;
 use je_platform::notification::notification_telemetry::NotificationTelemetryId;
 
 use crate::common::editor::{EditorIdentifier, EditorInputOrUntyped, SaveOptions, SaveReason};
+use crate::services::textfile::textfiles::EncodedContent;
 use crate::services::working_copy::stored_file_working_copy::IStoredFileWorkingCopy;
 
 //#region IProgressService
@@ -139,7 +143,34 @@ pub struct FileOperationUndoRedoInfo {
     pub is_undoing: Option<bool>,
 }
 
-/// `IWorkingCopyFileService` (os três eventos que o gerenciador de modelos de arquivo de texto escuta).
+/// `ICreateFileOperation` (`ICreateOperation` com `contents`): `contents` é o `VSBuffer | VSBufferReadable` que o
+/// `TextFileService.create` produz (o `VSBufferReadableStream` do original não é produzido por ele).
+#[derive(Clone)]
+pub struct CreateFileOperation {
+    pub resource: URI,
+    pub contents: Option<EncodedContent>,
+    pub overwrite: Option<bool>,
+}
+
+/// `Required<SourceTargetPair>` de `IMoveOperation.file`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RequiredSourceTargetPair {
+    pub source: URI,
+    pub target: URI,
+}
+
+/// `IMoveOperation`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveOperation {
+    pub file: RequiredSourceTargetPair,
+    pub overwrite: Option<bool>,
+}
+
+/// A mensagem de `create` e `move` num `IWorkingCopyFileService` que não os traz.
+const WORKING_COPY_FILE_OPERATION_UNSUPPORTED: &str = "esta implementação de IWorkingCopyFileService não executa a operação de arquivo";
+
+/// `IWorkingCopyFileService` (os três eventos que o gerenciador de modelos de arquivo de texto escuta, mais `create` e
+/// `move`, que o `TextFileService` chama).
 pub trait IWorkingCopyFileService {
     /// An event that is fired before a working copy file operation is about to run.
     fn on_will_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent>;
@@ -149,6 +180,18 @@ pub trait IWorkingCopyFileService {
 
     /// An event that is fired after a working copy file operation has been performed.
     fn on_did_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent>;
+
+    /// Will create a file. Working copy owners can listen to the events to participate. Quem não implementa a operação
+    /// (o contrato do serviço de arquivos de working copy ainda não foi portado por inteiro) rejeita.
+    fn create(&self, _operations: Vec<CreateFileOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        Promise::rejected(Error::new(WORKING_COPY_FILE_OPERATION_UNSUPPORTED))
+    }
+
+    /// Will move working copies matching the provided resources and corresponding children to the target resources
+    /// using the associated file service for those resources. Rejeita quando a implementação não a traz.
+    fn move_(&self, _operations: Vec<MoveOperation>, _token: CancellationToken, _undo_info: Option<FileOperationUndoRedoInfo>) -> Promise<Vec<FileStatWithMetadata>> {
+        Promise::rejected(Error::new(WORKING_COPY_FILE_OPERATION_UNSUPPORTED))
+    }
 
     /// Whether save participants are present for stored file working copies. Sem participantes registrados (o caso do
     /// serviço que ainda não os tem) é `false`.
@@ -209,6 +252,22 @@ pub struct SaveEditorsResult {
 pub trait IEditorServiceSave {
     /// `save(editors, options?)`: saves the provided editor.
     fn save(&self, editor: EditorIdentifier, options: Option<SaveEditorsOptions>) -> Promise<SaveEditorsResult>;
+}
+
+//#endregion
+
+//#region ICodeEditorService.getTransientModelProperties
+
+/// O recorte de `ICodeEditorService` que o `TextFileService` lê no "Salvar como" (`getTransientModelProperties` e
+/// `setTransientModelProperty`): o `ICodeEditorService` reduzido de `je_editor::opener_service` só traz o que o
+/// `EditorOpener` usa, e acrescentar métodos lá quebraria quem o implementa. O serviço de editores de código completo
+/// implementa este trait. O valor `any` da propriedade é um [`Dynamic`].
+pub trait ICodeEditorTransientProperties {
+    /// `getTransientModelProperties(model)`: as propriedades transitórias do modelo, `None` quando não há.
+    fn get_transient_model_properties(&self, model: &TextModel) -> Option<Vec<(String, Dynamic)>>;
+
+    /// `setTransientModelProperty(model, key, value)`.
+    fn set_transient_model_property(&self, model: &TextModel, key: &str, value: Dynamic);
 }
 
 //#endregion
