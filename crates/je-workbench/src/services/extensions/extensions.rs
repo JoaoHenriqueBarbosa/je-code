@@ -15,6 +15,8 @@
 //!   vazia, como o `extensions = []` do original).
 //! - `activateByEvent` e `activationEventIsDone` entram com a ponte `MainThreadCommands`; `ActivationKind` é o enum
 //!   [`ActivationKind`] e o `activationKind?` é `Option<ActivationKind>`.
+//! - `onDidChangeExtensionsStatus` e `canRemoveExtension` (lidos pelo `ContributedExternalUriOpenersStore`) têm corpo
+//!   padrão, o do `NullExtensionService` (`Event.None` e `false`).
 //! - `nullExtensionDescription`, `isProposedApiEnabled` e `checkProposedApiEnabled` trabalham sobre o
 //!   `ExtensionDescription` do `je-extensions` ([`null_extension_description`], [`is_proposed_api_enabled`],
 //!   [`check_proposed_api_enabled`]); a proposta é o nome como texto (`ApiProposalName` do original), e o erro que o
@@ -153,6 +155,18 @@ pub trait IExtensionService {
     /// `NullExtensionService` (que o `TestExtensionService` herda).
     fn on_did_change_extensions(&self) -> Event<IExtensionsChangeEvent> {
         Event::none()
+    }
+
+    /// `onDidChangeExtensionsStatus`: fired when the status of extensions changes (for example, when one is activated).
+    /// A implementação padrão é o `Event.None` do `NullExtensionService`.
+    fn on_did_change_extensions_status(&self) -> Event<Vec<ExtensionIdentifier>> {
+        Event::none()
+    }
+
+    /// `canRemoveExtension(extension)`: whether the extension can be removed without restarting the extension host (it
+    /// is not running). A implementação padrão é a do `NullExtensionService`, que devolve `false`.
+    fn can_remove_extension(&self, _extension: &ExtensionDescription) -> bool {
+        false
     }
 }
 

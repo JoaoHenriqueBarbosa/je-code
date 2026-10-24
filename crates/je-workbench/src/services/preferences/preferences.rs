@@ -2,8 +2,9 @@
 //! atalhos (`KeybindingMatch`, `KeybindingMatches`, `IKeybindingItemEntry`, `IKeybindingItem`), que o
 //! `KeybindingsEditorModel` produz, e os tipos das configurações que o editor de configurações mostra e busca
 //! (`SettingValueType`, `ISetting`, `IExtensionSetting`, `ISettingsGroup`, `ISettingsSection`, `ISearchResult`,
-//! `SettingMatchType`, `SettingKeyMatchTypes`, `ISettingMatch`). O resto do arquivo (`IPreferencesService`,
-//! `IKeybindingsEditorPane`, `ISettingsEditorModel`...) entra com o porte das telas de preferências.
+//! `SettingMatchType`, `SettingKeyMatchTypes`, `ISettingMatch`) e o recorte do `IPreferencesService` que o
+//! `ExternalUriOpenerService` usa (`openUserSettings`, `IOpenSettingsOptions`). O resto do arquivo (o `IPreferencesService`
+//! completo, `IKeybindingsEditorPane`, `ISettingsEditorModel`...) entra com o porte das telas de preferências.
 //!
 //! Divergências:
 //! - **`KeybindingMatch`** guarda `bool` em vez de `boolean | undefined`: o original só grava a chave quando é `true`
@@ -40,10 +41,15 @@ use std::rc::Rc;
 use je_base::dynamic::Dynamic;
 use je_base::filters::Match;
 use je_base::keybindings::ResolvedKeybinding;
+use je_base::promise::Promise;
+use je_base::uri::URI;
 use je_editor::range::Range;
 use je_extensions::scanner::ExtensionDescription;
+use je_instantiation::service_id;
+use je_platform::configuration::ConfigurationTarget;
 use je_platform::configuration::registry::{ConfigurationDefaultValueSource, ConfigurationScope, ExtensionInfo};
 use je_platform::keybinding::resolved_keybinding_item::ResolvedKeybindingItem;
+use je_platform::opener::editor_types::EditorOptions;
 
 use super::preferences_models::NULL_RANGE;
 
@@ -436,3 +442,40 @@ impl ISettingMatch {
         Self { setting, matches, match_type, key_match_score, score, provider_name: None }
     }
 }
+
+// ---- `IPreferencesService` (reduzido) ---------------------------------------------------------------------------------
+//
+// O `IPreferencesService` completo (as aberturas de configurações por escopo, os editores de atalhos, os modelos) entra
+// com o porte das telas de preferências. Este recorte é o que o `ExternalUriOpenerService` lê dele: `openUserSettings`.
+// `Promise<IEditorPane | undefined>` é `Promise<()>`, porque o `IEditorPane` não foi portado e nenhum chamador usa o painel.
+
+/// O `revealSetting` de `ISettingsEditorOptions`: `{ key: string; edit?: boolean }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevealSetting {
+    pub key: String,
+    pub edit: Option<bool>,
+}
+
+/// `IOpenSettingsOptions` (`extends ISettingsEditorOptions extends IEditorOptions`). Os campos de `IEditorOptions` são o
+/// [`EditorOptions`] em `editor_options`.
+#[derive(Clone, Default)]
+pub struct IOpenSettingsOptions {
+    pub editor_options: EditorOptions,
+    pub target: Option<ConfigurationTarget>,
+    pub folder_uri: Option<URI>,
+    pub query: Option<String>,
+    /// Only works when opening the json settings file. Use `query` for settings editor.
+    pub reveal_setting: Option<RevealSetting>,
+    pub focus_search: Option<bool>,
+    pub json_editor: Option<bool>,
+    pub open_to_side: Option<bool>,
+    pub group_id: Option<f64>,
+}
+
+/// `IPreferencesService`, reduzido ao `openUserSettings` (ver a nota acima).
+pub trait IPreferencesService {
+    /// `openUserSettings(options?)`.
+    fn open_user_settings(&self, options: Option<&IOpenSettingsOptions>) -> Promise<()>;
+}
+
+service_id!(pub I_PREFERENCES_SERVICE: dyn IPreferencesService = "preferencesService");

@@ -4628,3 +4628,56 @@ mod authentication_region {
 }
 
 // #endregion
+
+// #region UriOpeners
+
+pub use self::uri_openers_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostUriOpener.ts` e `mainThreadUriOpeners.ts` usam: `MainThreadUriOpenersShape`,
+/// `ExtHostUriOpenersShape` e os identificadores `MainContext.MainThreadUriOpeners` e `ExtHostContext.ExtHostUriOpeners`.
+///
+/// Divergências:
+/// - `UriComponents` é a [`URI`] e o `viewColumn?: ViewColumn` do contexto de `$openUri` é o `ViewColumn` do `platform/editor`.
+///   O objeto `{ resolvedUri, sourceUri, viewColumn? }` é [`OpenUriContextDto`].
+/// - `readonly string[]` de `$registerUriOpener` é `&[String]`.
+mod uri_openers_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::languages::ExternalUriOpenerPriority;
+    use je_extensions::manifest::ExtensionIdentifier;
+    use je_platform::opener::editor_types::ViewColumn;
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier};
+
+    /// O `context` de `$openUri`: `{ resolvedUri: UriComponents; sourceUri: UriComponents; viewColumn?: ViewColumn }`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct OpenUriContextDto {
+        pub resolved_uri: URI,
+        pub source_uri: URI,
+        pub view_column: Option<ViewColumn>,
+    }
+
+    /// `MainThreadUriOpenersShape`.
+    pub trait MainThreadUriOpenersShape: IDisposable {
+        fn rpc_register_uri_opener(&self, id: &str, schemes: &[String], extension_id: &ExtensionIdentifier, label: &str) -> Promise<()>;
+        fn rpc_unregister_uri_opener(&self, id: &str) -> Promise<()>;
+    }
+
+    /// `ExtHostUriOpenersShape`.
+    pub trait ExtHostUriOpenersShape {
+        fn rpc_can_open_uri(&self, id: &str, uri: &URI, token: CancellationToken) -> Promise<ExternalUriOpenerPriority>;
+        fn rpc_open_uri(&self, id: &str, context: OpenUriContextDto, token: CancellationToken) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_URI_OPENERS: ProxyIdentifier<dyn MainThreadUriOpenersShape> = ProxyIdentifier::new("MainThreadUriOpeners");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_URI_OPENERS: ProxyIdentifier<dyn ExtHostUriOpenersShape> = ProxyIdentifier::new("ExtHostUriOpeners");
+    }
+}
+
+// #endregion

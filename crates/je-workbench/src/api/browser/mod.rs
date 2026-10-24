@@ -29,3 +29,6 @@ pub mod main_thread_telemetry;
 // Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
 pub mod main_thread_webview_panels;
 pub mod main_thread_webviews;
+
+// Openers externos de URI: `mainThreadUriOpeners.ts`.
+pub mod main_thread_uri_openers;

@@ -66,3 +66,5 @@ pub mod ext_host_decorations;
 // Ativação de extensões: `extHostExtensionActivator.ts` e `extensionHostMain.ts` (o tratador de erros do host).
 pub mod ext_host_extension_activator;
 pub mod extension_host_main;
+// Openers externos de URI: `extHostUriOpener.ts`.
+pub mod ext_host_uri_opener;
