@@ -16,12 +16,11 @@
 //!   `TestFileService`, `FilesConfigurationService`, `WorkingCopyService`, `InMemoryWorkingCopyBackupService`,
 //!   `TestNotificationService`, `TestEditorService`, `NullLogService`) e os registra no `DisposableStore` dado, no lugar do
 //!   `disposables.add(...)`. O `UriIdentityService` é o real, como no original.
-//! - **`TestWorkingCopyBackupService`.** Os membros extras dele (`resolved`, `parseBackupContent`) não são lidos por esta suíte:
-//!   o serviço é o `InMemoryWorkingCopyBackupService` que ele estende.
-//! - **`WorkingCopyFileService`.** O serviço real ainda não foi portado: o [`TestWorkingCopyFileService`] traz os eventos de
-//!   operação sem disparo e os participantes de salvar do `StoredFileWorkingCopySaveParticipant` (`addSaveParticipant`,
-//!   `hasSaveParticipants`, `runSaveParticipants`), com a mesma lógica de ordem, cancelamento e progresso. O participante é
-//!   o trait [`IStoredFileWorkingCopySaveParticipant`] (o `ordinal` opcional é um método com valor padrão).
+//! - **`TestWorkingCopyBackupService`.** É o [`TestWorkingCopyBackupService`]: o `InMemoryWorkingCopyBackupService` com o
+//!   `resolved` (o `parseBackupContent` não é lido por estas suítes).
+//! - **`WorkingCopyFileService`.** O serviço real ainda não foi portado: o [`TestWorkingCopyFileService`] traz os três eventos
+//!   de operação com `waitUntil`, as operações `create`, `move`, `copy` e `delete` (que o teste do gerenciador chama) e os
+//!   participantes de salvar do `StoredFileWorkingCopySaveParticipant` de produção. As divergências dele estão na doc do tipo.
 //! - **`WorkingCopyEditorService`.** O real lê `editorService.getEditors(...)`, que no `TestEditorService` é sempre `[]`: o
 //!   [`TestWorkingCopyEditorService`] guarda os handlers e o `findEditor` devolve `None`.
 //! - **`BrowserElevatedFileService`.** Não existe no porte de produção: [`BrowserElevatedFileService`] tem o comportamento da
@@ -33,14 +32,13 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use je_base::async_::{async_fn, race_cancellation};
+use je_base::async_::{async_fn, promises};
 use je_base::buffer::{VSBuffer, VSBufferReadableStream, new_writeable_buffer_stream, stream_to_buffer};
-use je_base::cancellation::{CancellationToken, CancellationTokenSource};
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
-use je_base::errors::{self, Error};
+use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
-use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::stream::WriteableStream;
 use je_base::uri::URI;
@@ -48,33 +46,36 @@ use je_instantiation::Injectable;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::files::file_service::FileContentSource;
-use je_platform::files::files::{FileStat, FileStatWithMetadata, WriteFileOptions};
+use je_platform::files::files::{FileOperation, FileStat, FileStatWithMetadata, WriteFileOptions};
 use je_platform::files::i_file_service::IFileService;
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::log::{LogServiceRef, NullLogService};
-use je_platform::notification::notification::NotificationPriority;
-use je_platform::notification::notification_telemetry::NotificationTelemetryId;
 use je_platform::resources::ext_uri;
+use je_platform::storage::StorageService;
+use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::uri_identity::uri_identity_service::UriIdentityService;
-use je_workbench::common::editor::EditorIdentifier;
+use je_workbench::common::editor::{EditorIdentifier, RevertOptions};
 use je_workbench::services::files::elevated_file_service::IElevatedFileService;
+use je_workbench::services::label::label_service::LabelService;
 use je_workbench::services::textfile::collaborators::{
-    IProgress, IProgressService, IWorkingCopyFileService, ProgressCancellable, ProgressLocation, ProgressOptions, ProgressStep, ProgressTask,
-    StoredFileWorkingCopySaveParticipantContext, WorkingCopyFileEvent,
+    IProgress, IProgressService, IWorkingCopyFileService, ProgressOptions, ProgressStep, ProgressTask, StoredFileWorkingCopySaveParticipantContext, WorkingCopyFileEvent,
+    WorkingCopyFileEventFile,
 };
 use je_workbench::services::working_copy::file_working_copy::{IFileWorkingCopyModel, IFileWorkingCopyModelFactory, SnapshotContext};
-use je_workbench::services::working_copy::resource_working_copy::IResourceWorkingCopy;
 use je_workbench::services::working_copy::stored_file_working_copy::{
     IStoredFileWorkingCopy, IStoredFileWorkingCopyModel, IStoredFileWorkingCopyModelFactory, StoredFileWorkingCopy, StoredFileWorkingCopyModelContentChangedEvent,
     StoredFileWorkingCopyResolveOptions, StoredFileWorkingCopyResolver, StoredFileWorkingCopyServices,
 };
-use je_workbench::services::working_copy::working_copy::IWorkingCopy;
+use je_workbench::services::working_copy::stored_file_working_copy_save_participant::{IStoredFileWorkingCopySaveParticipant, StoredFileWorkingCopySaveParticipant};
+use je_workbench::services::working_copy::working_copy::{IWorkingCopy, WorkingCopyBackupContent, WorkingCopyIdentifier};
+use je_workbench::services::working_copy::working_copy_backup::{DiscardBackupsFilter, IWorkingCopyBackupService, ResolvedWorkingCopyBackup};
 use je_workbench::services::working_copy::working_copy_backup_service::InMemoryWorkingCopyBackupService;
 use je_workbench::services::working_copy::working_copy_editor_service::{IWorkingCopyEditorHandler, IWorkingCopyEditorService};
 use je_workbench::services::working_copy::working_copy_service::{IWorkingCopyService, WorkingCopyService};
-use je_workbench::test::browser::workbench_test_services::{TestEditorService, TestEnvironmentService};
+use je_workbench::test::browser::workbench_test_services::{TestEditorService, TestEnvironmentService, TestPathService, TestRemoteAgentService};
 use je_workbench::test::common::workbench_test_services::{
-    TestContextService, TestFileService, TestFilesConfigurationService, TestMarkerService, TestNotificationService, TestTextResourceConfigurationService,
+    TestContextService, TestFileService, TestFilesConfigurationService, TestLifecycleService, TestMarkerService, TestNotificationService, TestStorageService,
+    TestTextResourceConfigurationService,
 };
 
 //#region TestStoredFileWorkingCopyModel
@@ -319,24 +320,6 @@ impl IFileWorkingCopyModelFactory<TestStoredFileWorkingCopyModel> for TestStored
 
 //#region Serviços que faltavam
 
-/// `IStoredFileWorkingCopySaveParticipant`.
-pub trait IStoredFileWorkingCopySaveParticipant {
-    /// The ordinal number which determines the order of participation. Lower values mean to participate earlier.
-    fn ordinal(&self) -> Option<i32> {
-        None
-    }
-
-    /// Participate in a save of a working copy. Implementors can update the working copy with changes that should be part
-    /// of the save.
-    fn participate(
-        &self,
-        working_copy: Rc<dyn IStoredFileWorkingCopy>,
-        context: StoredFileWorkingCopySaveParticipantContext,
-        progress: Rc<dyn IProgress<ProgressStep>>,
-        token: CancellationToken,
-    ) -> Promise<()>;
-}
-
 /// O participante do teste: `{ participate: async (wc, context) => { ... } }`.
 struct FnSaveParticipant<F>(F);
 
@@ -362,134 +345,235 @@ pub fn save_participant(
     Rc::new(FnSaveParticipant(participate))
 }
 
-type SaveParticipants = Rc<RefCell<Vec<(u64, Rc<dyn IStoredFileWorkingCopySaveParticipant>)>>>;
-
-/// O `IWorkingCopyFileService` do teste: os eventos de operação não disparam e os participantes de salvar são os do
-/// `StoredFileWorkingCopySaveParticipant`.
+/// O `IWorkingCopyFileService` do teste. Os participantes de salvar são o `StoredFileWorkingCopySaveParticipant` de
+/// produção; as operações de arquivo (`create`, `move`, `copy` e `delete`) e os três eventos com `waitUntil` seguem o
+/// `WorkingCopyFileService` do original (o porte de produção dele ainda não existe: o `IFileService` reduzido não tem
+/// `canCreateFile`, `canMove`, `canCopy`, `canDelete`, `move` e `copy`).
+///
+/// Divergências do `WorkingCopyFileService`:
+/// - Sem os participantes de operação de arquivo (`addFileOperationParticipant`: nenhum registrado, então não fazem nada)
+///   e sem o `CancellationToken` das operações (só era repassado a eles).
+/// - A validação (`canXxx`) é sempre `true` no `TestFileService`; `move` e `copy` do `TestFileService` devolvem `null` e
+///   `createFile` o stat que ninguém lê, então as operações devolvem `()`. `move` e `copy` não tocam o serviço de arquivos.
+/// - `fireAsync` é disparar o evento e esperar as promessas que os ouvintes entregaram a `waitUntil`.
+/// - `getDirty` e o provider de working copies padrão (o único) leem o `IWorkingCopyService`.
 pub struct TestWorkingCopyFileService {
-    save_participants: SaveParticipants,
-    next_participant_id: Cell<u64>,
-    log_service: LogServiceRef,
-    progress_service: Rc<dyn IProgressService>,
+    base: Rc<Disposable>,
+    save_participants: Rc<StoredFileWorkingCopySaveParticipant>,
+    on_will_run_working_copy_file_operation: Rc<Emitter<WorkingCopyFileEvent>>,
+    on_did_fail_working_copy_file_operation: Rc<Emitter<WorkingCopyFileEvent>>,
+    on_did_run_working_copy_file_operation: Rc<Emitter<WorkingCopyFileEvent>>,
+    correlation_ids: Cell<usize>,
+    file_service: Rc<dyn IFileService>,
+    working_copy_service: Rc<dyn IWorkingCopyService>,
+    uri_identity_service: Rc<dyn IUriIdentityService>,
 }
 
 impl TestWorkingCopyFileService {
-    pub fn new(log_service: LogServiceRef, progress_service: Rc<dyn IProgressService>) -> Rc<Self> {
-        Rc::new(Self { save_participants: Rc::default(), next_participant_id: Cell::new(0), log_service, progress_service })
+    pub fn new(
+        log_service: LogServiceRef,
+        progress_service: Rc<dyn IProgressService>,
+        file_service: Rc<dyn IFileService>,
+        working_copy_service: Rc<dyn IWorkingCopyService>,
+        uri_identity_service: Rc<dyn IUriIdentityService>,
+    ) -> Rc<Self> {
+        let base = Disposable::new();
+        let on_will_run_working_copy_file_operation = Emitter::new();
+        let on_did_fail_working_copy_file_operation = Emitter::new();
+        let on_did_run_working_copy_file_operation = Emitter::new();
+        base.register(on_will_run_working_copy_file_operation.clone());
+        base.register(on_did_fail_working_copy_file_operation.clone());
+        base.register(on_did_run_working_copy_file_operation.clone());
+        let save_participants = StoredFileWorkingCopySaveParticipant::new(log_service, progress_service);
+        base.register(save_participants.clone());
+
+        Rc::new(Self {
+            base,
+            save_participants,
+            on_will_run_working_copy_file_operation,
+            on_did_fail_working_copy_file_operation,
+            on_did_run_working_copy_file_operation,
+            correlation_ids: Cell::new(0),
+            file_service,
+            working_copy_service,
+            uri_identity_service,
+        })
     }
 
     /// `addSaveParticipant(participant)`.
     pub fn add_save_participant(&self, participant: Rc<dyn IStoredFileWorkingCopySaveParticipant>) -> DisposableRef {
-        let id = self.next_participant_id.get();
-        self.next_participant_id.set(id + 1);
-        self.save_participants.borrow_mut().push((id, participant));
-
-        let save_participants = self.save_participants.clone();
-        to_disposable(move || save_participants.borrow_mut().retain(|(candidate, _)| *candidate != id))
+        self.save_participants.add_save_participant(participant)
     }
 
-    /// `StoredFileWorkingCopySaveParticipant.participate(workingCopy, context, progress, token)`.
-    fn participate(
-        &self,
-        working_copy: Rc<dyn IStoredFileWorkingCopy>,
-        context: StoredFileWorkingCopySaveParticipantContext,
-        progress: Rc<dyn IProgress<ProgressStep>>,
-        token: CancellationToken,
-    ) -> Promise<()> {
-        let cts = CancellationTokenSource::new(Some(&token));
+    //#region File operations
 
-        // undoStop before participation
-        if let Some(model) = working_copy.stored_model() {
-            model.push_stack_element();
-        }
-
-        // report to the "outer" progress
-        progress.report(ProgressStep { message: Some(localize("saveParticipants1", "Running Code Actions and Formatters...", &[])), ..ProgressStep::default() });
-
-        let bubble_cancel = Rc::new(Cell::new(false));
-
-        let (save_participants, log_service, progress_service) = (self.save_participants.clone(), self.log_service.clone(), self.progress_service.clone());
+    /// `create([{ resource }], CancellationToken.None)`.
+    pub fn create(self: &Rc<Self>, resources: &[URI]) -> Promise<()> {
+        let (this, resources) = (self.clone(), resources.to_vec());
 
         async_fn(async move {
-            let (task_working_copy, task_cts, task_bubble_cancel, cancel_cts) = (working_copy.clone(), cts.clone(), bubble_cancel.clone(), cts.clone());
-
-            // create an "inner" progress to allow to skip over long running save participants
-            progress_service
-                .with_progress(
-                    ProgressOptions {
-                        title: None,
-                        cancellable: Some(ProgressCancellable::Label(localize("skip", "Skip", &[]))),
-                        delay: Some(if working_copy.is_dirty() { 5000 } else { 3000 }),
-                        priority: Some(NotificationPriority::Urgent),
-                        telemetry: Some(NotificationTelemetryId::WorkingCopySaveParticipants),
-                        ..ProgressOptions::at(ProgressLocation::Notification)
-                    },
-                    Box::new(move |progress| {
-                        async_fn(async move {
-                            let mut participants: Vec<Rc<dyn IStoredFileWorkingCopySaveParticipant>> =
-                                save_participants.borrow().iter().map(|(_, participant)| participant.clone()).collect();
-                            participants.sort_by_key(|participant| participant.ordinal().unwrap_or(0));
-
-                            for save_participant in participants {
-                                if task_cts.token().is_cancellation_requested() || task_working_copy.is_disposed() {
-                                    break;
-                                }
-
-                                let promise = save_participant.participate(task_working_copy.clone(), context.clone(), progress.clone(), task_cts.token());
-                                if let Err(err) = race_cancellation(&promise, &task_cts.token()).await {
-                                    if !errors::is_cancellation_error(&err) {
-                                        log_service.error(&err.to_string());
-                                    } else if !task_cts.token().is_cancellation_requested() {
-                                        // we see a cancellation error BUT the token didn't signal it
-                                        // this means the participant wants the save operation to be cancelled
-                                        task_cts.cancel();
-                                        task_bubble_cancel.set(true);
-                                    }
-                                }
-                            }
-                            Ok(())
-                        })
-                    }),
-                    Some(Rc::new(move || cancel_cts.cancel())),
-                )
-                .await?;
-
-            // undoStop after participation
-            if let Some(model) = working_copy.stored_model() {
-                model.push_stack_element();
+            if resources.is_empty() {
+                return Ok(());
             }
 
-            cts.dispose_with(false);
+            // before events
+            let files = resources.iter().map(|resource| WorkingCopyFileEventFile { source: None, target: resource.clone() }).collect();
+            let event = this.new_event(FileOperation::Create, files);
+            this.fire_async(&this.on_will_run_working_copy_file_operation, &event).await?;
 
-            if bubble_cancel.get() {
-                return Err(Error::cancellation());
+            // now actually create on disk
+            let created = promises::settled(resources.iter().map(|resource| this.file_service.create_file(resource, None, None).then(|_| ())).collect()).await;
+            if let Err(error) = created {
+                // error event
+                this.fire_async(&this.on_did_fail_working_copy_file_operation, &event).await?;
+
+                return Err(error);
             }
-            Ok(())
+
+            // after event
+            this.fire_async(&this.on_did_run_working_copy_file_operation, &event).await
         })
+    }
+
+    /// `move([{ file: { source, target } }], CancellationToken.None)`.
+    pub fn move_files(self: &Rc<Self>, files: &[WorkingCopyFileEventFile]) -> Promise<()> {
+        self.do_move_or_copy(files, true)
+    }
+
+    /// `copy([{ file: { source, target } }], CancellationToken.None)`.
+    pub fn copy(self: &Rc<Self>, files: &[WorkingCopyFileEventFile]) -> Promise<()> {
+        self.do_move_or_copy(files, false)
+    }
+
+    fn do_move_or_copy(self: &Rc<Self>, files: &[WorkingCopyFileEventFile], is_move: bool) -> Promise<()> {
+        let (this, files) = (self.clone(), files.to_vec());
+
+        async_fn(async move {
+            // before event
+            let operation = if is_move { FileOperation::Move } else { FileOperation::Copy };
+            let event = this.new_event(operation, files.clone());
+            this.fire_async(&this.on_will_run_working_copy_file_operation, &event).await?;
+
+            for file in &files {
+                let (Some(source), target) = (&file.source, &file.target) else {
+                    continue;
+                };
+
+                // if source and target are not equal, handle dirty working copies
+                // depending on the operation:
+                // - move: revert both source and target (if any)
+                // - copy: revert target (if any)
+                if !this.uri_identity_service.ext_uri().is_equal(Some(source), Some(target), false) {
+                    let mut dirty_working_copies = Vec::new();
+                    if is_move {
+                        dirty_working_copies.extend(this.get_dirty(source));
+                    }
+                    dirty_working_copies.extend(this.get_dirty(target));
+                    promises::settled(dirty_working_copies.iter().map(|dirty_working_copy| dirty_working_copy.revert(Some(RevertOptions { soft: Some(true), ..RevertOptions::default() }))).collect())
+                        .await?;
+                }
+            }
+
+            // after event
+            this.fire_async(&this.on_did_run_working_copy_file_operation, &event).await
+        })
+    }
+
+    /// `delete([{ resource }], CancellationToken.None)`.
+    pub fn delete(self: &Rc<Self>, resources: &[URI]) -> Promise<()> {
+        let (this, resources) = (self.clone(), resources.to_vec());
+
+        async_fn(async move {
+            // before events
+            let files = resources.iter().map(|resource| WorkingCopyFileEventFile { source: None, target: resource.clone() }).collect();
+            let event = this.new_event(FileOperation::Delete, files);
+            this.fire_async(&this.on_will_run_working_copy_file_operation, &event).await?;
+
+            // check for any existing dirty working copies for the resource
+            // and do a soft revert before deleting to be able to close
+            // any opened editor with these working copies
+            for resource in &resources {
+                let dirty_working_copies = this.get_dirty(resource);
+                promises::settled(dirty_working_copies.iter().map(|dirty_working_copy| dirty_working_copy.revert(Some(RevertOptions { soft: Some(true), ..RevertOptions::default() }))).collect())
+                    .await?;
+            }
+
+            // now actually delete from disk
+            for resource in &resources {
+                if let Err(error) = this.file_service.del(resource, None).await {
+                    // error event
+                    this.fire_async(&this.on_did_fail_working_copy_file_operation, &event).await?;
+
+                    return Err(error);
+                }
+            }
+
+            // after event
+            this.fire_async(&this.on_did_run_working_copy_file_operation, &event).await
+        })
+    }
+
+    //#endregion
+
+    /// `{ correlationId: this.correlationIds++, operation, files }`.
+    fn new_event(&self, operation: FileOperation, files: Vec<WorkingCopyFileEventFile>) -> WorkingCopyFileEvent {
+        let correlation_id = self.correlation_ids.get();
+        self.correlation_ids.set(correlation_id + 1);
+
+        WorkingCopyFileEvent::new(correlation_id, operation, files)
+    }
+
+    /// `emitter.fireAsync(event, CancellationToken.None)`.
+    fn fire_async(&self, emitter: &Emitter<WorkingCopyFileEvent>, event: &WorkingCopyFileEvent) -> Promise<()> {
+        emitter.fire(event.clone());
+
+        promises::settled(event.take_joiners()).then(|_| ())
+    }
+
+    /// `getDirty(resource)` com o provider de working copies padrão.
+    fn get_dirty(&self, resource: &URI) -> Vec<Rc<dyn IWorkingCopy>> {
+        let ext_uri = self.uri_identity_service.ext_uri();
+        let has_provider = self.file_service.has_provider(resource);
+
+        self.working_copy_service
+            .working_copies()
+            .into_iter()
+            .filter(|working_copy| {
+                if has_provider {
+                    // only check for parents if the resource can be handled
+                    // by the file system where we then assume a folder like
+                    // path structure
+                    ext_uri.is_equal_or_parent(&working_copy.resource(), resource, false, false)
+                } else {
+                    ext_uri.is_equal(Some(&working_copy.resource()), Some(resource), false)
+                }
+            })
+            .filter(|working_copy| working_copy.is_dirty())
+            .collect()
     }
 }
 
 impl IDisposable for TestWorkingCopyFileService {
     fn dispose(&self) {
-        self.save_participants.borrow_mut().clear();
+        self.base.dispose();
     }
 }
 
 impl IWorkingCopyFileService for TestWorkingCopyFileService {
     fn on_will_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
-        Event::none()
+        self.on_will_run_working_copy_file_operation.event()
     }
 
     fn on_did_fail_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
-        Event::none()
+        self.on_did_fail_working_copy_file_operation.event()
     }
 
     fn on_did_run_working_copy_file_operation(&self) -> Event<WorkingCopyFileEvent> {
-        Event::none()
+        self.on_did_run_working_copy_file_operation.event()
     }
 
     fn has_save_participants(&self) -> bool {
-        !self.save_participants.borrow().is_empty()
+        !self.save_participants.is_empty()
     }
 
     fn run_save_participants(
@@ -499,7 +583,7 @@ impl IWorkingCopyFileService for TestWorkingCopyFileService {
         progress: Rc<dyn IProgress<ProgressStep>>,
         token: CancellationToken,
     ) -> Promise<()> {
-        self.participate(working_copy, context, progress, token)
+        self.save_participants.participate(working_copy, context, progress, token)
     }
 }
 
@@ -516,6 +600,69 @@ pub struct TestProgressService;
 impl IProgressService for TestProgressService {
     fn with_progress(&self, _options: ProgressOptions, task: ProgressTask, _on_did_cancel: Option<Rc<dyn Fn()>>) -> Promise<()> {
         task(Rc::new(NoProgress))
+    }
+}
+
+/// `TestWorkingCopyBackupService`: o `InMemoryWorkingCopyBackupService` que lembra os identificadores que resolveu
+/// (`resolved`). `extends` é a composição com o serviço em memória, de que os métodos do contrato são repassados.
+///
+/// O `resolved` do original é um `Set<IWorkingCopyIdentifier>` por identidade do objeto; o identificador do porte é um
+/// valor (`typeId` e recurso), então [`TestWorkingCopyBackupService::has_resolved`] compara por valor. O
+/// `parseBackupContent` não é lido por esta suíte.
+pub struct TestWorkingCopyBackupService {
+    inner: Rc<InMemoryWorkingCopyBackupService>,
+    resolved: RefCell<Vec<WorkingCopyIdentifier>>,
+}
+
+impl TestWorkingCopyBackupService {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self { inner: InMemoryWorkingCopyBackupService::new(), resolved: RefCell::new(Vec::new()) })
+    }
+
+    /// `resolved.has(identifier)`.
+    pub fn has_resolved(&self, identifier: &WorkingCopyIdentifier) -> bool {
+        self.resolved.borrow().contains(identifier)
+    }
+}
+
+impl IDisposable for TestWorkingCopyBackupService {
+    fn dispose(&self) {
+        self.inner.dispose();
+    }
+}
+
+impl IWorkingCopyBackupService for TestWorkingCopyBackupService {
+    fn has_backup_sync(&self, identifier: &WorkingCopyIdentifier, version_id: Option<u64>, meta: Option<&Dynamic>) -> bool {
+        self.inner.has_backup_sync(identifier, version_id, meta)
+    }
+
+    fn get_backups(&self) -> Promise<Vec<WorkingCopyIdentifier>> {
+        self.inner.get_backups()
+    }
+
+    fn resolve(&self, identifier: &WorkingCopyIdentifier) -> Promise<Option<ResolvedWorkingCopyBackup>> {
+        self.resolved.borrow_mut().push(identifier.clone());
+
+        self.inner.resolve(identifier)
+    }
+
+    fn backup(
+        &self,
+        identifier: &WorkingCopyIdentifier,
+        content: Option<WorkingCopyBackupContent>,
+        version_id: Option<u64>,
+        meta: Option<Dynamic>,
+        token: Option<CancellationToken>,
+    ) -> Promise<()> {
+        self.inner.backup(identifier, content, version_id, meta, token)
+    }
+
+    fn discard_backup(&self, identifier: &WorkingCopyIdentifier, token: Option<CancellationToken>) -> Promise<()> {
+        self.inner.discard_backup(identifier, token)
+    }
+
+    fn discard_backups(&self, filter: Option<DiscardBackupsFilter>) -> Promise<()> {
+        self.inner.discard_backups(filter)
     }
 }
 
@@ -589,13 +736,16 @@ pub struct TestServiceAccessor {
     pub log_service: LogServiceRef,
     pub working_copy_file_service: Rc<TestWorkingCopyFileService>,
     pub files_configuration_service: Rc<TestFilesConfigurationService>,
-    pub working_copy_backup_service: Rc<InMemoryWorkingCopyBackupService>,
+    pub working_copy_backup_service: Rc<TestWorkingCopyBackupService>,
     pub working_copy_service: Rc<WorkingCopyService>,
     pub notification_service: Rc<TestNotificationService>,
     pub working_copy_editor_service: Rc<TestWorkingCopyEditorService>,
     pub editor_service: Rc<TestEditorService>,
     pub elevated_file_service: Rc<BrowserElevatedFileService>,
     pub progress_service: Rc<TestProgressService>,
+    pub lifecycle_service: Rc<TestLifecycleService>,
+    pub label_service: Rc<LabelService>,
+    pub uri_identity_service: Rc<UriIdentityService>,
     created: RefCell<Vec<Rc<TestStoredFileWorkingCopy>>>,
 }
 
@@ -615,33 +765,59 @@ impl TestServiceAccessor {
         let file_service = disposables.add_rc(TestFileService::new());
         let file_service_contract: Rc<dyn IFileService> = file_service.clone();
         let uri_identity_service = disposables.add_rc(UriIdentityService::create((), (file_service_contract.clone(),)));
+        let context_service = TestContextService::new(None, None);
         let files_configuration_service = disposables.add_rc(TestFilesConfigurationService::create(
             (),
             (
                 context_key_service,
                 configuration_service.clone(),
-                TestContextService::new(None, None),
+                context_service.clone(),
                 TestEnvironmentService::new(),
-                uri_identity_service,
-                file_service_contract,
+                uri_identity_service.clone(),
+                file_service_contract.clone(),
                 Rc::new(TestMarkerService),
                 TestTextResourceConfigurationService::new(configuration_service),
             ),
         ));
-        let working_copy_file_service = disposables.add_rc(TestWorkingCopyFileService::new(log_service.clone(), progress_service.clone()));
+        let working_copy_service = disposables.add_rc(WorkingCopyService::new());
+        let working_copy_file_service = disposables.add_rc(TestWorkingCopyFileService::new(
+            log_service.clone(),
+            progress_service.clone(),
+            file_service_contract,
+            working_copy_service.clone(),
+            uri_identity_service.clone(),
+        ));
+        let storage = disposables.add_rc(TestStorageService::new());
+        let storage_service: Rc<dyn StorageService> = Rc::new(storage);
+        let lifecycle_service = disposables.add_rc(TestLifecycleService::new());
+        let label_service = disposables.add_rc(LabelService::create(
+            (),
+            (
+                TestEnvironmentService::new(),
+                context_service,
+                TestPathService::new(None, None),
+                Rc::new(TestRemoteAgentService),
+                storage_service,
+                lifecycle_service.clone(),
+                uri_identity_service.clone(),
+            ),
+        ));
 
         Self {
             file_service,
             log_service,
             working_copy_file_service,
             files_configuration_service,
-            working_copy_backup_service: disposables.add_rc(InMemoryWorkingCopyBackupService::new()),
-            working_copy_service: disposables.add_rc(WorkingCopyService::new()),
+            working_copy_backup_service: disposables.add_rc(TestWorkingCopyBackupService::new()),
+            working_copy_service,
             notification_service: Rc::new(TestNotificationService),
             working_copy_editor_service: disposables.add_rc(TestWorkingCopyEditorService::new()),
             editor_service: Rc::new(TestEditorService),
             elevated_file_service: Rc::new(BrowserElevatedFileService),
             progress_service,
+            lifecycle_service,
+            label_service,
+            uri_identity_service,
             created: RefCell::new(Vec::new()),
         }
     }
