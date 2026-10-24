@@ -47,3 +47,6 @@ pub mod ext_host_notebook;
 pub mod ext_host_notebook_document;
 pub mod ext_host_notebook_documents;
 pub mod ext_host_notebook_editor;
+// ApiCommands: `extHostApiCommands.ts` e os comandos internos `_execute*` do editor que ele chama.
+pub mod editor_execute_commands;
+pub mod ext_host_api_commands;
