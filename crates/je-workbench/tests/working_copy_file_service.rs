@@ -77,14 +77,15 @@ fn setup(disposables: &LeakGuard) -> TextFileTestAccessor {
         disposables.add_rc(test_configuration_service.on_did_change_configuration_emitter.clone());
         let configuration_service: Rc<dyn IConfigurationService> = test_configuration_service;
 
-        disposables.add_rc(WorkingCopyFileService::new(
+        let service = disposables.add_rc(WorkingCopyFileService::new(
             base.file_service.clone(),
             base.working_copy_service.clone(),
             base.uri_identity_service.clone(),
             base.log_service.clone(),
             configuration_service,
             base.progress_service.clone(),
-        ))
+        ));
+        service
     });
 
     disposables.add_rc(accessor.files());
