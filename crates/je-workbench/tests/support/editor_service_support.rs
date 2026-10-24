@@ -452,7 +452,9 @@ impl EditorServiceAccessor {
         collection.set(I_NOTIFICATION_SERVICE, base.notification_service.clone() as Rc<dyn INotificationService>);
         collection.set(I_EXTENSION_SERVICE, TestExtensionService::new() as Rc<dyn IExtensionService>);
         collection.set(I_HOST_SERVICE, Rc::new(TestHostService) as Rc<dyn IHostService>);
-        collection.set(I_WORKSPACE_TRUST_REQUEST_SERVICE, TestWorkspaceTrustRequestService::new(true) as Rc<dyn IWorkspaceTrustRequestService>);
+        // `instantiationService.stub(IWorkspaceTrustRequestService, disposables.add(new TestWorkspaceTrustRequestService(...)))`.
+        let workspace_trust_request_service = disposables.add_rc(TestWorkspaceTrustRequestService::new(false));
+        collection.set(I_WORKSPACE_TRUST_REQUEST_SERVICE, workspace_trust_request_service as Rc<dyn IWorkspaceTrustRequestService>);
         collection.set(I_WORKBENCH_ENVIRONMENT_SERVICE, TestEnvironmentService::new() as Rc<dyn IWorkbenchEnvironmentService>);
         collection.set(I_UNTITLED_TEXT_EDITOR_SERVICE, base.untitled_text_editor_service.clone() as Rc<dyn IUntitledTextEditorService>);
         collection.set(I_TEXT_MODEL_SERVICE, UntitledTextModelService::new(base.untitled_text_editor_service.clone()) as Rc<dyn ITextModelService>);
