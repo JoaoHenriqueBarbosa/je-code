@@ -180,3 +180,4 @@ pub mod gpu;
 
 pub mod services_model;
 pub mod text_resource_configuration_service;
+pub mod opener_service;
