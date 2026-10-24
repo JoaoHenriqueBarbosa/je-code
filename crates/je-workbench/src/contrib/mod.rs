@@ -62,3 +62,6 @@ pub mod remote;
 
 // Modern UI (`contrib/modernUI`): a configuração do vidro fosco, o material e a contribuição que liga as classes.
 pub mod modern_ui;
+
+// Arquivos de workspace (`contrib/workspaces`): a contribuição que sugere abrir um `.code-workspace` da raiz da pasta.
+pub mod workspaces;
