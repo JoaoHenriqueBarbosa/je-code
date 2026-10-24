@@ -234,3 +234,5 @@ pub mod editor_web_worker;
 pub mod editor_worker;
 
 pub mod parameter_hints;
+
+pub mod stable_editor_scroll;
