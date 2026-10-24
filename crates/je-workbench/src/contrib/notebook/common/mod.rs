@@ -10,6 +10,7 @@ pub mod notebook_execution_service;
 pub mod notebook_execution_state_service;
 pub mod notebook_kernel_service;
 pub mod notebook_logging_service;
+pub mod notebook_provider;
 pub mod notebook_range;
 pub mod notebook_renderer_messaging_service;
 pub mod notebook_service;
