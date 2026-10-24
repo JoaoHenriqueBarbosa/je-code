@@ -4203,6 +4203,7 @@ dependencies = [
  "je-platform",
  "je-storage",
  "je-theme",
+ "je-widgets",
  "jiff",
  "serde_json",
  "zyarr",
