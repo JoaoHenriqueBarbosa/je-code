@@ -20,6 +20,12 @@ pub mod keybinding_editing_support;
 // Porte de `terminalCompletionService.test.ts`.
 pub mod terminal_completion_support;
 
+// O emulador de terminal dos testes de `contrib/terminal` e `contrib/terminalContrib` (no lugar do `Terminal` do xterm).
+pub mod fake_xterm;
+
+// Porte de `terminalLinkOpeners.test.ts` e `terminalLocalLinkDetector.test.ts`: os dublês dos serviços.
+pub mod terminal_link_support;
+
 // Porte de `textFileEditorModelManager.test.ts`.
 pub mod text_file_support;
 
