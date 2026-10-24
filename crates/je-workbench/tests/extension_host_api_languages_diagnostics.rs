@@ -15,6 +15,9 @@
 //! - **Evento**: `onDidChangeDiagnostics` com as Uris alteradas (depois do `DebounceEmitter` de 50 ms).
 //! - **Linguagens**: `getLanguages`, `setTextDocumentLanguage` e `match`.
 
+#[allow(dead_code)]
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
 #[path = "support/extension_host_api_harness.rs"]
 mod harness;
 #[allow(dead_code, unused_imports)]

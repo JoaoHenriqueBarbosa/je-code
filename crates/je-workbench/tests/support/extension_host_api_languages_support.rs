@@ -9,6 +9,7 @@
 
 #![allow(dead_code, unused_imports)]
 
+use je_instantiation::Injectable;
 use std::cell::RefCell;
 use std::rc::Rc;
 

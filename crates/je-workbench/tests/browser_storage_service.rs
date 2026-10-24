@@ -209,7 +209,7 @@ fn log_service() -> LogServiceRef {
 
 /// Um URI do esquema `inmemory` com o caminho dado (`URI.file('/profiles').with({ scheme: Schemas.inMemory })` e `joinPath`).
 fn in_memory_uri(path: &str) -> URI {
-    URI::from(UriComponents { scheme: Some("inmemory".into()), path: Some(path.into()), ..Default::default() })
+    URI::from(&UriComponents { scheme: Some("inmemory".into()), path: Some(path.into()), ..Default::default() }, false)
 }
 
 /// `createStorageService`.

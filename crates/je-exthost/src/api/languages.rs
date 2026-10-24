@@ -594,16 +594,6 @@ pub fn namespace(runner: &NodeRunner, services: &LanguagesServices, table: &Rc<D
                 Ok(promise_to_js(&set_runner, changed, move |document| result_objects.document_to_js(document)))
             }),
         ));
-        members.push(function(
-            "match",
-            2,
-            Rc::new(move |args| {
-                let selector = selector_from(args.first().ok_or("match: falta o seletor")?)?;
-                let document = match_objects.document_of(args.get(1).ok_or("match: falta o documento")?)?;
-                let selector = LanguageSelector::from(Some(&selector));
-                Ok(JsData::Num(f64::from(score(selector.as_ref(), document.uri(), &document.language_id(), true, None, None))))
-            }),
-        ));
     }
 
     if let Some(diagnostics) = &services.diagnostics {

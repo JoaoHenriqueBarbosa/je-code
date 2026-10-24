@@ -18,6 +18,9 @@
 //! - **Símbolos**: `DocumentSymbol` e a ação de código (só o registro: o `CodeActionContext` do editor pede o serviço de ações).
 //! - **Classes**: `CodeActionKind` (`append`, `contains`, `intersects`) e as divergências de `language_types`.
 
+#[allow(dead_code)]
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
 #[path = "support/extension_host_api_harness.rs"]
 mod harness;
 #[allow(dead_code, unused_imports)]
