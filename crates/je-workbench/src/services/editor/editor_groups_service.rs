@@ -585,6 +585,12 @@ pub fn preferred_side_by_side_group_direction(configuration_service: &dyn IConfi
 
 /// `IEditorGroup`, reduzido ao que o resolvedor e o `findGroup` leem.
 pub trait IEditorGroup {
+    /// A vista concreta por trás do grupo, para quem a conhece (o `EditorPart` aceita o próprio objeto de grupo, como o
+    /// `assertGroupView` do original, que só busca por id quando recebe um número). `None` nos dublês.
+    fn as_any_rc(self: Rc<Self>) -> Option<Rc<dyn std::any::Any>> {
+        None
+    }
+
     /// `id`: A unique identifier of this group that remains identical even if the group is moved to different locations.
     fn id(&self) -> GroupIdentifier;
 

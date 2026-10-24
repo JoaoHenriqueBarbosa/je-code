@@ -1357,6 +1357,10 @@ impl SerializableView for EditorGroupView {
 }
 
 impl IEditorGroup for EditorGroupView {
+    fn as_any_rc(self: Rc<Self>) -> Option<Rc<dyn std::any::Any>> {
+        Some(self)
+    }
+
     fn id(&self) -> GroupIdentifier {
         self.model.id()
     }

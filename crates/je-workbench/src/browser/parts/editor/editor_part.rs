@@ -701,12 +701,14 @@ impl EditorPart {
 
     /// `assertGroupView(group)`.
     fn assert_group_view(&self, group: &GroupRef) -> Rc<EditorGroupView> {
-        let identifier = match group {
-            GroupRef::Id(identifier) => *identifier,
-            GroupRef::Group(group) => group.id(),
-        };
-
-        self.get_group_view(identifier).unwrap_or_else(|| invalid_group())
+        match group {
+            GroupRef::Id(identifier) => self.get_group_view(*identifier).unwrap_or_else(|| invalid_group()),
+            // O original devolve o próprio objeto (mesmo um grupo já removido); um dublê sem vista concreta é buscado pelo id.
+            GroupRef::Group(group) => match group.clone().as_any_rc().and_then(|any| any.downcast::<EditorGroupView>().ok()) {
+                Some(view) => view,
+                None => self.get_group_view(group.id()).unwrap_or_else(|| invalid_group()),
+            },
+        }
     }
 
     /// `hasGroup(identifier)`.
@@ -936,7 +938,8 @@ impl EditorPart {
     /// `doCreateGroupView(from)`.
     fn do_create_group_view(&self, from: EditorGroupSource) -> Rc<EditorGroupView> {
         // Create group view
-        let groups_view: Weak<dyn EditorGroupsView> = Rc::downgrade(&self.groups_view);
+        let groups_view_rc: Rc<dyn EditorGroupsView> = self.groups_view.clone();
+        let groups_view: Weak<dyn EditorGroupsView> = Rc::downgrade(&groups_view_rc);
         let group_view = EditorGroupView::new(
             from,
             &self.ui,

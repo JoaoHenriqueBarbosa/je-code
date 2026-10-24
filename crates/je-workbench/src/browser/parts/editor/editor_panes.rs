@@ -223,6 +223,7 @@ pub struct OpenEditorResult {
 }
 
 /// O resultado de `doSetInput`.
+#[derive(Clone)]
 struct SetInputResult {
     changed: bool,
     cancelled: bool,
