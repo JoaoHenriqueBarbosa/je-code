@@ -403,6 +403,11 @@ mod editor_inputs {
         fn active_text_editor_control(&self) -> Option<ActiveTextEditorControl> {
             None
         }
+
+        /// `openEditor`: o `TestEditorService` do original devolve `undefined` (nenhum painel abriu o editor).
+        fn open_editor(&self, _editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>> {
+            Promise::resolved(None)
+        }
     }
 
     /// `TestEditorInput`.
