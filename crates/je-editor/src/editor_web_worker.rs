@@ -23,12 +23,44 @@ use je_base::js_string::{substring, trim};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 
-use crate::editor_worker::WordRanges;
+use crate::diff::default_lines_diff_computer::default_lines_diff_computer::DefaultLinesDiffComputer;
+use crate::diff::legacy_lines_diff_computer::LegacyLinesDiffComputer;
+use crate::diff::lines_diff_computer::{ILinesDiffComputer, LinesDiffComputerOptions};
+use crate::diff::range_mapping::DetailedLineRangeMapping;
+use crate::edits::string_edit::StringEdit;
+use crate::editor_worker::{DiffAlgorithmName, WordRanges};
 use crate::mirror_text_model::MirrorTextModel;
 use crate::model::Eol;
+use crate::position_to_offset::PositionOffsetTransformerBase;
 use crate::range::Range;
+use crate::text::abstract_text::{AbstractText, StringText};
 use crate::text_model_events::ModelContentChangedEvent;
 use crate::word_helper::WordAtPosition;
+
+/// `computeStringDiff(original, modified, options, algorithm)` (`@internal` em `editorWebWorker.ts`): a
+/// diferença de linhas dos dois textos, refinada por caractere, como uma `StringEdit` sobre o original.
+pub fn compute_string_diff(original: &JsString, modified: &JsString, max_computation_time_ms: f64, algorithm: DiffAlgorithmName) -> StringEdit {
+    let original_text = StringText::new(original.clone());
+    let original_lines = original_text.get_lines();
+    let modified_text = StringText::new(modified.clone());
+    let modified_lines = modified_text.get_lines();
+
+    let options = LinesDiffComputerOptions {
+        ignore_trim_whitespace: false,
+        max_computation_time_ms,
+        compute_moves: false,
+        extend_to_subwords: Some(false),
+    };
+    let result = match algorithm {
+        DiffAlgorithmName::Legacy => LegacyLinesDiffComputer.compute_diff(&original_lines, &modified_lines, &options),
+        DiffAlgorithmName::Advanced | DiffAlgorithmName::AdvancedExternal | DiffAlgorithmName::AdvancedWasm => {
+            DefaultLinesDiffComputer::new().compute_diff(&original_lines, &modified_lines, &options)
+        }
+    };
+
+    let text_edit = DetailedLineRangeMapping::to_text_edit(&result.changes, &modified_text);
+    original_text.get_transformer().get_string_edit(&text_edit)
+}
 
 /// `IRawModelData`: o modelo que o worker passa a espelhar.
 pub struct RawModelData {

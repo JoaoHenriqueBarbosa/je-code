@@ -17,8 +17,8 @@
 //! - `emptyCodeActionsResponse` é um valor novo a cada uso.
 //! - `applyCodeAction(accessor, ...)` recebe os cinco serviços que o original lê do `ServicesAccessor` como
 //!   [`ApplyCodeActionServices`]. O `reason` do `IBulkEditOptions` (`EditSources.codeAction({ kind, providerId })`) é o
-//!   [`TextModelEditSource`] de origem `codeAction`: a representação do porte guarda só `source` e `name`, e o `kind`
-//!   da ação vai em `name`; o `providerId` (a extensão do provedor) não tem campo e não é guardado.
+//!   [`EditSources::code_action`] com o `kind` da ação; o `providerId` (a extensão do provedor) não chega a este
+//!   ponto e fica de fora.
 //! - O `asMessage(err)` do original devolve o texto do erro ou `undefined`; como toda rejeição do porte é um
 //!   [`Error`](je_base::errors::Error) com mensagem, o texto de reserva ("An unknown error occurred while applying
 //!   the code action") não é alcançável e não existe aqui.
@@ -57,7 +57,7 @@ use crate::code_editor_widget::{CodeEditorWidget, SelectionOrRange};
 use crate::editor_state::TextModelCancellationTokenSource;
 use crate::language_feature_registry::LanguageFeatureRegistry;
 use crate::text_model::TextModel;
-use crate::text_model_edit_source::TextModelEditSource;
+use crate::text_model_edit_source::EditSources;
 
 pub const CODE_ACTION_COMMAND_ID: &str = "editor.action.codeAction";
 pub const QUICK_FIX_COMMAND_ID: &str = "editor.action.quickFix";
@@ -493,7 +493,7 @@ pub fn apply_code_action(
                         code: Some("undoredo.codeAction".to_owned()),
                         respect_auto_save_config: Some(code_action_reason != ApplyCodeActionReason::OnSave),
                         show_preview: options.as_ref().and_then(|options| options.preview),
-                        reason: Some(TextModelEditSource { source: "codeAction".to_owned(), name: kind.clone() }),
+                        reason: Some(EditSources::code_action(kind.as_deref(), None)),
                     },
                 )
                 .await?;
