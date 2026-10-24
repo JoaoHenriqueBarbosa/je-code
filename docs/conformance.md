@@ -8,13 +8,13 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `platform` | 192 | 2806 | 110 | 1885 | 67.18 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
 | `workbench/services` | 137 | 2491 | 38 | 1112 | 44.64 |
-| `workbench/api` | 94 | 965 | 8 | 196 | 20.31 |
-| `workbench/contrib` | 370 | 4636 | 30 | 531 | 11.45 |
+| `workbench/api` | 94 | 965 | 9 | 231 | 23.94 |
+| `workbench/contrib` | 370 | 4636 | 32 | 611 | 13.18 |
 | `workbench (shell)` | 69 | 621 | 19 | 213 | 34.30 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 8664 | 47.11 |
+| **total** | | 18391 | | 8779 | 47.74 |
 
 ## Arquivos portados
 
@@ -439,6 +439,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/api/test/browser/extHostDocumentData.test.ts` | 27 | `crates/je-workbench/tests/ext_host_document_data.rs` | 27 |
 | `src/vs/workbench/api/test/browser/extHostDocumentsAndEditors.test.ts` | 1 | `crates/je-workbench/tests/ext_host_documents_and_editors.rs` | 1 |
 | `src/vs/workbench/api/test/browser/extHostTextEditor.test.ts` | 34 | `crates/je-workbench/tests/ext_host_text_editor.rs` | 34 |
+| `src/vs/workbench/api/test/browser/extHostTreeViews.test.ts` | 35 | `crates/je-workbench/tests/ext_host_tree_views.rs` | 35 |
 | `src/vs/workbench/api/test/browser/extHostTypes.test.ts` | 42 | `crates/je-workbench/tests/ext_host_types.rs` | 42 |
 | `src/vs/workbench/api/test/browser/extHostWorkspace.test.ts` | 41 | `crates/je-workbench/tests/ext_host_workspace.rs` | 41 |
 | `src/vs/workbench/contrib/browserView/test/common/browserSearch.test.ts` | 17 | `crates/je-workbench/tests/browser_search.rs` | 17 |
@@ -452,10 +453,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/mergeEditor/test/browser/mapping.test.ts` | 13 | `crates/je-workbench/tests/merge_editor_mapping.rs` | 13 |
 | `src/vs/workbench/contrib/multiDiffEditor/test/browser/multiDiffEditorLayoutDebug.test.ts` | 4 | `crates/je-workbench/tests/multi_diff_editor_layout_debug.rs` | 4 |
 | `src/vs/workbench/contrib/notebook/test/browser/notebookCommon.test.ts` | 18 | `crates/je-workbench/tests/notebook_common.rs` | 18 |
+| `src/vs/workbench/contrib/notebook/test/browser/notebookTextModel.test.ts` | 49 | `crates/je-workbench/tests/notebook_text_model.rs` | 49 |
 | `src/vs/workbench/contrib/onboarding/test/browser/onboardingRegistry.test.ts` | 2 | `crates/je-workbench/tests/onboarding_registry.rs` | 2 |
 | `src/vs/workbench/contrib/policyExport/test/common/policyReference.test.ts` | 2 | `crates/je-workbench/tests/policy_reference.rs` | 2 |
 | `src/vs/workbench/contrib/preferences/test/common/smartSnippetInserter.test.ts` | 7 | `crates/je-workbench/tests/smart_snippet_inserter.rs` | 7 |
 | `src/vs/workbench/contrib/search/test/common/extractRange.test.ts` | 5 | `crates/je-workbench/tests/extract_range.rs` | 5 |
+| `src/vs/workbench/contrib/snippets/test/browser/snippetsService.test.ts` | 31 | `crates/je-workbench/tests/snippets_service.rs` | 31 |
 | `src/vs/workbench/contrib/tasks/test/common/problemMatcher.test.ts` | 24 | `crates/je-workbench/tests/problem_matcher.rs` | 24 |
 | `src/vs/workbench/contrib/tasks/test/common/taskConfiguration.test.ts` | 59 | `crates/je-workbench/tests/task_configuration.rs` | 59 |
 | `src/vs/workbench/contrib/terminal/test/browser/capabilities/terminalCapabilityStore.test.ts` | 13 | `crates/je-platform/tests/terminal_capability_store.rs` | 13 |
