@@ -185,3 +185,6 @@ pub mod minimap_char_sheet;
 pub mod minimap_char_renderer;
 pub mod minimap_pre_baked;
 pub mod minimap_char_renderer_factory;
+pub mod view_model_impl;
+
+pub mod view_model_impl_api;

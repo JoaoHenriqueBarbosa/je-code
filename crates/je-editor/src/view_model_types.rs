@@ -20,7 +20,9 @@
 //!   [`CursorSimpleModel`] e não são redeclarados; os de `ISimpleModel` que não estão nele
 //!   (`getValueInRange`, `getValueLengthInRange`, `modifyPosition`) são declarados aqui.
 //! - `ITextModel` é o `Rc<TextModel>`. Os tipos de `ViewEventHandler`, `EditorTheme` e
-//!   `IGlyphMarginLanesModel`, que ainda não têm porte, entram como tipos associados do trait.
+//!   `IGlyphMarginLanesModel` entram como tipos associados do trait (`EventHandler` é `?Sized`, para ser o
+//!   `dyn ViewEventHandler`).
+//! - `onDidChangeContentOrInjectedText` e `emitContentChangeEvent` vêm do supertrait `text_model::ViewModel`.
 //! - `getEditorOption<T>(id)` (resultado tipado por opção) vira [`IViewModel::computed_editor_options`]: o
 //!   chamador lê a opção pela constante tipada do registro, como em `cursor_common`.
 //! - `string | null | undefined` (`source`) é `Option<&str>`; `minimalReveal?` é `Option<bool>`.
@@ -45,7 +47,7 @@ use crate::model::{EndOfLinePreference, ModelDecoration, TextDirection};
 use crate::model_line_projection_data::{InjectedText, LineBreaksComputer, LineBreaksComputerContext};
 use crate::position::Position;
 use crate::range::Range;
-use crate::text_model::{ModelDecorationOptions, TextModel};
+use crate::text_model::{ModelDecorationOptions, TextModel, ViewModel as TextModelViewModel};
 use crate::text_model_events::{InternalModelContentChangeEvent, ModelInjectedTextChangedEvent};
 use crate::text_model_guides::{ActiveIndentGuideInfo, BracketGuideOptions, IndentGuide};
 
@@ -457,12 +459,17 @@ pub struct RichTextToCopy {
 }
 
 /// `IViewModel`. Veja a nota de representação no topo do módulo sobre `&self` e os tipos associados.
-pub trait IViewModel: CursorSimpleModel {
-    /// O `ViewEventHandler` (`viewEventHandler.ts`), ainda sem porte.
-    type EventHandler;
-    /// O `EditorTheme` (`editorTheme.ts`), ainda sem porte.
+///
+/// `onDidChangeContentOrInjectedText` e `emitContentChangeEvent` do original são os métodos do supertrait
+/// [`TextModelViewModel`] (`text_model::ViewModel`, o que o `TextModel` chama no modelo de visão).
+/// `cursorConfig` é o `Rc` da configuração vigente (o `CursorConfiguration` não é `Clone`), e
+/// `createLineBreaksComputer` empresta o contexto e o modelo de visão (ver `IViewModelLines`).
+pub trait IViewModel: CursorSimpleModel + TextModelViewModel {
+    /// O `ViewEventHandler` (`viewEventHandler.ts`).
+    type EventHandler: ?Sized;
+    /// O `EditorTheme` (`editorTheme.ts`).
     type EditorTheme;
-    /// O `IGlyphMarginLanesModel` (`model.ts`), ainda sem porte.
+    /// O `IGlyphMarginLanesModel` (`model.ts`).
     type GlyphLanes;
 
     fn model(&self) -> Rc<TextModel>;
@@ -471,7 +478,7 @@ pub trait IViewModel: CursorSimpleModel {
 
     fn view_layout(&self) -> Rc<dyn IViewLayout>;
 
-    fn cursor_config(&self) -> CursorConfiguration;
+    fn cursor_config(&self) -> Rc<CursorConfiguration>;
 
     fn glyph_lanes(&self) -> Rc<Self::GlyphLanes>;
 
@@ -479,7 +486,7 @@ pub trait IViewModel: CursorSimpleModel {
     fn remove_view_event_handler(&self, event_handler: &Rc<Self::EventHandler>);
 
     /// A tradução de `getEditorOption(id)`: as opções calculadas, lidas pelas constantes do registro.
-    fn computed_editor_options(&self) -> ComputedEditorOptions;
+    fn computed_editor_options(&self) -> &ComputedEditorOptions;
 
     /// Dá a dica de que muitos pedidos vão chegar para estes números de linha.
     fn set_viewport(&self, start_line_number: i32, end_line_number: i32, centered_line_number: i32);
@@ -504,6 +511,7 @@ pub trait IViewModel: CursorSimpleModel {
 
     fn get_hidden_areas(&self) -> Vec<Range>;
 
+    fn get_line_length(&self, line_number: i32) -> usize;
     fn get_active_indent_guide(&self, line_number: i32, min_line_number: i32, max_line_number: i32) -> ActiveIndentGuideInfo;
     fn get_lines_indent_guides(&self, start_line_number: i32, end_line_number: i32) -> Vec<i32>;
     fn get_bracket_guides_in_range_by_line(
@@ -527,10 +535,10 @@ pub trait IViewModel: CursorSimpleModel {
     fn get_plain_text_to_copy(&self, model_ranges: &[Range], empty_selection_clipboard: bool, force_crlf: bool) -> PlainTextToCopy;
     fn get_rich_text_to_copy(&self, model_ranges: &[Range], empty_selection_clipboard: bool) -> Option<RichTextToCopy>;
 
-    fn on_did_change_content_or_injected_text(&self, e: ContentOrInjectedTextChangeEvent);
-    fn emit_content_change_event(&self, e: ContentOrInjectedTextChangeEvent);
-
-    fn create_line_breaks_computer(&self, context: Option<Rc<dyn LineBreaksComputerContext>>) -> Box<dyn LineBreaksComputer>;
+    fn create_line_breaks_computer<'a>(
+        &'a self,
+        context: Option<&'a dyn LineBreaksComputerContext>,
+    ) -> Box<dyn LineBreaksComputer + 'a>;
 
     // #region cursor
     fn get_primary_cursor_state(&self) -> CursorState;
