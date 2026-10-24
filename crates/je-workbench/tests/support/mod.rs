@@ -80,3 +80,6 @@ pub mod debug_view_support;
 
 // Porte de `editorAutoSave.test.ts` e `textFileEditorTracker.test.ts`: o `createEditorAutoSave`/`createTracker` comum e o `TestHostService` com foco.
 pub mod editor_auto_save_support;
+
+// Porte de `TestEditorGroupView` (`workbenchTestServices.ts`), usado por `openEditorsView.test.ts`.
+pub mod test_editor_group_view;
