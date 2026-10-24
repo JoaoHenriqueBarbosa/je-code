@@ -54,7 +54,8 @@ pub fn set_global_default_scrollbar_size(size: f64) {
     }
 }
 
-fn global_default_scrollbar_size() -> f64 {
+/// O tamanho padrão atual das barras (o `globalScrollbarSize` do módulo).
+pub fn global_default_scrollbar_size() -> f64 {
     GLOBAL_DEFAULT_SCROLLBAR_SIZE.with(|s| s.value.get())
 }
 

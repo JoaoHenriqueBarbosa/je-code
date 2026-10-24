@@ -59,3 +59,6 @@ pub mod url;
 
 // Acesso remoto (`contrib/remote`): o detector de URLs de servidores locais na saída dos terminais e das sessões de depuração.
 pub mod remote;
+
+// Modern UI (`contrib/modernUI`): a configuração do vidro fosco, o material e a contribuição que liga as classes.
+pub mod modern_ui;

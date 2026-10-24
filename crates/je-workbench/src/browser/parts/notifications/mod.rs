@@ -3,3 +3,4 @@
 
 pub mod notifications_actions;
 pub mod notifications_commands;
+pub mod notifications_viewer;
