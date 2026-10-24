@@ -36,3 +36,9 @@ je-widgets = { path = "../je-widgets" }
 # Rust puro. Versões fora do `Cargo.lock` da raiz, que ainda não tinha nenhuma das duas.
 encoding_rs = "0.8"
 chardetng = "0.1"
+
+# Os auxiliares de teste de `je-platform/tests/common` (incluídos por `#[path]` em `tests/configuration_service.rs`)
+# usam `indexmap` e `tempfile`.
+[dev-dependencies]
+indexmap = "2"
+tempfile = "3"
