@@ -16,6 +16,7 @@ use je_widgets::menu::GetKeyBinding;
 use je_widgets::menu_bar::MenuBarMenu;
 
 use super::Command;
+use super::quick_pick::PickItem;
 
 /// A fila de comandos que os itens de menu e os botões do shell alimentam; o shell esvazia depois de cada evento.
 pub type CommandQueue = Rc<RefCell<Vec<Command>>>;
@@ -40,7 +41,35 @@ fn keybindings() -> Rc<RefCell<Vec<(String, u32)>>> {
     Rc::new(RefCell::new(Vec::new()))
 }
 
-fn to_actions(items: Vec<Option<Item>>, queue: &CommandQueue, shortcuts: &Rc<RefCell<Vec<(String, u32)>>>, prefix: &str) -> Vec<ActionRef> {
+/// Os atalhos dos itens (para o rótulo do menu) e as entradas da paleta de comandos, preenchidos por [`to_actions`].
+struct Ctx {
+    shortcuts: Rc<RefCell<Vec<(String, u32)>>>,
+    palette: Rc<RefCell<Vec<PickItem>>>,
+    os: je_base::platform::OperatingSystem,
+}
+
+/// O rótulo do atalho na codificação binária (`Ctrl+Shift+P`, `Ctrl+K Ctrl+O`).
+fn keybinding_label(binary: u32, os: je_base::platform::OperatingSystem) -> Option<String> {
+    let keybinding = decode_keybinding(binary, os).ok().flatten()?;
+    USLayoutResolvedKeybinding::resolve_keybinding(&keybinding, os).into_iter().next()?.get_label()
+}
+
+/// O nome da categoria do menu na paleta (`File: Save`).
+fn category(prefix: &str) -> &'static str {
+    match prefix.split('.').next().unwrap_or(prefix) {
+        "file" => "File",
+        "edit" => "Edit",
+        "selection" => "Selection",
+        "view" => "View",
+        "go" => "Go",
+        "run" => "Run",
+        "terminal" => "Terminal",
+        _ => "Help",
+    }
+}
+
+fn to_actions(items: Vec<Option<Item>>, queue: &CommandQueue, ctx: &Ctx, prefix: &str) -> Vec<ActionRef> {
+    let shortcuts = &ctx.shortcuts;
     let mut actions = Vec::new();
     for (index, entry) in items.into_iter().enumerate() {
         let Some(Item(label, command, keybinding)) = entry else {
@@ -52,6 +81,16 @@ fn to_actions(items: Vec<Option<Item>>, queue: &CommandQueue, shortcuts: &Rc<Ref
             shortcuts.borrow_mut().push((id.clone(), keybinding));
         }
         let enabled = command.is_some();
+        if let Some(command) = &command {
+            let title = label.replace('&', "");
+            ctx.palette.borrow_mut().push(PickItem {
+                label: format!("{}: {}", category(prefix), title.trim_end_matches("...")),
+                description: None,
+                keybinding: (keybinding != 0).then(|| keybinding_label(keybinding, ctx.os)).flatten(),
+                command: command.clone(),
+                recent: false,
+            });
+        }
         let callback = command.map(|command| {
             let queue = queue.clone();
             Rc::new(move |_: Dynamic| {
@@ -65,9 +104,11 @@ fn to_actions(items: Vec<Option<Item>>, queue: &CommandQueue, shortcuts: &Rc<Ref
 }
 
 /// Os menus da barra, com os itens ligados à fila de comandos, e o resolvedor de atalhos dos itens.
-pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding) {
+pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding, Vec<PickItem>) {
     use Command as C;
-    let shortcuts = keybindings();
+    let os = Platform::detect().os;
+    let ctx = Ctx { shortcuts: keybindings(), palette: Rc::new(RefCell::new(Vec::new())), os };
+    let shortcuts = ctx.shortcuts.clone();
     let file = vec![
         Some(item("&New Text File", Some(C::NewUntitled), CTRL | code(KeyCode::KeyN))),
         Some(item("New File...", None, CTRL | ALT | KeyMod::WIN_CTRL | code(KeyCode::KeyN))),
@@ -136,19 +177,18 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding) 
         Some(item("&Status Bar", Some(C::ToggleStatusBar), 0)),
         Some(item("&Panel", None, CTRL | code(KeyCode::KeyJ))),
     ];
-    let shortcuts_for_view = shortcuts.clone();
     let view_actions = {
         let mut actions = to_actions(
             vec![
-                Some(item("&Command Palette...", None, CTRL | SHIFT | code(KeyCode::KeyP))),
+                Some(item("&Command Palette...", Some(C::CommandPalette), CTRL | SHIFT | code(KeyCode::KeyP))),
                 Some(item("&Open View...", None, 0)),
                 None,
             ],
             queue,
-            &shortcuts_for_view,
+            &ctx,
             "view.a",
         );
-        actions.push(SubmenuAction::new("view.appearance", "&Appearance", to_actions(appearance, queue, &shortcuts_for_view, "view.appearance"), None) as ActionRef);
+        actions.push(SubmenuAction::new("view.appearance", "&Appearance", to_actions(appearance, queue, &ctx, "view.appearance"), None) as ActionRef);
         actions.push(SubmenuAction::new("view.layout", "Editor &Layout", Vec::new(), None) as ActionRef);
         actions.extend(to_actions(
             vec![
@@ -167,7 +207,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding) 
                 Some(item("&Word Wrap", None, ALT | code(KeyCode::KeyZ))),
             ],
             queue,
-            &shortcuts_for_view,
+            &ctx,
             "view.b",
         ));
         actions
@@ -180,7 +220,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding) 
         Some(item("Next Editor", Some(C::NextEditor), CTRL | code(KeyCode::PageDown))),
         Some(item("Previous Editor", Some(C::PreviousEditor), CTRL | code(KeyCode::PageUp))),
         None,
-        Some(item("Go to &File...", None, CTRL | code(KeyCode::KeyP))),
+        Some(item("Go to &File...", Some(C::QuickOpen), CTRL | code(KeyCode::KeyP))),
         Some(item("Go to Symbol in &Workspace...", None, CTRL | code(KeyCode::KeyT))),
         None,
         Some(item("Go to &Symbol in Editor...", None, CTRL | SHIFT | code(KeyCode::KeyO))),
@@ -210,7 +250,7 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding) 
     ];
     let help = vec![
         Some(item("&Welcome", None, 0)),
-        Some(item("Show All &Commands", None, CTRL | SHIFT | code(KeyCode::KeyP))),
+        Some(item("Show All &Commands", Some(C::CommandPalette), CTRL | SHIFT | code(KeyCode::KeyP))),
         Some(item("&Documentation", None, 0)),
         None,
         Some(item("&Keyboard Shortcuts Reference", None, key_chord(CTRL | code(KeyCode::KeyK), CTRL | code(KeyCode::KeyR)))),
@@ -218,21 +258,22 @@ pub fn menubar_menus(queue: &CommandQueue) -> (Vec<MenuBarMenu>, GetKeyBinding) 
         Some(item("&About", None, 0)),
     ];
     let menus = vec![
-        MenuBarMenu { label: "&File".to_owned(), actions: to_actions(file, queue, &shortcuts, "file") },
-        MenuBarMenu { label: "&Edit".to_owned(), actions: to_actions(edit, queue, &shortcuts, "edit") },
-        MenuBarMenu { label: "&Selection".to_owned(), actions: to_actions(selection, queue, &shortcuts, "selection") },
+        MenuBarMenu { label: "&File".to_owned(), actions: to_actions(file, queue, &ctx, "file") },
+        MenuBarMenu { label: "&Edit".to_owned(), actions: to_actions(edit, queue, &ctx, "edit") },
+        MenuBarMenu { label: "&Selection".to_owned(), actions: to_actions(selection, queue, &ctx, "selection") },
         MenuBarMenu { label: "&View".to_owned(), actions: view_actions },
-        MenuBarMenu { label: "&Go".to_owned(), actions: to_actions(go, queue, &shortcuts, "go") },
-        MenuBarMenu { label: "&Run".to_owned(), actions: to_actions(run, queue, &shortcuts, "run") },
-        MenuBarMenu { label: "&Terminal".to_owned(), actions: to_actions(terminal, queue, &shortcuts, "terminal") },
-        MenuBarMenu { label: "&Help".to_owned(), actions: to_actions(help, queue, &shortcuts, "help") },
+        MenuBarMenu { label: "&Go".to_owned(), actions: to_actions(go, queue, &ctx, "go") },
+        MenuBarMenu { label: "&Run".to_owned(), actions: to_actions(run, queue, &ctx, "run") },
+        MenuBarMenu { label: "&Terminal".to_owned(), actions: to_actions(terminal, queue, &ctx, "terminal") },
+        MenuBarMenu { label: "&Help".to_owned(), actions: to_actions(help, queue, &ctx, "help") },
     ];
-    let os = Platform::detect().os;
     let get_key_binding: GetKeyBinding = Rc::new(move |action: &ActionRef| {
         let id = action.id();
         let binary = shortcuts.borrow().iter().find(|(item, _)| *item == id.as_str()).map(|(_, kb)| *kb)?;
         let keybinding = decode_keybinding(binary, os).ok().flatten()?;
         USLayoutResolvedKeybinding::resolve_keybinding(&keybinding, os).into_iter().next().map(|k| k as Rc<dyn ResolvedKeybinding>)
     });
-    (menus, get_key_binding)
+    let mut palette = ctx.palette.borrow().clone();
+    palette.dedup_by(|a, b| a.command == b.command);
+    (menus, get_key_binding, palette)
 }

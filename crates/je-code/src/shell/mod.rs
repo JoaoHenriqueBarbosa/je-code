@@ -10,6 +10,7 @@
 mod explorer;
 mod file_icons;
 mod menus;
+mod quick_pick;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ use web_time::Instant;
 use explorer::Explorer;
 use file_icons::FileIconTheme;
 use menus::CommandQueue;
+use quick_pick::{PickItem, QuickPick};
 
 /// O tema padrão relativo à pasta de extensões embutidas.
 pub const BUILTIN_DEFAULT_THEME: &str = "theme-defaults/themes/2026-dark.json";
@@ -60,6 +62,11 @@ pub enum Command {
     ToggleStatusBar,
     ToggleFullScreen,
     ShowExplorer,
+    QuickOpen,
+    CommandPalette,
+    /// Aceita a linha de índice dado do Quick Open ou da paleta.
+    QuickPickAccept(usize),
+    QuickPickClose,
     Exit,
 }
 
@@ -136,6 +143,11 @@ pub struct Shell {
     exit_requested: bool,
     fullscreen_requested: bool,
     needs_render: bool,
+    quick_pick: Option<QuickPick>,
+    palette_items: Vec<PickItem>,
+    /// Os arquivos do workspace, lidos na primeira abertura do Quick Open.
+    workspace_files: Option<Vec<PickItem>>,
+    language_of: explorer::LanguageOf,
 }
 
 fn color_or(theme: &ColorTheme, id: &str, fallback: Rgba) -> Rgba {
@@ -179,7 +191,7 @@ impl Shell {
             (chrome, menubar, explorer)
         };
         let queue: CommandQueue = Rc::new(RefCell::new(Vec::new()));
-        let (menus, get_keybinding) = menus::menubar_menus(&queue);
+        let (menus, get_keybinding, palette_items) = menus::menubar_menus(&queue);
         let menu_styles = default_menu_styles(&theme);
         let bar_options = IMenuBarOptions {
             enable_mnemonics: true,
@@ -197,7 +209,7 @@ impl Shell {
             }
             None => Rc::new(|_: &str| None),
         };
-        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of, queue.clone()));
+        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
         let mut shell = Self {
             ui,
             theme,
@@ -222,6 +234,10 @@ impl Shell {
             exit_requested: false,
             fullscreen_requested: false,
             needs_render: true,
+            quick_pick: None,
+            palette_items,
+            workspace_files: None,
+            language_of,
         };
         for file in files {
             shell.open_file(file)?;
@@ -461,9 +477,73 @@ impl Shell {
             Command::ShowExplorer => self.sidebar_visible = !self.sidebar_visible || self.explorer.is_none(),
             Command::ToggleStatusBar => self.statusbar_visible = !self.statusbar_visible,
             Command::ToggleFullScreen => self.fullscreen_requested = true,
+            Command::QuickOpen => self.open_quick_pick(""),
+            Command::CommandPalette => self.open_quick_pick(">"),
+            Command::QuickPickAccept(index) => {
+                let command = self.quick_pick.as_ref().and_then(|pick| pick.accept(Some(index)));
+                self.quick_pick = None;
+                if let Some(command) = command {
+                    self.run(command);
+                }
+            }
+            Command::QuickPickClose => self.quick_pick = None,
             Command::Exit => self.exit_requested = true,
         }
         self.needs_render = true;
+    }
+
+    /// Abre o Quick Open (`initial` vazio) ou a paleta (`>`).
+    fn open_quick_pick(&mut self, initial: &str) {
+        let files = match &self.workspace_files {
+            Some(files) => files.clone(),
+            None => {
+                let files = self.workspace.as_deref().map(quick_pick::scan_workspace).unwrap_or_default();
+                self.workspace_files = Some(files.clone());
+                files
+            }
+        };
+        let open: Vec<PathBuf> = self.active.into_iter().chain((0..self.editors.len()).filter(|i| Some(*i) != self.active)).filter_map(|i| self.editors[i].path.clone()).collect();
+        let recents = quick_pick::recent_items(&open, self.workspace.as_deref());
+        self.quick_pick = Some(QuickPick::new(files, recents, self.palette_items.clone(), initial));
+        self.ui.blur();
+    }
+
+    /// Trata uma tecla com o Quick Open aberto. Devolve se consumiu.
+    fn quick_pick_key(&mut self, down: bool, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+        let Some(pick) = self.quick_pick.as_mut() else { return false };
+        if !down {
+            return true;
+        }
+        let ctrl = mods.ctrl || mods.meta;
+        match key {
+            Some(EditorKey::Escape) => self.quick_pick = None,
+            Some(EditorKey::Enter) => {
+                let command = pick.accept(None);
+                self.quick_pick = None;
+                if let Some(command) = command {
+                    self.run(command);
+                }
+            }
+            Some(EditorKey::Up) => pick.move_focus(-1),
+            Some(EditorKey::Down) => pick.move_focus(1),
+            Some(EditorKey::PageUp) => pick.move_focus(-10),
+            Some(EditorKey::PageDown) => pick.move_focus(10),
+            Some(EditorKey::Left) => pick.move_cursor(pick.cursor().saturating_sub(1)),
+            Some(EditorKey::Right) => pick.move_cursor(pick.cursor() + 1),
+            Some(EditorKey::Home) => pick.move_cursor(0),
+            Some(EditorKey::End) => pick.move_cursor(pick.len()),
+            Some(EditorKey::Backspace) => pick.backspace(),
+            Some(EditorKey::Delete) => pick.delete(),
+            _ => {
+                if (!ctrl || mods.alt)
+                    && let Some(text) = text
+                {
+                    pick.type_text(text);
+                }
+            }
+        }
+        self.needs_render = true;
+        true
     }
 
     pub fn take_exit(&mut self) -> bool {
@@ -531,6 +611,15 @@ impl Shell {
         self.render_editor_part(chrome);
         if self.statusbar_visible {
             self.render_status_bar(chrome);
+        }
+        self.render_quick_pick(chrome);
+    }
+
+    fn render_quick_pick(&self, chrome: NodeId) {
+        let Some(pick) = &self.quick_pick else { return };
+        let rows = pick.render(&mut self.ui.tree_mut(), chrome, self.size.0, &self.theme, self.icons.as_ref(), &self.language_of);
+        for (row, index) in rows {
+            self.listen_command(row, Command::QuickPickAccept(index));
         }
     }
 
@@ -953,6 +1042,14 @@ impl Shell {
             self.sash_drag = Some((self.sidebar_width, x));
             return;
         }
+        if input.kind == PointerInputKind::Down
+            && let Some(pick) = &self.quick_pick
+            && !pick.widget_rect(self.size.0).contains(je_render::kurbo::Point::new(x, y))
+        {
+            self.quick_pick = None;
+            self.needs_render = true;
+            return;
+        }
         let target = self.ui.pointer_input(input);
         if input.kind == PointerInputKind::Down && Some(target) == self.nodes.editor_host && input.button == PointerButton::Primary {
             self.ui.blur();
@@ -1003,6 +1100,8 @@ impl Shell {
             (true, false, false, KeyCode::KeyW) | (true, false, false, KeyCode::F4) => Command::CloseActiveEditor,
             (true, false, false, KeyCode::KeyQ) => Command::Exit,
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
+            (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
+            (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::CommandPalette,
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
@@ -1014,6 +1113,11 @@ impl Shell {
     /// Entrega uma tecla: primeiro à árvore do `Ui` (a barra de menus escuta Alt e os mnemônicos na raiz); se nenhum
     /// widget tem o foco e ninguém consumiu, aos atalhos do workbench e então ao editor.
     pub fn key(&mut self, down: bool, key_code: KeyCode, mods: Modifiers, text: Option<&str>, editor_key: Option<EditorKey>) {
+        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::CommandPalette))) {
+            if self.quick_pick_key(down, text, editor_key, mods) {
+                return;
+            }
+        }
         let had_focus = self.ui.focused().is_some();
         let not_consumed = self.ui.key_input(down, KeyData { key_code, modifiers: mods });
         self.run_commands();

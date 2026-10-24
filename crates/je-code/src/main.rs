@@ -572,6 +572,46 @@ mod tests {
     }
 
     #[test]
+    fn quick_open_and_palette_pick_by_fuzzy_score() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-qo", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).expect("pasta");
+        for (name, text) in [("sample.ts", "x"), ("notes.txt", "n"), ("package.json", "{}"), ("src/index.ts", "i")] {
+            std::fs::write(dir.join(name), text).expect("arquivo");
+        }
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[dir.join("sample.ts")], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::QuickOpen);
+        snapshot(&mut shell, "q0-empty.png");
+        key(&mut shell, None, Some("s"));
+        snapshot(&mut shell, "q1-s.png");
+        // `sample.ts` (aberto) vem primeiro como `recently opened`; Enter mantém o arquivo.
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("sample.ts")));
+        // A busca por `idx` acha `src/index.ts`, que abre numa segunda aba.
+        shell.run(shell::Command::QuickOpen);
+        for c in ["i", "d", "x"] {
+            key(&mut shell, None, Some(c));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("src/index.ts")));
+        // A paleta lista os comandos do menu e roda o escolhido.
+        shell.run(shell::Command::CommandPalette);
+        snapshot(&mut shell, "q2-palette.png");
+        for c in ["c", "l", "o", "s", "e"] {
+            key(&mut shell, None, Some(c));
+        }
+        snapshot(&mut shell, "q3-palette-close.png");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("sample.ts")), "File: Close Editor fecha a aba ativa");
+        // Escape fecha sem rodar nada.
+        shell.run(shell::Command::QuickOpen);
+        key(&mut shell, Some(EditorKey::Escape), None);
+        key(&mut shell, None, Some("z"));
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_value_length(), 2, "com o painel fechado a tecla volta ao editor");
+        std::fs::remove_dir_all(&dir).expect("remove");
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");
