@@ -20,8 +20,8 @@
 //!   [`ITerminalCompletion`]; o `isFile`/`isDirectory` do DTO (que o original espalha no objeto sem uso) não tem campo. O
 //!   `resourceOptions` sem `cwd` (que o original passaria como `undefined` e quebraria depois) vira uma lista só de itens.
 //!   O `globPattern` não existe no tipo da API portado.
-//! - **`$setEnvironmentVariableCollection`.** O `persistent` da coleção traduzida não tem onde ficar: o `IEnvironmentVariableService`
-//!   do porte guarda só `map` e `descriptionMap` (ver `common/environment_variable.rs`).
+//! - **`$setEnvironmentVariableCollection`.** A coleção traduzida é a `IEnvironmentVariableCollectionWithPersistence` (ver
+//!   `common/environment_variable.rs`), com o `persistent` do pedido.
 //! - **`options.outputMatcher.length`.** O `ITerminalQuickFixProvider` recebe as opções por referência mutável (ver
 //!   `quick_fix.rs`).
 //! - **`String#match`.** `terminalCommand.command.match(commandLineMatcher)` e `lines.join('\n').match(lineMatcher)` são o
@@ -42,7 +42,7 @@ use je_base::promise::Promise;
 use je_platform::log::LogServiceRef;
 use je_platform::terminal::capabilities::capabilities::{CommandDetection, IBaseTerminalCommand, ITerminalCommand};
 use je_platform::terminal::capabilities::command_detection::terminal_command::match_line;
-use je_platform::terminal::environment_variable::{IEnvironmentVariableCollection, ISerializableEnvironmentDescriptionMap, ISerializableEnvironmentVariableCollection};
+use je_platform::terminal::environment_variable::{ISerializableEnvironmentDescriptionMap, ISerializableEnvironmentVariableCollection};
 use je_platform::terminal::environment_variable_shared::{
     deserialize_environment_description_map, deserialize_environment_variable_collection, serialize_environment_variable_collection,
 };
@@ -63,7 +63,7 @@ use crate::contrib::terminal::browser::terminal::{
 };
 use crate::contrib::terminal::browser::terminal_events::ITerminalServiceEvents;
 use crate::contrib::terminal::browser::terminal_process_ext_host_proxy::TerminalProcessExtHostProxy;
-use crate::contrib::terminal::common::environment_variable::IEnvironmentVariableService;
+use crate::contrib::terminal::common::environment_variable::{IEnvironmentVariableCollectionWithPersistence, IEnvironmentVariableService};
 use crate::contrib::terminal::common::terminal::{
     IShellLaunchConfigResolveOptions, IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, ITerminalProfileProvider, ITerminalProfileResolverService,
     ITerminalProfileService,
@@ -595,15 +595,16 @@ impl MainThreadTerminalServiceShape for MainThreadTerminalService {
     fn rpc_set_environment_variable_collection(
         &self,
         extension_identifier: &str,
-        _persistent: bool,
+        persistent: bool,
         collection: Option<ISerializableEnvironmentVariableCollection>,
         description_map: ISerializableEnvironmentDescriptionMap,
     ) {
         match collection {
             Some(collection) => {
-                let translated_collection = IEnvironmentVariableCollection {
+                let translated_collection = IEnvironmentVariableCollectionWithPersistence {
                     map: deserialize_environment_variable_collection(collection),
                     description_map: Some(deserialize_environment_description_map(Some(description_map))),
+                    persistent,
                 };
                 self.services.environment_variable_service.set(extension_identifier, translated_collection);
             }

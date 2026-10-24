@@ -97,7 +97,7 @@ fn string_list(value: &Value, what: &str) -> Result<Vec<String>, Error> {
 
 // region: URI, Range, Position, markdown
 
-fn uri_to_json(state: &UriState) -> Value {
+pub(crate) fn uri_to_json(state: &UriState) -> Value {
     let mut object = Obj::new();
     put(&mut object, "$mid", state.mid.map(|mid| number(f64::from(mid))));
     put(&mut object, "fsPath", state.fs_path.as_ref().map(js));
@@ -111,7 +111,7 @@ fn uri_to_json(state: &UriState) -> Value {
     Value::Object(object)
 }
 
-fn uri_from_json(value: &Value) -> Result<UriState, Error> {
+pub(crate) fn uri_from_json(value: &Value) -> Result<UriState, Error> {
     let object = as_obj(value, "uri")?;
     let text = |key: &str| -> Result<Option<JsString>, Error> { Ok(opt_str(object, key)?.map(JsString::from)) };
     Ok(UriState {

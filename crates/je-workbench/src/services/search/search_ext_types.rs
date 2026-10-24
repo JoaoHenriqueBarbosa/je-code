@@ -7,9 +7,8 @@
 //! `TextSearchContext2`, `TextSearchResult2`, `AISearchKeyword`, `AISearchResult`). Os métodos de `Position` e
 //! `Range` que o original declara só como assinatura do tipo da API (devolvem constantes, a implementação real
 //! vive no host de extensões) não existem aqui. As opções da busca de arquivo (`FileSearchProviderFolderOptions`
-//! e `FileSearchProviderOptions`) também estão aqui. As interfaces dos provedores (`TextSearchProvider2`,
-//! `FileSearchProvider2`, `AITextSearchProvider`), que dependem de `CancellationToken` e `IProgress`, ficam
-//! para quando a API de extensões for portada.
+//! e `FileSearchProviderOptions`) também estão aqui, e no fim do arquivo as interfaces dos provedores
+//! (`TextSearchProvider2`, `FileSearchProvider2`, `AITextSearchProvider`) com o `ProviderResult`.
 //!
 //! Linhas e colunas são `i64`, como em [`SearchRange`](super::search::SearchRange); o texto é [`JsString`]
 //! (comprimentos contam unidades UTF-16, como no JS). Os campos opcionais (`?:`) viram `Option`, e `type` de
@@ -252,4 +251,58 @@ pub enum TextSearchResult2 {
 pub enum AISearchResult {
     Text(TextSearchResult2),
     Keyword(AISearchKeyword),
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// As interfaces dos provedores (`FileSearchProvider2`, `TextSearchProvider2`, `AITextSearchProvider`).
+//
+// Divergências:
+// - `ProviderResult<T> = T | undefined | null | Thenable<T | undefined | null>` é sempre a promessa de um `Option`:
+//   um resultado síncrono é `Promise::resolved`, e `undefined`/`null` são `None`.
+// - `progress: IProgress<TextSearchResult2>` do `provideAITextSearchResults` é `IProgress<AISearchResult>`: o
+//   `TextSearchManager` entrega ao provedor um progresso que também aceita o `AISearchKeyword`, e o tipo declarado
+//   no original só o admite por bivariância dos métodos do TypeScript.
+// - `readonly name?: string` do `AITextSearchProvider` é o método `name`.
+// ---------------------------------------------------------------------------------------------------------
+
+use je_base::cancellation::CancellationToken;
+use je_base::promise::Promise;
+use je_platform::progress::progress::IProgress;
+
+/// `ProviderResult<T>`.
+pub type ProviderResult<T> = Promise<Option<T>>;
+
+/// `FileSearchProvider2`: provides search results for files in the given folder that match a query string.
+pub trait FileSearchProvider2 {
+    /// Provide the set of files that match a certain file path pattern.
+    fn provide_file_search_results(&self, pattern: &str, options: &FileSearchProviderOptions, token: &CancellationToken) -> ProviderResult<Vec<URI>>;
+}
+
+/// `TextSearchProvider2`: provides search results for text results inside files in the workspace.
+pub trait TextSearchProvider2 {
+    /// Provide results that match the given text pattern.
+    fn provide_text_search_results(
+        &self,
+        query: &TextSearchQuery2,
+        options: &TextSearchProviderOptions,
+        progress: Rc<dyn IProgress<TextSearchResult2>>,
+        token: &CancellationToken,
+    ) -> ProviderResult<TextSearchComplete2>;
+}
+
+/// `AITextSearchProvider`: provides additional AI text search results in the workspace.
+pub trait AITextSearchProvider {
+    /// The name of the AI searcher. Will be displayed as `{name} Results` in the Search View.
+    fn name(&self) -> Option<String> {
+        None
+    }
+
+    /// WARNING: VERY EXPERIMENTAL. Provide results that match the given text pattern.
+    fn provide_ai_text_search_results(
+        &self,
+        query: &JsString,
+        options: &TextSearchProviderOptions,
+        progress: Rc<dyn IProgress<AISearchResult>>,
+        token: &CancellationToken,
+    ) -> ProviderResult<TextSearchComplete2>;
 }

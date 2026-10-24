@@ -262,6 +262,11 @@ impl TerminalProcessManager {
         self.this.upgrade().expect("o gerenciador de processo foi descartado da memória")
     }
 
+    /// `os` é um campo público do original (`os: OperatingSystem | undefined`), que o teste do relançamento do pty host troca.
+    pub fn set_os(&self, os: Option<OperatingSystem>) {
+        self.os.set(os);
+    }
+
     /// Um serviço lido do serviço de instanciação quando usado (ver "Divergências").
     fn optional_service<T: ?Sized + 'static>(&self, id: ServiceId<T>) -> Option<Rc<T>> {
         self.instantiation_service.invoke_function(|accessor| accessor.try_get(id))
@@ -813,9 +818,10 @@ impl TerminalProcessManager {
         self.store.add(backend.on_pty_host_restart().listen({
             let weak = weak.clone();
             move |_| {
-                let Some(this) = weak.upgrade() else { return };
-                let task = this.clone();
-                runtime::spawn_local(async move {
+                let Some(task) = weak.upgrade() else { return };
+                // O corpo da função `async` do original roda de forma síncrona até o primeiro `await` (o do `relaunch`), por isso
+                // a mensagem de reinício sai antes de o `fire` do evento voltar.
+                {
                     // When the pty host restarts, reconnect is no longer possible
                     if !task.is_disconnected.get() {
                         task.is_disconnected.set(true);
@@ -856,10 +862,11 @@ impl TerminalProcessManager {
                                 ),
                                 false,
                             ));
-                            let _ = task.relaunch_process(shell_launch_config, dimensions.cols, dimensions.rows, false).await;
+                            // O `await` do `relaunch` não tem consumidor: o resultado (ou a rejeição) é descartado.
+                            let _ = task.relaunch_process(shell_launch_config, dimensions.cols, dimensions.rows, false);
                         }
                     }
-                });
+                }
             }
         }));
         self.store.add(to_disposable({

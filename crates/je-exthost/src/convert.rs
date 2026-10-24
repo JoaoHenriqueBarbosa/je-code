@@ -88,6 +88,14 @@ pub fn opt_number(value: Option<&JsData>) -> Option<f64> {
     }
 }
 
+/// O booleano de um valor que é booleano.
+pub fn opt_bool(value: Option<&JsData>) -> Option<bool> {
+    match value {
+        Some(JsData::Bool(flag)) => Some(*flag),
+        _ => None,
+    }
+}
+
 /// `value === undefined || value === null` (um argumento ausente conta como `undefined`).
 pub fn is_nullish(value: Option<&JsData>) -> bool {
     matches!(value, None | Some(JsData::Undefined) | Some(JsData::Null))

@@ -27,14 +27,35 @@ use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::languages::StringOrMarkdown;
+use je_editor::services::clipboard_service::IClipboardService;
+use je_extensions::manifest::ExtensionIdentifier;
 use je_platform::configuration::ConfigurationChange;
 use je_platform::edit_sessions::EditSessionIdentityMatch;
+use je_platform::log::{LogLevel, LoggerService};
+use je_platform::quickinput::quick_input::InputValidationResult;
+use je_workbench::api::common::ext_host_output::IDirectoryCreator;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostConfigurationShape, ExtHostContext, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData, IMainContext, IRawFileMatch2, IWorkspaceData,
-    StatusBarItemDto,
+    DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
+    ExtHostEditorsShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
+    IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWorkspaceData, SerializedModelContentChangedEvent, StatusBarItemDto, TextEditorPositionData,
 };
 
+use crate::api::env::HostEnvironment;
 use crate::local_context::LocalContext;
+
+/// O que o host precisa do lado do processo dele para criar canais de saída: no original o `ExtHostOutputService` usa o `ILoggerService`
+/// e o `IExtHostConsumerFileSystem` do próprio processo do host, e o `initData` (`logsLocation`, `extensionLogLevel`). Aqui o host não
+/// tem esses serviços, então quem monta o `MainThreadOutputService` os entrega junto.
+pub struct OutputEnvironment {
+    /// `initData.logsLocation`.
+    pub logs_location: URI,
+    /// `initData.environment.extensionLogLevel`.
+    pub extension_log_levels: Vec<(ExtensionIdentifier, LogLevel)>,
+    /// `IExtHostConsumerFileSystem.value.createDirectory`.
+    pub directory_creator: Rc<dyn IDirectoryCreator>,
+    /// `ILoggerService`.
+    pub logger_service: Rc<dyn LoggerService>,
+}
 
 /// Quem monta os clientes `MainThread*` em processo.
 pub trait IMainThreadBinder {
@@ -43,6 +64,23 @@ pub trait IMainThreadBinder {
     /// porque alguns clientes (o `MainThreadWorkspace`, `Injectable`) o recebem por valor. Devolve o que precisa ser descartado junto
     /// com o host.
     fn bind(&self, context: Rc<dyn IMainContext>) -> Vec<Rc<dyn IDisposable>>;
+
+    /// O ambiente do `ExtHostOutputService`, se o binder registrou o `MainThreadOutputService`. Sem ele o host não cria canais de
+    /// saída, mesmo com o cliente registrado.
+    fn output_environment(&self) -> Option<OutputEnvironment> {
+        None
+    }
+
+    /// Os valores de `vscode.env` que o original lê do `initData` (`appName`, `appRoot`, `language`, `machineId`, `sessionId`,
+    /// `uriScheme`, `shell`, `uiKind`). Sem eles esses membros não existem em `vscode.env`.
+    fn host_environment(&self) -> Option<HostEnvironment> {
+        None
+    }
+
+    /// O `IClipboardService` do workbench, que `vscode.env.clipboard` usa. Sem ele o membro não existe.
+    fn clipboard_service(&self) -> Option<Rc<dyn IClipboardService>> {
+        None
+    }
 }
 
 /// Um encaminhador preguiçoso para o `T` que ainda não existe (ver o cabeçalho do módulo).
@@ -152,11 +190,143 @@ impl ExtHostStatusBarShape for LateExtHostStatusBar {
     }
 }
 
+/// O `ExtHostQuickOpenShape` que ainda não existe quando `MainThreadQuickOpen` nasce.
+#[derive(Default)]
+pub struct LateExtHostQuickOpen(pub Late<dyn ExtHostQuickOpenShape>);
+
+impl ExtHostQuickOpenShape for LateExtHostQuickOpen {
+    fn rpc_on_item_selected(&self, handle: u32) {
+        self.0.call_void(move |target| target.rpc_on_item_selected(handle));
+    }
+
+    fn rpc_validate_input(&self, input: &str) -> Promise<InputValidationResult> {
+        self.0.bound().rpc_validate_input(input)
+    }
+
+    fn rpc_on_did_change_active(&self, session_id: u32, handles: Vec<u32>) {
+        self.0.call_void(move |target| target.rpc_on_did_change_active(session_id, handles));
+    }
+
+    fn rpc_on_did_change_selection(&self, session_id: u32, handles: Vec<u32>) {
+        self.0.call_void(move |target| target.rpc_on_did_change_selection(session_id, handles));
+    }
+
+    fn rpc_on_did_accept(&self, session_id: u32) {
+        self.0.call_void(move |target| target.rpc_on_did_accept(session_id));
+    }
+
+    fn rpc_on_did_change_value(&self, session_id: u32, value: &str) {
+        let value = value.to_owned();
+        self.0.call_void(move |target| target.rpc_on_did_change_value(session_id, &value));
+    }
+
+    fn rpc_on_did_trigger_button(&self, session_id: u32, handle: Option<i64>, checked: Option<bool>) {
+        self.0.call_void(move |target| target.rpc_on_did_trigger_button(session_id, handle, checked));
+    }
+
+    fn rpc_on_did_trigger_item_button(&self, session_id: u32, item_handle: Option<u32>, button_handle: Option<i64>, checked: Option<bool>) {
+        self.0.call_void(move |target| target.rpc_on_did_trigger_item_button(session_id, item_handle, button_handle, checked));
+    }
+
+    fn rpc_on_did_hide(&self, session_id: u32) {
+        self.0.call_void(move |target| target.rpc_on_did_hide(session_id));
+    }
+}
+
+/// O `ExtHostOutputServiceShape` que ainda não existe quando `MainThreadOutputService` nasce (ele avisa o canal visível no próprio
+/// construtor).
+#[derive(Default)]
+pub struct LateExtHostOutputService(pub Late<dyn ExtHostOutputServiceShape>);
+
+impl ExtHostOutputServiceShape for LateExtHostOutputService {
+    fn rpc_set_visible_channel(&self, visible_channel_id: Option<String>) {
+        self.0.call_void(move |target| target.rpc_set_visible_channel(visible_channel_id));
+    }
+}
+
+/// O `ExtHostProgressShape` que ainda não existe quando `MainThreadProgress` nasce.
+#[derive(Default)]
+pub struct LateExtHostProgress(pub Late<dyn ExtHostProgressShape>);
+
+impl ExtHostProgressShape for LateExtHostProgress {
+    fn rpc_accept_progress_canceled(&self, handle: u32) {
+        self.0.call_void(move |target| target.rpc_accept_progress_canceled(handle));
+    }
+}
+
+/// O `ExtHostDocumentsAndEditorsShape` que ainda não existe quando `MainThreadDocumentsAndEditors` nasce (o construtor dele já
+/// entrega o delta inicial).
+#[derive(Default)]
+pub struct LateExtHostDocumentsAndEditors(pub Late<dyn ExtHostDocumentsAndEditorsShape>);
+
+impl ExtHostDocumentsAndEditorsShape for LateExtHostDocumentsAndEditors {
+    fn rpc_accept_documents_and_editors_delta(&self, delta: DocumentsAndEditorsDelta) {
+        self.0.call_void(move |target| target.rpc_accept_documents_and_editors_delta(delta));
+    }
+}
+
+/// O `ExtHostDocumentsShape` que ainda não existe quando `MainThreadDocuments` nasce.
+#[derive(Default)]
+pub struct LateExtHostDocuments(pub Late<dyn ExtHostDocumentsShape>);
+
+impl ExtHostDocumentsShape for LateExtHostDocuments {
+    fn rpc_accept_model_language_changed(&self, uri: &URI, new_language_id: &str) {
+        let (uri, new_language_id) = (uri.clone(), new_language_id.to_owned());
+        self.0.call_void(move |target| target.rpc_accept_model_language_changed(&uri, &new_language_id));
+    }
+
+    fn rpc_accept_model_saved(&self, uri: &URI) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_model_saved(&uri));
+    }
+
+    fn rpc_accept_dirty_state_changed(&self, uri: &URI, is_dirty: bool) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_dirty_state_changed(&uri, is_dirty));
+    }
+
+    fn rpc_accept_encoding_changed(&self, uri: &URI, encoding: &str) {
+        let (uri, encoding) = (uri.clone(), encoding.to_owned());
+        self.0.call_void(move |target| target.rpc_accept_encoding_changed(&uri, &encoding));
+    }
+
+    fn rpc_accept_model_changed(&self, uri: &URI, e: SerializedModelContentChangedEvent, is_dirty: bool) {
+        let uri = uri.clone();
+        self.0.call_void(move |target| target.rpc_accept_model_changed(&uri, e, is_dirty));
+    }
+}
+
+/// O `ExtHostEditorsShape` que ainda não existe quando `MainThreadTextEditors` nasce.
+#[derive(Default)]
+pub struct LateExtHostEditors(pub Late<dyn ExtHostEditorsShape>);
+
+impl ExtHostEditorsShape for LateExtHostEditors {
+    fn rpc_accept_editor_properties_changed(&self, id: &str, props: EditorPropertiesChangeData) {
+        let id = id.to_owned();
+        self.0.call_void(move |target| target.rpc_accept_editor_properties_changed(&id, props));
+    }
+
+    fn rpc_accept_editor_position_data(&self, data: TextEditorPositionData) {
+        self.0.call_void(move |target| target.rpc_accept_editor_position_data(data));
+    }
+
+    fn rpc_accept_editor_diff_information(&self, id: &str, diff_information: Option<Vec<ITextEditorDiffInformation>>) {
+        let id = id.to_owned();
+        self.0.call_void(move |target| target.rpc_accept_editor_diff_information(&id, diff_information));
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
     pub workspace: Rc<LateExtHostWorkspace>,
     pub configuration: Rc<LateExtHostConfiguration>,
     pub status_bar: Rc<LateExtHostStatusBar>,
+    pub quick_open: Rc<LateExtHostQuickOpen>,
+    pub output: Rc<LateExtHostOutputService>,
+    pub progress: Rc<LateExtHostProgress>,
+    pub documents_and_editors: Rc<LateExtHostDocumentsAndEditors>,
+    pub documents: Rc<LateExtHostDocuments>,
+    pub editors: Rc<LateExtHostEditors>,
 }
 
 impl LateForwarders {
@@ -165,13 +335,31 @@ impl LateForwarders {
         let workspace = Rc::new(LateExtHostWorkspace::default());
         let configuration = Rc::new(LateExtHostConfiguration::default());
         let status_bar = Rc::new(LateExtHostStatusBar::default());
+        let quick_open = Rc::new(LateExtHostQuickOpen::default());
+        let output = Rc::new(LateExtHostOutputService::default());
+        let progress = Rc::new(LateExtHostProgress::default());
+        let documents_and_editors = Rc::new(LateExtHostDocumentsAndEditors::default());
+        let documents = Rc::new(LateExtHostDocuments::default());
+        let editors = Rc::new(LateExtHostEditors::default());
         let as_workspace: Rc<dyn ExtHostWorkspaceShape> = workspace.clone();
         let as_configuration: Rc<dyn ExtHostConfigurationShape> = configuration.clone();
         let as_status_bar: Rc<dyn ExtHostStatusBarShape> = status_bar.clone();
+        let as_quick_open: Rc<dyn ExtHostQuickOpenShape> = quick_open.clone();
+        let as_output: Rc<dyn ExtHostOutputServiceShape> = output.clone();
+        let as_progress: Rc<dyn ExtHostProgressShape> = progress.clone();
+        let as_documents_and_editors: Rc<dyn ExtHostDocumentsAndEditorsShape> = documents_and_editors.clone();
+        let as_documents: Rc<dyn ExtHostDocumentsShape> = documents.clone();
+        let as_editors: Rc<dyn ExtHostEditorsShape> = editors.clone();
         local.set_erased(ExtHostContext::EXT_HOST_WORKSPACE.sid, Rc::new(as_workspace));
         local.set_erased(ExtHostContext::EXT_HOST_CONFIGURATION.sid, Rc::new(as_configuration));
         local.set_erased(ExtHostContext::EXT_HOST_STATUS_BAR.sid, Rc::new(as_status_bar));
-        LateForwarders { workspace, configuration, status_bar }
+        local.set_erased(ExtHostContext::EXT_HOST_QUICK_OPEN.sid, Rc::new(as_quick_open));
+        local.set_erased(ExtHostContext::EXT_HOST_OUTPUT_SERVICE.sid, Rc::new(as_output));
+        local.set_erased(ExtHostContext::EXT_HOST_PROGRESS.sid, Rc::new(as_progress));
+        local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS_AND_EDITORS.sid, Rc::new(as_documents_and_editors));
+        local.set_erased(ExtHostContext::EXT_HOST_DOCUMENTS.sid, Rc::new(as_documents));
+        local.set_erased(ExtHostContext::EXT_HOST_EDITORS.sid, Rc::new(as_editors));
+        LateForwarders { workspace, configuration, status_bar, quick_open, output, progress, documents_and_editors, documents, editors }
     }
 }
 

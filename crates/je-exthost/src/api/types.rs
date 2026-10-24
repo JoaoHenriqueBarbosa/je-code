@@ -21,15 +21,15 @@ fn marked(class: &str, mut fields: Vec<(String, JsData)>) -> JsData {
     JsData::Object(fields)
 }
 
-fn position_data(position: Position) -> JsData {
+pub(crate) fn position_data(position: Position) -> JsData {
     marked("Position", vec![("line".to_owned(), JsData::Num(position.line())), ("character".to_owned(), JsData::Num(position.character()))])
 }
 
-fn range_data(range: Range) -> JsData {
+pub(crate) fn range_data(range: Range) -> JsData {
     marked("Range", vec![("start".to_owned(), position_data(range.start())), ("end".to_owned(), position_data(range.end()))])
 }
 
-fn selection_data(selection: Selection) -> JsData {
+pub(crate) fn selection_data(selection: Selection) -> JsData {
     marked(
         "Selection",
         vec![
@@ -42,17 +42,25 @@ fn selection_data(selection: Selection) -> JsData {
 }
 
 /// O `Position` de um valor com `line` e `character` numéricos (uma instância ou um literal, como o original aceita).
-fn to_position(value: &JsData) -> Result<Position, String> {
+pub(crate) fn to_position(value: &JsData) -> Result<Position, String> {
     match (number(field(value, "line")), number(field(value, "character"))) {
         (Some(line), Some(character)) => Position::new(line, character).map_err(|error| error.message),
         _ => Err("Illegal argument: esperava uma Position".to_owned()),
     }
 }
 
-fn to_range(value: &JsData) -> Result<Range, String> {
+pub(crate) fn to_range(value: &JsData) -> Result<Range, String> {
     match (field(value, "start"), field(value, "end")) {
         (Some(start), Some(end)) => Ok(Range::new(to_position(start)?, to_position(end)?)),
         _ => Err("Illegal argument: esperava um Range".to_owned()),
+    }
+}
+
+/// A `Selection` de um valor com `anchor` e `active` (uma instância ou um literal).
+pub(crate) fn to_selection(value: &JsData) -> Result<Selection, String> {
+    match (field(value, "anchor"), field(value, "active")) {
+        (Some(anchor), Some(active)) => Ok(Selection::new(to_position(anchor)?, to_position(active)?)),
+        _ => Err("Illegal argument: esperava uma Selection".to_owned()),
     }
 }
 

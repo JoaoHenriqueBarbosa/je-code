@@ -77,3 +77,23 @@ pub mod mock_debug;
 // Porte de `baseDebugView.test.ts`, `watchExpressionView.test.ts` e `variablesView.test.ts`: o `LinkDetector` e o
 // `DebugExpressionRenderer` de teste, o `IDebugService` com o `getViewModel` trocado, o escopo e a variável do `setup`.
 pub mod debug_view_support;
+
+// Porte de `editorAutoSave.test.ts` e `textFileEditorTracker.test.ts`: o `createEditorAutoSave`/`createTracker` comum e o `TestHostService` com foco.
+pub mod editor_auto_save_support;
+// Porte de `workbench/services/configuration/test/common/configurationModels.test.ts`: literais, nós de registro e `toConfigurationModel`.
+pub mod configuration_models_support;
+
+// Porte de `workbench/services/textfile/test/browser/textEditorService.test.ts`: o `NullFileSystemProvider` e o `FileServiceProvider`.
+pub mod text_editor_service_support;
+// Porte de `terminalProcessManager.test.ts`: o processo, o serviço de instâncias e o `workbenchInstantiationService` do gerenciador.
+pub mod terminal_process_manager_support;
+
+// Porte de `lineDataEventAddon.test.ts`, `markNavigationAddon.test.ts` e `decorationAddon.test.ts`: a decoração e o elemento do
+// `registerDecoration` do `TestTerminal`, e os dublês do `DecorationAddon`.
+pub mod fake_xterm_decoration;
+pub mod terminal_decoration_support;
+
+// Porte de `TestEditorGroupView` (`workbenchTestServices.ts`), usado por `openEditorsView.test.ts`.
+pub mod test_editor_group_view;
+// Porte de `searchResult.test.ts` e `searchViewlet.test.ts`: o `setup` e os `aSearchResult`, `aFileMatch` e `aFolderMatch`.
+pub mod search_support;

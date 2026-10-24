@@ -262,6 +262,27 @@ impl ExtHostExtensionService {
         self.activator().is_activated(&extension_id.value)
     }
 
+    /// `getExtensionExports(extensionId)`: `None` é o `null` do original (a extensão não está ativada ou é desconhecida); `Some(None)`
+    /// é o `undefined` de uma extensão ativada cujo `activate` não devolveu nada.
+    pub fn get_extension_exports(&self, extension_id: &ExtensionIdentifier) -> Option<Option<Dynamic>> {
+        self.activator().get_activated_extension(&extension_id.value).ok().map(|activated| activated.exports.clone())
+    }
+
+    /// `activateByIdWithErrors(extensionId, reason)`: espera o host ficar pronto para rodar extensões, ativa a extensão e rejeita com o
+    /// erro dela se a ativação falhou.
+    pub fn activate_by_id_with_errors(&self, extension_id: ExtensionIdentifier, reason: ExtensionActivationReason) -> Promise<()> {
+        let this = self.this();
+        async_fn(async move {
+            this.ready_to_run_extensions.wait().await?;
+            this.activator().activate_by_id(&extension_id, reason)?.await?;
+            let extension = this.activator().get_activated_extension(&extension_id.value)?;
+            if extension.activation_failed {
+                return Err(extension.activation_failed_error.clone().unwrap_or_else(|| Error::new(format!("Activation of '{}' failed", extension_id.value))));
+            }
+            Ok(())
+        })
+    }
+
     /// `getExtensionRegistry()`.
     pub fn my_registry(&self) -> &Rc<ExtensionDescriptionRegistry> {
         &self.my_registry
