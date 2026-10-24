@@ -31,6 +31,18 @@
 //!   resultado fica sem `checkboxChecked`.
 //! - **`TestCodeEditorService`.** Guarda as propriedades transitórias por recurso do modelo, como o
 //!   `AbstractCodeEditorService`.
+//!
+//! Acrescentado para `textFileEditorModel.test.ts`:
+//! - **`TestWorkingCopyService.testUnregisterWorkingCopy`.** O `unregisterWorkingCopy` do `WorkingCopyService` é privado, e
+//!   o único caminho público é o descarte do registro devolvido por `registerWorkingCopy`. O [`TestWorkingCopyService`]
+//!   embrulha o serviço real, guarda esse registro de cada working copy e o descarta no `testUnregisterWorkingCopy`. A
+//!   diferença para o original é que o descarte também dispara `onDidUnregister` (o `unregisterWorkingCopy` direto não
+//!   dispara); nenhum caso da suíte escuta esse evento. O descarte é de uma vez só, então o descarte do modelo depois dele
+//!   não faz mais nada, como no original.
+//! - **`TestReadonlyTextFileEditorModel`.** `isReadonly()` sobrescrito para `true`: como o `TextFileEditorModel` do porte é
+//!   uma struct sem herança, [`TextFileTestAccessor::create_readonly_model`] cria o modelo com um
+//!   `IFilesConfigurationService` que devolve somente leitura (todas as consultas de somente leitura do modelo passam por
+//!   `isReadonly()`, que é o que o serviço responde), e repassa o resto ao serviço real.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -41,7 +53,7 @@ use je_base::async_::async_fn;
 use je_base::buffer::{VSBuffer, VSBufferReadableStream};
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
-use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
+use je_base::lifecycle::{DisposableId, DisposableRef, DisposableStore, IDisposable, id_of, id_of_ref};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::stream::{ReadableStream, ReadableStreamEvents, Transformer, transform};
 use je_base::uri::URI;
@@ -59,10 +71,16 @@ use je_platform::dialogs::dialogs::{
     CheckboxResult, ConfirmResult, Confirmation, ConfirmationResult, FileNameOrResource, IDialogService, IFileDialogService, Input, InputResult, OpenDialogOptions, PickAndOpenOptions,
     Prompt, PromptCancel, PromptResult, SaveDialogOptions,
 };
-use je_platform::files::files::{FileOperationError, FileStatWithMetadata};
+use je_platform::files::files::{FileOperationError, FileStat, FileStatWithMetadata};
 use je_platform::files::i_file_service::IFileService;
 use je_platform::path::path_service::IPathService;
 use je_platform::workspace::IWorkspaceContextService;
+use je_workbench::common::editor::SaveReason;
+use je_workbench::services::files_configuration::files_configuration_service::{
+    IAutoSaveConfiguration, IAutoSaveMode, IFilesConfigurationService, Readonly, ReadonlyUpdate, ResourceOrEditor, SingleReadonlyUpdate,
+};
+use je_workbench::services::working_copy::working_copy::{IWorkingCopy, WorkingCopyIdentifier};
+use je_workbench::services::working_copy::working_copy_service::{IWorkingCopyService, WorkingCopySaveEvent, WorkingCopyService};
 use je_workbench::services::decorations::decorations::{IDecoration, IDecorationsProvider, IDecorationsService, IResourceDecorationChangeEvent};
 use je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService;
 use je_workbench::services::language_detection::language_detection_worker_service::ILanguageDetectionService;
@@ -429,10 +447,193 @@ impl IAccessibilityService for TestAccessibilityService {
 
 //#endregion
 
+//#region TestWorkingCopyService
+
+/// `TestWorkingCopyService extends WorkingCopyService`: o serviço real mais o `testUnregisterWorkingCopy`.
+pub struct TestWorkingCopyService {
+    inner: Rc<WorkingCopyService>,
+    /// O registro que `registerWorkingCopy` devolveu, por identidade da working copy.
+    registrations: RefCell<Vec<(DisposableId, DisposableRef)>>,
+}
+
+impl TestWorkingCopyService {
+    pub fn new(inner: Rc<WorkingCopyService>) -> Rc<Self> {
+        Rc::new(Self { inner, registrations: RefCell::new(Vec::new()) })
+    }
+
+    /// `testUnregisterWorkingCopy(workingCopy)`.
+    pub fn test_unregister_working_copy(&self, working_copy: &dyn IWorkingCopy) {
+        let id = id_of_ref(working_copy);
+        let registration = {
+            let mut registrations = self.registrations.borrow_mut();
+            registrations.iter().position(|(candidate, _)| *candidate == id).map(|index| registrations.remove(index).1)
+        };
+
+        if let Some(registration) = registration {
+            registration.dispose();
+        }
+    }
+}
+
+impl IWorkingCopyService for TestWorkingCopyService {
+    fn on_did_register(&self) -> Event<Rc<dyn IWorkingCopy>> {
+        self.inner.on_did_register()
+    }
+
+    fn on_did_unregister(&self) -> Event<Rc<dyn IWorkingCopy>> {
+        self.inner.on_did_unregister()
+    }
+
+    fn on_did_change_dirty(&self) -> Event<Rc<dyn IWorkingCopy>> {
+        self.inner.on_did_change_dirty()
+    }
+
+    fn on_did_change_content(&self) -> Event<Rc<dyn IWorkingCopy>> {
+        self.inner.on_did_change_content()
+    }
+
+    fn on_did_save(&self) -> Event<WorkingCopySaveEvent> {
+        self.inner.on_did_save()
+    }
+
+    fn dirty_count(&self) -> usize {
+        self.inner.dirty_count()
+    }
+
+    fn dirty_working_copies(&self) -> Vec<Rc<dyn IWorkingCopy>> {
+        self.inner.dirty_working_copies()
+    }
+
+    fn modified_count(&self) -> usize {
+        self.inner.modified_count()
+    }
+
+    fn modified_working_copies(&self) -> Vec<Rc<dyn IWorkingCopy>> {
+        self.inner.modified_working_copies()
+    }
+
+    fn has_dirty(&self) -> bool {
+        self.inner.has_dirty()
+    }
+
+    fn is_dirty(&self, resource: &URI, type_id: Option<&str>) -> bool {
+        self.inner.is_dirty(resource, type_id)
+    }
+
+    fn working_copies(&self) -> Vec<Rc<dyn IWorkingCopy>> {
+        self.inner.working_copies()
+    }
+
+    fn register_working_copy(&self, working_copy: Rc<dyn IWorkingCopy>) -> DisposableRef {
+        let id = id_of(&working_copy);
+        let registration = self.inner.register_working_copy(working_copy);
+        self.registrations.borrow_mut().push((id, registration.clone()));
+
+        registration
+    }
+
+    fn has(&self, identifier: &WorkingCopyIdentifier) -> bool {
+        self.inner.has(identifier)
+    }
+
+    fn has_resource(&self, resource: &URI) -> bool {
+        self.inner.has_resource(resource)
+    }
+
+    fn get(&self, identifier: &WorkingCopyIdentifier) -> Option<Rc<dyn IWorkingCopy>> {
+        self.inner.get(identifier)
+    }
+
+    fn get_all(&self, resource: &URI) -> Option<Vec<Rc<dyn IWorkingCopy>>> {
+        self.inner.get_all(resource)
+    }
+}
+
+//#endregion
+
+//#region TestReadonlyTextFileEditorModel
+
+/// O `IFilesConfigurationService` do `TestReadonlyTextFileEditorModel`: tudo do serviço real, menos `isReadonly`, que é
+/// sempre `true`.
+struct ReadonlyFilesConfigurationService {
+    inner: Rc<dyn IFilesConfigurationService>,
+}
+
+impl IFilesConfigurationService for ReadonlyFilesConfigurationService {
+    fn on_did_change_auto_save_configuration(&self) -> Event<()> {
+        self.inner.on_did_change_auto_save_configuration()
+    }
+
+    fn on_did_change_auto_save_disabled(&self) -> Event<URI> {
+        self.inner.on_did_change_auto_save_disabled()
+    }
+
+    fn get_auto_save_configuration(&self, resource_or_editor: Option<&ResourceOrEditor>) -> IAutoSaveConfiguration {
+        self.inner.get_auto_save_configuration(resource_or_editor)
+    }
+
+    fn has_short_auto_save_delay(&self, resource_or_editor: Option<&ResourceOrEditor>) -> bool {
+        self.inner.has_short_auto_save_delay(resource_or_editor)
+    }
+
+    fn get_auto_save_mode(&self, resource_or_editor: Option<&ResourceOrEditor>, save_reason: Option<SaveReason>) -> IAutoSaveMode {
+        self.inner.get_auto_save_mode(resource_or_editor, save_reason)
+    }
+
+    fn toggle_auto_save(&self) -> Promise<()> {
+        self.inner.toggle_auto_save()
+    }
+
+    fn enable_auto_save_after_short_delay(&self, resource_or_editor: &ResourceOrEditor) -> DisposableRef {
+        self.inner.enable_auto_save_after_short_delay(resource_or_editor)
+    }
+
+    fn disable_auto_save(&self, resource_or_editor: &ResourceOrEditor) -> DisposableRef {
+        self.inner.disable_auto_save(resource_or_editor)
+    }
+
+    fn on_did_change_readonly(&self) -> Event<()> {
+        self.inner.on_did_change_readonly()
+    }
+
+    fn is_readonly(&self, _resource: &URI, _stat: Option<&FileStat>) -> Readonly {
+        Readonly::Bool(true)
+    }
+
+    fn update_readonly(&self, resource: &URI, readonly: SingleReadonlyUpdate) -> Promise<()> {
+        self.inner.update_readonly(resource, readonly)
+    }
+
+    fn update_readonly_all(&self, resources: &[URI], readonly: ReadonlyUpdate) -> Promise<()> {
+        self.inner.update_readonly_all(resources, readonly)
+    }
+
+    fn on_did_change_files_association(&self) -> Event<()> {
+        self.inner.on_did_change_files_association()
+    }
+
+    fn is_hot_exit_enabled(&self) -> bool {
+        self.inner.is_hot_exit_enabled()
+    }
+
+    fn hot_exit_configuration(&self) -> Option<String> {
+        self.inner.hot_exit_configuration()
+    }
+
+    fn prevent_save_conflicts(&self, resource: &URI, language: Option<&str>) -> bool {
+        self.inner.prevent_save_conflicts(resource, language)
+    }
+}
+
+//#endregion
+
 //#region TestServiceAccessor
 
 /// A fábrica de modelos: `instantiationService.createInstance(TextFileEditorModel, resource, encoding, languageId)`.
 type ModelFactory = Rc<dyn Fn(URI, Option<String>, Option<String>) -> Rc<TextFileEditorModel>>;
+
+/// Os 14 serviços que o construtor do `TextFileEditorModel` injeta.
+type ServicesFactory = Rc<dyn Fn() -> TextFileEditorModelServices>;
 
 /// `workbenchInstantiationService(undefined, disposables)` mais o `TestServiceAccessor` do `workbenchTestServices.ts`, com os
 /// serviços que o serviço de arquivos de texto e os modelos leem. Os demais serviços (`fileService`, `workingCopyService`,
@@ -455,7 +656,10 @@ pub struct TextFileTestAccessor {
     pub context_service: Rc<TestContextService>,
     /// `testConfigurationService`.
     pub test_configuration_service: Rc<TestConfigurationService>,
+    /// `workingCopyService` (o `TestWorkingCopyService`, que tem o `testUnregisterWorkingCopy`).
+    pub working_copy_service: Rc<TestWorkingCopyService>,
     model_factory: ModelFactory,
+    services_factory: ServicesFactory,
 }
 
 impl Deref for TextFileTestAccessor {
@@ -497,36 +701,38 @@ impl TextFileTestAccessor {
 
         // Os modelos precisam do próprio `ITextFileService`, que só existe depois do gerenciador que os cria.
         let text_file_service_slot: Rc<RefCell<Weak<TestTextFileService>>> = Rc::new(RefCell::new(Weak::new()));
-        let model_factory: ModelFactory = {
+        let working_copy_service = TestWorkingCopyService::new(base.working_copy_service.clone());
+        let services_factory: ServicesFactory = {
             let slot = text_file_service_slot.clone();
             let (language_service, model_service) = (language_service.clone(), model_service.clone());
             let (file_service, log_service) = (base.file_service.clone(), base.log_service.clone());
-            let (working_copy_backup_service, working_copy_service) = (base.working_copy_backup_service.clone(), base.working_copy_service.clone());
+            let (working_copy_backup_service, working_copy_service) = (base.working_copy_backup_service.clone(), working_copy_service.clone());
             let (files_configuration_service, label_service) = (base.files_configuration_service.clone(), base.label_service.clone());
             let (path_service, progress_service) = (path_service.clone(), base.progress_service.clone());
-            Rc::new(move |resource, preferred_encoding, preferred_language_id| {
+            Rc::new(move || {
                 let text_file_service = slot.borrow().upgrade().expect("o serviço de arquivos de texto está vivo enquanto cria modelos");
-                TextFileEditorModel::new(
-                    resource,
-                    preferred_encoding,
-                    preferred_language_id,
-                    TextFileEditorModelServices {
-                        language_service: language_service.clone(),
-                        model_service: model_service.clone(),
-                        file_service: file_service.clone(),
-                        text_file_service,
-                        working_copy_backup_service: working_copy_backup_service.clone(),
-                        log_service: log_service.clone(),
-                        working_copy_service: working_copy_service.clone(),
-                        files_configuration_service: files_configuration_service.clone(),
-                        label_service: label_service.clone(),
-                        language_detection_service: language_detection_service.clone(),
-                        accessibility_service: accessibility_service.clone(),
-                        path_service: path_service.clone(),
-                        extension_service: extension_service.clone(),
-                        progress_service: progress_service.clone(),
-                    },
-                )
+                TextFileEditorModelServices {
+                    language_service: language_service.clone(),
+                    model_service: model_service.clone(),
+                    file_service: file_service.clone(),
+                    text_file_service,
+                    working_copy_backup_service: working_copy_backup_service.clone(),
+                    log_service: log_service.clone(),
+                    working_copy_service: working_copy_service.clone(),
+                    files_configuration_service: files_configuration_service.clone(),
+                    label_service: label_service.clone(),
+                    language_detection_service: language_detection_service.clone(),
+                    accessibility_service: accessibility_service.clone(),
+                    path_service: path_service.clone(),
+                    extension_service: extension_service.clone(),
+                    progress_service: progress_service.clone(),
+                }
+            })
+        };
+        let model_factory: ModelFactory = {
+            let services_factory = services_factory.clone();
+            Rc::new(move |resource, preferred_encoding, preferred_language_id| {
+                TextFileEditorModel::new(resource, preferred_encoding, preferred_language_id, services_factory())
             })
         };
 
@@ -565,7 +771,15 @@ impl TextFileTestAccessor {
         collection.set(I_CONFIGURATION_SERVICE, configuration_service);
         collection.set(I_TEXT_FILE_SERVICE, text_file_service.clone() as Rc<dyn ITextFileService>);
 
-        Self { base, text_file_service, model_service, language_service, dialog_service, file_dialog_service, untitled_text_editor_service, context_service, test_configuration_service, model_factory }
+        Self { base, text_file_service, model_service, language_service, dialog_service, file_dialog_service, untitled_text_editor_service, context_service, test_configuration_service, working_copy_service, model_factory, services_factory }
+    }
+
+    /// `instantiationService.createInstance(TestReadonlyTextFileEditorModel, resource, preferredEncoding, preferredLanguageId)`.
+    pub fn create_readonly_model(&self, resource: &URI, preferred_encoding: Option<&str>, preferred_language_id: Option<&str>) -> Rc<TextFileEditorModel> {
+        let mut services = (self.services_factory)();
+        services.files_configuration_service = Rc::new(ReadonlyFilesConfigurationService { inner: services.files_configuration_service.clone() });
+
+        TextFileEditorModel::new(resource.clone(), preferred_encoding.map(str::to_string), preferred_language_id.map(str::to_string), services)
     }
 
     /// `instantiationService.createInstance(TextFileEditorModel, resource, preferredEncoding, preferredLanguageId)`.
