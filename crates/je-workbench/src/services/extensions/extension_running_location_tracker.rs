@@ -141,7 +141,8 @@ impl ExtensionRunningLocationTracker {
             if has_main_or_browser(&extension) {
                 let running_location = self.running_location.borrow().get(&extension.identifier.value).copied().flatten();
                 if running_location.is_some_and(|running_location| running_location.kind() == extension_host_kind) {
-                    extensions.set(&extension.identifier.value, extension);
+                    let identifier = extension.identifier.value.clone();
+                    extensions.set(&identifier, extension);
                 }
             }
         }
