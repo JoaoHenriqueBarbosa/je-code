@@ -187,7 +187,8 @@ fn describe(detail: &CoverageDetailsWithBranch, get_value_in_range: &dyn Fn(&Ran
         CoverageDetailsWithBranch::Detail(CoverageDetails::Statement(statement)) => {
             let value = get_value_in_range(&tidy_location(statement.location));
             let trimmed = value.trim();
-            let text = wrap_name(if trimmed.is_empty() { &empty_statement() } else { trimmed });
+            let empty = empty_statement();
+            let text = wrap_name(if trimmed.is_empty() { &empty } else { trimmed });
             match statement.branches.as_deref().filter(|branches| !branches.is_empty()) {
                 Some(branches) => {
                     let covered = branches.iter().filter(|b| b.count.is_truthy()).count();
@@ -203,7 +204,8 @@ fn describe(detail: &CoverageDetailsWithBranch, get_value_in_range: &dyn Fn(&Ran
         CoverageDetailsWithBranch::Branch { branch, detail } => {
             let value = get_value_in_range(&tidy_location(detail.location));
             let trimmed = value.trim();
-            let text = wrap_name(if trimmed.is_empty() { &empty_statement() } else { trimmed });
+            let empty = empty_statement();
+            let text = wrap_name(if trimmed.is_empty() { &empty } else { trimmed });
             let covered = &detail.branches.as_ref().expect("um ramo vem de um statement com branches")[*branch];
             let label = match covered.label.as_deref().filter(|label| !label.is_empty()) {
                 Some(label) => wrap_in_backticks(label),
