@@ -43,7 +43,7 @@ mod test_text_model;
 
 use std::rc::Rc;
 
-use common::{ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use je_base::JsString;
 use je_base::cancellation::CancellationToken;
 use je_base::data_transfer::VSDataTransfer;
@@ -191,6 +191,9 @@ struct Env {
     language_features_service: LanguageFeaturesService,
     rpc_protocol: Rc<TestMainContext>,
     disposables: Vec<DisposableRef>,
+    /// O guarda de vazamentos nasce depois do `setup` (no original o `ensureNoDisposablesAreLeakedInTestSuite()` é
+    /// registrado depois dele) e confere depois do `teardown`.
+    guard: Option<LeakGuard>,
 }
 
 impl Env {
@@ -261,7 +264,10 @@ impl Env {
         );
         rpc_protocol.set(&ExtHostContext::EXT_HOST_LANGUAGE_FEATURES, ext_host.clone() as Rc<dyn ExtHostLanguageFeaturesShape>);
 
-        Env { model, ext_host, main_thread, language_features_service, rpc_protocol, disposables: Vec::new() }
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        // `originalErrorHandler = errorHandler.getUnexpectedErrorHandler(); setUnexpectedErrorHandler(() => { });`
+        je_base::errors::set_unexpected_error_handler(|_| {});
+        Env { model, ext_host, main_thread, language_features_service, rpc_protocol, disposables: Vec::new(), guard: Some(guard) }
     }
 
     /// `disposables.add(value)`.
@@ -277,6 +283,10 @@ impl Env {
         self.model.dispose();
         self.main_thread.dispose();
         self.rpc_protocol.sync().await.expect("sync");
+        // `setUnexpectedErrorHandler(originalErrorHandler)` (no `suiteTeardown`): de volta ao coletor do runner, e só depois a
+        // conferência de vazamentos.
+        common::record_unexpected_errors();
+        drop(self.guard);
     }
 }
 
@@ -302,7 +312,6 @@ fn range(start_line: f64, start_character: f64, end_line: f64, end_character: f6
 
 #[test]
 fn document_drop_edits_does_not_cache_an_empty_edit_array_without_release_ids() {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_with_faked_timers(async move {
         struct EmptyDropProvider;
         impl ApiDocumentDropEditProvider for EmptyDropProvider {
@@ -333,7 +342,6 @@ fn document_drop_edits_does_not_cache_an_empty_edit_array_without_release_ids() 
 
 #[test]
 fn document_symbols_register_deregister() {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_with_faked_timers(async move {
         let env = Env::new();
         assert_eq!(env.language_features_service.document_symbol_provider.all(&env.model).len(), 0);
@@ -354,7 +362,6 @@ fn document_symbols_register_deregister() {
 
 #[test]
 fn document_symbols_evil_provider() {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_with_faked_timers(async move {
         let mut env = Env::new();
         let evil = env.ext_host.register_document_symbol_provider(
@@ -386,7 +393,6 @@ fn document_symbols_evil_provider() {
 
 #[test]
 fn document_symbols_data_conversion() {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_with_faked_timers(async move {
         let mut env = Env::new();
         let registration = env.ext_host.register_document_symbol_provider(
@@ -414,7 +420,6 @@ fn document_symbols_data_conversion() {
 
 #[test]
 fn quick_outline_uses_a_not_ideal_sorting_138502() {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_with_faked_timers(async move {
         // (name, startLineNumber, startColumn, endLineNumber, endColumn)
         let symbols: [(&str, f64, f64, f64, f64); 6] = [
