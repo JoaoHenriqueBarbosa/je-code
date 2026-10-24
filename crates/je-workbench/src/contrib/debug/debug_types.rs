@@ -245,6 +245,12 @@ pub trait IExpressionContainer {
     fn display(&self) -> String {
         self.value()
     }
+    /// O `available` das classes que o têm (`Expression`, `Variable`); `None` para as demais.
+    fn availability(&self) -> Option<bool> {
+        None
+    }
+    /// `valueChanged = false`: o renderizador consome o realce de "mudou".
+    fn clear_value_changed(&self) {}
 }
 
 /// `IExpression`.
@@ -254,6 +260,21 @@ pub trait IExpression: IExpressionContainer {
     /// `element instanceof Variable` (o único tipo concreto que o filtro do REPL distingue entre as expressões).
     fn is_variable(&self) -> bool {
         false
+    }
+
+    /// `element as Variable`, quando a expressão é uma `Variable`.
+    fn as_variable(&self) -> Option<&super::debug_model::Variable> {
+        None
+    }
+
+    /// `element instanceof Variable`, com a posse do `Rc` (as chamadas assíncronas, como `setVariable`, precisam dele).
+    fn into_variable(self: Rc<Self>) -> Option<Rc<super::debug_model::Variable>> {
+        None
+    }
+
+    /// `element instanceof Expression`, com a posse do `Rc`.
+    fn into_expression(self: Rc<Self>) -> Option<Rc<super::debug_model::Expression>> {
+        None
     }
 }
 

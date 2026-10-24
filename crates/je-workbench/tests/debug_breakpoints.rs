@@ -1,15 +1,8 @@
 //! Porte de `src/vs/workbench/contrib/debug/test/browser/breakpoints.test.ts` (suíte `Debug - Breakpoints`), caso a caso e na mesma ordem.
 //!
-//! NÃO foi portado (sem `#[test]`), 1 dos 13 casos:
-//! - `decorations`: ele chama `createBreakpointDecorations` (`browser/breakpointEditorContribution.ts`), que precisa do
-//!   `ITextModel` (`createTextModel`, `validateRange`, `getLineFirstNonWhitespaceColumn`), do `ILanguageService` e do
-//!   `IDebugService.getModel()/getAdapterManager()` via `TestInstantiationService`, e monta `MarkdownString` com
-//!   `appendCodeblock`. O contrato do porte de `IDebugService` não tem o `IAdapterManager.getDebugger` (nem o `IDebugger`
-//!   com `strings` e `interestedInLanguage`) que `getBreakpointDecorationOptions` lê, então o caso não seria fiel.
-//!
-//! Os 12 portados, na ordem: `simple`, `toggling`, `two files`, `conditions`, `function breakpoints`, `multiple sessions`,
-//! `exception breakpoints`, `exception breakpoints multiple sessions`, `instruction breakpoints`, `data breakpoints`,
-//! `message and class name`, `updates when storage changes`.
+//! Os 13 casos foram portados, na ordem: `simple`, `toggling`, `two files`, `conditions`, `function breakpoints`,
+//! `multiple sessions`, `exception breakpoints`, `exception breakpoints multiple sessions`, `instruction breakpoints`,
+//! `data breakpoints`, `message and class name`, `decorations`, `updates when storage changes`.
 //!
 //! Notas de tradução:
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` vira o `LeakGuard` de cada caso; o `setup` (`createMockDebugModel`) roda
@@ -20,22 +13,37 @@
 //! - `DebugProtocol.Breakpoint` é `DapBreakpoint`; `{ supportsConditionalBreakpoints: true }` é o objeto JSON de capacidades.
 //! - `storage.store(key, value, WORKSPACE, USER, /* external= */ true)` é o `store_with` do `TestStorageService`.
 //! - `MockLabelService` é o dublê do workbench; `result.icon.id` é o `id` do `ThemeIcon`.
+//! - **`decorations`.** O `TestInstantiationService` com `IDebugService` (`MockDebugService` com `getModel => model`),
+//!   `ILabelService` (`MockLabelService`) e `ILanguageService` (`LanguageService`) é o `BreakpointDecorationServices` de
+//!   `breakpoint_editor_contribution.rs`; o `getAdapterManager()` que o `MockDebugService` não define (e que nenhuma
+//!   sessão chama aqui) é um dublê que entra em pânico. `createTextModel(text, languageId)` é o `create_text_model_with` do
+//!   je-editor; `decorations[i].options.before?.inlineClassName` e os demais campos leem o `ModelDecorationOptionsInit`.
+//!   O `assert.deepStrictEqual(glyphMarginHoverMessage, expected)` compara o `MarkdownString` completo do je-base campo a
+//!   campo (`value`, `isTrusted`, `supportThemeIcons`, `supportHtml`, `supportAlertSyntax`), porque o tipo não deriva `PartialEq`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
 mod support;
+#[path = "../../je-editor/tests/support/test_text_model.rs"]
+mod test_text_model;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
+use je_base::html_content::{IsTrusted, MarkdownString, MarkdownStringOptions, TrustedOrOptions};
 use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::uri::URI;
+use je_editor::language_service::LanguageService;
+use je_editor::model::{OverviewRulerLane, RelaxedTextModelCreationOptions};
+use je_editor::range::Range;
 use je_platform::label::label::{ILabelService, UriLabelOptions};
 use je_platform::log::NullLogService;
 use je_platform::resources::uri_file;
 use je_platform::storage::storage::{StorageScope, StorageService};
+use je_workbench::contrib::debug::breakpoint_editor_contribution::{BreakpointDecorationServices, IDebuggerLookup, create_breakpoint_decorations};
+use je_workbench::contrib::debug::debugger::Debugger;
 use je_workbench::contrib::debug::breakpoints::{
     DapBreakpoint, DataBreakpointOptions, ExceptionBreakpointsFilter, FunctionBreakpointOptions, IBaseBreakpointOptions, InstructionBreakpointOptions,
 };
@@ -529,6 +537,89 @@ fn message_and_class_name() {
     result = get_breakpoint_message_and_icon(State::Stopped, true, &bp(2), &*ls, &model);
     assert_eq!(result.message.as_deref(), Some("Log Message: hello, world"));
     assert_eq!(result.icon.id, "debug-breakpoint-log");
+}
+
+/// O `getAdapterManager()` que o `MockDebugService` não define: nenhuma sessão chama o `getDebugger` neste caso.
+struct UnusedAdapterManager;
+
+impl IDebuggerLookup for UnusedAdapterManager {
+    fn get_debugger(&self, _debug_type: &str) -> Option<Rc<Debugger>> {
+        panic!("getAdapterManager is not a function")
+    }
+}
+
+fn utf16(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
+#[test]
+fn decorations() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let model = create_mock_debug_model(&guard.store());
+    let model_uri = uri_file("/myfolder/my file first.js");
+    let language_id = "testMode";
+    let text_model = test_text_model::create_text_model_with(
+        [
+            "this is line one",
+            "this is line two",
+            "    this is line three it has whitespace at start",
+            "this is line four",
+            "this is line five",
+        ]
+        .join("\n")
+        .as_str(),
+        Some(language_id),
+        RelaxedTextModelCreationOptions::default(),
+        None,
+    );
+    add_breakpoints_and_check_events(
+        &model,
+        &model_uri,
+        vec![
+            BreakpointData { line_number: 1, enabled: Some(true), condition: Some("x > 5".to_owned()), ..BreakpointData::default() },
+            BreakpointData { line_number: 2, column: Some(4), enabled: Some(false), ..BreakpointData::default() },
+            BreakpointData { line_number: 3, enabled: Some(true), log_message: Some("hello".to_owned()), ..BreakpointData::default() },
+            BreakpointData { line_number: 500, enabled: Some(true), ..BreakpointData::default() },
+        ],
+    );
+    let breakpoints = model.get_breakpoints(None);
+
+    let services = BreakpointDecorationServices {
+        debug_model: model.clone(),
+        adapter_manager: Rc::new(UnusedAdapterManager),
+        label_service: MockLabelService::new(None),
+        language_service: guard.add_rc(LanguageService::new(false)),
+    };
+    let mut decorations = create_breakpoint_decorations(&services, &text_model, &breakpoints, State::Running, true, true);
+    assert_eq!(decorations.len(), 3); // last breakpoint filtered out since it has a large line number
+    assert_eq!(decorations[0].range, Range::new(1, 1, 1, 2));
+    assert_eq!(decorations[1].range, Range::new(2, 4, 2, 5));
+    assert_eq!(decorations[2].range, Range::new(3, 5, 3, 6));
+    assert_eq!(decorations[0].options.before_content_class_name, None);
+    let before = decorations[1].options.before.as_ref();
+    assert_eq!(before.and_then(|before| before.inline_class_name.as_deref()), Some("debug-breakpoint-placeholder"));
+    assert_eq!(before.and_then(|before| before.width_in_em), Some(0.9));
+    assert_eq!(decorations[0].options.overview_ruler.as_ref().and_then(|overview_ruler| overview_ruler.position), Some(OverviewRulerLane::Left));
+    let mut expected = MarkdownString::new(
+        None,
+        TrustedOrOptions::Options(MarkdownStringOptions {
+            is_trusted: Some(IsTrusted::Bool(true)),
+            support_theme_icons: Some(true),
+            ..MarkdownStringOptions::default()
+        }),
+    );
+    expected.append_codeblock(&utf16(language_id), &utf16("Condition: x > 5"));
+    let actual = decorations[0].glyph_margin_hover_message.as_ref().expect("o hover da margem");
+    assert_eq!(actual.value, expected.value);
+    assert_eq!(actual.is_trusted, expected.is_trusted);
+    assert_eq!(actual.support_theme_icons, expected.support_theme_icons);
+    assert_eq!(actual.support_html, expected.support_html);
+    assert_eq!(actual.support_alert_syntax, expected.support_alert_syntax);
+
+    decorations = create_breakpoint_decorations(&services, &text_model, &breakpoints, State::Running, true, false);
+    assert_eq!(decorations[0].options.overview_ruler, None);
+
+    text_model.dispose();
 }
 
 #[test]

@@ -26,64 +26,16 @@ mod support;
 use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
-use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
-use je_base::promise::Promise;
-use je_base::uri::URI;
+use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::uuid::generate_uuid;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::opener::opener::{
-    IExternalOpener, IExternalUriResolver, IOpener, IOpenerService, IValidator, OpenOptions, OpenResource, ResolveExternalUriOptions, ResolvedExternalUri,
-};
 use je_theme::color::format::css as css_format;
 use je_theme::color::{Color, Srgba};
 use je_workbench::contrib::debug::debug_ansi_handling::{append_stylized_string_to_container, calc_ansi_8bit_color, handle_ansi_output, style_property};
 use je_workbench::contrib::debug::debug_session::DebugSession;
-use je_workbench::contrib::debug::link_detector::{DebugLinkHoverBehavior, DebugLinkHoverBehaviorTypeData, Element, ITunnelService, LinkDetector};
-use je_workbench::test::browser::workbench_test_services::{TestEditorService, TestEnvironmentService, TestPathService};
-use je_workbench::test::common::workbench_test_services::TestFileService;
+use je_workbench::contrib::debug::link_detector::{DebugLinkHoverBehavior, DebugLinkHoverBehaviorTypeData, Element, LinkDetector};
+use support::debug_view_support::create_test_link_detector;
 use support::mock_debug::{create_mock_debug_model, create_test_session};
-
-/// `{ canTunnel: () => false }`.
-struct NoTunnelService;
-
-impl ITunnelService for NoTunnelService {
-    fn can_tunnel(&self, _uri: &URI) -> bool {
-        false
-    }
-}
-
-/// O `IOpenerService` do `workbenchInstantiationService`: nenhum caso abre um link.
-struct TestOpenerService;
-
-impl IOpenerService for TestOpenerService {
-    fn register_opener(&self, _opener: Rc<dyn IOpener>) -> DisposableRef {
-        unreachable!("o linkDetector não registra opener")
-    }
-
-    fn register_validator(&self, _validator: Rc<dyn IValidator>) -> DisposableRef {
-        unreachable!("o linkDetector não registra validador")
-    }
-
-    fn register_external_uri_resolver(&self, _resolver: Rc<dyn IExternalUriResolver>) -> DisposableRef {
-        unreachable!("o linkDetector não registra resolvedor")
-    }
-
-    fn set_default_external_opener(&self, _opener: Rc<dyn IExternalOpener>) {
-        unreachable!("o linkDetector não troca o opener externo")
-    }
-
-    fn register_external_opener(&self, _opener: Rc<dyn IExternalOpener>) -> DisposableRef {
-        unreachable!("o linkDetector não registra opener externo")
-    }
-
-    fn open(&self, _resource: &OpenResource, _options: Option<&OpenOptions>) -> Promise<bool> {
-        Promise::resolved(true)
-    }
-
-    fn resolve_external_uri(&self, _resource: &URI, _options: Option<&ResolveExternalUriOptions>) -> Promise<ResolvedExternalUri> {
-        unreachable!("o linkDetector não resolve URI externo")
-    }
-}
 
 /// O `setup`: o modelo, a sessão e o `LinkDetector`.
 struct Setup {
@@ -96,15 +48,7 @@ fn setup() -> Setup {
     let disposables = DisposableStore::new();
     let model = create_mock_debug_model(&disposables);
     let session = create_test_session(&model, "mockSession", None, &disposables);
-    let link_detector = LinkDetector::new(
-        Rc::new(TestEditorService),
-        TestFileService::new(),
-        Rc::new(TestOpenerService),
-        TestPathService::new(None, None),
-        Rc::new(NoTunnelService),
-        TestEnvironmentService::new(),
-        TestConfigurationService::new(None),
-    );
+    let link_detector = create_test_link_detector(TestConfigurationService::new(None));
     Setup { disposables, session, link_detector }
 }
 

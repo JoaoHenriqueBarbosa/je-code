@@ -3,8 +3,9 @@
 //! `MockRawSession`, `MockDebugAdapter`, `MockDebugStorage`, `createMockDebugModel` e `mockUriIdentityService`.
 //!
 //! Divergências:
-//! - **`MockDebugService`** NÃO foi portado (só o teste `decorations` de `breakpoints.test.ts` o usa, e esse caso não foi
-//!   portado: ver o topo de `debug_breakpoints.rs`).
+//! - **`MockDebugService`** não é um tipo único: cada teste usa o recorte que o código testado lê (o `getViewModel` dos testes de
+//!   `watchExpressionView` e `variablesView` está em `debug_view_support.rs`; o `getModel` do caso `decorations` de
+//!   `breakpoints.test.ts` é o `BreakpointDecorationServices` do próprio teste).
 //! - **`MockSession`** implementa o contrato completo [`IDebugSessionFull`]; o que o original lança com
 //!   `throw new Error('not implemented')` é `panic!` (os getters síncronos) ou uma promessa rejeitada com a mesma mensagem
 //!   (os pedidos assíncronos). O `mockObject<MockSession>()({ onDidInvalidateMemory })` do teste de memória é o
