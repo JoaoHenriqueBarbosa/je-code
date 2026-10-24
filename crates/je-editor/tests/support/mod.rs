@@ -31,6 +31,11 @@ pub mod test_view_model;
 
 pub mod word_test_utils;
 
+pub mod suggest_test_utils;
+pub mod test_clipboard_service;
+pub mod test_color_theme_service;
+pub mod test_text_resource_properties_service;
+
 use std::rc::Rc;
 
 use je_base::JsString;
