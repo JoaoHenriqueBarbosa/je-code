@@ -174,7 +174,7 @@ impl<T> Default for Originals<T> {
 
 impl<T> Originals<T> {
     /// Guarda a cópia original de cada objeto (descarta antes as entradas cujo objeto já morreu).
-    pub(crate) fn remember<'a>(&self, pairs: impl IntoIterator<Item = (&'a Rc<RefCell<T>>, &'a JsData)>) {
+    pub(crate) fn remember<'a>(&self, pairs: impl IntoIterator<Item = (&'a Rc<RefCell<T>>, &'a JsData)>) where T: 'a {
         let mut items = self.items.borrow_mut();
         items.retain(|(weak, _)| weak.strong_count() > 0);
         items.extend(pairs.into_iter().map(|(item, value)| (Rc::downgrade(item), value.clone())));
