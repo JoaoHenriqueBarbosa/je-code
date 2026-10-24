@@ -28,6 +28,7 @@ pub mod defaults;
 pub mod models;
 pub mod policy_configuration;
 pub mod service;
+pub mod test_configuration_service;
 pub mod user_settings;
 pub mod registry;
 pub mod variables;
@@ -157,6 +158,11 @@ pub struct ConfigurationCompareResult {
 }
 
 /// `IConfigurationValue<T>`: o valor de uma chave em cada camada. Um valor ausente é `undefined`.
+///
+/// Os campos `default`, `application`, `user`, `userLocal`, `userRemote`, `workspace`, `workspaceFolder`, `memory`
+/// e `policy` da interface são opcionais no original: aqui são métodos que devolvem `None` quando a camada não foi
+/// preenchida, o que é o caso dos literais que os testes devolvem de `inspect`. O `default` do original se chama
+/// `default_inspect`, porque `default` é palavra reservada. `policy` devolve só o valor (`{ value }` no original).
 pub trait ConfigurationValue {
     fn default_value(&self) -> Dynamic;
     fn application_value(&self) -> Dynamic;
@@ -169,6 +175,34 @@ pub trait ConfigurationValue {
     fn policy_value(&self) -> Dynamic;
     fn value(&self) -> Dynamic;
     fn override_identifiers(&self) -> Option<Vec<JsString>>;
+
+    fn default_inspect(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn application(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn user(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn user_local(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn user_remote(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn workspace(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn workspace_folder(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn memory(&self) -> Option<models::InspectValue> {
+        None
+    }
+    fn policy(&self) -> Option<Dynamic> {
+        None
+    }
 }
 
 /// `getConfigValueInTarget`.

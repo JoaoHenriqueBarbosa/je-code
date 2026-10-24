@@ -3,12 +3,9 @@
 //! o Copilot e a base de uma sessão derivada do emissor OAuth.
 //!
 //! Decisões de tradução:
-//! - **`IConfigurationService`**: o `inspect` do original devolve um `IConfigurationValue` (um objeto com as
-//!   camadas), e o `inspect` do porte devolve o `ConfigurationInspectValue` concreto, que ninguém além do
-//!   próprio modelo de configuração constrói. O módulo lê só o que precisa por
-//!   [`GitHubEnterpriseConfigurationService`] (o mesmo recorte do `ContextKeyConfigurationService`), com
-//!   `inspect` devolvendo o contrato [`ConfigurationValue`]. Todo `IConfigurationService` do porte já o
-//!   implementa (`impl` genérico abaixo).
+//! - **`IConfigurationService`**: o `inspect` devolve o `IConfigurationValue` do original, que é o trait
+//!   [`ConfigurationValue`] (um objeto com as camadas); as funções recebem o serviço como `&dyn IConfigurationService`
+//!   (ou `Rc<dyn IConfigurationService>`), sem recorte próprio.
 //! - **Valores dinâmicos**: a lista de instâncias é lida como [`Dynamic`] e validada como o original
 //!   (`Array.isArray` e `typeof uri === 'string'`); o erro de validação é o `Err` de quem lança.
 //! - **Funções `async`**: o `throw` dentro de `addGitHubEnterpriseUri` é uma promessa rejeitada.
@@ -41,30 +38,6 @@ pub const GITHUB_ENTERPRISE_URIS_SETTING: &str = "github-enterprise.uris";
 
 /// O valor padrão de `legacySetting`.
 pub const LEGACY_GITHUB_ENTERPRISE_URI_SETTING: &str = "github-enterprise.uri";
-
-/// O que `githubEnterprise.ts` lê e escreve do `IConfigurationService`.
-pub trait GitHubEnterpriseConfigurationService {
-    /// `inspect(key)`.
-    fn inspect(&self, key: &str) -> Rc<dyn ConfigurationValue>;
-    /// `getValue(section)`.
-    fn get_value(&self, section: &str) -> Dynamic;
-    /// `updateValue(key, value, target)`.
-    fn update_value(&self, key: &str, value: Dynamic, target: ConfigurationTarget) -> Promise<()>;
-}
-
-impl<T: IConfigurationService + ?Sized> GitHubEnterpriseConfigurationService for T {
-    fn inspect(&self, key: &str) -> Rc<dyn ConfigurationValue> {
-        Rc::new(<T as IConfigurationService>::inspect(self, key, &ConfigurationOverrides::default()))
-    }
-
-    fn get_value(&self, section: &str) -> Dynamic {
-        <T as IConfigurationService>::get_value(self, Some(section), None)
-    }
-
-    fn update_value(&self, key: &str, value: Dynamic, target: ConfigurationTarget) -> Promise<()> {
-        <T as IConfigurationService>::update_value(self, key, value, None, Some(target))
-    }
-}
 
 /// `{ ...inspected, workspaceValue: undefined, workspaceFolderValue: undefined }`: as camadas do usuário de um
 /// valor lido, sem as do workspace (que um workspace não confiável não pode impor).
@@ -117,17 +90,17 @@ impl ConfigurationValue for WithoutWorkspaceValues<'_> {
 }
 
 /// Reads enrollment configuration, never the destination for an authenticated request.
-pub fn get_configured_github_enterprise_uris<S: GitHubEnterpriseConfigurationService + ?Sized>(
-    configuration_service: &S,
+pub fn get_configured_github_enterprise_uris(
+    configuration_service: &dyn IConfigurationService,
     is_workspace_trusted: bool,
     legacy_setting: Option<&str>,
 ) -> Result<Vec<JsString>, Error> {
     let legacy_setting = legacy_setting.unwrap_or(LEGACY_GITHUB_ENTERPRISE_URI_SETTING);
-    let inspected = configuration_service.inspect(GITHUB_ENTERPRISE_URIS_SETTING);
+    let inspected = configuration_service.inspect(GITHUB_ENTERPRISE_URIS_SETTING, &ConfigurationOverrides::default());
     let configured = if is_workspace_trusted { is_configured(&*inspected) } else { is_configured(&WithoutWorkspaceValues(&*inspected)) };
-    let legacy = configuration_service.get_value(legacy_setting);
+    let legacy = configuration_service.get_value(Some(legacy_setting), None);
     let uris = if configured {
-        configuration_service.get_value(GITHUB_ENTERPRISE_URIS_SETTING)
+        configuration_service.get_value(Some(GITHUB_ENTERPRISE_URIS_SETTING), None)
     } else if legacy.is_truthy() {
         Dynamic::array([legacy])
     } else {
@@ -149,8 +122,8 @@ pub fn get_configured_github_enterprise_uris<S: GitHubEnterpriseConfigurationSer
 
 /// `addGitHubEnterpriseUri`: acrescenta `uri` à lista de instâncias (trocando `replaced_uri`, se houver) sem
 /// sobrescrever a lista efetiva nem a configuração legada. Rejeita um endereço que não é de instância.
-pub fn add_github_enterprise_uri<S: GitHubEnterpriseConfigurationService + ?Sized + 'static>(
-    configuration_service: Rc<S>,
+pub fn add_github_enterprise_uri(
+    configuration_service: Rc<dyn IConfigurationService>,
     uri: &str,
     is_workspace_trusted: bool,
     legacy_setting: Option<&str>,
@@ -169,13 +142,15 @@ pub fn add_github_enterprise_uri<S: GitHubEnterpriseConfigurationService + ?Size
             updated.push(uri);
         }
         if !equals(Some(&uris), Some(&updated), |one, other| one == other) {
-            let target = if is_workspace_trusted && !configuration_service.inspect(GITHUB_ENTERPRISE_URIS_SETTING).workspace_value().is_undefined() {
+            let target = if is_workspace_trusted
+                && !configuration_service.inspect(GITHUB_ENTERPRISE_URIS_SETTING, &ConfigurationOverrides::default()).workspace_value().is_undefined()
+            {
                 ConfigurationTarget::Workspace
             } else {
                 ConfigurationTarget::User
             };
             configuration_service
-                .update_value(GITHUB_ENTERPRISE_URIS_SETTING, Dynamic::array(updated.into_iter().map(Dynamic::String)), target)
+                .update_value(GITHUB_ENTERPRISE_URIS_SETTING, Dynamic::array(updated.into_iter().map(Dynamic::String)), None, Some(target))
                 .await?;
         }
         Ok(())

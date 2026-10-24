@@ -12,7 +12,8 @@
 //! - As chaves `workspaceValue` e `workspaceFolderValue` de dois casos do original não existem em
 //!   `IConfigurationValue` (os campos são `workspace` e `workspaceFolder`) e o serviço nunca as lê, então a camada
 //!   fica ausente.
-//! - `updateArgs = [...arguments]` é o [`UpdateValueCall`], e o `{ resource, overrideIdentifier }` esperado é o
+//! - `updateArgs = [...arguments]` é o [`UpdateValueCall`] (a última chamada registrada de `updateValue` do serviço),
+//!   e o `{ resource, overrideIdentifier }` esperado é o
 //!   `ConfigurationUpdateOverrides` equivalente (`overrideIdentifier: undefined` é `override_identifiers: None`).
 //! - `instantiationService.stub(IModelService, { getModel() { return null; } })` e o equivalente do
 //!   `ILanguageService` são structs de stub parcial: os métodos que o original não define entram em pânico.
@@ -30,7 +31,6 @@ use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::lifecycle::DisposableRef;
 use je_base::path::Platform;
-use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::language_service::{ILanguageSelection, ILanguageService, I_LANGUAGE_SERVICE};
 use je_editor::languages::ILanguageIdCodec;
@@ -41,9 +41,9 @@ use je_editor::text_model::TextModel;
 use je_editor::text_resource_configuration_service::{ITextResourceConfigurationService, TextResourceConfigurationService};
 use je_platform::configuration::models::{ConfigurationInspectValue, ConfigurationModel};
 use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
-use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, Overrides};
+use je_platform::configuration::test_configuration_service::{TestConfigurationService, UpdateValueCall};
+use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue, Overrides};
 use je_platform::log::NullLogService;
-use support::test_configuration_service::{TestConfigurationService, UpdateValueCall};
 use support::test_instantiation_service::TestInstantiationService;
 
 /// `{ value, override }` de uma camada do `IConfigurationValue`.
@@ -90,9 +90,9 @@ fn layer_model(layer: &Option<Layer>, language: Option<&str>) -> ConfigurationMo
 }
 
 /// O `ConfigurationInspectValue` que equivale ao literal `configurationValue` do original.
-fn inspect_value(configuration_value: &TestConfigurationValue, language: Option<&str>) -> ConfigurationInspectValue {
+fn inspect_value(configuration_value: &TestConfigurationValue, language: Option<&str>) -> Rc<dyn ConfigurationValue> {
     let model = |layer: &Option<Layer>| layer_model(layer, language);
-    ConfigurationInspectValue {
+    Rc::new(ConfigurationInspectValue {
         key: JsString::from(KEY),
         overrides: ConfigurationOverrides { resource: None, override_identifier: language.map(JsString::from) },
         value: Dynamic::Undefined,
@@ -109,15 +109,15 @@ fn inspect_value(configuration_value: &TestConfigurationValue, language: Option<
         workspace_configuration: Some(model(&configuration_value.workspace)),
         folder_configuration_model: Some(model(&configuration_value.workspace_folder)),
         memory_configuration_model: ConfigurationModel::create_empty_model(NullLogService::shared()),
-    }
+    })
 }
 
-/// O que o corpo da suíte guarda: o serviço de configuração, as variáveis do módulo e o `updateArgs`.
+/// O que o corpo da suíte guarda: o serviço de configuração e as variáveis do módulo. O `updateArgs` é a última
+/// chamada registrada de `updateValue` do serviço.
 struct Suite {
     configuration_service: Rc<TestConfigurationService>,
     configuration_value: Rc<RefCell<TestConfigurationValue>>,
     language: Rc<RefCell<Option<String>>>,
-    update_args: Rc<RefCell<Option<UpdateValueCall>>>,
 }
 
 impl Suite {
@@ -125,19 +125,11 @@ impl Suite {
         let configuration_service = TestConfigurationService::new(None);
         let configuration_value = Rc::new(RefCell::new(TestConfigurationValue::default()));
         let language: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        let update_args = Rc::new(RefCell::new(None));
-        configuration_service.set_inspect_override({
+        configuration_service.stub_inspect_with({
             let (configuration_value, language) = (configuration_value.clone(), language.clone());
             move |_, _| inspect_value(&configuration_value.borrow(), language.borrow().as_deref())
         });
-        configuration_service.set_update_value_override({
-            let update_args = update_args.clone();
-            move |call| {
-                *update_args.borrow_mut() = Some(call);
-                Promise::resolved(())
-            }
-        });
-        Suite { configuration_service, configuration_value, language, update_args }
+        Suite { configuration_service, configuration_value, language }
     }
 
     /// `language = ...; configurationValue = ...;`
@@ -156,7 +148,7 @@ impl Suite {
     }
 
     fn update_args(&self) -> UpdateValueCall {
-        self.update_args.borrow().clone().expect("updateValue foi chamado")
+        self.configuration_service.update_value_calls().pop().expect("updateValue foi chamado")
     }
 }
 

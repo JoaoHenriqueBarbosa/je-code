@@ -11,7 +11,7 @@
 //!   e `getValue(resource, position?, section?)` é [`ITextResourceConfigurationService::get_value_at`]. Como no
 //!   original, a posição só vale quando a seção vem junto (sem seção, a posição é ignorada).
 //! - **Valores** (`T`, `unknown`) são [`Dynamic`], como no `IConfigurationService` do `je-platform`, e
-//!   `IConfigurationValue<Readonly<T>>` é o [`ConfigurationInspectValue`] que o serviço de configuração devolve.
+//!   `IConfigurationValue<Readonly<T>>` é o [`ConfigurationValue`] que o serviço de configuração devolve.
 //! - **`null` e `undefined`** do identificador de linguagem e do alvo são `Option`.
 //! - **`IPosition`** é [`Position`] (no porte são o mesmo tipo).
 //! - **`affectedKeys`** (`ReadonlySet<string>`) é uma fatia sem repetição (`ConfigurationChangeEvent` já a monta
@@ -29,7 +29,7 @@ use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_instantiation::{Injectable, service_id, service_impl};
-use je_platform::configuration::models::{ConfigurationChangeEvent, ConfigurationInspectValue, InspectValue};
+use je_platform::configuration::models::{ConfigurationChangeEvent, InspectValue};
 use je_platform::configuration::service::{IConfigurationService, update_overrides_of};
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, ConfigurationValue};
 
@@ -61,7 +61,7 @@ pub trait ITextResourceConfigurationService {
     fn get_value_at(&self, resource: Option<&URI>, position: Option<&Position>, section: Option<&str>) -> Dynamic;
 
     /// Inspeciona os valores da seção para o recurso, com os overrides da linguagem aplicados.
-    fn inspect(&self, resource: Option<&URI>, position: Option<&Position>, section: &str) -> ConfigurationInspectValue;
+    fn inspect(&self, resource: Option<&URI>, position: Option<&Position>, section: &str) -> Rc<dyn ConfigurationValue>;
 
     /// Atualiza o valor da configuração do recurso no local efetivo.
     ///
@@ -132,7 +132,7 @@ impl ITextResourceConfigurationChangeEvent for ResourceConfigurationChangeEvent 
 
 /// `deriveConfigurationTarget`: o alvo onde a chave já está definida. Com linguagem, procura primeiro o
 /// override nas camadas (da mais específica para a menos); depois o valor. Sem nada definido, é o usuário local.
-fn derive_configuration_target(configuration_value: &ConfigurationInspectValue, language: Option<&str>) -> ConfigurationTarget {
+fn derive_configuration_target(configuration_value: &dyn ConfigurationValue, language: Option<&str>) -> ConfigurationTarget {
     let layers: [(ConfigurationTarget, Option<InspectValue>); 5] = [
         (ConfigurationTarget::Memory, configuration_value.memory()),
         (ConfigurationTarget::WorkspaceFolder, configuration_value.workspace_folder()),
@@ -215,7 +215,7 @@ impl ITextResourceConfigurationService for TextResourceConfigurationService {
         }
     }
 
-    fn inspect(&self, resource: Option<&URI>, position: Option<&Position>, section: &str) -> ConfigurationInspectValue {
+    fn inspect(&self, resource: Option<&URI>, position: Option<&Position>, section: &str) -> Rc<dyn ConfigurationValue> {
         let language = resource.and_then(|resource| self.languages.get_language(resource, position));
         self.configuration_service.inspect(section, &overrides_of(resource, language.as_deref()))
     }
@@ -223,7 +223,7 @@ impl ITextResourceConfigurationService for TextResourceConfigurationService {
     fn update_value(&self, resource: Option<&URI>, key: &str, value: Dynamic, configuration_target: Option<ConfigurationTarget>) -> Promise<()> {
         let language = resource.and_then(|resource| self.languages.get_language(resource, None));
         let configuration_value = self.configuration_service.inspect(key, &overrides_of(resource, language.as_deref()));
-        let configuration_target = configuration_target.unwrap_or_else(|| derive_configuration_target(&configuration_value, language.as_deref()));
+        let configuration_target = configuration_target.unwrap_or_else(|| derive_configuration_target(&*configuration_value, language.as_deref()));
         let override_identifier = language.as_deref().filter(|language| {
             !language.is_empty() && configuration_value.override_identifiers().is_some_and(|identifiers| identifiers.contains(&JsString::from(*language)))
         });

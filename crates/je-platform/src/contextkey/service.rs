@@ -7,8 +7,7 @@
 //!   o foco. A chave `inputFocus` nasce `false`, como no original.
 //! - Os comandos `_setContext`, `getContextKeyInfo` e `_generateContextKeyInfo` ficam para o registro de
 //!   comandos ([`crate::commands`]), que a UI liga a [`set_context`] e a [`RawContextKey::all`].
-//! - O serviço raiz lê a configuração por [`ContextKeyConfigurationService`] (o `IConfigurationService`
-//!   ainda não é um trait neste porte).
+//! - O serviço raiz lê a configuração pelo [`IConfigurationService`], como o original.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,46 +20,17 @@ use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, MutableDisposab
 use je_base::objects;
 use je_base::ternary_search_tree::TernarySearchTree;
 use je_base::uri::{URI, UriComponents};
-use je_base::JsString;
 
 use super::contextkey::{
     ContextKeyExpression, IContext, IContextKey, IContextKeyChangeEvent, IContextKeyService, IContextKeyServiceTarget,
     IScopedContextKeyService, ReadableSet,
 };
 use super::contextkeys::input_focused_context;
+use crate::configuration::service::IConfigurationService;
+use crate::configuration::ConfigurationTarget;
 use crate::js::{to_json, to_js_string};
 
 const KEYBINDING_CONTEXT_ATTR: &str = "data-keybinding-context";
-
-/// A mudança de configuração que o serviço raiz precisa: a origem era o padrão, e as chaves afetadas.
-#[derive(Clone, Debug)]
-pub struct ContextKeyConfigurationChange {
-    /// `event.source === ConfigurationTarget.DEFAULT`.
-    pub source_is_default: bool,
-    pub affected_keys: Vec<String>,
-}
-
-/// O que o serviço raiz lê do `IConfigurationService`.
-pub trait ContextKeyConfigurationService {
-    fn get_value(&self, section: &str) -> Dynamic;
-    fn on_did_change_configuration(&self) -> Event<ContextKeyConfigurationChange>;
-}
-
-impl ContextKeyConfigurationService for crate::configuration::service::ConfigurationService {
-    fn get_value(&self, section: &str) -> Dynamic {
-        crate::configuration::service::ConfigurationService::get_value(self, Some(section), None)
-    }
-
-    fn on_did_change_configuration(&self) -> Event<ContextKeyConfigurationChange> {
-        crate::configuration::service::ConfigurationService::on_did_change_configuration(self).map(
-            |event| ContextKeyConfigurationChange {
-                source_is_default: event.source.get() == Some(crate::configuration::ConfigurationTarget::Default),
-                affected_keys: event.affected_keys.iter().map(JsString::to_string_lossy).collect(),
-            },
-            None,
-        )
-    }
-}
 
 /// O nó de valores de um contexto: o `Context` do original e as suas especializações.
 pub trait ContextNode: IContext {
@@ -210,7 +180,7 @@ impl IContextKeyChangeEvent for CompositeContextKeyChangeEvent {
 /// O contêiner raiz: lê `config.*` do serviço de configuração, com cache invalidado pelas mudanças.
 struct ConfigAwareContextValuesContainer {
     base: Rc<Context>,
-    configuration_service: Rc<dyn ContextKeyConfigurationService>,
+    configuration_service: Rc<dyn IConfigurationService>,
     values: Rc<RefCell<TernarySearchTree<String, Dynamic>>>,
     listener: RefCell<Option<DisposableRef>>,
 }
@@ -220,13 +190,13 @@ const CONFIG_KEY_PREFIX: &str = "config.";
 impl ConfigAwareContextValuesContainer {
     fn new(
         id: i64,
-        configuration_service: Rc<dyn ContextKeyConfigurationService>,
+        configuration_service: Rc<dyn IConfigurationService>,
         emitter: Rc<PauseableEmitter<ChangeEvent>>,
     ) -> Rc<Self> {
         let values: Rc<RefCell<TernarySearchTree<String, Dynamic>>> = Rc::new(RefCell::new(TernarySearchTree::for_config_keys()));
         let cache = values.clone();
         let listener = configuration_service.on_did_change_configuration().listen(move |event| {
-            if event.source_is_default {
+            if event.source.get() == Some(ConfigurationTarget::Default) {
                 // new setting, reset everything
                 let all_keys: Vec<String> = cache.borrow().iter_entries().map(|(k, _)| k).collect();
                 cache.borrow_mut().clear();
@@ -234,7 +204,7 @@ impl ConfigAwareContextValuesContainer {
             } else {
                 let mut changed_keys = Vec::new();
                 for config_key in &event.affected_keys {
-                    let context_key = format!("config.{config_key}");
+                    let context_key = format!("config.{}", config_key.to_string_lossy());
                     let cached_items = cache.borrow().find_superstr(&context_key);
                     if let Some(cached_items) = cached_items {
                         changed_keys.extend(cached_items.map(|(key, _)| key));
@@ -269,7 +239,7 @@ impl IContext for ConfigAwareContextValuesContainer {
             return cached.clone();
         }
         let config_key = &key[CONFIG_KEY_PREFIX.len()..];
-        let config_value = self.configuration_service.get_value(config_key);
+        let config_value = self.configuration_service.get_value(Some(config_key), None);
         let value = match &config_value {
             Dynamic::Array(_) => match to_json(&config_value) {
                 Some(json) => Dynamic::String(je_base::marshalling::stringify(&je_base::marshalling::from_json(&json))),
@@ -380,7 +350,7 @@ fn new_emitter() -> Rc<PauseableEmitter<ChangeEvent>> {
 
 impl AbstractContextKeyService {
     /// `new ContextKeyService(configurationService)`.
-    pub fn new(configuration_service: Rc<dyn ContextKeyConfigurationService>) -> Rc<Self> {
+    pub fn new(configuration_service: Rc<dyn IConfigurationService>) -> Rc<Self> {
         let base = Disposable::new();
         let emitter = new_emitter();
         base.register(emitter.clone());
