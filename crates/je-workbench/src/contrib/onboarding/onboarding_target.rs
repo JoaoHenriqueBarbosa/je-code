@@ -1,0 +1,440 @@
+//! Porte de `src/vs/workbench/contrib/onboarding/browser/spotlight/onboardingTarget.ts`: a marcação de elementos
+//! como alvos de onboarding, os provedores de alvo que um dono registra e a resolução do alvo de um passo.
+//!
+//! Divergências (sem DOM, recorte declarado):
+//! - **`HTMLElement`, `Window` e `document`.** Não há DOM no porte. [`OnboardingElement`] é o modelo mínimo do que o
+//!   original lê e escreve num elemento: atributos, classes, `isConnected`, `ownerDocument`, `display`, `visibility`,
+//!   a caixa (`getBoundingClientRect().width/height`) e o foco (`focus()` e `document.activeElement`).
+//!   [`OnboardingWindow`] é a janela com o documento dela ([`OnboardingDocument`]), que guarda a ordem de inserção
+//!   dos elementos conectados (a ordem de documento do `querySelectorAll`). A identidade (`===`) é `Rc::ptr_eq`.
+//! - **`WeakMap<HTMLElement, registration>`.** O registro mora no estado do próprio elemento, com a mesma vida.
+//! - **`querySelectorAll('[data-onboarding-id="..."]')` e `CSS.escape`.** A comparação é de igualdade do valor do
+//!   atributo, então o escape não tem papel.
+//! - **`Promise<void> | void`** do `open` é `Option<Promise<()>>`.
+//! - **`scope?: string | (() => string | undefined)`** é [`OnboardingTargetScope`].
+//! - O `Map` de provedores é por thread (`thread_local!`), como o estado de módulo do original é por realm.
+//! - O `import '../media/onboardingTarget.css'` não tem equivalente: o CSS é especificação, não código executado.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::rc::{Rc, Weak};
+
+use je_base::errors::{self, Error};
+use je_base::event::Event;
+use je_base::lifecycle::{DisposableRef, to_disposable};
+use je_base::promise::Promise;
+
+/// Atributo que marca um elemento como alvo de spotlight de onboarding.
+///
+/// Os componentes aderem marcando o PRÓPRIO elemento com o atributo. Os tours referenciam o id; nunca entram no
+/// markup ou nas classes de outro componente para achar um alvo.
+pub const ONBOARDING_TARGET_ATTR: &str = "data-onboarding-id";
+
+pub const ONBOARDING_TARGET_PULSE_CLASS: &str = "onboarding-target-pulse";
+
+/// O documento de uma [`OnboardingWindow`].
+#[derive(Default)]
+pub struct OnboardingDocument {
+    /// Os elementos conectados, na ordem de inserção.
+    connected: RefCell<Vec<OnboardingElement>>,
+    active_element: RefCell<Option<OnboardingElement>>,
+}
+
+impl OnboardingDocument {
+    /// `document.activeElement` (sem foco é `None`; o `body` do navegador não é modelado).
+    pub fn active_element(&self) -> Option<OnboardingElement> {
+        self.active_element.borrow().clone()
+    }
+}
+
+/// A `Window` do original: a identidade dela é a do documento.
+#[derive(Clone, Default)]
+pub struct OnboardingWindow {
+    document: Rc<OnboardingDocument>,
+}
+
+impl OnboardingWindow {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn document(&self) -> &OnboardingDocument {
+        &self.document
+    }
+}
+
+impl PartialEq for OnboardingWindow {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.document, &other.document)
+    }
+}
+
+impl Eq for OnboardingWindow {}
+
+impl Hash for OnboardingWindow {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.document).cast::<()>().hash(state);
+    }
+}
+
+struct ElementState {
+    owner: Weak<OnboardingDocument>,
+    attributes: RefCell<Vec<(String, String)>>,
+    classes: RefCell<Vec<String>>,
+    connected: Cell<bool>,
+    display_none: Cell<bool>,
+    visibility_hidden: Cell<bool>,
+    width: Cell<f64>,
+    height: Cell<f64>,
+    registration: RefCell<Option<Rc<OnboardingTargetRegistration>>>,
+}
+
+/// Um `HTMLElement` reduzido ao que o onboarding usa. Clonar compartilha o mesmo elemento.
+#[derive(Clone)]
+pub struct OnboardingElement(Rc<ElementState>);
+
+impl PartialEq for OnboardingElement {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for OnboardingElement {}
+
+impl fmt::Debug for OnboardingElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "OnboardingElement({:?})", self.0.attributes.borrow())
+    }
+}
+
+impl OnboardingElement {
+    /// `$('button')`: um elemento solto, ainda fora do documento, dono é o documento da janela.
+    pub fn new(window: &OnboardingWindow) -> Self {
+        Self(Rc::new(ElementState {
+            owner: Rc::downgrade(&window.document),
+            attributes: RefCell::new(Vec::new()),
+            classes: RefCell::new(Vec::new()),
+            connected: Cell::new(false),
+            display_none: Cell::new(false),
+            visibility_hidden: Cell::new(false),
+            width: Cell::new(0.0),
+            height: Cell::new(0.0),
+            registration: RefCell::new(None),
+        }))
+    }
+
+    /// A caixa do elemento (o `width` e o `height` de `getBoundingClientRect()`).
+    pub fn set_size(&self, width: f64, height: f64) {
+        self.0.width.set(width);
+        self.0.height.set(height);
+    }
+
+    /// `style.display = 'none'` (verdadeiro) ou `style.display = ''` (falso).
+    pub fn set_display_none(&self, hidden: bool) {
+        self.0.display_none.set(hidden);
+    }
+
+    /// `style.visibility = 'hidden'` (verdadeiro) ou `''` (falso).
+    pub fn set_visibility_hidden(&self, hidden: bool) {
+        self.0.visibility_hidden.set(hidden);
+    }
+
+    /// `document.body.appendChild(element)`: conecta o elemento no fim do documento dele.
+    pub fn append_to_body(&self) {
+        let Some(document) = self.0.owner.upgrade() else {
+            return;
+        };
+        document.connected.borrow_mut().retain(|element| element != self);
+        document.connected.borrow_mut().push(self.clone());
+        self.0.connected.set(true);
+    }
+
+    /// `element.remove()`: desconecta o elemento e tira o foco dele.
+    pub fn remove(&self) {
+        if let Some(document) = self.0.owner.upgrade() {
+            document.connected.borrow_mut().retain(|element| element != self);
+            let focused = document.active_element.borrow().as_ref() == Some(self);
+            if focused {
+                *document.active_element.borrow_mut() = None;
+            }
+        }
+        self.0.connected.set(false);
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.0.connected.get()
+    }
+
+    /// `element.focus()`: só um elemento conectado recebe o foco.
+    pub fn focus(&self) {
+        if !self.0.connected.get() {
+            return;
+        }
+        if let Some(document) = self.0.owner.upgrade() {
+            *document.active_element.borrow_mut() = Some(self.clone());
+        }
+    }
+
+    pub fn has_attribute(&self, name: &str) -> bool {
+        self.get_attribute(name).is_some()
+    }
+
+    pub fn get_attribute(&self, name: &str) -> Option<String> {
+        self.0.attributes.borrow().iter().find(|(key, _)| key == name).map(|(_, value)| value.clone())
+    }
+
+    fn set_attribute(&self, name: &str, value: &str) {
+        let mut attributes = self.0.attributes.borrow_mut();
+        match attributes.iter_mut().find(|(key, _)| key == name) {
+            Some((_, current)) => *current = value.to_string(),
+            None => attributes.push((name.to_string(), value.to_string())),
+        }
+    }
+
+    fn remove_attribute(&self, name: &str) {
+        self.0.attributes.borrow_mut().retain(|(key, _)| key != name);
+    }
+
+    /// `element.classList.contains(name)`.
+    pub fn has_class(&self, name: &str) -> bool {
+        self.0.classes.borrow().iter().any(|class| class == name)
+    }
+
+    fn add_class(&self, name: &str) {
+        if !self.has_class(name) {
+            self.0.classes.borrow_mut().push(name.to_string());
+        }
+    }
+
+    fn remove_class(&self, name: &str) {
+        self.0.classes.borrow_mut().retain(|class| class != name);
+    }
+}
+
+/// `IOnboardingTarget.open` e `IOnboardingTargetOptions.open`: abre ou expande o alvo.
+pub type OnboardingTargetOpen = Rc<dyn Fn() -> Option<Promise<()>>>;
+
+/// `IOnboardingFocusTarget`: o dono do foco de teclado quando o elemento destacado não é focável.
+#[derive(Clone)]
+pub struct OnboardingFocusTarget {
+    pub element: OnboardingElement,
+    pub focus: Rc<dyn Fn()>,
+}
+
+impl PartialEq for OnboardingFocusTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.element == other.element && Rc::ptr_eq(&self.focus, &other.focus)
+    }
+}
+
+/// `scope?: string | (() => string | undefined)`.
+#[derive(Clone)]
+pub enum OnboardingTargetScope {
+    Fixed(String),
+    Dynamic(Rc<dyn Fn() -> Option<String>>),
+}
+
+/// `IOnboardingTargetOptions`.
+#[derive(Clone, Default)]
+pub struct OnboardingTargetOptions {
+    /// Abre ou expande o alvo antes de o passo de spotlight aparecer.
+    pub open: Option<OnboardingTargetOpen>,
+    pub focus_target: Option<OnboardingFocusTarget>,
+
+    /// Se o controle já tem um valor selecionado, independente da aceitação assíncrona.
+    pub has_selection: Option<Rc<dyn Fn() -> bool>>,
+
+    /// Reporta uma seleção do usuário e resolve quando ela é aceita ou rejeitada.
+    pub on_did_select: Option<Event<Promise<bool>>>,
+    /// Reporta ativação por mouse, teclado ou toque pelo controle dono.
+    pub on_did_activate: Option<Event<()>>,
+    /// Identifica a instância de UI preparada que é dona deste alvo.
+    pub scope: Option<OnboardingTargetScope>,
+}
+
+/// `IOnboardingTarget`.
+#[derive(Clone)]
+pub struct OnboardingTarget {
+    pub element: OnboardingElement,
+    pub open: Option<OnboardingTargetOpen>,
+    pub focus_target: Option<OnboardingFocusTarget>,
+    /// Seleções aceitas fornecidas por um adaptador com escopo, sem trocar o marcador DOM do dono.
+    pub on_did_select: Option<Event<Promise<bool>>>,
+    pub on_did_activate: Option<Event<()>>,
+}
+
+impl OnboardingTarget {
+    /// Um alvo só com o elemento, os demais membros ausentes.
+    pub fn new(element: OnboardingElement) -> Self {
+        Self { element, open: None, focus_target: None, on_did_select: None, on_did_activate: None }
+    }
+}
+
+struct OnboardingTargetRegistration {
+    #[allow(dead_code)]
+    id: String,
+    options: OnboardingTargetOptions,
+}
+
+/// O resolvedor de um provedor: recebe o escopo pedido.
+pub type OnboardingTargetResolve = Rc<dyn Fn(Option<&str>) -> Option<OnboardingTarget>>;
+
+struct ProviderRegistration {
+    resolve: OnboardingTargetResolve,
+}
+
+thread_local! {
+    static ONBOARDING_TARGET_PROVIDERS: RefCell<HashMap<String, Rc<ProviderRegistration>>> = RefCell::new(HashMap::new());
+}
+
+fn current_provider(id: &str) -> Option<Rc<ProviderRegistration>> {
+    ONBOARDING_TARGET_PROVIDERS.with(|providers| providers.borrow().get(id).cloned())
+}
+
+/// Registra um adaptador que resolve um controle pela API da feature dona dele. Lança se já houver um provedor
+/// para o `id`.
+pub fn register_onboarding_target_provider(
+    id: &str,
+    provider: impl Fn(Option<&str>) -> Option<OnboardingTarget> + 'static,
+) -> DisposableRef {
+    let registration = Rc::new(ProviderRegistration { resolve: Rc::new(provider) });
+    let already_registered = ONBOARDING_TARGET_PROVIDERS.with(|providers| {
+        let mut providers = providers.borrow_mut();
+        if providers.contains_key(id) {
+            return true;
+        }
+        providers.insert(id.to_string(), registration.clone());
+        false
+    });
+    if already_registered {
+        errors::throw(Error::new(format!("An onboarding target provider for '{id}' is already registered.")));
+    }
+    let id = id.to_string();
+    to_disposable(move || {
+        ONBOARDING_TARGET_PROVIDERS.with(|providers| {
+            let mut providers = providers.borrow_mut();
+            if providers.get(&id).is_some_and(|current| Rc::ptr_eq(current, &registration)) {
+                providers.remove(&id);
+            }
+        });
+    })
+}
+
+pub fn resolve_onboarding_target(target_window: &OnboardingWindow, id: &str, scope: Option<&str>) -> Option<OnboardingTarget> {
+    if let Some(provider) = current_provider(id) {
+        let target = (provider.resolve)(scope)?;
+        if !is_visible_onboarding_target(target_window, &target.element) {
+            return None;
+        }
+        let (window, id, scope, element) = (target_window.clone(), id.to_string(), scope.map(str::to_string), target.element.clone());
+        let open_provider = provider.clone();
+        let open: OnboardingTargetOpen = Rc::new(move || {
+            let still_current = current_provider(&id).is_some_and(|current| Rc::ptr_eq(&current, &open_provider));
+            if !still_current {
+                return None;
+            }
+            let current = (open_provider.resolve)(scope.as_deref())?;
+            if current.element == element && is_visible_onboarding_target(&window, &current.element) {
+                return current.open.as_ref().and_then(|open| open());
+            }
+            None
+        });
+        return Some(OnboardingTarget {
+            element: target.element,
+            open: Some(open),
+            focus_target: target.focus_target,
+            on_did_select: target.on_did_select,
+            on_did_activate: target.on_did_activate,
+        });
+    }
+    let element = find_onboarding_target(target_window, id, scope)?;
+    let options = registration_options(&element);
+    let open_element = element.clone();
+    Some(OnboardingTarget {
+        element,
+        open: Some(Rc::new(move || open_onboarding_target(&open_element))),
+        focus_target: options.as_ref().and_then(|options| options.focus_target.clone()),
+        on_did_select: None,
+        on_did_activate: options.and_then(|options| options.on_did_activate),
+    })
+}
+
+fn registration_options(element: &OnboardingElement) -> Option<OnboardingTargetOptions> {
+    element.0.registration.borrow().as_ref().map(|registration| registration.options.clone())
+}
+
+/// Marca `element` como o alvo de onboarding identificado por `id`.
+///
+/// Devolve um disposable que tira o atributo de novo.
+pub fn mark_onboarding_target(element: &OnboardingElement, id: &str, options: OnboardingTargetOptions) -> DisposableRef {
+    let registration = Rc::new(OnboardingTargetRegistration { id: id.to_string(), options });
+    element.set_attribute(ONBOARDING_TARGET_ATTR, id);
+    *element.0.registration.borrow_mut() = Some(registration.clone());
+    let element = element.clone();
+    to_disposable(move || {
+        let is_current = element.0.registration.borrow().as_ref().is_some_and(|current| Rc::ptr_eq(current, &registration));
+        if is_current {
+            *element.0.registration.borrow_mut() = None;
+            element.remove_attribute(ONBOARDING_TARGET_ATTR);
+        }
+    })
+}
+
+/// Abre ou expande um alvo pelo comportamento registrado pelo dono dele.
+pub fn open_onboarding_target(element: &OnboardingElement) -> Option<Promise<()>> {
+    registration_options(element).and_then(|options| options.open).and_then(|open| open())
+}
+
+/// Observa as seleções reportadas pelo dono do alvo.
+pub fn on_did_select_onboarding_target(element: &OnboardingElement) -> Event<Promise<bool>> {
+    registration_options(element).and_then(|options| options.on_did_select).unwrap_or_else(Event::none)
+}
+
+/// Lê o estado de seleção do dono do alvo, sem depender de estado de sessão a jusante.
+pub fn has_onboarding_target_selection(element: &OnboardingElement) -> bool {
+    registration_options(element).and_then(|options| options.has_selection).is_some_and(|has_selection| has_selection())
+}
+
+/// Aplica o tratamento padrão de pulso de onboarding em `element`.
+///
+/// Devolve um disposable que tira o pulso de novo.
+pub fn pulse_onboarding_target(element: &OnboardingElement) -> DisposableRef {
+    element.add_class(ONBOARDING_TARGET_PULSE_CLASS);
+    let element = element.clone();
+    to_disposable(move || element.remove_class(ONBOARDING_TARGET_PULSE_CLASS))
+}
+
+/// Resolve o elemento marcado com o id de alvo dado, dentro do documento da janela. Devolve `None` se não houver
+/// (por exemplo, a feature não está renderizada agora).
+///
+/// É o ÚNICO lugar em que o onboarding consulta o DOM, e casa só pelo atributo de onboarding, nunca por classes
+/// ou estrutura alheias.
+pub fn find_onboarding_target(target_window: &OnboardingWindow, id: &str, scope: Option<&str>) -> Option<OnboardingElement> {
+    let targets: Vec<OnboardingElement> = target_window.document.connected.borrow().clone();
+    targets.into_iter().find(|target| {
+        target.get_attribute(ONBOARDING_TARGET_ATTR).as_deref() == Some(id)
+            && is_visible_onboarding_target(target_window, target)
+            && matches_scope(target, scope)
+    })
+}
+
+fn matches_scope(target: &OnboardingElement, scope: Option<&str>) -> bool {
+    let registered = registration_options(target).and_then(|options| options.scope).and_then(|registered| match registered {
+        OnboardingTargetScope::Fixed(scope) => Some(scope),
+        OnboardingTargetScope::Dynamic(scope) => scope(),
+    });
+    registered.as_deref() == scope
+}
+
+fn is_visible_onboarding_target(target_window: &OnboardingWindow, target: &OnboardingElement) -> bool {
+    let same_document = target.0.owner.upgrade().is_some_and(|owner| Rc::ptr_eq(&owner, &target_window.document));
+    if !target.is_connected() || !same_document {
+        return false;
+    }
+    if target.0.display_none.get() || target.0.visibility_hidden.get() {
+        return false;
+    }
+    target.0.width.get() > 0.0 && target.0.height.get() > 0.0
+}
