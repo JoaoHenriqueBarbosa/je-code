@@ -1,17 +1,20 @@
 //! Porte do que o provider de disco usa de `src/vs/base/node/pfs.ts`: `SymlinkSupport`, `Promises.readdir`
-//! com tipos, `rm` (`RimRafMode`), `rename` com a nova tentativa do Windows, `copy`, `realpath`, `exists` e
-//! a abertura de arquivo para leitura.
+//! (com e sem tipos), `readDirsInDir`, `rm` (`RimRafMode`), `rename` com a nova tentativa do Windows, `copy`,
+//! `realpath` (e `realpathSync`), `realcase`, `exists`, `Promises.writeFile` e `writeFileSync` (com `fdatasync`,
+//! `configureFlushOnWrite` e a fila por caminho) e a abertura de arquivo para leitura.
 //!
 //! TODO(integração): mover para um módulo `base::node` quando existir.
 //!
-//! Fora do porte (nada no provider nem nos testes usa): `whenDeleted`, `readDirsInDir`, `realcase`,
-//! `Promises.writeFile` e `writeFileSync` (com `fdatasync` e a fila por caminho), `configureFlushOnWrite` do
-//! `pfs` (o provider tem o dele), `realpathSync` e `Promises.read/write/fstat/ftruncate/fdatasync` crus (o
-//! provider faz E/S posicional sobre `std::fs::File`, ver [`read_at`] e [`write_at`]).
+//! Fora do porte (nada no provider nem nos testes usa): `whenDeleted` e `Promises.read/write/fstat/ftruncate/
+//! fdatasync` crus (o provider faz E/S posicional sobre `std::fs::File`, ver [`read_at`] e [`write_at`]).
+//! O `configureFlushOnWrite` do provider de disco é outro, o dele; este é o do `pfs`.
 //!
 //! Divergência de execução: no original a E/S roda no pool de threads do libuv e a `Promise` resolve no
 //! event loop. Aqui as funções síncronas bloqueiam o thread do loop; só as que precisam esperar de verdade
 //! (`rm` com nova tentativa, `rename` com nova tentativa no Windows) são `async`. Os resultados são os mesmos.
+//! `realcase` é síncrono pelo mesmo motivo, e `realpathSync` é a própria [`realpath`] (a lógica do original
+//! é a mesma nas duas, só muda ser síncrona ou não). `writeFile` devolve a [`Promise`] da fila por caminho
+//! (a escrita em si roda quando a fila a chama).
 //!
 //! Erros: [`FsError`] imita o erro do Node (o `code` do errno e a mensagem `ENOENT: no such file or
 //! directory, stat '/x'`), porque o provider decide o código do erro dele pelo `code`.
@@ -20,12 +23,19 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use je_base::async_::timeout;
+use je_base::async_::{ResourceQueue, timeout};
+use je_base::cancellation::CancellationToken;
+use je_base::errors::Error;
 use je_base::extpath::{is_equal_or_parent, is_root_or_drive_letter, random_path};
 use je_base::normalization::normalize_nfc;
-use je_base::path::{PathModule, ProcessEnvironment};
+use je_base::path::{Environment, PathModule, ProcessEnvironment};
+use je_base::promise::Promise;
+use je_base::resources::ExtUri;
+use je_base::uri::URI;
 
 // region: erro
 
@@ -74,6 +84,17 @@ impl fmt::Display for FsError {
 }
 
 impl std::error::Error for FsError {}
+
+impl From<FsError> for Error {
+    /// O erro de uma `Promise` rejeitada pelo `fs`: a mensagem do Node e o `code` como propriedade.
+    fn from(error: FsError) -> Self {
+        let rejected = Error::new(error.message);
+        match error.code {
+            Some(code) => rejected.with_prop("code", code),
+            None => rejected,
+        }
+    }
+}
 
 /// O adaptador do `map_err`: `fs::metadata(path).map_err(fs_err("stat", path))`.
 pub fn fs_err<'a>(syscall: &'a str, path: &'a str) -> impl FnOnce(io::Error) -> FsError + 'a {
@@ -336,6 +357,17 @@ fn do_readdir(path: &str) -> Result<Vec<Dirent>, FsError> {
     Ok(children)
 }
 
+/// `Promises.readdir(path)` sem tipos: só os nomes, com o mesmo tratamento de [`readdir`].
+pub fn readdir_names(path: &str) -> Result<Vec<String>, FsError> {
+    readdir(path).map(|children| children.into_iter().map(|child| child.name).collect())
+}
+
+/// `Promises.readDirsInDir(dirPath)`: os nomes dos filhos que são pastas (seguindo links simbólicos).
+pub fn read_dirs_in_dir(dir_path: &str) -> Result<Vec<String>, FsError> {
+    let module = PathModule::native(&ProcessEnvironment);
+    Ok(readdir_names(dir_path)?.into_iter().filter(|child| exists_directory(&module.join(&[dir_path, child]))).collect())
+}
+
 // endregion
 
 // region: rimraf
@@ -415,6 +447,98 @@ fn remove_force(path: &str) -> Result<(), FsError> {
 
 fn temp_dir() -> String {
     std::env::temp_dir().to_string_lossy().into_owned()
+}
+
+// endregion
+
+// region: write file
+
+/// `IWriteFileOptions`: `mode` (padrão `0o666`, o do Node para arquivos) e `flag` (padrão `'w'`).
+#[derive(Clone, Debug, Default)]
+pub struct WriteFileOptions {
+    pub mode: Option<u32>,
+    pub flag: Option<String>,
+}
+
+static CAN_FLUSH: AtomicBool = AtomicBool::new(true);
+
+/// `configureFlushOnWrite(enabled)`.
+pub fn configure_flush_on_write(enabled: bool) {
+    CAN_FLUSH.store(enabled, Ordering::SeqCst);
+}
+
+thread_local! {
+    // According to node.js docs (https://nodejs.org/docs/v14.16.0/api/fs.html#fs_fs_writefile_file_data_options_callback)
+    // it is not safe to call writeFile() on the same path multiple times without waiting for the callback to
+    // return. Therefor we use a Queue on the path that is given to us to sequentialize calls to the same path properly.
+    static WRITE_QUEUES: ResourceQueue = ResourceQueue::new(biased_ignore_path_case());
+}
+
+/// `extUriBiasedIgnorePathCase`.
+fn biased_ignore_path_case() -> ExtUri {
+    ExtUri::biased_ignore_path_case(Rc::new(ProcessEnvironment), cfg!(target_os = "linux"))
+}
+
+/// `Promises.writeFile(path, data, options)`: o `fs.writeFile` com um `fdatasync` depois de escrever, para
+/// garantir que as mudanças chegaram ao disco. Várias escritas no mesmo caminho entram numa fila.
+pub fn write_file(path: &str, data: impl Into<Vec<u8>>, options: Option<WriteFileOptions>) -> Promise<()> {
+    let (path, data) = (path.to_string(), data.into());
+    let resource = URI::file(path.as_str(), ProcessEnvironment.platform());
+    WRITE_QUEUES.with(|queues| {
+        queues.queue_for(&resource, move || match write_file_and_flush(&path, &data, options.as_ref()) {
+            Ok(()) => Promise::resolved(()),
+            Err(error) => Promise::rejected(error.into()),
+        })
+    })
+}
+
+/// `writeFileSync(path, data, options)`: o mesmo sem a fila e sem a `Promise`.
+pub fn write_file_sync(path: &str, data: impl AsRef<[u8]>, options: Option<&WriteFileOptions>) -> Result<(), FsError> {
+    write_file_and_flush(path, data.as_ref(), options)
+}
+
+/// `doWriteFileAndFlush` e `writeFileSync`: abre com o mesmo `flag` e `mode` do `fs.writeFile`, escreve e,
+/// se o flush está ligado, sincroniza o conteúdo (não os metadados) com o disco
+/// (https://github.com/microsoft/vscode/issues/9589).
+fn write_file_and_flush(path: &str, data: &[u8], options: Option<&WriteFileOptions>) -> Result<(), FsError> {
+    use io::Write;
+
+    let mode = options.and_then(|options| options.mode).unwrap_or(0o666 /* default node.js mode for files */);
+    let flag = options.and_then(|options| options.flag.as_deref()).unwrap_or("w");
+
+    let mut file = open_for_write(path, flag, mode)?;
+    file.write_all(data).map_err(|error| FsError::from_io(&error, "write", None, None))?;
+
+    if CAN_FLUSH.load(Ordering::SeqCst)
+        && let Err(error) = file.sync_data()
+    {
+        // In some exotic setups it is well possible that node fails to sync. In that case we disable
+        // flushing and warn to the console
+        eprintln!("[node.js fs] fdatasync is now disabled for this session because it failed: {}", FsError::from_io(&error, "fdatasync", None, None));
+        configure_flush_on_write(false);
+    }
+    Ok(())
+}
+
+/// `fs.open(path, flag, mode)` para escrita: as letras do `flag` do Node (`r`, `w`, `a`, com `+`, `x` e `s`).
+fn open_for_write(path: &str, flag: &str, mode: u32) -> Result<File, FsError> {
+    let mut options = OpenOptions::new();
+    let plus = flag.contains('+');
+    let exclusive = flag.contains('x');
+    match flag.chars().next() {
+        Some('r') => options.read(true).write(plus),
+        Some('w') => options.write(true).read(plus).create(!exclusive).create_new(exclusive).truncate(!exclusive),
+        Some('a') => options.append(true).read(plus).create(!exclusive).create_new(exclusive),
+        _ => return Err(FsError::other(format!("The argument 'flags' is invalid. Received '{flag}'"))),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    options.open(path).map_err(fs_err("open", path))
 }
 
 // endregion
@@ -664,6 +788,45 @@ fn access_readable(path: &str) -> Result<(), FsError> {
     let stats = fs::metadata(path).map_err(fs_err("access", path))?;
     let opened = if stats.is_dir() { fs::read_dir(path).map(drop) } else { open_options_for_read().open(path).map(drop) };
     opened.map_err(fs_err("access", path))
+}
+
+/// `realcase(path, token)`: dado um caminho absoluto, normalizado e existente, o caminho exato que o
+/// arquivo tem no disco. Num sistema de arquivos que não diferencia maiúsculas o resultado pode diferir do
+/// original só no uso de maiúsculas; num que diferencia é sempre idêntico. Devolve `None` em caso de erro
+/// (e por isso não serve para verificar que um caminho existe).
+///
+/// Não trata os segmentos `..` e `.` nem leva o idioma em conta.
+pub fn realcase(path: &str, token: Option<&CancellationToken>) -> Option<String> {
+    if cfg!(target_os = "linux") {
+        // This method is unsupported on OS that have case sensitive file system where the same path can exist in
+        // different forms (see also https://github.com/microsoft/vscode/issues/139709)
+        return Some(path.to_string());
+    }
+
+    let module = PathModule::native(&ProcessEnvironment);
+    let dir = module.dirname(path);
+    if path == dir {
+        return Some(path.to_string()); // end recursion
+    }
+
+    let base = module.basename(path, None);
+    let name = (if base.is_empty() { path } else { base.as_str() /* can be '' for windows drive letters */ }).to_lowercase();
+
+    if token.is_some_and(CancellationToken::is_cancellation_requested) {
+        return None;
+    }
+
+    let entries = readdir_names(&dir).ok()?; // silently ignore error
+    let found: Vec<&String> = entries.iter().filter(|entry| entry.to_lowercase() == name).collect(); // use a case insensitive search
+    let index = match found.len() {
+        // on a case sensitive filesystem we cannot determine here, whether the file exists or not, hence we need the 'file exists' precondition
+        1 => 0,
+        // must be a case sensitive $filesystem
+        n if n > 1 => found.iter().position(|entry| **entry == name)?,
+        _ => return None,
+    };
+    let prefix = realcase(&dir, token)?; // recurse
+    Some(module.join(&[&prefix, found[index]]))
 }
 
 // endregion

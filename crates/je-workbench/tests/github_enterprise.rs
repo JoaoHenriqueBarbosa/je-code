@@ -19,7 +19,6 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
-mod support;
 
 use std::rc::Rc;
 
@@ -28,10 +27,11 @@ use je_base::JsString;
 use je_base::dynamic::Dynamic;
 use je_base::uri::URI;
 use je_platform::configuration::ConfigurationTarget;
+use je_platform::configuration::service::IConfigurationService;
+use je_platform::configuration::test_configuration_service::{TestConfigurationService, TestConfigurationValue, UpdateValueBehavior};
 use je_workbench::services::accounts::github_enterprise::{
     GITHUB_ENTERPRISE_URIS_SETTING, add_github_enterprise_uri, get_configured_github_enterprise_uris, get_github_enterprise_uri, is_valid_github_enterprise_uri,
 };
-use support::github_enterprise_configuration_service::{TestConfigurationService, TestConfigurationValue, UpdateValueBehavior};
 
 const LEGACY_SETTING: &str = "github-enterprise.uri";
 
@@ -62,7 +62,7 @@ fn configuration(guard: &LeakGuard, values: Vec<(&str, Dynamic)>) -> Rc<TestConf
 
 /// As chamadas de `updateValue` como `[key, value, target]`, com o valor como lista de textos.
 fn writes(service: &TestConfigurationService) -> Vec<(String, Vec<String>, ConfigurationTarget)> {
-    service.update_value_calls().into_iter().map(|call| (call.key, array_of_texts(&call.value), call.target)).collect()
+    service.update_value_calls().into_iter().map(|call| (call.key, array_of_texts(&call.value), call.target.expect("o alvo é sempre dado"))).collect()
 }
 
 /// O valor como texto (`getValue('github-enterprise.uri')` é um texto).

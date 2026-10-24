@@ -28,6 +28,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2", features = ["serde"] }
 # SHA-256 do `createStaticIPCHandle` e do `checksum` (RustCrypto, Rust puro).
 sha2 = "0.10"
+# ZIP de `node/zip.ts` (extração, leitura e escrita com deflate): a mesma crate, em Rust puro, que o `je-extensions` usa
+# no VSIX (deflate por `flate2` com o backend `zlib-rs`).
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # Fonte de aleatoriedade do SO para `Math.random` e `crypto.randomUUID`. No alvo web
 # (wasm32-unknown-unknown) o `random` cai num fallback do std, ver `src/random.rs`.

@@ -115,6 +115,12 @@ pub struct TestConfiguration;
 impl TestConfiguration {
     /// `new TestConfiguration(opts)`.
     pub fn new(opts: &Dynamic) -> Rc<EditorConfiguration> {
+        Self::with_environment(opts, Rc::new(TestEnvironment))
+    }
+
+    /// `new TestConfiguration(opts)` de uma subclasse que sobrescreve `_readEnvConfiguration` e/ou `_readFontInfo`:
+    /// o `environment` é o que as sobrescritas fazem.
+    pub fn with_environment(opts: &Dynamic, environment: Rc<dyn EditorEnvironment>) -> Rc<EditorConfiguration> {
         let dimension = opts.get_str("dimension");
         let dimension = if dimension.is_nullish() {
             None
@@ -124,6 +130,6 @@ impl TestConfiguration {
                 _ => None,
             }
         };
-        EditorConfiguration::new(false, editor_context(), opts, ElementSizeObserver::new(None, dimension), Rc::new(TestEnvironment))
+        EditorConfiguration::new(false, editor_context(), opts, ElementSizeObserver::new(None, dimension), environment)
     }
 }

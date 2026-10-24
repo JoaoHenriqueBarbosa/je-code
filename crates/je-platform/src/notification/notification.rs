@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use je_base::actions::ActionRef;
+use je_base::error_message::ErrorWithActions;
 use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::nls::localize;
@@ -17,11 +18,21 @@ use super::notification_message::NotificationText;
 use super::notification_telemetry::{NotificationActionTelemetryId, NotificationTelemetry};
 
 /// `NotificationMessage`: `string | Error | NotificationText`.
+///
+/// O `Error` que carrega ações (`IErrorWithActions`, `isErrorWithActions`) é a variante `ErrorWithActions`: o
+/// [`Error`] do porte guarda propriedades como texto e não cabe uma lista de ações nele.
 #[derive(Clone, Debug)]
 pub enum NotificationMessage {
     Text(String),
     Error(Error),
+    ErrorWithActions(ErrorWithActions),
     Rich(NotificationText),
+}
+
+impl From<ErrorWithActions> for NotificationMessage {
+    fn from(error: ErrorWithActions) -> Self {
+        NotificationMessage::ErrorWithActions(error)
+    }
 }
 
 impl From<&str> for NotificationMessage {

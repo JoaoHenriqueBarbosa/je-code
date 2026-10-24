@@ -49,7 +49,7 @@ use je_instantiation::service_id;
 
 use super::policy::{PolicyDefinitionRef, PolicyDefinitions};
 use crate::configuration::service::IConfigurationService;
-use crate::configuration::{ConfigurationOverrides, ConfigurationValue};
+use crate::configuration::ConfigurationOverrides;
 use crate::js::{to_js_string, trim};
 
 /// `RawManagedSettingsData`: o documento como veio do arquivo, sempre um objeto.

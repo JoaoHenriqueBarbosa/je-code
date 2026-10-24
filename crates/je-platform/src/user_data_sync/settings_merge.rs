@@ -33,7 +33,7 @@ use je_base::objects;
 use super::content;
 use super::user_data_sync::{IConflictSetting, get_disallowed_ignored_settings};
 use crate::configuration::service::IConfigurationService;
-use crate::configuration::{ConfigurationOverrides, ConfigurationValue};
+use crate::configuration::ConfigurationOverrides;
 use crate::js::{Key, from_json};
 
 type StringSet = OrderedMap<JsString, ()>;

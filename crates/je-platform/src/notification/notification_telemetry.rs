@@ -136,6 +136,17 @@ pub enum NotificationTelemetryOrigin {
     Unknown,
 }
 
+impl NotificationTelemetryOrigin {
+    /// O valor de texto do original.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotificationTelemetryOrigin::Core => "core",
+            NotificationTelemetryOrigin::Extension => "extension",
+            NotificationTelemetryOrigin::Unknown => "unknown",
+        }
+    }
+}
+
 /// `INotificationTelemetrySource.notificationId`: `NotificationTelemetryId | 'extension.message' | 'extension.progress' | 'unknown'`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationTelemetrySourceId {
@@ -143,6 +154,18 @@ pub enum NotificationTelemetrySourceId {
     ExtensionMessage,
     ExtensionProgress,
     Unknown,
+}
+
+impl NotificationTelemetrySourceId {
+    /// O valor de texto do original.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotificationTelemetrySourceId::Core(id) => id.as_str(),
+            NotificationTelemetrySourceId::ExtensionMessage => "extension.message",
+            NotificationTelemetrySourceId::ExtensionProgress => "extension.progress",
+            NotificationTelemetrySourceId::Unknown => "unknown",
+        }
+    }
 }
 
 /// `INotificationTelemetrySource`.

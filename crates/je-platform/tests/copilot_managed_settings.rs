@@ -9,8 +9,8 @@
 //!   percorre as mesmas combinações, na mesma ordem; a mensagem de falha leva a combinação.
 //! - `new class extends NullManagedSettingsService { override getManagedSettingValue... }` é [`BagService`],
 //!   um serviço sobre um mapa.
-//! - `TestConfigurationService` é [`TestConfigurationService`]: um `IConfigurationService` sem valores
-//!   (o `inspect` vem de uma `Configuration` vazia, então `policyValue` é `undefined`).
+//! - `TestConfigurationService` é o de `je_platform::configuration::test_configuration_service`, sem valores
+//!   configurados (o `inspect` devolve o literal com `policyValue` `undefined`).
 //! - `{ a: undefined }` não existe em `ManagedSettingsData`: o caso do buraco `undefined` testa a chave ausente
 //!   na camada de cima, que é o mesmo comportamento.
 //! - O caso do `__proto__` usa um documento com uma chave própria `__proto__` (o `Dynamic` não tem
@@ -21,15 +21,12 @@ mod common;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use common::{arr, empty_test_configuration, j, n, obj, s};
+use common::{arr, j, n, obj, s};
 use je_base::default_account::IPolicyData;
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::policy::{IManagedSettingsPolicyDefinitions, ManagedSettingType, ManagedSettingValue, PolicyValue};
-use je_base::promise::Promise;
-use je_platform::configuration::models::{Configuration, ConfigurationChangeEvent, ConfigurationInspectValue, ConfigurationKeys};
-use je_platform::configuration::service::IConfigurationService;
-use je_platform::configuration::{ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides};
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::policy::copilot_managed_settings::{
     COPILOT_FORCE_REMOTE_SETTINGS_REFRESH_KEY, COPILOT_MODEL_KEY, COPILOT_OTEL_CAPTURE_IDENTITY_KEY, COPILOT_PERMISSION_RULES_KEYS, COPILOT_SANDBOX_ALLOW_BYPASS_KEY,
     COPILOT_SANDBOX_ALLOW_DEV_TOOL_ACCESS_KEY, COPILOT_SANDBOX_ALLOW_LOCAL_NETWORK_KEY, COPILOT_SANDBOX_ALLOW_OUTBOUND_KEY, COPILOT_SANDBOX_ALLOWED_HOSTS_KEY, COPILOT_SANDBOX_AUTH_GH_KEY,
@@ -149,47 +146,6 @@ impl IManagedSettingsService for DenyOnlyService {
     }
 }
 
-/// `TestConfigurationService`: nenhum valor configurado.
-struct TestConfigurationService {
-    configuration: Configuration,
-}
-
-impl TestConfigurationService {
-    fn new() -> Self {
-        Self { configuration: empty_test_configuration() }
-    }
-}
-
-impl IConfigurationService for TestConfigurationService {
-    fn on_did_change_configuration(&self) -> Event<Rc<ConfigurationChangeEvent>> {
-        Event::none()
-    }
-
-    fn get_configuration_data(&self) -> Option<ConfigurationData> {
-        None
-    }
-
-    fn get_value(&self, _section: Option<&str>, _overrides: Option<&ConfigurationOverrides>) -> Dynamic {
-        Dynamic::Undefined
-    }
-
-    fn update_value(&self, _key: &str, _value: Dynamic, _overrides: Option<ConfigurationUpdateOverrides>, _target: Option<ConfigurationTarget>) -> Promise<()> {
-        Promise::resolved(())
-    }
-
-    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> ConfigurationInspectValue {
-        self.configuration.inspect(key, overrides, None)
-    }
-
-    fn reload_configuration(&self) -> Promise<()> {
-        Promise::resolved(())
-    }
-
-    fn keys(&self) -> ConfigurationKeys {
-        ConfigurationKeys::default()
-    }
-}
-
 fn contribution(channel: ManagedSettingsChannel, value: PolicyValue) -> IManagedSettingsContribution {
     IManagedSettingsContribution { channel, value }
 }
@@ -267,7 +223,7 @@ fn deny_lists_are_empty_only_when_they_are_valid_empty_json_arrays() {
 
 #[test]
 fn only_managed_sandbox_true_or_non_empty_deny_rules_require_copilot() {
-    let configuration_service = TestConfigurationService::new();
+    let configuration_service = TestConfigurationService::new(None);
     let sandbox = COPILOT_SANDBOX_ENABLED_KEY;
     let values: Vec<ManagedSettingsData> = vec![
         ManagedSettingsData::new(),
@@ -284,13 +240,13 @@ fn only_managed_sandbox_true_or_non_empty_deny_rules_require_copilot() {
         single(sandbox, text("true")),
         managed(vec![(COPILOT_SANDBOX_MCP_SERVERS_KEY, flag(true)), (COPILOT_SANDBOX_ALLOWED_HOSTS_KEY, text("[]"))]),
     ];
-    let results: Vec<bool> = values.into_iter().map(|bag| requires_copilot_agent_host(&BagService(bag), &configuration_service)).collect();
+    let results: Vec<bool> = values.into_iter().map(|bag| requires_copilot_agent_host(&BagService(bag), &*configuration_service)).collect();
     assert_eq!(results, vec![false, true, false, false, true, false, false, true, false, true, false, false, false]);
 }
 
 #[test]
 fn only_a_managed_true_local_escape_hatch_overrides_required_sandbox_and_permission_routing() {
-    let configuration_service = TestConfigurationService::new();
+    let configuration_service = TestConfigurationService::new(None);
     let key = COPILOT_TEMPORARY_DEFAULT_TO_LOCAL_HARNESS_KEY;
     let declarations = collect_managed_settings_definitions(&[policy("ChatTemporaryDefaultToLocalHarness", PolicyDefinitionType::Boolean, Some(declaration(key, "boolean")))]);
     let values = [Dynamic::Undefined, Dynamic::Bool(false), Dynamic::Bool(true), s("true")];
@@ -302,7 +258,7 @@ fn only_a_managed_true_local_escape_hatch_overrides_required_sandbox_and_permiss
             let mut bag = projected.clone();
             bag.insert(COPILOT_SANDBOX_ENABLED_KEY.to_owned(), flag(true));
             bag.insert("permissions.deny".to_owned(), text("[\"Shell\"]"));
-            (projected, requires_copilot_agent_host(&BagService(bag), &configuration_service))
+            (projected, requires_copilot_agent_host(&BagService(bag), &*configuration_service))
         })
         .collect();
     assert_eq!(
@@ -318,7 +274,7 @@ fn only_a_managed_true_local_escape_hatch_overrides_required_sandbox_and_permiss
 
 #[test]
 fn only_boolean_false_prohibits_local_without_permission_or_sandbox_requirements() {
-    let configuration = TestConfigurationService::new();
+    let configuration = TestConfigurationService::new(None);
     let key = COPILOT_TEMPORARY_ALLOW_LOCAL_HARNESS_KEY;
     let values = [Dynamic::Undefined, Dynamic::Bool(false), Dynamic::Bool(true), s("false"), n(0.0), Dynamic::Null];
     let results: Vec<(ManagedSettingsData, bool)> = values
@@ -326,7 +282,7 @@ fn only_boolean_false_prohibits_local_without_permission_or_sandbox_requirements
         .map(|value| {
             let bag = normalize(&nested("temporaryAllowLocalHarness", value));
             let projected = project(&bag, &MANAGED_SETTINGS_CONTROL_DEFINITIONS);
-            (projected, requires_copilot_agent_host(&BagService(bag), &configuration))
+            (projected, requires_copilot_agent_host(&BagService(bag), &*configuration))
         })
         .collect();
     assert_eq!(

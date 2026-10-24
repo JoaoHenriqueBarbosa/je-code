@@ -33,10 +33,10 @@ use je_base::dynamic::Dynamic;
 use je_base::lifecycle::IDisposable;
 use je_base::platform::Platform;
 use je_extensions::manifest::{ExtensionKind, ExtensionManifest};
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::log::NullLogService;
 use je_workbench::services::extensions::extension_manifest_properties_service::{ExtensionManifestPropertiesService, IExtensionManifestPropertiesService};
 use serde_json::{Map, Value, json};
-use support::test_configuration_service::TestConfigurationService;
 use support::workbench_test_services::{TestWorkspaceTrustEnablementService, test_product_service};
 
 /// `isWeb`.
