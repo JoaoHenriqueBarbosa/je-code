@@ -253,12 +253,14 @@ impl TestCoverage {
         path
     }
 
+    /// `treePathToUri(path)`: `URI.from({ scheme: path[0], authority: path[1], path: path.slice(2).join('/') })`. Num nó
+    /// perto da raiz (caminho com menos de três partes) o índice ausente é `undefined`, que o `URI.from` trata como vazio.
     fn tree_path_to_uri(&self, path: &[String]) -> URI {
         URI::from(
             &UriComponents {
-                scheme: Some(JsString::from(path[0].as_str())),
-                authority: Some(JsString::from(path[1].as_str())),
-                path: Some(JsString::from(path[2..].join("/"))),
+                scheme: path.first().map(|part| JsString::from(part.as_str())),
+                authority: path.get(1).map(|part| JsString::from(part.as_str())),
+                path: Some(JsString::from(path.get(2..).unwrap_or_default().join("/"))),
                 ..UriComponents::default()
             },
             false,

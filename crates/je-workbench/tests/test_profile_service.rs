@@ -85,7 +85,8 @@ struct Fixture {
 
 fn setup() -> Fixture {
     let ds = ensure_no_disposables_are_leaked_in_test_suite();
-    let context_key_service: Rc<dyn IContextKeyService> = ds.add_rc(MockContextKeyService::new());
+    let context_key_service = ds.add_rc(MockContextKeyService::new());
+    let context_key_service: Rc<dyn IContextKeyService> = context_key_service;
     let storage_service: Rc<dyn StorageService> = Rc::new(ds.add_rc(TestStorageService::new()));
     let t = ds.add_rc(TestProfileService::new(context_key_service, storage_service));
     Fixture { _ds: ds, t, id_counter: Cell::new(0) }
