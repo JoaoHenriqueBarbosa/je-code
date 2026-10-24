@@ -86,6 +86,10 @@ pub(crate) enum DragMode {
     Chars,
     Words(Range),
     Lines(Range),
+    /// Arrastando o botão da barra de rolagem; guarda o deslocamento do ponteiro dentro do botão.
+    Scrollbar(f64),
+    /// Arrastando no minimapa.
+    Minimap,
 }
 
 pub struct EditorView {
@@ -110,6 +114,9 @@ pub struct EditorView {
     max_line_width: f64,
     last_visible: Option<(i32, i32)>,
     bracket_match: RefCell<Option<BracketMatchCache>>,
+    /// As ocorrências da busca (o widget de busca do shell) e o índice da atual.
+    pub(crate) find_matches: Vec<Range>,
+    find_current: Option<usize>,
     subscriptions: Vec<DisposableRef>,
 }
 
@@ -199,8 +206,17 @@ impl EditorView {
             max_line_width: 0.0,
             last_visible: None,
             bracket_match: RefCell::new(None),
+            find_matches: Vec::new(),
+            find_current: None,
             subscriptions,
         }
+    }
+
+    /// Define as ocorrências da busca a destacar (`FindDecorations`): todas com o fundo de realce e a atual por cima.
+    pub fn set_find_matches(&mut self, matches: Vec<Range>, current: Option<usize>) {
+        self.find_matches = matches;
+        self.find_current = current;
+        self.mark_dirty();
     }
 
     /// Troca a área de transferência (os testes usam só a cópia interna).
@@ -337,7 +353,7 @@ impl EditorView {
         built
     }
 
-    fn token_color(&self, metadata: u32) -> Rgba {
+    pub(crate) fn token_color(&self, metadata: u32) -> Rgba {
         let foreground = TokenMetadata::get_foreground(metadata) as usize;
         self.token_colors.get(foreground).copied().flatten().filter(|_| foreground != 0).unwrap_or(self.colors.foreground)
     }
@@ -565,6 +581,7 @@ impl EditorView {
         let lh = self.layout.line_height();
         let content_left = self.layout.content_left();
         let view_width = self.layout.width;
+        let text_right = self.layout.text_right();
         let view_height = self.layout.height;
         let snap = |v: f64| v.round();
         // Converte px lógicos da view em px de dispositivo, com as bordas no pixel (o Chromium alinha as caixas).
@@ -584,16 +601,16 @@ impl EditorView {
         list.push_clip(je_render::Shape::Rect(rect(0.0, 0.0, view_width, view_height)));
 
         // Área de conteúdo, recortada (a rolagem horizontal não pode invadir a margem).
-        list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, view_width, view_height)));
+        list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, text_right, view_height)));
 
         // 1. Realce da linha do cursor (só com a seleção vazia).
         if selection.is_empty() && (first..=last).contains(&cursor_line) {
             let top = self.layout.line_top(cursor_line, scroll_top);
             if let Some(bg) = colors.line_highlight {
-                list.fill_rect(rect(content_left, top, view_width, top + lh), bg);
+                list.fill_rect(rect(content_left, top, text_right, top + lh), bg);
             }
             if let Some(border) = colors.line_highlight_border {
-                list.stroke(je_render::Shape::Rect(rect(content_left + 1.0, top + 1.0, view_width - 1.0, top + lh - 1.0)), 2.0 * scale, border);
+                list.stroke(je_render::Shape::Rect(rect(content_left + 1.0, top + 1.0, text_right - 1.0, top + lh - 1.0)), 2.0 * scale, border);
             }
         }
 
@@ -633,6 +650,25 @@ impl EditorView {
                 let top = self.layout.line_top(l, scroll_top);
                 let r = rect(x0, top, x1, top + lh);
                 list.fill(je_render::Shape::RoundedRect(RoundedRect::from_rect(r, RoundedRectRadii::new(top_left, top_right, bottom_right, bottom_left))), color);
+            }
+        }
+
+        // 2b. Ocorrências da busca (`.findMatch` e `.currentFindMatch`), recortadas às linhas visíveis.
+        for (i, m) in self.find_matches.iter().enumerate() {
+            if m.end_line_number < first || m.start_line_number > last {
+                continue;
+            }
+            let color = if self.find_current == Some(i) { colors.find_match } else { colors.find_match_highlight };
+            for l in m.start_line_number.max(first)..=m.end_line_number.min(last) {
+                let layout = &laid_out[(l - first) as usize].1;
+                let start_col = if l == m.start_line_number { m.start_column } else { 1 };
+                let end_col = if l == m.end_line_number { m.end_column } else { layout.units.len() as i32 + 1 };
+                let top = self.layout.line_top(l, scroll_top);
+                let x0 = content_left + self.column_x_in(layout, start_col) - scroll_left;
+                let x1 = content_left + self.column_x_in(layout, end_col) - scroll_left;
+                if x1 > x0 {
+                    list.fill_rect(rect(x0, top, x1, top + lh), color);
+                }
             }
         }
 
@@ -741,6 +777,9 @@ impl EditorView {
             let baseline = text_baseline(top_dev, lh * scale, &line);
             line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, color);
         }
+        self.paint_minimap(list, origin, scale);
+        self.paint_scrollbar(list, origin, scale);
+        self.paint_overview_ruler(list, origin, scale);
         list.pop_clip();
     }
 }

@@ -9,7 +9,9 @@
 
 mod explorer;
 mod file_icons;
+mod find;
 mod menus;
+mod quick_pick;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -32,7 +34,9 @@ use web_time::Instant;
 
 use explorer::Explorer;
 use file_icons::FileIconTheme;
+use find::FindWidget;
 use menus::CommandQueue;
+use quick_pick::{PickItem, QuickPick};
 
 /// O tema padrão relativo à pasta de extensões embutidas.
 pub const BUILTIN_DEFAULT_THEME: &str = "theme-defaults/themes/2026-dark.json";
@@ -60,6 +64,20 @@ pub enum Command {
     ToggleStatusBar,
     ToggleFullScreen,
     ShowExplorer,
+    QuickOpen,
+    CommandPalette,
+    Find,
+    FindNext,
+    FindPrevious,
+    FindClose,
+    FindToggleCase,
+    FindToggleWord,
+    FindToggleRegex,
+    FindToggleReplace,
+    FindInSelection,
+    /// Aceita a linha de índice dado do Quick Open ou da paleta.
+    QuickPickAccept(usize),
+    QuickPickClose,
     Exit,
 }
 
@@ -136,6 +154,16 @@ pub struct Shell {
     exit_requested: bool,
     fullscreen_requested: bool,
     needs_render: bool,
+    quick_pick: Option<QuickPick>,
+    find: Option<FindWidget>,
+    /// O campo da busca tem o foco do teclado.
+    find_focused: bool,
+    /// O último valor da busca, para reabrir o widget com ele.
+    last_find: Option<String>,
+    palette_items: Vec<PickItem>,
+    /// Os arquivos do workspace, lidos na primeira abertura do Quick Open.
+    workspace_files: Option<Vec<PickItem>>,
+    language_of: explorer::LanguageOf,
 }
 
 fn color_or(theme: &ColorTheme, id: &str, fallback: Rgba) -> Rgba {
@@ -179,7 +207,7 @@ impl Shell {
             (chrome, menubar, explorer)
         };
         let queue: CommandQueue = Rc::new(RefCell::new(Vec::new()));
-        let (menus, get_keybinding) = menus::menubar_menus(&queue);
+        let (menus, get_keybinding, palette_items) = menus::menubar_menus(&queue);
         let menu_styles = default_menu_styles(&theme);
         let bar_options = IMenuBarOptions {
             enable_mnemonics: true,
@@ -197,7 +225,7 @@ impl Shell {
             }
             None => Rc::new(|_: &str| None),
         };
-        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of, queue.clone()));
+        let explorer = workspace.as_ref().map(|root| Explorer::new(&ui, explorer_node, root, &theme, icons.clone(), language_of.clone(), queue.clone()));
         let mut shell = Self {
             ui,
             theme,
@@ -222,6 +250,13 @@ impl Shell {
             exit_requested: false,
             fullscreen_requested: false,
             needs_render: true,
+            quick_pick: None,
+            find: None,
+            find_focused: false,
+            last_find: None,
+            palette_items,
+            workspace_files: None,
+            language_of,
         };
         for file in files {
             shell.open_file(file)?;
@@ -240,6 +275,11 @@ impl Shell {
     pub fn set_backend(&mut self, backend: String) {
         self.backend = backend;
         self.needs_render = true;
+    }
+
+    /// Os caminhos selecionados no explorador (para os testes).
+    pub fn explorer_selection(&self) -> Vec<PathBuf> {
+        self.explorer.as_ref().map(Explorer::selection).unwrap_or_default()
     }
 
     pub fn active_editor(&self) -> Option<&OpenEditor> {
@@ -326,6 +366,12 @@ impl Shell {
             explorer.reveal(editor.path.as_deref());
         }
         self.needs_render = true;
+        if self.find.is_some() {
+            self.find_changed(false);
+            if self.find_focused {
+                self.editors[index].view.set_focus(false);
+            }
+        }
     }
 
     fn close_editor(&mut self, index: usize) {
@@ -456,9 +502,241 @@ impl Shell {
             Command::ShowExplorer => self.sidebar_visible = !self.sidebar_visible || self.explorer.is_none(),
             Command::ToggleStatusBar => self.statusbar_visible = !self.statusbar_visible,
             Command::ToggleFullScreen => self.fullscreen_requested = true,
+            Command::QuickOpen => self.open_quick_pick(""),
+            Command::CommandPalette => self.open_quick_pick(">"),
+            Command::QuickPickAccept(index) => {
+                let command = self.quick_pick.as_ref().and_then(|pick| pick.accept(Some(index)));
+                self.quick_pick = None;
+                if let Some(command) = command {
+                    self.run(command);
+                }
+            }
+            Command::QuickPickClose => self.quick_pick = None,
+            Command::Find => self.open_find(),
+            Command::FindNext => self.find_step(1),
+            Command::FindPrevious => self.find_step(-1),
+            Command::FindClose => self.close_find(),
+            Command::FindToggleCase | Command::FindToggleWord | Command::FindToggleRegex => {
+                if let Some(find) = &mut self.find {
+                    match command {
+                        Command::FindToggleCase => find.match_case = !find.match_case,
+                        Command::FindToggleWord => find.whole_word = !find.whole_word,
+                        _ => find.regex = !find.regex,
+                    }
+                }
+                self.find_changed(true);
+            }
+            // A substituição e a busca na seleção ainda não existem: o botão não faz nada.
+            Command::FindToggleReplace | Command::FindInSelection => {}
             Command::Exit => self.exit_requested = true,
         }
         self.needs_render = true;
+    }
+
+    /// Abre o Quick Open (`initial` vazio) ou a paleta (`>`).
+    fn open_quick_pick(&mut self, initial: &str) {
+        let files = match &self.workspace_files {
+            Some(files) => files.clone(),
+            None => {
+                let files = self.workspace.as_deref().map(quick_pick::scan_workspace).unwrap_or_default();
+                self.workspace_files = Some(files.clone());
+                files
+            }
+        };
+        let open: Vec<PathBuf> = self.active.into_iter().chain((0..self.editors.len()).filter(|i| Some(*i) != self.active)).filter_map(|i| self.editors[i].path.clone()).collect();
+        let recents = quick_pick::recent_items(&open, self.workspace.as_deref());
+        self.quick_pick = Some(QuickPick::new(files, recents, self.palette_items.clone(), initial));
+        self.ui.blur();
+    }
+
+    /// Trata uma tecla com o Quick Open aberto. Devolve se consumiu.
+    fn quick_pick_key(&mut self, down: bool, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+        let Some(pick) = self.quick_pick.as_mut() else { return false };
+        if !down {
+            return true;
+        }
+        let ctrl = mods.ctrl || mods.meta;
+        match key {
+            Some(EditorKey::Escape) => self.quick_pick = None,
+            Some(EditorKey::Enter) => {
+                let command = pick.accept(None);
+                self.quick_pick = None;
+                if let Some(command) = command {
+                    self.run(command);
+                }
+            }
+            Some(EditorKey::Up) => pick.move_focus(-1),
+            Some(EditorKey::Down) => pick.move_focus(1),
+            Some(EditorKey::PageUp) => pick.move_focus(-10),
+            Some(EditorKey::PageDown) => pick.move_focus(10),
+            Some(EditorKey::Left) => pick.move_cursor(pick.cursor().saturating_sub(1)),
+            Some(EditorKey::Right) => pick.move_cursor(pick.cursor() + 1),
+            Some(EditorKey::Home) => pick.move_cursor(0),
+            Some(EditorKey::End) => pick.move_cursor(pick.len()),
+            Some(EditorKey::Backspace) => pick.backspace(),
+            Some(EditorKey::Delete) => pick.delete(),
+            _ => {
+                if (!ctrl || mods.alt)
+                    && let Some(text) = text
+                {
+                    pick.type_text(text);
+                }
+            }
+        }
+        self.needs_render = true;
+        true
+    }
+
+    fn open_find(&mut self) {
+        let Some(editor) = self.active_editor() else { return };
+        let seed = editor.view.seed_search_string();
+        let origin = editor.view.cursor_position();
+        let keep = self.find.as_ref().map(|f| (f.match_case, f.whole_word, f.regex));
+        let mut find = FindWidget::new(&seed, origin);
+        if let Some((case, word, regex)) = keep {
+            (find.match_case, find.whole_word, find.regex) = (case, word, regex);
+        } else if seed.is_empty() && let Some(previous) = self.last_find.clone() {
+            find = FindWidget::new(&previous, origin);
+        }
+        self.find = Some(find);
+        self.find_focused = true;
+        self.ui.blur();
+        self.find_changed(true);
+    }
+
+    fn close_find(&mut self) {
+        if let Some(find) = self.find.take() {
+            self.last_find = Some(find.text());
+        }
+        self.find_focused = false;
+        if let Some(editor) = self.active_editor_mut() {
+            editor.view.set_find_matches(Vec::new(), None);
+            editor.view.set_focus(true);
+        }
+        self.needs_render = true;
+    }
+
+    /// O valor ou as chaves do campo mudaram: recalcula as ocorrências e seleciona a primeira a partir da origem.
+    fn find_changed(&mut self, select: bool) {
+        let (Some(find), Some(active)) = (self.find.as_mut(), self.active) else { return };
+        let editor = &mut self.editors[active];
+        find.search(editor.view.model());
+        let found = if select { find.select_from(find.origin) } else { None };
+        editor.view.set_find_matches(find.matches.clone(), find.current);
+        if let Some(range) = found {
+            editor.view.select_range(range);
+        }
+        self.needs_render = true;
+    }
+
+    fn find_step(&mut self, delta: isize) {
+        if self.find.is_none() {
+            self.open_find();
+            return;
+        }
+        let (Some(find), Some(active)) = (self.find.as_mut(), self.active) else { return };
+        let editor = &mut self.editors[active];
+        if find.version != editor.view.model().get_version_id() {
+            find.search(editor.view.model());
+        }
+        // A busca continua da seleção do editor, não da ocorrência anterior, se o cursor andou.
+        let from = editor.view.cursor_selection_range();
+        let range = match find.current.and_then(|i| find.matches.get(i)) {
+            Some(current) if *current == from => find.step(delta),
+            _ => {
+                let start = if delta > 0 { from.get_end_position() } else { from.get_start_position() };
+                let at = if delta > 0 { find.matches.iter().position(|m| !m.get_start_position().is_before(&start)) } else { find.matches.iter().rposition(|m| m.get_end_position().is_before(&start) || *m == from && false) };
+                let index = at.or(if find.matches.is_empty() { None } else if delta > 0 { Some(0) } else { Some(find.matches.len() - 1) });
+                find.current = index;
+                index.map(|i| find.matches[i])
+            }
+        };
+        editor.view.set_find_matches(find.matches.clone(), find.current);
+        if let Some(range) = range {
+            editor.view.select_range(range);
+        }
+        self.needs_render = true;
+    }
+
+    /// Trata uma tecla com o campo da busca focado. Devolve se consumiu.
+    fn find_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
+        let Some(find) = self.find.as_mut() else { return false };
+        let ctrl = mods.ctrl || mods.meta;
+        let mut changed = false;
+        // Com a semente selecionada, digitar ou apagar começa de um valor vazio; as setas só tiram a seleção.
+        let edits = matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) || (key.is_none() || matches!(key, Some(EditorKey::Char(_)))) && (!ctrl || mods.alt) && text.is_some();
+        if find.select_all && edits {
+            find.value.clear();
+            find.cursor = 0;
+            find.select_all = false;
+            changed = true;
+            if matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) {
+                self.find_origin_refresh();
+                self.find_changed(true);
+                self.needs_render = true;
+                return true;
+            }
+        } else if !matches!(key, Some(EditorKey::Enter | EditorKey::Escape)) {
+            find.select_all = false;
+        }
+        let Some(find) = self.find.as_mut() else { return false };
+        match key {
+            Some(EditorKey::Escape) => {
+                self.close_find();
+                return true;
+            }
+            Some(EditorKey::Enter) => {
+                self.find_step(if mods.shift { -1 } else { 1 });
+                return true;
+            }
+            Some(EditorKey::Left) => find.cursor = find.cursor.saturating_sub(1),
+            Some(EditorKey::Right) => find.cursor = (find.cursor + 1).min(find.value.len()),
+            Some(EditorKey::Home) => find.cursor = 0,
+            Some(EditorKey::End) => find.cursor = find.value.len(),
+            Some(EditorKey::Backspace) if find.cursor > 0 => {
+                find.value.remove(find.cursor - 1);
+                find.cursor -= 1;
+                changed = true;
+            }
+            Some(EditorKey::Delete) if find.cursor < find.value.len() => {
+                find.value.remove(find.cursor);
+                changed = true;
+            }
+            Some(EditorKey::Up | EditorKey::Down | EditorKey::PageUp | EditorKey::PageDown | EditorKey::Tab | EditorKey::Backspace | EditorKey::Delete) => return true,
+            Some(EditorKey::Char('a')) => {}
+            _ => {
+                if (!ctrl || mods.alt)
+                    && let Some(text) = text
+                {
+                    let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                    let at = find.cursor;
+                    find.cursor += inserted.len();
+                    find.value.splice(at..at, inserted);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.find_origin_refresh();
+            self.find_changed(true);
+        }
+        self.needs_render = true;
+        true
+    }
+
+    /// A busca parte do cursor do editor.
+    fn find_origin_refresh(&mut self) {
+        if let (Some(editor), Some(find)) = (self.active.map(|i| &self.editors[i]), self.find.as_mut()) {
+            find.origin = editor.view.cursor_selection_range().get_start_position();
+        }
+    }
+
+    fn render_find(&self, chrome: NodeId) {
+        let (Some(find), Some(editor)) = (&self.find, self.active_editor()) else { return };
+        let rect = FindWidget::rect(self.editor_rect(), editor.view.layout().minimap_width());
+        for (node, command) in find.render(&mut self.ui.tree_mut(), chrome, rect, self.find_focused, &self.theme) {
+            self.listen_command(node, command);
+        }
     }
 
     pub fn take_exit(&mut self) -> bool {
@@ -526,6 +804,16 @@ impl Shell {
         self.render_editor_part(chrome);
         if self.statusbar_visible {
             self.render_status_bar(chrome);
+        }
+        self.render_find(chrome);
+        self.render_quick_pick(chrome);
+    }
+
+    fn render_quick_pick(&self, chrome: NodeId) {
+        let Some(pick) = &self.quick_pick else { return };
+        let rows = pick.render(&mut self.ui.tree_mut(), chrome, self.size.0, &self.theme, self.icons.as_ref(), &self.language_of);
+        for (row, index) in rows {
+            self.listen_command(row, Command::QuickPickAccept(index));
         }
     }
 
@@ -883,6 +1171,12 @@ impl Shell {
     /// Pinta um quadro em `list` e devolve a cor de fundo da janela.
     pub fn paint(&mut self, list: &mut DisplayList, scale: f64, now: Instant) -> Rgba {
         self.run_commands();
+        // O documento mudou com a busca aberta: as ocorrências acompanham (o `FindModelBoundToEditorModel`).
+        if let (Some(find), Some(active)) = (&self.find, self.active)
+            && find.version != self.editors[active].view.model().get_version_id()
+        {
+            self.find_changed(false);
+        }
         self.ui.run_animation_frame();
         if self.needs_render {
             self.render();
@@ -948,9 +1242,18 @@ impl Shell {
             self.sash_drag = Some((self.sidebar_width, x));
             return;
         }
+        if input.kind == PointerInputKind::Down
+            && let Some(pick) = &self.quick_pick
+            && !pick.widget_rect(self.size.0).contains(je_render::kurbo::Point::new(x, y))
+        {
+            self.quick_pick = None;
+            self.needs_render = true;
+            return;
+        }
         let target = self.ui.pointer_input(input);
         if input.kind == PointerInputKind::Down && Some(target) == self.nodes.editor_host && input.button == PointerButton::Primary {
             self.ui.blur();
+            self.find_focused = false;
             if let Some((lx, ly)) = self.editor_local(x, y)
                 && let Some(editor) = self.active_editor_mut()
             {
@@ -998,6 +1301,11 @@ impl Shell {
             (true, false, false, KeyCode::KeyW) | (true, false, false, KeyCode::F4) => Command::CloseActiveEditor,
             (true, false, false, KeyCode::KeyQ) => Command::Exit,
             (true, false, false, KeyCode::KeyB) => Command::ToggleSidebar,
+            (true, false, false, KeyCode::KeyP) => Command::QuickOpen,
+            (true, false, false, KeyCode::KeyF) => Command::Find,
+            (false, false, false, KeyCode::F3) => Command::FindNext,
+            (false, true, false, KeyCode::F3) => Command::FindPrevious,
+            (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::CommandPalette,
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
@@ -1009,6 +1317,27 @@ impl Shell {
     /// Entrega uma tecla: primeiro à árvore do `Ui` (a barra de menus escuta Alt e os mnemônicos na raiz); se nenhum
     /// widget tem o foco e ninguém consumiu, aos atalhos do workbench e então ao editor.
     pub fn key(&mut self, down: bool, key_code: KeyCode, mods: Modifiers, text: Option<&str>, editor_key: Option<EditorKey>) {
+        if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::CommandPalette))) {
+            if self.quick_pick_key(down, text, editor_key, mods) {
+                return;
+            }
+        }
+        if self.find_focused && self.find.is_some() && down {
+            let toggles = match (mods.alt, key_code) {
+                (true, KeyCode::KeyC) => Some(Command::FindToggleCase),
+                (true, KeyCode::KeyW) => Some(Command::FindToggleWord),
+                (true, KeyCode::KeyR) => Some(Command::FindToggleRegex),
+                _ => None,
+            };
+            let shortcut = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::Find | Command::QuickOpen | Command::CommandPalette | Command::FindNext | Command::FindPrevious | Command::NewUntitled | Command::Save | Command::CloseActiveEditor | Command::ToggleSidebar));
+            if let Some(command) = toggles.or(shortcut) {
+                self.run(command);
+                return;
+            }
+            if self.find_key(text, editor_key, mods) {
+                return;
+            }
+        }
         let had_focus = self.ui.focused().is_some();
         let not_consumed = self.ui.key_input(down, KeyData { key_code, modifiers: mods });
         self.run_commands();
@@ -1023,6 +1352,10 @@ impl Shell {
         }
         if let Some(command) = self.workbench_shortcut(key_code, mods) {
             self.run(command);
+            return;
+        }
+        if editor_key == Some(EditorKey::Escape) && self.find.is_some() {
+            self.close_find();
             return;
         }
         let Some(editor) = self.active_editor_mut() else { return };

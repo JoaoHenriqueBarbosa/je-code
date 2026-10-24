@@ -561,10 +561,92 @@ mod tests {
         click(&mut shell, 120.0, 96.0 + 22.0 + 11.0);
         snapshot(&mut shell, "3-second.png");
         assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("src/b.rs")));
+        assert_eq!(shell.explorer_selection(), vec![dir.join("src/b.rs")], "o explorador seleciona o arquivo do editor ativo");
+        // Trocar de aba pela faixa leva a seleção do explorador junto (o `explorer.autoReveal`).
+        shell.run(shell::Command::ActivateEditor(0));
+        assert_eq!(shell.explorer_selection(), vec![dir.join("a.txt")]);
         // O menu File abre com o clique e "Close Editor" fecha a aba ativa.
         click(&mut shell, 54.0, 17.0);
         snapshot(&mut shell, "4-menu.png");
         std::fs::remove_dir_all(&dir).expect("remove");
+    }
+
+    #[test]
+    fn quick_open_and_palette_pick_by_fuzzy_score() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-qo", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).expect("pasta");
+        for (name, text) in [("sample.ts", "x"), ("notes.txt", "n"), ("package.json", "{}"), ("src/index.ts", "i")] {
+            std::fs::write(dir.join(name), text).expect("arquivo");
+        }
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[dir.join("sample.ts")], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::QuickOpen);
+        snapshot(&mut shell, "q0-empty.png");
+        key(&mut shell, None, Some("s"));
+        snapshot(&mut shell, "q1-s.png");
+        // `sample.ts` (aberto) vem primeiro como `recently opened`; Enter mantém o arquivo.
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("sample.ts")));
+        // A busca por `idx` acha `src/index.ts`, que abre numa segunda aba.
+        shell.run(shell::Command::QuickOpen);
+        for c in ["i", "d", "x"] {
+            key(&mut shell, None, Some(c));
+        }
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("src/index.ts")));
+        // A paleta lista os comandos do menu e roda o escolhido.
+        shell.run(shell::Command::CommandPalette);
+        snapshot(&mut shell, "q2-palette.png");
+        for c in ["c", "l", "o", "s", "e"] {
+            key(&mut shell, None, Some(c));
+        }
+        snapshot(&mut shell, "q3-palette-close.png");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(shell.active_editor().and_then(|e| e.path.clone()), Some(dir.join("sample.ts")), "File: Close Editor fecha a aba ativa");
+        // Escape fecha sem rodar nada.
+        shell.run(shell::Command::QuickOpen);
+        key(&mut shell, Some(EditorKey::Escape), None);
+        key(&mut shell, None, Some("z"));
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_value_length(), 2, "com o painel fechado a tecla volta ao editor");
+        std::fs::remove_dir_all(&dir).expect("remove");
+    }
+
+    #[test]
+    fn find_widget_selects_and_steps_through_matches() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let path = temp_file("find.ts", "const a = 1;\nconst b = a + a;\nlet C = 2;\n");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        let selection = |shell: &Shell| {
+            let r = shell.active_editor().expect("aba").view.cursor_selection_range();
+            (r.start_line_number, r.start_column, r.end_line_number, r.end_column)
+        };
+        shell.run(shell::Command::Find);
+        for c in ["c", "o"] {
+            key(&mut shell, None, Some(c));
+        }
+        snapshot(&mut shell, "f0-co.png");
+        assert_eq!(selection(&shell), (1, 1, 1, 3), "a primeira ocorrência a partir do cursor");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(selection(&shell), (2, 1, 2, 3), "Enter vai para a próxima");
+        key(&mut shell, Some(EditorKey::Enter), None);
+        assert_eq!(selection(&shell), (1, 1, 1, 3), "e dá a volta no documento");
+        shell.run(shell::Command::FindPrevious);
+        assert_eq!(selection(&shell), (2, 1, 2, 3), "Shift+Enter volta");
+        // Maiúsculas: `C` sem a chave acha `const` duas vezes e `C` de `let C`; com a chave, só o último.
+        shell.run(shell::Command::FindClose);
+        shell.run(shell::Command::Find);
+        for _ in 0..2 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        key(&mut shell, None, Some("C"));
+        snapshot(&mut shell, "f1-c.png");
+        shell.run(shell::Command::FindToggleCase);
+        assert_eq!(shell.active_editor().expect("aba").view.model().find_matches("C", je_editor::text_model::FindScope::Whole, false, true, None, false, 100).len(), 1);
+        key(&mut shell, Some(EditorKey::Escape), None);
+        key(&mut shell, None, Some("z"));
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_line_content(3).to_string_lossy().chars().filter(|c| *c == 'z').count(), 1, "Escape fecha a busca e devolve o teclado ao editor");
+        std::fs::remove_file(&path).expect("remove");
     }
 
     #[test]
