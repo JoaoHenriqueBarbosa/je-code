@@ -90,7 +90,7 @@ fn package_json(description: &ExtensionDescription) -> Result<JsData, String> {
     set("isBuiltin", JsData::Bool(description.is_builtin));
     set("isUserBuiltin", JsData::Bool(description.is_user_builtin));
     set("isUnderDevelopment", JsData::Bool(description.is_under_development));
-    set("extensionLocation", uri_to_js(&URI::parse(&description.extension_location, false)));
+    set("extensionLocation", uri_to_js(&URI::parse(description.extension_location.as_str(), false)));
     set("preRelease", JsData::Bool(description.pre_release));
     if let Some(name) = &description.publisher_display_name {
         set("publisherDisplayName", JsData::Str(name.clone()));
@@ -135,8 +135,8 @@ fn getter(slot: &Rc<ExtensionServiceSlot>, name: &str, read: impl Fn(&Rc<ExtHost
 pub fn define_class(runner: &NodeRunner, slot: &Rc<ExtensionServiceSlot>) {
     let getters = vec![
         getter(slot, "id", |_, description| Ok(JsData::Str(description.identifier.value.clone()))),
-        getter(slot, "extensionUri", |_, description| Ok(uri_to_js(&URI::parse(&description.extension_location, false)))),
-        getter(slot, "extensionPath", |_, description| Ok(JsData::Str(je_platform::resources::fs_path(&URI::parse(&description.extension_location, false))))),
+        getter(slot, "extensionUri", |_, description| Ok(uri_to_js(&URI::parse(description.extension_location.as_str(), false)))),
+        getter(slot, "extensionPath", |_, description| Ok(JsData::Str(je_platform::resources::fs_path(&URI::parse(description.extension_location.as_str(), false))))),
         getter(slot, "packageJSON", |_, description| package_json(description)),
         getter(slot, "extensionKind", |_, _| Ok(JsData::Num(EXTENSION_KIND_UI))),
         getter(slot, "isFromDifferentExtensionHost", |_, _| Ok(JsData::Bool(false))),

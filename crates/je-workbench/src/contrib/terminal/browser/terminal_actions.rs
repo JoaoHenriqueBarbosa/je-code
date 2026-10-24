@@ -31,10 +31,10 @@ pub struct WorkspaceFolderCwdPair {
 
 impl PartialEq for WorkspaceFolderCwdPair {
     fn eq(&self, other: &Self) -> bool {
-        self.folder.uri.to_string() == other.folder.uri.to_string()
+        self.folder.uri.to_string(false).to_string_lossy() == other.folder.uri.to_string(false).to_string_lossy()
             && self.folder.name == other.folder.name
             && self.folder.index == other.folder.index
-            && self.cwd.to_string() == other.cwd.to_string()
+            && self.cwd.to_string(false).to_string_lossy() == other.cwd.to_string(false).to_string_lossy()
             && self.is_absolute == other.is_absolute
             && self.is_overridden == other.is_overridden
     }
@@ -45,8 +45,8 @@ pub fn shrink_workspace_folder_cwd_pairs(pairs: &[Rc<WorkspaceFolderCwdPair>]) -
     // `map.set(key, pair)`: a chave guarda o índice do par escolhido (a identidade do objeto no original).
     let mut map: HashMap<String, usize> = HashMap::new();
     for (index, pair) in pairs.iter().enumerate() {
-        let key = pair.cwd.to_string();
-        if !map.contains_key(&key) || key == pair.folder.uri.to_string() {
+        let key = pair.cwd.to_string(false).to_string_lossy();
+        if !map.contains_key(&key) || key == pair.folder.uri.to_string(false).to_string_lossy() {
             map.insert(key, index);
         }
     }

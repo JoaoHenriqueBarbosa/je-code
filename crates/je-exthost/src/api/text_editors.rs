@@ -261,7 +261,7 @@ fn edit_method(objects: &Rc<TextObjects>, name: &str, length: u32, body: impl Fn
         name.to_owned(),
         length,
         Rc::new(move |this, args| {
-            body(&objects.edit_of(this)?, args)?;
+            body(&*objects.edit_of(this)?, args)?;
             Ok(JsData::Undefined)
         }),
     )
