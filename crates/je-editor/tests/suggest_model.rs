@@ -97,6 +97,7 @@ use je_editor::suggest::suggest_model::{
     SuggestTriggerOptions,
 };
 use je_editor::suggest::suggest_widget_contract::ISelectedSuggestion;
+use je_editor::cursor_common::CursorSimpleModel;
 use je_editor::text_model::TextModel;
 use je_editor::tokenization_registry::tokenization_registry;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
@@ -487,7 +488,7 @@ impl Fixture {
 
     /// Os serviços que o contêiner de serviços do editor entregaria ao `SuggestModel`.
     fn model_services(&self, context_keys: &Rc<ContextKeyService>) -> SuggestModelServices {
-        let context_key_service: Rc<dyn IContextKeyService> = Rc::clone(context_keys);
+        let context_key_service: Rc<dyn IContextKeyService> = context_keys.clone();
         SuggestModelServices {
             editor_worker_service: Rc::new(MockEditorWorkerService),
             clipboard_service: Rc::new(TestClipboardService::new()),
@@ -576,7 +577,7 @@ fn quick_suggestions_object(comments: &str, strings: &str, other: &str) -> Dynam
 }
 
 /// O que o mocha faz em volta de cada `test(...)` da suíte `TriggerAndCancelOracle` (ver as notas no topo do arquivo).
-fn run_test<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<Fixture>) -> F) {
+fn run_test<F: Future<Output = ()> + 'static>(body: impl FnOnce(Rc<Fixture>) -> F + 'static) {
     je_editor::core_commands::register_core_commands();
 
     // o `languageFeaturesService` do original é criado na carga da suíte, antes do rastreio de vazamentos
@@ -943,7 +944,7 @@ fn issue_21484_trigger_character_always_force_a_new_completion_session() {
 
         fx.register(
             &TestProvider::new(|doc, pos, _context| {
-                let content = doc.get_line_content(pos.line_number);
+                let content = <TextModel as CursorSimpleModel>::get_line_content(doc, pos.line_number);
                 let index = pos.column - 2;
                 let preceded_by_dot = index >= 0 && content.units().get(index as usize) == Some(&u16::from(b'.'));
                 list(
@@ -1317,7 +1318,7 @@ fn text_changes_for_completion_code_action_are_affected_by_the_completion_39893(
         // `class TestCtrl extends SuggestController`: o `_insertSuggestion` é público no porte.
         let ctrl = {
             let services = fx.model_services(&o.mock.context_keys);
-            let context_key_service: Rc<dyn IContextKeyService> = Rc::clone(&o.mock.context_keys);
+            let context_key_service: Rc<dyn IContextKeyService> = o.mock.context_keys.clone();
             o.editor.register_and_instantiate_contribution(SuggestController::ID, move |widget, _| {
                 SuggestController::new(
                     widget,
