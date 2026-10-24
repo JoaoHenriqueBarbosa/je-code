@@ -31,3 +31,5 @@ pub mod path;
 pub mod remote;
 // Serviço de arquivos de texto: codificação (`textfile/common/encoding.ts`).
 pub mod textfile;
+// Configuração do workbench: `WorkspaceService`, edição e as camadas por workspace e por pasta.
+pub mod configuration;

@@ -25,20 +25,39 @@ pub struct DefaultConfigurationChange {
     pub properties: Vec<JsString>,
 }
 
+/// Os pontos que a subclasse do workbench (`DefaultConfiguration` de `workbench/services/configuration/browser`)
+/// troca no original: `getConfigurationDefaultOverrides` (`protected`) e `onDidUpdateConfiguration` (`protected`, a
+/// subclasse chama o da base primeiro e depois faz o dela).
+pub trait DefaultConfigurationHooks {
+    /// `getConfigurationDefaultOverrides()`: os valores que valem no lugar do padrão do esquema.
+    fn get_configuration_default_overrides(&self) -> Dynamic {
+        Dynamic::object::<&str>([])
+    }
+
+    /// O que a subclasse faz depois do `onDidUpdateConfiguration` da base.
+    fn on_did_update_configuration(&self, _properties: &[JsString], _defaults_overrides: Option<bool>) {}
+}
+
 /// `DefaultConfiguration`.
 pub struct DefaultConfiguration {
     base: Rc<Disposable>,
     log: LogServiceRef,
     on_did_change_configuration: Rc<Emitter<DefaultConfigurationChange>>,
     configuration_model: RefCell<ConfigurationModel>,
+    hooks: Option<Rc<dyn DefaultConfigurationHooks>>,
 }
 
 impl DefaultConfiguration {
     pub fn new(log: LogServiceRef) -> Rc<Self> {
+        Self::with_hooks(log, None)
+    }
+
+    /// Uma `DefaultConfiguration` cuja subclasse troca os pontos de [`DefaultConfigurationHooks`].
+    pub fn with_hooks(log: LogServiceRef, hooks: Option<Rc<dyn DefaultConfigurationHooks>>) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_change_configuration = Emitter::new();
         base.register(on_did_change_configuration.clone());
-        Rc::new(Self { base, configuration_model: RefCell::new(ConfigurationModel::create_empty_model(log.clone())), log, on_did_change_configuration })
+        Rc::new(Self { base, configuration_model: RefCell::new(ConfigurationModel::create_empty_model(log.clone())), log, on_did_change_configuration, hooks })
     }
 
     /// `onDidChangeConfiguration`.
@@ -57,7 +76,7 @@ impl DefaultConfiguration {
         let this = Rc::downgrade(self);
         let listener: DisposableRef = configuration_registry().on_did_update_configuration().listen(move |update| {
             if let Some(this) = this.upgrade() {
-                this.on_did_update_configuration(&update.properties);
+                this.on_did_update_configuration(&update.properties, update.defaults_overrides);
             }
         });
         self.base.register(listener);
@@ -70,9 +89,12 @@ impl DefaultConfiguration {
         self.configuration_model()
     }
 
-    fn on_did_update_configuration(&self, properties: &[JsString]) {
+    fn on_did_update_configuration(&self, properties: &[JsString], defaults_overrides: Option<bool>) {
         self.update_configuration_model(properties, &self.get_configuration_properties());
         self.on_did_change_configuration.fire(DefaultConfigurationChange { defaults: self.configuration_model(), properties: properties.to_vec() });
+        if let Some(hooks) = &self.hooks {
+            hooks.on_did_update_configuration(properties, defaults_overrides);
+        }
     }
 
     fn reset_configuration_model(&self) {
@@ -96,8 +118,14 @@ impl DefaultConfiguration {
 
     fn update_configuration_model(&self, properties: &[JsString], configuration_properties: &PropertyDictionary) {
         let model = self.configuration_model();
+        let configuration_defaults_overrides = match &self.hooks {
+            Some(hooks) => hooks.get_configuration_default_overrides(),
+            None => Dynamic::object::<&str>([]),
+        };
         for key in properties {
+            let default_override_value = configuration_defaults_overrides.get(key);
             match configuration_properties.get(key) {
+                _ if !default_override_value.is_undefined() => model.set_value(key, default_override_value),
                 Some(property_schema) => model.set_value(key, self.get_default_value(key, &property_schema)),
                 None => model.remove_value(key),
             }

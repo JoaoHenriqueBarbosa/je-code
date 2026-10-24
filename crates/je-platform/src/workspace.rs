@@ -6,7 +6,7 @@
 //! [`AnyWorkspaceIdentifier`] (os guardas `isWorkspaceIdentifier` e companhia são métodos dele); o `IWorkspace`
 //! estrutural é o trait [`IWorkspace`], que o [`Workspace`] e o [`WorkspaceSnapshot`] implementam.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use je_base::ternary_search_tree::{TernarySearchTree, UriPredicate};
@@ -37,10 +37,10 @@ impl WorkspaceFolder {
 /// `Workspace`.
 pub struct Workspace {
     id: RefCell<String>,
-    transient: bool,
+    transient: Cell<bool>,
     configuration: RefCell<Option<URI>>,
     name: Option<String>,
-    ignore_path_casing: UriPredicate,
+    ignore_path_casing: RefCell<UriPredicate>,
     folders: RefCell<Vec<WorkspaceFolder>>,
     folders_map: RefCell<TernarySearchTree<URI, WorkspaceFolder>>,
 }
@@ -56,15 +56,25 @@ impl Workspace {
     ) -> Rc<Self> {
         let workspace = Rc::new(Self {
             id: RefCell::new(id.into()),
-            transient,
+            transient: Cell::new(transient),
             configuration: RefCell::new(configuration),
             name,
             folders_map: RefCell::new(TernarySearchTree::for_uris(ignore_path_casing.clone(), Rc::new(|_: &URI| true))),
-            ignore_path_casing,
+            ignore_path_casing: RefCell::new(ignore_path_casing),
             folders: RefCell::new(Vec::new()),
         });
         workspace.set_folders(folders);
         workspace
+    }
+
+    /// `update(workspace)`: assume o id, a configuração, o `transient`, a regra de caixa e as pastas de outro workspace
+    /// (o nome não muda: o original o copia, e os workspaces do serviço de configuração não têm nome).
+    pub fn update(&self, workspace: &Workspace) {
+        *self.id.borrow_mut() = workspace.id();
+        *self.configuration.borrow_mut() = workspace.configuration();
+        self.transient.set(workspace.transient());
+        *self.ignore_path_casing.borrow_mut() = workspace.ignore_path_casing.borrow().clone();
+        self.set_folders(workspace.folders());
     }
 
     pub fn id(&self) -> String {
@@ -72,7 +82,7 @@ impl Workspace {
     }
 
     pub fn transient(&self) -> bool {
-        self.transient
+        self.transient.get()
     }
 
     pub fn configuration(&self) -> Option<URI> {
@@ -89,7 +99,7 @@ impl Workspace {
 
     /// `set folders(...)`: troca as pastas e refaz o índice por URI.
     pub fn set_folders(&self, folders: Vec<WorkspaceFolder>) {
-        let mut map = TernarySearchTree::for_uris(self.ignore_path_casing.clone(), Rc::new(|_: &URI| true));
+        let mut map = TernarySearchTree::for_uris(self.ignore_path_casing.borrow().clone(), Rc::new(|_: &URI| true));
         for folder in &folders {
             map.set(folder.uri.clone(), folder.clone());
         }
