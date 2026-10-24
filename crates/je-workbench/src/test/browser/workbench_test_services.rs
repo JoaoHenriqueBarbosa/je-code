@@ -1737,7 +1737,7 @@ mod extension_enablement_test_services {
     use je_base::promise::Promise;
     use je_platform::product::{DefaultChatAgentExtensions, ProductService};
 
-    use crate::services::host::host::{IHostService, ReloadOptions};
+    use crate::services::host::host::{IHostService, OpenWindowOptions, ReloadOptions, WindowOpenable};
 
     /// `productService`.
     pub fn product_service() -> ProductService {
@@ -1751,6 +1751,11 @@ mod extension_enablement_test_services {
     pub struct TestHostService;
 
     impl IHostService for TestHostService {
+        /// `async openWindow(arg1?, arg2?) { }`.
+        fn open_window(&self, _to_open: Vec<WindowOpenable>, _options: Option<OpenWindowOptions>) -> Promise<()> {
+            Promise::resolved(())
+        }
+
         fn reload(&self, _options: Option<ReloadOptions>) -> Promise<()> {
             Promise::resolved(())
         }
