@@ -239,3 +239,5 @@ pub mod parameter_hints;
 pub mod stable_editor_scroll;
 
 pub mod tree_views_dnd;
+
+pub mod get_icon_classes;

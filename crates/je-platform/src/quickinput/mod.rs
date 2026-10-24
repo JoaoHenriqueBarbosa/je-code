@@ -1,6 +1,6 @@
 //! Porte de `src/vs/platform/quickinput`.
 //!
-//! Portado até agora: os tipos de `common/quickInput.ts` que os utilitários usam ([`quick_input`]), a lógica
+//! Portado: `common/quickInput.ts` completo ([`quick_input`], menos o que o topo dele lista como fora do porte), a lógica
 //! pura de `browser/quickInputUtils.ts` ([`quick_input_utils`]) e o ordenador da árvore ([`tree`]).
 
 pub mod quick_input;

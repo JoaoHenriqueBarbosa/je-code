@@ -530,7 +530,7 @@ async fn show_user_input(
             let queue_this = this.clone();
             let resolved_input = this
                 .user_input_access_queue
-                .queue(move || queue_this.quick_input_service.input(Some(&input_options)).then(UserInputResult::Text))
+                .queue(move || queue_this.quick_input_service.input(Some(&input_options), None).then(UserInputResult::Text))
                 .await?
                 .into_text();
             if let Some(text) = &resolved_input
@@ -568,6 +568,7 @@ async fn show_user_input(
                 let mut item = IQuickPickItem {
                     base: IQuickItem { label: JsString::from(item_label), ..IQuickItem::default() },
                     extra: Dynamic::object([("value", Dynamic::String(value.clone()))]),
+                    ..IQuickPickItem::default()
                 };
 
                 let value = Dynamic::String(value);
@@ -581,11 +582,11 @@ async fn show_user_input(
                 }
             }
 
-            let pick_options = IPickOptions { place_holder: Some(description.to_string_lossy()), match_on_detail: Some(true), ignore_focus_lost: Some(true) };
+            let pick_options = IPickOptions { place_holder: Some(description.to_string_lossy()), match_on_detail: Some(true), ignore_focus_lost: Some(true), ..IPickOptions::default() };
             let queue_this = this.clone();
             let resolved_input = this
                 .user_input_access_queue
-                .queue(move || queue_this.quick_input_service.pick(picks, Some(&pick_options)).then(UserInputResult::Pick))
+                .queue(move || queue_this.quick_input_service.pick_items(picks, Some(&pick_options)).then(UserInputResult::Pick))
                 .await?
                 .into_pick();
             match resolved_input {

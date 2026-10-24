@@ -1320,10 +1320,16 @@ mod quick_input_and_extension {
     use std::rc::Rc;
 
     use je_base::JsString;
+    use je_base::cancellation::CancellationToken;
     use je_base::dynamic::Dynamic;
     use je_base::event::Event;
+    use je_base::observable::base::IObservable;
     use je_base::promise::Promise;
-    use je_platform::quickinput::quick_input::{IInputOptions, IPickOptions, IQuickInputService, IQuickItem, IQuickPickItem};
+    use je_platform::quickinput::quick_input::{
+        IInputBox, IInputOptions, IKeyMods, IPickOptions, IQuickInputService, IQuickItem, IQuickNavigateConfiguration, IQuickPick, IQuickPickItem, IQuickTree,
+        QuickInputAlignment, QuickInputAlignmentSetting, QuickInputAnchor, QuickInputAnchorPosition, QuickInputButtonRef, QuickInputHideReason, QuickInputRef,
+        QuickPickCreateOptions, QuickPicks,
+    };
 
     use crate::services::extensions::extensions::{ActivationKind, IExtensionDescription, IExtensionService};
 
@@ -1346,7 +1352,7 @@ mod quick_input_and_extension {
 
     impl IQuickInputService for TestQuickInputService {
         /// `options ? 'resolved' + options.prompt : 'resolved'`: `prompt` ausente é `undefined`, que o `+` escreve como texto.
-        fn input(&self, options: Option<&IInputOptions>) -> Promise<Option<String>> {
+        fn input(&self, options: Option<&IInputOptions>, _token: Option<&CancellationToken>) -> Promise<Option<String>> {
             if let Some(stub) = &*self.input_stub.borrow() {
                 return Promise::resolved(stub.clone());
             }
@@ -1357,11 +1363,90 @@ mod quick_input_and_extension {
         }
 
         /// `Array.isArray(picks)` é sempre verdadeiro aqui: o item fixo.
-        fn pick(&self, _picks: Vec<IQuickPickItem>, _options: Option<&IPickOptions>) -> Promise<Option<IQuickPickItem>> {
+        fn pick(&self, _picks: QuickPicks, _options: Option<&IPickOptions>, _token: Option<&CancellationToken>) -> Promise<Option<IQuickPickItem>> {
             Promise::resolved(Some(IQuickPickItem {
                 base: IQuickItem { label: JsString::from("selectedPick"), description: Some(JsString::from("pick description")), ..IQuickItem::default() },
                 extra: Dynamic::object([("value", Dynamic::string("selectedPick"))]),
+                ..IQuickPickItem::default()
             }))
+        }
+
+        // O que o `TestQuickInputService` do original não define (o objeto não tem o método): lança `TypeError`.
+        fn back_button(&self) -> QuickInputButtonRef {
+            panic!("backButton is not defined")
+        }
+
+        fn on_show(&self) -> Event<()> {
+            panic!("onShow is not defined")
+        }
+
+        fn on_hide(&self) -> Event<()> {
+            panic!("onHide is not defined")
+        }
+
+        fn alignment(&self) -> IObservable<QuickInputAlignment> {
+            panic!("alignment is not defined")
+        }
+
+        fn with_quick_input_anchor(
+            &self,
+            _anchor: Option<QuickInputAnchor>,
+            _anchor_position: Option<QuickInputAnchorPosition>,
+            _operation: Box<dyn FnOnce() -> Promise<Dynamic>>,
+        ) -> Promise<Dynamic> {
+            panic!("withQuickInputAnchor is not a function")
+        }
+
+        fn pick_many(&self, _picks: QuickPicks, _options: Option<&IPickOptions>, _token: Option<&CancellationToken>) -> Promise<Option<Vec<IQuickPickItem>>> {
+            panic!("pick is not a function")
+        }
+
+        fn create_quick_pick(&self, _options: Option<QuickPickCreateOptions>) -> Rc<dyn IQuickPick> {
+            panic!("createQuickPick is not a function")
+        }
+
+        fn create_input_box(&self) -> Rc<dyn IInputBox> {
+            panic!("createInputBox is not a function")
+        }
+
+        fn create_quick_tree(&self) -> Rc<dyn IQuickTree> {
+            panic!("createQuickTree is not a function")
+        }
+
+        fn focus(&self) {
+            panic!("focus is not a function")
+        }
+
+        fn toggle(&self) {
+            panic!("toggle is not a function")
+        }
+
+        fn navigate(&self, _next: bool, _quick_navigate: Option<&IQuickNavigateConfiguration>) {
+            panic!("navigate is not a function")
+        }
+
+        fn back(&self) -> Promise<()> {
+            panic!("back is not a function")
+        }
+
+        fn accept(&self, _key_mods: Option<IKeyMods>) -> Promise<()> {
+            panic!("accept is not a function")
+        }
+
+        fn cancel(&self, _reason: Option<QuickInputHideReason>) -> Promise<()> {
+            panic!("cancel is not a function")
+        }
+
+        fn toggle_hover(&self) {
+            panic!("toggleHover is not a function")
+        }
+
+        fn current_quick_input(&self) -> Option<QuickInputRef> {
+            panic!("currentQuickInput is not defined")
+        }
+
+        fn set_alignment(&self, _alignment: QuickInputAlignmentSetting) {
+            panic!("setAlignment is not a function")
         }
     }
 

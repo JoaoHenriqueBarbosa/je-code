@@ -46,6 +46,7 @@ use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::map::ResourceMap;
 use je_base::marshalling::Marshalled;
+use je_base::observable::base::IObservable;
 use je_base::parts::ipc::IChannel;
 use je_base::parts::request::{IHeaders, IRequestContext, IRequestOptions, IRequestResponse};
 use je_base::product::IExtensionsGallery;
@@ -62,7 +63,11 @@ use je_platform::extension_management::extension_gallery_manifest::{
 use je_platform::log::NullLogService;
 use je_platform::policy::managed_settings_freshness::IManagedSettingsFreshness;
 use je_platform::product::{IProductService, ProductService};
-use je_platform::quickinput::quick_input::{IInputOptions, IPickOptions, IQuickInputService, IQuickPickItem};
+use je_platform::quickinput::quick_input::{
+    IInputBox, IInputOptions, IKeyMods, IPickOptions, IQuickInputService, IQuickNavigateConfiguration, IQuickPick, IQuickPickItem, IQuickTree, QuickInputAlignment,
+    QuickInputAlignmentSetting, QuickInputAnchor, QuickInputAnchorPosition, QuickInputButtonRef, QuickInputHideReason, QuickInputRef, QuickPickCreateOptions,
+    QuickPicks,
+};
 use je_platform::request::{AuthInfo, Credentials, IRequestService, RequestCompleteEvent};
 use je_platform::storage::{InMemoryStorageService, StorageScope, StorageService, StorageTarget};
 use je_platform::telemetry::{CommonPropertyValue, ITelemetryData, ITelemetryService, NullTelemetryServiceShape, TelemetryLevel};
@@ -442,12 +447,89 @@ impl ISharedProcessService for TestSharedProcessService {
 struct UnusedQuickInputService;
 
 impl IQuickInputService for UnusedQuickInputService {
-    fn input(&self, _options: Option<&IInputOptions>) -> Promise<Option<String>> {
+    fn input(&self, _options: Option<&IInputOptions>, _token: Option<&CancellationToken>) -> Promise<Option<String>> {
         not_mocked("input")
     }
 
-    fn pick(&self, _picks: Vec<IQuickPickItem>, _options: Option<&IPickOptions>) -> Promise<Option<IQuickPickItem>> {
+    fn pick(&self, _picks: QuickPicks, _options: Option<&IPickOptions>, _token: Option<&CancellationToken>) -> Promise<Option<IQuickPickItem>> {
         not_mocked("pick")
+    }
+
+    fn back_button(&self) -> QuickInputButtonRef {
+        not_mocked("backButton")
+    }
+
+    fn on_show(&self) -> Event<()> {
+        not_mocked("onShow")
+    }
+
+    fn on_hide(&self) -> Event<()> {
+        not_mocked("onHide")
+    }
+
+    fn alignment(&self) -> IObservable<QuickInputAlignment> {
+        not_mocked("alignment")
+    }
+
+    fn with_quick_input_anchor(
+        &self,
+        _anchor: Option<QuickInputAnchor>,
+        _anchor_position: Option<QuickInputAnchorPosition>,
+        _operation: Box<dyn FnOnce() -> Promise<Dynamic>>,
+    ) -> Promise<Dynamic> {
+        not_mocked("withQuickInputAnchor")
+    }
+
+    fn pick_many(&self, _picks: QuickPicks, _options: Option<&IPickOptions>, _token: Option<&CancellationToken>) -> Promise<Option<Vec<IQuickPickItem>>> {
+        not_mocked("pick")
+    }
+
+    fn create_quick_pick(&self, _options: Option<QuickPickCreateOptions>) -> Rc<dyn IQuickPick> {
+        not_mocked("createQuickPick")
+    }
+
+    fn create_input_box(&self) -> Rc<dyn IInputBox> {
+        not_mocked("createInputBox")
+    }
+
+    fn create_quick_tree(&self) -> Rc<dyn IQuickTree> {
+        not_mocked("createQuickTree")
+    }
+
+    fn focus(&self) {
+        not_mocked("focus")
+    }
+
+    fn toggle(&self) {
+        not_mocked("toggle")
+    }
+
+    fn navigate(&self, _next: bool, _quick_navigate: Option<&IQuickNavigateConfiguration>) {
+        not_mocked("navigate")
+    }
+
+    fn back(&self) -> Promise<()> {
+        not_mocked("back")
+    }
+
+    fn accept(&self, _key_mods: Option<IKeyMods>) -> Promise<()> {
+        not_mocked("accept")
+    }
+
+    fn cancel(&self, _reason: Option<QuickInputHideReason>) -> Promise<()> {
+        not_mocked("cancel")
+    }
+
+    fn toggle_hover(&self) {
+        not_mocked("toggleHover")
+    }
+
+    fn current_quick_input(&self) -> Option<QuickInputRef> {
+        not_mocked("currentQuickInput")
+    }
+
+    fn set_alignment(&self, _alignment: QuickInputAlignmentSetting) {
+        not_mocked("setAlignment")
     }
 }
 
