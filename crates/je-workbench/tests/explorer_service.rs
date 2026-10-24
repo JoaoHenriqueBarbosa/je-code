@@ -267,7 +267,8 @@ fn workbench_instantiation_service(
     let file_service_contract: Rc<dyn IFileService> = file_service.clone();
     let configuration_contract: Rc<dyn IConfigurationService> = configuration.clone();
     let uri_identity = uri_identity.unwrap_or_else(|| {
-        let service: Rc<dyn IUriIdentityService> = guard.add_rc(UriIdentityService::create((), (file_service_contract.clone(),)));
+        let concrete = guard.add_rc(UriIdentityService::create((), (file_service_contract.clone(),)));
+        let service: Rc<dyn IUriIdentityService> = concrete;
         service
     });
     let files_configuration: Rc<dyn IFilesConfigurationService> = Rc::new(NullFilesConfigurationService);
