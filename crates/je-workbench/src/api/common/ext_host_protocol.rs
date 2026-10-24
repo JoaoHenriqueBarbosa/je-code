@@ -1,10 +1,17 @@
 //! Porte parcial de `src/vs/workbench/api/common/extHost.protocol.ts` e do que ele pede do RPC
-//! (`proxyIdentifier.ts`), só o que `extHostBrowsers.ts` usa.
+//! (`proxyIdentifier.ts`), só o que `extHostBrowsers.ts` e `extHostCommands.ts` usam.
 //!
 //! Divergências:
 //! - É um porte parcial: do arquivo original entram `BrowserTabDto`, `MainThreadBrowsersShape`,
-//!   `ExtHostBrowsersShape`, `IMainContext` e o identificador `MainContext.MainThreadBrowsers`. O resto dos
-//!   DTOs, das formas e dos identificadores entra junto de cada arquivo `extHost*.ts` que os pedir.
+//!   `ExtHostBrowsersShape`, `IMainContext`, `MainThreadCommandsShape`, `ExtHostCommandsShape`,
+//!   `ICommandDto`, `ICommandMetadataDto`, `MainThreadTelemetryShape` (com o `IExtHostTelemetry` mínimo de
+//!   `extHostTelemetry.ts`), `SerializableObjectWithBuffers` (de `proxyIdentifier.ts`) e os identificadores
+//!   `MainContext.MainThreadBrowsers`, `MainThreadCommands`, `MainThreadTelemetry` e
+//!   `ExtHostContext.ExtHostCommands`. O resto dos DTOs, das formas e dos identificadores entra junto de
+//!   cada arquivo `extHost*.ts` que os pedir.
+//! - `$executeCommand` devolve `unknown | undefined`: é [`Dynamic`], com `Dynamic::Undefined` no segundo
+//!   caso; `args: unknown[] | SerializableObjectWithBuffers<unknown[]>` é [`CommandArgs`]. O `{ $ident?: string } &
+//!   languages.Command` de `ICommandDto` é um struct com o `$ident` no campo `ident`.
 //! - O prefixo `$` dos métodos de RPC vira `rpc_` (`$openBrowserTab` é `rpc_open_browser_tab`), porque
 //!   `onDidOpenBrowserTab` (o evento da API) e `$onDidOpenBrowserTab` (o retorno da thread principal) ficariam
 //!   com o mesmo nome em snake case.
@@ -26,8 +33,11 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
+use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
+use je_extensions::manifest::ExtensionIdentifier;
+use je_platform::commands::commands::CommandDescription;
 use je_platform::opener::editor_types::EditorOptions;
 
 pub use super::ext_host_type_converters::EditorGroupColumn;
@@ -178,9 +188,104 @@ pub trait ExtHostBrowsersShape {
 
 // #endregion
 
+// #region Commands
+
+/// `SerializableObjectWithBuffers<T>`: marca o objeto como contendo buffers, que o transporte serializa de
+/// forma mais eficiente.
+#[derive(Clone, Debug)]
+pub struct SerializableObjectWithBuffers<T> {
+    pub value: T,
+}
+
+impl<T> SerializableObjectWithBuffers<T> {
+    pub fn new(value: T) -> Self {
+        Self { value }
+    }
+}
+
+/// `ICommandDto`: `{ $ident?: string } & languages.Command`. O `$ident` é o campo `ident`.
+#[derive(Clone, Debug)]
+pub struct ICommandDto {
+    pub ident: Option<String>,
+    pub id: String,
+    pub title: String,
+    pub tooltip: Option<String>,
+    pub arguments: Option<Vec<Dynamic>>,
+}
+
+/// `unknown[] | SerializableObjectWithBuffers<unknown[]>`: os argumentos de `$executeCommand`.
+#[derive(Clone, Debug)]
+pub enum CommandArgs {
+    Plain(Vec<Dynamic>),
+    WithBuffers(SerializableObjectWithBuffers<Vec<Dynamic>>),
+}
+
+/// `MainThreadCommandsShape`. O retorno `unknown | undefined` de `$executeCommand` é um [`Dynamic`]
+/// (`Dynamic::Undefined` quando não há valor).
+pub trait MainThreadCommandsShape: IDisposable {
+    fn rpc_register_command(&self, id: &str);
+    fn rpc_unregister_command(&self, id: &str);
+    fn rpc_fire_command_activation_event(&self, id: &str);
+    fn rpc_execute_command(&self, id: &str, args: CommandArgs, retry: bool) -> Promise<Dynamic>;
+    fn rpc_get_commands(&self) -> Promise<Vec<String>>;
+}
+
+/// Um item de `ICommandMetadataDto.args`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandMetadataArgDto {
+    pub name: String,
+    pub is_optional: Option<bool>,
+    pub description: Option<String>,
+}
+
+/// `ICommandMetadataDto`. O `description` é `ILocalizedString | string`, ou seja, um `CommandDescription`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ICommandMetadataDto {
+    pub description: CommandDescription,
+    pub args: Option<Vec<CommandMetadataArgDto>>,
+    pub returns: Option<String>,
+}
+
+/// `ExtHostCommandsShape`: o retorno de `$getContributedCommandMetadata` é `{ [id: string]: string | ICommandMetadataDto }`,
+/// aqui uma lista de pares na ordem de inserção (o `string` do original nunca é produzido: o host sempre
+/// guarda um `ICommandMetadata`).
+pub trait ExtHostCommandsShape {
+    fn rpc_execute_contributed_command(&self, id: &str, args: Vec<Dynamic>) -> Promise<Dynamic>;
+    fn rpc_get_contributed_command_metadata(&self) -> Promise<Vec<(String, ICommandMetadataDto)>>;
+}
+
+// #endregion
+
+// #region Telemetry
+
+/// `MainThreadTelemetryShape`. O `$publicLog2<E, T>` genérico do original, que só checa o tipo dos dados em
+/// tempo de compilação, é `rpc_public_log2` com os dados como [`Dynamic`].
+pub trait MainThreadTelemetryShape: IDisposable {
+    fn rpc_public_log(&self, event_name: &str, data: Option<Dynamic>);
+    fn rpc_public_log2(&self, event_name: &str, data: Option<Dynamic>);
+}
+
+/// `IExtHostTelemetry`, só o que o host de comandos usa: `onExtensionError` devolve `true` se o erro foi
+/// repassado ao registrador de telemetria da extensão. O resto de `ExtHostTelemetryShape` entra junto do
+/// porte de `extHostTelemetry.ts`.
+pub trait IExtHostTelemetry {
+    fn on_extension_error(&self, extension: &ExtensionIdentifier, error: &Error) -> bool;
+}
+
+// #endregion
+
 /// `MainContext`: os identificadores dos proxies da thread principal.
 pub struct MainContext;
 
 impl MainContext {
     pub const MAIN_THREAD_BROWSERS: ProxyIdentifier<dyn MainThreadBrowsersShape> = ProxyIdentifier::new("MainThreadBrowsers");
+    pub const MAIN_THREAD_COMMANDS: ProxyIdentifier<dyn MainThreadCommandsShape> = ProxyIdentifier::new("MainThreadCommands");
+    pub const MAIN_THREAD_TELEMETRY: ProxyIdentifier<dyn MainThreadTelemetryShape> = ProxyIdentifier::new("MainThreadTelemetry");
+}
+
+/// `ExtHostContext`: os identificadores dos proxies do lado das extensões.
+pub struct ExtHostContext;
+
+impl ExtHostContext {
+    pub const EXT_HOST_COMMANDS: ProxyIdentifier<dyn ExtHostCommandsShape> = ProxyIdentifier::new("ExtHostCommands");
 }
