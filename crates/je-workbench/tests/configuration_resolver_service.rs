@@ -137,6 +137,21 @@ impl IEditorService for TestEditorServiceWithActiveEditor {
     fn save_all(&self, _options: Option<je_workbench::services::editor::editor_service::SaveAllEditorsOptions>) -> Promise<je_workbench::services::editor::editor_service::SaveEditorsResult> {
         unreachable!("TestEditorServiceWithActiveEditor.saveAll não é exercitado por esta suíte")
     }
+
+    /// Não é exercitado por esta suíte.
+    fn get_editors(&self, _order: je_workbench::common::editor::EditorsOrder) -> Vec<je_workbench::common::editor::EditorIdentifier> {
+        unreachable!("TestEditorServiceWithActiveEditor.getEditors não é exercitado por esta suíte")
+    }
+
+    /// Não é exercitado por esta suíte.
+    fn open_editors(&self, _editors: Vec<je_workbench::common::editor::EditorInputWithOptions>) -> Promise<Vec<Rc<dyn je_workbench::common::editor::IEditorPane>>> {
+        unreachable!("TestEditorServiceWithActiveEditor.openEditors não é exercitado por esta suíte")
+    }
+
+    /// Não é exercitado por esta suíte.
+    fn is_visible(&self, _editor: &je_workbench::common::editor::EditorInputRef) -> bool {
+        unreachable!("TestEditorServiceWithActiveEditor.isVisible não é exercitado por esta suíte")
+    }
 }
 
 /// `MockCommandService`.

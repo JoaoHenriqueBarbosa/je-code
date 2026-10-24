@@ -437,6 +437,21 @@ mod editor_inputs {
         fn save_all(&self, _options: Option<crate::services::editor::editor_service::SaveAllEditorsOptions>) -> Promise<crate::services::editor::editor_service::SaveEditorsResult> {
             panic!("Method not implemented.")
         }
+
+        /// `getEditors() { return []; }`.
+        fn get_editors(&self, _order: crate::common::editor::EditorsOrder) -> Vec<crate::common::editor::EditorIdentifier> {
+            Vec::new()
+        }
+
+        /// `openEditors(_editors, _group) { throw new Error('not implemented'); }`.
+        fn open_editors(&self, _editors: Vec<crate::common::editor::EditorInputWithOptions>) -> Promise<Vec<Rc<dyn IEditorPane>>> {
+            panic!("not implemented")
+        }
+
+        /// `isVisible(_editor) { return false; }`.
+        fn is_visible(&self, _editor: &crate::common::editor::EditorInputRef) -> bool {
+            false
+        }
     }
 
     /// `TestEditorInput`.

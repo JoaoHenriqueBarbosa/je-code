@@ -25,7 +25,9 @@ use je_base::promise::Promise;
 use je_editor::selection::Selection;
 use je_instantiation::service_id;
 
-use crate::common::editor::{EditorIdentifier, EditorInputOrUntyped, EditorsOrder, IEditorPane, SaveOptions, SideBySideEditor, UntypedEditorInput};
+use crate::common::editor::{
+    EditorIdentifier, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorsOrder, IEditorPane, SaveOptions, SideBySideEditor, UntypedEditorInput,
+};
 
 /// O recorte de `ICodeEditor` que o resolvedor de variáveis lê: a seleção, o texto dentro dela e o foco do widget.
 pub trait IActiveCodeEditor {
@@ -120,6 +122,17 @@ pub trait IEditorService {
 
     /// `saveAll(options)`: saves all editors that are dirty.
     fn save_all(&self, options: Option<SaveAllEditorsOptions>) -> Promise<SaveEditorsResult>;
+
+    /// `getEditors(order, options?)`: all editors that are opened, in the given order, across all groups (a sobrecarga
+    /// sem opções; a de `IResourceEditorInputIdentifier` entra junto do primeiro consumidor).
+    fn get_editors(&self, order: EditorsOrder) -> Vec<EditorIdentifier>;
+
+    /// `openEditors(editors, group?)` sem o grupo preferido e só com a forma `IEditorInputWithOptions[]`: opens the
+    /// editors in a group and resolves with the editor panes that are showing them.
+    fn open_editors(&self, editors: Vec<EditorInputWithOptions>) -> Promise<Vec<Rc<dyn IEditorPane>>>;
+
+    /// `isVisible(editor)`: determines if the editor is visible in any group (it is the active editor of the group).
+    fn is_visible(&self, editor: &EditorInputRef) -> bool;
 }
 
 service_id!(pub I_EDITOR_SERVICE: dyn IEditorService = "editorService");
