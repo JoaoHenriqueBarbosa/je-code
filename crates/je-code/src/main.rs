@@ -311,7 +311,13 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Com abas modificadas a janela pergunta antes; sem elas, fecha já.
+                self.shell.request_exit();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -979,6 +985,40 @@ mod tests {
         shell.run(shell::Command::ShowPanelTab(shell::PanelTab::Problems));
         assert!(shell.panel_is_visible());
         snapshot(&mut shell, "m1-problems.png");
+    }
+
+    #[test]
+    fn closing_a_modified_tab_asks_to_save() {
+        let path = temp_file("dirty.txt", "abc");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        // Tecla apertada e solta: o diálogo fecha com o Esc no `keyup`, como o original.
+        let key = |shell: &mut Shell, key: Option<EditorKey>, code: KeyCode| {
+            shell.key(true, code, Modifiers::default(), None, key);
+            shell.key(false, code, Modifiers::default(), None, key);
+        };
+        shell.active_editor_mut().expect("aba").view.type_text("X");
+        shell.run(shell::Command::CloseActiveEditor);
+        snapshot(&mut shell, "d0-ask.png");
+        assert!(shell.active_editor().is_some(), "a aba modificada não fecha sem perguntar");
+        // Esc cancela; a aba e a edição continuam.
+        key(&mut shell, Some(EditorKey::Escape), KeyCode::Escape);
+        assert!(shell.active_editor().expect("aba").is_modified());
+        // Save (o botão em foco) grava e fecha.
+        shell.run(shell::Command::CloseActiveEditor);
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter);
+        assert!(shell.active_editor().is_none());
+        assert_eq!(std::fs::read_to_string(&path).expect("lê"), "Xabc");
+        // Sair com uma aba modificada também pergunta; Don't Save fecha e sai.
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), None, std::slice::from_ref(&path), 1200.0, 800.0).expect("abre");
+        shell.active_editor_mut().expect("aba").view.type_text("Y");
+        shell.request_exit();
+        assert!(!shell.take_exit(), "não sai antes da resposta");
+        // Tab vai ao segundo botão (Don't Save) e Enter o aciona.
+        key(&mut shell, Some(EditorKey::Tab), KeyCode::Tab);
+        key(&mut shell, Some(EditorKey::Enter), KeyCode::Enter);
+        assert!(shell.take_exit(), "Don't Save sai");
+        assert_eq!(std::fs::read_to_string(&path).expect("lê"), "Xabc", "o texto descartado não foi gravado");
+        std::fs::remove_file(&path).expect("remove");
     }
 
     #[test]

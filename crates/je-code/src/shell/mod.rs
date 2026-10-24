@@ -160,6 +160,10 @@ pub enum Command {
     Revert,
     CloseActiveEditor,
     CloseEditor(usize),
+    SaveAndClose(usize),
+    DiscardAndClose(usize),
+    CancelExit,
+    CloseDialog,
     ActivateEditor(usize),
     NextEditor,
     PreviousEditor,
@@ -327,6 +331,12 @@ pub struct Shell {
     /// O índice da aba sob o ponteiro (mostra o botão de fechar).
     hovered_tab: Rc<RefCell<Option<usize>>>,
     exit_requested: bool,
+    /// Saindo: cada aba modificada pergunta antes; termina quando não sobra nenhuma.
+    exiting: bool,
+    /// O Save As veio do `Save` de um fechamento: a aba fecha depois de gravar.
+    close_after_save_as: bool,
+    /// O diálogo modal aberto: enquanto existe, teclado e ponteiro vão só para ele.
+    dialog: Option<Rc<je_widgets::dialog::Dialog>>,
     fullscreen_requested: bool,
     needs_render: bool,
     quick_pick: Option<QuickPick>,
@@ -457,6 +467,9 @@ impl Shell {
             sash_drag: None,
             hovered_tab: Rc::new(RefCell::new(None)),
             exit_requested: false,
+            exiting: false,
+            close_after_save_as: false,
+            dialog: None,
             fullscreen_requested: false,
             needs_render: true,
             quick_pick: None,
@@ -691,6 +704,69 @@ impl Shell {
         }
     }
 
+    /// Fechar uma aba modificada pergunta antes (`Do you want to save the changes you made to X?`).
+    fn request_close(&mut self, index: usize) {
+        let Some(editor) = self.editors.get(index) else { return };
+        if !editor.is_modified() {
+            self.close_editor(index);
+            return;
+        }
+        let name = editor.name.clone();
+        self.activate(index);
+        // O diálogo modal do VS Code (`showSaveConfirm`): Save, Don't Save e Cancel, com Esc como Cancel.
+        self.show_dialog(
+            &format!("Do you want to save the changes you made to {name}?"),
+            Some("Your changes will be lost if you don't save them."),
+            je_widgets::dialog::DialogType::Warning,
+            vec![("&&Save", Command::SaveAndClose(index)), ("Do&&n't Save", Command::DiscardAndClose(index)), ("Cancel", Command::CancelExit)],
+        );
+    }
+
+    /// Mostra um diálogo modal (`IDialogService.show`): cada botão roda o comando dele; o último é o de cancelar (Esc).
+    fn show_dialog(&mut self, message: &str, detail: Option<&str>, kind: je_widgets::dialog::DialogType, buttons: Vec<(&str, Command)>) {
+        use je_widgets::dialog::{Dialog, DialogOptions, default_dialog_styles};
+        let mut options = DialogOptions::new(
+            je_widgets::button::default_button_styles(&self.theme),
+            je_widgets::toggle::default_checkbox_styles(&self.theme),
+            je_widgets::input_box::default_input_box_styles(&self.theme),
+            default_dialog_styles(&self.theme),
+        );
+        options.r#type = Some(kind);
+        options.cancel_id = Some(buttons.len() as i32 - 1);
+        options.detail = detail.map(str::to_owned);
+        let labels = buttons.iter().map(|(label, _)| (*label).to_owned()).collect();
+        let commands: Vec<Command> = buttons.into_iter().map(|(_, command)| command).collect();
+        let root = self.ui.root();
+        let dialog = Dialog::new(&self.ui, root, message, Some(labels), options);
+        let queue = self.queue.clone();
+        let _ = dialog.show().then(move |result| {
+            queue.borrow_mut().push(Command::CloseDialog);
+            if let Some(command) = usize::try_from(result.button).ok().and_then(|i| commands.get(i)) {
+                queue.borrow_mut().push(command.clone());
+            }
+        });
+        self.dialog = Some(dialog);
+        // O diálogo põe o foco no botão padrão no próximo quadro de animação: roda já, para o teclado chegar nele.
+        self.ui.run_animation_frame();
+        self.needs_render = true;
+    }
+
+    /// Continua a saída: pergunta pela próxima aba modificada ou encerra.
+    fn continue_exit(&mut self) {
+        if !self.exiting {
+            return;
+        }
+        match self.editors.iter().position(OpenEditor::is_modified) {
+            Some(index) => self.request_close(index),
+            None => self.exit_requested = true,
+        }
+    }
+
+    /// A janela pediu para fechar (o X do sistema): o mesmo caminho do `Exit`.
+    pub fn request_exit(&mut self) {
+        self.run(Command::Exit);
+    }
+
     fn close_editor(&mut self, index: usize) {
         if index >= self.editors.len() {
             return;
@@ -798,10 +874,39 @@ impl Shell {
             }
             Command::CloseActiveEditor => {
                 if let Some(i) = active {
-                    self.close_editor(i);
+                    self.request_close(i);
                 }
             }
-            Command::CloseEditor(i) => self.close_editor(i),
+            Command::CloseEditor(i) => self.request_close(i),
+            Command::SaveAndClose(i) => {
+                if i < self.editors.len() {
+                    if self.editors[i].path.is_none() {
+                        // Sem arquivo: o Save As pergunta o caminho e a aba fecha depois de gravar.
+                        self.close_after_save_as = true;
+                        self.save(i);
+                    } else {
+                        self.save(i);
+                        if !self.editors[i].is_modified() {
+                            self.close_editor(i);
+                            self.continue_exit();
+                        }
+                    }
+                }
+            }
+            Command::DiscardAndClose(i) => {
+                if i < self.editors.len() {
+                    self.editors[i].saved_version = self.editors[i].view.model().get_alternative_version_id();
+                    self.close_editor(i);
+                    self.continue_exit();
+                }
+            }
+            Command::CancelExit => self.exiting = false,
+            Command::CloseDialog => {
+                if let Some(dialog) = self.dialog.take() {
+                    IDisposable::dispose(&*dialog);
+                }
+                self.needs_render = true;
+            }
             Command::ActivateEditor(i) => {
                 if i < self.editors.len() {
                     self.activate(i);
@@ -1118,7 +1223,10 @@ impl Shell {
             }
             // A substituição e a busca na seleção ainda não existem: o botão não faz nada.
             Command::FindToggleReplace | Command::FindInSelection => {}
-            Command::Exit => self.exit_requested = true,
+            Command::Exit => {
+                self.exiting = true;
+                self.continue_exit();
+            }
         }
         self.needs_render = true;
     }
@@ -1448,16 +1556,11 @@ impl Shell {
         self.needs_render = true;
     }
 
-    /// A confirmação de apagar (`explorer.confirmDelete`): uma lista de duas opções.
+    /// A confirmação de apagar (`explorer.confirmDelete`): o diálogo de mover para a lixeira.
     fn confirm_delete(&mut self, path: PathBuf) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let trash = if cfg!(windows) { "Move to Recycle Bin" } else { "Move to Trash" };
-        let items = vec![
-            PickItem { label: trash.to_owned(), description: Some(format!("Delete '{name}'")), keybinding: None, command: Command::DeletePath(path), recent: false },
-            PickItem { label: "Cancel".to_owned(), description: None, keybinding: None, command: Command::CloseContextMenu, recent: false },
-        ];
-        self.quick_pick = Some(QuickPick::list(items, &format!("Are you sure you want to delete '{name}'?")));
-        self.ui.blur();
+        let (button, detail) = if cfg!(windows) { ("&&Move to Recycle Bin", "You can restore this file from the Recycle Bin.") } else { ("&&Move to Trash", "You can restore this file from the Trash.") };
+        self.show_dialog(&format!("Are you sure you want to delete '{name}'?"), Some(detail), je_widgets::dialog::DialogType::Question, vec![(button, Command::DeletePath(path)), ("Cancel", Command::CloseDialog)]);
     }
 
     fn close_context_menu(&mut self) {
@@ -1586,6 +1689,10 @@ impl Shell {
                             self.editors[*index].name = name;
                             // Relê do disco: a linguagem e os ícones seguem o nome novo.
                             self.revert(*index);
+                            if std::mem::take(&mut self.close_after_save_as) {
+                                self.close_editor(*index);
+                                self.continue_exit();
+                            }
                             None
                         }),
                         None => Ok(None),
@@ -1660,6 +1767,7 @@ impl Shell {
         match key {
             Some(EditorKey::Escape) => {
                 self.quick_pick = None;
+                self.exiting = false;
                 if let Some((path, ui_theme, index)) = self.theme_before_preview.take() {
                     self.apply_theme_file(&path, &ui_theme, index);
                 }
@@ -2754,6 +2862,13 @@ impl Shell {
     pub fn pointer(&mut self, input: PointerInput) {
         let (x, y) = (input.x, input.y);
         self.last_pointer = (x, y);
+        if self.dialog.is_some() {
+            // O bloco modal cobre a janela: o ponteiro só fala com o diálogo.
+            self.ui.pointer_input(input);
+            je_base::runtime::turn();
+            self.run_commands();
+            return;
+        }
         // O menu de contexto aberto: o clique fora dele só o fecha.
         if input.kind == PointerInputKind::Down
             && let Some((_, slot)) = &self.context_menu
@@ -2912,6 +3027,12 @@ impl Shell {
     /// Entrega uma tecla: primeiro à árvore do `Ui` (a barra de menus escuta Alt e os mnemônicos na raiz); se nenhum
     /// widget tem o foco e ninguém consumiu, aos atalhos do workbench e então ao editor.
     pub fn key(&mut self, down: bool, key_code: KeyCode, mods: Modifiers, text: Option<&str>, editor_key: Option<EditorKey>) {
+        if self.dialog.is_some() {
+            self.ui.key_input(down, KeyData { key_code, modifiers: mods });
+            je_base::runtime::turn();
+            self.run_commands();
+            return;
+        }
         if self.context_menu.is_some() {
             // O `Menu` escuta o teclado pelo `Ui` (setas, Enter, Esc, mnemônicos).
             self.ui.key_input(down, KeyData { key_code, modifiers: mods });
