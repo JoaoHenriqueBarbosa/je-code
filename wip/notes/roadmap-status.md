@@ -54,6 +54,8 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 - 2026-10-24: quinto lote: pfs (30), zip do node (10), terminalEnvironment do node (33), núcleo do `CodeEditorWidget` (modelo, ViewModel, cursor, edições, `trigger`, `ICodeEditor`; sem a View de DOM). Suíte verde (eu, `cargo test`).
 
+- 2026-10-24: sexto lote: harness `withTestCodeEditor` (sideEditing 69 de 69 de primeira), Settings Sync (store, enablement, serviço, cliente e servidor de teste, manifesto de perfis 12), virtualScheduling (22), htmlToMarkdown (32, parser de HTML próprio: entidades nomeadas só do HTML 4, falta a tabela do HTML5), htmlContent, cancelPreviousCalls, charCode, nodeStreams. Suíte: 7 502 passando, 0 falhas (eu).
+
 ## Pendência antes do primeiro push
 
 - O histórico local tem caminho da máquina em dois commits já corrigidos (`oracle-harness/zyarr-gen/gen.js` no c468a64 e `crates/je-platform/tests/settings_compat.rs` no 55c6335). Reescrever esses dois commits (ou fazer squash do histórico) antes de publicar o repositório.
