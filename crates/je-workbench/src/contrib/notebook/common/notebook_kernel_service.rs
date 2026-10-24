@@ -1,10 +1,9 @@
-//! Porte parcial de `src/vs/workbench/contrib/notebook/common/notebookKernelService.ts`: o contrato `INotebookTextModelLike`
-//! de que `notebookCommon.ts` depende (`INotebookTextModel` o estende) e o que o `MainThreadNotebookKernels` usa do serviço de
-//! kernels: `INotebookKernel`, `INotebookKernelChangeEvent`, `INotebookKernelDetectionTask`, `IKernelSourceActionProvider`,
-//! `INotebookKernelMatchResult`, `ISelectedNotebooksChangeEvent` e o trait `INotebookKernelService`. O resto do arquivo
-//! (`ISourceAction`, `INotebookProxyKernelChangeEvent`, `ProxyKernelState`, o histórico de kernels, os membros do serviço que
-//! escolhem, pré-selecionam e listam kernels, as ações de origem e as tarefas de detecção como consulta) fica para a fatia do
-//! serviço de kernels.
+//! Porte parcial de `src/vs/workbench/contrib/notebook/common/notebookKernelService.ts`: `INotebookTextModelLike`
+//! (de que `notebookCommon.ts` depende, `INotebookTextModel` o estende), `INotebookKernel`, `INotebookKernelChangeEvent`,
+//! `INotebookKernelDetectionTask`, `ISourceAction`, `INotebookSourceActionChangeEvent`, `IKernelSourceActionProvider`,
+//! `INotebookKernelMatchResult`, `ISelectedNotebooksChangeEvent`, `INotebookKernelService` e
+//! `INotebookKernelHistoryService`. Só `INotebookProxyKernelChangeEvent` e `ProxyKernelState` ficam para a fatia dos
+//! kernels proxy.
 //!
 //! Divergências:
 //! - `INotebookTextModelLike` é uma interface estrutural (`{ uri: URI; notebookType: string }`); aqui é um trait, e
@@ -19,6 +18,7 @@
 
 use std::rc::Rc;
 
+use je_base::actions::ActionRef;
 use je_base::async_::AsyncIterableProducer;
 use je_base::cancellation::CancellationToken;
 use je_base::event::Event;
@@ -26,6 +26,8 @@ use je_base::lifecycle::DisposableRef;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_extensions::manifest::ExtensionIdentifier;
+use je_instantiation::service_id;
+use je_platform::contextkey::contextkey::IContextKeyService;
 
 use super::notebook_common::INotebookKernelSourceAction;
 use crate::api::common::ext_host_protocol::{VariablesRequestKindDto, VariablesResult};
@@ -34,6 +36,39 @@ use crate::api::common::ext_host_protocol::{VariablesRequestKindDto, VariablesRe
 pub trait INotebookTextModelLike {
     fn uri(&self) -> URI;
     fn notebook_type(&self) -> String;
+}
+
+/// O literal `{ uri, notebookType }` do original, como [`INotebookTextModelLike`].
+#[derive(Clone, Debug)]
+pub struct NotebookTextModelLike {
+    pub uri: URI,
+    pub notebook_type: String,
+}
+
+impl INotebookTextModelLike for NotebookTextModelLike {
+    fn uri(&self) -> URI {
+        self.uri.clone()
+    }
+
+    fn notebook_type(&self) -> String {
+        self.notebook_type.clone()
+    }
+}
+
+/// `ISourceAction`: `execution` é a promessa da execução em curso (`Promise<void> | undefined`).
+pub trait ISourceAction {
+    fn action(&self) -> ActionRef;
+    fn on_did_change_state(&self) -> Event<()>;
+    fn is_primary(&self) -> bool;
+    fn execution(&self) -> Option<Promise<()>>;
+    fn run_action(&self) -> Promise<()>;
+}
+
+/// `INotebookSourceActionChangeEvent`.
+#[derive(Clone, Debug)]
+pub struct INotebookSourceActionChangeEvent {
+    pub notebook: Option<URI>,
+    pub view_type: String,
 }
 
 /// `INotebookKernelChangeEvent`: as propriedades que mudaram.
@@ -110,14 +145,61 @@ pub struct INotebookKernelMatchResult {
     pub hidden: Vec<Rc<dyn INotebookKernel>>,
 }
 
-/// `INotebookKernelService`, só o que o `MainThreadNotebookKernels` chama.
+/// `INotebookKernelService`.
 pub trait INotebookKernelService {
+    fn on_did_add_kernel(&self) -> Event<Rc<dyn INotebookKernel>>;
+    fn on_did_remove_kernel(&self) -> Event<Rc<dyn INotebookKernel>>;
     fn on_did_change_selected_notebooks(&self) -> Event<ISelectedNotebooksChangeEvent>;
+    fn on_did_change_notebook_affinity(&self) -> Event<()>;
+    fn on_did_notebook_variables_update(&self) -> Event<URI>;
     fn register_kernel(&self, kernel: Rc<dyn INotebookKernel>) -> DisposableRef;
+
     fn get_matching_kernel(&self, notebook: &dyn INotebookTextModelLike) -> INotebookKernelMatchResult;
-    /// `updateKernelNotebookAffinity(kernel, notebook, preference)`.
+
+    /// Returns the selected or only available kernel.
+    fn get_selected_or_suggested_kernel(&self, notebook: &dyn INotebookTextModelLike) -> Option<Rc<dyn INotebookKernel>>;
+
+    /// Bind a notebook document to a kernel. A notebook is only bound to one kernel but a kernel can be bound to many
+    /// notebooks (depending on its configuration). `None` desfaz a ligação (a implementação aceita `undefined`).
+    fn select_kernel_for_notebook(&self, kernel: Option<&Rc<dyn INotebookKernel>>, notebook: &dyn INotebookTextModelLike);
+
+    /// Set the kernel that a notebook should use when it starts up.
+    fn preselect_kernel_for_notebook(&self, kernel: &Rc<dyn INotebookKernel>, notebook: &dyn INotebookTextModelLike);
+
+    /// `updateKernelNotebookAffinity(kernel, notebook, preference)`: higher values win, `None` removes the preference.
     fn update_kernel_notebook_affinity(&self, kernel: &Rc<dyn INotebookKernel>, notebook: &URI, preference: Option<i32>);
+
+    //#region Kernel detection tasks
+    fn on_did_change_kernel_detection_tasks(&self) -> Event<String>;
     fn register_notebook_kernel_detection_task(&self, task: Rc<dyn INotebookKernelDetectionTask>) -> DisposableRef;
+    fn get_kernel_detection_tasks(&self, notebook: &dyn INotebookTextModelLike) -> Vec<Rc<dyn INotebookKernelDetectionTask>>;
+    //#endregion
+
+    //#region Kernel source actions
+    fn on_did_change_source_actions(&self) -> Event<INotebookSourceActionChangeEvent>;
+    fn get_source_actions(&self, notebook: &dyn INotebookTextModelLike, context_key_service: Option<Rc<dyn IContextKeyService>>) -> Vec<Rc<dyn ISourceAction>>;
+    fn get_running_source_actions(&self, notebook: &dyn INotebookTextModelLike) -> Vec<Rc<dyn ISourceAction>>;
     fn register_kernel_source_action_provider(&self, view_type: &str, provider: Rc<IKernelSourceActionProvider>) -> DisposableRef;
+    fn get_kernel_source_actions2(&self, notebook: &dyn INotebookTextModelLike) -> Promise<Vec<INotebookKernelSourceAction>>;
+    //#endregion
+
     fn notify_variables_change(&self, notebook_uri: &URI);
+}
+
+service_id!(pub I_NOTEBOOK_KERNEL_SERVICE: dyn INotebookKernelService = "INotebookKernelService");
+
+/// `INotebookKernelHistoryService`: `getKernels(notebook)` devolve `{ selected, all }`, o mesmo formato do
+/// [`INotebookKernelMatchResult`] nos campos que ele lê.
+pub trait INotebookKernelHistoryService {
+    fn get_kernels(&self, notebook: &dyn INotebookTextModelLike) -> INotebookKernelHistory;
+    fn add_most_recent_kernel(&self, kernel: &Rc<dyn INotebookKernel>);
+}
+
+service_id!(pub I_NOTEBOOK_KERNEL_HISTORY_SERVICE: dyn INotebookKernelHistoryService = "INotebookKernelHistoryService");
+
+/// `{ selected: INotebookKernel | undefined; all: INotebookKernel[] }`.
+#[derive(Clone, Default)]
+pub struct INotebookKernelHistory {
+    pub selected: Option<Rc<dyn INotebookKernel>>,
+    pub all: Vec<Rc<dyn INotebookKernel>>,
 }
