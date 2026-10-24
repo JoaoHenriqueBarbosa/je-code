@@ -13,3 +13,6 @@ pub mod test_service_mocks;
 
 // Porte de `storedFileWorkingCopy.test.ts`.
 pub mod stored_file_working_copy_support;
+
+// Porte de `keybindingEditing.test.ts`.
+pub mod keybinding_editing_support;
