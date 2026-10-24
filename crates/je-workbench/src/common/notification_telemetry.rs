@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
-use je_base::actions::{ActionRef, IAction};
+use je_base::actions::ActionRef;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::id_of;
 use je_base::severity::Severity;

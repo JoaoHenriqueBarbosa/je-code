@@ -9,6 +9,5 @@ pub mod contrib;
 pub mod services;
 
 pub mod api;
-pub mod browser;
 
 pub mod common;
