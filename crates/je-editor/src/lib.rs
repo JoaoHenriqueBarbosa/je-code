@@ -177,3 +177,6 @@ pub mod minimap_tokens_color_tracker;
 pub mod view_context;
 pub mod view_model_impl_support;
 pub mod gpu;
+
+pub mod editor_browser;
+pub mod hover;
