@@ -1048,6 +1048,12 @@ impl CodeEditorWidget {
         self.telemetry_data.as_ref()
     }
 
+    /// `_contributions` (protegido no original): a subclasse de teste (`TestCodeEditor`) registra contribuições
+    /// por ele (`registerAndInstantiateContribution`).
+    pub fn contributions(&self) -> &Rc<CodeEditorContributions> {
+        &self.contributions
+    }
+
     /// `inComposition`.
     pub fn in_composition(&self) -> bool {
         self.in_composition.get()
