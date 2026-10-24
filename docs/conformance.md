@@ -4,15 +4,15 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 112 | 1816 | 79.72 |
-| `platform` | 192 | 2806 | 63 | 1212 | 43.19 |
-| `editor` | 182 | 3144 | 70 | 1274 | 40.52 |
-| `workbench/services` | 137 | 2491 | 4 | 50 | 2.01 |
+| `base` | 150 | 2278 | 118 | 1860 | 81.65 |
+| `platform` | 192 | 2806 | 90 | 1503 | 53.56 |
+| `editor` | 182 | 3144 | 84 | 1612 | 51.27 |
+| `workbench/services` | 137 | 2491 | 8 | 188 | 7.55 |
 | `workbench/api` | 94 | 965 | 0 | 0 | 0.00 |
-| `workbench/contrib` | 370 | 4636 | 9 | 171 | 3.69 |
+| `workbench/contrib` | 370 | 4636 | 12 | 207 | 4.47 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
-| **total** | | 16410 | | 4523 | 27.56 |
+| **total** | | 16410 | | 5370 | 32.72 |
 
 ## Arquivos portados
 
@@ -23,6 +23,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/parts/ipc/test/node/ipc.net.test.ts` | 23 | `crates/je-base/tests/ipc_net.rs` | 11 |
 | `src/vs/base/parts/request/test/common/requestImpl.test.ts` | 3 | `crates/je-base/tests/request_impl.rs` | 3 |
 | `src/vs/base/test/browser/comparers.test.ts` | 10 | `crates/je-base/tests/comparers.rs` | 10 |
+| `src/vs/base/test/browser/hash.test.ts` | 11 | `crates/je-base/tests/hash_browser.rs` | 11 |
 | `src/vs/base/test/browser/highlightedLabel.test.ts` | 9 | `crates/je-widgets/tests/highlighted_label.rs` | 9 |
 | `src/vs/base/test/browser/iconLabels.test.ts` | 6 | `crates/je-widgets/tests/icon_labels.rs` | 6 |
 | `src/vs/base/test/browser/progressBar.test.ts` | 1 | `crates/je-widgets/tests/progress_bar.rs` | 1 |
@@ -69,7 +70,9 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/decorators.test.ts` | 5 | `crates/je-base/tests/decorators.rs` | 3 |
 | `src/vs/base/test/common/diff/diff.test.ts` | 2 | `crates/je-base/tests/diff.rs` | 2 |
 | `src/vs/base/test/common/envfile.test.ts` | 1 | `crates/je-base/tests/envfile.rs` | 1 |
+| `src/vs/base/test/common/errors.test.ts` | 6 | `crates/je-base/tests/errors_test.rs` | 6 |
 | `src/vs/base/test/common/event.test.ts` | 93 | `crates/je-base/tests/event.rs` | 93 |
+| `src/vs/base/test/common/executionGraph.test.ts` | 6 | `crates/je-base/tests/execution_graph.rs` | 6 |
 | `src/vs/base/test/common/extpath.test.ts` | 11 | `crates/je-base/tests/extpath.rs` | 17 |
 | `src/vs/base/test/common/filters.test.ts` | 40 | `crates/je-base/tests/filters.rs` | 41 |
 | `src/vs/base/test/common/fuzzyScorer.test.ts` | 68 | `crates/je-base/tests/fuzzy_scorer.rs` | 68 |
@@ -83,6 +86,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/json.test.ts` | 17 | `crates/je-base/tests/json.rs` | 17 |
 | `src/vs/base/test/common/jsonEdit.test.ts` | 17 | `crates/je-base/tests/json_edit.rs` | 17 |
 | `src/vs/base/test/common/jsonFormatter.test.ts` | 24 | `crates/je-base/tests/json_formatter.rs` | 24 |
+| `src/vs/base/test/common/jsonParse.test.ts` | 13 | `crates/je-base/tests/json_parse.rs` | 13 |
 | `src/vs/base/test/common/jsonRpcProtocol.test.ts` | 10 | `crates/je-base/tests/json_rpc_protocol.rs` | 10 |
 | `src/vs/base/test/common/jsonSchema.test.ts` | 5 | `crates/je-base/tests/json_schema.rs` | 5 |
 | `src/vs/base/test/common/keyCodes.test.ts` | 42 | `crates/je-base/tests/key_codes.rs` | 4 |
@@ -100,6 +104,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/mime.test.ts` | 3 | `crates/je-base/tests/mime.rs` | 3 |
 | `src/vs/base/test/common/naturalLanguage/korean.test.ts` | 5 | `crates/je-base/tests/korean.rs` | 5 |
 | `src/vs/base/test/common/network.test.ts` | 1 | `crates/je-base/tests/network.rs` | 6 |
+| `src/vs/base/test/common/nls.test.ts` | 4 | `crates/je-base/tests/nls_test.rs` | 4 |
 | `src/vs/base/test/common/normalization.test.ts` | 1 | `crates/je-base/tests/normalization.rs` | 1 |
 | `src/vs/base/test/common/numbers.test.ts` | 6 | `crates/je-base/tests/numbers.rs` | 6 |
 | `src/vs/base/test/common/oauth.test.ts` | 97 | `crates/je-base/tests/oauth.rs` | 29 |
@@ -128,9 +133,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/common/yaml.test.ts` | 107 | `crates/je-base/tests/yaml.rs` | 108 |
 | `src/vs/base/test/common/zip.test.ts` | 6 | `crates/je-base/tests/zip.rs` | 6 |
 | `src/vs/base/test/node/crypto.test.ts` | 2 | `crates/je-base/tests/crypto.rs` | 2 |
+| `src/vs/base/test/node/id.test.ts` | 4 | `crates/je-base/tests/id.rs` | 4 |
 | `src/vs/base/test/node/ps.test.ts` | 9 | `crates/je-base/tests/ps.rs` | 9 |
 | `src/vs/base/test/node/unc.test.ts` | 1 | `crates/je-base/tests/unc.rs` | 1 |
 | `src/vs/platform/actions/test/common/menuService.test.ts` | 19 | `crates/je-platform/tests/menu_service.rs` | 14 |
+| `src/vs/platform/browserView/test/common/browserHistory.test.ts` | 26 | `crates/je-platform/tests/browser_history.rs` | 26 |
+| `src/vs/platform/browserView/test/common/browserPermissions.test.ts` | 10 | `crates/je-platform/tests/browser_permissions.rs` | 10 |
+| `src/vs/platform/browserView/test/common/browserViewGroup.test.ts` | 2 | `crates/je-platform/tests/browser_view_group.rs` | 2 |
+| `src/vs/platform/browserView/test/common/cssHelpers.test.ts` | 29 | `crates/je-platform/tests/css_helpers.rs` | 29 |
 | `src/vs/platform/commands/test/common/commands.test.ts` | 4 | `crates/je-platform/tests/commands.rs` | 4 |
 | `src/vs/platform/configuration/test/common/configuration.test.ts` | 21 | `crates/je-platform/tests/configuration.rs` | 21 |
 | `src/vs/platform/configuration/test/common/configurationModels.test.ts` | 94 | `crates/je-platform/tests/configuration_models.rs` | 94 |
@@ -170,16 +180,36 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/keybinding/test/common/keybindingResolver.test.ts` | 32 | `crates/je-platform/tests/keybinding_resolver.rs` | 32 |
 | `src/vs/platform/log/test/common/log.test.ts` | 10 | `crates/je-platform/tests/log.rs` | 10 |
 | `src/vs/platform/markers/test/common/markerService.test.ts` | 18 | `crates/je-platform/tests/marker_service.rs` | 18 |
+| `src/vs/platform/networkFilter/test/common/domainMatcher.test.ts` | 52 | `crates/je-platform/tests/domain_matcher.rs` | 52 |
 | `src/vs/platform/notification/test/common/notificationMessage.test.ts` | 7 | `crates/je-platform/tests/notification_message.rs` | 5 |
 | `src/vs/platform/opener/test/common/opener.test.ts` | 14 | `crates/je-platform/tests/opener.rs` | 14 |
+| `src/vs/platform/otel/test/node/otlp/otlpJsonDecode.test.ts` | 9 | `crates/je-platform/tests/otlp_json_decode.rs` | 9 |
+| `src/vs/platform/policy/test/common/fileManagedSettingsService.test.ts` | 26 | `crates/je-platform/tests/file_managed_settings_service.rs` | 26 |
+| `src/vs/platform/policy/test/common/managedSettingsFreshness.test.ts` | 2 | `crates/je-platform/tests/managed_settings_freshness.rs` | 2 |
+| `src/vs/platform/policy/test/common/policy.test.ts` | 2 | `crates/je-platform/tests/policy.rs` | 2 |
+| `src/vs/platform/quickinput/test/browser/quickInputUtils.test.ts` | 16 | `crates/je-platform/tests/quick_input_utils.rs` | 16 |
+| `src/vs/platform/quickinput/test/browser/tree/quickInputTreeSorter.test.ts` | 7 | `crates/je-platform/tests/quick_input_tree_sorter.rs` | 7 |
 | `src/vs/platform/remote/test/common/remoteHosts.test.ts` | 8 | `crates/je-platform/tests/remote_hosts.rs` | 8 |
+| `src/vs/platform/remoteTunnel/test/common/remoteTunnel.test.ts` | 2 | `crates/je-platform/tests/remote_tunnel.rs` | 2 |
+| `src/vs/platform/remoteTunnel/test/common/tunnelMachineStatus.test.ts` | 1 | `crates/je-platform/tests/tunnel_machine_status.rs` | 1 |
 | `src/vs/platform/request/test/common/requestService.test.ts` | 8 | `crates/je-platform/tests/request_service.rs` | 8 |
+| `src/vs/platform/sandbox/test/common/sandboxSettingsResolutionHelper.test.ts` | 9 | `crates/je-platform/tests/sandbox_settings_resolution_helper.rs` | 9 |
+| `src/vs/platform/sandbox/test/node/sandboxHelper.test.ts` | 11 | `crates/je-platform/tests/sandbox_helper.rs` | 11 |
 | `src/vs/platform/state/test/node/state.test.ts` | 7 | `crates/je-platform/tests/state.rs` | 7 |
 | `src/vs/platform/storage/test/common/storageService.test.ts` | 10 | `crates/je-platform/tests/storage_service.rs` | 10 |
 | `src/vs/platform/telemetry/test/common/telemetryLogAppender.test.ts` | 3 | `crates/je-platform/tests/telemetry_log_appender.rs` | 3 |
 | `src/vs/platform/telemetry/test/common/telemetryUtils.test.ts` | 14 | `crates/je-platform/tests/telemetry_utils.rs` | 14 |
+| `src/vs/platform/terminal/test/common/autoApprove/autoApproveParseSafety.test.ts` | 1 | `crates/je-platform/tests/auto_approve_parse_safety.rs` | 1 |
+| `src/vs/platform/terminal/test/common/autoApprove/cmdDelayedExpansion.test.ts` | 2 | `crates/je-platform/tests/cmd_delayed_expansion.rs` | 2 |
+| `src/vs/platform/terminal/test/common/autoApprove/sedFileWriteParser.test.ts` | 3 | `crates/je-platform/tests/sed_file_write_parser.rs` | 3 |
+| `src/vs/platform/terminal/test/common/requestStore.test.ts` | 2 | `crates/je-platform/tests/request_store.rs` | 2 |
+| `src/vs/platform/terminal/test/common/terminalEnvironment.test.ts` | 14 | `crates/je-platform/tests/terminal_environment_common.rs` | 14 |
+| `src/vs/platform/terminal/test/common/terminalProfiles.test.ts` | 4 | `crates/je-platform/tests/terminal_profiles.rs` | 4 |
+| `src/vs/platform/terminal/test/common/terminalRecorder.test.ts` | 3 | `crates/je-platform/tests/terminal_recorder.rs` | 3 |
 | `src/vs/platform/theme/test/common/sizeRegistry.test.ts` | 8 | `crates/je-theme/tests/size_registry.rs` | 8 |
 | `src/vs/platform/undoRedo/test/common/undoRedoService.test.ts` | 4 | `crates/je-editor/tests/undo_redo_service.rs` | 4 |
+| `src/vs/platform/update/test/electron-main/updateRelaunchArguments.test.ts` | 10 | `crates/je-platform/tests/update_relaunch_arguments.rs` | 10 |
+| `src/vs/platform/update/test/electron-main/win32UpdateType.test.ts` | 2 | `crates/je-platform/tests/win32_update_type.rs` | 3 |
 | `src/vs/platform/url/test/common/trustedDomains.test.ts` | 33 | `crates/je-platform/tests/trusted_domains.rs` | 33 |
 | `src/vs/platform/url/test/common/urlGlob.test.ts` | 31 | `crates/je-platform/tests/url_glob.rs` | 31 |
 | `src/vs/platform/url/test/common/urlPathNormalization.test.ts` | 20 | `crates/je-platform/tests/url_path_normalization.rs` | 20 |
@@ -189,11 +219,15 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/userDataSync/test/common/keybindingsMerge.test.ts` | 31 | `crates/je-platform/tests/keybindings_merge.rs` | 31 |
 | `src/vs/platform/userDataSync/test/common/settingsMerge.test.ts` | 71 | `crates/je-platform/tests/settings_merge.rs` | 71 |
 | `src/vs/platform/userDataSync/test/common/snippetsMerge.test.ts` | 21 | `crates/je-platform/tests/snippets_merge.rs` | 21 |
+| `src/vs/platform/userDataSync/test/common/userDataProfilesManifestMerge.test.ts` | 8 | `crates/je-platform/tests/user_data_profiles_manifest_merge.rs` | 8 |
+| `src/vs/platform/webContentExtractor/test/electron-main/cdpAccessibilityDomain.test.ts` | 20 | `crates/je-platform/tests/cdp_accessibility_domain.rs` | 20 |
+| `src/vs/platform/webContentExtractor/test/electron-main/webContentCache.test.ts` | 17 | `crates/je-platform/tests/web_content_cache.rs` | 17 |
 | `src/vs/platform/workspace/test/common/workspace.test.ts` | 14 | `crates/je-platform/tests/workspace.rs` | 14 |
 | `src/vs/platform/workspaces/test/common/workspaceIdentifier.test.ts` | 1 | `crates/je-platform/tests/workspace_identifier.rs` | 1 |
 | `src/vs/platform/workspaces/test/common/workspaces.test.ts` | 3 | `crates/je-platform/tests/workspaces.rs` | 3 |
 | `src/vs/platform/workspaces/test/node/workspaces.test.ts` | 2 | `crates/je-platform/tests/workspaces_node.rs` | 2 |
 | `src/vs/editor/contrib/caretOperations/test/browser/moveCarretCommand.test.ts` | 4 | `crates/je-editor/tests/move_caret_command.rs` | 4 |
+| `src/vs/editor/contrib/comment/test/browser/blockCommentCommand.test.ts` | 12 | `crates/je-editor/tests/block_comment_command.rs` | 12 |
 | `src/vs/editor/contrib/find/test/browser/replacePattern.test.ts` | 8 | `crates/je-editor/tests/replace_pattern.rs` | 8 |
 | `src/vs/editor/contrib/folding/test/browser/foldingModel.test.ts` | 22 | `crates/je-editor/tests/folding_model.rs` | 22 |
 | `src/vs/editor/contrib/folding/test/browser/foldingRanges.test.ts` | 7 | `crates/je-editor/tests/folding_ranges.rs` | 7 |
@@ -208,7 +242,13 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/contrib/linesOperations/test/browser/copyLinesCommand.test.ts` | 10 | `crates/je-editor/tests/copy_lines_command.rs` | 8 |
 | `src/vs/editor/contrib/linesOperations/test/browser/sortLinesCommand.test.ts` | 7 | `crates/je-editor/tests/sort_lines_command.rs` | 7 |
 | `src/vs/editor/contrib/snippet/test/browser/snippetParser.test.ts` | 54 | `crates/je-editor/tests/snippet_parser.rs` | 54 |
+| `src/vs/editor/test/browser/commands/shiftCommand.test.ts` | 25 | `crates/je-editor/tests/shift_command.rs` | 25 |
+| `src/vs/editor/test/browser/commands/trimTrailingWhitespaceCommand.test.ts` | 2 | `crates/je-editor/tests/trim_trailing_whitespace_command.rs` | 2 |
+| `src/vs/editor/test/browser/config/editorLayoutProvider.test.ts` | 20 | `crates/je-editor/tests/editor_layout_provider.rs` | 20 |
 | `src/vs/editor/test/browser/controller/textAreaState.test.ts` | 26 | `crates/je-editor/tests/text_area_state.rs` | 26 |
+| `src/vs/editor/test/browser/gpu/atlas/textureAtlasAllocator.test.ts` | 11 | `crates/je-editor/tests/texture_atlas_allocator.rs` | 14 |
+| `src/vs/editor/test/browser/gpu/bufferDirtyTracker.test.ts` | 2 | `crates/je-editor/tests/buffer_dirty_tracker.rs` | 2 |
+| `src/vs/editor/test/browser/gpu/objectCollectionBuffer.test.ts` | 6 | `crates/je-editor/tests/object_collection_buffer.rs` | 6 |
 | `src/vs/editor/test/browser/view/viewLayer.test.ts` | 80 | `crates/je-editor/tests/view_layer.rs` | 80 |
 | `src/vs/editor/test/common/controller/cursorAtomicMoveOperations.test.ts` | 2 | `crates/je-editor/tests/cursor_atomic_move_operations.rs` | 2 |
 | `src/vs/editor/test/common/core/characterClassifier.test.ts` | 1 | `crates/je-editor/tests/character_classifier.rs` | 1 |
@@ -219,6 +259,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/core/range.test.ts` | 9 | `crates/je-editor/tests/range.rs` | 9 |
 | `src/vs/editor/test/common/core/stringBuilder.test.ts` | 4 | `crates/je-editor/tests/string_builder.rs` | 4 |
 | `src/vs/editor/test/common/core/stringEdit.test.ts` | 15 | `crates/je-editor/tests/string_edit.rs` | 18 |
+| `src/vs/editor/test/common/core/textEdit.test.ts` | 2 | `crates/je-editor/tests/text_edit.rs` | 4 |
+| `src/vs/editor/test/common/diff/diffComputer.test.ts` | 49 | `crates/je-editor/tests/diff_computer.rs` | 49 |
 | `src/vs/editor/test/common/languages/defaultDocumentColorsComputer.test.ts` | 12 | `crates/je-editor/tests/default_document_colors_computer.rs` | 12 |
 | `src/vs/editor/test/common/model/annotations.test.ts` | 23 | `crates/je-editor/tests/annotations.rs` | 23 |
 | `src/vs/editor/test/common/model/bracketPairColorizer/beforeEditPositionMapper.test.ts` | 9 | `crates/je-editor/tests/bracket_pair_colorizer_before_edit_position_mapper.rs` | 9 |
@@ -244,9 +286,11 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/model/textModelSearch.test.ts` | 42 | `crates/je-editor/tests/text_model_search.rs` | 42 |
 | `src/vs/editor/test/common/model/textModelTokens.test.ts` | 2 | `crates/je-editor/tests/text_model_tokens.rs` | 2 |
 | `src/vs/editor/test/common/model/textModelWithTokens.test.ts` | 29 | `crates/je-editor/tests/text_model_with_tokens.rs` | 30 |
+| `src/vs/editor/test/common/model/tokenStore.test.ts` | 25 | `crates/je-editor/tests/token_store.rs` | 25 |
 | `src/vs/editor/test/common/model/tokensStore.test.ts` | 17 | `crates/je-editor/tests/tokens_store.rs` | 17 |
 | `src/vs/editor/test/common/modes/languageConfiguration.test.ts` | 11 | `crates/je-editor/tests/language_configuration.rs` | 11 |
 | `src/vs/editor/test/common/modes/languageSelector.test.ts` | 12 | `crates/je-editor/tests/language_selector.rs` | 12 |
+| `src/vs/editor/test/common/modes/linkComputer.test.ts` | 14 | `crates/je-editor/tests/link_computer.rs` | 14 |
 | `src/vs/editor/test/common/modes/supports/characterPair.test.ts` | 13 | `crates/je-editor/tests/character_pair.rs` | 13 |
 | `src/vs/editor/test/common/modes/supports/electricCharacter.test.ts` | 2 | `crates/je-editor/tests/electric_character.rs` | 2 |
 | `src/vs/editor/test/common/modes/supports/onEnter.test.ts` | 4 | `crates/je-editor/tests/on_enter.rs` | 4 |
@@ -262,17 +306,27 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/test/common/viewLayout/lineDecorations.test.ts` | 8 | `crates/je-editor/tests/line_decorations.rs` | 8 |
 | `src/vs/editor/test/common/viewLayout/lineHeights.test.ts` | 38 | `crates/je-editor/tests/line_heights.rs` | 38 |
 | `src/vs/editor/test/common/viewLayout/linesLayout.test.ts` | 12 | `crates/je-editor/tests/lines_layout.rs` | 12 |
+| `src/vs/editor/test/common/viewLayout/viewLineRenderer.test.ts` | 97 | `crates/je-editor/tests/view_line_renderer.rs` | 97 |
+| `src/vs/editor/test/common/viewModel/inlineDecorations.test.ts` | 31 | `crates/je-editor/tests/inline_decorations.rs` | 31 |
+| `src/vs/editor/test/common/viewModel/monospaceLineBreaksComputer.test.ts` | 37 | `crates/je-editor/tests/monospace_line_breaks_computer.rs` | 37 |
 | `src/vs/editor/test/common/viewModel/prefixSumComputer.test.ts` | 48 | `crates/je-editor/tests/prefix_sum_computer.rs` | 48 |
+| `src/vs/workbench/services/keybinding/test/browser/keybindingIO.test.ts` | 10 | `crates/je-workbench/tests/keybinding_io.rs` | 10 |
 | `src/vs/workbench/services/keybinding/test/node/fallbackKeyboardMapper.test.ts` | 16 | `crates/je-workbench/tests/fallback_keyboard_mapper.rs` | 16 |
+| `src/vs/workbench/services/keybinding/test/node/macLinuxKeyboardMapper.test.ts` | 85 | `crates/je-workbench/tests/mac_linux_keyboard_mapper.rs` | 85 |
+| `src/vs/workbench/services/keybinding/test/node/windowsKeyboardMapper.test.ts` | 33 | `crates/je-workbench/tests/windows_keyboard_mapper.rs` | 33 |
+| `src/vs/workbench/services/policies/test/browser/policyTelemetryContribution.test.ts` | 10 | `crates/je-workbench/tests/policy_telemetry_contribution.rs` | 10 |
 | `src/vs/workbench/services/search/test/common/ignoreFile.test.ts` | 12 | `crates/je-workbench/tests/ignore_file.rs` | 12 |
 | `src/vs/workbench/services/search/test/common/replace.test.ts` | 8 | `crates/je-workbench/tests/replace.rs` | 8 |
 | `src/vs/workbench/services/search/test/common/search.test.ts` | 14 | `crates/je-workbench/tests/search.rs` | 14 |
+| `src/vs/workbench/contrib/debug/test/node/terminals.test.ts` | 7 | `crates/je-workbench/tests/debug_terminals.rs` | 7 |
 | `src/vs/workbench/contrib/editTelemetry/test/node/arcTracker.test.ts` | 4 | `crates/je-base/tests/edit_arc_tracker.rs` | 4 |
 | `src/vs/workbench/contrib/files/test/browser/explorerFileNestingTrie.test.ts` | 26 | `crates/je-workbench/tests/explorer_file_nesting_trie.rs` | 27 |
 | `src/vs/workbench/contrib/mergeEditor/test/browser/mapping.test.ts` | 13 | `crates/je-workbench/tests/merge_editor_mapping.rs` | 13 |
 | `src/vs/workbench/contrib/terminal/test/browser/capabilities/terminalCapabilityStore.test.ts` | 13 | `crates/je-platform/tests/terminal_capability_store.rs` | 13 |
+| `src/vs/workbench/contrib/terminal/test/browser/terminalUri.test.ts` | 7 | `crates/je-workbench/tests/terminal_uri.rs` | 7 |
 | `src/vs/workbench/contrib/terminal/test/common/environmentVariableCollection.test.ts` | 18 | `crates/je-platform/tests/environment_variable_collection.rs` | 18 |
 | `src/vs/workbench/contrib/terminalContrib/links/test/browser/terminalLinkParsing.test.ts` | 27 | `crates/je-workbench/tests/terminal_link_parsing.rs` | 29 |
+| `src/vs/workbench/contrib/terminalContrib/suggest/test/browser/terminalCompletionModel.test.ts` | 22 | `crates/je-workbench/tests/terminal_completion_model.rs` | 22 |
 | `src/vs/workbench/contrib/update/test/common/updateInfoParser.test.ts` | 20 | `crates/je-workbench/tests/update_info_parser.rs` | 20 |
 | `src/vs/workbench/contrib/update/test/common/updateUtils.test.ts` | 36 | `crates/je-workbench/tests/update_utils.rs` | 36 |
 | `src/vs/workbench/contrib/url/test/browser/trustedDomains.test.ts` | 11 | `crates/je-workbench/tests/trusted_domains.rs` | 11 |
