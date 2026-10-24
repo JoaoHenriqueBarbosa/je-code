@@ -18,6 +18,14 @@ pub mod main_thread_quick_open;
 pub mod main_thread_workspace;
 pub mod main_thread_message_service;
 
+// Diagnostics, DocumentContentProviders, EditorTabs, Telemetry e Authentication (parcial): `mainThreadDiagnostics.ts`,
+// `mainThreadDocumentContentProviders.ts`, `mainThreadEditorTabs.ts`, `mainThreadTelemetry.ts`, `mainThreadAuthentication.ts`.
+pub mod main_thread_authentication;
+pub mod main_thread_diagnostics;
+pub mod main_thread_document_content_providers;
+pub mod main_thread_editor_tabs;
+pub mod main_thread_telemetry;
+
 // Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
 pub mod main_thread_webview_panels;
 pub mod main_thread_webviews;
