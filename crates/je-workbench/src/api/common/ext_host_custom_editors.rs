@@ -20,11 +20,11 @@
 //!   `isEditEvent`) é o enum [`CustomDocumentChangeEvent`].
 //! - `registerCustomEditorProvider` lança no original (viewType já registrado, proposta de API não habilitada): aqui
 //!   devolve [`Result`]. O `vscode.Disposable` é o [`Disposable`] de `ext_host_types`.
-//! - `ExtHostWebviews`, `ExtHostWebviewPanels` (`extHostWebview.ts`, `extHostWebviewPanels.ts`) e
-//!   `IExtensionStoragePaths` (`extHostStoragePaths.ts`) ainda não têm porte: este arquivo declara, como traits, só o
-//!   que o `ExtHostCustomEditors` usa deles ([`ExtHostWebviews`], [`ExtHostWebview`], [`ExtHostWebviewPanels`],
-//!   [`WebviewPanel`], [`IExtensionStoragePaths`]). `toExtensionData` e `shouldSerializeBuffersForPostMessage`, também de
-//!   `extHostWebview.ts`, são [`to_extension_data`] e [`should_serialize_buffers_for_post_message`] aqui.
+//! - `ExtHostWebviews` e `ExtHostWebviewPanels` (`extHostWebview.ts`, `extHostWebviewPanels.ts`) são os porte reais de
+//!   `ext_host_webview` e `ext_host_webview_panels` (`vscode.WebviewPanel` é o [`ExtHostWebviewPanel`]); `IExtensionStoragePaths`
+//!   (`extHostStoragePaths.ts`) ainda não tem porte: este arquivo declara, como trait, só o que o `ExtHostCustomEditors`
+//!   usa dele ([`IExtensionStoragePaths`]). `toExtensionData` e `shouldSerializeBuffersForPostMessage`, de `extHostWebview.ts`,
+//!   são `to_extension_data` e `should_serialize_buffers_for_post_message` de `ext_host_webview`.
 //! - O `ExtHostCustomEditors` é um `Rc` interno ([`ExtHostCustomEditors::new`]): as promessas e os ouvintes seguram o
 //!   estado. `IMainContext` só serve para pedir o proxy (`MainThreadCustomEditors`) no construtor.
 //! - `vscode.CustomTextEditorNavigation.captureViewState/restoreViewState` trafegam `unknown`: é [`Dynamic`].
@@ -50,7 +50,6 @@ use je_base::uri::URI;
 use je_editor::range::Range as EditorRange;
 use je_editor::selection::Selection as EditorSelection;
 use je_extensions::scanner::ExtensionDescription;
-use je_extensions::validator::{normalize_version, parse_version};
 
 use super::cache::Cache;
 use super::ext_host_document_data::TextDocument;
@@ -58,68 +57,20 @@ use super::ext_host_documents::ExtHostDocuments;
 use super::ext_host_protocol::{
     CreateCustomDocumentResult, CustomEditorDiffInitData, CustomEditorProviderCapabilities, CustomEditorResolveInitData, CustomEditorSideBySideDiffInitData,
     CustomEditorSideBySideDiffWebviewHandles, CustomTextEditorNavigationResult, EditorGroupColumn, ExtHostCustomEditorsShape, IMainContext, MainContext,
-    MainThreadCustomEditorsShape, WebviewContentOptions, WebviewExtensionDescription, WebviewPanelOptions,
+    MainThreadCustomEditorsShape, WebviewPanelOptions,
 };
 use super::ext_host_type_converters::{Range as RangeConverter, Selection as SelectionConverter, ViewColumn};
 use super::ext_host_types::{Disposable, Range, Selection};
+use super::ext_host_webview::{ExtHostWebviews, should_serialize_buffers_for_post_message, to_extension_data};
+use super::ext_host_webview_panels::{ExtHostWebviewPanel, ExtHostWebviewPanels};
 use crate::services::extensions::extensions::{check_proposed_api_enabled, is_proposed_api_enabled};
 
-// ---- colaboradores ainda não portados
-
-/// `ExtHostWebview`: o `webview` que `ExtHostWebviews.createNewWebview` cria e `ExtHostWebviewPanels.createNewWebviewPanel`
-/// recebe; o `ExtHostCustomEditors` só o repassa.
-pub trait ExtHostWebview {}
-
-/// `vscode.WebviewPanel`, só o que o `ExtHostCustomEditors` lê dele.
-pub trait WebviewPanel {
-    /// `onDidDispose`.
-    fn on_did_dispose(&self) -> Event<()>;
-}
-
-/// `ExtHostWebviews`, só o que o `ExtHostCustomEditors` chama.
-pub trait ExtHostWebviews {
-    /// `createNewWebview(handle, options, extension)`.
-    fn create_new_webview(&self, handle: &str, options: &WebviewContentOptions, extension: &ExtensionDescription) -> Rc<dyn ExtHostWebview>;
-
-    /// `ensureDefaultContentOptions(handle, contentOptions, extension)`.
-    fn ensure_default_content_options(&self, handle: &str, content_options: &WebviewContentOptions, extension: &ExtensionDescription);
-}
-
-/// `ExtHostWebviewPanels`, só o que o `ExtHostCustomEditors` chama.
-pub trait ExtHostWebviewPanels {
-    /// `createNewWebviewPanel(webviewHandle, viewType, title, position, options, webview, active)`.
-    #[allow(clippy::too_many_arguments)]
-    fn create_new_webview_panel(
-        &self,
-        webview_handle: &str,
-        view_type: &str,
-        title: &str,
-        position: f64,
-        options: WebviewPanelOptions,
-        webview: Rc<dyn ExtHostWebview>,
-        active: bool,
-    ) -> Rc<dyn WebviewPanel>;
-
-    /// `getWebviewPanel(handle)`.
-    fn get_webview_panel(&self, handle: &str) -> Option<Rc<dyn WebviewPanel>>;
-}
+// ---- colaborador ainda não portado
 
 /// `IExtensionStoragePaths`, só `workspaceValue` e `globalValue`.
 pub trait IExtensionStoragePaths {
     fn workspace_value(&self, extension: &ExtensionDescription) -> Option<URI>;
     fn global_value(&self, extension: &ExtensionDescription) -> URI;
-}
-
-/// `toExtensionData(extension)`.
-pub fn to_extension_data(extension: &ExtensionDescription) -> WebviewExtensionDescription {
-    WebviewExtensionDescription { id: extension.identifier.clone(), location: URI::parse(extension.extension_location.as_str(), false) }
-}
-
-/// `shouldSerializeBuffersForPostMessage(extension)`: a extensão declara `engines.vscode >= 1.57`.
-pub fn should_serialize_buffers_for_post_message(extension: &ExtensionDescription) -> bool {
-    let parsed = extension.manifest.engines.vscode.as_deref().and_then(parse_version);
-    let version = normalize_version(parsed.as_ref());
-    version.is_some_and(|version| version.major_base >= 1 && version.minor_base >= 57)
 }
 
 // ---- a API de editores personalizados (`vscode.d.ts`)
@@ -187,8 +138,8 @@ pub struct CustomEditorDiffDocuments<T> {
 /// `vscode.CustomEditorSideBySideDiffWebviewPanels`.
 #[derive(Clone)]
 pub struct CustomEditorSideBySideDiffWebviewPanels {
-    pub original: Rc<dyn WebviewPanel>,
-    pub modified: Rc<dyn WebviewPanel>,
+    pub original: Rc<ExtHostWebviewPanel>,
+    pub modified: Rc<ExtHostWebviewPanel>,
 }
 
 /// `vscode.CustomTextEditorRevealOptions`.
@@ -212,7 +163,7 @@ pub trait CustomEditorInlineDiffProvider {
     fn resolve_custom_editor_inline_diff(
         &self,
         documents: CustomEditorDiffDocuments<Rc<dyn CustomDocument>>,
-        panel: Rc<dyn WebviewPanel>,
+        panel: Rc<ExtHostWebviewPanel>,
         token: CancellationToken,
     ) -> MaybePromise<()>;
 }
@@ -229,7 +180,7 @@ pub trait CustomEditorSideBySideDiffProvider {
 
 /// `resolveCustomTextEditorInlineDiff` de `vscode.CustomTextEditorProvider` (proposta `customEditorDiffs`).
 pub trait CustomTextEditorInlineDiffProvider {
-    fn resolve_custom_text_editor_inline_diff(&self, documents: CustomEditorDiffDocuments<TextDocument>, panel: Rc<dyn WebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
+    fn resolve_custom_text_editor_inline_diff(&self, documents: CustomEditorDiffDocuments<TextDocument>, panel: Rc<ExtHostWebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
 }
 
 /// `resolveCustomTextEditorSideBySideDiff` de `vscode.CustomTextEditorProvider` (proposta `customEditorDiffs`).
@@ -244,7 +195,7 @@ pub trait CustomTextEditorSideBySideDiffProvider {
 
 /// `moveCustomTextEditor` de `vscode.CustomTextEditorProvider`.
 pub trait CustomTextEditorMoveProvider {
-    fn move_custom_text_editor(&self, document: TextDocument, panel: Rc<dyn WebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
+    fn move_custom_text_editor(&self, document: TextDocument, panel: Rc<ExtHostWebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
 }
 
 /// `resolveCustomTextEditorNavigation` de `vscode.CustomTextEditorProvider` (proposta `customTextEditorNavigation`).
@@ -252,7 +203,7 @@ pub trait CustomTextEditorNavigationProvider {
     fn resolve_custom_text_editor_navigation(
         &self,
         document: TextDocument,
-        panel: Rc<dyn WebviewPanel>,
+        panel: Rc<ExtHostWebviewPanel>,
         token: CancellationToken,
     ) -> MaybePromise<Rc<dyn CustomTextEditorNavigation>>;
 }
@@ -260,7 +211,7 @@ pub trait CustomTextEditorNavigationProvider {
 /// `vscode.CustomTextEditorProvider`.
 pub trait CustomTextEditorProvider {
     /// `resolveCustomTextEditor(document, webviewPanel, token)`.
-    fn resolve_custom_text_editor(&self, document: TextDocument, panel: Rc<dyn WebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
+    fn resolve_custom_text_editor(&self, document: TextDocument, panel: Rc<ExtHostWebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
 
     fn as_move(&self) -> Option<&dyn CustomTextEditorMoveProvider> {
         None
@@ -285,7 +236,7 @@ pub trait CustomReadonlyEditorProvider {
     fn open_custom_document(&self, uri: &URI, open_context: CustomDocumentOpenContext, token: CancellationToken) -> MaybePromise<Rc<dyn CustomDocument>>;
 
     /// `resolveCustomEditor(document, webviewPanel, token)`.
-    fn resolve_custom_editor(&self, document: Rc<dyn CustomDocument>, panel: Rc<dyn WebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
+    fn resolve_custom_editor(&self, document: Rc<dyn CustomDocument>, panel: Rc<ExtHostWebviewPanel>, token: CancellationToken) -> MaybePromise<()>;
 
     /// O provedor com `onDidChangeCustomDocument` (`vscode.CustomEditorProvider`), o que o torna editável.
     fn as_editable(&self) -> Option<&dyn CustomEditorProvider> {
@@ -493,8 +444,8 @@ struct Inner {
     navigation: RefCell<HashMap<String, Rc<CustomTextEditorNavigationEntry>>>,
     ext_host_documents: Rc<ExtHostDocuments>,
     extension_storage_paths: Option<Rc<dyn IExtensionStoragePaths>>,
-    ext_host_webview: Rc<dyn ExtHostWebviews>,
-    ext_host_webview_panels: Rc<dyn ExtHostWebviewPanels>,
+    ext_host_webview: Rc<ExtHostWebviews>,
+    ext_host_webview_panels: Rc<ExtHostWebviewPanels>,
 }
 
 /// `ExtHostCustomEditors`.
@@ -507,8 +458,8 @@ impl ExtHostCustomEditors {
         main_context: &dyn IMainContext,
         ext_host_documents: Rc<ExtHostDocuments>,
         extension_storage_paths: Option<Rc<dyn IExtensionStoragePaths>>,
-        ext_host_webview: Rc<dyn ExtHostWebviews>,
-        ext_host_webview_panels: Rc<dyn ExtHostWebviewPanels>,
+        ext_host_webview: Rc<ExtHostWebviews>,
+        ext_host_webview_panels: Rc<ExtHostWebviewPanels>,
     ) -> Self {
         Self {
             inner: Rc::new(Inner {
@@ -647,12 +598,12 @@ impl Inner {
         view_type: &str,
         init_data: &CustomEditorDiffInitData,
         position: EditorGroupColumn,
-    ) -> Result<(ProviderEntry, Rc<dyn WebviewPanel>), Error> {
+    ) -> Result<(ProviderEntry, Rc<ExtHostWebviewPanel>), Error> {
         let entry = self.get_provider(view_type)?;
         let view_column = view_column_to(position)?;
         let webview = self.ext_host_webview.create_new_webview(handle, &init_data.content_options, &entry.extension);
         self.ext_host_webview.ensure_default_content_options(handle, &init_data.content_options, &entry.extension);
-        let panel = self.ext_host_webview_panels.create_new_webview_panel(handle, view_type, &init_data.title, view_column, init_data.options, webview, init_data.active);
+        let panel = self.ext_host_webview_panels.create_new_webview_panel(handle, view_type, &init_data.title, Some(view_column), init_data.options, webview, init_data.active);
         Ok((entry, panel))
     }
 }
@@ -723,7 +674,7 @@ impl ExtHostCustomEditorsShape for ExtHostCustomEditors {
             // and the providing extension's install directory, as documented on
             // `WebviewOptions.localResourceRoots`.
             inner.ext_host_webview.ensure_default_content_options(&handle, &init_data.content_options, &entry.extension);
-            let panel = inner.ext_host_webview_panels.create_new_webview_panel(&handle, &view_type, &init_data.title, view_column, init_data.options, webview, init_data.active);
+            let panel = inner.ext_host_webview_panels.create_new_webview_panel(&handle, &view_type, &init_data.title, Some(view_column), init_data.options, webview, init_data.active);
 
             match &entry.provider {
                 EditorProvider::Custom(provider) => {

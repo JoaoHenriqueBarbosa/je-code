@@ -13,3 +13,7 @@ pub mod main_thread_timeline;
 pub mod main_thread_quick_open;
 pub mod main_thread_workspace;
 pub mod main_thread_message_service;
+
+// Webviews: `mainThreadWebviews.ts` e `mainThreadWebviewPanels.ts`.
+pub mod main_thread_webview_panels;
+pub mod main_thread_webviews;
