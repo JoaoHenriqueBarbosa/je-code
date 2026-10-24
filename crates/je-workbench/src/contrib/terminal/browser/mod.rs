@@ -5,3 +5,5 @@ pub mod terminal;
 pub mod terminal_configuration_service;
 
 pub mod terminal_instance;
+
+pub mod xterm;

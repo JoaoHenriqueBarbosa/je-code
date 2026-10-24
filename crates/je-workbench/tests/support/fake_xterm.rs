@@ -11,10 +11,12 @@
 //! - Registra marcadores ([`FakeMarker`]) na linha do cursor mais o deslocamento.
 //!
 //! O que ele não faz: caracteres largos (toda célula tem largura 1), atributos de cor e estilo (toda célula é sem estilo),
-//! limite de scrollback e reflow no redimensionamento.
+//! e reflow no redimensionamento. O limite de scrollback (`rows + options.scrollback` linhas, as mais antigas saem e os
+//! marcadores descem junto) só vale para o terminal criado com [`FakeXterm::from_options`], e é lido uma vez, na criação.
 //!
-//! Implementa os dois contratos do porte: o `IHeadlessTerminal` de `je_platform::terminal::xterm_headless` e o
-//! `ITerminal` de `je_workbench::contrib::terminal::xterm_buffer`, com os buffers, as linhas e as células de cada um.
+//! Implementa os contratos do porte: o `IHeadlessTerminal` de `je_platform::terminal::xterm_headless`, o `ITerminal` de
+//! `je_workbench::contrib::terminal::xterm_buffer` e o `IXtermRaw` do `XtermTerminal`, com os buffers, as linhas e as células
+//! de cada um.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -24,6 +26,7 @@ use je_base::js_string::JsString;
 use je_base::lifecycle::{DisposableRef, IDisposable, plain_disposable};
 use je_platform::terminal::capabilities::capabilities::IMarker;
 use je_platform::terminal::xterm_headless as platform;
+use je_workbench::contrib::terminal::browser::xterm::xterm_terminal::{IXtermRaw, XtermOptions};
 use je_workbench::contrib::terminal::xterm_buffer as workbench;
 
 /// O marcador de uma linha do buffer (`IMarker` do xterm).
@@ -37,6 +40,20 @@ pub struct FakeMarker {
 impl FakeMarker {
     pub fn new(id: f64, line: f64) -> Rc<Self> {
         Rc::new(Self { id, line: Cell::new(line), disposed: Cell::new(false), on_dispose: Emitter::new() })
+    }
+
+    /// As `amount` linhas mais antigas saíram do scrollback: o marcador desce o mesmo tanto, e sai do buffer (é descartado)
+    /// quando a linha dele foi a que saiu.
+    fn scroll_out(&self, amount: i32) {
+        if self.disposed.get() {
+            return;
+        }
+        let line = self.line.get() - f64::from(amount);
+        if line < 0.0 {
+            self.dispose();
+        } else {
+            self.line.set(line);
+        }
     }
 }
 
@@ -264,6 +281,10 @@ struct Screen {
     cursor_x: Cell<i32>,
     cursor_y: Cell<i32>,
     base_y: Cell<i32>,
+    /// O limite de linhas do scrollback (`options.scrollback`); `None` não limita.
+    scrollback: Option<i32>,
+    /// As linhas que saíram do scrollback desde a última leitura (os marcadores descem esse tanto).
+    trimmed: Cell<i32>,
 }
 
 impl Screen {
@@ -271,6 +292,18 @@ impl Screen {
         let mut lines = self.lines.borrow_mut();
         while i32::try_from(lines.len()).unwrap_or(i32::MAX) < count {
             lines.push(LineData::new(self.cols));
+        }
+    }
+
+    /// Descarta as linhas mais antigas além de `rows + scrollback`, como o buffer do xterm.
+    fn trim_scrollback(&self) {
+        let Some(scrollback) = self.scrollback else { return };
+        let limit = usize::try_from(self.rows + scrollback).unwrap_or(0);
+        let mut lines = self.lines.borrow_mut();
+        while lines.len() > limit {
+            lines.remove(0);
+            self.base_y.set(self.base_y.get() - 1);
+            self.trimmed.set(self.trimmed.get() + 1);
         }
     }
 
@@ -289,8 +322,9 @@ impl Screen {
         } else {
             self.cursor_y.set(self.cursor_y.get() + 1);
         }
+        self.ensure_lines(self.base_y.get() + self.cursor_y.get() + 1);
+        self.trim_scrollback();
         let absolute = self.base_y.get() + self.cursor_y.get();
-        self.ensure_lines(absolute + 1);
         if wrapped && let Some(line) = self.lines.borrow_mut().get_mut(usize::try_from(absolute).unwrap_or(0)) {
             line.is_wrapped = true;
         }
@@ -407,17 +441,32 @@ pub struct FakeXterm {
     deleted_lines: RefCell<Vec<(i32, i32)>>,
     /// Os marcadores registrados, descartados com o terminal (`Terminal.dispose()` descarta o buffer e os marcadores dele).
     markers: RefCell<Vec<Rc<FakeMarker>>>,
+    /// `terminal.options`.
+    options: RefCell<XtermOptions>,
 }
 
-impl FakeXterm {
+impl IDisposable for FakeXterm {
     /// `terminal.dispose()`: descarta os marcadores registrados.
-    pub fn dispose(&self) {
+    fn dispose(&self) {
         for marker in self.markers.take() {
             marker.dispose();
         }
     }
+}
 
+impl FakeXterm {
+    /// Um terminal sem limite de scrollback e com as opções padrão do xterm para o tamanho dado.
     pub fn new(cols: i32, rows: i32) -> Rc<Self> {
+        Self::with_options(XtermOptions::defaults(cols, rows), None)
+    }
+
+    /// `new Terminal(options)`: o tamanho e o limite de scrollback vêm das opções.
+    pub fn from_options(options: &XtermOptions) -> Rc<Self> {
+        Self::with_options(options.clone(), Some(options.scrollback as i32))
+    }
+
+    fn with_options(options: XtermOptions, scrollback: Option<i32>) -> Rc<Self> {
+        let (cols, rows) = (options.cols, options.rows);
         let screen = Rc::new(Screen {
             cols,
             rows,
@@ -425,6 +474,8 @@ impl FakeXterm {
             cursor_x: Cell::new(0),
             cursor_y: Cell::new(0),
             base_y: Cell::new(0),
+            scrollback,
+            trimmed: Cell::new(0),
         });
         screen.ensure_lines(rows);
         Rc::new(Self {
@@ -437,6 +488,7 @@ impl FakeXterm {
             next_marker_id: Cell::new(0),
             markers: RefCell::new(Vec::new()),
             deleted_lines: RefCell::new(Vec::new()),
+            options: RefCell::new(options),
         })
     }
 
@@ -469,6 +521,13 @@ impl FakeXterm {
                 c => self.screen.put_char(c),
             }
             index += 1;
+        }
+        let trimmed = self.screen.trimmed.take();
+        if trimmed > 0 {
+            let markers = self.markers.borrow().clone();
+            for marker in &markers {
+                marker.scroll_out(trimmed);
+            }
         }
         if before != (self.screen.cursor_x.get(), self.screen.cursor_y.get()) {
             self.on_cursor_move.fire(());
@@ -601,6 +660,23 @@ impl platform::IHeadlessTerminal for FakeXterm {
 
     fn on_write_parsed(&self) -> Event<()> {
         self.on_write_parsed.event()
+    }
+}
+
+impl IXtermRaw for FakeXterm {
+    fn options(&self) -> &RefCell<XtermOptions> {
+        &self.options
+    }
+
+    fn buffer_length(&self) -> i32 {
+        i32::try_from(self.screen.lines.borrow().len()).unwrap_or(i32::MAX)
+    }
+
+    fn write(&self, data: &str, callback: Option<Box<dyn FnOnce()>>) {
+        self.write_p(data);
+        if let Some(callback) = callback {
+            callback();
+        }
     }
 }
 

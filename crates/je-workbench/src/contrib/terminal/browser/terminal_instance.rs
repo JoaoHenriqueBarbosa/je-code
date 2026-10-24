@@ -1,10 +1,17 @@
-//! Porte parcial de `src/vs/workbench/contrib/terminal/browser/terminalInstance.ts`: `parseExitResult` e
-//! `TerminalLabelComputer` (o cálculo do título e da descrição da aba a partir dos modelos `tabs.title` e `tabs.description`).
+//! Porte parcial de `src/vs/workbench/contrib/terminal/browser/terminalInstance.ts`: `parseExitResult`,
+//! `TerminalLabelComputer` (o cálculo do título e da descrição da aba a partir dos modelos `tabs.title` e `tabs.description`)
+//! e `getCwdResource` (a resolução do diretório de trabalho detectado para um URI que existe).
 //!
-//! O resto do arquivo (`TerminalInstance`, `TerminalInstanceColorProvider`, o `guessShellTypeFromExecutable`...) depende do
-//! emulador de terminal (Fase 6), do DOM e de serviços do workbench ainda não portados, e entra com eles.
+//! O resto do arquivo (a classe `TerminalInstance` com o processo, o título, o `rename`, o `runCommand`, o descarte e a parte
+//! de DOM; `TerminalInstanceColorProvider`, o `guessShellTypeFromExecutable`...) depende de `ITerminalProcessManager`,
+//! `ITerminalChildProcess`, `ITerminalBackend`, `ITerminalInstanceService`, `ITerminalService` e do
+//! `workbenchInstantiationService` inteiro, que ainda não existem no porte, e do emulador de terminal da Fase 6, e entra
+//! com eles.
 //!
 //! Divergências:
+//! - **`getCwdResource`.** É [`get_cwd_resource`], uma função sobre o store de capacidades, o `remoteAuthority` e as três
+//!   operações que o método lê dos serviços (`IPathService.fileURI`, `IFileService.canHandleResource` e
+//!   `IFileService.exists`), reunidas em [`ICwdResourceServices`]: a classe `TerminalInstance` as injeta quando existir.
 //! - **`Pick<ITerminalInstance, ...>`.** É [`LabelInstance`], com os campos que o cálculo lê.
 //! - **Injeção.** Os parâmetros decorados do construtor são a tupla `Deps` do [`Injectable`], na ordem do original; a classe
 //!   herda de `Disposable`, aqui um `Disposable` guardado no campo `base`.
@@ -34,11 +41,15 @@ use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::nls::localize;
 use je_base::path::{PathModule, ProcessEnvironment};
 use je_base::platform::{OperatingSystem, Platform};
+use je_base::promise::Promise;
 use je_base::uri::{URI, UriComponents};
 use je_instantiation::Injectable;
 use je_platform::files::files::FileSystemProviderCapabilities;
 use je_platform::files::i_file_service::IFileService;
-use je_platform::terminal::capabilities::capabilities::{ITerminalCapabilityStore, TerminalCapability, TerminalCapabilityImpl, TerminalCommandConfidence};
+use je_platform::terminal::capabilities::capabilities::{
+    CwdDetection, ITerminalCapabilityStore, TerminalCapability, TerminalCapabilityImpl, TerminalCommandConfidence,
+};
+use je_platform::terminal::capabilities::terminal_capability_store::TerminalCapabilityStoreExt;
 use je_platform::terminal::terminal::{GeneralShellType, IShellLaunchConfig, ITerminalLaunchError, ShellType, TerminalType};
 use je_platform::workspace::{IWorkspaceContextService, WorkspaceFolder};
 
@@ -149,6 +160,42 @@ fn conpty_error_code(message: &str) -> Option<i64> {
         let after = last_line[index + marker.len()..].trim_start();
         let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
         if digits.is_empty() { None } else { digits.parse::<i64>().ok() }
+    })
+}
+
+/// O que `getCwdResource` lê dos serviços: `IPathService.fileURI`, `IFileService.canHandleResource` e `IFileService.exists`.
+pub trait ICwdResourceServices {
+    /// `IPathService.fileURI(path)`: o URI do caminho no ambiente remoto.
+    fn file_uri(&self, path: &str) -> Promise<URI>;
+
+    /// `IFileService.canHandleResource(resource)`: se há provedor para o esquema do recurso.
+    fn can_handle_resource(&self, resource: &URI) -> Promise<bool>;
+
+    /// `IFileService.exists(resource)`.
+    fn exists(&self, resource: &URI) -> Promise<bool>;
+}
+
+/// `TerminalInstance.getCwdResource`: o diretório de trabalho detectado como URI, ou `None` se não há cwd, se o serviço de
+/// arquivos não trata o esquema ou se o diretório não existe.
+pub fn get_cwd_resource(capabilities: &dyn ITerminalCapabilityStore, remote_authority: Option<&str>, services: Rc<dyn ICwdResourceServices>) -> Promise<Option<URI>> {
+    let Some(cwd) = capabilities.get::<CwdDetection>().map(|cwd_detection| cwd_detection.get_cwd()).filter(|cwd| !cwd.is_empty()) else {
+        return Promise::resolved(None);
+    };
+    let resource = if remote_authority.is_some_and(|authority| !authority.is_empty()) {
+        services.file_uri(&cwd)
+    } else {
+        Promise::resolved(URI::file(cwd.as_str(), je_platform::resources::host_platform()))
+    };
+    // In VS Code web (server-linux-x64-web accessed via browser), remoteAuthority is falsy from the terminal's perspective, so
+    // URI.file() is used above. The browser FileService has no file:// provider registered (only the remote provider), so
+    // guard with canHandleResource before calling exists() to avoid an ENOPRO error propagating to callers.
+    resource.then_promise(move |resource| {
+        services.can_handle_resource(&resource).then_promise(move |can_handle| {
+            if !can_handle {
+                return Promise::resolved(None);
+            }
+            services.exists(&resource).then(move |exists| exists.then_some(resource))
+        })
     })
 }
 
