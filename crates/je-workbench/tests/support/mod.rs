@@ -77,3 +77,6 @@ pub mod mock_debug;
 // Porte de `baseDebugView.test.ts`, `watchExpressionView.test.ts` e `variablesView.test.ts`: o `LinkDetector` e o
 // `DebugExpressionRenderer` de teste, o `IDebugService` com o `getViewModel` trocado, o escopo e a variável do `setup`.
 pub mod debug_view_support;
+
+// Porte de `editorAutoSave.test.ts` e `textFileEditorTracker.test.ts`: o `createEditorAutoSave`/`createTracker` comum e o `TestHostService` com foco.
+pub mod editor_auto_save_support;

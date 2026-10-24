@@ -4,6 +4,7 @@
 pub mod breadcrumbs;
 pub mod breadcrumbs_model;
 pub mod editor;
+pub mod editor_auto_save;
 pub mod editor_group_view;
 pub mod editor_panes;
 pub mod editor_part;
