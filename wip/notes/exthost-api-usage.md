@@ -245,9 +245,14 @@ Fonte: **eu** (leitura de `api/languages.rs`, `api/language_types.rs` e dos serv
 | `registerCompletionItemProvider`, `registerHoverProvider`, `registerDefinitionProvider`, `registerDeclarationProvider`, `registerImplementationProvider`, `registerTypeDefinitionProvider`, `registerCodeActionsProvider`, `registerDocumentFormattingEditProvider`, `registerDocumentRangeFormattingEditProvider`, `registerDocumentSymbolProvider` | entregue | `api/languages.rs`, sobre `ExtHostLanguageFeatures` |
 | `Diagnostic`, `DiagnosticRelatedInformation`, `Location`, `TextEdit`, `MarkdownString` (construtor e propriedades), `SnippetString` (construtor e `value`), `CompletionItem`, `CompletionList`, `Hover`, `CodeAction`, `DocumentSymbol`, `CodeActionKind` (membros estáticos e `append`, `contains`, `intersects`) | entregue | `api/language_types.rs` |
 | `DiagnosticSeverity`, `DiagnosticTag`, `SymbolKind`, `SymbolTag`, `CompletionItemKind`, `CompletionItemTag`, `CompletionTriggerKind`, `CodeActionTriggerKind` | entregue | `api/enums.rs` |
-| `MarkdownString#appendText`, `appendMarkdown`, `appendCodeblock`, `SnippetString#append*`, `WorkspaceEdit`, `CodeAction#edit` | falta | o motor entrega objeto comum por cópia, então um método não altera o receptor; pede uma API de referência no `zjsc` para o `this` (a função por referência de provedor já existe) |
-| `resolveCompletionItem`, `resolveCodeAction`, `provideDocumentRangesFormattingEdits`, `HoverContext#previousHover` | falta | o host não consegue perguntar se o provedor tem o método (`typeof provider.x === 'function'`), então os `has_*` valem `false` |
-| `registerReferenceProvider`, `registerRenameProvider`, `registerSignatureHelpProvider`, `registerFoldingRangeProvider`, `registerCodeLensProvider`, `registerInlayHintsProvider`, `registerDocumentLinkProvider`, `registerDocumentHighlightProvider`, `registerOnTypeFormattingEditProvider`, `registerWorkspaceSymbolProvider`, `setLanguageConfiguration`, `createLanguageStatusItem` | falta | o serviço do host os tem, falta só a ponte |
+| `MarkdownString#appendText`, `appendMarkdown`, `appendCodeblock`, `SnippetString#append*` | falta | o motor entrega objeto comum por cópia, então um método não altera o receptor; pede uma API de referência no `zjsc` para o `this` (a função por referência de provedor já existe) |
+| `HoverContext#previousHover` | falta | o host só tem o `Hover` já convertido para o formato do editor, sem o objeto da extensão |
+| `registerCodeLensProvider` (com `resolveCodeLens`, `onDidChangeCodeLenses`), `registerReferenceProvider`, `registerRenameProvider` (com `prepareRename`), `registerSignatureHelpProvider` (caracteres soltos e `{ triggerCharacters, retriggerCharacters }`), `registerDocumentHighlightProvider`, `registerOnTypeFormattingEditProvider`, `registerFoldingRangeProvider` (com `onDidChangeFoldingRanges`), `registerSelectionRangeProvider`, `registerDocumentSemanticTokensProvider` e `registerDocumentRangeSemanticTokensProvider` (com `provideDocumentSemanticTokensEdits`, `onDidChangeSemanticTokens`), `registerInlayHintsProvider` (com `resolveInlayHint`, `onDidChangeInlayHints`) | entregue (2026-10-25, escrito sem compilar: o integrador confirma) | `api/language_providers.rs`, sobre `ExtHostLanguageFeatures` |
+| `resolveCompletionItem`, `resolveCodeAction`, `provideDocumentRangesFormattingEdits` | entregue: os `has_*` leem `typeof provider.x === 'function'` no objeto do provedor (`JsProvider::has_method`) e o `resolveX` recebe a cópia original que o provedor devolveu (`Originals`) | `api/languages.rs` |
+| `CodeAction#edit` (um `WorkspaceEdit` criado pela extensão) | entregue (lido da tabela de `WorkspaceEditObjects`) | `api/language_types.rs` |
+| `CodeLens`, `DocumentHighlight`, `SignatureHelp`, `SignatureInformation`, `ParameterInformation`, `FoldingRange`, `SelectionRange`, `InlayHint`, `InlayHintLabelPart`, `SemanticTokensLegend`, `SemanticTokens`, `SemanticTokensEdit`, `SemanticTokensEdits`, `SemanticTokensBuilder` (estado do lado Rust, `push` de números e de `Range` com legenda, `build`) | entregue | `api/language_provider_types.rs` |
+| `DocumentHighlightKind`, `FoldingRangeKind`, `InlayHintKind`, `SignatureHelpTriggerKind` | entregue | `api/enums.rs` |
+| `registerDocumentLinkProvider`, `registerColorProvider`, `registerCallHierarchyProvider`, `registerTypeHierarchyProvider`, `registerWorkspaceSymbolProvider`, `registerEvaluatableExpressionProvider`, `registerInlineValuesProvider`, `registerLinkedEditingRangeProvider`, `registerMultiDocumentHighlightProvider`, `setLanguageConfiguration`, `createLanguageStatusItem` | falta | o serviço do host os tem, falta só a ponte |
 
 Como entra em `vscode.languages`: o `IMainThreadBinder` registra `MainThreadDiagnostics`, `MainThreadLanguages` e `MainThreadLanguageFeatures` (os
 registros de provedor também pedem `MainThreadDiagnostics`, porque o `ExtHostLanguageFeatures` lê os diagnósticos nas ações de código), além dos
@@ -264,6 +269,20 @@ binder em `tests/support/extension_host_api_languages_support.rs`.
 Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): `Event` precisa ser `Clone` (o `onDidChangeDiagnostics` o clona);
 `FormattingOptions` é lido por `tab_size` e `insert_spaces`; as instâncias de `DiagnosticCollection` são identificadas por `_id` (a identidade `a === b`
 falha); `CodeActionKind` não é construtível (`new CodeActionKind(x)` não existe).
+
+Segunda leva de provedores (2026-10-25, escrito sem compilar: o integrador confirma). Fonte: **eu** (leitura de `api/languages.rs`, `ext_host_language_features.rs` e
+seus submódulos, `ext_host_language_features_api.rs`, `ext_host_types/symbols.rs`, `semantic_tokens.rs` e do oráculo `extHost.api.impl.ts`). `languages.rs` ganhou a
+infraestrutura compartilhada (`JsProvider` com `has_method`, `change_event` e `resolve`; `Originals`; `Registrar`; `member` e `simple`) e `language_providers.rs` usa
+essa infraestrutura. `LanguagesServices` ganhou o campo `workspace_edits` (`host.rs` o preenche com a tabela de `WorkspaceEdit` que o `workspace` já usa) e
+`LanguagesState` o campo `builders` (a tabela de `SemanticTokensBuilder`). `language_types::code_actions_from_js` agora recebe a tabela de edições.
+Teste: `crates/je-workbench/tests/extension_host_api_languages_providers2.rs` (nenhum rodou). Pendências a confirmar na primeira compilação: o campo `include_declaration`
+de `ReferenceContext`; `ISignatureHelpContextDto` com `trigger_kind` de `je_editor::parameter_hints::languages::SignatureHelpTriggerKind`, `trigger_character`, `is_retrigger` e
+`active_signature_help`; `FoldingContext {}` como literal vazio; `ISuggestResultDto::cache_id` e `ChainedCacheId` como `(u32, u32)`; `ILocationDto::range`,
+`EditorDocumentHighlight::range`, `EditorSelectionRange::range` e `EditorFoldingRange::{start, end}`; `emitter.event` chamado sem `this` por `JsObjects::listen` (o evento
+`onDidChangeCodeLenses` do teste só exercita o registro, o disparo não é observado porque o `RecordingLanguageFeatures` ignora os `$emit*Event`); `Rc<Originals<T>>` com `Default`.
+Divergências: o provedor que altera o item no lugar e devolve `undefined` no `resolveX` perde a alteração; `SemanticTokens#data` é lista de números (o `Uint32Array` não
+atravessa o motor, o leitor aceita também o objeto de índices numéricos); o evento `onDidChangeX` é lido uma vez, no registro. Não testado de ponta a ponta: o
+`resolveCodeAction` (o `provideCodeActions` pede o `CodeActionContext` do editor) e o `provideDocumentSemanticTokensEdits`.
 
 ## Estado da entrega de `WorkspaceEdit` e `workspace.applyEdit` (2026-10-24, escrito sem compilar: o integrador confirma)
 

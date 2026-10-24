@@ -27,6 +27,8 @@ pub mod extensions;
 pub mod file_system_events;
 pub mod l10n;
 pub mod js_object;
+pub mod language_provider_types;
+pub mod language_providers;
 pub mod language_types;
 pub mod languages;
 pub mod notebooks;

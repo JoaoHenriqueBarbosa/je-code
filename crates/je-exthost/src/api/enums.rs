@@ -1,7 +1,8 @@
 //! As enumerações numéricas da API `vscode` que os namespaces entregues usam (`StatusBarAlignment`, `ConfigurationTarget`, `UIKind`,
 //! `ExtensionKind`, `QuickPickItemKind`, `InputBoxValidationSeverity`, `ProgressLocation`, `LogLevel`, `ViewColumn` e as do editor, e as de
 //! linguagem: `DiagnosticSeverity`, `DiagnosticTag`, `SymbolKind`, `SymbolTag`, `CompletionItemKind`, `CompletionItemTag`,
-//! `CompletionTriggerKind`, `CodeActionTriggerKind`) e o objeto `QuickInputButtons`.
+//! `CompletionTriggerKind`, `CodeActionTriggerKind`, `DocumentHighlightKind`, `FoldingRangeKind`, `InlayHintKind`,
+//! `SignatureHelpTriggerKind`) e o objeto `QuickInputButtons`.
 //! Cada enumeração é o objeto que o TypeScript gera para um `enum`: nome para valor e valor para nome (`StatusBarAlignment.Left === 1` e
 //! `StatusBarAlignment[1] === 'Left'`). Os valores são os de `ext_host_types::enums`.
 //!
@@ -15,9 +16,9 @@ use je_workbench::api::common::ext_host_debug_types::DebugConsoleMode;
 use je_workbench::contrib::debug::debug::DebugConfigurationProviderTriggerKind;
 use je_workbench::api::common::ext_host_types::{
     CodeActionTriggerKind, CommentMode, CommentState, CommentThreadApplicability, CommentThreadCollapsibleState, CommentThreadFocus, CommentThreadState,
-    CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, ExtensionKind,
-    InputBoxValidationSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment, NotebookControllerAffinity,
-    NotebookEditorRevealType, ProgressLocation, QuickPickItemKind, StatusBarAlignment, SymbolKind, SymbolTag,
+    CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, DocumentHighlightKind, ExtensionKind,
+    FoldingRangeKind, InlayHintKind, InputBoxValidationSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment,
+    NotebookControllerAffinity, NotebookEditorRevealType, ProgressLocation, QuickPickItemKind, SignatureHelpTriggerKind, StatusBarAlignment, SymbolKind, SymbolTag,
 };
 use zjsc::api::embed_node::JsData;
 
@@ -177,6 +178,28 @@ pub fn enums() -> Vec<(String, JsData)> {
         (
             "CodeActionTriggerKind".to_owned(),
             enum_object(&[("Invoke", CodeActionTriggerKind::Invoke.value()), ("Automatic", CodeActionTriggerKind::Automatic.value())]),
+        ),
+        // Os enums dos provedores de `languages` (`DocumentHighlightKind`, `FoldingRangeKind`, `InlayHintKind`, `SignatureHelpTriggerKind`).
+        (
+            "DocumentHighlightKind".to_owned(),
+            enum_object(&[
+                ("Text", DocumentHighlightKind::Text.value()),
+                ("Read", DocumentHighlightKind::Read.value()),
+                ("Write", DocumentHighlightKind::Write.value()),
+            ]),
+        ),
+        (
+            "FoldingRangeKind".to_owned(),
+            enum_object(&[("Comment", FoldingRangeKind::Comment.value()), ("Imports", FoldingRangeKind::Imports.value()), ("Region", FoldingRangeKind::Region.value())]),
+        ),
+        ("InlayHintKind".to_owned(), enum_object(&[("Type", InlayHintKind::Type.value()), ("Parameter", InlayHintKind::Parameter.value())])),
+        (
+            "SignatureHelpTriggerKind".to_owned(),
+            enum_object(&[
+                ("Invoke", SignatureHelpTriggerKind::Invoke.value()),
+                ("TriggerCharacter", SignatureHelpTriggerKind::TriggerCharacter.value()),
+                ("ContentChange", SignatureHelpTriggerKind::ContentChange.value()),
+            ]),
         ),
         // `TreeItemCollapsibleState`, `TreeItemCheckboxState`, `TerminalExitReason` e `TerminalLocation` (`extHostTypes.ts`).
         ("TreeItemCollapsibleState".to_owned(), enum_object(&[("None", 0), ("Collapsed", 1), ("Expanded", 2)])),

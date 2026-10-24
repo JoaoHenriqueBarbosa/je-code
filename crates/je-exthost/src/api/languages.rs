@@ -2,29 +2,28 @@
 //! linguagem (`getLanguages`, `setTextDocumentLanguage`), a pontuação de seletor (`match`) e os registros de provedor
 //! (`registerCompletionItemProvider`, `registerHoverProvider`, `registerDefinitionProvider`, `registerDeclarationProvider`,
 //! `registerImplementationProvider`, `registerTypeDefinitionProvider`, `registerCodeActionsProvider`,
-//! `registerDocumentFormattingEditProvider`, `registerDocumentRangeFormattingEditProvider` e `registerDocumentSymbolProvider`), mais a
-//! classe `vscode.DiagnosticCollection` (protótipo das coleções que o host entrega).
+//! `registerDocumentFormattingEditProvider`, `registerDocumentRangeFormattingEditProvider` e `registerDocumentSymbolProvider`; os demais
+//! estão em `language_providers`), mais a classe `vscode.DiagnosticCollection` (protótipo das coleções que o host entrega).
 //!
 //! É a ponte para o `ExtHostDiagnostics`, o `ExtHostLanguages` e o `ExtHostLanguageFeatures` portados (`extHostDiagnostics.ts`,
 //! `extHostLanguages.ts`, `extHostLanguageFeatures.ts` e o literal `languages` de `extHost.api.impl.ts`). Cada grupo só entra em
 //! `vscode.languages` se o binder registrou o cliente `MainThread*` de que ele depende (`MainThreadDiagnostics`, `MainThreadLanguages`,
 //! `MainThreadLanguageFeatures`) e os documentos de texto (`MainThreadDocuments` e `MainThreadTextEditors`) estão ligados.
 //!
-//! Falta (o serviço do host tem, falta só a ponte): `registerReferenceProvider`, `registerRenameProvider`,
-//! `registerSignatureHelpProvider`, `registerFoldingRangeProvider`, `registerCodeLensProvider`, `registerInlayHintsProvider`,
-//! `registerDocumentLinkProvider`, `registerDocumentHighlightProvider`, `registerOnTypeFormattingEditProvider`,
-//! `registerWorkspaceSymbolProvider` e os demais; `setLanguageConfiguration`, `createLanguageStatusItem`, `tokenAtPosition` e
-//! `onDidChangeSyntaxHighlighting`; `DiagnosticCollection#[Symbol.iterator]`.
+//! Falta (o serviço do host tem, falta só a ponte): `registerDocumentLinkProvider`, `registerWorkspaceSymbolProvider` e os demais;
+//! `setLanguageConfiguration`, `createLanguageStatusItem`, `tokenAtPosition` e `onDidChangeSyntaxHighlighting`;
+//! `DiagnosticCollection#[Symbol.iterator]`.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões: o host não sabe qual delas chama, então os registros e as coleções usam a extensão
 //!   `je.exthost` (a descrição que o binder não conhece), e a verificação das propostas de API (`checkProposedApiEnabled`) enxerga uma
 //!   extensão sem propostas.
 //! - O provedor chega por REFERÊNCIA (`NodeRunner::make_function_by_reference`), então os métodos de classe e o `this` do provedor
-//!   funcionam. A consequência é que o host não consegue perguntar "o provedor tem este método?" (`typeof provider.resolveX ===
-//!   'function'`): `resolveCompletionItem`, `resolveCodeAction` e `provideDocumentRangesFormattingEdits` não são ligados (os `has_*`
-//!   do trait valem `false`), mesmo que o provedor os defina.
+//!   funcionam, e os `has_*` do trait (`typeof provider.resolveX === 'function'`) são respondidos lendo o próprio objeto do provedor
+//!   ([`JsProvider::has_method`]), como no original. Os eventos (`onDidChangeCodeLenses`...) são assinados no objeto do provedor.
 //! - O resultado do provedor passa pelo motor como cópia: a identidade dos itens que o provedor guarda (para o `resolve`) não existe.
+//!   O host guarda, por item devolvido, a cópia original ([`Originals`]) e a entrega ao `resolveX` do provedor; o provedor que altera o
+//!   item no lugar e devolve `undefined` perde a alteração (o original também usa o item devolvido, não o alterado, quando devolve outro).
 //! - `HoverContext#previousHover` não é entregue (só `verbosityDelta`), porque o host só tem o `Hover` já convertido para o formato do
 //!   editor, sem o objeto da extensão.
 //! - `DiagnosticCollection#forEach` percorre um retrato das entradas; `thisArg` só vale se for função (o motor copia objetos comuns).
@@ -32,10 +31,12 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use je_base::cancellation::CancellationToken;
-use je_base::errors::Error;
+use je_base::errors::{on_unexpected_error, Error};
+use je_base::event::{Event, Listener};
+use je_base::lifecycle::{plain_disposable, DisposableRef};
 use je_base::promise::{MaybePromise, Promise};
 use je_editor::language_selector::score;
 use je_extensions::manifest::{ExtensionIdentifier, ExtensionManifest, TargetPlatform};
@@ -44,30 +45,35 @@ use je_workbench::api::common::ext_host_diagnostics::{DiagnosticCollection, ExtH
 use je_workbench::api::common::ext_host_document_data::TextDocument;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiCodeActionContext, ApiCodeActionProvider, ApiCompletionItemProvider, ApiCompletionResult, ApiDocumentFormattingEditProvider, ApiDocumentRangeFormattingEditProvider,
-    ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiHoverContext, ApiHoverProvider, ApiLocationLinkProvider, ApiLocationResult, ApiProviderResult, ApiRangeOrSelection,
-    CodeActionDocumentation, CodeActionProviderMetadata, CommandOrCodeAction, DocumentSymbolProviderMetadata,
+    ApiCodeActionContext, ApiCodeActionProvider, ApiCodeActionRef, ApiCompletionItemProvider, ApiCompletionResult, ApiDocumentFormattingEditProvider,
+    ApiDocumentRangeFormattingEditProvider, ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiHoverContext, ApiHoverProvider, ApiLocationLinkProvider, ApiLocationResult,
+    ApiProviderResult, ApiRangeOrSelection, CodeActionDocumentation, CodeActionProviderMetadata, CommandOrCodeAction, CompletionItemRef, DocumentSymbolProviderMetadata,
 };
 use je_workbench::api::common::ext_host_languages::ExtHostLanguages;
 use je_workbench::api::common::ext_host_protocol::FormattingOptions;
 use je_workbench::api::common::ext_host_type_converters::language_selector::LanguageSelector;
 use je_workbench::api::common::ext_host_type_converters::{DocumentFilterInput, DocumentSelectorInput};
-use je_workbench::api::common::ext_host_types::{CompletionContext, Diagnostic, Position, Range, TextEdit, VerboseHover};
+use je_workbench::api::common::ext_host_types::{CodeAction, CompletionContext, CompletionItem, Diagnostic, Position, Range, TextEdit, VerboseHover};
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
 
 use crate::api::commands::{promise_to_js, settle_js_result};
 use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
+use crate::api::js_object::JsObjects;
+use crate::api::language_provider_types::{self, SemanticTokensBuilders};
+use crate::api::language_providers;
 use crate::api::language_types::{
-    self, code_action_kind_data, code_action_kind_from_js, code_actions_from_js, command_from_js, completion_result_from_js, diagnostics_from_js,
-    document_symbols_from_js, hover_from_js, location_result_from_js, text_edits_from_js,
+    self, code_action_kind_data, code_action_kind_from_js, code_action_raw_entries, code_action_ref_from_js, code_actions_from_js, command_from_js,
+    completion_item_ref_from_js, completion_raw_items, completion_result_from_js, diagnostics_from_js, document_symbols_from_js, hover_from_js, location_result_from_js,
+    text_edits_from_js,
 };
 use crate::api::text_editors::{TextEditorApi, TextObjects};
 use crate::api::types::{position_data, range_data, selection_data};
 use crate::api::uri::guarded;
 use crate::api::workspace::glob_of;
+use crate::api::workspace_edit::WorkspaceEditObjects;
 use crate::api::HOST_EXTENSION;
-use crate::convert::{api_to_js, field, is_nullish, js_to_error, opt_bool, opt_string, string_arg, uri_from_js, uri_to_js};
+use crate::convert::{api_to_js, exported, field, is_nullish, js_to_error, opt_bool, opt_string, string_arg, uri_from_js, uri_to_js};
 
 /// Os serviços do host que o namespace usa. Cada grupo de `vscode.languages` só existe quando o serviço dele existe.
 pub struct LanguagesServices {
@@ -79,6 +85,8 @@ pub struct LanguagesServices {
     pub features: Option<Rc<ExtHostLanguageFeatures>>,
     /// Os documentos (`TextDocument` do motor) e os objetos vivos: sempre presentes, porque os três serviços acima pedem documentos.
     pub text_editors: TextEditorApi,
+    /// As `WorkspaceEdit` que as extensões criaram: `provideRenameEdits` e `CodeAction#edit` devolvem uma delas.
+    pub workspace_edits: Rc<WorkspaceEditObjects>,
 }
 
 /// As coleções de diagnósticos vivas, por id (o objeto JavaScript carrega só o id).
@@ -108,6 +116,7 @@ impl DiagnosticCollections {
 #[derive(Default)]
 pub struct LanguagesState {
     pub collections: Rc<DiagnosticCollections>,
+    pub builders: Rc<SemanticTokensBuilders>,
 }
 
 /// A extensão que o host usa nos registros (ver as divergências do módulo).
@@ -128,14 +137,6 @@ pub fn host_extension() -> Rc<ExtensionDescription> {
 }
 
 // --- seletores
-
-/// O valor do argumento por referência como dado: o objeto é copiado, o resto fica como veio.
-fn plain(runner: &NodeRunner, value: &JsData) -> JsData {
-    match value {
-        JsData::Handle(handle) => runner.export(handle),
-        other => other.clone(),
-    }
-}
 
 /// `vscode.DocumentSelector`: texto, `DocumentFilter` ou uma lista deles.
 fn selector_from(value: &JsData) -> Result<DocumentSelectorInput, String> {
@@ -158,18 +159,48 @@ fn selector_from(value: &JsData) -> Result<DocumentSelectorInput, String> {
 
 // --- provedores
 
+/// Os valores como o provedor os devolveu (cópias do motor), por objeto que o adaptador guarda por referência: o `resolveX` do provedor
+/// recebe a cópia original, porque o motor não entrega o objeto do provedor com a identidade dele. Uma entrada morre com o objeto (o
+/// adaptador solta o cache e o `Weak` deixa de ter dono).
+pub(crate) struct Originals<T> {
+    items: RefCell<Vec<(Weak<RefCell<T>>, JsData)>>,
+}
+
+impl<T> Default for Originals<T> {
+    fn default() -> Self {
+        Self { items: RefCell::new(Vec::new()) }
+    }
+}
+
+impl<T> Originals<T> {
+    /// Guarda a cópia original de cada objeto (descarta antes as entradas cujo objeto já morreu).
+    pub(crate) fn remember<'a>(&self, pairs: impl IntoIterator<Item = (&'a Rc<RefCell<T>>, &'a JsData)>) {
+        let mut items = self.items.borrow_mut();
+        items.retain(|(weak, _)| weak.strong_count() > 0);
+        items.extend(pairs.into_iter().map(|(item, value)| (Rc::downgrade(item), value.clone())));
+    }
+
+    /// A cópia original de `item`, se o provedor o devolveu.
+    pub(crate) fn of(&self, item: &Rc<RefCell<T>>) -> Option<JsData> {
+        let target = Rc::downgrade(item);
+        self.items.borrow().iter().find(|(weak, _)| weak.ptr_eq(&target)).map(|(_, value)| value.clone())
+    }
+}
+
 /// Um provedor JavaScript: o objeto (por referência, com o `this` e os métodos da classe) e o que a conversão precisa.
 #[derive(Clone)]
-struct JsProvider {
-    runner: NodeRunner,
-    provider: Rc<JsHandle>,
-    objects: Rc<TextObjects>,
-    events: Rc<EventTables>,
+pub(crate) struct JsProvider {
+    pub(crate) provider: Rc<JsHandle>,
+    pub(crate) objects: Rc<TextObjects>,
+    pub(crate) events: Rc<EventTables>,
+    pub(crate) js: JsObjects,
+    pub(crate) table: Rc<DisposableTable>,
+    pub(crate) edits: Rc<WorkspaceEditObjects>,
 }
 
 /// O resultado de um método do provedor (valor, ou promessa que o `then` adota) como `ProviderResult<T>`; uma conversão que falha é uma
 /// promessa rejeitada, como o `throw` síncrono do original.
-fn settle<T: Clone + 'static>(runner: &NodeRunner, result: JsData, convert: fn(&JsData) -> Result<Option<T>, Error>) -> ApiProviderResult<T> {
+fn settle<T: Clone + 'static>(runner: &NodeRunner, result: JsData, convert: impl Fn(&JsData) -> Result<Option<T>, Error> + 'static) -> ApiProviderResult<T> {
     match settle_js_result(runner, result) {
         MaybePromise::Value(value) => match convert(&crate::convert::dynamic_to_js(&value)) {
             Ok(converted) => MaybePromise::Value(converted),
@@ -181,27 +212,92 @@ fn settle<T: Clone + 'static>(runner: &NodeRunner, result: JsData, convert: fn(&
 
 impl JsProvider {
     /// `provider[method](...args)`: o resultado convertido por `convert`. Uma exceção do provedor é uma promessa rejeitada.
-    fn invoke<T: Clone + 'static>(&self, method: &str, args: Vec<JsData>, convert: fn(&JsData) -> Result<Option<T>, Error>) -> ApiProviderResult<T> {
-        match self.runner.call_method(&self.provider, method, &args) {
-            Ok(result) => settle(&self.runner, result, convert),
+    pub(crate) fn invoke<T: Clone + 'static>(
+        &self,
+        method: &str,
+        args: Vec<JsData>,
+        convert: impl Fn(&JsData) -> Result<Option<T>, Error> + 'static,
+    ) -> ApiProviderResult<T> {
+        let runner = self.js.runner();
+        match runner.call_method(&self.provider, method, &args) {
+            Ok(result) => settle(runner, result, convert),
             Err(message) => MaybePromise::Promise(Promise::rejected(Error::new(message))),
         }
     }
 
-    fn document(&self, document: &TextDocument) -> JsData {
+    /// `provider[method](original, token)` de um `resolveX`: `original` é a cópia que o provedor devolveu antes (ver [`Originals`]); um
+    /// objeto que este provedor não devolveu não tem original, e o resultado é "sem resolução".
+    pub(crate) fn resolve<T: 'static>(
+        &self,
+        method: &str,
+        originals: &Originals<T>,
+        item: &Rc<RefCell<T>>,
+        token: CancellationToken,
+        convert: impl Fn(&JsData) -> Result<Option<Rc<RefCell<T>>>, Error> + 'static,
+    ) -> ApiProviderResult<Rc<RefCell<T>>> {
+        let Some(original) = originals.of(item) else { return MaybePromise::Value(None) };
+        self.invoke(method, vec![original, self.token(token)], convert)
+    }
+
+    pub(crate) fn document(&self, document: &TextDocument) -> JsData {
         self.objects.document_to_js(document)
     }
 
-    fn token(&self, token: CancellationToken) -> JsData {
+    pub(crate) fn token(&self, token: CancellationToken) -> JsData {
         self.events.token_to_js(token)
+    }
+
+    /// `typeof provider[name] === 'function'`.
+    pub(crate) fn has_method(&self, name: &str) -> bool {
+        self.js.is_function(&JsData::Handle(self.provider.clone()), name)
+    }
+
+    /// O evento `provider[name]` (`onDidChangeCodeLenses`...), se o provedor o tem: cada disparo dele é um disparo do `Event<()>` do host, e
+    /// o `Disposable` da escuta desfaz a assinatura no provedor.
+    pub(crate) fn change_event(&self, name: &str) -> Option<Event<()>> {
+        let target = JsData::Handle(self.provider.clone());
+        let JsData::Handle(event) = self.js.property(&target, name) else { return None };
+        if !self.js.is_function(&target, name) {
+            return None;
+        }
+        let (js, table) = (self.js.clone(), self.table.clone());
+        Some(Event::new(move |listener: Listener<()>| -> DisposableRef {
+            match js.listen(&event, move |_| listener(&())) {
+                Ok(Some(id)) => {
+                    let table = table.clone();
+                    plain_disposable(move || table.dispose(id))
+                }
+                Ok(None) => plain_disposable(|| {}),
+                Err(message) => {
+                    on_unexpected_error(&Error::new(message));
+                    plain_disposable(|| {})
+                }
+            }
+        }))
     }
 }
 
-fn formatting_options_to_js(options: &FormattingOptions) -> JsData {
+pub(crate) fn formatting_options_to_js(options: &FormattingOptions) -> JsData {
     JsData::Object(vec![("tabSize".to_owned(), JsData::Num(options.tab_size as f64)), ("insertSpaces".to_owned(), JsData::Bool(options.insert_spaces))])
 }
 
-struct CompletionProvider(JsProvider);
+struct CompletionProvider {
+    js: JsProvider,
+    originals: Rc<Originals<CompletionItem>>,
+}
+
+impl CompletionProvider {
+    fn new(js: JsProvider) -> Self {
+        Self { js, originals: Rc::default() }
+    }
+}
+
+fn completion_refs(result: &ApiCompletionResult) -> &[CompletionItemRef] {
+    match result {
+        ApiCompletionResult::Items(items) => items,
+        ApiCompletionResult::List(list) => &list.items,
+    }
+}
 
 impl ApiCompletionItemProvider for CompletionProvider {
     fn provide_completion_items(&self, document: &TextDocument, position: &Position, token: CancellationToken, context: &CompletionContext) -> ApiProviderResult<ApiCompletionResult> {
@@ -209,7 +305,22 @@ impl ApiCompletionItemProvider for CompletionProvider {
             ("triggerKind".to_owned(), JsData::Num(f64::from(context.trigger_kind.value()))),
             ("triggerCharacter".to_owned(), context.trigger_character.clone().map_or(JsData::Undefined, JsData::Str)),
         ]);
-        self.0.invoke("provideCompletionItems", vec![self.0.document(document), position_data(*position), self.0.token(token), context], completion_result_from_js)
+        let originals = self.originals.clone();
+        self.js.invoke("provideCompletionItems", vec![self.js.document(document), position_data(*position), self.js.token(token), context], move |value| {
+            let result = completion_result_from_js(value)?;
+            if let Some(result) = &result {
+                originals.remember(completion_refs(result).iter().zip(completion_raw_items(value)));
+            }
+            Ok(result)
+        })
+    }
+
+    fn has_resolve_completion_item(&self) -> bool {
+        self.js.has_method("resolveCompletionItem")
+    }
+
+    fn resolve_completion_item(&self, item: &CompletionItemRef, token: CancellationToken) -> ApiProviderResult<CompletionItemRef> {
+        self.js.resolve("resolveCompletionItem", &self.originals, item, token, completion_item_ref_from_js)
     }
 }
 
@@ -237,7 +348,16 @@ impl ApiLocationLinkProvider for LocationLinkProvider {
     }
 }
 
-struct CodeActionProvider(JsProvider);
+struct CodeActionProvider {
+    js: JsProvider,
+    originals: Rc<Originals<CodeAction>>,
+}
+
+impl CodeActionProvider {
+    fn new(js: JsProvider) -> Self {
+        Self { js, originals: Rc::default() }
+    }
+}
 
 impl ApiCodeActionProvider for CodeActionProvider {
     fn provide_code_actions(
@@ -256,7 +376,26 @@ impl ApiCodeActionProvider for CodeActionProvider {
             ("only".to_owned(), context.only.as_ref().map_or(JsData::Undefined, code_action_kind_data)),
             ("triggerKind".to_owned(), JsData::Num(f64::from(context.trigger_kind.value()))),
         ]);
-        self.0.invoke("provideCodeActions", vec![self.0.document(document), range, context, self.0.token(token)], code_actions_from_js)
+        let (originals, edits) = (self.originals.clone(), self.js.edits.clone());
+        self.js.invoke("provideCodeActions", vec![self.js.document(document), range, context, self.js.token(token)], move |value| {
+            let actions = code_actions_from_js(value, &edits)?;
+            if let (Some(actions), JsData::Array(entries)) = (&actions, value) {
+                originals.remember(code_action_raw_entries(entries).zip(actions.iter()).filter_map(|(raw, action)| match action {
+                    CommandOrCodeAction::CodeAction(action) => Some((action, raw)),
+                    CommandOrCodeAction::Command(_) => None,
+                }));
+            }
+            Ok(actions)
+        })
+    }
+
+    fn has_resolve_code_action(&self) -> bool {
+        self.js.has_method("resolveCodeAction")
+    }
+
+    fn resolve_code_action(&self, code_action: &ApiCodeActionRef, token: CancellationToken) -> ApiProviderResult<ApiCodeActionRef> {
+        let edits = self.js.edits.clone();
+        self.js.resolve("resolveCodeAction", &self.originals, code_action, token, move |value| code_action_ref_from_js(value, &edits))
     }
 }
 
@@ -277,6 +416,21 @@ impl ApiDocumentRangeFormattingEditProvider for DocumentRangeFormattingProvider 
             vec![self.0.document(document), range_data(*range), formatting_options_to_js(options), self.0.token(token)],
             text_edits_from_js,
         )
+    }
+
+    fn has_provide_document_ranges_formatting_edits(&self) -> bool {
+        self.0.has_method("provideDocumentRangesFormattingEdits")
+    }
+
+    fn provide_document_ranges_formatting_edits(
+        &self,
+        document: &TextDocument,
+        ranges: &[Range],
+        options: &FormattingOptions,
+        token: CancellationToken,
+    ) -> ApiProviderResult<Vec<TextEdit>> {
+        let ranges = JsData::Array(ranges.iter().map(|range| range_data(*range)).collect());
+        self.0.invoke("provideDocumentRangesFormattingEdits", vec![self.0.document(document), ranges, formatting_options_to_js(options), self.0.token(token)], text_edits_from_js)
     }
 }
 
@@ -311,127 +465,111 @@ fn code_action_metadata_from_js(value: &JsData) -> Result<CodeActionProviderMeta
 }
 
 /// Tudo que um `register*Provider` precisa além do provedor.
-struct Registrar {
-    runner: NodeRunner,
-    features: Rc<ExtHostLanguageFeatures>,
-    extension: Rc<ExtensionDescription>,
-    objects: Rc<TextObjects>,
-    events: Rc<EventTables>,
-    table: Rc<DisposableTable>,
+pub(crate) struct Registrar {
+    pub(crate) runner: NodeRunner,
+    pub(crate) features: Rc<ExtHostLanguageFeatures>,
+    pub(crate) extension: Rc<ExtensionDescription>,
+    pub(crate) objects: Rc<TextObjects>,
+    pub(crate) events: Rc<EventTables>,
+    pub(crate) table: Rc<DisposableTable>,
+    pub(crate) js: JsObjects,
+    pub(crate) edits: Rc<WorkspaceEditObjects>,
 }
 
 impl Registrar {
     /// Os argumentos `(selector, provider, ...rest)` de um `register*Provider`: lê o seletor, monta o provedor e devolve o `Disposable`
     /// do registro.
-    fn register(&self, args: &[JsData], build: impl FnOnce(&ExtHostLanguageFeatures, &ExtensionDescription, &DocumentSelectorInput, JsProvider, &[JsData]) -> je_base::lifecycle::DisposableRef) -> Result<JsData, String> {
-        let selector = selector_from(&plain(&self.runner, args.first().ok_or("o seletor é obrigatório")?))?;
+    pub(crate) fn register(
+        &self,
+        args: &[JsData],
+        build: impl FnOnce(&ExtHostLanguageFeatures, &ExtensionDescription, &DocumentSelectorInput, JsProvider, &[JsData]) -> DisposableRef,
+    ) -> Result<JsData, String> {
+        let selector = selector_from(&exported(&self.runner, args.first().ok_or("o seletor é obrigatório")?))?;
         let Some(JsData::Handle(provider)) = args.get(1) else { return Err("o provedor precisa ser um objeto".to_owned()) };
-        let provider = JsProvider { runner: self.runner.clone(), provider: provider.clone(), objects: self.objects.clone(), events: self.events.clone() };
+        let provider = JsProvider {
+            provider: provider.clone(),
+            objects: self.objects.clone(),
+            events: self.events.clone(),
+            js: self.js.clone(),
+            table: self.table.clone(),
+            edits: self.edits.clone(),
+        };
         let registration = build(&*self.features, &*self.extension, &selector, provider, args.get(2..).unwrap_or(&[]));
         Ok(self.table.to_js(registration))
     }
 }
 
+/// Uma função `register*Provider` por referência.
+pub(crate) fn member(
+    runner: &NodeRunner,
+    registrar: &Rc<Registrar>,
+    name: &str,
+    length: u32,
+    body: impl Fn(&Registrar, &[JsData]) -> Result<JsData, String> + 'static,
+) -> (String, JsData) {
+    let registrar = registrar.clone();
+    let callback: NativeCallback = Rc::new(move |args| body(&registrar, args));
+    (name.to_owned(), JsData::Handle(Rc::new(runner.make_function_by_reference(name, length, callback))))
+}
+
+/// `register*Provider(selector, provider)`, sem argumentos além do provedor.
+pub(crate) fn simple(
+    runner: &NodeRunner,
+    registrar: &Rc<Registrar>,
+    name: &str,
+    register: impl Fn(&ExtHostLanguageFeatures, &ExtensionDescription, &DocumentSelectorInput, JsProvider) -> DisposableRef + 'static,
+) -> (String, JsData) {
+    member(runner, registrar, name, 2, move |registrar, args| {
+        registrar.register(args, |features, extension, selector, provider, _| register(features, extension, selector, provider))
+    })
+}
+
 /// As funções `register*Provider`, cada uma por referência.
 fn provider_members(runner: &NodeRunner, registrar: &Rc<Registrar>) -> Vec<(String, JsData)> {
-    let member = |name: &str, length: u32, body: NativeCallback| (name.to_owned(), JsData::Handle(Rc::new(runner.make_function_by_reference(name, length, body))));
-    let location = |name: &str, method: &'static str, register: fn(&ExtHostLanguageFeatures, &ExtensionDescription, &DocumentSelectorInput, Rc<dyn ApiLocationLinkProvider>) -> je_base::lifecycle::DisposableRef| {
-        let registrar = registrar.clone();
-        member(
-            name,
-            2,
-            Rc::new(move |args| registrar.register(args, |features, extension, selector, provider, _| register(features, extension, selector, Rc::new(LocationLinkProvider { provider, method })))),
-        )
+    let location = |name: &str, method: &'static str, register: fn(&ExtHostLanguageFeatures, &ExtensionDescription, &DocumentSelectorInput, Rc<dyn ApiLocationLinkProvider>) -> DisposableRef| {
+        simple(runner, registrar, name, move |features, extension, selector, provider| register(features, extension, selector, Rc::new(LocationLinkProvider { provider, method })))
     };
-    let completion = {
-        let registrar = registrar.clone();
-        member(
-            "registerCompletionItemProvider",
-            3,
-            Rc::new(move |args| {
-                registrar.register(args, |features, extension, selector, provider, rest| {
-                    let trigger_characters = rest.iter().filter_map(|character| opt_string(Some(character))).collect();
-                    features.register_completion_item_provider(extension, selector, Rc::new(CompletionProvider(provider)), trigger_characters)
-                })
-            }),
-        )
-    };
-    let hover = {
-        let registrar = registrar.clone();
-        member(
-            "registerHoverProvider",
-            2,
-            Rc::new(move |args| registrar.register(args, |features, extension, selector, provider, _| features.register_hover_provider(extension, selector, Rc::new(HoverProvider(provider))))),
-        )
-    };
-    let code_actions = {
-        let (registrar, runner) = (registrar.clone(), runner.clone());
-        member(
-            "registerCodeActionsProvider",
-            3,
-            Rc::new(move |args| {
-                let metadata = match args.get(2) {
-                    Some(metadata) if !is_nullish(Some(metadata)) => Some(code_action_metadata_from_js(&plain(&runner, metadata)).map_err(|error| error.message)?),
-                    _ => None,
-                };
-                registrar.register(args, |features, extension, selector, provider, _| {
-                    features.register_code_action_provider(extension, selector, Rc::new(CodeActionProvider(provider)), metadata.as_ref())
-                })
-            }),
-        )
-    };
-    let formatting = {
-        let registrar = registrar.clone();
-        member(
-            "registerDocumentFormattingEditProvider",
-            2,
-            Rc::new(move |args| {
-                registrar.register(args, |features, extension, selector, provider, _| {
-                    features.register_document_formatting_edit_provider(extension, selector, Rc::new(DocumentFormattingProvider(provider)))
-                })
-            }),
-        )
-    };
-    let range_formatting = {
-        let registrar = registrar.clone();
-        member(
-            "registerDocumentRangeFormattingEditProvider",
-            2,
-            Rc::new(move |args| {
-                registrar.register(args, |features, extension, selector, provider, _| {
-                    features.register_document_range_formatting_edit_provider(extension, selector, Rc::new(DocumentRangeFormattingProvider(provider)))
-                })
-            }),
-        )
-    };
-    let symbols = {
-        let (registrar, runner) = (registrar.clone(), runner.clone());
-        member(
-            "registerDocumentSymbolProvider",
-            3,
-            Rc::new(move |args| {
-                let metadata = match args.get(2) {
-                    Some(metadata) if !is_nullish(Some(metadata)) => Some(DocumentSymbolProviderMetadata { label: opt_string(field(&plain(&runner, metadata), "label")) }),
-                    _ => None,
-                };
-                registrar.register(args, |features, extension, selector, provider, _| {
-                    features.register_document_symbol_provider(extension, selector, Rc::new(DocumentSymbolProvider(provider)), metadata.as_ref())
-                })
-            }),
-        )
-    };
-    vec![
-        completion,
-        hover,
+    let mut members = vec![
+        member(runner, registrar, "registerCompletionItemProvider", 3, |registrar, args| {
+            registrar.register(args, |features, extension, selector, provider, rest| {
+                let trigger_characters = rest.iter().filter_map(|character| opt_string(Some(character))).collect();
+                features.register_completion_item_provider(extension, selector, Rc::new(CompletionProvider::new(provider)), trigger_characters)
+            })
+        }),
+        simple(runner, registrar, "registerHoverProvider", |features, extension, selector, provider| {
+            features.register_hover_provider(extension, selector, Rc::new(HoverProvider(provider)))
+        }),
         location("registerDefinitionProvider", "provideDefinition", ExtHostLanguageFeatures::register_definition_provider),
         location("registerDeclarationProvider", "provideDeclaration", ExtHostLanguageFeatures::register_declaration_provider),
         location("registerImplementationProvider", "provideImplementation", ExtHostLanguageFeatures::register_implementation_provider),
         location("registerTypeDefinitionProvider", "provideTypeDefinition", ExtHostLanguageFeatures::register_type_definition_provider),
-        code_actions,
-        formatting,
-        range_formatting,
-        symbols,
-    ]
+        member(runner, registrar, "registerCodeActionsProvider", 3, |registrar, args| {
+            let metadata = match args.get(2) {
+                Some(metadata) if !is_nullish(Some(metadata)) => Some(code_action_metadata_from_js(&exported(&registrar.runner, metadata)).map_err(|error| error.message)?),
+                _ => None,
+            };
+            registrar.register(args, |features, extension, selector, provider, _| {
+                features.register_code_action_provider(extension, selector, Rc::new(CodeActionProvider::new(provider)), metadata.as_ref())
+            })
+        }),
+        simple(runner, registrar, "registerDocumentFormattingEditProvider", |features, extension, selector, provider| {
+            features.register_document_formatting_edit_provider(extension, selector, Rc::new(DocumentFormattingProvider(provider)))
+        }),
+        simple(runner, registrar, "registerDocumentRangeFormattingEditProvider", |features, extension, selector, provider| {
+            features.register_document_range_formatting_edit_provider(extension, selector, Rc::new(DocumentRangeFormattingProvider(provider)))
+        }),
+        member(runner, registrar, "registerDocumentSymbolProvider", 3, |registrar, args| {
+            let metadata = match args.get(2) {
+                Some(metadata) if !is_nullish(Some(metadata)) => Some(DocumentSymbolProviderMetadata { label: opt_string(field(&exported(&registrar.runner, metadata), "label")) }),
+                _ => None,
+            };
+            registrar.register(args, |features, extension, selector, provider, _| {
+                features.register_document_symbol_provider(extension, selector, Rc::new(DocumentSymbolProvider(provider)), metadata.as_ref())
+            })
+        }),
+    ];
+    members.extend(language_providers::members(runner, registrar));
+    members
 }
 
 // --- diagnósticos
@@ -641,14 +779,18 @@ pub fn namespace(runner: &NodeRunner, services: &LanguagesServices, table: &Rc<D
             objects,
             events: events.clone(),
             table: table.clone(),
+            js: JsObjects::new(runner),
+            edits: services.workspace_edits.clone(),
         });
         members.extend(provider_members(runner, &registrar));
     }
     JsData::Object(members)
 }
 
-/// As classes deste módulo: as de valor (`language_types`) e o protótipo de `DiagnosticCollection`.
+/// As classes deste módulo: as de valor (`language_types` e `language_provider_types`) e o protótipo de `DiagnosticCollection`.
 pub fn classes(runner: &NodeRunner, state: &LanguagesState) -> Vec<(String, JsData)> {
     define_collection_class(runner, &state.collections);
-    language_types::classes(runner)
+    let mut classes = language_types::classes(runner);
+    classes.extend(language_provider_types::classes(runner, &state.builders));
+    classes
 }
