@@ -7,6 +7,7 @@
 
 use std::any::Any;
 use std::cell::Cell;
+use std::rc::Rc;
 
 use je_base::uri::URI;
 
@@ -37,10 +38,14 @@ thread_local! {
 }
 
 /// `UndoRedoGroup`: elementos do mesmo grupo são desfeitos e refeitos juntos.
-#[derive(Debug)]
+///
+/// Divergência: o original passa a mesma referência de objeto adiante (o `NotebookTextModel` guarda o grupo num elemento
+/// que só é empilhado depois). Aqui o contador de ordem é compartilhado (`Rc`) e o grupo é `Clone`: uma cópia avança
+/// a mesma ordem que o original.
+#[derive(Clone, Debug)]
 pub struct UndoRedoGroup {
     pub id: u64,
-    order: Cell<u64>,
+    order: Rc<Cell<u64>>,
 }
 
 impl UndoRedoGroup {
@@ -51,7 +56,7 @@ impl UndoRedoGroup {
                 id.set(current + 1);
                 current
             }),
-            order: Cell::new(1),
+            order: Rc::new(Cell::new(1)),
         }
     }
 
@@ -59,7 +64,7 @@ impl UndoRedoGroup {
     pub fn none() -> Self {
         Self {
             id: 0,
-            order: Cell::new(1),
+            order: Rc::new(Cell::new(1)),
         }
     }
 
