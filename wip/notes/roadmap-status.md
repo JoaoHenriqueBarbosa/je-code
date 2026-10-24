@@ -58,6 +58,7 @@ Nenhum critério medido ainda; os tamanhos de cada camada estão no `roadmap.md`
 
 ## Pendência antes do primeiro push
 
+- O commit `86a6c21` (2026-10-24, já no GitHub) versionou por engano o symlink `ref` com o caminho absoluto do clone; removido em seguida, mas fica no histórico. Entra na mesma reescrita abaixo.
 - O histórico local tem caminho da máquina em dois commits já corrigidos (`oracle-harness/zyarr-gen/gen.js` no c468a64 e `crates/je-platform/tests/settings_compat.rs` no 55c6335). Reescrever esses dois commits (ou fazer squash do histórico) antes de publicar o repositório.
 - 2026-10-23: H08 parcial: WebGPU 60 fps (vsync) e vello_cpu com simd128 56 a 60 fps no Chrome; WebGPU indisponível no Chromium do WSL (Mesa sem dzn).
 - 2026-10-23: tokenização no editor: `je-editor` com `TokenizationRegistry`, `LineTokens`, armazenamentos de tokens, `TextModel.tokenization()` (fatias em segundo plano com orçamento de tempo), serviço e registro de linguagens, configuração de linguagem; `je-languages` com a ponte TextMate (109 de 109 fixtures pelo `TextModel`, 10 temas) e o carregamento dos `language-configuration.json` (69 arquivos). Tokenização inicial de 50 814 linhas TypeScript em 901 ms (56 413 linhas/s), eu.
