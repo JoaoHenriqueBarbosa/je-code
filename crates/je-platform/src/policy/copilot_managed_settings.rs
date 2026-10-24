@@ -725,7 +725,11 @@ fn flatten_managed_settings_value(value: &Dynamic, prefix: Option<&str>, result:
         _ => None,
     };
     if let Some(leaf) = leaf {
-        if let Some(prefix) = prefix {
+        // `result[prefix] = value` num objeto literal: com a chave `__proto__` a atribuição passa pelo
+        // setter herdado, que ignora valor primitivo, então nada é gravado.
+        if let Some(prefix) = prefix
+            && prefix != "__proto__"
+        {
             result.insert(prefix.to_owned(), leaf);
         }
         return;
