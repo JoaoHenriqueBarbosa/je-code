@@ -1,7 +1,7 @@
 //! Dublês dos testes do multicursor: o `FindReplaceState` e o `CommonFindController` (`contrib/find`), que ainda não
 //! foram portados, só com o que o `multicursor.test.ts` observa.
 //!
-//! - [`FindReplaceState`] é o porte de `findState.ts` sem o que o teste não toca (`changeMatchInfo`, `matchesPosition`,
+//! - [`FindReplaceState`] (agora em `je_editor::multicursor_find_state`, reexportado aqui) é o porte de `findState.ts` sem o que o teste não toca (`changeMatchInfo`, `matchesPosition`,
 //!   `matchesCount`, `currentMatch`, `isSearching`/`filters` como dado de busca, `canNavigate*`): os campos, os
 //!   `Override`, o `change` com o cálculo do evento e o `onFindReplaceStateChange`, linha a linha. Os acessos `actual...`
 //!   (o valor guardado, sem o `Override`) são métodos próprios.
