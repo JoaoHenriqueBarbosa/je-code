@@ -812,3 +812,227 @@ pub trait ISearchService {
 }
 
 service_id!(pub I_SEARCH_SERVICE: dyn ISearchService = "searchService");
+
+// ---------------------------------------------------------------------------------------------------------
+// O que os gerenciadores de busca (`textSearchManager`, `fileSearchManager`) leem de `search.ts`:
+// `ISearchCompleteStats`, `resolvePatternsForProvider`, `QueryGlobTester`, `hasSiblingPromiseFn`, `hasSiblingFn` e
+// `excludeToGlobPattern`.
+//
+// Divergências:
+// - `QueryGlobTester` recebe o `ICommonQueryProps` (o `ISearchQuery` do original é a união das consultas, e o
+//   construtor só lê `ignoreGlobCase`, `excludePattern` e `includePattern`) e é usado dentro de um `Rc`, porque
+//   `includedInQuery` avalia o padrão de inclusão depois, quando a promessa do `hasSibling` assenta.
+// - `hasSibling?: (name) => boolean | Promise<boolean>` é um [`SiblingFn`] (`Rc<dyn Fn(&str) -> Sibling>`).
+// - `hasSiblingPromiseFn(siblingsFn?)` e `hasSiblingFn(siblingsFn?)` recebem e devolvem `Option` de fecho: o
+//   `undefined` do original é `None`. A lista `null` que o original tolera (`list ? ... : {}`) não existe em `Vec`.
+// ---------------------------------------------------------------------------------------------------------
+
+use std::collections::HashSet;
+
+use je_base::glob::{ExprMatch, ExprValue, HasSibling, ParsedExpression, Sibling};
+
+use super::search_ext_types::GlobPattern;
+
+/// `ISearchCompleteStats`.
+#[derive(Clone)]
+pub struct ISearchCompleteStats {
+    pub limit_hit: Option<bool>,
+    pub messages: Vec<ITextSearchCompleteMessage>,
+    pub stats: Option<ISearchStats>,
+}
+
+/// O `{ ...globalPattern, ...folderPattern }` do original: as chaves de `later` trocam o valor das de `earlier` sem
+/// mudar a posição, como a propagação de objetos.
+pub fn spread_expressions(earlier: Option<&Expression>, later: Option<&Expression>) -> Expression {
+    let mut merged = earlier.cloned().unwrap_or_default();
+    if let Some(later) = later {
+        for (pattern, value) in later.entries() {
+            merged.insert(pattern.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+/// `resolvePatternsForProvider`: computes the patterns that the provider handles. Discards sibling clauses and 'false'
+/// patterns.
+pub fn resolve_patterns_for_provider(global_pattern: Option<&Expression>, folder_pattern: Option<&Expression>) -> Vec<String> {
+    spread_expressions(global_pattern, folder_pattern)
+        .entries()
+        .iter()
+        .filter(|(_, value)| matches!(value, ExprValue::Bool(true)))
+        .map(|(pattern, _)| pattern.clone())
+        .collect()
+}
+
+/// O `hasSibling` de `QueryGlobTester`: `(name: string) => boolean | Promise<boolean>`.
+pub type SiblingFn = Rc<dyn Fn(&str) -> Sibling>;
+
+/// Se o resultado de um glob é verdadeiro no sentido do JavaScript: um texto não vazio (ou uma promessa).
+pub fn expr_match_is_truthy(result: &ExprMatch) -> bool {
+    match result {
+        ExprMatch::None => false,
+        ExprMatch::Matched(pattern) => !pattern.is_empty(),
+        ExprMatch::Pending(_) => true,
+    }
+}
+
+/// `hasSiblingClauses`: se alguma entrada do padrão não é booleana.
+fn has_sibling_clauses(pattern: &Expression) -> bool {
+    pattern.entries().iter().any(|(_, value)| !matches!(value, ExprValue::Bool(_)))
+}
+
+/// `QueryGlobTester`.
+pub struct QueryGlobTester {
+    // todo do original: evaluate globs based on baseURI of pattern
+    exclude_expression: Vec<Expression>,
+    parsed_exclude_expression: Vec<ParsedExpression>,
+    parsed_include_expression: Option<ParsedExpression>,
+}
+
+impl QueryGlobTester {
+    pub fn new(config: &ICommonQueryProps<URI>, folder_query: &IFolderQuery<URI>) -> Self {
+        let ignore_case = config.ignore_glob_case.unwrap_or(false) || folder_query.ignore_glob_case.unwrap_or(false);
+        let glob_options = if ignore_case { GlobOptions { ignore_case: Some(true), ..GlobOptions::default() } } else { GlobOptions::default() };
+
+        // todo do original: try to incorporate folderQuery.excludePattern.folder if available
+        let mut exclude_expression: Vec<Expression> = folder_query
+            .exclude_pattern
+            .as_ref()
+            .map(|patterns| patterns.iter().map(|exclude| spread_expressions(config.exclude_pattern.as_ref(), Some(&exclude.pattern))).collect())
+            .unwrap_or_default();
+
+        if exclude_expression.is_empty() {
+            // even if there are no folderQueries, we want to observe  the global excludes
+            exclude_expression = vec![config.exclude_pattern.clone().unwrap_or_default()];
+        }
+
+        let parsed_exclude_expression = exclude_expression.iter().map(|expression| glob::parse_expression(expression, &glob_options)).collect();
+
+        // Empty includeExpression means include nothing, so no {} shortcuts
+        let include_expression = match (&config.include_pattern, &folder_query.include_pattern) {
+            (Some(include), Some(folder_include)) => Some(spread_expressions(Some(include), Some(folder_include))),
+            (Some(include), None) => Some(include.clone()),
+            (None, Some(folder_include)) => Some(folder_include.clone()),
+            (None, None) => None,
+        };
+        let parsed_include_expression = include_expression.map(|expression| glob::parse_expression(&expression, &glob_options));
+
+        Self { exclude_expression, parsed_exclude_expression, parsed_include_expression }
+    }
+
+    /// `_evalParsedExcludeExpression`: o primeiro resultado que é texto (as promessas, que só aparecem com siblings
+    /// assíncronos, não contam aqui).
+    fn eval_parsed_exclude_expression(&self, test_path: &str, basename: Option<&str>, has_sibling: Option<HasSibling<'_>>) -> Option<Rc<str>> {
+        // todo do original: less hacky way of evaluating sync vs async sibling clauses
+        for folder_exclude in &self.parsed_exclude_expression {
+            // find first non-null result
+            if let ExprMatch::Matched(evaluation) = folder_exclude.matches(test_path, basename, has_sibling) {
+                return Some(evaluation);
+            }
+        }
+        None
+    }
+
+    pub fn matches_excludes_sync(&self, test_path: &str, basename: Option<&str>, has_sibling: Option<&dyn Fn(&str) -> bool>) -> bool {
+        let adapted = has_sibling.map(|has_sibling| move |name: &str| Sibling::Ready(has_sibling(name)));
+        let adapted: Option<HasSibling<'_>> = adapted.as_ref().map(|has_sibling| has_sibling as HasSibling<'_>);
+        self.eval_parsed_exclude_expression(test_path, basename, adapted).is_some_and(|result| !result.is_empty())
+    }
+
+    /// Guaranteed sync - siblingsFn should not return a promise.
+    pub fn included_in_query_sync(&self, test_path: &str, basename: Option<&str>, has_sibling: Option<&dyn Fn(&str) -> bool>) -> bool {
+        let adapted = has_sibling.map(|has_sibling| move |name: &str| Sibling::Ready(has_sibling(name)));
+        let adapted: Option<HasSibling<'_>> = adapted.as_ref().map(|has_sibling| has_sibling as HasSibling<'_>);
+        if self.eval_parsed_exclude_expression(test_path, basename, adapted).is_some_and(|result| !result.is_empty()) {
+            return false;
+        }
+
+        if let Some(include) = &self.parsed_include_expression
+            && !expr_match_is_truthy(&include.matches(test_path, basename, adapted))
+        {
+            return false;
+        }
+
+        true
+    }
+
+    /// O `isIncluded` interno de `includedInQuery`.
+    fn is_included(&self, test_path: &str, basename: Option<&str>, has_sibling: Option<HasSibling<'_>>) -> bool {
+        match &self.parsed_include_expression {
+            Some(include) => expr_match_is_truthy(&include.matches(test_path, basename, has_sibling)),
+            None => true,
+        }
+    }
+
+    /// Evaluating the exclude expression is only async if it includes sibling clauses. O original devolve sempre uma
+    /// promessa (o `Promise.all` do fim), então o resultado aqui também é sempre uma [`Promise`]. Como no original, o
+    /// resultado de um exclude que não é promessa (já resolvido) não é lido: só o padrão de inclusão decide.
+    pub fn included_in_query(self: &Rc<Self>, test_path: &str, basename: Option<&str>, has_sibling: Option<SiblingFn>) -> Promise<bool> {
+        let mut evaluations: Vec<Promise<bool>> = Vec::new();
+        for parsed_exclude in &self.parsed_exclude_expression {
+            match parsed_exclude.matches(test_path, basename, has_sibling.as_deref()) {
+                ExprMatch::Pending(excluded) => {
+                    let tester = self.clone();
+                    let test_path = test_path.to_owned();
+                    let basename = basename.map(str::to_owned);
+                    let has_sibling = has_sibling.clone();
+                    evaluations.push(excluded.then(move |excluded| {
+                        if excluded.is_some_and(|result| !result.is_empty()) {
+                            return false;
+                        }
+                        tester.is_included(&test_path, basename.as_deref(), has_sibling.as_deref())
+                    }));
+                }
+                _ => evaluations.push(Promise::resolved(self.is_included(test_path, basename, has_sibling.as_deref()))),
+            }
+        }
+        Promise::all(evaluations).then(|included| included.into_iter().any(|included| included))
+    }
+
+    pub fn has_sibling_exclude_clauses(&self) -> bool {
+        self.exclude_expression.iter().fold(false, |prev, curr| has_sibling_clauses(curr) || prev)
+    }
+}
+
+/// `hasSiblingPromiseFn`.
+pub fn has_sibling_promise_fn(siblings_fn: Option<Rc<dyn Fn() -> Promise<Vec<String>>>>) -> Option<Rc<dyn Fn(&str) -> Promise<bool>>> {
+    let siblings_fn = siblings_fn?;
+    let siblings: RefCell<Option<Promise<Rc<HashSet<String>>>>> = RefCell::new(None);
+    Some(Rc::new(move |name: &str| {
+        let loaded = siblings
+            .borrow_mut()
+            .get_or_insert_with(|| siblings_fn().then(|list| Rc::new(list.into_iter().collect::<HashSet<String>>())))
+            .clone();
+        let name = name.to_owned();
+        loaded.then(move |map| map.contains(&name))
+    }))
+}
+
+/// `hasSiblingFn`.
+pub fn has_sibling_fn(siblings_fn: Option<Rc<dyn Fn() -> Vec<String>>>) -> Option<Rc<dyn Fn(&str) -> bool>> {
+    let siblings_fn = siblings_fn?;
+    let siblings: RefCell<Option<HashSet<String>>> = RefCell::new(None);
+    Some(Rc::new(move |name: &str| {
+        siblings.borrow_mut().get_or_insert_with(|| siblings_fn().into_iter().collect()).contains(name)
+    }))
+}
+
+/// O `{ baseUri?: URI; patterns: string[] }` de `excludeToGlobPattern`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcludesForFolder {
+    pub base_uri: Option<URI>,
+    pub patterns: Vec<String>,
+}
+
+/// `excludeToGlobPattern`.
+pub fn exclude_to_glob_pattern(excludes_for_folder: &[ExcludesForFolder]) -> Vec<GlobPattern> {
+    excludes_for_folder
+        .iter()
+        .flat_map(|exclude| {
+            exclude.patterns.iter().map(|pattern| match &exclude.base_uri {
+                Some(base_uri) => GlobPattern::Relative(super::search_ext_types::RelativePattern { base_uri: base_uri.clone(), pattern: pattern.clone() }),
+                None => GlobPattern::Pattern(pattern.clone()),
+            })
+        })
+        .collect()
+}
