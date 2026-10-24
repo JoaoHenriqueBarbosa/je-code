@@ -556,7 +556,14 @@ pub struct AbstractTextFileService {
     log_service: LogServiceRef,
     elevated_file_service: Rc<dyn IElevatedFileService>,
     decorations_service: Rc<dyn IDecorationsService>,
+
+    /// O que as subclasses que sobrescrevem `read` e `readStream` só para ajustar as opções (como o `ensureLimits` do
+    /// `NativeTextFileService`) instalam com [`AbstractTextFileService::set_read_options_hook`].
+    read_options_hook: RefCell<Option<ReadOptionsHook>>,
 }
+
+/// O ajuste das opções de leitura que uma subclasse aplica antes de `super.read` e `super.readStream`.
+pub type ReadOptionsHook = Rc<dyn Fn(Option<ReadTextFileOptions>) -> Option<ReadTextFileOptions>>;
 
 impl AbstractTextFileService {
     /// `constructor(fileService, untitledTextEditorService, lifecycleService, instantiationService, modelService,
@@ -592,6 +599,7 @@ impl AbstractTextFileService {
             log_service: dependencies.log_service,
             elevated_file_service: dependencies.elevated_file_service,
             decorations_service: dependencies.decorations_service,
+            read_options_hook: RefCell::new(None),
         });
 
         service.provide_decorations();
@@ -606,6 +614,11 @@ impl AbstractTextFileService {
     /// `_register(disposable)`: o que a subclasse registra é descartado junto com o serviço.
     pub fn register(&self, disposable: DisposableRef) -> DisposableRef {
         self.base.register(disposable)
+    }
+
+    /// Instala o ajuste que a subclasse aplica às opções de `read` e `readStream` antes de chamar a implementação da base.
+    pub fn set_read_options_hook(&self, hook: ReadOptionsHook) {
+        *self.read_options_hook.borrow_mut() = Some(hook);
     }
 
     /// `fileService` (protected).
@@ -685,6 +698,11 @@ impl AbstractTextFileService {
 
     fn do_read(&self, resource: &URI, options: Option<ReadTextFileOptions>, prefer_unbuffered: bool) -> Promise<(je_platform::files::files::FileStreamContent, DecodeStreamResult)> {
         let (this, resource) = (self.rc(), resource.clone());
+        let hook = self.read_options_hook.borrow().clone();
+        let options = match hook {
+            Some(hook) => hook(options),
+            None => options,
+        };
         async_fn(async move {
             let cts = CancellationTokenSource::new(None);
 
