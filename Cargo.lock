@@ -4127,6 +4127,7 @@ dependencies = [
  "je-base",
  "je-instantiation",
  "je-storage",
+ "jiff",
  "libc",
  "notify",
  "tempfile",

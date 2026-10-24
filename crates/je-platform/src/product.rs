@@ -10,11 +10,12 @@
 //! e cresce quando um serviço novo precisar de mais um. [`je_base::product::IProductConfiguration`], o
 //! `product.json` completo, também o implementa.
 
-use je_base::product::{
-    ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IStringDictionary, StringsOrDictionary,
-};
 use std::cell::RefCell;
 
+use je_base::product::{
+    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IStringDictionary,
+    StringsOrDictionary,
+};
 use je_instantiation::service_id;
 
 /// `IProductService`, reduzido aos campos que os serviços portados leem.
@@ -56,6 +57,8 @@ pub trait IProductService {
     fn extension_untrusted_workspace_support(&self) -> Option<&IStringDictionary<ExtensionUntrustedWorkspaceSupport>>;
     /// `extensionVirtualWorkspacesSupport`.
     fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>>;
+    /// `configurationSync.store`: o servidor do Settings Sync, quando o produto declara.
+    fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore>;
 }
 
 /// `IEnabledTelemetryLevels`: o que o produto permite coletar.
@@ -90,6 +93,7 @@ pub struct ProductService {
     pub extension_point_extension_kind: Option<IStringDictionary<Vec<String>>>,
     pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
     pub extension_virtual_workspaces_support: Option<IStringDictionary<ExtensionVirtualWorkspaceSupport>>,
+    pub configuration_sync_store: Option<ConfigurationSyncStore>,
 }
 
 impl Default for ProductService {
@@ -113,6 +117,7 @@ impl Default for ProductService {
             extension_point_extension_kind: None,
             extension_untrusted_workspace_support: None,
             extension_virtual_workspaces_support: None,
+            configuration_sync_store: None,
         }
     }
 }
@@ -179,6 +184,9 @@ impl IProductService for ProductService {
     fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>> {
         self.extension_virtual_workspaces_support.as_ref()
     }
+    fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
+        self.configuration_sync_store.as_ref()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
@@ -235,5 +243,8 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>> {
         self.extension_virtual_workspaces_support.as_ref()
+    }
+    fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
+        self.configuration_sync_store.as_ref()
     }
 }

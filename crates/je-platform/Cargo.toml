@@ -26,6 +26,9 @@ url = "2"
 # Os mapas na ordem em que o original os escreve (`IStringDictionary`).
 indexmap = "2"
 
+# O `new Date(y, m, d, h, mi, s)` (fuso do sistema) do `userDataSyncLocalStoreService`: o mesmo `jiff` do `je-base`.
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
+
 # Observação do sistema de arquivos (inotify, FSEvents, ReadDirectoryChangesW): o `notify` no lugar do
 # `@parcel/watcher` e do `fs.watch` do Node. Fora do alvo web, onde não há sistema de arquivos.
 # Linux usa inotify e Windows usa ReadDirectoryChangesW, sem feature nenhuma. No macOS o backend é o

@@ -60,3 +60,4 @@ pub mod otel;
 pub mod web_content_extractor;
 
 pub mod agent_host;
+pub mod external_services;
