@@ -26,6 +26,7 @@ use std::cell::{Cell, RefCell};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
+use je_base::stream::WriteableStream;
 use je_base::JsString;
 use je_base::async_::async_fn;
 use je_base::buffer::{VSBuffer, VSBufferReadableStream, buffer_to_stream, new_writeable_buffer_stream, readable_to_buffer, stream_to_buffer};
@@ -412,7 +413,8 @@ impl FileWorkingCopyManagerAccessor {
     /// `Schemas.vscodeRemote`.
     pub fn register_providers(&self, disposables: &Rc<DisposableStore>) {
         for scheme in [schemas::FILE, schemas::VSCODE_REMOTE] {
-            let provider: FileSystemProviderRef = disposables.add_rc(InMemoryFileSystemProvider::new());
+            let concrete_provider = disposables.add_rc(InMemoryFileSystemProvider::new());
+            let provider: FileSystemProviderRef = concrete_provider;
             let registration = self.base.file_service.register_provider(scheme, provider).expect("o dublê aceita qualquer esquema");
             disposables.add(registration);
         }

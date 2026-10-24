@@ -29,6 +29,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use je_base::stream::WriteableStream;
 use je_base::async_::{async_fn, race_cancellation};
 use je_base::buffer::{VSBufferReadableStream, new_writeable_buffer_stream};
 use je_base::cancellation::CancellationToken;
