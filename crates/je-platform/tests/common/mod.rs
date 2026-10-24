@@ -29,7 +29,7 @@ pub mod keybinding;
 mod base;
 
 #[allow(unused_imports)]
-pub use base::{LeakGuard, assert_deep_strict_equal, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
+pub use base::{LeakGuard, assert_deep_strict_equal, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, run_with_real_timers};
 
 /// Um literal no estilo do TypeScript: JSON com aspas simples. Não tem `undefined`: quem precisa monta
 /// o valor na mão.

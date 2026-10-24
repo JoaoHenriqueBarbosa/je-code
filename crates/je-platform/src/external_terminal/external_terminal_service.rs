@@ -37,7 +37,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use je_base::async_::{async_fn, async_fn_maybe};
-use je_base::errors::{self, Error};
+use je_base::errors::Error;
 use je_base::network::{FileAccess, FileAccessContext, RemoteAuthorities};
 use je_base::nls::localize;
 use je_base::path::{Environment, PathModule, ProcessEnvironment as HostEnvironment};
@@ -49,7 +49,7 @@ use je_base::runtime;
 
 use super::external_terminal::{DEFAULT_TERMINAL_OSX, IExternalTerminalService, IExternalTerminalSettings, ITerminalForPlatform};
 use crate::files::pfs;
-use crate::sandbox::node_support::find_executable;
+use je_base::node::processes::find_executable;
 use crate::terminal::terminal::{ITerminalEnvironment, TerminalEnvironmentValue};
 
 /// `SpawnOptions` do `child_process`, só com o que o serviço passa.
@@ -470,7 +470,7 @@ impl WindowsExternalTerminalService {
     fn get_wt_exe_path() -> Promise<Option<String>> {
         WT_EXE_PATH.with(|memo| {
             memo.borrow_mut()
-                .get_or_insert_with(|| async_fn(async { Ok(errors::catch(|| find_executable("wt", None, None, None, None)).unwrap_or(None)) }))
+                .get_or_insert_with(|| async_fn(async { Ok(find_executable("wt", None, None, None, None).await) }))
                 .clone()
         })
     }
