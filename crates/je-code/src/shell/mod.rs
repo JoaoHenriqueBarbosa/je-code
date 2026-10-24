@@ -103,6 +103,41 @@ struct Toast {
     message: String,
 }
 
+/// As abas do painel inferior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelTab {
+    Problems,
+    Output,
+    DebugConsole,
+    Terminal,
+    Ports,
+}
+
+impl PanelTab {
+    const ALL: [PanelTab; 5] = [Self::Problems, Self::Output, Self::DebugConsole, Self::Terminal, Self::Ports];
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Problems => "Problems",
+            Self::Output => "Output",
+            Self::DebugConsole => "Debug Console",
+            Self::Terminal => "Terminal",
+            Self::Ports => "Ports",
+        }
+    }
+
+    /// O texto do painel vazio, o de cada vista do VS Code sem conteúdo.
+    fn empty_message(self) -> &'static str {
+        match self {
+            Self::Problems => "No problems have been detected in the workspace.",
+            Self::Output => "",
+            Self::DebugConsole => "",
+            Self::Terminal => "",
+            Self::Ports => "No forwarded ports. Forward a port to access your running services locally.",
+        }
+    }
+}
+
 /// O que um prompt de nome faz com o texto digitado.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PromptAction {
@@ -187,6 +222,8 @@ pub enum Command {
     QuickOpen,
     ShowCommands,
     TogglePanel,
+    ShowPanelTab(PanelTab),
+    KillTerminal,
     ToggleTerminal,
     NewTerminal,
     Find,
@@ -299,6 +336,7 @@ pub struct Shell {
     last_pointer: (f64, f64),
     find: Option<FindWidget>,
     panel_visible: bool,
+    panel_tab: PanelTab,
     panel_height: f64,
     terminal: Option<je_terminal::Terminal>,
     terminal_focused: bool,
@@ -426,6 +464,7 @@ impl Shell {
             last_pointer: (0.0, 0.0),
             find: None,
             panel_visible: false,
+            panel_tab: PanelTab::Terminal,
             panel_height: DEFAULT_PANEL_HEIGHT,
             terminal: None,
             terminal_focused: false,
@@ -1033,7 +1072,23 @@ impl Shell {
                 self.ensure_terminal();
                 self.resize_editors();
             }
+            Command::KillTerminal => {
+                self.terminal = None;
+                self.panel_visible = false;
+                self.set_terminal_focus(false);
+                self.resize_editors();
+            }
+            Command::ShowPanelTab(tab) => {
+                self.panel_tab = tab;
+                self.panel_visible = true;
+                self.set_terminal_focus(tab == PanelTab::Terminal);
+                if tab == PanelTab::Terminal {
+                    self.ensure_terminal();
+                }
+                self.resize_editors();
+            }
             Command::ToggleTerminal | Command::NewTerminal => {
+                self.panel_tab = PanelTab::Terminal;
                 if command == Command::NewTerminal {
                     self.terminal = None;
                 }
@@ -2149,14 +2204,16 @@ impl Shell {
         style.radius = RADIUS;
         style.clip = true;
         // As abas (`.composite-bar`): cada uma com 10 px de respiro de cada lado, 24 px de altura, a ativa com fundo.
-        let tabs = ["Problems", "Output", "Debug Console", "Terminal", "Ports"];
         let mut x = 2.0;
-        for name in tabs {
-            let active = name == "Terminal";
+        let mut tab_hits = Vec::new();
+        for tab_kind in PanelTab::ALL {
+            let name = tab_kind.title();
+            let active = tab_kind == self.panel_tab;
             let text_width = measure_text(name, &font);
             let width = text_width + 20.0;
             let tab = tree.create(panel, Role::Tab);
             tree.set_bounds(tab, Rect::new(x + 2.0, 5.0, x + 2.0 + width, 29.0));
+            tab_hits.push((tab, Command::ShowPanelTab(tab_kind)));
             let style = tree.style_mut(tab);
             style.radius = 5.0;
             style.cursor = Some(Cursor::Pointer);
@@ -2168,36 +2225,59 @@ impl Shell {
             tree.style_mut(text).content = Content::Text { text: name.to_owned(), style: font.clone(), color: if active { self.color("panelTitle.activeForeground") } else { inactive_fg }, line_height: 24.0 };
             x += width + 4.0;
         }
-        // À direita: o terminal ativo (ícone e nome), novo, dividir, apagar, mais, maximizar e fechar.
+        // À direita: maximizar e fechar sempre; o terminal ativo e as ações dele só na aba Terminal.
         let inner = rect.width() - 2.0;
-        let icons = [("close", inner - 28.0), ("screen-full", inner - 54.0), ("ellipsis", inner - 80.0), ("trash", inner - 106.0), ("split-horizontal", inner - 132.0)];
-        for (icon, bx) in icons {
+        let terminal_tab = self.panel_tab == PanelTab::Terminal;
+        let mut icons: Vec<(&str, f64, Option<Command>)> = vec![("close", inner - 28.0, Some(Command::TogglePanel)), ("screen-full", inner - 54.0, None)];
+        if terminal_tab {
+            icons.extend([("ellipsis", inner - 80.0, None), ("trash", inner - 106.0, Some(Command::KillTerminal)), ("split-horizontal", inner - 132.0, None)]);
+        }
+        for (icon, bx, command) in icons {
             let button = tree.create(panel, Role::Button);
             tree.set_bounds(button, Rect::new(bx, 5.0, bx + 22.0, 27.0));
             let style = tree.style_mut(button);
             style.content = Content::Codicon { id: icon.into(), size: 16.0, color: active_fg };
             style.radius = 5.0;
             style.cursor = Some(Cursor::Pointer);
+            if let Some(command) = command {
+                tab_hits.push((button, command));
+            }
         }
-        let new = tree.create(panel, Role::Button);
-        tree.set_bounds(new, Rect::new(inner - 175.0, 5.0, inner - 140.0, 27.0));
-        tree.style_mut(new).content = Content::Codicon { id: "add".into(), size: 16.0, color: active_fg };
-        let label_width = measure_text(&label, &font);
-        let name = tree.create(panel, Role::Generic);
-        let name_x = inner - 175.0 - 8.0 - label_width;
-        tree.set_bounds(name, Rect::new(name_x, 4.0, name_x + label_width, 28.0));
-        tree.style_mut(name).content = Content::Text { text: label, style: font, color: active_fg, line_height: 24.0 };
-        let icon = tree.create(panel, Role::Image);
-        tree.set_bounds(icon, Rect::new(name_x - 26.0, 5.0, name_x - 6.0, 27.0));
-        tree.style_mut(icon).content = Content::Codicon { id: "terminal".into(), size: 16.0, color: active_fg };
-        // A superfície do terminal.
-        let host = tree.create(panel, Role::Generic);
-        tree.set_bounds(host, Rect::new(0.0, PANEL_TITLE_HEIGHT, inner, rect.height() - 2.0));
-        let style = tree.style_mut(host);
-        style.content = Content::Host(1);
-        style.cursor = Some(Cursor::Text);
+        if terminal_tab {
+            let new = tree.create(panel, Role::Button);
+            tree.set_bounds(new, Rect::new(inner - 175.0, 5.0, inner - 140.0, 27.0));
+            tree.style_mut(new).content = Content::Codicon { id: "add".into(), size: 16.0, color: active_fg };
+            tab_hits.push((new, Command::NewTerminal));
+            let label_width = measure_text(&label, &font);
+            let name = tree.create(panel, Role::Generic);
+            let name_x = inner - 175.0 - 8.0 - label_width;
+            tree.set_bounds(name, Rect::new(name_x, 4.0, name_x + label_width, 28.0));
+            tree.style_mut(name).content = Content::Text { text: label, style: font.clone(), color: active_fg, line_height: 24.0 };
+            let icon = tree.create(panel, Role::Image);
+            tree.set_bounds(icon, Rect::new(name_x - 26.0, 5.0, name_x - 6.0, 27.0));
+            tree.style_mut(icon).content = Content::Codicon { id: "terminal".into(), size: 16.0, color: active_fg };
+            // A superfície do terminal.
+            let host = tree.create(panel, Role::Generic);
+            tree.set_bounds(host, Rect::new(0.0, PANEL_TITLE_HEIGHT, inner, rect.height() - 2.0));
+            let style = tree.style_mut(host);
+            style.content = Content::Host(1);
+            style.cursor = Some(Cursor::Text);
+        } else {
+            // As outras abas: a mensagem de vazio da vista (o conteúdo delas ainda não existe no je-code).
+            let message = self.panel_tab.empty_message();
+            if !message.is_empty() {
+                let note = tree.create(panel, Role::Status);
+                tree.set_bounds(note, Rect::new(20.0, PANEL_TITLE_HEIGHT + 4.0, inner - 20.0, PANEL_TITLE_HEIGHT + 26.0));
+                tree.style_mut(note).content = Content::Text { text: message.to_owned(), style: font, color: inactive_fg, line_height: 22.0 };
+            }
+        }
         drop(tree);
-        self.ensure_terminal();
+        for (node, command) in tab_hits {
+            self.listen_command(node, command);
+        }
+        if terminal_tab {
+            self.ensure_terminal();
+        }
     }
 
     /// Abre o terminal (um shell no workspace) na primeira vez que o painel aparece.
@@ -2734,7 +2814,7 @@ impl Shell {
             return;
         }
         if input.kind == PointerInputKind::Down {
-            let in_terminal = self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y)));
+            let in_terminal = self.panel_tab == PanelTab::Terminal && self.terminal_area().is_some_and(|a| a.contains(je_render::kurbo::Point::new(x, y)));
             if in_terminal != self.terminal_focused {
                 self.set_terminal_focus(in_terminal);
             }
@@ -2819,6 +2899,9 @@ impl Shell {
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, true, false, KeyCode::KeyF) => Command::ShowSearch,
             (true, true, false, KeyCode::KeyG) => Command::ShowScm,
+            (true, true, false, KeyCode::KeyM) => Command::ShowPanelTab(PanelTab::Problems),
+            (true, true, false, KeyCode::KeyU) => Command::ShowPanelTab(PanelTab::Output),
+            (true, true, false, KeyCode::KeyY) => Command::ShowPanelTab(PanelTab::DebugConsole),
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
             (false, false, false, KeyCode::F11) => Command::ToggleFullScreen,
@@ -2838,7 +2921,7 @@ impl Shell {
         if self.quick_pick.is_some() && !(down && matches!(self.workbench_shortcut(key_code, mods), Some(Command::QuickOpen | Command::ShowCommands))) && self.quick_pick_key(down, text, editor_key, mods) {
             return;
         }
-        if self.terminal_focused && self.panel_visible && self.terminal.is_some() && self.quick_pick.is_none() {
+        if self.terminal_focused && self.panel_visible && self.panel_tab == PanelTab::Terminal && self.terminal.is_some() && self.quick_pick.is_none() {
             if down {
                 let allowed = self.workbench_shortcut(key_code, mods).filter(|c| matches!(c, Command::QuickOpen | Command::ShowCommands | Command::TogglePanel | Command::ToggleTerminal | Command::NewTerminal | Command::ToggleSidebar | Command::NewUntitled | Command::ShowExplorer | Command::ToggleFullScreen | Command::Exit));
                 if let Some(command) = allowed {

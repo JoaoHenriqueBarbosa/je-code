@@ -975,6 +975,10 @@ mod tests {
         assert!(shell.panel_is_visible());
         toggle(&mut shell);
         assert!(!shell.panel_is_visible());
+        // Problems mostra a aba com a mensagem de vazio, sem abrir terminal.
+        shell.run(shell::Command::ShowPanelTab(shell::PanelTab::Problems));
+        assert!(shell.panel_is_visible());
+        snapshot(&mut shell, "m1-problems.png");
     }
 
     #[test]
