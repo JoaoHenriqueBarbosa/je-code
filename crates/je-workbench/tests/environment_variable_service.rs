@@ -61,7 +61,7 @@ impl Fixture {
             .collect();
         let extension_service: Rc<dyn IExtensionService> = StubExtensionService::configured(extensions, false, false, change_extensions_event.event());
         let storage = store.add_rc(InMemoryStorageService::new());
-        let storage_service: Rc<dyn StorageService> = storage;
+        let storage_service: Rc<dyn StorageService> = Rc::new(storage);
         let instantiation_service =
             store.add_rc(InstantiationService::new(ServiceCollection::new().with(I_EXTENSION_SERVICE, extension_service).with(I_STORAGE_SERVICE, storage_service)));
 

@@ -271,29 +271,31 @@ async fn fire_restart_and_capture_data(fixture: &Fixture, os: OperatingSystem, r
     data.expect("captured!")
 }
 
-#[test]
-fn pty_host_restart_appends_viewport_clearing_newlines_and_esc_h_on_windows() {
+/// O corpo dos casos de `pty host restart`: o `Fixture` fica vivo até depois do dreno dos timers simulados. A cauda assíncrona do
+/// tratador de reinício (o `relaunch`) roda nesse dreno, e no mocha o `teardown` que descarta os serviços vem depois dele.
+fn run_pty_host_restart_case(os: OperatingSystem, rows: i32, check: impl FnOnce(&str) + 'static) {
+    let kept: Rc<RefCell<Option<Fixture>>> = Rc::new(RefCell::new(None));
+    let holder = kept.clone();
     run_with_faked_timers(async move {
         let fixture = Fixture::new().await;
-        let data = fire_restart_and_capture_data(&fixture, OperatingSystem::Windows, 24).await;
-        assert!(data.ends_with(&format!("{}\x1b[H", "\r\n".repeat(23))));
+        let data = fire_restart_and_capture_data(&fixture, os, rows).await;
+        check(&data);
+        *holder.borrow_mut() = Some(fixture);
     });
+    drop(kept.borrow_mut().take());
+}
+
+#[test]
+fn pty_host_restart_appends_viewport_clearing_newlines_and_esc_h_on_windows() {
+    run_pty_host_restart_case(OperatingSystem::Windows, 24, |data| assert!(data.ends_with(&format!("{}\x1b[H", "\r\n".repeat(23)))));
 }
 
 #[test]
 fn pty_host_restart_does_not_append_viewport_clearing_sequence_on_non_windows() {
-    run_with_faked_timers(async move {
-        let fixture = Fixture::new().await;
-        let data = fire_restart_and_capture_data(&fixture, OperatingSystem::Linux, 24).await;
-        assert!(!data.contains("\x1b[H"));
-    });
+    run_pty_host_restart_case(OperatingSystem::Linux, 24, |data| assert!(!data.contains("\x1b[H")));
 }
 
 #[test]
 fn pty_host_restart_does_not_append_viewport_clearing_sequence_on_windows_when_rows_is_0() {
-    run_with_faked_timers(async move {
-        let fixture = Fixture::new().await;
-        let data = fire_restart_and_capture_data(&fixture, OperatingSystem::Windows, 0).await;
-        assert!(!data.contains("\x1b[H"));
-    });
+    run_pty_host_restart_case(OperatingSystem::Windows, 0, |data| assert!(!data.contains("\x1b[H")));
 }

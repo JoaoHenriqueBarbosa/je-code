@@ -357,7 +357,7 @@ pub fn create_process_manager_services(store: &Rc<DisposableStore>) -> ProcessMa
     // O `EnvironmentVariableService` real do `workbenchInstantiationService`, sobre o armazenamento e o serviço de extensões.
     let extension_service: Rc<dyn IExtensionService> = StubExtensionService::new();
     let storage = store.add_rc(InMemoryStorageService::new());
-    let storage_service: Rc<dyn StorageService> = storage;
+    let storage_service: Rc<dyn StorageService> = Rc::new(storage);
     let environment_variable_instantiation =
         store.add_rc(InstantiationService::new(ServiceCollection::new().with(I_EXTENSION_SERVICE, extension_service).with(I_STORAGE_SERVICE, storage_service)));
     let environment_variable_concrete = store.add_rc(environment_variable_instantiation.create_instance::<EnvironmentVariableService>(()));
