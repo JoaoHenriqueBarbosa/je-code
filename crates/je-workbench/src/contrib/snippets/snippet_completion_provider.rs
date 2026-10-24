@@ -19,15 +19,18 @@
 //! - `StopWatch#elapsed` é o `duration` da lista.
 //!
 //! Divergências:
-//! - `CompletionItem.command` e `CompletionItem.extensionId` não existem no [`CompletionItem`] do porte (ver o cabeçalho
-//!   de `languages.rs`). O comando `_snippet.markAsUsed` (com o snippet como argumento) é a constante
-//!   [`MARK_SNIPPET_AS_USED`] mais o campo `snippet` do [`SnippetCompletion`]; o `extensionId` fica em
-//!   [`SnippetCompletion::extension_id`]. O registro do comando em `CommandsRegistry` entra com o porte dos comandos
-//!   da plataforma, e o corpo dele é `ISnippetsService#updateUsageTimestamp`.
+//! - O `command` do item (`{ id: markSnippetAsUsed, title: '', arguments: [snippet] }`) leva o snippet como objeto com
+//!   carga nativa (`ObjectRef::with_host`), que é como um objeto vivo cruza os argumentos de comando no porte.
 //! - `resolveCompletionItem` só recebe itens deste provedor, então o `item instanceof SnippetCompletion` é sempre
 //!   verdadeiro; o item já traz o `codeSnippet` como `insert_text`, que é o que `resolve()` usa.
 
 use std::cell::RefCell;
+
+use je_base::dynamic::{Dynamic, ObjectRef};
+use je_editor::code_action::languages::Command;
+use je_base::lifecycle::{DisposableRef, mark_as_singleton};
+use je_instantiation::ServicesAccessor;
+use je_platform::commands::commands::{Command as PlatformCommand, commands_registry};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -57,11 +60,36 @@ use je_editor::text_model::TextModel;
 use je_editor::word_helper::WordAtPosition;
 use je_extensions::manifest::ExtensionIdentifier;
 
-use super::snippets::ISnippetsService;
+use super::snippets::{I_SNIPPETS_SERVICE, ISnippetsService};
 use super::snippets_file::{Snippet, SnippetSource};
 
 /// `markSnippetAsUsed`: o id do comando que o item de sugestão dispara depois de aceito.
 pub const MARK_SNIPPET_AS_USED: &str = "_snippet.markAsUsed";
+
+thread_local! {
+    /// O `CommandsRegistry.registerCommand(markSnippetAsUsed, ...)` do carregamento do módulo. Como no original, o
+    /// registro vale pela vida da thread e nunca é desfeito; no original ele acontece antes de qualquer rastreio de
+    /// vazamento, daí o `markAsSingleton`.
+    static MARK_SNIPPET_AS_USED_REGISTRATION: DisposableRef = {
+        mark_as_singleton(commands_registry().register_command(PlatformCommand::new(
+            MARK_SNIPPET_AS_USED,
+            Rc::new(|accessor: &ServicesAccessor, args: &[Dynamic]| {
+                let snippets_service = accessor.get(I_SNIPPETS_SERVICE);
+                if let Some(Dynamic::Object(first)) = args.first()
+                    && let Some(snippet) = first.host::<Snippet>()
+                {
+                    snippets_service.update_usage_timestamp(&snippet);
+                }
+                Dynamic::Undefined
+            }),
+        )))
+    };
+}
+
+/// Registra o comando `_snippet.markAsUsed` (uma vez por thread), o que o carregamento do módulo faz no original.
+pub fn register_snippet_completion_commands() {
+    MARK_SNIPPET_AS_USED_REGISTRATION.with(|_| {});
+}
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -140,6 +168,14 @@ impl SnippetCompletion {
             insert_text_rules: Some(self.insert_text_rules),
             commit_characters: None,
             additional_text_edits: None,
+            command: Some(Command {
+                id: MARK_SNIPPET_AS_USED.to_owned(),
+                title: String::new(),
+                tooltip: None,
+                arguments: Some(vec![Dynamic::Object(ObjectRef::with_host(self.snippet.clone()))]),
+            }),
+            action: None,
+            extension_id: self.extension_id.clone(),
         }
     }
 }
@@ -163,6 +199,7 @@ impl SnippetCompletionProvider {
         snippets: Rc<dyn ISnippetsService>,
         language_configuration_service: Rc<dyn ILanguageConfigurationService>,
     ) -> Self {
+        register_snippet_completion_commands();
         Self { language_service, snippets, language_configuration_service }
     }
 }

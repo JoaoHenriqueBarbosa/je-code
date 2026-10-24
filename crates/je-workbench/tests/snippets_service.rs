@@ -161,7 +161,8 @@ impl Fixture {
 
     /// `new SnippetCompletionProvider(languageService, snippetService, disposables.add(new TestLanguageConfigurationService()))`.
     fn provider(&self) -> Rc<SnippetCompletionProvider> {
-        self.provider_with(self.disposables.add_rc(TestLanguageConfigurationService::new()))
+        let language_configuration_service = self.disposables.add_rc(TestLanguageConfigurationService::new());
+        self.provider_with(language_configuration_service)
     }
 
     /// `instantiateTextModel(instantiationService, text, 'fooLang')`.

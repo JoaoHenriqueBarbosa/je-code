@@ -385,6 +385,12 @@ pub struct CompletionItem {
     /// An optional array of additional text edits that are applied when selecting this completion. Edits must not
     /// overlap with the main edit nor with themselves.
     pub additional_text_edits: Option<Vec<crate::edit_operation::SingleEditOperation>>,
+    /// A command that should be run upon acceptance of this item.
+    pub command: Option<crate::code_action::languages::Command>,
+    /// A command that should be run upon acceptance of this item.
+    pub action: Option<crate::code_action::languages::Command>,
+    /// `extensionId` (internal): a extensão que contribuiu o item.
+    pub extension_id: Option<je_extensions::manifest::ExtensionIdentifier>,
 }
 
 /// `CompletionItemProvider` (ver as diferenças acima).

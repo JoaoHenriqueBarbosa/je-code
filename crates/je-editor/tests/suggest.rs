@@ -73,6 +73,9 @@ fn suggestion(label: &str, kind: CompletionItemKind, range: CompletionItemRange)
         insert_text_rules: None,
         commit_characters: None,
         additional_text_edits: None,
+        command: None,
+        action: None,
+        extension_id: None,
     }
 }
 

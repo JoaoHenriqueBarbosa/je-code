@@ -18,6 +18,7 @@ zyarr = { path = "../zyarr" }
 # Contratos de plataforma: `IConfigurationService` e os valores de configuração
 # (`textResourceConfigurationService`), `platform/opener` e `platform/commands` (`OpenerService`).
 je-platform = { path = "../je-platform" }
+je-extensions = { path = "../je-extensions" }
 # Os identificadores de serviço e o `Injectable` (`createDecorator` e os parâmetros `@IFoo`).
 je-instantiation = { path = "../je-instantiation" }
 # O `new Date()` (fuso do sistema) do `TimeBasedVariableResolver` dos snippets: o mesmo `jiff` do `je-base`.
