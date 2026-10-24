@@ -1,7 +1,9 @@
-//! Porte parcial de `src/vs/workbench/contrib/terminal/browser/terminal.ts`: `ITerminalConfigurationService` e `LinuxDistro`
-//! (mais os tipos que o serviço recebe: o contêiner do painel e o núcleo do xterm).
+//! Porte parcial de `src/vs/workbench/contrib/terminal/browser/terminal.ts`: `ITerminalConfigurationService`, `LinuxDistro`
+//! (mais os tipos que o serviço recebe: o contêiner do painel e o núcleo do xterm), o `ITerminalInstanceService`, e as
+//! versões reduzidas de `ITerminalService` e `ITerminalInstance` que o resto do porte já lê.
 //!
-//! O resto do arquivo (`ITerminalService`, `ITerminalInstance`, `ITerminalGroupService`...) entra quando um consumidor pedir.
+//! O resto do arquivo (`ITerminalGroupService`, `ITerminalEditorService`, `IXtermTerminal`...) entra quando um consumidor
+//! pedir.
 //!
 //! Divergências:
 //! - **`config`.** `Readonly<ITerminalConfiguration>` é um [`Dynamic`] (objeto): a configuração tem cerca de 120
@@ -12,13 +14,26 @@
 //! - **`getFont(w: Window, ...)`.** A janela só serve para o `devicePixelRatio`, que é um número aqui.
 //! - **`xtermCore?: IXtermCore`.** O núcleo privado do xterm vira [`IXtermCore`], que devolve as dimensões em CSS de uma
 //!   célula quando o renderizador existe (`_renderService._renderer.value` definido).
+//! - **`ITerminalService`** tem só `getInstanceFromId` e `setNextCommandId`, que o gerenciador de processo e a informação de
+//!   variáveis de ambiente leem. **`ITerminalInstance`** tem só o que esses consumidores leem (o id, o título, o relançamento,
+//!   o estado de descarte e o `onDisposed`); a classe [`TerminalInstance`](super::terminal_instance::TerminalInstance) tem o
+//!   resto como métodos próprios.
+//! - **`ITerminalInstanceService.createInstance(launchConfig, target, editorOptions?)`** não leva o `editorOptions`
+//!   (`TerminalEditorLocation`, do serviço de editores de terminal, que não existe no porte).
+//! - **`convertProfileToShellLaunchConfig(IShellLaunchConfig | ITerminalProfile | undefined, cwd?)`** recebe o
+//!   [`ShellLaunchConfigOrProfile`].
+//! - **`getRegisteredBackends(): IterableIterator`** é um `Vec`.
+
+use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
+use je_base::promise::Promise;
 use je_instantiation::service_id;
-use je_platform::terminal::terminal::TerminalLocation;
+use je_platform::terminal::terminal::{IShellLaunchConfig, ITerminalProfile, ShellCwd, TerminalLocation};
 
-use crate::contrib::terminal::common::terminal::TerminalFont;
+use crate::contrib::terminal::common::terminal::{SharedShellLaunchConfig, TerminalFont};
+use crate::contrib::terminal::common::terminal_backend::ITerminalBackend;
 
 /// `LinuxDistro`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,3 +86,61 @@ pub trait ITerminalConfigurationService {
 }
 
 service_id!(pub I_TERMINAL_CONFIGURATION_SERVICE: dyn ITerminalConfigurationService = "terminalConfigurationService");
+
+/// `ITerminalInstance`, reduzido ao que o gerenciador de processo e a informação de variáveis de ambiente leem (ver
+/// "Divergências").
+pub trait ITerminalInstance {
+    fn instance_id(&self) -> u32;
+    fn title(&self) -> String;
+    fn is_disposed(&self) -> bool;
+    fn shell_launch_config(&self) -> SharedShellLaunchConfig;
+
+    /// Fired when the terminal instance is about to be disposed (the terminal is still alive for the listeners).
+    fn on_will_dispose(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// Fired after the terminal instance (and its xterm) has been disposed.
+    fn on_disposed(&self) -> Event<Rc<dyn ITerminalInstance>>;
+
+    /// Relaunches the process with the same launch config (debounced by one second, as in the original).
+    fn relaunch(&self);
+}
+
+/// `ITerminalService`, reduzido ao que o gerenciador de processo e a informação de variáveis de ambiente leem (ver
+/// "Divergências").
+pub trait ITerminalService {
+    fn get_instance_from_id(&self, terminal_id: u32) -> Option<Rc<dyn ITerminalInstance>>;
+    fn set_next_command_id(&self, id: u32, command_line: &str, command_id: &str) -> Promise<()>;
+}
+
+service_id!(pub I_TERMINAL_SERVICE: dyn ITerminalService = "terminalService");
+
+/// `IShellLaunchConfig | ITerminalProfile`: o argumento de `convertProfileToShellLaunchConfig`.
+#[derive(Clone)]
+pub enum ShellLaunchConfigOrProfile {
+    LaunchConfig(IShellLaunchConfig),
+    Profile(ITerminalProfile),
+}
+
+/// `ITerminalInstanceService`.
+pub trait ITerminalInstanceService {
+    /// An event that's fired when a terminal instance is created.
+    fn on_did_create_instance(&self) -> Event<Rc<dyn ITerminalInstance>>;
+
+    /// An event that's fired when a new backend is registered.
+    fn on_did_register_backend(&self) -> Event<Rc<dyn ITerminalBackend>>;
+
+    /// Helper function to convert a shell launch config, a profile or undefined into its equivalent shell launch config.
+    /// `cwd` is a cwd to override.
+    fn convert_profile_to_shell_launch_config(&self, shell_launch_config_or_profile: Option<ShellLaunchConfigOrProfile>, cwd: Option<ShellCwd>) -> IShellLaunchConfig;
+
+    /// Create a new terminal instance.
+    fn create_instance(&self, launch_config: IShellLaunchConfig, target: TerminalLocation) -> Rc<dyn ITerminalInstance>;
+
+    /// Gets the registered backend for a remote authority (`None` = local). This is a convenience method to avoid using the
+    /// more verbose fetching from the registry.
+    fn get_backend(&self, remote_authority: Option<&str>) -> Promise<Option<Rc<dyn ITerminalBackend>>>;
+
+    fn get_registered_backends(&self) -> Vec<Rc<dyn ITerminalBackend>>;
+    fn did_register_backend(&self, backend: Rc<dyn ITerminalBackend>);
+}
+
+service_id!(pub I_TERMINAL_INSTANCE_SERVICE: dyn ITerminalInstanceService = "terminalInstanceService");
