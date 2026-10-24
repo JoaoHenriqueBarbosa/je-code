@@ -130,7 +130,7 @@ impl EditorView {
         self.sync_scroll_dimensions_now();
         let p = self.core.view_model.get_primary_cursor_state().view_state.position;
         let lh = self.layout.line_height();
-        let top = f64::from(p.line_number - 1) * lh;
+        let top = self.layout.line_offset(p.line_number);
         let scroll_top = self.scroll_top();
         if top < scroll_top {
             self.set_scroll_top(top);
@@ -254,7 +254,7 @@ impl EditorView {
         }
         let view_position = self.view_position_at(x, y);
         let position = self.to_model(view_position);
-        let in_margin = x < self.layout.content_left() - crate::layout::LINE_DECORATIONS_WIDTH;
+        let in_margin = x < self.layout.content_left() - self.layout.decorations_width;
         let count = if in_margin { 3 } else { click_count.clamp(1, 3) };
         let source = ("source", Dynamic::from("mouse"));
         let last = mods.alt && !in_margin;

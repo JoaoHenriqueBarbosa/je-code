@@ -61,6 +61,14 @@ impl FontMetrics {
     }
 }
 
+/// Um espaço vertical entre linhas (o `IViewZone` do Monaco): `height` px depois da linha `after_line` (0 é antes da
+/// primeira), em linhas da view. O editor de diff usa para alinhar as linhas dos dois lados.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewZone {
+    pub after_line: i32,
+    pub height: f64,
+}
+
 /// A geometria da view para um tamanho e uma contagem de linhas.
 #[derive(Clone, Debug)]
 pub struct ViewLayout {
@@ -76,11 +84,54 @@ pub struct ViewLayout {
     pub show_line_numbers: bool,
     /// `editor.minimap.enabled`.
     pub minimap_enabled: bool,
+    /// A coluna das decorações de linha: 10 px do `lineDecorationsWidth` mais 16 do controle de dobra; no editor de
+    /// diff (sem dobra) são 16 px (medido no oráculo).
+    pub decorations_width: f64,
+    /// Os espaços entre linhas, em ordem de `after_line` (cada um com o deslocamento acumulado até ele).
+    zones: Vec<(ViewZone, f64)>,
 }
 
 impl ViewLayout {
     pub fn new(metrics: FontMetrics, tab_size: i32, width: f64, height: f64, line_count: i32) -> Self {
-        Self { metrics, tab_size, width, height, line_count, model_line_count: line_count, show_line_numbers: true, minimap_enabled: true }
+        Self { metrics, tab_size, width, height, line_count, model_line_count: line_count, show_line_numbers: true, minimap_enabled: true, decorations_width: LINE_DECORATIONS_WIDTH, zones: Vec::new() }
+    }
+
+    /// Troca os espaços entre linhas (ordena por posição; os de mesma linha somam).
+    pub fn set_zones(&mut self, mut zones: Vec<ViewZone>) {
+        zones.sort_by_key(|z| z.after_line);
+        let mut total = 0.0;
+        self.zones = zones
+            .into_iter()
+            .map(|z| {
+                total += z.height;
+                (z, total)
+            })
+            .collect();
+    }
+
+    pub fn zones(&self) -> impl Iterator<Item = ViewZone> + '_ {
+        self.zones.iter().map(|(z, _)| *z)
+    }
+
+    /// A altura de todos os espaços.
+    pub fn zones_height(&self) -> f64 {
+        self.zones.last().map_or(0.0, |(_, total)| *total)
+    }
+
+    /// A altura dos espaços que ficam antes da linha `line_number` (depois das linhas anteriores a ela).
+    fn zones_before_line(&self, line_number: i32) -> f64 {
+        let count = self.zones.partition_point(|(z, _)| z.after_line < line_number);
+        count.checked_sub(1).map_or(0.0, |i| self.zones[i].1)
+    }
+
+    /// O topo da linha no documento, com os espaços (sem a rolagem).
+    pub fn line_offset(&self, line_number: i32) -> f64 {
+        f64::from(line_number - 1) * self.line_height() + self.zones_before_line(line_number)
+    }
+
+    /// O topo e a altura de cada espaço no documento (sem a rolagem).
+    pub fn zone_spans(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        self.zones.iter().map(|(z, cumulative)| (f64::from(z.after_line) * self.line_height() + cumulative - z.height, z.height))
     }
 
     pub fn glyph_margin_width(&self) -> f64 {
@@ -103,7 +154,7 @@ impl ViewLayout {
 
     /// O início do conteúdo (`contentLeft`).
     pub fn content_left(&self) -> f64 {
-        self.glyph_margin_width() + self.line_numbers_width() + LINE_DECORATIONS_WIDTH
+        self.glyph_margin_width() + self.line_numbers_width() + self.decorations_width
     }
 
     /// A largura da barra de rolagem vertical (`verticalScrollbarSize`).
@@ -142,7 +193,7 @@ impl ViewLayout {
 
     /// Altura total das linhas mais o espaço de `scrollBeyondLastLine` (a última linha pode subir até o topo).
     pub fn scroll_height(&self) -> f64 {
-        f64::from(self.line_count) * self.line_height() + (self.height - self.line_height()).max(0.0)
+        f64::from(self.line_count) * self.line_height() + self.zones_height() + (self.height - self.line_height()).max(0.0)
     }
 
     pub fn max_scroll_top(&self) -> f64 {
@@ -151,13 +202,28 @@ impl ViewLayout {
 
     /// O topo da linha na tela (relativo à view) para um `scroll_top`.
     pub fn line_top(&self, line_number: i32, scroll_top: f64) -> f64 {
-        f64::from(line_number - 1) * self.line_height() - scroll_top
+        self.line_offset(line_number) - scroll_top
     }
 
     /// A linha sob a coordenada `y` (relativa à view), limitada ao documento.
     pub fn line_at_y(&self, y: f64, scroll_top: f64) -> i32 {
-        let line = ((y + scroll_top) / self.line_height()).floor() as i64 + 1;
-        line.clamp(1, i64::from(self.line_count)) as i32
+        let document_y = y + scroll_top;
+        if self.zones.is_empty() {
+            let line = (document_y / self.line_height()).floor() as i64 + 1;
+            return line.clamp(1, i64::from(self.line_count)) as i32;
+        }
+        // Uma busca binária pela última linha cujo topo não passa de `document_y` (um ponto dentro de um espaço
+        // pertence à linha de cima).
+        let (mut low, mut high) = (1, self.line_count.max(1));
+        while low < high {
+            let mid = low + (high - low + 1) / 2;
+            if self.line_offset(mid) <= document_y {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        low
     }
 
     /// As linhas parcialmente visíveis, de `(primeira, última)`.
@@ -217,6 +283,29 @@ mod tests {
         }
         assert_eq!(l.line_at_y(-500.0, 0.0), 1);
         assert_eq!(l.line_at_y(1e9, 0.0), 100);
+    }
+
+    #[test]
+    fn view_zones_push_the_lines_below_them_down() {
+        let mut l = layout(100);
+        // Um espaço de 2 linhas depois da linha 3 e outro de 1 linha antes da primeira.
+        l.set_zones(vec![ViewZone { after_line: 3, height: 38.0 }, ViewZone { after_line: 0, height: 19.0 }]);
+        assert_eq!(l.zones_height(), 57.0);
+        assert_eq!(l.line_top(1, 0.0), 19.0, "o espaço do topo empurra a linha 1");
+        assert_eq!(l.line_top(3, 0.0), 19.0 + 2.0 * 19.0);
+        assert_eq!(l.line_top(4, 0.0), 19.0 + 3.0 * 19.0 + 38.0, "a linha 4 vem depois do espaço");
+        assert_eq!(l.scroll_height(), 100.0 * 19.0 + 57.0 + (400.0 - 19.0));
+        let spans: Vec<(f64, f64)> = l.zone_spans().collect();
+        assert_eq!(spans, vec![(0.0, 19.0), (19.0 + 3.0 * 19.0, 38.0)]);
+        // Os pontos de cada linha voltam a ela; um ponto dentro de um espaço pertence à linha de cima.
+        for line in [1, 2, 3, 4, 50, 100] {
+            let top = l.line_top(line, 0.0);
+            assert_eq!(l.line_at_y(top, 0.0), line);
+            assert_eq!(l.line_at_y(top + 18.9, 0.0), line);
+        }
+        assert_eq!(l.line_at_y(l.line_top(3, 0.0) + 19.0 + 10.0, 0.0), 3);
+        assert_eq!(l.line_at_y(0.0, 0.0), 1, "dentro do espaço do topo");
+        assert_eq!(l.visible_lines(0.0).0, 1);
     }
 
     #[test]

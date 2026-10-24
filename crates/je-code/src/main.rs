@@ -960,6 +960,101 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// O conteúdo de `a.ts` no HEAD do repositório do teste.
+    fn original_text(dir: &Path) -> String {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(["show", "HEAD:a.ts"]).output().expect("git show");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn source_control_opens_the_side_by_side_diff() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-diff", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().expect("git existe");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run_git(&["init", "-q", "-b", "main"]);
+        run_git(&["config", "user.email", "a@b.c"]);
+        run_git(&["config", "user.name", "teste"]);
+        let original = "import { readFile } from \"fs\";\n\nfunction add(a: number, b: number): number {\n    return a + b;\n}\n\nconst items = [1, 2, 3];\nconsole.log(items.map(x => x * 2));\n\nfunction removed() {\n    return \"gone\";\n}\n\nexport class Counter {\n    private count = 0;\n    inc() { this.count++; }\n}\n";
+        let modified = "import { readFile } from \"fs\";\nimport { join } from \"path\";\n\nfunction add(a: number, b: number): number {\n    const sum = a + b + 1;\n    return sum;\n}\n\nconst items = [1, 2, 3, 4];\nconsole.log(items.map(x => x * 2));\n\nexport class Counter {\n    private count = 0;\n    inc() { this.count += 1; }\n    dec() { this.count -= 1; }\n}\n";
+        std::fs::write(dir.join("a.ts"), original).expect("a");
+        std::fs::write(dir.join("notes.txt"), "x\n").expect("notes");
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("a.ts"), modified).expect("edita");
+        std::fs::write(dir.join("new.txt"), "novo\n").expect("novo");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[], 1200.0, 800.0).expect("abre");
+        shell.set_wake(Arc::new(|| {}));
+        shell.run(shell::Command::ShowScm);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while shell.git_status().count() != 2 && std::time::Instant::now() < deadline {
+            shell.take_dirty();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // O arquivo novo (não rastreado) não tem o que comparar: abre como arquivo.
+        shell.run(shell::Command::ScmOpenChanges(shell::scm_view::Group::Changes, "new.txt".to_owned()));
+        assert!(shell.active_editor().is_some_and(|e| e.name == "new.txt" && e.diff().is_none()));
+        // O clique na linha de `a.ts` da vista abre o diff dele.
+        snapshot(&mut shell, "d-scm.png");
+        click(&mut shell, 120.0, 198.0);
+        assert_eq!(shell.active_editor().map(|e| e.name.as_str()), Some("a.ts (Working Tree)"));
+        shell.run(shell::Command::ToggleSidebar);
+        snapshot(&mut shell, "d0-diff.png");
+        let editor = shell.active_editor().expect("aba do diff");
+        let diff = editor.diff().expect("editor de diff");
+        // Cinco mudanças: o import novo, `return sum`, a lista, a função removida e a classe.
+        assert_eq!(diff.mappings().len(), 5, "{:?}", diff.mappings().iter().map(|m| (m.original, m.modified)).collect::<Vec<_>>());
+        // O alinhamento deixa os dois lados com a mesma altura de texto: o original ganha espaço onde o modificado cresce.
+        let (original, modified_view) = (diff.original().layout(), editor.view.layout());
+        assert!(original.zones_height() > 0.0 && modified_view.zones_height() > 0.0);
+        assert_eq!(
+            f64::from(original.line_count) * 19.0 + original.zones_height(),
+            f64::from(modified_view.line_count) * 19.0 + modified_view.zones_height()
+        );
+        // Abrir de novo ativa a mesma aba.
+        shell.run(shell::Command::ScmOpenChanges(shell::scm_view::Group::Changes, "a.ts".to_owned()));
+        assert_eq!(shell.tab_paths().iter().filter(|p| p.ends_with("a.ts")).count(), 1);
+        // Clicar no original o foca: digitar ali não muda texto nenhum.
+        click(&mut shell, 53.0 + 200.0, 90.0 + 30.0);
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        key(&mut shell, None, Some("z"));
+        let editor = shell.active_editor().expect("aba");
+        assert_eq!(editor.view.model().get_value().to_string_lossy(), modified);
+        assert_eq!(editor.diff().expect("diff").original().model().get_value().to_string_lossy(), original_text(&dir));
+        // Clicar no modificado e digitar edita o arquivo (a aba fica modificada) e o diff acompanha.
+        click(&mut shell, 53.0 + 700.0, 90.0 + 11.0);
+        key(&mut shell, None, Some("z"));
+        let editor = shell.active_editor().expect("aba");
+        assert!(editor.is_modified() && editor.view.model().get_value().to_string_lossy().contains('z'));
+        snapshot(&mut shell, "d1-diff-edited.png");
+        // A roda sobre o original rola os dois lados.
+        shell.wheel(53.0 + 200.0, 90.0 + 300.0, 0.0, 120.0);
+        snapshot(&mut shell, "d2-diff-scrolled.png");
+        let editor = shell.active_editor().expect("aba");
+        let (original_top, modified_top) = (editor.diff().expect("diff").original().scroll_top(), editor.view.scroll_top());
+        assert!(modified_top > 0.0 && original_top == modified_top, "{original_top} {modified_top}");
+        // O staged abre o índice contra o HEAD: somente leitura, sem arquivo para gravar.
+        shell.run(shell::Command::ShowScm);
+        shell.run(shell::Command::ScmOp(shell::git::Operation::Stage(vec!["a.ts".to_owned()])));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while shell.git_status().staged.is_empty() && std::time::Instant::now() < deadline {
+            shell.take_dirty();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        shell.run(shell::Command::ScmOpenChanges(shell::scm_view::Group::Staged, "a.ts".to_owned()));
+        let editor = shell.active_editor().expect("aba");
+        assert_eq!((editor.name.as_str(), editor.path.is_none(), editor.diff().is_some()), ("a.ts (Index)", true, true));
+        let before = editor.view.model().get_value().to_string_lossy();
+        // Com o foco no editor do índice (a vista fica aberta: o modificado começa depois da barra lateral).
+        click(&mut shell, 900.0, 90.0 + 30.0);
+        key(&mut shell, None, Some("q"));
+        assert_eq!(shell.active_editor().expect("aba").view.model().get_value().to_string_lossy(), before, "o lado do índice é somente leitura");
+        snapshot(&mut shell, "d3-diff-index.png");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn source_control_view_stages_and_commits() {
         let dir = std::env::temp_dir().join(format!("je-code-{}-scm", std::process::id()));

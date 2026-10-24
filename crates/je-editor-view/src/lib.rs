@@ -15,6 +15,7 @@
 pub mod clipboard;
 pub mod colors;
 mod core;
+pub mod diff;
 pub mod environment;
 pub mod folding;
 pub mod input;
@@ -32,4 +33,5 @@ pub use input::{CopiedText, EditorKey};
 pub use layout::{FontMetrics, ViewLayout};
 pub use settings::EditorSettings;
 pub use shortcuts::set_user_keybindings;
-pub use view::{EditorView, GutterChange, GutterKind};
+pub use diff::{DiffColors, DiffEditor, DiffLayout, Side};
+pub use view::{EditorView, GutterChange, GutterKind, LineDecoration, LineSign, RangeDecoration};

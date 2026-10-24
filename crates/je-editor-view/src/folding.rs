@@ -369,6 +369,9 @@ impl crate::view::EditorView {
 
     /// O clique na faixa dos chevrons (`GUTTER_LINE_DECORATIONS`): a linha do modelo da região que começa ali.
     pub(crate) fn chevron_line_at(&mut self, x: f64, y: f64) -> Option<i32> {
+        if self.embedded {
+            return None;
+        }
         let left = self.layout.line_numbers_left() + self.layout.line_numbers_width();
         if x < left || x >= self.layout.content_left() {
             return None;
@@ -434,6 +437,10 @@ impl crate::view::EditorView {
     }
 
     pub(crate) fn paint_fold_chevrons(&self, list: &mut je_render::DisplayList, origin: (f64, f64), scale: f64, laid_out: &[(i32, std::rc::Rc<crate::view::LineLayout>)], scroll_top: f64) {
+        if self.embedded {
+            // O editor de diff não tem controle de dobra (`folding: false`).
+            return;
+        }
         let left = self.layout.line_numbers_left() + self.layout.line_numbers_width() + CHEVRON_OFFSET;
         let lh = self.layout.line_height();
         let px = (f64::from(CHEVRON_SIZE) * scale) as f32;
