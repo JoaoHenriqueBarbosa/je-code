@@ -27,6 +27,7 @@
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
 
+use std::future::IntoFuture;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, timeout};
@@ -206,7 +207,7 @@ fn assert_status(actual: &dyn ITerminalStatusList, expected: &Rc<ITerminalStatus
     assert!(actual.primary().is_some_and(|primary| primary.severity == expected.severity), "Severity");
 }
 
-async fn poll<T>(fn_: impl Fn() -> Promise<T>, accept_fn: impl Fn(&T) -> bool, timeout_message: &str) -> T {
+async fn poll<T: Clone + 'static>(fn_: impl Fn() -> Promise<T>, accept_fn: impl Fn(&T) -> bool, timeout_message: &str) -> T {
     let retry_count: u64 = 200;
     let retry_interval: u64 = 10; // millis
     let mut trial = 1;
@@ -217,7 +218,7 @@ async fn poll<T>(fn_: impl Fn() -> Promise<T>, accept_fn: impl Fn(&T) -> bool, t
             panic!("Timeout: {timeout_message} after {} seconds.\r{last_error}", (retry_count * retry_interval) as f64 / 1000.0);
         }
 
-        match fn_().await {
+        match fn_().into_future().await {
             Ok(result) => {
                 if accept_fn(&result) {
                     return result;

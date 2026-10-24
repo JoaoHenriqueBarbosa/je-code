@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use common::{assert_deep_strict_equal, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::dynamic::Dynamic;
-use je_base::observable::base::{IObservable, Settable};
+use je_base::observable::base::{IObservable, Settable, SettableExt};
 use je_base::observable::observable_value;
 use je_platform::contextkey::IContextKeyService;
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
