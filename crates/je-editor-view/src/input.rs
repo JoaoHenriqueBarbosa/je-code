@@ -281,6 +281,7 @@ impl EditorView {
         if let EditorKey::Char(c) = key
             && ctrl
             && !mods.alt
+            && !self.shortcuts.is_pending()
         {
             match (c, mods.shift) {
                 ('c', false) => {

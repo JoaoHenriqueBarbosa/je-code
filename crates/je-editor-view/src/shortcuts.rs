@@ -116,6 +116,11 @@ impl Shortcuts {
         Resolution::None
     }
 
+    /// Há um primeiro acorde esperando o segundo.
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Abandona a sequência em espera (o foco mudou, ou o usuário digitou texto).
     pub fn cancel(&mut self) {
         self.pending = None;

@@ -114,6 +114,7 @@ fn register_editor_modules() {
     je_editor::word_operations::register_word_operations();
     je_editor::lines_operations::register_lines_operations();
     je_editor::line_selection::register_line_selection();
+    je_editor::comment::comment_actions::register_comment();
     je_editor::multicursor::register_multi_cursor(Rc::new(FindControllers), Rc::new(NoHighlightProviders));
 }
 
