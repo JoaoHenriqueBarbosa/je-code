@@ -22,6 +22,7 @@ pub mod ext_host_values;
 
 pub mod ext_host_configuration;
 pub mod ext_host_progress;
+pub mod ext_host_quick_open;
 pub mod ext_host_tree_views;
 pub mod ext_host_workspace;
 pub mod shared;
