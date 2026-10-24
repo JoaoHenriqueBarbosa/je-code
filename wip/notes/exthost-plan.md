@@ -176,3 +176,22 @@ O que falta para ativar uma extensão embutida de verdade (ordem de ataque, tama
 5. Primeiro alvo de ativação: `gulp`, `grunt`, `jake`, `debug-auto-launch`, `debug-server-ready`, `tunnel-forwarding`
    (40 a 76 KB, só `commands`, `tasks`, `debug`, `window`, `workspace`, `l10n`).
 
+### Primeira ativação de ponta a ponta (eu, 2026-10-24)
+
+`je_exthost::host::ExtensionHost` monta `LocalContext` (o `IMainContext` em processo: `get_proxy` devolve o objeto registrado), o
+`MainThreadCommands` real, o `ExtHostCommands` real e o objeto `vscode` com `commands` (`registerCommand`, `executeCommand`,
+`getCommands`), `l10n.t` e `Disposable` (classe nativa, `Disposable.from`, `instanceof`). Teste: uma extensão CommonJS em disco
+faz `require('vscode')`, registra comandos síncrono, assíncrono e que lança, e os executa de volta pelo `ExtHostCommands`: o erro
+original chega ao `catch` com a mensagem intacta, `dispose()` remove o comando e roda o `callOnDispose` uma vez, registrar o mesmo
+id lança `command 'x' already exists` (6 testes em `crates/je-exthost/tests/extension_host.rs`).
+
+Padrão para cada namespace novo (é o que se repete 200 vezes): (1) o serviço `ExtHost*` já portado fornece a lógica; (2) em
+`crates/je-exthost/src/api/<nome>.rs` uma função `namespace(runner, services, table) -> JsData` com `make_function` por membro,
+convertendo argumentos com `js_to_dynamic`/`dynamic_to_js` e promessas com `settle_js_result` (JS para Rust) e `promise_to_js`
+(Rust para JS); (3) descartável devolvido ao JavaScript passa por `DisposableTable::to_js`; (4) classes da API entram como
+`ClassSpec` (o `$$class` carrega a identidade); (5) o objeto entra em `ExtensionHost::new`. Os dois lados do RPC nascem um dentro
+do outro: um `Late*` (encaminhador preguiçoso, como o `LateExtHostCommands`) quebra o ciclo.
+
+Lacunas conhecidas da camada de valores: `Function`, `RegExp`, `Date` e arrays tipados do `Dynamic` ainda não atravessam; `ClassSpec`
+não tem acessores (`get isEmpty()` do `Range`), que pedem um getter nativo com consulta por `$$class` e propriedade; erros do Rust
+chegam ao JavaScript como objeto com `name` e `message`, não como instância de `Error`.
