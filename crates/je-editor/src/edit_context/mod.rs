@@ -5,3 +5,5 @@
 pub mod clipboard_utils;
 pub mod screen_reader_utils;
 pub mod text_area_state;
+
+pub mod text_area_input;
