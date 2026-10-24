@@ -16,6 +16,7 @@ pub mod configuration;
 pub mod dialogs;
 pub mod contextkey;
 pub mod environment;
+pub mod extension_management;
 pub mod files;
 pub mod js;
 pub mod keyboard_layout;

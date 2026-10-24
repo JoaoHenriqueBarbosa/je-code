@@ -7,6 +7,11 @@
 pub mod extension_bisect;
 pub mod extension_enablement_service;
 pub mod extension_features;
+pub mod extension_gallery_account;
+pub mod extension_gallery_account_service;
+pub mod extension_gallery_contracts;
+pub mod extension_gallery_manifest_service;
+pub mod extension_gallery_manifest_service_browser;
 pub mod extension_management;
 pub mod global_extension_enablement_service;
 pub mod service_contracts;
