@@ -5,16 +5,16 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
-| `platform` | 192 | 2806 | 107 | 1815 | 64.68 |
+| `platform` | 192 | 2806 | 108 | 1849 | 65.89 |
 | `editor` | 182 | 3144 | 138 | 2829 | 89.98 |
-| `workbench/services` | 137 | 2491 | 35 | 973 | 39.06 |
+| `workbench/services` | 137 | 2491 | 36 | 1018 | 40.87 |
 | `workbench/api` | 94 | 965 | 6 | 161 | 16.68 |
 | `workbench/contrib` | 370 | 4636 | 24 | 317 | 6.84 |
 | `workbench (shell)` | 69 | 621 | 19 | 213 | 34.30 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 8178 | 44.47 |
+| **total** | | 18391 | | 8257 | 44.90 |
 
 ## Arquivos portados
 
@@ -243,6 +243,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/userDataSync/test/common/settingsMerge.test.ts` | 71 | `crates/je-platform/tests/settings_merge.rs` | 71 |
 | `src/vs/platform/userDataSync/test/common/settingsSync.test.ts` | 18 | `crates/je-platform/tests/settings_sync.rs` | 18 |
 | `src/vs/platform/userDataSync/test/common/snippetsMerge.test.ts` | 21 | `crates/je-platform/tests/snippets_merge.rs` | 21 |
+| `src/vs/platform/userDataSync/test/common/snippetsSync.test.ts` | 34 | `crates/je-platform/tests/snippets_sync.rs` | 34 |
 | `src/vs/platform/userDataSync/test/common/synchronizer.test.ts` | 46 | `crates/je-platform/tests/synchronizer.rs` | 46 |
 | `src/vs/platform/userDataSync/test/common/tasksSync.test.ts` | 15 | `crates/je-platform/tests/tasks_sync.rs` | 15 |
 | `src/vs/platform/userDataSync/test/common/userDataProfilesManifestMerge.test.ts` | 8 | `crates/je-platform/tests/user_data_profiles_manifest_merge.rs` | 8 |
@@ -409,6 +410,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/keybinding/test/node/windowsKeyboardMapper.test.ts` | 33 | `crates/je-workbench/tests/windows_keyboard_mapper.rs` | 33 |
 | `src/vs/workbench/services/label/test/browser/label.test.ts` | 38 | `crates/je-workbench/tests/label.rs` | 38 |
 | `src/vs/workbench/services/layout/test/browser/layoutService.test.ts` | 10 | `crates/je-workbench/tests/layout_service.rs` | 10 |
+| `src/vs/workbench/services/policies/test/browser/accountPolicyService.test.ts` | 46 | `crates/je-workbench/tests/account_policy_service.rs` | 45 |
 | `src/vs/workbench/services/policies/test/browser/policyTelemetryContribution.test.ts` | 10 | `crates/je-workbench/tests/policy_telemetry_contribution.rs` | 10 |
 | `src/vs/workbench/services/preferences/test/common/preferencesValidation.test.ts` | 21 | `crates/je-workbench/tests/preferences_validation.rs` | 21 |
 | `src/vs/workbench/services/search/test/browser/queryBuilder.test.ts` | 35 | `crates/je-workbench/tests/query_builder.rs` | 35 |
