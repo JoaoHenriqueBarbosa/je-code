@@ -699,7 +699,7 @@ struct DocumentVersions {
 
 impl VersionInformationProvider for DocumentVersions {
     fn get_text_document_version(&self, uri: &URI) -> Option<i64> {
-        self.documents.get_document(uri).map(|document| document.version() as i64)
+        self.documents.get_document(uri).map(|document| document.document().version() as i64)
     }
 }
 

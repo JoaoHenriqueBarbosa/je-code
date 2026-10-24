@@ -117,7 +117,8 @@ pub fn to_extension_data(extension: &ExtensionDescription) -> WebviewExtensionDe
 
 /// `shouldSerializeBuffersForPostMessage(extension)`: a extensão declara `engines.vscode >= 1.57`.
 pub fn should_serialize_buffers_for_post_message(extension: &ExtensionDescription) -> bool {
-    let version = normalize_version(parse_version(&extension.manifest.engines.vscode).as_ref());
+    let parsed = extension.manifest.engines.vscode.as_deref().and_then(parse_version);
+    let version = normalize_version(parsed.as_ref());
     version.is_some_and(|version| version.major_base >= 1 && version.minor_base >= 57)
 }
 

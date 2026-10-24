@@ -36,7 +36,7 @@ use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_protocol::{
     ExtHostFileSystemEventServiceShape, ExtHostFileSystemInfoShape, FileSystemEvents, IMainContext, MainThreadFileSystemEventServiceShape,
 };
-use je_workbench::api::common::ext_host_types::RelativePattern;
+use je_workbench::api::common::ext_host_workspace::RelativePattern;
 use je_workbench::api::common::ext_host_workspace::{GlobPattern, WorkspaceFolder};
 use je_workbench::services::extensions::extensions::null_extension_description;
 
