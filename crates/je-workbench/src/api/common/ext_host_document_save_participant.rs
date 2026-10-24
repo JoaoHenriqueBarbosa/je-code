@@ -22,8 +22,7 @@
 //!   assentou ou rejeitou): é `Promise<bool>`, com `undefined` (nenhuma edição) valendo `false`.
 //! - `SerializableObjectWithBuffers` é o de [`ext_host_protocol`](super::ext_host_protocol), e o `IWorkspaceTextEditDto`
 //!   é o `IWorkspaceTextEdit` do editor. A conversão `TextDocumentSaveReason.to(reason)` de `extHostTypeConverters.ts`
-//!   ainda não existe em [`ext_host_type_converters`](super::ext_host_type_converters) e mora aqui
-//!   ([`text_document_save_reason_to`]); mover para lá quando esse arquivo a pedir.
+//!   é a de [`ext_host_type_converters::save`](super::ext_host_type_converters::save).
 //! - `ExtHostDocumentSaveParticipant` guarda o estado num `Rc` interno: as promessas e os temporizadores seguram o
 //!   participante até assentarem. `$participateInSave` é uma função `async` (`async_fn`), com o `try/finally` do
 //!   temporizador de prazo geral escrito em torno do laço.
@@ -54,15 +53,6 @@ use super::ext_host_type_converters as type_converters;
 use super::ext_host_types::{TextDocumentSaveReason, TextEdit};
 use super::ext_host_values::{ApiValue, is_instance_of};
 use crate::common::editor::SaveReason;
-
-/// `TextDocumentSaveReason.to(reason)` de `extHostTypeConverters.ts`.
-pub fn text_document_save_reason_to(reason: SaveReason) -> TextDocumentSaveReason {
-    match reason {
-        SaveReason::Auto => TextDocumentSaveReason::AfterDelay,
-        SaveReason::Explicit => TextDocumentSaveReason::Manual,
-        SaveReason::FocusChange | SaveReason::WindowChange => TextDocumentSaveReason::FocusOut,
-    }
-}
 
 /// O `{ timeout: number; errors: number }` do construtor: o prazo em milissegundos (de cada ouvinte e do conjunto) e
 /// quantos erros um ouvinte pode dar antes de ser ignorado.
@@ -186,7 +176,7 @@ impl ExtHostDocumentSaveParticipantShape for ExtHostDocumentSaveParticipant {
                     }
                     let document = inner.documents.get_document(&resource)?;
 
-                    let success = inner.deliver_event_async_and_blame_bad_listeners(&listener, document, text_document_save_reason_to(reason)).await?;
+                    let success = inner.deliver_event_async_and_blame_bad_listeners(&listener, document, type_converters::TextDocumentSaveReason::to(reason)).await?;
                     results.push(success);
                 }
                 Ok(())
