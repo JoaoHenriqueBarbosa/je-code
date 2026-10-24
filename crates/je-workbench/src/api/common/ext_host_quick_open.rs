@@ -9,8 +9,8 @@
 //!   `vscode.QuickInputButton`), e a identidade dos objetos (`Map<T, number>` do original) é a do `Rc`. `showQuickPick` devolve o
 //!   `handle` do item (o índice na lista que a extensão deu) em vez do item: quem chama (a ponte com o zjsc) guarda a lista e
 //!   resolve o `handle`, que é o `items[handle]` do original. O `onDidSelectItem` recebe o `handle` pelo mesmo motivo.
-//! - `string | QuickPickItem` é o enum [`QuickPickEntry`]. `tooltip` do item (proposta `quickPickItemTooltip`) não existe no
-//!   `TransferQuickPickItem` do porte do protocolo e não é enviado.
+//! - `string | QuickPickItem` é o enum [`QuickPickEntry`]. `tooltip` do item é `string | MarkdownString` e viaja como o
+//!   `MarkdownString.fromStrict` do original.
 //! - `QuickInputButtons.Back` é o botão com `is_back` (o `handle` dele é -1).
 //! - `Promise.race([widgetClosedPromise, itemsPromise])` é uma promessa resolvida pelo que assentar primeiro.
 //! - O `[key: string]: any` do `TransferQuickInput` é a lista de [`TransferQuickInputParam`] na ordem de inserção; atribuir de novo
@@ -34,8 +34,11 @@ use je_base::promise::{MaybePromise, Promise};
 use je_base::runtime::{clear_timeout, set_timeout, TimerId};
 use je_base::severity::Severity;
 use je_base::uri::URI;
-use je_platform::quickinput::quick_input::{IPickOptions, IQuickPickSeparator, InputValidationResult, QuickInputButtonLocation, QuickInputButtonToggle};
+use je_platform::quickinput::quick_input::{IPickOptions, IQuickPickSeparator, InputValidationResult, QuickInputButtonLocation, QuickInputButtonToggle, QuickPickTooltip};
+use je_editor::languages::StringOrMarkdown;
 
+use super::ext_host_type_converters::MarkdownString;
+use super::ext_host_types::Documentation;
 use super::ext_host_protocol::{
     ExtHostQuickOpenShape, IInputBoxOptions, IMainContext, MainContext, MainThreadQuickOpenShape, QuickOpenShowResult, TransferQuickInput, TransferQuickInputButton,
     TransferQuickInputKind, TransferQuickInputParam, TransferQuickPickItem, TransferQuickPickItemOrSeparator,
@@ -49,9 +52,8 @@ use super::ext_host_workspace::{IExtHostWorkspaceProvider, WorkspaceFolder};
 // ---- os valores da API ------------------------------------------------------------------------------------------------
 
 /// `vscode.QuickInputButton`.
-#[derive(Default)]
 pub struct QuickInputButton {
-    pub icon_path: Option<IconPathInput>,
+    pub icon_path: IconPathInput,
     pub tooltip: Option<String>,
     pub location: Option<QuickInputButtonLocation>,
     /// `toggle: { checked }`; a extensão e o host leem e escrevem `checked`.
@@ -69,6 +71,8 @@ pub struct QuickPickItem {
     pub icon_path: Option<IconPathInput>,
     pub description: Option<String>,
     pub detail: Option<String>,
+    /// `tooltip` (`string | MarkdownString`).
+    pub tooltip: Option<Documentation>,
     pub picked: Option<bool>,
     pub always_show: Option<bool>,
     pub resource_uri: Option<URI>,
@@ -115,10 +119,8 @@ pub struct InputBoxOptions {
 // ---- a conversão dos itens --------------------------------------------------------------------------------------------
 
 fn button_to_transfer(button: &QuickInputButton, handle: i64, with_location: bool) -> TransferQuickInputButton {
-    let mut transfer = TransferQuickInputButton::new(handle, IconPath::from(button.icon_path.clone()).unwrap_or_else(|| super::ext_host_protocol::IconPathDto::Themed {
-        light: je_platform::resources::uri_file(""),
-        dark: je_platform::resources::uri_file(""),
-    }));
+    // `iconPathDto: IconPath.from(button.iconPath)`
+    let mut transfer = TransferQuickInputButton::new(handle, IconPath::from(Some(button.icon_path.clone())));
     transfer.tooltip = button.tooltip.clone();
     if with_location {
         transfer.location = button.location;
@@ -147,6 +149,10 @@ fn item_to_transfer(handle: u32, item: &QuickPickItem, with_buttons: bool) -> Tr
         detail: item.detail.clone(),
         picked: item.picked,
         always_show: item.always_show,
+        tooltip: MarkdownString::from_strict(item.tooltip.as_ref()).map(|tooltip| match tooltip {
+            StringOrMarkdown::String(text) => QuickPickTooltip::Text(text),
+            StringOrMarkdown::Markdown(markdown) => QuickPickTooltip::Markdown(markdown),
+        }),
         buttons: if with_buttons {
             item.buttons.as_ref().map(|buttons| buttons.iter().enumerate().map(|(index, button)| button_to_transfer(button, index as i64, false)).collect())
         } else {
