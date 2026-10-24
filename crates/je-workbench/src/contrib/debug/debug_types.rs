@@ -257,9 +257,11 @@ pub trait IExpression: IExpressionContainer {
     }
 }
 
-/// `ITelemetryEndpoint`, só o que a sessão lê.
+/// `ITelemetryEndpoint`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ITelemetryEndpoint {
+    pub id: String,
+    pub ai_key: String,
     pub send_error_telemetry: bool,
 }
 

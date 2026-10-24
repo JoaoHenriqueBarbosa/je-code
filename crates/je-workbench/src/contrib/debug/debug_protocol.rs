@@ -51,6 +51,63 @@ impl ProtocolMessage {
             ProtocolMessage::Other(message) => &message.message_type,
         }
     }
+
+    /// O objeto JSON que o `JSON.stringify(message)` do original serializa (campos ausentes não aparecem).
+    pub fn to_json(&self) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert("seq".into(), Value::from(self.seq()));
+        object.insert("type".into(), Value::from(self.message_type()));
+        match self {
+            ProtocolMessage::Request(message) => {
+                object.insert("command".into(), Value::from(message.command.clone()));
+                if let Some(arguments) = &message.arguments {
+                    object.insert("arguments".into(), arguments.clone());
+                }
+            }
+            ProtocolMessage::Response(message) => {
+                object.insert("request_seq".into(), Value::from(message.request_seq));
+                object.insert("success".into(), Value::from(message.success));
+                object.insert("command".into(), Value::from(message.command.clone()));
+                if let Some(text) = &message.message {
+                    object.insert("message".into(), Value::from(text.clone()));
+                }
+                if let Some(body) = &message.body {
+                    object.insert("body".into(), body.clone());
+                }
+            }
+            ProtocolMessage::Event(message) => {
+                object.insert("event".into(), Value::from(message.event.clone()));
+                if let Some(body) = &message.body {
+                    object.insert("body".into(), body.clone());
+                }
+            }
+            ProtocolMessage::Other(_) => {}
+        }
+        Value::Object(object)
+    }
+
+    /// `<DebugProtocol.ProtocolMessage>JSON.parse(text)`: a mensagem a partir do objeto JSON recebido do adaptador.
+    pub fn from_json(value: &Value) -> ProtocolMessage {
+        let seq = value.get("seq").and_then(Value::as_i64).unwrap_or(0);
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        match value.get("type").and_then(Value::as_str) {
+            Some("request") => ProtocolMessage::Request(Request {
+                seq,
+                command: text("command").unwrap_or_default(),
+                arguments: value.get("arguments").cloned(),
+            }),
+            Some("response") => ProtocolMessage::Response(Response {
+                seq,
+                request_seq: value.get("request_seq").and_then(Value::as_i64).unwrap_or(0),
+                success: value.get("success").and_then(Value::as_bool).unwrap_or(false),
+                command: text("command").unwrap_or_default(),
+                message: text("message"),
+                body: value.get("body").cloned(),
+            }),
+            Some("event") => ProtocolMessage::Event(Event { seq, event: text("event").unwrap_or_default(), body: value.get("body").cloned() }),
+            other => ProtocolMessage::Other(OtherMessage { seq, message_type: other.unwrap_or_default().to_owned() }),
+        }
+    }
 }
 
 /// Uma `ProtocolMessage` de `type` desconhecido.
