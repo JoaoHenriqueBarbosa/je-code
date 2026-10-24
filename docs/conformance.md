@@ -6,15 +6,15 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | --- | --- | --- | --- | --- | --- |
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
 | `platform` | 192 | 2806 | 110 | 1885 | 67.18 |
-| `editor` | 182 | 3144 | 138 | 2829 | 89.98 |
+| `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
 | `workbench/services` | 137 | 2491 | 37 | 1060 | 42.55 |
 | `workbench/api` | 94 | 965 | 8 | 196 | 20.31 |
-| `workbench/contrib` | 370 | 4636 | 24 | 317 | 6.84 |
+| `workbench/contrib` | 370 | 4636 | 25 | 341 | 7.36 |
 | `workbench (shell)` | 69 | 621 | 19 | 213 | 34.30 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 8370 | 45.51 |
+| **total** | | 18391 | | 8422 | 45.79 |
 
 ## Arquivos portados
 
@@ -303,6 +303,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/editor/contrib/suggest/test/browser/completionModel.test.ts` | 13 | `crates/je-editor/tests/completion_model.rs` | 13 |
 | `src/vs/editor/contrib/suggest/test/browser/suggest.test.ts` | 6 | `crates/je-editor/tests/suggest.rs` | 6 |
 | `src/vs/editor/contrib/suggest/test/browser/suggestMemory.test.ts` | 7 | `crates/je-editor/tests/suggest_memory.rs` | 7 |
+| `src/vs/editor/contrib/suggest/test/browser/suggestModel.test.ts` | 32 | `crates/je-editor/tests/suggest_model.rs` | 28 |
 | `src/vs/editor/contrib/suggest/test/browser/wordDistance.test.ts` | 1 | `crates/je-editor/tests/word_distance.rs` | 1 |
 | `src/vs/editor/contrib/wordHighlighter/test/browser/wordHighlighter.test.ts` | 14 | `crates/je-editor/tests/word_highlighter.rs` | 14 |
 | `src/vs/editor/contrib/wordOperations/test/browser/wordOperations.test.ts` | 56 | `crates/je-editor/tests/word_operations.rs` | 54 |
@@ -451,6 +452,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/policyExport/test/common/policyReference.test.ts` | 2 | `crates/je-workbench/tests/policy_reference.rs` | 2 |
 | `src/vs/workbench/contrib/preferences/test/common/smartSnippetInserter.test.ts` | 7 | `crates/je-workbench/tests/smart_snippet_inserter.rs` | 7 |
 | `src/vs/workbench/contrib/search/test/common/extractRange.test.ts` | 5 | `crates/je-workbench/tests/extract_range.rs` | 5 |
+| `src/vs/workbench/contrib/tasks/test/common/problemMatcher.test.ts` | 24 | `crates/je-workbench/tests/problem_matcher.rs` | 24 |
 | `src/vs/workbench/contrib/terminal/test/browser/capabilities/terminalCapabilityStore.test.ts` | 13 | `crates/je-platform/tests/terminal_capability_store.rs` | 13 |
 | `src/vs/workbench/contrib/terminal/test/browser/terminalUri.test.ts` | 7 | `crates/je-workbench/tests/terminal_uri.rs` | 7 |
 | `src/vs/workbench/contrib/terminal/test/common/environmentVariableCollection.test.ts` | 18 | `crates/je-platform/tests/environment_variable_collection.rs` | 18 |
