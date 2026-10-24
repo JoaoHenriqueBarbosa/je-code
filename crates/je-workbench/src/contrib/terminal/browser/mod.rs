@@ -22,3 +22,9 @@ pub mod xterm;
 pub mod terminal_extensions;
 pub mod terminal_input_events;
 pub mod widgets;
+
+// Porte parcial de `terminalActions.ts` (o par pasta e cwd e o `shrinkWorkspaceFolderCwdPairs`).
+pub mod terminal_actions;
+
+// Porte de `terminalInstanceService.ts`.
+pub mod terminal_instance_service;

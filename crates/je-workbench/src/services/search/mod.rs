@@ -11,3 +11,7 @@ pub mod ripgrep_text_search_engine;
 pub mod search_ext_types_internal;
 pub mod search_helpers;
 pub mod query_builder;
+
+pub mod file_search_manager;
+pub mod ripgrep_file_search;
+pub mod text_search_manager;

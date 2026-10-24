@@ -130,6 +130,12 @@ pub trait IEditorPane {
     /// `onDidChangeControl`: an event to notify whenever the control of the pane changes.
     fn on_did_change_control(&self) -> je_base::event::Event<()>;
 
+    /// `onDidBlur` (`IComposite`): fired when the pane loses the focus. Tem implementação padrão (nunca dispara) para não
+    /// quebrar quem implementa só o recorte acima, como o `Event.None` dos dublês.
+    fn on_did_blur(&self) -> je_base::event::Event<()> {
+        je_base::event::Event::none()
+    }
+
     /// `getId()`: the identifier of the editor pane (`IComposite.getId`). Tem implementação padrão para não quebrar quem
     /// implementa só o recorte acima: lança o erro `Method not implemented.` do dublê do original.
     fn get_id(&self) -> String {

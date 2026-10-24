@@ -33,25 +33,8 @@ pub enum AnsiColor {
     Var(String),
 }
 
-/// `ansiColorIdentifiers`, na ordem do índice da cor.
-pub const ANSI_COLOR_IDENTIFIERS: [&str; 16] = [
-    "terminal.ansiBlack",
-    "terminal.ansiRed",
-    "terminal.ansiGreen",
-    "terminal.ansiYellow",
-    "terminal.ansiBlue",
-    "terminal.ansiMagenta",
-    "terminal.ansiCyan",
-    "terminal.ansiWhite",
-    "terminal.ansiBrightBlack",
-    "terminal.ansiBrightRed",
-    "terminal.ansiBrightGreen",
-    "terminal.ansiBrightYellow",
-    "terminal.ansiBrightBlue",
-    "terminal.ansiBrightMagenta",
-    "terminal.ansiBrightCyan",
-    "terminal.ansiBrightWhite",
-];
+/// `ansiColorIdentifiers`, na ordem do índice da cor (o de `terminalColorRegistry.ts`).
+pub use crate::contrib::terminal::common::terminal_color_registry::ANSI_COLOR_IDENTIFIERS;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ColorType {

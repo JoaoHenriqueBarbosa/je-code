@@ -147,6 +147,7 @@ impl LocalExtensionHost {
         let auto_start = matches!(self.startup, ExtensionHostStartup::EagerAutoStart | ExtensionHostStartup::LazyAutoStart);
         let service = ExtHostExtensionService::new(self.runner.clone(), ext_host.disposables().clone(), &*host_rpc, self.log_service.clone(), auto_start, snapshot);
         host_rpc.set_actor(EXT_HOST_EXTENSION_SERVICE_SID, ExtHostExtensionServiceActor::new(service.clone()));
+        ext_host.bind_extension_service(service.clone());
         service.initialize();
 
         let protocol: Rc<dyn IMessagePassingProtocol> = workbench_protocol.clone();

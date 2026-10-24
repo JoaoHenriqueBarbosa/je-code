@@ -14,6 +14,8 @@ je-editor = { path = "../je-editor" }
 je-platform = { path = "../je-platform" }
 je-extensions = { path = "../je-extensions" }
 je-workbench = { path = "../je-workbench" }
+# O manifesto da extensão (`package.json`) como valor JSON, para `vscode.extensions.getExtension(id).packageJSON`.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # Entropia do SO para `Host::random_fill` (no alvo web a aleatoriedade vem do navegador, fora desta crate).
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

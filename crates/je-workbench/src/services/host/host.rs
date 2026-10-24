@@ -72,6 +72,12 @@ pub trait IHostService {
     fn on_did_change_focus(&self) -> Event<bool> {
         Event::none()
     }
+
+    /// `onDidChangeActiveWindow`: dispara com o identificador da janela que passou a ser a ativa. O padrão nunca dispara,
+    /// como o `Event.None` dos dublês.
+    fn on_did_change_active_window(&self) -> Event<u32> {
+        Event::none()
+    }
 }
 
 service_id!(pub I_HOST_SERVICE: dyn IHostService = "hostService");

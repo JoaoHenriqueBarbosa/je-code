@@ -91,7 +91,7 @@ pub fn parse_update_info_input(text: &str) -> ParsedUpdateInfoInput {
 
 /// Caracteres que o `trim` do JavaScript remove: espaços (`WhiteSpace`, com `U+FEFF`) e terminadores de
 /// linha. O `char::is_whitespace` do Rust inclui `U+0085`, que o JavaScript não trata como espaço.
-fn is_js_whitespace(c: char) -> bool {
+pub(crate) fn is_js_whitespace(c: char) -> bool {
     c == '\u{FEFF}' || (c.is_whitespace() && c != '\u{85}')
 }
 
