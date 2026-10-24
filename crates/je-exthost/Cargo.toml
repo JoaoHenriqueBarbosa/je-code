@@ -1,0 +1,21 @@
+[package]
+name = "je-exthost"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Host de extensões do je-code: o Host do zjsc sobre o sistema operacional real e a ativação das extensões"
+
+[dependencies]
+zjsc = { path = "../zjsc" }
+
+# Entropia do SO para `Host::random_fill` (no alvo web a aleatoriedade vem do navegador, fora desta crate).
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
