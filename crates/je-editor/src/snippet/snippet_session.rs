@@ -61,7 +61,7 @@ use crate::range::Range;
 use crate::selection::{Selection, SelectionDirection};
 use crate::text_change::TextChange;
 use crate::text_model::{ModelDecorationOptions, TextModel};
-use crate::text_model_edit_source::TextModelEditSource;
+use crate::text_model_edit_source::{EditSources, TextModelEditSource};
 
 /// A identidade de um marcador (o `===` do original): o endereço do `Rc`.
 pub fn marker_id(marker: &MarkerRef) -> usize {
@@ -92,7 +92,7 @@ fn split_into_lines(text: &[u16]) -> Vec<JsString> {
 
 /// A origem de edição `EditSources.snippet()`.
 fn snippet_edit_source() -> TextModelEditSource {
-    TextModelEditSource { source: "snippet".to_owned(), name: None }
+    EditSources::snippet()
 }
 
 /// As quatro `ModelDecorationOptions` de um placeholder (`OneSnippet._decor`).
