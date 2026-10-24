@@ -92,6 +92,8 @@ pub fn define(runner: &NodeRunner, table: &Rc<DisposableTable>) -> JsData {
                 Ok(JsData::Undefined)
             }),
         )],
+        getters: vec![],
+        parent: None,
         statics: vec![(
             "from".to_owned(),
             1,

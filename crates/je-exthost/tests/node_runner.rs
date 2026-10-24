@@ -277,6 +277,8 @@ fn define_point(runner: &NodeRunner) {
             2,
             Rc::new(|this, args| Ok(point(field(this, "x") + number(&args[0]), field(this, "y") + number(&args[1])))),
         )],
+        getters: vec![],
+        parent: None,
         statics: vec![("origin".into(), 0, Rc::new(|_| Ok(point(0.0, 0.0))))],
     });
     runner.set_global("Point", &JsData::Handle(Rc::new(constructor)));
@@ -395,5 +397,37 @@ fn rust_created_promises_are_awaited_by_javascript() {
         runner.eval("failing.catch((e) => log.push('erro:' + e))", "t.js").unwrap();
         runner.reject_promise(&failing, &JsData::Str("falhou".into()));
         assert_eq!(text(runner, "log.join()"), "then:pronto,await:pronto,erro:falhou");
+    });
+}
+
+#[test]
+fn native_classes_have_getters_and_inherit_from_other_native_classes() {
+    with_runner("", |runner, _| {
+        let base = runner.define_class(ClassSpec {
+            name: "Base".into(),
+            length: 1,
+            construct: Rc::new(|args| Ok(JsData::Object(vec![("n".into(), args[0].clone())]))),
+            methods: vec![("hello".into(), 0, Rc::new(|this, _| Ok(JsData::Str(format!("base {}", field(this, "n"))))))],
+            getters: vec![("kind".into(), Rc::new(|_, _| Ok(JsData::Str("base".into()))))],
+            parent: None,
+            statics: vec![("make".into(), 1, Rc::new(|args| Ok(JsData::Object(vec![(CLASS_KEY.into(), JsData::Str("Base".into())), ("n".into(), args[0].clone())]))))],
+        });
+        let derived = runner.define_class(ClassSpec {
+            name: "Derived".into(),
+            length: 1,
+            construct: Rc::new(|args| Ok(JsData::Object(vec![("n".into(), args[0].clone())]))),
+            methods: vec![],
+            getters: vec![("double".into(), Rc::new(|this, _| Ok(JsData::Num(field(this, "n") * 2.0))))],
+            parent: Some("Base".into()),
+            statics: vec![],
+        });
+        runner.set_global("Base", &JsData::Handle(Rc::new(base)));
+        runner.set_global("Derived", &JsData::Handle(Rc::new(derived)));
+        assert_eq!(
+            text(runner, "const d = new Derived(21); [d instanceof Base, d instanceof Derived, d.hello(), d.kind, d.double, Object.keys(d).join(), Object.getPrototypeOf(Derived) === Base].join()"),
+            "true,true,base 21,base,42,n,true"
+        );
+        assert_eq!(text(runner, "Derived.make(5).hello() + ':' + (Derived.make(5) instanceof Base)"), "base 5:true", "o estático herdado resolve");
+        assert_eq!(text(runner, "try { d.kind = 'x'; d.kind } catch (e) { 'lançou' }"), "base", "o getter não tem setter");
     });
 }

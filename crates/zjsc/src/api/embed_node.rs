@@ -28,12 +28,13 @@ use crate::runtime::js_string::js_string;
 use crate::runtime::identifier::Identifier;
 use crate::runtime::js_array::{construct_array, is_js_array};
 use crate::runtime::js_function::JSFunction;
+use crate::runtime::js_getter_setter::GetterSetter;
 use crate::runtime::js_object::JSObject;
 use crate::runtime::js_promise::JSPromise;
 use crate::runtime::js_promise_host::PromiseHost;
 use crate::runtime::js_value::{js_boolean, js_number, JSValue};
 use crate::runtime::object_constructor::{construct_empty_object, enumerable_own_entries};
-use crate::runtime::property_attribute::DONT_ENUM;
+use crate::runtime::property_attribute::{ACCESSOR, DONT_ENUM};
 use crate::runtime::property_name::PropertyName;
 use crate::runtime::string_regexp_support::get_object_property;
 use crate::runtime::native_class_support::install_global_function_with_visibility;
@@ -97,7 +98,11 @@ pub struct ClassSpec {
     /// O construtor: devolve os campos próprios da instância (um [`JsData::Object`]).
     pub construct: NativeCallback,
     pub methods: Vec<(String, u32, MethodCallback)>,
+    /// Acessores somente leitura no protótipo (`get isEmpty()`): o corpo recebe o `this` copiado.
+    pub getters: Vec<(String, MethodCallback)>,
     pub statics: Vec<(String, u32, NativeCallback)>,
+    /// A classe base já definida (`Selection extends Range`): o protótipo e o construtor herdam dela.
+    pub parent: Option<String>,
 }
 
 thread_local! {
@@ -120,6 +125,7 @@ impl Drop for ProgramState {
         let _ = CONSTRUCTORS.try_with(|constructors| constructors.borrow_mut().clear());
         let _ = METHODS.try_with(|methods| methods.borrow_mut().clear());
         let _ = CLASSES.try_with(|classes| classes.borrow_mut().clear());
+        let _ = CLASS_CONSTRUCTORS.try_with(|constructors| constructors.borrow_mut().clear());
         let _ = HOST_MODULES.try_with(|modules| modules.borrow_mut().clear());
     }
 }
@@ -134,6 +140,8 @@ thread_local! {
     static CLASSES: RefCell<HashMap<String, JsHandle>> = RefCell::new(HashMap::new());
     /// Os construtores vivos, pelo id da célula da função.
     static CONSTRUCTORS: RefCell<HashMap<usize, ClassEntry>> = RefCell::new(HashMap::new());
+    /// O construtor de cada classe registrada, pelo nome (para a herança).
+    static CLASS_CONSTRUCTORS: RefCell<HashMap<String, JsHandle>> = RefCell::new(HashMap::new());
     /// Os métodos vivos, pelo id da célula da função.
     static METHODS: RefCell<HashMap<usize, MethodCallback>> = RefCell::new(HashMap::new());
 }
@@ -467,6 +475,15 @@ impl NodeRunner {
         let constructor_value = constructor.as_value();
         let prototype = construct_empty_object(global);
         let key = |name: &str| PropertyName::from_identifier(&Identifier::from_span(vm, name.as_bytes()));
+        if let Some(parent) = &spec.parent {
+            let parent_class = CLASSES.with(|classes| classes.borrow().get(parent).map(|handle| (handle.0, CLASS_CONSTRUCTORS.with(|c| c.borrow().get(parent).map(|h| h.0)))));
+            if let Some((parent_prototype, parent_constructor)) = parent_class {
+                prototype.set_prototype_direct(vm, parent_prototype);
+                if let Some(parent_constructor) = parent_constructor {
+                    constructor.set_prototype_direct(vm, parent_constructor);
+                }
+            }
+        }
         prototype.put_direct(vm, &key("constructor"), constructor_value, DONT_ENUM);
         constructor.put_direct(vm, &key("prototype"), prototype.as_value(), DONT_ENUM);
         if let JSValue::Cell(id) = constructor_value {
@@ -488,6 +505,24 @@ impl NodeRunner {
             }
             prototype.put_direct(vm, &key(name), function.as_value(), DONT_ENUM);
         }
+        for (name, callback) in &spec.getters {
+            let getter = JSFunction::create_native(
+                vm,
+                global,
+                0,
+                &WtfString::from_utf8(format!("get {name}").as_bytes()),
+                native_method,
+                ImplementationVisibility::Public,
+                crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+                crate::runtime::js_function::call_host_function_as_constructor,
+            );
+            if let JSValue::Cell(id) = getter.as_value() {
+                let callback = callback.clone();
+                METHODS.with(|methods| methods.borrow_mut().insert(id, Rc::new(move |this: &JsData, _: &[JsData]| callback(this, &[]))));
+            }
+            let accessor = GetterSetter::create_from_values(vm, getter.as_value(), JSValue::undefined());
+            let _ = prototype.put_direct_accessor(vm, &key(name), accessor, DONT_ENUM | ACCESSOR);
+        }
         for (name, length, callback) in &spec.statics {
             let function = self.make_function(name, *length, callback.clone());
             constructor.put_direct(vm, &key(name), function.0, DONT_ENUM);
@@ -495,6 +530,7 @@ impl NodeRunner {
             // da classe a mantém viva (a classe mesma está enraizada em `CLASSES`).
         }
         let handle = JsHandle::new(constructor_value);
+        CLASS_CONSTRUCTORS.with(|constructors| constructors.borrow_mut().insert(spec.name.clone(), JsHandle::new(constructor_value)));
         CLASSES.with(|classes| classes.borrow_mut().insert(spec.name.clone(), JsHandle::new(prototype.as_value())));
         handle
     }
