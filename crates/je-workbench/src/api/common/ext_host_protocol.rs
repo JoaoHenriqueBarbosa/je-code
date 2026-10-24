@@ -568,6 +568,135 @@ mod documents_and_editors_region {
 
 // #endregion
 
+// #region BulkEdits, DocumentSaveParticipant e DocumentContentProviders
+
+pub use self::bulk_edits_region::*;
+
+/// Região de `extHost.protocol.ts` que `extHostDocumentSaveParticipant.ts` e `extHostDocumentContentProviders.ts`
+/// usam: `IWorkspaceEditDto` (com os DTOs de arquivo, texto e célula), `MainThreadBulkEditsShape`,
+/// `ExtHostDocumentSaveParticipantShape`, `MainThreadDocumentContentProvidersShape`,
+/// `ExtHostDocumentContentProvidersShape` e os identificadores `MainContext.MainThreadBulkEdits`,
+/// `MainThreadDocumentContentProviders`, `ExtHostContext.ExtHostDocumentContentProviders` e
+/// `ExtHostDocumentSaveParticipant`. Fica num módulo próprio (reexportado aqui) para as importações não colidirem
+/// com as das outras regiões do arquivo.
+///
+/// Divergências:
+/// - `UriComponents` é a [`URI`], e o `string` de `$onVirtualDocumentChange` e o `string | null | undefined` de
+///   `$provideTextDocumentContent` são [`JsString`] (o texto de um provedor é UTF-16 e pode carregar substitutos
+///   isolados); `null` e `undefined` são ambos `None`. O `handle` é `u64`, como nas outras regiões.
+/// - `IWorkspaceTextEditDto` (`Dto<languages.IWorkspaceTextEdit>`) é o próprio `IWorkspaceTextEdit` do editor, que
+///   já guarda o `resource` como [`URI`]. `IWorkspaceFileEditDto` tem as opções próprias do protocolo: o `contents`
+///   é `{ type: 'base64'; value: string } | { type: 'dataTransferItem'; id: string }`
+///   ([`WorkspaceFileEditContentsDto`]) em vez da promessa de bytes do `languages.WorkspaceFileEditOptions`.
+/// - `IWorkspaceCellEditDto` é o `IWorkspaceNotebookCellEdit` de `notebook_common`, cujo `Replace` carrega os
+///   `ICellDto2` no lugar de `NotebookCellDataDto` (o mesmo conteúdo, com o estado de colapso a mais).
+/// - `$tryApplyWorkspaceEdit(dto, undoRedoGroupId?, isRefactoring?)` recebe os dois opcionais como `Option`.
+/// - `SaveReason` é o de `common::editor`.
+mod bulk_edits_region {
+    use je_base::js_string::JsString;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+    use je_editor::code_action::languages::{IWorkspaceTextEdit, WorkspaceEditMetadata};
+
+    use super::{ExtHostContext, MainContext, ProxyIdentifier, SerializableObjectWithBuffers};
+    use crate::common::editor::SaveReason;
+    use crate::contrib::notebook::common::notebook_common::IWorkspaceNotebookCellEdit;
+
+    // ---- edições do workspace
+
+    /// `IWorkspaceTextEditDto`: `Dto<languages.IWorkspaceTextEdit>`.
+    pub type IWorkspaceTextEditDto = IWorkspaceTextEdit;
+
+    /// O `contents` de `IWorkspaceFileEditDto.options`: `{ type: 'base64'; value: string } | { type: 'dataTransferItem'; id: string }`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum WorkspaceFileEditContentsDto {
+        Base64(String),
+        DataTransferItem(String),
+    }
+
+    /// `Omit<languages.WorkspaceFileEditOptions, 'contents'> & { contents?: ... }`.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct WorkspaceFileEditOptionsDto {
+        pub overwrite: Option<bool>,
+        pub ignore_if_not_exists: Option<bool>,
+        pub ignore_if_exists: Option<bool>,
+        pub recursive: Option<bool>,
+        pub copy: Option<bool>,
+        pub folder: Option<bool>,
+        pub skip_trash_bin: Option<bool>,
+        pub max_size: Option<f64>,
+        pub contents: Option<WorkspaceFileEditContentsDto>,
+    }
+
+    /// `IWorkspaceFileEditDto`.
+    #[derive(Clone, Default)]
+    pub struct IWorkspaceFileEditDto {
+        pub old_resource: Option<URI>,
+        pub new_resource: Option<URI>,
+        pub options: Option<WorkspaceFileEditOptionsDto>,
+        pub metadata: Option<WorkspaceEditMetadata>,
+    }
+
+    /// Um item de `IWorkspaceEditDto.edits`: `IWorkspaceFileEditDto | IWorkspaceTextEditDto | IWorkspaceCellEditDto`.
+    #[derive(Clone)]
+    pub enum WorkspaceEditEntryDto {
+        File(IWorkspaceFileEditDto),
+        Text(IWorkspaceTextEditDto),
+        Cell(IWorkspaceNotebookCellEdit),
+    }
+
+    /// `IWorkspaceEditDto`.
+    #[derive(Clone, Default)]
+    pub struct IWorkspaceEditDto {
+        pub edits: Vec<WorkspaceEditEntryDto>,
+    }
+
+    // ---- formas
+
+    /// `MainThreadBulkEditsShape`.
+    pub trait MainThreadBulkEditsShape: IDisposable {
+        fn rpc_try_apply_workspace_edit(
+            &self,
+            workspace_edit_dto: SerializableObjectWithBuffers<IWorkspaceEditDto>,
+            undo_redo_group_id: Option<f64>,
+            is_refactoring: Option<bool>,
+        ) -> Promise<bool>;
+    }
+
+    /// `ExtHostDocumentSaveParticipantShape`.
+    pub trait ExtHostDocumentSaveParticipantShape {
+        fn rpc_participate_in_save(&self, resource: &URI, reason: SaveReason) -> Promise<Vec<bool>>;
+    }
+
+    /// `MainThreadDocumentContentProvidersShape`.
+    pub trait MainThreadDocumentContentProvidersShape: IDisposable {
+        fn rpc_register_text_content_provider(&self, handle: u64, scheme: &str);
+        fn rpc_unregister_text_content_provider(&self, handle: u64);
+        fn rpc_on_virtual_document_change(&self, uri: &URI, value: &JsString) -> Promise<()>;
+    }
+
+    /// `ExtHostDocumentContentProvidersShape`.
+    pub trait ExtHostDocumentContentProvidersShape {
+        fn rpc_provide_text_document_content(&self, handle: u64, uri: &URI) -> Promise<Option<JsString>>;
+    }
+
+    // ---- identificadores
+
+    impl MainContext {
+        pub const MAIN_THREAD_BULK_EDITS: ProxyIdentifier<dyn MainThreadBulkEditsShape> = ProxyIdentifier::new("MainThreadBulkEdits");
+        pub const MAIN_THREAD_DOCUMENT_CONTENT_PROVIDERS: ProxyIdentifier<dyn MainThreadDocumentContentProvidersShape> =
+            ProxyIdentifier::new("MainThreadDocumentContentProviders");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_DOCUMENT_CONTENT_PROVIDERS: ProxyIdentifier<dyn ExtHostDocumentContentProvidersShape> = ProxyIdentifier::new("ExtHostDocumentContentProviders");
+        pub const EXT_HOST_DOCUMENT_SAVE_PARTICIPANT: ProxyIdentifier<dyn ExtHostDocumentSaveParticipantShape> = ProxyIdentifier::new("ExtHostDocumentSaveParticipant");
+    }
+}
+
+// #endregion
+
 // #region Telemetry
 
 /// `MainThreadTelemetryShape`. O `$publicLog2<E, T>` genérico do original, que só checa o tipo dos dados em
