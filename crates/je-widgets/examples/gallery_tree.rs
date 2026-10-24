@@ -118,7 +118,7 @@ fn panel(x: f64, theme: &ColorTheme, focused: bool, hover_row: usize, caption: &
     // O ponteiro sobre a linha pedida.
     let mut rows = {
         let tree = ui.tree();
-        support::query_all(&tree, container, &["monaco-list-row"])
+        tree.subtree(container).into_iter().filter(|n| tree.has_class(*n, "monaco-list-row")).collect::<Vec<_>>()
     };
     rows.sort_by(|a, b| ui.tree().bounds(*a).y0.total_cmp(&ui.tree().bounds(*b).y0));
     let r = ui.tree().absolute_bounds(rows[hover_row]);

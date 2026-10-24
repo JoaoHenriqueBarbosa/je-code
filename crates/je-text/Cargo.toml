@@ -11,6 +11,8 @@ je-render = { path = "../je-render" }
 je-codicons = { path = "../je-codicons" }
 # `system` liga o fontique às fontes do sistema (fontconfig por dlopen no Linux, DirectWrite, CoreText).
 parley = { version = "0.12", default-features = false, features = ["std", "system"] }
+# Inflate dos fontes WOFF (os ícones de arquivo do tema Seti vêm em `.woff`).
+miniz_oxide = "0.8"
 fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 
 [lints]

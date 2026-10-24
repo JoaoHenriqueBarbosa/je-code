@@ -26,7 +26,7 @@ use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::runtime;
 use je_render::Rgba;
-use je_ui::{Border, Content, EventKind, KeyData, NodeId, PointerButton, Ui};
+use je_ui::{Border, Content, EventKind, KeyData, NodeId, PointerButton, Role, Ui};
 
 use crate::common::{registered_emitter, throw};
 use crate::sash::is_macintosh;
@@ -467,10 +467,15 @@ impl<T: Clone + 'static> List<T> {
 
         let mut overridden = self.overridden_colors.borrow_mut();
         for node in tree.subtree(row).into_iter().skip(1) {
+            // Um `Role::Image` com texto é um glifo com cor própria (o `::before` do ícone de arquivo, que o CSS
+            // pinta com `color` explícito e por isso não herda a cor da linha).
+            if tree.role(node) == Role::Image {
+                continue;
+            }
             let (color, target) = match &mut tree.style_mut(node).content {
                 Content::Text { color, .. } => (color, paint.foreground),
                 Content::Codicon { color, .. } => (color, paint.icon_foreground.or(paint.foreground)),
-                Content::None => continue,
+                Content::None | Content::Host(_) => continue,
             };
             match (target, overridden.get(&node).copied()) {
                 (Some(target), previous) => {

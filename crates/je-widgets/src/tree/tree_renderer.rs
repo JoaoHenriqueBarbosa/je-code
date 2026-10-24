@@ -124,6 +124,20 @@ const DEFAULT_INDENT: f64 = 8.0;
 /// A largura do `.monaco-tl-twistie` (16 px) mais o `padding-right` (6 px) de `tree.css`.
 const TWISTIE_WIDTH: f64 = 22.0;
 
+/// A largura do twistie da linha: zero numa linha não colapsável de uma árvore com `align-icons-and-twisties`
+/// (`views.css`: o ícone do arquivo fica na coluna dos twisties, o que o explorador faz quando o tema de ícones
+/// não tem ícone de pasta).
+fn twistie_width(tree: &je_ui::Tree, row: je_ui::NodeId, collapsible: bool) -> f64 {
+    let mut node = Some(row);
+    while let Some(id) = node {
+        if tree.has_class(id, "align-icons-and-twisties") {
+            return if collapsible { TWISTIE_WIDTH } else { 0.0 };
+        }
+        node = tree.parent(id);
+    }
+    TWISTIE_WIDTH
+}
+
 fn expanded_icon_classes() -> Vec<String> {
     ThemeIcon::from_id("tree-item-expanded").as_class_name_array()
 }
@@ -333,7 +347,8 @@ where
             tree.set_class_name(template_data.twistie, "monaco-tl-twistie");
 
             let height = tree.bounds(template_data.container).height();
-            tree.set_bounds(template_data.twistie, je_render::kurbo::Rect::new(indent_size, 0.0, indent_size + TWISTIE_WIDTH, height));
+            let width = twistie_width(&tree, template_data.container, node.collapsible());
+            tree.set_bounds(template_data.twistie, je_render::kurbo::Rect::new(indent_size, 0.0, indent_size + width, height));
             let indent_width = (indent_size + self.indent.get() - 16.0).max(0.0);
             tree.set_bounds(template_data.indent, je_render::kurbo::Rect::new(16.0, 0.0, 16.0 + indent_width, height));
         }
@@ -532,7 +547,7 @@ where
             let height = details.and_then(|d| d.height).unwrap_or_else(|| container.height());
             let indent_size = template_data.indent_size.get();
             tree.set_bounds(template_data.indent, je_render::kurbo::Rect::new(16.0, 0.0, 16.0 + (indent_size + self.indent.get() - 16.0).max(0.0), height));
-            let contents_left = indent_size + TWISTIE_WIDTH;
+            let contents_left = indent_size + twistie_width(&tree, template_data.container, node.collapsible());
             let contents = tree.children(tree.parent(template_data.twistie).unwrap_or(template_data.container)).last().copied();
             if let Some(contents) = contents {
                 tree.set_bounds(contents, je_render::kurbo::Rect::new(contents_left, 0.0, contents_left.max(container.width()), height));
