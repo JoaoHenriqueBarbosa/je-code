@@ -23,7 +23,7 @@ use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use common::{ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, timeout};
+use common::{ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, timeout, LeakGuard};
 use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::js_string::JsString;
@@ -127,8 +127,10 @@ impl IEditorWorkerService for EditorWorkerServiceStub {
     }
 }
 
-fn new_providers(uri: &URI, model: &Rc<TextModel>, editor_worker_service: EditorWorkerServiceStub) -> Rc<MainThreadDocumentContentProviders> {
-    let language_service: Rc<dyn ILanguageService> = LanguageService::new(false);
+fn new_providers(store: &LeakGuard, uri: &URI, model: &Rc<TextModel>, editor_worker_service: EditorWorkerServiceStub) -> Rc<MainThreadDocumentContentProviders> {
+    // O original passa `null!` como `ILanguageService` (o trait de Rust não admite nulo): o serviço real é descartado no fim do caso.
+    let language_service = store.add_rc(LanguageService::new(false));
+    let language_service: Rc<dyn ILanguageService> = language_service;
     MainThreadDocumentContentProviders::new(
         &NoopContext,
         Rc::new(UnusedTextModelService),
@@ -148,6 +150,7 @@ fn events_are_processed_properly() {
 
         let model_for_edits = model.clone();
         let providers = new_providers(
+            &store,
             &uri,
             &model,
             EditorWorkerServiceStub {
@@ -193,6 +196,7 @@ fn model_disposed_during_async_operation() {
         let model_for_edits = model.clone();
         let flag = dispose_model_during_edit.clone();
         let providers = new_providers(
+            &store,
             &uri,
             &model,
             EditorWorkerServiceStub {

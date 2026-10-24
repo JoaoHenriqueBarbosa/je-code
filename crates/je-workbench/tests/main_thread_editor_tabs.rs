@@ -416,7 +416,8 @@ fn ignores_only_missing_modal_editor_label_changes() {
         };
         let editor_changes: Rc<Emitter<EditorsChangeEvent>> = disposables.add_rc(Emitter::new());
         let editor_service = EditorServiceStub { on_did_editors_change: editor_changes.event() };
-        let input: Rc<dyn EditorInput> = disposables.add_rc(je_workbench::test::browser::workbench_test_services::TestEditorInput::new(URI::parse("test:modal", false), "testEditor"));
+        let test_input = disposables.add_rc(je_workbench::test::browser::workbench_test_services::TestEditorInput::new(URI::parse("test:modal", false), "testEditor"));
+        let input: Rc<dyn EditorInput> = test_input;
         disposables.add_rc(MainThreadEditorTabs::new(
             &*single_proxy::<dyn ExtHostEditorTabsShape>(Rc::new(UnusedExtHost)),
             Rc::new(editor_groups_service),

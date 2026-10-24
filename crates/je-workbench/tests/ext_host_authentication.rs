@@ -72,7 +72,9 @@ fn derives_session_scopes_from_the_stored_token_scope_falling_back_to_jwt_claims
     let disposables = ensure_no_disposables_are_leaked_in_test_suite();
 
     let on_did_change = disposables.add_rc(Emitter::new());
-    let logger: LoggerRef = disposables.add_rc(Rc::new(NullLogger::new()));
+    let null_logger = Rc::new(NullLogger::new());
+    disposables.add_rc(null_logger.clone());
+    let logger: LoggerRef = null_logger;
     let persistence = TokenStorePersistence { on_did_change: on_did_change.event(), set: Box::new(|_| {}) };
     let store = disposables.add_rc(TokenStore::new(
         persistence,
