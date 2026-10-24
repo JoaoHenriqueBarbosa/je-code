@@ -130,6 +130,12 @@ impl ColorTheme {
         &self.colors
     }
 
+    /// Troca o `colorMap` (`this.colorMap = result.colors` do carregamento), mantendo as customizações e as cores
+    /// transientes.
+    pub fn set_colors(&mut self, colors: HashMap<String, Color>) {
+        self.colors = colors;
+    }
+
     /// Se há um `transientColorMap` (`this.transientColorMap !== undefined`).
     pub fn has_transient_colors(&self) -> bool {
         self.transient_colors.is_some()
