@@ -63,6 +63,7 @@ use je_workbench::common::editor::editor_input::EditorInput;
 use je_workbench::common::editor::editor_model::IEditorModel;
 use je_workbench::common::editor::text_resource_editor_input::TextResourceEditorInput;
 use je_workbench::common::editor::text_resource_editor_model::TextResourceEditorModel;
+use je_workbench::services::environment::environment_service::{IWorkbenchEnvironmentService, I_WORKBENCH_ENVIRONMENT_SERVICE};
 use je_workbench::services::language_detection::language_detection_worker_service::{ILanguageDetectionService, I_LANGUAGE_DETECTION_SERVICE};
 use je_workbench::services::textfile::text_file_editor_model::TextFileEditorModel;
 use je_workbench::services::textfile::textfiles::{TextBufferFactoryRef, snapshot_to_string};
@@ -71,6 +72,7 @@ use je_workbench::services::textmodel_resolver::text_model_resolver_service::Tex
 use je_workbench::services::untitled::untitled_text_editor_input::UntitledTextEditorInput;
 use je_workbench::services::untitled::untitled_text_editor_service::IUntitledTextEditorService;
 use je_workbench::services::working_copy::working_copy::IWorkingCopy;
+use je_workbench::test::browser::workbench_test_services::TestEnvironmentService;
 use support::text_file_support::TextFileTestAccessor;
 
 //#region Utilitários dos casos
@@ -93,6 +95,8 @@ fn setup(disposables: &LeakGuard) -> Fixture {
     // `instantiationService.stub(ITextModelService, disposables.add(instantiationService.createInstance(TextModelResolverService)))`
     let uri_identity_service: Rc<dyn IUriIdentityService> = accessor.uri_identity_service.clone();
     accessor.collection.set(I_URI_IDENTITY_SERVICE, uri_identity_service);
+    // O `workbenchInstantiationService` registra o `IWorkbenchEnvironmentService` (o `UntitledTextEditorInput` o injeta).
+    accessor.collection.set(I_WORKBENCH_ENVIRONMENT_SERVICE, TestEnvironmentService::new() as Rc<dyn IWorkbenchEnvironmentService>);
     let resolver = disposables.add_rc(accessor.instantiation_service.create_instance::<TextModelResolverService>(()));
     let text_model_service: Rc<dyn ITextModelService> = resolver.clone();
     accessor.collection.set(I_TEXT_MODEL_SERVICE, text_model_service);
