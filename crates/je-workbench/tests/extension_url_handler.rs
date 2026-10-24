@@ -68,6 +68,10 @@ impl IExtensionService for StubExtensionService {
     fn activate_by_event(&self, _activation_event: &str, _activation_kind: Option<ActivationKind>) -> Promise<()> {
         Promise::resolved(())
     }
+
+    fn activation_event_is_done(&self, _activation_event: &str) -> bool {
+        false
+    }
 }
 
 /// `{ confirm }`: `confirm` é um `sinon.stub().resolves({ confirmed, checkboxChecked: false })`.
@@ -202,6 +206,8 @@ async fn invoke_override(confirm_result: bool, options: Option<OpenUrlOptions>, 
         .await;
     registration.dispose();
     handler.dispose();
+    // O original pula o construtor (`Object.create`) e nunca cria o armazenamento; aqui o construtor roda de verdade.
+    storage.dispose();
 
     Outcome {
         handled: handled.unwrap(),

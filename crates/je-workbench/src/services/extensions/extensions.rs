@@ -85,13 +85,6 @@ pub enum ActivationKind {
     Immediate = 1,
 }
 
-/// `ActivationKind`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActivationKind {
-    Normal = 0,
-    Immediate = 1,
-}
-
 /// `IExtensionService`.
 pub trait IExtensionService {
     /// Send an activation event and activate interested extensions (`activateByEvent(activationEvent, activationKind?)`).
@@ -120,9 +113,6 @@ pub trait IExtensionService {
 
     /// `extensions`: the descriptions of the extensions registered so far.
     fn extensions(&self) -> Vec<ExtensionDescription>;
-
-    /// `activateByEvent(activationEvent, activationKind?)`: activates the extensions that declare the event.
-    fn activate_by_event(&self, activation_event: &str, activation_kind: Option<ActivationKind>) -> Promise<()>;
 }
 
 service_id!(pub I_EXTENSION_SERVICE: dyn IExtensionService = "extensionService");

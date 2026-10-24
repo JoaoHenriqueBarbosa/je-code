@@ -232,7 +232,7 @@ impl Injectable for ExtensionUrlHandler {
         if let Some(url_to_handle_value) = url_to_handle_value.filter(|value| !value.is_empty()) {
             this.storage_service.remove(URL_TO_HANDLE, StorageScope::Workspace);
             let parsed: serde_json::Value = serde_json::from_str(&url_to_handle_value).unwrap_or(serde_json::Value::Null);
-            let _ = this.handle_url_impl(revive_uri(&parsed), Some(OpenUrlOptions { trusted: Some(true), original_url: None }));
+            let _ = this.clone().handle_url_impl(revive_uri(&parsed), Some(OpenUrlOptions { trusted: Some(true), original_url: None }));
         }
 
         let cache = ExtensionUrlBootstrapHandler::cache();
@@ -241,7 +241,7 @@ impl Injectable for ExtensionUrlHandler {
             move || {
                 if let Some(this) = weak.upgrade() {
                     for (uri, option) in cache {
-                        let _ = this.handle_url_impl(uri, option);
+                        let _ = this.clone().handle_url_impl(uri, option);
                     }
                 }
             },

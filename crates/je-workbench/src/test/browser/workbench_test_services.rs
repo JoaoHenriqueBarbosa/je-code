@@ -1392,11 +1392,6 @@ mod quick_input_and_extension {
         fn extensions(&self) -> Vec<je_extensions::scanner::ExtensionDescription> {
             Vec::new()
         }
-
-        /// `activateByEvent(): Promise<void> { return Promise.resolve(); }`.
-        fn activate_by_event(&self, _activation_event: &str, _activation_kind: Option<crate::services::extensions::extensions::ActivationKind>) -> Promise<()> {
-            Promise::resolved(())
-        }
     }
 }
 
