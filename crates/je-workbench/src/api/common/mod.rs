@@ -61,3 +61,6 @@ pub mod ext_host_notebook_kernels;
 // BulkEdits e Decorations: `extHostBulkEdits.ts` e `extHostDecorations.ts`.
 pub mod ext_host_bulk_edits;
 pub mod ext_host_decorations;
+// Ativação de extensões: `extHostExtensionActivator.ts` e `extensionHostMain.ts` (o tratador de erros do host).
+pub mod ext_host_extension_activator;
+pub mod extension_host_main;
