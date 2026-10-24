@@ -72,6 +72,7 @@ use crate::browser::parts::editor::editor::{
     EditorPartCreationOptions, EditorPartsView, assign_part_options, get_editor_part_options, impacts_editor_part_options,
 };
 use crate::browser::parts::editor::editor_group_view::{ContextKeyTarget, EditorGroupSource, EditorGroupView, EditorGroupsView};
+use crate::browser::parts::editor::modal_editor_part::ModalEditorPartImpl;
 use crate::common::contextkeys::{
     editor_area_focus_context, editor_part_maximized_editor_group_context, editor_part_multiple_editor_groups_context, editor_tabs_visible_context,
     is_top_right_editor_group_context,
@@ -84,11 +85,11 @@ use crate::common::memento::Memento;
 use crate::services::editor::editor_group_finder::{FindGroupEditor, find_group};
 use crate::services::editor::editor_groups_service::{
     EditorGroupActivationEvent, EditorGroupLayout, EditorPartOptions, EditorPartOptionsChangeEvent, FindGroupScope, GroupActivationReason, GroupDirection,
-    GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder, IEditorGroup, IEditorPart, IEditorSideGroup, MergeGroupMode,
-    MergeGroupOptions, PreferredGroup, ShowTabs, SplitSizing,
+    GroupLayoutArgument, GroupLocation, GroupOrientation, GroupRef, GroupsArrangement, GroupsOrder, IEditorGroup, IEditorPart, IEditorSideGroup, IModalEditorPart,
+    MergeGroupMode, MergeGroupOptions, ModalEditorPartCloseOptions, PreferredGroup, ShowTabs, SplitSizing,
 };
 use crate::services::layout::layout_service::WindowId;
-use je_platform::opener::editor_types::EditorOptions;
+use je_platform::opener::editor_types::{EditorOptions, EditorPosition, ModalEditorNavigation, ModalEditorPartOptions};
 
 const EDITOR_PART_UI_STATE_STORAGE_KEY: &str = "editorpart.state";
 const EDITOR_PART_CENTERED_VIEW_STORAGE_KEY: &str = "editorpart.centeredview";
@@ -225,6 +226,8 @@ pub struct EditorPart {
     /// `editorPartsView`: o `EditorParts` que contém esta parte (`None` na parte avulsa).
     parts_view: RefCell<Option<Weak<dyn EditorPartsView>>>,
     has_file_icons: Cell<bool>,
+    /// `ModalEditorPartImpl` (a subclasse do original): presente só na parte modal.
+    modal: RefCell<Option<Rc<ModalEditorPartImpl>>>,
     state: RefCell<PartState>,
     store: Rc<DisposableStore>,
     grid_widget_disposables: Rc<DisposableStore>,
@@ -616,6 +619,7 @@ impl EditorPart {
             groups_view: Rc::new(PartGroupsView { part: this.clone() }),
             parts_view: RefCell::new(None),
             has_file_icons: Cell::new(true),
+            modal: RefCell::new(None),
             state: RefCell::new(PartState {
                 group_views: Vec::new(),
                 most_recent_active_groups: Vec::new(),
@@ -722,7 +726,7 @@ impl EditorPart {
         self.state.borrow().group_views.clone()
     }
 
-    fn group_count(&self) -> usize {
+    pub(crate) fn group_count(&self) -> usize {
         self.state.borrow().group_views.len()
     }
 
@@ -739,7 +743,7 @@ impl EditorPart {
         self.state.borrow().centered_layout_widget.clone().unwrap_or_else(|| throw(Error::new("The editor part has not been created yet")))
     }
 
-    fn active_view(&self) -> Rc<EditorGroupView> {
+    pub(crate) fn active_view(&self) -> Rc<EditorGroupView> {
         self.state.borrow().active_group.clone().unwrap_or_else(|| throw(Error::new("The editor part has no active group yet")))
     }
 
@@ -811,6 +815,21 @@ impl EditorPart {
     /// `willRestoreState`: se a criação da parte restaura o estado do espaço de trabalho.
     pub fn will_restore_state(&self) -> bool {
         self.state.borrow().will_restore_state
+    }
+
+    /// Faz desta parte a `ModalEditorPartImpl` (chamado pelo construtor do [`ModalEditorPartImpl`]).
+    pub fn set_modal(&self, modal: Rc<ModalEditorPartImpl>) {
+        *self.modal.borrow_mut() = Some(modal);
+    }
+
+    /// A `ModalEditorPartImpl` desta parte, se ela é a parte modal.
+    fn modal(&self) -> Option<Rc<ModalEditorPartImpl>> {
+        self.modal.borrow().clone()
+    }
+
+    /// `this` visto como `ModalEditorPartImpl`: lança se a parte não é a modal.
+    fn modal_part(&self) -> Rc<ModalEditorPartImpl> {
+        self.modal().unwrap_or_else(|| throw(Error::new("The editor part is not a modal editor part")))
     }
 
     /// `_contentDimension = undefined`: esquece o último layout, como numa parte que nunca foi posta em layout (o teste de
@@ -1104,6 +1123,13 @@ impl EditorPart {
 
     /// `removeGroup(group)`.
     fn remove_group_view(&self, group_view: &Rc<EditorGroupView>) {
+        // `ModalEditorPartImpl.removeGroup`: remover o último grupo fecha o modal
+        if let Some(modal) = self.modal()
+            && modal.remove_group(group_view)
+        {
+            return;
+        }
+
         if self.group_count() == 1 {
             return; // Cannot remove the last root group
         }
@@ -1484,6 +1510,11 @@ impl EditorPart {
 
     /// `handleContextKeys()`.
     fn handle_context_keys(&self) {
+        // `ModalEditorPartImpl.handleContextKeys`: as chaves do modal, antes das da parte
+        if let Some(modal) = self.modal() {
+            modal.handle_context_keys();
+        }
+
         let scoped = self.scoped_context_key_service.as_ref();
 
         // Bind `editorAreaFocus` to the editor part's scoped context key service so it evaluates to `true` only when keyboard
@@ -1689,6 +1720,10 @@ impl EditorPart {
 
     /// `saveState()`: grava o estado do grid (espaço de trabalho) e o do layout centralizado (perfil) nos mementos.
     pub fn save_state(&self) {
+        if self.modal().is_some() {
+            return; // disabled, modal editor part state is not persisted
+        }
+
         let workspace_memento = self.memento.get_memento(StorageScope::Workspace, StorageTarget::User);
         let profile_memento = self.memento.get_memento(StorageScope::Profile, StorageTarget::Machine);
 
@@ -2027,6 +2062,68 @@ impl IEditorPart for EditorPart {
     }
 }
 
+impl IModalEditorPart for EditorPart {
+    /// Dispara o fechamento e devolve se ele já terminou; pendente, `true` (a promessa verdadeira de `close()` no original).
+    fn close(&self) -> bool {
+        match self.modal_part().close(None).result() {
+            Some(Ok(closed)) => closed,
+            Some(Err(_)) | None => true,
+        }
+    }
+
+    fn close_with_options(&self, options: Option<ModalEditorPartCloseOptions>) -> Promise<bool> {
+        self.modal_part().close(options)
+    }
+
+    fn maximized(&self) -> bool {
+        self.modal_part().state().maximized()
+    }
+
+    fn on_did_change_maximized(&self) -> Event<bool> {
+        self.modal_part().state().on_did_change_maximized()
+    }
+
+    fn toggle_maximized(&self) {
+        self.modal_part().state().toggle_maximized();
+    }
+
+    fn size(&self) -> Option<Dimension> {
+        self.modal_part().state().size().map(|size| Dimension { width: size.width, height: size.height })
+    }
+
+    fn position(&self) -> Option<EditorPosition> {
+        self.modal_part().state().position()
+    }
+
+    fn has_sidebar(&self) -> bool {
+        self.modal_part().state().has_sidebar()
+    }
+
+    fn sidebar_width(&self) -> Option<f64> {
+        self.modal_part().state().sidebar_width()
+    }
+
+    fn sidebar_hidden(&self) -> bool {
+        self.modal_part().state().sidebar_hidden()
+    }
+
+    fn toggle_sidebar(&self) {
+        self.modal_part().state().toggle_sidebar();
+    }
+
+    fn navigation(&self) -> Option<ModalEditorNavigation> {
+        self.modal_part().state().navigation()
+    }
+
+    fn update_options(&self, options: Option<ModalEditorPartOptions>) {
+        self.modal_part().state().update_options(options.as_ref());
+    }
+
+    fn on_will_close(&self) -> Event<()> {
+        self.modal_part().state().on_will_close()
+    }
+}
+
 impl IDisposable for EditorPart {
     fn dispose(&self) {
         if std::mem::replace(&mut self.state.borrow_mut().disposed, true) {
@@ -2045,6 +2142,9 @@ impl IDisposable for EditorPart {
         }
 
         self.grid_widget_disposables.dispose();
+        if let Some(modal) = self.modal() {
+            modal.dispose(); // ensure to free the reference to the navigation closure
+        }
         self.store.dispose();
         self.ui.remove(self.container);
     }

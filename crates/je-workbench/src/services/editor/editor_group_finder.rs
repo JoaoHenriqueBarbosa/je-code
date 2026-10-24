@@ -10,8 +10,9 @@
 //! - **Grupos e serviço de grupos** vêm de [`editor_groups_service`](super::editor_groups_service), o recorte que o
 //!   porte tem do `IEditorGroupsService`.
 //! - **Comparações de grupo** (`editorGroupService.activeGroup !== group`) comparam o `id` do grupo.
-//! - **`handleModalEditorPart`** é `async`: o `await modalEditorPart.close()` (um `boolean`) custa uma rodada de
-//!   microtarefas, que o porte reproduz com uma promessa já resolvida.
+//! - **`handleModalEditorPart`** é `async`: o `await modalEditorPart.close()` espera a promessa de
+//!   [`IModalEditorPart::close_with_options`] (a parte modal fecha os editores de cada grupo, pela confirmação de editores
+//!   sujos).
 
 use std::rc::Rc;
 
@@ -144,7 +145,7 @@ fn handle_modal_editor_part(
 
         // Try to close the modal editor part unless preserveFocus is set
         if !preserve_focus {
-            Promise::resolved(modal_editor_part.close()).await?;
+            modal_editor_part.close_with_options(None).await?;
         }
 
         Ok(handle_group_activation(group, &editor, preferred_group.as_ref(), &*editor_group_service))

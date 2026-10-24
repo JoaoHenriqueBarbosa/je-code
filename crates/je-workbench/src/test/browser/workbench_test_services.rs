@@ -452,6 +452,16 @@ mod editor_inputs {
         fn is_visible(&self, _editor: &crate::common::editor::EditorInputRef) -> bool {
             false
         }
+
+        /// `createScoped(editorGroupsContainer) { return this; }`: o `TestEditorService` não guarda estado, então outro igual é o
+        /// mesmo serviço.
+        fn create_scoped(
+            &self,
+            _editor_groups_container: crate::services::editor::editor_groups_container::EditorGroupsContainer,
+            _disposables: &je_base::lifecycle::DisposableStore,
+        ) -> Rc<dyn IEditorService> {
+            Rc::new(TestEditorService)
+        }
     }
 
     /// `TestEditorInput`.
