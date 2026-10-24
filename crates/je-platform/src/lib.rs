@@ -85,3 +85,4 @@ pub mod virtual_workspace;
 pub mod diagnostics;
 
 pub mod metered_connection;
+pub mod observable;
