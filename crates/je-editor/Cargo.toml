@@ -20,6 +20,8 @@ zyarr = { path = "../zyarr" }
 je-platform = { path = "../je-platform" }
 # Os identificadores de serviço e o `Injectable` (`createDecorator` e os parâmetros `@IFoo`).
 je-instantiation = { path = "../je-instantiation" }
+# O `new Date()` (fuso do sistema) do `TimeBasedVariableResolver` dos snippets: o mesmo `jiff` do `je-base`.
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
 [[bench]]
 name = "piece_tree"
