@@ -25,7 +25,7 @@
 
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use je_base::async_::async_fn;
@@ -39,7 +39,9 @@ use je_platform::log::I_LOG_SERVICE;
 use je_platform::opener::editor_types::EditorOptions;
 use je_platform::registry::registry;
 
-use crate::common::editor::{EditorExtensions, EditorInputOrUntyped, EditorInputRef, EditorOpenContext, GroupIdentifier, IEditorDescriptor, IEditorPane};
+use crate::common::editor::{
+    EditorExtensions, EditorInputOrUntyped, EditorInputRef, EditorOpenContext, GroupIdentifier, IEditorDescriptor, IEditorPane, WillInstantiateEditorPaneEvent,
+};
 
 /// `ErrorPlaceholderEditor.ID`: o painel que mostra o erro de uma entrada que não abriu.
 pub const ERROR_EDITOR_ID: &str = "workbench.editors.errorEditor";
@@ -50,10 +52,37 @@ pub struct EditorPaneDescriptor {
     name: String,
 }
 
+thread_local! {
+    /// `EditorPaneDescriptor.instantiatedEditorPanes`: estático no original, aqui um por thread.
+    static INSTANTIATED_EDITOR_PANES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// `EditorPaneDescriptor._onWillInstantiateEditorPane`.
+    static ON_WILL_INSTANTIATE_EDITOR_PANE: Rc<Emitter<WillInstantiateEditorPaneEvent>> = Emitter::new();
+}
+
 impl EditorPaneDescriptor {
     /// `EditorPaneDescriptor.create(ctor, id, name)`.
     pub fn new(id: &str, name: &str) -> Rc<Self> {
         Rc::new(Self { id: id.to_string(), name: name.to_string() })
+    }
+
+    /// `EditorPaneDescriptor.didInstantiateEditorPane(typeId)`.
+    pub fn did_instantiate_editor_pane(type_id: &str) -> bool {
+        INSTANTIATED_EDITOR_PANES.with(|instantiated| instantiated.borrow().contains(type_id))
+    }
+
+    /// `EditorPaneDescriptor.onWillInstantiateEditorPane`.
+    pub fn on_will_instantiate_editor_pane() -> Event<WillInstantiateEditorPaneEvent> {
+        ON_WILL_INSTANTIATE_EDITOR_PANE.with(|emitter| emitter.event())
+    }
+
+    /// `instantiate(instantiationService, group)`: avisa que o painel vai nascer e o marca como instanciado depois de criado.
+    fn instantiate(&self, group_id: GroupIdentifier) -> Rc<EditorPane> {
+        ON_WILL_INSTANTIATE_EDITOR_PANE.with(|emitter| emitter.fire(WillInstantiateEditorPaneEvent { editor_type_id: self.id.clone() }));
+
+        let pane = EditorPane::new(&self.id, group_id);
+        INSTANTIATED_EDITOR_PANES.with(|instantiated| instantiated.borrow_mut().insert(self.id.clone()));
+
+        pane
     }
 
     /// `describes(editorPane)`: `editorPane.getId() === this.typeId`.
@@ -202,6 +231,10 @@ impl IEditorPane for EditorPane {
     fn get_id(&self) -> String {
         self.id.clone()
     }
+
+    fn options(&self) -> Option<EditorOptions> {
+        EditorPane::options(self)
+    }
 }
 
 impl IDisposable for EditorPane {
@@ -342,7 +375,7 @@ impl EditorPanes {
         // Create editor pane (return early if already instantiated)
         let existing = self.editor_panes.borrow().iter().find(|editor_pane| descriptor.describes(editor_pane)).cloned();
         let editor_pane = existing.unwrap_or_else(|| {
-            let editor_pane = self.disposables.add_rc(EditorPane::new(&descriptor.id, self.group_id));
+            let editor_pane = self.disposables.add_rc(descriptor.instantiate(self.group_id));
             self.editor_panes.borrow_mut().push(editor_pane.clone());
 
             editor_pane

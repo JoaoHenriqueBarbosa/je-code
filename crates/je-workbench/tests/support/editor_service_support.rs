@@ -24,6 +24,15 @@
 //!   (que marca `resolved`), o `as_any` e o `this` (a identidade é a da entrada de teste), e o `matches` (a identidade e o
 //!   `instanceof UntitledTextEditorInput` valem para as duas classes).
 //! - **`workbenchTeardown`.** É [`EditorServiceAccessor::teardown`].
+//!
+//! Acrescentado para `editorService.test.ts`:
+//! - **`registerTestFileEditor` e `registerTestSideBySideEditor`.** [`register_test_file_editor`] registra o painel
+//!   `TestTextFileEditor` (só a identidade `getId()`, o painel lógico não tem controle) para o `FileEditorInput`, e
+//!   [`register_test_side_by_side_editor`] o painel lado a lado para o `SideBySideEditorInput`.
+//! - **`IEditorPaneService`, `IEditorResolverService`, `ITextEditorService` e `IWorkspaceTrustRequestService`.** O acessor os
+//!   expõe (`editor_pane_service`, `editor_resolver_service`, `text_editor_service`, `workspace_trust_request_service`), como
+//!   os membros do `TestServiceAccessor` do original; [`EditorServiceAccessor::with_default_backup_service`] é o
+//!   `workbenchInstantiationService(undefined, disposables)` sem trocar o serviço de backup.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -57,8 +66,12 @@ use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase, U
 use je_workbench::common::editor::text_resource_editor_input::TextResourceEditorInput;
 use je_workbench::common::editor::editor_model::IEditorModel;
 use je_workbench::common::editor::{
-    EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, GroupIdentifier, RevertOptions, SaveOptions, UntypedEditorInput, Verbosity, is_untitled_resource_editor_input,
+    EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, GroupIdentifier, RevertOptions, SIDE_BY_SIDE_EDITOR_ID, SaveOptions, UntypedEditorInput, Verbosity,
+    is_untitled_resource_editor_input,
 };
+use je_workbench::common::editor::side_by_side_editor_input::SideBySideEditorInput;
+use je_workbench::contrib::files::browser::editors::file_editor_input::FileEditorInput;
+use je_workbench::services::editor::editor_pane_service::{EditorPaneService, IEditorPaneService, I_EDITOR_PANE_SERVICE};
 use je_workbench::services::files_configuration::files_configuration_service::Readonly;
 use je_workbench::services::editor::browser_editor_resolver_service::EditorResolverService;
 use je_workbench::services::editor::editor_groups_service::{
@@ -396,6 +409,9 @@ impl EditorInput for TestUntitledTextEditorInput {
 /// `TestTextResourceEditor.ID`.
 const TEST_TEXT_RESOURCE_EDITOR_ID: &str = "testTextResourceEditor";
 
+/// `TestTextFileEditor.ID`.
+pub const TEST_TEXT_FILE_EDITOR_ID: &str = "testTextFileEditor";
+
 /// `registerTestResourceEditor()`: o painel de teste do recurso de texto para as entradas sem título e de recurso de texto
 /// (mais a [`TestUntitledTextEditorInput`], ver o cabeçalho).
 pub fn register_test_resource_editor() -> DisposableRef {
@@ -403,6 +419,17 @@ pub fn register_test_resource_editor() -> DisposableRef {
         EditorPaneDescriptor::new(TEST_TEXT_RESOURCE_EDITOR_ID, "Text Editor"),
         vec![TypeId::of::<UntitledTextEditorInput>(), TypeId::of::<TextResourceEditorInput>(), TypeId::of::<TestUntitledTextEditorInput>()],
     )
+}
+
+/// `registerTestFileEditor()`: o painel `TestTextFileEditor` para o `FileEditorInput`. O `TestTextFileEditor` do original cria
+/// um `TestCodeEditor`; o painel lógico não tem controle, só a identidade (`getId()`).
+pub fn register_test_file_editor() -> DisposableRef {
+    editor_pane_registry().register_editor_pane(EditorPaneDescriptor::new(TEST_TEXT_FILE_EDITOR_ID, "Text File Editor"), vec![TypeId::of::<FileEditorInput>()])
+}
+
+/// `registerTestSideBySideEditor()`: o painel lado a lado para o `SideBySideEditorInput`.
+pub fn register_test_side_by_side_editor() -> DisposableRef {
+    editor_pane_registry().register_editor_pane(EditorPaneDescriptor::new(SIDE_BY_SIDE_EDITOR_ID, "Text Editor"), vec![TypeId::of::<SideBySideEditorInput>()])
 }
 
 //#region EditorServiceAccessor
@@ -418,6 +445,14 @@ pub struct EditorServiceAccessor {
     pub editor_groups_service: Rc<dyn IEditorGroupsService>,
     /// `editorService`.
     pub editor_service: Rc<EditorService>,
+    /// `editorResolverService`.
+    pub editor_resolver_service: Rc<EditorResolverService>,
+    /// `textEditorService`.
+    pub text_editor_service: Rc<TextEditorService>,
+    /// `editorPaneService`.
+    pub editor_pane_service: Rc<dyn IEditorPaneService>,
+    /// `workspaceTrustRequestService`.
+    pub workspace_trust_request_service: Rc<TestWorkspaceTrustRequestService>,
 }
 
 impl Deref for EditorServiceAccessor {
@@ -430,7 +465,19 @@ impl Deref for EditorServiceAccessor {
 
 impl EditorServiceAccessor {
     pub fn new(disposables: &Rc<DisposableStore>, working_copy_backup_service: Rc<dyn IWorkingCopyBackupService>) -> Self {
+        Self::from_base(disposables, TextFileTestAccessor::new(disposables), working_copy_backup_service)
+    }
+
+    /// `workbenchInstantiationService(undefined, disposables)` sem trocar o `IWorkingCopyBackupService`: vale o dublê do
+    /// `workbenchInstantiationService`.
+    pub fn with_default_backup_service(disposables: &Rc<DisposableStore>) -> Self {
         let base = TextFileTestAccessor::new(disposables);
+        let working_copy_backup_service: Rc<dyn IWorkingCopyBackupService> = base.working_copy_backup_service.clone();
+
+        Self::from_base(disposables, base, working_copy_backup_service)
+    }
+
+    fn from_base(disposables: &Rc<DisposableStore>, base: TextFileTestAccessor, working_copy_backup_service: Rc<dyn IWorkingCopyBackupService>) -> Self {
         let collection = base.collection.clone();
         let instantiation_service = base.instantiation_service.clone();
         let configuration_service: Rc<dyn IConfigurationService> = base.test_configuration_service.clone();
@@ -454,10 +501,12 @@ impl EditorServiceAccessor {
         collection.set(I_HOST_SERVICE, Rc::new(TestHostService) as Rc<dyn IHostService>);
         // `instantiationService.stub(IWorkspaceTrustRequestService, disposables.add(new TestWorkspaceTrustRequestService(...)))`.
         let workspace_trust_request_service = disposables.add_rc(TestWorkspaceTrustRequestService::new(false));
-        collection.set(I_WORKSPACE_TRUST_REQUEST_SERVICE, workspace_trust_request_service as Rc<dyn IWorkspaceTrustRequestService>);
+        collection.set(I_WORKSPACE_TRUST_REQUEST_SERVICE, workspace_trust_request_service.clone() as Rc<dyn IWorkspaceTrustRequestService>);
         collection.set(I_WORKBENCH_ENVIRONMENT_SERVICE, TestEnvironmentService::new() as Rc<dyn IWorkbenchEnvironmentService>);
         collection.set(I_UNTITLED_TEXT_EDITOR_SERVICE, base.untitled_text_editor_service.clone() as Rc<dyn IUntitledTextEditorService>);
         collection.set(I_TEXT_MODEL_SERVICE, UntitledTextModelService::new(base.untitled_text_editor_service.clone()) as Rc<dyn ITextModelService>);
+        let editor_pane_service: Rc<dyn IEditorPaneService> = instantiation_service.create_instance::<EditorPaneService>(());
+        collection.set(I_EDITOR_PANE_SERVICE, editor_pane_service.clone());
 
         // `createEditorPart(instantiationService, disposables)` e `instantiationService.stub(IEditorGroupsService, part)`
         let context_key_service = MockContextKeyService::scopable();
@@ -478,13 +527,13 @@ impl EditorServiceAccessor {
 
         // `instantiationService.createInstance(EditorService, undefined)` e `instantiationService.stub(IEditorService, editorService)`
         let editor_resolver_service = disposables.add_rc(instantiation_service.create_instance::<EditorResolverService>(()));
-        collection.set(I_EDITOR_RESOLVER_SERVICE, editor_resolver_service as Rc<dyn IEditorResolverService>);
+        collection.set(I_EDITOR_RESOLVER_SERVICE, editor_resolver_service.clone() as Rc<dyn IEditorResolverService>);
         let text_editor_service = disposables.add_rc(instantiation_service.create_instance::<TextEditorService>(()));
-        collection.set(I_TEXT_EDITOR_SERVICE, text_editor_service as Rc<dyn ITextEditorService>);
+        collection.set(I_TEXT_EDITOR_SERVICE, text_editor_service.clone() as Rc<dyn ITextEditorService>);
         let editor_service = disposables.add_rc(instantiation_service.create_instance::<EditorService>(None));
         collection.set(I_EDITOR_SERVICE, editor_service.clone() as Rc<dyn IEditorService>);
 
-        Self { base, part, editor_groups_service, editor_service }
+        Self { base, part, editor_groups_service, editor_service, editor_resolver_service, text_editor_service, editor_pane_service, workspace_trust_request_service }
     }
 
     /// `workbenchTeardown(instantiationService)`.

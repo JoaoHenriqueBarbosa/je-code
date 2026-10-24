@@ -506,7 +506,8 @@ mod editor_inputs {
         base: EditorInputBase,
         /// `resource`.
         pub resource: URI,
-        preferred_resource: URI,
+        preferred_resource: RefCell<URI>,
+        rename_calls: Cell<usize>,
         type_id: String,
         force_reveal: bool,
 
@@ -548,7 +549,8 @@ mod editor_inputs {
         fn create(resource: URI, type_id: &str, force_reveal: bool) -> Rc<Self> {
             Rc::new_cyclic(|this| Self {
                 base: EditorInputBase::new(this.clone()),
-                preferred_resource: resource.clone(),
+                preferred_resource: RefCell::new(resource.clone()),
+                rename_calls: Cell::new(0),
                 resource,
                 type_id: type_id.to_string(),
                 force_reveal,
@@ -575,6 +577,17 @@ mod editor_inputs {
         }
 
         pub fn set_preferred_resource(&self, _resource: &URI) {}
+
+        /// `Object.defineProperty(input, 'preferredResource', { value: resource })`: troca o `preferredResource` de fato (o
+        /// `setPreferredResource` do original não faz nada).
+        pub fn override_preferred_resource(&self, resource: &URI) {
+            *self.preferred_resource.borrow_mut() = resource.clone();
+        }
+
+        /// O contador de chamadas do `rename` que uma subclasse do original incrementa (`renameCalls++`).
+        pub fn rename_calls(&self) -> usize {
+            self.rename_calls.get()
+        }
 
         pub fn set_encoding(&self, _encoding: &str) {}
 
@@ -646,7 +659,7 @@ mod editor_inputs {
         }
 
         fn preferred_resource(&self) -> Option<URI> {
-            Some(self.preferred_resource.clone())
+            Some(self.preferred_resource.borrow().clone())
         }
 
         fn capabilities(&self) -> EditorInputCapabilities {
@@ -712,6 +725,7 @@ mod editor_inputs {
         }
 
         fn rename(&self, _group: GroupIdentifier, _target: &URI) -> Promise<Option<MoveResult>> {
+            self.rename_calls.set(self.rename_calls.get() + 1);
             Promise::resolved(self.moved_editor.borrow().clone())
         }
 
