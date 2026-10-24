@@ -5,3 +5,5 @@ pub mod statusbar;
 pub mod editor;
 
 pub mod notifications;
+
+pub mod views;

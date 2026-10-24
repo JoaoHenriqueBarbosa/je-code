@@ -76,7 +76,6 @@ pub mod secrets;
 
 pub mod label;
 pub mod path;
-pub mod undo_redo;
 pub mod uri_identity;
 pub mod virtual_workspace;
 

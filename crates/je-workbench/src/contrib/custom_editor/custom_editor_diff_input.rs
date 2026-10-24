@@ -25,12 +25,12 @@ use je_base::async_::async_fn;
 use je_base::js_string::JsString;
 use je_base::lifecycle::IDisposable;
 use je_base::nls::localize;
-use je_base::promise::Promise;
+use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
 use je_platform::dialogs::dialogs::IFileDialogService;
 use je_platform::opener::editor_types::{EditorOptions, EditorOverride};
 use je_platform::resources::ext_uri;
-use je_platform::undo_redo::undo_redo::IUndoRedoService;
+use je_editor::undo_redo::{IUndoRedoService, UndoRedoTarget};
 
 use super::custom_editor::{CustomEditorModelReference, ICustomEditorModel, ICustomEditorService};
 use crate::common::editor::editor_input::{EditorInput, UntypedEditorOptions};
@@ -300,13 +300,13 @@ impl CustomEditorDiffInput {
     }
 
     /// `undo()`.
-    pub fn undo(&self) -> Promise<()> {
-        self.services.undo_redo_service.undo(&self.init.modified_resource)
+    pub fn undo(&self) -> MaybePromise<()> {
+        self.services.undo_redo_service.undo(UndoRedoTarget::Resource(&self.init.modified_resource))
     }
 
     /// `redo()`.
-    pub fn redo(&self) -> Promise<()> {
-        self.services.undo_redo_service.redo(&self.init.modified_resource)
+    pub fn redo(&self) -> MaybePromise<()> {
+        self.services.undo_redo_service.redo(UndoRedoTarget::Resource(&self.init.modified_resource))
     }
 
     /// `toUntypedWithModifiedResource(modifiedResource)`.
@@ -523,13 +523,13 @@ impl CustomEditorSideBySideDiffInput {
     }
 
     /// `undo()`.
-    pub fn undo(&self) -> Promise<()> {
-        self.services.undo_redo_service.undo(&self.init.diff.modified_resource)
+    pub fn undo(&self) -> MaybePromise<()> {
+        self.services.undo_redo_service.undo(UndoRedoTarget::Resource(&self.init.diff.modified_resource))
     }
 
     /// `redo()`.
-    pub fn redo(&self) -> Promise<()> {
-        self.services.undo_redo_service.redo(&self.init.diff.modified_resource)
+    pub fn redo(&self) -> MaybePromise<()> {
+        self.services.undo_redo_service.redo(UndoRedoTarget::Resource(&self.init.diff.modified_resource))
     }
 
     fn is_readonly_value(&self) -> Readonly {

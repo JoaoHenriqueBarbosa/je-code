@@ -22,6 +22,7 @@ pub mod ext_host_configuration;
 pub mod ext_host_progress;
 pub mod ext_host_tree_views;
 pub mod ext_host_workspace;
+pub mod shared;
 
 pub mod cache;
 pub mod ext_host_custom_editors;

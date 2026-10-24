@@ -24,14 +24,15 @@
 //!   traits (que têm métodos de mesmo nome, `isDirty`, `revert`..., e por isso o corpo mora num método próprio ou no trait de
 //!   working copy). `HotExitState` é o enum com um número de identidade no estado pendente (a comparação `===`).
 //! - **`workingCopy.meta as CustomDocumentBackupData`** é o [`Dynamic`] do backup, do qual só se lê o `backupId`
-//!   ([`CustomDocumentBackupData::backup_id_of`]). `IUndoRedoService` é o recorte de `je-platform`
-//!   ([`IUndoRedoService`]).
+//!   ([`CustomDocumentBackupData::backup_id_of`]). `IUndoRedoService` é o de `je-editor` ([`IUndoRedoService`]); o
+//!   literal `IResourceUndoRedoElement` do `pushEdit` é a [`CustomEditorEditElement`].
 //! - `DeferredPromise.p` é o campo `promise`; `IReference` é a [`Reference`]. `MutableDisposable`, `DisposableMap` e
 //!   `DisposableStore` são os de `je-base`, e `onUnexpectedError(error)` é [`errors::on_unexpected_error`].
 //! - `ISelection` do `$onDidChangeCustomTextEditorSelection` é o [`Selection`].
 //! - O fechamento `webviewInput.onMove(async newResource => ...)` é um `Rc<dyn Fn(URI)>` que dispara a promessa e reporta o
 //!   erro dela como inesperado.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -46,13 +47,14 @@ use je_base::marshalling::{Marshalled, stringify};
 use je_base::network::schemas;
 use je_base::nls::localize;
 use je_base::path::{PathModule, ProcessEnvironment};
-use je_base::promise::{CancelablePromise, DeferredPromise, Promise};
+use je_base::promise::{CancelablePromise, DeferredPromise, MaybePromise, Promise};
 use je_base::resources::to_local_resource;
 use je_base::strings::multibyte_aware_btoa;
 use je_base::uri::{Field, URI, UriChange, UriComponents};
 use je_base::uuid::generate_uuid;
 use je_base::js_string::JsString;
 use je_editor::selection::Selection;
+use je_editor::undo_redo::{IUndoRedoService, UndoRedoElement};
 use je_platform::dialogs::dialogs::IFileDialogService;
 use je_platform::files::files::FileOperation;
 use je_platform::files::i_file_service::IFileService;
@@ -60,7 +62,6 @@ use je_platform::label::label::{ILabelService, UriLabelOptions};
 use je_platform::path::path_service::IPathService;
 use je_platform::resources::ext_uri;
 use je_platform::storage::StorageService;
-use je_platform::undo_redo::undo_redo::{IUndoRedoService, ResourceUndoRedoElement};
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 
 use crate::api::browser::main_thread_custom_text_editor_navigation::MainThreadCustomTextEditorNavigation;
@@ -1035,6 +1036,49 @@ impl HotExitState {
     }
 }
 
+/// O `IResourceUndoRedoElement` literal do `pushEdit` (`code: 'undoredo.customEditorEdit'`, `undo: () => this.undo()`,
+/// `redo: () => this.redo()`), com as duas operações devolvendo a promessa do `rpc_undo`/`rpc_redo`.
+struct CustomEditorEditElement {
+    resource: URI,
+    label: String,
+    undo_fn: Rc<dyn Fn() -> Promise<()>>,
+    redo_fn: Rc<dyn Fn() -> Promise<()>>,
+}
+
+impl UndoRedoElement for CustomEditorEditElement {
+    fn resource(&self) -> URI {
+        self.resource.clone()
+    }
+
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn code(&self) -> String {
+        "undoredo.customEditorEdit".to_owned()
+    }
+
+    fn undo(&self) {
+        let _ = (self.undo_fn)();
+    }
+
+    fn redo(&self) {
+        let _ = (self.redo_fn)();
+    }
+
+    fn undo_maybe(&self) -> MaybePromise<()> {
+        MaybePromise::Promise((self.undo_fn)())
+    }
+
+    fn redo_maybe(&self) -> MaybePromise<()> {
+        MaybePromise::Promise((self.redo_fn)())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 pub struct MainThreadCustomEditorModel {
     this: Weak<MainThreadCustomEditorModel>,
     base: Rc<Disposable>,
@@ -1230,14 +1274,13 @@ impl MainThreadCustomEditorModel {
         });
 
         let (undo_this, redo_this) = (self.this.clone(), self.this.clone());
-        self.services.undo_redo_service.push_element(ResourceUndoRedoElement {
+        let element: Rc<dyn UndoRedoElement> = Rc::new(CustomEditorEditElement {
             resource: self.editor_resource.clone(),
             label: label.map_or_else(|| localize("defaultEditLabel", "Edit", &[]), str::to_owned),
-            code: "undoredo.customEditorEdit".to_owned(),
-            confirm_before_undo: None,
-            undo: Rc::new(move || undo_this.upgrade().map_or_else(|| Promise::resolved(()), |model| model.undo())),
-            redo: Rc::new(move || redo_this.upgrade().map_or_else(|| Promise::resolved(()), |model| model.redo())),
+            undo_fn: Rc::new(move || undo_this.upgrade().map_or_else(|| Promise::resolved(()), |model| model.undo())),
+            redo_fn: Rc::new(move || redo_this.upgrade().map_or_else(|| Promise::resolved(()), |model| model.redo())),
         });
+        self.services.undo_redo_service.push_element(element.into(), None, None);
         Ok(())
     }
 

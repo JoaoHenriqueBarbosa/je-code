@@ -3,9 +3,9 @@
 //! `ITreeItemLabel`, `TreeCommand`, `ITreeItemCheckboxState`, `IRevealOptions`, `IViewBadge` e o `NoTreeViewError`.
 //!
 //! Divergências:
-//! - É um porte parcial: o resto de `views.ts` (descritores, containers, `ViewContainerLocation`, `ITreeView`,
-//!   `ResolvableTreeItem`, `ITreeViewDataProvider`, `ITreeViewDragAndDropController`...) é da camada de interface e
-//!   entra junto do porte dela. `TreeViewPaneHandleArg` e `TreeViewItemHandleArg` (os `$treeViewId` e
+//! - É um porte parcial: o resto de `views.ts` (`ICustomViewDescriptor`, `IEditableData`...) é da camada de interface e
+//!   entra junto do porte dela. O `ITreeView`, o `ITreeViewDataProvider` e o `ITreeViewDragAndDropController` estão em
+//!   `crate::common::tree_view_contracts` e o `ResolvableTreeItem` está neste arquivo. `TreeViewPaneHandleArg` e `TreeViewItemHandleArg` (os `$treeViewId` e
 //!   `$treeItemHandle` que o `processArgument` do host lê) chegam como [`Dynamic`], então não têm struct aqui.
 //! - Os registros e os descritores (`ViewContainersRegistry`, `ViewsRegistry`, `IViewDescriptor`, `IViewContainerModel`,
 //!   `IViewDescriptorService`...) estão no bloco final do arquivo, com as suas próprias divergências.
@@ -21,9 +21,12 @@
 //!   `undefined`, que é o que o `removeUnsetKeys` da suíte de testes calcula (e o que o RPC serializaria). Os
 //!   `UriComponents` e o `ThemeIcon` saem como os valores de classe de `ext_host_values`.
 
+use je_base::async_::async_fn;
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::nls::localize;
+use je_base::promise::Promise;
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;
 use je_editor::languages::StringOrMarkdown;
@@ -136,6 +139,9 @@ pub struct ITreeItem {
     pub parent: Option<Box<ITreeItem>>,
     pub accessibility_information: Option<AccessibilityInformation>,
     pub checkbox: Option<ITreeItemCheckboxState>,
+    /// As propriedades que o objeto `ITreeItem` do original carrega além das conhecidas (o `mixin` do
+    /// `ResolvableTreeItem` as copia todas): chave e valor, na ordem em que o objeto as recebeu.
+    pub custom_properties: Vec<(String, Dynamic)>,
 }
 
 /// O objeto JavaScript só com as propriedades definidas (uma propriedade `undefined` não existe).
@@ -185,7 +191,7 @@ impl ITreeItemLabel {
 impl ITreeItem {
     /// O item como objeto JavaScript, sem as propriedades `undefined` (ver as divergências do módulo).
     pub fn to_dynamic(&self) -> Dynamic {
-        object_of(vec![
+        let mut entries = vec![
             ("handle", Some(Dynamic::string(&self.handle))),
             ("parentHandle", self.parent_handle.as_deref().map(Dynamic::string)),
             ("collapsibleState", Some(Dynamic::from(self.collapsible_state.value()))),
@@ -217,7 +223,9 @@ impl ITreeItem {
                     ])
                 }),
             ),
-        ])
+        ];
+        entries.extend(self.custom_properties.iter().map(|(key, value)| (key.as_str(), Some(value.clone()))));
+        object_of(entries)
     }
 }
 
@@ -232,6 +240,98 @@ pub fn no_tree_view_error(tree_view_id: &str) -> Error {
 /// `NoTreeViewError.is(err)`.
 pub fn is_no_tree_view_error(error: &Error) -> bool {
     error.name == NO_TREE_VIEW_ERROR_NAME
+}
+
+/// O `resolve` que o `ResolvableTreeItem` recebe: pede ao host de extensões o item resolvido (`$resolve`).
+pub type TreeItemResolver = Rc<dyn Fn(CancellationToken) -> Promise<Option<ITreeItem>>>;
+
+/// `ResolvableTreeItem`: o item de árvore que resolve o tooltip e o comando sob demanda.
+///
+/// Divergências:
+/// - O original é um objeto que implementa `ITreeItem` (copia as propriedades do item com `mixin`) e é mutado por
+///   identidade. Aqui o item vive num `RefCell` dentro de um `Rc`: quem guarda a identidade guarda o `Rc`, e os valores
+///   que cruzam o contrato [`ITreeItem`] são cópias ([`ResolvableTreeItem::to_item`]).
+/// - `resolve` é o método [`ResolvableTreeItem::resolve`] (o campo de função do original).
+pub struct ResolvableTreeItem {
+    item: RefCell<ITreeItem>,
+    resolve_fn: Option<TreeItemResolver>,
+    resolved: Cell<bool>,
+}
+
+impl ResolvableTreeItem {
+    /// `new ResolvableTreeItem(treeItem, resolve?)`.
+    pub fn new(tree_item: ITreeItem, resolve: Option<TreeItemResolver>) -> Rc<Self> {
+        Rc::new(Self { item: RefCell::new(tree_item), resolve_fn: resolve, resolved: Cell::new(false) })
+    }
+
+    /// `hasResolve`.
+    pub fn has_resolve(&self) -> bool {
+        self.resolve_fn.is_some()
+    }
+
+    /// `resetResolve()`.
+    pub fn reset_resolve(&self) {
+        self.resolved.set(false);
+    }
+
+    /// `resolve(token)`: resolve o tooltip e o comando uma única vez (só se não foi cancelado).
+    pub fn resolve(self: &Rc<Self>, token: CancellationToken) -> Promise<()> {
+        let this = Rc::clone(self);
+        async_fn(async move {
+            if let Some(resolve) = &this.resolve_fn
+                && !this.resolved.get()
+            {
+                let resolved_item = resolve(token.clone()).await?;
+                if let Some(resolved_item) = resolved_item {
+                    // Resolvable elements. Currently tooltip and command.
+                    let mut item = this.item.borrow_mut();
+                    if item.tooltip.is_none() {
+                        item.tooltip = resolved_item.tooltip;
+                    }
+                    if item.command.is_none() {
+                        item.command = resolved_item.command;
+                    }
+                }
+            }
+            if !token.is_cancellation_requested() {
+                this.resolved.set(true);
+            }
+            Ok(())
+        })
+    }
+
+    /// O item inteiro (as propriedades que o objeto do original carrega: `children`, `parent`, `checkbox`...).
+    pub fn to_item(&self) -> ITreeItem {
+        self.item.borrow().clone()
+    }
+
+    /// `asTreeItem()`: só as propriedades de `ITreeItem` que o original copia (sem `parent`, `checkbox` e as
+    /// propriedades extras).
+    pub fn as_tree_item(&self) -> ITreeItem {
+        let item = self.item.borrow();
+        ITreeItem {
+            handle: item.handle.clone(),
+            parent_handle: item.parent_handle.clone(),
+            collapsible_state: item.collapsible_state,
+            label: item.label.clone(),
+            description: item.description.clone(),
+            icon: item.icon.clone(),
+            icon_dark: item.icon_dark.clone(),
+            theme_icon: item.theme_icon.clone(),
+            resource_uri: item.resource_uri.clone(),
+            tooltip: item.tooltip.clone(),
+            context_value: item.context_value.clone(),
+            command: item.command.clone(),
+            children: item.children.clone(),
+            accessibility_information: item.accessibility_information.clone(),
+            ..ITreeItem::default()
+        }
+    }
+
+    /// Muda o item no lugar (a escrita de propriedade do objeto do original).
+    pub fn update<R>(&self, change: impl FnOnce(&mut ITreeItem) -> R) -> R {
+        change(&mut self.item.borrow_mut())
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -257,8 +357,9 @@ pub fn is_no_tree_view_error(error: &Error) -> bool {
 //   `default-view-icon`, que é o que `registerIcon` devolve (o registro de ícones ainda não foi portado).
 // - **`getViewContainerLocation` e `getDefaultViewContainerLocation`** devolvem `Option` (o `| null` da interface; o
 //   `undefined` do registro para um contêiner que não está registrado).
-// - **Não portados** (dependem de interfaces da camada de UI): `ICustomViewDescriptor`, `ITreeView`, `ITreeViewDescriptor`,
-//   `ITreeViewDataProvider`, `ITreeViewDragAndDropController`, `IEditableData`, `ResolvableTreeItem`.
+// - **Não portados** (dependem de interfaces da camada de UI): `ICustomViewDescriptor` e `IEditableData`. O `ITreeView`, o
+//   `ITreeViewDataProvider` e o `ITreeViewDragAndDropController` estão em `crate::common::tree_view_contracts`; o
+//   `ResolvableTreeItem` está acima; o `ITreeViewDescriptor` é o campo `tree_view` do [`IViewDescriptor`].
 // ---------------------------------------------------------------------------------------------------------------------
 
 use std::cell::{Cell, RefCell};
@@ -279,6 +380,8 @@ use je_instantiation::{SyncDescriptor, delayed_proxy, service_id};
 use je_platform::contextkey::ContextKeyExpression;
 use je_platform::keybinding::keybindings_registry::Keybindings;
 use je_platform::registry::registry;
+
+use crate::common::tree_view_contracts::ITreeView;
 
 /// `VIEWS_LOG_ID`.
 pub const VIEWS_LOG_ID: &str = "views";
@@ -703,6 +806,10 @@ pub struct IViewDescriptor {
     pub accessibility_help_content: Option<MarkdownString>,
     /// Specifies in which window this view should be visible. Defaults to the main workbench only.
     pub window_enablement: Option<WindowEnablement>,
+    /// `ITreeViewDescriptor.treeView`: a árvore do descritor de uma view de árvore (`None` nas outras views). O
+    /// original distingue `ITreeViewDescriptor extends IViewDescriptor` por conversão de tipo; o `Rc` do descritor não
+    /// tem conversão, então o campo mora no descritor.
+    pub tree_view: Option<Rc<dyn ITreeView>>,
 }
 
 impl IViewDescriptor {
@@ -731,6 +838,7 @@ impl IViewDescriptor {
             open_command_action_descriptor: None,
             accessibility_help_content: None,
             window_enablement: None,
+            tree_view: None,
         }
     }
 }
