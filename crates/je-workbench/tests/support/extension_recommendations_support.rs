@@ -23,6 +23,7 @@
 
 #![allow(dead_code)]
 
+use je_base::lifecycle::IDisposable as _;
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::rc::Rc;

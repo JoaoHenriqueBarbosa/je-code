@@ -36,7 +36,7 @@ use je_platform::files::i_file_service::IFileService;
 use je_platform::resources::{join_path, uri_file};
 use je_platform::workspace::{IWorkspace, WorkbenchState, WorkspaceFolder};
 use je_workbench::contrib::files::browser::views::explorer_decorations_provider::{LIST_INVALID_ITEM_FOREGROUND, provide_decorations};
-use je_workbench::contrib::files::browser::views::explorer_view::{CompressedNavigationControllerProvider, get_context, should_preserve_workspace_name_case};
+use je_workbench::contrib::files::browser::views::explorer_view::{self, CompressedNavigationControllerProvider, should_preserve_workspace_name_case};
 use je_workbench::contrib::files::browser::views::explorer_viewer::{CompressedNavigationController, ICompressedNavigationController};
 use je_workbench::contrib::files::explorer_model::ExplorerItem;
 use je_workbench::services::decorations::decorations::{DecorationData, DecorationLetter};
@@ -138,11 +138,11 @@ fn get_context() {
     let s4 = services.create_stat(TITLE, "/path/to/stat", "stat", false, d, false, false);
     let no_navigation_controller = NoNavigationController;
 
-    assert_same_items(&get_context(&[s1.clone()], &[s2.clone(), s3.clone(), s4.clone()], true, &no_navigation_controller), &[&s2, &s3, &s4]);
-    assert_same_items(&get_context(&[s1.clone()], &[s1.clone(), s3.clone(), s4.clone()], true, &no_navigation_controller), &[&s1, &s3, &s4]);
-    assert_same_items(&get_context(&[s1.clone()], &[s3.clone(), s1.clone(), s4.clone()], false, &no_navigation_controller), &[&s1]);
-    assert_same_items(&get_context(&[], &[s3.clone(), s1.clone(), s4.clone()], false, &no_navigation_controller), &[]);
-    assert_same_items(&get_context(&[], &[s3.clone(), s1.clone(), s4.clone()], true, &no_navigation_controller), &[&s3, &s1, &s4]);
+    assert_same_items(&explorer_view::get_context(&[s1.clone()], &[s2.clone(), s3.clone(), s4.clone()], true, &no_navigation_controller), &[&s2, &s3, &s4]);
+    assert_same_items(&explorer_view::get_context(&[s1.clone()], &[s1.clone(), s3.clone(), s4.clone()], true, &no_navigation_controller), &[&s1, &s3, &s4]);
+    assert_same_items(&explorer_view::get_context(&[s1.clone()], &[s3.clone(), s1.clone(), s4.clone()], false, &no_navigation_controller), &[&s1]);
+    assert_same_items(&explorer_view::get_context(&[], &[s3.clone(), s1.clone(), s4.clone()], false, &no_navigation_controller), &[]);
+    assert_same_items(&explorer_view::get_context(&[], &[s3.clone(), s1.clone(), s4.clone()], true, &no_navigation_controller), &[&s3, &s1, &s4]);
 }
 
 #[test]

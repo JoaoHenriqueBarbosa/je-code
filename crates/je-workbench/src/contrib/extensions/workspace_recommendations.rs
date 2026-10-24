@@ -9,7 +9,8 @@ use std::rc::{Rc, Weak};
 
 use je_base::async_::async_fn;
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::{Disposable, IDisposable, RunOnceScheduler};
+use je_base::async_::RunOnceScheduler;
+use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::uri::URI;

@@ -251,7 +251,7 @@ impl WorkspaceExtensionsConfigService {
             for (index, workspace_folder) in workspace_folders.iter().enumerate() {
                 let mut item = IQuickPickItem::default();
                 item.base.label = workspace_folder.name.clone().into();
-                item.base.description = Some(localize("workspace folder", "Workspace Folder").into());
+                item.base.description = Some(localize("workspace folder", "Workspace Folder", &[]).into());
                 item.base.icon_classes = Some(get_icon_classes(
                     this.p.model_service.as_ref(),
                     this.p.language_service.as_ref(),
@@ -266,7 +266,7 @@ impl WorkspaceExtensionsConfigService {
             if workspace.is_some() {
                 folder_picks.push(QuickPickInput::Separator(IQuickPickSeparator::default()));
                 let mut item = IQuickPickItem::default();
-                item.base.label = localize("workspace", "Workspace").into();
+                item.base.label = localize("workspace", "Workspace", &[]).into();
                 item.extra = Dynamic::object([("workspaceOrFolder", Dynamic::Number(workspace_folders.len() as f64))]);
                 folder_picks.push(QuickPickInput::Item(item));
             }
@@ -413,14 +413,14 @@ impl WorkspaceExtensionsConfigService {
                 this.pick_workspace_or_folders(
                     marked_folders,
                     if is_workspace_marked { Some(workspace.clone()) } else { None },
-                    localize("select for remove", "Remove extension recommendation from"),
+                    localize("select for remove", "Remove extension recommendation from", &[]),
                 )
                 .await?
             } else {
                 this.pick_workspace_or_folders(
                     workspace.folders(),
                     if workspace.configuration().is_some() { Some(workspace.clone()) } else { None },
-                    localize("select for add", "Add extension recommendation to"),
+                    localize("select for add", "Add extension recommendation to", &[]),
                 )
                 .await?
             };

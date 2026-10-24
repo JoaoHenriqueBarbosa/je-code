@@ -441,7 +441,7 @@ impl NativeExtensionTipsService {
 
     fn get_valid_executable_based_extension_tips(&self, executable_tips: &IndexMap<String, ExeBasedExtensionTips>) -> Promise<Vec<ExecutableBasedExtensionTip>> {
         let file_service = self.p.file_service.clone();
-        let user_home_fs_path = self.p.user_home.fs_path(Platform::detect()).to_string_lossy();
+        let user_home_fs_path = je_platform::resources::fs_path(&self.p.user_home);
         let is_windows = Platform::detect().is_windows;
         let executable_tips = executable_tips.clone();
         async_fn(async move {
