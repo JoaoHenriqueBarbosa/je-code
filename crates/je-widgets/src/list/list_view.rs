@@ -114,7 +114,7 @@ pub struct ListView<T: Clone + 'static> {
     last_render_top: Cell<f64>,
     last_render_height: Cell<f64>,
     render_width: Cell<f64>,
-    rows_container: NodeId,
+    pub(crate) rows_container: NodeId,
     scrollable: Rc<Scrollable>,
     scrollable_element: Rc<AbstractScrollableElement>,
     scroll_height_value: Cell<f64>,
@@ -623,6 +623,11 @@ impl<T: Clone + 'static> ListView<T> {
     /// `indexOf`: a identidade do `findIndex(item => item.element === element)` é `eq`.
     pub fn index_of(&self, eq: impl Fn(&T) -> bool) -> Option<usize> {
         self.items.borrow().iter().position(|item| eq(&item.element))
+    }
+
+    /// Os nós de todas as linhas renderizadas (as visíveis e as do excesso de desenho).
+    pub fn rendered_dom_nodes(&self) -> Vec<NodeId> {
+        self.items.borrow().iter().filter_map(|item| item.row.as_ref().map(|r| r.dom_node)).collect()
     }
 
     /// `domElement(index)`: o nó da linha, se renderizada.

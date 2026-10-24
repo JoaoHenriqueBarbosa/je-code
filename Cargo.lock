@@ -4066,11 +4066,14 @@ dependencies = [
  "je-base",
  "je-editor",
  "je-editor-view",
+ "je-platform",
  "je-render",
  "je-text",
  "je-theme",
  "je-ui",
+ "je-widgets",
  "png",
+ "serde_json",
  "web-time",
  "winit",
 ]
@@ -4207,6 +4210,7 @@ dependencies = [
  "fontique 0.12.0",
  "je-codicons",
  "je-render",
+ "miniz_oxide 0.8.9",
  "parley 0.12.0",
 ]
 

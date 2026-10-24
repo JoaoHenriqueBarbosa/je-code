@@ -104,6 +104,9 @@ pub enum Content {
     Text { text: String, style: TextStyle, color: Rgba, line_height: f64 },
     /// Um codicon centrado no nó, no tamanho dado.
     Codicon { id: String, size: f32, color: Rgba },
+    /// Conteúdo pintado por quem monta a árvore, na ordem de pintura do nó (o `<canvas>` do VS Code: o
+    /// editor, o terminal). O número identifica a superfície para o [`Tree::paint_hosted`].
+    Host(u32),
 }
 
 /// O estilo resolvido de um nó.
@@ -478,11 +481,18 @@ impl Tree {
 
     /// Pinta a árvore na lista de exibição, em pixels de dispositivo (`scale` = devicePixelRatio).
     pub fn paint(&self, list: &mut DisplayList, scale: f64) {
-        let root = self.bounds(self.root);
-        self.paint_node(self.root, root, list, Vec2::ZERO, scale, 1.0);
+        self.paint_hosted(list, scale, &mut |_, _, _| {});
     }
 
-    fn paint_node(&self, id: NodeId, own: Rect, list: &mut DisplayList, origin: Vec2, scale: f64, inherited_opacity: f32) {
+    /// Como [`Tree::paint`], chamando `host` para cada nó com [`Content::Host`], com o retângulo absoluto do
+    /// nó em pixels lógicos, no ponto da ordem de pintura em que o nó está (o que vem depois pinta por cima).
+    pub fn paint_hosted(&self, list: &mut DisplayList, scale: f64, host: &mut dyn FnMut(u32, Rect, &mut DisplayList)) {
+        let root = self.bounds(self.root);
+        self.paint_node(self.root, root, list, Vec2::ZERO, scale, 1.0, host);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_node(&self, id: NodeId, own: Rect, list: &mut DisplayList, origin: Vec2, scale: f64, inherited_opacity: f32, host: &mut dyn FnMut(u32, Rect, &mut DisplayList)) {
         let node = self.node(id);
         let style = &node.style;
         let opacity = inherited_opacity * style.opacity;
@@ -501,6 +511,7 @@ impl Tree {
         }
         match &style.content {
             Content::None => {}
+            Content::Host(surface) => host(*surface, rect, list),
             Content::Text { text, style: text_style, color, line_height } => {
                 let line = with_text_system(|t| t.line(text, text_style));
                 let top = rect.y0 + half_leading(*line_height, f64::from(line.line_height));
@@ -528,7 +539,7 @@ impl Tree {
         let child_origin = Vec2::new(rect.x0, rect.y0);
         for child in self.paint_order(id) {
             let child_rect = self.resolve(child, (own.width(), own.height()));
-            self.paint_node(child, child_rect, list, child_origin, scale, opacity);
+            self.paint_node(child, child_rect, list, child_origin, scale, opacity, host);
         }
         if style.clip {
             list.pop_clip();

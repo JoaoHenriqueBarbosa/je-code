@@ -37,6 +37,7 @@ use crate::list::list_view::{ListViewOptions, ListViewOptionsUpdate};
 use crate::list::list_widget::{List, ListOptions, ListOverrides};
 use crate::tree::find::{DefaultFindVisibility, FindHandle};
 use crate::tree::sticky_scroll::{IStickyScrollDelegate, StickyScrollController, StickyScrollNodeSourceRangeProvider};
+use crate::list::list_styles::IListStyles;
 use crate::tree::tree_renderer::{Collection, EventCollection, RenderIndentGuides, RenderedIndentGuides, TreeRenderer, TreeRendererOptions, TwistieClassProvider};
 use crate::tree::tree_trait::TreeTrait;
 use crate::tree::tree_types::{
@@ -764,6 +765,16 @@ where
     /// `get options()`: um instantâneo.
     pub fn options(&self) -> AbstractTreeOptions<M> {
         self.options.borrow().clone()
+    }
+
+    /// `style(styles)`: repassa os estilos à lista (cores das linhas) e ao renderer (cor do twistie), e
+    /// renderiza de novo as linhas para o twistie tomar a cor.
+    pub fn style(&self, styles: &IListStyles) {
+        for renderer in &self.renderers {
+            renderer.style(styles);
+        }
+        self.view.style(styles);
+        self.view.rerender();
     }
 
     pub fn update_options(&self, update: &AbstractTreeOptionsUpdate<M::Element>) {

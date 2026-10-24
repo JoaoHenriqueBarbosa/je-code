@@ -18,9 +18,12 @@ path = "src/main.rs"
 je-base = { path = "../je-base" }
 je-editor = { path = "../je-editor" }
 je-editor-view = { path = "../je-editor-view" }
+je-platform = { path = "../je-platform" }
 je-render = { path = "../je-render" }
 je-theme = { path = "../je-theme" }
 je-ui = { path = "../je-ui" }
+je-widgets = { path = "../je-widgets" }
+serde_json = "1"
 je-text = { path = "../je-text" }
 # `Instant` que também funciona no wasm (o winit usa o mesmo tipo no `ControlFlow::WaitUntil`).
 web-time = "1"

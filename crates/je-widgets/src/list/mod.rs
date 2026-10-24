@@ -2,6 +2,7 @@
 //! com seleção, foco e teclado.
 
 pub mod list_paging;
+pub mod list_styles;
 pub mod list_types;
 pub mod list_view;
 pub mod list_widget;

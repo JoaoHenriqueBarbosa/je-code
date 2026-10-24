@@ -13,6 +13,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+mod woff;
+pub use woff::woff_to_sfnt;
+
 use je_render::{DisplayList, FontData, Glyph, Rgba};
 use parley::fontique::Blob;
 use parley::{FontContext, FontStyle, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};

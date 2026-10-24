@@ -10,24 +10,28 @@
 //!   scroll chegar); aqui a parte síncrona roda na chamada e a continuação é agendada com `spawn_local`,
 //!   e as funções não devolvem a promessa (quem precisar esperar usa um `timeout(0)` depois, como o teste
 //!   do VS Code já faz).
-//! - O `DefaultStyleController` gera CSS de texto e não existe: as cores entram nos widgets pelo tema.
+//! - O `DefaultStyleController` gera CSS de texto e não existe: [`List::style`] guarda os [`IListStyles`] e
+//!   pinta as linhas (fundo, texto, outline de foco, raio) com a cascata de [`IListStyles::row_paint`], a cada
+//!   mudança de `focused`/`selected`, de hover (`PointerEnter`/`PointerLeave` na linha) e de foco da lista.
 //!   TypeNavigationController (digitar para achar) e a arrastar e soltar ficam de fora
 //!   (`// TODO(integração)` quando o `je-ui` tiver entrada de texto).
 //! - `aria-*` não existem no `je-ui`; o `getActiveDescendantId` fica por [`List::get_element_id`].
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use je_base::event::{Emitter, Event as BaseEvent, EventBufferer};
 use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::runtime;
-use je_ui::{EventKind, KeyData, NodeId, PointerButton, Ui};
+use je_render::Rgba;
+use je_ui::{Border, Content, EventKind, KeyData, NodeId, PointerButton, Role, Ui};
 
 use crate::common::{registered_emitter, throw};
 use crate::sash::is_macintosh;
 use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IListRenderer, IListVirtualDelegate, ListEvent, ListMouseEvent, list_error};
+use crate::list::list_styles::{IListStyles, RowState};
 use crate::list::list_view::{ListView, ListViewOptions};
 
 /// `getContiguousRangeContaining`.
@@ -270,6 +274,14 @@ pub struct List<T: Clone + 'static> {
     on_pointer: Rc<Emitter<ListMouseEvent<T>>>,
     on_did_dispose: Rc<Emitter<()>>,
     disposed: Cell<bool>,
+    /// Os estilos de [`List::style`]; sem eles as linhas não são pintadas.
+    styles: RefCell<Option<IListStyles>>,
+    /// O `:focus` do `.monaco-list`.
+    list_focused: Cell<bool>,
+    /// As linhas sob o ponteiro.
+    hovered: RefCell<HashSet<NodeId>>,
+    /// Os nós de texto e de codicon que a cor da linha tomou: (cor original, cor aplicada).
+    overridden_colors: RefCell<HashMap<NodeId, (Rgba, Rgba)>>,
 }
 
 /// O renderer que aplica as classes dos traits (`focused`, `selected`, `anchor`) à linha e guarda o
@@ -286,7 +298,11 @@ impl<T: Clone + 'static> IListRenderer<T> for TraitsRenderer<T> {
     }
 
     fn render_template(&self, container: NodeId) -> crate::list::list_types::TemplateData {
-        self.inner.render_template(container)
+        let template_data = self.inner.render_template(container);
+        if let Some(list) = self.list.borrow().upgrade() {
+            list.listen_row_hover(container);
+        }
+        template_data
     }
 
     fn render_element(&self, element: &T, index: usize, template_data: &crate::list::list_types::TemplateData, details: Option<&crate::list::list_types::ListElementRenderDetails>) {
@@ -296,6 +312,11 @@ impl<T: Clone + 'static> IListRenderer<T> for TraitsRenderer<T> {
             list.apply_traits(node, index);
         }
         self.inner.render_element(element, index, template_data, details);
+        if let Some(list) = self.list.borrow().upgrade()
+            && let Some(node) = list.view.dom_element(index)
+        {
+            list.paint_row(node);
+        }
     }
 
     fn dispose_element(&self, element: &T, index: i64, template_data: &crate::list::list_types::TemplateData, details: Option<&crate::list::list_types::ListElementRenderDetails>) {
@@ -331,6 +352,10 @@ impl<T: Clone + 'static> List<T> {
             on_pointer: registered_emitter(&base),
             on_did_dispose: registered_emitter(&base),
             disposed: Cell::new(false),
+            styles: RefCell::new(None),
+            list_focused: Cell::new(false),
+            hovered: RefCell::new(HashSet::new()),
+            overridden_colors: RefCell::new(HashMap::new()),
         });
         for renderer in &wrapped {
             *renderer.list.borrow_mut() = Rc::downgrade(&this);
@@ -378,7 +403,98 @@ impl<T: Clone + 'static> List<T> {
             this.install_keyboard_controller();
         }
         this.install_mouse_controller();
+        for kind in [EventKind::Focus, EventKind::Blur] {
+            let weak = this.weak_self.clone();
+            base.register(ui.listen(this.view.dom_node, kind, false, move |e| {
+                if let Some(list) = weak.upgrade() {
+                    list.list_focused.set(e.kind == EventKind::Focus);
+                    list.repaint_rows();
+                }
+            }));
+        }
         this
+    }
+
+    /// `style(styles)` do `DefaultStyleController`: guarda os estilos e repinta as linhas renderizadas.
+    pub fn style(&self, styles: &IListStyles) {
+        *self.styles.borrow_mut() = Some(styles.clone());
+        self.ui.tree_mut().style_mut(self.view.rows_container).background = styles.list_background;
+        self.repaint_rows();
+    }
+
+    fn repaint_rows(&self) {
+        for row in self.view.rendered_dom_nodes() {
+            self.paint_row(row);
+        }
+    }
+
+    /// Acompanha o ponteiro sobre a linha (o `:hover` do CSS).
+    fn listen_row_hover(&self, row: NodeId) {
+        for kind in [EventKind::PointerEnter, EventKind::PointerLeave] {
+            let weak = self.weak_self.clone();
+            self.base.register(self.ui.listen(row, kind, false, move |e| {
+                if let Some(list) = weak.upgrade() {
+                    if e.kind == EventKind::PointerEnter {
+                        list.hovered.borrow_mut().insert(row);
+                    } else {
+                        list.hovered.borrow_mut().remove(&row);
+                    }
+                    list.paint_row(row);
+                }
+            }));
+        }
+    }
+
+    /// Pinta a linha com a cascata dos estilos: fundo, outline (borda de 1 px por dentro), raio e a cor do
+    /// texto e dos codicons de todos os descendentes (o `color` herdado do CSS). O estado vem das classes
+    /// `focused` e `selected` da linha, que a lista mantém. A cor original de um descendente volta quando a
+    /// linha perde o estado; se o renderer escreveu outra cor no meio, a dele vale.
+    fn paint_row(&self, row: NodeId) {
+        let styles = self.styles.borrow();
+        let Some(styles) = styles.as_ref() else { return };
+        let mut tree = self.ui.tree_mut();
+        if !tree.is_alive(row) {
+            return;
+        }
+
+        let state = RowState { list_focused: self.list_focused.get(), focused: tree.has_class(row, "focused"), selected: tree.has_class(row, "selected"), hovered: self.hovered.borrow().contains(&row) };
+        let paint = styles.row_paint(state);
+
+        let row_style = tree.style_mut(row);
+        row_style.background = paint.background;
+        row_style.border = paint.outline.map(|color| Border { width: 1.0, color });
+        row_style.radius = styles.row_radius;
+
+        let mut overridden = self.overridden_colors.borrow_mut();
+        for node in tree.subtree(row).into_iter().skip(1) {
+            // Um `Role::Image` com texto é um glifo com cor própria (o `::before` do ícone de arquivo, que o CSS
+            // pinta com `color` explícito e por isso não herda a cor da linha).
+            if tree.role(node) == Role::Image {
+                continue;
+            }
+            let (color, target) = match &mut tree.style_mut(node).content {
+                Content::Text { color, .. } => (color, paint.foreground),
+                Content::Codicon { color, .. } => (color, paint.icon_foreground.or(paint.foreground)),
+                Content::None | Content::Host(_) => continue,
+            };
+            match (target, overridden.get(&node).copied()) {
+                (Some(target), previous) => {
+                    let original = match previous {
+                        Some((original, applied)) if *color == applied => original,
+                        _ => *color,
+                    };
+                    overridden.insert(node, (original, target));
+                    *color = target;
+                }
+                (None, Some((original, applied))) => {
+                    if *color == applied {
+                        *color = original;
+                    }
+                    overridden.remove(&node);
+                }
+                (None, None) => {}
+            }
+        }
     }
 
     /// Aplica as classes dos três traits à linha renderizada do índice.
@@ -400,6 +516,7 @@ impl<T: Clone + 'static> List<T> {
                 && let Some(node) = self.view.dom_element(index)
             {
                 self.ui.tree_mut().toggle_class(node, name, trait_.contains(index));
+                self.paint_row(node);
             }
         }
     }
