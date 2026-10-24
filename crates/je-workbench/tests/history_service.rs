@@ -1045,7 +1045,7 @@ fn get_history() {
         // side by side
         let input5 = new_input_with_untyped(&disposables, uri("file://bar5"));
         let input6 = new_input_with_untyped(&disposables, uri_file("file://bar1/node_modules/test.txt"));
-        let input7 = Rc::new(SideBySideEditorInput::new(None, None, editor_ref(&input6), editor_ref(&input5), service.clone()));
+        let input7 = SideBySideEditorInput::new(None, None, editor_ref(&input6), editor_ref(&input5), service.clone());
         open_pinned(&part.active_group(), &input7).await;
 
         history = history_service.get_history();
@@ -1066,7 +1066,7 @@ fn editor_dispose_clears_history_listener() {
         let (part, history) = (&fixture.part, &fixture.history);
         history.get_history();
 
-        let input = Rc::new(TestFileEditorInput::new(uri_file("history-listener"), TEST_EDITOR_INPUT_ID));
+        let input = TestFileEditorInput::new(uri_file("history-listener"), TEST_EDITOR_INPUT_ID);
         open_pinned(&part.active_group(), &input).await;
 
         assert_eq!(history.editor_history_listeners_size_for_testing(), 1);
