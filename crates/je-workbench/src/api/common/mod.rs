@@ -6,7 +6,9 @@ pub mod ext_host_text_editor;
 pub mod ext_host_type_converters;
 pub mod ext_host_types;
 
+pub mod ext_host_document_content_providers;
 pub mod ext_host_document_data;
+pub mod ext_host_document_save_participant;
 pub mod ext_host_documents;
 pub mod ext_host_documents_and_editors;
 pub mod ext_host_commands;
