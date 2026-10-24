@@ -28,6 +28,8 @@ use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::JsString;
+use je_base::lifecycle::to_disposable;
+use je_editor::language_configuration_registry::ILanguageConfigurationService as _;
 use je_editor::code_editor_widget::EditorViewModel;
 use je_editor::core_commands::{NavigationCommandRevealType, core_navigation_commands};
 use je_editor::encoded_token_attributes::{metadata_consts as mc, standard_token_type};
@@ -116,7 +118,7 @@ mod view_controller_bracket_content_selection {
         let services = create_language_model_services(&ds);
         register_test_language(&ds, &services, language_id);
         let model = instantiate_text_model_with_languages(&services, text, language_id);
-        ds.add_rc(model.clone());
+        ds.add(to_disposable({ let model = model.clone(); move || model.dispose() }));
 
         with_test_code_editor(TestEditorInput::Model(model.clone()), TestCodeEditorInstantiationOptions::default(), |_, view_model, _| {
             let controller = create_view_controller(view_model);
@@ -222,7 +224,7 @@ mod view_controller_string_content_selection {
         ds.add(tokenization_registry().register(language_id, Rc::new(FixedTokensSupport { tokens })));
 
         let model = instantiate_text_model_with_languages(&services, text, language_id);
-        ds.add_rc(model.clone());
+        ds.add(to_disposable({ let model = model.clone(); move || model.dispose() }));
 
         model.tokenization().force_tokenization(1);
 
