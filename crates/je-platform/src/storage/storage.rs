@@ -26,6 +26,7 @@ use je_base::json::{Value, parse_str};
 use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, MutableDisposable};
 use je_base::map::OrderedMap;
 use je_base::promise::Promise;
+use je_instantiation::service_id;
 use je_storage::{IStorage, InMemoryStorageDatabase, Storage, StorageChangeEvent, StorageHint, StorageOptions, StorageValue};
 
 pub const IS_NEW_KEY: &str = "__$__isNewStorageMarker";
@@ -202,6 +203,8 @@ pub trait StorageService {
     /// the underlying storage have been flushed.
     fn flush(&self, reason: WillSaveStateReason) -> Promise<()>;
 }
+
+service_id!(pub I_STORAGE_SERVICE: dyn StorageService = "storageService");
 
 /// `IKeyTargets`.
 type KeyTargets = OrderedMap<String, StorageTarget>;

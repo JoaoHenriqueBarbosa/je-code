@@ -9,3 +9,5 @@ pub mod policies;
 pub mod preferences;
 pub mod text_mate;
 pub mod user_activity;
+pub mod authentication;
+pub mod user_attention;

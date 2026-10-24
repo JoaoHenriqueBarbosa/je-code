@@ -12,6 +12,11 @@ workspace = true
 [dependencies]
 je-base = { path = "../je-base" }
 je-platform = { path = "../je-platform" }
+# `IStorageService` guarda `StorageValue`; `ExtensionIdentifier.toKey` é do je-extensions; `createDecorator`,
+# `createInstance` e `registerSingleton` são do je-instantiation.
+je-storage = { path = "../je-storage" }
+je-extensions = { path = "../je-extensions" }
+je-instantiation = { path = "../je-instantiation" }
 # Tipos do editor (`Position`, `Range`, `TextLength`) que o workbench usa, como no original.
 je-editor = { path = "../je-editor" }
 # Injeção de dependência (`IInstantiationService`, `registerSingleton`) dos serviços do workbench.
