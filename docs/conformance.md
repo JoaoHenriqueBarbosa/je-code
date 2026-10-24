@@ -7,14 +7,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
 | `platform` | 192 | 2806 | 107 | 1815 | 64.68 |
 | `editor` | 182 | 3144 | 138 | 2829 | 89.98 |
-| `workbench/services` | 137 | 2491 | 33 | 839 | 33.68 |
+| `workbench/services` | 137 | 2491 | 34 | 968 | 38.86 |
 | `workbench/api` | 94 | 965 | 4 | 101 | 10.47 |
 | `workbench/contrib` | 370 | 4636 | 24 | 317 | 6.84 |
 | `workbench (shell)` | 69 | 621 | 12 | 145 | 23.35 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 7916 | 43.04 |
+| **total** | | 18391 | | 8045 | 43.74 |
 
 ## Arquivos portados
 
@@ -399,6 +399,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/authentication/test/browser/authenticationQueryService.test.ts` | 49 | `crates/je-workbench/tests/authentication_query_service.rs` | 49 |
 | `src/vs/workbench/services/configuration/test/browser/configurationService.test.ts` | 186 | `crates/je-workbench/tests/configuration_service.rs` | 175 |
 | `src/vs/workbench/services/configurationResolver/test/electron-browser/configurationResolverService.test.ts` | 59 | `crates/je-workbench/tests/configuration_resolver_service.rs` | 59 |
+| `src/vs/workbench/services/extensionManagement/test/browser/extensionEnablementService.test.ts` | 129 | `crates/je-workbench/tests/extension_enablement_service.rs` | 129 |
 | `src/vs/workbench/services/extensions/test/common/extensionManifestPropertiesService.test.ts` | 35 | `crates/je-workbench/tests/extension_manifest_properties_service.rs` | 35 |
 | `src/vs/workbench/services/filesConfiguration/test/browser/filesConfigurationService.test.ts` | 12 | `crates/je-workbench/tests/files_configuration_service.rs` | 12 |
 | `src/vs/workbench/services/keybinding/test/browser/keybindingIO.test.ts` | 10 | `crates/je-workbench/tests/keybinding_io.rs` | 10 |
