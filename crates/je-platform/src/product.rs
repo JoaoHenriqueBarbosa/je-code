@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 
 use je_base::product::{
-    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IStringDictionary,
+    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, IExtensionsGallery, IStringDictionary,
     StringsOrDictionary,
 };
 use je_instantiation::service_id;
@@ -71,6 +71,10 @@ pub trait IProductService {
     fn sessions_window_allowed_extensions(&self) -> Vec<String> {
         Vec::new()
     }
+    /// `extensionsGallery`: a galeria de extensões do produto, quando ele declara. Padrão: nenhuma.
+    fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
+        None
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -119,6 +123,7 @@ pub struct ProductService {
     pub configuration_sync_store: Option<ConfigurationSyncStore>,
     pub default_chat_agent: Option<DefaultChatAgentExtensions>,
     pub sessions_window_allowed_extensions: Vec<String>,
+    pub extensions_gallery: Option<IExtensionsGallery>,
 }
 
 impl Default for ProductService {
@@ -146,6 +151,7 @@ impl Default for ProductService {
             configuration_sync_store: None,
             default_chat_agent: None,
             sessions_window_allowed_extensions: Vec::new(),
+            extensions_gallery: None,
         }
     }
 }
@@ -229,6 +235,9 @@ impl IProductService for ProductService {
     fn sessions_window_allowed_extensions(&self) -> Vec<String> {
         self.sessions_window_allowed_extensions.clone()
     }
+    fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
+        self.extensions_gallery.as_ref()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
@@ -297,5 +306,8 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn sessions_window_allowed_extensions(&self) -> Vec<String> {
         self.sessions_window_allowed_extensions.clone().unwrap_or_default()
+    }
+    fn extensions_gallery(&self) -> Option<&IExtensionsGallery> {
+        self.extensions_gallery.as_ref()
     }
 }
