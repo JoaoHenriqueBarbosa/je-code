@@ -368,8 +368,10 @@ pub trait IEditorAction {
     fn run(&self, args: Option<&Dynamic>) -> Promise<()>;
 }
 
-/// `editorCommon.IEditorContribution`: criada junto com cada editor e descartada com ele.
-pub trait IEditorContribution: IDisposable {
+/// `editorCommon.IEditorContribution`: criada junto com cada editor e descartada com ele. O `Any` como supertrait
+/// permite o `getContribution<T>(id)` tipado do original ([`get_contribution_as`]): o `Rc<dyn IEditorContribution>` sobe
+/// para `Rc<dyn Any>` e desce para o tipo concreto.
+pub trait IEditorContribution: IDisposable + std::any::Any {
     /// `typeof contribution.saveViewState === 'function'` (e o mesmo para `restoreViewState`).
     fn has_view_state(&self) -> bool {
         false
@@ -843,6 +845,28 @@ editor_emitters! {
     begin_update, on_begin_update, (), direct, "`onBeginUpdate`.";
     end_update, on_end_update, (), direct, "`onEndUpdate`.";
     before_execute_edit, on_before_execute_edit, BeforeExecuteEditEvent, direct, "`onBeforeExecuteEdit`.";
+}
+
+impl CodeEditorWidget {
+    /// `onDidFocusEditorText` (`_editorTextFocus.onDidChangeToTrue`).
+    pub fn on_did_focus_editor_text(&self) -> Event<()> {
+        self.editor_text_focus.on_did_change_to_true()
+    }
+
+    /// `onDidBlurEditorText` (`_editorTextFocus.onDidChangeToFalse`).
+    pub fn on_did_blur_editor_text(&self) -> Event<()> {
+        self.editor_text_focus.on_did_change_to_false()
+    }
+
+    /// `onDidFocusEditorWidget` (`_editorWidgetFocus.onDidChangeToTrue`).
+    pub fn on_did_focus_editor_widget(&self) -> Event<()> {
+        self.editor_widget_focus.on_did_change_to_true()
+    }
+
+    /// `onDidBlurEditorWidget` (`_editorWidgetFocus.onDidChangeToFalse`).
+    pub fn on_did_blur_editor_widget(&self) -> Event<()> {
+        self.editor_widget_focus.on_did_change_to_false()
+    }
 }
 
 // #endregion
@@ -1711,6 +1735,16 @@ pub trait ICodeEditor {
 
     /// `getContribution(id)`.
     fn get_contribution(&self, id: &str) -> Option<Rc<dyn IEditorContribution>>;
+
+    /// `getContribution<T>(id)`: a contribuição como o seu tipo concreto, ou `None` se não existe (ou se é de outro
+    /// tipo, o que o `as T` do TypeScript não distingue).
+    fn get_contribution_as<T: IEditorContribution>(&self, id: &str) -> Option<Rc<T>>
+    where
+        Self: Sized,
+    {
+        let contribution: Rc<dyn std::any::Any> = self.get_contribution(id)?;
+        contribution.downcast::<T>().ok()
+    }
 
     /// `getActions()`.
     fn get_actions(&self) -> Vec<Rc<dyn IEditorAction>>;

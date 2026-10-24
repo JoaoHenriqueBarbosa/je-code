@@ -114,6 +114,27 @@ pub trait ITestEditorCommand {
     ) -> MaybePromise<()>;
 }
 
+/// `ITestEditorCommand` de um `IEditorCommand` (os comandos de palavra, por exemplo): o `command.runEditorCommand(accessor,
+/// editor, null)` do `runEditorCommand` das suítes de teste, com o `null` chegando ao comando como `Dynamic::Null`.
+pub struct EditorCommandAdapter<'a, C: IEditorCommand>(pub &'a C);
+
+impl<C: IEditorCommand> ITestEditorCommand for EditorCommandAdapter<'_, C> {
+    fn run_editor_command(
+        &self,
+        accessor: &ServicesAccessor,
+        editor: &Rc<CodeEditorWidget>,
+        args: Option<&Dynamic>,
+    ) -> MaybePromise<()> {
+        let args = args.cloned().unwrap_or(Dynamic::Null);
+        MaybePromise::Promise(IEditorCommand::run_editor_command(self.0, Some(accessor), editor, &args))
+    }
+}
+
+/// `runEditorCommand(editor, command)` das suítes de teste: `command.runEditorCommand(serviceAccessor, editor, null)`.
+pub fn run_editor_command(editor: &TestCodeEditor, command: &impl IEditorCommand) {
+    editor.run_command(&EditorCommandAdapter(command), None);
+}
+
 /// `ITestEditorAction`.
 pub trait ITestEditorAction {
     /// `run(accessor, editor, args?)`.

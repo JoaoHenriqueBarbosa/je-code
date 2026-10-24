@@ -204,3 +204,8 @@ pub mod move_lines_command;
 pub mod lines_operations;
 pub mod view_user_input_events;
 pub mod view_controller;
+pub mod editor_decorations_collection;
+
+pub mod word_part_operations;
+
+pub mod bracket_matching;
