@@ -17,6 +17,11 @@ pub fn host_platform() -> Platform {
     ProcessEnvironment.platform()
 }
 
+/// `extUri`: o utilitário de URIs sem viés, que toma os URIs como estão (`basename`, `dirname`, `isEqual`...).
+pub fn ext_uri() -> ExtUri {
+    ExtUri::unbiased(host_environment())
+}
+
 /// `joinPath(resource, ...pathFragments)` (o `extUri` sem viés).
 pub fn join_path(resource: &URI, path_fragments: &[&str]) -> URI {
     ExtUri::unbiased(host_environment()).join_path(resource, path_fragments)

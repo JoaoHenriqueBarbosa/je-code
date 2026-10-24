@@ -4,3 +4,5 @@ pub mod notification_telemetry;
 pub mod notifications;
 
 pub mod editor;
+
+pub mod memento;

@@ -66,3 +66,8 @@ pub mod encryption;
 pub mod external_terminal;
 pub mod registry;
 pub mod secrets;
+
+pub mod label;
+pub mod path;
+pub mod uri_identity;
+pub mod virtual_workspace;
