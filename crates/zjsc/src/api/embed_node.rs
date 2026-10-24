@@ -28,9 +28,12 @@ use crate::runtime::js_string::js_string;
 use crate::runtime::identifier::Identifier;
 use crate::runtime::js_array::{construct_array, is_js_array};
 use crate::runtime::js_function::JSFunction;
+use crate::runtime::js_object::JSObject;
 use crate::runtime::js_value::{js_boolean, js_number, JSValue};
 use crate::runtime::object_constructor::{construct_empty_object, enumerable_own_entries};
+use crate::runtime::property_attribute::DONT_ENUM;
 use crate::runtime::property_name::PropertyName;
+use crate::runtime::string_regexp_support::get_object_property;
 use crate::runtime::native_class_support::install_global_function_with_visibility;
 use crate::runtime::object_to_primitive::call_function;
 use crate::runtime::vm::VM;
@@ -77,6 +80,110 @@ fn native_trampoline_body(global_object: &JSGlobalObject, call: &HostCall) -> Ho
     }
 }
 host_function!(native_trampoline, native_trampoline_body);
+
+/// A chave reservada que marca o objeto como instância de uma classe registrada: não enumerável no lado JavaScript, e no
+/// lado do Rust um campo `("$$class", Str(nome))` de [`JsData::Object`] (o equivalente de `instanceof`).
+pub const CLASS_KEY: &str = "$$class";
+
+/// O corpo de um método de classe: recebe o `this` (copiado, com `$$class`) e os argumentos.
+pub type MethodCallback = Rc<dyn Fn(&JsData, &[JsData]) -> Result<JsData, String>>;
+
+/// A descrição de uma classe nativa para [`NodeRunner::define_class`].
+pub struct ClassSpec {
+    pub name: String,
+    pub length: u32,
+    /// O construtor: devolve os campos próprios da instância (um [`JsData::Object`]).
+    pub construct: NativeCallback,
+    pub methods: Vec<(String, u32, MethodCallback)>,
+    pub statics: Vec<(String, u32, NativeCallback)>,
+}
+
+struct ClassEntry {
+    name: String,
+    construct: NativeCallback,
+}
+
+thread_local! {
+    /// O protótipo de cada classe registrada, pelo nome (a raiz do coletor é o [`JsHandle`] guardado junto).
+    static CLASSES: RefCell<HashMap<String, JsHandle>> = RefCell::new(HashMap::new());
+    /// Os construtores vivos, pelo id da célula da função.
+    static CONSTRUCTORS: RefCell<HashMap<usize, ClassEntry>> = RefCell::new(HashMap::new());
+    /// Os métodos vivos, pelo id da célula da função.
+    static METHODS: RefCell<HashMap<usize, MethodCallback>> = RefCell::new(HashMap::new());
+}
+
+fn class_call_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResult {
+    let name = CONSTRUCTORS.with(|constructors| constructors.borrow().get(&call.callee()).map(|entry| entry.name.clone())).unwrap_or_default();
+    let _ = global_object;
+    Err(Thrown::type_error(&format!("Class constructor {name} cannot be invoked without 'new'")))
+}
+host_function!(class_call, class_call_body);
+
+fn class_construct_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResult {
+    let Some((name, construct)) = CONSTRUCTORS.with(|constructors| constructors.borrow().get(&call.callee()).map(|entry| (entry.name.clone(), entry.construct.clone()))) else {
+        return Err(Thrown::type_error("construtor nativo sem implementação registrada"));
+    };
+    let Some(global) = global_object.to_ref() else { return Ok(JSValue::undefined()) };
+    let vm = global.vm();
+    let identifier = Identifier::from_span(vm, b"prototype");
+    let prototype = get_object_property(global_object, call.new_target(), &identifier)?;
+    let arguments: Vec<JsData> = call.arguments().iter().map(|argument| read_value(&global, *argument, 0)).collect();
+    let fields = construct(&arguments).map_err(Thrown::TypeError)?;
+    let instance = construct_empty_object(&global);
+    if prototype.is_object() {
+        instance.set_prototype_direct(vm, prototype);
+    }
+    mark_class(&global, &instance, &name);
+    if let JsData::Object(fields) = fields {
+        put_fields(&global, &instance, &fields);
+    }
+    Ok(instance.as_value())
+}
+host_function!(class_construct, class_construct_body);
+
+fn native_method_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResult {
+    let Some(callback) = METHODS.with(|methods| methods.borrow().get(&call.callee()).cloned()) else {
+        return Err(Thrown::type_error("método nativo sem implementação registrada"));
+    };
+    let Some(global) = global_object.to_ref() else { return Ok(JSValue::undefined()) };
+    let this = read_value(&global, call.this_value(), 0);
+    let arguments: Vec<JsData> = call.arguments().iter().map(|argument| read_value(&global, *argument, 0)).collect();
+    match callback(&this, &arguments) {
+        Ok(data) => Ok(write_value(&global, &data)),
+        Err(message) => Err(Thrown::TypeError(message)),
+    }
+}
+host_function!(native_method, native_method_body);
+
+/// Marca `object` com a classe `name` (propriedade não enumerável [`CLASS_KEY`]).
+fn mark_class(global: &JSGlobalObjectRef, object: &JSObject, name: &str) {
+    let vm = global.vm();
+    let value = JSValue::from_js_string(js_string(vm, &WtfString::from_utf8(name.as_bytes())));
+    let key = PropertyName::from_identifier(&Identifier::from_span(vm, CLASS_KEY.as_bytes()));
+    object.put_direct(vm, &key, value, DONT_ENUM);
+}
+
+/// Grava os campos próprios enumeráveis de `fields` em `object`.
+fn put_fields(global: &JSGlobalObjectRef, object: &JSObject, fields: &[(String, JsData)]) {
+    let vm = global.vm();
+    let values: Vec<JSValue> = fields.iter().map(|(_, item)| write_value(global, item)).collect();
+    let _rooted = RootScope::new(&values);
+    for ((name, _), value) in fields.iter().zip(values) {
+        if name == CLASS_KEY {
+            continue;
+        }
+        let identifier = Identifier::from_span(vm, name.as_bytes());
+        let property = PropertyName::from_identifier(&identifier);
+        match property.parse_index() {
+            Some(index) => {
+                let _ = object.put_by_index(vm, index, value, false);
+            }
+            None => {
+                object.put_direct(vm, &property, value, 0);
+            }
+        }
+    }
+}
 
 /// Os valores que cruzam a fronteira: o que o JavaScript e o Rust trocam. Objetos e arrays viajam por cópia (só as
 /// propriedades próprias enumeráveis, com profundidade limitada); função, promessa e qualquer outra célula viajam como
@@ -130,7 +237,13 @@ fn read_value(global: &JSGlobalObjectRef, value: JSValue, depth: usize) -> JsDat
             indexed.sort_by_key(|(index, _)| *index);
             JsData::Array(indexed.into_iter().map(|(_, item)| item).collect())
         } else {
-            JsData::Object(entries.iter().map(|(name, item)| (String::from_utf8_lossy(&name.utf8()).into_owned(), read_value(global, *item, depth + 1))).collect())
+            let mut fields: Vec<(String, JsData)> = Vec::new();
+            let marker = get_object_property(global, value, &Identifier::from_span(global.vm(), CLASS_KEY.as_bytes())).ok().filter(JSValue::is_string);
+            if let Some(marker) = marker {
+                fields.push((CLASS_KEY.to_owned(), JsData::Str(rust_string(&marker.to_wtf_string()))));
+            }
+            fields.extend(entries.iter().map(|(name, item)| (String::from_utf8_lossy(&name.utf8()).into_owned(), read_value(global, *item, depth + 1))));
+            JsData::Object(fields)
         }
     } else {
         JsData::Handle(Rc::new(JsHandle::new(value)))
@@ -153,20 +266,17 @@ fn write_value(global: &JSGlobalObjectRef, data: &JsData) -> JSValue {
         }
         JsData::Object(fields) => {
             let object = construct_empty_object(global);
-            let values: Vec<JSValue> = fields.iter().map(|(_, item)| write_value(global, item)).collect();
-            let _rooted = RootScope::new(&values);
-            for ((name, _), value) in fields.iter().zip(values) {
-                let identifier = Identifier::from_span(vm, name.as_bytes());
-                let property = PropertyName::from_identifier(&identifier);
-                match property.parse_index() {
-                    Some(index) => {
-                        let _ = object.put_by_index(vm, index, value, false);
-                    }
-                    None => {
-                        object.put_direct(vm, &property, value, 0);
-                    }
+            let class = fields.iter().find_map(|(name, item)| match item {
+                JsData::Str(class) if name == CLASS_KEY => Some(class.clone()),
+                _ => None,
+            });
+            if let Some(class) = class {
+                if let Some(prototype) = CLASSES.with(|classes| classes.borrow().get(&class).map(|handle| handle.0)) {
+                    object.set_prototype_direct(vm, prototype);
                 }
+                mark_class(global, &object, &class);
             }
+            put_fields(global, &object, fields);
             object.as_value()
         }
     }
@@ -269,6 +379,57 @@ impl NodeRunner {
             NATIVES.with(|natives| natives.borrow_mut().insert(id, callback));
         }
         JsHandle::new(value)
+    }
+
+    /// Define a classe `spec` e a instala em `globalThis[spec.name]`. As instâncias nascem pelo `new` do JavaScript (o
+    /// construtor devolve os campos próprios) ou quando um [`JsData::Object`] com [`CLASS_KEY`] atravessa a fronteira.
+    pub fn define_class(&self, spec: ClassSpec) -> JsHandle {
+        let vm = &self.vm;
+        let global = &self.global_object;
+        let constructor = JSFunction::create_native(
+            vm,
+            global,
+            spec.length,
+            &WtfString::from_utf8(spec.name.as_bytes()),
+            class_call,
+            ImplementationVisibility::Public,
+            crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+            class_construct,
+        );
+        let constructor_value = constructor.as_value();
+        let prototype = construct_empty_object(global);
+        let key = |name: &str| PropertyName::from_identifier(&Identifier::from_span(vm, name.as_bytes()));
+        prototype.put_direct(vm, &key("constructor"), constructor_value, DONT_ENUM);
+        constructor.put_direct(vm, &key("prototype"), prototype.as_value(), DONT_ENUM);
+        if let JSValue::Cell(id) = constructor_value {
+            CONSTRUCTORS.with(|constructors| constructors.borrow_mut().insert(id, ClassEntry { name: spec.name.clone(), construct: spec.construct.clone() }));
+        }
+        for (name, length, callback) in &spec.methods {
+            let function = JSFunction::create_native(
+                vm,
+                global,
+                *length,
+                &WtfString::from_utf8(name.as_bytes()),
+                native_method,
+                ImplementationVisibility::Public,
+                crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+                crate::runtime::js_function::call_host_function_as_constructor,
+            );
+            if let JSValue::Cell(id) = function.as_value() {
+                METHODS.with(|methods| methods.borrow_mut().insert(id, callback.clone()));
+            }
+            prototype.put_direct(vm, &key(name), function.as_value(), DONT_ENUM);
+        }
+        for (name, length, callback) in &spec.statics {
+            let function = self.make_function(name, *length, callback.clone());
+            constructor.put_direct(vm, &key(name), function.0, DONT_ENUM);
+            // A função precisa sobreviver ao handle que saiu de escopo: o `JsHandle` solto tira a raiz, mas a propriedade
+            // da classe a mantém viva (a classe mesma está enraizada em `CLASSES`).
+        }
+        let handle = JsHandle::new(constructor_value);
+        CLASSES.with(|classes| classes.borrow_mut().insert(spec.name.clone(), JsHandle::new(prototype.as_value())));
+        crate::runtime::native_class_support::install_global(global, &spec.name, constructor_value);
+        handle
     }
 
     /// Converte `data` em valor JavaScript e o guarda.

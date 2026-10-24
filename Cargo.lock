@@ -4136,6 +4136,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "je-exthost"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "tempfile",
+ "zjsc",
+]
+
+[[package]]
 name = "je-instantiation"
 version = "0.0.0"
 dependencies = [

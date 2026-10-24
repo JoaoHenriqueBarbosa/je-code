@@ -251,3 +251,91 @@ fn native_functions_installed_on_objects_can_be_called_as_methods() {
         assert_eq!(text(runner, "typeof api.greet + ':' + Object.keys(api).join()"), "function:greet");
     });
 }
+
+// ---- classes nativas: `Position`, `Range`, `Uri`... com `instanceof`, métodos e estáticos
+
+use zjsc::api::embed_node::{ClassSpec, CLASS_KEY};
+
+fn point(x: f64, y: f64) -> JsData {
+    JsData::Object(vec![(CLASS_KEY.into(), JsData::Str("Point".into())), ("x".into(), JsData::Num(x)), ("y".into(), JsData::Num(y))])
+}
+
+fn field(data: &JsData, name: &str) -> f64 {
+    match data {
+        JsData::Object(fields) => fields.iter().find(|(key, _)| key == name).map(|(_, value)| number(value)).unwrap_or_else(|| panic!("sem campo {name}")),
+        _ => panic!("esperava objeto"),
+    }
+}
+
+fn define_point(runner: &NodeRunner) {
+    runner.define_class(ClassSpec {
+        name: "Point".into(),
+        length: 2,
+        construct: Rc::new(|args| Ok(JsData::Object(vec![("x".into(), args[0].clone()), ("y".into(), args[1].clone())]))),
+        methods: vec![(
+            "translate".into(),
+            2,
+            Rc::new(|this, args| Ok(point(field(this, "x") + number(&args[0]), field(this, "y") + number(&args[1])))),
+        )],
+        statics: vec![("origin".into(), 0, Rc::new(|_| Ok(point(0.0, 0.0))))],
+    });
+}
+
+#[test]
+fn native_class_instances_have_fields_methods_and_instanceof() {
+    with_runner("", |runner, _| {
+        define_point(runner);
+        assert_eq!(text(runner, "const p = new Point(1, 2); [p.x, p.y, p instanceof Point, p.constructor === Point, typeof Point].join()"), "1,2,true,true,function");
+        assert_eq!(text(runner, "const q = new Point(1, 2).translate(10, 20); [q.x, q.y, q instanceof Point].join()"), "11,22,true");
+        assert_eq!(text(runner, "String(Point.name) + ':' + Point.length"), "Point:2");
+    });
+}
+
+#[test]
+fn native_class_statics_and_marker_stay_hidden() {
+    with_runner("", |runner, _| {
+        define_point(runner);
+        assert_eq!(text(runner, "const o = Point.origin(); [o instanceof Point, o.x, o.y].join()"), "true,0,0");
+        assert_eq!(text(runner, "JSON.stringify(new Point(3, 4))"), r#"{"x":3,"y":4}"#, "o marcador de classe não aparece");
+        assert_eq!(text(runner, "Object.keys(new Point(3, 4)).join()"), "x,y");
+        assert_eq!(text(runner, "'$$class' in new Point(1, 1) ? 'tem' : 'não tem'"), "tem", "existe, só não é enumerável");
+    });
+}
+
+#[test]
+fn native_class_requires_new_and_can_be_extended_from_javascript() {
+    with_runner("", |runner, _| {
+        define_point(runner);
+        assert_eq!(text(runner, "try { Point(1, 2); 'sem erro' } catch (e) { e instanceof TypeError ? e.message : 'outro' }"), "Class constructor Point cannot be invoked without 'new'");
+        assert_eq!(
+            text(runner, "class Point3 extends Point { constructor(x, y, z) { super(x, y); this.z = z; } } const r = new Point3(1, 2, 3); [r instanceof Point3, r instanceof Point, r.x, r.z, r.translate(1, 1).x].join()"),
+            "true,true,1,3,2"
+        );
+    });
+}
+
+#[test]
+fn class_marker_carries_instances_across_the_boundary_in_both_directions() {
+    with_runner("", |runner, _| {
+        define_point(runner);
+        let seen: Rc<RefCell<Option<JsData>>> = Rc::default();
+        let sink = seen.clone();
+        let give = runner.make_function("give", 0, Rc::new(|_| Ok(point(7.0, 8.0))));
+        let take = runner.make_function(
+            "take",
+            1,
+            Rc::new(move |args| {
+                *sink.borrow_mut() = Some(args[0].clone());
+                Ok(JsData::Undefined)
+            }),
+        );
+        runner.set_global("give", &JsData::Handle(Rc::new(give)));
+        runner.set_global("take", &JsData::Handle(Rc::new(take)));
+        assert_eq!(text(runner, "const g = give(); [g instanceof Point, g.x, g.y].join()"), "true,7,8", "o Rust devolve um objeto marcado e o JavaScript o recebe como instância");
+        runner.eval("take(new Point(5, 6).translate(1, 1))", "t.js").unwrap();
+        let received = seen.borrow().clone().unwrap();
+        let JsData::Object(fields) = &received else { panic!("esperava objeto") };
+        assert!(matches!(fields.first(), Some((key, JsData::Str(class))) if key == CLASS_KEY && class == "Point"), "a instância chega ao Rust com o marcador");
+        assert_eq!((field(&received, "x"), field(&received, "y")), (6.0, 7.0));
+    });
+}
