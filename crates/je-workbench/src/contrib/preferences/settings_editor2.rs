@@ -9,6 +9,6 @@ pub fn is_settings_search_up_to_date(search_pending: bool, rendered_search_query
 
 /// `String.prototype.trim`: tira o espaço em branco do JavaScript (`WhiteSpace` e `LineTerminator`, o que o
 /// `char::is_whitespace` cobre, mais o BOM `U+FEFF`).
-fn js_trim(value: &str) -> &str {
+pub(crate) fn js_trim(value: &str) -> &str {
     value.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
 }
