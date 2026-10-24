@@ -93,37 +93,9 @@ impl FindWidget {
         Some(self.matches[next])
     }
 
-    /// O texto que troca a ocorrência `matched` (a busca com regex expande `$&`, `$1`...`$9` e `$$`).
+    /// O texto que troca a ocorrência `matched`.
     pub fn replacement_for(&self, matched: &str) -> String {
-        let template: String = self.replace_value.iter().collect();
-        if !self.regex {
-            return template;
-        }
-        let flags = if self.match_case { "u" } else { "iu" };
-        let Ok(regexp) = je_base::js_regexp::JsRegExp::from_str(&self.text(), flags) else { return template };
-        let units: Vec<u16> = matched.encode_utf16().collect();
-        let Some(found) = regexp.exec(&units) else { return template };
-        let group = |n: usize| found.captures.get(n).cloned().flatten().map(|r| String::from_utf16_lossy(&units[r])).unwrap_or_default();
-        let mut out = String::new();
-        let mut chars = template.chars().peekable();
-        while let Some(c) = chars.next() {
-            match (c, chars.peek().copied()) {
-                ('$', Some('$')) => {
-                    chars.next();
-                    out.push('$');
-                }
-                ('$', Some('&')) => {
-                    chars.next();
-                    out.push_str(&group(0));
-                }
-                ('$', Some(d)) if d.is_ascii_digit() && d != '0' => {
-                    chars.next();
-                    out.push_str(&group(d as usize - '0' as usize));
-                }
-                _ => out.push(c),
-            }
-        }
-        out
+        expand_replacement(&self.text(), self.regex, self.match_case, &self.replace_value.iter().collect::<String>(), matched)
     }
 
     /// O texto do contador.
@@ -259,4 +231,37 @@ impl FindWidget {
         }
         hits
     }
+}
+
+/// O texto de substituição para a ocorrência `matched` da busca `pattern`: com regex, `$&`, `$1`...`$9` e `$$` se
+/// expandem com os grupos do casamento (o `buildReplaceString` do VS Code); sem regex, o texto como está.
+pub fn expand_replacement(pattern: &str, regex: bool, match_case: bool, template: &str, matched: &str) -> String {
+    if !regex {
+        return template.to_owned();
+    }
+    let flags = if match_case { "u" } else { "iu" };
+    let Ok(regexp) = je_base::js_regexp::JsRegExp::from_str(pattern, flags) else { return template.to_owned() };
+    let units: Vec<u16> = matched.encode_utf16().collect();
+    let Some(found) = regexp.exec(&units) else { return template.to_owned() };
+    let group = |n: usize| found.captures.get(n).cloned().flatten().map(|r| String::from_utf16_lossy(&units[r])).unwrap_or_default();
+    let mut out = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek().copied()) {
+            ('$', Some('$')) => {
+                chars.next();
+                out.push('$');
+            }
+            ('$', Some('&')) => {
+                chars.next();
+                out.push_str(&group(0));
+            }
+            ('$', Some(d)) if d.is_ascii_digit() && d != '0' => {
+                chars.next();
+                out.push_str(&group(d as usize - '0' as usize));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }

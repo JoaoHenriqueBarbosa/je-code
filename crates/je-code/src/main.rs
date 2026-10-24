@@ -1242,6 +1242,43 @@ mod tests {
     }
 
     #[test]
+    fn replace_in_files_rewrites_closed_files_and_edits_open_ones() {
+        use je_editor::cursor_common::CursorSimpleModel;
+        let dir = std::env::temp_dir().join(format!("je-code-{}-rif", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        std::fs::write(dir.join("a.txt"), "old one\nold two\n").expect("a");
+        std::fs::write(dir.join("b.txt"), "keep old\n").expect("b");
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[dir.join("b.txt")], 1200.0, 800.0).expect("abre");
+        let key = |shell: &mut Shell, key: Option<EditorKey>, text: Option<&str>| shell.key(true, KeyCode::Unknown, Modifiers::default(), text, key);
+        shell.run(shell::Command::ShowSearchReplace);
+        // A semente é a palavra sob o cursor de b.txt (`keep`): troca por `old`.
+        for _ in 0..4 {
+            key(&mut shell, Some(EditorKey::Backspace), None);
+        }
+        for c in "old".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        shell.run(shell::Command::SearchNow);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while shell.search_message().as_deref() != Some("3 results in 2 files") && std::time::Instant::now() < deadline {
+            shell.take_dirty();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        key(&mut shell, Some(EditorKey::Tab), None);
+        for c in "new".chars() {
+            key(&mut shell, None, Some(&c.to_string()));
+        }
+        snapshot(&mut shell, "rif0.png");
+        shell.run(shell::Command::SearchReplaceAll);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).expect("a"), "new one\nnew two\n", "o arquivo fechado foi reescrito");
+        let open = shell.active_editor().expect("aba");
+        assert_eq!(open.view.model().get_line_content(1).to_string_lossy(), "keep new", "o aberto recebeu a edição");
+        assert!(open.is_modified(), "e fica modificado até salvar");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).expect("b"), "keep old\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn closing_tabs_moves_the_active_editor() {
         let a = temp_file("a.txt", "a");
         let b = temp_file("b.txt", "b");

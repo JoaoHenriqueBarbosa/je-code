@@ -226,6 +226,10 @@ pub enum Command {
     SearchToggleCase,
     SearchToggleWord,
     SearchToggleRegex,
+    SearchToggleReplace,
+    ShowSearchReplace,
+    SearchFocusReplace,
+    SearchReplaceAll,
     ShowScm,
     ShowExtensions,
     OpenRecent,
@@ -1227,6 +1231,24 @@ impl Shell {
                 self.search.collapse_all();
                 self.needs_render = true;
             }
+            Command::SearchToggleReplace => {
+                self.search.replace_visible = !self.search.replace_visible;
+                self.search.in_replace = self.search.replace_visible;
+                self.search_focused = true;
+            }
+            Command::SearchFocusReplace => {
+                self.search.in_replace = true;
+                self.search_focused = true;
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.set_focus(false);
+                }
+            }
+            Command::SearchReplaceAll => self.search_replace_all(),
+            Command::ShowSearchReplace => {
+                self.run(Command::ShowSearch);
+                self.search.replace_visible = true;
+                return;
+            }
             Command::SearchToggleCase | Command::SearchToggleWord | Command::SearchToggleRegex => {
                 match command {
                     Command::SearchToggleCase => self.search.match_case = !self.search.match_case,
@@ -1962,10 +1984,99 @@ impl Shell {
         je_base::runtime::set_timeout(Box::new(move || queue.borrow_mut().push(Command::SearchTick(generation))), 300);
     }
 
+    /// O `Replace All` da busca em arquivos: os abertos recebem a edição no editor (ficam modificados); os outros
+    /// são reescritos no disco.
+    fn search_replace_all(&mut self) {
+        use je_editor::text_model::FindScope;
+        let query = self.search.query();
+        if query.text.is_empty() {
+            return;
+        }
+        let template: String = self.search.replace_value.iter().collect();
+        let separators = query.whole_word.then_some("`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?");
+        let edits_for = |model: &TextModel| -> Vec<(je_editor::range::Range, String)> {
+            model
+                .find_matches(je_base::JsString::from(query.text.as_str()), FindScope::Whole, query.regex, query.match_case, separators, false, 100_000)
+                .into_iter()
+                .map(|m| {
+                    let matched = model.get_value_in_range(&m.range).to_string_lossy();
+                    (m.range, find::expand_replacement(&query.text, query.regex, query.match_case, &template, &matched))
+                })
+                .collect()
+        };
+        let (mut total, mut files) = (0usize, 0usize);
+        for path in self.search.result_files() {
+            let open = self.all_editors_mut().find(|e| e.path.as_deref() == Some(path.as_path())).map(|e| e.view.model().clone());
+            if let Some(model) = open {
+                let edits = edits_for(&model);
+                if let Some(editor) = self.all_editors_mut().find(|e| e.path.as_deref() == Some(path.as_path())) {
+                    total += edits.len();
+                    files += usize::from(!edits.is_empty());
+                    editor.view.replace_ranges(edits);
+                }
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let mut options = TextModel::default_creation_options();
+            options.detect_indentation = false;
+            let model = TextModel::new(TextSource::from(text.as_str()), "plaintext", options, None, UndoRedoService::for_tests());
+            let edits = edits_for(&model);
+            if edits.is_empty() {
+                continue;
+            }
+            total += edits.len();
+            files += 1;
+            let ops: Vec<_> = edits.into_iter().map(|(r, t)| je_editor::edit_operation::EditOperation::replace(r, Some(je_base::JsString::from(t.as_str())))).collect();
+            model.apply_edits(&ops);
+            let new_text = model.get_value_with(EndOfLinePreference::TextDefined, true).to_string_lossy();
+            if let Err(e) = std::fs::write(&path, new_text.as_bytes()) {
+                self.notify(Severity::Error, format!("Falha ao gravar '{}': {e}", path.display()));
+            }
+        }
+        self.notify(Severity::Info, format!("Replaced {total} occurrence{} across {files} file{}.", if total == 1 { "" } else { "s" }, if files == 1 { "" } else { "s" }));
+        self.start_search();
+    }
+
     /// Trata uma tecla com o campo da vista Search focado. Devolve se consumiu.
     fn search_key(&mut self, text: Option<&str>, key: Option<EditorKey>, mods: Modifiers) -> bool {
         let ctrl = mods.ctrl || mods.meta;
         let view = &mut self.search;
+        if key == Some(EditorKey::Tab) && view.replace_visible {
+            view.in_replace = !view.in_replace;
+            self.needs_render = true;
+            return true;
+        }
+        if view.in_replace {
+            match key {
+                Some(EditorKey::Escape) => {
+                    self.search_focused = false;
+                    if let Some(editor) = self.active_editor_mut() {
+                        editor.view.set_focus(true);
+                    }
+                }
+                Some(EditorKey::Enter) if ctrl && mods.alt => self.search_replace_all(),
+                Some(EditorKey::Left) => view.replace_cursor = view.replace_cursor.saturating_sub(1),
+                Some(EditorKey::Right) => view.replace_cursor = (view.replace_cursor + 1).min(view.replace_value.len()),
+                Some(EditorKey::Backspace) if view.replace_cursor > 0 => {
+                    view.replace_value.remove(view.replace_cursor - 1);
+                    view.replace_cursor -= 1;
+                }
+                Some(_) => {}
+                None => {
+                    if (!ctrl || mods.alt)
+                        && let Some(text) = text
+                    {
+                        let inserted: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                        let at = view.replace_cursor;
+                        view.replace_cursor += inserted.len();
+                        view.replace_value.splice(at..at, inserted);
+                    }
+                }
+            }
+            self.needs_render = true;
+            return true;
+        }
         let edits = matches!(key, Some(EditorKey::Backspace | EditorKey::Delete)) || (key.is_none() || matches!(key, Some(EditorKey::Char(_)))) && (!ctrl || mods.alt) && text.is_some();
         let mut changed = false;
         if view.select_all && edits {
@@ -3908,6 +4019,7 @@ impl Shell {
             (true, true, false, KeyCode::KeyP) | (false, false, false, KeyCode::F1) => Command::ShowCommands,
             (true, true, false, KeyCode::KeyE) => Command::ShowExplorer,
             (true, true, false, KeyCode::KeyF) => Command::ShowSearch,
+            (true, true, false, KeyCode::KeyH) => Command::ShowSearchReplace,
             (true, true, false, KeyCode::KeyG) => Command::ShowScm,
             (true, true, false, KeyCode::KeyX) => Command::ShowExtensions,
             (true, true, false, KeyCode::KeyM) => Command::ShowPanelTab(PanelTab::Problems),

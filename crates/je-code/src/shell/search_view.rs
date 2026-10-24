@@ -164,6 +164,11 @@ pub struct SearchView {
     pub whole_word: bool,
     pub regex: bool,
     pub select_all: bool,
+    /// A linha de substituição aberta, o texto dela e se o teclado está nela.
+    pub replace_visible: bool,
+    pub replace_value: Vec<char>,
+    pub replace_cursor: usize,
+    pub in_replace: bool,
     /// O `files.exclude` mais o `search.exclude` em vigor.
     pub excludes: super::excludes::Excludes,
     _listeners: Vec<DisposableRef>,
@@ -219,7 +224,12 @@ impl SearchView {
                 }
             }
         }));
-        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, excludes: super::excludes::Excludes::search(&serde_json::Map::new()), _listeners: listeners }
+        Self { tree, results, order: Vec::new(), collapsed, width, running: None, last_query: None, value: Vec::new(), cursor: 0, match_case: false, whole_word: false, regex: false, select_all: false, replace_visible: false, replace_value: Vec::new(), replace_cursor: 0, in_replace: false, excludes: super::excludes::Excludes::search(&serde_json::Map::new()), _listeners: listeners }
+    }
+
+    /// Os arquivos com resultado e as ocorrências de cada um, na ordem mostrada.
+    pub fn result_files(&self) -> Vec<PathBuf> {
+        self.order.clone()
     }
 
     pub fn restyle(&self, theme: &ColorTheme) {
@@ -333,17 +343,21 @@ impl SearchView {
         let font = ui_font(13.0, 400);
         let foreground = color("sideBar.foreground");
         let mut hits = Vec::new();
-        // O botão de expandir a substituição (ainda sem a linha de substituição).
+        // O botão de expandir a substituição.
         let toggle = tree.create(parent, Role::Button);
-        tree.set_bounds(toggle, Rect::new(5.0, 39.0, 21.0, 63.0));
-        tree.style_mut(toggle).content = Content::Codicon { id: "chevron-right".into(), size: 16.0, color: color("icon.foreground") };
+        tree.set_bounds(toggle, Rect::new(5.0, 39.0, 21.0, if self.replace_visible { 95.0 } else { 65.0 }));
+        let style = tree.style_mut(toggle);
+        style.content = Content::Codicon { id: if self.replace_visible { "chevron-down" } else { "chevron-right" }.into(), size: 16.0, color: color("icon.foreground") };
+        style.cursor = Some(Cursor::Pointer);
+        hits.push((toggle, Command::SearchToggleReplace));
+        let find_focused = focused && !self.in_replace;
         // O campo: de x = 21 até a borda direita, 26 px de altura.
         let input = tree.create(parent, Role::TextInput);
         tree.set_bounds(input, Rect::new(21.0, 39.0, width - 10.0, 65.0));
         hits.push((input, Command::SearchFocus));
         let style = tree.style_mut(input);
         style.background = Some(color("input.background"));
-        style.border = Some(Border { width: 1.0, color: if focused { color("focusBorder") } else { color("input.border") } });
+        style.border = Some(Border { width: 1.0, color: if find_focused { color("focusBorder") } else { color("input.border") } });
         style.radius = 4.0;
         let text = tree.create(input, Role::Generic);
         let inner = width - 10.0 - 21.0;
@@ -353,7 +367,7 @@ impl SearchView {
         } else {
             tree.style_mut(text).content = Content::Text { text: self.text(), style: font.clone(), color: foreground, line_height: 24.0 };
         }
-        if focused {
+        if find_focused {
             if self.select_all && !self.value.is_empty() {
                 let w = measure_text(&self.text(), &font).min(inner - 77.0);
                 let selection = tree.create(input, Role::Generic);
@@ -382,16 +396,49 @@ impl SearchView {
             }
             hits.push((node, command));
         }
+        // A linha de substituição: o campo e o Replace All.
+        let shift = if self.replace_visible { 30.0 } else { 0.0 };
+        if self.replace_visible {
+            let input = tree.create(parent, Role::TextInput);
+            tree.set_bounds(input, Rect::new(21.0, 69.0, width - 36.0, 95.0));
+            hits.push((input, Command::SearchFocusReplace));
+            let style = tree.style_mut(input);
+            style.background = Some(color("input.background"));
+            style.border = Some(Border { width: 1.0, color: if focused && self.in_replace { color("focusBorder") } else { color("input.border") } });
+            style.radius = 4.0;
+            let text = tree.create(input, Role::Generic);
+            tree.set_bounds(text, Rect::new(7.0, 1.0, width - 64.0, 24.0));
+            let value: String = self.replace_value.iter().collect();
+            if value.is_empty() {
+                tree.style_mut(text).content = Content::Text { text: "Replace".to_owned(), style: font.clone(), color: color("input.placeholderForeground"), line_height: 24.0 };
+            } else {
+                tree.style_mut(text).content = Content::Text { text: value, style: font.clone(), color: foreground, line_height: 24.0 };
+            }
+            if focused && self.in_replace {
+                let before: String = self.replace_value[..self.replace_cursor].iter().collect();
+                let x = 7.0 + measure_text(&before, &font);
+                let caret = tree.create(input, Role::Generic);
+                tree.set_bounds(caret, Rect::new(x, 5.0, x + 1.0, 20.0));
+                tree.style_mut(caret).background = Some(foreground);
+            }
+            let all = tree.create(parent, Role::Button);
+            tree.set_bounds(all, Rect::new(width - 32.0, 71.0, width - 10.0, 93.0));
+            let style = tree.style_mut(all);
+            style.content = Content::Codicon { id: "replace-all".into(), size: 16.0, color: foreground };
+            style.radius = 5.0;
+            style.cursor = Some(Cursor::Pointer);
+            hits.push((all, Command::SearchReplaceAll));
+        }
         // O `...` dos filtros de arquivos (incluir e excluir), ainda sem os campos.
         let more = tree.create(parent, Role::Button);
-        tree.set_bounds(more, Rect::new(width - 30.0, 68.0, width - 12.0, 80.0));
+        tree.set_bounds(more, Rect::new(width - 30.0, 68.0 + shift, width - 12.0, 80.0 + shift));
         tree.style_mut(more).content = Content::Codicon { id: "ellipsis".into(), size: 16.0, color: foreground };
         // A mensagem.
         if let Some(message) = self.message() {
             let muted = Rgba { a: (f32::from(foreground.a) * 0.65) as u8, ..foreground };
             let label = tree.create(parent, Role::Status);
             let w = measure_text(&message, &font);
-            tree.set_bounds(label, Rect::new(23.0, 79.0, 23.0 + w, 105.0));
+            tree.set_bounds(label, Rect::new(23.0, 79.0 + shift, 23.0 + w, 105.0 + shift));
             tree.style_mut(label).content = Content::Text { text: message, style: font.clone(), color: muted, line_height: 26.0 };
             // `Open in editor` é um link da mensagem quando há resultados.
             if self.results.borrow().values().any(|r| r.match_count > 0) {
@@ -399,15 +446,15 @@ impl SearchView {
                 let lx = 23.0 + w + measure_text(" - ", &font);
                 let lw = measure_text(link, &font);
                 let sep = tree.create(parent, Role::Generic);
-                tree.set_bounds(sep, Rect::new(23.0 + w, 79.0, lx, 105.0));
+                tree.set_bounds(sep, Rect::new(23.0 + w, 79.0 + shift, lx, 105.0 + shift));
                 tree.style_mut(sep).content = Content::Text { text: " - ".to_owned(), style: font.clone(), color: muted, line_height: 26.0 };
                 let node = tree.create(parent, Role::Link);
-                tree.set_bounds(node, Rect::new(lx, 79.0, lx + lw, 105.0));
+                tree.set_bounds(node, Rect::new(lx, 79.0 + shift, lx + lw, 105.0 + shift));
                 let style = tree.style_mut(node);
                 style.content = Content::Text { text: link.to_owned(), style: font, color: color("textLink.foreground"), line_height: 26.0 };
                 style.cursor = Some(Cursor::Pointer);
             }
         }
-        (hits, 105.0)
+        (hits, 105.0 + shift)
     }
 }
