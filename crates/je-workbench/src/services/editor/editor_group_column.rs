@@ -69,10 +69,10 @@ pub fn editor_group_to_column(editor_group_service: &dyn IEditorGroupsService, e
         GroupRef::Group(group) => Some(group.clone()),
     };
 
-    let target_id = group.unwrap_or_else(|| editor_group_service.active_group()).id();
-    editor_group_service
-        .get_groups(GroupsOrder::GridAppearance)
-        .iter()
-        .position(|candidate| candidate.id() == target_id)
-        .map_or(-1.0, |index| index as f64)
+    let groups = editor_group_service.get_groups(GroupsOrder::GridAppearance);
+    // Sem nenhum grupo não há `activeGroup` (no original é `undefined`, e `indexOf(undefined)` dá -1): o dublê `TestEditorGroupsService` vazio.
+    let Some(target_id) = group.map(|group| group.id()).or_else(|| (!groups.is_empty()).then(|| editor_group_service.active_group().id())) else {
+        return -1.0;
+    };
+    groups.iter().position(|candidate| candidate.id() == target_id).map_or(-1.0, |index| index as f64)
 }
