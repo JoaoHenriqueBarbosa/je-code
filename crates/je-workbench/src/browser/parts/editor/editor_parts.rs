@@ -358,7 +358,8 @@ impl EditorParts {
             store,
         });
 
-        let parts_view: Weak<dyn EditorPartsView> = Rc::downgrade(&this);
+        let parts_view_rc: Rc<dyn EditorPartsView> = this.clone();
+        let parts_view: Weak<dyn EditorPartsView> = Rc::downgrade(&parts_view_rc);
         main_part.set_parts_view(parts_view);
         this.register_part(main_part.clone(), None);
 
