@@ -9,3 +9,5 @@ pub mod terminal;
 pub mod terminal_backend;
 
 pub mod environment_variable;
+
+pub mod terminal_color_registry;
