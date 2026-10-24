@@ -176,7 +176,7 @@ fn bool_enablement(state: EnablementState) -> bool {
 
 /// `toExtensionDescription(extension)` (`services/extensions/common/extensions.ts`).
 fn to_extension_description(local: &LocalExtension) -> ExtensionDescription {
-    let id = get_gallery_extension_id(&local.manifest.publisher, &local.manifest.name);
+    let id = get_gallery_extension_id(Some(local.manifest.publisher.as_str()).filter(|publisher| !publisher.is_empty()), &local.manifest.name);
     ExtensionDescription {
         identifier: ExtensionIdentifier::new(id.clone()),
         id,
@@ -1786,7 +1786,7 @@ impl ExtensionsWorkbenchService {
                         let product_current_version = self.get_product_current_version();
                         let product_update_version = self.get_product_update_version();
                         if let Some(update_version) = product_update_version {
-                            let engine = local.manifest.engines.vscode.as_str();
+                            let engine = local.manifest.engines.vscode.as_deref().unwrap_or_default();
                             if !is_engine_valid(engine, &product_current_version.version, product_current_version.date.as_deref())
                                 && is_engine_valid(engine, &update_version.version, update_version.date.as_deref())
                             {
@@ -2236,7 +2236,7 @@ impl ExtensionsWorkbenchService {
             _ => return None,
         };
         let version = update.product_version?;
-        if semver::valid(&version) {
+        if semver::valid(&version).is_some() {
             return Some(ProductVersion { version, date: update.timestamp.map(iso_string) });
         }
         None
@@ -2295,7 +2295,7 @@ impl ExtensionsWorkbenchService {
             }
         }
 
-        if local.manifest.engines.vscode.is_empty() || local.manifest.main.is_some() || local.manifest.browser.is_some() {
+        if local.manifest.engines.vscode.as_deref().is_none_or(str::is_empty) || local.manifest.main.is_some() || local.manifest.browser.is_some() {
             return Promise::resolved(None);
         }
 
@@ -2645,7 +2645,7 @@ impl ExtensionsWorkbenchService {
                 if let Some(justification) = &install_options.justification {
                     let sync_check = install_options.base.is_machine_scoped.is_none()
                         && this.p.user_data_sync_enablement_service.is_enabled()
-                        && this.p.user_data_sync_enablement_service.is_resource_enabled(SyncResource::Extensions);
+                        && this.p.user_data_sync_enablement_service.is_resource_enabled(SyncResource::Extensions, None);
                     let label = match justification {
                         InstallJustification::ReasonWithAction { action, .. } if !action.is_empty() => {
                             localize("installButtonLabelWithAction", "&&Install Extension and {0}", &[action.as_str()])
@@ -2775,7 +2775,7 @@ impl ExtensionsWorkbenchService {
             let mut install_options = install_options;
             let manifest_value = this.p.extension_management_service.get_manifest(&vsix).await?;
             let manifest = ExtensionManifest::from_value(manifest_value);
-            let id = get_gallery_extension_id(&manifest.publisher, &manifest.name);
+            let id = get_gallery_extension_id(Some(manifest.publisher.as_str()).filter(|publisher| !publisher.is_empty()), &manifest.name);
             let existing = this.local().into_iter().find(|local| are_same_extensions(&local.identifier(), &je_extensions::manifest::ExtensionIdentifierInfo::new(id.clone())));
             if let Some(existing) = existing {
                 if existing.latest_version() == manifest.version {
@@ -3438,6 +3438,7 @@ impl ExtensionsWorkbenchService {
         }
         self.p.notification_service.error(vec![NotificationMessage::Error(err.clone())]);
     }
+}
 
 impl IDisposable for ExtensionsWorkbenchService {
     fn dispose(&self) {

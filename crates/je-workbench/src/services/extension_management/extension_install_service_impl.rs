@@ -270,7 +270,7 @@ impl IExtensionInstallService for ExtensionInstallService {
         let identifier = self.service.get_manifest(&uri_path(vsix)).ok().map(|manifest| {
             let publisher = manifest.get("publisher").and_then(Value::as_str).unwrap_or_default();
             let name = manifest.get("name").and_then(Value::as_str).unwrap_or_default();
-            ExtensionIdentifierInfo::new(je_extensions::util::get_gallery_extension_id(publisher, name))
+            ExtensionIdentifierInfo::new(je_extensions::util::get_gallery_extension_id(Some(publisher), name))
         });
         if let Some(identifier) = &identifier {
             self.begin_install(identifier, location, &options);
