@@ -97,6 +97,11 @@ impl UserSettings {
         })
     }
 
+    /// `parseOptions` (`protected` no original: a subclasse `ApplicationConfiguration` do workbench o lê).
+    pub fn parse_options(&self) -> ConfigurationParseOptions {
+        self.parse_options.borrow().clone()
+    }
+
     /// `reparse(parseOptions?)`.
     pub fn reparse(&self, parse_options: Option<ConfigurationParseOptions>) -> ConfigurationModel {
         if let Some(parse_options) = parse_options {

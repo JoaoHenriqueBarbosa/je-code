@@ -34,3 +34,5 @@ pub mod remote;
 pub mod textfile;
 
 // `IEditorService` reduzido (o que o `findViewStateForEditor` e o `SideBySideEditorInput` leem).
+// Configuração do workbench: `WorkspaceService`, edição e as camadas por workspace e por pasta.
+pub mod configuration;

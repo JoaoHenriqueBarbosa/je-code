@@ -594,6 +594,23 @@ impl Visitor for ContentVisitor {
     }
 }
 
+/// O que `ConfigurationModelParser#doParseRaw` devolve: o conteúdo, as chaves e os blocos de linguagem do modelo,
+/// mais as chaves restritas e se alguma propriedade foi excluída pelo filtro.
+pub struct ParsedRaw {
+    pub contents: Dynamic,
+    pub keys: Vec<JsString>,
+    pub overrides: Vec<Overrides>,
+    pub restricted: Vec<JsString>,
+    pub has_excluded_properties: bool,
+}
+
+/// `doParseRaw` era `protected` no original: as subclasses do workbench (`WorkspaceConfigurationModelParser` e
+/// `StandaloneConfigurationModelParser`) o trocam. Aqui a subclasse é um objeto que o parser consulta no lugar do
+/// corpo padrão; ela chama o corpo do original (o `super.doParseRaw`) com [`ConfigurationModelParser::do_parse_raw_base`].
+pub trait ParseRawOverride {
+    fn do_parse_raw(&self, parser: &ConfigurationModelParser, raw: &Dynamic, options: Option<&ConfigurationParseOptions>) -> ParsedRaw;
+}
+
 /// `ConfigurationModelParser`.
 pub struct ConfigurationModelParser {
     name: String,
@@ -603,11 +620,43 @@ pub struct ConfigurationModelParser {
     restricted_configurations: Vec<JsString>,
     parse_errors: Vec<ParseError>,
     syntax_errors: Vec<ParseError>,
+    parse_raw_override: Option<Rc<dyn ParseRawOverride>>,
 }
 
 impl ConfigurationModelParser {
     pub fn new(name: impl Into<String>, log: LogServiceRef) -> Self {
-        Self { name: name.into(), log, raw: None, configuration_model: None, restricted_configurations: Vec::new(), parse_errors: Vec::new(), syntax_errors: Vec::new() }
+        Self {
+            name: name.into(),
+            log,
+            raw: None,
+            configuration_model: None,
+            restricted_configurations: Vec::new(),
+            parse_errors: Vec::new(),
+            syntax_errors: Vec::new(),
+            parse_raw_override: None,
+        }
+    }
+
+    /// Um parser cuja subclasse troca o `doParseRaw` (veja [`ParseRawOverride`]).
+    pub fn with_override(name: impl Into<String>, log: LogServiceRef, parse_raw_override: Rc<dyn ParseRawOverride>) -> Self {
+        let mut parser = Self::new(name, log);
+        parser.parse_raw_override = Some(parse_raw_override);
+        parser
+    }
+
+    /// `_name`.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// `logService`.
+    pub fn log(&self) -> LogServiceRef {
+        self.log.clone()
+    }
+
+    /// `_raw`: o último dado cru lido.
+    pub fn raw_content(&self) -> Option<Dynamic> {
+        self.raw.clone()
     }
 
     /// `configurationModel`: o último modelo lido, ou um modelo vazio.
@@ -656,7 +705,10 @@ impl ConfigurationModelParser {
     /// `parseRaw(raw, options)`.
     pub fn parse_raw(&mut self, raw: &Dynamic, options: Option<&ConfigurationParseOptions>) {
         self.raw = Some(raw.clone());
-        let (contents, keys, overrides, restricted, has_excluded_properties) = self.do_parse_raw(raw, options);
+        let ParsedRaw { contents, keys, overrides, restricted, has_excluded_properties } = match self.parse_raw_override.clone() {
+            Some(parse_raw_override) => parse_raw_override.do_parse_raw(self, raw, options),
+            None => self.do_parse_raw_base(raw, options),
+        };
         // `raw has not changed` quando nada foi excluído.
         let model_raw = has_excluded_properties.then(|| Raw::List(vec![RawItem::Dictionary(raw.clone())]));
         self.configuration_model = Some(ConfigurationModel::new(contents, keys, overrides, model_raw, self.log.clone()));
@@ -678,7 +730,8 @@ impl ConfigurationModelParser {
         raw
     }
 
-    fn do_parse_raw(&self, raw: &Dynamic, options: Option<&ConfigurationParseOptions>) -> (Dynamic, Vec<JsString>, Vec<Overrides>, Vec<JsString>, bool) {
+    /// O corpo de `doParseRaw` da classe base (o `super.doParseRaw` das subclasses).
+    pub fn do_parse_raw_base(&self, raw: &Dynamic, options: Option<&ConfigurationParseOptions>) -> ParsedRaw {
         let registry = configuration_registry();
         let configuration_properties = registry.get_configuration_properties();
         let excluded_configuration_properties = registry.get_excluded_configuration_properties();
@@ -688,7 +741,13 @@ impl ConfigurationModelParser {
         let contents = to_values_tree(&raw, &conflict);
         let keys = object_keys(&raw);
         let overrides = Self::to_overrides(&raw, &conflict);
-        (contents, keys, overrides, filtered.restricted, filtered.has_excluded_properties)
+        ParsedRaw { contents, keys, overrides, restricted: filtered.restricted, has_excluded_properties: filtered.has_excluded_properties }
+    }
+
+    /// `toValuesTree` de um dado cru com as mensagens de conflito do nome deste parser.
+    pub fn to_values_tree_reporting_conflicts(&self, raw: &Dynamic) -> Dynamic {
+        let name = self.name.clone();
+        to_values_tree(raw, &move |message| eprintln!("Conflict in settings file {name}: {message}"))
     }
 
     fn filter(
