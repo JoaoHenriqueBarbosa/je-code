@@ -33,7 +33,7 @@ use je_base::platform::Platform;
 use je_base::strings::split_lines;
 use je_editor::code_editor_widget::{EditorViewModel, Handler, ICodeEditor, PastePayload};
 use je_editor::config::editor_options::registry::{MULTI_CURSOR_PASTE, editor_options_registry};
-use je_editor::config::editor_options::{EditorOption, ErasedEditorOption, InputMode};
+use je_editor::config::editor_options::{EditorOption, InputMode};
 use je_editor::core_commands::{ColumnSelectCommandOptions, core_navigation_commands};
 use je_editor::cursor_events::CursorChangeReason;
 use je_editor::edit_context::clipboard_utils::{

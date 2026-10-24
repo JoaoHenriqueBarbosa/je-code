@@ -287,7 +287,7 @@ impl EditorAction for ChangeIndentationSizeAction {
             return Promise::resolved(());
         };
 
-        let creation_opts = model_service.get_creation_options(&model.get_language_id(), &model.uri(), model.is_for_simple_widget());
+        let creation_opts = model_service.get_creation_options(&model.get_language_id(), Some(&model.uri()), model.is_for_simple_widget());
         let model_opts = model.get_options();
         let picks: Vec<IQuickItem> = (1..=8)
             .map(|n: i32| IQuickItem {
@@ -387,7 +387,7 @@ impl EditorAction for DetectIndentation {
             return Promise::resolved(());
         };
 
-        let creation_opts = model_service.get_creation_options(&model.get_language_id(), &model.uri(), model.is_for_simple_widget());
+        let creation_opts = model_service.get_creation_options(&model.get_language_id(), Some(&model.uri()), model.is_for_simple_widget());
         model.detect_indentation(creation_opts.insert_spaces, creation_opts.tab_size);
         Promise::resolved(())
     }

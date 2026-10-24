@@ -359,19 +359,6 @@ impl ModelService {
         }
     }
 
-    /// `getCreationOptions(languageIdOrSelection, resource, isForSimpleWidget)`.
-    pub fn get_creation_options(&self, language: &str, resource: Option<&URI>, is_for_simple_widget: bool) -> TextModelCreationOptions {
-        let key = language_and_resource_key(language, resource);
-        let cached = self.model_creation_options_by_language_and_resource.borrow().get(&key).copied();
-        if let Some(creation_options) = cached {
-            return creation_options;
-        }
-        let editor = self.configuration_service.get_value(Some("editor"), Some(&overrides_of(resource, language)));
-        let eol = self.get_eol(resource, language);
-        let creation_options = Self::read_model_options(&editor, &eol, is_for_simple_widget);
-        self.model_creation_options_by_language_and_resource.borrow_mut().insert(key, creation_options);
-        creation_options
-    }
 
     /// `_updateModelOptions(e)`.
     fn update_model_options(&self, e: Option<&Rc<ConfigurationChangeEvent>>) {
@@ -733,6 +720,20 @@ impl ModelService {
 }
 
 impl IModelService for ModelService {
+    /// `getCreationOptions(languageIdOrSelection, resource, isForSimpleWidget)`.
+    fn get_creation_options(&self, language: &str, resource: Option<&URI>, is_for_simple_widget: bool) -> TextModelCreationOptions {
+        let key = language_and_resource_key(language, resource);
+        let cached = self.model_creation_options_by_language_and_resource.borrow().get(&key).copied();
+        if let Some(creation_options) = cached {
+            return creation_options;
+        }
+        let editor = self.configuration_service.get_value(Some("editor"), Some(&overrides_of(resource, language)));
+        let eol = self.get_eol(resource, language);
+        let creation_options = Self::read_model_options(&editor, &eol, is_for_simple_widget);
+        self.model_creation_options_by_language_and_resource.borrow_mut().insert(key, creation_options);
+        creation_options
+    }
+
     /// `getModel(resource)`.
     fn get_model(&self, resource: &URI) -> Option<Rc<TextModel>> {
         self.models.borrow().get(&model_id(resource)).map(|model_data| model_data.model.clone())

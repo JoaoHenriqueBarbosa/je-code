@@ -161,7 +161,7 @@ impl IModelService for ModelServiceStub {
         None
     }
 
-    fn get_creation_options(&self, _language: &str, _resource: &URI, _is_for_simple_widget: bool) -> TextModelCreationOptions {
+    fn get_creation_options(&self, _language: &str, _resource: Option<&URI>, _is_for_simple_widget: bool) -> TextModelCreationOptions {
         absent("getCreationOptions")
     }
 }

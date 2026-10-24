@@ -36,7 +36,7 @@ fn color(value: &str) -> Option<DecorationColor> {
     Some(DecorationColor::Color(value.to_string()))
 }
 
-fn theme_color(id: &str) -> Option<DecorationColor> {
+fn theme_color_of(id: &str) -> Option<DecorationColor> {
     Some(DecorationColor::Theme(id.to_string()))
 }
 
@@ -103,8 +103,8 @@ fn theme_color() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
     let options = DecorationRenderOptions {
         base: ThemeDecorationRenderOptions {
-            background_color: theme_color("editorBackground"),
-            border_color: theme_color("editorBorder"),
+            background_color: theme_color_of("editorBackground"),
+            border_color: theme_color_of("editorBorder"),
             ..ThemeDecorationRenderOptions::default()
         },
         ..DecorationRenderOptions::default()
@@ -133,11 +133,11 @@ fn theme_color() {
 fn theme_overrides() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
     let options = DecorationRenderOptions {
-        base: ThemeDecorationRenderOptions { color: theme_color("editorBackground"), ..ThemeDecorationRenderOptions::default() },
+        base: ThemeDecorationRenderOptions { color: theme_color_of("editorBackground"), ..ThemeDecorationRenderOptions::default() },
         light: Some(ThemeDecorationRenderOptions { color: color("#FF00FF"), ..ThemeDecorationRenderOptions::default() }),
         dark: Some(ThemeDecorationRenderOptions {
             color: color("#000000"),
-            after: Some(ContentDecorationRenderOptions { color: theme_color("infoForeground"), ..ContentDecorationRenderOptions::default() }),
+            after: Some(ContentDecorationRenderOptions { color: theme_color_of("infoForeground"), ..ContentDecorationRenderOptions::default() }),
             ..ThemeDecorationRenderOptions::default()
         }),
         ..DecorationRenderOptions::default()

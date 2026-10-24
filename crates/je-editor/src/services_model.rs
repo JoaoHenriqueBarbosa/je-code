@@ -24,7 +24,7 @@ pub trait IModelService {
 
     /// `getCreationOptions(language, resource, isForSimpleWidget)`: as opções de criação de um modelo
     /// (tamanho de tabulação, espaços, detecção de indentação...) conforme a configuração.
-    fn get_creation_options(&self, language: &str, resource: &URI, is_for_simple_widget: bool) -> TextModelCreationOptions;
+    fn get_creation_options(&self, language: &str, resource: Option<&URI>, is_for_simple_widget: bool) -> TextModelCreationOptions;
 }
 
 je_instantiation::service_id!(pub I_MODEL_SERVICE: dyn IModelService = "modelService");
