@@ -1,33 +1,34 @@
 //! Porte de `src/vs/workbench/api/test/browser/extHostApiCommands.test.ts` (suíte `ExtHostLanguageFeatureCommands`), caso a caso e na mesma ordem.
 //!
-//! PORTADOS (31 dos 51 `test(` e `testApiCmd(` do original): `WorkspaceSymbols, invalid arguments`, `WorkspaceSymbols, back and forth`,
+//! PORTADOS (os 51 dos 51 `test(` e `testApiCmd(` do original): `WorkspaceSymbols, invalid arguments`, `WorkspaceSymbols, back and forth`,
 //! `executeWorkspaceSymbolProvider should accept empty string, #39522`, `executeFormatDocumentProvider, back and forth`,
-//! `vscode.prepareRename`, `Definition` x4, `Declaration` x2, `Type Definition` x3, `Implementation` x3, `reference search, back and
-//! forth`, `"vscode.executeDocumentHighlights" API has stopped returning DocumentHighlight[]#200056`, `Outline, back and forth`,
-//! `vscode.executeDocumentSymbolProvider command only returns SymbolInformation[] rather than DocumentSymbol[] #57984` e os três de
-//! `Selection Range` (`back and forth` e os dois `#91852`), `"TypeError: e.onCancellationRequested is not a function" calling hover
-//! provider in Insiders #54174` e os três de links (`Links, back and forth`, `What's the condition for DocumentLink target to be
-//! undefined? #106308` e `DocumentLink[] vscode.executeLinkProvider returns lack tooltip #213970`) e os dois de `CodeLens` (`back and
-//! forth` e `resolve`) e `Color provider`.
+//! `vscode.prepareRename`, `vscode.executeDocumentRenameProvider`, `Definition` x4, `Declaration` x2, `Type Definition` x3,
+//! `Implementation` x3, `reference search, back and forth`, `"vscode.executeDocumentHighlights" API has stopped returning
+//! DocumentHighlight[]#200056`, `Outline, back and forth`, `vscode.executeDocumentSymbolProvider command only returns
+//! SymbolInformation[] rather than DocumentSymbol[] #57984`, os sete de `suggest` (`triggerCharacter is null when completion provider
+//! is called programmatically #159914`, `Suggest, back and forth`, `Suggest, return CompletionList !array`, `Suggest, resolve
+//! completion items`, `"vscode.executeCompletionItemProvider" doesnot return a preselect field #53749`, `executeCompletionItemProvider
+//! doesn't capture commitCharacters #58228` e `vscode.executeCompletionItemProvider returns the wrong CompletionItemKinds in insiders
+//! #95715`), `Parameter Hints, back and forth`, os cinco de `quickfix` (`QuickFix, back and forth`, os três `vscode.executeCodeActionProvider
+//! ...` e `resolving code action`), os dois de `CodeLens` (`back and forth` e `resolve`), os três de links (`Links, back and forth`,
+//! `What's the condition for DocumentLink target to be undefined? #106308` e `DocumentLink[] vscode.executeLinkProvider returns lack
+//! tooltip #213970`), `Color provider`, `"TypeError: e.onCancellationRequested is not a function" calling hover provider in Insiders
+//! #54174`, os três de `inline hints` (`Inlay Hints, back and forth`, `Inline Hints, merge` e `Inline Hints, bad provider`), os três de
+//! `Selection Range` (`back and forth` e os dois `#91852`), `CallHierarchy, back and forth`, `prepareCallHierarchy throws TypeError if
+//! clangd returns empty result #137415` e `TypeHierarchy, back and forth`.
 //!
-//! FORA, e por quê (nenhum vira `#[test]` enquanto não puder ser fiel; o inventário completo do que falta na produção está no topo de
-//! `ext_host_api_commands.rs` e de `editor_execute_commands.rs`):
-//! - `vscode.executeDocumentRenameProvider`: o resultado do comando é o `WorkspaceEdit` do editor e `typeConverters.WorkspaceEdit.to`
-//!   só lê o `IWorkspaceEditDto` tipado.
-//! - `triggerCharacter is null when completion provider is called programmatically #159914`, `Suggest, back and forth`, `Suggest, return
-//!   CompletionList !array`, `Suggest, resolve completion items`, `"vscode.executeCompletionItemProvider" doesnot return a preselect
-//!   field #53749`, `executeCompletionItemProvider doesn't capture commitCharacters #58228` e `vscode.executeCompletionItemProvider
-//!   returns the wrong CompletionItemKinds in insiders #95715`: `typeConverters.CompletionItem.to` não existe.
-//! - `Parameter Hints, back and forth`: `typeConverters.SignatureHelp.to` não existe.
-//! - `QuickFix, back and forth`, os três `vscode.executeCodeActionProvider ...` e `resolving code action`: `typeConverters.CodeAction`
-//!   e o `_executeCodeActionProvider` registrado (só o corpo existe, em `code_action.rs`) não existem.
-//! - `Inlay Hints, back and forth`, `Inline Hints, merge` e `Inline Hints, bad provider`: `_executeInlayHintProvider` e
-//!   `typeConverters.InlayHint.to` não existem.
-//! - `CallHierarchy, back and forth`, `prepareCallHierarchy throws TypeError if clangd returns empty result #137415` e `TypeHierarchy,
-//!   back and forth`: os comandos `_executePrepareCallHierarchy` e companhia (`callHierarchy.ts` e `typeHierarchy.ts` do workbench) não
-//!   têm porte, e o `HierarchyItemDto` não sabe ser lido de um `Dynamic`.
+//! Nada fica de fora. Onde o original usa uma capacidade do TypeScript que o Rust não tem, a tradução está nas notas abaixo.
 //!
 //! Notas de tradução:
+//! - `class MyAction extends types.CodeAction { }` e o `assert.ok(action instanceof MyAction)` do `resolving code action`: o
+//!   `resolveCodeAction` confere que recebeu o mesmo objeto (`Rc::ptr_eq`) que o `provideCodeActions` devolveu, o que é o que a
+//!   subclasse garante.
+//! - `arguments: [document, range]` dos casos de `vscode.executeCodeActionProvider`: o `document` (um [`TextDocument`]) não é um
+//!   [`Dynamic`], e entra o recurso dele; os casos só leem `arguments[1]`.
+//! - `throw new Error()` do `provideInlayHints` do `Inline Hints, bad provider` é a promessa rejeitada que o adaptador do host
+//!   devolveria do `throw` dentro da função `async`.
+//! - `vscode.WorkspaceEdit` (resultado de `vscode.executeDocumentRenameProvider`) é um objeto marcado `WorkspaceEdit` com as funções
+//!   `has(uri)` e `get(uri)`, a parte `Maplike` que o caso lê.
 //! - `new TestRPCProtocol()` é o [`TestMainContext`]. Os dois lados dos comandos se conhecem (o `MainThreadCommands` pede o proxy do host
 //!   e o `ExtHostCommands` o do workbench, os dois na construção), então o proxy de `MainThreadCommands` registrado primeiro é o
 //!   [`LateMainThreadCommands`], que repassa tudo ao `MainThreadCommands` real depois de ele ser criado.
@@ -102,10 +103,12 @@ use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsA
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiCodeLensProvider, ApiColorPresentationContext, ApiDocumentColorProvider, ApiDocumentFormattingEditProvider, ApiDocumentHighlightProvider, ApiDocumentLinkProvider,
-    ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiHoverContext, ApiHoverProvider, ApiLocationLinkProvider, ApiLocationResult, CodeLensRef, DocumentLinkRef,
-    ApiPrepareRename, ApiProviderResult, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider, ApiWorkspaceSymbolProvider, DefinitionLink,
-    IExtHostApiDeprecationService, LocationOrLink,
+    ApiCodeActionContext, ApiCodeActionProvider, ApiCodeActionRef, ApiCallHierarchyProvider, ApiCodeLensProvider, ApiColorPresentationContext, ApiCompletionItemProvider,
+    ApiCompletionList, ApiCompletionResult, ApiDocumentColorProvider, ApiDocumentFormattingEditProvider, ApiDocumentHighlightProvider, ApiDocumentLinkProvider,
+    ApiDocumentSymbolProvider, ApiDocumentSymbols, ApiHoverContext, ApiHoverProvider, ApiInlayHintsProvider, ApiLocationLinkProvider, ApiLocationResult, ApiRangeOrSelection,
+    ApiTypeHierarchyProvider, CodeLensRef, CommandOrCodeAction, CompletionItemRef, DocumentLinkRef, InlayHintRef, OneOrMany,
+    ApiPrepareRename, ApiProviderResult, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider, ApiSignatureHelpContext, ApiSignatureHelpProvider,
+    ApiSignatureHelpRef, ApiWorkspaceSymbolProvider, DefinitionLink, IExtHostApiDeprecationService, LocationOrLink, SignatureHelpMetadataOrTriggerChars,
 };
 use je_workbench::api::common::ext_host_protocol::{
     CommandArgs, CreateDocumentOptions, DocumentsAndEditorsDelta, ExtHostCommandsShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostLanguageFeaturesShape,
@@ -905,6 +908,45 @@ fn vscode_prepare_rename() {
     });
 }
 
+/// `new class implements vscode.RenameProvider { provideRenameEdits(document, position, newName) { ...insert...; return edit; } }`.
+struct InsertRenameProvider;
+
+impl ApiRenameProvider for InsertRenameProvider {
+    fn provide_rename_edits(&self, document: &TextDocument, position: &types::Position, new_name: &str, _token: CancellationToken) -> ApiProviderResult<types::WorkspaceEdit> {
+        let mut edit = types::WorkspaceEdit::new();
+        edit.insert(document.uri(), *position, new_name, None);
+        found(edit)
+    }
+}
+
+#[test]
+fn vscode_execute_document_rename_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+        let registration = env.ext_host.register_rename_provider(&null_extension_description(), &default_selector(), Rc::new(InsertRenameProvider));
+        env.add(registration);
+
+        env.sync().await;
+
+        let edit = env
+            .execute("vscode.executeDocumentRenameProvider", vec![env.model.uri().to_dynamic(), position(0.0, 12.0), Dynamic::string("newNameOfThis")])
+            .await
+            .expect("executeCommand");
+
+        assert!(!edit.is_nullish());
+        let uri = env.model.uri().to_dynamic();
+        let has = edit.get_str("has");
+        let Dynamic::Function(has) = &has else { panic!("esperava uma função, veio {}", has.type_of()) };
+        assert!(matches!(has.call(&[uri.clone()]), Dynamic::Bool(true)));
+        let get = edit.get_str("get");
+        let Dynamic::Function(get) = &get else { panic!("esperava uma função, veio {}", get.type_of()) };
+        let text_edits = items(&get.call(&[uri]));
+        assert_eq!(text_edits.len(), 1);
+        assert_eq!(text(&text_edits[0].get_str("newText")), "newNameOfThis");
+        env.teardown().await;
+    });
+}
+
 // ---- definition -----------------------------------------------------------------------------------------
 
 #[test]
@@ -1176,6 +1218,615 @@ fn execute_document_symbol_provider_command_only_returns_symbol_information_arra
         assert_eq!(text(&first.get_str("name")), "DocumentSymbol");
         assert_eq!(items(&first.get_str("children")).len(), 1);
         assert_eq!(text(&second.get_str("name")), "SymbolInformation");
+        env.teardown().await;
+    });
+}
+
+// ---- suggest --------------------------------------------------------------------------------------------
+
+/// `provideCompletionItems(_doc, _pos, _tok, context): any { return ...; }` e, quando existe, `resolveCompletionItem(item) { ...; return item; }`.
+struct CompletionsProvider {
+    provide: Box<dyn Fn(&types::CompletionContext) -> ApiCompletionResult>,
+    resolve: Option<Box<dyn Fn()>>,
+}
+
+impl CompletionsProvider {
+    fn new(provide: impl Fn(&types::CompletionContext) -> ApiCompletionResult + 'static) -> Rc<Self> {
+        Rc::new(Self { provide: Box::new(provide), resolve: None })
+    }
+}
+
+impl ApiCompletionItemProvider for CompletionsProvider {
+    fn provide_completion_items(
+        &self,
+        _document: &TextDocument,
+        _position: &types::Position,
+        _token: CancellationToken,
+        context: &types::CompletionContext,
+    ) -> ApiProviderResult<ApiCompletionResult> {
+        found((self.provide)(context))
+    }
+
+    fn has_resolve_completion_item(&self) -> bool {
+        self.resolve.is_some()
+    }
+
+    fn resolve_completion_item(&self, item: &CompletionItemRef, _token: CancellationToken) -> ApiProviderResult<CompletionItemRef> {
+        if let Some(resolve) = &self.resolve {
+            resolve();
+        }
+        found(Rc::clone(item))
+    }
+}
+
+/// `new types.CompletionItem(label, kind)`.
+fn completion_item(label: &str, kind: Option<types::CompletionItemKind>) -> CompletionItemRef {
+    Rc::new(RefCell::new(types::CompletionItem::new(types::CompletionLabel::Text(label.to_owned()), kind)))
+}
+
+/// `commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', model.uri, new types.Position(0, 4), ...args)`.
+async fn execute_completion_item_provider(env: &Env, extra_args: Vec<Dynamic>) -> Dynamic {
+    let mut args = vec![env.model.uri().to_dynamic(), position(0.0, 4.0)];
+    args.extend(extra_args);
+    env.execute("vscode.executeCompletionItemProvider", args).await.expect("executeCommand")
+}
+
+/// `list.items`.
+fn completion_list_items(list: &Dynamic) -> Vec<Dynamic> {
+    assert!(has_class(list, "CompletionList"));
+    items(&list.get_str("items"))
+}
+
+#[test]
+fn trigger_character_is_null_when_completion_provider_is_called_programmatically_159914() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let actual_context: Rc<RefCell<Option<types::CompletionContext>>> = Rc::default();
+        let captured = Rc::clone(&actual_context);
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CompletionsProvider::new(move |context| {
+                *captured.borrow_mut() = Some(context.clone());
+                ApiCompletionResult::Items(Vec::new())
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        execute_completion_item_provider(&env, vec![]).await;
+
+        let actual_context = actual_context.borrow().clone().expect("o provedor recebeu o contexto");
+        assert_eq!(actual_context, types::CompletionContext { trigger_kind: types::CompletionTriggerKind::Invoke, trigger_character: None });
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CompletionsProvider::new(|_| {
+                let a = completion_item("item1", None);
+                a.borrow_mut().documentation = Some(types::Documentation::Markdown(types::MarkdownString::new(Some("hello_md_string"), false)));
+                let b = completion_item("item2", None);
+                // overwite after
+                b.borrow_mut().text_edit = Some(types::TextEdit::replace(range(0.0, 4.0, 0.0, 8.0), "foo"));
+                let c = completion_item("item3", None);
+                // overwite before & after
+                c.borrow_mut().text_edit = Some(types::TextEdit::replace(range(0.0, 1.0, 0.0, 6.0), "foobar"));
+
+                // snippet string!
+                let d = completion_item("item4", None);
+                // overwite before
+                d.borrow_mut().range = Some(types::CompletionRange::Range(range(0.0, 1.0, 0.0, 4.0)));
+                d.borrow_mut().insert_text = Some(types::InsertText::Snippet(types::SnippetString::new(Some("foo$0bar"))));
+                ApiCompletionResult::Items(vec![a, b, c, d])
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let list = execute_completion_item_provider(&env, vec![]).await;
+        let values = completion_list_items(&list);
+        assert_eq!(values.len(), 4);
+        let (first, second, third, fourth) = (&values[0], &values[1], &values[2], &values[3]);
+        assert_eq!(text(&first.get_str("label")), "item1");
+        assert!(matches!(first.get_str("textEdit"), Dynamic::Undefined)); // no text edit, default ranges
+        assert!(!is_instance_of(&first.get_str("range"), "Range"));
+        assert_eq!(text(&first.get_str("documentation").get_str("value")), "hello_md_string");
+        assert_eq!(text(&second.get_str("label")), "item2");
+        assert_eq!(text(&second.get_str("textEdit").get_str("newText")), "foo");
+        assert_range(&second.get_str("textEdit").get_str("range"), 0.0, 4.0, 0.0, 8.0);
+        assert_eq!(text(&third.get_str("label")), "item3");
+        assert_eq!(text(&third.get_str("textEdit").get_str("newText")), "foobar");
+        assert_range(&third.get_str("textEdit").get_str("range"), 0.0, 1.0, 0.0, 6.0);
+        assert_eq!(text(&fourth.get_str("label")), "item4");
+        assert!(matches!(fourth.get_str("textEdit"), Dynamic::Undefined));
+        let fourth_range = fourth.get_str("range");
+        assert!(is_instance_of(&fourth_range, "Range"));
+        assert_range(&fourth_range, 0.0, 1.0, 0.0, 4.0);
+        let insert_text = fourth.get_str("insertText");
+        assert!(is_instance_of(&insert_text, "SnippetString"));
+        assert_eq!(text(&insert_text.get_str("value")), "foo$0bar");
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_return_completion_list_not_array() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CompletionsProvider::new(|_| {
+                let a = completion_item("item1", None);
+                let b = completion_item("item2", None);
+                ApiCompletionResult::List(ApiCompletionList { is_incomplete: Some(true), items: vec![a, b] })
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let list = execute_completion_item_provider(&env, vec![]).await;
+
+        assert!(has_class(&list, "CompletionList"));
+        assert!(matches!(list.get_str("isIncomplete"), Dynamic::Bool(true)));
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn suggest_resolve_completion_items() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let resolve_count = Rc::new(Cell::new(0_u32));
+        let counter = Rc::clone(&resolve_count);
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CompletionsProvider {
+                provide: Box::new(|_| {
+                    let items = ["item1", "item2", "item3", "item4"].map(|label| completion_item(label, None));
+                    ApiCompletionResult::List(ApiCompletionList { is_incomplete: Some(false), items: items.to_vec() })
+                }),
+                resolve: Some(Box::new(move || counter.set(counter.get() + 1))),
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let list = execute_completion_item_provider(
+            &env,
+            vec![
+                Dynamic::Undefined,
+                Dynamic::Number(2.0), // maxItemsToResolve
+            ],
+        )
+        .await;
+
+        assert!(has_class(&list, "CompletionList"));
+        assert_eq!(resolve_count.get(), 2);
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn execute_completion_item_provider_returns_a_preselect_field_53749() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CompletionsProvider::new(|_| {
+                let a = completion_item("item1", None);
+                a.borrow_mut().preselect = Some(true);
+                let b = completion_item("item2", None);
+                let c = completion_item("item3", None);
+                c.borrow_mut().preselect = Some(true);
+                let d = completion_item("item4", None);
+                ApiCompletionResult::List(ApiCompletionList { is_incomplete: Some(false), items: vec![a, b, c, d] })
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let list = execute_completion_item_provider(&env, vec![Dynamic::Undefined]).await;
+
+        let values = completion_list_items(&list);
+        assert_eq!(values.len(), 4);
+
+        let (a, b, c, d) = (&values[0], &values[1], &values[2], &values[3]);
+        assert!(matches!(a.get_str("preselect"), Dynamic::Bool(true)));
+        assert!(matches!(b.get_str("preselect"), Dynamic::Undefined));
+        assert!(matches!(c.get_str("preselect"), Dynamic::Bool(true)));
+        assert!(matches!(d.get_str("preselect"), Dynamic::Undefined));
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn execute_completion_item_provider_does_not_capture_commit_characters_58228() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CompletionsProvider::new(|_| {
+                let a = completion_item("item1", None);
+                a.borrow_mut().commit_characters = Some(vec!["a".to_owned(), "b".to_owned()]);
+                let b = completion_item("item2", None);
+                ApiCompletionResult::List(ApiCompletionList { is_incomplete: Some(false), items: vec![a, b] })
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let list = execute_completion_item_provider(&env, vec![Dynamic::Undefined]).await;
+
+        let values = completion_list_items(&list);
+        assert_eq!(values.len(), 2);
+
+        let (a, b) = (&values[0], &values[1]);
+        assert_eq!(items(&a.get_str("commitCharacters")).iter().map(text).collect::<Vec<_>>(), ["a", "b"]);
+        assert!(matches!(b.get_str("commitCharacters"), Dynamic::Undefined));
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn execute_completion_item_provider_returns_the_wrong_completion_item_kinds_in_insiders_95715() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_completion_item_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CompletionsProvider::new(|_| {
+                ApiCompletionResult::Items(vec![
+                    completion_item("My Method", Some(types::CompletionItemKind::Method)),
+                    completion_item("My Property", Some(types::CompletionItemKind::Property)),
+                ])
+            }),
+            Vec::new(),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let list = execute_completion_item_provider(&env, vec![Dynamic::Undefined]).await;
+
+        let values = completion_list_items(&list);
+        assert_eq!(values.len(), 2);
+
+        let (a, b) = (&values[0], &values[1]);
+        assert_eq!(number(&a.get_str("kind")), f64::from(types::CompletionItemKind::Method.value()));
+        assert_eq!(number(&b.get_str("kind")), f64::from(types::CompletionItemKind::Property.value()));
+        env.teardown().await;
+    });
+}
+
+// ---- signature help -------------------------------------------------------------------------------------
+
+/// `new class implements vscode.SignatureHelpProvider { provideSignatureHelp(_document, _position, _token, context) { ... } }`.
+struct InvokedSignatureHelpProvider;
+
+impl ApiSignatureHelpProvider for InvokedSignatureHelpProvider {
+    fn provide_signature_help(
+        &self,
+        _document: &TextDocument,
+        _position: &types::Position,
+        _token: CancellationToken,
+        context: &ApiSignatureHelpContext,
+    ) -> ApiProviderResult<ApiSignatureHelpRef> {
+        let kind = if context.trigger_kind == types::SignatureHelpTriggerKind::Invoke { "invoked" } else { "unknown" };
+        // `${context.triggerCharacter}` de um `undefined` é o texto "undefined"
+        let documentation = format!("{kind} {}", context.trigger_character.as_deref().unwrap_or("undefined"));
+        found(Rc::new(RefCell::new(types::SignatureHelp {
+            active_signature: 0.0,
+            active_parameter: 1.0,
+            signatures: vec![types::SignatureInformation {
+                label: "abc".to_owned(),
+                documentation: Some(types::Documentation::Text(documentation)),
+                parameters: Vec::new(),
+                active_parameter: None,
+            }],
+        })))
+    }
+}
+
+#[test]
+fn parameter_hints_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_signature_help_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(InvokedSignatureHelpProvider),
+            SignatureHelpMetadataOrTriggerChars::TriggerCharacters(Vec::new()),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let first_value = env
+            .execute("vscode.executeSignatureHelpProvider", vec![env.model.uri().to_dynamic(), position(0.0, 1.0), Dynamic::string(",")])
+            .await
+            .expect("executeCommand");
+        assert_eq!(number(&first_value.get_str("activeSignature")), 0.0);
+        assert_eq!(number(&first_value.get_str("activeParameter")), 1.0);
+        let signatures = items(&first_value.get_str("signatures"));
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(text(&signatures[0].get_str("label")), "abc");
+        assert_eq!(text(&signatures[0].get_str("documentation")), "invoked ,");
+        env.teardown().await;
+    });
+}
+
+// ---- quickfix -------------------------------------------------------------------------------------------
+
+/// `provideCodeActions(document, rangeOrSelection): any { return [...]; }` e, quando existe, `resolveCodeAction(action) { ...; return action; }`.
+struct CodeActionsProvider {
+    provide: Box<dyn Fn(&TextDocument, &ApiRangeOrSelection) -> Vec<CommandOrCodeAction>>,
+    resolve: Option<Box<dyn Fn(&ApiCodeActionRef)>>,
+}
+
+impl CodeActionsProvider {
+    fn new(provide: impl Fn(&TextDocument, &ApiRangeOrSelection) -> Vec<CommandOrCodeAction> + 'static) -> Rc<Self> {
+        Rc::new(Self { provide: Box::new(provide), resolve: None })
+    }
+}
+
+impl ApiCodeActionProvider for CodeActionsProvider {
+    fn provide_code_actions(
+        &self,
+        document: &TextDocument,
+        range_or_selection: &ApiRangeOrSelection,
+        _context: &ApiCodeActionContext,
+        _token: CancellationToken,
+    ) -> ApiProviderResult<Vec<CommandOrCodeAction>> {
+        found((self.provide)(document, range_or_selection))
+    }
+
+    fn has_resolve_code_action(&self) -> bool {
+        self.resolve.is_some()
+    }
+
+    fn resolve_code_action(&self, code_action: &ApiCodeActionRef, _token: CancellationToken) -> ApiProviderResult<ApiCodeActionRef> {
+        if let Some(resolve) = &self.resolve {
+            resolve(code_action);
+        }
+        found(Rc::clone(code_action))
+    }
+}
+
+/// `{ command: { arguments: [document, range], command: 'command', title: 'command_title' }, kind: types.CodeActionKind.Empty.append('foo'),
+/// title: 'title' }`. O `document` não é um `Dynamic`: entra o recurso dele.
+fn code_action_with_command(document: &TextDocument, range_or_selection: &ApiRangeOrSelection) -> types::CodeAction {
+    let mut action = types::CodeAction::new("title", Some(types::CodeActionKind::empty().append("foo")));
+    let mut command = types::Command::new("command_title", "command");
+    command.arguments = Some(vec![
+        document.uri().to_dynamic(),
+        match range_or_selection {
+            ApiRangeOrSelection::Range(range) => range.to_dynamic(),
+            ApiRangeOrSelection::Selection(selection) => selection.to_dynamic(),
+        },
+    ]);
+    action.command = Some(command);
+    action
+}
+
+/// `new types.Selection(0, 0, 1, 1)`.
+fn selection_0_0_1_1() -> types::Selection {
+    types::Selection::new(types::Position::new(0.0, 0.0).expect("Position"), types::Position::new(1.0, 1.0).expect("Position"))
+}
+
+#[test]
+fn quick_fix_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CodeActionsProvider::new(|_, _| {
+                let mut command = types::Command::new("Title", "testing");
+                command.arguments = Some(vec![Dynamic::from(1.0), Dynamic::from(2.0), Dynamic::Bool(true)]);
+                vec![CommandOrCodeAction::Command(command)]
+            }),
+            None,
+        );
+        env.add(registration);
+
+        env.sync().await;
+        let value = env
+            .execute("vscode.executeCodeActionProvider", vec![env.model.uri().to_dynamic(), range(0.0, 0.0, 1.0, 1.0).to_dynamic()])
+            .await
+            .expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let first = &value[0];
+        assert_eq!(text(&first.get_str("title")), "Title");
+        assert_eq!(text(&first.get_str("command")), "testing");
+        let arguments = items(&first.get_str("arguments"));
+        assert_eq!(number(&arguments[0]), 1.0);
+        assert_eq!(number(&arguments[1]), 2.0);
+        assert!(matches!(arguments[2], Dynamic::Bool(true)));
+        assert_eq!(arguments.len(), 3);
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn execute_code_action_provider_results_seem_to_be_missing_their_command_property_45124() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CodeActionsProvider::new(|document, range_or_selection| {
+                vec![CommandOrCodeAction::CodeAction(Rc::new(RefCell::new(code_action_with_command(document, range_or_selection))))]
+            }),
+            None,
+        );
+        env.add(registration);
+
+        env.sync().await;
+        let value = env
+            .execute("vscode.executeCodeActionProvider", vec![env.model.uri().to_dynamic(), range(0.0, 0.0, 1.0, 1.0).to_dynamic()])
+            .await
+            .expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let first = &value[0];
+        let command = first.get_str("command");
+        assert!(!command.is_nullish());
+        assert_eq!(text(&command.get_str("command")), "command");
+        assert_eq!(text(&command.get_str("title")), "command_title");
+        assert_eq!(text(&first.get_str("kind").get_str("value")), "foo");
+        assert_eq!(text(&first.get_str("title")), "title");
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn execute_code_action_provider_passes_range_to_provider_although_selection_is_passed_in_77997() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CodeActionsProvider::new(|document, range_or_selection| {
+                vec![CommandOrCodeAction::CodeAction(Rc::new(RefCell::new(code_action_with_command(document, range_or_selection))))]
+            }),
+            None,
+        );
+        env.add(registration);
+
+        let selection = selection_0_0_1_1();
+
+        env.sync().await;
+        let value = env
+            .execute("vscode.executeCodeActionProvider", vec![env.model.uri().to_dynamic(), selection.to_dynamic()])
+            .await
+            .expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        let first = &value[0];
+        let command = first.get_str("command");
+        assert!(!command.is_nullish());
+        let argument = items(&command.get_str("arguments")).remove(1);
+        assert!(is_instance_of(&argument, "Selection"));
+        assert!(types::Selection::from_dynamic(&argument).expect("Selection").is_equal(&selection));
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn execute_code_action_provider_results_seem_to_be_missing_their_is_preferred_property_78098() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            CodeActionsProvider::new(|document, range_or_selection| {
+                let mut action = code_action_with_command(document, range_or_selection);
+                action.is_preferred = Some(true);
+                vec![CommandOrCodeAction::CodeAction(Rc::new(RefCell::new(action)))]
+            }),
+            None,
+        );
+        env.add(registration);
+
+        let selection = selection_0_0_1_1();
+
+        env.sync().await;
+        let value = env
+            .execute("vscode.executeCodeActionProvider", vec![env.model.uri().to_dynamic(), selection.to_dynamic()])
+            .await
+            .expect("executeCommand");
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+        assert!(matches!(value[0].get_str("isPreferred"), Dynamic::Bool(true)));
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn resolving_code_action() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let did_call_resolve = Rc::new(Cell::new(0_u32));
+        // `class MyAction extends types.CodeAction { }` e `assert.ok(action instanceof MyAction)`: o `resolveCodeAction` recebe o próprio
+        // objeto que o `provideCodeActions` devolveu (a identidade do `Rc`).
+        let provided: Rc<RefCell<Option<ApiCodeActionRef>>> = Rc::default();
+        let (provided_in_provide, provided_in_resolve, counter) = (Rc::clone(&provided), Rc::clone(&provided), Rc::clone(&did_call_resolve));
+        let registration = env.ext_host.register_code_action_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CodeActionsProvider {
+                provide: Box::new(move |_, _| {
+                    let action = Rc::new(RefCell::new(types::CodeAction::new("title", Some(types::CodeActionKind::empty().append("foo")))));
+                    *provided_in_provide.borrow_mut() = Some(Rc::clone(&action));
+                    vec![CommandOrCodeAction::CodeAction(action)]
+                }),
+                resolve: Some(Box::new(move |action| {
+                    assert!(Rc::ptr_eq(action, provided_in_resolve.borrow().as_ref().expect("provideCodeActions já rodou")));
+
+                    counter.set(counter.get() + 1);
+                    action.borrow_mut().title = "resolved title".to_owned();
+                    action.borrow_mut().edit = Some(types::WorkspaceEdit::new());
+                })),
+            }),
+            None,
+        );
+        env.add(registration);
+
+        let selection = selection_0_0_1_1();
+
+        env.sync().await;
+
+        let value = env
+            .execute(
+                "vscode.executeCodeActionProvider",
+                vec![env.model.uri().to_dynamic(), selection.to_dynamic(), Dynamic::Undefined, Dynamic::Number(1000.0)],
+            )
+            .await
+            .expect("executeCommand");
+        assert_eq!(did_call_resolve.get(), 1);
+        let value = items(&value);
+        assert_eq!(value.len(), 1);
+
+        let first = &value[0];
+        assert_eq!(text(&first.get_str("title")), "title"); // does NOT change
+        assert!(!first.get_str("edit").is_nullish()); // is set
         env.teardown().await;
     });
 }
@@ -1487,6 +2138,157 @@ fn type_error_on_cancellation_requested_is_not_a_function_calling_hover_provider
     });
 }
 
+// ---- inline hints ---------------------------------------------------------------------------------------
+
+/// `provideInlayHints(): any { return [...]; }` (ou o `throw new Error()` do provedor defeituoso, que no adaptador vira uma promessa
+/// rejeitada).
+struct InlayHintsProvider(Box<dyn Fn() -> ApiProviderResult<Vec<InlayHintRef>>>);
+
+impl ApiInlayHintsProvider for InlayHintsProvider {
+    fn provide_inlay_hints(&self, _document: &TextDocument, _range: &types::Range, _token: CancellationToken) -> ApiProviderResult<Vec<InlayHintRef>> {
+        (self.0)()
+    }
+}
+
+/// `new types.InlayHint(position, label, kind)` com o rótulo de texto.
+fn inlay_hint(line: f64, character: f64, label: &str, kind: Option<types::InlayHintKind>) -> InlayHintRef {
+    Rc::new(RefCell::new(types::InlayHint::new(
+        types::Position::new(line, character).expect("Position"),
+        types::InlayHintLabel::Text(label.to_owned()),
+        kind,
+    )))
+}
+
+/// `commands.executeCommand<vscode.InlayHint[]>('vscode.executeInlayHintProvider', model.uri, new types.Range(0, 0, 20, 20))`.
+async fn execute_inlay_hint_provider(env: &Env) -> Vec<Dynamic> {
+    let value = env
+        .execute("vscode.executeInlayHintProvider", vec![env.model.uri().to_dynamic(), range(0.0, 0.0, 20.0, 20.0).to_dynamic()])
+        .await
+        .expect("executeCommand");
+    items(&value)
+}
+
+/// `hint.position.line` e `hint.position.character`.
+fn assert_position(value: &Dynamic, line: f64, character: f64) {
+    let position = value.get_str("position");
+    assert_eq!(number(&position.get_str("line")), line);
+    assert_eq!(number(&position.get_str("character")), character);
+}
+
+#[test]
+fn inlay_hints_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_inlay_hints_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(InlayHintsProvider(Box::new(|| found(vec![inlay_hint(0.0, 1.0, "Foo", None)])))),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let value = execute_inlay_hint_provider(&env).await;
+        assert_eq!(value.len(), 1);
+
+        let first = &value[0];
+        assert_eq!(text(&first.get_str("label")), "Foo");
+        assert_position(first, 0.0, 1.0);
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn inline_hints_merge() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_inlay_hints_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(InlayHintsProvider(Box::new(|| {
+                let mut part = types::InlayHintLabelPart::new("Bar");
+                part.tooltip = Some(types::Documentation::Text("part_tooltip".to_owned()));
+                part.command = Some(types::Command::new("part", "cmd"));
+                let mut hint = types::InlayHint::new(types::Position::new(10.0, 11.0).expect("Position"), types::InlayHintLabel::Parts(vec![part]), None);
+                hint.tooltip = Some(types::Documentation::Text("hint_tooltip".to_owned()));
+                hint.padding_left = Some(true);
+                hint.padding_right = Some(false);
+                found(vec![Rc::new(RefCell::new(hint))])
+            }))),
+        );
+        env.add(registration);
+
+        let registration = env.ext_host.register_inlay_hints_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(InlayHintsProvider(Box::new(|| {
+                let hint = inlay_hint(0.0, 1.0, "Foo", Some(types::InlayHintKind::Parameter));
+                hint.borrow_mut().text_edits = Some(vec![types::TextEdit::insert(types::Position::new(0.0, 0.0).expect("Position"), "Hello")]);
+                found(vec![hint])
+            }))),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let value = execute_inlay_hint_provider(&env).await;
+        assert_eq!(value.len(), 2);
+
+        let (first, second) = (&value[0], &value[1]);
+        assert_eq!(text(&first.get_str("label")), "Foo");
+        assert_position(first, 0.0, 1.0);
+        let text_edits = items(&first.get_str("textEdits"));
+        assert_eq!(text_edits.len(), 1);
+        assert_eq!(text(&text_edits[0].get_str("newText")), "Hello");
+
+        assert_position(second, 10.0, 11.0);
+        assert!(matches!(second.get_str("paddingLeft"), Dynamic::Bool(true)));
+        assert!(matches!(second.get_str("paddingRight"), Dynamic::Bool(false)));
+        assert_eq!(text(&second.get_str("tooltip")), "hint_tooltip");
+
+        let label = items(&second.get_str("label")).remove(0);
+        assert!(has_class(&label, "InlayHintLabelPart"));
+        assert_eq!(text(&label.get_str("value")), "Bar");
+        assert_eq!(text(&label.get_str("tooltip")), "part_tooltip");
+        let command = label.get_str("command");
+        assert_eq!(text(&command.get_str("command")), "cmd");
+        assert_eq!(text(&command.get_str("title")), "part");
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn inline_hints_bad_provider() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_inlay_hints_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(InlayHintsProvider(Box::new(|| found(vec![inlay_hint(0.0, 1.0, "Foo", None)])))),
+        );
+        env.add(registration);
+        let registration = env.ext_host.register_inlay_hints_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(InlayHintsProvider(Box::new(|| MaybePromise::Promise(Promise::rejected(Error::new("Error")))))),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let value = execute_inlay_hint_provider(&env).await;
+        assert_eq!(value.len(), 1);
+
+        let first = &value[0];
+        assert_eq!(text(&first.get_str("label")), "Foo");
+        assert_position(first, 0.0, 1.0);
+        env.teardown().await;
+    });
+}
+
 // ---- selection ranges -----------------------------------------------------------------------------------
 
 /// `provideSelectionRanges(_doc, positions) { return ...; }`.
@@ -1526,6 +2328,151 @@ fn selection_range_back_and_forth() {
         let value = items(&value);
         assert_eq!(value.len(), 1);
         assert!(!value[0].get_str("parent").is_nullish());
+        env.teardown().await;
+    });
+}
+
+// ---- call hierarchy -------------------------------------------------------------------------------------
+
+/// `new types.Range(0, 0, 0, 0)`.
+fn zero_range() -> types::Range {
+    range(0.0, 0.0, 0.0, 0.0)
+}
+
+/// `new types.CallHierarchyItem(types.SymbolKind.Constant, name, name, uri, new types.Range(0, 0, 0, 0), new types.Range(0, 0, 0, 0))`.
+fn call_hierarchy_item(name: &str, uri: &URI) -> types::CallHierarchyItem {
+    types::CallHierarchyItem::new(types::SymbolKind::Constant, name, name, uri.clone(), zero_range(), zero_range())
+}
+
+/// `new types.TypeHierarchyItem(types.SymbolKind.Constant, name, name, uri, new types.Range(0, 0, 0, 0), new types.Range(0, 0, 0, 0))`.
+fn type_hierarchy_item(name: &str, uri: &URI) -> types::TypeHierarchyItem {
+    types::TypeHierarchyItem::new(types::SymbolKind::Constant, name, name, uri.clone(), zero_range(), zero_range())
+}
+
+/// O `vscode.CallHierarchyProvider` do caso: o `prepareCallHierarchy` recebe o recurso do documento.
+struct CallHierarchyTestProvider {
+    prepare: Box<dyn Fn(&URI) -> OneOrMany<types::CallHierarchyItem>>,
+    incoming: Box<dyn Fn(&URI) -> Vec<types::CallHierarchyIncomingCall>>,
+    outgoing: Box<dyn Fn(&URI) -> Vec<types::CallHierarchyOutgoingCall>>,
+}
+
+impl ApiCallHierarchyProvider for CallHierarchyTestProvider {
+    fn prepare_call_hierarchy(&self, document: &TextDocument, _position: &types::Position, _token: CancellationToken) -> ApiProviderResult<OneOrMany<types::CallHierarchyItem>> {
+        found((self.prepare)(document.uri()))
+    }
+
+    fn provide_call_hierarchy_incoming_calls(&self, item: &types::CallHierarchyItem, _token: CancellationToken) -> ApiProviderResult<Vec<types::CallHierarchyIncomingCall>> {
+        found((self.incoming)(&item.uri))
+    }
+
+    fn provide_call_hierarchy_outgoing_calls(&self, item: &types::CallHierarchyItem, _token: CancellationToken) -> ApiProviderResult<Vec<types::CallHierarchyOutgoingCall>> {
+        found((self.outgoing)(&item.uri))
+    }
+}
+
+#[test]
+fn call_hierarchy_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_call_hierarchy_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CallHierarchyTestProvider {
+                prepare: Box::new(|uri| OneOrMany::One(call_hierarchy_item("ROOT", uri))),
+                incoming: Box::new(|uri| vec![types::CallHierarchyIncomingCall::new(call_hierarchy_item("INCOMING", uri), vec![zero_range()])]),
+                outgoing: Box::new(|uri| vec![types::CallHierarchyOutgoingCall::new(call_hierarchy_item("OUTGOING", uri), vec![zero_range()])]),
+            }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let root = env.execute("vscode.prepareCallHierarchy", vec![env.model.uri().to_dynamic(), position(0.0, 0.0)]).await.expect("executeCommand");
+        let root = items(&root);
+        assert_eq!(root.len(), 1);
+        assert_eq!(text(&root[0].get_str("name")), "ROOT");
+
+        let incoming = env.execute("vscode.provideIncomingCalls", vec![root[0].clone()]).await.expect("executeCommand");
+        let incoming = items(&incoming);
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(text(&incoming[0].get_str("from").get_str("name")), "INCOMING");
+
+        let outgoing = env.execute("vscode.provideOutgoingCalls", vec![root[0].clone()]).await.expect("executeCommand");
+        let outgoing = items(&outgoing);
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(text(&outgoing[0].get_str("to").get_str("name")), "OUTGOING");
+        env.teardown().await;
+    });
+}
+
+#[test]
+fn prepare_call_hierarchy_throws_type_error_if_clangd_returns_empty_result_137415() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_call_hierarchy_provider(
+            &null_extension_description(),
+            &default_selector(),
+            Rc::new(CallHierarchyTestProvider {
+                prepare: Box::new(|_| OneOrMany::Many(Vec::new())),
+                incoming: Box::new(|_| Vec::new()),
+                outgoing: Box::new(|_| Vec::new()),
+            }),
+        );
+        env.add(registration);
+
+        env.sync().await;
+
+        let root = env.execute("vscode.prepareCallHierarchy", vec![env.model.uri().to_dynamic(), position(0.0, 0.0)]).await.expect("executeCommand");
+        assert_eq!(items(&root).len(), 0);
+        env.teardown().await;
+    });
+}
+
+// ---- type hierarchy -------------------------------------------------------------------------------------
+
+/// `new class implements vscode.TypeHierarchyProvider { ... }` do caso `TypeHierarchy, back and forth`.
+struct TypeHierarchyTestProvider;
+
+impl ApiTypeHierarchyProvider for TypeHierarchyTestProvider {
+    fn prepare_type_hierarchy(&self, document: &TextDocument, _position: &types::Position, _token: CancellationToken) -> ApiProviderResult<OneOrMany<types::TypeHierarchyItem>> {
+        found(OneOrMany::Many(vec![type_hierarchy_item("ROOT", document.uri())]))
+    }
+
+    fn provide_type_hierarchy_supertypes(&self, item: &types::TypeHierarchyItem, _token: CancellationToken) -> ApiProviderResult<Vec<types::TypeHierarchyItem>> {
+        found(vec![type_hierarchy_item("SUPER", &item.uri)])
+    }
+
+    fn provide_type_hierarchy_subtypes(&self, item: &types::TypeHierarchyItem, _token: CancellationToken) -> ApiProviderResult<Vec<types::TypeHierarchyItem>> {
+        found(vec![type_hierarchy_item("SUB", &item.uri)])
+    }
+}
+
+#[test]
+fn type_hierarchy_back_and_forth() {
+    run_with_faked_timers(async move {
+        let mut env = Env::new();
+
+        let registration = env.ext_host.register_type_hierarchy_provider(&null_extension_description(), &default_selector(), Rc::new(TypeHierarchyTestProvider));
+        env.add(registration);
+
+        env.sync().await;
+
+        let root = env.execute("vscode.prepareTypeHierarchy", vec![env.model.uri().to_dynamic(), position(0.0, 0.0)]).await.expect("executeCommand");
+        let root = items(&root);
+        assert_eq!(root.len(), 1);
+        assert_eq!(text(&root[0].get_str("name")), "ROOT");
+
+        let incoming = env.execute("vscode.provideSupertypes", vec![root[0].clone()]).await.expect("executeCommand");
+        let incoming = items(&incoming);
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(text(&incoming[0].get_str("name")), "SUPER");
+
+        let outgoing = env.execute("vscode.provideSubtypes", vec![root[0].clone()]).await.expect("executeCommand");
+        let outgoing = items(&outgoing);
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(text(&outgoing[0].get_str("name")), "SUB");
         env.teardown().await;
     });
 }

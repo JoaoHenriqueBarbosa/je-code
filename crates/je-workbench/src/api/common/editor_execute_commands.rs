@@ -14,17 +14,25 @@
 //! - `_executeLinkProvider` (`links/browser/getLinks.ts`).
 //! - `_executeCodeLensProvider` (`codelens/browser/codelens.ts`).
 //! - `_executeDocumentColorProvider` e `_executeColorPresentationProvider` (`colorPicker/browser/colorPickerContribution.ts`).
-//! - `_executePrepareRename` (`rename/browser/rename.ts`).
+//! - `_executePrepareRename` e `_executeDocumentRenameProvider` (`rename/browser/rename.ts`).
 //! - `_executeSelectionRangeProvider` (`smartSelect/browser/smartSelect.ts`).
 //! - `_executeWorkspaceSymbolProvider` (`workbench/contrib/search/common/search.ts`).
+//! - `_executeInlayHintProvider` (`inlayHints/browser/inlayHintsController.ts`, com o `InlayHintsFragments` de `inlayHints.ts`).
+//! - `_executeSignatureHelpProvider` (`parameterHints/browser/provideSignatureHelp.ts`).
+//! - `_executeCompletionItemProvider` (`suggest/browser/suggest.ts`).
+//! - `_executeCodeActionProvider` (`codeAction/browser/codeAction.ts`).
+//! - As seis de hierarquia (`_executePrepareCallHierarchy`, `_executeProvideIncomingCalls`, `_executeProvideOutgoingCalls`,
+//!   `_executePrepareTypeHierarchy`, `_executeProvideSupertypes` e `_executeProvideSubtypes`) moram em
+//!   [`hierarchy_execute_commands`](super::hierarchy_execute_commands) e são registradas por [`register_editor_execute_commands`].
 //!
-//! NÃO portados (ver a lista de `vscode.execute*` não portados em `ext_host_api_commands`): `_executeDocumentRenameProvider`,
-//! `_executeCompletionItemProvider`, `_executeSignatureHelpProvider`,
-//! `_executeCodeActionProvider`,
-//! `_executeInlayHintProvider`, `_executeFoldingRangeProvider`, `_executeInlineValueProvider`, `_executePrepareCallHierarchy`
-//! e as demais.
+//! NÃO portados (ver a lista de `vscode.execute*` não portados em `ext_host_api_commands`): `_executeFoldingRangeProvider`,
+//! `_executeInlineValueProvider` e as demais.
 //!
 //! Decisões de tradução:
+//! - O DTO de um `languages.WorkspaceEdit` é `{ edits }` (cada item é o `IWorkspaceTextEdit` ou o `IWorkspaceFileEdit`, sem os
+//!   `metadata`, que `WorkspaceEdit.to` não lê), o de `languages.CodeAction` leva o `_isSynthetic` (campo `is_synthetic` do
+//!   `CodeAction` do editor, que o provedor do workbench repassa do `ICodeActionDto`) e não leva os `diagnostics`, que
+//!   `vscode.executeCodeActionProvider` não lê.
 //! - `ILanguageFeaturesService` é o [`LanguageFeaturesService`] concreto, com o identificador [`I_LANGUAGE_FEATURES_SERVICE`].
 //! - O retorno `Promise<T>` do handler é a promessa embrulhada de [`promise_to_dynamic`], e o resultado é o [`Dynamic`]
 //!   que o RPC entregaria (o JSON do DTO): `languages.LocationLink` é `{ uri, range, originSelectionRange?,
@@ -54,7 +62,9 @@ use je_base::promise::Promise;
 use je_base::runtime::set_timeout;
 use je_base::types::assert_type;
 use je_base::uri::URI;
-use je_editor::code_action::languages::TextEdit as EditorTextEdit;
+use je_editor::code_action::code_action::execute_code_action_provider;
+use je_editor::code_action::languages::{CodeAction as EditorCodeAction, Command as EditorCommand, TextEdit as EditorTextEdit, WorkspaceEdit, WorkspaceEditItem};
+use je_editor::code_editor_widget::SelectionOrRange;
 use je_editor::codelens::get_code_lens_model;
 use je_editor::color::{ColorPresentationsCollector, DefaultColorDecoratorsEnablement, ExtColorDataCollector, find_color_data};
 use je_editor::editor_extensions::{I_TEXT_MODEL_SERVICE, ServicesAccessor, position_from_dynamic, register_model_and_position_command};
@@ -66,16 +76,22 @@ use je_editor::get_links::get_links;
 use je_editor::goto_symbol::{get_location_links_at_position, get_references_at_position};
 use je_editor::hover::get_hover::get_hovers_promise;
 use je_editor::language_features_service::{
-    CodeLens, FormattingOptions, IColor, IColorInformation, IColorPresentation, LanguageFeaturesService, LocationLink, LocationLinkProvider, Registry,
-    RenameLocation,
+    CodeLens, FormattingOptions, IColor, IColorInformation, IColorPresentation, InlayHint, InlayHintLabel, InlayHintLabelPart, LanguageFeaturesService, LocationLink,
+    LocationLinkProvider, Registry, RenameEdits, RenameLocation,
 };
+use je_editor::inlay_hints::InlayHintsFragments;
+use je_editor::languages::{CompletionItem, CompletionItemRange, CompletionLabel, StringOrMarkdown};
 use je_editor::language_providers::{DocumentHighlight, DocumentSymbol};
 use je_editor::outline_model::I_OUTLINE_MODEL_SERVICE;
+use je_editor::parameter_hints::languages::{ParameterLabel, SignatureHelp};
+use je_editor::parameter_hints::provide_signature_help::execute_signature_help_provider;
 use je_editor::position::Position;
 use je_editor::range::Range;
-use je_editor::rename::prepare_rename;
+use je_editor::rename::{prepare_rename, rename};
+use je_editor::selection::Selection;
 use je_editor::services_model::I_MODEL_SERVICE;
 use je_editor::smart_select::{SelectionRangesOptions, provide_selection_ranges};
+use je_editor::suggest::suggest::execute_completion_item_provider;
 use je_editor::text_model::TextModel;
 use je_editor::word_highlighter::get_occurrences_at_position;
 use je_instantiation::ServiceId;
@@ -87,10 +103,12 @@ use je_platform::resources::ext_uri;
 use crate::api::browser::main_thread_commands::promise_to_dynamic;
 use crate::api::browser::main_thread_language_features::registries::{IWorkspaceSymbol, get_workspace_symbols};
 use crate::api::common::ext_host_type_converters::{
-    CodeLens as CodeLensConverter, DocumentLink as DocumentLinkConverter, Hover as HoverConverter, Location as LocationConverter, Range as RangeConverter,
+    CodeLens as CodeLensConverter, DocumentLink as DocumentLinkConverter, Hover as HoverConverter, Location as LocationConverter, LocationDto,
+    MarkdownString as MarkdownStringConverter, Position as PositionConverter, Range as RangeConverter,
 };
 use crate::api::common::ext_host_types::illegal_argument;
 use crate::api::common::ext_host_values::{ApiValue, is_instance_of};
+use crate::api::common::hierarchy_execute_commands::register_hierarchy_execute_commands;
 
 /// `ILanguageFeaturesService`.
 pub const I_LANGUAGE_FEATURES_SERVICE: ServiceId<LanguageFeaturesService> = ServiceId::new("languageFeaturesService");
@@ -154,6 +172,64 @@ fn text_edits_to_dynamic(edits: Option<Vec<EditorTextEdit>>) -> Dynamic {
     }
 }
 
+/// `languages.WorkspaceEdit` como o DTO do RPC: `{ edits }`. Cada item é o `IWorkspaceTextEdit` (`{ resource, textEdit,
+/// versionId? }`) ou o `IWorkspaceFileEdit` (`{ oldResource?, newResource?, options? }`). Os `metadata` não cruzam
+/// (`WorkspaceEdit.to` não os lê) e o `contents` (uma promessa) vira ausente, como no JSON.
+fn workspace_edit_to_dynamic(workspace_edit: &WorkspaceEdit) -> Dynamic {
+    let item_to_dynamic = |item: &WorkspaceEditItem| -> Dynamic {
+        match item {
+            WorkspaceEditItem::Text(item) => {
+                let edit = &item.text_edit;
+                let text_edit = [
+                    ("range", Some(RangeConverter::to_dto(&edit.range))),
+                    ("text", Some(Dynamic::string(&edit.text))),
+                    ("eol", edit.eol.map(|eol| Dynamic::from(eol as i32))),
+                    ("insertAsSnippet", edit.insert_as_snippet.map(Dynamic::Bool)),
+                    ("keepWhitespace", edit.keep_whitespace.map(Dynamic::Bool)),
+                ];
+                let entries = [
+                    ("resource", Some(item.resource.to_dynamic())),
+                    ("textEdit", Some(Dynamic::object(text_edit.into_iter().filter_map(|(key, value)| value.map(|value| (key, value)))))),
+                    ("versionId", item.version_id.map(|version_id| Dynamic::Number(version_id as f64))),
+                ];
+                Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+            }
+            WorkspaceEditItem::File(item) => {
+                let options = item.options.as_ref().map(|options| {
+                    let entries = [
+                        ("overwrite", options.overwrite.map(Dynamic::Bool)),
+                        ("ignoreIfNotExists", options.ignore_if_not_exists.map(Dynamic::Bool)),
+                        ("ignoreIfExists", options.ignore_if_exists.map(Dynamic::Bool)),
+                        ("recursive", options.recursive.map(Dynamic::Bool)),
+                        ("copy", options.copy.map(Dynamic::Bool)),
+                        ("folder", options.folder.map(Dynamic::Bool)),
+                        ("skipTrashBin", options.skip_trash_bin.map(Dynamic::Bool)),
+                        ("maxSize", options.max_size.map(Dynamic::Number)),
+                    ];
+                    Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+                });
+                let entries = [
+                    ("oldResource", item.old_resource.as_ref().map(ApiValue::to_dynamic)),
+                    ("newResource", item.new_resource.as_ref().map(ApiValue::to_dynamic)),
+                    ("options", options),
+                ];
+                Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+            }
+            WorkspaceEditItem::Custom(item) => Dynamic::object([("resource", item.resource().to_dynamic())]),
+        }
+    };
+    Dynamic::object([("edits", Dynamic::array(workspace_edit.edits.iter().map(item_to_dynamic)))])
+}
+
+/// `languages.WorkspaceEdit & languages.Rejection` como o DTO do RPC: `{ edits, rejectReason? }`.
+fn rename_edits_to_dynamic(edits: &RenameEdits) -> Dynamic {
+    let entries = [
+        ("edits", edits.workspace_edit.as_ref().map(|edit| workspace_edit_to_dynamic(edit).get_str("edits"))),
+        ("rejectReason", edits.reject_reason.as_deref().map(Dynamic::string)),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+}
+
 /// `languages.RenameLocation` como o DTO do RPC.
 fn rename_location_to_dynamic(location: &RenameLocation) -> Dynamic {
     let mut entries: Vec<(&str, Dynamic)> = Vec::new();
@@ -167,6 +243,54 @@ fn rename_location_to_dynamic(location: &RenameLocation) -> Dynamic {
 }
 
 // ---- goToSymbol.ts ------------------------------------------------------------------------------------------
+
+/// `languages.Command` como o DTO do RPC.
+fn command_to_dynamic(command: &EditorCommand) -> Dynamic {
+    let entries = [
+        ("id", Some(Dynamic::string(&command.id))),
+        ("title", Some(Dynamic::string(&command.title))),
+        ("tooltip", command.tooltip.as_deref().map(Dynamic::string)),
+        ("arguments", command.arguments.as_ref().map(|arguments| Dynamic::array(arguments.iter().cloned()))),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+}
+
+/// `string | IMarkdownString` como o DTO do RPC.
+fn string_or_markdown_to_dynamic(value: &StringOrMarkdown) -> Dynamic {
+    match value {
+        StringOrMarkdown::String(text) => Dynamic::string(text),
+        StringOrMarkdown::Markdown(markdown) => MarkdownStringConverter::to_dto(markdown),
+    }
+}
+
+/// `languages.InlayHint` como o DTO do RPC (só com as propriedades definidas; o `cacheId` não cruza).
+fn inlay_hint_to_dynamic(hint: &InlayHint) -> Dynamic {
+    let label = match &hint.label {
+        InlayHintLabel::Text(text) => Dynamic::string(text),
+        InlayHintLabel::Parts(parts) => Dynamic::array(parts.iter().map(inlay_hint_label_part_to_dynamic)),
+    };
+    let entries = [
+        ("label", Some(label)),
+        ("tooltip", hint.tooltip.as_ref().map(string_or_markdown_to_dynamic)),
+        ("position", Some(PositionConverter::to_dto(&hint.position))),
+        ("textEdits", hint.text_edits.as_ref().map(|edits| Dynamic::array(edits.iter().map(text_edit_to_dynamic)))),
+        ("kind", hint.kind.map(|kind| Dynamic::from(kind as i32))),
+        ("paddingLeft", hint.padding_left.map(Dynamic::Bool)),
+        ("paddingRight", hint.padding_right.map(Dynamic::Bool)),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+}
+
+/// `languages.InlayHintLabelPart` como o DTO do RPC.
+fn inlay_hint_label_part_to_dynamic(part: &InlayHintLabelPart) -> Dynamic {
+    let entries = [
+        ("label", Some(Dynamic::string(&part.label))),
+        ("tooltip", part.tooltip.as_ref().map(string_or_markdown_to_dynamic)),
+        ("location", part.location.as_ref().map(|location| LocationConverter::to_dto(&LocationDto { uri: Some(location.uri.clone()), range: Some(location.range) }))),
+        ("command", part.command.as_ref().map(command_to_dynamic)),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+}
 
 /// `_sortedAndDeduped(callback)`: o resultado do `ReferencesModel` (ver as decisões de tradução do módulo).
 fn sorted_and_deduped(mut links: Vec<LocationLink>) -> Vec<LocationLink> {
@@ -453,7 +577,7 @@ fn register_color_commands() {
 // ---- argumentos ---------------------------------------------------------------------------------------------
 
 /// `const [resource] = args; assertType(URI.isUri(resource))`.
-fn resource_argument(args: &[Dynamic]) -> URI {
+pub(super) fn resource_argument(args: &[Dynamic]) -> URI {
     let resource = args.first().and_then(|resource| URI::from_dynamic(resource).ok());
     assert_type(&resource.is_some(), None);
     resource.expect("assert_type lança antes")
@@ -533,7 +657,7 @@ fn range_argument(value: Option<&Dynamic>) -> Range {
 }
 
 /// `Position.isIPosition(position)`.
-fn position_argument(value: Option<&Dynamic>) -> Position {
+pub(super) fn position_argument(value: Option<&Dynamic>) -> Position {
     let position = value.and_then(position_from_dynamic);
     assert_type(&position.is_some(), None);
     position.expect("assert_type lança antes")
@@ -595,6 +719,24 @@ fn register_format_commands() {
 }
 
 // ---- rename.ts ----------------------------------------------------------------------------------------------
+
+/// `registerModelAndPositionCommand('_executeDocumentRenameProvider', ...)`.
+fn register_rename_command() {
+    register_model_and_position_command(
+        "_executeDocumentRenameProvider",
+        Rc::new(|accessor, model, position, args| {
+            let new_name = match args.first() {
+                Some(Dynamic::String(new_name)) => Some(new_name.to_string_lossy()),
+                _ => None,
+            };
+            assert_type(&new_name.is_some(), None);
+            let new_name = new_name.expect("assert_type lança antes");
+            let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+            let edits = rename(&language_features_service.rename_provider, model, position, &new_name);
+            promise_to_dynamic(edits.then(|edits| rename_edits_to_dynamic(&edits)))
+        }),
+    );
+}
 
 /// `registerModelAndPositionCommand('_executePrepareRename', ...)`.
 fn register_prepare_rename_command() {
@@ -681,6 +823,247 @@ fn register_workspace_symbol_command() {
     commands_registry().register_command_handler("_executeWorkspaceSymbolProvider", Some(handler));
 }
 
+// ---- inlayHintsController.ts --------------------------------------------------------------------------------
+
+/// `CommandsRegistry.registerCommand('_executeInlayHintProvider', ...)`.
+fn register_inlay_hint_command() {
+    let handler: CommandHandler = Rc::new(|accessor, args| {
+        let uri = resource_argument(args);
+        let range = range_argument(args.get(1));
+        // `Range.lift(range)`
+        let range = Range::new(range.start_line_number, range.start_column, range.end_line_number, range.end_column);
+
+        let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+        let model_service = accessor.get(I_TEXT_MODEL_SERVICE);
+
+        promise_to_dynamic(async_fn(async move {
+            let reference = model_service.create_model_reference(&uri).await?;
+            let model = InlayHintsFragments::create(&language_features_service.inlay_hints_provider, &reference.object, vec![range], &CancellationToken::None).await;
+            let result = model.map(|model| {
+                let result = Dynamic::array(model.items.iter().map(|item| inlay_hint_to_dynamic(&item.hint)));
+                // dispose after sending to ext host
+                set_timeout(move || model.dispose(), 0);
+                result
+            });
+            reference.dispose();
+            result
+        }))
+    });
+    commands_registry().register_command_handler("_executeInlayHintProvider", Some(handler));
+}
+
+// ---- codeAction.ts ------------------------------------------------------------------------------------------
+
+/// `languages.CodeAction` como o DTO do RPC (só com as propriedades definidas, com o `_isSynthetic` do `CustomCodeAction`). Os
+/// `diagnostics` não cruzam: `vscode.executeCodeActionProvider` não os lê e o `MarkerData` não tem forma de [`Dynamic`].
+fn code_action_to_dynamic(action: &EditorCodeAction) -> Dynamic {
+    let entries = [
+        ("_isSynthetic", action.is_synthetic.map(Dynamic::Bool)),
+        ("title", Some(Dynamic::string(&action.title))),
+        ("command", action.command.as_ref().map(command_to_dynamic)),
+        ("edit", action.edit.as_ref().map(workspace_edit_to_dynamic)),
+        ("kind", action.kind.as_deref().map(Dynamic::string)),
+        ("isPreferred", action.is_preferred.map(Dynamic::Bool)),
+        ("isAI", action.is_ai.map(Dynamic::Bool)),
+        ("disabled", action.disabled.as_deref().map(Dynamic::string)),
+        ("ranges", action.ranges.as_ref().map(|ranges| Dynamic::array(ranges.iter().map(RangeConverter::to_dto)))),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+}
+
+/// `Selection.isISelection(value) ? Selection.liftSelection(value) : Range.isIRange(value) ? value : undefined`: o
+/// `rangeOrSelection` do comando `_executeCodeActionProvider`. O intervalo ainda é validado contra o modelo depois.
+fn range_or_selection_from_dynamic(value: &Dynamic) -> Option<SelectionOrRange> {
+    let number = |key: &str| match value.get_str(key) {
+        Dynamic::Number(number) => Some(number as i32),
+        _ => None,
+    };
+    if let (Some(start_line), Some(start_column), Some(line), Some(column)) =
+        (number("selectionStartLineNumber"), number("selectionStartColumn"), number("positionLineNumber"), number("positionColumn"))
+    {
+        return Some(SelectionOrRange::Selection(Selection::new(start_line, start_column, line, column)));
+    }
+    RangeConverter::from_dto(value).map(SelectionOrRange::Range)
+}
+
+/// `CommandsRegistry.registerCommand('_executeCodeActionProvider', ...)`.
+fn register_code_action_command() {
+    let handler: CommandHandler = Rc::new(|accessor, args| {
+        // `if (!(resource instanceof URI)) throw illegalArgument()`
+        let Some(resource) = args.first().and_then(|resource| URI::from_dynamic(resource).ok()) else {
+            errors::throw(illegal_argument(None));
+        };
+        let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+        let model = accessor.get(I_MODEL_SERVICE).get_model(&resource);
+        let Some(range_or_selection) = args.get(1).and_then(range_or_selection_from_dynamic) else {
+            errors::throw(illegal_argument(None));
+        };
+        let kind = match args.get(2) {
+            Some(Dynamic::String(kind)) => Some(kind.to_string_lossy()),
+            _ => None,
+        };
+        // `Math.min(validActions.length, typeof itemResolveCount === 'number' ? itemResolveCount : 0)`: o fracionário
+        // resolve mais um item e o negativo e o `NaN` nenhum
+        let item_resolve_count = match args.get(3) {
+            Some(Dynamic::Number(count)) => Some(count.ceil() as usize),
+            _ => None,
+        };
+
+        let actions = execute_code_action_provider(
+            &language_features_service.code_action_provider,
+            model.as_ref(),
+            range_or_selection,
+            kind.as_deref(),
+            item_resolve_count,
+        );
+        promise_to_dynamic(actions.then(|actions| Dynamic::array(actions.iter().map(|action| code_action_to_dynamic(&action.borrow())))))
+    });
+    commands_registry().register_command_handler("_executeCodeActionProvider", Some(handler));
+}
+
+// ---- suggest.ts ---------------------------------------------------------------------------------------------
+
+/// `languages.CompletionItem` como o DTO do RPC (só com as propriedades definidas): o `range` é um `IRange` ou
+/// `{ insert, replace }`, as edições adicionais são `{ range, text?, forceMoveMarkers? }`.
+fn completion_item_to_dynamic(item: &CompletionItem) -> Dynamic {
+    let label = match &item.label {
+        CompletionLabel::Text(text) => Dynamic::string(text),
+        CompletionLabel::Item(label) => Dynamic::object(
+            [
+                ("label", Some(Dynamic::string(&label.label))),
+                ("detail", label.detail.as_deref().map(Dynamic::string)),
+                ("description", label.description.as_deref().map(Dynamic::string)),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| (key, value))),
+        ),
+    };
+    let range = match &item.range {
+        CompletionItemRange::Single(range) => RangeConverter::to_dto(range),
+        CompletionItemRange::InsertReplace { insert, replace } => {
+            Dynamic::object([("insert", RangeConverter::to_dto(insert)), ("replace", RangeConverter::to_dto(replace))])
+        }
+    };
+    let additional_text_edits = item.additional_text_edits.as_ref().map(|edits| {
+        Dynamic::array(edits.iter().map(|edit| {
+            let entries = [
+                ("range", Some(RangeConverter::to_dto(&edit.range))),
+                ("text", edit.text.as_ref().map(|text| Dynamic::String(text.clone()))),
+                ("forceMoveMarkers", Some(Dynamic::Bool(edit.force_move_markers))),
+            ];
+            Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+        }))
+    });
+    let entries = [
+        ("label", Some(label)),
+        ("kind", Some(Dynamic::from(item.kind.to_index() as i32))),
+        ("range", Some(range)),
+        ("tags", item.tags.as_ref().map(|tags| Dynamic::array(tags.iter().map(|tag| Dynamic::from(*tag as i32))))),
+        ("detail", item.detail.as_deref().map(Dynamic::string)),
+        ("documentation", item.documentation.as_ref().map(string_or_markdown_to_dynamic)),
+        ("sortText", item.sort_text.as_deref().map(Dynamic::string)),
+        ("filterText", item.filter_text.as_deref().map(Dynamic::string)),
+        ("preselect", item.preselect.map(Dynamic::Bool)),
+        ("insertText", Some(Dynamic::string(&item.insert_text))),
+        ("insertTextRules", item.insert_text_rules.map(|rules| Dynamic::from(rules as i32))),
+        ("commitCharacters", item.commit_characters.as_ref().map(|characters| Dynamic::array(characters.iter().map(|character| Dynamic::string(character))))),
+        ("additionalTextEdits", additional_text_edits),
+        ("command", item.command.as_ref().map(command_to_dynamic)),
+    ];
+    Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))))
+}
+
+/// `CommandsRegistry.registerCommand('_executeCompletionItemProvider', ...)`.
+fn register_completion_item_command() {
+    let handler: CommandHandler = Rc::new(|accessor, args| {
+        let uri = resource_argument(args);
+        let position = position_argument(args.get(1));
+        let trigger_character = args.get(2).cloned().unwrap_or(Dynamic::Undefined);
+        assert_type(&(matches!(trigger_character, Dynamic::String(_)) || !trigger_character.is_truthy()), None);
+        let max_items_to_resolve = args.get(3).cloned().unwrap_or(Dynamic::Undefined);
+        assert_type(&(matches!(max_items_to_resolve, Dynamic::Number(_)) || !max_items_to_resolve.is_truthy()), None);
+        let trigger_character = match trigger_character {
+            Dynamic::String(character) => Some(character.to_string_lossy()),
+            _ => None,
+        };
+        // `resolving.length < (maxItemsToResolve ?? 0)`: o número fracionário deixa passar mais um item, o negativo e o `NaN` nenhum
+        let max_items_to_resolve = match max_items_to_resolve {
+            Dynamic::Number(count) => Some(count.ceil() as usize),
+            _ => None,
+        };
+
+        let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+        let model_service = accessor.get(I_TEXT_MODEL_SERVICE);
+
+        promise_to_dynamic(async_fn(async move {
+            let reference = model_service.create_model_reference(&uri).await?;
+            let result =
+                execute_completion_item_provider(&language_features_service.completion_provider, &reference.object, position, trigger_character, max_items_to_resolve).await;
+            reference.dispose();
+            let list = result?;
+            let entries = [
+                ("incomplete", list.incomplete.map(Dynamic::Bool)),
+                ("suggestions", Some(Dynamic::array(list.suggestions.iter().map(completion_item_to_dynamic)))),
+            ];
+            Ok(Dynamic::object(entries.into_iter().filter_map(|(key, value)| value.map(|value| (key, value)))))
+        }))
+    });
+    commands_registry().register_command_handler("_executeCompletionItemProvider", Some(handler));
+}
+
+// ---- provideSignatureHelp.ts --------------------------------------------------------------------------------
+
+/// `languages.SignatureHelp` como o DTO do RPC.
+fn signature_help_to_dynamic(help: &SignatureHelp) -> Dynamic {
+    let parameter_to_dynamic = |parameter: &je_editor::parameter_hints::languages::ParameterInformation| {
+        let label = match &parameter.label {
+            ParameterLabel::Text(text) => Dynamic::string(text),
+            ParameterLabel::Range(start, end) => Dynamic::array([Dynamic::from(f64::from(*start)), Dynamic::from(f64::from(*end))]),
+        };
+        let entries = [("label", Some(label)), ("documentation", parameter.documentation.as_ref().map(string_or_markdown_to_dynamic))];
+        Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+    };
+    let signatures = help.signatures.iter().map(|signature| {
+        let entries = [
+            ("label", Some(Dynamic::string(&signature.label))),
+            ("documentation", signature.documentation.as_ref().map(string_or_markdown_to_dynamic)),
+            ("parameters", Some(Dynamic::array(signature.parameters.iter().map(parameter_to_dynamic)))),
+            ("activeParameter", signature.active_parameter.map(|active| Dynamic::from(active))),
+        ];
+        Dynamic::object(entries.into_iter().filter_map(|(key, item)| item.map(|item| (key, item))))
+    });
+    Dynamic::object([
+        ("signatures", Dynamic::array(signatures)),
+        ("activeSignature", Dynamic::from(help.active_signature)),
+        ("activeParameter", Dynamic::from(help.active_parameter)),
+    ])
+}
+
+/// `CommandsRegistry.registerCommand('_executeSignatureHelpProvider', ...)`.
+fn register_signature_help_command() {
+    let handler: CommandHandler = Rc::new(|accessor, args| {
+        let uri = resource_argument(args);
+        let position = position_argument(args.get(1));
+        let trigger_character = args.get(2).cloned().unwrap_or(Dynamic::Undefined);
+        assert_type(&(matches!(trigger_character, Dynamic::String(_)) || !trigger_character.is_truthy()), None);
+        let trigger_character = match trigger_character {
+            Dynamic::String(character) => Some(character.to_string_lossy()),
+            _ => None,
+        };
+
+        let language_features_service = accessor.get(I_LANGUAGE_FEATURES_SERVICE);
+        let model_service = accessor.get(I_TEXT_MODEL_SERVICE);
+
+        promise_to_dynamic(async_fn(async move {
+            let reference = model_service.create_model_reference(&uri).await?;
+            let result = execute_signature_help_provider(&language_features_service.signature_help_provider, &reference.object, position, trigger_character).await;
+            reference.dispose();
+            Ok(result?.map_or(Dynamic::Undefined, |help| signature_help_to_dynamic(&help)))
+        }))
+    });
+    commands_registry().register_command_handler("_executeSignatureHelpProvider", Some(handler));
+}
+
 // ---- o registro ---------------------------------------------------------------------------------------------
 
 /// A carga dos módulos do editor que registram os comandos `_execute*` (os `import '...'` do teste do original).
@@ -694,6 +1077,12 @@ pub fn register_editor_execute_commands() {
     register_document_symbol_command();
     register_format_commands();
     register_prepare_rename_command();
+    register_rename_command();
     register_selection_range_command();
     register_workspace_symbol_command();
+    register_inlay_hint_command();
+    register_signature_help_command();
+    register_completion_item_command();
+    register_code_action_command();
+    register_hierarchy_execute_commands();
 }

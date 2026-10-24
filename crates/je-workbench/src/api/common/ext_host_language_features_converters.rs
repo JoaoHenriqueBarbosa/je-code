@@ -18,16 +18,21 @@
 //!   `TypeError('Invalid label')`: o tipo do rótulo garante a validade. `SignatureHelp.from` devolve o `SignatureHelp` do
 //!   editor (sem o `id`, que o adaptador acrescenta); `SignatureHelp.to` recebe os três campos do DTO.
 //! - `WorkspaceSymbol.from` devolve o [`IWorkspaceSymbolDto`] sem `cache_id`.
-//! - `InlayHintKind` é o mesmo enum nos dois lados (o original devolve o próprio número).
+//! - `InlayHintKind` tem os mesmos membros nos dois lados (o original devolve o próprio número): `from` e `to` são o mapa total.
+//!   `InlayHint.to` e `InlayHintLabelPart.to` devolvem [`Result`], porque `Position.to`, `TextEdit.to` e `location.to` validam.
 
 use je_base::errors::Error;
 use je_base::uri_ipc::IURITransformer;
-use je_editor::code_action::languages::CodeActionTriggerType;
+use je_editor::code_action::languages::{CodeActionTriggerType, TextEdit as EditorTextEdit};
 use je_editor::folding::syntax_range_provider::{FoldingRange as EditorFoldingRange, FoldingRangeKind as EditorFoldingRangeKind};
+use je_editor::language_features_service::{
+    InlayHint as EditorInlayHint, InlayHintKind as EditorInlayHintKind, InlayHintLabel as EditorInlayHintLabel, InlayHintLabelPart as EditorInlayHintLabelPart,
+};
 use je_editor::language_providers::SelectionRange as EditorSelectionRange;
 use je_editor::languages::{
-    CompletionContext as EditorCompletionContext, CompletionItemKind as EditorCompletionItemKind, CompletionItemTag as EditorCompletionItemTag,
-    CompletionTriggerKind as EditorCompletionTriggerKind, StringOrMarkdown,
+    CompletionContext as EditorCompletionContext, CompletionItem as EditorCompletionItem, CompletionItemKind as EditorCompletionItemKind,
+    CompletionItemRange as EditorCompletionItemRange, CompletionItemTag as EditorCompletionItemTag, CompletionLabel as EditorCompletionLabel,
+    CompletionTriggerKind as EditorCompletionTriggerKind, StringOrMarkdown, completion_item_insert_text_rule,
 };
 use je_editor::parameter_hints::languages::{
     ParameterInformation as EditorParameterInformation, ParameterLabel as EditorParameterLabel, SignatureHelp as EditorSignatureHelp,
@@ -37,11 +42,13 @@ use je_extensions::scanner::ExtensionDescription;
 
 use super::ext_host_language_features_api::{ApiInlineValue, DefinitionLink as ApiDefinitionLink, LocationOrLink};
 use super::ext_host_protocol::{
-    EvaluatableExpressionDto, HoverDto, IColorPresentationDto, IDocumentFilterDto, IInlineValueContextDto, ILinkDto, ILocationLinkDto, IWorkspaceSymbolDto,
+    ICommandDto, EvaluatableExpressionDto, HoverDto, IColorPresentationDto, IDocumentFilterDto, IInlineValueContextDto, ILinkDto, ILocationLinkDto, IWorkspaceSymbolDto,
     InlineValueDto, MultiDocumentHighlightDto,
 };
 use super::ext_host_type_converters::symbols::DocumentHighlight;
-use super::ext_host_type_converters::{DocumentSelectorInput, Location, MarkdownString, Range, SymbolKind, SymbolTag, TextEdit};
+use super::ext_host_type_converters::{
+    DocumentSelectorInput, ICommandsConverter, Location, LocationDto, MarkdownString, Position, Range, SymbolKind, SymbolTag, TextEdit,
+};
 use super::ext_host_types::{self as types, CodeActionTriggerKind as ApiCodeActionTriggerKind, Documentation, MarkedString, VerboseHover};
 use super::ext_host_workspace::glob_pattern_from;
 
@@ -231,7 +238,7 @@ impl CompletionContext {
     }
 }
 
-/// `typeConverters.CompletionItemTag` (só o `from`).
+/// `typeConverters.CompletionItemTag`.
 pub struct CompletionItemTag;
 
 impl CompletionItemTag {
@@ -240,12 +247,53 @@ impl CompletionItemTag {
             types::CompletionItemTag::Deprecated => EditorCompletionItemTag::Deprecated,
         }
     }
+
+    pub fn to(kind: EditorCompletionItemTag) -> types::CompletionItemTag {
+        match kind {
+            EditorCompletionItemTag::Deprecated => types::CompletionItemTag::Deprecated,
+        }
+    }
 }
 
-/// `typeConverters.CompletionItemKind` (só o `from`).
+/// `typeConverters.CompletionItemKind`.
 pub struct CompletionItemKind;
 
 impl CompletionItemKind {
+    /// `to(kind)`: os dois membros do editor sem par na API (`Customcolor` e `Tool`) são o `?? Property` do original.
+    pub fn to(kind: EditorCompletionItemKind) -> types::CompletionItemKind {
+        use EditorCompletionItemKind as Editor;
+        use types::CompletionItemKind as Api;
+        match kind {
+            Editor::Method => Api::Method,
+            Editor::Function => Api::Function,
+            Editor::Constructor => Api::Constructor,
+            Editor::Field => Api::Field,
+            Editor::Variable => Api::Variable,
+            Editor::Class => Api::Class,
+            Editor::Interface => Api::Interface,
+            Editor::Struct => Api::Struct,
+            Editor::Module => Api::Module,
+            Editor::Property => Api::Property,
+            Editor::Unit => Api::Unit,
+            Editor::Value => Api::Value,
+            Editor::Constant => Api::Constant,
+            Editor::Enum => Api::Enum,
+            Editor::EnumMember => Api::EnumMember,
+            Editor::Keyword => Api::Keyword,
+            Editor::Snippet => Api::Snippet,
+            Editor::Text => Api::Text,
+            Editor::Color => Api::Color,
+            Editor::File => Api::File,
+            Editor::Reference => Api::Reference,
+            Editor::Folder => Api::Folder,
+            Editor::Event => Api::Event,
+            Editor::Operator => Api::Operator,
+            Editor::TypeParameter => Api::TypeParameter,
+            Editor::User => Api::User,
+            Editor::Issue => Api::Issue,
+            Editor::Customcolor | Editor::Tool => Api::Property,
+        }
+    }
     pub fn from(kind: types::CompletionItemKind) -> EditorCompletionItemKind {
         use types::CompletionItemKind as Api;
         match kind {
@@ -277,6 +325,84 @@ impl CompletionItemKind {
             Api::Issue => EditorCompletionItemKind::Issue,
             Api::User => EditorCompletionItemKind::User,
         }
+    }
+}
+
+/// `typeConverters.CompletionItem`.
+pub struct CompletionItem;
+
+impl CompletionItem {
+    /// `to(suggestion, converter?)`: devolve [`Result`], porque `Range.to` e `TextEdit.to` validam. As edições adicionais
+    /// (`SingleEditOperation`) lidas como `languages.TextEdit` (`{ range, text }`) não têm `eol`.
+    pub fn to(suggestion: &EditorCompletionItem, converter: Option<&dyn ICommandsConverter>) -> Result<types::CompletionItem, Error> {
+        let label = match &suggestion.label {
+            EditorCompletionLabel::Text(text) => types::CompletionLabel::Text(text.clone()),
+            EditorCompletionLabel::Item(item) => types::CompletionLabel::Detailed(types::CompletionItemLabel {
+                label: item.label.clone(),
+                detail: item.detail.clone(),
+                description: item.description.clone(),
+            }),
+        };
+        let mut result = types::CompletionItem::new(label, Some(CompletionItemKind::to(suggestion.kind)));
+        result.tags = suggestion.tags.as_ref().map(|tags| tags.iter().copied().map(CompletionItemTag::to).collect());
+        result.detail = suggestion.detail.clone();
+        result.documentation = suggestion.documentation.as_ref().map(documentation_to);
+        result.sort_text = suggestion.sort_text.clone();
+        result.filter_text = suggestion.filter_text.clone();
+        result.preselect = suggestion.preselect;
+        result.commit_characters = suggestion.commit_characters.clone();
+
+        // range
+        result.range = Some(match &suggestion.range {
+            EditorCompletionItemRange::Single(range) => types::CompletionRange::Range(Range::to(range)?),
+            EditorCompletionItemRange::InsertReplace { insert, replace } => {
+                types::CompletionRange::InsertReplace { inserting: Range::to(insert)?, replacing: Range::to(replace)? }
+            }
+        });
+
+        result.keep_whitespace = Some(
+            suggestion
+                .insert_text_rules
+                .is_some_and(|rules| rules & completion_item_insert_text_rule::KEEP_WHITESPACE != 0),
+        );
+        // 'insertText'-logic
+        if suggestion.insert_text_rules.is_some_and(|rules| rules & completion_item_insert_text_rule::INSERT_AS_SNIPPET != 0) {
+            result.insert_text = Some(types::InsertText::Snippet(types::SnippetString::new(Some(suggestion.insert_text.as_str()))));
+        } else {
+            result.insert_text = Some(types::InsertText::Text(suggestion.insert_text.clone()));
+            result.text_edit = match &result.range {
+                Some(types::CompletionRange::Range(range)) => Some(types::TextEdit::new(*range, Some(suggestion.insert_text.as_str()))),
+                _ => None,
+            };
+        }
+        if let Some(edits) = suggestion.additional_text_edits.as_ref().filter(|edits| !edits.is_empty()) {
+            result.additional_text_edits = Some(
+                edits
+                    .iter()
+                    .map(|edit| {
+                        TextEdit::to(&EditorTextEdit {
+                            range: edit.range,
+                            text: edit.text.as_ref().map(|text| text.to_string_lossy()).unwrap_or_default(),
+                            eol: None,
+                            insert_as_snippet: None,
+                            keep_whitespace: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        result.command = match (converter, &suggestion.command) {
+            (Some(converter), Some(command)) => converter.from_internal(&ICommandDto {
+                ident: None,
+                id: command.id.clone(),
+                title: command.title.clone(),
+                tooltip: command.tooltip.clone(),
+                arguments: command.arguments.clone(),
+            }),
+            _ => None,
+        };
+
+        Ok(result)
     }
 }
 
@@ -431,5 +557,69 @@ pub struct FoldingRange;
 impl FoldingRange {
     pub fn from(r: &types::FoldingRange) -> EditorFoldingRange {
         EditorFoldingRange { start: r.start as i32 + 1, end: r.end as i32 + 1, kind: FoldingRangeKind::from(r.kind) }
+    }
+}
+
+/// `typeConverters.InlayHintKind`.
+pub struct InlayHintKind;
+
+impl InlayHintKind {
+    pub fn from(kind: types::InlayHintKind) -> EditorInlayHintKind {
+        match kind {
+            types::InlayHintKind::Type => EditorInlayHintKind::Type,
+            types::InlayHintKind::Parameter => EditorInlayHintKind::Parameter,
+        }
+    }
+
+    pub fn to(kind: EditorInlayHintKind) -> types::InlayHintKind {
+        match kind {
+            EditorInlayHintKind::Type => types::InlayHintKind::Type,
+            EditorInlayHintKind::Parameter => types::InlayHintKind::Parameter,
+        }
+    }
+}
+
+/// `typeConverters.InlayHintLabelPart`.
+pub struct InlayHintLabelPart;
+
+impl InlayHintLabelPart {
+    /// `to(converter, part)`: devolve [`Result`], porque `location.to` valida o intervalo.
+    pub fn to(converter: &dyn ICommandsConverter, part: &EditorInlayHintLabelPart) -> Result<types::InlayHintLabelPart, Error> {
+        let mut result = types::InlayHintLabelPart::new(part.label.clone());
+        result.tooltip = part.tooltip.as_ref().map(documentation_to);
+        if let Some(command) = &part.command {
+            result.command = converter.from_internal(&ICommandDto {
+                ident: None,
+                id: command.id.clone(),
+                title: command.title.clone(),
+                tooltip: command.tooltip.clone(),
+                arguments: command.arguments.clone(),
+            });
+        }
+        if let Some(location) = &part.location {
+            result.location = Some(Location::to(&LocationDto { uri: Some(location.uri.clone()), range: Some(location.range) })?);
+        }
+        Ok(result)
+    }
+}
+
+/// `typeConverters.InlayHint`.
+pub struct InlayHint;
+
+impl InlayHint {
+    /// `to(converter, hint)`: devolve [`Result`], porque `Position.to`, `TextEdit.to` e `location.to` validam.
+    pub fn to(converter: &dyn ICommandsConverter, hint: &EditorInlayHint) -> Result<types::InlayHint, Error> {
+        let label = match &hint.label {
+            EditorInlayHintLabel::Text(text) => types::InlayHintLabel::Text(text.clone()),
+            EditorInlayHintLabel::Parts(parts) => {
+                types::InlayHintLabel::Parts(parts.iter().map(|part| InlayHintLabelPart::to(converter, part)).collect::<Result<Vec<_>, _>>()?)
+            }
+        };
+        let mut result = types::InlayHint::new(Position::to(&hint.position)?, label, hint.kind.map(InlayHintKind::to));
+        result.text_edits = hint.text_edits.as_ref().map(|edits| edits.iter().map(TextEdit::to).collect::<Result<Vec<_>, _>>()).transpose()?;
+        result.tooltip = hint.tooltip.as_ref().map(documentation_to);
+        result.padding_left = hint.padding_left;
+        result.padding_right = hint.padding_right;
+        Ok(result)
     }
 }

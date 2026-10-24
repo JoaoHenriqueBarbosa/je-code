@@ -248,5 +248,6 @@ pub mod codelens;
 pub mod color;
 pub mod format;
 pub mod get_links;
+pub mod inlay_hints;
 pub mod goto_symbol;
 pub mod rename;

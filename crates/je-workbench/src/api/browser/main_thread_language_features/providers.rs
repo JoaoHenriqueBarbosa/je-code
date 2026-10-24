@@ -511,6 +511,7 @@ fn revive_code_action_dto(data: &ICodeActionDto, uri_identity_service: &Rc<dyn I
         None => None,
     };
     Ok(CodeAction {
+        is_synthetic: data.is_synthetic,
         title: data.title.clone(),
         command: data.command.as_ref().map(command_from_dto),
         edit,

@@ -192,9 +192,11 @@ pub struct WorkspaceEdit {
     pub edits: Vec<WorkspaceEditItem>,
 }
 
-/// `CodeAction`.
+/// `CodeAction`. O `is_synthetic` é o `_isSynthetic` do `CustomCodeAction` do host de extensões: no original o objeto da ação
+/// é o próprio DTO e leva a propriedade junto; aqui é o campo que o provedor do workbench repassa.
 #[derive(Clone, Default)]
 pub struct CodeAction {
+    pub is_synthetic: Option<bool>,
     pub title: String,
     pub command: Option<Command>,
     pub edit: Option<WorkspaceEdit>,
