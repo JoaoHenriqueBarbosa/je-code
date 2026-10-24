@@ -4138,7 +4138,9 @@ impl Shell {
             }
             return;
         }
-        if let Some(command) = self.workbench_shortcut(key_code, mods) {
+        // Uma tecla que o `keybindings.json` religou a um comando do shell vence a tabela fixa dele.
+        let rebound = editor_key.and_then(|key| self.active_editor().and_then(|e| e.view.user_keybinding(key, mods))).and_then(|(id, _)| Self::command_of_id(&id));
+        if let Some(command) = rebound.or_else(|| self.workbench_shortcut(key_code, mods)) {
             self.run(command);
             return;
         }

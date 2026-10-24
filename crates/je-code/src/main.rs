@@ -649,6 +649,29 @@ mod tests {
     }
 
     #[test]
+    fn user_keybinding_overrides_the_shell_shortcut_table() {
+        let dir = std::env::temp_dir().join(format!("je-code-{}-kb", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("pasta");
+        for name in ["one.ts", "two.ts"] {
+            std::fs::write(dir.join(name), "x").expect("arquivo");
+        }
+        let mut shell = Shell::open(Path::new(DEFAULT_THEME), Some(dir.clone()), &[dir.join("one.ts"), dir.join("two.ts")], 1200.0, 800.0).expect("abre");
+        let ctrl = Modifiers { ctrl: true, ..Modifiers::default() };
+        let press = |shell: &mut Shell, c: char| shell.key(true, KeyCode::KeyB, ctrl, None, Some(EditorKey::Char(c)));
+        let active = |shell: &Shell| shell.active_editor().and_then(|e| e.path.clone());
+        assert_eq!(active(&shell), Some(dir.join("two.ts")));
+        // Sem religar, Ctrl+B é o `toggleSidebarVisibility` da tabela do shell: nenhuma aba fecha.
+        press(&mut shell, 'b');
+        assert_eq!(active(&shell), Some(dir.join("two.ts")));
+        // O `keybindings.json` religa Ctrl+B para fechar o editor ativo e vence a tabela.
+        je_editor_view::set_user_keybindings(r#"[{ "key": "ctrl+b", "command": "workbench.action.closeActiveEditor" }]"#).expect("lê");
+        press(&mut shell, 'b');
+        assert_eq!(active(&shell), Some(dir.join("one.ts")), "a tecla religada fechou a aba");
+        je_editor_view::set_user_keybindings("[]").expect("limpa");
+        std::fs::remove_dir_all(&dir).expect("remove");
+    }
+
+    #[test]
     fn find_widget_selects_and_steps_through_matches() {
         use je_editor::cursor_common::CursorSimpleModel;
         let path = temp_file("find.ts", "const a = 1;\nconst b = a + a;\nlet C = 2;\n");

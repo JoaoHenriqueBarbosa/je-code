@@ -66,6 +66,8 @@ struct State {
     user: Vec<UserKeybindingItem>,
     generation: u64,
     resolver: Option<(u64, usize, Rc<KeybindingResolver>)>,
+    /// O resolvedor só com os atalhos do usuário, para saber se uma tecla foi religada por ele.
+    user_resolver: Option<(u64, Rc<KeybindingResolver>)>,
 }
 
 thread_local! {
@@ -92,6 +94,28 @@ fn resolve_items(items: impl Iterator<Item = (Option<Keybinding>, Option<String>
         }
     }
     result
+}
+
+/// O comando que o `keybindings.json` do usuário liga ao acorde (um acorde só, sem os atalhos de fábrica): serve ao
+/// shell para deixar a tecla religada pelo usuário vencer a dele.
+pub(crate) fn user_command(chord: KeyCodeChord, context: &EditorContext) -> Option<(String, Dynamic)> {
+    let keypress = dispatch_string(chord)?;
+    let resolver = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if let Some((generation, resolver)) = &state.user_resolver
+            && *generation == state.generation
+        {
+            return resolver.clone();
+        }
+        let user_items = resolve_items(state.user.iter().map(|k| (k.keybinding.clone(), k.command.clone(), k.command_args.clone(), k.when.clone(), None, false)), false);
+        let resolver = Rc::new(KeybindingResolver::new(Vec::new(), user_items, Rc::new(|_| {})));
+        state.user_resolver = Some((state.generation, resolver.clone()));
+        resolver
+    });
+    match resolver.resolve(context, &[], &keypress) {
+        ResolutionResult::KbFound { command_id: Some(id), command_args, .. } => Some((id, command_args)),
+        _ => None,
+    }
 }
 
 /// O resolvedor atual (refeito se os atalhos do usuário ou os registrados mudaram).
