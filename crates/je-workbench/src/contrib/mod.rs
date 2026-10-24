@@ -19,6 +19,7 @@ pub mod testing;
 pub mod browser_view;
 pub mod issue;
 pub mod multi_diff_editor;
+pub mod notebook;
 pub mod onboarding;
 
 pub mod tasks;

@@ -47,3 +47,6 @@ pub mod configuration_resolver;
 // Estrutura de tópicos (`IOutlineService`) e rótulo das pastas do workspace, que as migalhas leem.
 pub mod outline;
 pub mod workspaces;
+
+// URIs de célula, de metadados e de saída dos notebooks (`notebookDocumentService.ts`).
+pub mod notebook;
