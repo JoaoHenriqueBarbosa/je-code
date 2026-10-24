@@ -125,3 +125,33 @@ importações nomeadas). Para as classes, o total por arquivo é o limite superi
 3. `languages`: provedores de completion, code action, hover, definition, formatting; `createDiagnosticCollection`,
    `getDiagnostics`, `setLanguageConfiguration`, `match`, `getLanguages`.
 4. `env`, `extensions`, `Uri`, `EventEmitter`, `CancellationTokenSource` e as classes de valor acima.
+
+## Estado da entrega de `window` (2026-10-24, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `crates/je-exthost/src/api/window.rs` e dos módulos citados). Nenhum número de ativação foi medido.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `showInformationMessage`, `showWarningMessage`, `showErrorMessage` | entregue | `api/window.rs` |
+| `createStatusBarItem`, `setStatusBarMessage` | entregue | `api/window.rs` |
+| `showQuickPick` (texto e objeto, separador, `canPickMany`, `placeHolder`, `onDidSelectItem`, lista por promessa, token) | entregue | `api/quick_input.rs`, sobre `ExtHostQuickOpen` |
+| `showInputBox` (`value`, `valueSelection`, `prompt`, `placeHolder`, `password`, `validateInput`, token) | entregue | `api/quick_input.rs` |
+| `createOutputChannel` (canal comum, `languageId`, `{ log: true }`, `append`, `appendLine`, `replace`, `clear`, `show`, `hide`, `dispose`, `logLevel`, `onDidChangeLogLevel`, `trace` a `error`) | entregue | `api/output_channel.rs`, sobre `ExtHostOutputService` |
+| `withProgress` (`ProgressLocation`, `{ viewId }`, `title`, `cancellable`, `progress.report`, token) | entregue | `api/progress.rs`, sobre `ExtHostProgress` |
+| `QuickPickItemKind`, `InputBoxValidationSeverity`, `QuickInputButtons`, `ProgressLocation`, `LogLevel` | entregue | `api/enums.rs` |
+| `createQuickPick`, `createInputBox` | falta | o `ExtHostQuickOpen` os tem; faltam os objetos de sessão com acessores de leitura e escrita |
+| `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`, `showTextDocument` | falta | pedem o `ExtHostDocumentsAndEditors` montado em processo |
+| `tabGroups`, `createTreeView`, `createWebviewPanel`, `createTerminal` e os provedores | falta | |
+
+Como cada grupo entra em `vscode.window`: o `IMainThreadBinder` registra o cliente `MainThread*` correspondente (`MainThreadQuickOpen`,
+`MainThreadOutputService`, `MainThreadProgress`, além de `MainThreadMessageService` e `MainThreadStatusBar` que já existiam). Para os canais
+de saída o binder entrega também o `OutputEnvironment` (`IMainThreadBinder::output_environment`: pasta de logs, `ILoggerService` e criador de
+diretórios do lado do host).
+
+Os testes de ponta a ponta estão em `crates/je-workbench/tests/extension_host_api_window_quick_open.rs`,
+`extension_host_api_window_output.rs` e `extension_host_api_window_progress.rs`: cada um liga o cliente `MainThread*` real sobre dublês do
+serviço do workbench.
+
+Pendências conhecidas do que acabou de entrar (a confirmar na primeira compilação): o item de seletor devolvido à extensão é a cópia que
+atravessou a fronteira (comparar por `label`, não por identidade); `tooltip` de item só aceita texto; os argumentos extras de `trace` a
+`error` são ignorados; a extensão chamadora é sempre `je.exthost`, então o progresso não é atribuído a extensão nenhuma.

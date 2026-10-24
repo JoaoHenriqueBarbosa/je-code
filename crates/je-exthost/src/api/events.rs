@@ -65,6 +65,12 @@ impl EventTables {
     pub fn token_of(&self, value: &JsData) -> Option<CancellationToken> {
         self.tokens.borrow().get(&id_of(value)?).cloned()
     }
+
+    /// O argumento opcional `token?: CancellationToken` de uma função da API: o token que ele representa, ou `CancellationToken.None`
+    /// se o argumento falta ou não é um token do host.
+    pub fn token_arg(&self, value: Option<&JsData>) -> CancellationToken {
+        value.and_then(|token| self.token_of(token)).unwrap_or(CancellationToken::None)
+    }
 }
 
 fn id_of(value: &JsData) -> Option<u64> {

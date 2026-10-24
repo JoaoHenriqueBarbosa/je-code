@@ -25,7 +25,6 @@
 
 use std::rc::Rc;
 
-use je_base::cancellation::CancellationToken;
 use je_base::event::{Event, Listener};
 use je_base::lifecycle::{to_disposable, DisposableRef};
 use je_extensions::manifest::ExtensionIdentifier;
@@ -42,6 +41,7 @@ use crate::api::commands::promise_to_js;
 use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::accessor_namespace;
+use crate::api::HOST_EXTENSION;
 use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
 
 /// Os serviços do host que o namespace usa.
@@ -252,8 +252,8 @@ pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<D
                     Some(pattern) => FindFilesExclude::Pattern(glob_of(pattern)?),
                 };
                 let max_results = opt_number(args.get(2)).map(|count| count as i64);
-                let token = args.get(3).and_then(|token| find_events.token_of(token)).unwrap_or(CancellationToken::None);
-                let found = workspace.find_files(include, exclude, max_results, &ExtensionIdentifier::new("je.exthost"), token);
+                let token = find_events.token_arg(args.get(3));
+                let found = workspace.find_files(include, exclude, max_results, &ExtensionIdentifier::new(HOST_EXTENSION), token);
                 Ok(promise_to_js(&find_runner, found, |uris| JsData::Array(uris.iter().map(uri_to_js).collect())))
             }),
         ));

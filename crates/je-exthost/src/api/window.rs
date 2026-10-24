@@ -1,16 +1,17 @@
-//! `vscode.window`: as mensagens (`showInformationMessage`, `showWarningMessage`, `showErrorMessage`) e a barra de status
-//! (`createStatusBarItem`, `setStatusBarMessage`), mais as classes `vscode.ThemeColor` e `vscode.StatusBarItem` (esta só como
+//! `vscode.window`: as mensagens (`showInformationMessage`, `showWarningMessage`, `showErrorMessage`), a barra de status
+//! (`createStatusBarItem`, `setStatusBarMessage`), os seletores (`showQuickPick`, `showInputBox`), os canais de saída
+//! (`createOutputChannel`) e o progresso (`withProgress`), mais as classes `vscode.ThemeColor` e `vscode.StatusBarItem` (esta só como
 //! protótipo dos itens que o host entrega).
 //!
 //! As mensagens são o porte de `extHostMessageService.ts` (a lógica de `showMessage`: opções, itens, `isCloseAffordance`) sobre o
-//! proxy `MainThreadMessageService`; a barra de status liga o `ExtHostStatusBar` portado.
+//! proxy `MainThreadMessageService`; a barra de status liga o `ExtHostStatusBar` portado; os seletores ligam o `ExtHostQuickOpen`
+//! (módulo `quick_input`), os canais de saída o `ExtHostOutputService` (módulo `output_channel`) e o progresso o `ExtHostProgress`
+//! (módulo `progress`). Cada grupo só entra em `vscode.window` se o binder registrou o cliente `MainThread*` de que ele depende.
 //!
-//! Falta (depende de serviços do host ainda não portados, sem fachada): `showQuickPick`, `showInputBox`, `createQuickPick`,
-//! `createInputBox` (`ExtHostQuickOpen`); `createOutputChannel` (`ExtHostOutputService` e `MainThreadOutputService`);
-//! `withProgress` (o `ExtHostProgress` está portado, mas o `MainThreadProgress` pede o `IProgressService` do workbench montado em
-//! processo); `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`, `showTextDocument` (o
-//! `ExtHostDocumentsAndEditors`, ver o cabeçalho de `workspace.rs`); `tabGroups`, `createTreeView`, `createWebviewPanel`,
-//! `createTerminal` e os registros de provedores.
+//! Falta (depende de serviços do host ainda não ligados, sem fachada): `createQuickPick` e `createInputBox` (o `ExtHostQuickOpen` os
+//! tem, falta expor os objetos de sessão); `activeTextEditor`, `visibleTextEditors`, `onDidChangeActiveTextEditor`,
+//! `showTextDocument` (o `ExtHostDocumentsAndEditors`, ver o cabeçalho de `workspace.rs`); `tabGroups`, `createTreeView`,
+//! `createWebviewPanel`, `createTerminal` e os registros de provedores.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões: a `source` da notificação (`{ identifier, label }`) não é preenchida, porque o host
@@ -21,6 +22,8 @@
 //!   identidade (`choice === item`) falha, comparar por `title` funciona. Para itens de texto não muda nada.
 //! - `StatusBarItem#tooltip` aceita só texto (a `MarkdownString` ainda não é classe do `vscode`); `accessibilityInformation`,
 //!   `tooltip2` e o `id` de um item criado sem identificador não estão expostos.
+//! - Os seletores, os canais de saída e o progresso têm as divergências listadas nos cabeçalhos de `quick_input.rs`,
+//!   `output_channel.rs` e `progress.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -32,7 +35,10 @@ use je_base::promise::{MaybePromise, Promise};
 use je_base::severity::Severity;
 use je_base::themables::ThemeColor;
 use je_platform::log::LogServiceRef;
+use je_workbench::api::common::ext_host_output::ExtHostOutputService;
+use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{MainThreadMessageOptions, MainThreadMessageServiceShape, MessageCommandDto, StatusBarColor};
+use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_status_bar::{ExtHostStatusBar, ExtHostStatusBarEntry, StatusBarCommand, TimeoutOrThenable};
 use je_workbench::api::common::ext_host_types::{Command, Documentation, StatusBarAlignment};
 use je_workbench::api::common::ext_host_values::ApiValue;
@@ -40,14 +46,26 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, N
 
 use crate::api::commands::{promise_to_js, settle_js_result};
 use crate::api::disposable::DisposableTable;
-use crate::convert::{api_to_js, dynamic_to_js, field, js_to_dynamic, opt_number, opt_string, string_arg};
+use crate::api::events::EventTables;
+use crate::api::output_channel::{self, OutputChannels};
+use crate::api::progress::{self, ProgressReporters};
+use crate::api::quick_input;
+use crate::convert::{api_to_js, dynamic_to_js, field, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg};
 
-/// Os serviços do host que o namespace usa.
+/// Os serviços do host que o namespace usa. Cada grupo de membros de `vscode.window` só existe quando o serviço dele existe: o
+/// binder registra os clientes `MainThread*` que quer ligar.
 pub struct WindowServices {
-    pub message_service: Rc<dyn MainThreadMessageServiceShape>,
+    /// Sem o cliente `MainThreadMessageService` não há `showInformationMessage`, `showWarningMessage` nem `showErrorMessage`.
+    pub message_service: Option<Rc<dyn MainThreadMessageServiceShape>>,
     pub log_service: LogServiceRef,
     /// Sem o cliente `MainThreadStatusBar` do workbench não há barra de status, e os dois membros dela não existem em `vscode.window`.
     pub status_bar: Option<Rc<ExtHostStatusBar>>,
+    /// Sem o cliente `MainThreadQuickOpen` não há `showQuickPick` nem `showInputBox`.
+    pub quick_open: Option<Rc<ExtHostQuickOpen>>,
+    /// Sem o cliente `MainThreadOutputService` (e o ambiente de saída do binder) não há `createOutputChannel`.
+    pub output: Option<Rc<ExtHostOutputService>>,
+    /// Sem o cliente `MainThreadProgress` não há `withProgress`.
+    pub progress: Option<Rc<ExtHostProgress>>,
 }
 
 /// `isMessageItem(item)`: um objeto com `title` não vazio.
@@ -55,16 +73,9 @@ fn is_message_item(item: Option<&JsData>) -> bool {
     matches!(item.and_then(|item| field(item, "title")), Some(JsData::Str(title)) if !title.is_empty())
 }
 
-fn flag(options: &JsData, name: &str) -> Option<bool> {
-    match field(options, name) {
-        Some(JsData::Bool(value)) => Some(*value),
-        _ => None,
-    }
-}
-
 /// `ExtHostMessageService.showMessage` sem a extensão (ver as divergências do módulo): `args` são `(message, optionsOrFirstItem?,
 /// ...rest)`.
-fn show_message(runner: &NodeRunner, services: &WindowServices, severity: Severity, args: &[JsData]) -> Result<JsData, String> {
+fn show_message(runner: &NodeRunner, message_service: &Rc<dyn MainThreadMessageServiceShape>, log_service: &LogServiceRef, severity: Severity, args: &[JsData]) -> Result<JsData, String> {
     let message = string_arg(args, 0, "a mensagem")?;
     let options_or_first_item = args.get(1);
     let rest: &[JsData] = args.get(2..).unwrap_or(&[]);
@@ -74,7 +85,7 @@ fn show_message(runner: &NodeRunner, services: &WindowServices, severity: Severi
         options_or_first_item.into_iter().chain(rest.iter()).cloned().collect()
     } else {
         if let Some(provided) = options_or_first_item.filter(|provided| matches!(provided, JsData::Object(_))) {
-            options.modal = flag(provided, "modal");
+            options.modal = opt_bool(field(provided, "modal"));
             options.detail = opt_string(field(provided, "detail"));
         }
         rest.to_vec()
@@ -91,17 +102,17 @@ fn show_message(runner: &NodeRunner, services: &WindowServices, severity: Severi
                 commands.push(MessageCommandDto { title, is_close_affordance, handle: handle as f64 });
                 if is_close_affordance {
                     if has_close_affordance {
-                        services.log_service.warn("Only one message item can have 'isCloseAffordance'");
+                        log_service.warn("Only one message item can have 'isCloseAffordance'");
                     } else {
                         has_close_affordance = true;
                     }
                 }
             }
-            _ => services.log_service.warn("Invalid message item"),
+            _ => log_service.warn("Invalid message item"),
         }
     }
 
-    let chosen = services.message_service.rpc_show_message(severity, &message, options, commands);
+    let chosen = message_service.rpc_show_message(severity, &message, options, commands);
     Ok(promise_to_js(runner, chosen, move |handle| match handle {
         Some(handle) => items.get(*handle as usize).cloned().unwrap_or(JsData::Undefined),
         None => JsData::Undefined,
@@ -304,18 +315,46 @@ fn define_status_bar_item(runner: &NodeRunner, items: &Rc<StatusBarItems>, table
     JsData::Handle(Rc::new(constructor))
 }
 
+/// O que o namespace `window` guarda de cada chamada que devolve um objeto vivo para a extensão: os itens de barra de status, os canais de
+/// saída e os `Progress` das tarefas em andamento (os objetos JavaScript carregam só o id).
+#[derive(Default)]
+pub struct WindowState {
+    pub status_items: Rc<StatusBarItems>,
+    pub output_channels: Rc<OutputChannels>,
+    pub progress_reporters: Rc<ProgressReporters>,
+}
+
 /// O namespace `window`.
-pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<DisposableTable>, items: &Rc<StatusBarItems>) -> JsData {
+pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<DisposableTable>, events: &Rc<EventTables>, state: &WindowState) -> JsData {
     let mut members: Vec<(String, JsData)> = Vec::new();
     let mut add = |name: &str, length: u32, body: NativeCallback| members.push((name.to_owned(), JsData::Handle(Rc::new(runner.make_function(name, length, body)))));
 
-    for (name, severity) in [("showInformationMessage", Severity::Info), ("showWarningMessage", Severity::Warning), ("showErrorMessage", Severity::Error)] {
-        let (runner, services) = (runner.clone(), services.clone());
-        add(name, 1, Rc::new(move |args| show_message(&runner, &services, severity, args)));
+    if let Some(message_service) = services.message_service.clone() {
+        for (name, severity) in [("showInformationMessage", Severity::Info), ("showWarningMessage", Severity::Warning), ("showErrorMessage", Severity::Error)] {
+            let (runner, message_service, log_service) = (runner.clone(), message_service.clone(), services.log_service.clone());
+            add(name, 1, Rc::new(move |args| show_message(&runner, &message_service, &log_service, severity, args)));
+        }
+    }
+
+    if let Some(quick_open) = services.quick_open.clone() {
+        let (pick_runner, pick_quick_open, pick_events) = (runner.clone(), quick_open.clone(), events.clone());
+        add("showQuickPick", 3, Rc::new(move |args| quick_input::show_quick_pick(&pick_runner, &pick_quick_open, &pick_events, args)));
+        let (input_runner, input_events) = (runner.clone(), events.clone());
+        add("showInputBox", 2, Rc::new(move |args| quick_input::show_input_box(&input_runner, &quick_open, &input_events, args)));
+    }
+
+    if let Some(output) = services.output.clone() {
+        let create_channels = state.output_channels.clone();
+        add("createOutputChannel", 2, Rc::new(move |args| output_channel::create_output_channel(&output, &create_channels, args)));
+    }
+
+    if let Some(ext_host_progress) = services.progress.clone() {
+        let (progress_runner, reporters, progress_events) = (runner.clone(), state.progress_reporters.clone(), events.clone());
+        add("withProgress", 2, Rc::new(move |args| progress::with_progress(&progress_runner, &ext_host_progress, &reporters, &progress_events, args)));
     }
 
     if let Some(status_bar) = services.status_bar.clone() {
-        let (create_bar, create_items) = (status_bar.clone(), items.clone());
+        let (create_bar, create_items) = (status_bar.clone(), state.status_items.clone());
         add(
             "createStatusBarItem",
             3,
@@ -353,9 +392,11 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
     JsData::Object(members)
 }
 
-/// As classes deste módulo: `ThemeColor` e o protótipo de `StatusBarItem`.
-pub fn classes(runner: &NodeRunner, items: &Rc<StatusBarItems>, table: &Rc<DisposableTable>) -> Vec<(String, JsData)> {
-    let _status_bar_item = define_status_bar_item(runner, items, table);
+/// As classes deste módulo: `ThemeColor`, o protótipo de `StatusBarItem`, os de `OutputChannel` e `LogOutputChannel` e o de `Progress`.
+pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTable>) -> Vec<(String, JsData)> {
+    let _status_bar_item = define_status_bar_item(runner, &state.status_items, table);
+    output_channel::define_classes(runner, &state.output_channels, table);
+    progress::define_class(runner, &state.progress_reporters);
     let theme_color = runner.define_class(ClassSpec {
         name: "ThemeColor".to_owned(),
         length: 1,

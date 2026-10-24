@@ -18,10 +18,17 @@ pub mod disposable;
 pub mod enums;
 pub mod events;
 pub mod l10n;
+pub mod output_channel;
+pub mod progress;
+pub mod quick_input;
 pub mod types;
 pub mod uri;
 pub mod window;
 pub mod workspace;
+
+/// O identificador da extensão chamadora: o `vscode` é um só para todas as extensões, então o host não sabe qual delas chama e usa
+/// este para o que o original lê da `IExtensionDescription` (o log de traço do `findFiles`, o canal de saída, o progresso).
+pub const HOST_EXTENSION: &str = "je.exthost";
 
 /// Um namespace com acessores (`vscode.workspace.name`, `vscode.workspace.onDidChangeConfiguration`): o motor copia o objeto comum
 /// que atravessa a fronteira, então os acessores moram no protótipo de uma classe nativa `$<nome>` e o namespace é a instância

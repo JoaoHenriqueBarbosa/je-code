@@ -27,14 +27,32 @@ use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::languages::StringOrMarkdown;
+use je_extensions::manifest::ExtensionIdentifier;
 use je_platform::configuration::ConfigurationChange;
 use je_platform::edit_sessions::EditSessionIdentityMatch;
+use je_platform::log::{LogLevel, LoggerService};
+use je_platform::quickinput::quick_input::InputValidationResult;
+use je_workbench::api::common::ext_host_output::IDirectoryCreator;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostConfigurationShape, ExtHostContext, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData, IMainContext, IRawFileMatch2, IWorkspaceData,
-    StatusBarItemDto,
+    ExtHostConfigurationShape, ExtHostContext, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape,
+    IConfigurationInitData, IMainContext, IRawFileMatch2, IWorkspaceData, StatusBarItemDto,
 };
 
 use crate::local_context::LocalContext;
+
+/// O que o host precisa do lado do processo dele para criar canais de saída: no original o `ExtHostOutputService` usa o `ILoggerService`
+/// e o `IExtHostConsumerFileSystem` do próprio processo do host, e o `initData` (`logsLocation`, `extensionLogLevel`). Aqui o host não
+/// tem esses serviços, então quem monta o `MainThreadOutputService` os entrega junto.
+pub struct OutputEnvironment {
+    /// `initData.logsLocation`.
+    pub logs_location: URI,
+    /// `initData.environment.extensionLogLevel`.
+    pub extension_log_levels: Vec<(ExtensionIdentifier, LogLevel)>,
+    /// `IExtHostConsumerFileSystem.value.createDirectory`.
+    pub directory_creator: Rc<dyn IDirectoryCreator>,
+    /// `ILoggerService`.
+    pub logger_service: Rc<dyn LoggerService>,
+}
 
 /// Quem monta os clientes `MainThread*` em processo.
 pub trait IMainThreadBinder {
@@ -43,6 +61,12 @@ pub trait IMainThreadBinder {
     /// porque alguns clientes (o `MainThreadWorkspace`, `Injectable`) o recebem por valor. Devolve o que precisa ser descartado junto
     /// com o host.
     fn bind(&self, context: Rc<dyn IMainContext>) -> Vec<Rc<dyn IDisposable>>;
+
+    /// O ambiente do `ExtHostOutputService`, se o binder registrou o `MainThreadOutputService`. Sem ele o host não cria canais de
+    /// saída, mesmo com o cliente registrado.
+    fn output_environment(&self) -> Option<OutputEnvironment> {
+        None
+    }
 }
 
 /// Um encaminhador preguiçoso para o `T` que ainda não existe (ver o cabeçalho do módulo).
@@ -152,11 +176,78 @@ impl ExtHostStatusBarShape for LateExtHostStatusBar {
     }
 }
 
+/// O `ExtHostQuickOpenShape` que ainda não existe quando `MainThreadQuickOpen` nasce.
+#[derive(Default)]
+pub struct LateExtHostQuickOpen(pub Late<dyn ExtHostQuickOpenShape>);
+
+impl ExtHostQuickOpenShape for LateExtHostQuickOpen {
+    fn rpc_on_item_selected(&self, handle: u32) {
+        self.0.call_void(move |target| target.rpc_on_item_selected(handle));
+    }
+
+    fn rpc_validate_input(&self, input: &str) -> Promise<InputValidationResult> {
+        self.0.bound().rpc_validate_input(input)
+    }
+
+    fn rpc_on_did_change_active(&self, session_id: u32, handles: Vec<u32>) {
+        self.0.call_void(move |target| target.rpc_on_did_change_active(session_id, handles));
+    }
+
+    fn rpc_on_did_change_selection(&self, session_id: u32, handles: Vec<u32>) {
+        self.0.call_void(move |target| target.rpc_on_did_change_selection(session_id, handles));
+    }
+
+    fn rpc_on_did_accept(&self, session_id: u32) {
+        self.0.call_void(move |target| target.rpc_on_did_accept(session_id));
+    }
+
+    fn rpc_on_did_change_value(&self, session_id: u32, value: &str) {
+        let value = value.to_owned();
+        self.0.call_void(move |target| target.rpc_on_did_change_value(session_id, &value));
+    }
+
+    fn rpc_on_did_trigger_button(&self, session_id: u32, handle: Option<i64>, checked: Option<bool>) {
+        self.0.call_void(move |target| target.rpc_on_did_trigger_button(session_id, handle, checked));
+    }
+
+    fn rpc_on_did_trigger_item_button(&self, session_id: u32, item_handle: Option<u32>, button_handle: Option<i64>, checked: Option<bool>) {
+        self.0.call_void(move |target| target.rpc_on_did_trigger_item_button(session_id, item_handle, button_handle, checked));
+    }
+
+    fn rpc_on_did_hide(&self, session_id: u32) {
+        self.0.call_void(move |target| target.rpc_on_did_hide(session_id));
+    }
+}
+
+/// O `ExtHostOutputServiceShape` que ainda não existe quando `MainThreadOutputService` nasce (ele avisa o canal visível no próprio
+/// construtor).
+#[derive(Default)]
+pub struct LateExtHostOutputService(pub Late<dyn ExtHostOutputServiceShape>);
+
+impl ExtHostOutputServiceShape for LateExtHostOutputService {
+    fn rpc_set_visible_channel(&self, visible_channel_id: Option<String>) {
+        self.0.call_void(move |target| target.rpc_set_visible_channel(visible_channel_id));
+    }
+}
+
+/// O `ExtHostProgressShape` que ainda não existe quando `MainThreadProgress` nasce.
+#[derive(Default)]
+pub struct LateExtHostProgress(pub Late<dyn ExtHostProgressShape>);
+
+impl ExtHostProgressShape for LateExtHostProgress {
+    fn rpc_accept_progress_canceled(&self, handle: u32) {
+        self.0.call_void(move |target| target.rpc_accept_progress_canceled(handle));
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
     pub workspace: Rc<LateExtHostWorkspace>,
     pub configuration: Rc<LateExtHostConfiguration>,
     pub status_bar: Rc<LateExtHostStatusBar>,
+    pub quick_open: Rc<LateExtHostQuickOpen>,
+    pub output: Rc<LateExtHostOutputService>,
+    pub progress: Rc<LateExtHostProgress>,
 }
 
 impl LateForwarders {
@@ -165,13 +256,22 @@ impl LateForwarders {
         let workspace = Rc::new(LateExtHostWorkspace::default());
         let configuration = Rc::new(LateExtHostConfiguration::default());
         let status_bar = Rc::new(LateExtHostStatusBar::default());
+        let quick_open = Rc::new(LateExtHostQuickOpen::default());
+        let output = Rc::new(LateExtHostOutputService::default());
+        let progress = Rc::new(LateExtHostProgress::default());
         let as_workspace: Rc<dyn ExtHostWorkspaceShape> = workspace.clone();
         let as_configuration: Rc<dyn ExtHostConfigurationShape> = configuration.clone();
         let as_status_bar: Rc<dyn ExtHostStatusBarShape> = status_bar.clone();
+        let as_quick_open: Rc<dyn ExtHostQuickOpenShape> = quick_open.clone();
+        let as_output: Rc<dyn ExtHostOutputServiceShape> = output.clone();
+        let as_progress: Rc<dyn ExtHostProgressShape> = progress.clone();
         local.set_erased(ExtHostContext::EXT_HOST_WORKSPACE.sid, Rc::new(as_workspace));
         local.set_erased(ExtHostContext::EXT_HOST_CONFIGURATION.sid, Rc::new(as_configuration));
         local.set_erased(ExtHostContext::EXT_HOST_STATUS_BAR.sid, Rc::new(as_status_bar));
-        LateForwarders { workspace, configuration, status_bar }
+        local.set_erased(ExtHostContext::EXT_HOST_QUICK_OPEN.sid, Rc::new(as_quick_open));
+        local.set_erased(ExtHostContext::EXT_HOST_OUTPUT_SERVICE.sid, Rc::new(as_output));
+        local.set_erased(ExtHostContext::EXT_HOST_PROGRESS.sid, Rc::new(as_progress));
+        LateForwarders { workspace, configuration, status_bar, quick_open, output, progress }
     }
 }
 
