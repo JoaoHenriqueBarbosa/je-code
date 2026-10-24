@@ -191,3 +191,39 @@ fn folded_region_matches_the_oracle() {
     assert!(ink(215, 225), "a reticência fica depois do `{{`, como no oráculo (x de 217 a 223)");
     assert_eq!(v.layout().line_count, 27);
 }
+
+#[test]
+fn editing_with_wrap_and_fold_keeps_the_view_lines_in_step() {
+    let mut v = plain_view(&format!("{}\n{FOLDABLE}", long_text()));
+    v.set_word_wrap(WordWrap::On);
+    render(&mut v, "edit-before");
+    let wrapped = v.layout().line_count;
+    // Dobrar a função f (linha 4 do modelo, depois das 3 linhas do texto longo).
+    assert!(v.toggle_fold_at(4, false));
+    render(&mut v, "edit-folded");
+    assert_eq!(v.layout().line_count, wrapped - 2);
+    // Digitar no fim da linha longa empurra a quebra sem mexer na dobra.
+    v.set_cursor(Position::new(2, 320));
+    for _ in 0..40 {
+        v.type_text("x");
+    }
+    render(&mut v, "edit-typed");
+    let typed = v.layout().line_count;
+    assert!(typed >= wrapped - 2);
+    // Dobrar com o cursor dentro da região o leva para o fim da primeira linha dela (`adjustSelections`).
+    v.toggle_fold_at(4, false);
+    v.set_cursor(Position::new(5, 5));
+    v.toggle_fold_at(4, false);
+    render(&mut v, "edit-refolded");
+    assert_eq!(position(&v), (4, 15), "o cursor sai da linha escondida");
+    // Levar o cursor de volta à linha escondida (o ir para linha) desdobra a região.
+    v.set_cursor(Position::new(5, 5));
+    render(&mut v, "edit-revealed");
+    assert_eq!(position(&v), (5, 5));
+    assert_eq!(v.layout().line_count, typed + 2, "a região desdobrou");
+    let lines_after = v.layout().line_count;
+    v.set_word_wrap(WordWrap::Off);
+    render(&mut v, "edit-unwrapped");
+    assert_eq!(v.layout().line_count, 12, "sem quebra e sem dobra: as 12 linhas do modelo ({lines_after} com quebra)");
+}
+

@@ -62,6 +62,11 @@ impl EditorView {
     /// O que mudou nos cursores desde `before`: revela o cursor primário e acorda o piscar.
     fn after_edit(&mut self, before: &[Selection], scroll_before: f64) {
         let moved = self.core.selections() != before;
+        if moved && self.folding.has_hidden() {
+            // O cursor caiu numa linha escondida (desfazer, colar, API): a região desdobra (`revealCursor`).
+            let line = self.core.primary().selection_start_line_number;
+            self.folding.reveal_line(&self.core, line);
+        }
         if moved {
             self.reveal_cursor();
         } else {
