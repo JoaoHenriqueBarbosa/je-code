@@ -62,3 +62,6 @@ pub mod remote;
 
 // Modern UI (`contrib/modernUI`): a configuração do vidro fosco, o material e a contribuição que liga as classes.
 pub mod modern_ui;
+
+// Reinício por configuração (`contrib/relauncher`): o `SettingsChangeRelauncher`, que pergunta se reinicia quando uma configuração que só vale após o reinício muda.
+pub mod relauncher;
