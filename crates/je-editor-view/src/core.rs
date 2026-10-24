@@ -116,6 +116,33 @@ fn register_editor_modules() {
     je_editor::line_selection::register_line_selection();
     je_editor::comment::comment_actions::register_comment();
     je_editor::multicursor::register_multi_cursor(Rc::new(FindControllers), Rc::new(NoHighlightProviders));
+    register_view_keybindings();
+}
+
+/// Os atalhos das ações que a view trata por conta própria (a dobra do `FoldingController` e o `toggleWordWrap`
+/// do workbench), registrados como os `kbOpts` do original para o resolvedor de atalhos achá-los.
+fn register_view_keybindings() {
+    use je_base::key_codes::{KeyCode, KeyMod, key_chord};
+    use je_platform::keybinding::keybindings_registry::{KeybindingRule, KeybindingWeight, Keybindings, PlatformKeybindings, keybindings_registry};
+    let rule = |id: &str, primary: u32, mac: Option<u32>, weight: i64| KeybindingRule {
+        keybindings: Keybindings { primary: Some(primary), mac: mac.map(|p| PlatformKeybindings { primary: Some(p), ..Default::default() }), ..Default::default() },
+        id: id.to_owned(),
+        weight,
+        args: Dynamic::Undefined,
+        when: Some(je_editor::core_commands::editor_text_focus()),
+    };
+    let code = |k: KeyCode| k.0 as u32;
+    let registry = keybindings_registry();
+    for r in [
+        rule("editor.fold", KeyMod::CTRL_CMD | KeyMod::SHIFT | code(KeyCode::BracketLeft), Some(KeyMod::CTRL_CMD | KeyMod::ALT | code(KeyCode::BracketLeft)), KeybindingWeight::EDITOR_CONTRIB),
+        rule("editor.unfold", KeyMod::CTRL_CMD | KeyMod::SHIFT | code(KeyCode::BracketRight), Some(KeyMod::CTRL_CMD | KeyMod::ALT | code(KeyCode::BracketRight)), KeybindingWeight::EDITOR_CONTRIB),
+        rule("editor.foldAll", key_chord(KeyMod::CTRL_CMD | code(KeyCode::KeyK), KeyMod::CTRL_CMD | code(KeyCode::Digit0)), None, KeybindingWeight::EDITOR_CONTRIB),
+        rule("editor.unfoldAll", key_chord(KeyMod::CTRL_CMD | code(KeyCode::KeyK), KeyMod::CTRL_CMD | code(KeyCode::KeyJ)), None, KeybindingWeight::EDITOR_CONTRIB),
+        rule("editor.action.toggleWordWrap", KeyMod::ALT | code(KeyCode::KeyZ), None, KeybindingWeight::WORKBENCH_CONTRIB),
+    ] {
+        // Registrados uma vez por thread, junto com os módulos: ficam vivos enquanto o programa roda.
+        std::mem::forget(registry.register_keybinding_rule(r));
+    }
 }
 
 fn no_extensions_idle() -> RunWhenIdle {
@@ -145,6 +172,8 @@ fn editor_options(metrics: &FontMetrics) -> Dynamic {
         ("fontSize", Dynamic::from(f64::from(metrics.size))),
         ("lineHeight", Dynamic::from(metrics.line_height)),
         ("wordWrap", Dynamic::from("off")),
+        // O do editor de texto do workbench (o padrão do Monaco é 5): a largura dos números de linha que a view mede.
+        ("lineNumbersMinChars", Dynamic::from(3.0)),
         ("automaticLayout", Dynamic::from(false)),
     ])
 }
@@ -236,3 +265,4 @@ impl Drop for EditorCore {
         self.widget.dispose();
     }
 }
+

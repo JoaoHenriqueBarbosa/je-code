@@ -37,6 +37,12 @@ pub struct EditorColors {
     pub gutter_added: Rgba,
     pub gutter_modified: Rgba,
     pub gutter_deleted: Rgba,
+    /// `editor.foldBackground` (padrão: a seleção com 30% da opacidade) na primeira linha das regiões dobradas.
+    pub fold_background: Rgba,
+    /// `editor.foldPlaceholderForeground`, da reticência depois da linha dobrada.
+    pub fold_placeholder: Rgba,
+    /// `editorGutter.foldingControlForeground` (padrão: `icon.foreground`), dos chevrons da margem.
+    pub folding_control: Rgba,
     pub scrollbar_slider: Rgba,
     pub scrollbar_slider_hover: Rgba,
     pub scrollbar_slider_active: Rgba,
@@ -78,6 +84,12 @@ impl EditorColors {
             gutter_added: color("editorGutter.addedBackground"),
             gutter_modified: theme.get_color("editorGutter.modifiedBackground").unwrap_or(Rgba::opaque(0x1b, 0x81, 0xa8)),
             gutter_deleted: color("editorGutter.deletedBackground"),
+            fold_background: theme.get_color("editor.foldBackground").unwrap_or_else(|| {
+                let selection = color("editor.selectionBackground");
+                Rgba { a: (f32::from(selection.a) * 0.3).round() as u8, ..selection }
+            }),
+            fold_placeholder: theme.get_color("editor.foldPlaceholderForeground").unwrap_or(Rgba::opaque(0x80, 0x80, 0x80)),
+            folding_control: theme.get_color("editorGutter.foldingControlForeground").or_else(|| theme.get_color("icon.foreground")).unwrap_or(Rgba::opaque(0xc5, 0xc5, 0xc5)),
             scrollbar_slider: color("scrollbarSlider.background"),
             scrollbar_slider_hover: color("scrollbarSlider.hoverBackground"),
             scrollbar_slider_active: color("scrollbarSlider.activeBackground"),
