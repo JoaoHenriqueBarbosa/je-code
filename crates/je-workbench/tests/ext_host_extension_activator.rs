@@ -189,7 +189,7 @@ fn desc_with(id: &ExtensionIdentifier, deps: &[ExtensionIdentifier], activation_
             name: id.value.clone(),
             publisher: "test".to_owned(),
             version: "0.0.0".to_owned(),
-            engines: Engines { vscode: "^1.0.0".to_owned() },
+            engines: Engines { vscode: Some("^1.0.0".to_owned()), ..Engines::default() },
             activation_events: Some(activation_events.iter().map(|event| (*event).to_owned()).collect()),
             main: Some("index.js".to_owned()),
             extension_dependencies: Some(deps.iter().map(|dep| dep.value.clone()).collect()),
