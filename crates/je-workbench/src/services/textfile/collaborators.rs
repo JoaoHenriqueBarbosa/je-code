@@ -1,7 +1,7 @@
 //! Contratos reduzidos dos serviços que o `TextFileEditorModel`, o `TextFileSaveParticipant` e o
 //! `TextFileEditorModelManager` leem e que ainda não foram portados: `IProgressService`
-//! (`platform/progress/common/progress.ts`), `IWorkingCopyBackupService` (`workingCopyBackup.ts`),
-//! e `IWorkingCopyFileService` (`workingCopyFileService.ts`). O `ILanguageDetectionService` e o `IAccessibilityService`
+//! (`platform/progress/common/progress.ts`) e `IWorkingCopyFileService` (`workingCopyFileService.ts`). O
+//! `IWorkingCopyBackupService` completo é o de `services/working_copy/working_copy_backup.rs`. O `ILanguageDetectionService` e o `IAccessibilityService`
 //! são os dos módulos deles (`language_detection` e `je_platform::accessibility`).
 //!
 //! Seguem a regra do porte: cada contrato traz só o que o consumidor lê, com a assinatura do original, e cresce
@@ -17,16 +17,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::files::files::FileOperation;
 use je_platform::notification::notification::NotificationPriority;
 use je_platform::notification::notification_telemetry::NotificationTelemetryId;
-
-use crate::services::working_copy::working_copy::IWorkingCopy;
-use je_base::buffer::VSBufferReadableStream;
 
 //#region IProgressService
 
@@ -89,25 +85,6 @@ pub trait IProgressService {
 }
 
 je_instantiation::service_id!(pub I_PROGRESS_SERVICE: dyn IProgressService = "progressService");
-
-//#endregion
-
-//#region IWorkingCopyBackupService
-
-/// `IResolvedWorkingCopyBackup<T>`: o `meta` (um objeto) e o conteúdo do backup como stream.
-#[derive(Clone)]
-pub struct ResolvedWorkingCopyBackup {
-    pub meta: Option<Dynamic>,
-    pub value: VSBufferReadableStream,
-}
-
-/// `IWorkingCopyBackupService`.
-pub trait IWorkingCopyBackupService {
-    /// Resolves the backup for the given working copy if any.
-    fn resolve(&self, working_copy: &dyn IWorkingCopy) -> Promise<Option<ResolvedWorkingCopyBackup>>;
-}
-
-je_instantiation::service_id!(pub I_WORKING_COPY_BACKUP_SERVICE: dyn IWorkingCopyBackupService = "workingCopyBackupService");
 
 //#endregion
 
