@@ -26,7 +26,7 @@ use je_base::promise::{DeferredPromise, Promise};
 use je_base::uri::URI;
 use je_platform::resources::uri_file;
 use je_workbench::common::editor::{RevertOptions, SaveOptions};
-use je_workbench::contrib::custom_editor::custom_editor::{CustomEditorModelReference, ICustomEditorModel};
+use je_workbench::contrib::custom_editor::custom_editor::{CustomEditorModelReference, ICustomEditorModel, ICustomEditorModelManager};
 use je_workbench::contrib::custom_editor::custom_editor_model_manager::CustomEditorModelManager;
 use je_workbench::services::files_configuration::files_configuration_service::Readonly;
 
