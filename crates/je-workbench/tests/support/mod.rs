@@ -78,6 +78,9 @@ pub mod mock_debug;
 // `DebugExpressionRenderer` de teste, o `IDebugService` com o `getViewModel` trocado, o escopo e a variável do `setup`.
 pub mod debug_view_support;
 
+// Porte de `terminalProcessManager.test.ts`: o processo, o serviço de instâncias e o `workbenchInstantiationService` do gerenciador.
+pub mod terminal_process_manager_support;
+
 // Porte de `lineDataEventAddon.test.ts`, `markNavigationAddon.test.ts` e `decorationAddon.test.ts`: a decoração e o elemento do
 // `registerDecoration` do `TestTerminal`, e os dublês do `DecorationAddon`.
 pub mod fake_xterm_decoration;

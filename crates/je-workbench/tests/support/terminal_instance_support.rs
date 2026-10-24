@@ -41,7 +41,7 @@ use je_workbench::common::editor::{EditorInputOrUntyped, GroupIdentifier};
 use je_workbench::contrib::terminal::browser::terminal::{
     ICreateTerminalOptions, ITerminalInstance, ITerminalInstanceService, ITerminalService, ShellLaunchConfigOrProfile,
 };
-use je_workbench::contrib::terminal::common::environment_variable::IEnvironmentVariableService;
+use je_workbench::contrib::terminal::common::environment_variable::{IEnvironmentVariableCollectionWithPersistence, IEnvironmentVariableService};
 use je_workbench::contrib::terminal::common::terminal::{
     IShellLaunchConfigResolveOptions, IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, ITerminalProfileResolverService, SharedShellLaunchConfig,
 };
@@ -567,28 +567,34 @@ impl IHistoryService for TestHistoryService {
 
 /// O `EnvironmentVariableService` sem persistência (ver o cabeçalho).
 pub struct TestEnvironmentVariableService {
-    collections: RefCell<OrderedMap<String, IEnvironmentVariableCollection>>,
+    collections: RefCell<OrderedMap<String, IEnvironmentVariableCollectionWithPersistence>>,
     merged_collection: RefCell<Rc<dyn IMergedEnvironmentVariableCollection>>,
     on_did_change_collections: Rc<Emitter<Rc<dyn IMergedEnvironmentVariableCollection>>>,
 }
 
 impl TestEnvironmentVariableService {
     pub fn new() -> Rc<Self> {
-        let collections: OrderedMap<String, IEnvironmentVariableCollection> = OrderedMap::new();
-        let merged_collection: Rc<dyn IMergedEnvironmentVariableCollection> = Rc::new(MergedEnvironmentVariableCollection::new(collections.clone()));
-        Rc::new(Self { collections: RefCell::new(collections), merged_collection: RefCell::new(merged_collection), on_did_change_collections: Emitter::new() })
+        let merged_collection: Rc<dyn IMergedEnvironmentVariableCollection> = Rc::new(MergedEnvironmentVariableCollection::new(OrderedMap::new()));
+        Rc::new(Self { collections: RefCell::new(OrderedMap::new()), merged_collection: RefCell::new(merged_collection), on_did_change_collections: Emitter::new() })
     }
 
     /// `updateCollections`: recria a coleção mesclada e avisa.
     fn update_collections(&self) {
-        let merged: Rc<dyn IMergedEnvironmentVariableCollection> = Rc::new(MergedEnvironmentVariableCollection::new(self.collections.borrow().clone()));
+        let plain: OrderedMap<String, IEnvironmentVariableCollection> = {
+            let mut plain = OrderedMap::new();
+            for (extension, collection) in self.collections.borrow().iter() {
+                plain.insert(extension.clone(), collection.collection());
+            }
+            plain
+        };
+        let merged: Rc<dyn IMergedEnvironmentVariableCollection> = Rc::new(MergedEnvironmentVariableCollection::new(plain));
         *self.merged_collection.borrow_mut() = merged.clone();
         self.on_did_change_collections.fire(merged);
     }
 }
 
 impl IEnvironmentVariableService for TestEnvironmentVariableService {
-    fn collections(&self) -> OrderedMap<String, IEnvironmentVariableCollection> {
+    fn collections(&self) -> OrderedMap<String, IEnvironmentVariableCollectionWithPersistence> {
         self.collections.borrow().clone()
     }
 
@@ -600,7 +606,7 @@ impl IEnvironmentVariableService for TestEnvironmentVariableService {
         self.on_did_change_collections.event()
     }
 
-    fn set(&self, extension_identifier: &str, collection: IEnvironmentVariableCollection) {
+    fn set(&self, extension_identifier: &str, collection: IEnvironmentVariableCollectionWithPersistence) {
         self.collections.borrow_mut().insert(extension_identifier.to_owned(), collection);
         self.update_collections();
     }
