@@ -26,7 +26,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use common::files::async_test;
-use common::{RegistryGuard, j, node_full, s};
+use common::{RegistryGuard, assert_deep_strict_equal, j, node_full, s};
 use indexmap::IndexMap;
 use je_base::async_::timeout;
 use je_base::default_account::{ICopilotTokenInfo, IDefaultAccount, IDefaultAccountAuthenticationProvider, IEntitlementsData, IPolicyData};
@@ -341,7 +341,6 @@ je_platform::delegate_logger!(RecordingLogService, inner, error_args: |this, mes
     this.logged.borrow_mut().push((text, args.to_vec()));
 });
 
-impl je_platform::log::LogService for RecordingLogService {}
 
 /// `FakeManagedPolicyService`: o `getPolicyValue` lê um mapa próprio; `gated` faz o `AsyncManagedPolicyService`
 /// (nada visível até o `seed`).
@@ -796,7 +795,7 @@ fn should_initialize_with_default_account_and_preview_features_disabled() {
         assert_eq!(f.policy_service.get_policy_value_source("PolicySettingD"), Some(PolicyValueSource::Account));
 
         assert_eq!(actual.get_value("setting.B"), s("policyValueB"));
-        assert_eq!(actual.get_value("setting.C"), j("['policyValueC1', 'policyValueC2']"));
+        assert_deep_strict_equal(&actual.get_value("setting.C"), &j("['policyValueC1', 'policyValueC2']"));
         assert_eq!(actual.get_value("setting.D"), Dynamic::Bool(false));
     });
 }
@@ -1331,7 +1330,7 @@ fn managed_settings_per_key_precedence_merges_across_channels_different_keys_win
         let (_f, policy_service, config) = file_and_native_stack(&d, file, native).await;
         let model = config.configuration_model();
         assert_eq!(model.get_value("setting.F"), Dynamic::Bool(false));
-        assert_eq!(model.get_value("setting.G"), j("{ 'assign-issue@skills': true }"));
+        assert_deep_strict_equal(&model.get_value("setting.G"), &j("{ 'assign-issue@skills': true }"));
         assert_eq!(policy_service.get_policy_value_source("PolicySettingF"), Some(PolicyValueSource::NativeMdm));
         assert_eq!(policy_service.get_policy_value_source("PolicySettingG"), Some(PolicyValueSource::FileManagedSettings));
     });
@@ -1449,7 +1448,8 @@ fn managed_settings_an_object_typed_setting_resolves_identically_from_server_and
         };
         let server_config = resolve(Some(json), None).await;
         let mdm_config = resolve(None, Some(json)).await;
-        assert_eq!((server_config, mdm_config), (expected.clone(), expected));
+        assert_deep_strict_equal(&server_config, &expected);
+        assert_deep_strict_equal(&mdm_config, &expected);
     });
 }
 

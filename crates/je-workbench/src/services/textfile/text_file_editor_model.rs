@@ -898,7 +898,7 @@ impl TextFileEditorModel {
 
         // Track dirty state and version id
         let was_dirty = self.dirty.get();
-        self.do_set_dirty(dirty);
+        drop(self.do_set_dirty(dirty)); // a função de desfazer não é usada aqui, como no original
 
         // Emit as Event if dirty changed
         if dirty != was_dirty {

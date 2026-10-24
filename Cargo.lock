@@ -4232,6 +4232,7 @@ version = "0.0.0"
 dependencies = [
  "chardetng",
  "encoding_rs",
+ "indexmap",
  "je-base",
  "je-editor",
  "je-extensions",
@@ -4242,6 +4243,7 @@ dependencies = [
  "je-widgets",
  "jiff",
  "serde_json",
+ "tempfile",
  "zyarr",
 ]
 
