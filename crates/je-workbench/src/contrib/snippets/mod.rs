@@ -7,6 +7,7 @@
 //! - [`snippet_completion_provider`]: `SnippetCompletion` e `SnippetCompletionProvider`
 //!   (`snippetCompletionProvider.ts`).
 
+pub mod commands;
 pub mod snippet_completion_provider;
 pub mod snippets;
 pub mod snippets_file;
