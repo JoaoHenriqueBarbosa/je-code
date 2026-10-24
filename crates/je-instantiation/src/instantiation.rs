@@ -216,6 +216,9 @@ tuple_dependencies!(A, B, C, D, E, F, G, H, I);
 tuple_dependencies!(A, B, C, D, E, F, G, H, I, J);
 tuple_dependencies!(A, B, C, D, E, F, G, H, I, J, K);
 tuple_dependencies!(A, B, C, D, E, F, G, H, I, J, K, L);
+tuple_dependencies!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+tuple_dependencies!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+tuple_dependencies!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
 
 /// Um tipo construível por `createInstance`.
 pub trait Injectable: Sized + 'static {

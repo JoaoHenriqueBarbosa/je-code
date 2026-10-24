@@ -2,3 +2,4 @@
 
 pub mod browser;
 pub mod workspace_folder_label_service;
+pub mod workspace_editing;

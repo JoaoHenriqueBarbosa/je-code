@@ -336,6 +336,25 @@ impl IEditorService for TestEditorServiceWithActiveLanguage {
     fn open_editor(&self, _editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>> {
         Promise::resolved(None)
     }
+
+    /// Não é exercitado por esta suíte.
+    fn find_editors(&self, _resource: &je_base::uri::URI, _options: Option<je_workbench::services::editor::editor_service::FindEditorOptions>) -> Vec<je_workbench::common::editor::EditorIdentifier> {
+        unreachable!("TestEditorServiceWithActiveLanguage.findEditors não é exercitado por esta suíte")
+    }
+
+    /// Não é exercitado por esta suíte.
+    fn save(
+        &self,
+        _editors: Vec<je_workbench::common::editor::EditorIdentifier>,
+        _options: Option<je_workbench::services::editor::editor_service::SaveEditorsOptions>,
+    ) -> Promise<je_workbench::services::editor::editor_service::SaveEditorsResult> {
+        unreachable!("TestEditorServiceWithActiveLanguage.save não é exercitado por esta suíte")
+    }
+
+    /// Não é exercitado por esta suíte.
+    fn save_all(&self, _options: Option<je_workbench::services::editor::editor_service::SaveAllEditorsOptions>) -> Promise<je_workbench::services::editor::editor_service::SaveEditorsResult> {
+        unreachable!("TestEditorServiceWithActiveLanguage.saveAll não é exercitado por esta suíte")
+    }
 }
 
 /// `ITextEditorService`: os casos não criam editores por ele.

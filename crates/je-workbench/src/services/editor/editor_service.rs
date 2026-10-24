@@ -11,15 +11,21 @@
 //! - **`activeTextEditorControl`** (`ICodeEditor | IDiffEditor | undefined`) é o [`ActiveTextEditorControl`]. O `ICodeEditor`
 //!   do `je-editor` carrega a API inteira do editor; o resolvedor só lê a seleção, o texto dela e o foco, que são os
 //!   métodos de [`IActiveCodeEditor`]. `isCodeEditor` e `isDiffEditor` são as variantes do enum.
+//! - **`findEditors`, `save` e `saveAll`** são lidos pelo `MainThreadWorkspace`. `findEditors` entra só na sobrecarga com
+//!   `URI` (a de `IResourceEditorInputIdentifier` entra junto do primeiro consumidor). As interfaces
+//!   `ISaveEditorsOptions`, `ISaveAllEditorsOptions` (com `IBaseSaveRevertAllEditorOptions`), `ISaveEditorsResult` e
+//!   `IFindEditorOptions` são [`SaveEditorsOptions`], [`SaveAllEditorsOptions`], [`SaveEditorsResult`] e
+//!   [`FindEditorOptions`]; `includeUntitled?: { includeScratchpad } | boolean` é [`IncludeUntitled`].
 
 use std::rc::Rc;
 
 use je_base::JsString;
+use je_base::uri::URI;
 use je_base::promise::Promise;
 use je_editor::selection::Selection;
 use je_instantiation::service_id;
 
-use crate::common::editor::{EditorInputOrUntyped, IEditorPane, UntypedEditorInput};
+use crate::common::editor::{EditorIdentifier, EditorInputOrUntyped, EditorsOrder, IEditorPane, SaveOptions, SideBySideEditor, UntypedEditorInput};
 
 /// O recorte de `ICodeEditor` que o resolvedor de variáveis lê: a seleção, o texto dentro dela e o foco do widget.
 pub trait IActiveCodeEditor {
@@ -41,6 +47,51 @@ pub enum ActiveTextEditorControl {
     Diff { original: Rc<dyn IActiveCodeEditor>, modified: Rc<dyn IActiveCodeEditor> },
 }
 
+/// `ISaveEditorsOptions`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SaveEditorsOptions {
+    /// O `ISaveOptions` de que herda.
+    pub base: SaveOptions,
+    /// Save the editors to a different location (`saveAs`).
+    pub save_as: Option<bool>,
+}
+
+/// O `{ includeScratchpad: boolean } | boolean` de `includeUntitled`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncludeUntitled {
+    Bool(bool),
+    /// `{ includeScratchpad }`.
+    Options { include_scratchpad: bool },
+}
+
+/// `ISaveAllEditorsOptions` (`ISaveEditorsOptions` mais `IBaseSaveRevertAllEditorOptions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SaveAllEditorsOptions {
+    pub save: SaveEditorsOptions,
+    /// Whether to include untitled editors as well.
+    pub include_untitled: Option<IncludeUntitled>,
+    /// Whether to exclude sticky editors.
+    pub exclude_sticky: Option<bool>,
+}
+
+/// `ISaveEditorsResult`.
+#[derive(Clone)]
+pub struct SaveEditorsResult {
+    /// Whether the save operation was successful.
+    pub success: bool,
+    /// Resulting editors after the save operation.
+    pub editors: Vec<EditorInputOrUntyped>,
+}
+
+/// `IFindEditorOptions`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindEditorOptions {
+    /// Whether to consider any or both side by side editor as matching (`Primary`, `Secondary` ou `Any`).
+    pub support_side_by_side: Option<SideBySideEditor>,
+    /// The order in which to consider editors for finding.
+    pub order: Option<EditorsOrder>,
+}
+
 /// `IEditorService`.
 pub trait IEditorService {
     /// The currently visible editor panes in the editor part, one per visible group.
@@ -60,6 +111,15 @@ pub trait IEditorService {
     /// `openEditor(editor: IUntypedEditorInput, group?: PreferredGroup)` sem o grupo preferido (o grupo ativo): opens an
     /// editor in a group and resolves with the editor pane that is showing it, or `None` when it was not opened.
     fn open_editor(&self, editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>>;
+
+    /// `findEditors(resource, options)`: finds all editors that match the resource.
+    fn find_editors(&self, resource: &URI, options: Option<FindEditorOptions>) -> Vec<EditorIdentifier>;
+
+    /// `save(editors, options)`: saves the editors and resolves with the result of the operation.
+    fn save(&self, editors: Vec<EditorIdentifier>, options: Option<SaveEditorsOptions>) -> Promise<SaveEditorsResult>;
+
+    /// `saveAll(options)`: saves all editors that are dirty.
+    fn save_all(&self, options: Option<SaveAllEditorsOptions>) -> Promise<SaveEditorsResult>;
 }
 
 service_id!(pub I_EDITOR_SERVICE: dyn IEditorService = "editorService");

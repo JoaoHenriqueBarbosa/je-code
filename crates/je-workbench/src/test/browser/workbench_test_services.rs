@@ -418,6 +418,25 @@ mod editor_inputs {
         fn open_editor(&self, _editor: UntypedEditorInput) -> Promise<Option<Rc<dyn IEditorPane>>> {
             Promise::resolved(None)
         }
+
+        /// `findEditors() { return [] as any; }`.
+        fn find_editors(&self, _resource: &URI, _options: Option<crate::services::editor::editor_service::FindEditorOptions>) -> Vec<crate::common::editor::EditorIdentifier> {
+            Vec::new()
+        }
+
+        /// `save(...) { throw new Error('Method not implemented.'); }`.
+        fn save(
+            &self,
+            _editors: Vec<crate::common::editor::EditorIdentifier>,
+            _options: Option<crate::services::editor::editor_service::SaveEditorsOptions>,
+        ) -> Promise<crate::services::editor::editor_service::SaveEditorsResult> {
+            panic!("Method not implemented.")
+        }
+
+        /// `saveAll(...) { throw new Error('Method not implemented.'); }`.
+        fn save_all(&self, _options: Option<crate::services::editor::editor_service::SaveAllEditorsOptions>) -> Promise<crate::services::editor::editor_service::SaveEditorsResult> {
+            panic!("Method not implemented.")
+        }
     }
 
     /// `TestEditorInput`.

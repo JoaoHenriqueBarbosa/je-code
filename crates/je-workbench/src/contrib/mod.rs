@@ -8,6 +8,7 @@ pub mod update;
 
 pub mod terminal;
 
+pub mod custom_editor;
 pub mod debug;
 
 pub mod extensions;
