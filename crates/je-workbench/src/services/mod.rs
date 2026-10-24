@@ -22,3 +22,6 @@ pub mod extension_management;
 pub mod lifecycle;
 pub mod user_data_profile;
 pub mod working_copy;
+
+// Serviço de arquivos de texto: codificação (`textfile/common/encoding.ts`).
+pub mod textfile;
