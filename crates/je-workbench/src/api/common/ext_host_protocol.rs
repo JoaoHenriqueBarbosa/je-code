@@ -2810,11 +2810,28 @@ pub use self::language_features_region::*;
 /// `ExtHostLanguageFeaturesShape` e os identificadores `MainContext.MainThreadLanguageFeatures` e
 /// `ExtHostContext.ExtHostLanguageFeatures`.
 ///
-/// PARTE 1 (somente o que os adaptadores já portados pedem): `DocumentSymbol`, `CodeLens`, `Definition`,
-/// `Declaration`, `Implementation`, `TypeDefinition`, `Hover`, `DocumentHighlight`, `MultiDocumentHighlight` e
-/// `Reference`. Os métodos dos demais provedores (ação de código, formatação, símbolos do workspace, renomeação,
-/// semântica, completar, assinatura, dicas embutidas, links, cor, dobra, seleção, hierarquias, soltar, valores
-/// embutidos, expressão avaliável, edição ligada e `$setWordDefinitions`) entram nos dois traits na parte 2.
+/// PARTES 1 e 2 (somente o que os adaptadores já portados pedem): `DocumentSymbol`, `CodeLens`, `Definition`,
+/// `Declaration`, `Implementation`, `TypeDefinition`, `Hover`, `DocumentHighlight`, `MultiDocumentHighlight`,
+/// `Reference`, e (parte 2) expressão avaliável, valores embutidos, edição ligada, ação de código, colar, formatação
+/// (documento, intervalo, ao digitar), símbolos do workspace, renomeação, novos nomes de símbolo, tokens semânticos,
+/// completar, assinatura, dicas embutidas, links, cor, dobra, seleção, hierarquias de chamada e de tipo, e soltar.
+/// Ainda pendentes para a parte 3: as completações em linha (`$registerInlineCompletionsSupport`,
+/// `$provideInlineCompletions` e os `$handleInlineCompletion*`), `$setLanguageConfiguration` e `$setWordDefinitions`.
+///
+/// Divergências da parte 2:
+/// - Os DTOs que o original tira de `languages.ts` e o editor ainda não tem são definidos aqui (`FormattingOptions`,
+///   `InlineValueDto`, `EvaluatableExpressionDto`, `InlayHintLabelDto`...); os que o editor já tem são os dele
+///   (`TextEdit` de `code_action::languages`, `CompletionContext`, `SignatureInformation`, `FoldingRange`,
+///   `SelectionRange`, `SymbolKind`...). `InlayHintKind` e `NewSymbolNameTag` são os enums da API (mesmos valores).
+/// - `ISuggestDataDto` e `ISuggestResultDto` são structs com campos nomeados no lugar das chaves de uma letra
+///   (`ISuggestDataDtoField.label = 'a'`), que existem só para encurtar o JSON na rede; o `x` é `cache_id`.
+/// - `IWorkspaceEditDto & { rejectReason?: string }` é [`RenameEditsDto`] e `RenameLocation & Rejection` é
+///   [`RenameLocationDto`]: o objeto que o original monta sem o outro lado (`edits: undefined!`) tem o lado ausente `None`.
+/// - `$provideCodeActions(rangeOrSelection: IRange | ISelection)` é o enum [`RangeOrSelection`].
+/// - `CustomCodeAction._isSynthetic` é o campo `is_synthetic` de [`ICodeActionDto`] (o objeto do original o carrega junto).
+/// - `$provideDocumentSemanticTokens` devolve `VSBuffer | null`: `Option<VSBuffer>`.
+/// - `ICallHierarchyItemDto` e `ITypeHierarchyItemDto` (mesma forma) são o [`HierarchyItemDto`] dos conversores.
+/// - `insertText: string | { snippet: string }` dos DTOs de colar e soltar é [`DropPasteInsertTextDto`].
 ///
 /// Divergências:
 /// - Os handles (`number`) são `u32` e os `UriComponents` são [`URI`] (os dois lados dividem o processo e o `revive` é a
@@ -2830,18 +2847,29 @@ pub use self::language_features_region::*;
 /// - `Dto<languages.MultiDocumentHighlight[]>` é uma lista de [`MultiDocumentHighlightDto`].
 /// - `$emitCodeLensEvent(eventHandle, event?: any)` leva o evento como `Option<Dynamic>`.
 mod language_features_region {
+    use je_base::buffer::VSBuffer;
     use je_base::cancellation::CancellationToken;
     use je_base::dynamic::Dynamic;
     use je_base::html_content::IMarkdownString;
     use je_base::lifecycle::IDisposable;
     use je_base::promise::Promise;
     use je_base::uri::URI;
-    use je_editor::language_providers::{DocumentHighlight, DocumentSymbol};
+    use je_editor::code_action::languages::{CodeActionContext, TextEdit as EditorTextEdit};
+    use je_editor::folding::syntax_range_provider::{FoldingContext, FoldingRange as EditorFoldingRange};
+    use je_editor::language_providers::{
+        DocumentHighlight, DocumentSymbol, SelectionRange as EditorSelectionRange, SymbolKind as EditorSymbolKind, SymbolTag as EditorSymbolTag,
+    };
+    use je_editor::languages::{CompletionContext, CompletionItemKind as EditorCompletionItemKind, CompletionItemRange, CompletionItemTag, CompletionLabel, StringOrMarkdown};
+    use je_editor::parameter_hints::languages::{SignatureHelpTriggerKind, SignatureInformation as EditorSignatureInformation};
     use je_editor::position::Position as EditorPosition;
     use je_editor::range::Range as EditorRange;
+    use je_editor::selection::Selection as EditorSelection;
+    use je_extensions::manifest::ExtensionIdentifier;
+    use je_platform::markers::markers::MarkerData;
 
-    use super::{ExtHostContext, ICommandDto, MainContext, ProxyIdentifier};
-    use crate::api::common::ext_host_type_converters::LocationDto;
+    use super::{DataTransferDto, ExtHostContext, ICommandDto, IWorkspaceEditDto, MainContext, ProxyIdentifier};
+    use crate::api::common::ext_host_type_converters::{HierarchyItemDto, IncomingCallDto, LocationDto, OutgoingCallDto};
+    use crate::api::common::ext_host_types::{DocumentPasteTriggerKind, InlayHintKind, NewSymbolNameTag, SemanticTokensLegend};
     use crate::api::common::ext_host_workspace::GlobPatternDto;
 
     /// `IDocumentFilterDto`.
@@ -2937,6 +2965,375 @@ mod language_features_region {
         pub lenses: Vec<ICodeLensDto>,
     }
 
+    // ---- parte 2: valores embutidos, expressão avaliável, edição ligada
+
+    /// `languages.EvaluatableExpression`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct EvaluatableExpressionDto {
+        pub range: EditorRange,
+        pub expression: Option<String>,
+    }
+
+    /// `languages.InlineValue`: `InlineValueText | InlineValueVariableLookup | InlineValueExpression`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum InlineValueDto {
+        Text { range: EditorRange, text: String },
+        Variable { range: EditorRange, variable_name: Option<String>, case_sensitive_lookup: bool },
+        Expression { range: EditorRange, expression: Option<String> },
+    }
+
+    /// `IInlineValueContextDto`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct IInlineValueContextDto {
+        pub frame_id: f64,
+        pub stopped_location: EditorRange,
+    }
+
+    /// `IRegExpDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct IRegExpDto {
+        pub pattern: String,
+        pub flags: Option<String>,
+    }
+
+    /// `ILinkedEditingRangesDto`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ILinkedEditingRangesDto {
+        pub ranges: Vec<EditorRange>,
+        pub word_pattern: Option<IRegExpDto>,
+    }
+
+    // ---- parte 2: ações de código e colar
+
+    /// `IRange | ISelection`.
+    #[derive(Clone)]
+    pub enum RangeOrSelection {
+        Range(EditorRange),
+        Selection(EditorSelection),
+    }
+
+    /// `ICodeActionDto`. O `is_synthetic` é o `_isSynthetic` de `CustomCodeAction`.
+    #[derive(Clone, Default)]
+    pub struct ICodeActionDto {
+        pub is_synthetic: Option<bool>,
+        pub cache_id: Option<ChainedCacheId>,
+        pub title: String,
+        pub edit: Option<IWorkspaceEditDto>,
+        pub diagnostics: Option<Vec<MarkerData>>,
+        pub command: Option<ICommandDto>,
+        pub kind: Option<String>,
+        pub is_preferred: Option<bool>,
+        pub is_ai: Option<bool>,
+        pub disabled: Option<String>,
+        pub ranges: Option<Vec<EditorRange>>,
+    }
+
+    /// `ICodeActionListDto`.
+    #[derive(Clone)]
+    pub struct ICodeActionListDto {
+        pub cache_id: CacheId,
+        pub actions: Vec<ICodeActionDto>,
+    }
+
+    /// O elemento de `ICodeActionProviderMetadataDto.documentation`.
+    #[derive(Clone, Debug)]
+    pub struct CodeActionDocumentationDto {
+        pub kind: String,
+        pub command: ICommandDto,
+    }
+
+    /// `ICodeActionProviderMetadataDto`.
+    #[derive(Clone, Debug, Default)]
+    pub struct ICodeActionProviderMetadataDto {
+        pub provided_kinds: Option<Vec<String>>,
+        pub documentation: Option<Vec<CodeActionDocumentationDto>>,
+    }
+
+    /// O `{ edit?: IWorkspaceEditDto; command?: ICommandDto }` de `$resolveCodeAction`.
+    #[derive(Clone, Default)]
+    pub struct ResolvedCodeActionDto {
+        pub edit: Option<IWorkspaceEditDto>,
+        pub command: Option<ICommandDto>,
+    }
+
+    /// `string | { snippet: string }`: o `insertText` das edições de colar e de soltar.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum DropPasteInsertTextDto {
+        Text(String),
+        Snippet(String),
+    }
+
+    /// `{ value: string }`: o `kind` de `IPasteEditDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct EditKindDto {
+        pub value: String,
+    }
+
+    /// `IPasteEditProviderMetadataDto`.
+    #[derive(Clone, Debug, Default)]
+    pub struct IPasteEditProviderMetadataDto {
+        pub supports_copy: bool,
+        pub supports_paste: bool,
+        pub supports_resolve: bool,
+        pub provided_paste_edit_kinds: Option<Vec<String>>,
+        pub copy_mime_types: Option<Vec<String>>,
+        pub paste_mime_types: Option<Vec<String>>,
+    }
+
+    /// `IDocumentPasteContextDto`.
+    #[derive(Clone, Debug)]
+    pub struct IDocumentPasteContextDto {
+        pub only: Option<String>,
+        pub trigger_kind: DocumentPasteTriggerKind,
+    }
+
+    /// `IPasteEditDto`.
+    #[derive(Clone)]
+    pub struct IPasteEditDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub title: String,
+        pub kind: Option<EditKindDto>,
+        pub insert_text: DropPasteInsertTextDto,
+        pub additional_edit: Option<IWorkspaceEditDto>,
+        pub yield_to: Option<Vec<String>>,
+    }
+
+    /// O `{ insertText?; additionalEdit? }` de `$resolvePasteEdit`.
+    #[derive(Clone, Default)]
+    pub struct ResolvedPasteEditDto {
+        pub insert_text: Option<DropPasteInsertTextDto>,
+        pub additional_edit: Option<IWorkspaceEditDto>,
+    }
+
+    /// `IDocumentDropEditProviderMetadata`.
+    #[derive(Clone, Debug, Default)]
+    pub struct IDocumentDropEditProviderMetadata {
+        pub supports_resolve: bool,
+        pub drop_mime_types: Vec<String>,
+        pub provided_drop_kinds: Option<Vec<String>>,
+    }
+
+    /// `IDocumentDropEditDto`.
+    #[derive(Clone)]
+    pub struct IDocumentDropEditDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub title: String,
+        pub kind: Option<String>,
+        pub insert_text: DropPasteInsertTextDto,
+        pub additional_edit: Option<IWorkspaceEditDto>,
+        pub yield_to: Option<Vec<String>>,
+    }
+
+    /// O `{ additionalEdit? }` de `$resolveDropEdit`.
+    #[derive(Clone, Default)]
+    pub struct ResolvedDropEditDto {
+        pub additional_edit: Option<IWorkspaceEditDto>,
+    }
+
+    // ---- parte 2: formatação, símbolos do workspace, renomeação
+
+    /// `languages.FormattingOptions`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct FormattingOptions {
+        pub tab_size: f64,
+        pub insert_spaces: bool,
+    }
+
+    /// `IWorkspaceSymbolDto`: `CachedSessionItem<Dto<IWorkspaceSymbol>>`.
+    #[derive(Clone, Debug)]
+    pub struct IWorkspaceSymbolDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub name: String,
+        pub container_name: Option<String>,
+        pub kind: EditorSymbolKind,
+        pub tags: Option<Vec<EditorSymbolTag>>,
+        pub location: ILocationDto,
+    }
+
+    /// `IWorkspaceSymbolsDto`: `CachedSession<{ symbols: IWorkspaceSymbolDto[] }>`.
+    #[derive(Clone, Debug, Default)]
+    pub struct IWorkspaceSymbolsDto {
+        pub cache_id: Option<CacheId>,
+        pub symbols: Vec<IWorkspaceSymbolDto>,
+    }
+
+    /// `IWorkspaceEditDto & languages.Rejection` (ver a nota do módulo).
+    #[derive(Clone, Default)]
+    pub struct RenameEditsDto {
+        pub workspace_edit: Option<IWorkspaceEditDto>,
+        pub reject_reason: Option<String>,
+    }
+
+    /// `languages.RenameLocation & languages.Rejection` (ver a nota do módulo).
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct RenameLocationDto {
+        pub range: Option<EditorRange>,
+        pub text: Option<String>,
+        pub reject_reason: Option<String>,
+    }
+
+    /// `languages.NewSymbolNameTriggerKind`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum LanguagesNewSymbolNameTriggerKind {
+        Invoke = 0,
+        Automatic = 1,
+    }
+
+    /// `languages.NewSymbolName`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct NewSymbolNameDto {
+        pub new_symbol_name: String,
+        pub tags: Option<Vec<NewSymbolNameTag>>,
+    }
+
+    // ---- parte 2: completar
+
+    /// O `{ insert: IRange; replace: IRange }` de `ISuggestResultDtoField.defaultRanges`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ISuggestDefaultRangesDto {
+        pub insert: EditorRange,
+        pub replace: EditorRange,
+    }
+
+    /// `ISuggestDataDto` (ver a nota do módulo). `cache_id` é o `x`.
+    #[derive(Clone)]
+    pub struct ISuggestDataDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub label: CompletionLabel,
+        pub kind: Option<EditorCompletionItemKind>,
+        pub detail: Option<String>,
+        pub documentation: Option<StringOrMarkdown>,
+        pub sort_text: Option<String>,
+        pub filter_text: Option<String>,
+        pub preselect: Option<bool>,
+        pub insert_text: Option<String>,
+        /// Máscara de `completion_item_insert_text_rule`.
+        pub insert_text_rules: Option<u32>,
+        pub range: Option<CompletionItemRange>,
+        pub commit_characters: Option<String>,
+        pub additional_text_edits: Option<Vec<EditorTextEdit>>,
+        pub kind_modifier: Option<Vec<CompletionItemTag>>,
+        pub command_ident: Option<String>,
+        pub command_id: Option<String>,
+        pub command_arguments: Option<Vec<Dynamic>>,
+    }
+
+    /// `ISuggestResultDto`. `cache_id` é o `x`.
+    #[derive(Clone)]
+    pub struct ISuggestResultDto {
+        pub cache_id: Option<CacheId>,
+        pub default_ranges: ISuggestDefaultRangesDto,
+        pub completions: Vec<ISuggestDataDto>,
+        pub is_incomplete: Option<bool>,
+        pub duration: f64,
+    }
+
+    // ---- parte 2: assinatura, dicas embutidas, links, cor
+
+    /// `ISignatureHelpProviderMetadataDto`.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct ISignatureHelpProviderMetadataDto {
+        pub trigger_characters: Vec<String>,
+        pub retrigger_characters: Vec<String>,
+    }
+
+    /// `ISignatureHelpDto`.
+    #[derive(Clone, Debug)]
+    pub struct ISignatureHelpDto {
+        pub id: CacheId,
+        pub signatures: Vec<EditorSignatureInformation>,
+        pub active_signature: i32,
+        pub active_parameter: i32,
+    }
+
+    /// `ISignatureHelpContextDto`.
+    #[derive(Clone, Debug)]
+    pub struct ISignatureHelpContextDto {
+        pub trigger_kind: SignatureHelpTriggerKind,
+        pub trigger_character: Option<String>,
+        pub is_retrigger: bool,
+        pub active_signature_help: Option<ISignatureHelpDto>,
+    }
+
+    /// `languages.InlayHintLabelPart`.
+    #[derive(Clone, Debug)]
+    pub struct InlayHintLabelPartDto {
+        pub label: String,
+        pub tooltip: Option<StringOrMarkdown>,
+        pub location: Option<ILocationDto>,
+        pub command: Option<ICommandDto>,
+    }
+
+    /// `string | languages.InlayHintLabelPart[]`.
+    #[derive(Clone, Debug)]
+    pub enum InlayHintLabelDto {
+        Text(String),
+        Parts(Vec<InlayHintLabelPartDto>),
+    }
+
+    /// `IInlayHintDto`: `CachedSessionItem<Dto<languages.InlayHint>>`.
+    #[derive(Clone)]
+    pub struct IInlayHintDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub label: InlayHintLabelDto,
+        pub tooltip: Option<StringOrMarkdown>,
+        pub position: EditorPosition,
+        pub text_edits: Option<Vec<EditorTextEdit>>,
+        pub kind: Option<InlayHintKind>,
+        pub padding_left: Option<bool>,
+        pub padding_right: Option<bool>,
+    }
+
+    /// `IInlayHintsDto`: `CachedSession<{ hints: IInlayHintDto[] }>`.
+    #[derive(Clone)]
+    pub struct IInlayHintsDto {
+        pub cache_id: Option<CacheId>,
+        pub hints: Vec<IInlayHintDto>,
+    }
+
+    /// `ILinkDto`: `CachedSessionItem<Dto<languages.ILink>>`. O `url` é sempre `URI` (`DocumentLink.from` passa o `target`).
+    #[derive(Clone, Debug)]
+    pub struct ILinkDto {
+        pub cache_id: Option<ChainedCacheId>,
+        pub range: EditorRange,
+        pub url: Option<URI>,
+        pub tooltip: Option<String>,
+    }
+
+    /// `ILinksListDto`: `CachedSession<{ links: ILinkDto[] }>`.
+    #[derive(Clone, Debug)]
+    pub struct ILinksListDto {
+        pub cache_id: Option<CacheId>,
+        pub links: Vec<ILinkDto>,
+    }
+
+    /// `IRawColorInfo`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct IRawColorInfo {
+        pub color: [f64; 4],
+        pub range: EditorRange,
+    }
+
+    /// `languages.IColorPresentation`.
+    #[derive(Clone)]
+    pub struct IColorPresentationDto {
+        pub label: String,
+        pub text_edit: Option<EditorTextEdit>,
+        pub additional_text_edits: Option<Vec<EditorTextEdit>>,
+    }
+
+    /// `ICallHierarchyItemDto`.
+    pub type ICallHierarchyItemDto = HierarchyItemDto;
+
+    /// `ITypeHierarchyItemDto`.
+    pub type ITypeHierarchyItemDto = HierarchyItemDto;
+
+    /// `IIncomingCallDto`.
+    pub type IIncomingCallDto = IncomingCallDto;
+
+    /// `IOutgoingCallDto`.
+    pub type IOutgoingCallDto = OutgoingCallDto;
+
     /// `MainThreadLanguageFeaturesShape` (parte 1, ver a nota do módulo).
     pub trait MainThreadLanguageFeaturesShape: IDisposable {
         fn rpc_unregister(&self, handle: u32);
@@ -2951,6 +3348,83 @@ mod language_features_region {
         fn rpc_register_document_highlight_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
         fn rpc_register_multi_document_highlight_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
         fn rpc_register_reference_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_evaluatable_expression_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_inline_values_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, event_handle: Option<u32>);
+        fn rpc_emit_inline_values_event(&self, event_handle: u32, event: Option<Dynamic>);
+        fn rpc_register_linked_editing_range_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_code_action_support(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            metadata: ICodeActionProviderMetadataDto,
+            display_name: &str,
+            extension_id: &str,
+            supports_resolve: bool,
+        );
+        fn rpc_register_paste_edit_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, metadata: IPasteEditProviderMetadataDto);
+        fn rpc_register_document_formatting_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>, extension_id: &ExtensionIdentifier, display_name: &str);
+        fn rpc_register_range_formatting_support(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            extension_id: &ExtensionIdentifier,
+            display_name: &str,
+            support_ranges: bool,
+        );
+        fn rpc_register_on_type_formatting_support(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            auto_format_trigger_characters: Vec<String>,
+            extension_id: &ExtensionIdentifier,
+        );
+        fn rpc_register_navigate_type_support(&self, handle: u32, supports_resolve: bool);
+        fn rpc_register_rename_support(&self, handle: u32, selector: Vec<IDocumentFilterDto>, supports_resolve_initial_values: bool);
+        fn rpc_register_new_symbol_names_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_document_semantic_tokens_provider(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            legend: SemanticTokensLegend,
+            event_handle: Option<u32>,
+        );
+        fn rpc_emit_document_semantic_tokens_event(&self, event_handle: u32);
+        fn rpc_register_document_range_semantic_tokens_provider(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            legend: SemanticTokensLegend,
+            event_handle: Option<u32>,
+        );
+        fn rpc_emit_document_range_semantic_tokens_event(&self, event_handle: u32);
+        fn rpc_register_completions_provider(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            trigger_characters: Vec<String>,
+            supports_resolve_details: bool,
+            extension_id: &ExtensionIdentifier,
+        );
+        fn rpc_register_signature_help_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, metadata: ISignatureHelpProviderMetadataDto);
+        fn rpc_register_inlay_hints_provider(
+            &self,
+            handle: u32,
+            selector: Vec<IDocumentFilterDto>,
+            supports_resolve: bool,
+            event_handle: Option<u32>,
+            display_name: Option<&str>,
+        );
+        fn rpc_emit_inlay_hints_event(&self, event_handle: u32);
+        fn rpc_register_document_link_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, supports_resolve: bool);
+        fn rpc_register_document_color_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_folding_range_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, extension_id: &ExtensionIdentifier, event_handle: Option<u32>);
+        fn rpc_emit_folding_range_event(&self, event_handle: u32, event: Option<Dynamic>);
+        fn rpc_register_selection_range_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_call_hierarchy_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_type_hierarchy_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>);
+        fn rpc_register_document_on_drop_edit_provider(&self, handle: u32, selector: Vec<IDocumentFilterDto>, metadata: Option<IDocumentDropEditProviderMetadata>);
+        fn rpc_resolve_paste_file_data(&self, handle: u32, request_id: u32, data_id: &str) -> Promise<VSBuffer>;
+        fn rpc_resolve_document_on_drop_file_data(&self, handle: u32, request_id: u32, data_id: &str) -> Promise<VSBuffer>;
     }
 
     /// `ExtHostLanguageFeaturesShape` (parte 1, ver a nota do módulo).
@@ -2989,6 +3463,186 @@ mod language_features_region {
             context: ReferenceContext,
             token: CancellationToken,
         ) -> Promise<Option<Vec<ILocationDto>>>;
+        fn rpc_provide_evaluatable_expression(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<EvaluatableExpressionDto>>;
+        fn rpc_provide_inline_values(
+            &self,
+            handle: u32,
+            resource: &URI,
+            range: EditorRange,
+            context: IInlineValueContextDto,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<InlineValueDto>>>;
+        fn rpc_provide_linked_editing_ranges(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<ILinkedEditingRangesDto>>;
+        fn rpc_provide_code_actions(
+            &self,
+            handle: u32,
+            resource: &URI,
+            range_or_selection: RangeOrSelection,
+            context: CodeActionContext,
+            token: CancellationToken,
+        ) -> Promise<Option<ICodeActionListDto>>;
+        fn rpc_resolve_code_action(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedCodeActionDto>;
+        fn rpc_release_code_actions(&self, handle: u32, cache_id: u32);
+        fn rpc_prepare_document_paste(
+            &self,
+            handle: u32,
+            uri: &URI,
+            ranges: Vec<EditorRange>,
+            data_transfer: DataTransferDto,
+            token: CancellationToken,
+        ) -> Promise<Option<DataTransferDto>>;
+        fn rpc_provide_paste_edits(
+            &self,
+            handle: u32,
+            request_id: u32,
+            uri: &URI,
+            ranges: Vec<EditorRange>,
+            data_transfer: DataTransferDto,
+            context: IDocumentPasteContextDto,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<IPasteEditDto>>>;
+        fn rpc_resolve_paste_edit(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedPasteEditDto>;
+        fn rpc_release_paste_edits(&self, handle: u32, cache_id: u32);
+        fn rpc_provide_document_formatting_edits(
+            &self,
+            handle: u32,
+            resource: &URI,
+            options: FormattingOptions,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        fn rpc_provide_document_range_formatting_edits(
+            &self,
+            handle: u32,
+            resource: &URI,
+            range: EditorRange,
+            options: FormattingOptions,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        fn rpc_provide_document_ranges_formatting_edits(
+            &self,
+            handle: u32,
+            resource: &URI,
+            ranges: Vec<EditorRange>,
+            options: FormattingOptions,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        fn rpc_provide_on_type_formatting_edits(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            ch: &str,
+            options: FormattingOptions,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<EditorTextEdit>>>;
+        fn rpc_provide_workspace_symbols(&self, handle: u32, search: &str, token: CancellationToken) -> Promise<IWorkspaceSymbolsDto>;
+        fn rpc_resolve_workspace_symbol(&self, handle: u32, symbol: IWorkspaceSymbolDto, token: CancellationToken) -> Promise<Option<IWorkspaceSymbolDto>>;
+        fn rpc_release_workspace_symbols(&self, handle: u32, id: u32);
+        fn rpc_provide_rename_edits(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            new_name: &str,
+            token: CancellationToken,
+        ) -> Promise<Option<RenameEditsDto>>;
+        fn rpc_resolve_rename_location(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<RenameLocationDto>>;
+        fn rpc_supports_automatic_new_symbol_names_trigger_kind(&self, handle: u32) -> Promise<Option<bool>>;
+        fn rpc_provide_new_symbol_names(
+            &self,
+            handle: u32,
+            resource: &URI,
+            range: EditorRange,
+            trigger_kind: LanguagesNewSymbolNameTriggerKind,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<NewSymbolNameDto>>>;
+        fn rpc_provide_document_semantic_tokens(&self, handle: u32, resource: &URI, previous_result_id: u32, token: CancellationToken) -> Promise<Option<VSBuffer>>;
+        fn rpc_release_document_semantic_tokens(&self, handle: u32, semantic_coloring_result_id: u32);
+        fn rpc_provide_document_range_semantic_tokens(&self, handle: u32, resource: &URI, range: EditorRange, token: CancellationToken) -> Promise<Option<VSBuffer>>;
+        fn rpc_provide_completion_items(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            context: CompletionContext,
+            token: CancellationToken,
+        ) -> Promise<Option<ISuggestResultDto>>;
+        fn rpc_resolve_completion_item(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<Option<ISuggestDataDto>>;
+        fn rpc_release_completion_items(&self, handle: u32, id: u32);
+        fn rpc_provide_signature_help(
+            &self,
+            handle: u32,
+            resource: &URI,
+            position: EditorPosition,
+            context: ISignatureHelpContextDto,
+            token: CancellationToken,
+        ) -> Promise<Option<ISignatureHelpDto>>;
+        fn rpc_release_signature_help(&self, handle: u32, id: u32);
+        fn rpc_provide_inlay_hints(&self, handle: u32, resource: &URI, range: EditorRange, token: CancellationToken) -> Promise<Option<IInlayHintsDto>>;
+        fn rpc_resolve_inlay_hint(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<Option<IInlayHintDto>>;
+        fn rpc_release_inlay_hints(&self, handle: u32, id: u32);
+        fn rpc_provide_document_links(&self, handle: u32, resource: &URI, token: CancellationToken) -> Promise<Option<ILinksListDto>>;
+        fn rpc_resolve_document_link(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<Option<ILinkDto>>;
+        fn rpc_release_document_links(&self, handle: u32, id: u32);
+        fn rpc_provide_document_colors(&self, handle: u32, resource: &URI, token: CancellationToken) -> Promise<Vec<IRawColorInfo>>;
+        fn rpc_provide_color_presentations(
+            &self,
+            handle: u32,
+            resource: &URI,
+            color_info: IRawColorInfo,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<IColorPresentationDto>>>;
+        fn rpc_provide_folding_ranges(&self, handle: u32, resource: &URI, context: FoldingContext, token: CancellationToken) -> Promise<Option<Vec<EditorFoldingRange>>>;
+        fn rpc_provide_selection_ranges(
+            &self,
+            handle: u32,
+            resource: &URI,
+            positions: Vec<EditorPosition>,
+            token: CancellationToken,
+        ) -> Promise<Vec<Vec<EditorSelectionRange>>>;
+        fn rpc_prepare_call_hierarchy(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<Vec<ICallHierarchyItemDto>>>;
+        fn rpc_provide_call_hierarchy_incoming_calls(
+            &self,
+            handle: u32,
+            session_id: &str,
+            item_id: &str,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<IIncomingCallDto>>>;
+        fn rpc_provide_call_hierarchy_outgoing_calls(
+            &self,
+            handle: u32,
+            session_id: &str,
+            item_id: &str,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<IOutgoingCallDto>>>;
+        fn rpc_release_call_hierarchy(&self, handle: u32, session_id: &str);
+        fn rpc_prepare_type_hierarchy(&self, handle: u32, resource: &URI, position: EditorPosition, token: CancellationToken) -> Promise<Option<Vec<ITypeHierarchyItemDto>>>;
+        fn rpc_provide_type_hierarchy_supertypes(
+            &self,
+            handle: u32,
+            session_id: &str,
+            item_id: &str,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<ITypeHierarchyItemDto>>>;
+        fn rpc_provide_type_hierarchy_subtypes(
+            &self,
+            handle: u32,
+            session_id: &str,
+            item_id: &str,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<ITypeHierarchyItemDto>>>;
+        fn rpc_release_type_hierarchy(&self, handle: u32, session_id: &str);
+        fn rpc_provide_document_on_drop_edits(
+            &self,
+            handle: u32,
+            request_id: u32,
+            resource: &URI,
+            position: EditorPosition,
+            data_transfer: DataTransferDto,
+            token: CancellationToken,
+        ) -> Promise<Option<Vec<IDocumentDropEditDto>>>;
+        fn rpc_resolve_drop_edit(&self, handle: u32, id: ChainedCacheId, token: CancellationToken) -> Promise<ResolvedDropEditDto>;
+        fn rpc_release_document_on_drop_edits(&self, handle: u32, cache_id: u32);
     }
 
     impl MainContext {
