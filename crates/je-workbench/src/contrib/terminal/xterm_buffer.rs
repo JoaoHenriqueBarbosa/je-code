@@ -84,12 +84,22 @@ pub trait IBufferLine {
 pub trait IBuffer {
     /// A linha do índice `y` (começando em 0), ou `None` se ela não existe.
     fn get_line(&self, y: i32) -> Option<Rc<dyn IBufferLine>>;
+
+    /// `buffer.viewportY`: a linha absoluta do topo da área visível (o gerenciador de links lê).
+    fn viewport_y(&self) -> i32;
+
+    /// `buffer.length`: o número de linhas do buffer (o scrollback e a área visível).
+    fn length(&self) -> i32;
 }
 
-/// `Terminal` do `@xterm/xterm`, só com o que os detectores de links leem (`terminal.cols` e `terminal.buffer.active`).
+/// `Terminal` do `@xterm/xterm`, só com o que os detectores de links leem (`terminal.cols`, `terminal.rows` e
+/// `terminal.buffer.active`).
 pub trait ITerminal {
     /// `terminal.cols`.
     fn cols(&self) -> i32;
+
+    /// `terminal.rows`.
+    fn rows(&self) -> i32;
 
     /// `terminal.buffer.active`.
     fn buffer_active(&self) -> Rc<dyn IBuffer>;

@@ -34,6 +34,7 @@ pub mod product;
 pub mod resources;
 pub mod state;
 pub mod telemetry;
+pub mod tunnel;
 pub mod url;
 pub mod storage;
 pub mod user_data;

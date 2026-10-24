@@ -6,8 +6,9 @@
 //! - **`class TestTelemetryService extends NullTelemetryServiceShape`.** Sem herança em Rust, o [`TestTelemetryService`] delega
 //!   tudo ao `NullTelemetryServiceShape` e sobrescreve o `public_log2`, que guarda `{ name, data }` quando o nome não é vazio.
 //! - **`changeSetting(settingId, value, source)`.** É [`Fixture::change_setting`]: grava a configuração e dispara o
-//!   `ConfigurationChangeEvent` real da chave com a origem dada (o literal do original afirma a chave e `overrides !== undefined`,
-//!   que é o que o `affectsConfiguration(key, {})` do evento real faz para uma chave sem filhos).
+//!   `ConfigurationChangeEvent` real da chave com a origem dada e o novo valor na configuração atual (o literal do original
+//!   afirma `key === settingId && overrides !== undefined` sem comparar valores; o evento real compara o valor anterior com o
+//!   atual, então a configuração atual precisa ter o valor, ver `fire_configuration_change_with_value`).
 //! - **`assert.deepStrictEqual(telemetryService.events, ...)`.** Compara o array dinâmico `{ name, data }` com o
 //!   `assert_deep_strict_equal` de `je-base/tests/common`.
 //! - **`as const` de `profileSettings`.** É a lista [`PROFILE_SETTINGS`] com o valor de cada configuração como [`Dynamic`].
@@ -167,8 +168,8 @@ impl Fixture {
 
     /// `changeSetting(settingId, value, source = ConfigurationTarget.USER)`.
     async fn change_setting(&self, setting_id: &str, value: Dynamic, source: ConfigurationTarget) {
-        self.configuration_service.set_user_configuration(setting_id, value, None).await.unwrap();
-        configuration_event_support::fire_configuration_change_from(&self.configuration_service, &[setting_id], source);
+        self.configuration_service.set_user_configuration(setting_id, value.clone(), None).await.unwrap();
+        configuration_event_support::fire_configuration_change_with_value(&self.configuration_service, setting_id, value, source);
     }
 }
 

@@ -26,6 +26,9 @@ use je_base::js_string::JsString;
 use je_base::lifecycle::{DisposableRef, IDisposable, plain_disposable};
 use je_platform::terminal::capabilities::capabilities::IMarker;
 use je_platform::terminal::xterm_headless as platform;
+use je_workbench::contrib::terminal::browser::terminal::ClientRect;
+use je_workbench::contrib::terminal::browser::terminal_extensions::{ILinkProvider, IXtermRawTerminal, LinkHandler, RenderedRange};
+use je_workbench::contrib::terminal::browser::terminal_input_events::{ITerminalDocumentEvents, TerminalKeyEvent, TerminalMouseEvent};
 use je_workbench::contrib::terminal::browser::xterm::xterm_terminal::{IXtermRaw, XtermOptions};
 use je_workbench::contrib::terminal::xterm_buffer as workbench;
 
@@ -410,6 +413,15 @@ impl workbench::IBuffer for FakeBuffer {
     fn get_line(&self, y: i32) -> Option<Rc<dyn workbench::IBufferLine>> {
         self.screen.line(y).map(|line| Rc::new(line) as Rc<dyn workbench::IBufferLine>)
     }
+
+    /// O dublê não rola a área visível sozinho: o topo dela é o `baseY`.
+    fn viewport_y(&self) -> i32 {
+        self.screen.base_y.get()
+    }
+
+    fn length(&self) -> i32 {
+        i32::try_from(self.screen.lines.borrow().len()).unwrap_or(i32::MAX)
+    }
 }
 
 /// Os tratadores registrados no `parser`.
@@ -457,6 +469,14 @@ pub struct FakeXterm {
     on_write_parsed: Rc<Emitter<()>>,
     on_resize: Rc<Emitter<platform::TerminalResize>>,
     on_title_change: Rc<Emitter<JsString>>,
+    on_scroll: Rc<Emitter<i32>>,
+    on_render: Rc<Emitter<RenderedRange>>,
+    on_selection_change: Rc<Emitter<()>>,
+    link_providers: Rc<RefCell<Vec<Rc<dyn ILinkProvider>>>>,
+    link_handler: RefCell<Option<LinkHandler>>,
+    css_cell: Cell<ClientRect>,
+    document: Rc<FakeDocumentEvents>,
+    pasted: RefCell<Vec<String>>,
     bracketed_paste_mode: Cell<bool>,
     next_marker_id: Cell<u64>,
     deleted_lines: RefCell<Vec<(i32, i32)>>,
@@ -507,6 +527,14 @@ impl FakeXterm {
             on_write_parsed: Emitter::new(),
             on_resize: Emitter::new(),
             on_title_change: Emitter::new(),
+            on_scroll: Emitter::new(),
+            on_render: Emitter::new(),
+            on_selection_change: Emitter::new(),
+            link_providers: Rc::default(),
+            link_handler: RefCell::new(None),
+            css_cell: Cell::new(ClientRect { width: 0.0, height: 0.0 }),
+            document: FakeDocumentEvents::new(),
+            pasted: RefCell::new(Vec::new()),
             bracketed_paste_mode: Cell::new(false),
             next_marker_id: Cell::new(0),
             markers: RefCell::new(Vec::new()),
@@ -745,7 +773,129 @@ impl workbench::ITerminal for FakeXterm {
         self.screen.cols
     }
 
+    fn rows(&self) -> i32 {
+        self.screen.rows
+    }
+
     fn buffer_active(&self) -> Rc<dyn workbench::IBuffer> {
         Rc::new(self.buffer())
+    }
+}
+
+/// O `document` da janela do terminal: o teste dispara os eventos de teclado e de mouse.
+pub struct FakeDocumentEvents {
+    pub key_down: Rc<Emitter<TerminalKeyEvent>>,
+    pub key_up: Rc<Emitter<TerminalKeyEvent>>,
+    pub mouse_move: Rc<Emitter<TerminalMouseEvent>>,
+    pub device_pixel_ratio: Cell<f64>,
+}
+
+impl FakeDocumentEvents {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self { key_down: Emitter::new(), key_up: Emitter::new(), mouse_move: Emitter::new(), device_pixel_ratio: Cell::new(1.0) })
+    }
+}
+
+impl ITerminalDocumentEvents for FakeDocumentEvents {
+    fn on_key_down(&self) -> Event<TerminalKeyEvent> {
+        self.key_down.event()
+    }
+
+    fn on_key_up(&self) -> Event<TerminalKeyEvent> {
+        self.key_up.event()
+    }
+
+    fn on_mouse_move(&self) -> Event<TerminalMouseEvent> {
+        self.mouse_move.event()
+    }
+
+    fn device_pixel_ratio(&self) -> f64 {
+        self.device_pixel_ratio.get()
+    }
+}
+
+impl FakeXterm {
+    /// Dispara o `onScroll` do xterm.
+    pub fn fire_scroll(&self, position: i32) {
+        self.on_scroll.fire(position);
+    }
+
+    /// Dispara o `onRender` do xterm.
+    pub fn fire_render(&self, start: i32, end: i32) {
+        self.on_render.fire(RenderedRange { start, end });
+    }
+
+    /// Dispara o `onSelectionChange` do xterm.
+    pub fn fire_selection_change(&self) {
+        self.on_selection_change.fire(());
+    }
+
+    /// `xterm._core._renderService.dimensions.css.cell = { width, height }` (o `mockXtermCoreRenderService` do teste).
+    pub fn set_css_cell_dimensions(&self, width: f64, height: f64) {
+        self.css_cell.set(ClientRect { width, height });
+    }
+
+    /// Os provedores de links registrados com `registerLinkProvider`, na ordem de registro.
+    pub fn link_providers(&self) -> Vec<Rc<dyn ILinkProvider>> {
+        self.link_providers.borrow().clone()
+    }
+
+    /// O `document` da janela.
+    pub fn document(&self) -> Rc<FakeDocumentEvents> {
+        self.document.clone()
+    }
+
+    /// O que `paste(data)` recebeu.
+    pub fn pasted(&self) -> Vec<String> {
+        self.pasted.borrow().clone()
+    }
+
+    /// `modes.bracketedPasteMode = value`.
+    pub fn set_bracketed_paste_mode(&self, value: bool) {
+        self.bracketed_paste_mode.set(value);
+    }
+}
+
+impl IXtermRawTerminal for FakeXterm {
+    fn on_scroll(&self) -> Event<i32> {
+        self.on_scroll.event()
+    }
+
+    fn on_render(&self) -> Event<RenderedRange> {
+        self.on_render.event()
+    }
+
+    fn on_selection_change(&self) -> Event<()> {
+        self.on_selection_change.event()
+    }
+
+    fn register_link_provider(&self, provider: Rc<dyn ILinkProvider>) -> DisposableRef {
+        self.link_providers.borrow_mut().push(provider.clone());
+        let providers = self.link_providers.clone();
+        plain_disposable(move || providers.borrow_mut().retain(|registered| !Rc::ptr_eq(registered, &provider)))
+    }
+
+    fn link_handler(&self) -> Option<LinkHandler> {
+        self.link_handler.borrow().clone()
+    }
+
+    fn set_link_handler(&self, handler: Option<LinkHandler>) {
+        *self.link_handler.borrow_mut() = handler;
+    }
+
+    fn css_cell_dimensions(&self) -> ClientRect {
+        self.css_cell.get()
+    }
+
+    fn bracketed_paste_mode(&self) -> bool {
+        self.bracketed_paste_mode.get()
+    }
+
+    fn paste(&self, data: &str) {
+        self.pasted.borrow_mut().push(data.to_owned());
+    }
+
+    fn document_events(&self) -> Rc<dyn ITerminalDocumentEvents> {
+        self.document.clone()
     }
 }

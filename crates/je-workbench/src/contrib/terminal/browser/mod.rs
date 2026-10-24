@@ -17,3 +17,8 @@ pub mod terminal_status_list;
 pub mod environment_variable_info;
 
 pub mod xterm;
+
+// As contribuições do terminal, os eventos de entrada e os widgets (gerenciador e hover).
+pub mod terminal_extensions;
+pub mod terminal_input_events;
+pub mod widgets;
