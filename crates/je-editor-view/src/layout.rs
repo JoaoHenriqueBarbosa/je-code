@@ -53,12 +53,15 @@ pub struct ViewLayout {
     pub tab_size: i32,
     pub width: f64,
     pub height: f64,
+    /// As linhas da view (com quebra de linha e dobra, as do `ViewModel`).
     pub line_count: i32,
+    /// As linhas do modelo, de onde sai a largura dos números de linha (`lineNumbersDigitCount`).
+    pub model_line_count: i32,
 }
 
 impl ViewLayout {
     pub fn new(metrics: FontMetrics, tab_size: i32, width: f64, height: f64, line_count: i32) -> Self {
-        Self { metrics, tab_size, width, height, line_count }
+        Self { metrics, tab_size, width, height, line_count, model_line_count: line_count }
     }
 
     pub fn glyph_margin_width(&self) -> f64 {
@@ -67,7 +70,7 @@ impl ViewLayout {
 
     /// `Math.round(max(dígitos, minChars) * maxDigitWidth)`.
     pub fn line_numbers_width(&self) -> f64 {
-        let digits = self.line_count.max(1).to_string().len().max(LINE_NUMBERS_MIN_CHARS);
+        let digits = self.model_line_count.max(1).to_string().len().max(LINE_NUMBERS_MIN_CHARS);
         (digits as f64 * self.metrics.digit_width).round()
     }
 

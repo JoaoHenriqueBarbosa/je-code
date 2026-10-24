@@ -12,6 +12,7 @@
 //! de colchetes do modelo.
 
 use je_editor::cursor_common::CursorSimpleModel;
+use je_editor::view_model_types::IViewModel;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -20,7 +21,6 @@ use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
 use je_base::runtime;
 use je_base::scrollable::{INewScrollDimensions, INewScrollPosition, IScrollableOptions, Scrollable};
 use je_editor::attached_views::AttachedView;
-use je_editor::line_tokens::IViewLineTokens;
 use je_editor::encoded_token_attributes::{TokenMetadata, font_style};
 use je_editor::position::Position;
 use je_editor::range::Range;
@@ -59,13 +59,22 @@ pub(crate) struct Segment {
     pub strike: bool,
 }
 
-/// O layout em cache de uma linha.
+/// O layout em cache de uma linha da view (uma linha do modelo, ou um pedaço dela com a quebra de linha).
 pub(crate) struct LineLayout {
     pub segments: Vec<Segment>,
     /// A largura do texto em px lógicos.
     pub width: f64,
+    /// O texto da linha da view (numa continuação quebrada, com o recuo de `wrappingIndent` na frente).
     pub units: Vec<u16>,
     pub ascii: bool,
+    /// A linha do modelo de onde a linha da view vem.
+    pub model_line: i32,
+    /// É a primeira linha da view da linha do modelo (onde aparece o número da linha).
+    pub first: bool,
+    /// A linha do modelo continua na linha da view seguinte (`continuesWithWrappedLine`).
+    pub continues: bool,
+    /// A menor coluna da linha da view (depois do recuo de uma continuação quebrada).
+    pub min_column: i32,
 }
 
 /// O que os ouvintes do modelo deixam para a view tratar no próximo quadro.
@@ -135,6 +144,14 @@ pub struct EditorView {
     pub(crate) clipboard: Clipboard,
     max_line_width: f64,
     last_visible: Option<(i32, i32)>,
+    /// A contagem de linhas da view do último quadro: mudou, as linhas deslocaram e o cache inteiro cai.
+    view_line_count: i32,
+    /// `editor.wordWrap`.
+    pub(crate) word_wrap: crate::folding::WordWrap,
+    /// A dobra de código (regiões, linhas escondidas, chevrons da margem).
+    pub(crate) folding: crate::folding::Folding,
+    /// O ponteiro está sobre a margem (os chevrons de dobra aparecem com `showFoldingControls: mouseover`).
+    pub(crate) hover_margin: bool,
     bracket_match: RefCell<Option<BracketMatchCache>>,
     /// As ocorrências da busca (o widget de busca do shell) e o índice da atual.
     /// As barras de diff da margem (o `quickDiff` do SCM): linhas e tipo.
@@ -207,6 +224,7 @@ impl EditorView {
         }));
 
         let core = EditorCore::new(model.clone(), &metrics, width, height);
+        let folding = crate::folding::Folding::new(&model, &shared);
         Self {
             model,
             metrics,
@@ -227,6 +245,10 @@ impl EditorView {
             clipboard: Clipboard::new(),
             max_line_width: 0.0,
             last_visible: None,
+            view_line_count: 0,
+            word_wrap: crate::folding::WordWrap::Off,
+            folding,
+            hover_margin: false,
             bracket_match: RefCell::new(None),
             gutter_changes: Vec::new(),
             find_matches: Vec::new(),
@@ -352,8 +374,15 @@ impl EditorView {
         self.mark_dirty();
     }
 
+    /// As dimensões de rolagem com as linhas da view atuais (fora do quadro: depois de dobrar ou de quebrar).
+    pub(crate) fn sync_scroll_dimensions_now(&mut self) {
+        self.folding.update(&self.core);
+        self.sync_scroll_dimensions();
+    }
+
     fn sync_scroll_dimensions(&mut self) {
-        self.layout.line_count = self.model.get_line_count();
+        self.layout.line_count = self.core.view_model.get_line_count();
+        self.layout.model_line_count = self.model.get_line_count();
         self.layout.tab_size = self.model.get_options().tab_size;
         let scroll_width = (self.max_line_width + SCROLL_BEYOND_LAST_COLUMN * self.metrics.char_width).max(self.layout.content_width());
         self.scrollable.set_scroll_dimensions(
@@ -393,8 +422,9 @@ impl EditorView {
 
     fn build_line(&self, line_number: i32) -> LineLayout {
         let scale = self.layout_scale;
-        let content = self.model.get_line_content(line_number);
-        let units = content.units().to_vec();
+        let data = self.core.view_model.get_view_line_data(line_number);
+        let model_start = self.to_model(Position::new(line_number, data.min_column));
+        let units = data.content.units().to_vec();
         let ascii = text::is_basic_ascii(&units);
         let tab = self.layout.tab_size;
         let limit = units.len().min(STOP_RENDERING_LINE_AFTER);
@@ -409,16 +439,20 @@ impl EditorView {
             underline: bool,
             strike: bool,
         }
-        let tokens = self.model.tokenization().get_line_tokens(line_number);
+        let tokens = data.tokens.clone();
         let mut brackets: Vec<(usize, usize, Rgba)> = Vec::new();
         if !self.colors.bracket_colors.is_empty() && !units.is_empty() {
-            let range = Range::new(line_number, 1, line_number, units.len() as i32 + 1);
+            // Os colchetes da linha do modelo que caem nesta linha da view, em colunas da view.
+            let model_line = model_start.line_number;
+            let range = Range::new(model_line, 1, model_line, self.model.get_line_max_column(model_line));
             for b in self.model.bracket_pairs().get_brackets_in_range(range, true).to_array() {
-                if b.range.start_line_number == line_number
-                    && b.range.end_line_number == line_number
-                    && let Some(color) = self.colors.bracket_color(b.nesting_level, b.is_invalid)
-                {
-                    brackets.push(((b.range.start_column - 1) as usize, (b.range.end_column - 1) as usize, color));
+                if b.range.start_line_number != model_line || b.range.end_line_number != model_line {
+                    continue;
+                }
+                let Some(color) = self.colors.bracket_color(b.nesting_level, b.is_invalid) else { continue };
+                let view = self.to_view_range(b.range);
+                if view.start_line_number == line_number && view.end_line_number == line_number {
+                    brackets.push(((view.start_column - 1) as usize, (view.end_column - 1) as usize, color));
                 }
             }
             brackets.sort_by_key(|b| b.0);
@@ -471,7 +505,25 @@ impl EditorView {
             });
             x += width;
         }
-        LineLayout { segments, width: x, units, ascii }
+        LineLayout { segments, width: x, units, ascii, model_line: model_start.line_number, first: model_start.column == 1, continues: data.continues_with_wrapped_line, min_column: data.min_column }
+    }
+
+    /// A posição do modelo como posição da view (linha da view com quebra e dobra).
+    pub(crate) fn to_view(&self, position: Position) -> Position {
+        self.core.view_model.coordinates_converter.convert_model_position_to_view_position(position, None, None, None)
+    }
+
+    pub(crate) fn to_view_range(&self, range: Range) -> Range {
+        self.core.view_model.coordinates_converter.convert_model_range_to_view_range(range, None)
+    }
+
+    pub(crate) fn to_model(&self, position: Position) -> Position {
+        self.core.view_model.coordinates_converter.convert_view_position_to_model_position(position)
+    }
+
+    /// As seleções dos cursores em coordenadas da view.
+    pub(crate) fn view_selections(&self) -> Vec<je_editor::selection::Selection> {
+        self.core.view_model.get_cursor_states().into_iter().map(|c| c.view_state.selection).collect()
     }
 
     /// A posição horizontal (px lógicos, relativa ao início do texto) de uma coluna da linha.
@@ -523,15 +575,24 @@ impl EditorView {
 
     /// A posição do modelo sob um ponto da view (px lógicos relativos ao canto da view).
     pub fn position_at(&mut self, x: f64, y: f64) -> Position {
+        let view = self.view_position_at(x, y);
+        self.to_model(view)
+    }
+
+    /// A posição da view sob um ponto (px lógicos relativos ao canto da view).
+    pub(crate) fn view_position_at(&mut self, x: f64, y: f64) -> Position {
+        self.sync_scroll_dimensions();
         let line = self.layout.line_at_y(y, self.scroll_top());
         let local_x = x - self.layout.content_left() + self.scroll_left();
         let column = self.column_at_x(line, local_x);
-        Position::new(line, column)
+        // A coluna não passa do recuo de uma continuação quebrada (`minColumn`).
+        let min = self.core.view_model.get_line_min_column(line);
+        Position::new(line, column.max(min))
     }
 
     /// O retângulo do cursor em px lógicos relativos à view (para testes e para o reveal).
     pub fn cursor_rect(&mut self) -> Rect {
-        let p = self.core.primary().get_position();
+        let p = self.core.view_model.get_primary_cursor_state().view_state.position;
         let x = self.layout.content_left() + self.column_x(p.line_number, p.column) - self.scroll_left();
         let y = self.layout.line_top(p.line_number, self.scroll_top());
         Rect::new(x, y, x + 2.0, y + self.layout.line_height())
@@ -578,12 +639,24 @@ impl EditorView {
             self.layout_scale = scale;
             self.shared.invalid_all.set(true);
         }
+        self.folding.update(&self.core);
+        let view_line_count = self.core.view_model.get_line_count();
+        if view_line_count != self.view_line_count {
+            // Linhas da view entraram ou saíram (quebra, dobra, edição): os números deslocaram.
+            self.view_line_count = view_line_count;
+            self.shared.invalid_all.set(true);
+        }
         if self.shared.invalid_all.replace(false) {
             self.lines.clear();
             self.shared.invalid_lines.borrow_mut().clear();
         } else {
-            for (from, to) in self.shared.invalid_lines.borrow_mut().drain(..) {
-                for line in from..=to {
+            let invalid: Vec<(i32, i32)> = self.shared.invalid_lines.borrow_mut().drain(..).collect();
+            let model_lines = self.model.get_line_count();
+            for (from, to) in invalid {
+                let (from, to) = (from.clamp(1, model_lines), to.clamp(1, model_lines));
+                let start = self.to_view(Position::new(from, 1)).line_number;
+                let end = self.to_view(Position::new(to, self.model.get_line_max_column(to))).line_number;
+                for line in start..=end {
                     self.lines.remove(&line);
                 }
             }
@@ -593,7 +666,9 @@ impl EditorView {
         let (first, last) = self.layout.visible_lines(self.scroll_top());
         if self.last_visible != Some((first, last)) {
             self.last_visible = Some((first, last));
-            self.attached.set_visible_lines(&[(first, last)], true);
+            let model_first = self.to_model(Position::new(first, 1)).line_number;
+            let model_last = self.to_model(Position::new(last, self.core.view_model.get_line_max_column(last))).line_number;
+            self.attached.set_visible_lines(&[(model_first, model_last)], true);
         }
     }
 
@@ -616,9 +691,11 @@ impl EditorView {
         };
 
         let colors = self.colors.clone();
-        let selections = self.core.selections();
-        let primary = self.core.primary();
+        // Seleções, cursores e decorações em coordenadas da view (com quebra de linha e dobra).
+        let selections = self.view_selections();
+        let primary = self.core.view_model.get_primary_cursor_state().view_state.selection;
         let cursor_line = primary.position_line_number;
+        let primary_model_line = self.core.primary().position_line_number;
         let all_empty = selections.iter().all(|s| s.is_empty());
 
         let laid_out: Vec<(i32, Rc<LineLayout>)> = (first..=last).map(|l| (l, self.line_layout(l))).collect();
@@ -633,7 +710,14 @@ impl EditorView {
 
         // 1. Realce da linha de cada cursor (só com todas as seleções vazias, como o `CurrentLineHighlightOverlay`).
         if all_empty {
-            let mut lines: Vec<i32> = selections.iter().map(|s| s.position_line_number).filter(|l| (first..=last).contains(l)).collect();
+            // Com a quebra de linha todas as linhas da view da linha do modelo do cursor recebem o realce.
+            let mut lines: Vec<i32> = Vec::new();
+            for selection in &selections {
+                let model_line = self.to_model(Position::new(selection.position_line_number, 1)).line_number;
+                let from = self.to_view(Position::new(model_line, 1)).line_number;
+                let to = self.to_view(Position::new(model_line, self.model.get_line_max_column(model_line))).line_number;
+                lines.extend((from.max(first)..=to.min(last)).filter(|l| (first..=last).contains(l)));
+            }
             lines.sort_unstable();
             lines.dedup();
             for line in lines {
@@ -658,12 +742,12 @@ impl EditorView {
                 if l < selection.start_line_number || l > selection.end_line_number {
                     continue;
                 }
-                let start_col = if l == selection.start_line_number { selection.start_column } else { 1 };
+                let start_col = if l == selection.start_line_number { selection.start_column } else { layout.min_column };
                 let end_col = if l == selection.end_line_number { selection.end_column } else { layout.units.len() as i32 + 1 };
                 selected.push((l, start_col, end_col));
                 let x0 = self.column_x_in(layout, start_col);
                 let mut x1 = self.column_x_in(layout, end_col);
-                if l < selection.end_line_number {
+                if l < selection.end_line_number && !layout.continues {
                     // A quebra de linha selecionada aparece como uma célula a mais.
                     x1 += self.metrics.char_width;
                 }
@@ -687,14 +771,15 @@ impl EditorView {
         }
 
         // 2b. Ocorrências da busca (`.findMatch` e `.currentFindMatch`), recortadas às linhas visíveis.
-        for (i, m) in self.find_matches.iter().enumerate() {
+        let find_matches: Vec<Range> = self.find_matches.iter().map(|m| self.to_view_range(*m)).collect();
+        for (i, m) in find_matches.iter().enumerate() {
             if m.end_line_number < first || m.start_line_number > last {
                 continue;
             }
             let color = if self.find_current == Some(i) { colors.find_match } else { colors.find_match_highlight };
             for l in m.start_line_number.max(first)..=m.end_line_number.min(last) {
                 let layout = &laid_out[(l - first) as usize].1;
-                let start_col = if l == m.start_line_number { m.start_column } else { 1 };
+                let start_col = if l == m.start_line_number { m.start_column } else { layout.min_column };
                 let end_col = if l == m.end_line_number { m.end_column } else { layout.units.len() as i32 + 1 };
                 let top = self.layout.line_top(l, scroll_top);
                 let x0 = content_left + self.column_x_in(layout, start_col) - scroll_left;
@@ -707,7 +792,7 @@ impl EditorView {
 
         // 3. Colchetes casando.
         if let Some((a, b)) = self.bracket_match() {
-            for r in [a, b] {
+            for r in [self.to_view_range(a), self.to_view_range(b)] {
                 if !(first..=last).contains(&r.start_line_number) || r.start_line_number != r.end_line_number {
                     continue;
                 }
@@ -723,8 +808,8 @@ impl EditorView {
 
         // 4. Guias de indentação.
         if !self.model.is_too_large_for_tokenization() {
-            let levels = self.model.guides().get_lines_indent_guides(first, last);
-            let active = self.model.guides().get_active_indent_guide(cursor_line, first, last);
+            let levels = self.core.view_model.get_lines_indent_guides(first, last);
+            let active = self.core.view_model.get_active_indent_guide(cursor_line, first, last);
             let indent_size = self.model.get_options().indent_size.max(1);
             let width = f64::from(indent_size) * self.metrics.char_width;
             for (i, &level) in levels.iter().enumerate() {
@@ -740,6 +825,9 @@ impl EditorView {
                 }
             }
         }
+
+        // 4b. O fundo da primeira linha das regiões dobradas (`folded-background`).
+        self.paint_fold_backgrounds(list, &rect, &laid_out, scroll_top);
 
         // 5. Texto.
         for (line_number, layout) in &laid_out {
@@ -784,10 +872,14 @@ impl EditorView {
             }
         }
 
+        // 5c. A reticência depois da linha dobrada (`inline-folded`).
+        self.paint_fold_ellipsis(list, origin, scale, &laid_out, scroll_top, scroll_left);
+
         // 6. Cursores (um por seleção).
         if self.focused && self.cursor_visible_at(now) {
             for selection in &selections {
                 let p = selection.get_position();
+                let p = Position::new(p.line_number, p.column);
                 if !(first..=last).contains(&p.line_number) {
                     continue;
                 }
@@ -805,11 +897,16 @@ impl EditorView {
         let ln_width = self.layout.line_numbers_width();
         list.fill_rect(rect(0.0, 0.0, content_left, view_height), colors.gutter_background);
         let style = self.metrics.style(scale, false, false);
-        for l in first..=last {
-            let label = l.to_string();
+        for (l, layout) in &laid_out {
+            let l = *l;
+            // Só a primeira linha da view de cada linha do modelo leva o número.
+            if !layout.first {
+                continue;
+            }
+            let label = layout.model_line.to_string();
             let line = with_text_system(|t| t.line(&label, &style));
             let top = self.layout.line_top(l, scroll_top);
-            let color = if l == cursor_line { colors.line_number_active } else { colors.line_number };
+            let color = if layout.model_line == primary_model_line { colors.line_number_active } else { colors.line_number };
             let x_dev = snap((origin.0 + ln_left + ln_width) * scale - f64::from(line.width)) as f32;
             let top_dev = (origin.1 + top) * scale;
             let baseline = text_baseline(top_dev, lh * scale, &line);
@@ -817,7 +914,21 @@ impl EditorView {
         }
         // As barras do diff contra o HEAD: 3 px de largura, 5 px à direita da margem dos números.
         let bar_left = ln_left + ln_width + 5.0;
-        for change in &self.gutter_changes {
+        let model_lines = self.model.get_line_count();
+        let gutter_changes: Vec<GutterChange> = self
+            .gutter_changes
+            .iter()
+            .map(|c| {
+                let start = c.start_line.clamp(1, model_lines);
+                let end = c.end_line.clamp(1, model_lines);
+                let view_start = self.to_view(Position::new(start, 1)).line_number;
+                let view_end = self.to_view(Position::new(end, self.model.get_line_max_column(end))).line_number;
+                // Linhas removidas no fim do arquivo: a fronteira fica depois da última linha.
+                let view_start = if c.kind == GutterKind::Deleted && c.start_line > model_lines { self.core.view_model.get_line_count() + 1 } else { view_start };
+                GutterChange { start_line: view_start, end_line: view_end, kind: c.kind }
+            })
+            .collect();
+        for change in &gutter_changes {
             let (color, deleted) = match change.kind {
                 GutterKind::Added => (colors.gutter_added, false),
                 GutterKind::Modified => (colors.gutter_modified, false),
@@ -860,6 +971,7 @@ impl EditorView {
                 list.fill_rect(r, color);
             }
         }
+        self.paint_fold_chevrons(list, origin, scale, &laid_out, scroll_top);
         self.paint_minimap(list, origin, scale);
         self.paint_scrollbar(list, origin, scale);
         self.paint_overview_ruler(list, origin, scale);

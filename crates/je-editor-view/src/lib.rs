@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod colors;
 mod core;
 pub mod environment;
+pub mod folding;
 pub mod input;
 mod shortcuts;
 pub mod services;

@@ -172,6 +172,7 @@ pub enum Command {
     ToggleSidebar,
     ToggleStatusBar,
     ToggleFullScreen,
+    ToggleWordWrap,
     ShowExplorer,
     ShowManageMenu,
     PickTheme,
@@ -940,6 +941,11 @@ impl Shell {
             }
             Command::ToggleStatusBar => self.statusbar_visible = !self.statusbar_visible,
             Command::ToggleFullScreen => self.fullscreen_requested = true,
+            Command::ToggleWordWrap => {
+                if let Some(editor) = self.active_editor_mut() {
+                    editor.view.toggle_word_wrap();
+                }
+            }
             Command::QuickOpen => self.open_quick_pick(""),
             Command::ShowCommands => self.open_quick_pick(">"),
             Command::ShowManageMenu => {
@@ -2819,6 +2825,14 @@ impl Shell {
                 self.set_terminal_focus(in_terminal);
             }
         }
+        // O ponteiro sobre o editor (os chevrons de dobra da margem aparecem com ele).
+        if input.kind == PointerInputKind::Move {
+            let local = self.editor_local(x, y);
+            if let Some(editor) = self.active_editor_mut() {
+                let (lx, ly) = local.unwrap_or((-1.0, -1.0));
+                editor.view.mouse_move(lx, ly);
+            }
+        }
         let target = self.ui.pointer_input(input);
         if input.kind == PointerInputKind::Down && Some(target) == self.nodes.editor_host && input.button == PointerButton::Primary {
             self.ui.blur();
@@ -2905,6 +2919,7 @@ impl Shell {
             (true, false, false, KeyCode::PageDown) => Command::NextEditor,
             (true, false, false, KeyCode::PageUp) => Command::PreviousEditor,
             (false, false, false, KeyCode::F11) => Command::ToggleFullScreen,
+            (false, false, true, KeyCode::KeyZ) => Command::ToggleWordWrap,
             _ => return None,
         })
     }
