@@ -76,6 +76,7 @@ use super::extension_bisect::IExtensionBisectService;
 use super::extension_management::{
     EnablementState, ExtensionInstallLocation, ExtensionRef, IExtension, IExtensionManagementServer, IExtensionManagementServerService,
     IGlobalExtensionEnablementService, IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService, WorkspaceTypeOverrides,
+    local_extension_uri,
 };
 use super::global_extension_enablement_service::StorageManager;
 use super::service_contracts::IChatEntitlementService;
@@ -822,7 +823,7 @@ impl ExtensionEnablementService {
             return false;
         }
 
-        if self.context_service.is_inside_workspace(&extension.location) {
+        if self.context_service.is_inside_workspace(&local_extension_uri(extension)) {
             return true;
         }
 

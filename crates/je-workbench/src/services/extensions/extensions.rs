@@ -168,6 +168,31 @@ pub trait IExtensionService {
     fn can_remove_extension(&self, _extension: &ExtensionDescription) -> bool {
         false
     }
+
+    /// `canAddExtension(extension)`: whether the extension can be added without restarting the extension host. A
+    /// implementação padrão é a do `NullExtensionService`, que devolve `false`.
+    fn can_add_extension(&self, _extension: &ExtensionDescription) -> bool {
+        false
+    }
+
+    /// `stopExtensionHosts(reason, auto)`: resolves to `true` when the hosts were stopped. A implementação padrão é a do
+    /// `NullExtensionService`, que devolve `true`.
+    fn stop_extension_hosts(&self, _reason: &str, _auto: bool) -> Promise<bool> {
+        Promise::resolved(true)
+    }
+
+    /// `startExtensionHosts(updates)`: starts the hosts, with the extensions to add and the ids to remove. A
+    /// implementação padrão é a do `NullExtensionService`, que não faz nada.
+    fn start_extension_hosts(&self, _updates: Option<ExtensionHostUpdates>) -> Promise<()> {
+        Promise::resolved(())
+    }
+}
+
+/// `{ toAdd: ILocalExtension[]; toRemove: string[] }` de `startExtensionHosts`.
+#[derive(Clone, Debug, Default)]
+pub struct ExtensionHostUpdates {
+    pub to_add: Vec<je_extensions::management::LocalExtension>,
+    pub to_remove: Vec<String>,
 }
 
 /// `IExtensionsChangeEvent`: `{ added, removed }`, as descrições completas das extensões.

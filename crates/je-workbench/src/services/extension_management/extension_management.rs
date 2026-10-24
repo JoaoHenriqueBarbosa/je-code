@@ -4,12 +4,15 @@
 //! `IWorkbenchExtensionEnablementService`), mais os recortes dos contratos de plataforma que eles estendem.
 //!
 //! Recortes (cada um entra inteiro quando o serviço que ele descreve for portado):
-//! - **`IExtension`** (`platform/extensions/common/extensions.ts`) é a struct [`IExtension`], com o que o gerenciador de
-//!   habilitação lê: tipo, `isBuiltin`, identificador, manifesto, `location` (um `URI`, de cujo esquema o servidor
-//!   depende), plataforma de destino, `isValid`, `preRelease` e `publisherDisplayName` (os dois últimos alimentam a
-//!   lista `extensions.allowed`). `ILocalExtension` é o mesmo tipo ([`ILocalExtension`]): os campos que
-//!   só ele acrescenta (`isMachineScoped`, `installedTimestamp`...) não são lidos aqui. A extensão é compartilhada
-//!   por `Rc`, porque o original compara extensões por identidade (`Map<IExtension, ...>`, `indexOf`).
+//! - **`IExtension`** (`platform/extensions/common/extensions.ts`) e **`ILocalExtension`** são um só modelo: a
+//!   [`LocalExtension`] completa de `je-extensions` ([`IExtension`] e [`ILocalExtension`] são apelidos dela). O recorte
+//!   reduzido que existia aqui foi removido. A extensão é compartilhada por `Rc` ([`ExtensionRef`]), porque o original
+//!   compara extensões por identidade (`Map<IExtension, ...>`, `indexOf`). Uma diferença que resta: o `location` da
+//!   `LocalExtension` é um caminho (texto), e o original guarda um `URI` de cujo esquema o servidor depende. A função
+//!   [`local_extension_uri`] devolve o `URI`: um `location` que já traz esquema (`vscode-remote://...`) é lido como
+//!   URI, e um caminho puro vira `file`. Os caminhos que o scanner de `je-extensions` produz nunca têm `://`. Unificar
+//!   de vez exige o `location` virar `URI` na `LocalExtension`, mudança de `je-extensions` que fica para quando o
+//!   scanner for portado por inteiro.
 //! - **`IExtensionManagementService`** (`platform/extensionManagement/common/extensionManagement.ts`) é o trait
 //!   [`IExtensionManagementService`], só com os eventos de instalação e remoção, `getInstalled()` (sem os argumentos
 //!   opcionais `type`, `profileLocation`, `productVersion` e `language`, que o gerenciador de habilitação não passa) e
@@ -33,31 +36,34 @@ use std::rc::Rc;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
-use je_extensions::management::{ExtensionsControlManifest, InstallOperation};
-use je_extensions::manifest::{ExtensionIdentifierInfo, ExtensionManifest, ExtensionType, TargetPlatform};
+use je_extensions::management::{ExtensionsControlManifest, GalleryExtension, InstallOperation, LocalExtension};
+use je_extensions::manifest::{ExtensionIdentifierInfo, ExtensionManifest};
 use je_instantiation::service_id;
 
-/// `IExtension`: uma extensão instalada ou escaneada.
-#[derive(Clone, Debug)]
-pub struct IExtension {
-    pub extension_type: ExtensionType,
-    pub is_builtin: bool,
-    pub identifier: ExtensionIdentifierInfo,
-    pub manifest: ExtensionManifest,
-    pub location: URI,
-    pub target_platform: TargetPlatform,
-    pub is_valid: bool,
-    /// `preRelease`.
-    pub pre_release: bool,
-    /// `publisherDisplayName` (de `ILocalExtension`): a lista `extensions.allowed` também o reconhece.
-    pub publisher_display_name: Option<String>,
-}
+/// `IExtension` (`platform/extensions/common/extensions.ts`): a extensão local completa de `je-extensions`.
+pub type IExtension = LocalExtension;
 
-/// `ILocalExtension`: no gerenciador de habilitação a extensão local é lida como uma [`IExtension`].
-pub type ILocalExtension = IExtension;
+/// `ILocalExtension`.
+pub type ILocalExtension = LocalExtension;
 
 /// Uma extensão compartilhada: o original passa o mesmo objeto de mão em mão e compara por identidade.
-pub type ExtensionRef = Rc<IExtension>;
+pub type ExtensionRef = Rc<LocalExtension>;
+
+/// O `location` de uma extensão local como `URI` (ver a nota do módulo sobre o esquema).
+pub fn local_extension_uri(extension: &LocalExtension) -> URI {
+    if extension.location.contains("://") {
+        URI::parse(extension.location.as_str(), false)
+    } else {
+        URI::file(extension.location.as_str(), je_platform::resources::host_platform())
+    }
+}
+
+/// `URI | IGalleryExtension`: de onde a extensão vem (`source` dos eventos de instalação).
+#[derive(Clone, Debug)]
+pub enum InstallExtensionSource {
+    Location(URI),
+    Gallery(GalleryExtension),
+}
 
 /// `IResourceExtension`: uma extensão que vive num recurso (uma pasta do workspace ou um VSIX), sem passar pela galeria
 /// nem pelo gerenciador de instalação. O campo `type: 'resource'` do original é o próprio tipo.
@@ -75,9 +81,11 @@ pub struct IResourceExtension {
 pub struct InstallExtensionResult {
     pub identifier: ExtensionIdentifierInfo,
     pub operation: InstallOperation,
-    pub source: Option<URI>,
+    pub source: Option<InstallExtensionSource>,
     pub profile_location: Option<URI>,
     pub local: Option<ExtensionRef>,
+    /// `workspaceScoped`.
+    pub workspace_scoped: Option<bool>,
 }
 
 /// `DidUninstallExtensionEvent` (com o `server` do `DidUninstallExtensionOnServerEvent`).
@@ -87,6 +95,8 @@ pub struct DidUninstallExtensionEvent {
     pub profile_location: Option<URI>,
     /// A mensagem do erro, se a remoção falhou.
     pub error: Option<String>,
+    /// `workspaceScoped`.
+    pub workspace_scoped: Option<bool>,
     /// O servidor de onde a extensão saiu (só o serviço do workbench preenche).
     pub server: Option<Rc<IExtensionManagementServer>>,
 }
@@ -115,6 +125,13 @@ pub trait IProfileAwareExtensionManagementService: IExtensionManagementService {
     fn on_profile_aware_did_install_extensions(&self) -> Event<Vec<InstallExtensionResult>>;
     fn on_profile_aware_did_uninstall_extension(&self) -> Event<DidUninstallExtensionEvent>;
     fn on_did_change_profile(&self) -> Event<DidChangeProfileEvent>;
+
+    /// Este mesmo serviço como o contrato completo de instalação, para quem instala, atualiza e remove (o original
+    /// chama `installFromGallery`, `updateMetadata`... no `IExtensionManagementService` do servidor; aqui o contrato
+    /// reduzido não os traz, e o dublê que não instala devolve `None`).
+    fn as_install_service(self: Rc<Self>) -> Option<Rc<dyn super::extension_install_service::IExtensionInstallService>> {
+        None
+    }
 }
 
 /// `IExtensionManagementServer`.
