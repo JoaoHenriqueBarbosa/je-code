@@ -7,14 +7,14 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `base` | 150 | 2278 | 126 | 1870 | 82.09 |
 | `platform` | 192 | 2806 | 110 | 1885 | 67.18 |
 | `editor` | 182 | 3144 | 139 | 2857 | 90.87 |
-| `workbench/services` | 137 | 2491 | 38 | 1112 | 44.64 |
+| `workbench/services` | 137 | 2491 | 39 | 1169 | 46.93 |
 | `workbench/api` | 94 | 965 | 9 | 231 | 23.94 |
-| `workbench/contrib` | 370 | 4636 | 33 | 648 | 13.98 |
+| `workbench/contrib` | 370 | 4636 | 34 | 675 | 14.56 |
 | `workbench (shell)` | 69 | 621 | 19 | 213 | 34.30 |
 | `server` | 8 | 75 | 0 | 0 | 0.00 |
 | `code` | 5 | 15 | 0 | 0 | 0.00 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 8816 | 47.94 |
+| **total** | | 18391 | | 8900 | 48.39 |
 
 ## Arquivos portados
 
@@ -433,6 +433,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/services/userAttention/test/browser/userAttentionService.test.ts` | 11 | `crates/je-workbench/tests/user_attention_service.rs` | 11 |
 | `src/vs/workbench/services/workingCopy/test/browser/resourceWorkingCopy.test.ts` | 2 | `crates/je-workbench/tests/resource_working_copy.rs` | 2 |
 | `src/vs/workbench/services/workingCopy/test/common/workingCopyService.test.ts` | 3 | `crates/je-workbench/tests/working_copy_service.rs` | 3 |
+| `src/vs/workbench/services/workingCopy/test/electron-browser/workingCopyBackupService.test.ts` | 57 | `crates/je-workbench/tests/working_copy_backup_service.rs` | 57 |
 | `src/vs/workbench/api/test/browser/extHostBrowsers.test.ts` | 28 | `crates/je-workbench/tests/ext_host_browsers.rs` | 28 |
 | `src/vs/workbench/api/test/browser/extHostCommands.test.ts` | 4 | `crates/je-workbench/tests/ext_host_commands.rs` | 4 |
 | `src/vs/workbench/api/test/browser/extHostConfiguration.test.ts` | 19 | `crates/je-workbench/tests/ext_host_configuration.rs` | 19 |
@@ -458,6 +459,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/policyExport/test/common/policyReference.test.ts` | 2 | `crates/je-workbench/tests/policy_reference.rs` | 2 |
 | `src/vs/workbench/contrib/preferences/test/browser/settingsTreeModels.test.ts` | 37 | `crates/je-workbench/tests/settings_tree_models.rs` | 37 |
 | `src/vs/workbench/contrib/preferences/test/common/smartSnippetInserter.test.ts` | 7 | `crates/je-workbench/tests/smart_snippet_inserter.rs` | 7 |
+| `src/vs/workbench/contrib/search/test/browser/searchResult.test.ts` | 27 | `crates/je-workbench/tests/search_result.rs` | 27 |
 | `src/vs/workbench/contrib/search/test/common/extractRange.test.ts` | 5 | `crates/je-workbench/tests/extract_range.rs` | 5 |
 | `src/vs/workbench/contrib/snippets/test/browser/snippetsService.test.ts` | 31 | `crates/je-workbench/tests/snippets_service.rs` | 31 |
 | `src/vs/workbench/contrib/tasks/test/common/problemMatcher.test.ts` | 24 | `crates/je-workbench/tests/problem_matcher.rs` | 24 |
