@@ -23,8 +23,10 @@ use je_base::event::Event as BaseEvent;
 use je_base::lifecycle::{ById, DisposableRef, DisposableStore, IDisposable, none, to_disposable};
 use je_base::map::SetMap;
 use je_base::themables::ThemeIcon;
-use je_ui::{NodeId, Role, Ui};
+use je_render::Rgba;
+use je_ui::{Content, NodeId, Role, Ui};
 
+use crate::list::list_styles::{IListStyles, LIST_FALLBACK_FOREGROUND};
 use crate::list::list_types::{IListRenderer, ListElementRenderDetails, TemplateData};
 use crate::tree::tree_types::{CollapseStateChangeEvent, ITreeModel, ITreeRenderer, TreeElementRenderDetails, TreeNodeApi};
 
@@ -143,6 +145,8 @@ where
     indent: Cell<f64>,
     default_indent: Cell<f64>,
     hide_twisties_of_childless_elements: Cell<bool>,
+    /// A cor do codicon do twistie (a do texto da linha, `IListStyles::foreground`).
+    twistie_color: Cell<Rgba>,
     twistie_additional_css_class: RefCell<Option<TwistieClassProvider<M::Element>>>,
     should_render_indent_guides: Cell<bool>,
     active_indent_nodes: RefCell<HashSet<ById<M::Node>>>,
@@ -177,6 +181,7 @@ where
             indent: Cell::new(DEFAULT_INDENT),
             default_indent: Cell::new(DEFAULT_INDENT),
             hide_twisties_of_childless_elements: Cell::new(false),
+            twistie_color: Cell::new(LIST_FALLBACK_FOREGROUND),
             twistie_additional_css_class: RefCell::new(None),
             should_render_indent_guides: Cell::new(false),
             active_indent_nodes: RefCell::new(HashSet::new()),
@@ -212,6 +217,19 @@ where
     /// O renderer do usuário que esta instância envolve (a lista de sticky precisa dele).
     pub fn renderer(&self) -> &Rc<dyn ITreeRenderer<M>> {
         &self.renderer
+    }
+
+    /// A parte do `style(styles)` da árvore que cabe ao renderer: a cor do twistie vira a do texto. As
+    /// guias de indentação (`treeIndentGuidesStroke`) ainda não são pintadas (ver `render_indent_guides`).
+    pub fn style(&self, styles: &IListStyles) {
+        let color = styles.foreground.unwrap_or(LIST_FALLBACK_FOREGROUND);
+        self.twistie_color.set(color);
+        let mut tree = self.ui.tree_mut();
+        for template_data in self.rendered_nodes.borrow().values() {
+            if let Content::Codicon { color: current, .. } = &mut tree.style_mut(template_data.twistie).content {
+                *current = color;
+            }
+        }
     }
 
     pub fn update_options(&self, options: &TreeRendererOptions<M::Element>) {
@@ -326,7 +344,19 @@ where
             let mut tree = self.ui.tree_mut();
             let hide = self.hide_twisties_of_childless_elements.get();
 
-            if node.collapsible() && (!hide || node.visible_children_count() > 0) {
+            let collapsible = node.collapsible() && (!hide || node.visible_children_count() > 0);
+
+            if !twistie_rendered {
+                // O `::before` do codicon `tree-item-expanded` (e o `tree-item-collapsed` do `.collapsed`).
+                // Mantém a cor que a linha já deu ao nó (selecionada, focada...), se ele já tinha ícone.
+                let color = match &tree.style_mut(template_data.twistie).content {
+                    Content::Codicon { color, .. } => *color,
+                    _ => self.twistie_color.get(),
+                };
+                tree.style_mut(template_data.twistie).content = if collapsible { Content::Codicon { id: (if node.collapsed() { "chevron-right" } else { "chevron-down" }).to_owned(), size: 16.0, color } } else { Content::None };
+            }
+
+            if collapsible {
                 if !twistie_rendered {
                     for class in expanded_icon_classes() {
                         tree.add_class(template_data.twistie, &class);
