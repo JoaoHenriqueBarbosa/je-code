@@ -14,6 +14,8 @@ pub mod extension_gallery_manifest_service;
 pub mod extension_gallery_manifest_service_browser;
 pub mod extension_gallery_service;
 pub mod extension_install_service;
+// Instalação de VSIX (zip e sistema de arquivos): fora do alvo web, onde a instalação é do servidor remoto, como em `je-extensions`.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod extension_install_service_impl;
 pub mod extension_management;
 pub mod extension_tips_service;
