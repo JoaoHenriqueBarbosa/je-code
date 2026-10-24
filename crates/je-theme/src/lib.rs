@@ -9,11 +9,15 @@
 //! - [`color`]: a classe `Color` de `src/vs/base/common/color.ts`.
 //! - [`registry`]: `colorUtils.ts` e `colorRegistry.ts` (o registro e a resolução de valores).
 //! - [`registered_colors`]: as cores registradas pelo VS Code (gerado).
+//! - [`theme_defaults`]: os padrões por tipo de tema e `normalizeColor` de `colorThemeData.ts`.
+//! - [`token_classification_registry`]: `tokenClassificationRegistry.ts` (tipos e modificadores de semantic tokens).
 
 pub mod color;
 #[rustfmt::skip]
 pub mod registered_colors;
 pub mod registry;
+pub mod theme_defaults;
+pub mod token_classification_registry;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

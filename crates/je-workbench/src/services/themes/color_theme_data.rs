@@ -8,9 +8,8 @@
 //!   `setTransientColors`) são do [`je_theme::ColorTheme`], que ganhou `unloaded`, `colors`, `has_transient_colors`
 //!   e `get_color_customization`.
 //! - `convertSettings` e `ITextMateThemingRule` vêm de `theme_compatibility`.
-//! - `je-languages/src/token_theme.rs` tem o `normalizeColor` e os `defaultThemeColors`, mas lê as regras de um
-//!   arquivo de tema e `je-workbench` não depende de `je-languages`; aqui as regras saem do estado do tema, então
-//!   as duas funções pequenas (`normalize_color` e `default_theme_colors`) ficam neste arquivo.
+//! - `normalizeColor` (para string), `defaultThemeColors` e o `getThemeTypeSelector` são de
+//!   `je_theme::theme_defaults`, que `je-languages/src/token_theme.rs` também usa.
 //!
 //! Fora deste porte (dependem de módulos ainda sem porte):
 //! - Os semantic tokens: `semanticTokenRules`, `customSemanticTokenRules`, `getTokenStyle`, `resolveTokenStyleValue`,
@@ -39,6 +38,7 @@ use je_platform::storage::{StorageScope, StorageService, StorageTarget};
 use je_storage::StorageValue;
 use je_theme::color::Color;
 use je_theme::color::format::css::format_hex_a;
+use je_theme::theme_defaults::normalize_color;
 use je_theme::{ColorTheme, ThemeType};
 use serde_json::{Map, Value};
 
@@ -62,40 +62,6 @@ const TOKEN_GROUP_TO_SCOPES: [(&str, &[&str]); 7] = [
     ("functions", &["entity.name.function", "support.function"]),
     ("variables", &["variable", "entity.name.variable"]),
 ];
-
-/// `defaultThemeColors[baseTheme]`: as regras `token.*-token` aplicadas quando o tema não tem `token.info-token`.
-fn default_theme_colors(theme_type: ThemeType) -> [(&'static str, &'static str); 4] {
-    let (info, warn, error, debug) = match theme_type {
-        ThemeType::Light | ThemeType::HighContrastLight => ("#316bcd", "#cd9731", "#cd3131", "#800080"),
-        ThemeType::Dark => ("#6796e6", "#cd9731", "#f44747", "#b267e6"),
-        ThemeType::HighContrastDark => ("#6796e6", "#008000", "#FF0000", "#b267e6"),
-    };
-    [("token.info-token", info), ("token.warn-token", warn), ("token.error-token", error), ("token.debug-token", debug)]
-}
-
-/// `normalizeColor` para uma string: `#RGB`, `#RGBA`, `#RRGGBB` ou `#RRGGBBAA` em maiúsculas; o alfa `FF` cai.
-fn normalize_color(color: &str) -> Option<String> {
-    let digits = color.strip_prefix('#')?;
-    let count = digits.chars().count();
-    if ![3, 4, 6, 8].contains(&count) {
-        return None;
-    }
-    let mut result = String::from("#");
-    for c in digits.chars() {
-        if !c.is_ascii_hexdigit() {
-            return None;
-        }
-        let upper = c.to_ascii_uppercase();
-        result.push(upper);
-        if count <= 4 {
-            result.push(upper);
-        }
-    }
-    if result.len() == 9 && result.ends_with("FF") {
-        result.truncate(7);
-    }
-    Some(result)
-}
 
 /// `normalizeColor` para uma `Color`: passa por `Color.Format.CSS.formatHexA(color, true)`.
 fn normalize_color_value(color: &Color) -> Option<String> {
@@ -200,22 +166,7 @@ pub struct ColorThemeData {
 
 /// O `type` do tema pelo primeiro nome de classe do `id` (`themeTypeSelector`).
 fn theme_type_of_id(id: &str) -> ThemeType {
-    match id.split(' ').next().unwrap_or("") {
-        "vs" => ThemeType::Light,
-        "hc-black" => ThemeType::HighContrastDark,
-        "hc-light" => ThemeType::HighContrastLight,
-        _ => ThemeType::Dark,
-    }
-}
-
-/// `getThemeTypeSelector` (de `themeService.ts`).
-fn theme_type_selector(theme_type: ThemeType) -> &'static str {
-    match theme_type {
-        ThemeType::Light => "vs",
-        ThemeType::Dark => "vs-dark",
-        ThemeType::HighContrastDark => "hc-black",
-        ThemeType::HighContrastLight => "hc-light",
-    }
+    ThemeType::from_ui_theme(id.split(' ').next().unwrap_or(""))
 }
 
 impl ColorThemeData {
@@ -293,7 +244,7 @@ impl ColorThemeData {
             add_rule(&mut result, &mut has_default_tokens, rule);
         }
         if !has_default_tokens {
-            for (scope, foreground) in default_theme_colors(self.theme_type()) {
+            for (scope, foreground) in self.theme_type().default_token_rules() {
                 let mut settings = IndexMap::new();
                 settings.insert("foreground".to_owned(), Value::String(foreground.to_owned()));
                 let rule = TextMateThemingRule {
@@ -504,7 +455,7 @@ impl ColorThemeData {
 
     /// `createUnloadedThemeForThemeType`.
     pub fn create_unloaded_theme_for_theme_type(theme_type: ThemeType, color_map: &[(&str, &str)]) -> ColorThemeData {
-        Self::create_unloaded_theme(theme_type_selector(theme_type), color_map)
+        Self::create_unloaded_theme(theme_type.ui_theme(), color_map)
     }
 
     /// `createUnloadedTheme`.

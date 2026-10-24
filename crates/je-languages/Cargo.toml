@@ -12,6 +12,8 @@ workspace = true
 [dependencies]
 je-base = { path = "../je-base" }
 je-editor = { path = "../je-editor" }
+# `ThemeType`, `normalizeColor` e os padrões de tema, definidos uma vez (já é dependência transitiva via `je-editor`).
+je-theme = { path = "../je-theme" }
 # Porte do `vscode-textmate` sobre o `ferroni` (Oniguruma em Rust puro), H14 do `docs/bench-report.md`.
 ferriki-textmate = "=1.1.2"
 # Só a ponte para o `RawTheme` do ferriki, que deserializa de `serde_json::Value`.
