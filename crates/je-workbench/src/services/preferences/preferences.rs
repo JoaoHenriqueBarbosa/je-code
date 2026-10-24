@@ -345,6 +345,59 @@ pub struct ISearchResult {
     pub exact_match: bool,
 }
 
+/// `ISearchResultGroup`: o `result` é compartilhado (`Rc<RefCell<..>>`), porque o modelo de configurações tira os
+/// resultados duplicados entre grupos no próprio objeto do chamador (`group.result.filterMatches = ...`).
+#[derive(Clone)]
+pub struct ISearchResultGroup {
+    pub id: String,
+    pub label: String,
+    pub result: std::rc::Rc<std::cell::RefCell<ISearchResult>>,
+    pub order: f64,
+}
+
+/// `IFilterResult`.
+#[derive(Clone)]
+pub struct IFilterResult {
+    pub query: Option<String>,
+    pub filtered_groups: Vec<ISettingsGroup>,
+    pub all_groups: Vec<ISettingsGroup>,
+    pub matches: Vec<Range>,
+    pub exact_match: Option<bool>,
+}
+
+/// O objeto que um `ISettingMatcher` devolve (`{ matches, matchType, keyMatchScore, score }`).
+#[derive(Clone, Debug)]
+pub struct ISettingMatcherResult {
+    pub matches: Vec<Range>,
+    pub match_type: SettingMatchType,
+    pub key_match_score: f64,
+    pub score: f64,
+}
+
+/// `IGroupFilter` (`boolean | null`: `null` é falso).
+pub type IGroupFilter<'a> = &'a dyn Fn(&ISettingsGroup) -> bool;
+
+/// `ISettingMatcher`.
+pub type ISettingMatcher<'a> = &'a dyn Fn(&ISetting, &ISettingsGroup) -> Option<ISettingMatcherResult>;
+
+/// `ISettingsEditorModel` (com o `getPreference` do `IPreferencesEditorModel<ISetting>`).
+pub trait ISettingsEditorModel: crate::common::editor::editor_model::IEditorModel {
+    /// `onDidChangeGroups`.
+    fn on_did_change_groups(&self) -> je_base::event::Event<()>;
+
+    /// `settingsGroups`.
+    fn settings_groups(&self) -> Vec<ISettingsGroup>;
+
+    /// `filterSettings(filter, groupFilter, settingMatcher)`.
+    fn filter_settings(&self, filter: &str, group_filter: IGroupFilter, setting_matcher: ISettingMatcher) -> Vec<ISettingMatch>;
+
+    /// `updateResultGroup(id, resultGroup)`.
+    fn update_result_group(&self, id: &str, result_group: Option<ISearchResultGroup>) -> Option<IFilterResult>;
+
+    /// `getPreference(key)`.
+    fn get_preference(&self, key: &str) -> Option<Rc<ISetting>>;
+}
+
 /// `SettingMatchType`: as maneiras de uma configuração casar com a busca, em ordem crescente de relevância. É um
 /// conjunto de bits no original (`1 << n`), por isso o newtype com `|` e `&`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
