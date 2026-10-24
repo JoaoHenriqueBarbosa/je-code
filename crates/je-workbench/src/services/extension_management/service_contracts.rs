@@ -1,6 +1,5 @@
 //! Recortes dos contratos de serviço que o `ExtensionEnablementService` lê e que ainda não foram portados:
-//! `IHostService` (`workbench/services/host/browser/host.ts`), `IDefaultAccountService`
-//! (`platform/defaultAccount/common/defaultAccount.ts`) e `IChatEntitlementService`
+//! `IHostService` (`workbench/services/host/browser/host.ts`) e `IChatEntitlementService`
 //! (`workbench/services/chat/common/chatEntitlementService.ts`).
 //!
 //! Cada trait traz só o que o gerenciador de habilitação chama; o resto entra junto com o serviço de que o trait é
@@ -23,21 +22,6 @@ pub trait IHostService {
 }
 
 service_id!(pub I_HOST_SERVICE: dyn IHostService = "hostService");
-
-/// `IDefaultAccountAuthenticationProvider`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IDefaultAccountAuthenticationProvider {
-    pub id: String,
-    pub name: String,
-    pub enterprise: bool,
-}
-
-/// `IDefaultAccountService`, reduzido a `getDefaultAccountAuthenticationProvider`.
-pub trait IDefaultAccountService {
-    fn get_default_account_authentication_provider(&self) -> IDefaultAccountAuthenticationProvider;
-}
-
-service_id!(pub I_DEFAULT_ACCOUNT_SERVICE: dyn IDefaultAccountService = "defaultAccountService");
 
 /// `IChatEntitlementContextState`, reduzido a `completed` (a configuração do chat foi concluída).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

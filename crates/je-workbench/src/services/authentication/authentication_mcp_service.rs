@@ -7,8 +7,8 @@
 //! - **A interface** tem só as preferências de conta (`onDidChangeAccountPreference`, `getAccountPreference`,
 //!   `updateAccountPreference`, `removeAccountPreference`), que são o que os serviços portados chamam. Os
 //!   membros de preferência de sessão (obsoletos), `selectSession`, `requestSessionAccess` e
-//!   `requestNewSession` dependem de `AuthenticationSession` e entram com ele, quando o
-//!   `AuthenticationService` for portado.
+//!   `requestNewSession` entram quando o `AuthenticationService` for portado (o tipo `AuthenticationSession`
+//!   já existe em `authentication.rs`).
 //! - **O evento** emite o `{ mcpServerIds, providerId }` anônimo do original, a struct
 //!   [`McpAccountPreferenceChange`].
 

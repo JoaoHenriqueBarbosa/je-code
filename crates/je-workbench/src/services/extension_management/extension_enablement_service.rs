@@ -78,7 +78,8 @@ use super::extension_management::{
     IGlobalExtensionEnablementService, IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService, WorkspaceTypeOverrides,
 };
 use super::global_extension_enablement_service::StorageManager;
-use super::service_contracts::{IChatEntitlementService, IDefaultAccountService, IHostService, ReloadOptions};
+use super::service_contracts::{IChatEntitlementService, IHostService, ReloadOptions};
+use crate::services::accounts::default_account::IDefaultAccountService;
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
 use crate::services::extensions::extension_manifest_properties_service::IExtensionManifestPropertiesService;
 use crate::services::lifecycle::lifecycle::{ILifecycleService, LifecyclePhase};

@@ -39,7 +39,9 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use je_base::default_account::{ICopilotTokenInfo, IDefaultAccount, IDefaultAccountAuthenticationProvider, IPolicyData};
 use je_base::dynamic::{Dynamic, json_stringify};
+use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event, any};
 use je_base::lifecycle::IDisposable;
 use je_base::network::schemas;
@@ -55,6 +57,7 @@ use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::environment::environment::DisableExtensions;
 use je_platform::log::NullLogService;
+use je_platform::policy::managed_settings_freshness::IManagedSettingsFreshness;
 use je_platform::resources::uri_file;
 use je_platform::storage::{AbstractStorageService, InMemoryStorageService, StorageScope, StorageService, StorageTarget};
 use je_platform::user_data_sync::user_data_sync::{IUserDataSyncEnablementService, SyncResource};
@@ -62,6 +65,10 @@ use je_platform::user_data_sync::user_data_sync_account::{IUserDataSyncAccount, 
 use je_platform::workspace::{WorkbenchState, new_test_workspace, to_workspace_folder};
 use je_platform::workspace_trust::IWorkspaceTrustManagementService;
 use je_storage::StorageValue;
+use je_workbench::services::accounts::default_account::{
+    IDefaultAccountProvider, IDefaultAccountRefreshOptions, IDefaultAccountService, ISignInOptions, ManagedSettingsFetchStatus,
+};
+use je_workbench::services::accounts::managed_settings::IManagedSettingsCompatibilityError;
 use je_workbench::services::extension_management::extension_bisect::IExtensionBisectService;
 use je_workbench::services::extension_management::extension_enablement_service::{ExtensionEnablementService, ExtensionEnablementServiceParts};
 use je_workbench::services::extension_management::extension_management::{
@@ -70,9 +77,7 @@ use je_workbench::services::extension_management::extension_management::{
     IWorkbenchExtensionManagementService, InstallExtensionResult, WorkspaceTypeOverrides,
 };
 use je_workbench::services::extension_management::global_extension_enablement_service::GlobalExtensionEnablementService;
-use je_workbench::services::extension_management::service_contracts::{
-    ChatEntitlementContext, ChatEntitlementContextState, IChatEntitlementService, IDefaultAccountAuthenticationProvider, IDefaultAccountService,
-};
+use je_workbench::services::extension_management::service_contracts::{ChatEntitlementContext, ChatEntitlementContextState, IChatEntitlementService};
 use je_workbench::services::extensions::extension_manifest_properties_service::{EXTENSIONS_SUPPORT_AGENTS_WINDOW, ExtensionManifestPropertiesService};
 use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
 use je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService;
@@ -451,12 +456,93 @@ impl IUserDataSyncAccountService for StubUserDataSyncAccountService {
     }
 }
 
-/// O `IDefaultAccountService` do `TestExtensionEnablementService`: o provedor `default-auth-provider`.
+/// O `IDefaultAccountService` do `TestExtensionEnablementService`: o provedor `default-auth-provider`. Os demais membros
+/// não existem no objeto do original, e chamá-los lança.
 struct StubDefaultAccountService;
+
+fn not_implemented() -> ! {
+    errors::throw(Error::new("not implemented"))
+}
 
 impl IDefaultAccountService for StubDefaultAccountService {
     fn get_default_account_authentication_provider(&self) -> IDefaultAccountAuthenticationProvider {
-        IDefaultAccountAuthenticationProvider { id: "default-auth-provider".to_owned(), name: "default-auth-provider".to_owned(), enterprise: false }
+        IDefaultAccountAuthenticationProvider { id: "default-auth-provider".to_owned(), name: "default-auth-provider".to_owned(), enterprise: false, extra: Default::default() }
+    }
+
+    fn on_did_change_default_account(&self) -> Event<Option<IDefaultAccount>> {
+        not_implemented()
+    }
+
+    fn on_did_change_policy_data(&self) -> Event<Option<IPolicyData>> {
+        not_implemented()
+    }
+
+    fn policy_data(&self) -> Option<IPolicyData> {
+        not_implemented()
+    }
+
+    fn current_default_account(&self) -> Option<IDefaultAccount> {
+        not_implemented()
+    }
+
+    fn copilot_token_info(&self) -> Option<ICopilotTokenInfo> {
+        not_implemented()
+    }
+
+    fn on_did_change_copilot_token_info(&self) -> Event<Option<ICopilotTokenInfo>> {
+        not_implemented()
+    }
+
+    fn managed_settings_fetch_status(&self) -> Option<ManagedSettingsFetchStatus> {
+        not_implemented()
+    }
+
+    fn managed_settings_fetched_at(&self) -> Option<f64> {
+        not_implemented()
+    }
+
+    fn managed_settings_raw_response(&self) -> Dynamic {
+        not_implemented()
+    }
+
+    fn managed_settings_compatibility_error(&self) -> Option<IManagedSettingsCompatibilityError> {
+        not_implemented()
+    }
+
+    fn on_did_change_managed_settings_compatibility_error(&self) -> Event<Option<IManagedSettingsCompatibilityError>> {
+        not_implemented()
+    }
+
+    fn managed_settings_freshness(&self) -> IManagedSettingsFreshness {
+        not_implemented()
+    }
+
+    fn on_did_change_managed_settings_freshness(&self) -> Event<IManagedSettingsFreshness> {
+        not_implemented()
+    }
+
+    fn get_default_account(&self) -> Promise<Option<IDefaultAccount>> {
+        not_implemented()
+    }
+
+    fn set_default_account_provider(&self, _provider: Rc<dyn IDefaultAccountProvider>) -> Result<(), Error> {
+        not_implemented()
+    }
+
+    fn refresh(&self, _options: Option<IDefaultAccountRefreshOptions>) -> Promise<Option<IDefaultAccount>> {
+        not_implemented()
+    }
+
+    fn sign_in(&self, _options: Option<ISignInOptions>) -> Promise<Option<IDefaultAccount>> {
+        not_implemented()
+    }
+
+    fn sign_out(&self) -> Promise<()> {
+        not_implemented()
+    }
+
+    fn resolve_git_hub_url(&self, _path: &str) -> Option<String> {
+        not_implemented()
     }
 }
 
