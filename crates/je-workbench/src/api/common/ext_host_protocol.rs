@@ -4813,3 +4813,352 @@ mod notebook_editors_region {
 }
 
 // #endregion
+
+// #region Terminal (serviço e integração com o shell)
+
+pub use self::terminal_service_region::*;
+
+/// As formas de `extHost.protocol.ts` que `extHostTerminalService.ts`, `mainThreadTerminalService.ts` e
+/// `mainThreadTerminalShellIntegration.ts` usam: `ExtHostTerminalIdentifier`, `TerminalLaunchConfig`, os DTOs do terminal
+/// (`ITerminalLinkDto`, `ITerminalDimensionsDto`, `TerminalQuickFix`, `TerminalCommandMatchResultDto`, `ITerminalCommandDto`,
+/// `ITerminalCompletion*Dto`, `TerminalCompletionListDto`), o `IShellLaunchConfigDto` e o `ICreateContributedTerminalProfileOptions`
+/// (de `platform/terminal/common/terminal.ts`, ainda sem porte próprio), e as quatro formas
+/// (`MainThreadTerminalServiceShape`, `ExtHostTerminalServiceShape`, `MainThreadTerminalShellIntegrationShape`,
+/// `ExtHostTerminalShellIntegrationShape`) com os identificadores.
+///
+/// Divergências:
+/// - `ExtHostTerminalIdentifier = number | string` é o enum [`ExtHostTerminalIdentifier`] (`Id` é o `number` e `Uuid` o `string`).
+/// - Os `UriComponents` já chegam revividos como [`URI`]; `cwd?: string | UriComponents` é o [`ShellCwd`].
+/// - As variantes de `location` que o original escreve como objetos soltos (`{ viewColumn, preserveFocus }`, `{ parentTerminal }`,
+///   `{ splitActiveTerminal }`) são os enums [`TerminalLaunchLocation`] e [`TerminalProfileLocation`] (o segundo é o do
+///   `ICreateContributedTerminalProfileOptions` e do `ITerminalInternalOptions`, que dividem o mesmo tipo de local).
+/// - Um método `$x` que é `void` na forma devolve `()`. Os que a classe do original declara `async` (e que os testes aguardam)
+///   devolvem `Promise<()>` na forma, o que o proxy real de RPC também faz.
+/// - `$provideTerminalCompletions(id, options, token)` e `$provideTerminalQuickFixes(id, matchResult, token)` levam o `token`
+///   da forma, que a implementação do `ExtHostTerminalService` ignora (cria o próprio).
+/// - `$startExtensionTerminal` devolve `Promise<ITerminalLaunchError | undefined>`; `$acceptProcessRequestLatency`, o `id` que recebe.
+/// - `$shellEnvChange(instanceId, shellEnvKeys, shellEnvValues: string[], isTrusted)` recebe os valores como `Option<String>`, porque
+///   a thread principal repassa `Object.values` de um ambiente cujos valores podem ser `undefined`.
+/// - `IProcessProperty<any>` é o [`IProcessProperty`] (uma variante por tipo).
+mod terminal_service_region {
+    use je_base::arrays::OneOrMany;
+    use je_base::cancellation::CancellationToken;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::themables::ThemeIcon;
+    use je_base::uri::URI;
+    use je_editor::languages::StringOrMarkdown;
+    use je_platform::terminal::environment_variable::{ISerializableEnvironmentDescriptionMap, ISerializableEnvironmentVariableCollection};
+    use je_platform::terminal::terminal::{
+        IProcessProperty, IProcessReadyWindowsPty, IReconnectionProperties, ITerminalEnvironment, ITerminalLaunchError,
+        ITerminalOutputMatch, ITerminalProfile, ITerminalTabAction, RegExpMatchArray, ShellCwd, TerminalExitReason, TerminalIcon, TerminalLocation,
+        TerminalShellType, TerminalType,
+    };
+
+    use super::super::ext_host_types::TerminalShellExecutionCommandLineConfidence;
+    use super::{ExtHostContext, ICommandDto, MainContext, ProxyIdentifier};
+
+    /// `ExtHostTerminalIdentifier = number | string`: um UUID gerado no host de extensões até a thread principal atribuir o id
+    /// numérico, e o id numérico depois disso.
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    pub enum ExtHostTerminalIdentifier {
+        Id(u32),
+        Uuid(String),
+    }
+
+    impl ExtHostTerminalIdentifier {
+        /// `String(id)` / `id.toString()`.
+        pub fn as_text(&self) -> String {
+            match self {
+                Self::Id(id) => id.to_string(),
+                Self::Uuid(uuid) => uuid.clone(),
+            }
+        }
+    }
+
+    /// `ICreateContributedTerminalProfileOptions` e o `TerminalProfileLocation` do `location` dele moram em
+    /// `platform/terminal/common/terminal.ts` (aqui, `je_platform::terminal::terminal`).
+    pub use je_platform::terminal::terminal::{ICreateContributedTerminalProfileOptions, TerminalProfileLocation};
+
+    /// `TerminalLocation | { viewColumn: number; preserveFocus?: boolean } | { parentTerminal: ExtHostTerminalIdentifier } |
+    /// { splitActiveTerminal: boolean }`. O `preserveState` só existe quando o local veio de um `TerminalProfileLocation`, que o
+    /// original repassa sem alterar o objeto.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum TerminalLaunchLocation {
+        Location(TerminalLocation),
+        ViewColumn { view_column: f64, preserve_focus: Option<bool>, preserve_state: Option<bool> },
+        ParentTerminal(ExtHostTerminalIdentifier),
+        SplitActiveTerminal(bool),
+    }
+
+    impl From<TerminalProfileLocation> for TerminalLaunchLocation {
+        fn from(location: TerminalProfileLocation) -> Self {
+            match location {
+                TerminalProfileLocation::Location(location) => Self::Location(location),
+                TerminalProfileLocation::ViewColumn { view_column, preserve_state } => Self::ViewColumn { view_column, preserve_focus: None, preserve_state },
+                TerminalProfileLocation::SplitActiveTerminal(split) => Self::SplitActiveTerminal(split),
+            }
+        }
+    }
+
+    /// `TerminalLaunchConfig`.
+    #[derive(Clone, Default)]
+    pub struct TerminalLaunchConfig {
+        pub name: Option<String>,
+        pub shell_path: Option<String>,
+        pub shell_args: Option<OneOrMany<String>>,
+        pub cwd: Option<ShellCwd>,
+        pub env: Option<ITerminalEnvironment>,
+        pub icon: Option<TerminalIcon>,
+        pub color: Option<String>,
+        pub initial_text: Option<String>,
+        pub wait_on_exit: Option<bool>,
+        pub strict_env: Option<bool>,
+        pub hide_from_user: Option<bool>,
+        pub is_extension_custom_pty_terminal: Option<bool>,
+        pub force_shell_integration: Option<bool>,
+        pub is_feature_terminal: Option<bool>,
+        pub is_remote_resolver_terminal: Option<bool>,
+        pub is_extension_owned_terminal: Option<bool>,
+        pub use_shell_environment: Option<bool>,
+        pub location: Option<TerminalLaunchLocation>,
+        pub is_transient: Option<bool>,
+        pub shell_integration_nonce: Option<String>,
+        pub title_template: Option<String>,
+    }
+
+    /// `IShellLaunchConfigDto`.
+    #[derive(Clone, Default)]
+    pub struct IShellLaunchConfigDto {
+        pub name: Option<String>,
+        pub executable: Option<String>,
+        pub args: Option<OneOrMany<String>>,
+        pub cwd: Option<ShellCwd>,
+        pub env: Option<ITerminalEnvironment>,
+        pub use_shell_environment: Option<bool>,
+        pub hide_from_user: Option<bool>,
+        pub reconnection_properties: Option<IReconnectionProperties>,
+        pub type_: Option<TerminalType>,
+        pub is_feature_terminal: Option<bool>,
+        pub force_shell_integration: Option<bool>,
+        pub tab_actions: Option<Vec<ITerminalTabAction>>,
+        pub shell_integration_environment_reporting: Option<bool>,
+        pub title_template: Option<String>,
+    }
+
+    /// `ITerminalLinkDto`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ITerminalLinkDto {
+        /// The ID of the link to enable activation and disposal.
+        pub id: u32,
+        /// The startIndex of the link in the line.
+        pub start_index: f64,
+        /// The length of the link in the line.
+        pub length: f64,
+        /// The descriptive label for what the link does when activated.
+        pub label: Option<String>,
+    }
+
+    /// `ITerminalDimensionsDto`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ITerminalDimensionsDto {
+        pub columns: i32,
+        pub rows: i32,
+    }
+
+    /// `ITerminalQuickFixTerminalCommandDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ITerminalQuickFixTerminalCommandDto {
+        pub terminal_command: String,
+        pub should_execute: Option<bool>,
+    }
+
+    /// `ITerminalQuickFixOpenerDto`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ITerminalQuickFixOpenerDto {
+        pub uri: URI,
+    }
+
+    /// `TerminalQuickFix = ITerminalQuickFixTerminalCommandDto | ITerminalQuickFixOpenerDto | ICommandDto`.
+    #[derive(Clone, Debug)]
+    pub enum TerminalQuickFix {
+        TerminalCommand(ITerminalQuickFixTerminalCommandDto),
+        Opener(ITerminalQuickFixOpenerDto),
+        Command(ICommandDto),
+    }
+
+    /// `TerminalCommandMatchResultDto`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct TerminalCommandMatchResultDto {
+        pub command_line: String,
+        pub command_line_match: RegExpMatchArray,
+        pub output_match: Option<ITerminalOutputMatch>,
+    }
+
+    /// `ITerminalCommandDto`.
+    #[derive(Clone, Debug)]
+    pub struct ITerminalCommandDto {
+        pub command_line: Option<String>,
+        pub cwd: Option<ShellCwd>,
+        pub exit_code: Option<i32>,
+        pub output: Option<String>,
+    }
+
+    /// `ITerminalCompletionContextDto`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ITerminalCompletionContextDto {
+        pub command_line: String,
+        pub cursor_index: i64,
+    }
+
+    /// `ITerminalCompletionItemDto`. O `label: string | CompletionItemLabel` é o [`CompletionLabel`](super::super::ext_host_types::CompletionLabel).
+    #[derive(Clone, Debug)]
+    pub struct ITerminalCompletionItemDto {
+        pub label: super::super::ext_host_types::CompletionLabel,
+        pub detail: Option<String>,
+        pub documentation: Option<StringOrMarkdown>,
+        pub icon: Option<ThemeIcon>,
+        pub kind: Option<i32>,
+        pub is_file: Option<bool>,
+        pub is_directory: Option<bool>,
+        pub is_keyword: Option<bool>,
+        pub replacement_range: (f64, f64),
+    }
+
+    /// `TerminalCompletionResourceOptionsDto`: o `globPattern` que a API não carrega fica de fora (ver `ext_host_types`).
+    #[derive(Clone, Debug)]
+    pub struct TerminalCompletionResourceOptionsDto {
+        pub show_files: Option<bool>,
+        pub show_directories: Option<bool>,
+        pub cwd: Option<URI>,
+        pub path_separator: String,
+    }
+
+    /// `TerminalCompletionListDto`.
+    #[derive(Clone, Debug, Default)]
+    pub struct TerminalCompletionListDto {
+        /// Resources should be shown in the completions list.
+        pub resource_options: Option<TerminalCompletionResourceOptionsDto>,
+        /// The completion items.
+        pub items: Vec<ITerminalCompletionItemDto>,
+    }
+
+    impl TerminalCompletionListDto {
+        /// `new TerminalCompletionListDto(items?, resourceOptions?)`.
+        pub fn new(items: Option<Vec<ITerminalCompletionItemDto>>, resource_options: Option<TerminalCompletionResourceOptionsDto>) -> Self {
+            Self { items: items.unwrap_or_default(), resource_options }
+        }
+    }
+
+    /// `MainThreadTerminalServiceShape`.
+    pub trait MainThreadTerminalServiceShape: IDisposable {
+        fn rpc_create_terminal(&self, ext_host_terminal_id: &str, config: TerminalLaunchConfig) -> Promise<()>;
+        fn rpc_dispose(&self, id: &ExtHostTerminalIdentifier);
+        fn rpc_hide(&self, id: &ExtHostTerminalIdentifier);
+        fn rpc_send_text(&self, id: &ExtHostTerminalIdentifier, text: &str, should_execute: bool);
+        fn rpc_show(&self, id: &ExtHostTerminalIdentifier, preserve_focus: bool);
+        fn rpc_register_process_support(&self, is_supported: bool);
+        fn rpc_register_profile_provider(&self, id: &str, extension_identifier: &str);
+        fn rpc_unregister_profile_provider(&self, id: &str);
+        fn rpc_register_completion_provider(&self, id: &str, extension_identifier: &str, trigger_characters: &[String]);
+        fn rpc_unregister_completion_provider(&self, id: &str);
+        fn rpc_register_quick_fix_provider(&self, id: &str, extension_identifier: &str);
+        fn rpc_unregister_quick_fix_provider(&self, id: &str);
+        fn rpc_set_environment_variable_collection(
+            &self,
+            extension_identifier: &str,
+            persistent: bool,
+            collection: Option<ISerializableEnvironmentVariableCollection>,
+            description_map: ISerializableEnvironmentDescriptionMap,
+        );
+
+        // Optional event toggles
+        fn rpc_start_sending_data_events(&self);
+        fn rpc_stop_sending_data_events(&self);
+        fn rpc_start_sending_command_events(&self);
+        fn rpc_stop_sending_command_events(&self);
+        fn rpc_start_link_provider(&self);
+        fn rpc_stop_link_provider(&self);
+
+        // Process
+        fn rpc_send_process_data(&self, terminal_id: u32, data: &str);
+        fn rpc_send_process_ready(&self, terminal_id: u32, pid: i32, cwd: &str, windows_pty: Option<IProcessReadyWindowsPty>);
+        fn rpc_send_process_property(&self, terminal_id: u32, property: IProcessProperty);
+        fn rpc_send_process_exit(&self, terminal_id: u32, exit_code: Option<i32>);
+    }
+
+    /// `MainThreadTerminalShellIntegrationShape`.
+    pub trait MainThreadTerminalShellIntegrationShape: IDisposable {
+        fn rpc_execute_command(&self, terminal_id: u32, command_line: &str);
+    }
+
+    /// `ExtHostTerminalServiceShape`.
+    pub trait ExtHostTerminalServiceShape {
+        fn rpc_accept_terminal_closed(&self, id: u32, exit_code: Option<i32>, exit_reason: TerminalExitReason) -> Promise<()>;
+        fn rpc_accept_terminal_opened(&self, id: u32, ext_host_terminal_id: Option<&str>, name: &str, shell_launch_config: IShellLaunchConfigDto);
+        fn rpc_accept_active_terminal_changed(&self, id: Option<u32>) -> Promise<()>;
+        fn rpc_accept_terminal_process_id(&self, id: u32, process_id: i32) -> Promise<()>;
+        fn rpc_accept_terminal_process_data(&self, id: u32, data: &str) -> Promise<()>;
+        fn rpc_accept_did_execute_command(&self, id: u32, command: ITerminalCommandDto) -> Promise<()>;
+        fn rpc_accept_terminal_title_change(&self, id: u32, name: &str) -> Promise<()>;
+        fn rpc_accept_terminal_dimensions(&self, id: u32, cols: i32, rows: i32) -> Promise<()>;
+        fn rpc_accept_terminal_maximum_dimensions(&self, id: u32, cols: i32, rows: i32) -> Promise<()>;
+        fn rpc_accept_terminal_interaction(&self, id: u32);
+        fn rpc_accept_terminal_selection(&self, id: u32, selection: Option<&str>);
+        fn rpc_accept_terminal_shell_type(&self, id: u32, shell_type: TerminalShellType);
+        fn rpc_start_extension_terminal(&self, id: u32, initial_dimensions: Option<ITerminalDimensionsDto>) -> Promise<Option<ITerminalLaunchError>>;
+        fn rpc_accept_process_ack_data_event(&self, id: u32, char_count: usize);
+        fn rpc_accept_process_input(&self, id: u32, data: &str);
+        fn rpc_accept_process_resize(&self, id: u32, cols: i32, rows: i32);
+        fn rpc_accept_process_shutdown(&self, id: u32, immediate: bool);
+        fn rpc_accept_process_request_initial_cwd(&self, id: u32);
+        fn rpc_accept_process_request_cwd(&self, id: u32);
+        fn rpc_accept_process_request_latency(&self, id: u32) -> Promise<u32>;
+        fn rpc_provide_links(&self, id: u32, line: &str) -> Promise<Vec<ITerminalLinkDto>>;
+        fn rpc_activate_link(&self, id: u32, link_id: u32);
+        fn rpc_init_environment_variable_collections(&self, collections: Vec<(String, ISerializableEnvironmentVariableCollection)>);
+        fn rpc_accept_default_profile(&self, profile: ITerminalProfile, automation_profile: ITerminalProfile);
+        fn rpc_create_contributed_profile_terminal(&self, id: &str, options: ICreateContributedTerminalProfileOptions) -> Promise<()>;
+        fn rpc_provide_terminal_quick_fixes(&self, id: &str, match_result: TerminalCommandMatchResultDto, token: CancellationToken) -> Promise<Option<OneOrMany<TerminalQuickFix>>>;
+        fn rpc_provide_terminal_completions(&self, id: &str, options: ITerminalCompletionContextDto, token: CancellationToken) -> Promise<Option<TerminalCompletionListDto>>;
+    }
+
+    /// `ExtHostTerminalShellIntegrationShape`.
+    pub trait ExtHostTerminalShellIntegrationShape {
+        fn rpc_shell_integration_change(&self, instance_id: u32, supports_execute_command_api: bool);
+        fn rpc_shell_execution_start(
+            &self,
+            instance_id: u32,
+            supports_execute_command_api: bool,
+            command_line_value: &str,
+            command_line_confidence: TerminalShellExecutionCommandLineConfidence,
+            is_trusted: bool,
+            cwd: Option<&str>,
+        );
+        fn rpc_shell_execution_end(
+            &self,
+            instance_id: u32,
+            command_line_value: &str,
+            command_line_confidence: TerminalShellExecutionCommandLineConfidence,
+            is_trusted: bool,
+            exit_code: Option<i32>,
+        );
+        fn rpc_shell_execution_data(&self, instance_id: u32, data: &str);
+        fn rpc_shell_env_change(&self, instance_id: u32, shell_env_keys: &[String], shell_env_values: &[Option<String>], is_trusted: bool);
+        fn rpc_cwd_change(&self, instance_id: u32, cwd: Option<&str>);
+        fn rpc_close_terminal(&self, instance_id: u32);
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_TERMINAL_SERVICE: ProxyIdentifier<dyn MainThreadTerminalServiceShape> = ProxyIdentifier::new("MainThreadTerminalService");
+        pub const MAIN_THREAD_TERMINAL_SHELL_INTEGRATION: ProxyIdentifier<dyn MainThreadTerminalShellIntegrationShape> =
+            ProxyIdentifier::new("MainThreadTerminalShellIntegration");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_TERMINAL_SERVICE: ProxyIdentifier<dyn ExtHostTerminalServiceShape> = ProxyIdentifier::new("ExtHostTerminalService");
+        pub const EXT_HOST_TERMINAL_SHELL_INTEGRATION: ProxyIdentifier<dyn ExtHostTerminalShellIntegrationShape> = ProxyIdentifier::new("ExtHostTerminalShellIntegration");
+    }
+}
+
+// #endregion

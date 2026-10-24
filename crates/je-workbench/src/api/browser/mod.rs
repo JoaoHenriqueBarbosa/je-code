@@ -26,6 +26,8 @@ pub mod main_thread_diagnostics;
 pub mod main_thread_document_content_providers;
 pub mod main_thread_editor_tabs;
 pub mod main_thread_telemetry;
+pub mod main_thread_terminal_service;
+pub mod main_thread_terminal_shell_integration;
 // Depuração: `mainThreadDebugService.ts`.
 pub mod main_thread_debug_service;
 

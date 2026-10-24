@@ -3,8 +3,10 @@
 //! processo (`ITerminalProcessInfo`, `ITerminalProcessManager`, `IBeforeProcessDataEvent`), o `ITerminalProfileResolverService`
 //! (com o `IShellLaunchConfigResolveOptions`) e o `ITerminalStatus`.
 //!
-//! O resto do arquivo (`ITerminalConfiguration` tipada, `ITerminalProfileService`, `ITerminalEditorService`...) entra quando
-//! um consumidor pedir.
+//! O resto do arquivo (`ITerminalConfiguration` tipada, `ITerminalEditorService`...) entra quando
+//! um consumidor pedir. O `ITerminalProfileService` tem só `onDidChangeAvailableProfiles` e `registerTerminalProfileProvider`, que o
+//! `MainThreadTerminalService` lê, e o `ITerminalProfileProvider` é o que ele registra; o `ITerminalProcessExtHostProxy` e o
+//! `IStartExtensionTerminalRequest` são os do terminal de extensão (`onStart` do proxy, que nada dispara, fica de fora).
 //!
 //! Divergências:
 //! - **`const enum` de string.** `TerminalCommandId` é um enum com `as_str()` devolvendo o valor do original, como os de
@@ -31,6 +33,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::event::Event;
+use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::platform::{OperatingSystem, Platform};
 use je_base::promise::Promise;
 use je_base::severity::Severity;
@@ -39,7 +42,8 @@ use je_instantiation::service_id;
 use je_platform::terminal::capabilities::capabilities::{ISerializedCommandDetectionCapability, ITerminalCapabilityStore};
 use je_platform::terminal::environment_variable::IMergedEnvironmentVariableCollection;
 use je_platform::terminal::terminal::{
-    IProcessDataEvent, IProcessProperty, IProcessReadyEvent, IShellLaunchConfig, ITerminalLaunchOutcome, ITerminalProfile, ProcessPropertyType, UnicodeVersion,
+    ICreateContributedTerminalProfileOptions, IProcessDataEvent, IProcessProperty, IProcessReadyEvent, IProcessReadyWindowsPty, IShellLaunchConfig,
+    ITerminalDimensions, ITerminalLaunchError, ITerminalLaunchOutcome, ITerminalProfile, ProcessPropertyType, UnicodeVersion,
 };
 use je_base::arrays::OneOrMany;
 
@@ -489,6 +493,48 @@ pub struct ITerminalStatus {
     pub hover_actions: Option<Vec<ITerminalStatusHoverAction>>,
 }
 
+/// `ITerminalProfileProvider`: o provedor de perfil que uma extensão registra.
+pub trait ITerminalProfileProvider {
+    fn create_contributed_terminal_profile(&self, options: ICreateContributedTerminalProfileOptions) -> Promise<()>;
+}
+
+/// `ITerminalProfileService`, reduzido ao que o `MainThreadTerminalService` lê (ver as divergências no topo do módulo).
+pub trait ITerminalProfileService {
+    /// `onDidChangeAvailableProfiles`.
+    fn on_did_change_available_profiles(&self) -> Event<Vec<ITerminalProfile>>;
+    /// `registerTerminalProfileProvider(extensionIdentifier, id, profileProvider)`.
+    fn register_terminal_profile_provider(&self, extension_identifier: &str, id: &str, profile_provider: Rc<dyn ITerminalProfileProvider>) -> DisposableRef;
+}
+
+service_id!(pub I_TERMINAL_PROFILE_SERVICE: dyn ITerminalProfileService = "terminalProfileService");
+
+/// `ITerminalProcessExtHostProxy`: o processo de um terminal de extensão, visto da thread principal.
+pub trait ITerminalProcessExtHostProxy: IDisposable {
+    fn instance_id(&self) -> u32;
+
+    fn emit_data(&self, data: &str);
+    fn emit_process_property(&self, property: IProcessProperty);
+    fn emit_ready(&self, pid: i32, cwd: &str, windows_pty: Option<IProcessReadyWindowsPty>);
+    fn emit_exit(&self, exit_code: Option<i32>);
+
+    fn on_input(&self) -> Event<String>;
+    fn on_binary(&self) -> Event<String>;
+    fn on_resize(&self) -> Event<ITerminalDimensions>;
+    fn on_acknowledge_data_event(&self) -> Event<usize>;
+    fn on_shutdown(&self) -> Event<bool>;
+    fn on_request_initial_cwd(&self) -> Event<()>;
+    fn on_request_cwd(&self) -> Event<()>;
+}
+
+/// `IStartExtensionTerminalRequest`.
+#[derive(Clone)]
+pub struct IStartExtensionTerminalRequest {
+    pub proxy: Rc<dyn ITerminalProcessExtHostProxy>,
+    pub cols: i32,
+    pub rows: i32,
+    pub callback: Rc<dyn Fn(Option<ITerminalLaunchError>)>,
+}
+
 /// `IBeforeProcessDataEvent`.
 pub struct IBeforeProcessDataEvent {
     /// The data of the event, this can be modified by the event listener to change what gets sent to the terminal.
@@ -499,7 +545,7 @@ pub struct IBeforeProcessDataEvent {
 pub trait ITerminalProcessInfo {
     fn process_state(&self) -> ProcessState;
     fn pty_process_ready(&self) -> Promise<()>;
-    fn shell_process_id(&self) -> Option<u32>;
+    fn shell_process_id(&self) -> Option<i32>;
     fn remote_authority(&self) -> Option<String>;
     fn os(&self) -> Option<OperatingSystem>;
     fn user_home(&self) -> Option<String>;

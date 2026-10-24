@@ -953,7 +953,7 @@ impl TerminalInstance {
         self.rows.get()
     }
 
-    pub fn process_id(&self) -> Option<u32> {
+    pub fn process_id(&self) -> Option<i32> {
         self.process_manager.shell_process_id()
     }
 
@@ -2647,6 +2647,74 @@ impl ITerminalInstance for TerminalInstance {
 
     fn relaunch(&self) {
         self.relaunch();
+    }
+
+    fn capabilities(&self) -> Rc<dyn ITerminalCapabilityStore> {
+        self.capabilities.clone()
+    }
+
+    fn shell_type(&self) -> TerminalShellType {
+        self.shell_type()
+    }
+
+    fn target(&self) -> Option<TerminalLocation> {
+        self.target()
+    }
+
+    fn process_id(&self) -> Option<i32> {
+        self.process_id()
+    }
+
+    fn process_ready(&self) -> Promise<()> {
+        self.process_ready()
+    }
+
+    fn cols(&self) -> i32 {
+        self.cols()
+    }
+
+    fn rows(&self) -> i32 {
+        self.rows()
+    }
+
+    fn max_cols(&self) -> i32 {
+        self.max_cols()
+    }
+
+    fn max_rows(&self) -> i32 {
+        self.max_rows()
+    }
+
+    fn exit_code(&self) -> Option<i32> {
+        self.exit_code()
+    }
+
+    fn exit_reason(&self) -> Option<TerminalExitReason> {
+        self.exit_reason()
+    }
+
+    fn initial_data_events(&self) -> Option<Vec<String>> {
+        self.initial_data_events()
+    }
+
+    fn on_data(&self) -> Event<String> {
+        self.on_data()
+    }
+
+    fn run_command(&self, command_line: &str, should_execute: bool) -> Promise<()> {
+        self.run_command(command_line, should_execute, None, None, None)
+    }
+
+    fn send_text(&self, text: &str, should_execute: bool) -> Promise<()> {
+        self.send_text(text, should_execute, None)
+    }
+
+    fn rename(&self, title: Option<&str>) {
+        self.rename(title, None);
+    }
+
+    fn dispose_with_reason(&self, reason: Option<TerminalExitReason>) {
+        self.dispose_with_reason(reason);
     }
 }
 

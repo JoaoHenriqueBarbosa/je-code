@@ -83,6 +83,7 @@ pub mod ext_host_debug_types;
 // `extHost.api.impl.ts`: só `getTerminalInternalOptions`.
 pub mod ext_host_api_impl;
 // `extHostTerminalShellIntegration.ts`: só o `InternalTerminalShellIntegration` e os tipos `vscode.*` que ele produz.
+pub mod ext_host_terminal_service;
 pub mod ext_host_terminal_shell_integration;
 // Openers externos de URI: `extHostUriOpener.ts`.
 pub mod ext_host_uri_opener;

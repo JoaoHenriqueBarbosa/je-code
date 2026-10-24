@@ -939,7 +939,7 @@ fn count_new_lines(regex: &JsRegExp) -> i32 {
 }
 
 /// `line.match(matcher)`: com um texto, o `String#match` cria um `RegExp` com ele.
-fn match_line(matcher: &LineMatcher, line: &JsString) -> Option<RegExpMatchArray> {
+pub fn match_line(matcher: &LineMatcher, line: &JsString) -> Option<RegExpMatchArray> {
     let found = match matcher {
         LineMatcher::Text(text) => {
             let regex = JsRegExp::from_str(text, "").ok()?;

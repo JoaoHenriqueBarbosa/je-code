@@ -30,7 +30,7 @@ use je_base::uri::URI;
 use je_platform::terminal::environment_variable::{IEnvironmentVariableCollection, IMergedEnvironmentVariableCollection};
 use je_platform::terminal::environment_variable_collection::MergedEnvironmentVariableCollection;
 use je_platform::terminal::terminal::{
-    IProcessDataEvent, IProcessProperty, IProcessReadyEvent, IShellLaunchConfig, ITerminalChildProcess, ITerminalEnvironment, ITerminalLaunchOutcome,
+    IProcessDataEvent, IProcessProperty, IProcessReadyEvent, IShellLaunchConfig, ITerminalChildProcess, ITerminalEnvironment, ITerminalLaunchError, ITerminalLaunchOutcome,
     ITerminalProcessOptions, ITerminalProfile, ProcessData, ProcessPropertyType, ShellCwd, TerminalEnvironmentValue, TerminalIcon, TerminalLocation, TitleEventSource,
     UnicodeVersion,
 };
@@ -38,10 +38,12 @@ use je_platform::workspace_trust::{
     IWorkspaceTrustRequestService, ResourceTrustRequestOptions, WorkspaceTrustRequestOptions, WorkspaceTrustUriResponse,
 };
 use je_workbench::common::editor::{EditorInputOrUntyped, GroupIdentifier};
-use je_workbench::contrib::terminal::browser::terminal::{ITerminalInstance, ITerminalInstanceService, ITerminalService, ShellLaunchConfigOrProfile};
+use je_workbench::contrib::terminal::browser::terminal::{
+    ICreateTerminalOptions, ITerminalInstance, ITerminalInstanceService, ITerminalService, ShellLaunchConfigOrProfile,
+};
 use je_workbench::contrib::terminal::common::environment_variable::IEnvironmentVariableService;
 use je_workbench::contrib::terminal::common::terminal::{
-    IShellLaunchConfigResolveOptions, ITerminalProfileResolverService, SharedShellLaunchConfig,
+    IShellLaunchConfigResolveOptions, IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, ITerminalProfileResolverService, SharedShellLaunchConfig,
 };
 use je_workbench::contrib::terminal::common::terminal_backend::{IDetachInstanceRequest, IPtyHostLatencyMeasurement, ITerminalBackend};
 use je_workbench::contrib::terminal::common::terminal_environment::{ITerminalBackendWslPath, WslPathDirection};
@@ -431,6 +433,70 @@ impl IWorkspaceTrustRequestService for TestTerminalWorkspaceTrustRequestService 
 pub struct TestTerminalService;
 
 impl ITerminalService for TestTerminalService {
+    fn instances(&self) -> Vec<Rc<dyn ITerminalInstance>> {
+        panic!("instances is not defined")
+    }
+
+    fn active_instance(&self) -> Option<Rc<dyn ITerminalInstance>> {
+        panic!("activeInstance is not defined")
+    }
+
+    fn on_did_create_instance(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onDidCreateInstance is not defined")
+    }
+
+    fn on_did_dispose_instance(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onDidDisposeInstance is not defined")
+    }
+
+    fn on_any_instance_process_id_ready(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onAnyInstanceProcessIdReady is not defined")
+    }
+
+    fn on_did_change_instance_dimensions(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onDidChangeInstanceDimensions is not defined")
+    }
+
+    fn on_any_instance_maximum_dimensions_change(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onAnyInstanceMaximumDimensionsChange is not defined")
+    }
+
+    fn on_did_request_start_extension_terminal(&self) -> Event<IStartExtensionTerminalRequest> {
+        panic!("onDidRequestStartExtensionTerminal is not defined")
+    }
+
+    fn on_did_change_active_instance(&self) -> Event<Option<Rc<dyn ITerminalInstance>>> {
+        panic!("onDidChangeActiveInstance is not defined")
+    }
+
+    fn on_any_instance_title_change(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onAnyInstanceTitleChange is not defined")
+    }
+
+    fn on_any_instance_data_input(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onAnyInstanceDataInput is not defined")
+    }
+
+    fn on_any_instance_shell_type_changed(&self) -> Event<Rc<dyn ITerminalInstance>> {
+        panic!("onAnyInstanceShellTypeChanged is not defined")
+    }
+
+    fn register_process_support(&self, _is_supported: bool) {
+        panic!("registerProcessSupport is not defined")
+    }
+
+    fn set_active_instance(&self, _instance: Rc<dyn ITerminalInstance>) {
+        panic!("setActiveInstance is not defined")
+    }
+
+    fn create_terminal(&self, _options: Option<ICreateTerminalOptions>) -> Promise<Rc<dyn ITerminalInstance>> {
+        panic!("createTerminal is not defined")
+    }
+
+    fn request_start_extension_terminal(&self, _proxy: Rc<dyn ITerminalProcessExtHostProxy>, _cols: i32, _rows: i32) -> Promise<Option<ITerminalLaunchError>> {
+        panic!("requestStartExtensionTerminal is not defined")
+    }
+
     fn get_instance_from_id(&self, _terminal_id: u32) -> Option<Rc<dyn ITerminalInstance>> {
         None
     }
