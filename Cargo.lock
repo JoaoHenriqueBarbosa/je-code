@@ -4163,6 +4163,7 @@ dependencies = [
  "je-extensions",
  "je-platform",
  "je-workbench",
+ "serde_json",
  "tempfile",
  "zjsc",
 ]
