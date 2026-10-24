@@ -59,6 +59,21 @@ impl UrlSearchParams {
         Self::default()
     }
 
+    /// `new URLSearchParams(init)` com um texto: o `?` inicial é ignorado e cada par `nome=valor` separado por `&`
+    /// é lido como `application/x-www-form-urlencoded` (`+` vira espaço, `%XX` vira o byte, UTF-8 com perda).
+    pub fn parse(query: &str) -> Self {
+        let query = query.strip_prefix('?').unwrap_or(query);
+        let pairs = query
+            .split('&')
+            .filter(|sequence| !sequence.is_empty())
+            .map(|sequence| {
+                let (name, value) = sequence.split_once('=').unwrap_or((sequence, ""));
+                (form_decode(name), form_decode(value))
+            })
+            .collect();
+        Self { pairs }
+    }
+
     pub fn append(&mut self, name: &str, value: &str) {
         self.pairs.push((name.to_owned(), value.to_owned()));
     }
@@ -90,6 +105,38 @@ fn form_encode(text: &str) -> String {
         }
     }
     out
+}
+
+/// A leitura inversa de [`form_encode`]: `+` vira espaço e `%XX` vira o byte; um `%` sem dois dígitos
+/// hexadecimais fica como está. Os bytes são lidos como UTF-8 com perda.
+fn form_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let hex_value = |byte: Option<&u8>| byte.and_then(|b| char::from(*b).to_digit(16)).and_then(|digit| u8::try_from(digit).ok());
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' => match (hex_value(bytes.get(i + 1)), hex_value(bytes.get(i + 2))) {
+                (Some(high), Some(low)) => {
+                    out.push(high * 16 + low);
+                    i += 3;
+                }
+                _ => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `buildIdJagExchangeBody`.

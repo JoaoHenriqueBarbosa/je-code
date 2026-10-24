@@ -129,7 +129,7 @@ fn get_substitution(found: &Match, input: &[u16], replacement: &[u16]) -> JsStri
 }
 
 /// `text.replace(regExp, replacement)` com uma `RegExp` não global: troca só o primeiro casamento.
-fn replace_first(text: &[u16], reg_exp: &JsRegExp, replacement: &[u16]) -> JsString {
+pub(crate) fn replace_first(text: &[u16], reg_exp: &JsRegExp, replacement: &[u16]) -> JsString {
     let Some(found) = reg_exp.exec(text) else {
         return JsString::from(text);
     };
