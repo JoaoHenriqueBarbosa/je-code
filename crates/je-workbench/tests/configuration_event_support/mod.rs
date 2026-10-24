@@ -35,8 +35,13 @@ fn empty_configuration() -> Configuration {
 
 /// `configService.onDidChangeConfigurationEmitter.fire({ affectsConfiguration: key => keys.includes(key), source: USER })`.
 pub fn fire_configuration_change(config: &TestConfigurationService, keys: &[&str]) {
+    fire_configuration_change_from(config, keys, ConfigurationTarget::User);
+}
+
+/// O mesmo evento com a origem (`source`) dada.
+pub fn fire_configuration_change_from(config: &TestConfigurationService, keys: &[&str], source: ConfigurationTarget) {
     let change = ConfigurationChange { keys: keys.iter().map(|key| JsString::from(*key)).collect(), overrides: Vec::new() };
     let event = ConfigurationChangeEvent::new(change, None, Rc::new(empty_configuration()), None, NullLogService::shared());
-    event.source.set(Some(ConfigurationTarget::User));
+    event.source.set(Some(source));
     config.on_did_change_configuration_emitter.fire(Rc::new(event));
 }

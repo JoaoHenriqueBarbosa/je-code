@@ -7,7 +7,7 @@
 //!   xterm), trata `\r` e `\n`, e deixa o cursor em `cols` depois da última coluna (a quebra pendente do xterm).
 //! - Lê as sequências OSC (`ESC ] Ps ; Pt BEL` ou `ESC \`) e CSI (`ESC [ params final`) do texto escrito e as entrega aos
 //!   tratadores do `parser`, do último registrado para o primeiro, até um devolver `true`. Sem tratador que consuma, o
-//!   `CSI 2 J` e o `CSI 3 J` limpam a área visível, o padrão do xterm.
+//!   `CSI 2 J` e o `CSI 3 J` limpam a área visível, e o `CSI n A` sobe o cursor `n` linhas, o padrão do xterm.
 //! - Registra marcadores ([`FakeMarker`]) na linha do cursor mais o deslocamento.
 //!
 //! O que ele não faz: caracteres largos (toda célula tem largura 1), atributos de cor e estilo (toda célula é sem estilo),
@@ -351,6 +351,25 @@ impl Screen {
         }
     }
 
+    /// `terminal.clear()` sem o `onScroll`: a linha do cursor vira a primeira, o cursor sobe para o topo e o resto fica em branco.
+    fn clear(&self) {
+        let current = usize::try_from(self.base_y.get() + self.cursor_y.get()).unwrap_or(0);
+        let kept = self.lines.borrow().get(current).cloned();
+        {
+            let mut lines = self.lines.borrow_mut();
+            lines.clear();
+            lines.extend(kept);
+        }
+        self.base_y.set(0);
+        self.cursor_y.set(0);
+        self.ensure_lines(self.rows);
+    }
+
+    /// `CSI n A` (`CUU`): sobe o cursor `count` linhas, sem passar do topo da área visível.
+    fn cursor_up(&self, count: i32) {
+        self.cursor_y.set((self.cursor_y.get() - count).max(0));
+    }
+
     fn line(&self, y: i32) -> Option<FakeLine> {
         let index = usize::try_from(y).ok()?;
         self.lines.borrow().get(index).map(|data| FakeLine { data: data.clone() })
@@ -501,6 +520,18 @@ impl FakeXterm {
         self.screen.reset();
     }
 
+    /// `terminal.clear()`: limpa o buffer, deixando a linha do cursor como a primeira (o prompt). Não faz nada com o buffer já
+    /// limpo; descarta os marcadores (`clearAllMarkers`).
+    pub fn clear(&self) {
+        if self.screen.base_y.get() == 0 && self.screen.cursor_y.get() == 0 {
+            return;
+        }
+        for marker in self.markers.take() {
+            marker.dispose();
+        }
+        self.screen.clear();
+    }
+
     /// `terminal.buffer.active` com os membros próprios do dublê.
     pub fn buffer(&self) -> FakeBuffer {
         FakeBuffer { screen: self.screen.clone() }
@@ -611,6 +642,13 @@ impl FakeXterm {
         let handled = handlers.iter().rev().any(|handler| handler(&params));
         if !handled && final_byte == 'J' && params.first().is_some_and(|param| param.is(2) || param.is(3)) {
             self.screen.clear_viewport();
+        }
+        if !handled && final_byte == 'A' {
+            let count = match params.first() {
+                Some(platform::CsiParam::Number(count)) if *count > 0 => *count,
+                _ => 1,
+            };
+            self.screen.cursor_up(count);
         }
         end
     }
