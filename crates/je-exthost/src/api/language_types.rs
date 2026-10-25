@@ -276,6 +276,25 @@ pub fn hover_from_js(value: &JsData) -> Result<Option<VerboseHover>, Error> {
     )))
 }
 
+fn marked_string_data(value: &MarkedString) -> JsData {
+    match value {
+        MarkedString::Text(text) => JsData::Str(text.clone()),
+        MarkedString::Markdown(markdown) => api_to_js(markdown),
+        MarkedString::Code { language, value } => JsData::Object(vec![("language".to_owned(), JsData::Str(language.clone())), ("value".to_owned(), JsData::Str(value.clone()))]),
+    }
+}
+
+/// O `Hover` que a extensão devolveu, como ela o lê de volta (`HoverContext#previousHover`): `contents` sempre lista, o `range` que o
+/// adaptador preencheu (o original altera o `Hover` da extensão no lugar) e as duas flags de verbosidade quando ela as definiu.
+pub fn hover_data(hover: &VerboseHover) -> JsData {
+    class_fields(vec![
+        ("contents", Some(JsData::Array(hover.hover.contents.iter().map(marked_string_data).collect()))),
+        ("range", hover.hover.range.map(range_data)),
+        ("canIncreaseVerbosity", hover.can_increase_verbosity.map(JsData::Bool)),
+        ("canDecreaseVerbosity", hover.can_decrease_verbosity.map(JsData::Bool)),
+    ])
+}
+
 fn location_or_link_from_js(value: &JsData) -> Result<LocationOrLink, Error> {
     if field(value, "targetUri").is_some() {
         return Ok(LocationOrLink::Link(DefinitionLink {

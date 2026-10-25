@@ -24,8 +24,8 @@
 //! - O resultado do provedor passa pelo motor como cópia: a identidade dos itens que o provedor guarda (para o `resolve`) não existe.
 //!   O host guarda, por item devolvido, a cópia original ([`Originals`]) e a entrega ao `resolveX` do provedor; o provedor que altera o
 //!   item no lugar e devolve `undefined` perde a alteração (o original também usa o item devolvido, não o alterado, quando devolve outro).
-//! - `HoverContext#previousHover` não é entregue (só `verbosityDelta`), porque o host só tem o `Hover` já convertido para o formato do
-//!   editor, sem o objeto da extensão.
+//! - `HoverContext#previousHover` é o `Hover` que o `_hoverMap` do adaptador guarda por id, relido como objeto da extensão
+//!   (`language_types::hover_data`, com o `range` que o adaptador preencheu); a identidade do objeto original não existe.
 //! - `DiagnosticCollection#forEach` percorre um retrato das entradas; `thisArg` só vale se for função (o motor copia objetos comuns).
 //! - As classes de valor (`MarkdownString`, `SnippetString`, `WorkspaceEdit`) e a lista do que falta nelas estão em `language_types`.
 
@@ -64,7 +64,7 @@ use crate::api::language_provider_types::{self, SemanticTokensBuilders};
 use crate::api::language_providers;
 use crate::api::language_types::{
     self, code_action_kind_data, code_action_kind_from_js, code_action_raw_entries, code_action_ref_from_js, code_actions_from_js, command_from_js,
-    completion_item_ref_from_js, completion_raw_items, completion_result_from_js, diagnostics_from_js, document_symbols_from_js, hover_from_js, location_result_from_js,
+    completion_item_ref_from_js, completion_raw_items, completion_result_from_js, diagnostics_from_js, document_symbols_from_js, hover_data, hover_from_js, location_result_from_js,
     text_edits_from_js,
 };
 use crate::api::text_editors::{TextEditorApi, TextObjects};
@@ -330,7 +330,10 @@ impl ApiHoverProvider for HoverProvider {
     fn provide_hover(&self, document: &TextDocument, position: &Position, token: CancellationToken, context: Option<&ApiHoverContext>) -> ApiProviderResult<VerboseHover> {
         let mut args = vec![self.0.document(document), position_data(*position), self.0.token(token)];
         if let Some(context) = context {
-            args.push(JsData::Object(vec![("verbosityDelta".to_owned(), JsData::Num(context.verbosity_delta))]));
+            args.push(JsData::Object(vec![
+                ("verbosityDelta".to_owned(), JsData::Num(context.verbosity_delta)),
+                ("previousHover".to_owned(), hover_data(&context.previous_hover)),
+            ]));
         }
         self.0.invoke("provideHover", args, hover_from_js)
     }
