@@ -83,13 +83,21 @@ use je_theme::color::Color;
 use je_theme::registry::ColorValue::Id;
 use je_theme::registry::{ColorTransform, ColorValue, Defaults, color_registry};
 use je_workbench::contrib::files::browser::views::explorer_view::should_preserve_workspace_name_case;
-use je_ui::{NodeId, Ui};
+use je_base::actions::{Action, ActionRef, Separator};
+use je_base::key_codes::KeyCode;
+use je_render::kurbo::Rect;
+use je_ui::{Event as UiEvent, EventKind, KeyData, Modifiers, NodeId, Role, Ui};
+use je_widgets::action_bar::{ActionBar, ActionsOrientation, IActionBarOptions, IActionOptions};
+use je_widgets::menu::{HorizontalDirection, IMenuDirection, IMenuOptions, Menu, VerticalDirection, unthemed_menu_styles};
+use je_widgets::menu_bar::{IMenuBarOptions, MenuBar, MenuBarMenu};
+use je_widgets::modifier_key_emitter::ModifierKeyEmitter;
 use je_widgets::paneview::{Pane, PaneContent, PaneOptions};
 use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
-    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, ModernUiStyle, NotificationInsets, NotificationsPlacement, PaneHost, PaneState, css_rgb,
+    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle, NotificationInsets,
+    NotificationsPlacement, PaneHost, PaneState, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb,
 };
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
@@ -1507,3 +1515,232 @@ fn keeps_the_connected_editor_tab_color_audit_exhaustive() {
         vec!["editorGroupHeader.connectedTabsBackground", "editorGroupHeader.tabsBackground", "editorGroupHeader.tabsBorder"]
     );
 }
+
+/// As caixas `left` e `top` de um elemento posicionado: `position: fixed` ancora na janela, qualquer outro valor desloca
+/// pela origem do bloco contêiner.
+fn positioned_origin(position: &str, declared: (f64, f64), container_origin: (f64, f64)) -> (f64, f64) {
+    if position == "fixed" { declared } else { (declared.0 + container_origin.0, declared.1 + container_origin.1) }
+}
+
+#[test]
+fn keeps_floating_rail_overlays_anchored_to_the_viewport() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    style.set_activity_bar_metrics(ActivityBarMetrics { width: Some(36.0), action_height: Some(36.0) });
+    let activity_bar = ClassList::new("part activitybar left");
+    let menubar = style.compact_menubar_box(&activity_bar).expect("o menubar compacto da barra de atividade");
+    let rail = style.activity_rail_geometry(&activity_bar).expect("a trilha flutuante");
+    let rail_margins = style.floating_part_margins(&activity_bar).expect("a margem da trilha");
+    let rail_right = rail_margins.left + rail.width;
+    // `top: 120px; left: 240px; width: 200px; height: 160px` no menu do botão aberto.
+    let (top, left) = positioned_origin(MENUBAR_MENU_HOLDER_POSITION, (120.0, 240.0), (rail_margins.left, 0.0));
+
+    assert_eq!(
+        (MENUBAR_MENU_HOLDER_POSITION, px(menubar.height), px(menubar.height), menubar.display, px(menubar.padding_top), top, left, 200.0, left > rail_right),
+        ("fixed", "39px".to_owned(), "39px".to_owned(), "flex", "3px".to_owned(), 120.0, 240.0, 200.0, true)
+    );
+    assert_eq!(menubar.height, 39.0);
+}
+
+fn add_classes(tree: &mut je_ui::Tree, node: NodeId, class_name: &str) {
+    for class in class_name.split_whitespace() {
+        tree.add_class(node, class);
+    }
+}
+
+fn key_up(ui: &Ui, target: NodeId, key_code: KeyCode) {
+    ui.dispatch(&mut UiEvent::new(EventKind::KeyUp, target).with_key(KeyData { key_code, modifiers: Modifiers::default() }));
+}
+
+/// O primeiro descendente (a própria raiz fica de fora) com a classe, em ordem de documento.
+fn first_with_class(ui: &Ui, root: NodeId, class_name: &str) -> Option<NodeId> {
+    let tree = ui.tree();
+    tree.subtree(root).into_iter().skip(1).find(|node| tree.has_class(*node, class_name))
+}
+
+/// A altura, o deslocamento do topo da primeira linha e o `margin-top` de cada linha de um `.monaco-menu`.
+fn menu_geometry(ui: &Ui, style: &ModernUiStyle, menu: NodeId) -> Vec<(f64, f64, String)> {
+    let container = first_with_class(ui, menu, "actions-container").expect("a lista de ações do menu");
+    let tree = ui.tree();
+    let rows = tree.children(container).to_vec();
+    let first_top = tree.absolute_bounds(rows[0]).y0;
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| (tree.bounds(*row).height(), tree.absolute_bounds(*row).y0 - first_top, px(style.activity_bar_action_margin_top(true, index > 0))))
+        .collect()
+}
+
+fn keeps_compact_application_menu_spacing_independent_of_the_activity_rail(classes: &str, gap: f64, compact_activity_bar: bool, application_scrollbar_z_index: i32) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, &format!("monaco-workbench {classes}"));
+    style.set_activity_bar_metrics(ActivityBarMetrics { width: Some(36.0), action_height: Some(36.0) });
+    style.set_activity_bar_action_gap(gap);
+
+    let ui = Ui::new();
+    let (menubar_node, composite_bar, reference_host) = {
+        let root = ui.root();
+        let mut tree = ui.tree_mut();
+        tree.set_bounds(root, Rect::new(0.0, 0.0, 1024.0, 768.0));
+        let workbench = tree.create(root, Role::Generic);
+        add_classes(&mut tree, workbench, &format!("monaco-workbench {classes}"));
+        tree.set_bounds(workbench, Rect::new(0.0, 0.0, 1024.0, 400.0));
+        let activity_bar = tree.create(workbench, Role::Generic);
+        add_classes(&mut tree, activity_bar, &format!("part activitybar left{}", if compact_activity_bar { " compact" } else { "" }));
+        tree.set_bounds(activity_bar, Rect::new(0.0, 0.0, 44.0, 400.0));
+        let content = tree.create(activity_bar, Role::Generic);
+        add_classes(&mut tree, content, "content");
+        tree.set_bounds(content, Rect::new(0.0, 0.0, 44.0, 400.0));
+        let menubar_node = tree.create(content, Role::Generic);
+        add_classes(&mut tree, menubar_node, "menubar");
+        tree.set_bounds(menubar_node, Rect::new(0.0, 0.0, 36.0, 39.0));
+        let composite_bar = tree.create(content, Role::Generic);
+        add_classes(&mut tree, composite_bar, "composite-bar");
+        tree.set_bounds(composite_bar, Rect::new(0.0, 39.0, 36.0, 400.0));
+        let reference_host = tree.create(workbench, Role::Generic);
+        add_classes(&mut tree, reference_host, "reference-menu");
+        tree.set_bounds(reference_host, Rect::new(600.0, 0.0, 600.0, 0.0));
+        (menubar_node, composite_bar, reference_host)
+    };
+
+    let rail = guard.add_rc(ActionBar::new(&ui, composite_bar, IActionBarOptions { orientation: Some(ActionsOrientation::Vertical), ..Default::default() }));
+    rail.push(
+        &[guard.add_rc(Action::new("explorer", "Explorer", "", true, None)) as ActionRef, guard.add_rc(Action::new("search", "Search", "", true, None)) as ActionRef],
+        IActionOptions::default(),
+    );
+    let actions: Vec<ActionRef> = vec![
+        guard.add_rc(Action::new("undo", "Undo", "", true, None)) as ActionRef,
+        guard.add_rc(Action::new("redo", "Redo", "", true, None)) as ActionRef,
+        Separator::new() as ActionRef,
+        guard.add_rc(Action::new("cut", "Cut", "", true, None)) as ActionRef,
+        guard.add_rc(Action::new("copy", "Copy", "", true, None)) as ActionRef,
+    ];
+    ModifierKeyEmitter::get_instance(&ui).reset_key_status();
+    let menu_bar = guard.add_rc(MenuBar::new(
+        &ui,
+        menubar_node,
+        IMenuBarOptions {
+            visibility: Some("compact".to_owned()),
+            compact_mode: Some(IMenuDirection { horizontal: HorizontalDirection::Right, vertical: VerticalDirection::Below }),
+            ..Default::default()
+        },
+        unthemed_menu_styles(),
+    ));
+    menu_bar.push(&[
+        MenuBarMenu { label: "Edit".to_owned(), actions: actions.clone() },
+        MenuBarMenu { label: "View".to_owned(), actions: Vec::new() },
+        MenuBarMenu { label: "Help".to_owned(), actions: Vec::new() },
+    ]);
+    menu_bar.update(None);
+    ui.run_animation_frame();
+    menu_bar.toggle_focus();
+    let menu_button = ui.tree().children(menubar_node)[0];
+    key_up(&ui, menu_button, KeyCode::Enter);
+
+    let holder = first_with_class(&ui, menubar_node, "menubar-menu-items-holder").expect("o menu do aplicativo está aberto");
+    let application_menu = first_with_class(&ui, holder, "monaco-menu").expect("o menu do aplicativo");
+    let first_item = first_with_class(&ui, application_menu, "action-menu-item").expect("o primeiro item do menu do aplicativo");
+    key_up(&ui, first_item, KeyCode::RightArrow);
+    let submenu_container = first_with_class(&ui, holder, "monaco-submenu").expect("o submenu abriu");
+    let submenu = first_with_class(&ui, submenu_container, "monaco-menu").expect("o menu do submenu");
+
+    let reference_menu = guard.add_rc(Menu::new(&ui, reference_host, &actions, IMenuOptions::default(), Rc::new(unthemed_menu_styles())));
+    let reference_node = first_with_class(&ui, reference_host, "monaco-menu").expect("o menu de referência");
+    let application_rows = menu_geometry(&ui, &style, application_menu);
+    let rail_items: Vec<NodeId> = {
+        let tree = ui.tree();
+        tree.subtree(composite_bar).into_iter().filter(|node| tree.has_class(*node, "action-item")).collect()
+    };
+    let submenu_container_z_index = ui.tree().style(submenu_container).z_index;
+
+    assert_eq!(
+        (
+            px(style.activity_bar_action_margin_top(false, rail_items.len() > 1)),
+            application_rows.iter().map(|row| row.2.clone()).collect::<Vec<_>>(),
+            application_rows[1].1,
+            style.application_menu_scrollbar_z_index(),
+            menu_geometry(&ui, &style, submenu),
+            submenu_container_z_index,
+            VISIBLE_SCROLLBAR_Z_INDEX,
+        ),
+        (
+            px(gap),
+            vec!["0px".to_owned(), "0px".to_owned(), "0px".to_owned()],
+            24.0,
+            application_scrollbar_z_index,
+            menu_geometry(&ui, &style, reference_node),
+            1,
+            11,
+        )
+    );
+    assert_eq!(rail_items.len(), 2);
+    menu_bar.blur();
+    drop(reference_menu);
+    ModifierKeyEmitter::dispose_instance(&ui);
+}
+
+#[test]
+fn keeps_compact_application_menu_spacing_independent_of_the_activity_rail_in_default_density() {
+    keeps_compact_application_menu_spacing_independent_of_the_activity_rail("modern-ui floating-panels", 8.0, false, 0);
+}
+
+#[test]
+fn keeps_compact_application_menu_spacing_independent_of_the_activity_rail_in_compact_density() {
+    keeps_compact_application_menu_spacing_independent_of_the_activity_rail("modern-ui floating-panels modern-ui-compact", 4.0, false, 0);
+}
+
+#[test]
+fn keeps_compact_application_menu_spacing_independent_of_the_activity_rail_in_compact_activity_bar() {
+    keeps_compact_application_menu_spacing_independent_of_the_activity_rail("modern-ui floating-panels activitybar-compact", 0.0, true, 0);
+}
+
+#[test]
+fn keeps_compact_application_menu_spacing_independent_of_the_activity_rail_in_classic_layout() {
+    keeps_compact_application_menu_spacing_independent_of_the_activity_rail("", 0.0, false, 11);
+}
+
+#[test]
+fn styles_focused_and_open_compact_application_menu_states() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let customized = |selection_border: &str| {
+        theme_with_colors(&[
+            ("menubar.selectionBorder", selection_border),
+            ("modernActivityBarItem.hoverBackground", "#234567"),
+            ("modernActivityBarItem.hoverForeground", "#345678"),
+            ("modernActivityBarItem.activeBackground", "#456789"),
+            ("modernActivityBarItem.activeForeground", "#56789a"),
+        ])
+    };
+    // O executor sem cabeça do original não ativa `:focus`; `.open` exercita os seletores compartilhados de foco e de aberto.
+    let target_styles = |theme: &ColorTheme, root_class_name: &str| {
+        let style = ModernUiStyle::new(theme, root_class_name);
+        let toggle = style.compact_menu_toggle_style(MenubarButtonState { open: true, ..MenubarButtonState::default() });
+        let outline = toggle.outline.expect("o título aberto tem contorno");
+        (
+            css_rgb(&toggle.button_background.unwrap_or_else(Color::transparent_color)),
+            css_rgb(&toggle.background.expect("o fundo do alvo")),
+            css_rgb(&toggle.color.expect("a cor do alvo")),
+            css_rgb(&outline.color.expect("a cor do contorno")),
+            outline.style,
+            px(outline.width),
+            toggle.font_size.map(px),
+        )
+    };
+    let focus_and_open = target_styles(&customized("#123456"), "monaco-workbench modern-ui floating-panels");
+    let high_contrast_focus_and_open = target_styles(&customized("#abcdef"), "monaco-workbench modern-ui floating-panels hc-black");
+
+    let expected = |outline_color: &str| {
+        (
+            "rgba(0, 0, 0, 0)".to_owned(),
+            "rgb(69, 103, 137)".to_owned(),
+            "rgb(86, 120, 154)".to_owned(),
+            outline_color.to_owned(),
+            "solid",
+            "1px".to_owned(),
+            Some("16px".to_owned()),
+        )
+    };
+    assert_eq!((focus_and_open, high_contrast_focus_and_open), (expected("rgb(18, 52, 86)"), expected("rgb(171, 205, 239)")));
+}
+

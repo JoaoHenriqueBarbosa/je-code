@@ -20,7 +20,7 @@ use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
 use je_theme::registry::{as_css_variable_name, color_registry};
 use je_theme::size_utils::get_size_registry;
-use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
+use je_theme::sizes::base_sizes::{CODICON_FONT_SIZE, CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -126,11 +126,20 @@ pub struct ModernUiStyle<'a> {
     /// Só as cores que o tema define de fato existem como `--vscode-*`: o DOM de um teste sem o CSS gerado pelo tema
     /// (`generateColorThemeCSS`) não carrega os padrões registrados.
     explicit_colors_only: bool,
+    /// `--activity-bar-action-gap`, que `activitybarPart.ts` publica na raiz (`None` é a variável indefinida, `0px`).
+    activity_bar_action_gap: Option<f64>,
 }
 
 impl<'a> ModernUiStyle<'a> {
     pub fn new(theme: &'a ColorTheme, root_class_name: &str) -> Self {
-        Self { theme, root: ClassList::new(root_class_name), notification_insets: NotificationInsets::default(), activity_bar_metrics: ActivityBarMetrics::default(), explicit_colors_only: false }
+        Self {
+            theme,
+            root: ClassList::new(root_class_name),
+            notification_insets: NotificationInsets::default(),
+            activity_bar_metrics: ActivityBarMetrics::default(),
+            explicit_colors_only: false,
+            activity_bar_action_gap: None,
+        }
     }
 
     /// Um DOM em que só as variáveis `--vscode-*` definidas pelo tema existem, sem os padrões registrados.
@@ -1156,4 +1165,148 @@ fn modern_ui_tab_variable_color_id(name: &str) -> Option<&'static str> {
         "editor-tab-action-active-hover-background" => "modernEditorTab.activeHoverActionBackground",
         _ => return None,
     })
+}
+
+/// `position` do `.menubar-menu-items-holder` (menubar.css, linhas 66 a 76): o menu do aplicativo é `fixed`, ancorado na
+/// janela e não na trilha da barra de atividade (por isso `floatingPanels.css`, linhas 316 a 325, desloca o `.content` com
+/// `left` e não com `transform`, que viraria o bloco contêiner do menu e o recortaria).
+pub const MENUBAR_MENU_HOLDER_POSITION: &str = "fixed";
+
+/// `z-index` de uma barra de rolagem visível (`.monaco-scrollable-element > .scrollbar.visible`, scrollbars.css).
+pub const VISIBLE_SCROLLBAR_Z_INDEX: i32 = 11;
+
+/// A caixa de um `.menubar.compact` da barra de atividade, em px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenubarBox {
+    /// `display` do `.menubar` (menubar.css, linha 8).
+    pub display: &'static str,
+    /// `height` calculado.
+    pub height: f64,
+    /// `padding-top` calculado.
+    pub padding_top: f64,
+}
+
+/// O estado de um `.menubar-menu-button` da barra compacta que as regras de `menubarControl.css` e de `activityBar.css`
+/// testam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenubarButtonState {
+    /// `:focus`.
+    pub focused: bool,
+    /// `.open`.
+    pub open: bool,
+    /// `:hover`.
+    pub hovered: bool,
+    /// `:focus-within` na `.menubar`.
+    pub focus_within: bool,
+}
+
+/// O `outline` calculado de um título de menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineStyle {
+    /// `None` é `currentcolor`.
+    pub color: Option<Color>,
+    pub style: &'static str,
+    pub width: f64,
+}
+
+/// O que as regras pintam no botão e no `.toolbar-toggle-more` do menu compacto da barra de atividade.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactMenuToggleStyle {
+    /// `background-color` do `.menubar-menu-button` (`None` é transparente, o padrão).
+    pub button_background: Option<Color>,
+    /// `background-color` do `.toolbar-toggle-more` (`None` é transparente, o padrão).
+    pub background: Option<Color>,
+    /// `color` do `.toolbar-toggle-more`.
+    pub color: Option<Color>,
+    /// `outline` do `.menubar-menu-title` (`None` é `outline-style: none`).
+    pub outline: Option<OutlineStyle>,
+    /// `font-size` do `.toolbar-toggle-more` em px (`None` quando nenhuma regra do Modern UI o define).
+    pub font_size: Option<f64>,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// Define `--activity-bar-action-gap` (`root.style.setProperty`).
+    pub fn set_activity_bar_action_gap(&mut self, gap: f64) {
+        self.activity_bar_action_gap = Some(gap);
+    }
+
+    /// `.modern-ui.monaco-workbench`: as regras de `activityBar.css` que miram o menu compacto.
+    fn modern_workbench(&self) -> bool {
+        self.has("modern-ui") && self.has("monaco-workbench")
+    }
+
+    /// A caixa do `.menubar.compact` de uma `.part.activitybar` (activityBar.css, linhas 58 a 61; floatingPanels.css, linhas
+    /// 334 a 337). `None` quando nenhuma regra do Modern UI nem do `.floating-panels` o alcança.
+    pub fn compact_menubar_box(&self, part: &ClassList) -> Option<MenubarBox> {
+        if !part.contains("activitybar") {
+            return None;
+        }
+        // `var(--activity-bar-action-height, 36px)`: nas duas regras o padrão é 36px, também no compacto.
+        let action_height = self.activity_bar_metrics.action_height.unwrap_or(36.0);
+        let floating_rail = self.has("floating-panels") && !part.contains("top") && !part.contains("bottom");
+        if floating_rail {
+            // `(var(--modern-ui-activitybar-lane) - 2px) / 2`: o `2px` são as duas bordas de 1px do cartão.
+            let inset = (self.activity_bar_lane() - 2.0) / 2.0;
+            return Some(MenubarBox { display: "flex", height: action_height + inset, padding_top: inset });
+        }
+        self.modern_workbench().then_some(MenubarBox { display: "flex", height: action_height, padding_top: 0.0 })
+    }
+
+    /// `margin-top` de um `.action-item` da barra de atividade (floatingPanels.css, linhas 308 a 314): o vão entre os itens
+    /// vale só para o item que segue outro (`.action-item + .action-item`) fora de um `.monaco-menu`, que guarda o
+    /// espaçamento próprio das linhas e dos separadores.
+    pub fn activity_bar_action_margin_top(&self, inside_menu: bool, follows_sibling: bool) -> f64 {
+        if self.has("floating-panels") && !inside_menu && follows_sibling {
+            self.activity_bar_action_gap.unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// `z-index` da barra de rolagem vertical do menu do aplicativo (activityBar.css, linhas 67 a 69): o Modern UI a leva ao
+    /// fundo, e a do submenu (que não é filha direta do `.menubar-menu-items-holder`) segue [`VISIBLE_SCROLLBAR_Z_INDEX`].
+    pub fn application_menu_scrollbar_z_index(&self) -> i32 {
+        if self.modern_workbench() { 0 } else { VISIBLE_SCROLLBAR_Z_INDEX }
+    }
+
+    /// O botão e o `.toolbar-toggle-more` do menu compacto da barra de atividade (menubarControl.css, linhas 11 a 27 e 49 a
+    /// 63; menubar.css, linhas 89 a 97; activityBar.css, linhas 71 a 92). Com o Modern UI o botão não pinta fundo e o
+    /// alvo assume as cores de item da barra de atividade.
+    pub fn compact_menu_toggle_style(&self, state: MenubarButtonState) -> CompactMenuToggleStyle {
+        let active = state.open || state.focused;
+        // `.menubar.compact:not(:focus-within) > .menubar-menu-button:hover`.
+        let hovered = state.hovered && !state.focus_within;
+        let modern = self.modern_workbench();
+        let button_background = if modern && active {
+            None
+        } else if state.focused {
+            self.color("menubar.selectionBackground")
+        } else {
+            None
+        };
+        let (background, color) = if modern && hovered {
+            (self.color("modernActivityBarItem.hoverBackground"), self.color("modernActivityBarItem.hoverForeground"))
+        } else if modern && active {
+            (self.color("modernActivityBarItem.activeBackground"), self.color("modernActivityBarItem.activeForeground"))
+        } else if hovered || active {
+            (None, self.color("activityBar.foreground"))
+        } else {
+            (None, self.color("activityBar.inactiveForeground"))
+        };
+        // `.open` e `:focus` (sólido) vêm depois de `:hover` (tracejado) no arquivo, com a mesma especificidade.
+        let outline_style = if active {
+            Some("solid")
+        } else if state.hovered {
+            Some("dashed")
+        } else {
+            None
+        };
+        CompactMenuToggleStyle {
+            button_background,
+            background,
+            color,
+            outline: outline_style.map(|style| OutlineStyle { color: self.color("menubar.selectionBorder"), style, width: 1.0 }),
+            font_size: modern.then(|| self.size(CODICON_FONT_SIZE)),
+        }
+    }
 }
