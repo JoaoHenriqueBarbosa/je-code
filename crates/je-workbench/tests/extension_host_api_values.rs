@@ -61,6 +61,17 @@ exports.activate = (context) => {
     source.cancel();
     return { before, after: token.isCancellationRequested, again: source.token.isCancellationRequested };
   });
+  command('t.theme', () => {
+    const color = new vscode.ThemeColor('terminal.ansiRed');
+    const icon = new vscode.ThemeIcon('terminal', color);
+    const plain = new vscode.ThemeIcon('zap');
+    return {
+      colorId: color.id, colorIsInstance: color instanceof vscode.ThemeColor,
+      iconId: icon.id, iconColorId: icon.color.id, iconIsInstance: icon instanceof vscode.ThemeIcon, plainHasColor: plain.color !== undefined,
+      fileId: vscode.ThemeIcon.File.id, folderId: vscode.ThemeIcon.Folder.id, fileIsInstance: vscode.ThemeIcon.File instanceof vscode.ThemeIcon,
+      validIcon: vscode.ThemeIcon.isThemeIcon(icon), invalidIcon: vscode.ThemeIcon.isThemeIcon({ id: 3 }),
+    };
+  });
   command('t.enums', () => ({
     left: vscode.StatusBarAlignment.Left, rightName: vscode.StatusBarAlignment[2],
     global: vscode.ConfigurationTarget.Global, workspaceFolder: vscode.ConfigurationTarget.WorkspaceFolder, web: vscode.UIKind.Web,
@@ -133,6 +144,24 @@ fn cancellation_token_source_cancels_the_live_token() {
         assert_eq!(result.get_str("after"), Dynamic::Bool(true), "o token acompanha o cancel() da fonte");
         assert_eq!(result.get_str("again"), Dynamic::Bool(true), "o token da fonte é sempre o mesmo");
         assert_eq!(workbench.probe("JSON.stringify(globalThis.__cancelLog)"), r#"["cancelled"]"#);
+    });
+}
+
+#[test]
+fn theme_icon_and_theme_color_are_classes_with_the_original_members() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, ()| {
+        let theme = workbench.execute("t.theme", Vec::new());
+        assert_eq!(text(&theme, "colorId"), "terminal.ansiRed");
+        assert_eq!(theme.get_str("colorIsInstance"), Dynamic::Bool(true));
+        assert_eq!(text(&theme, "iconId"), "terminal");
+        assert_eq!(text(&theme, "iconColorId"), "terminal.ansiRed");
+        assert_eq!(theme.get_str("iconIsInstance"), Dynamic::Bool(true));
+        assert_eq!(theme.get_str("plainHasColor"), Dynamic::Bool(false));
+        assert_eq!(text(&theme, "fileId"), "file");
+        assert_eq!(text(&theme, "folderId"), "folder");
+        assert_eq!(theme.get_str("fileIsInstance"), Dynamic::Bool(true));
+        assert_eq!(theme.get_str("validIcon"), Dynamic::Bool(true));
+        assert_eq!(theme.get_str("invalidIcon"), Dynamic::Bool(false));
     });
 }
 

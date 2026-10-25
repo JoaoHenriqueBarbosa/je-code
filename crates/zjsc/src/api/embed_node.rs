@@ -36,7 +36,7 @@ use crate::runtime::js_value::{js_boolean, js_number, JSValue};
 use crate::runtime::object_constructor::{construct_empty_object, enumerable_own_entries};
 use crate::runtime::property_attribute::{ACCESSOR, DONT_ENUM};
 use crate::runtime::property_name::PropertyName;
-use crate::runtime::string_regexp_support::get_object_property;
+use crate::runtime::string_regexp_support::{get_object_property, set_object_property};
 use crate::runtime::native_class_support::install_global_function_with_visibility;
 use crate::runtime::object_to_primitive::call_function;
 use crate::runtime::vm::VM;
@@ -658,6 +658,18 @@ impl NodeRunner {
     /// Copia o valor de `handle` para o lado do Rust.
     pub fn export(&self, handle: &JsHandle) -> JsData {
         read_value(&self.global_object, handle.0, 0)
+    }
+
+    /// `target[name] = data`: o membro estático de uma classe (`ThemeIcon.File`), por exemplo. Um `data` com [`CLASS_KEY`] vira
+    /// instância da classe já definida; a exceção do motor volta como mensagem.
+    pub fn set_property(&self, target: &JsHandle, name: &str, data: &JsData) -> Result<(), String> {
+        let value = write_value(&self.global_object, data);
+        let _rooted = RootScope::new(&[value]);
+        set_object_property(&self.global_object, target.0, &Identifier::from_span(&self.vm, name.as_bytes()), value).map_err(|_| {
+            let message = self.vm.exception().map(|exception| describe_exception(&exception.value())).unwrap_or_default();
+            self.vm.clear_exception();
+            message
+        })
     }
 
     /// `globalThis[name] = data`.

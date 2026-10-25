@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::errors::Error;
+use je_base::themables::ThemeIcon;
 use je_workbench::api::common::ext_host_language_features_api::{
     ApiCodeActionRef, ApiCompletionList, ApiCompletionResult, ApiDocumentSymbols, ApiLocationResult, CommandOrCodeAction, CompletionItemRef, DefinitionLink, LocationOrLink,
 };
@@ -529,10 +530,37 @@ fn define_code_action_kind(runner: &NodeRunner) -> JsData {
     )
 }
 
+/// `ThemeIcon` de `extHostTypes.ts` (o `ThemeColor` mora em `window.rs`): as instâncias têm os campos `id` e `color` (o `ApiValue` lê
+/// os dois), e `ThemeIcon.File` e `ThemeIcon.Folder` são instâncias de verdade, como as atribuições estáticas do original.
+fn define_theme_icon(runner: &NodeRunner) -> Result<JsData, String> {
+    let theme_icon = runner.define_class(ClassSpec {
+        name: "ThemeIcon".to_owned(),
+        length: 2,
+        construct: Rc::new(|args| Ok(class_fields(vec![("id", args.first().cloned()), ("color", args.get(1).filter(|color| !is_nullish(Some(*color))).cloned())]))),
+        methods: vec![],
+        getters: vec![],
+        statics: vec![(
+            "isThemeIcon".to_owned(),
+            1,
+            Rc::new(|args| match args.first() {
+                Some(thing) if !is_nullish(Some(thing)) => Ok(JsData::Bool(matches!(field(thing, "id"), Some(JsData::Str(_))))),
+                _ => Err("Cannot read properties of undefined (reading 'id')".to_owned()),
+            }),
+        )],
+        parent: None,
+    });
+    for (name, id) in [("File", "file"), ("Folder", "folder")] {
+        runner.set_property(&theme_icon, name, &api_to_js(&ThemeIcon::from_id(id)))?;
+    }
+    Ok(JsData::Handle(Rc::new(theme_icon)))
+}
+
 /// As classes deste módulo como entradas do objeto `vscode`.
 pub fn classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
     let entry = |name: &str, value: JsData| (name.to_owned(), value);
+    let theme_icon = define_theme_icon(runner).unwrap_or_else(|message| panic!("ThemeIcon.File e ThemeIcon.Folder: {message}"));
     vec![
+        entry("ThemeIcon", theme_icon),
         entry(
             "Location",
             define(
