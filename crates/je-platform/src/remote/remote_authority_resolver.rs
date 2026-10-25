@@ -217,6 +217,14 @@ impl RemoteAuthorityResolverError {
     }
 }
 
+/// `TunnelPrivacy`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TunnelPrivacy {
+    pub theme_icon: String,
+    pub id: String,
+    pub label: String,
+}
+
 /// `getRemoteAuthorityPrefix(remoteAuthority)`.
 pub fn get_remote_authority_prefix(remote_authority: &str) -> &str {
     match remote_authority.find('+') {
