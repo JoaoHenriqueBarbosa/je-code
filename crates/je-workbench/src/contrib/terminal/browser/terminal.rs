@@ -31,7 +31,10 @@
 //!   [`TerminalInstance`](super::terminal_instance::TerminalInstance) tem o resto como métodos próprios.
 //! - **`ICreateTerminalOptions`** tem `config` (`IShellLaunchConfig | ITerminalProfile`, sem o `IExtensionTerminalProfile`),
 //!   `cwd`, `resource`, `location` e `skipContributedProfileCheck`. O `location` é o [`TerminalCreateLocation`].
-//! - **`ITerminalGroupService`** e **`ITerminalEditorService`** têm só `showPanel`/`hidePanel` e `revealActiveEditor`.
+//! - **`ITerminalGroupService`** e **`ITerminalEditorService`** têm o que o `TerminalService`, o `MainThreadTerminalService` e as
+//!   pontes leem (o painel, o host de instâncias, a ativação, a criação de grupos e `getGroupForInstance` no primeiro; o
+//!   `revealActiveEditor` e o host no segundo). **`ITerminalGroup`** é o conjunto de instâncias de um grupo, sem o contêiner de
+//!   painéis (ver `terminal_group.rs`).
 //! - **`ITerminalLink`** e **`ITerminalExternalLinkProvider`** são os do `MainThreadTerminalService` (o `activate` é um `Rc<dyn Fn()>`).
 //! - **`ITerminalInstanceService.createInstance(launchConfig, target, editorOptions?)`** não leva o `editorOptions`
 //!   (`TerminalEditorLocation`, do serviço de editores de terminal, que não existe no porte).
@@ -43,6 +46,7 @@ use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
+use je_base::lifecycle::DisposableRef;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_instantiation::service_id;
@@ -260,6 +264,10 @@ pub trait ITerminalInstance {
     fn has_focus(&self) -> bool {
         false
     }
+    /// `hadFocusOnExit`: o foco é do frontend nativo, então o padrão vale "sem foco ao sair".
+    fn had_focus_on_exit(&self) -> bool {
+        false
+    }
 }
 
 /// `ITerminalInstanceHost`, reduzido ao que o `TerminalService` lê: o dono de um conjunto de instâncias (o serviço de grupos ou o
@@ -296,6 +304,62 @@ pub trait ITerminalExternalLinkProvider {
     fn provide_links(&self, instance: Rc<dyn ITerminalInstance>, line: &str) -> Promise<Option<Vec<ITerminalLink>>>;
 }
 
+/// `'before' | 'after'` de `moveInstance`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalMovePosition {
+    Before,
+    After,
+}
+
+/// `IShellLaunchConfig | ITerminalInstance`: o argumento de `TerminalGroup#addInstance` e de `createGroup`.
+#[derive(Clone)]
+pub enum TerminalGroupSource {
+    LaunchConfig(IShellLaunchConfig),
+    Instance(Rc<dyn ITerminalInstance>),
+}
+
+/// `ITerminalGroup`, reduzido ao que o `TerminalGroupService` e o `MainThreadTerminalService` leem: as instâncias, a instância
+/// ativa, os eventos e a edição do conjunto. O contêiner de painéis (`attachToElement`, `layout`, `resizePane*`, `setVisible`,
+/// `getLayoutInfo`, `onPanelOrientationChanged`) e o `title` são do frontend nativo e não fazem parte do porte.
+pub trait ITerminalGroup {
+    /// `terminalInstances`.
+    fn terminal_instances(&self) -> Vec<Rc<dyn ITerminalInstance>>;
+    /// `activeInstance`.
+    fn active_instance(&self) -> Option<Rc<dyn ITerminalInstance>>;
+    /// `hadFocusOnExit`.
+    fn had_focus_on_exit(&self) -> bool;
+
+    /// `onDidDisposeInstance`.
+    fn on_did_dispose_instance(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// `onDidFocusInstance`.
+    fn on_did_focus_instance(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// `onDidChangeInstanceCapability`.
+    fn on_did_change_instance_capability(&self) -> Event<Rc<dyn ITerminalInstance>>;
+    /// `onDisposed`.
+    fn on_disposed(&self) -> Event<Rc<dyn ITerminalGroup>>;
+    /// `onInstancesChanged`.
+    fn on_instances_changed(&self) -> Event<()>;
+    /// `onDidChangeActiveInstance`.
+    fn on_did_change_active_instance(&self) -> Event<Option<Rc<dyn ITerminalInstance>>>;
+
+    /// `addInstance(shellLaunchConfigOrInstance, parentTerminalId?)`.
+    fn add_instance(&self, source: TerminalGroupSource, parent_terminal_id: Option<u32>);
+    /// `removeInstance(instance)`.
+    fn remove_instance(&self, instance: &Rc<dyn ITerminalInstance>);
+    /// `moveInstance(instances, index, position)`.
+    fn move_instance(&self, instances: &[Rc<dyn ITerminalInstance>], index: usize, position: TerminalMovePosition);
+    /// `setActiveInstanceByIndex(index, force?)`.
+    fn set_active_instance_by_index(&self, index: usize, force: bool);
+    /// `focusPreviousPane()`.
+    fn focus_previous_pane(&self);
+    /// `focusNextPane()`.
+    fn focus_next_pane(&self);
+    /// `split(shellLaunchConfig)`.
+    fn split(&self, shell_launch_config: IShellLaunchConfig) -> Rc<dyn ITerminalInstance>;
+    /// `addDisposable(disposable)`.
+    fn add_disposable(&self, disposable: DisposableRef);
+}
+
 /// `ITerminalGroupService`, reduzido ao que o `MainThreadTerminalService` e o `TerminalService` leem. Os membros do
 /// `TerminalService` têm o padrão de um `mock<ITerminalGroupService>()` (o membro não definido lança).
 pub trait ITerminalGroupService {
@@ -330,6 +394,10 @@ pub trait ITerminalGroupService {
     }
     /// `getGroupForInstance(parent)?.split(shellLaunchConfig)`: `None` quando a instância não tem grupo.
     fn split_instance(&self, _parent: Rc<dyn ITerminalInstance>, _shell_launch_config: IShellLaunchConfig) -> Option<Rc<dyn ITerminalInstance>> {
+        je_base::errors::throw(je_base::errors::Error::new("getGroupForInstance is not a function"))
+    }
+    /// `getGroupForInstance(instance)`.
+    fn get_group_for_instance(&self, _instance: &Rc<dyn ITerminalInstance>) -> Option<Rc<dyn ITerminalGroup>> {
         je_base::errors::throw(je_base::errors::Error::new("getGroupForInstance is not a function"))
     }
 }

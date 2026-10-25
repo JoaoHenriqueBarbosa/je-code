@@ -89,3 +89,31 @@ pub fn process_supported_bind_to(context_key_service: &dyn IContextKeyService) -
 pub fn terminal_has_been_created_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
     TERMINAL_HAS_BEEN_CREATED.with(|key| key.bind_to(context_key_service))
 }
+
+/// `TerminalContextKeyStrings.GroupCount`.
+pub const GROUP_COUNT_CONTEXT_KEY: &str = "terminalGroupCount";
+
+/// `TerminalContextKeyStrings.SplitPaneActive`.
+pub const SPLIT_PANE_ACTIVE_CONTEXT_KEY: &str = "terminalSplitPaneActive";
+
+thread_local! {
+    /// `TerminalContextKeys.groupCount`: the current number of terminal groups (escondida da lista central).
+    static GROUP_COUNT: RawContextKey = RawContextKey::new(GROUP_COUNT_CONTEXT_KEY, Dynamic::Number(0.0), ContextKeyMeta::Hide);
+
+    /// `TerminalContextKeys.splitTerminalActive`: whether the active terminal is a split pane.
+    static SPLIT_TERMINAL_ACTIVE: RawContextKey = RawContextKey::new(
+        SPLIT_PANE_ACTIVE_CONTEXT_KEY,
+        Dynamic::Bool(false),
+        ContextKeyMeta::Description(localize("splitPaneActive", "Whether the active terminal is a split pane.", &[])),
+    );
+}
+
+/// `TerminalContextKeys.groupCount.bindTo(service)`.
+pub fn group_count_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
+    GROUP_COUNT.with(|key| key.bind_to(context_key_service))
+}
+
+/// `TerminalContextKeys.splitTerminalActive.bindTo(service)`.
+pub fn split_terminal_active_bind_to(context_key_service: &dyn IContextKeyService) -> Rc<dyn IContextKey> {
+    SPLIT_TERMINAL_ACTIVE.with(|key| key.bind_to(context_key_service))
+}
