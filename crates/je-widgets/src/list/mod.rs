@@ -1,6 +1,7 @@
 //! Porte de `src/vs/base/browser/ui/list/`: a lista virtualizada (só as linhas visíveis existem como nós),
 //! com seleção, foco e teclado.
 
+pub mod list_dnd;
 pub mod list_paging;
 pub mod list_styles;
 pub mod list_types;

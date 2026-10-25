@@ -21,11 +21,16 @@
 //! - O `ITreeRenderer` que o usuário implementa é o [`IAsyncDataTreeRenderer`] (sobre o envoltório). O
 //!   `renderTwistie` e o `rowClassName` do renderer do usuário não são repassados (o
 //!   `AsyncDataTreeRenderer` do original também não os repassa).
-//! - As opções são sobre `T` (o original as declara sobre `T` e as converte para `IAsyncDataTreeNode`). Ficam
-//!   de fora: `findProvider` (e a busca assíncrona), `dnd`, `multipleSelectionController`,
-//!   `accessibilityProvider` e `stickyScrollDelegate` (a árvore abstrata do `je-widgets` ainda não tem os
-//!   três primeiros, e o último é sobre o modelo). // TODO(integração): depende do controlador de busca e
-//!   da arrastar e soltar.
+//! - As opções são sobre `T` (o original as declara sobre `T` e as converte para `IAsyncDataTreeNode`):
+//!   `accessibilityProvider` vira o [`NodeAccessibilityProvider`] (papel `tree`/`treeitem` por padrão e o rótulo do
+//!   elemento) e `dnd` vira o [`AsyncDataTreeNodeListDragAndDrop`] (os dados de arrasto levam os elementos, não os
+//!   nós, e o `context` é o mesmo). Ficam de fora, e só por isto:
+//!   - `findProvider` (e a busca assíncrona): o `AsyncFindController` estende o `FindController`, que precisa do
+//!     widget de busca (`contextViewProvider`, `FindInput`), ainda sem equivalente no `je-ui` (ver
+//!     [`crate::tree::find`]), e trabalha com `FindFilterData` no lugar do `TFilterData` das opções;
+//!   - `multipleSelectionController`: nem a `List` nem a árvore abstrata do `je-widgets` têm essa opção (o
+//!     `MouseController` da lista tem as regras fixas de `Ctrl` e `Shift`);
+//!   - `stickyScrollDelegate`: é sobre o modelo (`IStickyScrollDelegate<M>`), não sobre `T`.
 //! - No original o `collapseByDefault` é função (`(e: T) => boolean`); aqui é `Option<Rc<dyn Fn(&T) -> bool>>`.
 
 use std::cell::{Cell, RefCell};
@@ -35,13 +40,18 @@ use std::rc::{Rc, Weak};
 use je_base::event::Event as BaseEvent;
 use je_base::promise::CancelablePromise;
 use je_base::themables::ThemeIcon;
-use je_ui::{NodeId, Ui};
+use je_ui::{NodeId, Role, Ui};
 
-use crate::list::list_types::{GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListVirtualDelegate, TemplateData};
+use crate::dnd::{DragEvent, IDragAndDropData};
+use crate::list::list_dnd::{ElementsDragAndDropData, IListDragAndDrop, ListViewTargetSector};
+use crate::list::list_types::{GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListVirtualDelegate, TemplateData};
 use crate::list::list_view::ListViewOptions;
 use crate::tree::abstract_tree::{AbstractTreeOptions, AbstractTreeOptionsUpdate, ExpandOnlyOnTwistieClick};
 use crate::tree::sticky_scroll::StickyScrollNodeSourceRange;
-use crate::tree::tree_types::{ByRef, ITreeFilter, ITreeModel, ITreeRenderer, ITreeSorter, InputOrElement, ObjectTreeElementCollapseState, TreeElementRenderDetails, TreeFilterResult, TreeNodeApi, TreeVisibility};
+use crate::tree::tree_types::{
+    ByRef, ITreeDragAndDrop, ITreeFilter, ITreeModel, ITreeRenderer, ITreeSorter, InputOrElement, ObjectTreeElementCollapseState, TreeDragOverResult, TreeElementRenderDetails, TreeFilterResult, TreeNodeApi,
+    TreeVisibility,
+};
 
 /// `IAsyncDataTreeNode<TInput, T>`.
 pub struct IAsyncDataTreeNode<TInput, T> {
@@ -426,6 +436,10 @@ pub struct AsyncDataTreeOptions<T, F = ()> {
     pub find_widget_enabled: Option<bool>,
     pub sorter: Option<Rc<dyn ITreeSorter<T>>>,
     pub auto_expand_single_children: bool,
+    /// `accessibilityProvider`.
+    pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<T>>>,
+    /// `dnd`.
+    pub dnd: Option<Rc<dyn ITreeDragAndDrop<T>>>,
 }
 
 impl<T, F> Default for AsyncDataTreeOptions<T, F> {
@@ -445,6 +459,8 @@ impl<T, F> Default for AsyncDataTreeOptions<T, F> {
             find_widget_enabled: None,
             sorter: None,
             auto_expand_single_children: false,
+            accessibility_provider: None,
+            dnd: None,
         }
     }
 }
@@ -584,6 +600,89 @@ fn update_as_node_options<TInput: Clone + 'static, T: Clone + 'static>(update: &
     }
 }
 
+/// O `accessibilityProvider` do usuário (sobre `T`) visto como o dos nós internos: `getRole` e `getWidgetRole` caem em
+/// `treeitem` e `tree` quando o provedor não os define.
+pub(crate) struct NodeAccessibilityProvider<T>(pub(crate) Rc<dyn IListAccessibilityProvider<T>>);
+
+impl<TInput: Clone, T: Clone> IListAccessibilityProvider<Option<AsyncNode<TInput, T>>> for NodeAccessibilityProvider<T> {
+    fn get_aria_label(&self, element: &Option<AsyncNode<TInput, T>>) -> Option<String> {
+        self.0.get_aria_label(&element.as_ref().expect("a raiz não tem rótulo de acessibilidade").element_t())
+    }
+
+    fn get_widget_aria_label(&self) -> String {
+        self.0.get_widget_aria_label()
+    }
+
+    fn get_widget_role(&self) -> Option<Role> {
+        Some(self.0.get_widget_role().unwrap_or(Role::Tree))
+    }
+
+    fn get_role(&self, element: &Option<AsyncNode<TInput, T>>) -> Option<Role> {
+        Some(self.0.get_role(&element.as_ref().expect("a raiz não tem papel de acessibilidade").element_t()).unwrap_or(Role::TreeItem))
+    }
+}
+
+/// `AsyncDataTreeElementsDragAndDropData` e `asAsyncDataTreeDragAndDropData`: os dados de arrasto com os elementos
+/// `T` dos nós (e o mesmo `context`); qualquer outro dado passa como está.
+fn as_async_data_tree_drag_and_drop_data<TInput: Clone + 'static, T: Clone + 'static>(data: &Rc<dyn IDragAndDropData>) -> Rc<dyn IDragAndDropData> {
+    match data.as_any().downcast_ref::<ElementsDragAndDropData<Option<AsyncNode<TInput, T>>>>() {
+        Some(elements) => Rc::new(elements.derive(elements.elements.iter().filter_map(|node| node.as_ref().map(|node| node.element_t())).collect::<Vec<T>>())),
+        None => data.clone(),
+    }
+}
+
+/// `AsyncDataTreeNodeListDragAndDrop<TInput, T>`: o `ITreeDragAndDrop<T>` do usuário como o dos nós internos. O
+/// `onDragOver` devolve a reação da árvore inteira (com o `bubble` e o `autoExpand`), que a `TreeNodeListDragAndDrop`
+/// da árvore abstrata lê.
+pub(crate) struct AsyncDataTreeNodeListDragAndDrop<T>(pub(crate) Rc<dyn ITreeDragAndDrop<T>>);
+
+impl<TInput: Clone + 'static, T: Clone + 'static> IListDragAndDrop<Option<AsyncNode<TInput, T>>, TreeDragOverResult> for AsyncDataTreeNodeListDragAndDrop<T> {
+    fn get_drag_uri(&self, node: &Option<AsyncNode<TInput, T>>) -> Option<String> {
+        self.0.get_drag_uri(&node.as_ref().expect("a raiz não é arrastável").element_t())
+    }
+
+    fn get_drag_label(&self, nodes: &[Option<AsyncNode<TInput, T>>], original_event: &DragEvent) -> Option<String> {
+        let elements: Vec<T> = nodes.iter().filter_map(|node| node.as_ref().map(|node| node.element_t())).collect();
+        self.0.get_drag_label(&elements, original_event)
+    }
+
+    fn on_drag_start(&self, data: &Rc<dyn IDragAndDropData>, original_event: &DragEvent) {
+        self.0.on_drag_start(&as_async_data_tree_drag_and_drop_data::<TInput, T>(data), original_event);
+    }
+
+    fn on_drag_over(
+        &self,
+        data: &Rc<dyn IDragAndDropData>,
+        target_node: Option<&Option<AsyncNode<TInput, T>>>,
+        target_index: Option<usize>,
+        target_sector: Option<ListViewTargetSector>,
+        original_event: &DragEvent,
+    ) -> TreeDragOverResult {
+        let target_element = target_node.and_then(|node| node.as_ref()).map(|node| node.element_t());
+        self.0.on_drag_over(&as_async_data_tree_drag_and_drop_data::<TInput, T>(data), target_element.as_ref(), target_index, target_sector, original_event)
+    }
+
+    fn drop(
+        &self,
+        data: &Rc<dyn IDragAndDropData>,
+        target_node: Option<&Option<AsyncNode<TInput, T>>>,
+        target_index: Option<usize>,
+        target_sector: Option<ListViewTargetSector>,
+        original_event: &DragEvent,
+    ) {
+        let target_element = target_node.and_then(|node| node.as_ref()).map(|node| node.element_t());
+        self.0.drop(&as_async_data_tree_drag_and_drop_data::<TInput, T>(data), target_element.as_ref(), target_index, target_sector, original_event);
+    }
+
+    fn on_drag_end(&self, original_event: &DragEvent) {
+        self.0.on_drag_end(original_event);
+    }
+
+    fn dispose(&self) {
+        self.0.dispose();
+    }
+}
+
 /// `asObjectTreeOptions`: as opções da árvore de dados como as da árvore abstrata do modelo por baixo.
 /// O `collapseByDefault` é sempre ligado (o padrão por elemento vai no `defaultCollapseState`), o
 /// `sorter` fica de fora (a ordenação é da árvore de dados) e o `findWidgetEnabled` é ligado (o original
@@ -626,7 +725,7 @@ where
         }),
         disable_expand_on_spacebar: options.disable_expand_on_spacebar,
         find_widget_enabled: Some(true),
-        // As opções da árvore de dados assíncrona não têm `accessibilityProvider`.
-        accessibility_provider: None,
+        accessibility_provider: options.accessibility_provider.clone().map(|provider| Rc::new(NodeAccessibilityProvider(provider)) as Rc<dyn IListAccessibilityProvider<M::Element>>),
+        dnd: options.dnd.clone().map(|dnd| Rc::new(AsyncDataTreeNodeListDragAndDrop(dnd)) as Rc<dyn ITreeDragAndDrop<M::Element>>),
     }
 }

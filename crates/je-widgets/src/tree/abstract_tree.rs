@@ -12,9 +12,10 @@
 //!   [`ListOverrides`](crate::list::list_widget::ListOverrides) que a árvore passa à lista.
 //! - Os eventos do DOM são os do `je-ui`. `isButton`, `isEditableElement`, `isMonacoEditor`,
 //!   `isMonacoCustomToggle` e `isActionItem` (classes de widgets que o `je-ui` ainda não tem) não são
-//!   conferidos. A arrastar e soltar (`TreeNodeListDragAndDrop`), o tipo-para-navegar (a `List` do
+//!   conferidos. O tipo-para-navegar (a `List` do
 //!   `je-widgets` não o tem), o `aria-level`/`aria-expanded`, o `createStyleSheet` e o `style()` (CSS gerado) ficam de fora. O
 //!   `accessibilityProvider` das opções vira o papel (`tree`/`treeitem`) e o rótulo que a [`List`] aplica à árvore e aos nós.
+//!   O `dnd` das opções é o [`TreeNodeListDragAndDrop`] sobre o modelo (a [`List`] o recebe em `ListOptions::dnd`).
 //! - O `Relay` de eventos do modelo é um `Emitter` que repassa (o modelo não é trocado depois do
 //!   construtor).
 
@@ -33,16 +34,18 @@ use je_base::symbols::Delay;
 use je_ui::{EventKind, KeyData, NodeId, Role, Ui};
 
 use crate::common::{store_emitter, throw};
+use crate::list::list_dnd::IListDragAndDrop;
 use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListRenderer, IListVirtualDelegate, ListMouseEvent};
 use crate::list::list_view::{ListViewOptions, ListViewOptionsUpdate};
 use crate::list::list_widget::{List, ListOptions, ListOverrides};
 use crate::tree::find::{DefaultFindVisibility, FindHandle};
 use crate::tree::sticky_scroll::{IStickyScrollDelegate, StickyScrollController, StickyScrollNodeSourceRangeProvider};
 use crate::list::list_styles::IListStyles;
+use crate::tree::tree_dnd::TreeNodeListDragAndDrop;
 use crate::tree::tree_renderer::{Collection, EventCollection, RenderIndentGuides, RenderedIndentGuides, TreeRenderer, TreeRendererOptions, TwistieClassProvider};
 use crate::tree::tree_trait::TreeTrait;
 use crate::tree::tree_types::{
-    CollapseStateChangeEvent, ITreeFilter, ITreeModel, ITreeNavigator, ITreeRenderer, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi, tree_error,
+    CollapseStateChangeEvent, ITreeDragAndDrop, ITreeFilter, ITreeModel, ITreeNavigator, ITreeRenderer, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi, tree_error,
 };
 
 /// `TreeFindMode`.
@@ -270,6 +273,8 @@ pub struct AbstractTreeOptions<M: ITreeModel> {
     pub find_widget_enabled: Option<bool>,
     /// `accessibilityProvider`: o papel (`tree` e `treeitem`) e o rótulo da árvore e dos nós.
     pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<M::Element>>>,
+    /// `dnd`: a arrastar e soltar dos elementos da árvore (ver [`TreeNodeListDragAndDrop`]).
+    pub dnd: Option<Rc<dyn ITreeDragAndDrop<M::Element>>>,
 }
 
 impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
@@ -289,6 +294,7 @@ impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
             disable_expand_on_spacebar: false,
             find_widget_enabled: None,
             accessibility_provider: None,
+            dnd: None,
         }
     }
 }
@@ -310,6 +316,7 @@ impl<M: ITreeModel> Clone for AbstractTreeOptions<M> {
             disable_expand_on_spacebar: self.disable_expand_on_spacebar,
             find_widget_enabled: self.find_widget_enabled,
             accessibility_provider: self.accessibility_provider.clone(),
+            dnd: self.dnd.clone(),
         }
     }
 }
@@ -668,6 +675,8 @@ where
                     .accessibility_provider
                     .clone()
                     .map(|provider| Rc::new(NodeAccessibilityProvider::<M> { provider }) as Rc<dyn IListAccessibilityProvider<Rc<M::Node>>>),
+                // `dnd: options.dnd && disposableStore.add(new TreeNodeListDragAndDrop(modelProvider, options.dnd))`
+                dnd: options.dnd.clone().map(|dnd| Rc::new(TreeNodeListDragAndDrop::<M>::new(model.clone(), dnd)) as Rc<dyn IListDragAndDrop<Rc<M::Node>>>),
             };
 
             let list_renderers: Vec<Rc<dyn IListRenderer<Rc<M::Node>>>> = tree_renderers.iter().map(|r| r.clone() as Rc<dyn IListRenderer<Rc<M::Node>>>).collect();

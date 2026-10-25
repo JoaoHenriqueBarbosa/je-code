@@ -35,9 +35,11 @@
 //!   (`listFocus`, `listSelectionNavigation`, `listHasSelectionOrFocus` e as quatro `treeElement*`; as demais, de rolagem,
 //!   busca e multisseleção, não são lidas pelo peek). `overrideStyles: { listBackground }` é o `style` com as cores de
 //!   [`references_tree_styles`]. `keyboardSupport` é `AsyncDataTreeOptions::keyboard_support`.
-//! - `ReferencesDragAndDrop` guarda a lógica de `getDragURI`, `getDragLabel` e `onDragStart` ([`ReferencesDragAndDrop`]); as
-//!   opções da árvore de dados assíncrona ainda não têm `dnd` (`// TODO(integração)`), então ninguém a instala. O
-//!   `accessibilityProvider` está na mesma situação (ver `references_tree`).
+//! - `ReferencesDragAndDrop` é o `dnd` da árvore (`AsyncDataTreeOptions::dnd`): `getDragURI`, `getDragLabel`, `onDragStart`
+//!   (grava `ResourceURLs` e `text/plain` no `dataTransfer` do arrasto), `onDragOver` que recusa e `drop` vazio. O
+//!   `AccessibilityProvider` entra em `AsyncDataTreeOptions::accessibility_provider`. O `dragstart` da linha só chega à
+//!   árvore quando o `je-ui` entregar os eventos de arrastar e soltar (ver `je_widgets::dnd::listen_drag_event`); a opção
+//!   já está ligada.
 //! - `async revealReference`, `_revealReference` e `setSelection().then(...)` são [`Promise`]s; o que o original roda antes do
 //!   primeiro `await` roda dentro da chamada. `this._tree.rerender(reference)` de uma referência cuja árvore ainda não a tem
 //!   (um arquivo recolhido) lançaria `Data tree node not found` dentro de um ouvinte; aqui o ouvinte confere antes
@@ -70,13 +72,15 @@ use je_platform::opener::opener::with_selection;
 use je_theme::color::Color;
 use je_theme::to_rgba8;
 use je_ui::{Border, Event as UiEvent, EventKind, NodeId, PointerButton, Role, Ui};
+use je_widgets::dnd::{DataTransfers, DragEvent, IDragAndDropData};
 use je_widgets::dom::{StandardKeyboardEvent, create_detached_el, create_el, hide, show};
+use je_widgets::list::list_dnd::{ElementsDragAndDropData, IListDragAndDrop, ListViewTargetSector};
 use je_widgets::list::list_styles::IListStyles;
 use je_widgets::list::list_types::IListVirtualDelegate;
 use je_widgets::splitview::{Orientation, Sizing, SplitView, SplitViewOptions, SplitViewView};
 use je_widgets::tree::async_data_tree::{AsyncDataTree, ObjectBackend};
 use je_widgets::tree::async_data_tree_node::{AsyncDataTreeOptions, IAsyncDataTreeRenderer};
-use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi};
+use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeDragOverResult, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi};
 
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::core_2d::dimension::Dimension;
@@ -86,7 +90,7 @@ use crate::editor_extensions::{ITextModelService, ModelReference};
 use crate::embedded_code_editor_widget::EmbeddedCodeEditorWidget;
 use crate::goto_symbol::peek::references_controller::{IReferenceWidget, SelectionEvent, SelectionKind, SelectionSource, location_of};
 use crate::goto_symbol::peek::references_tree::{
-    DataSource, Delegate, FileReferencesRenderer, IdentityProvider, OneReferenceRenderer, ReferencesTreeInput, ReferencesTreeRendererServices, StringRepresentationProvider,
+    AccessibilityProvider, DataSource, Delegate, FileReferencesRenderer, IdentityProvider, OneReferenceRenderer, ReferencesTreeInput, ReferencesTreeRendererServices, StringRepresentationProvider,
     TreeElement, references_tree_styles,
 };
 use crate::goto_symbol::references_model::{FileReferences, OneReference, ReferencesModel, ext_uri};
@@ -292,7 +296,8 @@ impl LayoutData {
     }
 }
 
-/// `ReferencesDragAndDrop` (ver o topo do módulo sobre a instalação).
+/// `ReferencesDragAndDrop` (o `dnd` da árvore: `getDragURI`, `getDragLabel` e `onDragStart`; `onDragOver` recusa e `drop` não
+/// faz nada).
 pub struct ReferencesDragAndDrop {
     label_service: Rc<dyn ILabelService>,
 }
@@ -301,9 +306,11 @@ impl ReferencesDragAndDrop {
     pub fn new(label_service: Rc<dyn ILabelService>) -> Self {
         Self { label_service }
     }
+}
 
+impl IListDragAndDrop<TreeElement, TreeDragOverResult> for ReferencesDragAndDrop {
     /// `getDragURI(element)`.
-    pub fn get_drag_uri(&self, element: &TreeElement) -> Option<String> {
+    fn get_drag_uri(&self, element: &TreeElement) -> Option<String> {
         match element {
             TreeElement::File(file) => Some(file.uri.to_string(false).to_string_lossy()),
             TreeElement::Reference(reference) => Some(with_selection(reference.uri(), &range_to_text_editor_selection(&reference.range())).to_string(false).to_string_lossy()),
@@ -311,7 +318,7 @@ impl ReferencesDragAndDrop {
     }
 
     /// `getDragLabel(elements)`.
-    pub fn get_drag_label(&self, elements: &[TreeElement]) -> Option<String> {
+    fn get_drag_label(&self, elements: &[TreeElement], _original_event: &DragEvent) -> Option<String> {
         if elements.is_empty() {
             return None;
         }
@@ -319,16 +326,37 @@ impl ReferencesDragAndDrop {
         Some(labels.join(", "))
     }
 
-    /// O que `onDragStart` grava no `dataTransfer`: a lista de recursos em JSON (`DataTransfers.RESOURCES`) e os mesmos
-    /// recursos, um por linha, como texto (`DataTransfers.TEXT`). `None` quando não há recurso a arrastar.
-    pub fn drag_data(&self, elements: &[TreeElement]) -> Option<(String, String)> {
-        let resources: Vec<String> = elements.iter().filter_map(|element| self.get_drag_uri(element)).filter(|resource| !resource.is_empty()).collect();
+    /// `onDragStart(data, originalEvent)`: grava no `dataTransfer` a lista de recursos em JSON (`DataTransfers.RESOURCES`) e os
+    /// mesmos recursos, um por linha, como texto (`DataTransfers.TEXT`), se há recurso a arrastar.
+    fn on_drag_start(&self, data: &Rc<dyn IDragAndDropData>, original_event: &DragEvent) {
+        let Some(elements) = data.as_any().downcast_ref::<ElementsDragAndDropData<TreeElement>>() else {
+            return;
+        };
+        let resources: Vec<String> = elements.elements.iter().filter_map(|element| self.get_drag_uri(element)).filter(|resource| !resource.is_empty()).collect();
         if resources.is_empty() {
-            return None;
+            return;
         }
+        // Apply resources as resource-list
         let list = Dynamic::array(resources.iter().map(|resource| Dynamic::string(resource)));
-        Some((json_stringify(&list)?, resources.join("\n")))
+        if let Some(json) = json_stringify(&list) {
+            original_event.data_transfer.set_data(DataTransfers::RESOURCES, &json);
+        }
+        // Also add as plain text for outside consumers
+        original_event.data_transfer.set_data(DataTransfers::TEXT, &resources.join("\n"));
     }
+
+    fn on_drag_over(
+        &self,
+        _data: &Rc<dyn IDragAndDropData>,
+        _target_element: Option<&TreeElement>,
+        _target_index: Option<usize>,
+        _target_sector: Option<ListViewTargetSector>,
+        _original_event: &DragEvent,
+    ) -> TreeDragOverResult {
+        TreeDragOverResult::Bool(false)
+    }
+
+    fn drop(&self, _data: &Rc<dyn IDragAndDropData>, _target_element: Option<&TreeElement>, _target_index: Option<usize>, _target_sector: Option<ListViewTargetSector>, _original_event: &DragEvent) {}
 }
 
 // #region ReferencesTree
@@ -940,8 +968,10 @@ impl PeekViewHooks for ReferenceWidget {
         let renderer_services = ReferencesTreeRendererServices { ui: ui.clone(), label_service: Rc::clone(&services.label_service), theme_service: Rc::clone(&services.theme_service) };
         let mut tree_options = AsyncDataTreeOptions::<TreeElement, FuzzyScore>::default();
         tree_options.keyboard_support = Some(self.default_tree_keyboard_support);
+        tree_options.accessibility_provider = Some(Rc::new(AccessibilityProvider));
         tree_options.keyboard_navigation_label_provider = Some(Rc::new(StringRepresentationProvider));
         tree_options.identity_provider = Some(Rc::new(IdentityProvider));
+        tree_options.dnd = Some(Rc::new(ReferencesDragAndDrop::new(Rc::clone(&services.label_service))));
         if self.default_tree_keyboard_support {
             // the tree will consume `Escape` and prevent the widget from closing
             let keybinding_service = Rc::clone(&services.keybinding_service);
