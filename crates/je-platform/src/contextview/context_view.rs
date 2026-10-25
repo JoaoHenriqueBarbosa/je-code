@@ -171,6 +171,12 @@ pub trait IContextMenuDelegate {
     fn layer(&self) -> Option<i32> {
         None
     }
+    /// A parte do delegado que depende dos widgets nativos (`getActionViewItem`, `getActionsContext`, `getKeyBinding`),
+    /// opaca para a plataforma, que não depende de `je-widgets`: quem monta o menu (o `ContextMenuHandler` do workbench)
+    /// a lê com `downcast_ref`. Sem valor, o menu usa os itens, o contexto e os atalhos padrão.
+    fn native_extras(&self) -> Option<Rc<dyn Any>> {
+        None
+    }
 }
 
 /// `IContextMenuMenuDelegate`: `{ menuId?, menuActionOptions?, contextKeyService?, getActions? } & Omit<IContextMenuDelegate, 'getActions'>`.

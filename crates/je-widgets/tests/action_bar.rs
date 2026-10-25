@@ -1,7 +1,8 @@
-//! Testes extras do `ActionBar` e do `ActionViewItem` (`src/vs/base/browser/ui/actionbar/`): o VS Code 1.143.1
-//! não tem teste dedicado do action bar (os do toolbar o exercitam), então estes cobrem o comportamento
-//! portado: teclado, foco, `push`/`pull`/`clear`, ações desabilitadas, runner, contexto, estilos de estado
-//! e medidas. Não fazem parte do porte caso a caso.
+//! Testes extras do `ActionBar` e do `ActionViewItem` (`src/vs/base/browser/ui/actionbar/`). O porte caso a caso do
+//! teste do VS Code (`src/vs/base/test/browser/actionbar.test.ts`: `prepareActions`, `hasAction` e o provedor de
+//! toggles) está em `actionbar_oracle.rs`; os testes do toolbar também exercitam a barra. Estes cobrem o
+//! comportamento portado além disso: teclado, foco, `push`/`pull`/`clear`, ações desabilitadas, runner, contexto,
+//! estilos de estado e medidas. Não fazem parte do porte caso a caso.
 
 mod support;
 
