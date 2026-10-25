@@ -55,7 +55,7 @@ use je_base::promise::Promise;
 use je_base::resources::ExtUri;
 use je_base::uri::{Field, MARSHALLED_ID_URI, URI, UriChange, UriState, decode_uri_component};
 use je_platform::commands::ICommandService;
-use je_platform::opener::editor_types::{EditorOpenSource, EditorOptions, TextEditorSelection, ViewColumn};
+use je_platform::opener::editor_types::{EditorOpenSource, EditorOptions, TextEditorSelection, TextEditorSelectionRevealType, ViewColumn};
 use je_platform::opener::{
     AllowCommands, AllowContributedOpeners, DEFAULT_EXTERNAL_URI_OPENER_ID, ExternalOpenerContext, ExtractedSelection, IExternalOpener,
     IExternalUriResolver, IOpener, IOpenerService, IValidator, OpenOptions, OpenResource, ResolveExternalUriOptions, ResolvedExternalUri,
@@ -71,6 +71,8 @@ pub type CodeEditorHandle = Rc<dyn Any>;
 pub struct TextEditorOptions {
     pub editor: EditorOptions,
     pub selection: Option<TextEditorSelection>,
+    /// `selectionRevealType`.
+    pub selection_reveal_type: Option<TextEditorSelectionRevealType>,
 }
 
 /// `ITextResourceEditorInput`, só com o recurso e as opções.
@@ -246,7 +248,7 @@ impl IOpener for EditorOpener {
                 editor.source = Some(if from_user_gesture { EditorOpenSource::User } else { EditorOpenSource::Api });
             }
 
-            let input = TextResourceEditorInput { resource: target, options: Some(TextEditorOptions { editor, selection }) };
+            let input = TextResourceEditorInput { resource: target, options: Some(TextEditorOptions { editor, selection, selection_reveal_type: None }) };
             let side_by_side = options.as_ref().and_then(|options| options.open_to_side);
             editor_service.open_code_editor(input, editor_service.get_focused_code_editor(), side_by_side).await?;
 
