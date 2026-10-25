@@ -47,7 +47,8 @@ use je_workbench::services::authentication::authentication::{
 /// `createGlobalBar(accountsVisible)`: a barra com as ações "Accounts" (se visível) e "Manage".
 fn create_global_bar(guard: &LeakGuard, accounts_visible: bool) -> (Rc<GlobalCompositeBar>, Rc<ActionBar>) {
     let ui = Ui::new();
-    let container = ui.tree_mut().create(ui.root(), Role::Generic);
+    let root = ui.root();
+    let container = ui.tree_mut().create(root, Role::Generic);
     let action_bar = ActionBar::new(&ui, container, IActionBarOptions::default());
     let storage = guard.add_rc(InMemoryStorageService::new());
     let bar = GlobalCompositeBar::from_action_bar(&ui, container, action_bar.clone(), Rc::new(storage));
@@ -251,7 +252,8 @@ fn read_avatar(ui: &Ui, core: &AccountsCore, label: je_ui::NodeId) -> (Option<St
 /// `harness = createHarness(groupedAccounts, currentDefaultAccount)` e `updateAvatar.call(harness)`.
 fn update_avatar_for(first_icon: &URI, default_icon: Option<URI>, default_account: Option<IDefaultAccount>) -> (Option<String>, bool) {
     let ui = Ui::new();
-    let label = ui.tree_mut().create(ui.root(), Role::Generic);
+    let root = ui.root();
+    let label = ui.tree_mut().create(root, Role::Generic);
     let core = create_accounts_core(&ui, |_| Dynamic::Bool(true), default_account, CodexAccountStatus::SignedOut);
     core.grouped_accounts().set("github", vec![account("first-id", "first-account", Some(first_icon.clone()))]);
     core.grouped_accounts().set("microsoft", vec![account("default-id", "default-account", default_icon)]);
