@@ -50,6 +50,8 @@ pub mod workspaces;
 pub mod window;
 pub mod assignment;
 
+pub mod windows;
+
 #[doc(hidden)]
 pub use je_base::event as __je_event;
 #[doc(hidden)]

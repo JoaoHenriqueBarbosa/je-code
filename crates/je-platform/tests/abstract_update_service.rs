@@ -302,6 +302,18 @@ impl LifecycleMainService for TestLifecycleMainService {
         Event::none()
     }
 
+    fn on_before_shutdown(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn quit_requested(&self) -> bool {
+        false
+    }
+
+    fn was_restarted(&self) -> bool {
+        false
+    }
+
     fn when(&self, _phase: LifecycleMainPhase) -> Promise<()> {
         Promise::resolved(())
     }

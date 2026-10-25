@@ -15,11 +15,11 @@
 //! - **`@IUserDataProfilesMainService`**: o serviço só chama `unsetWorkspace`, que é o do [`UserDataProfilesService`] (o
 //!   `UserDataProfilesMainService` do original é o mesmo serviço do `common`).
 //! - **`ICodeWindow`** não tem porte (o `window.ts` de `electron-main` depende de `BrowserWindow`); [`CodeWindow`] é o
-//!   contrato com os membros que este serviço lê, e [`NativeWindowConfiguration`] o `INativeWindowConfiguration` com os
-//!   três campos que ele lê ou grava. `window.win` (o `BrowserWindow`, que some quando a janela é destruída) é
-//!   [`CodeWindow::has_native_window`].
-//! - **`findWindowOnWorkspaceOrFolder`** (de `windowsFinder.ts`, ainda sem porte) é [`find_window_on_workspace_or_folder`],
-//!   só ela, porque é a única que o serviço usa.
+//!   contrato com os membros que os consumidores portados leem (este serviço, o `windowsFinder.ts` e o
+//!   `windowsStateHandler.ts`), e [`NativeWindowConfiguration`] o `INativeWindowConfiguration` com os campos que eles
+//!   leem ou gravam. `window.win` (o `BrowserWindow`, que some quando a janela é destruída) é
+//!   [`CodeWindow::has_native_window`], e `window.win?.isSimpleFullScreen()` é [`CodeWindow::is_simple_full_screen`].
+//! - **`findWindowOnWorkspaceOrFolder`** é a de [`crate::windows::windows_finder`] (o porte de `windowsFinder.ts`).
 //! - **`doResolveLocalWorkspace`** tem duas sobrecargas no original (síncrona e assíncrona); só a assíncrona é chamada
 //!   (`resolveLocalWorkspace`), e a leitura de arquivo daqui é síncrona (ver a divergência de execução em [`pfs`]), então o
 //!   corpo é [`WorkspacesManagementMainService::do_resolve_local_workspace`], uma função comum.
@@ -51,6 +51,8 @@ use crate::files::pfs::{self, FsError, RimRafMode};
 use crate::log::{LogServiceRef, Logger};
 use crate::resources::{ext_uri_biased_ignore_path_case, fs_path, join_path};
 use crate::user_data_profile::UserDataProfilesService;
+use crate::window::electron_main::{Rectangle, WindowUiState};
+use crate::windows::windows_finder::find_window_on_workspace_or_folder;
 use crate::workspace::{
     AnyWorkspaceIdentifier, ResolvedWorkspace, UNTITLED_WORKSPACE_NAME, WorkspaceIdentifier, has_workspace_file_extension_uri, is_untitled_workspace,
 };
@@ -64,17 +66,40 @@ use crate::workspaces::workspaces::{
 #[derive(Clone, Debug, Default)]
 pub struct NativeWindowConfiguration {
     pub extension_development_path: Option<Vec<String>>,
+    pub extension_tests_path: Option<String>,
     pub backup_path: Option<String>,
     pub workspace: Option<AnyWorkspaceIdentifier>,
 }
 
-/// `ICodeWindow`, com os membros que o serviço de workspaces usa.
+/// `ICodeWindow`, com os membros que os consumidores portados leem (ver [`crate::user_data_profile::user_data_profiles_handler::ProfilesWindow`]
+/// para o resto do contrato).
 pub trait CodeWindow {
     /// `window.win`: o `BrowserWindow` existe (a janela não foi destruída).
     fn has_native_window(&self) -> bool;
 
+    /// `window.win?.isSimpleFullScreen()`: `false` quando o `BrowserWindow` não existe.
+    fn is_simple_full_screen(&self) -> bool;
+
     /// `window.isReady`.
     fn is_ready(&self) -> bool;
+
+    /// `window.id`.
+    fn id(&self) -> i32;
+
+    /// `window.backupPath`.
+    fn backup_path(&self) -> Option<String>;
+
+    /// `window.isExtensionDevelopmentHost`.
+    fn is_extension_development_host(&self) -> bool;
+
+    /// `window.isExtensionTestHost`.
+    fn is_extension_test_host(&self) -> bool;
+
+    /// `window.getBounds()`.
+    fn get_bounds(&self) -> Rectangle;
+
+    /// `window.serializeWindowState()`.
+    fn serialize_window_state(&self) -> WindowUiState;
 
     /// `window.openedWorkspace`.
     fn opened_workspace(&self) -> Option<AnyWorkspaceIdentifier>;
@@ -116,20 +141,6 @@ pub trait IWorkspacesManagementMainService {
 }
 
 service_id!(pub I_WORKSPACES_MANAGEMENT_MAIN_SERVICE: dyn IWorkspacesManagementMainService = "workspacesManagementMainService");
-
-/// `findWindowOnWorkspaceOrFolder`.
-pub fn find_window_on_workspace_or_folder(windows: &[Rc<dyn CodeWindow>], folder_or_workspace_config_uri: &URI, ext_uri: &ExtUri) -> Option<Rc<dyn CodeWindow>> {
-    windows
-        .iter()
-        .find(|window| match window.opened_workspace() {
-            // check for workspace config path
-            Some(AnyWorkspaceIdentifier::Workspace(workspace)) => ext_uri.is_equal(Some(&workspace.config_path), Some(folder_or_workspace_config_uri), false),
-            // check for folder path
-            Some(AnyWorkspaceIdentifier::SingleFolder(folder)) => ext_uri.is_equal(Some(&folder.uri), Some(folder_or_workspace_config_uri), false),
-            _ => false,
-        })
-        .cloned()
-}
 
 /// `join(a, b)` do módulo `path` da plataforma.
 fn join(first: &str, second: &str) -> String {
