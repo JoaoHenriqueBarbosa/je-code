@@ -3,8 +3,8 @@
 //!
 //! Divergências de forma:
 //! - O original compara marcadores por referência ("marker instances are not recreated when different owners update").
-//!   O `MarkerService` do porte devolve cópias em cada `read`, então a identidade de um marcador é a sua forma textual
-//!   completa (`{:?}`, dono, recurso e todos os campos); dois marcadores idênticos do mesmo dono valem um só.
+//!   O `MarkerService` do porte devolve cópias em cada `read`; a referência é o `Marker::instance`, que as cópias
+//!   compartilham e que cada marcador recriado pelo serviço troca.
 //! - `_createDecorationRange` ajusta o `startColumn` do marcador recebido; aqui o ajuste vale para a cópia guardada na
 //!   decoração (a que `getMarker` e `getLiveMarkers` devolvem), não para o marcador do serviço de marcadores.
 //! - `Number.MAX_VALUE` em `endColumn` é qualquer coluna final a partir de `i32::MAX` (as colunas do editor são `i32`).
@@ -255,7 +255,7 @@ fn has_marker_tag(marker: &Marker, tag: MarkerTag) -> bool {
 
 /// A identidade de um marcador (ver as divergências do módulo).
 fn marker_key(marker: &Marker) -> String {
-    format!("{marker:?}")
+    marker.instance.id().to_string()
 }
 
 struct MarkerDecorationsState {
@@ -304,16 +304,9 @@ impl MarkerDecorations {
     }
 
     fn update(&self, markers: Vec<Marker>) -> bool {
-        // The marker service gives the same marker content when different owners update, so the keys are compared
-        // to find out what changed since the last update.
-        let mut seen = HashSet::new();
-        let mut incoming: Vec<(String, Marker)> = Vec::new();
-        for marker in markers {
-            let key = marker_key(&marker);
-            if seen.insert(key.clone()) {
-                incoming.push((key, marker));
-            }
-        }
+        // We use the fact that marker instances are not recreated when different owners
+        // update. So we can compare references to find out what changed since the last update.
+        let mut incoming: Vec<(String, Marker)> = markers.into_iter().map(|marker| (marker_key(&marker), marker)).collect();
         let after: Vec<String> = incoming.iter().map(|(key, _)| key.clone()).collect();
         let before: Vec<String> = self.state.borrow().map.keys().cloned().collect();
         let diff = diff_sets(&before, &after);

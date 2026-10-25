@@ -55,6 +55,7 @@ fn a_marker_full(
     related_information: Option<Vec<IRelatedInformation>>,
 ) -> IMarker {
     IMarker {
+        instance: je_platform::markers::MarkerInstance::new(),
         owner: "someOwner".to_string(),
         resource: uri_file(resource),
         severity,

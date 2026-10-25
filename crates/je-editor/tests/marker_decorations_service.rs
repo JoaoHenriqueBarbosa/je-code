@@ -62,7 +62,7 @@ fn setup() -> Fixture {
 }
 
 fn file_uri(path: &str) -> URI {
-    URI::file(path, je_base::path::ProcessEnvironment.platform())
+    URI::file(path, je_base::path::Environment::platform(&je_base::path::ProcessEnvironment))
 }
 
 impl Fixture {
