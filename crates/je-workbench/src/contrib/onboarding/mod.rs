@@ -11,3 +11,5 @@ pub mod spotlight_types;
 pub mod onboarding_presentation;
 pub mod run_onboarding_step;
 pub mod sequence_presentation;
+pub mod onboarding_tryout_actions;
+pub mod guided_tryout_presentation;
