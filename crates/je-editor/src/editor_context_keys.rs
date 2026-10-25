@@ -1,7 +1,7 @@
 //! Porte parcial de `src/vs/editor/common/editorContextKeys.ts`: as chaves de contexto de provedor de formatação de
 //! `EditorContextKeys` (`hasDocumentFormattingProvider`, `hasDocumentSelectionFormattingProvider`,
-//! `hasMultipleDocumentFormattingProvider` e `hasMultipleDocumentSelectionFormattingProvider`) e a
-//! `multiDiffEditorItemAllUnchangedRegionsShown`.
+//! `hasMultipleDocumentFormattingProvider` e `hasMultipleDocumentSelectionFormattingProvider`), a
+//! `multiDiffEditorItemAllUnchangedRegionsShown` e as do sticky scroll (`stickyScrollFocused` e `stickyScrollVisible`).
 //!
 //! As chaves são `thread_local` e as funções devolvem cópias (o mesmo padrão de `find_model`); as outras chaves do
 //! namespace entram aqui quando a contribuição que as usa for portada.
@@ -34,6 +34,26 @@ thread_local! {
         false,
         ContextKeyMeta::Description("Whether all unchanged regions of a multi diff editor file are revealed".to_owned()),
     );
+    static STICKY_SCROLL_FOCUSED: RawContextKey = RawContextKey::new(
+        "stickyScrollFocused",
+        false,
+        ContextKeyMeta::Description("Whether the sticky scroll is focused".to_owned()),
+    );
+    static STICKY_SCROLL_VISIBLE: RawContextKey = RawContextKey::new(
+        "stickyScrollVisible",
+        false,
+        ContextKeyMeta::Description("Whether the sticky scroll is visible".to_owned()),
+    );
+}
+
+/// `EditorContextKeys.stickyScrollFocused`.
+pub fn sticky_scroll_focused() -> RawContextKey {
+    STICKY_SCROLL_FOCUSED.with(Clone::clone)
+}
+
+/// `EditorContextKeys.stickyScrollVisible`.
+pub fn sticky_scroll_visible() -> RawContextKey {
+    STICKY_SCROLL_VISIBLE.with(Clone::clone)
 }
 
 /// `EditorContextKeys.multiDiffEditorItemAllUnchangedRegionsShown`.

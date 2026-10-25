@@ -50,8 +50,8 @@
 //!     `SimpleInlineSuggestModel`, o posicionamento na margem, o hover e o pulso) e `gutterIndicatorMenu`
 //!     (`GutterIndicatorMenuContent`, o cabeçalho, as ações, os atalhos e o rodapé como dado em `GutterMenuContentVisual`).
 //!     O `GutterIndicatorMenuHost` implementa o `IGutterIndicatorHost` do indicador; o hover e o rastreador de foco
-//!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter` e a altura do sticky scroll
-//!     pelo construtor do host, ambos fechados pelo pintor nativo e pelo controller (4c-6);
+//!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter`, fechado pelo pintor nativo e pelo
+//!     controller (4c-6); a altura do sticky scroll o indicador lê do `StickyScrollController` do editor;
 //!   - 4c-4 (pronta): a `InlineEditsView`, em `view/inline_edits/inline_edits_view` (o arquivo inteiro: o `_uiState`,
 //!     `_determineView`, `_determineRenderState`, as views portadas, o `JumpToView` e o clique), com o `ILongDistanceHint` e
 //!     o `ILongDistanceViewState` em `long_distance_hint`, e o producer (`inline_edits_view_producer`:
