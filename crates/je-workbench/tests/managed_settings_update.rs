@@ -676,7 +676,8 @@ fn accessibility_help_uses_the_concise_requirement_and_restores_focus_without_cl
     let fixture = Fixture::new(&guard, Some(error()));
     let services = help_services(&guard, &fixture.service, editor_environment());
     let ui = Ui::new();
-    let target = ui.tree_mut().create(ui.root(), Role::Button);
+    let root = ui.root();
+    let target = ui.tree_mut().create(root, Role::Button);
     guard.add(to_disposable({
         let ui = ui.clone();
         move || ui.remove(target)
