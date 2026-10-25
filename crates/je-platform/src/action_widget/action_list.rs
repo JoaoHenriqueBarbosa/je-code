@@ -526,6 +526,9 @@ pub struct IActionListOptions {
     pub submenu_hover_delay: Option<u64>,
     /// Stops pointer events on the row toolbar from reaching the row.
     pub stop_toolbar_pointer_propagation: bool,
+    /// Includes the focused row's toolbar actions in the Tab sequence: only that row's toolbar is focusable, and hovering a
+    /// toolbar keeps the row focused.
+    pub tab_through_item_actions: bool,
     pub secondary_heading: Option<String>,
     /// Optional text shown below the action list as a footer.
     pub footer_text: Option<String>,
@@ -887,6 +890,8 @@ struct WidgetState<T: ActionListItemData> {
     /// `visibleItemsUpdate`: o quadro agendado que avisa as linhas que entraram na área visível.
     visible_items_update: Option<TimerId>,
     prefetch_timer: Option<TimerId>,
+    /// Os `options` da última chamada de `update_items` (o `lastCall.args[2]` do `sinon.spy`).
+    last_update_options: Option<IActionListUpdateOptions>,
 }
 
 /// O cabeçalho do painel: o texto do markdown renderizado ou o elemento do chamador.
@@ -1088,6 +1093,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 visible_items: BTreeSet::new(),
                 visible_items_update: None,
                 prefetch_timer: None,
+                last_update_options: None,
             }),
             measurer: RefCell::new(Rc::new(|_| 0.0)),
             is_submenu_panel: Cell::new(false),
@@ -1460,7 +1466,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     }
 
     /// `_submenuContainer.focus()`.
-    fn focus_panel(&self) {
+    pub fn focus_panel(&self) {
         if let Some(input) = &self.filter_input {
             input.blur();
         }
@@ -1502,6 +1508,27 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// Quantos botões a barra de `element` tem (as ações e a de remover que `onRemove` acrescenta).
     fn toolbar_length(element: &IActionListItem<T>) -> usize {
         element.toolbar_actions.as_ref().map_or(0, Vec::len) + usize::from(element.on_remove.is_some())
+    }
+
+    /// `_list.scrollTop`.
+    pub fn scroll_top(&self) -> f64 {
+        self.state.borrow().scroll_top
+    }
+
+    /// Os `options` que o último `update_items` recebeu.
+    pub fn last_update_options(&self) -> Option<IActionListUpdateOptions> {
+        self.state.borrow().last_update_options
+    }
+
+    /// `tabIndex` dos botões da barra da linha `index`: com `tabThroughItemActions` só a barra da linha focada é focável
+    /// (`_updateToolbarFocusability`); sem a opção todas são. `None` se a linha não tem barra.
+    pub fn toolbar_tab_index(&self, index: usize) -> Option<i32> {
+        let element = self.element(index)?;
+        if Self::toolbar_length(&element) == 0 {
+            return None;
+        }
+        let tab_through = self.opts().is_some_and(|o| o.tab_through_item_actions);
+        Some(if !tab_through || self.state.borrow().focus == Some(index) { 0 } else { -1 })
     }
 
     /// `document.activeElement === this._list.getHTMLElement()`.
@@ -2530,6 +2557,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// closing the widget.
     pub fn update_items(&self, items: &[Rc<IActionListItem<T>>], focus_item_id: Option<&str>, options: Option<IActionListUpdateOptions>) {
         let options = options.unwrap_or_default();
+        self.state.borrow_mut().last_update_options = Some(options);
         let preserved_scroll_top = options.preserve_scroll_position.then(|| self.state.borrow().scroll_top);
         let pending = self.state.borrow().pending_submenu_element.clone();
         if let Some(pending) = pending {
@@ -3617,6 +3645,32 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         self.run_item_toolbar_action(&label, action_id)
     }
 
+    /// O clique no `Switch` embutido da linha `index` (`toggle.click()`): inverte o estado e avisa o `onChange`, sem selecionar a
+    /// linha.
+    pub fn click_inline_toggle(&self, index: usize) {
+        let Some(element) = self.element(index) else {
+            return;
+        };
+        let Some(toggle) = element.inline_toggle.clone() else {
+            return;
+        };
+        if toggle.disabled {
+            return;
+        }
+        let checked = {
+            let mut state = self.state.borrow_mut();
+            let position = state.standalone_toggles.iter().position(|(item, _)| Rc::ptr_eq(item, &element));
+            let position = position.unwrap_or_else(|| {
+                state.standalone_toggles.push((element.clone(), toggle.checked));
+                state.standalone_toggles.len() - 1
+            });
+            let checked = !state.standalone_toggles[position].1;
+            state.standalone_toggles[position].1 = checked;
+            checked
+        };
+        (toggle.on_change)(checked);
+    }
+
     /// O clique no chevron da linha `index`: abre o painel dela sem selecionar a linha.
     pub fn click_submenu_indicator(&self, index: usize) {
         if let Some(element) = self.element(index) {
@@ -3637,11 +3691,16 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         let persistent = self.opts().is_some_and(|o| o.persistent_hover);
         if element.item.is_some() && Self::focus_condition(&element) {
             // Hovering inside a toolbar skips the re-render that would destroy the element mid-hover.
+            let tab_through_item_actions = self.opts().is_some_and(|o| o.tab_through_item_actions);
+            // Moving to another row hides the focused toolbar, so keep the document focus in the list.
+            if tab_through_item_actions && self.state.borrow().focus != index && self.focus_state.toolbar_focused.get().is_some() {
+                self.dom_focus_list();
+            }
             if event.target == PointerTarget::Toolbar {
                 if !has_submenu_actions(&element) {
                     self.cancel_submenu_show();
                 }
-                self.set_focus(None);
+                self.set_focus(if tab_through_item_actions { index } else { None });
                 return;
             }
 
@@ -3816,7 +3875,8 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         let Some(element) = self.element(index) else {
             return;
         };
-        if !element.hover.as_ref().is_some_and(|hover| hover.tab_through_panel) && self.item_detail_links(&element).is_empty() {
+        let tab_through_item_actions = self.opts().is_some_and(|o| o.tab_through_item_actions);
+        if !element.hover.as_ref().is_some_and(|hover| hover.tab_through_panel) && !tab_through_item_actions && self.item_detail_links(&element).is_empty() {
             return;
         }
         let active_control = self.focus_state.control_focused.borrow().clone();
@@ -4374,11 +4434,9 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         Some(label)
     }
 
-    /// O estado marcado do `Switch` do toggle independente da linha (o `toggle.checked` depois de ativado).
+    /// O estado marcado do `Switch` do toggle da linha (o `toggle.checked` depois de ativado): o do toggle independente e o do
+    /// embutido que o clique no `Switch` inverteu.
     fn toggle_checked(&self, element: &IActionListItem<T>, toggle: &IActionListItemInlineToggle) -> bool {
-        if element.standalone_toggle.is_none() {
-            return toggle.checked;
-        }
         let state = self.state.borrow();
         state.standalone_toggles.iter().find(|(item, _)| std::ptr::eq(Rc::as_ptr(item), element)).map_or(toggle.checked, |(_, checked)| *checked)
     }
