@@ -1,5 +1,7 @@
 //! A árvore de nós, numa arena.
 
+use std::collections::HashMap;
+
 use je_render::kurbo::{BezPath, Rect, RoundedRect, RoundedRectRadii, Shape as _, Vec2};
 use je_render::{DisplayList, Rgba, Shape};
 use je_text::{TextStyle, with_text_system};
@@ -63,6 +65,57 @@ pub enum Role {
     MenuItemRadio,
     Tooltip,
     Alert,
+}
+
+/// Os nomes ARIA dos papéis (o valor do atributo `role`), na ordem do enum. `Generic` não tem nome: é o
+/// elemento sem o atributo.
+const ROLE_NAMES: [(Role, &str); 34] = [
+    (Role::Button, "button"),
+    (Role::Toolbar, "toolbar"),
+    (Role::Tab, "tab"),
+    (Role::TabList, "tablist"),
+    (Role::Tree, "tree"),
+    (Role::TreeItem, "treeitem"),
+    (Role::List, "list"),
+    (Role::ListItem, "listitem"),
+    (Role::TextInput, "textbox"),
+    (Role::Menu, "menu"),
+    (Role::MenuBar, "menubar"),
+    (Role::MenuItem, "menuitem"),
+    (Role::Status, "status"),
+    (Role::Region, "region"),
+    (Role::Separator, "separator"),
+    (Role::Checkbox, "checkbox"),
+    (Role::Radio, "radio"),
+    (Role::RadioGroup, "radiogroup"),
+    (Role::Switch, "switch"),
+    (Role::Dialog, "dialog"),
+    (Role::AlertDialog, "alertdialog"),
+    (Role::ProgressBar, "progressbar"),
+    (Role::ComboBox, "combobox"),
+    (Role::ListBox, "listbox"),
+    (Role::Option, "option"),
+    (Role::Link, "link"),
+    (Role::Image, "img"),
+    (Role::Group, "group"),
+    (Role::Heading, "heading"),
+    (Role::Presentation, "presentation"),
+    (Role::MenuItemCheckbox, "menuitemcheckbox"),
+    (Role::MenuItemRadio, "menuitemradio"),
+    (Role::Tooltip, "tooltip"),
+    (Role::Alert, "alert"),
+];
+
+impl Role {
+    /// O valor do atributo `role` do ARIA para este papel; `None` para `Generic` (sem o atributo).
+    pub fn aria_name(self) -> Option<&'static str> {
+        ROLE_NAMES.iter().find(|(role, _)| *role == self).map(|(_, name)| *name)
+    }
+
+    /// O papel de um valor do atributo `role` (`None` se o nome não é um papel que o `je-ui` conhece).
+    pub fn from_aria_name(name: &str) -> Option<Role> {
+        ROLE_NAMES.iter().find(|(_, candidate)| *candidate == name).map(|(role, _)| *role)
+    }
 }
 
 /// O `pointer-events` do CSS. É herdado: `None` num nó vale para os descendentes, até um que declare
@@ -161,6 +214,10 @@ struct Node {
     /// O `classList`: nomes de classe, sem estilo (a regra de CSS vira código do widget), mas o
     /// código do VS Code lê e escreve classes como estado e como marcador de estrutura.
     classes: Vec<String>,
+    /// Os atributos do elemento que o `je-ui` não modela em campo próprio (`aria-checked`, `aria-disabled`,
+    /// `disabled`, `data-*`, `tabindex`, `draggable`...). `aria-label` e `role` não ficam aqui: são o
+    /// rótulo e o papel do nó (ver [`Tree::attribute`]).
+    attributes: HashMap<String, String>,
     alive: bool,
     /// Quantas vezes o espaço da arena já foi reutilizado.
     generation: u32,
@@ -175,7 +232,7 @@ pub struct Tree {
 
 impl Node {
     fn new(parent: Option<NodeId>, role: Role) -> Self {
-        Self { parent, children: Vec::new(), bounds: Rect::ZERO, fill: (false, false), right: None, bottom: None, style: NodeStyle::default(), role, label: None, classes: Vec::new(), alive: true, generation: 0 }
+        Self { parent, children: Vec::new(), bounds: Rect::ZERO, fill: (false, false), right: None, bottom: None, style: NodeStyle::default(), role, label: None, classes: Vec::new(), attributes: HashMap::new(), alive: true, generation: 0 }
     }
 }
 
@@ -360,6 +417,54 @@ impl Tree {
 
     pub fn clear_label(&mut self, id: NodeId) {
         self.node_mut(id).label = None;
+    }
+
+    /// `setAttribute(name, value)`. `aria-label` é o rótulo do nó ([`Tree::set_label`]) e `role` o papel
+    /// ([`Tree::set_role`], quando o nome é um papel conhecido); os demais (`aria-checked`, `disabled`,
+    /// `data-index`...) ficam guardados no nó, como texto, e vão para a árvore de acessibilidade com ele.
+    pub fn set_attribute(&mut self, id: NodeId, name: &str, value: impl Into<String>) {
+        let value = value.into();
+        match name {
+            "aria-label" => self.set_label(id, value),
+            "role" => match Role::from_aria_name(&value) {
+                Some(role) => self.set_role(id, role),
+                None => {
+                    self.node_mut(id).attributes.insert(name.to_owned(), value);
+                }
+            },
+            _ => {
+                self.node_mut(id).attributes.insert(name.to_owned(), value);
+            }
+        }
+    }
+
+    /// `getAttribute(name)`: `None` se o atributo não existe (o `null` do DOM).
+    pub fn attribute(&self, id: NodeId, name: &str) -> Option<&str> {
+        let node = self.node(id);
+        match name {
+            "aria-label" => node.label.as_deref(),
+            "role" => node.role.aria_name().or_else(|| node.attributes.get(name).map(String::as_str)),
+            _ => node.attributes.get(name).map(String::as_str),
+        }
+    }
+
+    /// `hasAttribute(name)`.
+    pub fn has_attribute(&self, id: NodeId, name: &str) -> bool {
+        self.attribute(id, name).is_some()
+    }
+
+    /// `removeAttribute(name)`.
+    pub fn remove_attribute(&mut self, id: NodeId, name: &str) {
+        match name {
+            "aria-label" => self.clear_label(id),
+            "role" => {
+                self.set_role(id, Role::Generic);
+                self.node_mut(id).attributes.remove(name);
+            }
+            _ => {
+                self.node_mut(id).attributes.remove(name);
+            }
+        }
     }
 
     pub fn role(&self, id: NodeId) -> Role {

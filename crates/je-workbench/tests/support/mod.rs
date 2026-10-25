@@ -111,3 +111,7 @@ pub mod open_with_editor_picker_support;
 
 // Porte de `contrib/testing/test/browser/testObjectTree.ts`: o `TestObjectTree` e o `TestTreeTestHarness`.
 pub mod test_object_tree;
+
+// Porte de `settingsTreeModels.test.ts`, `settingsEditor2.test.ts` e `settingsTree.test.ts`: a configuração de teste, os dublês dos
+// serviços (configuração gerenciada, idioma), o registro do nó de configuração e os construtores de configurações e grupos.
+pub mod preferences_support;

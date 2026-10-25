@@ -32,6 +32,31 @@
 //! margem e folga do `Layout` vêm de `tab_box_style` e `layout_tabs_row` (`multieditortabscontrol.css`, o `flex` do
 //! `tabs-container`), com o que `tabs.css` e `connectedEditorTabs.css` somam, e com as variáveis que `connectedGroup()`
 //! declara (raio médio 6px, traço 1px, `size20` 2px, `size40` 4px).
+//!
+//! Casos de `connected single rows use panel height ...` em diante: leem as abas de todas as barras como `querySelectorAll` lê o
+//! documento (`Fixture::live_bars` e `Fixture::tab_views`), com a caixa da `.tab`, do `.tab-fill` e do `.action-label` em coordenadas do
+//! grupo e com o zoom da raiz. O contorno do preenchimento (`tab_fill_shape`), o fundo da aba inativa e da ativa
+//! (`connected_inactive_tab_background`, `connected_active_tab_paint`), o `overflow` do título (`connected_title_overflow`), o recuo do
+//! botão de nova aba (`connected_add_tab_button_insets`) e o realce de topo (`dirty_top_accent`) vêm do que o controle resolve para a
+//! pintura nativa. O tema só troca cor e traço: os laços de temas percorrem todos e a geometria vale para cada um.
+//!
+//! Casos `clipped Connected caps ...` em diante: o que o original lê de `getComputedStyle` e a cor, o contorno e o fundo da aba conectada
+//! saem do `ModernUiStyle` (`contrib/modern_ui/resolved_style`), que resolve as regras de `connectedEditorTabs.css` e `tabs.css` para as
+//! classes da raiz, o tema e as variáveis `--modern-ui-*` do caso (`PaintContext`, que o `Layout` guarda como o DOM de tema). A
+//! aresta de rolagem (`ConnectedOverflowEdge`) é conferida em `connected_overflow_edge_style`, o realce de topo da aresta em
+//! `connected_edge_accent`, o sublinhado da pílula de cima em `connected_upper_row_bottom_accent` e o estilo do `.tab-actions` em
+//! `tab_actions_block_border_color`, `tab_action_overlay_background` e `tab_actions_fade_content`. A raiz `modern-ui` sem o estilo
+//! conectado (`pill` de `connected tabs reserve separator height ...`) é a raiz com `TabsParentTraits::in_modern_ui` e sem
+//! `in_connected_editor_tabs`: a classe só muda o recuo do preenchimento conectado (`connectedEditorTabs.css` L164), então as alturas
+//! lidas valem as do Pill compartilhado, medidas com a raiz certa. As demais raízes dos casos têm `.modern-ui` (`connectedGroup()`).
+//!
+//! Casos `keeps the connected outline inside the visible scroll area` e `invalidates connected clipping geometry ...`: a raiz deles
+//! não declara `--vscode-cornerRadius-medium`, então o ombro e a tampa valem `cornerRadius-small` mais o traço (5px, `Layout::spacing`).
+//! As classes de corte das abas e da aresta de rolagem (`connected-tab-left-edge`, `-left-clipped`, `-right-edge`, `-right-clipped`,
+//! `-hovered`) são o estado do controle; o `display`, o `z-index`, a largura, o raio e a cor dos pseudoelementos da aresta
+//! (`ConnectedOverflowEdgeBox` e `ConnectedOverflowRightBox`) saem das regras de `connectedEditorTabs.css` L423 a L469 e L618 a L691, com
+//! as cores do `ModernUiStyle`. O controle não escreve posição em linha no `.tab-fill` nem no `.tab-connected-edge` (`style.left` e
+//! `style.right` do original ficam vazios), e a aresta de rolagem é irmã do contêiner rolável, não filha dele.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -45,6 +70,7 @@ mod test_color_theme_service;
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use editor_input_services::{WorkbenchServices, uri_identity_service};
@@ -61,6 +87,8 @@ use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_platform::resources::uri_file;
 use je_platform::storage::{I_STORAGE_SERVICE, InMemoryStorageService, StorageService};
 use je_platform::uri_identity::uri_identity::I_URI_IDENTITY_SERVICE;
+use je_theme::color::Color;
+use je_theme::{ColorTheme, ThemeType};
 use je_ui::Ui;
 use je_workbench::browser::parts::editor::editor::default_editor_part_options;
 use je_workbench::browser::parts::editor::editor_group_view::EditorGroupView;
@@ -68,16 +96,28 @@ use je_workbench::browser::parts::editor::editor_tabs_control::{
     EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost, TabsParentTraits, compute_tab_height,
 };
 use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
-    AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, FitTabMetrics, LayoutOptions,
-    MultiEditorTabsControlState, StrokeSide, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabColors, TabCssClasses, TabFillStrokeInput, TabFlexItem,
-    TabSizingParams, TabActionGeometry, TabBoxContext, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
-    high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_geometry, tab_action_label_opacity, tab_box_style, tab_fill_rect,
+    ConnectedActiveTabPaint, ConnectedTabColors, ConnectedTabPaintInput, ModernSpacing, ShoulderShadow, TabDividerInput, connected_active_tab_paint, tab_divider,
+};
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
+    AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, BoxRect, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, FitTabMetrics, LayoutOptions,
+    MultiEditorTabsControlState, OverflowMode, StrokeSide, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabColors, TabCssClasses, TabFillShape,
+    TabFillStrokeInput, TabFlexItem, TabSizingParams, TabActionGeometry, TabBoxContext, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics,
+    WrapTabMeasure, WrappingMeasure, connected_add_tab_button_insets, connected_inactive_tab_background, connected_title_overflow, dirty_top_accent,
+    high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_geometry, tab_action_label_opacity, tab_box_style, tab_fill_rect, tab_fill_shape,
 };
 use je_workbench::browser::parts::editor::multi_row_editor_tabs_control::MultiRowEditorControl;
 use je_workbench::common::editor::editor_group_model::{EditorGroupModel, EditorOrIndex, IReadonlyEditorGroupModel};
 use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
 use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase};
-use je_workbench::common::editor::{EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, Verbosity};
+use je_workbench::common::editor::{EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, Verbosity};
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
+    AlignItems, ConnectedEdgeAccent, ConnectedEdgeAccentInput, ConnectedOverflowColors, ConnectedOverflowEdgeBox, ConnectedOverflowRightBox, TabActionsContext, TabState,
+    connected_edge_accent, connected_editor_actions_height, connected_overflow_edge_box, connected_overflow_edge_style, connected_overflow_right_box,
+    connected_upper_row_bottom_accent, tab_action_overlay_background, tab_actions_block_border_color, tab_actions_fade_content, tab_connected_edge_rect, tabs_row_align_items,
+};
+use je_workbench::contrib::modern_ui::resolved_style::{
+    FillShoulder, ModernUiStyle, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TabElement, css_rgb, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
+};
 use je_workbench::contrib::modern_ui::tabs_header::{ModernHeaderBacking, modern_header_backing};
 use je_workbench::services::editor::editor_groups_service::{
     EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartOptions, IEditorGroup, IEditorPart, PinnedTabSizing, TabActionLocation, TabHeight, TabSizing,
@@ -98,6 +138,8 @@ struct NamedInput {
     descriptions: Option<(String, String)>,
     /// `TestFileEditorInput.dirty`.
     dirty: Cell<bool>,
+    /// `TestFileEditorInput.capabilities`: começa em `EditorInputCapabilities.None`.
+    capabilities: Cell<EditorInputCapabilities>,
 }
 
 impl NamedInput {
@@ -108,12 +150,19 @@ impl NamedInput {
             name: name.to_string(),
             descriptions: descriptions.map(|(short, long)| (short.to_string(), long.to_string())),
             dirty: Cell::new(false),
+            // `TestFileEditorInput._capabilities = EditorInputCapabilities.None` (o `EditorInput` base devolve `Readonly`, o dublê o sobrescreve).
+            capabilities: Cell::new(EditorInputCapabilities::NONE),
         })
     }
 
     /// `TestFileEditorInput.setDirty()`.
     fn set_dirty(&self) {
         self.dirty.set(true);
+    }
+
+    /// `input.capabilities = capabilities`.
+    fn set_capabilities(&self, capabilities: EditorInputCapabilities) {
+        self.capabilities.set(capabilities);
     }
 }
 
@@ -150,6 +199,10 @@ impl EditorInput for NamedInput {
 
     fn is_dirty(&self) -> bool {
         self.dirty.get()
+    }
+
+    fn capabilities(&self) -> EditorInputCapabilities {
+        self.capabilities.get()
     }
 }
 
@@ -240,10 +293,15 @@ const STROKE: f64 = 1.0;
 const SPACING_SIZE20: f64 = 2.0;
 /// `--vscode-spacing-size40`: o `--modern-ui-tab-terminal-gutter` do Modern UI sem o estilo conectado.
 const TAB_GUTTER: f64 = 4.0;
-/// `margin-inline-end` da última aba conectada fora da quebra: o ombro do terminal (`shoulder-radius + strokeThickness`).
-const SHOULDER_MARGIN: f64 = SHOULDER_RADIUS + STROKE;
 /// O espaçamento vertical do `tabs-and-actions-container` no Modern UI.
 const ROW_PADDING: f64 = 3.0;
+/// `padding-top` do `tabs-and-actions-container` quando as abas quebram (`connectedEditorTabs.css` L303: `size20`) e `padding-bottom`
+/// do `.tabs-container` (L184: `strokeThickness`). Somados dão o `ROW_PADDING` do estilo conectado.
+const STRIP_PADDING_TOP: f64 = SPACING_SIZE20;
+const TABS_PADDING_BOTTOM: f64 = STROKE;
+/// `bottom` do `::after` do `tabs-and-actions-container` (a linha que separa o cabeçalho do documento, `tabs.css` L286 a L297), cuja
+/// altura é `strokeThickness`.
+const SEPARATOR_BOTTOM: f64 = 0.0;
 /// A largura do selo de decoração (`::after` com a letra e a margem de 5px dos dois lados).
 const BADGE_WIDTH: f64 = 17.0;
 
@@ -251,6 +309,8 @@ const BADGE_WIDTH: f64 = 17.0;
 struct Geometry {
     widths: Vec<f64>,
     margins: Vec<f64>,
+    /// A caixa de cada aba que o flex recebeu (`tab_box_style`, com a margem do terminal): o `padding` computado dela.
+    styles: Vec<TabBoxStyle>,
     offsets: Vec<f64>,
     tops: Vec<f64>,
     rows: usize,
@@ -278,9 +338,15 @@ struct Layout {
     badged: RefCell<Option<URI>>,
     /// O rótulo inclui o texto da descrição (`label-description`), nos casos que medem a descrição.
     show_descriptions: Cell<bool>,
-    /// `--modern-ui-connected-tab-shoulder-radius` (mais o traço, na conta da lacuna final das abas quebradas): o valor de
-    /// `connectedGroup()`, que um caso pode sobrescrever na raiz.
-    shoulder_radius: Cell<f64>,
+    /// As variáveis `--vscode-spacing-*`, `--vscode-strokeThickness` e `--vscode-cornerRadius-*` da raiz: o valor de `connectedGroup()`
+    /// (raio médio 6px, ombro de 7px), que um caso pode sobrescrever na raiz (`--modern-ui-connected-tab-shoulder-radius` vem de
+    /// `cornerRadius-medium` mais o traço).
+    spacing: Cell<ModernSpacing>,
+    /// O DOM de tema do caso (as cores do tema, as variáveis escritas na raiz e no grupo e a classe de tema da raiz) que as regras do
+    /// estilo conectado leem. Sem ele o controle recebe as variáveis da aresta vazias, como num DOM sem tema.
+    paint: RefCell<Option<PaintContext>>,
+    /// `.editor-group-container.active`.
+    group_active: Cell<bool>,
 }
 
 fn name_chars(tab: &Tab) -> f64 {
@@ -302,8 +368,15 @@ impl Layout {
             fit_reads: RefCell::new(Vec::new()),
             badged: RefCell::new(None),
             show_descriptions: Cell::new(false),
-            shoulder_radius: Cell::new(SHOULDER_RADIUS),
+            spacing: Cell::new(ModernSpacing::default()),
+            paint: RefCell::new(None),
+            group_active: Cell::new(true),
         })
+    }
+
+    /// `--modern-ui-connected-tab-shoulder-radius`: `cornerRadius-medium` mais o traço.
+    fn shoulder_radius(&self) -> f64 {
+        self.spacing.get().shoulder_radius()
     }
 
     /// `--editor-group-tab-height` do Modern UI (`tabs.css`): 24px, ou 20px no modo compacto.
@@ -324,11 +397,16 @@ impl Layout {
     }
 
     /// As variáveis, classes do contêiner e da linha que as regras de geometria de `connectedEditorTabs.css` leem, sem a medida
-    /// da aba (`connectedGroup()` põe `.modern-ui` na raiz e o grupo `.active`).
+    /// da aba (`connectedGroup()` põe `.modern-ui` na raiz e o grupo `.active`; o caso `connected tabs reserve separator height ...`
+    /// a tira e a devolve, e `TabsParentTraits::in_modern_ui` carrega isso).
     fn base_context(&self, container: &TabsContainerView, tab: &Tab) -> TabBoxContext {
         TabBoxContext {
             connected: self.is_connected(),
-            modern_ui_root: true,
+            spacing: self.spacing.get(),
+            modern_ui_root: self.parent.get().in_modern_ui,
+            modern_ui_tabs: self.parent.get().in_modern_ui_tabs,
+            two_tab_bars: container.bars.two_tab_bars,
+            first_tab_bar: container.bars.top_tab_bar,
             editor_group_tab_height: self.css_tab_height(),
             wrapping: container.wrapping,
             upper_bar: container.connected_tab_upper_bar,
@@ -344,8 +422,15 @@ impl Layout {
         let mut context = self.base_context(container, &tabs[index]);
         context.starts_row = index == 0 || tabs[index - 1].state.last_in_row;
         context.tab_width = tab_width;
-        context.tab_height = if context.connected { context.connected_row_height() } else { self.tab_height() };
+        context.tab_height = self.row_height(container);
         context
+    }
+
+    /// O contexto de geometria da aba `index` de uma barra, com a largura que o layout deu a ela.
+    fn bar_box_context(&self, bar: &MultiEditorTabsControlState, index: usize) -> TabBoxContext {
+        let tab_width = self.geometry(&bar.container, &bar.tabs).widths[index];
+
+        self.box_context(&bar.container, &bar.tabs, index, tab_width)
     }
 
     /// `(left, right)` do `.monaco-icon-label-container` dentro da aba: o rótulo vai do recuo ao início da coluna da ação (ação
@@ -399,7 +484,7 @@ impl Layout {
         let parent = self.parent.get();
         match (parent.in_modern_ui_tabs, parent.in_connected_editor_tabs && !container.connected_tab_upper_bar) {
             (false, _) => 0.0,
-            (true, true) => self.shoulder_radius.get(),
+            (true, true) => self.shoulder_radius(),
             (true, false) => TAB_GUTTER,
         }
     }
@@ -410,7 +495,7 @@ impl Layout {
     /// `multieditortabscontrol.css`, que [`tab_box_style`] resolve.
     fn terminal_extra_margin(&self, container: &TabsContainerView) -> f64 {
         if !container.wrapping {
-            return if self.parent.get().in_connected_editor_tabs { SHOULDER_MARGIN } else { 0.0 };
+            return if self.parent.get().in_connected_editor_tabs { self.shoulder_radius() + STROKE } else { 0.0 };
         }
 
         self.terminal_gutter(container)
@@ -421,12 +506,82 @@ impl Layout {
     /// `size20 - shoulder-radius - strokeThickness` (`connectedEditorTabs.css`, regra fora da quebra).
     fn add_button_near_edge(&self, tab: (f64, f64), terminal_margin: f64) -> f64 {
         let zoom = self.zoom.get();
-        let offset = (terminal_margin + SPACING_SIZE20 - SHOULDER_RADIUS - STROKE) * zoom;
+        let offset = (terminal_margin + SPACING_SIZE20 - self.shoulder_radius() - STROKE) * zoom;
         if self.rtl.get() { tab.0 - offset } else { tab.1 + offset }
     }
 
     fn tab_height(&self) -> f64 {
         compute_tab_height(self.options.borrow().tab_height == TabHeight::Compact, self.parent.get(), false)
+    }
+
+    /// A altura de uma linha de abas: no estilo conectado `--modern-ui-connected-tab-row-height`, que muda com a quebra e com a
+    /// barra superior (`TabBoxContext::connected_row_height`), e nos demais a altura da aba.
+    fn row_height(&self, container: &TabsContainerView) -> f64 {
+        let parent = self.parent.get();
+        let context = TabBoxContext {
+            spacing: self.spacing.get(),
+            connected: self.is_connected(),
+            modern_ui_root: parent.in_modern_ui,
+            modern_ui_tabs: parent.in_modern_ui_tabs,
+            two_tab_bars: container.bars.two_tab_bars,
+            first_tab_bar: container.bars.top_tab_bar,
+            editor_group_tab_height: self.css_tab_height(),
+            wrapping: container.wrapping,
+            upper_bar: container.connected_tab_upper_bar,
+            ..TabBoxContext::default()
+        };
+        if context.connected {
+            context.connected_row_height()
+        } else if parent.in_modern_ui_tabs {
+            // O estilo Pill soma o `border-block` da `.tab` à altura do título, e ele muda com a quebra.
+            context.pill_tab_height()
+        } else {
+            self.tab_height()
+        }
+    }
+
+    /// `(tabsContainer.offsetHeight, tabsAndActionsContainer.offsetHeight)` com `rows` linhas. No estilo conectado o `.tabs-container`
+    /// soma o `padding-bottom` de `strokeThickness` (zero na barra superior, `connectedEditorTabs.css` L184 e L187) às linhas e o
+    /// `tabs-and-actions-container` soma o `padding-top` de `size20` quando quebra ou é a barra superior (L298 e L303); nos demais
+    /// estilos vale a altura da aba, e o Modern UI soma o espaçamento vertical da linha.
+    fn header_heights(&self, container: &TabsContainerView, rows: usize) -> (f64, f64) {
+        if self.is_connected() {
+            let tabs = rows as f64 * self.row_height(container) + self.tabs_padding_bottom(container);
+
+            return (tabs, self.strip_padding_top(container) + tabs);
+        }
+        let row = self.row_height(container);
+        let tabs = if container.wrapping { rows as f64 * row } else { row };
+
+        (tabs, tabs + if self.parent.get().in_modern_ui_tabs { ROW_PADDING } else { 0.0 })
+    }
+
+    /// `padding-bottom` do `.tabs-container` no estilo conectado: `strokeThickness` (`connectedEditorTabs.css` L184), zero na barra
+    /// superior (L187).
+    fn tabs_padding_bottom(&self, container: &TabsContainerView) -> f64 {
+        if container.connected_tab_upper_bar { 0.0 } else { TABS_PADDING_BOTTOM }
+    }
+
+    /// `padding-top` do `tabs-and-actions-container` no Modern UI: o estilo Pill dá `size20` só na quebra (`tabs.css` L283 e L319) e
+    /// com duas barras nenhuma das duas o tem (L305 a L307); o conectado zera o recuo (`connectedEditorTabs.css` L149) e devolve
+    /// `size20` na quebra sem duas barras e na barra superior (L301 a L304).
+    fn strip_padding_top(&self, container: &TabsContainerView) -> f64 {
+        let modern_ui_tabs = self.parent.get().in_modern_ui_tabs;
+        let wrapping_alone = container.wrapping && !container.bars.two_tab_bars;
+        if modern_ui_tabs && (wrapping_alone || self.is_connected() && container.connected_tab_upper_bar) { STRIP_PADDING_TOP } else { 0.0 }
+    }
+
+    /// `padding-left` do `tabs-and-actions-container`: o estilo Pill dá `size20` sempre (`tabs.css` L283) e o conectado zera o recuo
+    /// (L148) e o devolve na quebra e na barra superior (L296 a L299).
+    fn strip_padding_left(&self, container: &TabsContainerView) -> f64 {
+        let parent = self.parent.get();
+        if parent.in_modern_ui_tabs && (!parent.in_connected_editor_tabs || container.wrapping || container.connected_tab_upper_bar) { SPACING_SIZE20 } else { 0.0 }
+    }
+
+    /// `getBoundingClientRect()` do `.tab-label` na vertical, relativo ao topo da aba: o rótulo é um item flex com `margin: auto` na
+    /// caixa de conteúdo da aba (`border-block-width: 0` no estilo conectado), então o centro é o centro da aba.
+    fn label_center(&self, tab_height: f64) -> f64 {
+        tab_height / 2.0
     }
 
     fn geometry(&self, container: &TabsContainerView, tabs: &[Tab]) -> Geometry {
@@ -465,7 +620,10 @@ impl Layout {
                 let classes = TabCssClasses::of(&tab.state, container);
                 let params = TabSizingParams { current_width: tab.state.current_width, fit_width: tab.state.fit_width, ..params };
                 let mut style = tab_box_style(&classes, &params);
-                if tab.state.last_tab {
+                // `.tab.connected-tab-last:not(.connected-tab-upper-row)` (`connectedEditorTabs.css` L568): fora da quebra a linha de
+                // cima não reserva o ombro do terminal.
+                let upper_row_without_shoulder = connected && !container.wrapping && tab.state.connected_tab_upper_row;
+                if tab.state.last_tab && !upper_row_without_shoulder {
                     style.margin_end += extra_margin;
                 }
 
@@ -473,6 +631,7 @@ impl Layout {
             })
             .collect();
         let margins: Vec<f64> = items.iter().map(|item| item.style.margin_end).collect();
+        let styles: Vec<TabBoxStyle> = items.iter().map(|item| item.style).collect();
 
         // `.tabs-bar-add-tab { flex: 0 0 auto }` é um filho do `tabs-container` na quebra, com a mesma margem final da última aba.
         // O `tabs.css` soma o `--modern-ui-tab-terminal-gutter` à região do toolbar, também no botão de nova aba.
@@ -496,7 +655,7 @@ impl Layout {
         let row = layout_tabs_row(&items, visible_width, container.wrapping);
         let widths: Vec<f64> = row.widths[..tabs.len()].to_vec();
 
-        let tab_height = self.tab_height();
+        let row_height = self.row_height(container);
         let mut offsets = Vec::new();
         let mut cursor = 0.0;
         let mut current_line = 0usize;
@@ -511,11 +670,11 @@ impl Layout {
         }
         let content_width = widths.iter().zip(&margins).map(|(width, margin)| width + margin).sum::<f64>() + if connected { add_width } else { 0.0 };
 
-        let tops: Vec<f64> = (0..tabs.len()).map(|index| row.lines[index] as f64 * tab_height).collect();
+        let tops: Vec<f64> = (0..tabs.len()).map(|index| row.lines[index] as f64 * row_height).collect();
         let last_line = row.lines.last().copied().unwrap_or(0);
-        let (rows, add_top) = if container.wrapping { (last_line + 1, last_line as f64 * tab_height) } else { (1usize, 0.0) };
+        let (rows, add_top) = if container.wrapping { (last_line + 1, last_line as f64 * row_height) } else { (1usize, 0.0) };
 
-        Geometry { widths, margins, offsets, tops, rows, add_width, add_margin, add_top, visible_width, content_width }
+        Geometry { widths, margins, styles, offsets, tops, rows, add_width, add_margin, add_top, visible_width, content_width }
     }
 
     /// `getBoundingClientRect()` de uma aba: `(left, right)`, com a rolagem, o zoom e a direção do texto.
@@ -578,14 +737,13 @@ impl TabsMeasurer for Layout {
 
     fn measure_wrapping(&self, container: &TabsContainerView, tabs: &[Tab]) -> WrappingMeasure {
         let geometry = self.geometry(container, tabs);
-        let tab_height = self.tab_height();
-        let tabs_container_height = if container.wrapping { geometry.rows as f64 * tab_height } else { tab_height };
+        let (tabs_container_height, tabs_and_actions_height) = self.header_heights(container, geometry.rows);
 
         WrappingMeasure {
             visible_tabs_width: geometry.visible_width,
             all_tabs_width: if container.wrapping { geometry.visible_width } else { geometry.content_width.max(geometry.visible_width) },
             tabs_container_height,
-            tabs_and_actions_height: tabs_container_height + if self.parent.get().in_modern_ui_tabs { ROW_PADDING } else { 0.0 },
+            tabs_and_actions_height,
             tabs_and_actions_content_width: self.width.get(),
             editor_toolbar_width: self.toolbar.get(),
             add_tab_offset_width: geometry.add_width,
@@ -631,7 +789,14 @@ impl TabsMeasurer for Layout {
         let geometry = self.geometry(container, tabs);
         let zoom = self.zoom.get();
         let (left, right) = self.tab_rect(&geometry, active_tab_index, container.scroll_left);
-        let height = self.tab_height() * zoom;
+        // O `.tab-fill` da aba ativa em coordenadas da tela do `.tabs-container`, e o elemento rolável que o contém (as linhas somadas
+        // ao `padding-bottom` do contêiner de abas).
+        let context = self.box_context(container, tabs, active_tab_index, geometry.widths[active_tab_index]);
+        let fill = tab_fill_rect(&context);
+        let row_top = geometry.tops[active_tab_index];
+        let scrollable_height = self.header_heights(container, geometry.rows).0 * zoom;
+        let (tab_border, overflow_top_border, overflow_top_background) =
+            self.cap_style(&tabs[active_tab_index].state).map_or_else(|| (String::new(), String::new(), String::new()), |cap| (cap.variable, cap.top_color, cap.background_image));
 
         Some(ConnectedActiveTabMeasure {
             container_scroll_left: container.scroll_left,
@@ -639,14 +804,14 @@ impl TabsMeasurer for Layout {
             tabs_width: geometry.visible_width * zoom,
             fill_left: left,
             fill_right: right,
-            fill_top: 0.0,
-            fill_bottom: height,
+            fill_top: (row_top + fill.top) * zoom,
+            fill_bottom: (row_top + fill.bottom) * zoom,
             scrollable_top: 0.0,
-            scrollable_bottom: height,
-            tab_border: String::new(),
-            overflow_top_border: String::new(),
-            overflow_top_background: String::new(),
-            shoulder_extent: SHOULDER_RADIUS,
+            scrollable_bottom: scrollable_height,
+            tab_border,
+            overflow_top_border,
+            overflow_top_background,
+            shoulder_extent: self.shoulder_radius(),
         })
     }
 
@@ -688,10 +853,13 @@ fn readonly_model(model: &Rc<EditorGroupModel>) -> Rc<dyn IReadonlyEditorGroupMo
 }
 
 /// `IEditorTitleControlDimensions` de `layoutConnectedGroup(group, width)`: `{ container: Dimension(width, 33), available:
-/// Dimension(width, 300) }`.
-fn title_dimensions(width: f64) -> EditorTitleControlDimensions {
-    EditorTitleControlDimensions { container: Some(Dimension { width, height: 33.0 }), available: Some(Dimension { width, height: 300.0 }) }
+/// Dimension(width, 300) }`. Os casos que restringem a altura passam a deles em `available_height`.
+fn title_dimensions(width: f64, available_height: f64) -> EditorTitleControlDimensions {
+    EditorTitleControlDimensions { container: Some(Dimension { width, height: 33.0 }), available: Some(Dimension { width, height: available_height }) }
 }
+
+/// A altura disponível de `layoutConnectedGroup` (`new Dimension(width, 300)`).
+const AVAILABLE_HEIGHT: f64 = 300.0;
 
 fn build_state(
     model: &Rc<EditorGroupModel>,
@@ -740,7 +908,7 @@ impl Fixture {
         }
 
         // `container = $('.title.tabs')`: a classe `tabs` existe, o resto vem de `connectedGroup()`.
-        let parent = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_connected_editor_tabs: false };
+        let parent = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_modern_ui: true, in_connected_editor_tabs: false };
         let layout = Layout::new(options.clone(), parent);
         let state = build_state(&model, &options, parent, AddTabPresence::None);
         let mut fixture = Self { suite, model, options, layout, state, row: None, parent, add_visible: true };
@@ -751,7 +919,7 @@ impl Fixture {
 
     /// `connectedGroup()`: o contêiner passa a viver numa raiz `modern-ui-tabs modern-ui-connected-editor-tabs`.
     fn connected_group(&mut self) {
-        self.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: true, in_connected_editor_tabs: true });
+        self.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: true, in_modern_ui: true, in_connected_editor_tabs: true });
     }
 
     /// `root.classList.toggle('modern-ui-connected-editor-tabs', connected)`.
@@ -762,11 +930,23 @@ impl Fixture {
     fn set_parent(&mut self, parent: TabsParentTraits) {
         self.parent = parent;
         self.state.base.parent = parent;
+        if let Some(row) = &mut self.row {
+            row.sticky.base.parent = parent;
+            row.unsticky.base.parent = parent;
+        }
         self.layout.parent.set(parent);
+    }
+
+    /// `tabsControl.dispose()` do controle de duas barras.
+    fn dispose_row(&mut self) {
+        if let Some(row) = self.row.take() {
+            row.dispose();
+        }
     }
 
     /// `control.dispose(); reset(container); control = createControl(menuIds)`.
     fn create_control(&mut self, has_add_tab: bool) {
+        self.dispose_row();
         let add_tab = match (has_add_tab, self.add_visible) {
             (false, _) => AddTabPresence::None,
             (true, true) => AddTabPresence::Visible,
@@ -875,9 +1055,14 @@ impl Fixture {
 
     /// `layoutConnectedGroup(group, width)`.
     fn layout(&mut self, width: f64) {
+        self.layout_with_available(width, AVAILABLE_HEIGHT);
+    }
+
+    /// `control.layout({ container: new Dimension(width, 33), available: new Dimension(width, available_height) })` e o quadro seguinte.
+    fn layout_with_available(&mut self, width: f64, available_height: f64) {
         self.layout.width.set(width);
         let computed_height = self.computed_height();
-        self.state.layout(title_dimensions(width), None, computed_height);
+        self.state.layout(title_dimensions(width, available_height), None, computed_height);
         self.frame();
     }
 
@@ -951,7 +1136,7 @@ impl Fixture {
 
     /// O contexto de geometria da aba `tab_index` com a largura que o layout deu a ela.
     fn box_context(&self, tab_index: usize) -> TabBoxContext {
-        self.layout.box_context(&self.state.container, &self.state.tabs, tab_index, self.geometry().widths[tab_index])
+        self.layout.bar_box_context(&self.state, tab_index)
     }
 
     /// `tab.querySelector('.action-label')` e `.tab-actions` em coordenadas da aba, e o `.monaco-icon-label-container`.
@@ -986,15 +1171,22 @@ impl Fixture {
     fn reveal(&mut self, width: f64) {
         self.layout.width.set(width);
         let computed_height = self.computed_height();
-        self.state.layout(title_dimensions(width), Some(LayoutOptions { force_reveal_active_tab: true }), computed_height);
+        self.state.layout(title_dimensions(width, AVAILABLE_HEIGHT), Some(LayoutOptions { force_reveal_active_tab: true }), computed_height);
         self.frame();
     }
 
     /// `control.dispose(); reset(container); instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView,
-    /// groupsView, groupView, model, undefined, false, false)` sobre o modelo, as opções e a raiz vigentes. O controle de uma barra
-    /// do `setup` fica sem uso (o `Fixture` não tem descarte para ele).
-    fn create_multi_row(&mut self) {
-        self.row = Some(MultiRowEditorControl::new(group_host(&self.model, &self.options), readonly_model(&self.model), self.parent, false, false));
+    /// groupsView, groupView, model, menuIds, false, false)` sobre o modelo, as opções e a raiz vigentes: `has_add_tab` é o
+    /// `menuIds` com o `tabsBarAddTab` (as duas barras recebem o botão de nova aba, `Visible` como `addMenuVisible` do `setup`).
+    /// O controle de uma barra do `setup` fica sem uso (o `Fixture` não tem descarte para ele).
+    fn create_multi_row(&mut self, has_add_tab: bool) {
+        self.dispose_row();
+        let mut row = MultiRowEditorControl::new(group_host(&self.model, &self.options), readonly_model(&self.model), self.parent, false, false);
+        if has_add_tab {
+            row.sticky.container.add_tab = AddTabPresence::Visible;
+            row.unsticky.container.add_tab = AddTabPresence::Visible;
+        }
+        self.row = Some(row);
     }
 
     fn row(&self) -> &MultiRowEditorControl {
@@ -1025,7 +1217,7 @@ impl Fixture {
     fn row_layout(&mut self, width: f64) {
         self.layout.width.set(width);
         let row = self.row.as_mut().expect("o caso cria o controle de duas barras");
-        row.layout(title_dimensions(width), &*self.layout);
+        row.layout(title_dimensions(width, AVAILABLE_HEIGHT), &*self.layout);
         self.row_frame();
     }
 
@@ -1114,6 +1306,7 @@ fn keeps_connected_layout_current_when_an_add_tab_toolbar_follows_the_editor_tab
     let mut fx = Fixture::new();
     fx.connected_group();
     // `group.closest('.monaco-workbench').classList.remove('modern-ui')`: as classes do estilo conectado ficam.
+    fx.set_parent(TabsParentTraits { in_modern_ui: false, ..fx.parent });
     let editors = fx.model.get_editors(EditorsOrder::Sequential, None);
     for editor in &editors {
         fx.model.close_editor(editor, None, None);
@@ -1987,7 +2180,7 @@ fn action_reservation_does_not_make_inactive_clean_close_buttons_visible() {
     let mut expected = Vec::new();
     for style in ["legacy", "pill", "connected"] {
         // `root.classList.toggle('modern-ui-tabs', style !== 'legacy')` e `modern-ui-connected-editor-tabs`
-        fx.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected" });
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected", ..fx.parent });
         for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
             let high_contrast = theme.starts_with("hc");
             for tab_action_reserve_space in [false, true] {
@@ -2040,6 +2233,7 @@ const HC_INACTIVE_MODIFIED_BORDER: &str = "#22d3ee";
 fn describe_stroke_color(color: TabStrokeColor) -> String {
     match color {
         TabStrokeColor::Color(color) => color.to_string(),
+        TabStrokeColor::Transparent => "rgba(0, 0, 0, 0)".to_string(),
         other => format!("{other:?}"),
     }
 }
@@ -2800,7 +2994,7 @@ fn action_reservation_changes_update_fit_widths_in_both_modern_styles_and_leave_
     let mut results = Vec::new();
     for style in ["legacy", "pill", "connected"] {
         // `root.classList.toggle('modern-ui-tabs', style !== 'legacy')` e `modern-ui-connected-editor-tabs`
-        fx.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected" });
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected", ..fx.parent });
         for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
             for layout in ["single", "wrapped", "pinned-wrapped"] {
                 let wrapped = layout != "single";
@@ -3730,7 +3924,7 @@ fn connected_fixed_widths_settle_wrapping_on_the_first_scheduled_layout() {
 fn the_first_nonempty_connected_tab_bar_owns_the_top_row_after_the_pinned_row_empties() {
     let mut fx = Fixture::new();
     fx.connected_group();
-    fx.create_multi_row();
+    fx.create_multi_row(false);
     fx.row_open_editors();
     fx.row_layout(400.0);
     let unsticky_top_rows = |fx: &Fixture| fx.row().unsticky.tabs.iter().map(|tab| tab.state.connected_tab_top_row).collect::<Vec<_>>();
@@ -3767,7 +3961,7 @@ fn connected_wrapping_state_aggregates_across_separate_pinned_and_unpinned_rows(
         options.tab_sizing_fixed_max_width = 120.0;
         options.editor_actions_location = EditorActionsLocation::Hidden;
     });
-    fx.create_multi_row();
+    fx.create_multi_row(false);
     fx.row_update_options(&old_options, &new_options);
     let sticky_editor = fx.model.get_editor_by_index(0).expect("aba 0");
     fx.model.stick(&sticky_editor);
@@ -3797,7 +3991,7 @@ fn connected_wrapped_last_tab_adds_its_shoulder_to_the_editor_actions_margin() {
     // `tabsContainer.style.setProperty('--last-tab-margin-right', '17px')` e
     // `tabsContainer.style.setProperty('--modern-ui-connected-tab-shoulder-radius', '5px')`.
     fx.state.container.last_tab_margin_right = 17.0;
-    fx.layout.shoulder_radius.set(5.0);
+    fx.layout.spacing.set(ModernSpacing { corner_medium: 4.0, ..ModernSpacing::default() });
     let last_tab_active = fx.state.tabs.last().expect("última aba").state.active;
     let margin = *fx.geometry().margins.last().expect("margem da última aba");
 
@@ -4039,6 +4233,78 @@ fn selected_wrapped_tabs_and_focused_actions_use_the_document_surface_on_every_r
     assert_eq!(measurements, expected);
 }
 
+/// `connected_active_tab_paint` da aba `index`, com as classes que o controle escreveu nela e no contêiner. O grupo é o ativo
+/// (`connectedGroup()` cria `.editor-group-container.active`).
+fn active_tab_paint(layout: &Layout, bar: &MultiEditorTabsControlState, index: usize, colors: &ConnectedTabColors, high_contrast: bool, hovered: bool) -> ConnectedActiveTabPaint {
+    let state = &bar.tabs[index].state;
+    let input = ConnectedTabPaintInput {
+        active: state.active,
+        upper_row: state.connected_tab_upper_row,
+        wrapping: bar.container.wrapping,
+        upper_bar: bar.container.connected_tab_upper_bar,
+        starts_row: layout.bar_box_context(bar, index).starts_row,
+        left_edge: state.connected_clipping.left_edge,
+        hovered,
+        multi_selected: state.multi_selected,
+        high_contrast,
+        group_active: true,
+    };
+
+    connected_active_tab_paint(&input, colors, &ModernSpacing::default())
+}
+
+/// `getComputedStyle(...).boxShadow` de um ombro: a cor antes dos quatro comprimentos.
+fn shadow_text(shadow: &ShoulderShadow) -> String {
+    format!("{} {}px {}px {}px {}px", css_rgb(&shadow.color), shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread)
+}
+
+#[test]
+fn customized_connected_backgrounds_fill_the_shoulders_without_straight_masks_covering_their_curves() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--modern-ui-connected-tab-surface', '#123456')`, `--modern-ui-editor-tab-custom-active-background` e
+    // `--modern-ui-editor-tab-custom-border`
+    let colors = ConnectedTabColors {
+        surface: Some(Color::from_hex("#123456")),
+        custom_active_background: Some(Color::from_hex("#164e63")),
+        custom_border: Some(Color::from_hex("#22d3ee")),
+        ..ConnectedTabColors::default()
+    };
+    fx.activate(1);
+    fx.layout(320.0);
+    let paint = active_tab_paint(&fx.layout, &fx.state, fx.active_index(), &colors, false, false);
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        fill: String,
+        fill_border: String,
+        /// `[borderLeftColor, borderBottomWidth, clipPath]` do `.tab-connected-edge`.
+        outline: [String; 3],
+        shoulders: [String; 2],
+        masks: [&'static str; 2],
+    }
+
+    let shoulders = [&paint.before, &paint.after].map(|shoulder| shadow_text(&shoulder.as_ref().expect("a aba ativa tem os dois ombros").shadow));
+    let measurement = Measurement {
+        fill: css_rgb(&paint.background),
+        fill_border: css_rgb(&paint.fill_border_color),
+        outline: [css_rgb(&paint.edge_border_left_color), format!("{}px", paint.edge_border_bottom_width), format!("inset(0px 0px {}px)", paint.edge_clip_bottom_inset)],
+        shoulders,
+        masks: [if paint.straight_masks { "\"\"" } else { "none" }; 2],
+    };
+
+    assert_eq!(
+        measurement,
+        Measurement {
+            fill: "rgb(22, 78, 99)".to_string(),
+            fill_border: "rgba(0, 0, 0, 0)".to_string(),
+            outline: ["rgb(34, 211, 238)".to_string(), "0px".to_string(), "inset(0px 0px 7px)".to_string()],
+            shoulders: ["rgb(22, 78, 99) 3.5px 3.5px 0px 3.5px".to_string(), "rgb(22, 78, 99) -3.5px 3.5px 0px 3.5px".to_string()],
+            masks: ["none", "none"],
+        }
+    );
+}
+
 #[test]
 fn hc_connected_multi_selection_keeps_the_selected_state_on_the_active_tab() {
     let mut fx = Fixture::new();
@@ -4191,5 +4457,3200 @@ fn freestanding_connected_neighbors_keep_one_stroke_each_and_equal_gutters_witho
 
     assert_eq!((inactive_gap, hit_targets_contiguous), (4.0, true));
 }
+
+#[test]
+fn single_row_connected_inactive_tabs_use_dividers_while_retaining_high_contrast_interaction_strokes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-tab-border', '#abcdef')`, `--vscode-tab-divider`, `--vscode-focusBorder` e
+    // `--vscode-contrastActiveBorder`, com o `rgb(...)` que o `getComputedStyle` devolve.
+    let rgb = |hex: &str| css_rgb(&Color::from_hex(hex));
+    let (tab_border, focus_border, contrast_active_border) = (rgb("#abcdef"), rgb("#ffaa00"), rgb("#ffaa00"));
+    let divider_color = Color::from_hex("#abcdef");
+    fx.open_named_editors(&names(&["first.ts", "second.ts", "third.ts"]));
+    fx.activate(0);
+    let peer = 1;
+    let sides = [StrokeSide::Top, StrokeSide::Right, StrokeSide::Bottom, StrokeSide::Left];
+
+    // O `.tab-fill` do vizinho com as classes `hovered` e `selected` e o foco que o caso liga e desliga no elemento.
+    let stroke = |fx: &Fixture, high_contrast: bool, hovered: bool, selected: bool, focused: bool| {
+        let state = &fx.state.tabs[peer].state;
+        high_contrast_connected_tab_fill_stroke(&TabFillStrokeInput {
+            wrapping: fx.state.container.wrapping,
+            upper_bar: fx.state.container.connected_tab_upper_bar,
+            active: state.active,
+            selected,
+            multi_selected: state.multi_selected,
+            dirty_border_top: state.dirty_border_top,
+            upper_row: state.connected_tab_upper_row,
+            hovered,
+            focused,
+            focus_within: focused,
+            tab_border: Some(tab_border.as_str()),
+            contrast_active_border: Some(contrast_active_border.as_str()),
+            focus_border: Some(focus_border.as_str()),
+            spacing_size20: SPACING_SIZE20,
+            regular_theme: !high_contrast,
+            ..TabFillStrokeInput::default()
+        })
+    };
+    // `getComputedStyle(tabs[index].querySelector('.tab-divider'))`
+    let divider_of = |fx: &Fixture, index: usize, high_contrast: bool| {
+        let tabs = &fx.state.tabs;
+        tab_divider(
+            &TabDividerInput {
+                modern_ui_tabs: fx.parent.in_modern_ui_tabs,
+                connected: fx.layout.is_connected(),
+                high_contrast,
+                wrapping: fx.state.container.wrapping,
+                upper_bar: fx.state.container.connected_tab_upper_bar,
+                active: tabs[index].state.active,
+                previous_active: index > 0 && tabs[index - 1].state.active,
+                follows_tab_in_row: index > 0 && !tabs[index - 1].state.last_in_row,
+            },
+            &ModernSpacing::default(),
+            Some(&divider_color),
+        )
+    };
+    let rect = |fx: &Fixture, index: usize| fx.layout.tab_rect(&fx.geometry(), index, fx.state.container.scroll_left);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        rtl: bool,
+        compact: bool,
+        resting_border: [String; 4],
+        /// `[display, backgroundColor, width, height]`
+        divider: [String; 4],
+        divider_at_boundary: bool,
+        active_neighbor_divider: &'static str,
+        css_focused: bool,
+        interaction_strokes: Option<[String; 3]>,
+        geometry_stable: bool,
+        control_height: f64,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let high_contrast = theme.starts_with("hc-");
+        for rtl in [false, true] {
+            // `root.dir = direction`
+            fx.layout.rtl.set(rtl);
+            for tab_height in [TabHeight::Default, TabHeight::Compact] {
+                fx.update_options(|options| {
+                    options.wrap_tabs = false;
+                    options.tab_height = tab_height;
+                });
+                fx.layout(600.0);
+                let resting = stroke(&fx, high_contrast, false, false, false);
+                let resting_border = sides.map(|side| describe_stroke_color(resting.color(side)));
+                let bounds = rect(&fx, peer);
+                let hover_stroke = describe_stroke_color(stroke(&fx, high_contrast, true, false, false).color(StrokeSide::Left));
+                let selected_stroke = describe_stroke_color(stroke(&fx, high_contrast, false, true, false).color(StrokeSide::Left));
+                // `peer.focus()`: o elemento tem `tabindex`, então com a janela em foco vale `:focus`.
+                fx.focus_action(peer);
+                let css_focused = true;
+                let focus_stroke = describe_stroke_color(stroke(&fx, high_contrast, false, false, true).color(StrokeSide::Left));
+                let divider = divider_of(&fx, 2, high_contrast);
+                // `dividerBounds` com `inset-inline-start: 0`: a ponta de início do divisor é a da própria aba.
+                let geometry = fx.geometry();
+                let scroll = fx.state.container.scroll_left;
+                let (divider_tab_left, divider_tab_right) = fx.layout.tab_rect(&geometry, 2, scroll);
+                let (neighbor_left, neighbor_right) = fx.layout.tab_rect(&geometry, peer, scroll);
+                let distance = if rtl { divider_tab_right - neighbor_left } else { divider_tab_left - neighbor_right };
+                results.push(Row {
+                    theme,
+                    rtl,
+                    compact: tab_height == TabHeight::Compact,
+                    resting_border,
+                    divider: [
+                        if divider.displayed { "block" } else { "none" }.to_string(),
+                        css_rgb(&divider.background),
+                        format!("{}px", divider.width),
+                        format!("{}px", divider.height),
+                    ],
+                    divider_at_boundary: distance.abs() < 1.0 / 64.0,
+                    active_neighbor_divider: if divider_of(&fx, peer, high_contrast).displayed { "block" } else { "none" },
+                    css_focused,
+                    interaction_strokes: high_contrast.then(|| [hover_stroke, selected_stroke, focus_stroke]),
+                    geometry_stable: bounds == rect(&fx, peer),
+                    control_height: fx.get_height(),
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            theme: result.theme,
+            rtl: result.rtl,
+            compact: result.compact,
+            resting_border: std::array::from_fn(|_| "rgba(0, 0, 0, 0)".to_string()),
+            divider: ["block", "rgb(171, 205, 239)", "1px", "16px"].map(str::to_string),
+            divider_at_boundary: true,
+            active_neighbor_divider: "none",
+            css_focused: result.css_focused,
+            interaction_strokes: result.theme.starts_with("hc-").then(|| {
+                [
+                    "rgb(171, 205, 239)".to_string(),
+                    "rgb(255, 170, 0)".to_string(),
+                    if result.css_focused { "rgb(255, 170, 0)" } else { "rgb(171, 205, 239)" }.to_string(),
+                ]
+            }),
+            geometry_stable: true,
+            control_height: if result.compact { 28.0 } else { 32.0 },
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn resting_selected_dirty_and_pinned_single_row_pills_center_their_labels_and_actions_on_the_painted_fill() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--modern-ui-editor-tab-custom-inactive-background', '#234567')` só troca a cor do preenchimento.
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/dirty.ts"), "testEditorInput"));
+    concrete.set_dirty();
+    let dirty_editor: EditorInputRef = concrete;
+    open!(fx.model, dirty_editor, pinned: true, active: false);
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/pinned.ts"), "testEditorInput"));
+    let pinned_editor: EditorInputRef = concrete;
+    open!(fx.model, pinned_editor, pinned: true, active: false);
+    fx.model.stick(&pinned_editor);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        label_centered: bool,
+        action_centered: bool,
+        fill_height: f64,
+    }
+
+    let mut results = Vec::new();
+    // O tema só troca cor, borda e raio (pintura): a geometria do preenchimento e do rótulo vale para os quatro.
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            fx.update_options(|options| {
+                options.tab_height = tab_height;
+                options.wrap_tabs = false;
+                options.pinned_tab_sizing = PinnedTabSizing::Normal;
+                options.tab_action_unpin_visibility = true;
+            });
+            fx.open_editors();
+            fx.layout(900.0);
+            let tabs = &fx.state.tabs;
+            // `.tab:not(.active):not(.dirty):not(.sticky)`, que o caso marca com a classe `selected` (o preenchimento é o mesmo),
+            // `.tab.dirty` e `.tab.sticky`.
+            let selected = tabs.iter().position(|tab| !tab.state.active && !tab.state.dirty && !tab.state.sticky).expect("aba inativa e limpa");
+            let dirty = tabs.iter().position(|tab| tab.state.dirty).expect("aba suja");
+            let sticky = tabs.iter().position(|tab| tab.state.sticky).expect("aba fixada");
+            for index in [selected, dirty, sticky] {
+                let context = fx.box_context(index);
+                let fill = tab_fill_rect(&context);
+                let fill_center = (fill.top + fill.bottom) / 2.0;
+                let action = fx.action_geometry(index).label;
+                results.push(Row {
+                    theme,
+                    compact: tab_height == TabHeight::Compact,
+                    label_centered: (fx.layout.label_center(context.tab_height) - fill_center).abs() < 1.0 / 32.0,
+                    action_centered: ((action.top + action.bottom) / 2.0 - fill_center).abs() < 1.0 / 32.0,
+                    fill_height: fill.height(),
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            theme: result.theme,
+            compact: result.compact,
+            label_centered: true,
+            action_centered: true,
+            fill_height: if result.compact { 20.0 } else { 24.0 },
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+/// `[tab.top, tab.bottom, fill.top, fill.bottom]` de cada aba em coordenadas do `tabs-and-actions-container`
+/// (`getBoundingClientRect()` menos o topo do contêiner).
+fn strip_tab_boxes(fx: &Fixture) -> Vec<[f64; 4]> {
+    let geometry = fx.geometry();
+    let padding_top = fx.layout.strip_padding_top(&fx.state.container);
+    (0..fx.state.tabs.len())
+        .map(|index| {
+            let context = fx.box_context(index);
+            let fill = tab_fill_rect(&context);
+            let top = padding_top + geometry.tops[index];
+            [top, top + context.tab_height, top + fill.top, top + fill.bottom]
+        })
+        .collect()
+}
+
+#[test]
+fn wrapped_fills_retain_equal_content_heights_and_only_the_active_bottom_cap_joins_the_document() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--modern-ui-connected-tab-surface', '#ffffff')` e `--modern-ui-editor-tab-custom-border`
+    let colors = ConnectedTabColors {
+        surface: Some(Color::from_hex("#ffffff")),
+        custom_border: Some(Color::from_hex("#22d3ee")),
+        ..ConnectedTabColors::default()
+    };
+    fx.activate(1);
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        compact: bool,
+        strip_height: f64,
+        wrapping: bool,
+        upper_row: bool,
+        gap: f64,
+        clipping_gap: f64,
+        bottom_radius: String,
+        shoulder: &'static str,
+        /// `[borderLeftColor, borderBottomColor]` do `::after` do `.tab-fill`.
+        shoulder_stroke: [String; 2],
+        shoulder_baseline_offset: f64,
+        tab_content_heights: Vec<f64>,
+        hitbox_heights: Vec<f64>,
+        bottom_join: f64,
+        row_gap: f64,
+        overflow: [&'static str; 2],
+        separator_offset: f64,
+        connection_overlap: f64,
+    }
+
+    let mut measurements = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        fx.update_options(|options| {
+            options.wrap_tabs = true;
+            options.tab_height = tab_height;
+            options.tab_sizing = TabSizing::Fixed;
+            options.tab_sizing_fixed_min_width = 120.0;
+            options.tab_sizing_fixed_max_width = 120.0;
+            options.editor_actions_location = EditorActionsLocation::Hidden;
+        });
+        fx.layout(150.0);
+        let index = fx.active_index();
+        let paint = active_tab_paint(&fx.layout, &fx.state, index, &colors, false, false);
+        let strip_height = fx.rendered_height();
+        let boxes = strip_tab_boxes(&fx);
+        let [_, tab_bottom, _, fill_bottom] = boxes[index];
+        // `getBoundingClientRect().bottom` do `.tabs-container` e do `.monaco-scrollable-element`, que acabam juntos.
+        let clipping_bottom = fx.layout.strip_padding_top(&fx.state.container) + fx.layout.measure_wrapping(&fx.state.container, &fx.state.tabs).tabs_container_height;
+        // `::after` do `tabs-and-actions-container`: `bottom: 0` e `height: strokeThickness`.
+        let separator_top = strip_height - SEPARATOR_BOTTOM - STROKE;
+        let after = paint.after.as_ref().expect("a aba ativa fora da linha de cima tem o ombro de fim");
+        measurements.push(Measurement {
+            compact: tab_height == TabHeight::Compact,
+            strip_height,
+            wrapping: fx.state.container.wrapping,
+            upper_row: fx.state.tabs[index].state.connected_tab_upper_row,
+            gap: strip_height - fill_bottom,
+            clipping_gap: strip_height - clipping_bottom,
+            bottom_radius: format!("{}px", paint.fill_bottom_radius),
+            shoulder: if paint.after.is_some() { "\"\"" } else { "none" },
+            shoulder_stroke: [css_rgb(&after.stroke), css_rgb(&after.stroke)],
+            // O `::after` do ombro tem `bottom: 0` dentro do `.tab-fill`.
+            shoulder_baseline_offset: fill_bottom - paint.fill_border_bottom_width - 0.0 - (separator_top + STROKE),
+            tab_content_heights: boxes.iter().enumerate().map(|(position, [_, _, top, bottom])| bottom - top - if position == 1 { 3.0 } else { 0.0 }).collect(),
+            hitbox_heights: boxes.iter().map(|[top, bottom, _, _]| bottom - top).collect(),
+            bottom_join: fill_bottom - tab_bottom + 2.0,
+            row_gap: boxes[1][2] - boxes[0][3],
+            overflow: [if fx.state.container.overflow_visible { "visible" } else { "hidden" }; 2],
+            separator_offset: separator_top - tab_bottom,
+            connection_overlap: fill_bottom - strip_height,
+        });
+    }
+
+    let expected = |compact: bool| Measurement {
+        compact,
+        strip_height: if compact { 51.0 } else { 59.0 },
+        wrapping: true,
+        upper_row: false,
+        gap: 0.0,
+        clipping_gap: 0.0,
+        bottom_radius: "0px".to_string(),
+        shoulder: "\"\"",
+        shoulder_stroke: std::array::from_fn(|_| "rgb(34, 211, 238)".to_string()),
+        shoulder_baseline_offset: 0.0,
+        tab_content_heights: if compact { vec![20.0, 20.0] } else { vec![24.0, 24.0] },
+        hitbox_heights: if compact { vec![24.0, 24.0] } else { vec![28.0, 28.0] },
+        bottom_join: 3.0,
+        row_gap: 4.0,
+        overflow: ["visible", "visible"],
+        separator_offset: 0.0,
+        connection_overlap: 0.0,
+    };
+    assert_eq!(measurements, vec![expected(false), expected(true)]);
+}
+
+#[test]
+fn wrapped_connected_tabs_include_title_padding_in_the_available_height_constraint() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.layout(150.0);
+    // `{ strip: strip.offsetHeight, tabs: tabs.offsetHeight }`
+    let wrapped_heights = (fx.rendered_height(), fx.layout.measure_wrapping(&fx.state.container, &fx.state.tabs).tabs_container_height);
+
+    // `control.layout({ container: new Dimension(150, 33), available: new Dimension(150, wrappedHeights.tabs) })` e o quadro seguinte
+    fx.layout_with_available(150.0, wrapped_heights.1);
+    let constrained_by_tabs_height = fx.state.container.wrapping;
+
+    fx.layout_with_available(150.0, wrapped_heights.0);
+
+    assert_eq!((wrapped_heights, constrained_by_tabs_height, fx.state.container.wrapping), ((59.0, 57.0), false, true));
+}
+
+#[test]
+fn three_wrapped_rows_retain_equal_tab_heights_without_a_fixed_strip_height() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--modern-ui-connected-tab-surface', '#ffffff')` só troca a cor do fundo.
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/third.ts"), "testEditorInput"));
+    let third: EditorInputRef = concrete;
+    // `model.openEditor(editor, { index: model.count, pinned: true, active: true })`: no fim, e ativa.
+    open!(fx.model, third, index: fx.model.count() as i64, pinned: true, active: true);
+    fx.open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        compact: bool,
+        strip_height: f64,
+        tab_content_heights: Vec<f64>,
+        hitbox_heights: Vec<f64>,
+        bottom_cap_active: bool,
+        row_gaps: Vec<f64>,
+    }
+
+    let mut measurements = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        fx.update_options(|options| {
+            options.wrap_tabs = true;
+            options.tab_height = tab_height;
+            options.tab_sizing = TabSizing::Fixed;
+            options.tab_sizing_fixed_min_width = 120.0;
+            options.tab_sizing_fixed_max_width = 120.0;
+            options.editor_actions_location = EditorActionsLocation::Hidden;
+        });
+        fx.layout(150.0);
+        let boxes = strip_tab_boxes(&fx);
+        measurements.push(Measurement {
+            compact: tab_height == TabHeight::Compact,
+            strip_height: fx.rendered_height(),
+            tab_content_heights: boxes.iter().enumerate().map(|(position, [_, _, top, bottom])| bottom - top - if position == 2 { 3.0 } else { 0.0 }).collect(),
+            hitbox_heights: boxes.iter().map(|[top, bottom, _, _]| bottom - top).collect(),
+            bottom_cap_active: fx.state.tabs.iter().find(|tab| tab.state.connected_tab_last).expect("aba terminal").state.active,
+            row_gaps: boxes.windows(2).map(|pair| pair[1][2] - pair[0][3]).collect(),
+        });
+    }
+
+    assert_eq!(
+        measurements,
+        vec![
+            Measurement { compact: false, strip_height: 87.0, tab_content_heights: vec![24.0; 3], hitbox_heights: vec![28.0; 3], bottom_cap_active: true, row_gaps: vec![4.0, 4.0] },
+            Measurement { compact: true, strip_height: 75.0, tab_content_heights: vec![20.0; 3], hitbox_heights: vec![24.0; 3], bottom_cap_active: true, row_gaps: vec![4.0, 4.0] },
+        ]
+    );
+}
+
+#[test]
+fn connected_tabs_do_not_overflow_vertically_while_dragging() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--modern-ui-connected-tab-surface', '#ffffff')` só troca a cor do fundo.
+    fx.activate(1);
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        wrap_tabs: bool,
+        wrapping: bool,
+        vertical_overflow: f64,
+    }
+
+    let mut measurements = Vec::new();
+    for (wrap_tabs, width) in [(false, 320.0), (true, 150.0)] {
+        fx.update_options(|options| {
+            options.wrap_tabs = wrap_tabs;
+            options.tab_sizing = TabSizing::Fixed;
+            options.tab_sizing_fixed_min_width = 120.0;
+            options.tab_sizing_fixed_max_width = 120.0;
+            options.editor_actions_location = EditorActionsLocation::Hidden;
+        });
+        fx.layout(width);
+        // `tabs.classList.add('scroll')`
+        fx.state.container.scroll_mode = true;
+        // `tabs.scrollHeight - tabs.clientHeight`: o conteúdo vai do topo do contêiner de abas à base da última linha, mais o
+        // `padding-bottom`, e a altura do contêiner é a que o layout mede.
+        let padding_top = fx.layout.strip_padding_top(&fx.state.container);
+        let content_bottom = strip_tab_boxes(&fx).iter().map(|[_, bottom, _, _]| bottom - padding_top).fold(0.0, f64::max);
+        let client_height = fx.layout.measure_wrapping(&fx.state.container, &fx.state.tabs).tabs_container_height;
+        measurements.push(Measurement {
+            wrap_tabs,
+            wrapping: fx.state.container.wrapping,
+            vertical_overflow: (content_bottom + TABS_PADDING_BOTTOM - client_height).max(0.0),
+        });
+    }
+
+    assert_eq!(
+        measurements,
+        vec![
+            Measurement { wrap_tabs: false, wrapping: false, vertical_overflow: 0.0 },
+            Measurement { wrap_tabs: true, wrapping: true, vertical_overflow: 0.0 },
+        ]
+    );
+}
+
+//#endregion
+
+//#region Barras vivas (o que o original consulta com `querySelectorAll`)
+//
+// Os casos seguintes leem as abas de todas as barras do controle (`.tabs-and-actions-container` sem `empty`) em coordenadas do grupo,
+// como `getBoundingClientRect()` devolve. [`LiveBar`] é uma barra com o topo dela (a soma das alturas das barras de cima),
+// [`TabView`] é a aba com a caixa, o `.tab-fill`, o `.action-label`, o contorno e o fundo que o controle resolve para a pintura
+// nativa, e a leitura `getComputedStyle(fill).backgroundColor` é [`connected_inactive_tab_background`] ou o fundo da
+// `connected_active_tab_paint`. As medidas usam `Layout` como as anteriores: texto da esquerda para a direita, sem rolagem.
+
+/// `1 / 32`, a tolerância de pixel que o original usa nas comparações de geometria com zoom.
+const TOLERANCE: f64 = 1.0 / 32.0;
+
+/// Uma barra de abas mostrada com o topo dela no grupo.
+struct LiveBar<'a> {
+    state: &'a MultiEditorTabsControlState,
+    /// `getBoundingClientRect().top` do `.tabs-and-actions-container`, em px de layout.
+    top: f64,
+}
+
+/// A aba como o original a lê do navegador, em coordenadas da tela do grupo (origem no canto do `.editor-group-container`, com o zoom
+/// da raiz).
+struct TabView {
+    context: TabBoxContext,
+    /// `getBoundingClientRect()` da `.tab` e do `.tab-fill`.
+    hitbox: BoxRect,
+    fill: BoxRect,
+    /// `getBoundingClientRect()` do `.action-label`, ou `None` com o `.tab-actions` em `display: none`.
+    label: Option<BoxRect>,
+    shape: TabFillShape,
+    /// `getComputedStyle(fill).backgroundColor`.
+    background: Color,
+}
+
+impl Fixture {
+    /// As barras que o navegador mostra, de cima para baixo: as do controle de duas barras que não estão `empty`, ou a barra única.
+    fn live_bars(&self) -> Vec<LiveBar<'_>> {
+        let states: Vec<&MultiEditorTabsControlState> = match &self.row {
+            Some(row) => [&row.sticky, &row.unsticky].into_iter().filter(|bar| !bar.empty).collect(),
+            None => vec![&self.state],
+        };
+        let mut top = 0.0;
+
+        states
+            .into_iter()
+            .map(|state| {
+                let bar = LiveBar { state, top };
+                top += self.layout.measure_wrapping(&state.container, &state.tabs).tabs_and_actions_height;
+
+                bar
+            })
+            .collect()
+    }
+
+    /// As abas de uma barra: a `.tab` começa depois do `padding-left` e do `padding-top` do `.tabs-and-actions-container`, e o zoom da
+    /// raiz escala tudo.
+    fn tab_views_of(&self, bar: &LiveBar, colors: &ConnectedTabColors) -> Vec<TabView> {
+        let state = bar.state;
+        let geometry = self.layout.geometry(&state.container, &state.tabs);
+        let zoom = self.layout.zoom.get();
+        let padding_left = self.layout.strip_padding_left(&state.container) * zoom;
+        let padding_top = self.layout.strip_padding_top(&state.container);
+        let spacing = ModernSpacing::default();
+        let connected = self.layout.is_connected();
+        let cap_radius = spacing.cap_radius(state.container.wrapping, state.container.connected_tab_upper_bar);
+
+        (0..state.tabs.len())
+            .map(|index| {
+                let context = self.layout.box_context(&state.container, &state.tabs, index, geometry.widths[index]);
+                let classes = TabCssClasses::of(&state.tabs[index].state, &state.container);
+                let (tab_left, tab_right) = self.layout.tab_rect(&geometry, index, state.container.scroll_left);
+                let left = tab_left + padding_left;
+                let top = (bar.top + padding_top + geometry.tops[index]) * zoom;
+                let at = |local: BoxRect| BoxRect { left: left + local.left * zoom, top: top + local.top * zoom, right: left + local.right * zoom, bottom: top + local.bottom * zoom };
+                let background = if context.active {
+                    active_tab_paint(&self.layout, state, index, colors, false, false).background
+                } else {
+                    connected_inactive_tab_background(colors, true)
+                };
+
+                TabView {
+                    hitbox: BoxRect { left, top, right: tab_right + padding_left, bottom: top + context.tab_height * zoom },
+                    fill: at(tab_fill_rect(&context)),
+                    label: tab_action_geometry(&classes, &context).map(|action| at(action.label)),
+                    shape: tab_fill_shape(connected, context.active, context.upper_row, cap_radius, &spacing),
+                    background,
+                    context,
+                }
+            })
+            .collect()
+    }
+
+    /// As abas de todas as barras mostradas, na ordem do documento.
+    fn tab_views(&self, colors: &ConnectedTabColors) -> Vec<TabView> {
+        self.live_bars().iter().flat_map(|bar| self.tab_views_of(bar, colors)).collect()
+    }
+}
+
+/// `getComputedStyle(fill).borderRadius`: um valor se os quatro cantos são iguais, senão os quatro em sequência.
+fn css_border_radius(radius: [f64; 4]) -> String {
+    let px = |value: f64| format!("{value}px");
+    if radius.iter().all(|value| *value == radius[0]) { px(radius[0]) } else { radius.map(px).join(" ") }
+}
+
+/// Os cinco layouts de `connected single rows use panel height while wrapped and upper pinned rows retain pill height`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RowLayout {
+    Single,
+    Wrapped,
+    Pinned,
+    PinnedWrapped,
+    PinnedWrappedEmpty,
+}
+
+impl RowLayout {
+    const ALL: [Self; 5] = [Self::Single, Self::Wrapped, Self::Pinned, Self::PinnedWrapped, Self::PinnedWrappedEmpty];
+
+    /// `layout === 'wrapped' || layout.startsWith('pinned-wrapped')`.
+    fn wrapped(self) -> bool {
+        matches!(self, Self::Wrapped | Self::PinnedWrapped | Self::PinnedWrappedEmpty)
+    }
+
+    /// `layout.startsWith('pinned')`.
+    fn separate_pinned_row(self) -> bool {
+        matches!(self, Self::Pinned | Self::PinnedWrapped | Self::PinnedWrappedEmpty)
+    }
+}
+
+#[test]
+fn connected_single_rows_use_panel_height_while_wrapped_and_upper_pinned_rows_retain_pill_height() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--modern-ui-editor-tab-custom-active-background', '#164e63')` e o inativo `#1e293b`
+    let colors = ConnectedTabColors {
+        custom_active_background: Some(Color::from_hex("#164e63")),
+        custom_inactive_background: Some(Color::from_hex("#1e293b")),
+        ..ConnectedTabColors::default()
+    };
+    // `model.openEditor(third, { pinned: true, active: false })`: depois da ativa, então o índice 1 é a `third.ts`.
+    fx.open_pinned_file("third.ts", false);
+    let first = fx.model.get_editor_by_index(0).expect("aba 0");
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        compact: bool,
+        layout: RowLayout,
+        rows: usize,
+        tab_heights: Vec<f64>,
+        fill_heights: Vec<f64>,
+        content_heights: Vec<f64>,
+        backgrounds: Vec<String>,
+        action_targets: Vec<[f64; 2]>,
+    }
+
+    let mut measurements = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        for layout in RowLayout::ALL {
+            let wrapped = layout.wrapped();
+            let separate_pinned_row = layout.separate_pinned_row();
+            fx.set_options(|options| {
+                options.tab_height = tab_height;
+                options.wrap_tabs = wrapped;
+                options.pinned_tabs_on_separate_row = separate_pinned_row;
+                options.pinned_tab_sizing = PinnedTabSizing::Normal;
+                options.tab_action_unpin_visibility = true;
+                options.tab_sizing = TabSizing::Fixed;
+                options.tab_sizing_fixed_min_width = 120.0;
+                options.tab_sizing_fixed_max_width = 120.0;
+                options.editor_actions_location = EditorActionsLocation::Hidden;
+            });
+            if separate_pinned_row && layout != RowLayout::PinnedWrappedEmpty {
+                fx.model.stick(&first);
+            } else {
+                fx.model.unstick(&first);
+            }
+            let second = fx.model.get_editor_by_index(1).expect("aba 1");
+            open!(fx.model, second, active: true);
+            let width = if wrapped { 150.0 } else { 400.0 };
+            if separate_pinned_row {
+                // `instantiationService.createInstance(MultiRowEditorControl, ...)`
+                fx.create_multi_row(false);
+                fx.row_open_editors();
+                fx.row_layout(width);
+            } else {
+                fx.create_control(false);
+                fx.layout(width);
+            }
+
+            let views = fx.tab_views(&colors);
+            let tops: HashSet<u64> = views.iter().map(|view| view.hitbox.top.to_bits()).collect();
+            measurements.push(Measurement {
+                compact: tab_height == TabHeight::Compact,
+                layout,
+                rows: tops.len(),
+                tab_heights: views.iter().map(|view| view.hitbox.bottom - view.hitbox.top).collect(),
+                fill_heights: views.iter().map(|view| view.fill.height()).collect(),
+                content_heights: views
+                    .iter()
+                    .map(|view| {
+                        let connected_cap = view.context.active && !view.context.upper_row;
+                        if connected_cap {
+                            // `tab.offsetHeight - parseFloat(getComputedStyle(fill).top) - (wrapped ? 2 : 0)`
+                            (view.hitbox.bottom - view.hitbox.top) - (view.fill.top - view.hitbox.top) - if wrapped { 2.0 } else { 0.0 }
+                        } else {
+                            view.fill.height()
+                        }
+                    })
+                    .collect(),
+                backgrounds: views.iter().map(|view| css_rgb(&view.background)).collect(),
+                action_targets: views.iter().map(|view| view.label.map_or([0.0; 2], |label| [label.width(), label.height()])).collect(),
+            });
+        }
+    }
+
+    let expected: Vec<Measurement> = [TabHeight::Default, TabHeight::Compact]
+        .into_iter()
+        .flat_map(|tab_height| {
+            let compact = tab_height == TabHeight::Compact;
+            RowLayout::ALL.into_iter().map(move |layout| {
+                let single_row = matches!(layout, RowLayout::Single | RowLayout::Pinned);
+                Measurement {
+                    compact,
+                    layout,
+                    rows: match layout {
+                        RowLayout::Single => 1,
+                        RowLayout::Pinned => 2,
+                        _ => 3,
+                    },
+                    tab_heights: (0..3)
+                        .map(|index| if layout == RowLayout::Single || layout == RowLayout::Pinned && index > 0 { if compact { 27.0 } else { 31.0 } } else if compact { 24.0 } else { 28.0 })
+                        .collect(),
+                    fill_heights: (0..3)
+                        .map(|index| {
+                            let upper = if layout == RowLayout::Pinned { index == 0 } else { layout != RowLayout::Single && index < 2 };
+                            let extension = if single_row { 9.0 } else { 3.0 };
+                            (if compact { 20.0 } else { 24.0 }) + if !upper && index == 1 { extension } else { 0.0 }
+                        })
+                        .collect(),
+                    content_heights: (0..3).map(|index| if single_row && index == 1 { if compact { 28.0 } else { 32.0 } } else if compact { 20.0 } else { 24.0 }).collect(),
+                    backgrounds: ["rgb(30, 41, 59)", "rgb(22, 78, 99)", "rgb(30, 41, 59)"].map(str::to_string).to_vec(),
+                    action_targets: vec![[20.0, 20.0]; 3],
+                }
+            })
+        })
+        .collect();
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn wrapped_headers_contain_horizontal_tab_painting_while_preserving_vertical_shoulders() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `openNamedEditors([`a-${'long-wrapped-tab-name-'.repeat(12)}.txt`, 'short.txt'])`
+    fx.open_named_editors(&[format!("a-{}.txt", "long-wrapped-tab-name-".repeat(12)), "short.txt".to_string()]);
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.wrap_tabs = true;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        width: f64,
+        wrapped: bool,
+        long_label: bool,
+        paints_outside_group: bool,
+        horizontal_overflow: OverflowMode,
+        vertical_overflow: OverflowMode,
+    }
+
+    let colors = ConnectedTabColors::default();
+    let shoulder = ModernSpacing::default().shoulder_radius();
+    let mut results = Vec::new();
+    for width in [500.0, 240.0, 350.0, 240.0] {
+        fx.layout(width);
+        let zoom = fx.layout.zoom.get();
+        // `container.getBoundingClientRect().right`: o título ocupa a largura do grupo.
+        let title_right = width * zoom;
+        let views = fx.tab_views(&colors);
+        // `range.selectNodeContents(name).getBoundingClientRect()` do primeiro `.label-name`: o texto inteiro, sem o corte da elipse.
+        let first_tab = &fx.state.tabs[0];
+        let label_left = fx.layout.label_span(fx.geometry().widths[0], fx.action_padding(0, false), first_tab.state.tab_actions_left).0;
+        let name_right = views[0].hitbox.left + (label_left + name_chars(first_tab) * CHAR_WIDTH) * zoom;
+        let overflow = connected_title_overflow(fx.layout.is_connected(), fx.state.container.connected_tabs_wrapping);
+        // `elementFromPoint(titleBounds.right + 8, ...)`: o que a pintura nativa deixa passar da borda de fim do título são as abas
+        // e o ombro da aba ativa fora da linha de cima, e só com o `overflow-x` visível.
+        let reach = views.iter().map(|view| view.hitbox.right + if view.context.active && !view.context.upper_row { shoulder * zoom } else { 0.0 }).fold(0.0, f64::max);
+        results.push(Row {
+            width,
+            wrapped: fx.state.container.connected_tabs_wrapping,
+            long_label: name_right > title_right + 8.0,
+            paints_outside_group: overflow.horizontal == OverflowMode::Visible && reach > title_right + 8.0,
+            horizontal_overflow: overflow.horizontal,
+            vertical_overflow: overflow.vertical,
+        });
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row { wrapped: true, long_label: true, paints_outside_group: false, horizontal_overflow: OverflowMode::Clip, vertical_overflow: OverflowMode::Visible, ..*result })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn add_tab_leaves_separate_pinned_row_caps_and_action_hit_targets_unobstructed() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let first = fx.model.get_editor_by_index(0).expect("aba 0");
+    fx.model.stick(&first);
+    // `control = createControl(menuIds)` e `control.dispose()` não deixam estado: o que vale é o controle de duas barras com o
+    // `tabsBarAddTab` nas duas barras.
+    fx.set_options(|options| {
+        options.pinned_tabs_on_separate_row = true;
+        options.pinned_tab_sizing = PinnedTabSizing::Normal;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.create_multi_row(true);
+    fx.row_open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        wrap_tabs: bool,
+        positive_inset: String,
+        cap_before_button: bool,
+        backplate_inside_control: String,
+        clickable: bool,
+    }
+
+    let colors = ConnectedTabColors::default();
+    let spacing = ModernSpacing::default();
+    let mut results = Vec::new();
+    // O tema só troca cor e traço (pintura): a geometria do botão e do contêiner vale para os três.
+    for theme in ["vs-dark", "hc-black", "hc-light"] {
+        for wrap_tabs in [false, true] {
+            let (old_options, new_options) = fx.set_options(|options| options.wrap_tabs = wrap_tabs);
+            fx.row_update_options(&old_options, &new_options);
+            fx.row_layout(500.0);
+
+            let bars = fx.live_bars();
+            // `container.querySelector('.connected-tab-upper-bar')`
+            let upper = bars.iter().find(|bar| bar.state.container.connected_tab_upper_bar).expect("a barra superior");
+            let views = fx.tab_views_of(upper, &colors);
+            let geometry = fx.layout.geometry(&upper.state.container, &upper.state.tabs);
+            let insets = connected_add_tab_button_insets(upper.state.container.wrapping, upper.state.container.connected_tab_upper_bar, &spacing);
+            // O botão de nova aba é o `.tabs-bar-add-tab` colado à borda de fim (`position: sticky`) e o `.action-label` recua a margem
+            // de cada lado.
+            let (add_left, add_right) = fx.layout.add_rect(&geometry);
+            let zoom = fx.layout.zoom.get();
+            let (button_left, button_right) = (add_left + insets.margin_start * zoom, add_right - spacing.size20 * zoom);
+            let center = (button_left + button_right) / 2.0;
+            // `elementFromPoint` no centro do botão: a área do controle de nova aba, antes do toolbar de ações que ocupa a borda de fim.
+            let toolbar_left = fx.layout.width.get() * zoom - fx.layout.toolbar.get() * zoom;
+            results.push(Row {
+                theme,
+                wrap_tabs,
+                positive_inset: format!("{}px", insets.margin_start),
+                cap_before_button: views[0].fill.right <= button_left,
+                backplate_inside_control: format!("{}px", insets.backplate_inset_start),
+                clickable: add_left <= center && center <= add_right && center <= toolbar_left,
+            });
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row { positive_inset: "2px".to_string(), cap_before_button: true, backplate_inside_control: "2px".to_string(), clickable: true, ..*result })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn separate_pinned_bars_share_upper_pill_geometry_and_reserve_no_document_seam() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-tab-border', '#00ffff')` e `--vscode-contrastActiveBorder` só trocam o traço (pintura
+    // nativa): a geometria e o contorno dos preenchimentos valem para todas as cores.
+    let pinned_editors = fx.model.get_editors(EditorsOrder::Sequential, None);
+    for editor in &pinned_editors {
+        fx.model.stick(editor);
+    }
+    for index in 2..6 {
+        fx.open_pinned_file(&format!("file{index}.ts"), false);
+    }
+    // `control.dispose(); reset(container)`: as duas barras são o controle do caso.
+    fx.set_options(|options| {
+        options.pinned_tabs_on_separate_row = true;
+        options.pinned_tab_sizing = PinnedTabSizing::Normal;
+        options.tab_action_unpin_visibility = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.create_multi_row(false);
+    fx.row_open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        wrap_tabs: bool,
+        width: f64,
+        zoom: f64,
+        active_index: usize,
+        upper_bar: bool,
+        all_upper_pills: bool,
+        hitboxes: bool,
+        painted_heights: bool,
+        left_inset: bool,
+        top_inset: bool,
+        aligned_with_wrapped_pills: Option<bool>,
+        shared_row_gap: Option<bool>,
+        corners: Vec<String>,
+        equal_left_stroke: bool,
+        no_document_seam: bool,
+        control_height_matches: bool,
+        targets: bool,
+    }
+
+    let colors = ConnectedTabColors::default();
+    let near = |value: f64, expected: f64| (value - expected).abs() < TOLERANCE;
+    let mut results = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for wrap_tabs in [false, true] {
+                let (old_options, new_options) = fx.set_options(|options| {
+                    options.tab_height = tab_height;
+                    options.wrap_tabs = wrap_tabs;
+                });
+                fx.row_update_options(&old_options, &new_options);
+                for width in if wrap_tabs { vec![150.0, 260.0] } else { vec![600.0] } {
+                    for zoom in if wrap_tabs { vec![1.0, 1.6] } else { vec![1.0] } {
+                        // `root.style.zoom = String(zoom)`
+                        fx.layout.zoom.set(zoom);
+                        for active_index in [0usize, 2] {
+                            let editor = fx.model.get_editor_by_index(active_index as i64).expect("aba");
+                            open!(fx.model, editor, active: true);
+                            fx.row_open_editors();
+                            fx.row_layout(width);
+
+                            let bars = fx.live_bars();
+                            let pinned = fx.tab_views_of(&bars[0], &colors);
+                            let lower_fill = fx.tab_views_of(&bars[1], &colors)[0].fill;
+                            let row_height = if tab_height == TabHeight::Compact { 24.0 } else { 28.0 };
+                            let bars_height: f64 = bars.iter().map(|bar| fx.layout.measure_wrapping(&bar.state.container, &bar.state.tabs).tabs_and_actions_height).sum();
+                            results.push(Row {
+                                theme,
+                                compact: tab_height == TabHeight::Compact,
+                                wrap_tabs,
+                                width,
+                                zoom,
+                                active_index,
+                                upper_bar: bars[0].state.container.connected_tab_upper_bar,
+                                all_upper_pills: pinned.iter().all(|view| view.context.upper_row),
+                                hitboxes: pinned.iter().all(|view| near((view.hitbox.bottom - view.hitbox.top) / zoom, row_height)),
+                                painted_heights: pinned.iter().all(|view| near(view.fill.height() / zoom, row_height - 4.0)),
+                                // `group.getBoundingClientRect()` é a origem das coordenadas.
+                                left_inset: near(pinned[0].fill.left / zoom, 4.0),
+                                top_inset: near(pinned[0].fill.top / zoom, 4.0),
+                                aligned_with_wrapped_pills: wrap_tabs.then(|| near(pinned[0].fill.left - lower_fill.left, 0.0)),
+                                shared_row_gap: wrap_tabs.then(|| near((lower_fill.top - pinned[1].fill.bottom) / zoom, 4.0)),
+                                corners: pinned.iter().map(|view| css_border_radius(view.shape.border_radius)).collect(),
+                                equal_left_stroke: pinned[0].shape.border_left_width == pinned[1].shape.border_left_width,
+                                no_document_seam: fx.layout.tabs_padding_bottom(&bars[0].state.container) == 0.0,
+                                control_height_matches: fx.row().get_height(&*fx.layout) == bars_height,
+                                targets: pinned.iter().all(|view| view.label.is_some_and(|label| near(label.width() / zoom, 20.0) && near(label.height() / zoom, 20.0))),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fx.row_layout(260.0);
+    let height_with_pinned_bar = fx.row().get_height(&*fx.layout);
+    for editor in &pinned_editors {
+        fx.model.unstick(editor);
+        fx.row_mut().unstick_editor(editor);
+    }
+    fx.row_layout(260.0);
+    // `Number(root.style.zoom)`: o último zoom escrito pelo laço.
+    let zoom = fx.layout.zoom.get();
+    // `.tabs-and-actions-container:not(.empty) .tab-fill`: o primeiro preenchimento da primeira barra que sobrou.
+    let remaining_fill = {
+        let bars = fx.live_bars();
+        fx.tab_views_of(&bars[0], &colors)[0].fill
+    };
+    let same_outer_top = near(remaining_fill.top / zoom, 4.0);
+    let height_stable = fx.row().get_height(&*fx.layout) == height_with_pinned_bar;
+    // `root.classList.remove('modern-ui-connected-editor-tabs')`
+    fx.set_connected(false);
+    fx.row_layout(600.0);
+    let visible_marker_cleared_for_pill = !fx.live_bars().iter().any(|bar| bar.state.container.connected_tab_upper_bar);
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            upper_bar: true,
+            all_upper_pills: true,
+            hitboxes: true,
+            painted_heights: true,
+            left_inset: true,
+            top_inset: true,
+            aligned_with_wrapped_pills: result.wrap_tabs.then_some(true),
+            shared_row_gap: result.wrap_tabs.then_some(true),
+            corners: vec!["4px".to_string(), "4px".to_string()],
+            equal_left_stroke: true,
+            no_document_seam: true,
+            control_height_matches: true,
+            targets: true,
+            ..*result
+        })
+        .collect();
+    assert_eq!((results, same_outer_top, height_stable, visible_marker_cleared_for_pill), (expected, true, true, true));
+}
+
+/// A leitura de uma aba do caso `wrapped Connected pills share Pill padding, gutters, and close targets`.
+#[derive(Debug, PartialEq)]
+struct PillRead {
+    /// `[paddingLeft, paddingRight]` da `.tab`.
+    padding: [f64; 2],
+    /// `[surface.left - hitbox.left, hitbox.right - surface.right, surface.top - hitbox.top, hitbox.bottom - surface.bottom]`.
+    insets: [f64; 4],
+    /// `[surface.left - group.left, surface.top - group.top]`.
+    outer_offset: [f64; 2],
+    height: f64,
+    radius: String,
+    target: [f64; 2],
+    action_offset: f64,
+}
+
+/// `read()` do caso: as duas primeiras abas da barra.
+fn read_pills(fx: &Fixture, colors: &ConnectedTabColors, location: TabActionLocation) -> Vec<PillRead> {
+    let bars = fx.live_bars();
+    let bar = &bars[0];
+    let geometry = fx.layout.geometry(&bar.state.container, &bar.state.tabs);
+
+    fx.tab_views_of(bar, colors)
+        .iter()
+        .take(2)
+        .enumerate()
+        .map(|(index, view)| {
+            let label = view.label.expect("a aba tem a ação");
+            let style = &geometry.styles[index];
+
+            PillRead {
+                padding: [style.padding_left, style.padding_right],
+                insets: [view.fill.left - view.hitbox.left, view.hitbox.right - view.fill.right, view.fill.top - view.hitbox.top, view.hitbox.bottom - view.fill.bottom],
+                outer_offset: [view.fill.left, view.fill.top],
+                height: view.fill.height(),
+                radius: css_border_radius(view.shape.border_radius),
+                target: [label.width(), label.height()],
+                action_offset: if location == TabActionLocation::Left { label.left - view.hitbox.left } else { view.hitbox.right - label.right },
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn wrapped_connected_pills_share_pill_padding_gutters_and_close_targets() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/third.ts"), "testEditorInput"));
+    let third: EditorInputRef = concrete;
+    // `model.openEditor(third, { index: model.count, pinned: true, active: true })`: no fim, e ativa.
+    open!(fx.model, third, index: fx.model.count() as i64, pinned: true, active: true);
+    fx.open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        tab_action_location: TabActionLocation,
+        same: bool,
+    }
+
+    let colors = ConnectedTabColors::default();
+    let mut results = Vec::new();
+    // O tema só troca cor e traço (pintura): a geometria das abas Pill e conectada vale para os quatro.
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                fx.update_options(|options| {
+                    options.wrap_tabs = true;
+                    options.tab_height = tab_height;
+                    options.tab_action_location = tab_action_location;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                // `root.classList.remove('modern-ui-connected-editor-tabs')`: o estilo Pill.
+                fx.set_connected(false);
+                fx.layout(150.0);
+                let pill = read_pills(&fx, &colors, tab_action_location);
+                fx.set_connected(true);
+                fx.layout(150.0);
+                let connected = read_pills(&fx, &colors, tab_action_location);
+                results.push(Row { theme, compact: tab_height == TabHeight::Compact, tab_action_location, same: pill == connected });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results.iter().map(|result| Row { same: true, ..*result }).collect();
+    assert_eq!(results, expected);
+}
+
+impl Fixture {
+    /// `container.querySelector('.tab.active')` para escrever nele (`tab.classList.add(...)`).
+    fn active_tab_mut(&mut self) -> &mut Tab {
+        let bars: Vec<&mut MultiEditorTabsControlState> = match &mut self.row {
+            Some(row) => vec![&mut row.sticky, &mut row.unsticky],
+            None => vec![&mut self.state],
+        };
+
+        bars.into_iter().flat_map(|bar| bar.tabs.iter_mut()).find(|tab| tab.state.active).expect("aba ativa")
+    }
+}
+
+#[test]
+fn wrapped_freestanding_fills_own_equal_gutters_and_clipped_accents_across_themes_and_densities() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-tab-border', '#00ffff')` só troca o traço (pintura nativa).
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/modified.ts"), "testEditorInput"));
+    concrete.set_dirty();
+    let modified: EditorInputRef = concrete;
+    open!(fx.model, modified, index: fx.model.count() as i64, pinned: true, active: false);
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/fourth.ts"), "testEditorInput"));
+    let fourth: EditorInputRef = concrete;
+    open!(fx.model, fourth, index: fx.model.count() as i64, pinned: true, active: false);
+    fx.open_editors();
+    // `themeService.setTheme(new TestColorTheme({ 'tab.activeModifiedBorder': '#ffffff', 'tab.inactiveModifiedBorder': '#ffffff' }))`
+    fx.state.set_colors(TabColors {
+        tab_active_modified_border: Some("#ffffff".to_string()),
+        tab_inactive_modified_border: Some("#ffffff".to_string()),
+        ..TabColors::default()
+    });
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        theme: &'static str,
+        compact_layout: bool,
+        compact: bool,
+        zoom: f64,
+        /// `[|tab.height / zoom - nominal| < 1/32, |fill.height / zoom - painted| < 1/32]` de cada aba.
+        heights: Vec<[bool; 2]>,
+        equal_gutters: bool,
+        inside_hitboxes: bool,
+        corners: Vec<String>,
+        first_stroke: f64,
+        /// `[insideFill, color, height ≈ 2, overflow do preenchimento]` do realce de topo da terceira aba.
+        accent: (bool, String, bool, OverflowMode),
+        targets: Vec<bool>,
+    }
+
+    let spacing = ModernSpacing::default();
+    let colors = ConnectedTabColors::default();
+    let near = |value: f64, expected: f64| (value - expected).abs() < TOLERANCE;
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        // `root.classList.toggle('modern-ui-compact', compactLayout)`: só a densidade do tema, a geometria da aba não muda.
+        for compact_layout in [false, true] {
+            for tab_height in [TabHeight::Default, TabHeight::Compact] {
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.wrap_tabs = true;
+                    options.highlight_modified_tabs = true;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                for zoom in [1.0, 1.25, 1.6] {
+                    fx.layout.zoom.set(zoom);
+                    fx.layout(260.0);
+                    let views = fx.tab_views(&colors);
+                    let nominal_height = if tab_height == TabHeight::Compact { 24.0 } else { 28.0 };
+                    let painted_height = nominal_height - 4.0;
+                    let gap = 4.0;
+                    let modified_tab = &fx.state.tabs[2].state;
+                    let accent = dirty_top_accent(fx.layout.is_connected(), modified_tab.dirty_border_top_color.as_deref(), &spacing);
+                    let accent_color = match accent.color {
+                        TabStrokeColor::Color(color) => css_rgb(&Color::from_hex(color)),
+                        other => describe_stroke_color(other),
+                    };
+                    measurements.push(Measurement {
+                        theme,
+                        compact_layout,
+                        compact: tab_height == TabHeight::Compact,
+                        zoom,
+                        heights: views
+                            .iter()
+                            .map(|view| [near((view.hitbox.bottom - view.hitbox.top) / zoom, nominal_height), near(view.fill.height() / zoom, painted_height)])
+                            .collect(),
+                        equal_gutters: near((views[1].fill.left - views[0].fill.right) / zoom, gap) && near((views[2].fill.top - views[0].fill.bottom) / zoom, gap),
+                        inside_hitboxes: views.iter().all(|view| view.fill.top >= view.hitbox.top && view.fill.bottom <= view.hitbox.bottom),
+                        corners: views.iter().map(|view| css_border_radius(view.shape.border_radius)).collect(),
+                        first_stroke: views[0].shape.border_left_width,
+                        accent: (
+                            fx.layout.is_connected(),
+                            accent_color,
+                            (accent.height - 2.0).abs() < 1.0 / 64.0,
+                            if views[2].shape.overflow_hidden { OverflowMode::Hidden } else { OverflowMode::Visible },
+                        ),
+                        targets: views.iter().map(|view| view.label.is_some_and(|label| near(label.width() / zoom, 20.0) && near(label.height() / zoom, 20.0))).collect(),
+                    });
+                    expected.push(Measurement {
+                        theme,
+                        compact_layout,
+                        compact: tab_height == TabHeight::Compact,
+                        zoom,
+                        heights: vec![[true, true]; 4],
+                        equal_gutters: true,
+                        inside_hitboxes: true,
+                        corners: vec!["4px".to_string(); 4],
+                        first_stroke: views[1].shape.border_left_width,
+                        accent: (true, "rgb(255, 255, 255)".to_string(), true, OverflowMode::Hidden),
+                        targets: vec![true; 4],
+                    });
+                }
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn modified_top_indicators_follow_the_fill_without_moving_connected_close_actions() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `control.dispose()`: cada volta cria o controle dela. `model.openEditor(third, { pinned: true, active: false })`: depois da ativa.
+    fx.open_pinned_file("third.ts", false);
+    let first = fx.model.get_editor_by_index(0).expect("aba 0");
+    let spacing = ModernSpacing::default();
+    let colors = ConnectedTabColors::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        connected: bool,
+        compact: bool,
+        layout: RowLayout,
+        tab_action_location: TabActionLocation,
+        top_offset: f64,
+        thickness: f64,
+        fill_stable: bool,
+        action_shift: f64,
+        target: [f64; 2],
+    }
+
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for connected in [false, true] {
+        // `root.classList.toggle('modern-ui-connected-editor-tabs', connected)`
+        fx.set_connected(connected);
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for layout in [RowLayout::Single, RowLayout::Wrapped, RowLayout::PinnedWrapped] {
+                for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                    let wrapped = layout.wrapped();
+                    let pinned = layout.separate_pinned_row();
+                    fx.set_options(|options| {
+                        options.tab_height = tab_height;
+                        options.tab_action_location = tab_action_location;
+                        options.wrap_tabs = wrapped;
+                        options.pinned_tabs_on_separate_row = pinned;
+                        options.pinned_tab_sizing = PinnedTabSizing::Normal;
+                        options.tab_sizing = TabSizing::Fixed;
+                        options.tab_sizing_fixed_min_width = 120.0;
+                        options.tab_sizing_fixed_max_width = 120.0;
+                        options.editor_actions_location = EditorActionsLocation::Hidden;
+                    });
+                    if pinned {
+                        fx.model.stick(&first);
+                    } else {
+                        fx.model.unstick(&first);
+                    }
+                    let second = fx.model.get_editor_by_index(1).expect("aba 1");
+                    open!(fx.model, second, active: true);
+                    let width = if wrapped { 150.0 } else { 400.0 };
+                    if pinned {
+                        fx.create_multi_row(false);
+                        fx.row_open_editors();
+                        fx.row_layout(width);
+                    } else {
+                        fx.create_control(false);
+                        fx.layout(width);
+                    }
+
+                    let before = fx.tab_views(&colors);
+                    let active_index = before.iter().position(|view| view.context.active).expect("aba ativa");
+                    // `tab.classList.add('dirty', 'dirty-border-top')` e `--tab-dirty-border-top-color`
+                    let tab = fx.active_tab_mut();
+                    tab.state.dirty = true;
+                    tab.state.dirty_border_top = true;
+                    tab.state.dirty_border_top_color = Some("#22d3ee".to_string());
+                    let after = fx.tab_views(&colors);
+                    let accent = dirty_top_accent(connected, Some("#22d3ee"), &spacing);
+                    let (before_action, after_action) = (before[active_index].label.expect("a ação"), after[active_index].label.expect("a ação"));
+                    let compact = tab_height == TabHeight::Compact;
+                    measurements.push(Measurement {
+                        connected,
+                        compact,
+                        layout,
+                        tab_action_location,
+                        top_offset: accent.top_offset,
+                        thickness: accent.height,
+                        fill_stable: before[active_index].fill == after[active_index].fill,
+                        action_shift: after_action.top - before_action.top,
+                        target: [after_action.width(), after_action.height()],
+                    });
+                    expected.push(Measurement {
+                        connected,
+                        compact,
+                        layout,
+                        tab_action_location,
+                        top_offset: 0.0,
+                        thickness: 2.0,
+                        fill_stable: true,
+                        action_shift: if connected { 0.0 } else { 1.0 },
+                        target: [20.0, 20.0],
+                    });
+                    // `tabsControl.dispose()`
+                    fx.dispose_row();
+                }
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+/// A aba ativa de uma leitura de `tab_views` (`container.querySelector('.tab.active')`).
+fn active_view(views: &[TabView]) -> &TabView {
+    views.iter().find(|view| view.context.active).expect("aba ativa")
+}
+
+/// O primeiro preenchimento de aba inativa (`container.querySelector('.tab:not(.active) > .tab-fill')`).
+fn peer_view(views: &[TabView]) -> &TabView {
+    views.iter().find(|view| !view.context.active).expect("aba inativa")
+}
+
+#[test]
+fn both_layout_densities_align_connected_painted_content_with_pill_while_preserving_hitboxes_and_shoulders() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.classList.toggle('modern-ui-compact', ...)` e o tema só trocam cor, traço e raio de pintura: o laço percorre os dois
+    // e a geometria do preenchimento, da ação e do contorno vale para cada um (o tema alto contraste entra em `active_tab_paint`).
+    let colors = ConnectedTabColors::default();
+    let near = |value: f64, expected: f64| (value - expected).abs() < TOLERANCE;
+    let px = |value: f64| format!("{value}px");
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        zoom: f64,
+        content_height: f64,
+        pill_height: f64,
+        same_cap_height: bool,
+        default_content_height: f64,
+        peer_centered: bool,
+        stable_hitbox: bool,
+        stable_close: bool,
+        rounded_cap: String,
+        shoulder_radius: String,
+        peer_radius: String,
+        open_join: bool,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            fx.update_options(|options| {
+                options.tab_height = tab_height;
+                options.wrap_tabs = false;
+            });
+            for zoom in [1.0, 1.6] {
+                fx.layout.zoom.set(zoom);
+                // `root.classList.remove('modern-ui-connected-editor-tabs')`: o estilo Pill.
+                fx.set_connected(false);
+                fx.layout(600.0);
+                let pill_height = active_view(&fx.tab_views(&colors)).fill.height() / zoom;
+                // `root.classList.add('modern-ui-connected-editor-tabs')`
+                fx.set_connected(true);
+                fx.layout(600.0);
+                let before = fx.tab_views(&colors);
+                let (hitbox, action, before_height) = {
+                    let tab = active_view(&before);
+                    (tab.hitbox, tab.label, tab.fill.height() / zoom)
+                };
+                // `root.classList.add('modern-ui-compact')`: só a densidade do tema, o controle refaz o layout.
+                fx.layout(600.0);
+                let after = fx.tab_views(&colors);
+                let tab = active_view(&after);
+                let peer = peer_view(&after);
+                let paint = active_tab_paint(&fx.layout, &fx.state, fx.active_index(), &colors, high_contrast, false);
+                let shoulder = paint.after.as_ref().expect("a aba ativa fora da linha de cima tem o ombro de fim");
+                results.push(Row {
+                    theme,
+                    compact: tab_height == TabHeight::Compact,
+                    zoom,
+                    content_height: (peer.fill.height() / zoom).round(),
+                    pill_height: pill_height.round(),
+                    same_cap_height: near(before_height, tab.fill.height() / zoom),
+                    default_content_height: (before_height - 9.0).round(),
+                    peer_centered: near((peer.fill.top + peer.fill.bottom) / 2.0, (tab.hitbox.top + tab.hitbox.bottom) / 2.0),
+                    stable_hitbox: hitbox == tab.hitbox,
+                    stable_close: action == tab.label,
+                    rounded_cap: px(paint.cap_radius),
+                    shoulder_radius: px(shoulder.size),
+                    peer_radius: css_border_radius(peer.shape.border_radius),
+                    // `borderBottomWidth` do `.tab-fill` em `0px`, `::after` com `content: ""` e `bottom: 0px` (o `bottom` é a regra de
+                    // `connectedEditorTabs.css` L378 a L381, que o ombro declara para colar na base do preenchimento).
+                    open_join: paint.fill_border_bottom_width == 0.0,
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            theme: result.theme,
+            compact: result.compact,
+            zoom: result.zoom,
+            content_height: result.pill_height,
+            pill_height: result.pill_height,
+            same_cap_height: true,
+            default_content_height: result.pill_height,
+            peer_centered: true,
+            stable_hitbox: true,
+            stable_close: true,
+            rounded_cap: "7px".to_string(),
+            shoulder_radius: "7px".to_string(),
+            peer_radius: "4px".to_string(),
+            open_join: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn connected_single_row_caps_match_chat_curvature_while_wrapped_caps_retain_their_geometry() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.classList.add('modern-ui-compact')` e o tema só trocam a pintura.
+    fx.activate(1);
+    let colors = ConnectedTabColors::default();
+    let px = |value: f64| format!("{value}px");
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        zoom: f64,
+        wrap_tabs: bool,
+        actual_wrapping: bool,
+        attached_cap: bool,
+        /// `[fill.borderTopRightRadius, cap.borderTopRightRadius, shoulder.borderBottomLeftRadius]`.
+        curves: [String; 3],
+        inactive_corners: Vec<String>,
+        shoulder_baseline: f64,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for zoom in [1.0, 1.6] {
+                fx.layout.zoom.set(zoom);
+                for wrap_tabs in [false, true] {
+                    fx.update_options(|options| {
+                        options.tab_height = tab_height;
+                        options.wrap_tabs = wrap_tabs;
+                        options.tab_sizing = TabSizing::Fixed;
+                        options.tab_sizing_fixed_min_width = 120.0;
+                        options.tab_sizing_fixed_max_width = 120.0;
+                        options.editor_actions_location = EditorActionsLocation::Hidden;
+                    });
+                    fx.layout(if wrap_tabs { 150.0 } else { 600.0 });
+                    let views = fx.tab_views(&colors);
+                    let tab = active_view(&views);
+                    let paint = active_tab_paint(&fx.layout, &fx.state, fx.active_index(), &colors, high_contrast, false);
+                    let shoulder = paint.after.as_ref().expect("a aba ativa fora da linha de cima tem o ombro de fim");
+                    results.push(Row {
+                        theme,
+                        compact: tab_height == TabHeight::Compact,
+                        zoom,
+                        wrap_tabs,
+                        actual_wrapping: fx.state.container.wrapping,
+                        attached_cap: !fx.state.tabs[fx.active_index()].state.connected_tab_upper_row,
+                        curves: [px(tab.shape.border_radius[1]), px(paint.cap_radius), px(shoulder.size)],
+                        inactive_corners: views.iter().filter(|view| !view.context.active).map(|view| css_border_radius(view.shape.border_radius)).collect(),
+                        // `::after` com `bottom: 0` dentro do `.tab-fill` mais a borda de baixo dele.
+                        shoulder_baseline: 0.0 + paint.fill_border_bottom_width,
+                    });
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| {
+            let cap = px(if result.wrap_tabs { 5.0 } else { 7.0 });
+            Row {
+                theme: result.theme,
+                compact: result.compact,
+                zoom: result.zoom,
+                wrap_tabs: result.wrap_tabs,
+                actual_wrapping: result.wrap_tabs,
+                attached_cap: true,
+                curves: [cap.clone(), cap, "7px".to_string()],
+                inactive_corners: vec!["4px".to_string()],
+                shoulder_baseline: 0.0,
+            }
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn selecting_a_connected_tab_retains_wrapped_pill_height_and_fills_a_single_row_header() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let colors = ConnectedTabColors::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        compact_layout: bool,
+        compact: bool,
+        wrap_tabs: bool,
+        same_content_height: bool,
+        content_height: f64,
+        hitbox_stable: bool,
+        action_stable: bool,
+    }
+
+    let mut results = Vec::new();
+    // `root.classList.toggle('modern-ui-compact', compactLayout)`: só a densidade do tema, a geometria da aba não muda.
+    for compact_layout in [false, true] {
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for wrap_tabs in [false, true] {
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.wrap_tabs = wrap_tabs;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                let width = if wrap_tabs { 150.0 } else { 600.0 };
+                // `tabs[1]`: a `.tab`, o `.tab-fill` e o `.action-label` da segunda aba.
+                let second_tab = |fx: &Fixture| {
+                    let views = fx.tab_views(&colors);
+                    (views[1].hitbox, views[1].fill, views[1].label)
+                };
+                fx.activate(0);
+                fx.layout(width);
+                let (resting_hitbox, resting_fill, resting_action) = second_tab(&fx);
+                fx.activate(1);
+                fx.layout(width);
+                let (hitbox, fill, action) = second_tab(&fx);
+                let content_height = if wrap_tabs { hitbox.bottom - 2.0 - fill.top } else { fill.height() };
+                results.push(Row {
+                    compact_layout,
+                    compact: tab_height == TabHeight::Compact,
+                    wrap_tabs,
+                    same_content_height: (content_height - resting_fill.height()).abs() < TOLERANCE,
+                    content_height: content_height.round(),
+                    hitbox_stable: resting_hitbox == hitbox,
+                    action_stable: resting_action == action,
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            compact_layout: result.compact_layout,
+            compact: result.compact,
+            wrap_tabs: result.wrap_tabs,
+            same_content_height: result.wrap_tabs,
+            content_height: match (result.wrap_tabs, result.compact) {
+                (true, false) => 24.0,
+                (true, true) => 20.0,
+                (false, false) => 33.0,
+                (false, true) => 29.0,
+            },
+            hitbox_stable: true,
+            action_stable: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn single_row_connected_caps_stay_flush_while_inactive_pills_are_centered_without_losing_rounded_corners() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `--vscode-focusBorder` (`#ffaa00`) e `--modern-ui-editor-tab-custom-border` (`#445566`) viram as cores do tema, e
+    // `tab.classList.add('tab-border-top')` só liga o gradiente do `.tab-connected-edge` (pintura).
+    let colors = ConnectedTabColors {
+        custom_border: Some(Color::from_hex("#445566")),
+        focus_border: Some(Color::from_hex("#ffaa00")),
+        ..ConnectedTabColors::default()
+    };
+    let near = |value: f64, expected: f64, tolerance: f64| (value - expected).abs() < tolerance;
+    let half = |value: f64| (value * 2.0).round() / 2.0;
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        theme: &'static str,
+        compact: bool,
+        zoom: f64,
+        top_row: bool,
+        cap_top: String,
+        top_inset: f64,
+        rounded_top: bool,
+        peer_inset: f64,
+        edge_top_aligns: bool,
+        peer_height: f64,
+        connection_extension: f64,
+        height_stable: bool,
+        control_height: f64,
+    }
+
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            fx.update_options(|options| {
+                options.tab_height = tab_height;
+                options.wrap_tabs = false;
+                options.pinned_tabs_on_separate_row = false;
+            });
+            for zoom in [1.0, 1.25, 1.6] {
+                fx.layout.zoom.set(zoom);
+                fx.layout(600.0);
+                let views = fx.tab_views(&colors);
+                let tab = active_view(&views);
+                let peer = peer_view(&views);
+                let paint = active_tab_paint(&fx.layout, &fx.state, fx.active_index(), &colors, high_contrast, false);
+                let nominal_height = if tab_height == TabHeight::Default { 31.0 } else { 27.0 };
+                // `.tab-connected-edge`: `top: --modern-ui-connected-tab-fill-block-inset` na caixa da aba (`connectedEditorTabs.css` L410).
+                let edge_top = tab.hitbox.top + tab.context.connected_fill_block_inset() * zoom;
+                let compact = tab_height == TabHeight::Compact;
+                measurements.push(Measurement {
+                    theme,
+                    compact,
+                    zoom,
+                    top_row: fx.state.tabs[fx.active_index()].state.connected_tab_top_row,
+                    cap_top: css_rgb(&paint.border),
+                    top_inset: half((tab.fill.top - tab.hitbox.top) / zoom),
+                    rounded_top: paint.cap_radius == 7.0 && tab.shape.border_radius[1] == 7.0,
+                    peer_inset: half((peer.fill.top - tab.hitbox.top) / zoom),
+                    edge_top_aligns: near(edge_top, tab.fill.top, 1.0 / 64.0),
+                    peer_height: (peer.fill.height() / zoom).round(),
+                    connection_extension: half((tab.fill.bottom - peer.fill.bottom) / zoom),
+                    height_stable: near((tab.hitbox.bottom - tab.hitbox.top) / zoom, nominal_height, 1.0 / 64.0),
+                    control_height: fx.get_height(),
+                });
+                expected.push(Measurement {
+                    theme,
+                    compact,
+                    zoom,
+                    top_row: true,
+                    cap_top: if high_contrast { "rgb(255, 170, 0)" } else { "rgb(68, 85, 102)" }.to_string(),
+                    top_inset: -1.0,
+                    rounded_top: true,
+                    peer_inset: 3.5,
+                    edge_top_aligns: true,
+                    peer_height: if compact { 20.0 } else { 24.0 },
+                    connection_extension: 4.5,
+                    height_stable: true,
+                    control_height: nominal_height + 1.0,
+                });
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn connected_shoulders_share_the_cap_baseline_at_fractional_zoom() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `--vscode-tab-selectedBorderTop` vira a cor do tema. `tab.classList.add('tab-border-top')` e o `style.transform` (`none`: nenhuma
+    // regra de `connectedEditorTabs.css` move o `.tab-fill`) são pintura da renderização nativa.
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/third.ts"), "testEditorInput"));
+    let third: EditorInputRef = concrete;
+    // `model.openEditor(third, { index: model.count, pinned: true, active: true })`: no fim, e ativa.
+    open!(fx.model, third, index: fx.model.count() as i64, pinned: true, active: true);
+    fx.open_editors();
+    fx.state.set_colors(TabColors { tab_selected_border_top: Some("#ffaa00".to_string()), ..TabColors::default() });
+    // `model.setSelection(model.activeEditor, [first, second]); control.updateEditorSelections()`
+    let active = fx.model.active_editor().expect("aba ativa");
+    let selection: Vec<EditorInputRef> = (0..2).map(|index| fx.model.get_editor_by_index(index).expect("aba")).collect();
+    fx.set_selection(&active, &selection);
+    fx.update_editor_selections();
+    let colors = ConnectedTabColors::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Measurement {
+        theme: &'static str,
+        zoom: f64,
+        baseline_offset: f64,
+        /// `[cor do traço de cima, `.tab-fill` com `overflow: hidden`]` de cada aba selecionada e inativa (só fora do alto contraste).
+        selection_strokes: Option<Vec<(String, bool)>>,
+    }
+
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let high_contrast = theme.starts_with("hc-");
+        for zoom in [1.0, 1.25, 1.5, 1.6, 2.0] {
+            fx.layout.zoom.set(zoom);
+            fx.layout(600.0);
+            let views = fx.tab_views(&colors);
+            let paint = active_tab_paint(&fx.layout, &fx.state, fx.active_index(), &colors, high_contrast, false);
+            // `::before` com `bottom: 0` dentro do `.tab-fill` mais a borda de baixo dele.
+            assert!(paint.before.is_some(), "a aba ativa fora da linha de cima tem o ombro de início");
+            let selection_strokes = (!high_contrast).then(|| {
+                fx.state
+                    .tabs
+                    .iter()
+                    .zip(&views)
+                    .filter(|(tab, _)| tab.state.selected && !tab.state.active)
+                    .map(|(tab, view)| (css_rgb(&Color::from_hex(&tab.state.tab_border_top_color)), view.shape.overflow_hidden))
+                    .collect()
+            });
+            measurements.push(Measurement { theme, zoom, baseline_offset: 0.0 + paint.fill_border_bottom_width, selection_strokes });
+            expected.push(Measurement {
+                theme,
+                zoom,
+                baseline_offset: 0.0,
+                selection_strokes: (!high_contrast).then(|| vec![("rgb(255, 170, 0)".to_string(), true); 2]),
+            });
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+//#endregion
+
+//#region DOM de tema, aresta de rolagem e estilo das ações da aba conectada
+
+/// `--modern-ui-connected-tab-border`, que o grupo declara e a aba ativa recalcula.
+const CONNECTED_TAB_BORDER: &str = "--modern-ui-connected-tab-border";
+/// `--modern-ui-editor-tab-custom-active-border-top` e a variante do grupo sem foco, escritas no grupo.
+const CUSTOM_ACTIVE_BORDER_TOP: &str = "--modern-ui-editor-tab-custom-active-border-top";
+const CUSTOM_UNFOCUSED_ACTIVE_BORDER_TOP: &str = "--modern-ui-editor-tab-custom-unfocused-active-border-top";
+
+/// O DOM de tema de um caso: as cores `--vscode-*` que ele escreve na raiz (o tema), as `--modern-ui-*` que ele escreve na raiz ou no
+/// grupo e a classe de tema da raiz (`vs`, `vs-dark`, `hc-black`, `hc-light`).
+struct PaintContext {
+    theme: ColorTheme,
+    theme_class: &'static str,
+    variables: Vec<(String, Color)>,
+}
+
+/// O tipo do tema que a classe da raiz representa.
+fn theme_type_of(theme_class: &str) -> ThemeType {
+    match theme_class {
+        "vs" => ThemeType::Light,
+        "hc-black" => ThemeType::HighContrastDark,
+        "hc-light" => ThemeType::HighContrastLight,
+        _ => ThemeType::Dark,
+    }
+}
+
+impl PaintContext {
+    /// `colors` são as variáveis `--vscode-*` pelo id da cor do tema e `variables` as `--modern-ui-*` pelo nome, ambas em hexadecimal.
+    fn new(colors: &[(&str, &str)], variables: &[(&str, &str)]) -> Self {
+        let colors: HashMap<String, Color> = colors.iter().map(|(id, hex)| (id.to_string(), Color::from_hex(hex))).collect();
+
+        Self {
+            theme: ColorTheme::unloaded("test", ThemeType::Dark, colors),
+            theme_class: "vs-dark",
+            variables: variables.iter().map(|(name, hex)| (name.to_string(), Color::from_hex(hex))).collect(),
+        }
+    }
+
+    /// `root.classList.add(themeClass)`.
+    fn set_theme(&mut self, theme_class: &'static str) {
+        self.theme.theme_type = theme_type_of(theme_class);
+        self.theme_class = theme_class;
+    }
+
+    fn variable(&self, name: &str) -> Option<&Color> {
+        self.variables.iter().find(|(variable, _)| variable == name).map(|(_, color)| color)
+    }
+}
+
+/// A aba como os seletores de `connectedEditorTabs.css` a veem: as classes que o controle escreveu nela e as variáveis dela.
+fn tab_element(state: &TabState, group_active: bool) -> TabElement {
+    let classes = [
+        ("active", state.active),
+        ("selected", state.selected),
+        ("multi-selected", state.multi_selected),
+        ("dirty", state.dirty),
+        ("dirty-border-top", state.dirty_border_top),
+        ("tab-border-top", state.tab_border_top),
+        ("tab-border-bottom", state.tab_border_bottom),
+        ("sticky", state.sticky),
+        ("close-action-off", state.close_action_off),
+        ("tab-actions-left", state.tab_actions_left),
+        ("connected-tab-upper-row", state.connected_tab_upper_row),
+        ("connected-tab-left-edge", state.connected_clipping.left_edge),
+    ];
+    let class_name = std::iter::once("tab").chain(classes.iter().filter(|(_, present)| *present).map(|(name, _)| *name)).collect::<Vec<&str>>().join(" ");
+    let color = |value: &str| (!value.is_empty()).then(|| Color::from_hex(value));
+    let mut element = TabElement::new(&class_name, group_active);
+    element.border_top_color = color(&state.tab_border_top_color);
+    element.border_bottom_color = color(&state.tab_border_bottom_color);
+    element.dirty_border_top_color = state.dirty_border_top_color.as_deref().and_then(color);
+
+    element
+}
+
+/// O `background-image` computado do realce de topo: `none` ou `linear-gradient(<cor> <altura>px, <transparente> <altura>px)`.
+fn gradient_text(accent: Option<&ConnectedEdgeAccent>) -> String {
+    accent.map_or_else(
+        || "none".to_string(),
+        |accent| format!("linear-gradient({} {}px, rgba(0, 0, 0, 0) {}px)", css_rgb(&accent.color), accent.height, accent.height),
+    )
+}
+
+/// Um comprimento computado em pixels (`getComputedStyle(...).top`).
+fn css_px(value: f64) -> String {
+    format!("{}px", value + 0.0)
+}
+
+/// `getComputedStyle(.tab-connected-edge)` da aba ativa fora da linha de cima, e a variável que a aba declara.
+struct CapStyle {
+    /// `--modern-ui-connected-tab-border` computada na aba (`getPropertyValue`).
+    variable: String,
+    /// `border-right-color`, `border-top-color` e `background-image` da aresta.
+    border_right: String,
+    top_color: String,
+    background_image: String,
+    /// O realce de topo que o `background-image` pinta.
+    accent: Option<ConnectedEdgeAccent>,
+}
+
+impl Layout {
+    /// Resolve o que as regras do estilo conectado leem do DOM de tema: o `ModernUiStyle` das classes vigentes da raiz e o contexto
+    /// do caso. `None` sem DOM de tema.
+    fn with_style<R>(&self, read: impl FnOnce(&ModernUiStyle<'_>, &PaintContext) -> R) -> Option<R> {
+        let guard = self.paint.borrow();
+        let paint = guard.as_ref()?;
+        let parent = self.parent.get();
+        let mut classes = vec!["monaco-workbench", "floating-panels", paint.theme_class];
+        if parent.in_modern_ui {
+            classes.push("modern-ui");
+        }
+        if parent.in_modern_ui_tabs {
+            classes.push("modern-ui-tabs");
+        }
+        if parent.in_connected_editor_tabs {
+            classes.push("modern-ui-connected-editor-tabs");
+        }
+        let mut style = ModernUiStyle::new(&paint.theme, &classes.join(" ")).with_explicit_colors_only();
+        for (name, color) in &paint.variables {
+            style.set_root_variable(name, color.clone());
+        }
+
+        Some(read(&style, paint))
+    }
+
+    /// `root.style.setProperty(...)` e a classe de tema dos casos.
+    fn set_paint(&self, paint: PaintContext) {
+        *self.paint.borrow_mut() = Some(paint);
+    }
+
+    /// `root.classList.add(themeClass)` sobre o DOM de tema do caso.
+    fn set_theme(&self, theme_class: &'static str) {
+        if let Some(paint) = self.paint.borrow_mut().as_mut() {
+            paint.set_theme(theme_class);
+        }
+    }
+
+    /// `getComputedStyle(.tab-connected-edge)` da aba (o estado dela e o grupo), ou `None` sem DOM de tema.
+    fn cap_style(&self, state: &TabState) -> Option<CapStyle> {
+        let group_active = self.group_active.get();
+        let element = tab_element(state, group_active);
+        let dirty_color = state.dirty_border_top_color.as_deref().filter(|color| !color.is_empty()).map(Color::from_hex);
+
+        self.with_style(|style, paint| {
+            let accent = connected_edge_accent(
+                &ConnectedEdgeAccentInput {
+                    group_active,
+                    multi_selected: state.multi_selected,
+                    tab_border_top: state.tab_border_top,
+                    dirty_border_top: state.dirty_border_top,
+                    dirty_border_top_color: dirty_color.as_ref(),
+                    custom_active_border_top: paint.variable(CUSTOM_ACTIVE_BORDER_TOP),
+                    custom_unfocused_active_border_top: paint.variable(CUSTOM_UNFOCUSED_ACTIVE_BORDER_TOP),
+                },
+                &ModernSpacing::default(),
+            );
+
+            CapStyle {
+                variable: style.tab_variable(CONNECTED_TAB_BORDER, &element).as_ref().map(css_rgb).unwrap_or_default(),
+                border_right: style.connected_edge_border_color(&element, StrokeSide::Right, false).as_ref().map(css_rgb).unwrap_or_default(),
+                top_color: style.connected_edge_border_top_color(&element).as_ref().map(css_rgb).unwrap_or_default(),
+                background_image: gradient_text(accent.as_ref()),
+                accent,
+            }
+        })
+    }
+
+    /// `--modern-ui-connected-tab-border` do grupo (o elemento sem classes de aba), que a aresta de rolagem herda sem a variável própria.
+    fn group_border_text(&self) -> String {
+        let element = TabElement::new("", self.group_active.get());
+
+        self.with_style(|style, _| style.tab_variable(CONNECTED_TAB_BORDER, &element).as_ref().map(css_rgb).unwrap_or_default()).unwrap_or_default()
+    }
+
+    /// `getComputedStyle(.tab-actions).backgroundColor` da aba, com o foco dentro do `.tab-actions` ou fora dele.
+    fn tab_actions_background_text(&self, state: &TabState, focus_within: bool) -> String {
+        let element = tab_element(state, self.group_active.get());
+
+        self.with_style(|style, _| css_rgb(&style.tab_actions_background(&element, focus_within))).unwrap_or_default()
+    }
+}
+
+impl Fixture {
+    /// `readHeight()`: `control.layout({ container: Dimension.None, available: Dimension.None })`, o quadro seguinte e
+    /// `control.getHeight()`. As duas dimensões `None` pulam o layout das abas e só refazem a altura usada.
+    fn read_height(&mut self) -> f64 {
+        let computed_height = self.computed_height();
+        self.state.layout(EditorTitleControlDimensions { container: None, available: None }, None, computed_height);
+        self.frame();
+
+        self.get_height()
+    }
+
+    /// `getComputedStyle(cap).borderRightColor` da aba ativa.
+    fn active_cap_style(&self) -> CapStyle {
+        self.layout.cap_style(&self.state.tabs[self.active_index()].state).expect("o caso declara o DOM de tema")
+    }
+
+    /// O contexto das regras do `.tab-actions` da aba `index`.
+    fn tab_actions_context(&self, index: usize, high_contrast: bool, interacting: bool) -> TabActionsContext {
+        let state = &self.state.tabs[index].state;
+
+        TabActionsContext {
+            modern_ui_tabs: self.parent.in_modern_ui_tabs,
+            connected: self.layout.is_connected(),
+            high_contrast,
+            reserve_space: self.options.borrow().tab_action_reserve_space,
+            active: state.active,
+            selected: state.selected,
+            multi_selected: state.multi_selected,
+            dirty: state.dirty,
+            sticky: state.sticky,
+            close_action_off: state.close_action_off,
+            tab_border_top: state.tab_border_top,
+            interacting,
+        }
+    }
+}
+
+#[test]
+fn clipped_connected_caps_inherit_and_clear_the_active_multi_selection_outline_color() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-focusBorder', '#00ff00')`, `--vscode-contrastBorder` e `--vscode-contrastActiveBorder`
+    fx.layout.set_paint(PaintContext::new(&[("focusBorder", "#00ff00"), ("contrastBorder", "#00ffff"), ("contrastActiveBorder", "#ff0000")], &[]));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    let active = fx.model.active_editor().expect("aba ativa");
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        active_group: bool,
+        selected: bool,
+        clipped: bool,
+        cap: String,
+        overflow: String,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        for active_group in [true, false] {
+            // `group.classList.toggle('active', activeGroup)`
+            fx.layout.group_active.set(active_group);
+            for selected in [true, false] {
+                let selection: Vec<EditorInputRef> = if selected { fx.model.get_editor_by_index(1).into_iter().collect() } else { Vec::new() };
+                fx.set_selection(&active, &selection);
+                fx.update_editor_selections();
+                fx.layout(240.0);
+                // `tabs.classList.add('scroll'); tabs.scrollLeft = 40; tabs.dispatchEvent(new Event('scroll'))`
+                fx.state.container.scroll_mode = true;
+                fx.scroll_to(40.0);
+                let edge = &fx.state.container.overflow_edge;
+                results.push(Row {
+                    theme,
+                    active_group,
+                    selected,
+                    clipped: edge.left_clipped,
+                    cap: fx.active_cap_style().border_right,
+                    overflow: connected_overflow_edge_style(edge, &fx.layout.group_border_text()).border,
+                });
+            }
+        }
+    }
+    // `root.classList.remove('modern-ui-connected-editor-tabs')` e o layout seguinte
+    fx.set_connected(false);
+    fx.layout(240.0);
+    let override_cleared = fx.state.container.overflow_edge.border.clone().unwrap_or_default();
+
+    let rgb = |hex: &str| css_rgb(&Color::from_hex(hex));
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| {
+            let outline = if result.selected {
+                rgb("#ff0000")
+            } else if result.active_group {
+                rgb("#00ff00")
+            } else {
+                rgb("#00ffff")
+            };
+
+            Row { theme: result.theme, active_group: result.active_group, selected: result.selected, clipped: true, cap: outline.clone(), overflow: outline }
+        })
+        .collect();
+    assert_eq!((results, override_cleared), (expected, String::new()));
+}
+
+#[test]
+fn clipped_connected_caps_preserve_explicit_and_modified_top_paint_separately_from_side_strokes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-focusBorder', '#00ff00')`, `--vscode-contrastActiveBorder` e as customizações do grupo
+    fx.layout.set_paint(PaintContext::new(
+        &[("focusBorder", "#00ff00"), ("contrastActiveBorder", "#ff0000")],
+        &[(CUSTOM_ACTIVE_BORDER_TOP, "#22d3ee"), (CUSTOM_UNFOCUSED_ACTIVE_BORDER_TOP, "#c084fc")],
+    ));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.activate(1);
+    let colors = ConnectedTabColors::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        active_group: bool,
+        modified: bool,
+        right_clipped: bool,
+        top_color: String,
+        same_sides: bool,
+        same_modified_paint: bool,
+        accent_inside_viewport: bool,
+        accent_starts_at_viewport_top: bool,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["vs-dark", "hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        for active_group in [true, false] {
+            fx.layout.group_active.set(active_group);
+            for modified in [false, true] {
+                fx.layout(240.0);
+                // `tab.classList.add('tab-border-top')`, `tab.classList.toggle('dirty-border-top', modified)` e `--tab-dirty-border-top-color`
+                {
+                    let state = &mut fx.active_tab_mut().state;
+                    state.tab_border_top = true;
+                    state.dirty_border_top = modified;
+                    state.dirty_border_top_color = Some("#ffffff".to_string());
+                }
+                fx.reveal(240.0);
+                // `tabs.classList.add('scroll'); tabs.scrollLeft = 0; tabs.dispatchEvent(new Event('scroll'))`
+                fx.state.container.scroll_mode = true;
+                fx.scroll_to(0.0);
+
+                let bars = fx.live_bars();
+                let bar = &bars[0];
+                let views = fx.tab_views_of(bar, &colors);
+                let view = active_view(&views);
+                let cap = fx.layout.cap_style(&bar.state.tabs[fx.active_index()].state).expect("o caso declara o DOM de tema");
+                let edge = tab_connected_edge_rect(&view.context).expect("a aba ativa fora da linha de cima tem a aresta");
+                let accent = cap.accent.as_ref().expect("o realce de topo da aresta");
+                let zoom = fx.layout.zoom.get();
+                // `capBounds.top + parseFloat(capStyle.backgroundPositionY)`, contra os limites do `.tabs-container`
+                let accent_top = view.hitbox.top + (edge.top + accent.position_y) * zoom;
+                let accent_height = (if modified { 2.0 } else { 1.0 }) * zoom;
+                let tabs_top = (bar.top + fx.layout.strip_padding_top(&bar.state.container)) * zoom;
+                let tabs_bottom = tabs_top + fx.layout.measure_wrapping(&bar.state.container, &bar.state.tabs).tabs_container_height * zoom;
+                let overflow = &bar.state.container.overflow_edge;
+                let clipped = connected_overflow_edge_style(overflow, &fx.layout.group_border_text());
+                results.push(Row {
+                    theme,
+                    active_group,
+                    modified,
+                    right_clipped: overflow.right_clipped,
+                    top_color: clipped.top_border.clone(),
+                    same_sides: clipped.border == cap.border_right,
+                    same_modified_paint: clipped.background_image == cap.background_image,
+                    accent_inside_viewport: accent_top >= tabs_top && accent_top + accent_height <= tabs_bottom,
+                    accent_starts_at_viewport_top: (accent_top - tabs_top).abs() < 1.0 / 64.0,
+                });
+            }
+        }
+    }
+    // `root.classList.remove('modern-ui-connected-editor-tabs')` e o layout seguinte
+    fx.set_connected(false);
+    fx.layout(240.0);
+    let edge = &fx.state.container.overflow_edge;
+    let cleared = (edge.overflow_top_border.clone().unwrap_or_default(), edge.overflow_top_background.clone().unwrap_or_default());
+
+    let rgb = |hex: &str| css_rgb(&Color::from_hex(hex));
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            theme: result.theme,
+            active_group: result.active_group,
+            modified: result.modified,
+            right_clipped: true,
+            top_color: if result.modified {
+                rgb("#ffffff")
+            } else if result.active_group {
+                rgb("#22d3ee")
+            } else {
+                rgb("#c084fc")
+            },
+            same_sides: true,
+            same_modified_paint: true,
+            accent_inside_viewport: true,
+            accent_starts_at_viewport_top: true,
+        })
+        .collect();
+    assert_eq!((results, cleared), (expected, (String::new(), String::new())));
+}
+
+#[test]
+fn customized_bottom_accents_stay_inside_the_upper_connected_pill_clipping_boundary() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.layout(150.0);
+    let index = fx.state.tabs.iter().position(|tab| tab.state.active && tab.state.connected_tab_upper_row).expect("a aba ativa na linha de cima");
+    // `tab.classList.add('tab-border-bottom')` e `tab.style.setProperty('--tab-border-bottom-color', '#22d3ee')`
+    {
+        let state = &mut fx.state.tabs[index].state;
+        state.tab_border_bottom = true;
+        state.tab_border_bottom_color = "#22d3ee".to_string();
+    }
+    let views = fx.tab_views(&ConnectedTabColors::default());
+    let view = &views[index];
+    let state = &fx.state.tabs[index].state;
+    let bottom_color = Color::from_hex(&state.tab_border_bottom_color);
+    let accent = connected_upper_row_bottom_accent(view.context.upper_row, view.context.active, state.tab_border_bottom, Some(&bottom_color), &ModernSpacing::default())
+        .expect("o sublinhado da pílula de cima ativa");
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        color: String,
+        bottom: String,
+        height: String,
+        clipping: OverflowMode,
+    }
+
+    assert_eq!(
+        Report {
+            color: css_rgb(&accent.color),
+            bottom: css_px(accent.bottom),
+            height: css_px(accent.height),
+            clipping: if view.shape.overflow_hidden { OverflowMode::Hidden } else { OverflowMode::Visible },
+        },
+        Report { color: "rgb(34, 211, 238)".to_string(), bottom: "0px".to_string(), height: "1px".to_string(), clipping: OverflowMode::Hidden }
+    );
+}
+
+#[test]
+fn connected_multi_selection_focus_keeps_close_targets_stable_and_action_containers_borderless() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-focusBorder', '#ffaa00')`, `--vscode-contrastBorder` e `--vscode-contrastActiveBorder`
+    fx.layout.set_paint(PaintContext::new(&[("focusBorder", "#ffaa00"), ("contrastBorder", "#00ffff"), ("contrastActiveBorder", "#ffaa00")], &[]));
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        tab_action_location: TabActionLocation,
+        stable: bool,
+        inline_borders: [String; 2],
+        block_colors: [String; 2],
+        background: String,
+        focused: bool,
+    }
+
+    let border_top_color = Color::from_hex("#ffaa00");
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                // `container.classList.toggle('compact-height', tabHeight === 'compact')` é a altura que o `Layout` lê das opções
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.tab_action_location = tab_action_location;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 140.0;
+                    options.tab_sizing_fixed_max_width = 140.0;
+                });
+                let active = fx.model.active_editor().expect("aba ativa");
+                let second = fx.model.get_editor_by_index(1).expect("aba 1");
+                fx.set_selection(&active, &[second]);
+                fx.update_editor_selections();
+                fx.layout(400.0);
+                let index = fx.active_index();
+                // `tab.classList.add('tab-border-top')` e `--tab-border-top-color`
+                {
+                    let state = &mut fx.state.tabs[index].state;
+                    state.tab_border_top = true;
+                    state.tab_border_top_color = "#ffaa00".to_string();
+                }
+                let before = fx.action_bounds(index);
+                // `action.tabIndex = 0; action.focus()`: o foco entra no `.tab-actions` da aba
+                fx.focus_action(index);
+                let after = fx.action_bounds(index);
+                let geometry = fx.action_geometry(index);
+                let context = fx.tab_actions_context(index, high_contrast, true);
+                let block_color = css_rgb(&tab_actions_block_border_color(&context, Some(&border_top_color)));
+                let compact = tab_height == TabHeight::Compact;
+                measurements.push(Row {
+                    theme,
+                    compact,
+                    tab_action_location,
+                    stable: before == after,
+                    inline_borders: [css_px(geometry.border_left), css_px(geometry.border_right)],
+                    block_colors: [block_color.clone(), block_color],
+                    background: fx.layout.tab_actions_background_text(&fx.state.tabs[index].state, true),
+                    focused: tab_action_geometry(&TabCssClasses::of(&fx.state.tabs[index].state, &fx.state.container), &fx.box_context(index)).is_some(),
+                });
+                let inline_borders = if tab_action_location == TabActionLocation::Left { ["1px", "0px"] } else { ["0px", "0px"] };
+                let transparent = css_rgb(&Color::transparent_color());
+                expected.push(Row {
+                    theme,
+                    compact,
+                    tab_action_location,
+                    stable: true,
+                    inline_borders: inline_borders.map(str::to_string),
+                    block_colors: [transparent.clone(), transparent.clone()],
+                    background: transparent,
+                    focused: true,
+                });
+                // `action.blur()` e `tab.classList.remove('tab-border-top')`
+                let state = &mut fx.state.tabs[index].state;
+                state.tab_border_top = false;
+                state.tab_border_top_color = String::new();
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn connected_action_overlays_leave_the_fill_and_modified_bar_as_paint_owners() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--modern-ui-editor-tab-custom-action-*-background', '#654321')` nas quatro variáveis
+    fx.layout.set_paint(PaintContext::new(
+        &[],
+        &[
+            ("--modern-ui-editor-tab-custom-action-hover-background", "#654321"),
+            ("--modern-ui-editor-tab-custom-action-active-background", "#654321"),
+            ("--modern-ui-editor-tab-custom-action-active-hover-background", "#654321"),
+            ("--modern-ui-editor-tab-custom-action-selected-background", "#654321"),
+        ],
+    ));
+    let active = fx.model.active_editor().expect("aba ativa");
+    let second = fx.model.get_editor_by_index(1).expect("aba 1");
+    fx.set_selection(&active, &[second]);
+    fx.update_editor_selections();
+    let spacing = ModernSpacing::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        tab_action_reserve_space: bool,
+        tab_action_location: TabActionLocation,
+        index: usize,
+        overlay: String,
+        background: String,
+        fade: &'static str,
+        accent: (String, f64, f64),
+        stable_target: bool,
+    }
+
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for tab_action_reserve_space in [false, true] {
+                for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                    fx.update_options(|options| {
+                        options.tab_height = tab_height;
+                        options.tab_action_reserve_space = tab_action_reserve_space;
+                        options.tab_action_location = tab_action_location;
+                    });
+                    fx.layout(600.0);
+                    for index in 0..fx.state.tabs.len() {
+                        // `tab.classList.add('dirty', 'dirty-border-top')` e `--tab-dirty-border-top-color`
+                        {
+                            let state = &mut fx.state.tabs[index].state;
+                            state.dirty = true;
+                            state.dirty_border_top = true;
+                            state.dirty_border_top_color = Some("#22d3ee".to_string());
+                        }
+                        let before = fx.action_bounds(index);
+                        // `action.tabIndex = 0; action.focus()`
+                        fx.focus_action(index);
+                        let context = fx.tab_actions_context(index, high_contrast, true);
+                        let state = &fx.state.tabs[index].state;
+                        let accent = dirty_top_accent(fx.layout.is_connected(), state.dirty_border_top_color.as_deref(), &spacing);
+                        let accent_color = match accent.color {
+                            TabStrokeColor::Color(color) => css_rgb(&Color::from_hex(color)),
+                            other => describe_stroke_color(other),
+                        };
+                        let compact = tab_height == TabHeight::Compact;
+                        measurements.push(Row {
+                            theme,
+                            compact,
+                            tab_action_reserve_space,
+                            tab_action_location,
+                            index,
+                            overlay: tab_action_overlay_background(&context)
+                                .map_or_else(String::new, |color| if color == Color::transparent_color() { "transparent".to_string() } else { css_rgb(&color) }),
+                            background: fx.layout.tab_actions_background_text(state, true),
+                            fade: tab_actions_fade_content(&context),
+                            accent: (accent_color, accent.height, accent.top_offset),
+                            stable_target: before == fx.action_bounds(index),
+                        });
+                        expected.push(Row {
+                            theme,
+                            compact,
+                            tab_action_reserve_space,
+                            tab_action_location,
+                            index,
+                            overlay: "transparent".to_string(),
+                            background: css_rgb(&Color::transparent_color()),
+                            fade: "none",
+                            accent: ("rgb(34, 211, 238)".to_string(), 2.0, 0.0),
+                            stable_target: true,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn connected_tabs_reserve_separator_height_without_changing_classic_or_shared_modern_tabs() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let classic_root = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_modern_ui: false, in_connected_editor_tabs: false };
+
+    #[derive(Debug, PartialEq)]
+    struct Heights {
+        compact: bool,
+        classic: f64,
+        shared_modern: f64,
+        pill: f64,
+        connected: f64,
+    }
+
+    let mut heights = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        fx.update_options(|options| options.tab_height = tab_height);
+        // `root.classList.remove('modern-ui', 'modern-ui-tabs', 'modern-ui-connected-editor-tabs')`
+        fx.set_parent(classic_root);
+        let classic = fx.read_height();
+        // `root.classList.add('modern-ui-tabs')`
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, ..classic_root });
+        let shared_modern = fx.read_height();
+        // `root.classList.add('modern-ui')`: a raiz do Pill, que só `connectedEditorTabs.css` distingue (e só com o estilo conectado)
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, in_modern_ui: true, ..classic_root });
+        let pill = fx.read_height();
+        // `root.classList.add('modern-ui-connected-editor-tabs')`
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, in_modern_ui: true, in_connected_editor_tabs: true, ..classic_root });
+        let connected = fx.read_height();
+        heights.push(Heights { compact: tab_height == TabHeight::Compact, classic, shared_modern, pill, connected });
+    }
+
+    assert_eq!(
+        heights,
+        vec![
+            Heights { compact: false, classic: 35.0, shared_modern: 32.0, pill: 32.0, connected: 32.0 },
+            Heights { compact: true, classic: 22.0, shared_modern: 28.0, pill: 28.0, connected: 28.0 },
+        ]
+    );
+}
+
+#[test]
+fn single_row_connected_tabs_align_their_tops_and_retain_inline_gutters() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // A raiz do original declara só `size20`, `size40`, `size80` e `strokeThickness`; as regras medidas leem só os três primeiros e o
+    // traço, e `--editor-group-tab-height` vale 24px (`tabs.css` L73 a L76).
+    let spacing = ModernSpacing::default();
+    let (active_context, inactive_context) = (fx.box_context(0), fx.box_context(1));
+    let active_fill = tab_fill_rect(&active_context);
+    let active_edge = tab_connected_edge_rect(&active_context).expect("a aba ativa fora da linha de cima tem a aresta");
+    let inactive_fill = tab_fill_rect(&inactive_context);
+    let container = &fx.state.container;
+    let tabs_height = fx.layout.header_heights(container, 1).0;
+
+    #[derive(Debug, PartialEq)]
+    struct Insets {
+        top: String,
+        left: String,
+        right: String,
+        bottom: String,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        active: Insets,
+        active_edge_bottom: String,
+        inactive: Insets,
+        align_items: AlignItems,
+        editor_actions_height: String,
+        row_padding_left: String,
+        row_padding_top: String,
+    }
+
+    // `top`, `left`, `right` e `bottom` computados do elemento posicionado contra a caixa da aba
+    let insets = |context: &TabBoxContext, rect: &BoxRect| Insets {
+        top: css_px(rect.top),
+        left: css_px(rect.left),
+        right: css_px(context.tab_width - rect.right),
+        bottom: css_px(context.tab_height - rect.bottom),
+    };
+    let report = Report {
+        active: insets(&active_context, &active_fill),
+        active_edge_bottom: css_px(active_context.tab_height - active_edge.bottom),
+        inactive: insets(&inactive_context, &inactive_fill),
+        align_items: tabs_row_align_items(fx.parent.in_modern_ui_tabs, fx.layout.is_connected(), container.wrapping),
+        editor_actions_height: css_px(connected_editor_actions_height(tabs_height, container.connected_tab_upper_bar, &spacing)),
+        row_padding_left: css_px(fx.layout.strip_padding_left(container)),
+        row_padding_top: css_px(fx.layout.strip_padding_top(container)),
+    };
+
+    assert_eq!(
+        report,
+        Report {
+            active: Insets { top: "-1px".to_string(), left: "0px".to_string(), right: "0px".to_string(), bottom: "-1px".to_string() },
+            active_edge_bottom: "-1px".to_string(),
+            inactive: Insets { top: "3.5px".to_string(), left: "2px".to_string(), right: "2px".to_string(), bottom: "3.5px".to_string() },
+            align_items: AlignItems::FlexStart,
+            editor_actions_height: "31px".to_string(),
+            row_padding_left: "0px".to_string(),
+            row_padding_top: "0px".to_string(),
+        }
+    );
+}
+
+//#region Contorno conectado dentro da área visível da rolagem
+
+/// `--modern-ui-*` e `--vscode-editor-background` que os casos `keeps the connected outline inside the visible scroll area` e
+/// `invalidates connected clipping geometry ...` escrevem na raiz (`root.style.cssText`); o fundo do editor é o de cada tema do laço.
+fn outline_variables(editor_background: &str) -> [(&str, &str); 4] {
+    [
+        ("--vscode-editor-background", editor_background),
+        ("--modern-ui-connected-tab-surface", "#333333"),
+        ("--modern-ui-editor-tab-custom-active-background", "#333333"),
+        ("--modern-ui-editor-tab-custom-active-hover-background", "#654321"),
+    ]
+}
+
+/// O espaçamento da raiz desses casos: sem `--vscode-cornerRadius-medium`, o raio do ombro e o da tampa vêm de `cornerRadius-small`
+/// (4px) mais o traço (`--modern-ui-connected-tab-radius`, `connectedEditorTabs.css` L114).
+fn outline_spacing() -> ModernSpacing {
+    ModernSpacing { corner_medium: 4.0, ..ModernSpacing::default() }
+}
+
+/// `box-sizing` dos pseudoelementos da aresta de rolagem (`connectedEditorTabs.css` L441).
+const OVERFLOW_PSEUDO_BOX_SIZING: &str = "border-box";
+
+/// `tabs.classList.add('scroll'); tabs.scrollLeft = left; tabs.dispatchEvent(new UIEvent('scroll'))`: a classe `scroll` fica.
+fn scroll_tabs(fx: &mut Fixture, scroll_left: f64) {
+    fx.state.container.scroll_mode = true;
+    fx.scroll_to(scroll_left);
+}
+
+/// `layout(width)` dos casos: `control.layout({ container: new Dimension(width, 33), available: new Dimension(width, 200) })` e o quadro seguinte.
+fn layout_outline(fx: &mut Fixture, width: f64) {
+    fx.layout_with_available(width, 200.0);
+}
+
+/// `style.left`, `style.right` e as demais posições em linha: vazias quando o controle não as escreveu.
+fn px_or_empty(value: Option<f64>) -> String {
+    value.map_or_else(String::new, css_px)
+}
+
+/// O `.tab-fill` e o `.tab-connected-edge` de uma aba em coordenadas dela: o `.tab-fill` com a distância do lado de fim, a aresta
+/// `None` com `display: none`.
+#[derive(Clone, Copy, Debug)]
+struct TabBoxes {
+    fill: BoxRect,
+    fill_right_inset: f64,
+    edge: Option<BoxRect>,
+}
+
+/// `style.left` ou `style.right` de um elemento posicionado por CSS: vazio quando a posição lida é a da folha de estilo (`baseline`), e
+/// o deslocamento em pixels quando algo a moveu.
+fn inline_offset(now: f64, baseline: f64) -> String {
+    if now == baseline { String::new() } else { css_px(now - baseline) }
+}
+
+/// [`inline_offset`] para a aresta, que some com `display: none`: aparecer ou sumir entre as leituras não é posição de folha de estilo.
+fn edge_inline_offset(now: Option<BoxRect>, baseline: Option<BoxRect>) -> String {
+    match (now, baseline) {
+        (Some(now), Some(baseline)) => inline_offset(now.left, baseline.left),
+        (None, None) => String::new(),
+        _ => "display".to_string(),
+    }
+}
+
+/// `z-index` computado: `auto` sem regra.
+fn z_index_text(z_index: Option<i32>) -> String {
+    z_index.map_or_else(|| "auto".to_string(), |z| z.to_string())
+}
+
+/// `getComputedStyle(...).backgroundColor`: transparente sem fundo.
+fn background_text(background: Option<&Color>) -> String {
+    css_rgb(background.unwrap_or(&Color::transparent_color()))
+}
+
+impl Fixture {
+    /// `tab.dispatchEvent(new MouseEvent(EventType.MOUSE_LEAVE))`.
+    fn leave_tab(&mut self, tab_index: usize) {
+        self.state.handle_tab_mouse_leave(tab_index);
+    }
+
+    /// As regras de `connectedEditorTabs.css` lidas na aba `index` (as classes e as variáveis que o controle escreveu nela).
+    fn tab_style<R>(&self, index: usize, read: impl FnOnce(&ModernUiStyle<'_>, &TabElement) -> R) -> R {
+        let element = tab_element(&self.state.tabs[index].state, self.layout.group_active.get());
+
+        self.layout.with_style(|style, _| read(style, &element)).expect("o caso declara o DOM de tema")
+    }
+
+    /// `getComputedStyle(fill, '::before' ou '::after').content` da aba `index`.
+    fn fill_shoulder(&self, index: usize, shoulder: FillShoulder) -> &'static str {
+        let starts_row = index == 0 || self.state.tabs[index - 1].state.last_in_row;
+
+        self.tab_style(index, |style, element| style.fill_shoulder_content(element, starts_row, shoulder))
+    }
+
+    /// `(borderLeftWidth, borderRightWidth)` computadas do `.tab-fill` da aba `index`.
+    fn fill_side_widths(&self, index: usize) -> (f64, f64) {
+        self.tab_style(index, |style, element| style.tab_fill_border_widths(element).map(|edges| (edges.left, edges.right))).expect("o Modern UI declara o traço do preenchimento")
+    }
+
+    /// `getComputedStyle(fill).display`: `connectedEditorTabs.css` L471 a L476 esconde o preenchimento da aba ativa fora da área visível.
+    fn fill_display(&self, index: usize) -> &'static str {
+        if self.state.tabs[index].state.connected_clipping.hidden { "none" } else { "block" }
+    }
+
+    /// `getComputedStyle(.tab-connected-edge).display`: só a aba ativa fora da linha de cima a desenha, e a mesma regra a esconde.
+    fn edge_display(&self, index: usize) -> &'static str {
+        let drawn = tab_connected_edge_rect(&self.box_context(index)).is_some() && !self.state.tabs[index].state.connected_clipping.hidden;
+
+        if drawn { "block" } else { "none" }
+    }
+
+    /// `getComputedStyle(fill).borderRadius` da aba `index`: o canto de início da fileira é reto e a aba ativa tem a tampa de `cap-radius`.
+    fn fill_border_radius(&self, index: usize) -> String {
+        let context = self.box_context(index);
+        let container = &self.state.container;
+        let spacing = self.layout.spacing.get();
+        let cap_radius = spacing.cap_radius(container.wrapping, container.connected_tab_upper_bar);
+        let shape = tab_fill_shape(self.layout.is_connected(), context.active, context.upper_row, cap_radius, &spacing);
+
+        css_border_radius([context.fill_top_left_radius(), tab_fill_top_right_radius(&context), shape.border_radius[2], tab_fill_bottom_left_radius(&context)])
+    }
+
+    /// As cores do grupo (`.title.tabs`) que a aresta de rolagem lê.
+    fn overflow_colors(&self) -> ConnectedOverflowColors {
+        let group = TabElement::new("", self.layout.group_active.get());
+
+        self.layout
+            .with_style(|style, _| ConnectedOverflowColors {
+                active_background: style.tab_variable("--modern-ui-connected-tab-active-background", &group),
+                active_hover_background: style.tab_variable("--modern-ui-connected-tab-active-hover-background", &group),
+                strip_mask: style
+                    .tab_variable("--modern-ui-connected-tab-strip-background", &group)
+                    .or_else(|| style.variable("--vscode-editorGroupHeader-tabsBackground"))
+                    .or_else(|| style.variable("--vscode-editor-background")),
+            })
+            .expect("o caso declara o DOM de tema")
+    }
+
+    /// `getComputedStyle(overflowEdge)` e dos pseudoelementos dele.
+    fn overflow_edge_box(&self) -> ConnectedOverflowEdgeBox {
+        let container = &self.state.container;
+
+        connected_overflow_edge_box(&container.overflow_edge, container.wrapping, container.connected_tab_upper_bar, &self.layout.spacing.get(), &self.overflow_colors())
+    }
+
+    /// `getComputedStyle(.tab-connected-overflow-right ...)`, se o `overflowEdge` está cortado à direita.
+    fn overflow_right_box(&self) -> Option<ConnectedOverflowRightBox> {
+        let container = &self.state.container;
+
+        connected_overflow_right_box(&container.overflow_edge, container.wrapping, container.connected_tab_upper_bar, &self.layout.spacing.get(), &self.overflow_colors())
+    }
+
+    /// `[overflowEdge.style.left, overflowEdge.style.right]`.
+    fn overflow_edge_offsets(&self) -> [String; 2] {
+        let edge = &self.state.container.overflow_edge;
+
+        [px_or_empty(edge.left), px_or_empty(edge.right)]
+    }
+
+    /// As caixas do `.tab-fill` e do `.tab-connected-edge` da aba `index` em coordenadas da aba, lidas das regras de CSS com as classes
+    /// e o estado que o controle deixou nela naquele instante.
+    fn tab_boxes(&self, index: usize) -> TabBoxes {
+        let context = self.box_context(index);
+        let fill = tab_fill_rect(&context);
+
+        TabBoxes { fill, fill_right_inset: context.tab_width - fill.right, edge: tab_connected_edge_rect(&context) }
+    }
+
+    /// `fill.style.left`: o deslocamento do `.tab-fill` em relação à posição que o CSS dá à aba na leitura `baseline`, vazio quando o controle
+    /// não moveu o preenchimento.
+    fn fill_left_offset(&self, index: usize, baseline: &TabBoxes) -> String {
+        inline_offset(self.tab_boxes(index).fill.left, baseline.fill.left)
+    }
+
+    /// `fill.style.right`, como [`Fixture::fill_left_offset`] para o lado de fim.
+    fn fill_right_offset(&self, index: usize, baseline: &TabBoxes) -> String {
+        inline_offset(self.tab_boxes(index).fill_right_inset, baseline.fill_right_inset)
+    }
+
+    /// `previousEdge.style.left`: o quanto a aresta da aba ativa `active` avança sobre a aba anterior `previous` (`left` negativo) e, sem
+    /// avanço, o deslocamento da aresta da anterior em relação à leitura `baseline`.
+    fn previous_tab_overflow(&self, active: usize, previous: usize, baseline: &TabBoxes) -> String {
+        let hanging = self.tab_boxes(active).edge.map_or(0.0, |edge| (-edge.left).max(0.0));
+        if hanging > 0.0 {
+            return css_px(-hanging);
+        }
+
+        edge_inline_offset(self.tab_boxes(previous).edge, baseline.edge)
+    }
+
+    /// `overflowEdge.parentElement === tabs.parentElement`: a aresta não anda com o conteúdo. Rola um pixel e volta: a aba se move
+    /// exatamente esse pixel na tela e a aresta, filha do contêiner que não rola, mantém as quatro posições.
+    fn overflow_edge_is_stationary(&mut self) -> bool {
+        let scroll = self.state.container.scroll_left;
+        let edge_position = |fx: &Fixture| {
+            let edge = &fx.state.container.overflow_edge;
+
+            (edge.top, edge.right, edge.bottom, edge.left)
+        };
+        let first_tab_left = |fx: &Fixture, scroll: f64| fx.layout.tab_rect(&fx.geometry(), 0, scroll).0;
+
+        let before = (edge_position(self), first_tab_left(self, scroll));
+        scroll_tabs(self, scroll + 1.0);
+        let scrolled = (edge_position(self), first_tab_left(self, scroll + 1.0));
+        scroll_tabs(self, scroll);
+
+        before.1 - scrolled.1 == 1.0 && before.0 == scrolled.0 && edge_position(self) == before.0
+    }
+
+    /// `overflowEdge.classList.contains('connected-tab-top-row') && getComputedStyle(<tampa>).borderTopColor === 'rgb(51, 51, 51)'`: a tampa
+    /// tem o traço de cima próprio, com a cor da borda conectada do grupo.
+    fn overflow_edge_owns_cap_top(&self) -> bool {
+        let edge = &self.state.container.overflow_edge;
+
+        edge.top_row && connected_overflow_edge_style(edge, &self.layout.group_border_text()).top_border == "rgb(51, 51, 51)"
+    }
+
+    /// O `edgeOverlay` do corte à esquerda: o `::before` do preenchimento, o `display` e o `z-index` da aresta e o `::before` dela.
+    fn left_edge_overlay(&self, index: usize) -> Vec<String> {
+        let edge = self.overflow_edge_box();
+        let before = edge.before.as_ref().expect("a aba ativa está cortada à esquerda");
+
+        vec![
+            self.fill_shoulder(index, FillShoulder::Left).to_string(),
+            edge.display.to_string(),
+            z_index_text(edge.z_index),
+            css_px(before.width),
+            css_px(before.border_top_left_radius),
+            OVERFLOW_PSEUDO_BOX_SIZING.to_string(),
+            css_px(before.border_left_width),
+            css_px(before.border_top_width),
+            background_text(before.background.as_ref()),
+        ]
+    }
+
+    /// O `edgeOverlay` do corte à direita: o `::after` do preenchimento, o `display` e o `z-index` da aresta e o `::after` dela.
+    fn right_edge_overlay(&self, index: usize) -> Vec<String> {
+        let edge = self.overflow_edge_box();
+        let after = edge.after.as_ref().expect("a aba ativa está cortada à direita");
+
+        vec![
+            self.fill_shoulder(index, FillShoulder::Right).to_string(),
+            edge.display.to_string(),
+            z_index_text(edge.z_index),
+            css_px(after.width),
+            css_px(after.border_top_right_radius),
+            OVERFLOW_PSEUDO_BOX_SIZING.to_string(),
+            css_px(after.border_right_width),
+            css_px(after.border_top_width),
+            background_text(after.background.as_ref()),
+        ]
+    }
+
+    /// `{ hovered: overflowEdge.classList.contains('connected-tab-hovered'), background: getComputedStyle(overflowEdge, '::before').backgroundColor }`.
+    fn left_hover_read(&self) -> OverflowHoverRead {
+        OverflowHoverRead { hovered: self.state.container.overflow_edge.hovered, background: background_text(self.overflow_edge_box().before.as_ref().and_then(|before| before.background.as_ref())) }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct OverflowHoverRead {
+    hovered: bool,
+    background: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedLeftRead {
+    edge: bool,
+    clipped: bool,
+    fill_offset: String,
+    edge_offset: [String; 2],
+    inset: f64,
+    stationary_parent: bool,
+    own_cap_top: bool,
+    edge_overlay: Vec<String>,
+}
+
+#[derive(Debug, PartialEq)]
+struct MultiSelectedRead {
+    clipping: String,
+    edge: &'static str,
+    radius: String,
+    connected_class: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct SingleSelectedRead {
+    clipping: String,
+    connected_class: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct TerminalOutlineRead {
+    right: f64,
+    right_shoulder: &'static str,
+    right_mask: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct NormalOutlineRead {
+    left: f64,
+    right: f64,
+    left_shoulder: &'static str,
+    right_shoulder: &'static str,
+    edge: &'static str,
+    overflow_edge: &'static str,
+    masks: [&'static str; 2],
+}
+
+#[derive(Debug, PartialEq)]
+struct RightShoulderAtViewportRead {
+    edge: bool,
+    clipped: bool,
+    right: f64,
+    right_shoulder: &'static str,
+    right_mask: &'static str,
+    overflow_edge: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct RightShoulderRevealedRead {
+    edge: bool,
+    clipped: bool,
+    right_shoulder: &'static str,
+    right_mask: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct LeftShoulderAtViewportRead {
+    edge: bool,
+    clipped: bool,
+    left: f64,
+    left_shoulder: &'static str,
+    left_mask: &'static str,
+    overflow_edge: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct LeftShoulderRevealedRead {
+    edge: bool,
+    clipped: bool,
+    left_shoulder: &'static str,
+    left_mask: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedRightHoverRead {
+    hovered: bool,
+    mask: String,
+    cap: String,
+    shoulder: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedRightHoverResetRead {
+    hovered: bool,
+    cap: String,
+    shoulder: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct OverflowRightOffsetRead {
+    right: String,
+    inset: f64,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedRightRead {
+    edge: bool,
+    clipped: bool,
+    fill_offset: String,
+    edge_offset: [String; 2],
+    overflow_right_offsets: Vec<OverflowRightOffsetRead>,
+    edge_overlay: Vec<String>,
+    previous_tab_overflow: String,
+    own_cap_top: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct HighContrastRead {
+    clipping: String,
+    edge: &'static str,
+    connected_class: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct HighContrastRightRead {
+    theme: &'static str,
+    width: u32,
+    mask: String,
+    cap_reaches_bottom: bool,
+    strokes_align: bool,
+    baseline_aligns: bool,
+    separate_stroke: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct OutlineReport {
+    clipped_hover: OverflowHoverRead,
+    clipped_hover_reset: OverflowHoverRead,
+    clipped_left: ClippedLeftRead,
+    multi_selected: MultiSelectedRead,
+    single_selected: SingleSelectedRead,
+    terminal_outline: TerminalOutlineRead,
+    normal_outline: NormalOutlineRead,
+    right_shoulder_at_viewport: RightShoulderAtViewportRead,
+    right_shoulder_revealed: RightShoulderRevealedRead,
+    left_shoulder_at_viewport: LeftShoulderAtViewportRead,
+    left_shoulder_revealed: LeftShoulderRevealedRead,
+    clipped_right_hover: ClippedRightHoverRead,
+    clipped_right_hover_reset: ClippedRightHoverResetRead,
+    clipped_right: ClippedRightRead,
+    hidden_at_fill_edge: [&'static str; 2],
+    high_contrast: HighContrastRead,
+    high_contrast_right: Vec<HighContrastRightRead>,
+    reset: String,
+}
+
+#[test]
+fn keeps_the_connected_outline_inside_the_visible_scroll_area() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.cssText = '--vscode-spacing-size20: 2px; ...; --modern-ui-editor-tab-custom-active-hover-background: #654321;'`
+    fx.layout.spacing.set(outline_spacing());
+    fx.layout.set_paint(PaintContext::new(&[], &outline_variables("#ffffff")));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    layout_outline(&mut fx, 240.0);
+    // A posição que as folhas de estilo dão ao `.tab-fill` da primeira aba antes de a rolagem cortá-la.
+    let left_baseline = fx.tab_boxes(0);
+    scroll_tabs(&mut fx, 40.0);
+    fx.hover_tab(0);
+    let clipped_hover = fx.left_hover_read();
+    fx.leave_tab(0);
+    let clipped_hover_reset = fx.left_hover_read();
+    let first = fx.state.tabs[0].state.connected_clipping;
+    let clipped_left = ClippedLeftRead {
+        edge: first.left_edge,
+        clipped: first.left_clipped,
+        // O controle não desloca o `.tab-fill`: o recorte vai no `overflow_edge`, e a posição lida é a da folha de estilo.
+        fill_offset: fx.fill_left_offset(0, &left_baseline),
+        edge_offset: fx.overflow_edge_offsets(),
+        // `overflowEdge.getBoundingClientRect().left - tabs.getBoundingClientRect().left`: a aresta parte da borda esquerda do contêiner.
+        inset: fx.state.container.overflow_edge.left.unwrap_or_default(),
+        // A aresta é filha do contêiner rolável de fora (`container.overflow_edge`), não do `.tabs-container` que rola.
+        stationary_parent: fx.overflow_edge_is_stationary(),
+        own_cap_top: fx.overflow_edge_owns_cap_top(),
+        edge_overlay: fx.left_edge_overlay(0),
+    };
+
+    let active = fx.model.active_editor().expect("aba ativa");
+    let second = fx.model.get_editor_by_index(1).expect("segunda aba");
+    fx.set_selection(&active, &[second]);
+    fx.update_editor_selections();
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 40.0);
+    let multi_selected = MultiSelectedRead {
+        clipping: px_or_empty(fx.state.container.overflow_edge.left),
+        edge: fx.overflow_edge_box().display,
+        radius: fx.fill_border_radius(0),
+        connected_class: fx.state.tabs[0].state.connected_clipping.left_clipped,
+    };
+    fx.set_selection(&active, &[]);
+    fx.update_editor_selections();
+    layout_outline(&mut fx, 240.0);
+    let single_selected =
+        SingleSelectedRead { clipping: px_or_empty(fx.state.container.overflow_edge.left), connected_class: fx.state.tabs[0].state.connected_clipping.left_clipped };
+
+    fx.activate(1);
+    layout_outline(&mut fx, 400.0);
+    scroll_tabs(&mut fx, 0.0);
+    let terminal_outline = TerminalOutlineRead {
+        right: fx.fill_side_widths(1).1,
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        right_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+    };
+    fx.open_pinned_file("file2.txt", false);
+    fx.open_editors();
+    layout_outline(&mut fx, 400.0);
+    let normal_outline = NormalOutlineRead {
+        left: fx.fill_side_widths(1).0,
+        right: fx.fill_side_widths(1).1,
+        left_shoulder: fx.fill_shoulder(1, FillShoulder::Left),
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        edge: fx.edge_display(1),
+        overflow_edge: fx.overflow_edge_box().display,
+        masks: [TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_CONNECTED_EDGE_PSEUDO_CONTENT],
+    };
+
+    layout_outline(&mut fx, 324.0);
+    scroll_tabs(&mut fx, 0.0);
+    let second_clipping = |fx: &Fixture| fx.state.tabs[1].state.connected_clipping;
+    let right_shoulder_at_viewport = RightShoulderAtViewportRead {
+        edge: second_clipping(&fx).right_edge,
+        clipped: second_clipping(&fx).right_clipped,
+        right: fx.fill_side_widths(1).1,
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        right_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+        overflow_edge: fx.overflow_edge_box().display,
+    };
+    scroll_tabs(&mut fx, 8.0);
+    let right_shoulder_revealed = RightShoulderRevealedRead {
+        edge: second_clipping(&fx).right_edge,
+        clipped: second_clipping(&fx).right_clipped,
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        right_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+    };
+    scroll_tabs(&mut fx, 156.0);
+    let left_shoulder_at_viewport = LeftShoulderAtViewportRead {
+        edge: second_clipping(&fx).left_edge,
+        clipped: second_clipping(&fx).left_clipped,
+        left: fx.fill_side_widths(1).0,
+        left_shoulder: fx.fill_shoulder(1, FillShoulder::Left),
+        left_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+        overflow_edge: fx.overflow_edge_box().display,
+    };
+    scroll_tabs(&mut fx, 152.0);
+    let left_shoulder_revealed = LeftShoulderRevealedRead {
+        edge: second_clipping(&fx).left_edge,
+        clipped: second_clipping(&fx).left_clipped,
+        left_shoulder: fx.fill_shoulder(1, FillShoulder::Left),
+        left_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+    };
+
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 0.0);
+    // A posição que as folhas de estilo dão ao `.tab-fill` e à aresta antes de a rolagem cortar a aba ativa à direita.
+    let (right_baseline, previous_baseline) = (fx.tab_boxes(1), fx.tab_boxes(0));
+    let mut overflow_right_offsets = Vec::new();
+    for position in [0.0, 1.0, 2.0, 3.0] {
+        scroll_tabs(&mut fx, position);
+        let edge = &fx.state.container.overflow_edge;
+        // `tabs.getBoundingClientRect().right - overflowEdge.getBoundingClientRect().right`: a aresta termina `right` antes da borda do contêiner.
+        overflow_right_offsets.push(OverflowRightOffsetRead { right: px_or_empty(edge.right), inset: edge.right.unwrap_or_default() });
+    }
+    fx.hover_tab(1);
+    let right_box = fx.overflow_right_box().expect("a aba ativa está cortada à direita");
+    let clipped_right_hover = ClippedRightHoverRead {
+        hovered: fx.state.container.overflow_edge.hovered,
+        mask: background_text(fx.overflow_edge_box().after.as_ref().and_then(|after| after.background.as_ref())),
+        cap: background_text(right_box.cap_background.as_ref()),
+        shoulder: right_box.shoulder_shadow.as_ref().map(css_rgb).is_some_and(|shadow| shadow.contains("rgb(101, 67, 33)")),
+    };
+    fx.leave_tab(1);
+    let right_box = fx.overflow_right_box().expect("a aba ativa está cortada à direita");
+    let clipped_right_hover_reset = ClippedRightHoverResetRead {
+        hovered: fx.state.container.overflow_edge.hovered,
+        cap: background_text(right_box.cap_background.as_ref()),
+        shoulder: right_box.shoulder_shadow.as_ref().map(css_rgb).is_some_and(|shadow| shadow.contains("rgb(51, 51, 51)")),
+    };
+    let clipped_right = ClippedRightRead {
+        edge: second_clipping(&fx).right_edge,
+        clipped: second_clipping(&fx).right_clipped,
+        // O controle não desloca o `.tab-fill` nem o `.tab-connected-edge`: o recorte vai no `overflow_edge`.
+        fill_offset: fx.fill_right_offset(1, &right_baseline),
+        edge_offset: fx.overflow_edge_offsets(),
+        overflow_right_offsets,
+        edge_overlay: fx.right_edge_overlay(1),
+        previous_tab_overflow: fx.previous_tab_overflow(1, 0, &previous_baseline),
+        own_cap_top: fx.overflow_edge_owns_cap_top(),
+    };
+
+    fx.activate(0);
+    layout_outline(&mut fx, 100.0);
+    let first_tab_width = fx.geometry().widths[0];
+    scroll_tabs(&mut fx, first_tab_width - 5.0);
+    let hidden_at_fill_edge = [fx.fill_display(0), fx.overflow_edge_box().display];
+
+    // `root.classList.add('hc-black')`
+    fx.layout.set_theme("hc-black");
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 40.0);
+    let high_contrast = HighContrastRead {
+        clipping: px_or_empty(fx.state.container.overflow_edge.left),
+        edge: fx.overflow_edge_box().display,
+        connected_class: fx.state.tabs[0].state.connected_clipping.left_clipped,
+    };
+
+    fx.activate(1);
+    let mut high_contrast_right = Vec::new();
+    for theme in ["hc-black", "hc-light"] {
+        // `root.classList.remove('hc-black', 'hc-light'); root.classList.add(theme)`, `--vscode-focusBorder: #f38518` e o fundo do editor do tema
+        let background = if theme == "hc-black" { "#000000" } else { "#ffffff" };
+        fx.layout.set_paint(PaintContext::new(&[("focusBorder", "#f38518")], &outline_variables(background)));
+        fx.layout.set_theme(theme);
+        for width in [240.0, 324.0] {
+            layout_outline(&mut fx, width);
+            scroll_tabs(&mut fx, 0.0);
+            let right_box = fx.overflow_right_box().expect("a aba ativa está cortada à direita");
+            let edge = &fx.state.container.overflow_edge;
+            let edge_style = connected_overflow_edge_style(edge, &fx.layout.group_border_text());
+            // `getBoundingClientRect()` do `.tab-connected-overflow-right`: ocupa a aresta, que termina `right` antes da borda direita e
+            // `bottom` antes da base do contêiner de abas.
+            let tabs_height = fx.layout.header_heights(&fx.state.container, fx.geometry().rows).0;
+            let outline_right = fx.geometry().visible_width - edge.right.unwrap_or_default();
+            let outline_bottom = tabs_height - edge.bottom.unwrap_or_default();
+            let cap_right = outline_right - right_box.cap_right;
+            let shoulder_left = outline_right - right_box.shoulder_right - right_box.shoulder_width;
+            high_contrast_right.push(HighContrastRightRead {
+                theme,
+                width: width as u32,
+                mask: background_text(fx.overflow_edge_box().after.as_ref().and_then(|after| after.background.as_ref())),
+                cap_reaches_bottom: right_box.cap_bottom == 0.0,
+                strokes_align: cap_right - right_box.cap_border_right_width == shoulder_left,
+                baseline_aligns: outline_bottom == tabs_height,
+                separate_stroke: right_box.cap_border_right_color == Color::transparent_color()
+                    && edge_style.border == "rgb(243, 133, 24)"
+                    && css_px(right_box.edge_clip_bottom) == css_px(right_box.shoulder_height),
+            });
+        }
+    }
+
+    // `root.classList.remove('modern-ui-connected-editor-tabs')`
+    fx.set_connected(false);
+    layout_outline(&mut fx, 100.0);
+    let reset = px_or_empty(fx.state.container.overflow_edge.left);
+
+    let report = OutlineReport {
+        clipped_hover,
+        clipped_hover_reset,
+        clipped_left,
+        multi_selected,
+        single_selected,
+        terminal_outline,
+        normal_outline,
+        right_shoulder_at_viewport,
+        right_shoulder_revealed,
+        left_shoulder_at_viewport,
+        left_shoulder_revealed,
+        clipped_right_hover,
+        clipped_right_hover_reset,
+        clipped_right,
+        hidden_at_fill_edge,
+        high_contrast,
+        high_contrast_right,
+        reset,
+    };
+    let hc_row = |theme, width, mask: &str| HighContrastRightRead {
+        theme,
+        width,
+        mask: mask.to_string(),
+        cap_reaches_bottom: true,
+        strokes_align: true,
+        baseline_aligns: true,
+        separate_stroke: true,
+    };
+    let expected = OutlineReport {
+        clipped_hover: OverflowHoverRead { hovered: true, background: "rgb(101, 67, 33)".to_string() },
+        clipped_hover_reset: OverflowHoverRead { hovered: false, background: "rgb(51, 51, 51)".to_string() },
+        clipped_left: ClippedLeftRead {
+            edge: true,
+            clipped: true,
+            fill_offset: String::new(),
+            edge_offset: ["0px".to_string(), "0px".to_string()],
+            inset: 0.0,
+            stationary_parent: true,
+            own_cap_top: true,
+            edge_overlay: ["none", "block", "8", "5px", "5px", "border-box", "1px", "1px", "rgb(51, 51, 51)"].map(String::from).to_vec(),
+        },
+        multi_selected: MultiSelectedRead { clipping: "0px".to_string(), edge: "block", radius: "0px 5px 0px 0px".to_string(), connected_class: true },
+        single_selected: SingleSelectedRead { clipping: "0px".to_string(), connected_class: true },
+        terminal_outline: TerminalOutlineRead { right: 1.0, right_shoulder: "\"\"", right_mask: "none" },
+        normal_outline: NormalOutlineRead { left: 1.0, right: 1.0, left_shoulder: "\"\"", right_shoulder: "\"\"", edge: "block", overflow_edge: "none", masks: ["none", "none"] },
+        right_shoulder_at_viewport: RightShoulderAtViewportRead { edge: true, clipped: false, right: 1.0, right_shoulder: "\"\"", right_mask: "none", overflow_edge: "block" },
+        right_shoulder_revealed: RightShoulderRevealedRead { edge: false, clipped: false, right_shoulder: "\"\"", right_mask: "none" },
+        left_shoulder_at_viewport: LeftShoulderAtViewportRead { edge: true, clipped: false, left: 1.0, left_shoulder: "none", left_mask: "none", overflow_edge: "none" },
+        left_shoulder_revealed: LeftShoulderRevealedRead { edge: false, clipped: false, left_shoulder: "\"\"", left_mask: "none" },
+        clipped_right_hover: ClippedRightHoverRead { hovered: true, mask: "rgb(255, 255, 255)".to_string(), cap: "rgb(101, 67, 33)".to_string(), shoulder: true },
+        clipped_right_hover_reset: ClippedRightHoverResetRead { hovered: false, cap: "rgb(51, 51, 51)".to_string(), shoulder: true },
+        clipped_right: ClippedRightRead {
+            edge: true,
+            clipped: true,
+            fill_offset: String::new(),
+            edge_offset: ["0px".to_string(), "0px".to_string()],
+            overflow_right_offsets: (0..4).map(|_| OverflowRightOffsetRead { right: "0px".to_string(), inset: 0.0 }).collect(),
+            edge_overlay: ["\"\"", "block", "8", "10px", "0px", "border-box", "0px", "0px", "rgb(255, 255, 255)"].map(String::from).to_vec(),
+            previous_tab_overflow: String::new(),
+            own_cap_top: true,
+        },
+        hidden_at_fill_edge: ["none", "none"],
+        high_contrast: HighContrastRead { clipping: "0px".to_string(), edge: "block", connected_class: true },
+        high_contrast_right: vec![
+            hc_row("hc-black", 240, "rgb(0, 0, 0)"),
+            hc_row("hc-black", 324, "rgb(0, 0, 0)"),
+            hc_row("hc-light", 240, "rgb(255, 255, 255)"),
+            hc_row("hc-light", 324, "rgb(255, 255, 255)"),
+        ],
+        reset: String::new(),
+    };
+    assert_eq!(report, expected);
+}
+
+#[test]
+fn invalidates_connected_clipping_geometry_after_dirty_and_capability_changes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.cssText = '--vscode-spacing-size20: 2px; ...; --vscode-spacing-size280: 28px; ...; --modern-ui-connected-tab-surface: #333333;'`
+    fx.layout.spacing.set(outline_spacing());
+    fx.layout.set_paint(PaintContext::new(&[], &[("--vscode-editor-background", "#ffffff"), ("--modern-ui-connected-tab-surface", "#333333")]));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.open_pinned_file("file2.txt", false);
+    fx.activate(1);
+    layout_outline(&mut fx, 180.0);
+    scroll_tabs(&mut fx, 0.0);
+
+    let first_editor = fx.model.get_editor_by_index(0).expect("primeira aba");
+    let first_input = first_editor.as_any().downcast_ref::<NamedInput>().expect("o caso abre `NamedInput`");
+    first_input.set_dirty();
+    let computed_height = fx.computed_height();
+    fx.state.update_editor_dirty(&first_editor, computed_height);
+    // `overflowEdge.style.left === '' && !activeTab.classList.contains('connected-tab-right-edge')`, antes do quadro seguinte
+    let invalidated_before_layout = fx.state.container.overflow_edge.left.is_none() && !fx.state.tabs[1].state.connected_clipping.right_edge;
+    fx.frame();
+
+    let rebuilt_after_layout = fx.state.container.overflow_edge.left.is_some();
+    first_input.set_capabilities(EditorInputCapabilities::CANNOT_CLOSE);
+    let computed_height = fx.computed_height();
+    fx.state.update_editor_capabilities(&first_editor, computed_height);
+    let capability_update_invalidated = fx.state.container.overflow_edge.left.is_none() && !fx.state.tabs[1].state.connected_clipping.right_edge;
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        first_tab_dirty: bool,
+        invalidated_before_layout: bool,
+        rebuilt_after_layout: bool,
+        capability_update_invalidated: bool,
+    }
+
+    assert_eq!(
+        Report { first_tab_dirty: fx.state.tabs[0].state.dirty, invalidated_before_layout, rebuilt_after_layout, capability_update_invalidated },
+        Report { first_tab_dirty: true, invalidated_before_layout: true, rebuilt_after_layout: true, capability_update_invalidated: true }
+    );
+}
+
+//#endregion
 
 //#endregion

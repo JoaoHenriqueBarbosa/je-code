@@ -61,6 +61,8 @@ pub(crate) const INHERITED_FOREGROUND: Rgba = Rgba::opaque(0xCC, 0xCC, 0xCC);
 
 /// O `font-size` do `.codicon` (`font: normal normal normal 16px/1 codicon`).
 pub(crate) const CODICON_SIZE: f64 = 16.0;
+/// A margem direita da vaga à frente do rótulo (`margin: 0 var(--vscode-spacing-size40) 0 0`, `4px`).
+const LEADING_ICON_GAP: f64 = 4.0;
 
 /// `IButtonStyles`, com `focus_border` a mais (o `--vscode-focusBorder` que a regra global de foco lê).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -399,6 +401,8 @@ pub struct Button {
     width_mode: Cell<WidthMode>,
     forced_height: Cell<Option<f64>>,
     outline: Cell<Option<NodeId>>,
+    /// A vaga à frente do rótulo (`.monaco-button-leading-icon`): o ícone ou o spinner que o dono pendurou.
+    leading: Cell<Option<NodeId>>,
     on_did_click: Rc<Emitter<Option<ButtonEvent>>>,
     on_did_escape: Rc<Emitter<Option<ButtonEvent>>>,
     focus_tracker: Rc<FocusTracker>,
@@ -444,6 +448,7 @@ impl Button {
             width_mode: Cell::new(WidthMode::Css),
             forced_height: Cell::new(None),
             outline: Cell::new(None),
+            leading: Cell::new(None),
             on_did_click: registered_emitter(&base),
             on_did_escape: registered_emitter(&base),
             focus_tracker,
@@ -861,14 +866,50 @@ impl Button {
 
     /// A largura do conteúdo: a soma dos trechos (e do glifo do próprio elemento).
     fn content_width(&self, b: &ButtonBox) -> f64 {
+        let leading = self.leading_cell();
         if self.label_element.is_some() {
-            return row_items(&self.parts.borrow(), b).iter().map(|i| i.cell_width).sum();
+            return leading + row_items(&self.parts.borrow(), b).iter().map(|i| i.cell_width).sum::<f64>();
         }
         let parts = row_items(&self.parts.borrow(), b);
-        if parts.is_empty() && self.element_icon().is_some() {
+        if parts.is_empty() && leading == 0.0 && self.element_icon().is_some() {
             return CODICON_SIZE;
         }
-        parts.iter().map(|i| i.cell_width).sum()
+        leading + parts.iter().map(|i| i.cell_width).sum::<f64>()
+    }
+
+    /// Põe `node` na vaga à frente do rótulo (o `button.prepend(leading)` do `WorkbenchButtonBar`): o nó vira o
+    /// primeiro filho do botão, e o layout reserva `16px` mais a margem de `--vscode-spacing-size40` (`4px`) até o
+    /// rótulo, ou só os `16px` com a classe `monaco-button-leading-icon-only`. Chamar de novo depois de reescrever o
+    /// rótulo (que no DOM apaga os filhos) o devolve à frente. `None` esvazia a vaga.
+    pub fn set_leading(&self, node: Option<NodeId>) {
+        self.leading.set(node);
+        if let Some(node) = node {
+            let mut tree = self.ui.tree_mut();
+            let first = tree.children(self.element).first().copied();
+            if first != Some(node) {
+                tree.insert_before(self.element, node, first);
+            }
+        }
+        self.refresh();
+    }
+
+    /// O espaço que a vaga à frente ocupa na fileira (zero sem ela).
+    fn leading_cell(&self) -> f64 {
+        let Some(node) = self.leading.get() else { return 0.0 };
+        let gap = if self.ui.tree().has_class(node, "monaco-button-leading-icon-only") { 0.0 } else { LEADING_ICON_GAP };
+        CODICON_SIZE + gap
+    }
+
+    /// O `display: flex` do botão com a vaga à frente: ela e os trechos centrados juntos em `inner`.
+    fn layout_leading_row(&self, parts: &[LabelPart], b: &ButtonBox, inner: Rect) {
+        let leading_cell = self.leading_cell();
+        let row = Rect::new(inner.x0 + leading_cell, inner.y0, inner.x1, inner.y1);
+        layout_row(&self.ui, parts, b, row);
+        let Some(node) = self.leading.get() else { return };
+        let total = leading_cell + row_items(parts, b).iter().map(|i| i.cell_width).sum::<f64>();
+        let x = inner.x0 + (inner.width() - total) / 2.0;
+        let y = inner.y0 + (inner.height() - CODICON_SIZE) / 2.0;
+        self.ui.tree_mut().set_bounds(node, Rect::new(x, y, x + CODICON_SIZE, y + CODICON_SIZE));
     }
 
     fn layout_with(&self, b: &ButtonBox) {
@@ -900,7 +941,7 @@ impl Button {
         if let (true, Some(label), Some(label_short)) = (short, self.label_element, self.label_short_element) {
             self.layout_short_label(b, inner, label, label_short, &parts, &short_parts);
         } else {
-            layout_row(&self.ui, &parts, b, inner);
+            self.layout_leading_row(&parts, b, inner);
         }
         // O contorno acompanha a caixa.
         let outline = self.outline.get();

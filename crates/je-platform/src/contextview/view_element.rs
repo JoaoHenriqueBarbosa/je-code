@@ -24,9 +24,14 @@ pub struct ViewElement {
     height: Cell<f64>,
     client_height: Cell<f64>,
     measure: RefCell<Option<MeasureFn>>,
+    client_width_source: RefCell<Option<WidthFn>>,
+    scroll_width_source: RefCell<Option<WidthFn>>,
     opening_animation_finished: Cell<bool>,
     native: Option<Rc<dyn Any>>,
 }
+
+/// Mede uma largura sob demanda (o refluxo do DOM para `clientWidth` e `scrollWidth`).
+pub type WidthFn = Rc<dyn Fn() -> f64>;
 
 impl ViewElement {
     pub fn new() -> Rc<Self> {
@@ -56,6 +61,8 @@ impl ViewElement {
             height: Cell::new(0.0),
             client_height: Cell::new(0.0),
             measure: RefCell::new(None),
+            client_width_source: RefCell::new(None),
+            scroll_width_source: RefCell::new(None),
             opening_animation_finished: Cell::new(false),
         })
     }
@@ -184,6 +191,28 @@ impl ViewElement {
     pub fn rect(&self) -> IRect {
         let size = self.size();
         IRect { top: self.top.get(), left: self.left.get(), width: size.width, height: size.height }
+    }
+
+    /// Define como o elemento mede `clientWidth` (o `Object.defineProperties(element, { clientWidth: { get } })` dos testes).
+    pub fn set_client_width_source(&self, source: WidthFn) {
+        *self.client_width_source.borrow_mut() = Some(source);
+    }
+
+    /// Define como o elemento mede `scrollWidth`.
+    pub fn set_scroll_width_source(&self, source: WidthFn) {
+        *self.scroll_width_source.borrow_mut() = Some(source);
+    }
+
+    /// `clientWidth`: a medição definida, ou a largura do elemento.
+    pub fn client_width(&self) -> f64 {
+        let source = self.client_width_source.borrow().clone();
+        source.map_or_else(|| self.size().width, |source| source())
+    }
+
+    /// `scrollWidth`: a medição definida, ou o `clientWidth` (um conteúdo que não transborda).
+    pub fn scroll_width(&self) -> f64 {
+        let source = self.scroll_width_source.borrow().clone();
+        source.map_or_else(|| self.client_width(), |source| source())
     }
 
     /// `clientHeight`.

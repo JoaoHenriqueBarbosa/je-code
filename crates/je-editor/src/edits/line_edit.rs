@@ -1,8 +1,9 @@
 //! Porte parcial de `src/vs/editor/common/core/edits/lineEdit.ts`: o `LineEdit` e o `LineReplacement` com o que o
 //! `EditDeltaInfo.fromEdit` do `textModelEditSource` lê (`fromStringEdit`, `fromTextEdit`, `fromSingleTextEdit`, as
-//! `replacements` com `lineRange` e `newLines`).
+//! `replacements` com `lineRange` e `newLines`), mais `getNewLineRanges` e `toLineEdit`, que o `InlineEditWithChanges`
+//! lê.
 //!
-//! As demais operações (`toEdit`, `getNewLineRanges`, `mapLineNumber`, `rebase`, `humanReadablePatch`, `inverse`,
+//! As demais operações (`toEdit`, `mapLineNumber`, `rebase`, `humanReadablePatch`, `inverse`,
 //! `removeCommonSuffixPrefixLines`, `toSingleTextEdit`, a serialização) entram junto de quem as usar.
 
 use je_base::JsString;
@@ -75,6 +76,17 @@ impl LineEdit {
     pub fn is_empty(&self) -> bool {
         self.replacements.is_empty()
     }
+
+    /// `getNewLineRanges()`: o intervalo de linhas que cada substituição ocupa depois de aplicada.
+    pub fn get_new_line_ranges(&self) -> Vec<LineRange> {
+        let mut ranges: Vec<LineRange> = Vec::new();
+        let mut offset = 0;
+        for e in &self.replacements {
+            ranges.push(LineRange::of_length(e.line_range.start_line_number + offset, e.new_lines.len() as i32));
+            offset += e.new_lines.len() as i32 - e.line_range.length();
+        }
+        ranges
+    }
 }
 
 /// `LineReplacement`.
@@ -142,5 +154,10 @@ impl LineReplacement {
         }
 
         LineReplacement::new(LineRange::new(start_line_number, end_line_number_ex), new_lines)
+    }
+
+    /// `toLineEdit()`.
+    pub fn to_line_edit(&self) -> LineEdit {
+        LineEdit::new(vec![self.clone()])
     }
 }

@@ -332,6 +332,9 @@ pub fn inspect_dynamic(value: Option<je_platform::configuration::models::Inspect
 
 pub mod files;
 pub mod disk;
+pub mod lifecycle_main_service;
+pub mod workspace_asserts;
+pub mod storage_main;
 
 pub mod watcher;
 

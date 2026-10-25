@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 
 use je_base::arrays_find::{find_first_idx_monotonous_or_arr_len, find_last_idx_monotonous, find_last_monotonous};
 use je_base::errors::{self, Error};
+use je_base::observable::deps::StrictEquals;
 
 use crate::offset_range::OffsetRange;
 use crate::range::Range;
@@ -22,6 +23,14 @@ pub struct LineRange {
     pub start_line_number: i32,
     /// A linha final (exclusiva).
     pub end_line_number_exclusive: i32,
+}
+
+/// O `===` de um observável que carrega um `LineRange` compara por valor: o observável só avisa quando o intervalo
+/// mudou de fato (o mesmo critério do `Rect` e do `Point`).
+impl StrictEquals for LineRange {
+    fn strict_equals(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 impl LineRange {

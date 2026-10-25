@@ -5,9 +5,11 @@
 //! armazenamento e o debounce de eventos).
 //!
 //! Fora do porte (e por quê): `menuResetAction.ts` (uma `Action2` com diálogo de confirmação, que depende do serviço de
-//! diálogo da interface) e todo o `browser/` (toolbars, botões, view items e `actionViewItemService`: a UI é desenhada
-//! pela árvore de widgets nativa, não por HTML; `menuEntryActionViewItem.ts` e `toolbar.ts` dependem de widgets). Do
-//! `browser/` não sobra lógica pura de modelo além do que já está em `actions.rs`.
+//! diálogo da interface) e o que no `browser/` estende widgets (`WorkbenchToolBar`, `WorkbenchButtonBar`,
+//! `MenuWorkbenchButtonBar`: vivem em `je_workbench::platform::actions`, porque a plataforma não depende de `je-widgets`),
+//! além do `menuEntryActionViewItem.ts` (só a lógica de modelo está aqui), do `actionViewItemService.ts` e do
+//! `MenuWorkbenchToolBar`, que dependem de view items ainda não portados. Do `browser/` sobra aqui a lógica pura de modelo
+//! que já está em `actions.rs` e em `menu_entry_action_view_item.rs`.
 
 pub mod menu_entry_action_view_item;
 pub mod menu_ids;

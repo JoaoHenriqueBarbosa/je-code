@@ -20,9 +20,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use common::disk::{get_random_test_path, run_on_real_loop};
+use common::lifecycle_main_service::TestLifecycleMainService;
+use common::storage_main::{StorageMainServiceSetup, create_storage_main_service};
 use je_base::dynamic::Dynamic;
 use je_base::json::{self, ParseOptions, Value};
-use je_base::lifecycle::IDisposable;
+use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_platform::configuration::service::ConfigurationService;
 use je_platform::configuration::{ConfigurationOverrides, ConfigurationValue};
 use je_platform::environment::argv::{IgnoringReporter, OPTIONS, parse_args};
@@ -36,7 +38,8 @@ use je_platform::log::{LogLevel, LogServiceRef, MessageLogger, MessageSink};
 use je_platform::policy::NullPolicyService;
 use je_platform::product::ProductService;
 use je_platform::resources::{fs_path, uri_file};
-use je_platform::storage::{SqliteStorageService, StorageProfile, StorageScope, StorageService, StorageServiceOptions, StorageTarget};
+use je_platform::storage::{SqliteStorageService, StorageScope, StorageService, StorageServiceOptions, StorageTarget};
+use je_platform::user_data_profile::IUserDataProfilesService;
 use je_storage::StorageValue;
 
 /// Um diretório temporário que some ao fim do teste.
@@ -113,10 +116,10 @@ fn top_level_settings(text: &str) -> Vec<(String, Dynamic)> {
 async fn verify(profile: PathBuf) {
     let (log, problems) = recording_log();
 
-    // O ambiente: os mesmos diretórios do VS Code a partir do `--user-data-dir`.
-    let argv = vec!["--user-data-dir".to_owned(), profile.to_string_lossy().into_owned()];
+    // O ambiente: os mesmos diretórios do VS Code a partir do `--user-data-dir` (o compartilhado também fica na cópia).
+    let argv = vec!["--user-data-dir".to_owned(), profile.to_string_lossy().into_owned(), "--shared-data-dir".to_owned(), profile.join("shared").to_string_lossy().into_owned()];
     let args = NativeParsedArgs::from_dynamic(&parse_args(&argv, &OPTIONS, &IgnoringReporter));
-    let environment = NativeEnvironmentService::native(args, ProductService::default(), "/app").unwrap();
+    let environment = Rc::new(NativeEnvironmentService::native(args, ProductService::default(), "/app").unwrap());
     assert_eq!(environment.user_data_path(), profile.to_string_lossy());
     assert_eq!(fs_path(&environment.app_settings_home()), profile.join("User").to_string_lossy());
     assert!(fs_path(&environment.state_resource()).ends_with("User/globalStorage/storage.json".replace('/', std::path::MAIN_SEPARATOR_STR).as_str()));
@@ -150,20 +153,17 @@ async fn verify(profile: PathBuf) {
     assert!(!std::fs::read_to_string(&settings_path).unwrap().contains("jeCompat.probe"));
     configuration.dispose();
 
-    // O `state.vscdb` global, pelo serviço de armazenamento.
-    let global_storage_home = environment.app_settings_home();
-    let global_storage_home = je_platform::resources::join_path(&global_storage_home, &["globalStorage"]);
-    let default_profile = StorageProfile { id: "__default__profile__".to_owned(), is_default: true, use_default_global_state: false, global_storage_home };
-    let storage = SqliteStorageService::new(
-        StorageServiceOptions {
-            default_profile: default_profile.clone(),
-            current_profile: default_profile,
-            application_shared_storage_folder: profile.join("shared").join("sharedStorage"),
-            workspace_storage_home: profile.join("User").join("workspaceStorage"),
-            initial_workspace: None,
-        },
-        log.clone(),
-    );
+    // O `state.vscdb` global, pelo serviço de armazenamento (sobre o `StorageMainService`, dono das conexões).
+    let lifecycle_main_service = TestLifecycleMainService::new();
+    let disposables = DisposableStore::new();
+    let StorageMainServiceSetup { storage_main_service, user_data_profiles_service } =
+        create_storage_main_service(&disposables, None, environment.clone(), file_service.clone(), log.clone(), lifecycle_main_service.clone());
+    let storage = SqliteStorageService::new(StorageServiceOptions {
+        storage_main_service,
+        user_data_profiles_service: user_data_profiles_service.as_service(),
+        current_profile: user_data_profiles_service.default_profile(),
+        initial_workspace: None,
+    });
     let service = storage.service();
     storage.initialize().await.unwrap();
     let keys: Vec<String> = [StorageTarget::User, StorageTarget::Machine].into_iter().flat_map(|target| service.keys(StorageScope::Application, target)).collect();
@@ -174,7 +174,9 @@ async fn verify(profile: PathBuf) {
     service.store("jeCompat.probe", StorageValue::String("valor".to_owned()), StorageScope::Application, StorageTarget::Machine);
     assert_eq!(service.get("jeCompat.probe", StorageScope::Application, None), Some("valor".to_owned()));
     storage.close().await.unwrap();
+    lifecycle_main_service.fire_on_will_shutdown().await.unwrap();
     storage.dispose();
+    disposables.dispose();
 
     registration.dispose();
     provider.dispose();
@@ -206,28 +208,35 @@ fn vscode_profile_compat_synthetic() {
 
     // O `state.vscdb` de origem é escrito pelo próprio serviço de armazenamento (a ida e volta com o disco).
     let source = temp.0.join("source");
-    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(source.join("User").join("globalStorage")).unwrap();
     let source_for_write = source.clone();
     run_on_real_loop(async move {
         let (log, _) = recording_log();
-        let home = uri_file(&source_for_write.join("User").join("globalStorage").to_string_lossy());
-        let profile = StorageProfile { id: "__default__profile__".to_owned(), is_default: true, use_default_global_state: false, global_storage_home: home };
-        let storage = SqliteStorageService::new(
-            StorageServiceOptions {
-                default_profile: profile.clone(),
-                current_profile: profile,
-                application_shared_storage_folder: source_for_write.join("shared").join("sharedStorage"),
-                workspace_storage_home: source_for_write.join("User").join("workspaceStorage"),
-                initial_workspace: None,
-            },
-            log,
-        );
+        // Os mesmos diretórios do VS Code a partir do `--user-data-dir` da origem.
+        let argv = vec!["--user-data-dir".to_owned(), source_for_write.to_string_lossy().into_owned(), "--shared-data-dir".to_owned(), source_for_write.join("shared").to_string_lossy().into_owned()];
+        let args = NativeParsedArgs::from_dynamic(&parse_args(&argv, &OPTIONS, &IgnoringReporter));
+        let environment = Rc::new(NativeEnvironmentService::native(args, ProductService::default(), "/app").unwrap());
+
+        let file_service = FileService::new(log.clone());
+        let lifecycle_main_service = TestLifecycleMainService::new();
+        let disposables = DisposableStore::new();
+        let StorageMainServiceSetup { storage_main_service, user_data_profiles_service } =
+            create_storage_main_service(&disposables, None, environment, file_service.clone(), log, lifecycle_main_service.clone());
+        let storage = SqliteStorageService::new(StorageServiceOptions {
+            storage_main_service,
+            user_data_profiles_service: user_data_profiles_service.as_service(),
+            current_profile: user_data_profiles_service.default_profile(),
+            initial_workspace: None,
+        });
         storage.initialize().await.unwrap();
         let service = storage.service();
         service.store("telemetry.machineId", StorageValue::String("abc".to_owned()), StorageScope::Application, StorageTarget::Machine);
         service.store("workbench.sideBar.hidden", StorageValue::Bool(false), StorageScope::Application, StorageTarget::User);
         storage.close().await.unwrap();
+        lifecycle_main_service.fire_on_will_shutdown().await.unwrap();
         storage.dispose();
+        disposables.dispose();
+        file_service.dispose();
     });
     std::fs::copy(user.join("settings.json"), source.join("User").join("settings.json")).unwrap();
 

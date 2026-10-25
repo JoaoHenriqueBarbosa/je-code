@@ -2,6 +2,7 @@
 //! que o `joinPath`, o `isEqualOrParent` e o `basename` do original usam; a conversão para o caminho do sistema de
 //! arquivos (`URI#fsPath`) e para o JSON de `URI#toJSON` (o formato do `extensions.json`) fica nas bordas.
 
+use je_platform::resources::host_platform;
 use je_base::path::{Platform, PathModule, ProcessEnvironment};
 use je_base::uri::URI;
 use serde_json::{Map, Value};
@@ -38,10 +39,6 @@ pub fn is_equal_or_parent(candidate: &str, base: &str) -> bool {
 /// `resources.isEqual`.
 pub fn is_equal(a: &str, b: &str) -> bool {
     a == b
-}
-
-fn host_platform() -> Platform {
-    if cfg!(windows) { Platform::Win32 } else { Platform::Posix }
 }
 
 fn file_uri(uri_path: &str) -> URI {

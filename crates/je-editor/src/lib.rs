@@ -203,7 +203,10 @@ pub mod view_model_impl_api;
 pub mod editor_browser;
 pub mod hover;
 
+pub mod view_parts;
+
 pub mod code_editor_widget;
+pub mod embedded_code_editor_widget;
 
 pub mod trigger_inline_edit_commands_registry;
 pub mod editor_extensions;
@@ -277,3 +280,9 @@ pub mod semantic_tokens_styling;
 pub mod semantic_tokens_styling_service;
 
 pub mod observable_code_editor;
+
+pub mod diff_editor_options;
+pub mod diff_editor_utils;
+pub mod diff_editor_view_zones;
+pub mod diff_provider_factory_service;
+pub mod multi_diff_editor;

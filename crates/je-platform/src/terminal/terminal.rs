@@ -16,14 +16,14 @@
 //! - `IShellLaunchConfig`: `waitOnExit` é [`WaitOnExitValue`] (o `(exitCode) => string` é um `Rc<dyn Fn>`) e a
 //!   chave `[remoteResolverTerminal]` (um `Symbol`) é o campo `remote_resolver_terminal`.
 //!
-//! Divergências (o que ainda falta do `terminal.ts`, a portar quando um consumidor pedir): `TerminalSettingPrefix`
-//! e `TerminalSettingId`; os tipos de layout (`IRawTerminalInstanceLayoutInfo`, `IPtyHostAttachTarget`...);
-//! `TerminalIpcChannels`; `IPtyService`,
-//! `IPtyServiceContribution`, `IPtyHostController`, `IPtyHostService`, `ILocalPtyService`; as constantes
-//! (`HeartbeatConstants`, `LocalReconnectConstants`) e `IHeartbeatService`; os estados de serialização
-//! (`ISerializedTerminalState`...); `IShellLaunchConfigDto`; `ICreateContributedTerminalProfileOptions`;
-//! `ITerminalProfileObject`; os seletores de comando; o registro de backends (`TerminalExtensions`,
-//! `ITerminalBackendRegistry`). O `ITerminalBackend` fica em `je_workbench::contrib::terminal::common::terminal_backend`,
+//! Divergências (o que ainda falta do `terminal.ts`, a portar quando um consumidor pedir): `LocalReconnectConstants`;
+//! `IShellLaunchConfigDto`;
+//! `ICreateContributedTerminalProfileOptions`; `ITerminalProfileObject`; os seletores de comando; o registro de backends
+//! (`TerminalExtensions`, `ITerminalBackendRegistry`). Os tipos do pty host e do pty service (`TerminalIpcChannels`,
+//! `HeartbeatConstants`, `IHeartbeatService`, os tipos de layout, `IPtyService`, `IPtyServiceContribution`,
+//! `IPtyHostController`, `IPtyHostService`, `ILocalPtyService`, `ISerializedTerminalState`...) estão em
+//! [`super::pty_service`]; `TerminalSettingPrefix` e `TerminalSettingId`, em [`super::terminal_settings`]. O
+//! `ITerminalBackend` fica em `je_workbench::contrib::terminal::common::terminal_backend`,
 //! porque herda o `ITerminalBackendWslPath` do workbench.
 //!
 //! Contratos do processo (porte de `ITerminalChildProcess` e companhia):

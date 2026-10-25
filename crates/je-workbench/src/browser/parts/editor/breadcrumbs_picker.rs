@@ -29,7 +29,8 @@
 //!   e a pintura fica para quando a primitiva existir. O `box-shadow` (`--vscode-shadow-lg`) e o `padding-top: 2px` do contêiner
 //!   da árvore também não têm campo no `NodeStyle`.
 //! - **`ILayoutInfo.inputHeight`** (sempre 0 e sem leitor) não é portado.
-//! - **`setTimeout(() => this._tree.dispose(), 0)`** é um `disposable_timeout` de 0 ms.
+//! - **`setTimeout(() => this._tree.dispose(), 0)`** é um `runtime::set_timeout` de 0 ms (o `setTimeout` simples do original, sem
+//!   disposable devolvido: um `disposable_timeout` descartado sem `dispose` apareceria como vazamento).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -47,7 +48,7 @@ use je_base::nls::localize;
 use je_base::path::{PathModule, ProcessEnvironment};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
-use je_base::async_::disposable_timeout;
+use je_base::runtime;
 use je_editor::text_resource_configuration_service::ITextResourceConfigurationService;
 use je_editor::services::theme_service::IThemeService;
 use je_platform::configuration::ConfigurationOverrides;
@@ -74,6 +75,7 @@ use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeFilter, ITreeSorter, I
 use super::breadcrumbs::{BreadcrumbsConfig, BreadcrumbsConfigKeys, SymbolSortOrder};
 use super::breadcrumbs_model::{BreadcrumbsElement, FileElement, OutlineElement2, OutlineElementValue};
 use crate::browser::labels::{FileDecorations, IFileLabelOptions, IResourceLabel, IResourceLabelOptions, ResourceLabels, ResourceLabelsServices, default_labels_container};
+use crate::browser::workbench_tree::workbench_tree_data_preamble;
 use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use crate::contrib::notebook::browser::contrib::outline::notebook_outline::IFileIconTheme;
 use crate::services::editor::editor_groups_service::PreferredGroup;
@@ -317,7 +319,7 @@ impl BreadcrumbsPicker {
         self.services.ui.tree_mut().remove(self.dom_node);
         // tree cannot be disposed while being opened...
         if let Some(tree) = self.tree.borrow_mut().take() {
-            disposable_timeout(move || tree.dispose(), 0, None);
+            runtime::set_timeout(move || tree.dispose(), 0);
         }
     }
 
@@ -372,7 +374,7 @@ impl BreadcrumbsPicker {
             }
         }));
 
-        // `this._domNode.focus()`: o foco do nó é da árvore do `je-ui`, que o seletor recebe do contexto que o abre.
+        self.services.ui.focus(self.dom_node);
         let picker = self.clone();
         self.kind.set_input(self, &input).then_result(move |result| {
             match result {
@@ -741,6 +743,10 @@ impl IBreadcrumbsPickerKind for FilePickerKind {
         options.filter = Some(filter);
         options.identity_provider = Some(Rc::new(FileIdentityProvider));
         options.keyboard_navigation_label_provider = Some(Rc::new(FileNavigationLabelProvider));
+        // O original cria uma `WorkbenchAsyncDataTree`: o modo de expansão (`workbench.tree.expandMode`, o padrão é o clique simples)
+        // vem da configuração. Sem isso a árvore pura usa o padrão dela (expandir só no twistie) e o clique na linha de uma pasta
+        // não a expande.
+        workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.update, &mut options.keyboard_support);
 
         let tree = AsyncDataTree::<_, _, _, ObjectBackend>::new(
             "BreadcrumbsFilePicker",

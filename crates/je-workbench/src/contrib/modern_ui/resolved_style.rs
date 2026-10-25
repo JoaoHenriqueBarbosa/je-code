@@ -13,14 +13,25 @@
 //! - **Cores.** Saem como [`Color`]; o texto `rgb(...)` do computado é [`css_rgb`], e o valor de uma propriedade
 //!   personalizada (`getPropertyValue`) é o `to_string()` da cor, que é o texto que o `generateColorThemeCSS` escreve.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use je_theme::ColorTheme;
 use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
 use je_theme::registry::{as_css_variable_name, color_registry};
 use je_theme::size_utils::get_size_registry;
-use je_theme::sizes::base_sizes::{CODICON_FONT_SIZE, CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
+use je_theme::sizes::base_sizes::{CODICON_FONT_SIZE, CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
+
+// Os traços de borda dos cartões compactos (`floatingPanels.css`, linhas 508 a 522).
+mod card_border_layers;
+// As abas conectadas do editor (`connectedEditorTabs.css` e as regras de `tabs.css` que ela cobre).
+mod connected_tabs;
+
+pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
+pub use connected_tabs::{
+    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, StickyTabsBackgroundBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabActionsFade, TabBorderContainer,
+    TabBorderIndicator, TabElement, TabFillAccentLine, TabRowPlacement, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
+};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -130,6 +141,14 @@ pub struct ModernUiStyle<'a> {
     activity_bar_action_gap: Option<f64>,
     /// `--window-zoom-factor`, que `window.ts` publica na raiz (`var(--window-zoom-factor, 1)`: indefinida vale `1`).
     window_zoom_factor: f64,
+    /// As propriedades personalizadas de cor que o DOM escreve direto na raiz (`root.style.setProperty('--modern-ui-...')`),
+    /// que vencem as que os participantes de tema declaram na folha de estilo.
+    root_variables: BTreeMap<String, Color>,
+    /// Os tamanhos `--vscode-*` definidos na raiz. `None` é a produção, em que o registro de tamanhos escreve todos os do
+    /// tema na raiz (como o `modernUI.contribution.ts` faz ao montar a folha de estilo). `Some` é o DOM de um teste, em que
+    /// só existem as variáveis que o caso define com `root.style.setProperty`; as demais são indefinidas e cada `var()`
+    /// cai no fallback do CSS (ou invalida a declaração, que vale `0` nas margens, nos recuos e nos raios).
+    root_sizes: Option<BTreeMap<String, f64>>,
 }
 
 impl<'a> ModernUiStyle<'a> {
@@ -142,7 +161,28 @@ impl<'a> ModernUiStyle<'a> {
             explicit_colors_only: false,
             activity_bar_action_gap: None,
             window_zoom_factor: 1.0,
+            root_variables: BTreeMap::new(),
+            root_sizes: None,
         }
+    }
+
+    /// Um DOM em que só os tamanhos `--vscode-*` listados existem na raiz (`root.style.setProperty('--vscode-X', 'Npx')`).
+    /// Cada item é o id do tamanho (`cornerRadius.small` é `--vscode-cornerRadius-small`) e o valor em px; os demais ficam
+    /// indefinidos, sem os padrões do tema.
+    pub fn with_root_sizes(mut self, sizes: &[(&str, f64)]) -> Self {
+        self.root_sizes = Some(sizes.iter().map(|(id, value)| ((*id).to_owned(), *value)).collect());
+        self
+    }
+
+    /// Define uma propriedade personalizada de cor na raiz (`root.style.setProperty(name, color)`), por exemplo
+    /// `--modern-ui-editor-tab-custom-active-border-top`.
+    pub fn set_root_variable(&mut self, name: &str, color: Color) {
+        self.root_variables.insert(name.to_owned(), color);
+    }
+
+    /// Remove uma propriedade personalizada da raiz (`root.style.removeProperty(name)`).
+    pub fn remove_root_variable(&mut self, name: &str) {
+        self.root_variables.remove(name);
     }
 
     /// Define `--window-zoom-factor` (`root.style.setProperty`).
@@ -202,8 +242,14 @@ impl<'a> ModernUiStyle<'a> {
     /// O valor de uma variável CSS, `--vscode-*` (a cor do tema) ou `--modern-ui-*` das abas (`tabs.css`, linhas 24 a 54).
     /// `None` é a variável indefinida.
     pub fn variable(&self, name: &str) -> Option<Color> {
+        // O que o DOM escreveu na raiz e o que os participantes de tema declaram na folha (as customizações legadas
+        // `tab.*`, com `.modern-ui-tabs.monaco-workbench.monaco-workbench`) vencem o padrão de `tabs.css`.
+        if let Some(color) = self.declared(name) {
+            return Some(color);
+        }
         if let Some(id) = modern_ui_tab_variable_color_id(name) {
-            return self.has("modern-ui-tabs").then(|| self.color(id)).flatten();
+            // A variável `unfocused-*` é um alias da focada, que o participante também pode ter declarado.
+            return self.has("modern-ui-tabs").then(|| self.declared(&name.replace("-unfocused-", "-")).or_else(|| self.color(id))).flatten();
         }
         color_registry().get_colors().iter().find(|contribution| as_css_variable_name(contribution.id) == name).and_then(|contribution| self.color(contribution.id))
     }
@@ -249,6 +295,12 @@ impl<'a> ModernUiStyle<'a> {
         if !self.has("modern-ui") {
             return None;
         }
+        // `--modern-ui-editor-border-color` do editor com várias abas em alto contraste (connectedEditorTabs.css, linhas 50 a
+        // 53, com a especificidade acima de `editorBorder.css`, linha 26) e, com `.floating-panels`, a `!important` da linha
+        // 49 do `editorBorder.css` lê a mesma variável: a moldura do grupo é quem desenha o traço, não a borda da parte.
+        if self.connected_high_contrast_editor(part) {
+            return Some(self.floating_card_border_color().unwrap_or_else(|| self.first(&["modernPanel.border", "contrastBorder"]).unwrap_or_else(Color::transparent_color)));
+        }
         if !self.has("floating-panels") {
             // editorBorder.css, linha 27: só o editor principal; `color-mix(in srgb, foreground 12%, transparent)` é o
             // primeiro plano com 12% do seu alfa.
@@ -260,15 +312,24 @@ impl<'a> ModernUiStyle<'a> {
                 foreground.transparent(0.12)
             }));
         }
-        // `--modern-ui-editor-border-color` (floatingPanels.css linha 36; connectedEditorTabs.css linhas 13 e 51) vence a
-        // cadeia de `editorBorder.css` (linha 49, `!important`).
-        if self.connected_high_contrast_editor(part) {
-            return Some(self.floating_card_border_color().unwrap_or_else(|| self.first(&["modernPanel.border", "contrastBorder"]).unwrap_or_else(Color::transparent_color)));
-        }
+        // `--modern-ui-editor-border-color` (floatingPanels.css linha 36) vence a cadeia de `editorBorder.css` (linha 49,
+        // `!important`).
         if self.compact() {
             return Some(Color::transparent_color());
         }
         Some(self.chain(&["editor.border", "surface.border", "widget.border"]))
+    }
+
+    /// `border-width` do `.part.editor`: o traço de `strokeThickness` do editor principal com o Modern UI (editorBorder.css,
+    /// linha 27) e o `1px` fixo da parte modal (modalEditorPart.css, linha 40). Sem nenhuma das duas regras, sem borda.
+    pub fn editor_border_width(&self, part: &ClassList) -> f64 {
+        if part.contains("modal-editor-part") {
+            1.0
+        } else if self.has("modern-ui") {
+            self.size(STROKE_THICKNESS)
+        } else {
+            0.0
+        }
     }
 
     /// `border-color` das partes flutuantes (barra de atividade, barra lateral, painel). `part` leva `part` e o tipo
@@ -320,7 +381,7 @@ impl<'a> ModernUiStyle<'a> {
             }
             _ => None,
         };
-        inset.and_then(|id| get_size_registry().resolve_default_size(id, self.theme)).map_or(0.0, |size| size.value)
+        inset.map_or(0.0, |id| self.size(id))
     }
 
     /// `background-color` do indicador (`.active-item-indicator`) de uma ação das abas de um painel composto
@@ -358,41 +419,70 @@ impl<'a> ModernUiStyle<'a> {
     }
 
     /// `background-color` do `.tab-fill` de uma aba do editor fora do alto contraste (`tabs.css`, linhas 370 a 458). Os
-    /// grupos sem foco usam as variáveis `unfocused-*`, que são aliases das focadas, então o grupo não muda o valor.
+    /// grupos sem foco usam as variáveis `unfocused-*`, aliases das focadas até que uma customização legada (`tab.unfocused*`)
+    /// declare a própria.
     pub fn editor_tab_fill_background(&self, tab: EditorTabState) -> Option<Color> {
+        if self.has("modern-ui-tabs") && self.has("modern-ui-connected-editor-tabs") {
+            // `connectedEditorTabs.css` (linhas 102 a 143 e 322 a 335) refaz as variáveis de fundo das abas.
+            return self.connected_tab_fill_background(&TabElement::from(tab));
+        }
         if !self.has("modern-ui-tabs") || self.high_contrast() {
             return None;
         }
-        let id = match (tab.active, tab.selected, tab.hovered) {
-            (true, _, false) => "modernEditorTab.activeBackground",
-            (true, _, true) => "modernEditorTab.activeHoverBackground",
-            (false, true, _) => "tab.selectedBackground",
-            (false, false, true) => "modernEditorTab.hoverBackground",
-            (false, false, false) => "modernEditorTab.inactiveBackground",
+        let state = match (tab.active, tab.selected, tab.hovered) {
+            (true, _, false) => "active-background",
+            (true, _, true) => "active-hover-background",
+            (false, true, _) => return self.color("tab.selectedBackground"),
+            (false, false, true) => "hover-background",
+            (false, false, false) => "inactive-background",
         };
-        self.color(id)
+        // Linhas 377 a 455: o grupo sem foco lê a variável `unfocused-*`, que sem valor próprio é um alias da focada.
+        let group = if tab.group_active { "" } else { "unfocused-" };
+        self.variable(&format!("--modern-ui-editor-tab-{group}{state}"))
     }
 
     /// `color` do `.tab-label` de uma aba do editor (`tabs.css`, linhas 1060 a 1111). A aba inativa usa
     /// `--modern-ui-editor-tab-inactive-foreground`: 50% do primeiro plano, ou `tab.inactiveForeground` nas abas conectadas
-    /// fora do alto contraste (linhas 37 e 61).
+    /// fora do alto contraste (linhas 37 e 61). Cada variável `--modern-ui-editor-tab-*-foreground` que o DOM escreveu na raiz
+    /// vence o padrão, e a do grupo sem foco (`unfocused-*`) é um alias da do grupo com foco (linhas 36, 38 e 40).
     pub fn editor_tab_foreground(&self, tab: EditorTabState) -> Option<Color> {
         if !self.has("modern-ui-tabs") {
             return None;
         }
         if tab.active {
-            return self.color("modernEditorTab.activeForeground");
+            return self.tab_foreground_variable(tab.group_active, "active", || self.color("modernEditorTab.activeForeground"));
         }
         if tab.selected {
             return self.color("tab.selectedForeground");
         }
         if tab.hovered {
-            return self.color("modernEditorTab.hoverForeground");
+            return self.tab_foreground_variable(tab.group_active, "hover", || self.color("modernEditorTab.hoverForeground"));
         }
-        if self.has("modern-ui-connected-editor-tabs") && !self.high_contrast() {
-            return self.color("tab.inactiveForeground");
+        self.tab_foreground_variable(tab.group_active, "inactive", || {
+            if self.has("modern-ui-connected-editor-tabs") && !self.high_contrast() {
+                self.color("tab.inactiveForeground")
+            } else {
+                self.color("foreground").map(|foreground| foreground.transparent(0.5))
+            }
+        })
+    }
+
+    /// `--modern-ui-editor-tab-<state>-foreground` (ou `unfocused-<state>-foreground`, que sem valor próprio é um alias da
+    /// primeira): o que o DOM escreveu na raiz e, sem isso, o que o participante de tema declara na folha (as customizações
+    /// legadas `tab.*Foreground`) e, por último, o padrão da folha.
+    fn tab_foreground_variable(&self, group_active: bool, state: &str, default: impl FnOnce() -> Option<Color>) -> Option<Color> {
+        let own = self.declared(&format!("--modern-ui-editor-tab-{state}-foreground"));
+        if group_active {
+            return own.or_else(default);
         }
-        self.color("foreground").map(|foreground| foreground.transparent(0.5))
+        self.declared(&format!("--modern-ui-editor-tab-unfocused-{state}-foreground")).or(own).or_else(default)
+    }
+
+    /// `color` do ícone (`::before`), do nome e da descrição de um rótulo de aba: o do `.tab-label`. O rótulo com a decoração
+    /// de arquivo (`.monaco-decoration-itemColor`, `decoration_color`) fica de fora das regras de `tabs.css` (linhas 1067 a
+    /// 1111) e o ícone, o nome e a descrição herdam a cor dela (linhas 1115 a 1119).
+    pub fn editor_tab_label_color(&self, tab: EditorTabState, decoration_color: Option<&Color>) -> Option<Color> {
+        decoration_color.cloned().or_else(|| self.editor_tab_foreground(tab))
     }
 
     /// `background-color` do `.tab-actions` de uma aba (`tabs.css`, linhas 580 a 650). O fundo só existe com o ponteiro
@@ -476,9 +566,29 @@ impl<'a> ModernUiStyle<'a> {
         self.has("modern-ui-notifications-dialogs")
     }
 
-    /// `var(--vscode-<size>)`, em px; `0` quando o tamanho não existe para o tema.
+    /// O valor de `--vscode-<size>` na raiz, em px; `None` é a variável indefinida (ver `root_sizes`).
+    fn size_variable(&self, id: &str) -> Option<f64> {
+        match &self.root_sizes {
+            Some(sizes) => sizes.get(id).copied(),
+            None => get_size_registry().resolve_default_size(id, self.theme).map(|size| size.value),
+        }
+    }
+
+    /// `var(--vscode-<size>)`, em px; `0` quando a variável é indefinida (a declaração é inválida e a margem, o recuo ou o
+    /// raio voltam ao valor inicial).
     fn size(&self, id: &str) -> f64 {
-        get_size_registry().resolve_default_size(id, self.theme).map_or(0.0, |size| size.value)
+        self.size_variable(id).unwrap_or(0.0)
+    }
+
+    /// `var(--vscode-<size>, <fallback>px)`.
+    fn size_or(&self, id: &str, fallback: f64) -> f64 {
+        self.size_variable(id).unwrap_or(fallback)
+    }
+
+    /// `--modern-ui-connected-tab-radius` (connectedEditorTabs.css, linha 114):
+    /// `var(--vscode-cornerRadius-medium, var(--vscode-cornerRadius-small))`.
+    fn connected_tab_radius(&self) -> f64 {
+        self.size_variable(CORNER_RADIUS_MEDIUM).or_else(|| self.size_variable(CORNER_RADIUS_SMALL)).unwrap_or(0.0)
     }
 
     /// Define as variáveis `--modern-ui-notifications-*-inset` (`root.style.setProperty`).
@@ -799,6 +909,37 @@ impl<'a> ModernUiStyle<'a> {
     pub fn pane_composite_header_overflow_visible(&self, part: &ClassList) -> bool {
         self.pane_composite_header_footer_border_width(part).is_some()
     }
+
+    /// `.modern-ui.monaco-workbench .part.basepanel > .composite.title` (padding.css, linhas 279 e 283): o título do painel
+    /// cujos filhos `.title-actions` e `.global-actions` as regras abaixo tocam.
+    fn panel_composite_title(&self, part: &ClassList, title: &ClassList) -> bool {
+        self.has("modern-ui") && self.has("monaco-workbench") && part.contains("part") && part.contains("basepanel") && title.contains("composite") && title.contains("title")
+    }
+
+    /// `min-width` do `.title-actions` do título de um painel (padding.css, linhas 279 a 281): `0`, para as ações do título
+    /// encolherem em vez de empurrarem as ações globais. `None` é o `auto` do item flexível sem a regra.
+    pub fn panel_title_actions_min_width(&self, part: &ClassList, title: &ClassList) -> Option<f64> {
+        self.panel_composite_title(part, title).then_some(0.0)
+    }
+
+    /// O `.global-actions` do título de um painel (padding.css, linhas 283 a 287: `position: relative`, `z-index: 1` e
+    /// `flex: 0 0 auto`), que fica acima das ações do título que transbordam e não encolhe. Nenhuma regra lhe dá fundo.
+    pub fn panel_global_actions(&self, part: &ClassList, title: &ClassList) -> PanelGlobalActions {
+        if self.panel_composite_title(part, title) {
+            return PanelGlobalActions { position: "relative", z_index: Some(1), flex_shrink: 0.0, background: Color::transparent_color() };
+        }
+        PanelGlobalActions { position: "static", z_index: None, flex_shrink: 1.0, background: Color::transparent_color() }
+    }
+}
+
+/// O que as regras do Modern UI calculam para o `.global-actions` do título de um painel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelGlobalActions {
+    pub position: &'static str,
+    /// `None` é o `z-index: auto`.
+    pub z_index: Option<i32>,
+    pub flex_shrink: f64,
+    pub background: Color,
 }
 
 /// O `margin` calculado de uma parte flutuante, em px.
@@ -890,7 +1031,7 @@ impl<'a> ModernUiStyle<'a> {
     }
 
     /// `margin` do `.part.activitybar` e do `.part.panel` flutuantes (floatingPanels.css, linhas 76 a 102, 222 a 298 e 532 a
-    /// 535). `None` fora do `.floating-panels` ou para outro tipo de parte.
+    /// 535), da barra lateral e do editor principal. `None` fora do `.floating-panels` ou para outro tipo de parte.
     pub fn floating_part_margins(&self, part: &ClassList) -> Option<PartMargins> {
         if !self.has("floating-panels") {
             return None;
@@ -939,6 +1080,33 @@ impl<'a> ModernUiStyle<'a> {
                 margins.top = card;
             }
             if self.compact() && part.contains("floating-part-outer-bottom") {
+                margins.bottom = outer;
+            }
+            return Some(margins);
+        }
+        if part.contains("editor") {
+            // Linhas 176 a 202, 441 a 443, 461 a 463 e 532 a 535 (o editor principal, filho da grade): a precedência é a da
+            // especificidade, que põe o painel em cima (linhas 187 e 461) acima da margem da janela (linhas 180 e 441).
+            let mut margins = PartMargins { top: inner, right: inner, bottom: card, left: card };
+            if self.has("top-window-edge") {
+                margins.top = outer;
+            }
+            if self.has("panel-position-top") && !self.has("nopanel") {
+                margins.top = card;
+            }
+            if part.contains("floating-editor-outer-left") {
+                margins.left = outer;
+            }
+            if part.contains("floating-editor-outer-right") {
+                margins.right = outer;
+            }
+            if self.has("nostatusbar") {
+                margins.bottom = outer;
+            }
+            if self.has("panel-position-bottom") && !self.has("nopanel") {
+                margins.bottom = inner;
+            }
+            if self.compact() && part.contains("floating-editor-outer-bottom") {
                 margins.bottom = outer;
             }
             return Some(margins);
@@ -1524,7 +1692,7 @@ impl<'a> ModernUiStyle<'a> {
         if !self.has("floating-panels") || !editor.contains("editor") {
             return None;
         }
-        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") { 0.0 } else { self.size(CORNER_RADIUS_LARGE) });
+        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") { 0.0 } else { self.size_or(CORNER_RADIUS_LARGE, 8.0) });
         let outer_bottom = editor.contains("floating-editor-outer-bottom");
         Some(self.with_exposed_bottom_corners(
             radii,
@@ -1542,7 +1710,7 @@ impl<'a> ModernUiStyle<'a> {
             return None;
         }
         let modal = overlay.contains("webview-overlay-modal");
-        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") && !modal { 0.0 } else { self.size(CORNER_RADIUS_LARGE) });
+        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") && !modal { 0.0 } else { self.size_or(CORNER_RADIUS_LARGE, 8.0) });
         let outer_bottom = !modal && overlay.contains("webview-overlay-outer-bottom");
         Some(self.with_exposed_bottom_corners(
             radii,

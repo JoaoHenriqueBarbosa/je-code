@@ -72,6 +72,7 @@ use crate::dom::create_el;
 use crate::hover_api::{HoverPlacement, IHoverDelegate, IManagedHover, IManagedHoverOptions, ManagedHoverContent, ManagedHoverContentOrFactory, get_base_layer_hover_delegate, get_default_hover_delegate};
 use crate::select_box::{ISelectBoxDelegate, ISelectBoxOptions, ISelectBoxStyles, ISelectOptionItem, SelectBox};
 use crate::text::{WORKBENCH_LINE_HEIGHT, measure_text, ui_font};
+use crate::toggle::ToggleStyles;
 
 /// O `--vscode-cornerRadius-medium` (`baseSizes.ts`: 6px em todos os temas).
 pub const CORNER_RADIUS_MEDIUM: f64 = 6.0;
@@ -207,6 +208,8 @@ pub struct IActionViewItemOptions {
     pub keybinding_not_rendered_with_label: bool,
     /// As cores do CSS (não está no original). Sem valor, [`ActionBarStyles::default`].
     pub styles: Option<Rc<ActionBarStyles>>,
+    /// `toggleStyles`: as cores do `ToggleActionViewItem` (o `createToggleActionViewItemProvider` as escreve).
+    pub toggle_styles: Option<ToggleStyles>,
 }
 
 /// `IBaseActionViewItemOptions`.

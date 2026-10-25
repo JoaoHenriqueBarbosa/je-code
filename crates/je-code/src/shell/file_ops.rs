@@ -71,9 +71,21 @@ pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// Move para a lixeira do sistema.
-pub fn trash(path: &Path) -> Result<(), String> {
-    ::trash::delete(path).map_err(|e| format!("Falha ao mover '{}' para a lixeira: {e}", path.display()))
+/// Se a lixeira existe (`FileSystemProviderCapabilities.Trash`): no navegador não há lixeira do sistema, e o VS Code web
+/// apaga de vez, com o diálogo de exclusão permanente.
+pub const TRASH_SUPPORTED: bool = cfg!(not(target_arch = "wasm32"));
+
+/// Apaga `path`: para a lixeira do sistema quando ela existe, senão de vez (`deleteFiles` com `useTrash`).
+pub fn delete(path: &Path) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ::trash::delete(path).map_err(|e| format!("Falha ao mover '{}' para a lixeira: {e}", path.display()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let result = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+        result.map_err(|e| format!("Falha ao apagar '{}': {e}", path.display()))
+    }
 }
 
 /// Mostra o item no gerenciador de arquivos do sistema (`revealFileInOS`).

@@ -354,6 +354,12 @@ pub fn turn() {
     while run_next_timer(false) {}
 }
 
+/// Quantos timers estão pendentes neste thread (o `clock.countTimers()` do sinon): os de `setTimeout`, também os que
+/// um intervalo tem armado.
+pub fn pending_timer_count() -> usize {
+    LOOP.with(|l| l.timers.borrow().len())
+}
+
 /// Quanto falta para o próximo timer, para o loop da janela dormir o tempo certo.
 pub fn time_to_next_timer() -> Option<Duration> {
     LOOP.with(|l| {

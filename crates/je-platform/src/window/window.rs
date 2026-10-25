@@ -4,8 +4,12 @@
 //! calcula o deslocamento do topo com ela) e o `IPath` reduzido ao `fileUri` (o que o serviço de confiança no
 //! workspace lê dos arquivos de abertura; `workspace`, `label`, `type`, `openOnlyIfExists`, `exists`, `editorOptions`,
 //! `selection`, `remoteAuthority`, `editorOverrideId`, `diffMode` e `mergeMode` entram junto com quem os consumir).
-//! Os demais tipos (`IWindowSettings`, `IOpenWindowOptions`...) entram junto com quem os consumir.
+//! O `IWindowSettings` é o [`WindowSettings`], só com `restoreFullscreen` e `newWindowDimensions` (o que o
+//! `WindowsStateHandler` lê; o resto das chaves entra junto com quem as consumir), e os três tamanhos padrão de janela
+//! (`DEFAULT_EMPTY_WINDOW_SIZE`, `DEFAULT_WORKSPACE_WINDOW_SIZE` e `DEFAULT_AUX_WINDOW_SIZE`) também estão aqui.
+//! Os demais tipos (`IOpenWindowOptions`...) entram junto com quem os consumir.
 
+use je_base::dynamic::{Dynamic, Truthy};
 use je_base::errors;
 use je_base::network::AGENTS_AUTHORITY;
 use je_base::oauth::UrlSearchParams;
@@ -15,6 +19,62 @@ use je_base::uri::URI;
 /// `DEFAULT_CUSTOM_TITLEBAR_HEIGHT`: altura da barra de título customizada, em pixels, incluindo o espaço da
 /// central de comandos.
 pub const DEFAULT_CUSTOM_TITLEBAR_HEIGHT: u32 = 35;
+
+/// Largura e altura em pixels: o tipo dos três tamanhos padrão de janela.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// `DEFAULT_EMPTY_WINDOW_SIZE`.
+pub const DEFAULT_EMPTY_WINDOW_SIZE: WindowSize = WindowSize { width: 1200.0, height: 800.0 };
+
+/// `DEFAULT_WORKSPACE_WINDOW_SIZE`.
+pub const DEFAULT_WORKSPACE_WINDOW_SIZE: WindowSize = WindowSize { width: 1440.0, height: 900.0 };
+
+/// `DEFAULT_AUX_WINDOW_SIZE`.
+pub const DEFAULT_AUX_WINDOW_SIZE: WindowSize = WindowSize { width: 1024.0, height: 768.0 };
+
+/// `IWindowSettings['newWindowDimensions']`. Um valor fora dos cinco conhecidos se comporta como `default` em todo
+/// consumidor (nenhum teste do original o distingue), então vira [`NewWindowDimensions::Default`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewWindowDimensions {
+    Default,
+    Inherit,
+    Offset,
+    Maximized,
+    Fullscreen,
+}
+
+/// `IWindowSettings`, só com as chaves que o `WindowsStateHandler` lê.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowSettings {
+    pub restore_fullscreen: bool,
+    /// `None` quando a chave não está definida (ou está vazia).
+    pub new_window_dimensions: Option<NewWindowDimensions>,
+}
+
+impl WindowSettings {
+    /// O valor de `configurationService.getValue<IWindowSettings | undefined>('window')`; `None` quando a seção não é um objeto.
+    pub fn from_dynamic(value: &Dynamic) -> Option<Self> {
+        if !matches!(value, Dynamic::Object(_)) {
+            return None;
+        }
+        let new_window_dimensions = match value.get_str("newWindowDimensions") {
+            Dynamic::String(text) => match text.to_string_lossy().as_str() {
+                "" => None,
+                "inherit" => Some(NewWindowDimensions::Inherit),
+                "offset" => Some(NewWindowDimensions::Offset),
+                "maximized" => Some(NewWindowDimensions::Maximized),
+                "fullscreen" => Some(NewWindowDimensions::Fullscreen),
+                _ => Some(NewWindowDimensions::Default),
+            },
+            _ => None,
+        };
+        Some(Self { restore_fullscreen: value.get_str("restoreFullscreen").is_truthy(), new_window_dimensions })
+    }
+}
 
 /// `IPoint`.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -20,6 +20,7 @@ use je_base::dynamic::Dynamic;
 use je_editor::core_2d::dimension::Dimension;
 use je_platform::configuration::models::ConfigurationChangeEvent;
 use je_platform::configuration::service::IConfigurationService;
+use je_platform::actions::MenuId;
 use je_platform::contextkey::contextkey::{IContextKey, RawContextKey};
 use je_platform::opener::editor_types::EditorOptions;
 
@@ -299,6 +300,49 @@ pub trait IEditorGroupsView {
 pub trait IEditorGroupView: IEditorGroup {
     /// `groupsView`.
     fn groups_view(&self) -> Rc<dyn IEditorGroupsView>;
+
+    /// `relayout()`: refaz o layout do grupo com as últimas dimensões. Tem implementação padrão (lança o erro do dublê) para
+    /// não quebrar quem implementa só o recorte acima.
+    fn relayout(&self) {
+        je_base::errors::throw(je_base::errors::Error::new("Method not implemented."))
+    }
+}
+
+/// `IEditorGroupMenuIds`.
+#[derive(Clone, Default)]
+pub struct IEditorGroupMenuIds {
+    /// Menu whose actions render as the leading (left) header toolbar.
+    pub header_primary: Option<MenuId>,
+    /// Menu whose actions render as the trailing (right) header toolbar.
+    pub header_secondary: Option<MenuId>,
+    /// Menu whose actions render after the trailing header toolbar.
+    pub header_layout: Option<MenuId>,
+    /// Menu whose actions render in the editor-actions toolbar on the tab bar.
+    pub editor_actions: Option<MenuId>,
+    /// Menu shown when right-clicking the empty tab-bar area.
+    pub tabs_bar_context: Option<MenuId>,
+    /// Menu whose actions populate the add-tab (`+`) control in the tab bar.
+    pub tabs_bar_add_tab: Option<MenuId>,
+}
+
+/// `IEditorGroupViewOptions['reserveHeaderSpace']`: reserves the enabled group header for an editor even when its
+/// breadcrumbs and actions are empty.
+pub type ReserveHeaderSpace = Rc<dyn Fn(Option<&EditorInputRef>) -> bool>;
+
+/// `IEditorGroupViewOptions`.
+#[derive(Clone, Default)]
+pub struct IEditorGroupViewOptions {
+    /// Whether the editor group should receive keyboard focus after creation or not.
+    pub preserve_focus: Option<bool>,
+    /// Optional menu ids used by the group header and tab bar. When unset the workbench uses the shared defaults and
+    /// renders no custom header actions.
+    pub menu_ids: Option<IEditorGroupMenuIds>,
+    /// Shows the full-width group header with its configured actions and breadcrumbs.
+    pub show_header: Option<bool>,
+    /// Reserves the enabled group header for an editor even when its breadcrumbs and actions are empty.
+    pub reserve_header_space: Option<ReserveHeaderSpace>,
+    /// Uses the modern UI presentation for editor tabs.
+    pub use_modern_ui_tabs: Option<bool>,
 }
 
 /// `fillActiveEditorSelection(group, expectedActiveEditor, options)`: se o editor esperado é o ativo do grupo, a seleção do

@@ -20,6 +20,7 @@ panic = "unwind"
 
 [patch.crates-io]
 ferroni = { path = "vendor/ferroni" }
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
 
 # O zjsc tem cerca de 635 mil linhas numa crate só: sem debuginfo para o link e a memória caberem.
 [profile.release.package.zjsc]

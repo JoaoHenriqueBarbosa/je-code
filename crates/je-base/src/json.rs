@@ -93,6 +93,30 @@ pub enum Value {
     Object(Object),
 }
 
+impl Value {
+    /// A veracidade do JavaScript (`!!value`): `null`, `false`, `0`, `NaN` e `""` são falsos.
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Number(n) => *n != 0.0 && !n.is_nan(),
+            Value::String(s) => !s.is_empty(),
+            Value::Array(_) | Value::Object(_) => true,
+        }
+    }
+}
+
+/// A veracidade do JavaScript (`!!value`) de um `serde_json::Value`.
+pub fn is_serde_value_truthy(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
+        serde_json::Value::String(s) => !s.is_empty(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => true,
+    }
+}
+
 /// Objeto com a ordem de propriedades do JavaScript: chaves que são índices de array
 /// (inteiros canônicos abaixo de 2^32 - 1) primeiro, em ordem numérica; o resto na ordem de
 /// inserção. Atribuir de novo a uma chave existente mantém a posição dela.

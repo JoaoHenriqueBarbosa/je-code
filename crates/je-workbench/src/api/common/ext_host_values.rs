@@ -34,13 +34,13 @@
 //!   o item que o provedor devolve como [`Dynamic`] (a interface `vscode.TreeItem`, com ou sem a classe), então
 //!   `TreeItem` não implementa [`ApiValue`].
 
+use je_platform::resources::host_platform;
 use je_base::buffer::VSBuffer;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::html_content::{IsTrusted, MarkdownStringTrustedOptions};
 use je_base::js_string::JsString;
 use je_base::marshalling_ids::MarshalledId;
-use je_base::path::Platform;
 use je_base::themables::{ThemeColor, ThemeIcon};
 use je_base::uri::{UriComponents, UriState, URI};
 
@@ -301,11 +301,6 @@ fn uri_state_of(value: &Dynamic) -> Result<UriState, Error> {
             fragment: component("fragment")?,
         },
     })
-}
-
-/// A plataforma do `URI.revive` do processo.
-fn host_platform() -> Platform {
-    if cfg!(windows) { Platform::Win32 } else { Platform::Posix }
 }
 
 impl ApiValue for URI {

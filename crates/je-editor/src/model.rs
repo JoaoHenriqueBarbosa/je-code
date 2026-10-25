@@ -3,6 +3,7 @@
 //!
 //! Textos são UTF-16 ([`JsString`]); o `text: string | null` das operações é `Option<JsString>`.
 
+use std::any::Any;
 use std::rc::Rc;
 
 use je_base::JsString;
@@ -272,9 +273,39 @@ pub struct ModelDecorationMinimapInit {
     pub section_header_text: Option<String>,
 }
 
+/// `attachedData: unknown` de `InjectedTextOptions`: um valor opaco que o dono do texto injetado anexa e que volta
+/// em `InjectedText.options` (por exemplo, no alvo do mouse). A igualdade é a identidade do valor, como o `===`.
+#[derive(Clone, Default)]
+pub struct InjectedTextAttachedData(Option<Rc<dyn Any>>);
+
+impl InjectedTextAttachedData {
+    pub fn new<T: Any>(value: Rc<T>) -> Self {
+        Self(Some(value))
+    }
+
+    /// `attachedData instanceof T`: o valor anexado, se for do tipo `T`.
+    pub fn downcast<T: Any>(&self) -> Option<Rc<T>> {
+        self.0.clone()?.downcast::<T>().ok()
+    }
+}
+
+impl std::fmt::Debug for InjectedTextAttachedData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "InjectedTextAttachedData(..)" } else { "InjectedTextAttachedData(None)" })
+    }
+}
+
+impl PartialEq for InjectedTextAttachedData {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::ptr::addr_eq(Rc::as_ptr(a), Rc::as_ptr(b)),
+            _ => false,
+        }
+    }
+}
+
 /// `InjectedTextOptions`.
-///
-/// Pendente: `attachedData` (`unknown`, sem consumidor nesta camada).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InjectedTextOptions {
     pub content: String,
@@ -286,6 +317,8 @@ pub struct InjectedTextOptions {
     /// o que não é finito e não negativo.
     pub width_in_em: Option<f64>,
     pub cursor_stops: Option<InjectedTextCursorStops>,
+    /// `attachedData`.
+    pub attached_data: InjectedTextAttachedData,
 }
 
 /// `IModelDecorationOptions`: a entrada de `deltaDecorations`, com todo campo opcional no valor neutro.

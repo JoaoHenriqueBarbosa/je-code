@@ -19,3 +19,6 @@ workspace = true
 
 [dev-dependencies]
 png = "0.18"
+# O `actionbar.test.ts` confere o `quickInputButtonToAction` do `je-platform` (dependência de desenvolvimento: o
+# `je-platform` depende do `je-widgets`, e ciclo só por dev-dependency é permitido).
+je-platform = { path = "../je-platform" }

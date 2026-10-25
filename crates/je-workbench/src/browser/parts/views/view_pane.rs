@@ -5,8 +5,9 @@
 //! Divergências:
 //! - **Herança.** `ViewPane extends Pane` é um [`ViewPane`] que guarda um [`Pane`] (`Deref` leva a ele). Quem herda da
 //!   `ViewPane` (o `ExplorerView`...) implementa [`ViewPaneDelegate`] (os métodos que o original deixa para sobrescrever:
-//!   `renderBody`, `layoutBody`, `getActionsContext`, `getActionRunner`, `getOptimalWidth`, `saveState`, `shouldShowWelcome`,
-//!   `onDidScrollRoot`) e o registra com [`ViewPane::set_delegate`] (fraco: o delegado costuma guardar a `ViewPane`). O
+//!   `renderBody`, `renderHeaderTitle`, `layoutBody`, `getActionsContext`, `getActionRunner`, `getOptimalWidth`, `saveState`,
+//!   `shouldShowWelcome`, `onDidScrollRoot`) e o registra com [`ViewPane::set_delegate`] (fraco: o delegado costuma guardar a
+//!   `ViewPane`). O
 //!   `primaryActionGroups`, que o construtor lê da subclasse, é o campo [`IViewPaneOptions::primary_action_groups`].
 //! - **Injeção.** Os dez serviços do construtor e os de `createInstance` (`WorkbenchToolBar`, `createActionViewItem`, a
 //!   mensagem de boas-vindas) são os campos de [`ViewPaneServices`]. A barra de ferramentas, o item de ação e a mensagem de
@@ -183,8 +184,14 @@ pub struct ViewPaneServices {
 
 /// O que a subclasse da `ViewPane` sobrescreve. Os padrões são os do original.
 pub trait ViewPaneDelegate {
+    /// `renderHeader(container)` depois do `super.renderHeader` (a `ViewPane` monta o cabeçalho antes de chamar).
+    fn render_header(&self, _container: NodeId) {}
+
     /// `renderBody(container)` (a `ViewPane` cuida do `super.renderBody`, que cria a mensagem de boas-vindas).
     fn render_body(&self, _container: NodeId) {}
+
+    /// `renderHeaderTitle(container)` (depois do `super.renderHeaderTitle`, que cria o ícone, o título e a descrição).
+    fn render_header_title(&self, _container: NodeId) {}
 
     /// `layoutBody(height, width)` (depois do `super.layoutBody`).
     fn layout_body(&self, _height: f64, _width: f64) {}
@@ -702,6 +709,11 @@ impl ViewPane {
         self.on_did_change_view_welcome_state.event()
     }
 
+    /// Dispara o `_onDidChangeTitleArea` (o `protected` do original, para a subclasse).
+    pub fn fire_did_change_title_area(&self) {
+        self.on_did_change_title_area.fire(());
+    }
+
     /// Dispara o `_onDidChangeViewWelcomeState` (o `protected` do original, para a subclasse).
     pub fn fire_did_change_view_welcome_state(&self) {
         self.on_did_change_view_welcome_state.fire(());
@@ -904,6 +916,15 @@ impl ViewPane {
         }));
         self.update_actions_visibility();
         self.update_actions_display();
+
+        if let Some(delegate) = self.delegate() {
+            delegate.render_header(container);
+        }
+    }
+
+    /// O nó do título do cabeçalho (o `container.querySelector('.title')` das subclasses), depois do `renderHeader`.
+    pub fn title_container(&self) -> Option<NodeId> {
+        self.header.borrow().title_container
     }
 
     /// O que `updateHeader` faz a mais depois do `Pane`: o ícone do twisty acompanha o estado.
@@ -992,6 +1013,10 @@ impl ViewPane {
         self.header.borrow_mut().icon_container_hover = Some(hover(icon_container, &calculated_title));
         let description = self.title_description();
         self.ui.tree_mut().set_label(icon_container, self.get_aria_label(&calculated_title, description.as_deref()));
+
+        if let Some(delegate) = self.delegate() {
+            delegate.render_header_title(container);
+        }
     }
 
     fn get_aria_label(&self, title: &str, description: Option<&str>) -> String {

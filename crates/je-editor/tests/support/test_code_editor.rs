@@ -405,7 +405,18 @@ pub fn instantiate_test_code_editor(
     options: &TestCodeEditorCreationOptions,
 ) -> Rc<TestCodeEditor> {
     // `TestCodeEditor._createConfiguration`.
-    let configuration: Rc<dyn IEditorConfiguration> = TestConfiguration::new(options);
+    instantiate_test_code_editor_with_configuration(services, model, options, TestConfiguration::new(options))
+}
+
+/// `instantiateTestCodeEditor` com a configuração dada: o que um teste faz quando o original cria o
+/// `CodeEditorWidget` real (cuja `EditorConfiguration` mede a fonte do DOM e lê a opção `lineHeight`) em vez do
+/// `TestCodeEditor` (cuja `TestConfiguration` tem altura de linha fixa em 19).
+pub fn instantiate_test_code_editor_with_configuration(
+    services: &Rc<CodeEditorServices>,
+    model: Option<Rc<TextModel>>,
+    options: &TestCodeEditorCreationOptions,
+    configuration: Rc<dyn IEditorConfiguration>,
+) -> Rc<TestCodeEditor> {
     let dom_line_breaks_computer_factory: Rc<dyn LineBreaksComputerFactory> =
         Rc::new(MonospaceLineBreaksComputerFactory::create(ConfigurationOptions::options(&*configuration)));
 

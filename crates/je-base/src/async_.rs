@@ -237,6 +237,16 @@ pub fn reject_if_not_canceled(error: Error) -> Promise<()> {
     if errors::is_cancellation_error(&error) { Promise::resolved(()) } else { Promise::rejected(error) }
 }
 
+/// `promise.catch(rejectIfNotCanceled)`: a promessa que resolve com `Some(valor)` quando `promise` resolve, com `None` (o
+/// `undefined` do `catch`) quando ela é cancelada, e rejeita com qualquer outro erro.
+pub fn catch_if_not_canceled<T: Clone + 'static>(promise: &Promise<T>) -> Promise<Option<T>> {
+    promise.then_result_promise(|result| match result {
+        Ok(value) => Promise::resolved(Some(value)),
+        Err(error) if errors::is_cancellation_error(&error) => Promise::resolved(None),
+        Err(error) => Promise::rejected(error),
+    })
+}
+
 /// `notCancellablePromise(promise)`: a mesma promessa sem o `cancel`.
 pub fn not_cancellable_promise<T: Clone + 'static>(promise: &CancelablePromise<T>) -> Promise<T> {
     let (result, resolver) = Promise::new();

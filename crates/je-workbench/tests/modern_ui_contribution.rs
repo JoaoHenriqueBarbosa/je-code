@@ -39,7 +39,7 @@
 //! até `rounds activity bar corners ...` e todos os que seguem (barra de atividade, barra de status, menu compacto,
 //! sashes, cantos do macOS, abas conectadas por tema) exceto os portados abaixo, e `uses the editor background for the
 //! connected surface` até `applies editor tab foregrounds ...`, `uses readable theme foregrounds ...` até `fades tab
-//! actions only when ...`, e de `uses legacy color customizations ...` até `keeps panel global actions above ...`.
+//! actions only when ...`.
 //! Portados com a geometria do resolvedor (`pane_composite_action_box`, `activity_rail_geometry`, `floating_part_margins`,
 //! `activity_bar_corner_radii`): de `pane composite actions fill ...` até `keeps a gutter between horizontal panels ...`.
 //! Portados com o resolvedor das alças dos sashes (`sash_grip_content`, `sash_grip`, `vertical_sash_highlight_insets`) e
@@ -49,6 +49,49 @@
 //! Nos casos parciais ficou só a parte que não é CSS: no terceiro caso `paneHeaderLineHeight` e
 //! `paneHeaderInlineLineHeight`; em `toggles uppercase view headers without relayout` o `text-transform` dos títulos;
 //! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`).
+//! Portados com as margens do editor, as camadas de borda dos cartões compactos (`compact_card_border_layers`) e o estilo
+//! das abas conectadas (`tab_variable`, `connected_tab_fill_background`, `connected_edge_border_top_color`,
+//! `tab_border_container`, com o participante `collect_modern_tab_color_customizations`): de `compact density keeps the
+//! panel cluster flush and square` até `uses explicitly customized selected borders only when the active top border is
+//! absent`. O `generateColorThemeCSS` desses casos é o estilo sem `with_explicit_colors_only`, que já aplica os padrões do
+//! registro e os participantes; `createUnloadedTheme` é `ColorTheme::unloaded` e `setCustomColors` é `set_custom_colors`.
+//! Portados com a fileira, a máscara e o apoio do botão de nova aba (`connected_tab_strip_background`, `add_tab_background`),
+//! as máscaras das ações (`tab_actions_background`) e a moldura do grupo em alto contraste (`connected_group_frame`): de
+//! `preserves hover action customization ...` até `retains the empty root connected editor frame in high contrast`.
+//! Portados com a geometria nativa das abas (`ModernUiStyle::tab_box_context`, que monta o `TabBoxContext` de
+//! `multi_editor_tabs_control.rs` com as classes da raiz e da aba e os tamanhos do tema; `tab_fill_rect` mede o
+//! `getBoundingClientRect()` do `.tab-fill`), o `pointer-events` e o `z-index` das abas (`tab_actions_pointer_events`,
+//! `tab_z_index`) e a borda do editor (`editor_border_width`, `editor_border_color`): de `preserves upper-row pill gutters
+//! ...` até `reserves the connected terminal shoulder ...`. O DOM do original só define na raiz as variáveis de tamanho que o
+//! caso escreve (`root.style.setProperty`), e o que ele deixa indefinido (os `--vscode-spacing-*` de `preserves a single HC
+//! frame ...`, por exemplo) cai no fallback do CSS ou vale zero; `ModernUiStyle::with_root_sizes` monta a raiz só com essas
+//! variáveis, e os casos conferem o valor literal do oráculo.
+//! Portados com o contorno do `.tab-fill` (`tab_fill_outline_style`), a largura das bordas dos indicadores
+//! (`tab_border_container_border_widths`), as bordas e o conteúdo dos ombros (`connected_edge_border_color`,
+//! `fill_shoulder_content`, `fill_shoulder_box`, `tab_fill_border_color`) e as medidas da fileira
+//! (`tabs_and_actions_padding_top`, `tabs_container_padding_bottom`): de `HC active multi-selection keeps one cap outline ...`
+//! até `keeps the right shoulder curved and the left edge straight at row boundaries`.
+//! Portados com a máscara das abas fixas (`sticky_tabs_background_box`), o raio e o alinhamento das ações
+//! (`tab_actions_border_radii`, `tab_actions_container_justify_content`, `tab_action_geometry`) e as cores dos rótulos
+//! (`editor_tab_label_color`): `extends the connected sticky mask ...`, `centers connected actions ...` e `applies editor tab
+//! foregrounds ...`. `uses the registered modern tab colors` (linha 3459 do oráculo) está portado acima, junto das cores
+//! do tema. Portados com os primeiros planos legíveis e os padrões do participante de tema (`editor_tab_foreground` com
+//! `declared`): `uses readable theme foregrounds ...` e `preserves pill and HC label defaults ...`.
+//! Portados com o recuo da aba (`tab_padding`, as regras `!important` de `tabs.css` L99 a L253), a opacidade e o
+//! `pointer-events` das ações (`tab_action_label_opacity`, `tab_actions_pointer_events`), o degradê de saída
+//! (`tab_actions_fade_content`) e o fundo das ações por estado (`tab_actions_state_background`, `tab_actions_fade_gradient`):
+//! de `keeps clean editor tabs compact ...` até `applies the correct action background for each editor tab state`.
+//! `tab divider inherits tab border unless customized` e `keeps the connected editor tab color audit exhaustive` já estão
+//! portados acima, junto das cores do tema. No último caso os quatro estados com `:hover` que o oráculo deixa comentados
+//! (`activeHover` e os outros) entram com o ponteiro na aba (`TabElement::hovered`) e os valores dos comentários.
+//! Portados com o caminho das cores legadas (`collect_modern_tab_color_customizations`, que `ModernUiStyle::variable` e
+//! `editor_tab_fill_background` consultam antes do padrão de `tabs.css`) e com os pseudoelementos como dados do estilo
+//! resolvido (`tab_fill_accent_line` para o `::before` e o `::after` do `.tab-fill`; `tab_actions_background_clip`,
+//! `tab_actions_border_widths`, `tab_actions_border_color` para o `.tab-actions`; `tab_actions_fade` para o `::before` dele;
+//! `tabs_and_actions_box_shadow`; `tab_action_button_background`; `panel_title_actions_min_width` e `panel_global_actions`):
+//! os seis casos de `uses legacy color customizations for Modern UI editor tabs only` até `keeps panel global actions above
+//! overflowing title actions`, que fecham o arquivo do oráculo. `createCompositeAction` escreve na raiz os tamanhos e os pesos
+//! de fonte de `composite_action_root_sizes`, e o que o caso define a mais (`--vscode-strokeThickness`) entra junto.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -86,6 +129,10 @@ use je_theme::ThemeType;
 use je_theme::color::Color;
 use je_theme::registry::ColorValue::Id;
 use je_theme::registry::{ColorDefaults, ColorTransform, ColorValue, Defaults, color_registry};
+use je_theme::sizes::base_sizes::{
+    CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, FONT_WEIGHT_SEMI_BOLD, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE320, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80,
+    STROKE_THICKNESS,
+};
 use je_theme::to_rgba8;
 use je_workbench::contrib::files::browser::views::explorer_view::should_preserve_workspace_name_case;
 use je_base::actions::{Action, ActionRef, Separator};
@@ -103,8 +150,12 @@ use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
-    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle, NotificationInsets,
-    NotificationsPlacement, PaneHost, PaneState, SashPlacement, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb,
+    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, FillShoulder, GradientKind, HorizontalEdges, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle,
+    NotificationInsets, NotificationsPlacement, PaneHost, PaneState, PartMargins, SashPlacement, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderIndicator, TabElement, TabRowPlacement,
+    EDITOR_TABS_SCROLLBAR_Z_INDEX, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
+};
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
+    BoxRect, StrokeSide, TabActionLabelContext, TabActionsContext, TabBoxContext, TabCssClasses, TabSizingParams, tab_action_geometry, tab_action_label_opacity, tab_actions_fade_content, tab_box_style, tab_fill_rect,
 };
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
@@ -587,6 +638,23 @@ fn radii_css(radii: CornerRadii) -> String {
     }
 }
 
+/// O `border-radius` computado na forma mais curta do shorthand (como o Chromium serializa): `0px 4px 0px 0px` fica com os
+/// quatro valores e `4px 0px 0px 0px` perde o último, que repete o segundo.
+fn shortest_border_radius(radii: CornerRadii) -> String {
+    let CornerRadii(top_left, top_right, bottom_right, bottom_left) = radii;
+    let mut values = vec![top_left, top_right, bottom_right, bottom_left];
+    if bottom_left == top_right {
+        values.pop();
+        if bottom_right == top_left {
+            values.pop();
+            if top_right == top_left {
+                values.pop();
+            }
+        }
+    }
+    values.into_iter().map(px).collect::<Vec<_>>().join(" ")
+}
+
 #[test]
 fn supports_isolated_notification_and_dialog_presentation() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
@@ -810,7 +878,12 @@ const SURFACE_BORDER: Option<Defaults> = Some(Defaults::Single(ColorValue::Id("s
 
 /// O `<div class="monaco-workbench ...">` com as variáveis `--vscode-X` do `style.setProperty`: um tema de cores `X`.
 fn theme_with_colors(colors: &[(&str, &str)]) -> ColorTheme {
-    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme_with_colors_of_type(ThemeType::Dark, colors)
+}
+
+/// `theme_with_colors` para qualquer um dos quatro tipos de tema.
+fn theme_with_colors_of_type(theme_type: ThemeType, colors: &[(&str, &str)]) -> ColorTheme {
+    let mut theme = unloaded_theme(theme_type);
     theme.set_custom_colors(colors.iter().copied());
     theme
 }
@@ -2027,6 +2100,1744 @@ fn keeps_macos_corner_radii_in_sync_with_zoom_window_borders_and_chrome() {
             ("linux", "8px"),
         ]
         .map(|(name, value)| (name, value.to_owned()))
+    );
+}
+
+/// Os quatro `margin-*` computados, na ordem `top`, `right`, `bottom`, `left`.
+fn margins_css_list(margins: PartMargins) -> [String; 4] {
+    [margins.top, margins.right, margins.bottom, margins.left].map(px)
+}
+
+/// O `margin` computado: o shorthand na forma mais curta (um, dois, três ou quatro valores).
+fn margin_css(margins: PartMargins) -> String {
+    let [top, right, bottom, left] = margins_css_list(margins);
+    if top == right && right == bottom && bottom == left {
+        top
+    } else if top == bottom && right == left {
+        format!("{top} {right}")
+    } else if right == left {
+        format!("{top} {right} {bottom}")
+    } else {
+        format!("{top} {right} {bottom} {left}")
+    }
+}
+
+#[test]
+fn compact_density_keeps_the_panel_cluster_flush_and_square() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `--vscode-surface-border` e `--vscode-editor-border` são customizações do tema; `--vscode-cornerRadius-large: 8px`,
+    // `--vscode-spacing-size40: 4px`, `--vscode-spacing-sizeNone: 0px` e `--vscode-strokeThickness: 1px` são os valores do tema.
+    let theme = theme_with_colors(&[("surface.border", "#123456"), ("editor.border", "#654321")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-compact floating-panels");
+    let activity_bar = ClassList::new("part activitybar left");
+    let side_bar = ClassList::new("part sidebar floating-part-outer-left floating-part-outer-top floating-part-outer-bottom");
+    let panel = ClassList::new("part panel");
+    let auxiliary_bar = ClassList::new("part auxiliarybar floating-part-outer-right floating-part-outer-top floating-part-outer-bottom");
+    let editor = ClassList::new("part editor floating-editor-outer-left floating-editor-outer-right floating-editor-outer-top floating-editor-outer-bottom");
+    let webview_overlay_content =
+        ClassList::new("webview-overlay-content webview-overlay-outer-left webview-overlay-outer-right webview-overlay-outer-top webview-overlay-outer-bottom");
+    let modal_webview_overlay_content = ClassList::new("webview-overlay-content webview-overlay-modal");
+    let corners = |part: &ClassList| radii_css_list(style.part_corner_radii(part).expect("o raio da parte"));
+    let margin = |part: &ClassList| margins_css_list(style.floating_part_margins(part).expect("a margem da parte"));
+    let floating_border_color = |part: &ClassList| style.floating_part_border_colors(part).expect("a borda da parte").to_css();
+    // `backgroundImage.split('radial-gradient').length - 1` e `backgroundOrigin.split(', ').every(origin => origin === 'border-box')`.
+    let corner_border_count = |part: &ClassList| style.compact_card_border_layers(part).iter().filter(|layer| layer.kind == GradientKind::Radial).count();
+    let all_border_backgrounds_use_border_box = |part: &ClassList| {
+        let layers = style.compact_card_border_layers(part);
+        !layers.is_empty() && layers.iter().all(|layer| layer.origin_border_box)
+    };
+    let square = || ["0px"; 4].map(str::to_owned);
+    let transparent = "rgba(0, 0, 0, 0)".to_owned();
+
+    assert_eq!(
+        (
+            (corners(&activity_bar), corner_border_count(&activity_bar)),
+            (
+                margin(&side_bar),
+                corners(&side_bar),
+                floating_border_color(&side_bar),
+                all_border_backgrounds_use_border_box(&side_bar),
+                corner_border_count(&side_bar),
+            ),
+            (corners(&panel), floating_border_color(&panel), all_border_backgrounds_use_border_box(&panel), corner_border_count(&panel)),
+            (corners(&auxiliary_bar), corner_border_count(&auxiliary_bar)),
+            (
+                margin(&editor),
+                corners(&editor),
+                style.editor_border_color(&editor).map(|color| css_rgb(&color)),
+                all_border_backgrounds_use_border_box(&editor),
+                corner_border_count(&editor),
+            ),
+            radii_css(style.editor_content_corner_radii(&editor).expect("o raio do conteúdo do editor")),
+            radii_css_list(style.webview_overlay_corner_radii(&webview_overlay_content).expect("o raio do webview")),
+            radii_css(style.webview_overlay_corner_radii(&modal_webview_overlay_content).expect("o raio do webview modal")),
+        ),
+        (
+            (square(), 0),
+            (square(), square(), transparent.clone(), true, 0),
+            (square(), transparent.clone(), true, 0),
+            (square(), 0),
+            (square(), square(), Some(transparent), true, 0),
+            "0px".to_owned(),
+            square(),
+            "8px".to_owned(),
+        )
+    );
+}
+
+#[test]
+fn compact_perimeter_stays_flush_with_hidden_window_chrome_and_restores_the_default_density() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    let parts: Vec<ClassList> = [
+        "activitybar left",
+        "activitybar right",
+        "sidebar floating-part-outer-left floating-part-outer-top floating-part-outer-bottom",
+        "auxiliarybar floating-part-outer-right floating-part-outer-top floating-part-outer-bottom",
+        "panel top floating-part-outer-left floating-part-outer-right floating-part-outer-top floating-part-outer-bottom",
+        "panel bottom floating-part-outer-left floating-part-outer-right floating-part-outer-top floating-part-outer-bottom",
+        "editor floating-editor-outer-left floating-editor-outer-right floating-editor-outer-top floating-editor-outer-bottom",
+    ]
+    .iter()
+    .map(|class_name| ClassList::new(&format!("part {class_name}")))
+    .collect();
+    // `{ margin, radius }` de cada parte.
+    let read_geometry = |style: &ModernUiStyle| -> Vec<(String, String)> {
+        parts
+            .iter()
+            .map(|part| (margin_css(style.floating_part_margins(part).expect("a margem da parte")), radii_css(style.part_corner_radii(part).expect("o raio da parte"))))
+            .collect()
+    };
+    let default_geometry = read_geometry(&style);
+
+    for chrome_classes in ["", "top-window-edge", "nostatusbar", "top-window-edge nostatusbar"] {
+        style.set_root_class_name(&format!("monaco-workbench modern-ui floating-panels modern-ui-compact {chrome_classes}"));
+        let flush: Vec<(String, String)> = parts.iter().map(|_| ("0px".to_owned(), "0px".to_owned())).collect();
+        assert_eq!(read_geometry(&style), flush, "{chrome_classes}");
+    }
+
+    style.set_root_class_name("monaco-workbench modern-ui floating-panels");
+    assert_eq!(read_geometry(&style), default_geometry);
+}
+
+/// `ColorThemeData.createUnloadedTheme('vs-dark', colors)`: um tema escuro só com o `colorMap` dado (cores do tema, não
+/// customizações do usuário).
+fn unloaded_theme_with_file_colors(colors: &[(&str, &str)]) -> ColorTheme {
+    unloaded_theme_of_type_with_file_colors(ThemeType::Dark, colors)
+}
+
+/// `ColorThemeData.createUnloadedTheme(themeId, colors)` para qualquer um dos quatro tipos de tema.
+fn unloaded_theme_of_type_with_file_colors(theme_type: ThemeType, colors: &[(&str, &str)]) -> ColorTheme {
+    ColorTheme::unloaded("", theme_type, colors.iter().map(|(id, hex)| ((*id).to_owned(), Color::from_hex(hex))).collect())
+}
+
+/// O tipo do tema que `createUnloadedTheme` deriva do id (`vs-dark`, `vs`, `hc-black` e `hc-light`).
+fn theme_type_of(theme_id: &str) -> ThemeType {
+    match theme_id {
+        "vs-dark" => ThemeType::Dark,
+        "vs" => ThemeType::Light,
+        "hc-black" => ThemeType::HighContrastDark,
+        "hc-light" => ThemeType::HighContrastLight,
+        other => panic!("tema desconhecido: {other}"),
+    }
+}
+
+/// O `background-color` computado de um elemento: o elemento sem fundo declarado é transparente.
+fn computed_background(color: Option<Color>) -> String {
+    css_rgb(&color.unwrap_or_else(Color::transparent_color))
+}
+
+/// Os textos de uma lista de cores, no formato do `getComputedStyle`.
+fn some_strings<const N: usize>(texts: [&str; N]) -> [Option<String>; N] {
+    texts.map(|text| Some(text.to_owned()))
+}
+
+#[test]
+fn uses_the_editor_background_for_the_connected_surface() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let backgrounds = [("#1f1f1f", "#ffffff17"), ("#ffffff", "#2468ac"), ("#1f1f1f", "#00000000")].map(|(editor, tab)| {
+        let theme = unloaded_theme_with_file_colors(&[("editor.background", editor), ("modernEditorTab.activeBackground", tab)]);
+        // `--modern-ui-connected-tab-surface` do `registerThemingParticipant` de `connectedEditorTabs.ts`.
+        let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs");
+        style.connected_tab_surface().map(|color| color.to_string())
+    });
+
+    assert_eq!(backgrounds, some_strings(["#1f1f1f", "#ffffff", "#1f1f1f"]));
+}
+
+#[test]
+fn uses_legacy_background_customizations_for_connected_tabs() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_with_file_colors(&[("editor.background", "#000000"), ("editorGroupHeader.connectedTabsBackground", "#111111")]);
+    theme.set_custom_colors([
+        ("tab.activeBackground", "#123456"),
+        ("tab.unfocusedActiveBackground", "#234567"),
+        ("tab.inactiveBackground", "#345678"),
+        ("tab.unfocusedInactiveBackground", "#456789"),
+        ("tab.hoverBackground", "#56789A"),
+        ("tab.unfocusedHoverBackground", "#6789AB"),
+    ]);
+    // O CSS gerado pelo tema (`generateColorThemeCSS` com os participantes) é o estilo sem `with_explicit_colors_only`.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    let colors = |group_active: bool| {
+        let tab = |class_name: &str| TabElement::new(class_name, group_active);
+        // O `.title.tabs` do grupo não é uma aba: as sondas `hover-probe` e `active-hover-probe` herdam dele.
+        let title = tab("");
+        // As sondas `upper-*` estão dentro da aba `connected-tab-upper-row`.
+        let upper_tab = tab("tab connected-tab-upper-row");
+        let hover_name = if group_active { "--modern-ui-editor-tab-hover-background" } else { "--modern-ui-editor-tab-unfocused-hover-background" };
+        [
+            style.connected_tab_fill_background(&tab("tab active")),
+            style.connected_tab_fill_background(&tab("tab")),
+            style.tab_variable("--modern-ui-editor-tab-hover-background", &upper_tab),
+            style.tab_variable("--modern-ui-editor-tab-unfocused-hover-background", &upper_tab),
+            style.tab_variable("--modern-ui-editor-tab-action-unfocused-hover-background", &upper_tab),
+            style.tab_variable(hover_name, &title),
+            style.tab_variable("--modern-ui-connected-tab-active-hover-background", &title),
+        ]
+        .map(rgb_of)
+    };
+
+    assert_eq!(
+        (colors(true), colors(false)),
+        (
+            some_strings(["rgb(18, 52, 86)", "rgb(52, 86, 120)", "rgb(86, 120, 154)", "rgb(103, 137, 171)", "rgb(103, 137, 171)", "rgb(86, 120, 154)", "rgb(86, 120, 154)"]),
+            some_strings(["rgb(35, 69, 103)", "rgb(69, 103, 137)", "rgb(86, 120, 154)", "rgb(103, 137, 171)", "rgb(103, 137, 171)", "rgb(103, 137, 171)", "rgb(103, 137, 171)"]),
+        )
+    );
+}
+
+#[test]
+fn uses_legacy_border_customizations_for_connected_tabs() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `--vscode-tab-selectedBorderTop` é a customização `tab.selectedBorderTop`; o DOM só tem as variáveis que o caso escreve,
+    // sem o CSS gerado pelo tema.
+    let theme = theme_with_colors(&[("tab.selectedBorderTop", "#56789a")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    style.set_root_variable("--modern-ui-editor-tab-custom-active-border-top", Color::from_hex("#123456"));
+    style.set_root_variable("--modern-ui-editor-tab-custom-unfocused-active-border-top", Color::from_hex("#234567"));
+    let border_styles = |group_active: bool| {
+        // `--tab-border-top-color` e `--tab-border-bottom-color` que o caso escreve em cada aba.
+        let (active_top, active_bottom) = if group_active { ("#123456", "#345678") } else { ("#234567", "#456789") };
+        let active_tab = TabElement::new("tab active connected-tab-top-row tab-border-top tab-border-bottom", group_active)
+            .with_border_colors(Some(Color::from_hex(active_top)), Some(Color::from_hex(active_bottom)));
+        let selected_tab = TabElement::new("tab selected tab-border-top", group_active).with_border_colors(Some(Color::from_hex("#56789a")), None);
+        let active_top_border = style.tab_border_container(&active_tab, TabBorderIndicator::Top);
+        let active_bottom_border = style.tab_border_container(&active_tab, TabBorderIndicator::Bottom);
+        let selected_top_border = style.tab_border_container(&selected_tab, TabBorderIndicator::Top);
+        (
+            (active_top_border.display, rgb_of(style.connected_tab_fill_border_top_color(&active_tab)), rgb_of(style.connected_edge_border_top_color(&active_tab))),
+            (active_bottom_border.display, css_rgb(&active_bottom_border.background)),
+            (selected_top_border.display, rgb_of(style.connected_tab_fill_border_top_color(&selected_tab))),
+        )
+    };
+
+    let expected = |edge: &str, bottom: &str| {
+        (
+            ("none", Some("rgba(0, 0, 0, 0)".to_owned()), Some(edge.to_owned())),
+            ("block", bottom.to_owned()),
+            ("none", Some("rgb(86, 120, 154)".to_owned())),
+        )
+    };
+    assert_eq!(
+        (border_styles(true), border_styles(false)),
+        (expected("rgb(18, 52, 86)", "rgb(52, 86, 120)"), expected("rgb(35, 69, 103)", "rgb(69, 103, 137)"))
+    );
+}
+
+#[test]
+fn uses_explicitly_customized_selected_borders_only_when_the_active_top_border_is_absent() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    type Colors<'a> = &'a [(&'a str, &'a str)];
+    let cases: [(Colors, Colors, [&str; 2]); 5] = [
+        (&[], &[], ["rgb(37, 37, 38)", "rgb(37, 37, 38)"]),
+        (&[], &[("tab.selectedBorderTop", "#a3e635")], ["rgb(163, 230, 53)", "rgb(163, 230, 53)"]),
+        (&[("tab.activeBorderTop", "#3994bc")], &[("tab.selectedBorderTop", "#a3e635")], ["rgb(37, 37, 38)", "rgb(37, 37, 38)"]),
+        (
+            &[],
+            &[("tab.selectedBorderTop", "#a3e635"), ("tab.activeBorderTop", "#22d3ee"), ("tab.unfocusedActiveBorderTop", "#c084fc")],
+            ["rgb(34, 211, 238)", "rgb(192, 132, 252)"],
+        ),
+        (&[], &[("tab.selectedBorderTop", "#a3e635"), ("tab.activeBorderTop", "#00000000")], ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"]),
+    ];
+
+    let actual: Vec<[String; 2]> = cases
+        .iter()
+        .map(|(colors, customizations, _)| {
+            let mut theme = unloaded_theme_with_file_colors(colors);
+            theme.set_custom_colors(customizations.iter().copied());
+            // O CSS gerado pelo tema (`generateColorThemeCSS`) é o estilo sem `with_explicit_colors_only`.
+            let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs");
+            // O grupo ativo e o sem foco, cada um com a aba `active selected tab-border-top` e o seu `tab-connected-edge`.
+            [true, false].map(|group_active| {
+                let tab = TabElement::new("tab active selected tab-border-top", group_active);
+                css_rgb(&style.connected_edge_border_top_color(&tab).expect("a aresta conectada da aba ativa"))
+            })
+        })
+        .collect();
+    let expected: Vec<[String; 2]> = cases.iter().map(|(_, _, expected)| (*expected).map(str::to_owned)).collect();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn preserves_hover_action_customization_on_connected_wrapped_and_separate_pinned_rows() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let actual = [false, true].map(|customize_action| {
+        let mut theme = unloaded_theme(ThemeType::Dark);
+        let mut customizations = vec![("modernEditorTab.hoverBackground", "#7c2d12")];
+        if customize_action {
+            customizations.push(("modernEditorTab.hoverActionBackground", "#5a1f0c"));
+        }
+        theme.set_custom_colors(customizations);
+        let style = ModernUiStyle::new(&theme, "upper-action-customization monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs");
+        // Os grupos ativo e sem foco, cada um com a aba da fileira única (`single`), a da fileira com quebra (`wrapped`) e a da
+        // fileira das fixadas (`pinned`). As duas últimas são `connected-tab-upper-row`; `wrapping` e `two-tab-bars` são do
+        // contêiner e não mudam a variável da aba.
+        [true, false]
+            .into_iter()
+            .flat_map(|group_active| {
+                ["single", "wrapped", "pinned"].map(|layout| {
+                    let tab = TabElement::new(if layout == "single" { "tab" } else { "tab connected-tab-upper-row" }, group_active);
+                    let probe = if group_active { "--modern-ui-editor-tab-action-hover-background" } else { "--modern-ui-editor-tab-action-unfocused-hover-background" };
+                    rgb_of(style.tab_variable(probe, &tab))
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(actual, [vec![Some("rgb(124, 45, 18)".to_owned()); 6], vec![Some("rgb(90, 31, 12)".to_owned()); 6]]);
+}
+
+#[test]
+fn uses_separate_connected_strip_and_border_colors_without_changing_the_editor_group_header() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let results = ["#2468ac", "#ff000080", "#00000000"].map(|color| {
+        let mut theme = unloaded_theme_of_type_with_file_colors(
+            ThemeType::Light,
+            &[
+                ("editor.background", "#ffffff"),
+                ("editorGroup.border", "#123456"),
+                ("editorGroupHeader.tabsBorder", "#445566"),
+                ("editorGroupHeader.tabsBackground", "#eeeeee"),
+                ("editorGroupHeader.connectedTabsBackground", "#ddeeff"),
+                ("modernEditorTab.activeBackground", "#abcdef"),
+            ],
+        );
+        theme.set_custom_colors([("modernEditorTab.activeBackground", color), ("tab.activeBackground", "#654321")]);
+        let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+        let tab = TabElement::new("tab active", true);
+        let separator = rgb_of(style.connected_tab_separator_color(&tab));
+        (
+            // O `.tab-fill`, o `.tab-connected-edge`, o `::before` e o `::after` do fill, o `::after` da fileira e o `.tab-actions`.
+            [
+                rgb_of(style.connected_tab_fill_background(&tab)),
+                rgb_of(style.connected_edge_border_top_color(&tab)),
+                separator.clone(),
+                separator.clone(),
+                separator,
+                Some(css_rgb(&style.tab_actions_background(&tab, true))),
+            ],
+            rgb_of(style.variable("--vscode-editorGroupHeader-tabsBackground")),
+            rgb_of(style.connected_tab_strip_background()),
+            theme.resolve_color("editorGroup.border", true).map(|border| border.to_string()),
+        )
+    });
+
+    let surface = |fill: &str| -> [Option<String>; 6] {
+        let border = "rgb(68, 85, 102)";
+        [fill, border, border, border, border, "rgba(0, 0, 0, 0)"].map(|color| Some(color.to_owned()))
+    };
+    let expected_for = |fill: &str| (surface(fill), Some("rgb(238, 238, 238)".to_owned()), Some("rgb(221, 238, 255)".to_owned()), Some("#123456".to_owned()));
+    assert_eq!(results, [expected_for("rgb(36, 104, 172)"), expected_for("rgba(255, 0, 0, 0.5)"), expected_for("rgba(0, 0, 0, 0)")]);
+}
+
+#[test]
+fn keeps_the_shared_connected_strip_on_the_standard_header_background_outside_modern_ui() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme_of_type_with_file_colors(
+        ThemeType::Light,
+        &[
+            ("editor.background", "#ffffff"),
+            ("editorGroupHeader.tabsBackground", "#f8f8f8"),
+            ("editorGroupHeader.connectedTabsBackground", "#e5e5e5"),
+            ("modernEditorTab.hoverBackground", "#00000080"),
+        ],
+    );
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs");
+    // As sondas estão na raiz, que não é uma aba nem um grupo.
+    let root = TabElement::new("", true);
+    let colors = |style: &ModernUiStyle| {
+        (
+            rgb_of(style.tab_variable("--modern-ui-connected-tab-strip-background", &root)),
+            rgb_of(style.tab_variable("--modern-ui-connected-tab-upper-hover-background", &root)),
+        )
+    };
+
+    let shared = colors(&style);
+    style.set_root_class_name("monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs modern-ui");
+    let editor = colors(&style);
+
+    assert_eq!(
+        (shared, editor),
+        (
+            (Some("rgb(248, 248, 248)".to_owned()), Some("rgb(123, 123, 123)".to_owned())),
+            (Some("rgb(229, 229, 229)".to_owned()), Some("rgb(114, 114, 114)".to_owned())),
+        )
+    );
+}
+
+#[test]
+fn keeps_selected_pill_surfaces_visible_beneath_transparent_tab_actions() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    for (theme_id, strip, hover, expected) in [
+        ("vs-dark", "#202020", "#ffffff80", "rgb(143, 143, 143)"),
+        ("vs", "#eeeeee", "#00000080", "rgb(118, 118, 118)"),
+        ("vs", "#eeeeee", "#2468ac", "rgb(36, 104, 172)"),
+        ("vs-dark", "#202020", "#ffffff00", "rgb(32, 32, 32)"),
+        ("hc-black", "#000000", "#ffffff", "rgb(255, 255, 255)"),
+        ("hc-light", "#ffffff", "#000000", "rgb(0, 0, 0)"),
+    ] {
+        let theme = unloaded_theme_of_type_with_file_colors(
+            theme_type_of(theme_id),
+            &[("editor.background", "#112233"), ("editorGroupHeader.tabsBackground", strip), ("modernEditorTab.hoverBackground", hover)],
+        );
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}"));
+        let high_contrast = theme_id.starts_with("hc-");
+        // `title.compact-height` só muda a altura, não as cores.
+        for compact in [false, true] {
+            for focused_group in [false, true] {
+                for actions_left in [false, true] {
+                    for active in [false, true] {
+                        let class_name = format!("tab connected-tab-upper-row{}{}", if actions_left { " tab-actions-left" } else { "" }, if active { " active" } else { "" });
+                        let tab = TabElement::new(&class_name, focused_group);
+                        let strip_color = computed_background(style.connected_tab_strip_background());
+                        // A ação está com o foco: `action.focus()`.
+                        assert_eq!(
+                            (
+                                computed_background(style.connected_tab_fill_background(&tab)),
+                                rgb_of(style.tab_variable("--modern-ui-editor-tab-hover-background", &tab)),
+                                css_rgb(&style.tab_actions_background(&tab, true)),
+                            ),
+                            (
+                                if active {
+                                    "rgb(17, 34, 51)".to_owned()
+                                } else if high_contrast {
+                                    "rgba(0, 0, 0, 0)".to_owned()
+                                } else {
+                                    strip_color
+                                },
+                                Some(expected.to_owned()),
+                                "rgba(0, 0, 0, 0)".to_owned(),
+                            ),
+                            "{theme_id}, {hover}, compact: {compact}, focused group: {focused_group}, actions left: {actions_left}, active: {active}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn composites_translucent_connected_strip_colors_only_once() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let cases: [(Option<&str>, &str); 4] =
+        [(Some("#ffffff80"), "rgb(143, 143, 143)"), (Some("#ffffff00"), "rgb(32, 32, 32)"), (Some("#abcdef"), "rgb(171, 205, 239)"), (None, "rgb(32, 32, 32)")];
+    for (strip, expected) in cases {
+        let theme_ids: &[&str] = if strip.is_some() { &["vs-dark", "vs", "hc-black", "hc-light"] } else { &["hc-black", "hc-light"] };
+        for theme_id in theme_ids {
+            let mut colors = vec![("editor.background", "#202020")];
+            colors.extend(strip.map(|strip| ("editorGroupHeader.tabsBackground", strip)));
+            let theme = unloaded_theme_of_type_with_file_colors(theme_type_of(theme_id), &colors);
+            let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}"));
+            let high_contrast = theme_id.starts_with("hc-");
+            // A aba inativa do grupo ativo, com o foco na ação (`action.focus()`).
+            let tab = TabElement::new("tab", true);
+            // `row.classList.toggle('wrapping', wrapped)`: a fileira com quebra pinta a mesma superfície.
+            for wrapped in [false, true] {
+                // A fileira, a máscara das abas fixas e o apoio do botão de nova aba leem a mesma variável da fileira.
+                let strip_background = computed_background(style.connected_tab_strip_background());
+                assert_eq!(
+                    (
+                        [strip_background.clone(), strip_background.clone(), css_rgb(&style.add_tab_background())],
+                        strip_background,
+                        computed_background(style.connected_tab_fill_background(&tab)),
+                        high_contrast.then(|| css_rgb(&style.tab_actions_background(&tab, true))),
+                    ),
+                    (
+                        [expected.to_owned(), expected.to_owned(), "rgba(0, 0, 0, 0)".to_owned()],
+                        expected.to_owned(),
+                        if high_contrast { "rgba(0, 0, 0, 0)".to_owned() } else { expected.to_owned() },
+                        high_contrast.then(|| "rgba(0, 0, 0, 0)".to_owned()),
+                    ),
+                    "{theme_id}, {strip:?}, wrapped: {wrapped}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn retains_the_empty_root_connected_editor_frame_in_high_contrast() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let part = ClassList::new("part editor editor-tabs-multiple");
+    for theme_id in ["vs-dark", "vs", "hc-black", "hc-light"] {
+        // `--vscode-focusBorder`, `--vscode-contrastBorder` e `--vscode-modernPanel-border` são customizações do tema.
+        let mut theme = unloaded_theme(theme_type_of(theme_id));
+        theme.set_custom_colors([("focusBorder", "#ffaa00"), ("contrastBorder", "#00aaff"), ("modernPanel.border", "#00ffff")]);
+        let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+        for floating in [false, true] {
+            style.set_root_class_name(&format!(
+                "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}{}",
+                if floating { " floating-panels" } else { "" }
+            ));
+            for empty in [false, true, false] {
+                let group = ClassList::new(if empty { "editor-group-container empty active" } else { "editor-group-container active" });
+                let frame = style.connected_group_frame(&part, false);
+                let has_frame = theme_id.starts_with("hc-");
+                let actual = (
+                    frame.as_ref().map_or("none", |_| "\"\""),
+                    has_frame
+                        .then(|| {
+                            frame.as_ref().map(|frame| {
+                                (px(frame.border_width), frame.color.as_ref().map(css_rgb), px(frame.radius), if frame.pointer_events_none { "none" } else { "auto" })
+                            })
+                        })
+                        .flatten(),
+                    empty.then(|| [editor_group_child_display(&group), editor_group_child_display(&group)]),
+                );
+                let expected = (
+                    if has_frame { "\"\"" } else { "none" },
+                    has_frame.then(|| ("1px".to_owned(), Some("rgb(0, 255, 255)".to_owned()), "8px".to_owned(), "none")),
+                    empty.then_some(["none", "none"]),
+                );
+                assert_eq!(actual, expected, "{theme_id}, floating: {floating}, empty: {empty}");
+            }
+        }
+    }
+}
+
+/// `[left, top, right, bottom]` de uma caixa da geometria nativa (`getBoundingClientRect()` do original).
+fn box_array(rect: BoxRect) -> [f64; 4] {
+    [rect.left, rect.top, rect.right, rect.bottom]
+}
+
+#[test]
+fn preserves_upper_row_pill_gutters_for_wrapped_and_pinned_rows() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `--vscode-spacing-size20`, `--vscode-cornerRadius-small` e `--vscode-strokeThickness` são os valores do tema.
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    for pinned_row in [false, true] {
+        // `title.two-tab-bars` é a fileira das fixadas, a barra superior; sem ela a fileira é a da quebra (`wrapping`).
+        let placement = TabRowPlacement { wrapping: !pinned_row, upper_bar: pinned_row, two_tab_bars: pinned_row, first_tab_bar: pinned_row, tab_width: 120.0, ..TabRowPlacement::default() };
+        for row_end in ["", "last-in-row", "connected-tab-right-edge"] {
+            let tab = TabElement::new(&format!("tab active connected-tab-upper-row {row_end}"), true);
+            // O `left` do `.tab-fill` e o `right`, a distância da borda direita da aba até a do preenchimento.
+            let fill = tab_fill_rect(&style.tab_box_context(&tab, placement));
+            assert_eq!(
+                [px(fill.left), px(placement.tab_width - fill.right)],
+                ["2px".to_owned(), "2px".to_owned()],
+                "pinned row: {pinned_row}, row end: {row_end}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hidden_connected_close_slots_do_not_intercept_pointer_input() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    for state in ["", "active", "dirty", "sticky", "focus", ""] {
+        // `action.blur()` e depois, no estado `focus`, `action.focus()`: o foco está na ação, então a aba tem `:focus-within`.
+        let class_name = if state == "focus" { "" } else { state };
+        let tab = TabElement { focus_within: state == "focus", ..TabElement::new(&format!("tab sizing-fit {class_name}"), true) }.with_title("title tabs tab-actions-reserve-space", true);
+        // O `.action-label` herda o `pointer-events` do `.tab-actions`, e nenhuma regra o troca.
+        let pointer_events = style.tab_actions_pointer_events(&tab);
+        assert_eq!([pointer_events, pointer_events], [if state.is_empty() { "none" } else { "auto" }; 2], "{}", if state.is_empty() { "hidden" } else { state });
+    }
+}
+
+#[test]
+fn raises_active_connected_sticky_shoulders_above_peers_but_below_scrollbars() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    for sizing in ["fit", "shrink", "fixed"] {
+        for sticky in ["compact", "shrink"] {
+            for disabled in [false, true] {
+                // `tabs.classList.toggle('disable-sticky-tabs', disabled)`: a classe é do `.tabs-container` das duas abas.
+                let tab = |active: bool| TabElement {
+                    disable_sticky_tabs: disabled,
+                    ..TabElement::new(&format!("tab {}sticky sizing-{sizing} sticky-{sticky}", if active { "active " } else { "" }), true)
+                };
+                // `auto` é `None`; a barra de rolagem da fileira tem `z-index: 11` em qualquer estado.
+                let actual = [style.tab_z_index(&tab(true)), style.tab_z_index(&tab(false)), Some(EDITOR_TABS_SCROLLBAR_Z_INDEX)];
+                assert_eq!(actual, if disabled { [None, None, Some(11)] } else { [Some(9), Some(8), Some(11)] }, "{sizing}, {sticky}, disabled: {disabled}");
+            }
+        }
+    }
+}
+
+#[test]
+fn preserves_a_single_hc_frame_in_every_tab_mode_without_changing_the_outer_card_geometry() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // As variáveis `--vscode-*` da raiz são as cores do tema; sem o CSS gerado pelo tema, só elas existem no DOM.
+    let themes: Vec<(&str, ColorTheme)> = ["vs-dark", "vs", "hc-black", "hc-light"]
+        .into_iter()
+        .map(|theme_id| {
+            let mut theme = unloaded_theme(theme_type_of(theme_id));
+            theme.set_custom_colors([("editor.border", "#123456"), ("editorGroup.border", "#123456"), ("modernPanel.border", "#00ffff"), ("focusBorder", "#ffaa00")]);
+            (theme_id, theme)
+        })
+        .collect();
+    let root_classes = |floating: bool, theme_id: &str, connected: bool, compact: bool| {
+        let mut classes = String::from("monaco-workbench modern-ui modern-ui-tabs");
+        for (enabled, class_name) in [(floating, "floating-panels"), (connected, "modern-ui-connected-editor-tabs"), (compact, "modern-ui-compact")] {
+            if enabled {
+                classes.push(' ');
+                classes.push_str(class_name);
+            }
+        }
+        format!("{classes} {theme_id}")
+    };
+    let editor_part = |multiple: bool| ClassList::new(&format!("part editor floating-editor-outer-left floating-editor-outer-top{}", if multiple { " editor-tabs-multiple" } else { "" }));
+    // A geometria do cartão externo: as margens da parte (o lugar que ela ocupa na grade) e a borda que fica dentro dela
+    // (onde começa o conteúdo). O `getBoundingClientRect()` do original lê o mesmo par.
+    let geometry = |style: &ModernUiStyle, part: &ClassList| (style.floating_part_margins(part), px(style.editor_border_width(part)));
+    // O original mede a linha de base uma vez por `floating`. A raiz define só `--vscode-strokeThickness` e
+    // `--vscode-cornerRadius-large`; os `--vscode-spacing-*` ficam indefinidos e as margens valem zero em qualquer densidade,
+    // então a linha de base não depende da densidade, do tema, das abas conectadas nem do modo das abas.
+    let root_sizes = [(STROKE_THICKNESS, 1.0), (CORNER_RADIUS_LARGE, 8.0)];
+    let baseline = |floating: bool| {
+        let style = ModernUiStyle::new(&themes[0].1, &root_classes(floating, "", false, false)).with_explicit_colors_only().with_root_sizes(&root_sizes);
+        geometry(&style, &editor_part(false))
+    };
+
+    for floating in [false, true] {
+        for (theme_id, theme) in &themes {
+            let high_contrast = theme_id.starts_with("hc-");
+            for connected in [false, true] {
+                for compact in [false, true] {
+                    let style = ModernUiStyle::new(theme, &root_classes(floating, theme_id, connected, compact)).with_explicit_colors_only().with_root_sizes(&root_sizes);
+                    for show_tabs in ["multiple", "single", "none", "multiple"] {
+                        let part = editor_part(show_tabs == "multiple");
+                        let connected_frame = connected && show_tabs == "multiple";
+                        let shared_card = connected_frame && high_contrast;
+                        let border_width = style.editor_border_width(&part);
+                        // `::after` do `.editor-group-container`: as bordas vêm da regra da moldura (linhas 39 a 48), e o
+                        // `content: none` da linha 56 só a apaga no editor da grade do Modern UI.
+                        let frame_rule = style.connected_group_frame(&part, false);
+                        let group_frame = [
+                            style.connected_group_frame(&part, true).map_or("none", |_| "\"\"").to_owned(),
+                            px(frame_rule.as_ref().map_or(0.0, |frame| frame.border_width)),
+                            px(frame_rule.as_ref().map_or(0.0, |frame| frame.border_width)),
+                            px(frame_rule.as_ref().map_or(0.0, |frame| frame.radius)),
+                        ];
+                        let border = [px(border_width), px(border_width), css_rgb(&style.editor_border_color(&part).expect("a borda do editor"))];
+                        let compact_stroke = (floating && compact).then(|| style.floating_card_stroke_color(&part).expect("o traço do cartão compacto").to_string());
+
+                        let expected_border_color = if floating && compact {
+                            "rgba(0, 0, 0, 0)"
+                        } else if shared_card {
+                            "rgb(0, 255, 255)"
+                        } else {
+                            "rgb(18, 52, 86)"
+                        };
+                        let expected_frame = if shared_card { ["none", "1px", "1px", "8px"] } else { ["none", "0px", "0px", "0px"] };
+                        assert_eq!(
+                            (geometry(&style, &part), border, compact_stroke, group_frame),
+                            (
+                                baseline(floating),
+                                [px(1.0), px(1.0), expected_border_color.to_owned()],
+                                (floating && compact).then(|| if shared_card { "#00ffff" } else { "#123456" }.to_owned()),
+                                expected_frame.map(str::to_owned),
+                            ),
+                            "{theme_id}, floating: {floating}, connected: {connected}, compact: {compact}, showTabs: {show_tabs}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn connects_hc_group_borders_without_moving_content_when_themes_or_active_groups_change() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let part = ClassList::new("part editor editor-tabs-multiple");
+    let placement = TabRowPlacement { tab_width: 120.0, ..TabRowPlacement::default() };
+    // A aba ativa (`connected-tab-top-row`) é a segunda da fileira, com 120px; a primeira abre a fileira.
+    let first_placement = TabRowPlacement { starts_row: true, ..placement };
+    let mut first_geometry = None;
+    for theme_id in ["vs-dark", "vs", "hc-black", "hc-light"] {
+        let theme = unloaded_theme_of_type_with_file_colors(
+            theme_type_of(theme_id),
+            &[
+                ("editor.background", "#333333"),
+                ("editorGroupHeader.tabsBorder", "#252526"),
+                ("focusBorder", "#ffaa00"),
+                ("contrastBorder", "#888888"),
+                ("modernPanel.border", "#00ffff"),
+            ],
+        );
+        // O CSS gerado pelo tema (`generateColorThemeCSS`) é o estilo sem `with_explicit_colors_only`.
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}"));
+        // A geometria do cabeçalho conectado: a altura da fileira e as caixas do `.tab-fill` das duas abas (a altura e a
+        // largura da aba, as linhas do breadcrumbs, do cabeçalho e do corpo não dependem do tema nem do grupo).
+        let geometry = |group_active: bool| {
+            let first = style.tab_box_context(&TabElement::new("tab first-in-row", group_active), first_placement);
+            let active = style.tab_box_context(&TabElement::new("tab active connected-tab-top-row", group_active), placement);
+            (first.connected_row_height(), box_array(tab_fill_rect(&first)), box_array(tab_fill_rect(&active)), (active.tab_width, active.tab_height))
+        };
+        let baseline = *first_geometry.get_or_insert_with(|| geometry(true));
+        for group_active in [true, false] {
+            let high_contrast = theme_id.starts_with("hc-");
+            let border = if high_contrast {
+                if group_active { "rgb(255, 170, 0)" } else { "rgb(136, 136, 136)" }
+            } else {
+                "rgb(37, 37, 38)"
+            };
+            let first_tab = TabElement::new("tab first-in-row", group_active);
+            let tab = TabElement::new("tab active connected-tab-top-row", group_active);
+            // `border` do `.tab-fill` pinta os quatro lados da mesma cor, então a tampa (topo e esquerda) lê uma só.
+            let cap = rgb_of(style.connected_tab_fill_border_top_color(&tab));
+            // `::before` (`border-right`, `border-bottom`) e `::after` (`border-left`, `border-bottom`) do `.tab-fill` e o
+            // `::after` da fileira leem a mesma `--modern-ui-connected-tab-border`.
+            let separator = rgb_of(style.connected_tab_separator_color(&tab));
+            let frame = style.connected_group_frame(&part, false);
+            let frame_width = px(frame.as_ref().map_or(0.0, |frame| frame.border_width));
+            let actual = (
+                geometry(group_active),
+                style.tab_fill_border_widths(&first_tab).map(|widths| px(widths.left)),
+                [cap.clone(), cap],
+                [[separator.clone(), separator.clone()], [separator.clone(), separator.clone()]],
+                separator,
+                (
+                    frame.as_ref().map_or("none", |_| "\"\"").to_owned(),
+                    [frame_width.clone(), frame_width.clone(), frame_width],
+                    high_contrast.then(|| frame.as_ref().and_then(|frame| frame.color.as_ref().map(css_rgb))).flatten(),
+                    px(frame.as_ref().map_or(0.0, |frame| frame.radius)),
+                    if frame.as_ref().is_some_and(|frame| frame.pointer_events_none) { "none" } else { "auto" },
+                ),
+                rgb_of(style.connected_tab_surface()),
+            );
+            let expected_separator = Some(border.to_owned());
+            let expected = (
+                baseline,
+                Some("1px".to_owned()),
+                [Some("rgba(0, 0, 0, 0)".to_owned()), Some("rgba(0, 0, 0, 0)".to_owned())],
+                [[expected_separator.clone(), expected_separator.clone()], [expected_separator.clone(), expected_separator.clone()]],
+                expected_separator,
+                if high_contrast {
+                    ("\"\"".to_owned(), ["1px".to_owned(), "1px".to_owned(), "1px".to_owned()], Some("rgb(0, 255, 255)".to_owned()), "8px".to_owned(), "none")
+                } else {
+                    ("none".to_owned(), ["0px".to_owned(), "0px".to_owned(), "0px".to_owned()], None, "0px".to_owned(), "auto")
+                },
+                Some("rgb(51, 51, 51)".to_owned()),
+            );
+            assert_eq!(actual, expected, "{theme_id}, active group: {group_active}");
+        }
+    }
+}
+
+#[test]
+fn uses_the_panel_border_for_the_connected_hc_frame_in_a_multi_tab_modal_editor() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // A parte modal, filha do `.monaco-modal-editor-block`, fora da grade.
+    let part = ClassList::new("part editor editor-tabs-multiple modal-editor-part");
+    for theme_id in ["hc-black", "hc-light"] {
+        // As variáveis `--vscode-*` da raiz são as cores do tema; sem o CSS gerado pelo tema, só elas existem no DOM.
+        let mut theme = unloaded_theme(theme_type_of(theme_id));
+        theme.set_custom_colors([("focusBorder", "#ffaa00"), ("contrastBorder", "#888888"), ("modernPanel.border", "#00ffff"), ("editorWidget.border", "#888888")]);
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        for group_active in [true, false] {
+            // Uma aba comum e a aba ativa (`connected-tab-top-row`), os dois filhos do `.tabs-container`.
+            let tabs = [TabElement::new("tab", group_active), TabElement::new("tab active connected-tab-top-row", group_active)];
+            let frame = style.connected_group_frame(&part, false);
+            assert_eq!(
+                (
+                    tabs.len(),
+                    rgb_of(style.connected_tab_fill_border_top_color(&tabs[1])),
+                    frame.as_ref().map(|frame| (px(frame.border_width), frame.color.as_ref().map(css_rgb), px(frame.radius))),
+                    frame.as_ref().map_or("none", |_| "\"\""),
+                    px(style.editor_border_width(&part)),
+                ),
+                (2, Some("rgba(0, 0, 0, 0)".to_owned()), Some(("1px".to_owned(), Some("rgb(0, 255, 255)".to_owned()), "8px".to_owned())), "\"\"", "1px".to_owned()),
+                "{theme_id}, active group: {group_active}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reserves_the_connected_terminal_shoulder_without_moving_tab_content() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // O `left` do rótulo: o recuo da aba, que não depende de a aba estar ativa.
+    let label_left = |context: &TabBoxContext| {
+        tab_box_style(
+            &TabCssClasses { last_tab: true, last_child: true, wrapping: context.wrapping, ..TabCssClasses::default() },
+            &TabSizingParams { modern_ui_tabs: true, connected_editor_tabs: context.connected, ..TabSizingParams::default() },
+        )
+        .padding_left
+    };
+    for classes in ["", "modern-ui", "modern-ui modern-ui-connected-editor-tabs", "modern-ui-connected-editor-tabs"] {
+        let connected = classes.contains("modern-ui-connected-editor-tabs");
+        let shares_editor_frame = connected && classes.split(' ').any(|class_name| class_name == "modern-ui");
+        for theme_id in ["vs-dark", "vs", "hc-black", "hc-light"] {
+            let theme = unloaded_theme(theme_type_of(theme_id));
+            let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui-tabs {classes} {theme_id}"));
+            for active_group in [true, false] {
+                for compact in [true, false] {
+                    // A aba de 120px abre a fileira (`first-in-row`) e é a última (`connected-tab-last`); `compact-height` é do `.title`.
+                    let placement = TabRowPlacement { compact_height: compact, starts_row: true, tab_width: 120.0, ..TabRowPlacement::default() };
+                    let inactive = style.tab_box_context(&TabElement::new("tab first-in-row connected-tab-last", active_group), placement);
+                    let active = style.tab_box_context(&TabElement::new("tab first-in-row connected-tab-last active", active_group), placement);
+                    let (inactive_fill, active_fill) = (tab_fill_rect(&inactive), tab_fill_rect(&active));
+                    // `--modern-ui-connected-tab-action-inset` e `--modern-ui-tab-action-padding` só existem nas abas conectadas;
+                    // sem elas a sonda `var(..., 0px)` mede `0`.
+                    let action_classes = TabCssClasses { last_tab: true, last_child: true, ..TabCssClasses::default() };
+                    let (action_inset, action_padding) = if active.connected { (active.connected_action_inset(), active.action_padding(&action_classes)) } else { (0.0, 0.0) };
+
+                    // A largura da pílula de 120px e a altura da fileira; o rótulo não anda quando a aba fica ativa.
+                    let (expected_inset, expected_padding) = match (connected, compact, shares_editor_frame) {
+                        (false, ..) => (0.0, 0.0),
+                        (true, true, false) => (4.0, 28.0),
+                        (true, true, true) => (4.5, 28.5),
+                        (true, false, false) => (6.0, 30.0),
+                        (true, false, true) => (6.5, 30.5),
+                    };
+                    assert_eq!(
+                        (
+                            (active.tab_width, active.tab_height),
+                            label_left(&active),
+                            [inactive_fill.top - active_fill.top, inactive_fill.left - active_fill.left, active_fill.right - inactive_fill.right],
+                            (action_inset, action_padding),
+                            // O ombro terminal de `7px` (`cornerRadius-medium` e o traço) mais o traço de `1px` da aba conectada.
+                            px(active.connected_terminal_shoulder_margin(true)),
+                            px(active.fill_top_left_radius()),
+                        ),
+                        (
+                            (inactive.tab_width, inactive.tab_height),
+                            label_left(&inactive),
+                            if connected { [if shares_editor_frame { 4.5 } else { 3.5 }, 2.0, 2.0] } else { [0.0, 0.0, 0.0] },
+                            (expected_inset, expected_padding),
+                            if connected { "8px".to_owned() } else { "0px".to_owned() },
+                            if connected { "0px".to_owned() } else { "4px".to_owned() },
+                        ),
+                        "{classes:?}, {theme_id}, active group: {active_group}, compact: {compact}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn hc_active_multi_selection_keeps_one_cap_outline_without_an_inner_frame() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // A aba única do `.tabs-container` (a primeira, então abre a fileira) de 120px.
+    let placement = TabRowPlacement { tab_width: 120.0, starts_row: true, ..TabRowPlacement::default() };
+    for theme_id in ["hc-black", "hc-light"] {
+        let mut theme = unloaded_theme(theme_type_of(theme_id));
+        theme.set_custom_colors([("contrastActiveBorder", "#ff0000"), ("focusBorder", "#00ff00")]);
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        let ordinary = TabElement::new("tab active", true);
+        let selected = TabElement::new("tab active selected multi-selected", true);
+        let bounds = box_array(tab_fill_rect(&style.tab_box_context(&ordinary, placement)));
+        let ordinary_outline = style.tab_fill_outline_style(&ordinary);
+        let indicator = style.tab_border_container_border_widths();
+        assert_eq!(
+            (
+                ordinary_outline,
+                style.tab_fill_outline_style(&selected),
+                rgb_of(style.connected_edge_border_color(&selected, StrokeSide::Right, placement.starts_row)),
+                [indicator.top, indicator.right, indicator.bottom, indicator.left].map(px),
+                box_array(tab_fill_rect(&style.tab_box_context(&selected, placement))),
+            ),
+            ("none", "none", Some("rgb(255, 0, 0)".to_owned()), ["0px", "0px", "0px", "0px"].map(str::to_owned), bounds),
+            "{theme_id}"
+        );
+    }
+}
+
+#[test]
+fn matches_connected_cap_and_shoulder_radii_for_the_outside_stroke_and_omits_the_first_outer_shoulder() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[("focusBorder", "#ffaa00")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    let shoulders = |tab: &TabElement, starts_row: bool| [FillShoulder::Left, FillShoulder::Right].map(|shoulder| style.fill_shoulder_content(tab, starts_row, shoulder));
+
+    // A primeira aba (`:first-child`, ativa) não tem o ombro externo da esquerda.
+    let first_shoulders = shoulders(&TabElement::new("tab active first-in-row", true), true);
+    // A aba do meio (a segunda, ativa quando a primeira deixa de ser).
+    let middle = TabElement::new("tab active", true);
+    let middle_context = style.tab_box_context(&middle, TabRowPlacement::default());
+    let [left_shoulder, right_shoulder] = [FillShoulder::Left, FillShoulder::Right].map(|shoulder| style.fill_shoulder_box(&middle, false, shoulder).expect("o ombro da aba ativa"));
+
+    assert_eq!(
+        (
+            first_shoulders,
+            (
+                shoulders(&middle, false),
+                [px(middle_context.fill_top_left_radius()), px(tab_fill_top_right_radius(&middle_context))],
+                TAB_FILL_BACKGROUND_CLIP,
+                [px(left_shoulder.bottom_radius), px(right_shoulder.bottom_radius)],
+                [[px(left_shoulder.width), px(left_shoulder.height)], [px(right_shoulder.width), px(right_shoulder.height)]],
+            ),
+        ),
+        (
+            ["none", "\"\""],
+            (
+                ["\"\"", "\"\""],
+                ["7px".to_owned(), "7px".to_owned()],
+                "border-box",
+                ["7px".to_owned(), "7px".to_owned()],
+                [["7px".to_owned(), "7px".to_owned()], ["7px".to_owned(), "7px".to_owned()]],
+            ),
+        )
+    );
+}
+
+#[test]
+fn aligns_single_row_connected_caps_while_retaining_wrapped_gutters() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    let single = TabRowPlacement::default();
+    let wrapped = TabRowPlacement { wrapping: true, ..TabRowPlacement::default() };
+    let row_start = |placement: TabRowPlacement| TabRowPlacement { starts_row: true, ..placement };
+
+    // A fileira de uma linha: a aba inativa abre a fileira e a ativa é a segunda.
+    let inactive_single = (TabElement::new("tab", true), row_start(single));
+    let active_single = (TabElement::new("tab active", true), single);
+    // A fileira quebrada: a pílula de cima abre a fileira, e as de baixo vêm depois dela.
+    let upper = (TabElement::new("tab active connected-tab-upper-row connected-tab-top-row first-in-row", true), row_start(wrapped));
+    let inactive_bottom = (TabElement::new("tab", true), wrapped);
+    let active_bottom = (TabElement::new("tab active", true), wrapped);
+
+    // A moldura de cima fora da quebra: o `left` do preenchimento e os raios da esquerda.
+    let upper_unwrapped = style.tab_box_context(&upper.0, row_start(single));
+    let non_wrapped_top_frame = (
+        px(tab_fill_rect(&upper_unwrapped).left),
+        px(upper_unwrapped.fill_top_left_radius()),
+        px(tab_fill_bottom_left_radius(&upper_unwrapped)),
+    );
+    // `border-block` da aba, os recuos `top` e `bottom` do preenchimento e o `left` dele.
+    let geometry = |(tab, placement): &(TabElement, TabRowPlacement)| {
+        let context = style.tab_box_context(tab, *placement);
+        let fill = tab_fill_rect(&context);
+        let (border_top, border_bottom) = context.pill_border_block();
+        ([px(border_top), px(border_bottom)], [px(fill.top), px(context.tab_height - fill.bottom)], px(fill.left))
+    };
+    let upper_context = style.tab_box_context(&upper.0, upper.1);
+    let active_bottom_context = style.tab_box_context(&active_bottom.0, active_bottom.1);
+    let top_widths = style.tab_fill_border_widths(&upper.0).expect("as larguras da borda do preenchimento");
+    let transparent = Some("rgba(0, 0, 0, 0)".to_owned());
+
+    assert_eq!(
+        (
+            non_wrapped_top_frame,
+            px(style.tabs_and_actions_padding_top(wrapped)),
+            // A reserva da ação (`padding-right`) é a mesma na pílula de cima e na aba de baixo.
+            upper_context.action_padding(&TabCssClasses::default()) == active_bottom_context.action_padding(&TabCssClasses::default()),
+            [px(style.tabs_container_padding_bottom(single)), px(style.tabs_container_padding_bottom(wrapped))],
+            [px(style.tabs_row_separator_bottom()), px(style.tabs_row_separator_bottom())],
+            (
+                [style.tab_fill_border_color(&upper.0, StrokeSide::Top, upper.1), style.tab_fill_border_color(&upper.0, StrokeSide::Left, upper.1)],
+                px(upper_context.fill_top_left_radius()),
+                [px(top_widths.top), px(top_widths.left)],
+            ),
+            geometry(&upper),
+            (geometry(&inactive_single), geometry(&inactive_bottom)),
+            (geometry(&active_single), geometry(&active_bottom)),
+        ),
+        (
+            ("2px".to_owned(), "4px".to_owned(), "4px".to_owned()),
+            "2px".to_owned(),
+            true,
+            ["1px".to_owned(), "1px".to_owned()],
+            ["0px".to_owned(), "0px".to_owned()],
+            ([transparent.clone(), transparent], "4px".to_owned(), ["1px".to_owned(), "1px".to_owned()]),
+            (["0px".to_owned(), "0px".to_owned()], ["2px".to_owned(), "2px".to_owned()], "2px".to_owned()),
+            (
+                (["0px".to_owned(), "0px".to_owned()], ["3.5px".to_owned(), "3.5px".to_owned()], "2px".to_owned()),
+                (["0px".to_owned(), "0px".to_owned()], ["2px".to_owned(), "2px".to_owned()], "2px".to_owned()),
+            ),
+            (
+                (["0px".to_owned(), "0px".to_owned()], ["-1px".to_owned(), "-1px".to_owned()], "0px".to_owned()),
+                (["0px".to_owned(), "0px".to_owned()], ["2px".to_owned(), "-1px".to_owned()], "0px".to_owned()),
+            ),
+        )
+    );
+}
+
+#[test]
+fn shares_the_high_contrast_outer_frame_while_retaining_upper_row_outlines() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut outlines = Vec::new();
+    for theme_id in ["hc-black", "hc-light"] {
+        let theme = theme_with_colors_of_type(theme_type_of(theme_id), &[("focusBorder", "#ffaa00")]);
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        for upper_row in [false, true] {
+            // `row.classList.toggle('wrapping', upperRow)` e `tab.classList.toggle('connected-tab-upper-row', upperRow)`.
+            let tab = TabElement::new(if upper_row { "tab active connected-tab-top-row first-in-row connected-tab-upper-row" } else { "tab active connected-tab-top-row first-in-row" }, true);
+            let placement = TabRowPlacement { wrapping: upper_row, starts_row: true, ..TabRowPlacement::default() };
+            outlines.push((
+                theme_id,
+                upper_row,
+                style.tab_fill_border_color(&tab, StrokeSide::Top, placement),
+                style.tab_fill_border_color(&tab, StrokeSide::Left, placement),
+            ));
+        }
+    }
+    let expected = |theme_id: &'static str, upper_row: bool| {
+        let color = Some(if upper_row { "rgb(255, 170, 0)" } else { "rgba(0, 0, 0, 0)" }.to_owned());
+        (theme_id, upper_row, color.clone(), color)
+    };
+    assert_eq!(outlines, vec![expected("hc-black", false), expected("hc-black", true), expected("hc-light", false), expected("hc-light", true)]);
+}
+
+#[test]
+fn upper_connected_pills_reserve_top_accents_for_customizations_and_retain_hc_outlines() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme_id in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let theme = theme_with_colors_of_type(theme_type_of(theme_id), &[("focusBorder", "#ffaa00"), ("contrastBorder", "#00ffff")]);
+        let mut style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        style.set_root_variable("--modern-ui-editor-tab-custom-border", Color::from_hex("#445566"));
+        // A pílula de cima de 160px, a primeira da fileira, em qualquer grupo (`group.classList.toggle('active', active)`).
+        let placement = TabRowPlacement { tab_width: 160.0, starts_row: true, ..TabRowPlacement::default() };
+        for active in [false, true] {
+            let tab = TabElement::new("tab active connected-tab-upper-row tab-border-top", active);
+            for customized in [false, true] {
+                let before = box_array(tab_fill_rect(&style.tab_box_context(&tab, placement)));
+                if customized {
+                    style.set_root_variable("--modern-ui-editor-tab-custom-active-border-top", Color::from_hex("#112233"));
+                    style.set_root_variable("--modern-ui-editor-tab-custom-unfocused-active-border-top", Color::from_hex("#445566"));
+                } else {
+                    style.remove_root_variable("--modern-ui-editor-tab-custom-active-border-top");
+                    style.remove_root_variable("--modern-ui-editor-tab-custom-unfocused-active-border-top");
+                }
+                let borders = [StrokeSide::Top, StrokeSide::Right, StrokeSide::Bottom, StrokeSide::Left].map(|side| style.tab_fill_border_color(&tab, side, placement));
+                let geometry_stable = before == box_array(tab_fill_rect(&style.tab_box_context(&tab, placement)));
+                measurements.push((theme_id, active, customized, borders, geometry_stable));
+                let transparent = "rgba(0, 0, 0, 0)".to_owned();
+                let border = if theme_id.starts_with("hc-") { (if active { "rgb(255, 170, 0)" } else { "rgb(0, 255, 255)" }).to_owned() } else { transparent.clone() };
+                let borders = if theme_id.starts_with("hc-") {
+                    [border.clone(), border.clone(), border.clone(), border]
+                } else {
+                    let top = if customized { (if active { "rgb(17, 34, 51)" } else { "rgb(68, 85, 102)" }).to_owned() } else { transparent.clone() };
+                    [top, transparent.clone(), transparent.clone(), transparent]
+                };
+                expected.push((theme_id, active, customized, borders.map(Some), true));
+            }
+        }
+    }
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn keeps_the_right_shoulder_curved_and_the_left_edge_straight_at_row_boundaries() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    // Os ombros do `.tab-fill` e as máscaras do `.tab-connected-edge` (`::before` e `::after`).
+    let edges = |tab: &TabElement, starts_row: bool| {
+        (
+            [FillShoulder::Left, FillShoulder::Right].map(|shoulder| style.fill_shoulder_content(tab, starts_row, shoulder)),
+            [TAB_CONNECTED_EDGE_PSEUDO_CONTENT; 2],
+        )
+    };
+
+    // O fim da fileira é a segunda aba (depois de uma aba comum); ela está ativa primeiro.
+    let row_end = edges(&TabElement::new("tab active last-in-row", true), false);
+    // O começo da fileira vem logo depois do `last-in-row` (`.tab.last-in-row + .tab.active`) e fica ativo depois.
+    let row_start = edges(&TabElement::new("tab active first-in-row", true), true);
+
+    assert_eq!(
+        (row_end, row_start),
+        ((["\"\"", "\"\""], ["none", "none"]), (["none", "\"\""], ["none", "none"]))
+    );
+}
+
+#[test]
+fn extends_the_connected_sticky_mask_through_its_owned_strip_separator() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `--vscode-strokeThickness: 1px` é o tamanho do tema; `--modern-ui-connected-tab-border` (`#123456`, na raiz e no grupo) é a
+    // cor do traço de baixo, que o caso não confere.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    // O `.monaco-scrollable-element` é `position: relative` de `33px` de altura; a máscara tem `84px` de largura.
+    let scrollable_height = 33.0;
+    let context = style.tab_box_context(&TabElement::new("tab", true), TabRowPlacement::default());
+    let sticky = style.sticky_tabs_background_box(scrollable_height, context.editor_group_tab_height);
+
+    assert_eq!(
+        (px(sticky.top), sticky.bottom.map(px), sticky.height, scrollable_height - (sticky.top + sticky.height), px(sticky.border_bottom_width)),
+        ("0px".to_owned(), Some("0px".to_owned()), 33.0, 0.0, "1px".to_owned())
+    );
+}
+
+#[test]
+fn centers_connected_actions_within_their_action_surface_in_every_theme() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `root.style.setProperty('--vscode-spacing-size20', '2px')` e `('--vscode-cornerRadius-small', '4px')`: são as únicas
+    // variáveis de tamanho da raiz, então `--modern-ui-connected-tab-radius` cai no fallback do `var()`, o raio pequeno.
+    let root_sizes = [(SPACING_SIZE20, 2.0), (CORNER_RADIUS_SMALL, 4.0)];
+    // `root.classList.add('hc-black')` troca só a classe da raiz.
+    let measure = |root_class_name: &str| {
+        let style = ModernUiStyle::new(&theme, root_class_name).with_explicit_colors_only().with_root_sizes(&root_sizes);
+        let measure_action = |actions_left: bool| {
+            // As duas abas são `tab active`, a segunda com `tab-actions-left`, no grupo ativo.
+            let tab = TabElement::new(if actions_left { "tab active tab-actions-left" } else { "tab active" }, true);
+            let context = style.tab_box_context(&tab, TabRowPlacement { tab_width: 120.0, ..TabRowPlacement::default() });
+            let classes = TabCssClasses { tab_actions_left: actions_left, ..TabCssClasses::default() };
+            let geometry = tab_action_geometry(&classes, &context).expect("a ranhura da ação");
+            // `.tab-actions` e o `.monaco-action-bar` dentro dela declaram `width: 24px` (`tabs.css`, linhas 512 e 526).
+            let width = geometry.actions.right - geometry.actions.left;
+            (shortest_border_radius(style.tab_actions_border_radii(&tab).expect("o raio das ações")), style.tab_actions_container_justify_content(), px(width))
+        };
+        (measure_action(false), measure_action(true))
+    };
+    let connected = measure("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    let high_contrast = measure("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs hc-black");
+
+    // Os valores literais do oráculo: `0px 4px 0px 0px` e `4px 0px 0px`, com a ranhura e a barra de ações de `24px`.
+    let expected = (("0px 4px 0px 0px".to_owned(), Some("center"), "24px".to_owned()), ("4px 0px 0px".to_owned(), Some("center"), "24px".to_owned()));
+    assert_eq!((connected, high_contrast), (expected.clone(), expected));
+}
+
+#[test]
+fn applies_editor_tab_foregrounds_to_the_icon_name_and_description() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors([("tab.selectedForeground", "#0d0e0f")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only();
+    for (state, hex) in [("active", "#010203"), ("inactive", "#040506"), ("unfocused-active", "#070809"), ("unfocused-inactive", "#0a0b0c")] {
+        style.set_root_variable(&format!("--modern-ui-editor-tab-{state}-foreground"), Color::from_hex(hex));
+    }
+    // O ícone (`::before` do rótulo), o nome e a descrição herdam a cor do `.tab-label`: os três valem a mesma.
+    let label_colors = |tab: EditorTabState, decoration: Option<&Color>| {
+        let color = rgb_of(style.editor_tab_label_color(tab, decoration));
+        [color.clone(), color.clone(), color]
+    };
+    let state = |active: bool, selected: bool, group_active: bool| EditorTabState { active, selected, group_active, ..EditorTabState::default() };
+    // O rótulo decorado (`monaco-decoration-itemColor`) leva a cor inline `#101112`.
+    let decoration = Color::from_hex("#101112");
+
+    let expected = |text: &str| [Some(text.to_owned()), Some(text.to_owned()), Some(text.to_owned())];
+    assert_eq!(
+        [
+            label_colors(state(true, false, true), None),
+            label_colors(state(false, false, true), None),
+            label_colors(state(false, true, true), None),
+            label_colors(state(false, false, true), Some(&decoration)),
+            label_colors(state(true, false, false), None),
+            label_colors(state(false, false, false), None),
+        ],
+        [
+            expected("rgb(1, 2, 3)"),
+            expected("rgb(4, 5, 6)"),
+            expected("rgb(13, 14, 15)"),
+            expected("rgb(16, 17, 18)"),
+            expected("rgb(7, 8, 9)"),
+            expected("rgb(10, 11, 12)"),
+        ]
+    );
+}
+
+#[test]
+fn uses_readable_theme_foregrounds_for_connected_inactive_tabs_in_either_editor_group() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `{ background, inactive, foreground }` de cada paleta do oráculo; `createUnloadedTheme('vs', ...)` é o tema claro com o
+    // `colorMap` dado, e o `generateColorThemeCSS` é o estilo sem `with_explicit_colors_only`.
+    let palettes = [
+        ("#202122", "#8c8c8c", "#bfbfbf"),
+        ("#eaeaea", "#606060", "#202020"),
+        ("#2b2b2b", "#9d9d9d", "#cccccc"),
+        ("#e5e5e5", "#616161", "#3b3b3b"),
+        ("#303031", "#a6a6a6", "#cccccc"),
+        ("#e8e8e8", "#616161", "#616161"),
+    ];
+    for (background, inactive, foreground) in palettes {
+        let theme = unloaded_theme_of_type_with_file_colors(
+            ThemeType::Light,
+            &[("foreground", foreground), ("tab.inactiveForeground", inactive), ("editorGroupHeader.tabsBackground", background)],
+        );
+        let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+        // Um grupo ativo e outro sem foco, cada um com uma aba inativa.
+        let labels = [true, false].map(|group_active| {
+            let tab = EditorTabState { group_active, ..EditorTabState::default() };
+            let fill = style.editor_tab_fill_background(tab).expect("o fundo do preenchimento da aba");
+            let text = style.editor_tab_foreground(tab).expect("o primeiro plano da aba");
+            (text.to_string(), fill.to_string(), text.blend(&fill).get_contrast_ratio(&fill) >= 4.5)
+        });
+
+        let expected = (inactive.to_owned(), background.to_owned(), true);
+        assert_eq!(labels, [expected.clone(), expected], "paleta de {background}");
+    }
+}
+
+#[test]
+fn preserves_pill_and_hc_label_defaults_and_explicit_connected_foreground_customizations() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_of_type_with_file_colors(ThemeType::Dark, &[("foreground", "#cccccc"), ("tab.inactiveForeground", "#9d9d9d")]);
+    let connected_class_name = "monaco-workbench modern-ui-tabs modern-ui modern-ui-connected-editor-tabs";
+    let focused = EditorTabState { group_active: true, ..EditorTabState::default() };
+    let unfocused = EditorTabState { group_active: false, ..EditorTabState::default() };
+    // `probe.style.color = 'var(--modern-ui-editor-tab-inactive-foreground)'`: a cor da aba inativa do grupo.
+    let color = |style: &ModernUiStyle, tab: EditorTabState| rgb_of(style.editor_tab_foreground(tab));
+
+    let (pill, connected, high_contrast) = {
+        let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs");
+        let pill = color(&style, focused);
+        style.set_root_class_name(connected_class_name);
+        let connected = color(&style, focused);
+        let high_contrast = ["hc-black", "hc-light"].map(|theme_class| {
+            style.set_root_class_name(&format!("{connected_class_name} {theme_class}"));
+            color(&style, focused)
+        });
+        (pill, connected, high_contrast)
+    };
+
+    // `theme.setCustomColors(...)` e o participante de tema que reemite as variáveis `--modern-ui-editor-tab-*-foreground`.
+    theme.set_custom_colors([("tab.inactiveForeground", "#123456"), ("tab.unfocusedInactiveForeground", "#654321")]);
+    let style = ModernUiStyle::new(&theme, connected_class_name);
+    let (custom, unfocused_custom) = (color(&style, focused), color(&style, unfocused));
+
+    assert_eq!(
+        (connected, high_contrast, custom, unfocused_custom),
+        (Some("rgb(157, 157, 157)".to_owned()), [pill.clone(), pill], Some("rgb(18, 52, 86)".to_owned()), Some("rgb(101, 67, 33)".to_owned()))
+    );
+}
+
+#[test]
+fn keeps_clean_editor_tabs_compact_while_reserving_persistent_indicators() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `--vscode-spacing-size60/80/280` são as únicas variáveis de tamanho que o caso define na raiz.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only().with_root_sizes(&[(SPACING_SIZE60, 6.0), (SPACING_SIZE80, 8.0), (SPACING_SIZE280, 28.0)]);
+    // As abas do caso estão em `.part.editor > .title > .tabs-container`, fora de `.content .editor-group-container`.
+    let padding = |tab_class_name: &str, title_class_name: &str| {
+        let tab = TabElement::new(tab_class_name, true).with_title(title_class_name, false);
+        let HorizontalEdges { left, right } = style.tab_padding(&tab, TabRowPlacement::default()).expect("o recuo da aba com o Modern UI das abas");
+        [px(left), px(right)]
+    };
+    let compact = "title tabs";
+    let reserved = "title tabs tab-actions-reserve-space";
+    let pair = |left: &str, right: &str| [left.to_owned(), right.to_owned()];
+
+    assert_eq!(
+        [
+            padding("tab", compact),
+            padding("tab dirty", compact),
+            padding("tab dirty close-action-off", compact),
+            padding("tab dirty dirty-border-top close-action-off", compact),
+            padding("tab dirty dirty-border-top", compact),
+            padding("tab sticky", compact),
+            padding("tab sticky pinned-action-off close-action-off", compact),
+            padding("tab dirty tab-actions-left", compact),
+            padding("tab dirty dirty-border-top close-action-off tab-actions-left", compact),
+            padding("tab dirty dirty-border-top tab-actions-left", compact),
+            padding("tab", reserved),
+            padding("tab tab-actions-left", reserved),
+            padding("tab dirty dirty-border-top", reserved),
+            padding("tab dirty dirty-border-top tab-actions-left", reserved),
+        ],
+        [
+            pair("6px", "8px"),
+            pair("6px", "28px"),
+            pair("6px", "28px"),
+            pair("6px", "8px"),
+            pair("6px", "28px"),
+            pair("6px", "28px"),
+            pair("6px", "8px"),
+            pair("28px", "8px"),
+            pair("6px", "8px"),
+            pair("28px", "8px"),
+            pair("6px", "28px"),
+            pair("28px", "8px"),
+            pair("6px", "28px"),
+            pair("28px", "8px"),
+        ]
+    );
+}
+
+#[test]
+fn uses_iconless_leading_spacing_when_the_file_icon_theme_is_disabled() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only().with_root_sizes(&[(SPACING_SIZE60, 6.0), (SPACING_SIZE80, 8.0)]);
+    let leading = |style: &ModernUiStyle, title_class_name: &str| {
+        let tab = TabElement::new("tab", true).with_title(title_class_name, true);
+        px(style.tab_padding(&tab, TabRowPlacement::default()).expect("o recuo da aba com o Modern UI das abas").left)
+    };
+
+    let file_icon_theme_none = leading(&style, "title tabs show-file-icons");
+    // `root.classList.add('file-icons-enabled')`
+    style.set_root_class_name("monaco-workbench modern-ui-tabs file-icons-enabled");
+    let file_icons_enabled = leading(&style, "title tabs show-file-icons");
+    // `title.classList.remove('show-file-icons')`
+    let icons_setting_disabled = leading(&style, "title tabs");
+
+    assert_eq!((file_icon_theme_none, file_icons_enabled, icons_setting_disabled), ("8px".to_owned(), "6px".to_owned(), "8px".to_owned()));
+}
+
+#[test]
+fn preserves_contrast_tab_action_visibility_across_reservation_and_connected_states() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors([("contrastActiveBorder", "#FFFFFF")]);
+    let plain = "active-contrast-theme monaco-workbench modern-ui-tabs";
+    let high_contrast_connected = "active-contrast-theme hc-black monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs";
+    let high_contrast = "active-contrast-theme hc-black monaco-workbench modern-ui-tabs";
+    // `{ opacity, pointerEvents }`: a opacidade do `.action-label` e o `pointer-events` do `.tab-actions` pai dele.
+    let measure = |root_class_name: &str, group_active: bool, title_class_name: &str, tab_class_name: &str| {
+        let style = ModernUiStyle::new(&theme, root_class_name);
+        let (root, title, tab_classes) = (ClassList::new(root_class_name), ClassList::new(title_class_name), ClassList::new(tab_class_name));
+        let opacity = tab_action_label_opacity(&TabActionLabelContext {
+            modern_ui_tabs: root.contains("modern-ui-tabs"),
+            connected_editor_tabs: root.contains("modern-ui-connected-editor-tabs"),
+            high_contrast: root.contains("hc-black") || root.contains("hc-light"),
+            group_active,
+            title_reserves_action_space: title.contains("tab-actions-reserve-space"),
+            active: tab_classes.contains("active"),
+            ..TabActionLabelContext::default()
+        });
+        let tab = TabElement::new(tab_class_name, group_active).with_title(title_class_name, true);
+        (opacity, style.tab_actions_pointer_events(&tab))
+    };
+
+    assert_eq!(
+        [
+            // reservedActive
+            measure(plain, true, "title tab-actions-reserve-space", "tab active"),
+            // reservedInactiveGroup
+            measure(plain, false, "title tab-actions-reserve-space", "tab"),
+            // transientActive
+            measure(plain, true, "title", "tab active"),
+            // highContrastReservedActive
+            measure(high_contrast_connected, true, "title tabs tab-actions-reserve-space", "tab active"),
+            // highContrastConnectedActive
+            measure(high_contrast_connected, true, "title tabs", "tab active"),
+            // highContrastConnectedInactiveGroup
+            measure(high_contrast_connected, false, "title tabs", "tab active"),
+            // highContrastTransientActive
+            measure(high_contrast, true, "title tabs", "tab active"),
+        ],
+        [(1.0, "auto"), (0.0, "auto"), (1.0, "none"), (1.0, "auto"), (1.0, "auto"), (0.5, "auto"), (1.0, "none")]
+    );
+}
+
+#[test]
+fn fades_tab_actions_only_when_they_overlay_clean_tabs() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // O `.action-label` tem o foco, então o `.tab-actions` tem `:focus-within`.
+    let fade_content = |root_class_name: &str, title_class_name: &str, tab_class_name: &str| {
+        let (root, title, tab) = (ClassList::new(root_class_name), ClassList::new(title_class_name), ClassList::new(tab_class_name));
+        tab_actions_fade_content(&TabActionsContext {
+            modern_ui_tabs: root.contains("modern-ui-tabs"),
+            connected: root.contains("modern-ui-connected-editor-tabs"),
+            reserve_space: title.contains("tab-actions-reserve-space"),
+            dirty: tab.contains("dirty"),
+            sticky: tab.contains("sticky"),
+            interacting: true,
+            ..TabActionsContext::default()
+        })
+    };
+    let plain = "monaco-workbench modern-ui-tabs";
+    let connected_root = "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs";
+
+    let overlaid = fade_content(plain, "title tabs", "tab");
+    let reserved = fade_content(plain, "title tabs tab-actions-reserve-space", "tab");
+    let connected = fade_content(connected_root, "title tabs connected-tabs-labels", "tab");
+    assert_eq!(
+        (overlaid, reserved, connected, fade_content(plain, "title", "tab dirty"), fade_content(plain, "title", "tab sticky")),
+        ("\"\"", "none", "none", "none", "none")
+    );
+}
+
+#[test]
+fn applies_the_correct_action_background_for_each_editor_tab_state() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    // `--vscode-modernEditorTab-selectedActionBackground` é a cor do tema.
+    theme.set_custom_colors([("modernEditorTab.selectedActionBackground", "#131415")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only();
+    for (name, hex) in [
+        ("--modern-ui-editor-tab-action-active-background", "#010203"),
+        ("--modern-ui-editor-tab-action-unfocused-active-background", "#040506"),
+        ("--modern-ui-editor-tab-action-hover-background", "#070809"),
+        ("--modern-ui-editor-tab-action-unfocused-hover-background", "#0A0B0C"),
+        ("--modern-ui-editor-tab-action-active-hover-background", "#0D0E0F"),
+        ("--modern-ui-editor-tab-action-unfocused-active-hover-background", "#101112"),
+    ] {
+        style.set_root_variable(name, Color::from_hex(hex));
+    }
+    // `[backgroundColor do .tab-actions, backgroundImage do ::before]`, com o foco na ação (`:focus-within`) e, nos casos que o
+    // oráculo deixa comentados por exigirem `:hover`, com o ponteiro na aba.
+    let colors = |group_active: bool, tab_class_name: &str, hovered: bool| {
+        let tab = TabElement { hovered, focus_within: true, ..TabElement::new(tab_class_name, group_active) }.with_title("title", true);
+        [css_rgb(&style.tab_actions_state_background(&tab)), style.tab_actions_fade_gradient(&tab)]
+    };
+    let expected = |rgb: &str, direction: &str| [format!("rgb({rgb})"), format!("linear-gradient(to {direction}, rgba(0, 0, 0, 0), rgb({rgb}))")];
+
+    assert_eq!(
+        [
+            colors(true, "tab active", false),
+            colors(true, "tab active tab-actions-left", false),
+            colors(false, "tab active", false),
+            colors(false, "tab active tab-actions-left", false),
+            colors(true, "tab", false),
+            colors(true, "tab tab-actions-left", false),
+            colors(false, "tab", false),
+            colors(false, "tab tab-actions-left", false),
+            colors(true, "tab active", true),
+            colors(true, "tab active tab-actions-left", true),
+            colors(false, "tab active", true),
+            colors(false, "tab active tab-actions-left", true),
+            colors(true, "tab selected", false),
+            colors(true, "tab selected tab-actions-left", false),
+        ],
+        [
+            expected("1, 2, 3", "right"),
+            expected("1, 2, 3", "left"),
+            expected("4, 5, 6", "right"),
+            expected("4, 5, 6", "left"),
+            expected("7, 8, 9", "right"),
+            expected("7, 8, 9", "left"),
+            expected("10, 11, 12", "right"),
+            expected("10, 11, 12", "left"),
+            expected("13, 14, 15", "right"),
+            expected("13, 14, 15", "left"),
+            expected("16, 17, 18", "right"),
+            expected("16, 17, 18", "left"),
+            expected("19, 20, 21", "right"),
+            expected("19, 20, 21", "left"),
+        ]
+    );
+}
+
+/// As variáveis de tamanho e os pesos de fonte que `createCompositeAction` escreve na raiz
+/// (`root.style.setProperty('--vscode-spacing-size20', '2px')` e as outras).
+fn composite_action_root_sizes() -> Vec<(&'static str, f64)> {
+    vec![(SPACING_SIZE20, 2.0), (SPACING_SIZE40, 4.0), (SPACING_SIZE240, 24.0), (SPACING_SIZE320, 32.0), (FONT_WEIGHT_REGULAR, 400.0), (FONT_WEIGHT_SEMI_BOLD, 600.0)]
+}
+
+/// As linhas `{ nome: valor }` do objeto que o `assert.deepStrictEqual` do oráculo compara, com o valor esperado em texto.
+fn expected_rows<const N: usize>(rows: [(&'static str, &str); N]) -> Vec<(&'static str, Option<String>)> {
+    rows.into_iter().map(|(name, value)| (name, Some(value.to_owned()))).collect()
+}
+
+#[test]
+fn uses_legacy_color_customizations_for_modern_ui_editor_tabs_only() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `ColorThemeData.createUnloadedTheme('vs-dark', { ... })` são as cores do arquivo do tema.
+    let mut theme = unloaded_theme_with_file_colors(&[
+        ("editor.background", "#000000"),
+        ("modernTab.activeBackground", "#010203"),
+        ("modernTab.activeForeground", "#A0B0C0"),
+        ("modernTab.hoverBackground", "#020304"),
+        ("modernTab.hoverForeground", "#B0C0D0"),
+        ("tab.unfocusedHoverBackground", "#0A0B0C"),
+    ]);
+    theme.set_custom_colors([
+        ("tab.activeBackground", "#123456"),
+        ("tab.activeBorder", "#556677"),
+        ("tab.activeBorderTop", "#334455"),
+        ("tab.activeForeground", "#FEDCBA"),
+        ("tab.border", "#778899"),
+        ("tab.hoverBackground", "#456789"),
+        ("tab.hoverBorder", "#112233"),
+        ("tab.hoverForeground", "#DDEEFF"),
+        ("tab.inactiveBackground", "#345678"),
+        ("tab.inactiveForeground", "#CCDDEE"),
+        ("tab.lastPinnedBorder", "#8899AA"),
+    ]);
+    // O CSS gerado pelo tema (`generateColorThemeCSS` com os participantes) é o estilo sem `with_explicit_colors_only`; a raiz
+    // leva `--vscode-strokeThickness: 1px` e as variáveis de `createCompositeAction`.
+    let mut root_sizes = composite_action_root_sizes();
+    root_sizes.push((STROKE_THICKNESS, 1.0));
+    let style = ModernUiStyle::new(&theme, "legacy-tab-customization-theme monaco-workbench modern-ui-tabs").with_root_sizes(&root_sizes);
+
+    let checked = ActionTabState { checked: true, ..ActionTabState::default() };
+    // `.editor-group-container.active` (o grupo com o foco) e o sem foco, cada um com a aba ativa e a inativa.
+    let state = |active: bool, group_active: bool| EditorTabState { active, group_active, ..EditorTabState::default() };
+    // `activeTabAction.focus()` e `reservedSelectedTabAction.focus()`: o foco está nas ações das duas abas, ambas no grupo ativo.
+    let tab = |class_name: &str, title_class_name: &str| TabElement { focus_within: true, ..TabElement::new(class_name, true) }.with_title(title_class_name, true);
+    let active_tab = tab("tab active tab-border-bottom tab-border-top", "title");
+    let reserved_tab = tab("tab selected tab-border-top", "title tab-actions-reserve-space");
+    let variable = |name: &str| rgb_of(style.variable(name));
+    // `getComputedStyle(activeFill, '::before')` e `'::after'`.
+    let accent_line = |side: StrokeSide| style.tab_fill_accent_line(&active_tab, side).expect("o traço da aba ativa").background;
+    let border_widths = style.tab_actions_border_widths(&active_tab);
+    let fade = style.tab_actions_fade(&active_tab).expect("o degradê de saída das ações da aba ativa");
+    // `pinnedRow` é o primeiro `.tabs-and-actions-container` de `.title.two-tab-bars`.
+    let pinned_row = TabRowPlacement { two_tab_bars: true, first_tab_bar: true, ..TabRowPlacement::default() };
+
+    let actual: Vec<(&str, Option<String>)> = vec![
+        ("paneBackground", rgb_of(style.pane_tab_indicator_background(checked))),
+        ("paneForeground", rgb_of(style.action_tab_foreground(checked))),
+        ("activeBackground", rgb_of(style.editor_tab_fill_background(state(true, true)))),
+        ("activeForeground", rgb_of(style.editor_tab_foreground(state(true, true)))),
+        ("activeBorderTop", Some(css_rgb(&accent_line(StrokeSide::Top)))),
+        ("activeBorderBottom", Some(css_rgb(&accent_line(StrokeSide::Bottom)))),
+        ("inactiveBackground", rgb_of(style.editor_tab_fill_background(state(false, true)))),
+        ("inactiveForeground", rgb_of(style.editor_tab_foreground(state(false, true)))),
+        ("unfocusedActiveBackground", rgb_of(style.editor_tab_fill_background(state(true, false)))),
+        ("unfocusedActiveForeground", rgb_of(style.editor_tab_foreground(state(true, false)))),
+        ("unfocusedInactiveBackground", rgb_of(style.editor_tab_fill_background(state(false, false)))),
+        ("unfocusedInactiveForeground", rgb_of(style.editor_tab_foreground(state(false, false)))),
+        ("hoverBackground", variable("--modern-ui-editor-tab-hover-background")),
+        ("hoverForeground", variable("--modern-ui-editor-tab-hover-foreground")),
+        ("unfocusedHoverBackground", variable("--modern-ui-editor-tab-unfocused-hover-background")),
+        ("unfocusedHoverForeground", variable("--modern-ui-editor-tab-unfocused-hover-foreground")),
+        ("activeHoverBackground", variable("--modern-ui-editor-tab-active-hover-background")),
+        ("unfocusedActiveHoverBackground", variable("--modern-ui-editor-tab-unfocused-active-hover-background")),
+        ("activeHoverActionBackground", variable("--modern-ui-editor-tab-action-active-hover-background")),
+        ("unfocusedActiveBorder", variable("--modern-ui-editor-tab-unfocused-active-border")),
+        ("unfocusedActiveBorderTop", variable("--modern-ui-editor-tab-unfocused-active-border-top")),
+        ("unfocusedHoverBorder", variable("--modern-ui-editor-tab-unfocused-hover-border")),
+        ("actionBackground", Some(css_rgb(&style.tab_actions_state_background(&active_tab)))),
+        ("actionBackgroundClip", Some(style.tab_actions_background_clip(&active_tab).to_owned())),
+        ("actionInlineEndBorderColor", rgb_of(style.tab_actions_border_color(&active_tab, StrokeSide::Right))),
+        ("actionFadeBackgroundClip", Some(fade.background_clip.to_owned())),
+        ("reservedActionBackground", Some(css_rgb(&style.tab_actions_state_background(&reserved_tab)))),
+        ("reservedActionBorderTopWidth", Some(px(style.tab_actions_border_widths(&reserved_tab).top))),
+        ("separatorColor", variable("--modern-ui-editor-tab-border")),
+        ("customConnectedBorder", variable("--modern-ui-editor-tab-custom-border")),
+        ("lastPinnedBorder", variable("--modern-ui-editor-tab-last-pinned-border")),
+    ];
+
+    assert_eq!(
+        actual,
+        expected_rows([
+            ("paneBackground", "rgb(1, 2, 3)"),
+            ("paneForeground", "rgb(160, 176, 192)"),
+            ("activeBackground", "rgb(18, 52, 86)"),
+            ("activeForeground", "rgb(254, 220, 186)"),
+            ("activeBorderTop", "rgb(51, 68, 85)"),
+            ("activeBorderBottom", "rgb(85, 102, 119)"),
+            ("inactiveBackground", "rgb(52, 86, 120)"),
+            ("inactiveForeground", "rgb(204, 221, 238)"),
+            ("unfocusedActiveBackground", "rgb(18, 52, 86)"),
+            ("unfocusedActiveForeground", "rgba(254, 220, 186, 0.5)"),
+            ("unfocusedInactiveBackground", "rgb(52, 86, 120)"),
+            ("unfocusedInactiveForeground", "rgba(204, 221, 238, 0.5)"),
+            ("hoverBackground", "rgb(69, 103, 137)"),
+            ("hoverForeground", "rgb(221, 238, 255)"),
+            ("unfocusedHoverBackground", "rgb(10, 11, 12)"),
+            ("unfocusedHoverForeground", "rgba(221, 238, 255, 0.5)"),
+            ("activeHoverBackground", "rgb(69, 103, 137)"),
+            ("unfocusedActiveHoverBackground", "rgb(10, 11, 12)"),
+            ("activeHoverActionBackground", "rgb(69, 103, 137)"),
+            ("unfocusedActiveBorder", "rgba(85, 102, 119, 0.5)"),
+            ("unfocusedActiveBorderTop", "rgba(51, 68, 85, 0.5)"),
+            ("unfocusedHoverBorder", "rgba(17, 34, 51, 0.5)"),
+            ("actionBackground", "rgb(18, 52, 86)"),
+            ("actionBackgroundClip", "padding-box"),
+            ("actionInlineEndBorderColor", "rgba(0, 0, 0, 0)"),
+            ("actionFadeBackgroundClip", "padding-box"),
+            ("reservedActionBackground", "rgba(0, 0, 0, 0)"),
+            ("reservedActionBorderTopWidth", "1px"),
+            ("separatorColor", "rgb(119, 136, 153)"),
+            ("customConnectedBorder", "rgb(119, 136, 153)"),
+            ("lastPinnedBorder", "rgb(136, 153, 170)"),
+        ])
+    );
+    // `actionBorderBlockWidth`, `actionFadeBorderBlockWidth` e `pinnedRowUsesLastPinnedBorder`.
+    assert_eq!(
+        (
+            [px(border_widths.top), px(border_widths.bottom)],
+            [px(fade.border_widths.top), px(fade.border_widths.bottom)],
+            style.tabs_and_actions_box_shadow(pinned_row).contains("rgb(136, 153, 170)"),
+        ),
+        (["1px".to_owned(), "1px".to_owned()], ["1px".to_owned(), "1px".to_owned()], true)
+    );
+}
+
+#[test]
+fn prefers_explicit_modern_tab_customizations_over_legacy_colors() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_with_file_colors(&[("editor.background", "#000000")]);
+    theme.set_custom_colors([
+        ("modernTab.activeBackground", "#ABCDEF"),
+        ("modernTab.activeForeground", "#102030"),
+        ("modernTab.hoverBackground", "#9A3412"),
+        ("modernTab.hoverForeground", "#FFF7ED"),
+        ("tab.activeBackground", "#123456"),
+        ("tab.activeForeground", "#FEDCBA"),
+    ]);
+    let style = ModernUiStyle::new(&theme, "modern-tab-customization-theme monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs").with_root_sizes(&composite_action_root_sizes());
+    let checked = ActionTabState { checked: true, ..ActionTabState::default() };
+    // A aba ativa do grupo ativo.
+    let active = EditorTabState { active: true, group_active: true, ..EditorTabState::default() };
+    let variable = |name: &str| rgb_of(style.variable(name));
+
+    let actual: Vec<(&str, Option<String>)> = vec![
+        ("paneBackground", rgb_of(style.pane_tab_indicator_background(checked))),
+        ("paneForeground", rgb_of(style.action_tab_foreground(checked))),
+        ("editorBackground", rgb_of(style.editor_tab_fill_background(active))),
+        ("editorForeground", rgb_of(style.editor_tab_foreground(active))),
+        ("hoverBackground", variable("--modern-ui-editor-tab-custom-hover-background")),
+        ("hoverForeground", variable("--modern-ui-editor-tab-hover-foreground")),
+    ];
+
+    assert_eq!(
+        actual,
+        expected_rows([
+            ("paneBackground", "rgb(171, 205, 239)"),
+            ("paneForeground", "rgb(16, 32, 48)"),
+            ("editorBackground", "rgb(171, 205, 239)"),
+            ("editorForeground", "rgb(16, 32, 48)"),
+            ("hoverBackground", "rgb(154, 52, 18)"),
+            ("hoverForeground", "rgb(255, 247, 237)"),
+        ])
+    );
+}
+
+#[test]
+fn prefers_editor_specific_modern_tab_customizations_over_legacy_colors() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_with_file_colors(&[("editor.background", "#000000"), ("modernTab.activeBackground", "#ABCDEF"), ("modernTab.activeForeground", "#102030")]);
+    theme.set_custom_colors([
+        ("modernEditorTab.activeBackground", "#2468AC"),
+        ("modernEditorTab.activeActionBackground", "#0E3747"),
+        ("modernEditorTab.activeForeground", "#13579B"),
+        ("modernEditorTab.activeHoverBackground", "#48ACF0"),
+        ("modernEditorTab.activeHoverActionBackground", "#4C1678"),
+        ("modernEditorTab.inactiveBackground", "#369CF0"),
+        ("modernEditorTab.hoverBackground", "#7C2D12"),
+        ("modernEditorTab.hoverActionBackground", "#5A1F0C"),
+        ("modernEditorTab.hoverForeground", "#FFEDD5"),
+        ("modernEditorTab.selectedActionBackground", "#166534"),
+        ("tab.activeBackground", "#123456"),
+        ("tab.activeForeground", "#FEDCBA"),
+        ("tab.hoverBackground", "#456789"),
+        ("tab.inactiveBackground", "#345678"),
+    ]);
+    let style = ModernUiStyle::new(&theme, "modern-editor-tab-customization-theme monaco-workbench modern-ui-tabs").with_root_sizes(&composite_action_root_sizes());
+    let checked = ActionTabState { checked: true, ..ActionTabState::default() };
+    let state = |active: bool| EditorTabState { active, group_active: true, ..EditorTabState::default() };
+    let variable = |name: &str| rgb_of(style.variable(name));
+
+    let actual: Vec<(&str, Option<String>)> = vec![
+        ("paneBackground", rgb_of(style.pane_tab_indicator_background(checked))),
+        ("paneForeground", rgb_of(style.action_tab_foreground(checked))),
+        ("editorBackground", rgb_of(style.editor_tab_fill_background(state(true)))),
+        ("editorForeground", rgb_of(style.editor_tab_foreground(state(true)))),
+        ("editorInactiveBackground", rgb_of(style.editor_tab_fill_background(state(false)))),
+        ("editorActiveActionBackground", variable("--modern-ui-editor-tab-custom-action-active-background")),
+        ("editorActiveHoverBackground", variable("--modern-ui-editor-tab-active-hover-background")),
+        ("editorActiveHoverActionBackground", variable("--modern-ui-editor-tab-action-active-hover-background")),
+        ("editorHoverBackground", variable("--modern-ui-editor-tab-custom-hover-background")),
+        ("editorHoverActionBackground", variable("--modern-ui-editor-tab-custom-action-hover-background")),
+        ("editorHoverForeground", variable("--modern-ui-editor-tab-hover-foreground")),
+        ("editorSelectedActionBackground", variable("--vscode-modernEditorTab-selectedActionBackground")),
+    ];
+
+    assert_eq!(
+        actual,
+        expected_rows([
+            ("paneBackground", "rgb(171, 205, 239)"),
+            ("paneForeground", "rgb(16, 32, 48)"),
+            ("editorBackground", "rgb(36, 104, 172)"),
+            ("editorForeground", "rgb(19, 87, 155)"),
+            ("editorInactiveBackground", "rgb(54, 156, 240)"),
+            ("editorActiveActionBackground", "rgb(14, 55, 71)"),
+            ("editorActiveHoverBackground", "rgb(72, 172, 240)"),
+            ("editorActiveHoverActionBackground", "rgb(76, 22, 120)"),
+            ("editorHoverBackground", "rgb(124, 45, 18)"),
+            ("editorHoverActionBackground", "rgb(90, 31, 12)"),
+            ("editorHoverForeground", "rgb(255, 237, 213)"),
+            ("editorSelectedActionBackground", "rgb(22, 101, 52)"),
+        ])
+    );
+}
+
+#[test]
+fn uses_theme_defined_action_colors_while_preserving_user_overrides_and_default_hover_colors() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let action_colors = [
+        ("modernEditorTab.activeActionBackground", "#0E3747"),
+        ("modernEditorTab.activeHoverActionBackground", "#4C1678"),
+        ("modernEditorTab.hoverActionBackground", "#5A1F0C"),
+        ("modernEditorTab.selectedActionBackground", "#166534"),
+    ];
+    let results = ["default", "theme", "user", "themeWithUserOverride"].map(|source| {
+        // `createUnloadedTheme('vs-dark', source === 'theme' || ... ? actionColors : {})`.
+        let mut theme = if matches!(source, "theme" | "themeWithUserOverride") { unloaded_theme_with_file_colors(&action_colors) } else { unloaded_theme_with_file_colors(&[]) };
+        if source == "user" {
+            theme.set_custom_colors(action_colors);
+        } else if source == "themeWithUserOverride" {
+            theme.set_custom_colors([("modernEditorTab.selectedActionBackground", "#123456")]);
+        }
+        let mut style = ModernUiStyle::new(&theme, &format!("action-color-source-{source} monaco-workbench modern-ui-tabs"));
+        style.set_root_variable("--vscode-toolbar-hoverBackground", Color::from_hex("#ABCDEF"));
+        // O `.action-label` dentro do `.tab-actions` da aba, no `.title.tab-actions-reserve-space` do grupo ativo.
+        let button_background = |class_name: &str| rgb_of(style.tab_action_button_background(&TabElement::new(class_name, true).with_title("title tab-actions-reserve-space", true)));
+        (
+            source,
+            button_background("tab active"),
+            button_background("tab"),
+            button_background("tab selected"),
+            // `rootStyle.getPropertyValue(...).trim()`: a propriedade indefinida vale o texto vazio.
+            style.variable("--modern-ui-editor-tab-custom-action-active-hover-background").map(|color| color.to_string()).unwrap_or_default(),
+        )
+    });
+
+    let toolbar = Some("rgb(171, 205, 239)".to_owned());
+    let (active, inactive, selected) = (Some("rgb(14, 55, 71)".to_owned()), Some("rgb(90, 31, 12)".to_owned()), Some("rgb(22, 101, 52)".to_owned()));
+    assert_eq!(
+        results,
+        [
+            ("default", toolbar.clone(), toolbar.clone(), toolbar, String::new()),
+            ("theme", active.clone(), inactive.clone(), selected, "#4c1678".to_owned()),
+            ("user", active.clone(), inactive.clone(), Some("rgb(22, 101, 52)".to_owned()), "#4c1678".to_owned()),
+            ("themeWithUserOverride", active, inactive, Some("rgb(18, 52, 86)".to_owned()), "#4c1678".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn derives_inactive_tab_foreground_from_a_legacy_active_foreground_customization() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_with_file_colors(&[("editor.background", "#000000")]);
+    theme.set_custom_colors([("tab.activeForeground", "#FEDCBA")]);
+    let style = ModernUiStyle::new(&theme, "active-foreground-only-theme monaco-workbench modern-ui-tabs");
+    // A aba inativa do grupo ativo e a do grupo sem foco.
+    let inactive = |group_active: bool| rgb_of(style.editor_tab_foreground(EditorTabState { group_active, ..EditorTabState::default() }));
+
+    assert_eq!(
+        (inactive(true), inactive(false)),
+        (Some("rgba(254, 220, 186, 0.5)".to_owned()), Some("rgba(254, 220, 186, 0.25)".to_owned()))
+    );
+}
+
+#[test]
+fn keeps_panel_global_actions_above_overflowing_title_actions() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `--vscode-panel-background` é a customização `panel.background`.
+    let theme = theme_with_colors(&[("panel.background", "#123456")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui");
+    let (part, title) = (ClassList::new("part basepanel bottom"), ClassList::new("composite title"));
+    let global_actions = style.panel_global_actions(&part, &title);
+
+    assert_eq!(
+        (
+            style.panel_title_actions_min_width(&part, &title).map(px),
+            global_actions.position,
+            global_actions.z_index,
+            global_actions.flex_shrink,
+            css_rgb(&global_actions.background),
+        ),
+        (Some("0px".to_owned()), "relative", Some(1), 0.0, "rgba(0, 0, 0, 0)".to_owned())
     );
 }
 

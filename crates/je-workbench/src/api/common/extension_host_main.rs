@@ -32,6 +32,7 @@
 //! - `V8CallSite` (de `base/common/errors.ts`) não traz `getThis` e `getFunction` (devolvem `unknown` e `Function`, sem
 //!   representação), e `URI.file(fileName)` usa a plataforma do processo.
 
+use je_platform::resources::host_platform;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -39,7 +40,6 @@ use std::rc::{Rc, Weak};
 use je_base::async_::async_fn;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
-use je_base::path::Platform;
 use je_base::promise::Promise;
 use je_base::ternary_search_tree::TernarySearchTree;
 use je_base::uri::URI;
@@ -351,11 +351,6 @@ struct ExtensionErrorData {
 /// `PendingMigrationError.is(error)`.
 fn is_pending_migration_error(error: &Error) -> bool {
     error.name == PENDING_MIGRATION_ERROR_NAME
-}
-
-/// A plataforma do processo (o `isWindows` do `URI.file`).
-fn host_platform() -> Platform {
-    if cfg!(windows) { Platform::Win32 } else { Platform::Posix }
 }
 
 /// `ErrorHandler`.

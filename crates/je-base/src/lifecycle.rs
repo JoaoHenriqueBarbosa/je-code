@@ -632,6 +632,12 @@ impl Disposable {
         }
         self.store.add(o)
     }
+
+    /// `_store`: o `DisposableStore` que recebe os filhos registrados (o original o expõe como `protected`, para as subclasses
+    /// que entregam o store a quem precisa de uma vida atrelada à delas, como `cancelOnDispose(this._store)`).
+    pub fn store(&self) -> &Rc<DisposableStore> {
+        &self.store
+    }
 }
 
 impl IDisposable for Disposable {
@@ -768,6 +774,93 @@ impl RefCountedDisposable {
             self.disposable.dispose();
         }
         self
+    }
+}
+
+/// O estado compartilhado de um [`RefCounted`]: o objeto, a contagem de referências e o que descartar na última.
+struct RefCountedCore<T> {
+    object: T,
+    ref_count: Cell<u32>,
+    disposable: DisposableRef,
+}
+
+impl<T> RefCountedCore<T> {
+    /// `_decreaseRefCount`: a última referência descartada descarta o objeto.
+    fn decrease_ref_count(&self) {
+        self.ref_count.set(self.ref_count.get() - 1);
+        if self.ref_count.get() == 0 {
+            self.disposable.dispose();
+        }
+    }
+}
+
+/// `RefCounted<T>` (`editor/browser/widget/diffEditor/utils.ts`, com o `BaseRefCounted` e o `ClonedRefCounted`): uma referência
+/// contada a um objeto, que só é descartado quando a última referência (a criada por `create...` e as de `createNewRef`) é
+/// descartada. Cada referência descarta uma vez só (`_isDisposed`).
+///
+/// Divergências:
+/// - Cada referência é um `Rc<RefCounted<T>>`, para entrar num `DisposableStore` (o `IDisposable` do original), e o `object`
+///   é o campo [`RefCounted::object`] (por referência, o `get object()`).
+/// - O `debugOwner` e a lista `_owners` do original só servem à depuração (nenhum código a lê), então `createNewRef` não o
+///   recebe e a lista não é mantida.
+/// - `BaseRefCounted` e `ClonedRefCounted` têm o mesmo comportamento (`createNewRef` soma uma referência ao núcleo
+///   compartilhado e `dispose` tira uma), então são o mesmo tipo.
+pub struct RefCounted<T: 'static> {
+    core: Rc<RefCountedCore<T>>,
+    is_disposed: Cell<bool>,
+}
+
+impl<T: 'static> RefCounted<T> {
+    fn from_core(core: Rc<RefCountedCore<T>>) -> Rc<Self> {
+        Rc::new(Self { core, is_disposed: Cell::new(false) })
+    }
+
+    /// `RefCounted.create(value)`: o descarte da última referência descarta `value`.
+    pub fn create(value: T) -> Rc<Self>
+    where
+        T: IDisposable + Clone,
+    {
+        let disposable: DisposableRef = Rc::new(value.clone());
+        Self::from_core(Rc::new(RefCountedCore { object: value, ref_count: Cell::new(1), disposable }))
+    }
+
+    /// `RefCounted.createWithDisposable(value, disposable)`: o descarte da última referência descarta `disposable` e depois
+    /// `value`.
+    pub fn create_with_disposable(value: T, disposable: DisposableRef) -> Rc<Self>
+    where
+        T: IDisposable + Clone,
+    {
+        let store = DisposableStore::new();
+        store.add(disposable);
+        let value_ref: DisposableRef = Rc::new(value.clone());
+        store.add(value_ref);
+        Self::from_core(Rc::new(RefCountedCore { object: value, ref_count: Cell::new(1), disposable: store }))
+    }
+
+    /// `RefCounted.createOfNonDisposable(value, disposable)`: `value` não é descartável, e o descarte da última referência
+    /// descarta só `disposable`.
+    pub fn create_of_non_disposable(value: T, disposable: DisposableRef) -> Rc<Self> {
+        Self::from_core(Rc::new(RefCountedCore { object: value, ref_count: Cell::new(1), disposable }))
+    }
+
+    /// `get object()`.
+    pub fn object(&self) -> &T {
+        &self.core.object
+    }
+
+    /// `createNewRef()`: soma uma referência ao mesmo objeto.
+    pub fn create_new_ref(&self) -> Rc<Self> {
+        self.core.ref_count.set(self.core.ref_count.get() + 1);
+        Self::from_core(self.core.clone())
+    }
+}
+
+impl<T: 'static> IDisposable for RefCounted<T> {
+    fn dispose(&self) {
+        if self.is_disposed.replace(true) {
+            return;
+        }
+        self.core.decrease_ref_count();
     }
 }
 

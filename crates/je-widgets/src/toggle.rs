@@ -17,14 +17,26 @@
 //!   `focusBorder` e o `color` herdado) são campos de [`ToggleStyles`] e [`CheckboxStyles`].
 //! - `tabIndex` e `aria-*` ficam no widget ([`Toggle::tab_index`], [`Toggle::attribute`]).
 //!
-//! Fica de fora, por enquanto: o `CheckboxActionViewItem`, o `ToggleActionViewItem` e o
-//! `createToggleActionViewItemProvider` (dependem do `BaseActionViewItem` do actionbar: onda 2), o toque
+//! Fica de fora, por enquanto: o `CheckboxActionViewItem`, o toque
 //! (`ignoreGesture`), a borda tracejada do `:focus-visible` (a árvore só tem borda sólida) e o
 //! `.hc-black`/`.hc-light` (o tema de alto contraste troca o fundo e a borda do hover).
+//!
+//! # `ToggleActionViewItem`
+//!
+//! [`ToggleActionViewItem`] é o item de ação que mostra a ação como um [`Toggle`] (sem foco por Tab, `notFocusable`):
+//! `render` não chama o do base (só guarda o `li` como `element` e pendura o nó do toggle nele), o título leva o
+//! atalho (`rótulo (atalho)`) e a troca do toggle escreve `checked` na ação. O `instanceof ToggleActionViewItem` do
+//! original é `constructor_name() == "ToggleActionViewItem"`. [`create_toggle_action_view_item_provider`] recebe a
+//! `Ui` (o provedor do original não precisa dela porque o DOM é global) e as cores `toggleStyles`, que vão ao
+//! item pelo campo `toggle_styles` de [`IActionViewItemOptions`].
+//!
+//! Tamanho no `li`: o que [`Toggle::width`] reserva por `20px` de altura, com o `margin-left` de `2px`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use je_base::actions::ActionRef;
+use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event as BaseEvent};
 use je_base::html_content::IMarkdownString;
 use je_base::icon_labels::{get_codicon_aria_label, strip_icons};
@@ -36,6 +48,8 @@ use je_render::kurbo::Rect;
 use je_theme::ColorTheme;
 use je_ui::{Border, Content, Cursor, EventKind, NodeId, PointerEvents, Role, Ui};
 
+use crate::action_bar::IActionViewItemProvider;
+use crate::action_view_items::{BaseActionViewItem, IActionViewItem, IActionViewItemOptions, ItemSize};
 use crate::button::{Attributes, INHERITED_FOREGROUND, OutlineSpec, update_outline};
 use crate::common::registered_emitter;
 use crate::dom::{StandardKeyboardEvent, create_detached_el};
@@ -679,4 +693,135 @@ impl IDisposable for TriStateCheckbox {
     fn constructor_name(&self) -> &'static str {
         "TriStateCheckbox"
     }
+}
+
+/// A altura do toggle (`height: 20px`), a do `li` que o contém.
+const TOGGLE_ITEM_HEIGHT: f64 = 20.0;
+/// O `margin-left` do `.monaco-custom-toggle` dentro do `li`.
+const TOGGLE_MARGIN_LEFT: f64 = 2.0;
+
+/// `ToggleActionViewItem`: a ação desenhada como um [`Toggle`].
+pub struct ToggleActionViewItem {
+    base: BaseActionViewItem,
+    toggle: Rc<Toggle>,
+}
+
+impl ToggleActionViewItem {
+    /// `new ToggleActionViewItem(context, action, options)`.
+    pub fn new(ui: &Ui, context: Option<Dynamic>, action: ActionRef, options: IActionViewItemOptions) -> Rc<Self> {
+        let mut toggle_opts = ToggleOpts::new(ToggleTitle::Text(Self::title_of(&action, &options)), action.checked() == Some(true), options.toggle_styles.unwrap_or_default());
+        toggle_opts.action_class_name = action.class();
+        toggle_opts.not_focusable = true;
+        let toggle = Toggle::new(ui, toggle_opts);
+        let this = Rc::new_cyclic(|weak: &Weak<Self>| {
+            let base = BaseActionViewItem::new_derived(ui, context, action, options, weak.clone() as Weak<dyn IActionViewItem>);
+            base.register(toggle.clone());
+            Self { base, toggle }
+        });
+        let weak = Rc::downgrade(&this);
+        this.base.register(this.toggle.on_change().listen(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.base.action().set_checked(Some(this.toggle.checked()));
+            }
+        }));
+        this
+    }
+
+    /// `label (keybinding)`, ou só o rótulo sem atalho.
+    fn title_of(action: &ActionRef, options: &IActionViewItemOptions) -> String {
+        match options.keybinding.as_deref() {
+            Some(keybinding) if !keybinding.is_empty() => format!("{} ({})", action.label(), keybinding),
+            _ => action.label(),
+        }
+    }
+
+    /// O [`Toggle`] do item (`protected readonly toggle`).
+    pub fn toggle(&self) -> &Rc<Toggle> {
+        &self.toggle
+    }
+}
+
+impl IActionViewItem for ToggleActionViewItem {
+    fn base(&self) -> &BaseActionViewItem {
+        &self.base
+    }
+
+    fn render(&self, container: NodeId) {
+        self.base.set_element(container);
+        self.base.ui().tree_mut().append_child(container, self.toggle.dom_node());
+        self.update_checked();
+        self.update_enabled();
+    }
+
+    fn update_enabled(&self) {
+        let enabled = self.is_enabled();
+        if enabled {
+            self.toggle.enable();
+        } else {
+            self.toggle.disable();
+        }
+        if let Some(element) = self.base.element() {
+            self.base.ui().tree_mut().toggle_class(element, "disabled", !enabled);
+        }
+    }
+
+    fn update_checked(&self) {
+        self.toggle.set_checked(self.base.action().checked() == Some(true));
+    }
+
+    fn update_label(&self) {
+        self.toggle.set_title(ToggleTitle::Text(Self::title_of(&self.base.action(), &self.base.options)));
+    }
+
+    fn focus(&self, _from_right: bool) {
+        self.toggle.set_tab_index(0);
+        self.toggle.focus();
+    }
+
+    fn blur(&self) {
+        self.toggle.set_tab_index(-1);
+        let ui = self.base.ui();
+        if ui.focused() == Some(self.toggle.dom_node()) {
+            ui.blur();
+        }
+    }
+
+    fn set_focusable(&self, focusable: bool) {
+        self.toggle.set_tab_index(if focusable { 0 } else { -1 });
+    }
+
+    fn tab_stops(&self) -> usize {
+        usize::from(self.toggle.tab_index() == 0)
+    }
+
+    fn size(&self, _vertical: bool) -> ItemSize {
+        (self.toggle.width(), TOGGLE_ITEM_HEIGHT)
+    }
+
+    fn layout(&self, _vertical: bool, _width: f64, _height: f64) {
+        self.toggle.set_position(TOGGLE_MARGIN_LEFT, 0.0);
+    }
+}
+
+impl IDisposable for ToggleActionViewItem {
+    fn dispose(&self) {
+        self.base.base_dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "ToggleActionViewItem"
+    }
+}
+
+/// `createToggleActionViewItemProvider(toggleStyles)`: o provedor que desenha como [`ToggleActionViewItem`] a ação com
+/// estado `checked` (o `checked !== undefined`) e devolve `None` (o [`ActionViewItem`](crate::action_view_items::ActionViewItem)
+/// padrão) para as demais. `toggle_styles` sobrescreve o `toggle_styles` das opções, como o `{ ...options, toggleStyles }`.
+pub fn create_toggle_action_view_item_provider(ui: &Ui, toggle_styles: Option<ToggleStyles>) -> IActionViewItemProvider {
+    let ui = ui.clone();
+    Rc::new(move |action: &ActionRef, options: &IActionViewItemOptions| {
+        // Only render as a toggle if the action has a checked property
+        action.checked()?;
+        let options = IActionViewItemOptions { toggle_styles, ..options.clone() };
+        Some(ToggleActionViewItem::new(&ui, None, action.clone(), options) as Rc<dyn IActionViewItem>)
+    })
 }

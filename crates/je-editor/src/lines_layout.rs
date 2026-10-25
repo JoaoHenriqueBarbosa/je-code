@@ -118,30 +118,50 @@ impl From<&EditorWhitespace> for IEditorWhitespace {
 static INSTANCE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// O acessor de `changeWhitespace`.
-struct WhitespaceChangeAccessor<'a> {
-    instance_id: &'a str,
-    last_whitespace_id: &'a mut usize,
-    pending_changes: &'a mut PendingChanges,
+/// Onde o acessor de `changeWhitespace` enfileira as mudanças: o `LinesLayout` emprestado durante todo o callback, ou a
+/// célula que o guarda, emprestada só durante cada operação (assim o callback pode ler o layout, como no original, em que as
+/// mudanças ficam pendentes até o commit).
+pub trait WhitespaceChangeTarget {
+    fn with_layout<R>(&mut self, f: impl FnOnce(&mut LinesLayout) -> R) -> R;
+}
+
+impl WhitespaceChangeTarget for &mut LinesLayout {
+    fn with_layout<R>(&mut self, f: impl FnOnce(&mut LinesLayout) -> R) -> R {
+        f(self)
+    }
+}
+
+impl WhitespaceChangeTarget for &std::cell::RefCell<LinesLayout> {
+    fn with_layout<R>(&mut self, f: impl FnOnce(&mut LinesLayout) -> R) -> R {
+        f(&mut self.borrow_mut())
+    }
+}
+
+/// O acessor de `changeWhitespace`.
+pub struct WhitespaceChangeAccessor<T: WhitespaceChangeTarget> {
+    target: T,
     had_a_change: bool,
 }
 
-impl IWhitespaceChangeAccessor for WhitespaceChangeAccessor<'_> {
+impl<T: WhitespaceChangeTarget> IWhitespaceChangeAccessor for WhitespaceChangeAccessor<T> {
     fn insert_whitespace(&mut self, after_line_number: i32, ordinal: i32, height_in_px: i32, min_width: i32) -> String {
         self.had_a_change = true;
-        *self.last_whitespace_id += 1;
-        let id = format!("{}{}", self.instance_id, self.last_whitespace_id);
-        self.pending_changes.insert(EditorWhitespace::new(id.as_str(), after_line_number, ordinal, height_in_px, min_width));
-        id
+        self.target.with_layout(|layout| {
+            layout.last_whitespace_id += 1;
+            let id = format!("{}{}", layout.instance_id, layout.last_whitespace_id);
+            layout.pending_changes.insert(EditorWhitespace::new(id.as_str(), after_line_number, ordinal, height_in_px, min_width));
+            id
+        })
     }
 
     fn change_one_whitespace(&mut self, id: &str, new_after_line_number: i32, new_height: i32) {
         self.had_a_change = true;
-        self.pending_changes.change(PendingChange { id: id.to_string(), new_after_line_number, new_height });
+        self.target.with_layout(|layout| layout.pending_changes.change(PendingChange { id: id.to_string(), new_after_line_number, new_height }));
     }
 
     fn remove_whitespace(&mut self, id: &str) {
         self.had_a_change = true;
-        self.pending_changes.remove(PendingRemove { id: id.to_string() });
+        self.target.with_layout(|layout| layout.pending_changes.remove(PendingRemove { id: id.to_string() }));
     }
 }
 
@@ -260,18 +280,20 @@ impl LinesLayout {
     }
 
     pub fn change_whitespace(&mut self, callback: impl FnOnce(&mut dyn IWhitespaceChangeAccessor)) -> bool {
-        let mut accessor = WhitespaceChangeAccessor {
-            instance_id: &self.instance_id,
-            last_whitespace_id: &mut self.last_whitespace_id,
-            pending_changes: &mut self.pending_changes,
-            had_a_change: false,
-        };
-        // `try { ... } finally { commit }`: confirma o que ficou pendente mesmo se o callback entrar em pânico.
+        Self::change_whitespace_of(self, callback)
+    }
+
+    /// `changeWhitespace(callback)` sobre um alvo qualquer ([`WhitespaceChangeTarget`]): o callback enfileira as mudanças e
+    /// o `finally` do original as confirma, mesmo se o callback entrar em pânico.
+    pub fn change_whitespace_of<T: WhitespaceChangeTarget>(target: T, callback: impl FnOnce(&mut dyn IWhitespaceChangeAccessor)) -> bool {
+        let mut accessor = WhitespaceChangeAccessor { target, had_a_change: false };
         let outcome = catch_unwind(AssertUnwindSafe(|| callback(&mut accessor)));
         let had_a_change = accessor.had_a_change;
-        if let Some((inserts, changes, removes)) = self.pending_changes.drain() {
-            self.commit_pending_changes(inserts, changes, removes);
-        }
+        accessor.target.with_layout(|layout| {
+            if let Some((inserts, changes, removes)) = layout.pending_changes.drain() {
+                layout.commit_pending_changes(inserts, changes, removes);
+            }
+        });
         if let Err(payload) = outcome {
             resume_unwind(payload);
         }

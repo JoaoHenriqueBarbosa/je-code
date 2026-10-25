@@ -1,6 +1,9 @@
 //! Porte de `src/vs/workbench/contrib/preferences/test/browser/settingsTreeModels.test.ts` (suítes `SettingsTree managed default descriptions`, `SettingsTree Agents Window density`, `SettingsTree managed sandbox`, `SettingsTree ExP assignments`, `SettingsTree deprecation warnings`, `SettingsTree sandbox network search ordering`, `SettingsTree search results` e `SettingsTree`), caso a caso e na mesma ordem.
 //!
 //! Divergências:
+//! - Os dublês de serviços (`TestSettingsConfiguration`, `StubManagedSettingsService` sobre o `ManagedStore`, `StubLanguageService`),
+//!   o `create_services`, o `ConfigurationRegistration` e os construtores de configurações vivem em
+//!   `support/preferences_support.rs`, compartilhados com `settings_editor2.rs` e `settings_tree.rs`.
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` é o `LeakGuard` de cada teste (inclusive o da suíte `SettingsTree`, que o
 //!   chama no fim). O `TestInstantiationService` não existe: os serviços do original (`instantiationService.stub(...)`) são o
 //!   [`SettingsTreeServices`] que [`create_services`] monta, e `createInstance(Model, ...)` é o construtor do modelo com ele.
@@ -31,306 +34,46 @@
 //! - O `ILanguageService` e o produto do `TestProductService` são os de `je_workbench::test`, e o ambiente é o
 //!   `TestEnvironmentService` com `isSessionsWindow`.
 
-#[path = "../../je-platform/tests/common/mod.rs"]
-mod common;
+mod support;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use common::{LeakGuard, assert_deep_strict_equal, dyn_strs, ensure_no_disposables_are_leaked_in_test_suite, node, obj, prop_with, s};
-use je_base::JsString;
+use crate::support::preferences_support::common::{LeakGuard, assert_deep_strict_equal, dyn_strs, ensure_no_disposables_are_leaked_in_test_suite, node, obj, prop_with, s};
+use crate::support::preferences_support::{
+    ConfigurationRegistration, ManagedStore, StubManagedSettingsService, TestSettingsConfiguration, copy_of, create_services, first_defined, first_element, match_of,
+    mock_setting, new_test_service, null_managed_settings_service, register_sandbox_presentation_configuration, search_result, toc_entry, view_state,
+};
 use je_base::console::WarnSpy;
-use je_base::dynamic::{Dynamic, Truthy, json_stringify};
-use je_base::event::Event;
-use je_base::lifecycle::DisposableRef;
-use je_base::policy::{ManagedSettingValue, ManagedSettingsData, PolicyValue};
-use je_base::promise::Promise;
-use je_base::uri::URI;
-use je_editor::language_service::{ILanguageSelection, ILanguageService};
-use je_editor::languages::ILanguageIdCodec;
-use je_editor::languages_registry::LanguageNameIdPair;
-use je_editor::modes_registry::{LanguageExtensionPoint, LanguageIcon};
+use je_base::dynamic::{Dynamic, json_stringify};
+use je_base::policy::PolicyValue;
 use je_editor::range::Range;
-use je_platform::configuration::models::{ConfigurationChangeEvent, ConfigurationKeys};
-use je_platform::configuration::registry::{ConfigurationNode, ConfigurationScope, PropertySchema, configuration_registry};
 use je_platform::configuration::service::IConfigurationService;
+use je_platform::configuration::registry::ConfigurationScope;
 use je_platform::configuration::test_configuration_service::{TestConfigurationService, TestConfigurationValue};
-use je_platform::configuration::{ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue};
 use je_platform::network_filter::settings::AgentNetworkDomainSettingId;
 use je_platform::policy::copilot_managed_settings::{
     COPILOT_SANDBOX_ALLOWED_HOSTS_KEY, COPILOT_SANDBOX_ALLOW_BYPASS_KEY, COPILOT_SANDBOX_ALLOW_DEV_TOOL_ACCESS_KEY, COPILOT_SANDBOX_ALLOW_LOCAL_NETWORK_KEY,
     COPILOT_SANDBOX_ALLOW_OUTBOUND_KEY, COPILOT_SANDBOX_DENIED_PATHS_KEY, COPILOT_SANDBOX_ENABLED_KEY, COPILOT_SANDBOX_LSP_SERVERS_KEY,
-    COPILOT_SANDBOX_MCP_SERVERS_KEY, COPILOT_SANDBOX_READONLY_PATHS_KEY, IManagedSettingsService, NullManagedSettingsService,
+    COPILOT_SANDBOX_MCP_SERVERS_KEY, COPILOT_SANDBOX_READONLY_PATHS_KEY,
 };
 use je_platform::sandbox::settings::AgentSandboxSettingId;
-use je_platform::workspace::AnyWorkspaceIdentifier;
-use je_workbench::contrib::chat::chat_network_configuration::chat_network_domain_configuration_properties;
 use je_workbench::contrib::chat::model_selection::{default_model_policy_description_function, get_default_model_policy_description};
 use je_workbench::contrib::preferences::common::preferences::{EXP_ASSIGNMENT_SETTING_TAG, POLICY_SETTING_TAG};
 use je_workbench::contrib::preferences::preferences_search::SettingMatches;
 use je_workbench::contrib::preferences::preferences_widgets::SettingsTarget;
 use je_workbench::contrib::preferences::settings_editor_setting_indicators::get_indicators_label_aria_label;
-use je_workbench::contrib::preferences::settings_layout::ITOCEntry;
 use je_workbench::contrib::preferences::settings_tree_models::{
     IParsedQuery, ISettingsEditorViewState, SearchResultIdx, SearchResultModel, SettingDisplayFormat, SettingsTreeGroupElement, SettingsTreeModel,
-    SettingsTreeServices, SettingsTreeSettingElement, ViewStateRef, parse_query, sanitize_id, setting_key_to_display_format,
+    SettingsTreeSettingElement, ViewStateRef, parse_query, sanitize_id, setting_key_to_display_format,
 };
-use je_workbench::contrib::terminal_contrib::chat_agent_tools::terminal_chat_agent_tools_configuration::terminal_chat_agent_tools_managed_presentation_properties;
-use je_workbench::services::configuration::common::configuration::{IWorkbenchConfigurationService, RestrictedSettings};
 use je_workbench::services::configuration::common::experimental_settings::{ExperimentalSettingsService, IExperimentalSettingsService};
-use je_workbench::services::configuration::common::managed_settings_presentation::ManagedSettingsPresentationService;
 use je_workbench::services::layout::layout_service::{LayoutSettings, ModernUiDensity};
-use je_workbench::services::preferences::preferences::{ISearchResult, ISetting, ISettingMatch, SettingMatchType, SettingSchemaType};
-use je_workbench::test::browser::workbench_test_services::{EnvironmentOverrides, TestEnvironmentService};
-use je_workbench::test::common::workbench_test_services::{TestProductService, TestUserDataProfileService};
+use je_workbench::services::preferences::preferences::{ISetting, ISettingMatch, SettingMatchType};
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Dublês e construtores comuns às suítes.
-
-fn absent(method: &str) -> ! {
-    panic!("`{method}` não existe no stub parcial")
-}
-
-/// `{ isRegisteredLanguageId: () => true }`: o resto não existe no objeto do original.
-struct StubLanguageService;
-
-impl ILanguageService for StubLanguageService {
-    fn language_id_codec(&self) -> Rc<dyn ILanguageIdCodec> {
-        absent("languageIdCodec")
-    }
-    fn on_did_request_basic_language_features(&self) -> Event<String> {
-        absent("onDidRequestBasicLanguageFeatures")
-    }
-    fn on_did_request_rich_language_features(&self) -> Event<String> {
-        absent("onDidRequestRichLanguageFeatures")
-    }
-    fn on_did_change(&self) -> Event<()> {
-        absent("onDidChange")
-    }
-    fn register_language(&self, _def: LanguageExtensionPoint) -> DisposableRef {
-        absent("registerLanguage")
-    }
-    fn is_registered_language_id(&self, _language_id: Option<&str>) -> bool {
-        true
-    }
-    fn get_registered_language_ids(&self) -> Vec<String> {
-        absent("getRegisteredLanguageIds")
-    }
-    fn get_sorted_registered_language_names(&self) -> Vec<LanguageNameIdPair> {
-        absent("getSortedRegisteredLanguageNames")
-    }
-    fn get_language_name(&self, _language_id: &str) -> Option<String> {
-        absent("getLanguageName")
-    }
-    fn get_mime_type(&self, _language_id: &str) -> Option<String> {
-        absent("getMimeType")
-    }
-    fn get_icon(&self, _language_id: &str) -> Option<LanguageIcon> {
-        absent("getIcon")
-    }
-    fn get_extensions(&self, _language_id: &str) -> Vec<String> {
-        absent("getExtensions")
-    }
-    fn get_filenames(&self, _language_id: &str) -> Vec<String> {
-        absent("getFilenames")
-    }
-    fn get_configuration_files(&self, _language_id: &str) -> Vec<URI> {
-        absent("getConfigurationFiles")
-    }
-    fn get_language_id_by_language_name(&self, _language_name: &str) -> Option<String> {
-        absent("getLanguageIdByLanguageName")
-    }
-    fn get_language_id_by_mime_type(&self, _mime_type: Option<&str>) -> Option<String> {
-        absent("getLanguageIdByMimeType")
-    }
-    fn guess_language_id_by_filepath_or_first_line(&self, _resource: Option<&URI>, _first_line: Option<&JsString>) -> Option<String> {
-        absent("guessLanguageIdByFilepathOrFirstLine")
-    }
-    fn create_by_id(&self, _language_id: Option<&str>) -> Rc<dyn ILanguageSelection> {
-        absent("createById")
-    }
-    fn create_by_mime_type(&self, _mime_type: Option<&str>) -> Rc<dyn ILanguageSelection> {
-        absent("createByMimeType")
-    }
-    fn create_by_filepath_or_first_line(&self, _resource: Option<&URI>, _first_line: Option<&JsString>) -> Rc<dyn ILanguageSelection> {
-        absent("createByFilepathOrFirstLine")
-    }
-    fn request_basic_language_features(&self, _language_id: &str) {
-        absent("requestBasicLanguageFeatures")
-    }
-    fn request_rich_language_features(&self, _language_id: &str) {
-        absent("requestRichLanguageFeatures")
-    }
-}
-
-/// `new TestConfigurationService(configuration)` com o emissor registrado no guarda (`store.add(service.onDidChangeConfigurationEmitter)`).
-fn new_test_service(store: &LeakGuard, configuration: Option<Dynamic>) -> Rc<TestConfigurationService> {
-    let service = TestConfigurationService::new(configuration);
-    store.add_rc(service.on_did_change_configuration_emitter.clone());
-    service
-}
-
-/// `new class extends TestConfigurationService { isSettingAppliedForAllProfiles(): boolean { return false; } }(configuration)`.
-struct TestSettingsConfiguration {
-    service: Rc<TestConfigurationService>,
-    config: Dynamic,
-}
-
-impl TestSettingsConfiguration {
-    fn new(store: &LeakGuard, config: Option<Dynamic>) -> Rc<Self> {
-        let config = config.unwrap_or_else(|| Dynamic::object(Vec::<(&str, Dynamic)>::new()));
-        let service = new_test_service(store, Some(config.clone()));
-        Rc::new(Self { service, config })
-    }
-
-    /// O `super` da subclasse: um serviço sem substituto sobre o mesmo objeto de configuração.
-    fn base(&self, store: &LeakGuard) -> Rc<TestConfigurationService> {
-        new_test_service(store, Some(self.config.clone()))
-    }
-
-    /// `configuration.setUserConfiguration(key, value)`.
-    fn set_user_configuration(&self, key: &str, value: Dynamic) {
-        let _ = self.service.set_user_configuration(key, value, None);
-    }
-
-    /// `configuration.getValue(key)`.
-    fn get_value(&self, key: &str) -> Dynamic {
-        self.service.get_value(Some(key), None)
-    }
-
-    /// `configuration.inspect(key)`.
-    fn inspect(&self, key: &str) -> Rc<dyn ConfigurationValue> {
-        self.service.inspect(key, &ConfigurationOverrides::default())
-    }
-}
-
-impl IConfigurationService for TestSettingsConfiguration {
-    fn on_did_change_configuration(&self) -> Event<Rc<ConfigurationChangeEvent>> {
-        self.service.on_did_change_configuration()
-    }
-    fn get_configuration_data(&self) -> Option<ConfigurationData> {
-        self.service.get_configuration_data()
-    }
-    fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic {
-        self.service.get_value(section, overrides)
-    }
-    fn update_value(&self, key: &str, value: Dynamic, overrides: Option<ConfigurationUpdateOverrides>, target: Option<ConfigurationTarget>) -> Promise<()> {
-        self.service.update_value(key, value, overrides, target)
-    }
-    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> Rc<dyn ConfigurationValue> {
-        self.service.inspect(key, overrides)
-    }
-    fn reload_configuration(&self) -> Promise<()> {
-        self.service.reload_configuration()
-    }
-    fn keys(&self) -> ConfigurationKeys {
-        self.service.keys()
-    }
-}
-
-impl IWorkbenchConfigurationService for TestSettingsConfiguration {
-    fn restricted_settings(&self) -> RestrictedSettings {
-        RestrictedSettings::default()
-    }
-    fn on_did_change_restricted_settings(&self) -> Event<RestrictedSettings> {
-        Event::none()
-    }
-    fn when_remote_configuration_loaded(&self) -> Promise<()> {
-        Promise::resolved(())
-    }
-    fn initialize(&self, _arg: &AnyWorkspaceIdentifier) -> Promise<()> {
-        Promise::resolved(())
-    }
-    fn is_setting_applied_for_all_profiles(&self, _setting: &str) -> bool {
-        false
-    }
-}
-
-/// `{ ...result }`: uma cópia dos valores de um `inspect`.
-fn copy_of(result: &dyn ConfigurationValue) -> TestConfigurationValue {
-    TestConfigurationValue {
-        default_value: result.default_value(),
-        application_value: result.application_value(),
-        user_value: result.user_value(),
-        user_local_value: result.user_local_value(),
-        user_remote_value: result.user_remote_value(),
-        workspace_value: result.workspace_value(),
-        workspace_folder_value: result.workspace_folder_value(),
-        memory_value: result.memory_value(),
-        policy_value: result.policy_value(),
-        value: result.value(),
-        override_identifiers: result.override_identifiers(),
-    }
-}
-
-/// `a ?? b ?? c`: o primeiro valor que não é nulo nem `undefined`.
-fn first_defined(values: &[&Dynamic]) -> Dynamic {
-    values.iter().find(|value| !value.is_nullish()).map_or(Dynamic::Undefined, |value| (*value).clone())
-}
-
-/// Os serviços que os testes empilham com `instantiationService.stub(...)`.
-fn create_services(
-    store: &LeakGuard,
-    configuration: &Rc<TestSettingsConfiguration>,
-    is_sessions_window: bool,
-    managed_settings_service: Rc<dyn IManagedSettingsService>,
-) -> (SettingsTreeServices, Rc<ExperimentalSettingsService>) {
-    let experimental_settings_service = store.add_rc(ExperimentalSettingsService::new());
-    let managed_settings_presentation_service = store.add_rc(ManagedSettingsPresentationService::new(managed_settings_service));
-    let services = SettingsTreeServices {
-        configuration_service: configuration.clone(),
-        language_service: Rc::new(StubLanguageService),
-        user_data_profile_service: TestUserDataProfileService::new(),
-        product_service: Rc::new(TestProductService::default()),
-        environment_service: TestEnvironmentService::with_overrides(EnvironmentOverrides { is_sessions_window, ..Default::default() }),
-        experimental_settings_service: experimental_settings_service.clone(),
-        managed_settings_presentation_service,
-    };
-    (services, experimental_settings_service)
-}
-
-/// `instantiationService.stub(IManagedSettingsService, new NullManagedSettingsService())`.
-fn null_managed_settings_service() -> Rc<dyn IManagedSettingsService> {
-    Rc::new(NullManagedSettingsService)
-}
-
-/// O `registerConfiguration` do `suiteSetup` e o `deregisterConfigurations` do `suiteTeardown`.
-struct ConfigurationRegistration(ConfigurationNode);
-
-impl ConfigurationRegistration {
-    fn new(node: ConfigurationNode) -> Self {
-        configuration_registry().register_configuration(node.clone());
-        Self(node)
-    }
-}
-
-impl Drop for ConfigurationRegistration {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            configuration_registry().deregister_configurations(std::slice::from_ref(&self.0));
-        }
-    }
-}
-
-/// `mock<ISetting>` com a chave e o tipo (`override key = key; override type = 'string'; override description = []`).
-fn mock_setting(key: &str, type_: &str) -> ISetting {
-    ISetting { key: key.to_owned(), r#type: Some(SettingSchemaType::Single(type_.to_owned())), description: Vec::new(), ..ISetting::default() }
-}
-
-/// `{ setting, matches: [], matchType, keyMatchScore: 0, score: 0 }`.
-fn match_of(setting: ISetting, match_type: SettingMatchType) -> ISettingMatch {
-    ISettingMatch::new(Rc::new(setting), Some(Vec::new()), match_type, 0.0, 0.0)
-}
-
-/// `{ filterMatches, exactMatch }`.
-fn search_result(filter_matches: Vec<ISettingMatch>, exact_match: bool) -> ISearchResult {
-    ISearchResult { filter_matches, exact_match }
-}
-
-fn view_state(settings_target: SettingsTarget) -> ViewStateRef {
-    Rc::new(RefCell::new(ISettingsEditorViewState::new(settings_target)))
-}
+// Construtores comuns às suítes (os dublês e a configuração de teste vivem em `support/preferences_support.rs`).
 
 /// `{ value, managed, policyFilter }`.
 fn element_state(value: Dynamic, managed: bool, policy_filter: bool) -> Dynamic {
@@ -352,15 +95,6 @@ fn array(items: Vec<Dynamic>) -> Dynamic {
 /// Os elementos de configuração dos filhos da raiz (`filter((child): child is SettingsTreeSettingElement => child instanceof SettingsTreeSettingElement)`).
 fn setting_children(root: &Rc<SettingsTreeGroupElement>) -> Vec<Rc<SettingsTreeSettingElement>> {
     root.children().iter().filter_map(|child| child.as_setting().cloned()).collect()
-}
-
-/// `model.getElementsByName(key)![0]`.
-fn first_element(model: &SettingsTreeModel, key: &str) -> Rc<SettingsTreeSettingElement> {
-    model.get_elements_by_name(key).expect("o modelo tem a configuração")[0].clone()
-}
-
-fn toc_entry(id: &str, label: &str, settings: Vec<Rc<ISetting>>) -> ITOCEntry<Rc<ISetting>> {
-    ITOCEntry { id: id.to_owned(), label: label.to_owned(), order: None, children: None, settings: Some(settings), hide: None }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -522,50 +256,6 @@ fn preserves_the_existing_editor_window_and_user_scope_display() {
 // ---------------------------------------------------------------------------------------------------------------------
 // suite('SettingsTree managed sandbox')
 
-/// O objeto `managed` que os testes mudam (`managed[key] = value`, `delete managed[key]`).
-#[derive(Default)]
-struct ManagedStore {
-    values: RefCell<HashMap<String, Option<PolicyValue>>>,
-}
-
-impl ManagedStore {
-    /// `managed[key] = value` (`None` é o `undefined`).
-    fn set(&self, key: &str, value: Option<PolicyValue>) {
-        self.values.borrow_mut().insert(key.to_owned(), value);
-    }
-
-    /// `delete managed[key]`.
-    fn delete(&self, key: &str) {
-        self.values.borrow_mut().remove(key);
-    }
-}
-
-/// `new class extends mock<IManagedSettingsService>() { onDidChangeManagedSettings = Event.None; getManagedSettingValue(key) { return managed[key]; } }`.
-struct StubManagedSettingsService {
-    store: Rc<ManagedStore>,
-}
-
-impl IManagedSettingsService for StubManagedSettingsService {
-    fn on_did_change_managed_settings(&self) -> Event<()> {
-        Event::none()
-    }
-    fn get_managed_settings(&self) -> ManagedSettingsData {
-        absent("getManagedSettings")
-    }
-    fn get_managed_setting_value(&self, key: &str) -> Option<ManagedSettingValue> {
-        self.store.values.borrow().get(key).cloned().flatten()
-    }
-}
-
-/// O `registerConfiguration(configurationNode)` do `suiteSetup` da suíte.
-fn register_sandbox_presentation_configuration() -> ConfigurationRegistration {
-    let mut properties = terminal_chat_agent_tools_managed_presentation_properties();
-    properties.extend(chat_network_domain_configuration_properties());
-    let properties: Vec<(&str, PropertySchema)> =
-        properties.iter().filter(|(_, property)| property.get("managedSettingsPresentation").is_truthy()).map(|(key, property)| (key.as_str(), property.clone())).collect();
-    ConfigurationRegistration::new(node("sandboxPresentationTest", properties))
-}
-
 fn local_paths() -> Dynamic {
     obj(vec![("readwritePaths", dyn_strs(&["local.write"])), ("readonlyPaths", dyn_strs(&["local.read"])), ("deniedPaths", dyn_strs(&["local.deny"]))])
 }
@@ -598,7 +288,7 @@ impl SandboxModel {
         for (key, value) in initial_managed {
             managed.set(key, Some(value));
         }
-        let (services, _) = create_services(store, &configuration, false, Rc::new(StubManagedSettingsService { store: managed.clone() }));
+        let (services, _) = create_services(store, &configuration, false, Rc::new(StubManagedSettingsService::new(managed.clone())));
         let model = store.add_rc(SearchResultModel::new(view_state(settings_target), None, true, services));
         let keys = setting_keys.unwrap_or_else(|| {
             vec![
@@ -662,7 +352,7 @@ fn texts_state(value: &[&str], managed: bool, policy_filter: bool) -> Dynamic {
 #[test]
 fn managed_allowlist_locks_allowed_domains_and_restores_local_preferences_after_removal() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     let key = AgentNetworkDomainSettingId::AllowedNetworkDomains.as_str();
     for allowed_hosts in [vec![], vec!["managed.example", "*.managed.example"]] {
         let sandbox = SandboxModel::new(&store, SettingsTarget::UserLocal, true, Some(vec![key]), Vec::new());
@@ -685,7 +375,7 @@ fn managed_allowlist_locks_allowed_domains_and_restores_local_preferences_after_
 #[test]
 fn ignores_malformed_managed_allowlists_in_the_presentation_and_preserves_local_values() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     let key = AgentNetworkDomainSettingId::AllowedNetworkDomains.as_str();
     let sandbox = SandboxModel::new(&store, SettingsTarget::UserLocal, true, Some(vec![key]), Vec::new());
     let console_warn = WarnSpy::install();
@@ -717,7 +407,7 @@ fn ignores_malformed_managed_allowlists_in_the_presentation_and_preserves_local_
 #[test]
 fn composes_managed_filesystem_presentation_with_local_paths_and_restores_preferences_on_removal() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     let key = AgentSandboxSettingId::AgentSandboxUserConfiguredPaths.as_str();
     let sandbox = SandboxModel::new(&store, SettingsTarget::UserLocal, true, Some(vec![key]), Vec::new());
     let initial = sandbox.read();
@@ -751,7 +441,7 @@ fn composes_managed_filesystem_presentation_with_local_paths_and_restores_prefer
 #[test]
 fn ignores_malformed_managed_filesystem_paths_without_hiding_saved_local_paths() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     let key = AgentSandboxSettingId::AgentSandboxUserConfiguredPaths.as_str();
     let console_warn = WarnSpy::install();
     let sandbox = SandboxModel::new(
@@ -788,7 +478,7 @@ fn ignores_malformed_managed_filesystem_paths_without_hiding_saved_local_paths()
 #[test]
 fn resolved_enabled_and_allow_bypass() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     for enabled in [None, Some(false), Some(true)] {
         for allow_bypass in [None, Some(false), Some(true)] {
             let sandbox = SandboxModel::with_defaults(&store);
@@ -821,7 +511,7 @@ const SANDBOX_TARGETS: [fn() -> SettingsTarget; 3] = [|| SettingsTarget::UserLoc
 #[test]
 fn managed_setting_preserves_local_value_in_target() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     for target in SANDBOX_TARGETS {
         for local_access in [false, true] {
             let cases = [
@@ -864,7 +554,7 @@ fn managed_setting_preserves_local_value_in_target() {
 #[test]
 fn managed_access_restrictions_preserve_local_value_in_target() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     for target in SANDBOX_TARGETS {
         for local_access in [false, true] {
             let sandbox = SandboxModel::new(&store, target(), local_access, None, Vec::new());
@@ -894,7 +584,7 @@ fn managed_access_restrictions_preserve_local_value_in_target() {
 #[test]
 fn refreshes_existing_rows_and_restores_preferences_after_removal_in_target() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     for target in SANDBOX_TARGETS {
         let sandbox = SandboxModel::new(&store, target(), true, None, Vec::new());
         let initial = sandbox.read();
@@ -921,7 +611,7 @@ fn refreshes_existing_rows_and_restores_preferences_after_removal_in_target() {
 #[test]
 fn runtime_restrictions_take_precedence_in_the_ui_and_leave_configuration_policies_intact() {
     let store = ensure_no_disposables_are_leaked_in_test_suite();
-    let _registration = register_sandbox_presentation_configuration();
+    let _registration = register_sandbox_presentation_configuration("sandboxPresentationTest");
     let sandbox = SandboxModel::with_defaults(&store);
     let reader = sandbox.configuration.base(&store);
     sandbox.configuration.service.stub_inspect_with(move |key, _| Rc::new(TestConfigurationValue { policy_value: reader.get_value(Some(key), None), ..Default::default() }));

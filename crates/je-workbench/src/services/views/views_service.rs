@@ -10,6 +10,7 @@
 //! - **`OutputViewPane`** (`outputView.ts`) não foi portado: [`IOutputViewPane`] é o que o `OutputService` lê dele
 //!   (`showChannel`). `onDidChangeViewVisibility` emite o [`ViewVisibilityChangeEvent`] (`{ id, visible }`).
 
+use std::any::Any;
 use std::rc::Rc;
 
 use je_base::errors::{self, Error};
@@ -25,7 +26,10 @@ fn not_a_function(member: &str) -> ! {
 }
 
 /// O que o `fileCommands.ts` usa de uma `ViewPane` aberta ou achada por id: `setExpanded` e `focus`.
-pub trait IViewPane {
+///
+/// O supertrait [`Any`] é o `view as ExplorerView` do original (`explorerView.ts`, `collapseExplorerFolders`): quem recebe a
+/// vista converte `&dyn IViewPane` em `&dyn Any` e lê o tipo concreto com `downcast_ref`.
+pub trait IViewPane: Any {
     /// `setExpanded(expanded)`: se o estado mudou.
     fn set_expanded(&self, expanded: bool) -> bool;
 

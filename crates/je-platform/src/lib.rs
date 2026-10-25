@@ -50,6 +50,8 @@ pub mod workspaces;
 pub mod window;
 pub mod assignment;
 
+pub mod windows;
+
 #[doc(hidden)]
 pub use je_base::event as __je_event;
 #[doc(hidden)]
@@ -63,6 +65,9 @@ pub mod remote;
 pub mod opener;
 
 pub mod terminal;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod shell;
 
 pub mod sandbox;
 pub mod network_filter;

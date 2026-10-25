@@ -17,7 +17,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use je_base::lifecycle::DisposableRef;
+use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_platform::contextview::context_view::{
     AnchorTarget, HideData, IContextViewCloseAnimation as PlatformCloseAnimation, IContextViewDelegate, IContextViewService,
 };
@@ -121,6 +121,13 @@ impl NativeContextViewService {
     /// `new ContextView(container, ContextViewDOMPosition.ABSOLUTE)` sobre o contêiner da janela.
     pub fn new(ui: &Ui, container: NodeId) -> Rc<Self> {
         Rc::new(Self { view: ContextView::new(ui, container, ContextViewDOMPosition::Absolute), pending_hide_data: Rc::new(RefCell::new(None)) })
+    }
+}
+
+/// `ContextViewService.dispose()` (`Disposable`): descarta a `ContextView`, que esconde a visão aberta e solta o contêiner.
+impl IDisposable for NativeContextViewService {
+    fn dispose(&self) {
+        self.view.dispose();
     }
 }
 
