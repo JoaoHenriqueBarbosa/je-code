@@ -45,7 +45,8 @@ use je_platform::workspace::{IWorkspaceContextService, WorkbenchState};
 
 use crate::common::editor::{RevertOptions, SaveOptions, SaveReason};
 use crate::services::editor::editor_service::{IEditorService, IncludeUntitled, RevertAllEditorsOptions, SaveAllEditorsOptions, SaveEditorsOptions};
-use crate::services::files_configuration::files_configuration_service::{AutoSaveMode, HotExitConfiguration, IFilesConfigurationService, ResourceOrEditor};
+use crate::services::files_configuration::files_configuration_service::{AutoSaveMode, IFilesConfigurationService, ResourceOrEditor};
+use je_platform::files::files::HotExitConfiguration;
 use crate::services::lifecycle::lifecycle::{ILifecycleService, ShutdownReason};
 use crate::services::working_copy::working_copy::{IWorkingCopy, WorkingCopyCapabilities, WorkingCopyIdentifier};
 use crate::services::working_copy::working_copy_backup::{DiscardBackupsFilter, IWorkingCopyBackupService};

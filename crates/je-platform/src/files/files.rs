@@ -1051,3 +1051,12 @@ pub fn has_file_atomic_write_capability(provider: &dyn FileSystemProvider) -> bo
 }
 
 // endregion
+
+/// `HotExitConfiguration`: os valores da configuração `files.hotExit`.
+pub struct HotExitConfiguration;
+
+impl HotExitConfiguration {
+    pub const OFF: &'static str = "off";
+    pub const ON_EXIT: &'static str = "onExit";
+    pub const ON_EXIT_AND_WINDOW_CLOSE: &'static str = "onExitAndWindowClose";
+}

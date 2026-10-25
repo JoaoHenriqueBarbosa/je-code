@@ -21,8 +21,6 @@
 //!   a leitura repete a tolerância do original (campo ausente ou que não é array vale lista vazia, um elemento `null`
 //!   derruba a leitura dos workspaces ou pastas, um valor que não é string vira o texto do JavaScript, como o
 //!   `URI.parse(undefined)`).
-//! - **`HotExitConfiguration`** (`files.ts`) ainda não tem casa em `files/files.rs`; fica aqui, com os mesmos valores
-//!   do `HotExitConfiguration` de `je-workbench`.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -42,6 +40,7 @@ use je_instantiation::service_id;
 use super::{BackupInfo, EmptyWindowBackupInfo, FolderBackupInfo, WorkspaceBackupInfo};
 use crate::configuration::service::IConfigurationService;
 use crate::environment::environment::NativeEnvironmentServiceApi;
+use crate::files::files::HotExitConfiguration;
 use crate::files::pfs::{self, RenameRetry, RimRafMode};
 use crate::js::to_js_string;
 use crate::log::{LogServiceRef, Logger};
@@ -50,15 +49,6 @@ use crate::state::{StateReadService, StateService};
 use crate::workspace::WorkspaceIdentifier;
 use crate::workspaces::node::md5::md5_hex;
 use crate::workspaces::node::workspaces::create_empty_workspace_identifier;
-
-/// `HotExitConfiguration` (`files.ts`): os valores de `files.hotExit`.
-pub struct HotExitConfiguration;
-
-impl HotExitConfiguration {
-    pub const OFF: &'static str = "off";
-    pub const ON_EXIT: &'static str = "onExit";
-    pub const ON_EXIT_AND_WINDOW_CLOSE: &'static str = "onExitAndWindowClose";
-}
 
 /// `IBackupMainService`.
 pub trait IBackupMainService {

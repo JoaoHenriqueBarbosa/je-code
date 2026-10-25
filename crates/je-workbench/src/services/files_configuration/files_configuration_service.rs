@@ -51,7 +51,7 @@ use je_platform::configuration::ConfigurationOverrides;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::contextkey::{ContextKeyMeta, IContextKey, IContextKeyService, RawContextKey};
 use je_platform::environment::environment::EnvironmentService;
-use je_platform::files::files::{FileStat, has_readonly_capability};
+use je_platform::files::files::{FileStat, HotExitConfiguration, has_readonly_capability};
 use je_platform::files::i_file_service::IFileService;
 use je_platform::markers::{IMarkerService, MarkerReadOptions, MarkerSeverity};
 use je_platform::resources::ext_uri;
@@ -139,15 +139,6 @@ impl AutoSaveConfiguration {
     pub const AFTER_DELAY: &'static str = "afterDelay";
     pub const ON_FOCUS_CHANGE: &'static str = "onFocusChange";
     pub const ON_WINDOW_CHANGE: &'static str = "onWindowChange";
-}
-
-/// `HotExitConfiguration` (de `files.ts`): os valores da configuração `files.hotExit`.
-pub struct HotExitConfiguration;
-
-impl HotExitConfiguration {
-    pub const OFF: &'static str = "off";
-    pub const ON_EXIT: &'static str = "onExit";
-    pub const ON_EXIT_AND_WINDOW_CLOSE: &'static str = "onExitAndWindowClose";
 }
 
 /// `FILES_READONLY_INCLUDE_CONFIG`.
