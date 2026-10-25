@@ -169,13 +169,15 @@ fn animate_fixed_values<T: Clone + StrictEquals + 'static>(values: Vec<FixedValu
     observable_from_event(event, move |_| values[idx.get()].value.clone())
 }
 
-/// `_getKeybinding(commandId)`: o atalho do comando, relido quando o contexto muda.
-fn lookup_keybinding_observable(
-    command_id: &'static str,
+/// `_getKeybinding(commandId)`: o atalho do comando, relido quando o contexto muda. O menu do indicador da margem
+/// (`gutterIndicatorMenu`) tem o mesmo método e usa esta função.
+pub(crate) fn lookup_keybinding_observable(
+    command_id: &str,
     keybinding_service: Rc<dyn IKeybindingService>,
     context_key_service: &Rc<dyn IContextKeyService>,
 ) -> IObservable<Option<Rc<dyn ResolvedKeybinding>>> {
-    observable_from_event(context_key_service.on_did_change_context(), move |_| keybinding_service.lookup_keybinding(command_id, None, false))
+    let command_id = command_id.to_owned();
+    observable_from_event(context_key_service.on_did_change_context(), move |_| keybinding_service.lookup_keybinding(&command_id, None, false))
 }
 
 /// `JumpToView`.

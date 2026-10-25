@@ -42,11 +42,13 @@
 //!     substituição de linhas e lado a lado (`inline_edits_views/`, com o `NonOverflowOverlayWidget` que as views
 //!     compartilham; o lado a lado trouxe o `EmbeddedCodeEditorWidget`, em `embedded_code_editor_widget`).
 //!     Faltam: inserção em linha, inserção em várias linhas e long distance hint;
-//!   - 4c-3 (em andamento): o gutter indicator, em `view/inline_edits/components/`. Pronto: `gutterIndicatorView`
+//!   - 4c-3 (pronta): o gutter indicator, em `view/inline_edits/components/`: `gutterIndicatorView`
 //!     (`InlineEditsGutterIndicator`, `InlineEditsGutterIndicatorData`, `InlineSuggestionGutterMenuData`,
-//!     `SimpleInlineSuggestModel`, o posicionamento na margem, o hover e o pulso). A abertura do menu e a altura do sticky
-//!     scroll chegam pelo contrato `IGutterIndicatorHost`. Falta: `gutterIndicatorMenu` (`GutterIndicatorMenuContent`),
-//!     que implementa `IGutterIndicatorHost::show_menu` (conteúdo, `createFocusTracker` e `showInstantHover`);
+//!     `SimpleInlineSuggestModel`, o posicionamento na margem, o hover e o pulso) e `gutterIndicatorMenu`
+//!     (`GutterIndicatorMenuContent`, o cabeçalho, as ações, os atalhos e o rodapé como dado em `GutterMenuContentVisual`).
+//!     O `GutterIndicatorMenuHost` implementa o `IGutterIndicatorHost` do indicador; o hover e o rastreador de foco
+//!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter` e a altura do sticky scroll
+//!     pelo construtor do host, ambos fechados pelo pintor nativo e pelo controller (4c-6);
 //!   - 4c-4: a `InlineEditsView` e o producer (`inlineEditsViewProducer`);
 //!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
 //!     (`hintsWidget/*`, com o `StatusBarViewItem`);
