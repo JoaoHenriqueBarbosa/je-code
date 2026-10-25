@@ -1,13 +1,13 @@
-//! Porte de `src/vs/workbench/api/common/extHostTerminalShellIntegration.ts`, a parte `InternalTerminalShellIntegration`
-//! (o estado de execuções de comando de um terminal: execuções pendentes, a corrente, linhas de comando multilinha, os
-//! fluxos de dados `read()`), com os tipos `vscode.*` que ela produz.
-//!
-//! De fora: `ExtHostTerminalShellIntegration` e `IExtHostTerminalShellIntegration` (o serviço que liga a thread principal
-//! a um `InternalTerminalShellIntegration` por terminal), que dependem do `ExtHostTerminalService`
-//! (`extHostTerminalService.ts`), do protocolo `ExtHostTerminalShellIntegrationShape` e do `IExtHostRpcService`, todos
-//! ainda sem porte.
+//! Porte de `src/vs/workbench/api/common/extHostTerminalShellIntegration.ts`: o `InternalTerminalShellIntegration` (o estado
+//! de execuções de comando de um terminal: execuções pendentes, a corrente, linhas de comando multilinha, os fluxos de dados
+//! `read()`), o serviço `ExtHostTerminalShellIntegration` (liga a thread principal a um `InternalTerminalShellIntegration`
+//! por terminal e implementa o `ExtHostTerminalShellIntegrationShape`) e os tipos `vscode.*` que eles produzem.
 //!
 //! Divergências:
+//! - `ExtHostTerminalShellIntegration` é genérico sobre a estratégia de criação do [`BaseExtHostTerminalService`] (a
+//!   `IExtHostTerminalService` do original); `IExtHostRpcService` é o [`IMainContext`]. `_register(toDisposable(...))` que
+//!   limpa as integrações é o `dispose`. `terminal.onWillDispose(...)` descarta a integração sem tirá-la do mapa, como o
+//!   original (quem tira é `$closeTerminal`). O `shellEnvValues` com `undefined` é `Option<String>`.
 //! - `vscode.Terminal` é opaco para este arquivo (só viaja nos eventos e é comparado por identidade): [`Terminal`] é um
 //!   `Rc<dyn Any>`.
 //! - `InternalTerminalShellExecution` e o `value: vscode.TerminalShellExecution` que ele expõe são um tipo só,
@@ -27,6 +27,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use je_base::async_::{AsyncIterable, AsyncIterableEmitter, AsyncIterableObject, Barrier, async_fn, async_iterable_to_promise};
@@ -35,7 +36,12 @@ use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
+use je_platform::resources::host_platform;
 
+use super::ext_host_protocol::{
+    ExtHostTerminalShellIntegrationShape, IMainContext, MainContext, MainThreadTerminalShellIntegrationShape,
+};
+use super::ext_host_terminal_service::{BaseExtHostTerminalService, ExtHostTerminalCreation};
 use super::ext_host_types::TerminalShellExecutionCommandLineConfidence;
 
 /// `vscode.Terminal`, opaco (ver as divergências no topo do módulo).
@@ -487,10 +493,10 @@ impl InternalTerminalShellIntegration {
     }
 
     /// `setEnv(keys, values, isTrusted)`.
-    pub fn set_env(&self, keys: &[String], values: &[String], is_trusted: bool) {
+    pub fn set_env(&self, keys: &[String], values: &[Option<String>], is_trusted: bool) {
         let mut env: Vec<(String, Option<String>)> = Vec::new();
         for (i, key) in keys.iter().enumerate() {
-            let value = values.get(i).cloned();
+            let value = values.get(i).cloned().flatten();
             match env.iter_mut().find(|(existing, _)| existing == key) {
                 Some(entry) => entry.1 = value,
                 None => env.push((key.clone(), value)),
@@ -522,6 +528,169 @@ impl InternalTerminalShellIntegration {
 impl IDisposable for InternalTerminalShellIntegration {
     fn dispose(&self) {
         self.base.dispose();
+    }
+}
+
+// ---- o serviço
+
+/// `ExtHostTerminalShellIntegration` (e a sua `IExtHostTerminalShellIntegration`).
+pub struct ExtHostTerminalShellIntegration<S: ExtHostTerminalCreation> {
+    this: Weak<Self>,
+    base: Rc<DisposableStore>,
+    proxy: Rc<dyn MainThreadTerminalShellIntegrationShape>,
+    ext_host_terminal_service: Rc<BaseExtHostTerminalService<S>>,
+    /// `_activeShellIntegrations`, por id da instância.
+    active_shell_integrations: RefCell<HashMap<u32, Rc<InternalTerminalShellIntegration>>>,
+    on_did_change_terminal_shell_integration_emitter: Rc<Emitter<TerminalShellIntegrationChangeEvent>>,
+    on_did_start_terminal_shell_execution_emitter: Rc<Emitter<TerminalShellExecutionStartEvent>>,
+    on_did_end_terminal_shell_execution_emitter: Rc<Emitter<TerminalShellExecutionEndEvent>>,
+}
+
+impl<S: ExtHostTerminalCreation> ExtHostTerminalShellIntegration<S> {
+    pub fn new(ext_host_rpc: &dyn IMainContext, ext_host_terminal_service: Rc<BaseExtHostTerminalService<S>>) -> Rc<Self> {
+        let proxy = ext_host_rpc.get_proxy(&MainContext::MAIN_THREAD_TERMINAL_SHELL_INTEGRATION);
+        let base = DisposableStore::new();
+        let on_did_change_terminal_shell_integration_emitter = base.add_rc(Emitter::new());
+        let on_did_start_terminal_shell_execution_emitter = base.add_rc(Emitter::new());
+        let on_did_end_terminal_shell_execution_emitter = base.add_rc(Emitter::new());
+        Rc::new_cyclic(|this| Self {
+            this: this.clone(),
+            base,
+            proxy,
+            ext_host_terminal_service,
+            active_shell_integrations: RefCell::new(HashMap::new()),
+            on_did_change_terminal_shell_integration_emitter,
+            on_did_start_terminal_shell_execution_emitter,
+            on_did_end_terminal_shell_execution_emitter,
+        })
+    }
+
+    /// `onDidChangeTerminalShellIntegration`.
+    pub fn on_did_change_terminal_shell_integration(&self) -> Event<TerminalShellIntegrationChangeEvent> {
+        self.on_did_change_terminal_shell_integration_emitter.event()
+    }
+
+    /// `onDidStartTerminalShellExecution`.
+    pub fn on_did_start_terminal_shell_execution(&self) -> Event<TerminalShellExecutionStartEvent> {
+        self.on_did_start_terminal_shell_execution_emitter.event()
+    }
+
+    /// `onDidEndTerminalShellExecution`.
+    pub fn on_did_end_terminal_shell_execution(&self) -> Event<TerminalShellExecutionEndEvent> {
+        self.on_did_end_terminal_shell_execution_emitter.event()
+    }
+
+    fn integration_of(&self, instance_id: u32) -> Option<Rc<InternalTerminalShellIntegration>> {
+        self.active_shell_integrations.borrow().get(&instance_id).cloned()
+    }
+
+    /// `_convertCwdToUri(cwd)`: o `cwd` chega do renderer como texto e só vira URI aqui, na máquina em que o pty vive.
+    fn convert_cwd_to_uri(cwd: Option<&str>) -> Option<URI> {
+        cwd.filter(|cwd| !cwd.is_empty()).map(|cwd| URI::file(cwd, host_platform()))
+    }
+}
+
+impl<S: ExtHostTerminalCreation> IDisposable for ExtHostTerminalShellIntegration<S> {
+    fn dispose(&self) {
+        let integrations: Vec<_> = self.active_shell_integrations.borrow_mut().drain().map(|(_, integration)| integration).collect();
+        for integration in integrations {
+            integration.dispose();
+        }
+        self.base.dispose();
+    }
+}
+
+impl<S: ExtHostTerminalCreation> ExtHostTerminalShellIntegrationShape for ExtHostTerminalShellIntegration<S> {
+    fn rpc_shell_integration_change(&self, instance_id: u32, supports_execute_command_api: bool) {
+        let Some(terminal) = self.ext_host_terminal_service.get_terminal_by_id(instance_id) else { return };
+
+        let api_terminal: Terminal = terminal.value();
+        let shell_integration = match self.integration_of(instance_id) {
+            Some(shell_integration) => shell_integration,
+            None => {
+                let shell_integration =
+                    InternalTerminalShellIntegration::new(api_terminal.clone(), supports_execute_command_api, self.on_did_start_terminal_shell_execution_emitter.clone());
+                self.active_shell_integrations.borrow_mut().insert(instance_id, shell_integration.clone());
+                let weak = self.this.clone();
+                shell_integration.store.add(terminal.on_will_dispose().listen(move |_| {
+                    let Some(this) = weak.upgrade() else { return };
+                    let integration = this.integration_of(instance_id);
+                    if let Some(integration) = integration {
+                        integration.dispose();
+                    }
+                }));
+                let proxy = self.proxy.clone();
+                shell_integration.store.add(shell_integration.on_did_request_shell_execution().listen(move |command_line| proxy.rpc_execute_command(instance_id, command_line)));
+                let end_emitter = self.on_did_end_terminal_shell_execution_emitter.clone();
+                shell_integration.store.add(shell_integration.on_did_request_end_execution().listen(move |e| end_emitter.fire(e.clone())));
+                let change_emitter = self.on_did_change_terminal_shell_integration_emitter.clone();
+                shell_integration.store.add(shell_integration.on_did_request_change_shell_integration().listen(move |e| change_emitter.fire(e.clone())));
+                terminal.set_shell_integration(Some(shell_integration.value()));
+                shell_integration
+            }
+        };
+        self.on_did_change_terminal_shell_integration_emitter
+            .fire(TerminalShellIntegrationChangeEvent { terminal: api_terminal, shell_integration: shell_integration.value() });
+    }
+
+    fn rpc_shell_execution_start(
+        &self,
+        instance_id: u32,
+        supports_execute_command_api: bool,
+        command_line_value: &str,
+        command_line_confidence: TerminalShellExecutionCommandLineConfidence,
+        is_trusted: bool,
+        cwd: Option<&str>,
+    ) {
+        // Force shellIntegration creation if it hasn't been created yet, this could when events
+        // don't come through on startup
+        let exists = self.active_shell_integrations.borrow().contains_key(&instance_id);
+        if !exists {
+            self.rpc_shell_integration_change(instance_id, supports_execute_command_api);
+        }
+        let command_line = TerminalShellExecutionCommandLine { value: command_line_value.to_owned(), confidence: command_line_confidence, is_trusted };
+        if let Some(integration) = self.integration_of(instance_id) {
+            integration.start_shell_execution(command_line, Self::convert_cwd_to_uri(cwd));
+        }
+    }
+
+    fn rpc_shell_execution_end(
+        &self,
+        instance_id: u32,
+        command_line_value: &str,
+        command_line_confidence: TerminalShellExecutionCommandLineConfidence,
+        is_trusted: bool,
+        exit_code: Option<i32>,
+    ) {
+        let command_line = TerminalShellExecutionCommandLine { value: command_line_value.to_owned(), confidence: command_line_confidence, is_trusted };
+        if let Some(integration) = self.integration_of(instance_id) {
+            integration.end_shell_execution(Some(command_line), exit_code);
+        }
+    }
+
+    fn rpc_shell_execution_data(&self, instance_id: u32, data: &str) {
+        if let Some(integration) = self.integration_of(instance_id) {
+            integration.emit_data(data);
+        }
+    }
+
+    fn rpc_shell_env_change(&self, instance_id: u32, shell_env_keys: &[String], shell_env_values: &[Option<String>], is_trusted: bool) {
+        if let Some(integration) = self.integration_of(instance_id) {
+            integration.set_env(shell_env_keys, shell_env_values, is_trusted);
+        }
+    }
+
+    fn rpc_cwd_change(&self, instance_id: u32, cwd: Option<&str>) {
+        if let Some(integration) = self.integration_of(instance_id) {
+            integration.set_cwd(Self::convert_cwd_to_uri(cwd));
+        }
+    }
+
+    fn rpc_close_terminal(&self, instance_id: u32) {
+        let integration = self.active_shell_integrations.borrow_mut().remove(&instance_id);
+        if let Some(integration) = integration {
+            integration.dispose();
+        }
     }
 }
 
