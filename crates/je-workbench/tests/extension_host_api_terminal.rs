@@ -28,7 +28,7 @@ use je_platform::terminal::environment_variable::{ISerializableEnvironmentDescri
 use je_platform::terminal::terminal::{IProcessProperty, IProcessReadyWindowsPty, ShellCwd, TerminalEnvironmentValue, TerminalExitReason as PlatformExitReason};
 use je_workbench::api::common::ext_host_protocol::{
     ExtHostContext, ExtHostTerminalIdentifier, ExtHostTerminalServiceShape, ICreateContributedTerminalProfileOptions, IMainContext, IShellLaunchConfigDto, ITerminalDimensionsDto,
-    MainContext, MainThreadTerminalServiceShape, TerminalLaunchConfig,
+    MainContext, MainThreadTerminalServiceShape, TerminalLaunchConfig, TerminalLaunchLocation,
 };
 
 /// O JavaScript da extensão de exemplo.
@@ -108,6 +108,40 @@ exports.activate = (context) => {
     }));
     return 'registered';
   });
+  command('t.createLocated', () => {
+    globalThis.__located = vscode.window.createTerminal({ name: 'located', location: vscode.TerminalLocation.Editor, iconPath: new vscode.ThemeIcon('terminal') });
+    return globalThis.__located.name;
+  });
+  command('t.createEditorColumn', () => {
+    vscode.window.createTerminal({ name: 'column', location: { viewColumn: vscode.ViewColumn.Two, preserveFocus: true } });
+    return 'ok';
+  });
+  command('t.createSplit', () => {
+    vscode.window.createTerminal({ name: 'child', location: { parentTerminal: globalThis.__plain } });
+    return 'ok';
+  });
+  command('t.proposed', () => {
+    const read = (name) => {
+      try { vscode.window[name](() => {}); return 'sem erro'; } catch (error) { return error.message; }
+    };
+    return JSON.stringify({ dimensions: read('onDidChangeTerminalDimensions'), data: read('onDidWriteTerminalData') });
+  });
+  command('t.registerLinks', () => {
+    globalThis.__linked = [];
+    subscribe(vscode.window.registerTerminalLinkProvider({
+      provideTerminalLinks(context, token) {
+        globalThis.__linkContext = context.terminal.name + '|' + context.line;
+        return [new vscode.TerminalLink(2, 3, 'dica')];
+      },
+      handleTerminalLink(link) {
+        globalThis.__linked.push(link.startIndex + ':' + link.length + ':' + link.tooltip);
+      },
+    }));
+    return 'registered';
+  });
+  command('t.badLink', () => {
+    try { new vscode.TerminalLink(-1, 3); return 'sem erro'; } catch (error) { return error.message; }
+  });
 };
 "#;
 
@@ -136,6 +170,8 @@ struct Renderer {
     /// Os pedidos da extensão, como texto (`sendText:1:echo hi:true`, `show:1:true`, `hide:1`, `dispose:1`).
     calls: RefCell<Vec<String>>,
     requested: RefCell<Vec<Created>>,
+    /// O local e o ícone de cada `$createTerminal` (`location:editor`, `icon`, `parent:1`...).
+    launches: RefCell<Vec<String>>,
     registered_profiles: RefCell<Vec<(String, String)>>,
     process_data: RefCell<Vec<(u32, String)>>,
     process_ready: RefCell<Vec<(u32, i32)>>,
@@ -151,6 +187,7 @@ impl Renderer {
             pending: RefCell::new(Vec::new()),
             calls: RefCell::new(Vec::new()),
             requested: RefCell::new(Vec::new()),
+            launches: RefCell::new(Vec::new()),
             registered_profiles: RefCell::new(Vec::new()),
             process_data: RefCell::new(Vec::new()),
             process_ready: RefCell::new(Vec::new()),
@@ -222,6 +259,14 @@ impl MainThreadTerminalServiceShape for Renderer {
             is_pty: config.is_extension_custom_pty_terminal.unwrap_or(false),
         };
         self.requested.borrow_mut().push(created.clone());
+        let location = match &config.location {
+            Some(TerminalLaunchLocation::Location(location)) => format!("location:{}", *location as i32),
+            Some(TerminalLaunchLocation::ViewColumn { preserve_focus, .. }) => format!("column:preserveFocus={preserve_focus:?}"),
+            Some(TerminalLaunchLocation::ParentTerminal(parent)) => format!("parent:{}", id_text(parent)),
+            Some(TerminalLaunchLocation::SplitActiveTerminal(split)) => format!("split:{split}"),
+            None => "no-location".to_owned(),
+        };
+        self.launches.borrow_mut().push(format!("{location}:{}", if config.icon.is_some() { "icon" } else { "no-icon" }));
         let (promise, resolver) = Promise::<()>::new();
         self.pending.borrow_mut().push(Pending { uuid: ext_host_terminal_id.to_owned(), created, resolver });
         promise
@@ -467,5 +512,62 @@ fn terminal_profile_provider_registers_and_creates_the_profile_terminal() {
 
         assert_eq!(open_pending(workbench, &renderer), vec![1]);
         assert_eq!(events(workbench), r#"["open:from profile","active:from profile"]"#);
+    });
+}
+
+#[test]
+fn terminal_options_location_and_theme_icon_reach_the_main_thread() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        assert_eq!(run(workbench, "t.createLocated"), Dynamic::string("located"));
+        assert_eq!(run(workbench, "t.createEditorColumn"), Dynamic::string("ok"));
+        assert_eq!(*renderer.launches.borrow(), vec!["location:2:icon", "column:preserveFocus=Some(true):no-icon"]);
+    });
+}
+
+#[test]
+fn terminal_options_parent_terminal_splits_the_parent() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        run(workbench, "t.createByName");
+        open_pending(workbench, &renderer);
+        assert_eq!(run(workbench, "t.createSplit"), Dynamic::string("ok"));
+        assert_eq!(renderer.launches.borrow().last().map(String::as_str), Some("parent:1:no-icon"));
+    });
+}
+
+#[test]
+fn proposed_terminal_events_throw_without_the_proposal() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, _renderer| {
+        let text = format!("{:?}", run(workbench, "t.proposed"));
+        assert!(text.contains("terminalDimensions"), "{text}");
+        assert!(text.contains("terminalDataWriteEvent"), "{text}");
+        assert!(!text.contains("sem erro"), "{text}");
+    });
+}
+
+#[test]
+fn terminal_link_provider_provides_and_handles_links() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        assert_eq!(run(workbench, "t.registerLinks"), Dynamic::string("registered"));
+        run(workbench, "t.createByName");
+        open_pending(workbench, &renderer);
+
+        let provided = renderer.ext_host().rpc_provide_links(1, "ab cde");
+        settle(workbench);
+        let Some(Ok(links)) = provided.result() else { panic!("o provedor devolveu os links") };
+        assert_eq!(links.len(), 1);
+        assert_eq!((links[0].start_index, links[0].length, links[0].label.as_deref()), (2.0, 3.0, Some("dica")));
+        assert_eq!(workbench.probe("String(globalThis.__linkContext)"), "plain|ab cde");
+
+        renderer.ext_host().rpc_activate_link(1, links[0].id);
+        workbench.pump();
+        assert_eq!(workbench.probe("JSON.stringify(globalThis.__linked)"), r#"["2:3:dica"]"#);
+    });
+}
+
+#[test]
+fn terminal_link_constructor_validates_its_arguments() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, _renderer| {
+        let message = format!("{:?}", run(workbench, "t.badLink"));
+        assert!(message.contains("startIndex"), "{message}");
     });
 }

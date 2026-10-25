@@ -7,12 +7,21 @@
 //! `onDidOverrideDimensions` e `onDidChangeName` viram eventos do Rust, e `open`, `close`, `handleInput` e `setDimensions` chamam o
 //! objeto da extensão com o `this` dele).
 //!
-//! Falta: `TerminalOptions#location` (e `parentTerminal`), `iconPath` como `ThemeIcon`, `Terminal#shellIntegration`,
-//! `onDidChangeTerminalDimensions`, `onDidWriteTerminalData`, `onDidExecuteTerminalCommand`, `registerTerminalLinkProvider`,
-//! `registerTerminalQuickFixProvider`, `registerTerminalCompletionProvider` (propostas de API ou fora do pedido) e
-//! `environmentVariableCollection`.
+//! Também: `TerminalOptions#location` (`TerminalLocation`, `{ viewColumn, preserveFocus }` e `{ parentTerminal }`), `iconPath` como
+//! `ThemeIcon`, `onDidChangeTerminalDimensions` e `onDidWriteTerminalData` (propostas `terminalDimensions` e `terminalDataWriteEvent`,
+//! conferidas com `checkProposedApiEnabled`) e `registerTerminalLinkProvider` (com a classe `TerminalLink`).
+//!
+//! Falta: `Terminal#shellIntegration` e `onDidChangeTerminalShellIntegration`, `onDidStartTerminalShellExecution`,
+//! `onDidEndTerminalShellExecution` (o `ExtHostTerminalShellIntegration` portado existe, mas ainda não é criado nem ligado pelo host
+//! em processo), `environmentVariableCollection` do `ExtensionContext` (o `ExtHostExtensionService` ainda não monta o contexto com o
+//! `ExtHostStorage`), `onDidExecuteTerminalCommand`, `registerTerminalQuickFixProvider` e `registerTerminalCompletionProvider`
+//! (propostas de API fora do pedido).
 //!
 //! Divergências:
+//! - O `vscode` é um só para todas as extensões e a extensão do host não habilita proposta: `onDidChangeTerminalDimensions` e
+//!   `onDidWriteTerminalData` lançam o erro de `checkProposedApiEnabled` ao serem lidos (o original lança ao chamar o evento).
+//! - `handleTerminalLink` recebe um objeto novo com os campos do `TerminalLink` (o serviço guarda o link portado, não o objeto da
+//!   extensão): `startIndex`, `length` e `tooltip` chegam, a identidade e propriedades extras não.
 //! - O `vscode` é um só para todas as extensões: `registerTerminalProfileProvider` usa a extensão `je.exthost`, então a proposta
 //!   `terminalTitle` nunca está habilitada e o `titleTemplate` de um perfil é ignorado, como o original faz sem a proposta.
 //! - O `Pseudoterminal` devolvido por um `TerminalProfileProvider` atravessa o motor como cópia (a promessa do provedor entrega o
@@ -32,12 +41,14 @@ use je_base::errors::{on_unexpected_error, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::IDisposable;
 use je_base::promise::{MaybePromise, Promise};
-use je_base::themables::ThemeColor;
-use je_platform::terminal::terminal::{ITerminalEnvironment, ShellCwd, TerminalEnvironmentValue};
+use je_base::themables::{ThemeColor, ThemeIcon};
+use je_platform::terminal::terminal::{ITerminalEnvironment, ShellCwd, TerminalEnvironmentValue, TerminalLocation};
 use je_workbench::api::common::ext_host_terminal_service::{
-    ExtensionTerminalOptions, Pseudoterminal, TerminalCreationOptions, TerminalDimensions, TerminalIconPath, TerminalOptions, TerminalProfile, TerminalProfileProvider,
-    TerminalProfileResult, VscodeTerminal, WorkerExtHostTerminalService,
+    ExtensionTerminalOptions, Pseudoterminal, TerminalCreationOptions, TerminalDimensions, TerminalEditorLocationOptions, TerminalIconPath, TerminalLinkContext,
+    TerminalLinkProvider, TerminalLocationOption, TerminalOptions, TerminalProfile, TerminalProfileProvider, TerminalProfileResult, VscodeTerminal, WorkerExtHostTerminalService,
 };
+use je_workbench::api::common::ext_host_types::TerminalLink;
+use je_workbench::services::extensions::extensions::check_proposed_api_enabled;
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
 
 use crate::api::commands::{promise_to_js, settle_js_result};
@@ -45,7 +56,7 @@ use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::js_object::JsObjects;
 use crate::api::languages::host_extension;
-use crate::convert::{dynamic_to_js, field, is_nullish, opt_bool, opt_number, opt_string, uri_from_js, uri_to_js};
+use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, uri_from_js, uri_to_js};
 
 // ---- os objetos `Terminal`
 
@@ -118,9 +129,12 @@ fn cwd_from_js(value: Option<&JsData>) -> Result<Option<ShellCwd>, String> {
     }
 }
 
-/// `iconPath`: `Uri | { light: Uri; dark: Uri }` (o `ThemeIcon` está em "Falta").
+/// `iconPath`: `Uri | { light: Uri; dark: Uri } | ThemeIcon`.
 fn icon_from_js(value: Option<&JsData>) -> Result<Option<TerminalIconPath>, String> {
     match value {
+        Some(icon @ JsData::Object(_)) if class_name(icon) == Some("ThemeIcon") => {
+            Ok(Some(TerminalIconPath::Theme(ThemeIcon::from_dynamic(&js_to_dynamic(icon)).map_err(|error| error.message)?)))
+        }
         Some(icon) if field(icon, "light").is_some() && field(icon, "dark").is_some() => Ok(Some(TerminalIconPath::LightDark {
             light: uri_from_js(field(icon, "light").ok_or("iconPath.light")?)?,
             dark: uri_from_js(field(icon, "dark").ok_or("iconPath.dark")?)?,
@@ -137,9 +151,31 @@ fn color_from_js(value: Option<&JsData>) -> Result<Option<ThemeColor>, String> {
     }
 }
 
+/// `location`: `TerminalLocation | { viewColumn, preserveFocus? } | { parentTerminal }`.
+fn location_from_js(value: Option<&JsData>, objects: &TerminalObjects) -> Result<Option<TerminalLocationOption>, String> {
+    match value {
+        Some(JsData::Num(number)) => match *number as i32 {
+            1 => Ok(Some(TerminalLocationOption::Location(TerminalLocation::Panel))),
+            2 => Ok(Some(TerminalLocationOption::Location(TerminalLocation::Editor))),
+            _ => Err(format!("TerminalOptions.location inválido: {number}")),
+        },
+        Some(location @ JsData::Object(_)) => {
+            if let Some(parent) = field(location, "parentTerminal").filter(|parent| !is_nullish(Some(*parent))) {
+                let (parent_terminal, _) = objects.entry_of(parent)?;
+                Ok(Some(TerminalLocationOption::Split { parent_terminal }))
+            } else {
+                Ok(opt_number(field(location, "viewColumn"))
+                    .map(|view_column| TerminalLocationOption::Editor(TerminalEditorLocationOptions { view_column, preserve_focus: opt_bool(field(location, "preserveFocus")) })))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 /// `vscode.TerminalOptions`.
-fn terminal_options_from_js(data: &JsData) -> Result<TerminalOptions, String> {
+fn terminal_options_from_js(data: &JsData, objects: &TerminalObjects) -> Result<TerminalOptions, String> {
     Ok(TerminalOptions {
+        location: location_from_js(field(data, "location"), objects)?,
         name: opt_string(field(data, "name")),
         shell_path: opt_string(field(data, "shellPath")),
         shell_args: shell_args_from_js(field(data, "shellArgs")),
@@ -363,7 +399,7 @@ impl TerminalContext {
             pty: JsPseudoterminal::new(self.js.clone(), pty, self.table.clone()),
             icon_path: icon_from_js(field(data, "iconPath"))?,
             color: color_from_js(field(data, "color"))?,
-            location: None,
+            location: location_from_js(field(data, "location"), &self.objects)?,
             is_transient: opt_bool(field(data, "isTransient")),
             shell_integration_nonce: opt_string(field(data, "shellIntegrationNonce")),
             title_template: opt_string(field(data, "titleTemplate")),
@@ -380,7 +416,7 @@ impl TerminalContext {
                 };
                 self.extension_options(data, handle).map(TerminalCreationOptions::Extension)
             }
-            None => terminal_options_from_js(data).map(TerminalCreationOptions::Terminal),
+            None => terminal_options_from_js(data, &self.objects).map(TerminalCreationOptions::Terminal),
         }
     }
 
@@ -394,7 +430,7 @@ impl TerminalContext {
                         let JsData::Handle(pty) = self.js.property(options, "pty") else { return Err("createTerminal: o pty precisa ser um objeto".to_owned()) };
                         self.service.create_extension_terminal(&self.extension_options(&data, pty)?, None)
                     }
-                    None => self.service.create_terminal_from_options(terminal_options_from_js(&data)?, None).map_err(|error| error.message)?,
+                    None => self.service.create_terminal_from_options(terminal_options_from_js(&data, &self.objects)?, None).map_err(|error| error.message)?,
                 };
                 (terminal, Some(options.clone()))
             }
@@ -452,6 +488,77 @@ impl TerminalProfileProvider for JsProfileProvider {
             Err(message) => MaybePromise::Promise(Promise::rejected(Error::new(message))),
         }
     }
+}
+
+// ---- o provedor de links
+
+/// Os campos de um `TerminalLink` como o objeto que a extensão enxerga.
+fn terminal_link_to_js(link: &TerminalLink) -> JsData {
+    JsData::Object(vec![
+        ("startIndex".to_owned(), JsData::Num(link.start_index)),
+        ("length".to_owned(), JsData::Num(link.length)),
+        ("tooltip".to_owned(), link.tooltip.clone().map_or(JsData::Undefined, JsData::Str)),
+    ])
+}
+
+/// `new TerminalLink(startIndex, length, tooltip?)`, com a validação de `extHostTypes.ts`.
+fn terminal_link_from_parts(start_index: Option<&JsData>, length: Option<&JsData>, tooltip: Option<&JsData>) -> Result<TerminalLink, Error> {
+    TerminalLink::new(opt_number(start_index).unwrap_or(f64::NAN), opt_number(length).unwrap_or(f64::NAN), opt_string(tooltip).as_deref())
+}
+
+/// `ProviderResult<TerminalLink[]>` vindo da extensão.
+fn links_from_js(value: &JsData) -> Result<Option<Vec<TerminalLink>>, Error> {
+    match value {
+        JsData::Array(items) => items.iter().map(|item| terminal_link_from_parts(field(item, "startIndex"), field(item, "length"), field(item, "tooltip"))).collect::<Result<Vec<_>, _>>().map(Some),
+        _ => Ok(None),
+    }
+}
+
+struct JsLinkProvider {
+    context: TerminalContext,
+    provider: Rc<JsHandle>,
+}
+
+impl TerminalLinkProvider for JsLinkProvider {
+    fn provide_terminal_links(&self, context: &TerminalLinkContext, token: CancellationToken) -> MaybePromise<Option<Vec<TerminalLink>>> {
+        let runner = self.context.js.runner();
+        let js_context = JsData::Object(vec![
+            ("terminal".to_owned(), self.context.objects.to_js(&context.terminal, None)),
+            ("line".to_owned(), JsData::Str(context.line.clone())),
+        ]);
+        match runner.call_method(&self.provider, "provideTerminalLinks", &[js_context, self.context.events.token_to_js(token)]) {
+            Ok(result) => match settle_js_result(runner, result) {
+                MaybePromise::Value(value) => match links_from_js(&dynamic_to_js(&value)) {
+                    Ok(links) => MaybePromise::Value(links),
+                    Err(error) => MaybePromise::Promise(Promise::rejected(error)),
+                },
+                MaybePromise::Promise(promise) => MaybePromise::Promise(promise.then_result(move |outcome| links_from_js(&dynamic_to_js(&outcome?)))),
+            },
+            Err(message) => MaybePromise::Promise(Promise::rejected(Error::new(message))),
+        }
+    }
+
+    fn handle_terminal_link(&self, link: &TerminalLink) {
+        if let Err(message) = self.context.js.runner().call_method(&self.provider, "handleTerminalLink", &[terminal_link_to_js(link)]) {
+            on_unexpected_error(&Error::new(message));
+        }
+    }
+}
+
+/// A classe `vscode.TerminalLink` (`new TerminalLink(startIndex, length, tooltip?)`).
+pub fn terminal_link_class(runner: &NodeRunner) -> JsData {
+    let constructor = runner.define_class(ClassSpec {
+        name: "TerminalLink".to_owned(),
+        length: 3,
+        construct: Rc::new(|args| {
+            terminal_link_from_parts(args.first(), args.get(1), args.get(2)).map(|link| terminal_link_to_js(&link)).map_err(|error| error.message)
+        }),
+        methods: vec![],
+        getters: vec![],
+        statics: vec![],
+        parent: None,
+    });
+    JsData::Handle(Rc::new(constructor))
 }
 
 // ---- a classe `Terminal`
@@ -581,9 +688,19 @@ pub fn window_members(
     let reference = |name: &str, length: u32, body: NativeCallback| (name.to_owned(), JsData::Handle(Rc::new(runner.make_function_by_reference(name, length, body))));
 
     let create_context = context.clone();
+    let link_context = context.clone();
     let profile_context = context;
     let references = vec![
         reference("createTerminal", 3, Rc::new(move |args| create_context.create_terminal(args))),
+        reference(
+            "registerTerminalLinkProvider",
+            1,
+            Rc::new(move |args| {
+                let Some(JsData::Handle(provider)) = args.first() else { return Err("registerTerminalLinkProvider: o provedor precisa ser um objeto".to_owned()) };
+                let registration = link_context.service.register_link_provider(Rc::new(JsLinkProvider { context: link_context.clone(), provider: provider.clone() }));
+                Ok(link_context.table.to_js(registration))
+            }),
+        ),
         reference(
             "registerTerminalProfileProvider",
             2,
@@ -630,6 +747,50 @@ pub fn window_members(
             let (source, to_js_objects) = (service.clone(), objects.clone());
             event_getter(runner, table, "onDidChangeTerminalState", move || source.on_did_change_terminal_state(), move |terminal: &Rc<VscodeTerminal>| to_js_objects.to_js(terminal, None))
         },
+        {
+            let (source, to_js_objects) = (service.clone(), objects.clone());
+            proposed_getter(
+                "terminalDimensions",
+                event_getter(
+                    runner,
+                    table,
+                    "onDidChangeTerminalDimensions",
+                    move || source.on_did_change_terminal_dimensions(),
+                    move |(terminal, dimensions): &(Rc<VscodeTerminal>, TerminalDimensions)| {
+                        JsData::Object(vec![
+                            ("terminal".to_owned(), to_js_objects.to_js(terminal, None)),
+                            ("dimensions".to_owned(), dimensions_to_js(TerminalDimensions { columns: dimensions.columns, rows: dimensions.rows })),
+                        ])
+                    },
+                ),
+            )
+        },
+        {
+            let (source, to_js_objects) = (service.clone(), objects.clone());
+            proposed_getter(
+                "terminalDataWriteEvent",
+                event_getter(
+                    runner,
+                    table,
+                    "onDidWriteTerminalData",
+                    move || source.on_did_write_terminal_data(),
+                    move |(terminal, data): &(Rc<VscodeTerminal>, String)| {
+                        JsData::Object(vec![("terminal".to_owned(), to_js_objects.to_js(terminal, None)), ("data".to_owned(), JsData::Str(data.clone()))])
+                    },
+                ),
+            )
+        },
     ];
     TerminalMembers { references, getters }
+}
+
+/// Um membro que o original guarda com `checkProposedApiEnabled(extension, proposal)`: ler o acessor sem a proposta lança o erro.
+fn proposed_getter(proposal: &'static str, (name, read): (String, MethodCallback)) -> (String, MethodCallback) {
+    (
+        name,
+        Rc::new(move |this, args| {
+            check_proposed_api_enabled(&host_extension(), proposal).map_err(|error| error.message)?;
+            read(this, args)
+        }),
+    )
 }
