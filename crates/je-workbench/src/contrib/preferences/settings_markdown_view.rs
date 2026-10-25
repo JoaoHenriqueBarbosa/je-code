@@ -24,6 +24,9 @@
 //! - **Elementos sem equivalente.** Tabelas viram blocos empilhados (uma célula por bloco), o tachado (`del`) não é
 //!   desenhado (o nó de texto do `je-ui` não tem decoração), e imagens saem antes da tradução ([`clean_rendered_markdown`]).
 //! - **Foco.** O `je-ui` não tem `tabindex`: um link é alcançado pelo ponteiro, e o foco por teclado entra com o foco do nó.
+//! - **Espaço entre palavras.** O DOM guarda o espaço como parte do nó de texto; aqui cada palavra é um nó e o espaço é a folga
+//!   do layout. O nó que vem depois de um espaço leva o atributo [`SPACE_BEFORE_ATTR`], para a concatenação dos textos
+//!   (`textContent`) devolver as palavras separadas.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -63,6 +66,8 @@ const CODE_RADIUS: f64 = 4.0;
 const MONOSPACE_FAMILIES: &str = "\"Droid Sans Mono\", \"monospace\", monospace";
 /// O tamanho do codicon de um `span.codicon`.
 const CODICON_SIZE: f32 = 16.0;
+/// O atributo do nó (palavra ou caixa de código) que tinha um espaço antes dele no texto.
+pub const SPACE_BEFORE_ATTR: &str = "data-space-before";
 
 /// As cores e as medidas do texto de um [`MarkdownView`].
 #[derive(Clone)]
@@ -383,6 +388,15 @@ impl<'a> Builder<'a> {
         node
     }
 
+    /// O espaço em branco que o DOM guarda entre as palavras como nó de texto: aqui cada palavra é um nó e o espaço é a folga
+    /// do layout, então o nó que vem depois de um espaço leva o atributo [`SPACE_BEFORE_ATTR`], que a concatenação dos textos
+    /// (`textContent`) lê para devolver o texto com os espaços.
+    fn mark_space_before(&mut self, node: NodeId, space_before: bool) {
+        if space_before {
+            self.tree.set_attribute(node, SPACE_BEFORE_ATTR, "true");
+        }
+    }
+
     fn push_text(&mut self, text: &str, ctx: &Ctx) {
         if text.chars().next().is_some_and(char::is_whitespace) {
             self.pending_space = true;
@@ -412,6 +426,7 @@ impl<'a> Builder<'a> {
         let color = if ctx.link.is_some() { self.styles.link_foreground } else { self.styles.foreground };
         let node = self.word_node(word, &style, ctx, color);
         self.tree.set_label(node, word);
+        self.mark_space_before(node, space_before);
         self.attach_link(node, ctx);
         let atom = Atom { kind: AtomKind::Word, node: Some(node), inner: None, width: measure_text(word, &style), height: self.styles.line_height * f64::from(ctx.scale), space_before };
         self.ensure_current(ctx).atoms.push(atom);
@@ -439,6 +454,7 @@ impl<'a> Builder<'a> {
                 box_style.cursor = Some(Cursor::Pointer);
             }
         }
+        self.mark_space_before(inner, space_before);
         self.attach_link(node, ctx);
         let width = text_width + 2.0 * (CODE_PADDING_X + CODE_BORDER);
         let atom = Atom { kind: AtomKind::Word, node: Some(node), inner: Some((inner, text_width)), width, height: CODE_LINE_HEIGHT + 2.0 * CODE_BORDER, space_before };

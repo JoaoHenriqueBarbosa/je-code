@@ -76,7 +76,7 @@ use je_widgets::tree::index_tree_model::TreeNode;
 use je_widgets::tree::tree_types::{ITreeRenderer, TreeVisibility};
 use je_workbench::contrib::preferences::settings_tree_models::SettingsTreeElement;
 use je_workbench::contrib::preferences::preferences_widgets::SettingsTarget;
-use je_workbench::contrib::preferences::settings_markdown_view::OwnedMarkdownEnvironment;
+use je_workbench::contrib::preferences::settings_markdown_view::{OwnedMarkdownEnvironment, SPACE_BEFORE_ATTR};
 use je_workbench::contrib::preferences::settings_tree_models::{
     SettingsTreeGroupChild, SettingsTreeGroupElement, SettingsTreeModel, SettingsTreeServices, SettingsTreeSettingElement,
 };
@@ -275,13 +275,16 @@ fn with_label(ui: &Ui, root: NodeId, label: &str) -> Vec<NodeId> {
     tree.subtree(root).into_iter().filter(|node| tree.label(*node) == Some(label)).collect()
 }
 
-/// `element.textContent`.
+/// `element.textContent`: cada palavra do Markdown é um nó, e o espaço que o DOM guarda entre elas é o atributo do nó seguinte.
 fn text_content(ui: &Ui, root: NodeId) -> String {
     let tree = ui.tree();
     tree.subtree(root)
         .into_iter()
         .filter_map(|node| match &tree.style(node).content {
-            Content::Text { text, .. } => Some(text.clone()),
+            Content::Text { text, .. } => {
+                let space = if tree.attribute(node, SPACE_BEFORE_ATTR) == Some("true") { " " } else { "" };
+                Some(format!("{space}{text}"))
+            }
             _ => None,
         })
         .collect()

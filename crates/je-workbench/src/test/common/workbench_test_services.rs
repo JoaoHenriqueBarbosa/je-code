@@ -160,6 +160,16 @@ impl TestUserDataProfileService {
         let location = vscode_tests_resource();
         Rc::new(Self { current_profile: to_user_data_profile("test", "test", &location, &location, None, None, &unbiased_ext_uri()) })
     }
+
+    /// O `new UserDataProfileService(userDataProfilesService.defaultProfile)` que o `workbenchInstantiationService` de
+    /// `test/browser` registra: o perfil atual é o padrão (`isDefault`), então as configurações de escopo `application`
+    /// são lidas do alvo do editor, não do alvo `application`.
+    pub fn with_default_profile() -> Rc<Self> {
+        let location = vscode_tests_resource();
+        let mut current_profile = to_user_data_profile("__default__profile__", "Default", &location, &location, None, None, &unbiased_ext_uri());
+        current_profile.is_default = true;
+        Rc::new(Self { current_profile })
+    }
 }
 
 impl IUserDataProfileService for TestUserDataProfileService {
