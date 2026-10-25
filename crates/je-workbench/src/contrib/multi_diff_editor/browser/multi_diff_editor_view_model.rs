@@ -38,14 +38,15 @@ use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, RefCounted, i
 use je_base::observable::observables::observable_value::{ObservableValue, observable_value_owned};
 use je_base::observable::utils::utils::DerivedWithWritableCache;
 use je_base::observable::{
-    DebugOwner, IObservable, ITransaction, Observable, ObservableExt, ObservablePromise, ObservableResolvedPromise, SettableExt, const_observable, derived,
-    derived_observable_with_writable_cache, map_observable_array_cached_by, observable_from_value_with_change_event, transaction, wait_for_state,
+    DebugOwner, IObservable, ISettableObservable, ITransaction, Observable, ObservableExt, ObservablePromise, ObservableResolvedPromise, Settable, SettableExt, const_observable,
+    derived, derived_observable_with_writable_cache, map_observable_array_cached_by, observable_from_value_with_change_event, transaction, wait_for_state,
 };
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::diff_editor_options::{DiffEditorOptions, spread_options};
 use je_editor::diff_editor_view_model::{DiffEditorModel, DiffEditorViewModel, IDiffEditorViewModel};
 use je_editor::multi_diff_editor::model::{ContextKeys, DocumentDiffItemRef, DocumentsValue, IDocumentDiffItem, IMultiDiffEditorModel};
+use je_editor::multi_diff_editor::view_model::IDocumentDiffItemViewModel;
 use je_editor::selection::Selection;
 use je_editor::text_model::{TextModel, TextSource};
 use je_instantiation::{Injectable, InstantiationService};
@@ -431,5 +432,54 @@ impl DocumentDiffItemViewModel {
 impl IDisposable for DocumentDiffItemViewModel {
     fn dispose(&self) {
         self.base.dispose();
+    }
+}
+
+/// O recorte que o `DiffEditorItemTemplate` do `je-editor` lê do item (ver `je_editor::multi_diff_editor::view_model`). Os
+/// métodos inherentes acima continuam sendo a fonte, porque são chamados por todo o workbench sem o trait em escopo; este
+/// bloco só os entrega ao trait do `je-editor`, que não enxerga esta struct.
+impl IDocumentDiffItemViewModel for DocumentDiffItemViewModel {
+    fn document_diff_item(&self) -> &Rc<dyn IDocumentDiffItem> {
+        DocumentDiffItemViewModel::document_diff_item(self)
+    }
+
+    fn diff_editor_view_model(&self) -> &Rc<DiffEditorViewModel> {
+        DocumentDiffItemViewModel::diff_editor_view_model(self)
+    }
+
+    fn diff_editor_view_model_ref(&self) -> &Rc<RefCounted<Rc<DiffEditorViewModel>>> {
+        &self.diff_editor_view_model_ref
+    }
+
+    fn original_uri(&self) -> Option<URI> {
+        DocumentDiffItemViewModel::original_uri(self)
+    }
+
+    fn modified_uri(&self) -> Option<URI> {
+        DocumentDiffItemViewModel::modified_uri(self)
+    }
+
+    fn is_binary(&self) -> bool {
+        DocumentDiffItemViewModel::is_binary(self)
+    }
+
+    fn collapsed(&self) -> ISettableObservable<bool> {
+        self.collapsed.to_settable()
+    }
+
+    fn is_active(&self) -> IObservable<bool> {
+        self.is_active.clone()
+    }
+
+    fn is_first(&self) -> IObservable<bool> {
+        self.is_first.clone()
+    }
+
+    fn expanded_content_height(&self) -> f64 {
+        self.last_template_data.get().expanded_content_height
+    }
+
+    fn set_active(&self, tx: Option<&dyn ITransaction>) {
+        DocumentDiffItemViewModel::set_active(self, tx);
     }
 }

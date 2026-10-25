@@ -1,6 +1,7 @@
 //! Porte parcial de `src/vs/editor/common/editorContextKeys.ts`: as chaves de contexto de provedor de formatação de
 //! `EditorContextKeys` (`hasDocumentFormattingProvider`, `hasDocumentSelectionFormattingProvider`,
-//! `hasMultipleDocumentFormattingProvider` e `hasMultipleDocumentSelectionFormattingProvider`).
+//! `hasMultipleDocumentFormattingProvider` e `hasMultipleDocumentSelectionFormattingProvider`) e a
+//! `multiDiffEditorItemAllUnchangedRegionsShown`.
 //!
 //! As chaves são `thread_local` e as funções devolvem cópias (o mesmo padrão de `find_model`); as outras chaves do
 //! namespace entram aqui quando a contribuição que as usa for portada.
@@ -28,6 +29,16 @@ thread_local! {
         false,
         ContextKeyMeta::Description("Whether the editor has multiple document selection formatting providers".to_owned()),
     );
+    static MULTI_DIFF_EDITOR_ITEM_ALL_UNCHANGED_REGIONS_SHOWN: RawContextKey = RawContextKey::new(
+        "multiDiffEditorItemAllUnchangedRegionsShown",
+        false,
+        ContextKeyMeta::Description("Whether all unchanged regions of a multi diff editor file are revealed".to_owned()),
+    );
+}
+
+/// `EditorContextKeys.multiDiffEditorItemAllUnchangedRegionsShown`.
+pub fn multi_diff_editor_item_all_unchanged_regions_shown() -> RawContextKey {
+    MULTI_DIFF_EDITOR_ITEM_ALL_UNCHANGED_REGIONS_SHOWN.with(Clone::clone)
 }
 
 /// `EditorContextKeys.hasDocumentFormattingProvider`.

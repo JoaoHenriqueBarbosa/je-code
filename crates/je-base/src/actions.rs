@@ -279,13 +279,19 @@ pub struct ActionRunner {
 
 impl ActionRunner {
     pub fn new() -> Rc<Self> {
-        Self::with_run_action(Rc::new(|action, context| {
+        Self::with_run_action(Self::default_run_action())
+    }
+
+    /// O `runAction` padrão: roda a ação com o contexto. Quem sobrescreve o método protegido no original e chama
+    /// `super.runAction(action, context)` chama esta função.
+    pub fn default_run_action() -> RunAction {
+        Rc::new(|action, context| {
             let promise = action.run(&[context.unwrap_or(Dynamic::Undefined)]);
             async_fn(async move {
                 promise.await?;
                 Ok(())
             })
-        }))
+        })
     }
 
     /// Um runner com o `runAction` sobrescrito (o método protegido do original).
