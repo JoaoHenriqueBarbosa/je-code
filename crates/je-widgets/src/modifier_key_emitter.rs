@@ -35,6 +35,8 @@ pub enum ModifierKey {
 /// `event?: KeyboardEvent` de `IModifierKeyStatus`). `prevent_default` volta para o evento de origem.
 #[derive(Debug)]
 pub struct ModifierKeyEvent {
+    /// O `type` do evento de teclado (`keydown` ou `keyup`).
+    pub kind: EventKind,
     pub key_code: KeyCode,
     default_prevented: Cell<bool>,
 }
@@ -209,7 +211,7 @@ impl ModifierKeyEmitter {
 
     /// `fireWithEvent`: o evento só existe enquanto os ouvintes são avisados.
     fn fire_with_event(&self, e: &mut Event) {
-        let handle = Rc::new(ModifierKeyEvent { key_code: e.key.map_or(KeyCode::Unknown, |k| k.key_code), default_prevented: Cell::new(false) });
+        let handle = Rc::new(ModifierKeyEvent { kind: e.kind, key_code: e.key.map_or(KeyCode::Unknown, |k| k.key_code), default_prevented: Cell::new(false) });
         let status = ModifierKeyStatus { event: Some(handle.clone()), ..self.key_status.borrow().clone() };
         self.emitter.fire(status);
         if handle.default_prevented.get() {

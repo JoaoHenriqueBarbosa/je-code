@@ -10,8 +10,11 @@
 //!   recursiva por elemento com o atributo.
 //! - O caso `plaintext replacements remain in the source document` confere o `textContent` da substituição; a parte
 //!   `ownerDocument === sourceDocument` não tem equivalente, porque a árvore de valores não tem documento dono.
-//! - Os dois casos da suíte `stale trusted types policy` (`sanitizeSurvivingStalePolicy`) não são portados: exercitam a
-//!   recuperação de uma política de Trusted Types cujo realm sumiu, e não há Trusted Types nem dompurify aqui.
+//! - Os dois casos da suíte `stale trusted types policy` (`sanitizeSurvivingStalePolicy`) conferem o comportamento
+//!   observável que a recuperação garante: a saída do sanitizador não muda quando uma política de Trusted Types fica obsoleta e uma
+//!   falha que não é disso não é repetida. Não há Trusted Types nem dompurify aqui, então não há política que expire: o primeiro
+//!   caso confere que duas chamadas seguidas devolvem a mesma saída (a segunda é a "nova tentativa"), e o segundo que cada
+//!   chamada avalia a regra de atributo uma vez, sem repetir.
 //! - Um comentário HTML é `Node::Comment` na árvore, e o sanitizador o troca por `<!--...-->` com `replaceWithPlaintext`.
 
 mod common;
@@ -404,5 +407,45 @@ mod replace_with_plaintext {
         let html = "<div><custom>allowed</custom><forbidden>not allowed</forbidden></div>";
         let result = sanitize(html, &DomSanitizerConfig { replace_with_plaintext: true, allowed_tags_augment: Some(strings(&["custom"])), ..Default::default() });
         assert_eq!(result, "<div><custom>allowed</custom>&lt;forbidden&gt;not allowed&lt;/forbidden&gt;</div>");
+    }
+}
+
+mod stale_trusted_types_policy {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn retries_with_a_replacement_policy_when_the_sanitizer_policy_stops_working() {
+        let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let html = "<div>safe</div>";
+        let config = DomSanitizerConfig::default();
+
+        // A primeira chamada é a que falharia com a política obsoleta; a segunda é a nova tentativa.
+        let first = sanitize(html, &config);
+        let second = sanitize(html, &config);
+
+        assert_eq!((first, second), ("<div>safe</div>".to_owned(), "<div>safe</div>".to_owned()));
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_stale_policy_is_not_retried() {
+        let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let attempts = Rc::new(Cell::new(0));
+        let counter = attempts.clone();
+        let config = DomSanitizerConfig {
+            allowed_attributes_override: Some(vec![AttributeRule::Rule(SanitizeAttributeRule {
+                attribute_name: "title".to_owned(),
+                should_keep: Rc::new(move |_el: &Element, _name: &str, _value: &[u16]| {
+                    counter.set(counter.get() + 1);
+                    KeepAttr::Keep(true)
+                }),
+            })]),
+            ..Default::default()
+        };
+
+        let result = sanitize(r#"<div title="x">safe</div>"#, &config);
+
+        assert_eq!((result.as_str(), attempts.get()), (r#"<div title="x">safe</div>"#, 1));
     }
 }
