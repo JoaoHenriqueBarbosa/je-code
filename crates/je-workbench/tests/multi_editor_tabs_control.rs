@@ -138,7 +138,7 @@ struct NamedInput {
     descriptions: Option<(String, String)>,
     /// `TestFileEditorInput.dirty`.
     dirty: Cell<bool>,
-    /// `TestFileEditorInput.capabilities`.
+    /// `TestFileEditorInput.capabilities`: começa em `EditorInputCapabilities.None`.
     capabilities: Cell<EditorInputCapabilities>,
 }
 
@@ -150,7 +150,8 @@ impl NamedInput {
             name: name.to_string(),
             descriptions: descriptions.map(|(short, long)| (short.to_string(), long.to_string())),
             dirty: Cell::new(false),
-            capabilities: Cell::new(EditorInputCapabilities::READONLY),
+            // `TestFileEditorInput._capabilities = EditorInputCapabilities.None` (o `EditorInput` base devolve `Readonly`, o dublê o sobrescreve).
+            capabilities: Cell::new(EditorInputCapabilities::NONE),
         })
     }
 
@@ -6948,6 +6949,30 @@ fn px_or_empty(value: Option<f64>) -> String {
     value.map_or_else(String::new, css_px)
 }
 
+/// O `.tab-fill` e o `.tab-connected-edge` de uma aba em coordenadas dela: o `.tab-fill` com a distância do lado de fim, a aresta
+/// `None` com `display: none`.
+#[derive(Clone, Copy, Debug)]
+struct TabBoxes {
+    fill: BoxRect,
+    fill_right_inset: f64,
+    edge: Option<BoxRect>,
+}
+
+/// `style.left` ou `style.right` de um elemento posicionado por CSS: vazio quando a posição lida é a da folha de estilo (`baseline`), e
+/// o deslocamento em pixels quando algo a moveu.
+fn inline_offset(now: f64, baseline: f64) -> String {
+    if now == baseline { String::new() } else { css_px(now - baseline) }
+}
+
+/// [`inline_offset`] para a aresta, que some com `display: none`: aparecer ou sumir entre as leituras não é posição de folha de estilo.
+fn edge_inline_offset(now: Option<BoxRect>, baseline: Option<BoxRect>) -> String {
+    match (now, baseline) {
+        (Some(now), Some(baseline)) => inline_offset(now.left, baseline.left),
+        (None, None) => String::new(),
+        _ => "display".to_string(),
+    }
+}
+
 /// `z-index` computado: `auto` sem regra.
 fn z_index_text(z_index: Option<i32>) -> String {
     z_index.map_or_else(|| "auto".to_string(), |z| z.to_string())
@@ -7041,6 +7066,56 @@ impl Fixture {
         let edge = &self.state.container.overflow_edge;
 
         [px_or_empty(edge.left), px_or_empty(edge.right)]
+    }
+
+    /// As caixas do `.tab-fill` e do `.tab-connected-edge` da aba `index` em coordenadas da aba, lidas das regras de CSS com as classes
+    /// e o estado que o controle deixou nela naquele instante.
+    fn tab_boxes(&self, index: usize) -> TabBoxes {
+        let context = self.box_context(index);
+        let fill = tab_fill_rect(&context);
+
+        TabBoxes { fill, fill_right_inset: context.tab_width - fill.right, edge: tab_connected_edge_rect(&context) }
+    }
+
+    /// `fill.style.left`: o deslocamento do `.tab-fill` em relação à posição que o CSS dá à aba na leitura `baseline`, vazio quando o controle
+    /// não moveu o preenchimento.
+    fn fill_left_offset(&self, index: usize, baseline: &TabBoxes) -> String {
+        inline_offset(self.tab_boxes(index).fill.left, baseline.fill.left)
+    }
+
+    /// `fill.style.right`, como [`Fixture::fill_left_offset`] para o lado de fim.
+    fn fill_right_offset(&self, index: usize, baseline: &TabBoxes) -> String {
+        inline_offset(self.tab_boxes(index).fill_right_inset, baseline.fill_right_inset)
+    }
+
+    /// `previousEdge.style.left`: o quanto a aresta da aba ativa `active` avança sobre a aba anterior `previous` (`left` negativo) e, sem
+    /// avanço, o deslocamento da aresta da anterior em relação à leitura `baseline`.
+    fn previous_tab_overflow(&self, active: usize, previous: usize, baseline: &TabBoxes) -> String {
+        let hanging = self.tab_boxes(active).edge.map_or(0.0, |edge| (-edge.left).max(0.0));
+        if hanging > 0.0 {
+            return css_px(-hanging);
+        }
+
+        edge_inline_offset(self.tab_boxes(previous).edge, baseline.edge)
+    }
+
+    /// `overflowEdge.parentElement === tabs.parentElement`: a aresta não anda com o conteúdo. Rola um pixel e volta: a aba se move
+    /// exatamente esse pixel na tela e a aresta, filha do contêiner que não rola, mantém as quatro posições.
+    fn overflow_edge_is_stationary(&mut self) -> bool {
+        let scroll = self.state.container.scroll_left;
+        let edge_position = |fx: &Fixture| {
+            let edge = &fx.state.container.overflow_edge;
+
+            (edge.top, edge.right, edge.bottom, edge.left)
+        };
+        let first_tab_left = |fx: &Fixture, scroll: f64| fx.layout.tab_rect(&fx.geometry(), 0, scroll).0;
+
+        let before = (edge_position(self), first_tab_left(self, scroll));
+        scroll_tabs(self, scroll + 1.0);
+        let scrolled = (edge_position(self), first_tab_left(self, scroll + 1.0));
+        scroll_tabs(self, scroll);
+
+        before.1 - scrolled.1 == 1.0 && before.0 == scrolled.0 && edge_position(self) == before.0
     }
 
     /// `overflowEdge.classList.contains('connected-tab-top-row') && getComputedStyle(<tampa>).borderTopColor === 'rgb(51, 51, 51)'`: a tampa
@@ -7266,6 +7341,8 @@ fn keeps_the_connected_outline_inside_the_visible_scroll_area() {
         options.editor_actions_location = EditorActionsLocation::Hidden;
     });
     layout_outline(&mut fx, 240.0);
+    // A posição que as folhas de estilo dão ao `.tab-fill` da primeira aba antes de a rolagem cortá-la.
+    let left_baseline = fx.tab_boxes(0);
     scroll_tabs(&mut fx, 40.0);
     fx.hover_tab(0);
     let clipped_hover = fx.left_hover_read();
@@ -7275,13 +7352,13 @@ fn keeps_the_connected_outline_inside_the_visible_scroll_area() {
     let clipped_left = ClippedLeftRead {
         edge: first.left_edge,
         clipped: first.left_clipped,
-        // O controle não escreve posição em linha no `.tab-fill`: o recorte vai no `overflow_edge`.
-        fill_offset: String::new(),
+        // O controle não desloca o `.tab-fill`: o recorte vai no `overflow_edge`, e a posição lida é a da folha de estilo.
+        fill_offset: fx.fill_left_offset(0, &left_baseline),
         edge_offset: fx.overflow_edge_offsets(),
         // `overflowEdge.getBoundingClientRect().left - tabs.getBoundingClientRect().left`: a aresta parte da borda esquerda do contêiner.
         inset: fx.state.container.overflow_edge.left.unwrap_or_default(),
         // A aresta é filha do contêiner rolável de fora (`container.overflow_edge`), não do `.tabs-container` que rola.
-        stationary_parent: true,
+        stationary_parent: fx.overflow_edge_is_stationary(),
         own_cap_top: fx.overflow_edge_owns_cap_top(),
         edge_overlay: fx.left_edge_overlay(0),
     };
@@ -7362,6 +7439,8 @@ fn keeps_the_connected_outline_inside_the_visible_scroll_area() {
 
     layout_outline(&mut fx, 240.0);
     scroll_tabs(&mut fx, 0.0);
+    // A posição que as folhas de estilo dão ao `.tab-fill` e à aresta antes de a rolagem cortar a aba ativa à direita.
+    let (right_baseline, previous_baseline) = (fx.tab_boxes(1), fx.tab_boxes(0));
     let mut overflow_right_offsets = Vec::new();
     for position in [0.0, 1.0, 2.0, 3.0] {
         scroll_tabs(&mut fx, position);
@@ -7387,12 +7466,12 @@ fn keeps_the_connected_outline_inside_the_visible_scroll_area() {
     let clipped_right = ClippedRightRead {
         edge: second_clipping(&fx).right_edge,
         clipped: second_clipping(&fx).right_clipped,
-        // O controle não escreve posição em linha no `.tab-fill` nem no `.tab-connected-edge`: o recorte vai no `overflow_edge`.
-        fill_offset: String::new(),
+        // O controle não desloca o `.tab-fill` nem o `.tab-connected-edge`: o recorte vai no `overflow_edge`.
+        fill_offset: fx.fill_right_offset(1, &right_baseline),
         edge_offset: fx.overflow_edge_offsets(),
         overflow_right_offsets,
         edge_overlay: fx.right_edge_overlay(1),
-        previous_tab_overflow: String::new(),
+        previous_tab_overflow: fx.previous_tab_overflow(1, 0, &previous_baseline),
         own_cap_top: fx.overflow_edge_owns_cap_top(),
     };
 
