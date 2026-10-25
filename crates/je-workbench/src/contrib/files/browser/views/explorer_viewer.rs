@@ -6,12 +6,12 @@
 //! a decisão de `FileDragAndDrop.handleDragOver` ([`handle_drag_over`]) e o `ICompressedNavigationController` com o
 //! `CompressedNavigationController`.
 //!
-//! Plano da fatia 2 (a seguir, nesta ordem): (a) `ExplorerDataSource` e `FilesFilter` sobre `IFileService`,
-//! `IExplorerService`, `IFilesConfigurationService`, `IgnoreFile` e `TernarySearchTree`; (b) `ExplorerFindProvider` sobre
-//! `ISearchService` e a árvore compressível assíncrona de je-widgets; (c) `FilesRenderer` sobre `ResourceLabels` de
-//! `labels.rs` e o `ViewPane` do workbench; (d) o restante do `FileDragAndDrop` (`drop`, `handleExplorerDrop`,
-//! `doHandleRootDrop`, cópia e movimento com `applyBulkEdit`); (e) `explorerView.ts` inteiro e os 16 casos da suíte
-//! `context menu` de `explorer_view.rs`.
+//! Plano (estado após a fatia 2a). FEITO em [`super::explorer_viewer_data`]: `ExplorerDataSource`, `FilesFilter`,
+//! `ExplorerFindProvider` (com `PhantomExplorerItem` por identidade) e `getMatchingDirectoriesFromFiles`. PENDENTE
+//! (fatia 2b): `FilesRenderer` sobre `ResourceLabels` de `labels.rs` (o `IconLabel`/`renderInputBox` dependem do widget de
+//! rótulo e do `InlineEditInputBox`) e o restante do `FileDragAndDrop` (`drop`, `handleExplorerDrop`, `doHandleRootDrop`,
+//! cópia e movimento com `applyBulkEdit`). Fatia 3: `explorerView.ts` inteiro e os 16 casos da suíte `context menu` de
+//! `explorer_view.rs`, que também implementa `ExplorerFindTree` e `ExplorerFindActiveKey` sobre a árvore real.
 //!
 //! Divergências:
 //! - **DOM.** A UI é nativa: o `templateData` (`container`, `label.onDidRender`) e os `labels: HTMLElement[]` não existem. O
@@ -373,6 +373,7 @@ pub struct ExplorerFindHighlightTree {
 
 impl ExplorerFindHighlightTree {
     pub fn new(ext_uri: Rc<ExtUri>) -> Self {
+        // o `relativePath` do original é o do `extUri` padrão
         Self { ext_uri, tree: RefCell::new(HashMap::new()), highlighted_items: RefCell::new(HashMap::new()) }
     }
 

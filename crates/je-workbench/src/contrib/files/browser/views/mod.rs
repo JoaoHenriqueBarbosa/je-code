@@ -5,4 +5,5 @@
 pub mod explorer_decorations_provider;
 pub mod explorer_view;
 pub mod explorer_viewer;
+pub mod explorer_viewer_data;
 pub mod open_editors_view;
