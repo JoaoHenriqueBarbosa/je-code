@@ -750,10 +750,12 @@ fn prepares_real_comparison_content_without_opening_or_writing_user_files() {
             (scheme_of(&input.original), scheme_of(&input.modified))
         };
         context.store.dispose();
+        // o conteúdo é lido antes do teardown, que é quando o original descarta os modelos
+        let contents = sample.contents();
         sample.dispose_models();
 
         assert_eq!(
-            (result, opened_before_run, sample.references.borrow().clone(), sample.contents(), original_scheme, modified_scheme, sample.released.get()),
+            (result, opened_before_run, sample.references.borrow().clone(), contents, original_scheme, modified_scheme, sample.released.get()),
             (
                 opened(),
                 0,
