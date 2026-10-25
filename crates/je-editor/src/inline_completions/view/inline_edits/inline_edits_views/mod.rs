@@ -1,9 +1,11 @@
 //! Porte de `src/vs/editor/contrib/inlineCompletions/browser/view/inlineEdits/inlineEditsViews/`: as views do inline
 //! edits (uma por forma de apresentar a edição).
 //!
-//! Esta fatia (4c-2, parte 1) traz `inlineEditsWordInsertView` ([`inline_edits_word_insert_view`]),
-//! `inlineEditsCollapsedView` ([`inline_edits_collapsed_view`]) e `inlineEditsDeletionView`
-//! ([`inline_edits_deletion_view`]). As demais views entram nas fatias seguintes.
+//! Esta fatia (4c-2, partes 1 e 2) traz `inlineEditsWordInsertView` ([`inline_edits_word_insert_view`]),
+//! `inlineEditsCollapsedView` ([`inline_edits_collapsed_view`]), `inlineEditsDeletionView`
+//! ([`inline_edits_deletion_view`]), `jumpToView` ([`jump_to_view`]), `inlineEditsCustomView`
+//! ([`inline_edits_custom_view`]) e `originalEditorInlineDiffView` ([`original_editor_inline_diff_view`]). As demais
+//! views entram nas fatias seguintes.
 //!
 //! Notas de tradução comuns:
 //! - o `n.div({...}, [...]).keepUpdated(store)` do original monta um nó DOM que as views registram como widget de
@@ -22,8 +24,11 @@ use crate::editor_browser::OverlayWidgetPosition;
 use crate::observable_code_editor::IObservableOverlayWidget;
 
 pub mod inline_edits_collapsed_view;
+pub mod inline_edits_custom_view;
 pub mod inline_edits_deletion_view;
 pub mod inline_edits_word_insert_view;
+pub mod jump_to_view;
+pub mod original_editor_inline_diff_view;
 
 /// O `IObservableOverlayWidget` com `allowEditorOverflow: false` que as views desta pasta registram com
 /// `createOverlayWidget`.
