@@ -1,10 +1,13 @@
-//! Porte da primeira metade de `src/vs/workbench/contrib/timeline/browser/timelinePane.ts` (parte A): os tipos auxiliares
-//! (`TreeElement`, `LoadMoreCommand`, `TimelineAggregate`, `TimelineIdentityProvider`, `TimelineActionContext`,
-//! `getMultiSelection`, `updateRelativeTime`, as chaves de contexto) e a classe [`TimelinePane`] do início até o fim da
-//! lógica de carga (campos, construtor, `followActiveEditor`, `pageOnScroll`, `pageSize`, `setUri`, `onActiveEditorChanged`,
-//! `onProvidersChanged`, `onTimelineChanged`, `onEditableChanged`, `onSelectionChanged`, `loadTimeline`,
-//! `loadTimelineForSource`, `reloadTimeline`, `handleRequest`, `getItems`, `refresh`, `refreshDebounced`, as mensagens de
-//! vazio e o estado de paginação).
+//! Porte de `src/vs/workbench/contrib/timeline/browser/timelinePane.ts`: os tipos auxiliares (`TreeElement`,
+//! `LoadMoreCommand`, `TimelineAggregate`, `TimelineIdentityProvider`, `TimelineActionContext`, `getMultiSelection`,
+//! `updateRelativeTime`, as chaves de contexto), a classe [`TimelinePane`] (campos, construtor, `followActiveEditor`,
+//! `pageOnScroll`, `pageSize`, `setUri`, `onActiveEditorChanged`, `onProvidersChanged`, `onTimelineChanged`,
+//! `onEditableChanged`, `onSelectionChanged`, `loadTimeline`, `loadTimelineForSource`, `reloadTimeline`, `handleRequest`,
+//! `getItems`, `refresh`, `refreshDebounced`, as mensagens de vazio e o estado de paginação, `renderBody`, `layoutBody`,
+//! `renderHeaderTitle`, `focus`, `setExpanded`, `setVisible`, `loadMore`, `ensureValidItems`, `compareSelected`,
+//! `onContextMenu`), o corpo da árvore ([`TimelineBody`]) com o [`TimelineTreeRenderer`], o
+//! [`TimelineKeyboardNavigationLabelProvider`], o [`TimelineListVirtualDelegate`] e o [`TimelineActionRunner`], e os comandos
+//! do painel ([`TimelinePaneCommands`]).
 //!
 //! Divergências:
 //! - **Herança.** `TimelinePane extends ViewPane` é um [`TimelinePane`] que guarda um `Rc<ViewPane>` e implementa
@@ -17,8 +20,8 @@
 //!   objeto mutável compartilhado entre o agregado, a árvore e o renderer (`item.relativeTime = ...`, `tree.rerender(item)`
 //!   por identidade); aqui é o [`TimelineItemRef`] (`Rc<RefCell<TimelineItem>>`), e a igualdade e o hash de [`TreeElement`]
 //!   são por identidade do `Rc`, como o `===` do original. O `TimelineIdentityProvider` devolve o `handle`.
-//! - **Árvore e mensagem.** `$message`, `$tree`, `tree` e `treeRenderer` nascem em `renderBody` (parte B). A parte A fala com
-//!   eles pelo trait [`ITimelineBody`], que a parte B implementa sobre a `WorkbenchObjectTree<TreeElement, FuzzyScore>` e
+//! - **Árvore e mensagem.** `$message`, `$tree`, `tree` e `treeRenderer` nascem em `renderBody`. A lógica de carga fala com eles
+//!   pelo trait [`ITimelineBody`], que o [`TimelineBody`] implementa sobre a `WorkbenchObjectTree<TreeElement, FuzzyScore>` e
 //!   registra com [`TimelinePane::set_body`]. Sem o corpo (antes do `renderBody`), as operações sobre ele não fazem nada,
 //!   que é o que os `this.tree?` e `if (!this.$message) return` do original fazem.
 //! - **`setChildren(null, this.getItems())`.** O gerador `getItems` é consumido por inteiro antes da chamada (vira um `Vec`),
@@ -29,79 +32,140 @@
 //! - **`@debounce(500)`.** `refreshDebounced` é o `clearTimeout` mais `setTimeout(500)` do decorador, no `runtime`.
 //! - **`getActionsContext()`.** Devolve o `URI` como objeto dinâmico com o `URI` por carga nativa
 //!   ([`ObjectRef::with_host`]), a forma que o porte usa para um valor vivo que passa pelo `Dynamic`.
-//! - **`MultiDiffEditorInput`.** Ainda não foi portado: o `instanceof` é a comparação do `editor_type_id` com o
-//!   `MultiDiffEditorInput.ID` ([`MULTI_DIFF_EDITOR_INPUT_ID`]).
 //! - **`getItems` e `mostRecentEnd`.** `timeline.items[Math.min(maxCount, length - 1)]` lança `TypeError` no original quando o
 //!   índice não é inteiro dentro dos limites (uma timeline vazia com cursor, ou `timeline.pageSize` fracionário); aqui o
 //!   índice inválido não contribui para o `mostRecentEnd`, em vez de abortar o `refresh`.
 //! - **`TimelinePane.TITLE`.** `localize2('timeline', "Timeline")` é [`timeline_pane_title`] (o texto localizado) e
 //!   [`TIMELINE_PANE_TITLE_ORIGINAL`] (o original).
 //!
-//! O que a parte B deve fornecer (assinaturas):
-//! - `impl ITimelineBody for ...`: `render_height`, `set_children`, `clear_children`, `rerender`, `rerender_element`,
-//!   `has_element`, `get_selection`, `dom_focus`, `show_message`, `hide_message`, `set_uri`, `is_focus_free_or_inside`.
-//!   Ela chama [`TimelinePane::set_body`] ao fim do `renderBody` e [`TimelinePane::set_message`] com a mensagem inicial
-//!   ("The active editor cannot provide timeline information.").
-//! - No `impl ViewPaneDelegate for TimelinePane` (que a parte A começa com `get_actions_context`): `render_body` e
-//!   `layout_body` (`this.tree.layout(height, width)`).
-//! - Os métodos que sobrescrevem a `ViewPane` (`focus`, `setExpanded`, `setVisible`, `renderHeaderTitle`), chamando os da
-//!   [`TimelinePane::view_pane`] antes ou depois. `setVisible` usa [`TimelinePane::replace_visibility_disposables`] e
-//!   [`TimelinePane::dispose_visibility_disposables`], [`TimelinePane::on_active_editor_changed`],
-//!   [`TimelinePane::refresh_debounced`] e `services().extension_service.activate_by_event("onView:timeline", None)`;
-//!   `setExpanded` usa [`TimelinePane::set_uri_core`], [`TimelinePane::uri`], [`TimelinePane::workspace`] e
-//!   [`TimelinePane::follow_active_editor`].
-//! - `loadMore(item)`, `compareSelected`, `onContextMenu`, `onDidOpen` e `onDidScrollToEnd`, que usam
-//!   [`TimelinePane::load_timeline`], [`TimelinePane::page_size`], [`TimelinePane::page_on_scroll`],
-//!   [`TimelinePane::visible_item_count`], [`TimelinePane::set_max_item_count`],
-//!   [`TimelinePane::pending_request_count`], [`TimelinePane::ensure_valid_items`], [`TimelinePane::on_selection_changed`]
-//!   e [`TimelinePane::show_workspace_timeline`].
-//! - `TimelinePaneCommands` (registrado em [`TimelinePane::base`]), `TimelineElementTemplate`, `TimelineActionRunner`,
-//!   `TimelineKeyboardNavigationLabelProvider`, `TimelineListVirtualDelegate`, `TimelineTreeRenderer` e os nove casos do
-//!   teste. O `TimelineCanCompareSelectionContext` é [`timeline_can_compare_selection_context`].
+//! - **Corpo.** `renderBody` cria a mensagem, a árvore (`WorkbenchObjectTree<TreeElement, FuzzyScore>`) e o renderer, e entrega
+//!   tudo à parte A pelo [`TimelineBody`] (que implementa [`ITimelineBody`]). As peças que o original cria com
+//!   `createInstance` (a árvore, o renderer, o `WorkbenchHoverDelegate`, o `InlineEditInputBox`, o `TimelinePaneCommands`) entram
+//!   por [`TimelineBodyServices`] e [`TimelinePaneServices`], como o `ViewPaneServices.create_toolbar` da base.
+//! - **Comandos.** O `TimelinePaneCommands` guarda o painel por [`ITimelinePaneCommandsHost`] (só o que as ações chamam: o `id`,
+//!   `reset`, `showWorkspaceTimeline`, `compareSelected` e a troca de `followActiveEditor`), um trait porque o teste do original
+//!   o instancia com `upcastPartial<TimelinePane>({ id })`; o painel o guarda por referência fraca (o ciclo do original é do
+//!   coletor de lixo). `reset` e `showWorkspaceTimeline` moram no impl desse trait, não em métodos próprios.
+//! - **Acesso do teste.** O teste do original lê membros `private` (`clear`, `loadTimelineForSource`, `onProvidersChanged`,
+//!   `onEditableChanged`, `onTimelineChanged`, `pendingRequests`, `timelinesBySource`, `excludedSources`): aqui os métodos são
+//!   `pub` e os mapas saem por [`TimelinePane::pending_request`], [`TimelinePane::timeline_for_source`] e
+//!   [`TimelinePane::set_excluded_sources`].
+//! - **Acessibilidade e `getActionViewItem`.** A árvore do `je-widgets` não tem `accessibilityProvider` nem as opções ARIA, então
+//!   o [`TimelineAccessibilityProvider`] guarda os três textos e papéis do original sem ligação. O menu de contexto do porte não
+//!   aceita o `getActionViewItem` (o rótulo do atalho de cada ação), que fica por conta de quem desenha o menu.
+//! - **Ícones e tooltip.** O `je-ui` não tem conteúdo de imagem: um item com `icon`/`iconDark` (URI) deixa o ícone sem desenho
+//!   (a classe do ícone fica), e sem tipo de tema (`isDark(theme.type)`) a escolha entre os dois não existe. O `themeIcon` e a cor
+//!   dele saem do `IThemeService`. O tooltip em markdown vai com o texto simples como alternativa (`renderAsPlaintext`).
+//! - **Linha.** O `.timeline-timestamp-container` e o `.actions` ficam dentro do `.monaco-icon-label` no original (um `flex`); aqui
+//!   são irmãos do rótulo e o [`TimelineTreeRenderer`] reparte a largura da linha entre os quatro (`layout_row`). As ações
+//!   aparecem com o ponteiro sobre a linha (as classes `selected` e `focused` da linha não chegam ao template), e o traço de
+//!   `.timeline-timestamp--duplicate::before` não é desenhado (o carimbo repetido só guarda os 10px).
+//! - **Mensagem.** O `$message` quebra o texto em linhas (`position: absolute` com `padding: 10px 22px 0 22px`): o `je-ui` não
+//!   quebra linha de texto, então [`TimelineBody`] mede e reparte as palavras a cada layout.
+//! - **`renderHeaderTitle`.** Chega pelo gancho [`ViewPaneDelegate::render_header_title`], chamado pela `ViewPane` depois do
+//!   `super.renderHeaderTitle`.
+//! - **`onDidOpen` e `API_OPEN_EDITOR_COMMAND_ID`.** Os dois ids (de `editorCommands.ts`, ainda não portado) são
+//!   [`API_OPEN_EDITOR_COMMAND_ID`] e [`API_OPEN_DIFF_EDITOR_COMMAND_ID`]; o `IOpenEvent` que vai nos argumentos é a carga nativa de
+//!   um objeto ([`ObjectRef::with_host`]).
+//! - **Contexto das ações.** O `TimelineActionContext` (`{ uri, item }`) viaja pelo `Dynamic` como carga nativa
+//!   ([`timeline_action_context_to_dynamic`]); o contexto que as extensões recebem é o objeto `{ $mid, handle, source, uri }`.
+//! - **Filtros por fonte.** O `excluded` do original é um `Set` que guarda a ordem de inserção; aqui é uma lista sem repetição.
+//! - **`MultiDiffEditorInput`.** Ainda não foi portado: o `instanceof` é a comparação do `editor_type_id` com o
+//!   `MultiDiffEditorInput.ID` ([`MULTI_DIFF_EDITOR_INPUT_ID`], definido no arquivo do input).
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak};
 
+use je_base::actions::{ActionRef, ActionRunner, IActionRunner, RunAction, SubmenuAction};
+use je_base::async_::async_fn;
 use je_base::cancellation::CancellationTokenSource;
 use je_base::collator::{Collator, CollatorOptions, Sensitivity};
 use je_base::date::from_now;
-use je_base::dynamic::{Dynamic, ObjectRef, Truthy};
-use je_base::event::Event;
+use je_base::dynamic::{Dynamic, ObjectRef, Truthy, json_stringify};
+use je_base::errors::{self, Error};
+use je_base::event::{Emitter, Event};
+use je_base::filters::{FuzzyScore, create_matches};
 use je_base::json::{Value, parse_str};
-use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, to_disposable};
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::map::OrderedMap;
+use je_base::markdown_plaintext::render_as_plaintext;
+use je_base::marshalling_ids::MarshalledId;
 use je_base::network::schemas;
 use je_base::nls::localize;
+use je_base::parts::contextmenu::IContextMenuEvent;
 use je_base::platform::Platform;
+use je_base::promise::Promise;
 use je_base::runtime::{self, TimerId};
+use je_base::strings::escape_reg_exp_characters;
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;
+use je_editor::languages::StringOrMarkdown;
+use je_editor::services::theme_service::IThemeService;
+use je_instantiation::ServicesAccessor;
+use je_platform::accessibility::IAccessibilityInformation;
+use je_platform::action::{Category, CommandAction, CommandActionTitle, Icon, Title, Toggled, localize2};
+use je_platform::actions::menu_entry_action_view_item::{PrimaryAndSecondaryActions, get_context_menu_actions};
 use je_platform::actions::menu_ids;
-use je_platform::commands::commands::ICommandService;
-use je_platform::contextkey::{ContextKeyMeta, IContextKey, IContextKeyService, RawContextKey};
+use je_platform::actions::{Action2, Action2MenuItem, Action2Options, AnyMenuItem, IMenuService, MenuActionOptions, MenuId, MenuItem, menu_registry, register_action2};
+use je_platform::commands::commands::{CommandHandler, ICommandService, commands_registry};
+use je_platform::contextkey::contextkey::ContextRegExp;
+use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression, ContextKeyMeta, IContextKey, IContextKeyService, RawContextKey};
+use je_platform::contextview::context_view::{AnchorTarget, ContextMenuRequest, IContextMenuDelegate, IContextMenuMenuDelegate, IContextMenuService};
+use je_platform::contextview::view_element::ViewElement;
 use je_platform::label::label::ILabelService;
+use je_platform::list::list_service::{workbench_list_double_selection, workbench_list_multi_selection};
 use je_platform::progress::progress::{IProgressService, ProgressLocationId, ProgressOptions, ProgressTask};
-use je_platform::storage::{StorageScope, StorageService};
+use je_platform::storage::{I_STORAGE_SERVICE, StorageScope, StorageService, StorageTarget};
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
-use je_widgets::list::list_types::IIdentityProvider;
+use je_render::kurbo::Rect;
+use je_storage::StorageValue;
+use je_theme::to_rgba8;
+use je_ui::{Content, EventKind, NodeId, PointerEvents, Role, Ui};
+use je_widgets::action_bar::{ActionBar, IActionBarOptions, IActionOptions, IActionViewItemProvider};
+use je_widgets::action_view_items::IActionViewItemOptions;
+use je_widgets::context_view_api::IContextViewProvider;
+use je_widgets::dom::{create_el, hide, is_ancestor_of_active_element, show};
+use je_widgets::hover_api::{HoverContent, HoverPlacement, IHoverDelegate, ManagedHoverContent};
+use je_widgets::icon_label::{IIconLabelCreationOptions, IIconLabelValueOptions, IconLabel, IconLabelStyles, IconLabelText, IconLabelTitle};
+use je_widgets::input_box::InputBoxStyles;
+use je_widgets::list::list_styles::IListStyles;
+use je_widgets::list::list_types::{IIdentityProvider, IKeyboardNavigationLabelProvider, IListVirtualDelegate, TemplateData};
+use je_widgets::text::{measure_text, ui_font};
+use je_widgets::tree::abstract_tree::AbstractTreeOptions;
+use je_widgets::tree::object_tree::{ObjectTreeMethods, ObjectTreeOptions};
+use je_widgets::tree::object_tree_model::{ObjectTreeModel, ObjectTreeModelSetChildrenOptions};
+use je_widgets::tree::tree_types::{IObjectTreeElement, ITreeModel, ITreeRenderer, TreeElementRenderDetails, TreeMouseEvent, TreeNodeApi};
 
-use crate::browser::parts::views::view_pane::{IViewPaneOptions, ViewPane, ViewPaneDelegate, ViewPaneServices};
+use crate::api::common::ext_host_values::ApiValue;
+use crate::browser::parts::views::inline_edit_input_box::{InlineEditInputBox, InlineEditInputBoxOptions};
+use crate::browser::parts::views::view_pane::{IViewPaneOptions, ListOverrideStyleColors, ViewPane, ViewPaneDelegate, ViewPaneServices};
+use crate::browser::resource_navigator::IOpenEvent;
+use crate::browser::workbench_tree::{IWorkbenchTreeOptions, WorkbenchObjectTree, WorkbenchTreeServices};
 use crate::common::editor::editor_input::EditorInput;
-use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor};
+use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor, UntypedEditorInput};
+use crate::common::views::ViewContainerLocation;
+use crate::contrib::multi_diff_editor::browser::multi_diff_editor_input::MULTI_DIFF_EDITOR_INPUT_ID;
 use crate::contrib::timeline::common::timeline::{
-    ITimelineService, Timeline, TimelineChangeEvent, TimelineItem, TimelineItemIdentifier, TimelineOptions, TimelineProvidersChangeEvent, TimelineRequest, TimelineTriggerKind,
+    ITimelineService, Timeline, TimelineChangeEvent, TimelineItem, TimelineItemIdentifier, TimelineOptions, TimelineProvidersChangeEvent, TimelineRequest, TimelineSource,
+    TimelineTriggerKind,
 };
+use crate::contrib::timeline::common::timeline_service::timeline_has_workspace_provider_context;
 use crate::services::editor::editor_service::IEditorService;
 use crate::services::extensions::extensions::IExtensionService;
+use crate::services::views::views_service::IViewPane;
 
 /// `ItemHeight`.
 pub const ITEM_HEIGHT: f64 = 22.0;
 
-/// `MultiDiffEditorInput.ID`.
-pub const MULTI_DIFF_EDITOR_INPUT_ID: &str = "workbench.input.multiDiffEditor";
+/// `API_OPEN_EDITOR_COMMAND_ID` (`editorCommands.ts`, ainda não portado).
+pub const API_OPEN_EDITOR_COMMAND_ID: &str = "_workbench.open";
+
+/// `API_OPEN_DIFF_EDITOR_COMMAND_ID` (`editorCommands.ts`, ainda não portado).
+pub const API_OPEN_DIFF_EDITOR_COMMAND_ID: &str = "_workbench.diff";
 
 /// A chave do armazenamento (escopo do perfil) com os ids das fontes excluídas.
 pub const EXCLUDE_SOURCES_KEY: &str = "timeline.excludeSources";
@@ -261,6 +325,41 @@ impl TreeElement {
             TreeElement::LoadMore(_) => None,
         }
     }
+
+    /// `element.themeIcon`.
+    pub fn theme_icon(&self) -> Option<ThemeIcon> {
+        match self {
+            TreeElement::Item(item) => item.borrow().theme_icon.clone(),
+            TreeElement::LoadMore(command) => command.theme_icon(),
+        }
+    }
+
+    /// `element.icon ?? element.iconDark` como "tem imagem": o `je-ui` não desenha imagens (ver as divergências do módulo).
+    pub fn has_icon_uri(&self) -> bool {
+        match self {
+            TreeElement::Item(item) => {
+                let item = item.borrow();
+                item.icon.is_some() || item.icon_dark.is_some()
+            }
+            TreeElement::LoadMore(_) => false,
+        }
+    }
+
+    /// `element.tooltip`.
+    pub fn tooltip(&self) -> Option<StringOrMarkdown> {
+        match self {
+            TreeElement::Item(item) => item.borrow().tooltip.clone(),
+            TreeElement::LoadMore(_) => None,
+        }
+    }
+
+    /// `element.accessibilityInformation`.
+    pub fn accessibility_information(&self) -> Option<IAccessibilityInformation> {
+        match self {
+            TreeElement::Item(item) => item.borrow().accessibility_information.clone(),
+            TreeElement::LoadMore(_) => None,
+        }
+    }
 }
 
 impl PartialEq for TreeElement {
@@ -319,6 +418,35 @@ pub struct TimelineActionContext {
     /// The file or folder whose timeline is shown, `None` for the workspace timeline.
     pub uri: Option<URI>,
     pub item: TreeElement,
+}
+
+/// O `TimelineActionContext` como contexto das ações (a carga nativa de um objeto, ver as divergências do módulo).
+pub fn timeline_action_context_to_dynamic(context: &TimelineActionContext) -> Dynamic {
+    Dynamic::Object(ObjectRef::with_host(Rc::new(context.clone())))
+}
+
+/// O `TimelineActionContext` que o contexto carrega, se for um.
+pub fn timeline_action_context_from_dynamic(context: &Dynamic) -> Option<Rc<TimelineActionContext>> {
+    match context {
+        Dynamic::Object(object) => object.host::<TimelineActionContext>(),
+        _ => None,
+    }
+}
+
+/// `toActionContext(item, uri)`: o objeto `{ $mid, handle, source, uri }` que os comandos das extensões recebem.
+fn to_action_context(item: &TimelineItemRef, uri: Option<&URI>) -> Dynamic {
+    let item = item.borrow();
+    Dynamic::object([
+        ("$mid", Dynamic::from(MarshalledId::TimelineActionContext as i32)),
+        ("handle", Dynamic::string(&item.handle)),
+        ("source", Dynamic::string(&item.source)),
+        ("uri", uri_to_dynamic(uri)),
+    ])
+}
+
+/// `uri` como argumento de um comando: o `URI`, ou `undefined` para a timeline do workspace.
+fn uri_to_dynamic(uri: Option<&URI>) -> Dynamic {
+    uri.map_or(Dynamic::Undefined, URI::to_dynamic)
 }
 
 /// `getMultiSelection(item, selection)`: the selected timeline items when `item` is part of a multi-selection, otherwise
@@ -535,21 +663,22 @@ fn is_file_or_git(uri: &URI) -> bool {
     scheme == schemas::FILE || scheme == "git"
 }
 
-/// O que o painel lê do armazenamento: o texto de `timeline.excludeSources` e o conjunto que ele descreve
-/// (`new Set(JSON.parse(text))`; um JSON inválido ou que não é uma lista de textos é o conjunto vazio).
-fn read_excluded_sources(storage: &dyn StorageService) -> (String, HashSet<String>) {
+/// O que o painel lê do armazenamento: o texto de `timeline.excludeSources` e a lista de fontes que ele descreve, sem repetição e
+/// na ordem do texto (`new Set(JSON.parse(text))`; um JSON inválido ou que não é uma lista de textos é a lista vazia).
+fn read_excluded_sources(storage: &dyn StorageService) -> (String, Vec<String>) {
     let raw = storage.get(EXCLUDE_SOURCES_KEY, StorageScope::Profile, Some("[]")).unwrap_or_else(|| "[]".to_owned());
     let mut errors = Vec::new();
-    let sources = match parse_str(&raw, &mut errors).filter(|_| errors.is_empty()) {
-        Some(Value::Array(values)) => values
-            .into_iter()
-            .filter_map(|value| match value {
-                Value::String(source) => Some(source.to_string_lossy()),
-                _ => None,
-            })
-            .collect(),
-        _ => HashSet::new(),
-    };
+    let mut sources: Vec<String> = Vec::new();
+    if let Some(Value::Array(values)) = parse_str(&raw, &mut errors).filter(|_| errors.is_empty()) {
+        for value in values {
+            if let Value::String(source) = value {
+                let source = source.to_string_lossy();
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+    }
     (raw, sources)
 }
 
@@ -579,6 +708,12 @@ pub trait ITimelineBody {
     /// `tree.domFocus()`.
     fn dom_focus(&self);
 
+    /// `tree.setFocus([element])`.
+    fn set_focus(&self, element: &TreeElement);
+
+    /// `tree.layout(height, width)` (e a mensagem, que acompanha a largura).
+    fn layout(&self, height: f64, width: f64);
+
     /// O `showMessage` do painel: mostra `$message` (sem a classe `hide`) com o texto.
     fn show_message(&self, message: &str);
 
@@ -592,6 +727,35 @@ pub trait ITimelineBody {
     /// `body` do documento ou ele está dentro do `$container` (`!activeElement || activeElement === activeElement.ownerDocument.body
     /// || DOM.isAncestor(activeElement, this.$container)`).
     fn is_focus_free_or_inside(&self) -> bool;
+}
+
+/// `new WorkbenchHoverDelegate(mode, { instantHover }, { position: { hoverPosition: RIGHT, clippingElement } })`: o que a
+/// fábrica do delegado de hover recebe (o `RIGHT` com inversão quando falta espaço é da fábrica).
+#[derive(Clone)]
+pub struct TimelineHoverDelegateArgs {
+    pub placement: HoverPlacement,
+    pub instant_hover: bool,
+    pub clipping_element: NodeId,
+}
+
+/// `createInstance(WorkbenchHoverDelegate, ...)`.
+pub type TimelineHoverDelegateFactory = Rc<dyn Fn(&TimelineHoverDelegateArgs) -> Rc<dyn IHoverDelegate>>;
+
+/// Os serviços do corpo (`renderBody`), as peças que o original cria com `createInstance`.
+#[derive(Clone)]
+pub struct TimelineBodyServices {
+    /// Os serviços da `WorkbenchObjectTree` (`IContextKeyService`, `IListService`, `IConfigurationService` e `defaultListStyles`).
+    pub tree: WorkbenchTreeServices,
+    /// `IThemeService` do renderer (a cor do `themeIcon`).
+    pub theme_service: Rc<dyn IThemeService>,
+    pub create_hover_delegate: TimelineHoverDelegateFactory,
+    /// O estilo do texto das linhas (o `foreground` dele é o do ícone sem cor e o do texto da mensagem).
+    pub icon_label_styles: IconLabelStyles,
+    /// `defaultInputBoxStyles`, lido a cada edição (o tema pode mudar).
+    pub input_box_styles: Rc<dyn Fn() -> InputBoxStyles>,
+    pub context_view_provider: Option<Rc<dyn IContextViewProvider>>,
+    /// `getLocationBasedColors().listOverrideStyles` resolvido pelo tema (`overrideStyles` da árvore).
+    pub list_override_styles: Rc<dyn Fn(&ListOverrideStyleColors) -> IListStyles>,
 }
 
 /// Os serviços do construtor do `TimelinePane` (ver as divergências do módulo).
@@ -608,6 +772,7 @@ pub struct TimelinePaneServices {
     pub label_service: Rc<dyn ILabelService>,
     pub uri_identity_service: Rc<dyn IUriIdentityService>,
     pub extension_service: Rc<dyn IExtensionService>,
+    pub body: TimelineBodyServices,
 }
 
 /// `TimelinePane`.
@@ -617,6 +782,7 @@ pub struct TimelinePane {
     weak_self: Weak<TimelinePane>,
     view_pane: Rc<ViewPane>,
     services: TimelinePaneServices,
+    commands: RefCell<Option<Rc<TimelinePaneCommands>>>,
 
     body: RefCell<Option<Rc<dyn ITimelineBody>>>,
     visibility_disposables: RefCell<Option<Rc<DisposableStore>>>,
@@ -675,12 +841,13 @@ impl TimelinePane {
             weak_self: weak.clone(),
             view_pane,
             services,
+            commands: RefCell::new(None),
             body: RefCell::new(None),
             visibility_disposables: RefCell::new(None),
             follow_active_editor_context,
             timeline_exclude_sources_context,
             workspace_context,
-            excluded_sources: RefCell::new(excluded_sources),
+            excluded_sources: RefCell::new(excluded_sources.into_iter().collect()),
             pending_requests: RefCell::new(OrderedMap::new()),
             timelines_by_source: RefCell::new(OrderedMap::new()),
             uri: RefCell::new(None),
@@ -700,6 +867,17 @@ impl TimelinePane {
 
         let delegate: Weak<dyn ViewPaneDelegate> = Rc::downgrade(&this);
         this.view_pane.set_delegate(delegate);
+
+        let host: Rc<dyn ITimelinePaneCommandsHost> = this.clone();
+        let commands = TimelinePaneCommands::new(
+            Rc::downgrade(&host),
+            this.services.timeline_service.clone(),
+            this.services.storage_service.clone(),
+            this.services.view_pane.context_key_service.clone(),
+            this.services.view_pane.menu_service.clone(),
+        );
+        this.base.register(commands.clone());
+        *this.commands.borrow_mut() = Some(commands);
 
         this.register_listener(this.services.storage_service.on_did_change_value(StorageScope::Profile, Some(EXCLUDE_SOURCES_KEY), &this.store), |this, _| {
             this.on_storage_service_changed();
@@ -768,6 +946,21 @@ impl TimelinePane {
         }
     }
 
+    /// `this.pendingRequests.get(source)?.request`.
+    pub fn pending_request(&self, source: &str) -> Option<TimelineRequest> {
+        self.pending_requests.borrow().get(&source.to_owned()).map(|pending_request| pending_request.request.clone())
+    }
+
+    /// `this.timelinesBySource.get(source)`.
+    pub fn timeline_for_source(&self, source: &str) -> Option<Rc<TimelineAggregate>> {
+        self.timelines_by_source.borrow().get(&source.to_owned()).cloned()
+    }
+
+    /// `this.excludedSources = sources`.
+    pub fn set_excluded_sources(&self, sources: HashSet<String>) {
+        *self.excluded_sources.borrow_mut() = sources;
+    }
+
     // followActiveEditor, pageOnScroll e pageSize
 
     /// `get followActiveEditor()`.
@@ -813,11 +1006,6 @@ impl TimelinePane {
         (render_height / ITEM_HEIGHT + if self.page_on_scroll() { 1.0 } else { -1.0 }).floor().max(20.0)
     }
 
-    /// `reset()`.
-    pub fn reset(&self) {
-        self.load_timeline(true, None, TimelineTriggerKind::Invoke);
-    }
-
     // O alvo da timeline
 
     /// The file or folder whose timeline is shown, `None` for the workspace timeline or when there is nothing to show.
@@ -858,11 +1046,6 @@ impl TimelinePane {
         self.load_timeline(true, None, TimelineTriggerKind::Automatic);
     }
 
-    /// `showWorkspaceTimeline()`.
-    pub fn show_workspace_timeline(&self) {
-        self.set_uri_core(None, true, true);
-    }
-
     fn has_target(&self) -> bool {
         self.uri.borrow().is_some() || self.workspace.get()
     }
@@ -879,7 +1062,7 @@ impl TimelinePane {
     fn on_storage_service_changed(&self) {
         let (excluded_sources_string, excluded_sources) = read_excluded_sources(self.services.storage_service.as_ref());
         self.timeline_exclude_sources_context.set(Dynamic::string(&excluded_sources_string));
-        *self.excluded_sources.borrow_mut() = excluded_sources;
+        *self.excluded_sources.borrow_mut() = excluded_sources.into_iter().collect();
 
         let missing: Vec<String> = {
             let excluded_sources = self.excluded_sources.borrow();
@@ -955,7 +1138,7 @@ impl TimelinePane {
         self.set_uri_core(uri, workspace, false);
     }
 
-    fn on_providers_changed(&self, event: &TimelineProvidersChangeEvent) {
+    pub fn on_providers_changed(&self, event: &TimelineProvidersChangeEvent) {
         if let Some(removed) = &event.removed {
             for source in removed {
                 let pending_request = self.pending_requests.borrow_mut().remove(source);
@@ -978,7 +1161,7 @@ impl TimelinePane {
         }
     }
 
-    fn on_timeline_changed(&self, event: &TimelineChangeEvent) {
+    pub fn on_timeline_changed(&self, event: &TimelineChangeEvent) {
         let affected = if event.workspace {
             self.workspace.get()
         } else {
@@ -999,7 +1182,7 @@ impl TimelinePane {
         }
     }
 
-    fn on_editable_changed(&self) {
+    pub fn on_editable_changed(&self) {
         let previous = self.edited_item.borrow().clone();
         let current = self.services.timeline_service.editable().map(|editable| editable.item);
         *self.edited_item.borrow_mut() = current.clone();
@@ -1150,7 +1333,7 @@ impl TimelinePane {
         self.view_pane.is_body_visible()
     }
 
-    fn clear(&self, cancel_pending: bool) {
+    pub fn clear(&self, cancel_pending: bool) {
         self.visible_item_count.set(0);
         self.max_item_count.set(self.page_size());
         self.timelines_by_source.borrow_mut().clear();
@@ -1219,7 +1402,7 @@ impl TimelinePane {
 
     /// `loadTimelineForSource(source, uri, reset, options?, triggerKind = Automatic)`: `uri` is the file or folder to load the
     /// timeline for, `None` for the workspace timeline.
-    fn load_timeline_for_source(&self, source: &str, uri: Option<&URI>, reset: bool, options: Option<TimelineOptions>, trigger_kind: TimelineTriggerKind) -> bool {
+    pub fn load_timeline_for_source(&self, source: &str, uri: Option<&URI>, reset: bool, options: Option<TimelineOptions>, trigger_kind: TimelineTriggerKind) -> bool {
         if self.excluded_sources.borrow().contains(source) {
             return false;
         }
@@ -1627,9 +1810,1214 @@ impl TimelinePane {
     }
 }
 
+// O corpo da vista (`renderBody` e o que depende dele)
+
+impl TimelinePane {
+    fn commands(&self) -> Rc<TimelinePaneCommands> {
+        self.commands.borrow().clone().expect("o construtor cria os comandos")
+    }
+
+    /// `loadMore(item)`.
+    pub fn load_more(&self, item: &Rc<LoadMoreCommand>) {
+        if item.loading() {
+            return;
+        }
+
+        item.set_loading(true);
+        if let Some(body) = self.body() {
+            body.rerender_element(&TreeElement::LoadMore(item.clone()));
+        }
+
+        if self.pending_request_count() != 0 {
+            return;
+        }
+
+        self.set_max_item_count(self.visible_item_count() as f64 + self.page_size());
+        self.load_timeline(false, None, TimelineTriggerKind::Automatic);
+    }
+
+    /// O `onDidOpen` do `renderBody`.
+    fn on_did_open(&self, event: &IOpenEvent<TreeElement>) {
+        if event.browser_event.is_none() || !self.ensure_valid_items() {
+            return;
+        }
+        let Some(body) = self.body() else { return };
+
+        // Fora de uma seleção de um elemento o `item` é `undefined`, e a raiz (`null`) não abre nada
+        let selection = body.get_selection();
+        let [Some(item)] = selection.as_slice() else { return };
+
+        if let Some(timeline_item) = item.timeline_item() {
+            let command = timeline_item.borrow().command.clone();
+            if let Some(command) = command {
+                let mut args = command.arguments.clone().unwrap_or_default();
+                if command.id == API_OPEN_EDITOR_COMMAND_ID || command.id == API_OPEN_DIFF_EDITOR_COMMAND_ID {
+                    // Some commands owned by us should receive the `IOpenEvent` as context to open properly
+                    args.push(Dynamic::Object(ObjectRef::with_host(Rc::new(event.clone()))));
+                }
+
+                let _ = self.services.command_service.execute_command(&command.id, args);
+            }
+        } else if let Some(load_more) = item.load_more_command() {
+            self.load_more(load_more);
+        }
+    }
+
+    /// `onContextMenu(commands, treeEvent)`.
+    fn on_context_menu(&self, tree_event: &TreeMouseEvent<Option<TreeElement>>) {
+        // `treeEvent.element === null`: nada sob o ponteiro, ou a raiz
+        let Some(Some(item)) = tree_event.element.clone() else { return };
+
+        if !self.ensure_valid_items() {
+            return;
+        }
+        let Some(body) = self.body() else { return };
+
+        body.set_focus(&item);
+        let selection = item.timeline_item().and_then(|timeline_item| get_multi_selection(timeline_item, &body.get_selection()));
+        let actions = self.commands().get_item_context_actions(&item, selection.as_deref());
+        if actions.is_empty() {
+            return;
+        }
+
+        let anchor_node = tree_event.browser_event.target.unwrap_or_else(|| self.view_pane.element());
+        let get_selection: Rc<dyn Fn() -> Vec<Option<TreeElement>>> = {
+            let body = body.clone();
+            Rc::new(move || body.get_selection())
+        };
+        let weak = self.weak_self.clone();
+        self.services.view_pane.context_menu_service.show_context_menu(ContextMenuRequest::Menu(IContextMenuMenuDelegate {
+            menu_id: None,
+            menu_action_options: None,
+            get_actions_context: Some(Rc::new(move |_event: Option<&IContextMenuEvent>| {
+                let uri = weak.upgrade().and_then(|pane| pane.uri());
+                Some(timeline_action_context_to_dynamic(&TimelineActionContext { uri, item: item.clone() }))
+            })),
+            context_key_service: None,
+            get_actions: Some(Rc::new(move || actions.clone())),
+            base: Rc::new(TimelineContextMenuDelegate {
+                anchor: AnchorTarget::Element(ViewElement::from_native(Rc::new(anchor_node))),
+                body,
+                action_runner: TimelineActionRunner::new(get_selection),
+            }),
+        }));
+    }
+
+    /// `setVisible(visible)`.
+    pub fn set_visible(&self, visible: bool) {
+        if visible {
+            let _ = self.services.extension_service.activate_by_event("onView:timeline", None);
+            let visibility_disposables = self.replace_visibility_disposables();
+
+            let weak = self.weak_self.clone();
+            visibility_disposables.add(self.services.editor_service.on_did_active_editor_change().listen(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.on_active_editor_changed();
+                }
+            }));
+
+            // Refresh the view on focus to update the relative timestamps
+            let weak = self.weak_self.clone();
+            visibility_disposables.add(self.view_pane.on_did_focus().listen(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.refresh_debounced();
+                }
+            }));
+
+            self.view_pane.set_visible(visible);
+
+            self.on_active_editor_changed();
+        } else {
+            self.dispose_visibility_disposables();
+
+            self.view_pane.set_visible(visible);
+        }
+    }
+}
+
+/// `TimelinePaneCommands` conhece do painel só o que as ações dele chamam (ver as divergências do módulo).
+pub trait ITimelinePaneCommandsHost {
+    /// `pane.id`.
+    fn id(&self) -> String;
+
+    /// `pane.reset()`.
+    fn reset(&self);
+
+    /// `pane.showWorkspaceTimeline()`.
+    fn show_workspace_timeline(&self);
+
+    /// `pane.followActiveEditor = !pane.followActiveEditor`: devolve o valor novo.
+    fn toggle_follow_active_editor(&self) -> bool;
+
+    /// `pane.compareSelected()`.
+    fn compare_selected(&self) -> Promise<()>;
+}
+
+impl ITimelinePaneCommandsHost for TimelinePane {
+    fn id(&self) -> String {
+        self.view_pane.id.clone()
+    }
+
+    fn reset(&self) {
+        self.load_timeline(true, None, TimelineTriggerKind::Invoke);
+    }
+
+    fn show_workspace_timeline(&self) {
+        self.set_uri_core(None, true, true);
+    }
+
+    fn toggle_follow_active_editor(&self) -> bool {
+        let value = !self.follow_active_editor();
+        self.set_follow_active_editor(value);
+        value
+    }
+
+    fn compare_selected(&self) -> Promise<()> {
+        let Some(body) = self.body() else { return Promise::resolved(()) };
+        let mut selection: Vec<TimelineItemRef> = body.get_selection().iter().filter_map(|element| element.as_ref().and_then(TreeElement::timeline_item).cloned()).collect();
+        if selection.len() != 2 {
+            return Promise::resolved(());
+        }
+
+        selection.sort_by(|a, b| {
+            let difference = a.borrow().timestamp - b.borrow().timestamp;
+            if difference < 0.0 {
+                Ordering::Less
+            } else if difference > 0.0 {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        });
+        let (older, newer) = (selection[0].borrow(), selection[1].borrow());
+        let (Some(older_resource), Some(newer_resource)) = (older.resource_uri.clone(), newer.resource_uri.clone()) else {
+            return Promise::resolved(());
+        };
+
+        let label = localize(
+            "timeline.compareSelectedLabel",
+            "{0} ({1}) \u{2194} {2} ({3})",
+            &[&self.services.label_service.get_uri_basename_label(&older_resource), &older.label, &self.services.label_service.get_uri_basename_label(&newer_resource), &newer.label],
+        );
+        let opened = self.services.editor_service.open_editor(UntypedEditorInput {
+            original: Some(Box::new(UntypedEditorInput::from_resource(older_resource))),
+            modified: Some(Box::new(UntypedEditorInput::from_resource(newer_resource))),
+            label: Some(label),
+            ..UntypedEditorInput::default()
+        });
+        async_fn(async move {
+            opened.await?;
+            Ok(())
+        })
+    }
+}
+
+/// O `IContextMenuDelegate` do menu de um item: a âncora, o foco de volta na árvore ao cancelar e o runner das ações (as ações
+/// e o contexto vão pelo [`IContextMenuMenuDelegate`]).
+struct TimelineContextMenuDelegate {
+    anchor: AnchorTarget,
+    body: Rc<dyn ITimelineBody>,
+    action_runner: Rc<ActionRunner>,
+}
+
+impl IContextMenuDelegate for TimelineContextMenuDelegate {
+    fn get_anchor(&self) -> AnchorTarget {
+        self.anchor.clone()
+    }
+
+    fn get_actions(&self) -> Vec<ActionRef> {
+        Vec::new()
+    }
+
+    fn on_hide(&self, did_cancel: bool) {
+        if did_cancel {
+            self.body.dom_focus();
+        }
+    }
+
+    fn action_runner(&self) -> Option<Rc<dyn IActionRunner>> {
+        Some(self.action_runner.clone())
+    }
+}
+
 impl ViewPaneDelegate for TimelinePane {
     fn get_actions_context(&self) -> Option<Dynamic> {
         self.uri.borrow().as_ref().map(|uri| Dynamic::Object(ObjectRef::with_host(Rc::new(uri.clone()))))
+    }
+
+    fn render_header_title(&self, container: NodeId) {
+        self.services.view_pane.ui.tree_mut().add_class(container, "timeline-view");
+    }
+
+    fn render_body(&self, container: NodeId) {
+        let ui = self.services.view_pane.ui.clone();
+        let (message_node, tree_node) = {
+            let mut tree = ui.tree_mut();
+            tree.add_class(container, "tree-explorer-viewlet-tree-view");
+            tree.add_class(container, "timeline-tree-view");
+
+            let message_node = create_el(&mut tree, container, Role::Generic, "message");
+            tree.add_class(message_node, "timeline-subtle");
+            {
+                let style = tree.style_mut(message_node);
+                style.opacity = 0.5;
+                style.pointer_events = PointerEvents::None;
+                style.z_index = 1;
+            }
+
+            let tree_node = create_el(&mut tree, container, Role::Generic, "customview-tree");
+            tree.add_class(tree_node, "file-icon-themable-tree");
+            tree.add_class(tree_node, "hide-arrows");
+            tree.set_fill(tree_node, true, true);
+            (message_node, tree_node)
+        };
+
+        // O renderer lê a seleção da árvore, que nasce depois dele
+        let tree_slot: Rc<RefCell<Weak<TimelineTree>>> = Rc::new(RefCell::new(Weak::new()));
+        let get_selection: Rc<dyn Fn() -> Vec<Option<TreeElement>>> = {
+            let tree_slot = tree_slot.clone();
+            Rc::new(move || tree_slot.borrow().upgrade().map(|tree| tree.get_selection()).unwrap_or_default())
+        };
+
+        let create_action_view_item = self.services.view_pane.create_action_view_item.clone();
+        let action_view_item_provider: IActionViewItemProvider = Rc::new(move |action: &ActionRef, options: &IActionViewItemOptions| {
+            let menu_as_child = action.as_any().is::<SubmenuAction>();
+            create_action_view_item(action, options, menu_as_child)
+        });
+
+        let renderer = TimelineTreeRenderer::new(TimelineTreeRendererArgs {
+            ui: ui.clone(),
+            services: self.services.body.clone(),
+            context_menu_service: self.services.view_pane.context_menu_service.clone(),
+            commands: self.commands(),
+            timeline_service: self.services.timeline_service.clone(),
+            view_container_location: self.services.view_pane.view_descriptor_service.get_view_location_by_id(&self.view_pane.id),
+            clipping_element: tree_node,
+            get_selection,
+            action_view_item_provider,
+        });
+        self.base.register(renderer.clone());
+        let weak = self.weak_self.clone();
+        self.base.register(renderer.on_did_scroll_to_end().listen(move |item| {
+            if let Some(this) = weak.upgrade()
+                && this.page_on_scroll()
+            {
+                this.load_more(item);
+            }
+        }));
+
+        let tree_renderer: Rc<dyn ITreeRenderer<TimelineModel>> = renderer.clone();
+        let tree = TimelineTree::new(
+            "TimelinePane",
+            &ui,
+            tree_node,
+            Rc::new(TimelineListVirtualDelegate),
+            vec![tree_renderer],
+            ObjectTreeOptions {
+                tree: AbstractTreeOptions {
+                    identity_provider: Some(Rc::new(TimelineIdentityProvider)),
+                    keyboard_navigation_label_provider: Some(Rc::new(TimelineKeyboardNavigationLabelProvider)),
+                    ..AbstractTreeOptions::default()
+                },
+                sorter: None,
+            },
+            IWorkbenchTreeOptions {
+                override_styles: Some((self.services.body.list_override_styles)(&self.view_pane.get_location_based_colors().list_override_styles)),
+                ..IWorkbenchTreeOptions::default()
+            },
+            &self.services.body.tree,
+        );
+        *tree_slot.borrow_mut() = Rc::downgrade(&tree);
+        self.base.register(tree.widget().clone());
+
+        timeline_view_focused_context().bind_to(&*tree.context_key_service());
+
+        let weak = self.weak_self.clone();
+        self.base.register(tree.on_context_menu().listen(move |event| {
+            if let Some(this) = weak.upgrade() {
+                this.on_context_menu(event);
+            }
+        }));
+        let weak = self.weak_self.clone();
+        self.base.register(tree.on_did_change_selection().listen(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.on_selection_changed();
+            }
+        }));
+        let weak = self.weak_self.clone();
+        self.base.register(tree.on_did_open().listen(move |event| {
+            if let Some(this) = weak.upgrade() {
+                this.on_did_open(event);
+            }
+        }));
+
+        let body = Rc::new(TimelineBody {
+            ui,
+            container,
+            message_node,
+            message: RefCell::new(String::new()),
+            message_lines: RefCell::new(Vec::new()),
+            width: Cell::new(0.0),
+            text_styles: self.services.body.icon_label_styles,
+            tree,
+            renderer,
+        });
+        self.set_body(body);
+
+        self.set_message(Some(localize("timeline.editorCannotProvideTimeline", "The active editor cannot provide timeline information.", &[])));
+    }
+
+    fn layout_body(&self, height: f64, width: f64) {
+        if let Some(body) = self.body() {
+            body.layout(height, width);
+        }
+    }
+}
+
+impl IViewPane for TimelinePane {
+    /// `setExpanded(expanded)`.
+    fn set_expanded(&self, expanded: bool) -> bool {
+        let changed = self.view_pane.set_expanded(expanded);
+
+        if changed && self.is_body_visible() {
+            if !self.follow_active_editor() {
+                self.set_uri_core(self.uri(), self.workspace(), true);
+            } else {
+                self.on_active_editor_changed();
+            }
+        }
+
+        changed
+    }
+
+    /// `focus()`.
+    fn focus(&self) {
+        self.view_pane.focus();
+        if let Some(body) = self.body() {
+            body.dom_focus();
+        }
+    }
+}
+
+/// A árvore do painel: `WorkbenchObjectTree<TreeElement, FuzzyScore>`.
+type TimelineTree = WorkbenchObjectTree<TreeElement, FuzzyScore>;
+
+/// O modelo da árvore do painel.
+type TimelineModel = ObjectTreeModel<TreeElement, FuzzyScore>;
+
+/// O nó que o renderer recebe.
+type TimelineNode = <TimelineModel as ITreeModel>::Node;
+
+/// `padding: 10px 22px 0 22px` do `.message`.
+const MESSAGE_PADDING_X: f64 = 22.0;
+const MESSAGE_PADDING_TOP: f64 = 10.0;
+
+/// Reparte `text` em linhas de no máximo `width` (as palavras que não cabem vão para a linha seguinte; uma palavra maior que a
+/// linha fica sozinha numa).
+fn wrap_words(text: &str, width: f64, measure: impl Fn(&str) -> f64) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split(' ') {
+        let candidate = if current.is_empty() { word.to_owned() } else { format!("{current} {word}") };
+        if current.is_empty() || measure(&candidate) <= width {
+            current = candidate;
+        } else {
+            lines.push(std::mem::replace(&mut current, word.to_owned()));
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// O corpo que nasce em `renderBody`: a mensagem (`$message`), a árvore e o renderer. Implementa o que a lógica de carga usa
+/// dele ([`ITimelineBody`]).
+pub struct TimelineBody {
+    ui: Ui,
+    /// `$container`.
+    container: NodeId,
+    /// `$message`.
+    message_node: NodeId,
+    message: RefCell<String>,
+    message_lines: RefCell<Vec<NodeId>>,
+    width: Cell<f64>,
+    text_styles: IconLabelStyles,
+    tree: Rc<TimelineTree>,
+    renderer: Rc<TimelineTreeRenderer>,
+}
+
+impl TimelineBody {
+    /// Quebra a mensagem em linhas de acordo com a largura do último `layout`.
+    fn layout_message(&self) {
+        let text = self.message.borrow().clone();
+        let width = (self.width.get() - 2.0 * MESSAGE_PADDING_X).max(0.0);
+        let styles = self.text_styles.text;
+        let style = ui_font(styles.font_size, styles.font_weight);
+        let lines = wrap_words(&text, width, |candidate| measure_text(candidate, &style));
+
+        let mut tree = self.ui.tree_mut();
+        for line in self.message_lines.borrow_mut().drain(..) {
+            tree.remove(line);
+        }
+        let mut nodes = Vec::with_capacity(lines.len());
+        for (index, line) in lines.iter().enumerate() {
+            let node = create_el(&mut tree, self.message_node, Role::Generic, "");
+            tree.style_mut(node).content = Content::Text { text: line.clone(), style: style.clone(), color: styles.foreground, line_height: ITEM_HEIGHT };
+            tree.set_bounds(node, Rect::new(0.0, index as f64 * ITEM_HEIGHT, width, (index + 1) as f64 * ITEM_HEIGHT));
+            nodes.push(node);
+        }
+        tree.set_bounds(self.message_node, Rect::new(MESSAGE_PADDING_X, MESSAGE_PADDING_TOP, MESSAGE_PADDING_X + width, MESSAGE_PADDING_TOP + lines.len() as f64 * ITEM_HEIGHT));
+        *self.message_lines.borrow_mut() = nodes;
+    }
+}
+
+impl ITimelineBody for TimelineBody {
+    fn render_height(&self) -> f64 {
+        self.tree.render_height()
+    }
+
+    fn set_children(&self, elements: Vec<TreeElement>) {
+        self.tree.set_children(&None, elements.into_iter().map(IObjectTreeElement::new).collect(), ObjectTreeModelSetChildrenOptions::default());
+    }
+
+    fn clear_children(&self) {
+        self.tree.set_children(&None, Vec::new(), ObjectTreeModelSetChildrenOptions::default());
+    }
+
+    fn rerender(&self) {
+        self.tree.rerender_element(None);
+    }
+
+    fn rerender_element(&self, element: &TreeElement) {
+        self.tree.rerender_element(Some(element));
+    }
+
+    fn has_element(&self, element: &TreeElement) -> bool {
+        self.tree.has_element(element)
+    }
+
+    fn get_selection(&self) -> Vec<Option<TreeElement>> {
+        self.tree.get_selection()
+    }
+
+    fn dom_focus(&self) {
+        self.tree.dom_focus();
+    }
+
+    fn set_focus(&self, element: &TreeElement) {
+        self.tree.set_focus(&[Some(element.clone())], None);
+    }
+
+    fn layout(&self, height: f64, width: f64) {
+        self.width.set(width);
+        self.tree.layout(Some(height), Some(width));
+        self.layout_message();
+    }
+
+    fn show_message(&self, message: &str) {
+        {
+            let mut tree = self.ui.tree_mut();
+            tree.remove_class(self.message_node, "hide");
+            show(&mut tree, self.message_node);
+        }
+        *self.message.borrow_mut() = message.to_owned();
+        self.layout_message();
+    }
+
+    fn hide_message(&self) {
+        self.message.borrow_mut().clear();
+        self.layout_message();
+        let mut tree = self.ui.tree_mut();
+        tree.add_class(self.message_node, "hide");
+        hide(&mut tree, self.message_node);
+    }
+
+    fn set_uri(&self, uri: Option<&URI>) {
+        self.renderer.set_uri(uri.cloned());
+    }
+
+    fn is_focus_free_or_inside(&self) -> bool {
+        match self.ui.focused() {
+            None => true,
+            Some(focused) => focused == self.ui.root() || is_ancestor_of_active_element(&self.ui, self.container),
+        }
+    }
+}
+
+/// `TimelineIdentityProvider` para os elementos `T | null` da árvore (a raiz não tem identidade).
+impl IIdentityProvider<Option<TreeElement>> for TimelineIdentityProvider {
+    fn get_id(&self, item: &Option<TreeElement>) -> String {
+        item.as_ref().map(TreeElement::handle).unwrap_or_default()
+    }
+}
+
+/// O que o `accessibilityProvider` da árvore devolve: os textos e papéis do original (ver as divergências do módulo).
+pub struct TimelineAccessibilityProvider;
+
+impl TimelineAccessibilityProvider {
+    /// `getAriaLabel(element)`.
+    pub fn get_aria_label(&self, element: &TreeElement) -> String {
+        if let Some(command) = element.load_more_command() {
+            return command.aria_label();
+        }
+        match element.accessibility_information() {
+            Some(information) => information.label,
+            None => localize("timeline.aria.item", "{0}: {1}", &[&element.relative_time_full_word().unwrap_or_default(), &element.label()]),
+        }
+    }
+
+    /// `getRole(element)`.
+    pub fn get_role(&self, element: &TreeElement) -> String {
+        if element.load_more_command().is_some() {
+            return "treeitem".to_owned();
+        }
+        element.accessibility_information().and_then(|information| information.role).filter(|role| !role.is_empty()).unwrap_or_else(|| "treeitem".to_owned())
+    }
+
+    /// `getWidgetAriaLabel()`.
+    pub fn get_widget_aria_label(&self) -> String {
+        localize("timeline", "Timeline", &[])
+    }
+}
+
+/// `TimelineKeyboardNavigationLabelProvider`.
+pub struct TimelineKeyboardNavigationLabelProvider;
+
+impl IKeyboardNavigationLabelProvider<Option<TreeElement>> for TimelineKeyboardNavigationLabelProvider {
+    fn get_keyboard_navigation_label(&self, element: &Option<TreeElement>) -> Vec<Option<String>> {
+        vec![element.as_ref().map(TreeElement::label)]
+    }
+}
+
+/// `TimelineElementTemplate.id`.
+pub const TIMELINE_ELEMENT_TEMPLATE_ID: &str = "TimelineElementTemplate";
+
+/// `TimelineListVirtualDelegate`.
+pub struct TimelineListVirtualDelegate;
+
+impl IListVirtualDelegate<TreeElement> for TimelineListVirtualDelegate {
+    fn get_height(&self, _element: &TreeElement) -> f64 {
+        ITEM_HEIGHT
+    }
+
+    fn get_template_id(&self, _element: &TreeElement) -> String {
+        TIMELINE_ELEMENT_TEMPLATE_ID.to_owned()
+    }
+}
+
+/// `TimelineActionRunner`: executa os comandos sobre os itens da timeline com `(item, uri, source, selectedItems?)`, ver
+/// `vscode.TimelineItem.contextValue`. É o [`ActionRunner`] com o `runAction` sobrescrito (o contexto é um
+/// [`TimelineActionContext`], ver [`timeline_action_context_to_dynamic`]).
+pub struct TimelineActionRunner;
+
+impl TimelineActionRunner {
+    /// `new TimelineActionRunner(getSelection)`.
+    pub fn new(get_selection: Rc<dyn Fn() -> Vec<Option<TreeElement>>>) -> Rc<ActionRunner> {
+        let run_action: RunAction = Rc::new(move |action: &ActionRef, context: Option<Dynamic>| -> Promise<()> {
+            // A desestruturação `{ uri, item }` de um contexto ausente lança `TypeError`
+            let Some(context) = context.as_ref().and_then(timeline_action_context_from_dynamic) else {
+                errors::throw(Error::type_error("Cannot destructure property 'uri' of 'undefined' as it is undefined."))
+            };
+            let TimelineActionContext { uri, item } = (*context).clone();
+
+            let Some(timeline_item) = item.timeline_item().cloned() else {
+                // Um item que não é da timeline (o "Load more") roda a ação sem argumentos
+                let promise = action.run(&[]);
+                return async_fn(async move {
+                    promise.await?;
+                    Ok(())
+                });
+            };
+
+            // Commands only receive the selected items of the provider of the item
+            let source = timeline_item.borrow().source.clone();
+            let selection = get_multi_selection(&timeline_item, &get_selection()).map(|items| items.into_iter().filter(|selected| selected.borrow().source == source).collect::<Vec<_>>());
+
+            let promise = action.run(&[
+                to_action_context(&timeline_item, uri.as_ref()),
+                uri_to_dynamic(uri.as_ref()),
+                Dynamic::string(&source),
+                selection.map_or(Dynamic::Undefined, |items| Dynamic::array(items.iter().map(|selected| to_action_context(selected, uri.as_ref())))),
+            ]);
+            async_fn(async move {
+                promise.await?;
+                Ok(())
+            })
+        });
+        ActionRunner::with_run_action(run_action)
+    }
+}
+
+/// Os argumentos do [`TimelineTreeRenderer`] (`commands`, `viewContainerLocation`, `clippingElement`, `getSelection` e os
+/// serviços injetados).
+pub struct TimelineTreeRendererArgs {
+    pub ui: Ui,
+    pub services: TimelineBodyServices,
+    pub context_menu_service: Rc<dyn IContextMenuService>,
+    pub commands: Rc<TimelinePaneCommands>,
+    pub timeline_service: Rc<dyn ITimelineService>,
+    pub view_container_location: Option<ViewContainerLocation>,
+    pub clipping_element: NodeId,
+    pub get_selection: Rc<dyn Fn() -> Vec<Option<TreeElement>>>,
+    /// `createActionViewItem.bind(undefined, this.instantiationService)`.
+    pub action_view_item_provider: IActionViewItemProvider,
+}
+
+/// `TimelineElementTemplate`: a linha (`.custom-view-tree-node-item`) com o ícone, o rótulo, o carimbo de tempo e as ações.
+struct TimelineElementTemplate {
+    ui: Ui,
+    container: NodeId,
+    icon: NodeId,
+    icon_label: Rc<IconLabel>,
+    timestamp_container: NodeId,
+    timestamp: NodeId,
+    actions_container: NodeId,
+    action_bar: Rc<ActionBar>,
+    /// A caixa de edição em linha (`timeline-item-editing`), no lugar do rótulo, do carimbo e das ações.
+    editor: RefCell<Option<Rc<InlineEditInputBox>>>,
+    hovered: Cell<bool>,
+    template_disposables: Rc<DisposableStore>,
+    element_disposables: Rc<DisposableStore>,
+}
+
+/// O `margin-right` de 6px depois do ícone de 16px.
+const ICON_COLUMN_WIDTH: f64 = 22.0;
+
+/// `.timeline-timestamp--duplicate .timeline-timestamp { width: 10px }`.
+const DUPLICATE_TIMESTAMP_WIDTH: f64 = 10.0;
+
+impl TimelineElementTemplate {
+    /// `reset()`.
+    fn reset(&self) {
+        self.element_disposables.clear();
+        *self.editor.borrow_mut() = None;
+        self.hovered.set(false);
+        {
+            let mut tree = self.ui.tree_mut();
+            tree.set_class_name(self.icon, "");
+            tree.style_mut(self.icon).content = Content::None;
+        }
+        self.action_bar.clear();
+    }
+
+    /// `.actions` aparecem com o ponteiro sobre a linha, e só fora da edição.
+    fn update_actions_visibility(&self) {
+        let visible = self.hovered.get() && self.editor.borrow().is_none() && !self.action_bar.is_empty();
+        self.ui.tree_mut().style_mut(self.actions_container).visible = visible;
+        self.layout_row();
+    }
+
+    /// O `display: flex` da linha: reparte a largura entre o ícone, o rótulo (`flex: 1`), o carimbo e as ações.
+    fn layout_row(&self) {
+        let row_width = self.ui.tree().bounds(self.container).width();
+
+        let editor = self.editor.borrow().clone();
+        if let Some(editor) = editor {
+            let input_width = (row_width - ICON_COLUMN_WIDTH).max(0.0);
+            editor.input_box().set_width(input_width);
+            self.ui.tree_mut().set_bounds(editor.input_box().element(), Rect::new(ICON_COLUMN_WIDTH, 0.0, ICON_COLUMN_WIDTH + input_width, ITEM_HEIGHT));
+            return;
+        }
+
+        let actions_width = if self.ui.tree().style(self.actions_container).visible { (0..self.action_bar.length()).map(|index| self.action_bar.get_width(index)).sum::<f64>() } else { 0.0 };
+        let timestamp_width = {
+            let tree = self.ui.tree();
+            if tree.has_class(self.timestamp_container, "timeline-timestamp--duplicate") {
+                DUPLICATE_TIMESTAMP_WIDTH
+            } else {
+                match &tree.style(self.timestamp).content {
+                    Content::Text { text, style, .. } => measure_text(text, style),
+                    _ => 0.0,
+                }
+            }
+        };
+
+        // `.timeline-timestamp-container { margin-left: 2px; margin-right: 4px }`
+        let timestamp_container_width = 2.0 + timestamp_width + 4.0;
+        let label_width = (row_width - ICON_COLUMN_WIDTH - timestamp_container_width - actions_width).max(0.0);
+        let timestamp_x = ICON_COLUMN_WIDTH + label_width;
+        let actions_x = timestamp_x + timestamp_container_width;
+
+        {
+            let mut tree = self.ui.tree_mut();
+            tree.set_bounds(self.icon, Rect::new(0.0, 0.0, 16.0, ITEM_HEIGHT));
+            tree.set_bounds(self.icon_label.element(), Rect::new(ICON_COLUMN_WIDTH, 0.0, timestamp_x, ITEM_HEIGHT));
+            tree.set_bounds(self.timestamp_container, Rect::new(timestamp_x, 0.0, actions_x, ITEM_HEIGHT));
+            tree.set_bounds(self.timestamp, Rect::new(2.0, 0.0, 2.0 + timestamp_width, ITEM_HEIGHT));
+            tree.set_bounds(self.actions_container, Rect::new(actions_x, 0.0, actions_x + actions_width, ITEM_HEIGHT));
+        }
+        self.icon_label.layout(Some(label_width));
+    }
+}
+
+/// `TimelineTreeRenderer`.
+pub struct TimelineTreeRenderer {
+    base: Rc<Disposable>,
+    ui: Ui,
+    services: TimelineBodyServices,
+    context_menu_service: Rc<dyn IContextMenuService>,
+    commands: Rc<TimelinePaneCommands>,
+    timeline_service: Rc<dyn ITimelineService>,
+    hover_delegate: Rc<dyn IHoverDelegate>,
+    action_view_item_provider: IActionViewItemProvider,
+    get_selection: Rc<dyn Fn() -> Vec<Option<TreeElement>>>,
+    uri: RefCell<Option<URI>>,
+    on_did_scroll_to_end: Rc<Emitter<Rc<LoadMoreCommand>>>,
+}
+
+impl TimelineTreeRenderer {
+    pub fn new(args: TimelineTreeRendererArgs) -> Rc<Self> {
+        let base = Disposable::new();
+        let on_did_scroll_to_end = Emitter::new();
+        base.register(on_did_scroll_to_end.clone());
+
+        let in_panel = args.view_container_location == Some(ViewContainerLocation::Panel);
+        let hover_delegate = (args.services.create_hover_delegate)(&TimelineHoverDelegateArgs {
+            placement: if in_panel { HoverPlacement::Mouse } else { HoverPlacement::Element },
+            instant_hover: !in_panel,
+            clipping_element: args.clipping_element,
+        });
+
+        Rc::new(Self {
+            base,
+            ui: args.ui,
+            services: args.services,
+            context_menu_service: args.context_menu_service,
+            commands: args.commands,
+            timeline_service: args.timeline_service,
+            hover_delegate,
+            action_view_item_provider: args.action_view_item_provider,
+            get_selection: args.get_selection,
+            uri: RefCell::new(None),
+            on_did_scroll_to_end,
+        })
+    }
+
+    /// `onDidScrollToEnd`.
+    pub fn on_did_scroll_to_end(&self) -> Event<Rc<LoadMoreCommand>> {
+        self.on_did_scroll_to_end.event()
+    }
+
+    /// `setUri(uri)`.
+    pub fn set_uri(&self, uri: Option<URI>) {
+        *self.uri.borrow_mut() = uri;
+    }
+
+    fn template(template_data: &TemplateData) -> &Rc<TimelineElementTemplate> {
+        template_data.downcast_ref::<Rc<TimelineElementTemplate>>().expect("o template do TimelineTreeRenderer")
+    }
+}
+
+impl IDisposable for TimelineTreeRenderer {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "TimelineTreeRenderer"
+    }
+}
+
+impl ITreeRenderer<TimelineModel> for TimelineTreeRenderer {
+    fn template_id(&self) -> String {
+        TIMELINE_ELEMENT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = &self.ui;
+        let template_disposables = DisposableStore::new();
+
+        ui.tree_mut().add_class(container, "custom-view-tree-node-item");
+        let icon = create_el(&mut ui.tree_mut(), container, Role::Image, "custom-view-tree-node-item-icon");
+
+        let icon_label = IconLabel::new(
+            ui,
+            container,
+            Some(IIconLabelCreationOptions { support_highlights: true, support_icons: true, hover_delegate: Some(self.hover_delegate.clone()), ..IIconLabelCreationOptions::default() }),
+            self.services.icon_label_styles,
+        );
+        template_disposables.add(icon_label.clone());
+
+        let timestamp_container = create_el(&mut ui.tree_mut(), container, Role::Generic, "timeline-timestamp-container");
+        let timestamp = create_el(&mut ui.tree_mut(), timestamp_container, Role::Generic, "timeline-timestamp");
+        let actions_container = create_el(&mut ui.tree_mut(), container, Role::Generic, "actions");
+        {
+            let mut tree = ui.tree_mut();
+            tree.style_mut(timestamp_container).opacity = 0.5;
+            tree.style_mut(actions_container).visible = false;
+        }
+        let action_bar = ActionBar::new(ui, actions_container, IActionBarOptions { action_view_item_provider: Some(self.action_view_item_provider.clone()), ..IActionBarOptions::default() });
+        template_disposables.add(action_bar.clone());
+
+        let element_disposables = template_disposables.add_rc(DisposableStore::new());
+        let template = Rc::new(TimelineElementTemplate {
+            ui: ui.clone(),
+            container,
+            icon,
+            icon_label,
+            timestamp_container,
+            timestamp,
+            actions_container,
+            action_bar,
+            editor: RefCell::new(None),
+            hovered: Cell::new(false),
+            template_disposables: template_disposables.clone(),
+            element_disposables,
+        });
+
+        // `.monaco-list-row:hover .actions`
+        for (kind, hovered) in [(EventKind::PointerEnter, true), (EventKind::PointerLeave, false)] {
+            let weak = Rc::downgrade(&template);
+            template_disposables.add(ui.listen(container, kind, false, move |_| {
+                if let Some(template) = weak.upgrade() {
+                    template.hovered.set(hovered);
+                    template.update_actions_visibility();
+                }
+            }));
+        }
+
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<TimelineNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let template = Self::template(template_data);
+        template.reset();
+
+        let item = node.element().expect("elemento da árvore");
+        let ui = &self.ui;
+
+        // O ícone: a imagem de um `icon`/`iconDark` o `je-ui` não desenha (ver as divergências do módulo)
+        let theme_icon = if item.has_icon_uri() { None } else { item.theme_icon() };
+        let icon_color = theme_icon.as_ref().and_then(|icon| icon.color.as_ref()).and_then(|color| self.services.theme_service.get_color_theme().get_color(&color.id, None)).map(|color| to_rgba8(&color));
+        {
+            let mut tree = ui.tree_mut();
+            tree.set_class_name(template.icon, "custom-view-tree-node-item-icon");
+            if let Some(theme_icon) = &theme_icon {
+                for class_name in theme_icon.as_class_name().split(' ') {
+                    tree.add_class(template.icon, class_name);
+                }
+                tree.style_mut(template.icon).content =
+                    Content::Codicon { id: theme_icon.id.clone(), size: 16.0, color: icon_color.unwrap_or(self.services.icon_label_styles.text.foreground) };
+            }
+        }
+
+        let tooltip = item.tooltip().filter(StringOrMarkdown::is_truthy).map(|tooltip| match tooltip {
+            StringOrMarkdown::String(text) => IconLabelTitle::Text(text),
+            StringOrMarkdown::Markdown(markdown) => IconLabelTitle::Markdown(ManagedHoverContent::Markdown {
+                markdown_not_supported_fallback: Some(render_as_plaintext(&markdown.value.to_string_lossy())),
+                markdown: Some(HoverContent::Markdown(markdown)),
+            }),
+        });
+        let filter_data = node.filter_data();
+        template.icon_label.set_label(
+            IconLabelText::Single(item.label()),
+            item.description().as_deref(),
+            Some(&IIconLabelValueOptions { title: tooltip, matches: Some(create_matches(filter_data.as_deref())), ..IIconLabelValueOptions::default() }),
+        );
+
+        // O carimbo de tempo (`timeline-timestamp--duplicate` quando repete o do item de cima)
+        let styles = self.services.icon_label_styles.text;
+        {
+            let mut tree = ui.tree_mut();
+            tree.style_mut(template.timestamp).content =
+                Content::Text { text: item.relative_time().unwrap_or_default(), style: ui_font(styles.font_size, styles.font_weight), color: styles.foreground, line_height: ITEM_HEIGHT };
+            tree.set_label(template.timestamp, item.relative_time_full_word().unwrap_or_default());
+            tree.toggle_class(template.timestamp_container, "timeline-timestamp--duplicate", item.timeline_item().is_some() && item.hide_relative_time() == Some(true));
+        }
+
+        let selection = item.timeline_item().and_then(|timeline_item| get_multi_selection(timeline_item, &(self.get_selection)()));
+        template.action_bar.set_context(Some(timeline_action_context_to_dynamic(&TimelineActionContext { uri: self.uri.borrow().clone(), item: item.clone() })));
+        template.action_bar.set_action_runner(TimelineActionRunner::new(self.get_selection.clone()));
+        template.action_bar.push(&self.commands.get_item_actions(&item, selection.as_deref()), IActionOptions { item: IActionViewItemOptions { icon: Some(true), label: Some(false), ..IActionViewItemOptions::default() }, index: None });
+        template.action_bar.layout();
+
+        let editable = self.timeline_service.editable();
+        let editable_data = item.timeline_item().and_then(|timeline_item| {
+            let timeline_item = timeline_item.borrow();
+            editable.filter(|editable| editable.item.source == timeline_item.source && editable.item.handle == timeline_item.handle).map(|editable| editable.data)
+        });
+        {
+            let mut tree = ui.tree_mut();
+            tree.toggle_class(template.container, "timeline-item-editing", editable_data.is_some());
+            for element in [template.icon_label.element(), template.timestamp_container] {
+                tree.style_mut(element).visible = editable_data.is_none();
+            }
+        }
+        if let Some(editable_data) = editable_data {
+            let editor = InlineEditInputBox::new(
+                ui,
+                template.container,
+                self.services.context_view_provider.clone(),
+                self.context_menu_service.clone(),
+                (self.services.input_box_styles)(),
+                editable_data,
+                InlineEditInputBoxOptions {
+                    aria_label: localize("timelineInputAriaLabel", "Type timeline item name. Press Enter to confirm or Escape to cancel.", &[]),
+                    value: None,
+                    selection: None,
+                },
+            );
+            template.element_disposables.add(editor.clone());
+            *template.editor.borrow_mut() = Some(editor);
+        }
+        template.update_actions_visibility();
+
+        // If we are rendering the load more item, we've scrolled to the end, so trigger an event
+        if let Some(load_more) = item.load_more_command() {
+            let (emitter, load_more) = (self.on_did_scroll_to_end.clone(), load_more.clone());
+            runtime::set_timeout(move || emitter.fire(load_more), 0);
+        }
+    }
+
+    fn dispose_element(&self, _node: &Rc<TimelineNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let template = Self::template(template_data);
+        template.element_disposables.clear();
+        template.action_bar.action_runner().dispose();
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        Self::template(template_data).template_disposables.dispose();
+    }
+}
+
+// Os comandos do painel
+
+/// `registerIcon('timeline-refresh', Codicon.refresh, ...)`.
+fn timeline_refresh_icon() -> ThemeIcon {
+    ThemeIcon::from_id("timeline-refresh")
+}
+
+/// `registerIcon('timeline-pin', Codicon.pin, ...)`.
+fn timeline_pin_icon() -> ThemeIcon {
+    ThemeIcon::from_id("timeline-pin")
+}
+
+/// `registerIcon('timeline-unpin', Codicon.pinned, ...)`.
+fn timeline_unpin_icon() -> ThemeIcon {
+    ThemeIcon::from_id("timeline-unpin")
+}
+
+/// O comando que alterna o `followActiveEditor`.
+const TOGGLE_FOLLOW_ACTIVE_EDITOR_COMMAND_ID: &str = "timeline.toggleFollowActiveEditor";
+
+/// `localize2(key, message)` como título de comando.
+fn localized_title(key: &str, message: &str) -> Title {
+    let localized = localize2(key, message);
+    Title::Localized(CommandActionTitle { value: localized.value, original: localized.original, mnemonic_title: None })
+}
+
+/// `category: localize2('timeline', "Timeline")`.
+fn timeline_category() -> Category {
+    Category::Localized(localize2("timeline", "Timeline"))
+}
+
+/// O item de menu de uma ação: `{ id, group, order?, when? }`.
+fn action_menu_item(id: MenuId, group: &str, order: Option<f64>, when: Option<ContextKeyExpression>) -> Action2MenuItem {
+    Action2MenuItem { id, null_precondition: false, alt: None, when, group: Some(group.to_owned()), order, is_hidden_by_default: None }
+}
+
+/// As três ações do painel que só chamam o painel (`timeline.refresh`, `timeline.showWorkspaceTimeline` e
+/// `timeline.compareSelected`).
+struct PaneCommandAction {
+    pane: Weak<dyn ITimelinePaneCommandsHost>,
+    options: Action2Options,
+    run: fn(&dyn ITimelinePaneCommandsHost),
+}
+
+impl Action2 for PaneCommandAction {
+    fn desc(&self) -> Action2Options {
+        self.options.clone()
+    }
+
+    fn run(&self, _accessor: &ServicesAccessor, _args: &[Dynamic]) {
+        if let Some(pane) = self.pane.upgrade() {
+            (self.run)(&*pane);
+        }
+    }
+}
+
+/// `timeline.toggleExcludeSource:<id>`: liga e desliga uma fonte no filtro.
+struct ToggleExcludeSourceAction {
+    source: TimelineSource,
+    /// O `excluded` do original: compartilhado entre as ações e mantido entre as execuções.
+    excluded: Rc<RefCell<Vec<String>>>,
+}
+
+impl Action2 for ToggleExcludeSourceAction {
+    fn desc(&self) -> Action2Options {
+        let pattern = format!("\\b{}\\b", escape_reg_exp_characters(&self.source.id.encode_utf16().collect::<Vec<u16>>()).to_string_lossy());
+        let regex = ContextRegExp::new(&pattern, "").expect("o texto escapado é uma expressão regular válida");
+        Action2Options {
+            command: CommandAction {
+                toggled: Some(Toggled::Expression(ContextKeyExpr::regex(timeline_exclude_sources().key(), regex).negate())),
+                ..CommandAction::new(format!("timeline.toggleExcludeSource:{}", self.source.id), Title::Plain(self.source.label.clone()))
+            },
+            menu: vec![action_menu_item(menu_ids::timeline_filter_sub_menu(), "navigation", None, None)],
+            keybinding: Vec::new(),
+            f1: false,
+        }
+    }
+
+    fn run(&self, accessor: &ServicesAccessor, _args: &[Dynamic]) {
+        let text = {
+            let mut excluded = self.excluded.borrow_mut();
+            match excluded.iter().position(|id| *id == self.source.id) {
+                Some(index) => {
+                    excluded.remove(index);
+                }
+                None => excluded.push(self.source.id.clone()),
+            }
+            json_stringify(&Dynamic::array(excluded.iter().map(|id| Dynamic::string(id)))).expect("uma lista de textos tem representação JSON")
+        };
+
+        accessor.get(I_STORAGE_SERVICE).store(EXCLUDE_SOURCES_KEY, StorageValue::String(text), StorageScope::Profile, StorageTarget::User);
+    }
+}
+
+/// O contexto de um item para o menu: `view`, o `contextValue` e o que a seleção diz (os atalhos da lista não valem para itens
+/// fora da seleção, então ficam por item).
+fn item_context_keys(element: &TreeElement, selection: Option<&[TimelineItemRef]>) -> Vec<(String, Dynamic)> {
+    vec![
+        ("timelineItem".to_owned(), element.context_value().map_or(Dynamic::Undefined, |value| Dynamic::string(&value))),
+        (workbench_list_multi_selection().key().to_owned(), Dynamic::Bool(selection.is_some())),
+        (workbench_list_double_selection().key().to_owned(), Dynamic::Bool(selection.is_some_and(|selection| selection.len() == 2))),
+        (
+            timeline_can_compare_selection_context().key().to_owned(),
+            Dynamic::Bool(selection.is_some_and(|selection| selection.len() == 2 && selection.iter().all(|item| item.borrow().resource_uri.is_some()))),
+        ),
+    ]
+}
+
+/// `TimelinePaneCommands`.
+pub struct TimelinePaneCommands {
+    base: Rc<Disposable>,
+    source_disposables: Rc<DisposableStore>,
+    pane: Weak<dyn ITimelinePaneCommandsHost>,
+    timeline_service: Rc<dyn ITimelineService>,
+    storage_service: Rc<dyn StorageService>,
+    context_key_service: Rc<dyn IContextKeyService>,
+    menu_service: Rc<dyn IMenuService>,
+    weak_self: Weak<TimelinePaneCommands>,
+}
+
+impl TimelinePaneCommands {
+    pub fn new(
+        pane: Weak<dyn ITimelinePaneCommandsHost>,
+        timeline_service: Rc<dyn ITimelineService>,
+        storage_service: Rc<dyn StorageService>,
+        context_key_service: Rc<dyn IContextKeyService>,
+        menu_service: Rc<dyn IMenuService>,
+    ) -> Rc<Self> {
+        let base = Disposable::new();
+        let source_disposables = DisposableStore::new();
+        base.register(source_disposables.clone());
+
+        let title_menu = menu_ids::timeline_title();
+        let pane_action = |command: CommandAction, menu: Action2MenuItem, run: fn(&dyn ITimelinePaneCommandsHost)| {
+            register_action2(Rc::new(PaneCommandAction { pane: pane.clone(), options: Action2Options { command, menu: vec![menu], keybinding: Vec::new(), f1: false }, run }))
+        };
+
+        base.register(pane_action(
+            CommandAction { icon: Some(Icon::Theme(timeline_refresh_icon())), category: Some(timeline_category()), ..CommandAction::new("timeline.refresh", localized_title("refresh", "Refresh")) },
+            action_menu_item(title_menu.clone(), "navigation", Some(99.0), None),
+            |pane| pane.reset(),
+        ));
+
+        base.register(pane_action(
+            CommandAction { category: Some(timeline_category()), ..CommandAction::new("timeline.showWorkspaceTimeline", localized_title("timeline.showWorkspaceTimeline", "Pin Workspace Timeline")) },
+            action_menu_item(
+                title_menu.clone(),
+                "1_workspace",
+                None,
+                ContextKeyExpr::and([timeline_has_workspace_provider_context().expr(), timeline_for_workspace_context().to_negated()]),
+            ),
+            |pane| pane.show_workspace_timeline(),
+        ));
+
+        base.register(pane_action(
+            CommandAction::new("timeline.compareSelected", localized_title("timeline.compareSelected", "Compare Selected")),
+            action_menu_item(menu_ids::timeline_item_context(), "3_compare", Some(0.0), Some(timeline_can_compare_selection_context().expr())),
+            |pane| {
+                let _ = pane.compare_selected();
+            },
+        ));
+
+        let toggle_pane = pane.clone();
+        let toggle: CommandHandler = Rc::new(move |_accessor, _args| toggle_pane.upgrade().map_or(Dynamic::Undefined, |pane| Dynamic::Bool(pane.toggle_follow_active_editor())));
+        base.register(commands_registry().register_command_handler(TOGGLE_FOLLOW_ACTIVE_EDITOR_COMMAND_ID, Some(toggle)));
+
+        for (when, title_key, title_message, icon) in [
+            (timeline_follow_active_editor_context().expr(), "timeline.toggleFollowActiveEditorCommand.follow", "Pin Current Timeline", timeline_pin_icon()),
+            (timeline_follow_active_editor_context().to_negated(), "timeline.toggleFollowActiveEditorCommand.unfollow", "Unpin Current Timeline", timeline_unpin_icon()),
+        ] {
+            base.register(menu_registry().append_menu_item(
+                &title_menu,
+                AnyMenuItem::Menu(MenuItem {
+                    group: Some("navigation".to_owned()),
+                    order: Some(98.0),
+                    when: Some(when),
+                    ..MenuItem::new(CommandAction {
+                        icon: Some(Icon::Theme(icon)),
+                        category: Some(timeline_category()),
+                        ..CommandAction::new(TOGGLE_FOLLOW_ACTIVE_EDITOR_COMMAND_ID, localized_title(title_key, title_message))
+                    })
+                }),
+            ));
+        }
+
+        let this = Rc::new_cyclic(|weak| Self { base, source_disposables, pane, timeline_service, storage_service, context_key_service, menu_service, weak_self: weak.clone() });
+
+        let weak = this.weak_self.clone();
+        this.base.register(this.timeline_service.on_did_change_providers().listen(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.update_timeline_source_filters();
+            }
+        }));
+        this.update_timeline_source_filters();
+
+        this
+    }
+
+    /// `getItemActions(element, selection)`: `selection` são os itens selecionados quando `element` faz parte de uma seleção
+    /// múltipla.
+    pub fn get_item_actions(&self, element: &TreeElement, selection: Option<&[TimelineItemRef]>) -> Vec<ActionRef> {
+        self.get_actions(&menu_ids::timeline_item_context(), item_context_keys(element, selection)).primary
+    }
+
+    /// `getItemContextActions(element, selection)`.
+    pub fn get_item_context_actions(&self, element: &TreeElement, selection: Option<&[TimelineItemRef]>) -> Vec<ActionRef> {
+        self.get_actions(&menu_ids::timeline_item_context(), item_context_keys(element, selection)).secondary
+    }
+
+    fn get_actions(&self, menu_id: &MenuId, context: Vec<(String, Dynamic)>) -> PrimaryAndSecondaryActions {
+        let pane_id = self.pane.upgrade().map(|pane| pane.id()).expect("o painel vive enquanto os comandos são usados");
+        let mut overlay = vec![("view".to_owned(), Dynamic::string(&pane_id))];
+        overlay.extend(context);
+        let context_key_service = self.context_key_service.create_overlay(overlay);
+
+        let menu = self.menu_service.get_menu_actions(menu_id, &*context_key_service, Some(&MenuActionOptions { should_forward_args: true, ..MenuActionOptions::default() }));
+        get_context_menu_actions(&menu, Some("inline"))
+    }
+
+    fn update_timeline_source_filters(&self) {
+        self.source_disposables.clear();
+
+        let (_, excluded) = read_excluded_sources(self.storage_service.as_ref());
+        let excluded = Rc::new(RefCell::new(excluded));
+        for source in self.timeline_service.get_sources() {
+            self.source_disposables.add(register_action2(Rc::new(ToggleExcludeSourceAction { source, excluded: excluded.clone() })));
+        }
+    }
+}
+
+impl IDisposable for TimelinePaneCommands {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "TimelinePaneCommands"
     }
 }
 
