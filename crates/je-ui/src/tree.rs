@@ -167,10 +167,29 @@ pub enum Content {
     Host(u32),
 }
 
+/// O `color` do CSS de um nó: a cor do texto e dos codicons dele, herdada pelos descendentes que não declaram a
+/// própria. A resolução é [`Tree::resolved_foreground`], que a pintura e a leitura ([`Tree::text_color`]) usam.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Foreground {
+    /// Sem declaração (o padrão): o conteúdo do nó pinta com a cor própria que traz ([`Content::Text`],
+    /// [`Content::Codicon`]). Para um descendente que herda, o nó é transparente: a cor vem do antepassado seguinte.
+    #[default]
+    Content,
+    /// `color: <cor>`.
+    Color(Rgba),
+    /// `color: inherit`: a cor do pai, resolvida do mesmo modo. Sem nenhuma declaração acima, vale a cor própria do conteúdo.
+    Inherit,
+    /// `color: <cor>`, e `color: inherit` quando algum antepassado tem a classe `class` (a regra de descendente
+    /// `.<class> .<nó> { color: inherit }`, como o `.monaco-list:focus .selected .reference-file` do peek).
+    ColorUnlessUnder { color: Rgba, class: &'static str },
+}
+
 /// O estilo resolvido de um nó.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeStyle {
     pub background: Option<Rgba>,
+    /// O `color` do CSS (ver [`Foreground`]).
+    pub foreground: Foreground,
     pub border: Option<Border>,
     pub radius: f64,
     /// `overflow: hidden`: recorta os filhos ao retângulo (com o raio).
@@ -198,7 +217,7 @@ pub struct NodeStyle {
 
 impl Default for NodeStyle {
     fn default() -> Self {
-        Self { background: None, border: None, radius: 0.0, clip: false, visible: true, pointer_events: PointerEvents::Inherit, z_index: 0, cursor: None, opacity: 1.0, content: Content::None, corner_radii: None, border_widths: None }
+        Self { background: None, foreground: Foreground::Content, border: None, radius: 0.0, clip: false, visible: true, pointer_events: PointerEvents::Inherit, z_index: 0, cursor: None, opacity: 1.0, content: Content::None, corner_radii: None, border_widths: None }
     }
 }
 
@@ -636,6 +655,58 @@ impl Tree {
         self.node(id).children.iter().copied().filter(|c| self.has_class(*c, class)).collect()
     }
 
+    /// A cor do `color` do CSS em vigor sobre o nó, ou `None` quando vale a cor própria do conteúdo. O nó declara
+    /// ([`Foreground::Color`]), herda do pai ([`Foreground::Inherit`]) ou não participa ([`Foreground::Content`], que
+    /// só encerra a busca no próprio nó consultado e é transparente nos antepassados).
+    pub fn resolved_foreground(&self, id: NodeId) -> Option<Rgba> {
+        let mut current = id;
+        loop {
+            let node = self.node(current);
+            match node.style.foreground {
+                Foreground::Color(color) => return Some(color),
+                Foreground::ColorUnlessUnder { color, class } if !self.has_ancestor_with_class(current, class) => return Some(color),
+                Foreground::Content if current == id => return None,
+                Foreground::Content | Foreground::Inherit | Foreground::ColorUnlessUnder { .. } => {}
+            }
+            current = node.parent?;
+        }
+    }
+
+    /// A cor com que o texto ou o codicon do nó é pintado: a de [`Tree::resolved_foreground`] ou, sem ela, a do conteúdo.
+    /// `None` num nó sem [`Content::Text`] nem [`Content::Codicon`].
+    pub fn text_color(&self, id: NodeId) -> Option<Rgba> {
+        let (Content::Text { color, .. } | Content::Codicon { color, .. }) = &self.node(id).style.content else { return None };
+        Some(self.resolved_foreground(id).unwrap_or(*color))
+    }
+
+    /// Algum antepassado de `id` (sem contar o próprio nó) tem a classe.
+    fn has_ancestor_with_class(&self, id: NodeId, class: &str) -> bool {
+        let mut current = self.node(id).parent;
+        while let Some(n) = current {
+            if self.has_class(n, class) {
+                return true;
+            }
+            current = self.node(n).parent;
+        }
+        false
+    }
+
+    /// Algum nó entre `id` e `ancestor` (os dois fora da conta) declara uma cor ([`Foreground::Color`] ou
+    /// [`Foreground::ColorUnlessUnder`]): o texto de `id` herda dela, não da cor que `ancestor` dá aos descendentes.
+    pub fn declares_foreground_below(&self, id: NodeId, ancestor: NodeId) -> bool {
+        let mut current = self.node(id).parent;
+        while let Some(n) = current {
+            if n == ancestor {
+                return false;
+            }
+            if matches!(self.node(n).style.foreground, Foreground::Color(_) | Foreground::ColorUnlessUnder { .. }) {
+                return true;
+            }
+            current = self.node(n).parent;
+        }
+        false
+    }
+
     /// O cursor em vigor sobre o nó: o dele ou o do antepassado mais próximo que define um.
     pub fn cursor(&self, id: NodeId) -> Cursor {
         let mut current = Some(id);
@@ -719,15 +790,16 @@ impl Tree {
             Content::None => {}
             Content::Host(surface) => host(*surface, rect, list),
             Content::Text { text, style: text_style, color, line_height } => {
+                let color = self.resolved_foreground(id).unwrap_or(*color);
                 let line = with_text_system(|t| t.line(text, text_style));
                 let top = rect.y0 + half_leading(*line_height, f64::from(line.line_height));
                 if (scale - 1.0).abs() < f64::EPSILON {
-                    line.paint(list, rect.x0 as f32, top as f32, fade(*color, opacity));
+                    line.paint(list, rect.x0 as f32, top as f32, fade(color, opacity));
                 } else {
                     let scaled = TextStyle { size_64: (f64::from(text_style.size_64) * scale).round() as u32, ..text_style.clone() };
                     let line = with_text_system(|t| t.line(text, &scaled));
                     let top = rect.y0 * scale + half_leading(*line_height * scale, f64::from(line.line_height));
-                    line.paint(list, (rect.x0 * scale) as f32, top as f32, fade(*color, opacity));
+                    line.paint(list, (rect.x0 * scale) as f32, top as f32, fade(color, opacity));
                 }
             }
             Content::Paragraph(paragraph) => {
@@ -739,11 +811,12 @@ impl Tree {
                 }
             }
             Content::Codicon { id: icon, size, color } => {
+                let color = self.resolved_foreground(id).unwrap_or(*color);
                 let px = (f64::from(*size) * scale) as f32;
                 if let Some(line) = with_text_system(|t| t.codicon(icon, px)) {
                     let x = device.x0 + (device.width() - f64::from(line.width)) / 2.0;
                     let y = device.y0 + (device.height() - f64::from(line.line_height)) / 2.0;
-                    line.paint(list, x as f32, y as f32, fade(*color, opacity));
+                    line.paint(list, x as f32, y as f32, fade(color, opacity));
                 }
             }
         }

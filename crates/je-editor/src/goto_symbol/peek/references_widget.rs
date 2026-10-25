@@ -30,7 +30,8 @@
 //!   porte sempre traz o `TextModel` (mesma observação de `references_model`), então o ramo e o modelo não existem.
 //! - **A árvore.** `ReferencesTree extends WorkbenchAsyncDataTree` é [`ReferencesTree`], sobre a `AsyncDataTree` do
 //!   `je-widgets` (o `WorkbenchAsyncDataTree` mora no `je-workbench`, que o `je-editor` não alcança). Dele vêm, no que o peek
-//!   usa: o `onDidOpen` (as regras do `ResourceNavigator` com `openOnSingleClick: true`), o registro no `ListService`
+//!   usa: o `onDidOpen` (o [`ResourceNavigator`] do `je-widgets` com `openOnSingleClick: true`, que mora lá justamente para o
+//!   peek o alcançar), o registro no `ListService`
 //!   (o `lastFocusedList` dos atalhos do peek) e as chaves de contexto de lista e de árvore em um serviço escopado
 //!   (`listFocus`, `listSelectionNavigation`, `listHasSelectionOrFocus` e as quatro `treeElement*`; as demais, de rolagem,
 //!   busca e multisseleção, não são lidas pelo peek). `overrideStyles: { listBackground }` é o `style` com as cores de
@@ -70,16 +71,17 @@ use je_platform::list::list_service::{
 use je_platform::opener::opener::with_selection;
 use je_theme::color::Color;
 use je_theme::to_rgba8;
-use je_ui::{Border, Event as UiEvent, EventKind, NodeId, PointerButton, Role, Ui};
+use je_ui::{Border, Event as UiEvent, EventKind, NodeId, Role, Ui};
 use je_widgets::dnd::{DataTransfers, DragEvent, IDragAndDropData};
 use je_widgets::dom::{StandardKeyboardEvent, create_detached_el, create_el, hide, show};
 use je_widgets::list::list_dnd::{ElementsDragAndDropData, IListDragAndDrop, ListViewTargetSector};
 use je_widgets::list::list_styles::IListStyles;
 use je_widgets::list::list_types::IListVirtualDelegate;
+use je_widgets::list::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use je_widgets::splitview::{Orientation, Sizing, SplitView, SplitViewOptions, SplitViewView};
 use je_widgets::tree::async_data_tree::{AsyncDataTree, ObjectBackend};
 use je_widgets::tree::async_data_tree_node::{AsyncDataTreeOptions, IAsyncDataTreeRenderer};
-use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeDragOverResult, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi};
+use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeDragOverResult, TreeNodeApi};
 
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::core_2d::dimension::Dimension;
@@ -363,14 +365,6 @@ impl IListDragAndDrop<TreeElement, TreeDragOverResult> for ReferencesDragAndDrop
 /// A `AsyncDataTree` das referências.
 pub type ReferencesAsyncTree = AsyncDataTree<ReferencesTreeInput, TreeElement, FuzzyScore, ObjectBackend>;
 
-/// `IOpenEvent<TreeElement>`, no que o peek lê: o elemento, `sideBySide` e `editorOptions.pinned`.
-#[derive(Clone)]
-pub struct ReferencesTreeOpenEvent {
-    pub element: TreeElement,
-    pub side_by_side: bool,
-    pub pinned: bool,
-}
-
 /// Os serviços que o `WorkbenchAsyncDataTree` recebe por injeção, no que o peek usa.
 #[derive(Clone)]
 pub struct ReferencesTreeServices {
@@ -445,7 +439,7 @@ impl IListWidget for ReferencesTreeListWidget {
 /// módulo).
 pub struct ReferencesTree {
     tree: Rc<ReferencesAsyncTree>,
-    on_did_open: Rc<Emitter<ReferencesTreeOpenEvent>>,
+    navigator: Rc<ResourceNavigator<TreeElement>>,
     base: Rc<Disposable>,
 }
 
@@ -467,47 +461,19 @@ impl ReferencesTree {
         tree.style(override_styles);
 
         let base = Disposable::new();
-        let on_did_open = Emitter::<ReferencesTreeOpenEvent>::new();
-        base.register(on_did_open.clone());
 
-        // O `ResourceNavigator` com `openOnSingleClick: true`.
-        {
-            let (emitter, weak_tree) = (on_did_open.clone(), Rc::downgrade(&tree));
-            base.register(tree.on_did_change_selection().listen(move |event: &TreeEvent<TreeElement>| {
-                // onSelectionFromKeyboard
-                if !event.browser_event.is_some_and(|browser_event| browser_event.is_keyboard) || event.elements.len() != 1 {
-                    return;
-                }
-                if let Some(tree) = weak_tree.upgrade() {
-                    // preserveFocus: true, pinned: false, sideBySide: false
-                    Self::open(&emitter, tree.get_selection().into_iter().next(), false, false);
-                }
-            }));
-        }
-        {
-            let emitter = on_did_open.clone();
-            base.register(tree.on_pointer().listen(move |event: &TreeMouseEvent<TreeElement>| {
-                // onPointer
-                if event.browser_event.click_count == 2 {
-                    return;
-                }
-                let is_middle_click = event.browser_event.button == PointerButton::Auxiliary;
-                let modifiers = event.browser_event.modifiers;
-                Self::open(&emitter, event.element.clone(), is_middle_click, modifiers.ctrl || modifiers.meta || modifiers.alt);
-            }));
-        }
-        {
-            let emitter = on_did_open.clone();
-            base.register(tree.on_mouse_dbl_click().listen(move |event: &TreeMouseEvent<TreeElement>| {
-                // onMouseDblClick: copied from AbstractTree
-                if event.target == TreeMouseEventTarget::Twistie {
-                    return;
-                }
-                let modifiers = event.browser_event.modifiers;
-                Self::open(&emitter, event.element.clone(), true, modifiers.ctrl || modifiers.meta || modifiers.alt);
-            }));
-        }
-
+        // O `TreeResourceNavigator` com `openOnSingleClick: true` (e sem `configurationService`).
+        let navigator = {
+            let weak_tree = Rc::downgrade(&tree);
+            ResourceNavigator::new(
+                tree.on_did_change_selection(),
+                tree.on_pointer(),
+                tree.on_mouse_dbl_click(),
+                move || weak_tree.upgrade().and_then(|tree| tree.get_selection().into_iter().next()),
+                Some(IResourceNavigatorOptions { configuration_service: None, open_on_single_click: Some(true) }),
+            )
+        };
+        base.register(navigator.clone());
         // O registro no `ListService` do `WorkbenchTreeInternals`.
         let list_widget: Rc<dyn IListWidget> = Rc::new(ReferencesTreeListWidget { ui: ui.clone(), tree: Rc::clone(&tree) });
         base.register(services.list_service.register(list_widget, Vec::new()));
@@ -564,14 +530,7 @@ impl ReferencesTree {
         }
         base.register(context_key_service);
 
-        Rc::new(Self { tree, on_did_open, base })
-    }
-
-    /// `_open(element, preserveFocus = true, pinned, sideBySide)`: nada sem elemento.
-    fn open(emitter: &Emitter<ReferencesTreeOpenEvent>, element: Option<TreeElement>, pinned: bool, side_by_side: bool) {
-        if let Some(element) = element {
-            emitter.fire(ReferencesTreeOpenEvent { element, side_by_side, pinned });
-        }
+        Rc::new(Self { tree, navigator, base })
     }
 
     /// A árvore de dados por baixo (os métodos do `AsyncDataTree` que o `WorkbenchAsyncDataTree` herda).
@@ -580,8 +539,8 @@ impl ReferencesTree {
     }
 
     /// `onDidOpen`.
-    pub fn on_did_open(&self) -> BaseEvent<ReferencesTreeOpenEvent> {
-        self.on_did_open.event()
+    pub fn on_did_open(&self) -> BaseEvent<IOpenEvent<TreeElement>> {
+        self.navigator.on_did_open()
     }
 }
 
@@ -968,7 +927,11 @@ impl PeekViewHooks for ReferenceWidget {
         let mut tree_options = AsyncDataTreeOptions::<TreeElement, FuzzyScore>::default();
         tree_options.keyboard_support = Some(self.default_tree_keyboard_support);
         tree_options.accessibility_provider = Some(Rc::new(AccessibilityProvider));
-        tree_options.keyboard_navigation_label_provider = Some(Rc::new(StringRepresentationProvider));
+        // `this._instantiationService.createInstance(StringRepresentationProvider)`: o provedor de rótulos é também o delegate da
+        // navegação por tipo, com o `@IKeybindingService` (o `WorkbenchAsyncDataTree` injeta o do serviço).
+        let string_representation = Rc::new(StringRepresentationProvider::new(Rc::clone(&services.keybinding_service)));
+        tree_options.keyboard_navigation_delegate = Some(string_representation.clone());
+        tree_options.keyboard_navigation_label_provider = Some(string_representation);
         tree_options.identity_provider = Some(Rc::new(IdentityProvider));
         tree_options.dnd = Some(Rc::new(ReferencesDragAndDrop::new(Rc::clone(&services.label_service))));
         if self.default_tree_keyboard_support {
@@ -1068,13 +1031,13 @@ impl PeekViewHooks for ReferenceWidget {
         });
 
         // listen on selection and focus
-        self.peek.zone().disposables().add(tree.on_did_open().listen(move |event: &ReferencesTreeOpenEvent| {
+        self.peek.zone().disposables().add(tree.on_did_open().listen(move |event: &IOpenEvent<TreeElement>| {
             let Some(this) = weak.upgrade() else {
                 return;
             };
             if event.side_by_side {
                 this.on_tree_event(&event.element, SelectionKind::Side);
-            } else if event.pinned {
+            } else if event.editor_options.pinned == Some(true) {
                 this.on_tree_event(&event.element, SelectionKind::Goto);
             } else {
                 this.on_tree_event(&event.element, SelectionKind::Show);

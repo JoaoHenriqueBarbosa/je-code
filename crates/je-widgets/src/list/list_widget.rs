@@ -13,10 +13,15 @@
 //! - O `DefaultStyleController` gera CSS de texto e não existe: [`List::style`] guarda os [`IListStyles`] e
 //!   pinta as linhas (fundo, texto, outline de foco, raio) com a cascata de [`IListStyles::row_paint`], a cada
 //!   mudança de `focused`/`selected`, de hover (`PointerEnter`/`PointerLeave` na linha) e de foco da lista.
-//!   TypeNavigationController (digitar para achar) fica de fora (`// TODO(integração)` quando o `je-ui` tiver
-//!   entrada de texto). A arrastar e soltar (`dnd`) é a do original: o `ListViewDragAndDrop` entrega os elementos
+//!   TypeNavigationController (digitar para achar) é o [`TypeNavigationController`], criado quando há
+//!   `keyboardNavigationLabelProvider`. A arrastar e soltar (`dnd`) é a do original: o `ListViewDragAndDrop` entrega os elementos
 //!   da seleção à [`ListView`], e as linhas com `drop-target*` são pintadas por [`List::paint_row`] (fundo de soltar
 //!   e a linha de 1 px entre linhas).
+//! - **A cor do texto.** O `color` do CSS herda; o `je-ui` o modela em [`Foreground`]. A lista dá à linha a cor dela
+//!   (`Foreground::Color`) e ao `.monaco-list` a cor do tema ([`List::style`]); o texto que herda a cor a toma pela
+//!   resolução do `je-ui`. Os renderers que ainda fixam a cor no texto (`Foreground::Content`) recebem a cor da linha
+//!   copiada em cada nó, com a exceção do texto sob um nó que declara a própria cor. A classe [`ACTIVE_SELECTION_CLASS`]
+//!   na linha é o `.monaco-list:focus .selected` das regras de descendente.
 //! - `aria-*` não existem no `je-ui` (só `role` e `label`); o `getActiveDescendantId` fica por [`List::get_element_id`]. O
 //!   `accessibilityProvider` ([`IListAccessibilityProvider`]) dá o papel e o rótulo da lista e de cada linha.
 
@@ -29,16 +34,24 @@ use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{Disposable, IDisposable, to_disposable};
 use je_base::runtime;
 use je_render::Rgba;
-use je_ui::{Border, Content, EventKind, KeyData, NodeId, PointerButton, Role, Ui};
+use je_ui::{Border, Content, EventKind, Foreground, KeyData, NodeId, PointerButton, Role, Ui};
 
 use crate::common::{registered_emitter, throw};
 use crate::dnd::{DragEvent, IDragAndDropData};
 use crate::drag_image::DragImageStyle;
 use crate::sash::is_macintosh;
 use crate::list::list_dnd::{IListDragAndDrop, IListViewDragAndDrop, ListDragOverEffectPosition, ListDragOverResult, ListViewTargetSector};
-use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IListAccessibilityProvider, IListRenderer, IListVirtualDelegate, ListEvent, ListMouseEvent, list_error};
+use crate::list::list_types::{
+    BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IKeyboardNavigationDelegate, IKeyboardNavigationEventFilter, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListRenderer,
+    IListVirtualDelegate, ListEvent, ListMouseEvent, list_error,
+};
 use crate::list::list_styles::{IListStyles, RowState};
 use crate::list::list_view::{ListView, ListViewOptions};
+use crate::list::type_navigation::{DefaultKeyboardNavigationDelegate, TypeNavigationController, TypeNavigationMode};
+
+/// A classe da linha selecionada de uma lista com foco (`.monaco-list:focus .selected`), que a lista mantém em [`List::paint_row`]
+/// para as regras de descendente (`Foreground::ColorUnlessUnder`).
+pub const ACTIVE_SELECTION_CLASS: &str = "active-selection";
 
 /// A largura da borda de cima: a linha do `.drop-target-before::before`.
 const DROP_LINE_BEFORE: [f64; 4] = [1.0, 0.0, 0.0, 0.0];
@@ -251,7 +264,7 @@ pub trait ListOverrides<T: Clone + 'static> {
     }
 }
 
-/// `IListOptions<T>` (os campos que a lista usa; os de tipo-para-navegar e estilo não existem).
+/// `IListOptions<T>` (os campos que a lista usa; os de estilo não existem).
 #[derive(Clone)]
 pub struct ListOptions<T> {
     pub view: ListViewOptions,
@@ -264,11 +277,34 @@ pub struct ListOptions<T> {
     pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<T>>>,
     /// `dnd`: "Once passed to a list, that list takes up the responsibility of disposing it".
     pub dnd: Option<Rc<dyn IListDragAndDrop<T>>>,
+    /// `keyboardNavigationLabelProvider`: com ele a lista navega digitando (ver [`TypeNavigationController`]).
+    pub keyboard_navigation_label_provider: Option<Rc<dyn IKeyboardNavigationLabelProvider<T>>>,
+    /// `keyboardNavigationDelegate`; sem ele vale o [`DefaultKeyboardNavigationDelegate`].
+    pub keyboard_navigation_delegate: Option<Rc<dyn IKeyboardNavigationDelegate>>,
+    /// `keyboardNavigationEventFilter`; sem ele toda tecla pode começar a navegação.
+    pub keyboard_navigation_event_filter: Option<IKeyboardNavigationEventFilter>,
+    /// `typeNavigationEnabled`: ligado casa também por trechos difusos; ausente, só por prefixo.
+    pub type_navigation_enabled: Option<bool>,
+    /// `typeNavigationMode` (padrão: automático).
+    pub type_navigation_mode: Option<TypeNavigationMode>,
 }
 
 impl<T> Default for ListOptions<T> {
     fn default() -> Self {
-        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None, overrides: None, accessibility_provider: None, dnd: None }
+        Self {
+            view: ListViewOptions::default(),
+            identity_provider: None,
+            multiple_selection_support: None,
+            keyboard_support: None,
+            overrides: None,
+            accessibility_provider: None,
+            dnd: None,
+            keyboard_navigation_label_provider: None,
+            keyboard_navigation_delegate: None,
+            keyboard_navigation_event_filter: None,
+            type_navigation_enabled: None,
+            type_navigation_mode: None,
+        }
     }
 }
 
@@ -297,6 +333,8 @@ pub struct List<T: Clone + 'static> {
     hovered: RefCell<HashSet<NodeId>>,
     /// Os nós de texto e de codicon que a cor da linha tomou: (cor original, cor aplicada).
     overridden_colors: RefCell<HashMap<NodeId, (Rgba, Rgba)>>,
+    /// O `typeNavigationController`, quando há `keyboardNavigationLabelProvider`.
+    type_navigation: RefCell<Option<Rc<TypeNavigationController<T>>>>,
 }
 
 /// `ListViewDragAndDrop<T>`: o `IListDragAndDrop` do usuário como o `IListViewDragAndDrop` da `ListView`, com os
@@ -422,6 +460,7 @@ impl<T: Clone + 'static> List<T> {
             list_focused: Cell::new(false),
             hovered: RefCell::new(HashSet::new()),
             overridden_colors: RefCell::new(HashMap::new()),
+            type_navigation: RefCell::new(None),
         });
         for renderer in &wrapped {
             *renderer.list.borrow_mut() = Rc::downgrade(&this);
@@ -487,6 +526,22 @@ impl<T: Clone + 'static> List<T> {
         if options.keyboard_support.unwrap_or(true) {
             this.install_keyboard_controller();
         }
+        if let Some(provider) = &options.keyboard_navigation_label_provider {
+            let delegate = options.keyboard_navigation_delegate.clone().unwrap_or_else(|| Rc::new(DefaultKeyboardNavigationDelegate) as Rc<dyn IKeyboardNavigationDelegate>);
+            let event_filter = options.keyboard_navigation_event_filter.clone().unwrap_or_else(|| Rc::new(|_: &KeyData| true) as IKeyboardNavigationEventFilter);
+            let controller = TypeNavigationController::new(
+                this.weak_self.clone(),
+                ui,
+                this.view.dom_node,
+                provider.clone(),
+                event_filter,
+                delegate,
+                options.type_navigation_enabled,
+                options.type_navigation_mode,
+            );
+            base.register(controller.clone());
+            *this.type_navigation.borrow_mut() = Some(controller);
+        }
         this.install_mouse_controller();
         for kind in [EventKind::Focus, EventKind::Blur] {
             let weak = this.weak_self.clone();
@@ -517,6 +572,9 @@ impl<T: Clone + 'static> List<T> {
     /// `style(styles)` do `DefaultStyleController`: guarda os estilos e repinta as linhas renderizadas.
     pub fn style(&self, styles: &IListStyles) {
         *self.styles.borrow_mut() = Some(styles.clone());
+        // O `color` do `.monaco-list` (o `--vscode-foreground` do workbench, o `.ref-tree { color }` do peek): o texto das
+        // linhas que herda a cor (`Foreground::Inherit`) a lê daqui quando a linha não declara a própria.
+        self.ui.tree_mut().style_mut(self.view.dom_node).foreground = styles.foreground.map_or(Foreground::Content, Foreground::Color);
         self.view.set_drag_image_style(DragImageStyle {
             background: styles.list_active_selection_background,
             foreground: styles.list_active_selection_foreground,
@@ -599,8 +657,14 @@ impl<T: Clone + 'static> List<T> {
             }
         });
 
+        // `.monaco-list:focus .selected`: a classe que as regras de descendente das linhas (`Foreground::ColorUnlessUnder`,
+        // como o `.reference-file` do peek) leem, já que o `:focus` da lista não é um antepassado no `je-ui`.
+        tree.toggle_class(row, ACTIVE_SELECTION_CLASS, state.list_focused && state.selected);
+
         let row_style = tree.style_mut(row);
         row_style.background = paint.background;
+        // A cor da linha é o `color` do CSS dela: o texto que herda a cor (`Foreground::Inherit`) a toma.
+        row_style.foreground = paint.foreground.map_or(Foreground::Content, Foreground::Color);
         match drop_line {
             Some((color, widths)) => {
                 row_style.border = Some(Border { width: 1.0, color });
@@ -620,6 +684,11 @@ impl<T: Clone + 'static> List<T> {
             // Um `Role::Image` com texto é um glifo com cor própria (o `::before` do ícone de arquivo, que o CSS
             // pinta com `color` explícito e por isso não herda a cor da linha).
             if tree.role(node) == Role::Image {
+                continue;
+            }
+            // O texto que herda a cor (`Foreground::Inherit`) ou que está sob um nó que declara a própria (o `.reference-file`,
+            // o `.monaco-count-badge`) já tem a cor certa pela resolução do `color`: a da linha não o alcança, como no CSS.
+            if tree.style(node).foreground != Foreground::Content || tree.declares_foreground_below(node, row) {
                 continue;
             }
             let (color, target) = match &mut tree.style_mut(node).content {
@@ -693,6 +762,22 @@ impl<T: Clone + 'static> List<T> {
 
     pub fn options(&self) -> &ListOptions<T> {
         &self.options
+    }
+
+    /// `triggerTypeNavigation()`: no modo [`TypeNavigationMode::Trigger`], liga (ou desliga) a navegação por tipo para a
+    /// próxima palavra.
+    pub fn trigger_type_navigation(&self) {
+        if let Some(controller) = &*self.type_navigation.borrow() {
+            controller.trigger();
+        }
+    }
+
+    /// O trecho do `updateOptions` que o `TypeNavigationController` lê (`typeNavigationEnabled` e `typeNavigationMode`); o
+    /// que está ausente fica como estava.
+    pub fn update_type_navigation_options(&self, type_navigation_enabled: Option<bool>, type_navigation_mode: Option<TypeNavigationMode>) {
+        if let Some(controller) = &*self.type_navigation.borrow() {
+            controller.update_options(type_navigation_enabled, type_navigation_mode);
+        }
     }
 
     /// `splice(start, deleteCount, elements)`.

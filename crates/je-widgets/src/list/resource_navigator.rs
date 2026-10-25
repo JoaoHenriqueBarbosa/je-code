@@ -1,6 +1,10 @@
 //! Porte do `ResourceNavigator` e do `TreeResourceNavigator` de `src/vs/platform/list/browser/listService.ts` (e do
-//! `IOpenEvent` e do `IResourceNavigatorOptions`): o que dá o `onDidOpen` às árvores do workbench (a seleção por teclado,
-//! o clique simples, o duplo clique), sem a árvore, o contexto e os estilos do `WorkbenchTreeInternals`.
+//! `IOpenEvent` e do `IResourceNavigatorOptions`): o que dá o `onDidOpen` às árvores do workbench e do peek (a seleção por
+//! teclado, o clique simples, o duplo clique), sem a árvore, o contexto e os estilos do `WorkbenchTreeInternals`.
+//!
+//! Mora no `je-widgets`, e não no `je-workbench`, porque só depende da lista e da árvore daqui, da configuração e das opções de
+//! editor do `je-platform` e do `je-ui`; o `je-editor` (o peek de referências, que usa `openOnSingleClick: true`) não alcança o
+//! `je-workbench`.
 //!
 //! Notas de tradução:
 //! - **A origem dos eventos.** O original lê `widget.onDidChangeSelection`, `onPointer` e `onMouseDblClick` e o
@@ -21,8 +25,9 @@ use je_base::lifecycle::{Disposable, IDisposable};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::opener::editor_types::EditorOptions;
 use je_ui::PointerButton;
-use je_widgets::list::list_types::BrowserEvent;
-use je_widgets::tree::tree_types::{TreeEvent, TreeMouseEvent, TreeMouseEventTarget};
+
+use crate::list::list_types::BrowserEvent;
+use crate::tree::tree_types::{TreeEvent, TreeMouseEvent, TreeMouseEventTarget};
 
 /// `openModeSettingKey`.
 pub const OPEN_MODE_SETTING_KEY: &str = "workbench.list.openMode";

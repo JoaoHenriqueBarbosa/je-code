@@ -8,5 +8,7 @@ pub mod list_types;
 pub mod list_view;
 pub mod list_widget;
 pub mod range_map;
+pub mod resource_navigator;
 pub mod row_cache;
 pub mod splice;
+pub mod type_navigation;

@@ -44,7 +44,7 @@ use je_ui::{NodeId, Role, Ui};
 
 use crate::dnd::{DragEvent, IDragAndDropData};
 use crate::list::list_dnd::{ElementsDragAndDropData, IListDragAndDrop, ListViewTargetSector};
-use crate::list::list_types::{GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListVirtualDelegate, TemplateData};
+use crate::list::list_types::{GroupId, IIdentityProvider, IKeyboardNavigationDelegate, IKeyboardNavigationEventFilter, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListVirtualDelegate, TemplateData};
 use crate::list::list_view::ListViewOptions;
 use crate::tree::abstract_tree::{AbstractTreeOptions, AbstractTreeOptionsUpdate, ExpandOnlyOnTwistieClick};
 use crate::tree::sticky_scroll::StickyScrollNodeSourceRange;
@@ -426,6 +426,10 @@ pub struct AsyncDataTreeOptions<T, F = ()> {
     pub view: ListViewOptions,
     pub identity_provider: Option<Rc<dyn IIdentityProvider<T>>>,
     pub keyboard_navigation_label_provider: Option<Rc<dyn IKeyboardNavigationLabelProvider<T>>>,
+    /// `keyboardNavigationDelegate`.
+    pub keyboard_navigation_delegate: Option<Rc<dyn IKeyboardNavigationDelegate>>,
+    /// `keyboardNavigationEventFilter`.
+    pub keyboard_navigation_event_filter: Option<IKeyboardNavigationEventFilter>,
     pub keyboard_support: Option<bool>,
     pub collapse_by_default: Option<CollapseByDefault<T>>,
     pub allow_non_collapsible_parents: bool,
@@ -449,6 +453,8 @@ impl<T, F> Default for AsyncDataTreeOptions<T, F> {
             view: ListViewOptions::default(),
             identity_provider: None,
             keyboard_navigation_label_provider: None,
+            keyboard_navigation_delegate: None,
+            keyboard_navigation_event_filter: None,
             keyboard_support: None,
             collapse_by_default: None,
             allow_non_collapsible_parents: false,
@@ -597,6 +603,8 @@ fn update_as_node_options<TInput: Clone + 'static, T: Clone + 'static>(update: &
         enable_sticky_scroll: update.enable_sticky_scroll,
         sticky_scroll_max_item_count: update.sticky_scroll_max_item_count,
         sticky_scroll_max_node_height: update.sticky_scroll_max_node_height,
+        type_navigation_enabled: update.type_navigation_enabled,
+        type_navigation_mode: update.type_navigation_mode,
     }
 }
 
@@ -701,6 +709,8 @@ where
         view: options.view.clone(),
         identity_provider: options.identity_provider.clone().map(|provider| Rc::new(NodeIdentityProvider(provider)) as Rc<dyn IIdentityProvider<M::Element>>),
         keyboard_navigation_label_provider: options.keyboard_navigation_label_provider.clone().map(|provider| Rc::new(NodeLabelProvider(provider)) as Rc<dyn IKeyboardNavigationLabelProvider<M::Element>>),
+        keyboard_navigation_delegate: options.keyboard_navigation_delegate.clone(),
+        keyboard_navigation_event_filter: options.keyboard_navigation_event_filter.clone(),
         keyboard_support: options.keyboard_support,
         collapse_by_default: true,
         allow_non_collapsible_parents: options.allow_non_collapsible_parents,

@@ -651,12 +651,14 @@ fn icon_label_styles() -> IconLabelStyles {
         text: HighlightedLabelStyles {
             foreground: Rgba::opaque(0xcc, 0xcc, 0xcc),
             highlight_foreground: None,
+            highlight_background: None,
             highlight_weight: 400,
             font_size: 13.0,
             font_weight: 400,
             line_height: None,
             italic: false,
             strikethrough: false,
+            inherit_foreground: false,
         },
         disabled_foreground: None,
     }

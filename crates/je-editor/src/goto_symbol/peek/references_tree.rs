@@ -16,12 +16,22 @@
 //!   `.referenceMatch`, a seleção de uma lista com foco e o negrito do contraste alto) viram [`ReferencesTreeStyles`],
 //!   calculado de um tema por [`references_tree_styles`] e relido a cada renderização: o `IColorTheme` do editor é um
 //!   trait e os `default*Styles` do `je-widgets` pedem o `ColorTheme` concreto, então o mapeamento de cores da lista
-//!   (`defaultListStyles`) é refeito aqui com o fundo e a seleção do peek por cima. O rótulo de uma linha selecionada
-//!   mantém a cor do arquivo (o `color: inherit` de `.monaco-list:focus .selected .reference-file` herda a cor da
-//!   linha, que o rótulo não lê) e o realce de `.referenceMatch .highlight` pinta só o texto (o `HighlightedLabel` não
-//!   tem fundo de realce).
-//! - `StringRepresentationProvider.mightProducePrintableCharacter` e o `@IKeybindingService` dele não existem: o
-//!   `IKeyboardNavigationLabelProvider` do `je-widgets` só tem `getKeyboardNavigationLabel`.
+//!   (`defaultListStyles`) é refeito aqui com o fundo e a seleção do peek por cima.
+//! - **Cor herdada.** O `color` do CSS herda, e o `je-ui` o modela em `Foreground`: o texto de uma referência não fixa cor
+//!   (`HighlightedLabelStyles::inherit_foreground`) e toma a da linha (`peekViewResult.selectionForeground` na linha
+//!   selecionada de uma lista com foco) ou a do `.ref-tree` (`peekViewResult.lineForeground`, a cor da lista). O
+//!   `.reference-file` declara `peekViewResult.fileForeground` e, em `.monaco-list:focus .selected .reference-file { color:
+//!   inherit !important }`, herda a da linha: é o `Foreground::ColorUnlessUnder` com a classe que a lista põe na linha
+//!   (`ACTIVE_SELECTION_CLASS`). Dentro dele o nome, a descrição e o ícone herdam, e o contador (`.count`) mantém a cor do
+//!   próprio badge.
+//! - **Realce.** `.referenceMatch .highlight { color: peekViewResult.fileForeground; background-color:
+//!   peekViewResult.matchHighlightBackground }` é `HighlightedLabelStyles::highlight_foreground` e `highlight_background`. O
+//!   contorno pontilhado do realce no contraste alto (`border: 1px dotted contrastActiveBorder`) fica de fora: o `je-ui`
+//!   não tem traço pontilhado.
+//! - `StringRepresentationProvider` recebe o `@IKeybindingService` e implementa o `IKeyboardNavigationDelegate` do
+//!   `je-widgets` com o `mightProducePrintableCharacter` dele (no original o método é declarado no provedor e o
+//!   `WorkbenchAsyncDataTree` injeta o do serviço; aqui o peek entrega o provedor como `keyboard_navigation_delegate` da
+//!   árvore). O `IKeyboardNavigationLabelProvider` só tem `getKeyboardNavigationLabel`, como no original.
 //! - `AccessibilityProvider` é o `IListAccessibilityProvider` do `je-widgets` e entra em
 //!   `AsyncDataTreeOptions::accessibility_provider` (o papel `tree`/`treeitem` e o rótulo `aria-label` que ele dá).
 //! - `DataSource.getChildren` de um `FileReferences` é o `resolve` do modelo (uma [`Promise`]); `throw new Error('bad
@@ -41,17 +51,19 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_theme::ThemeType;
 use je_theme::to_rgba8;
-use je_ui::{NodeId, Role, Ui};
+use je_ui::{Foreground, KeyData, NodeId, Role, Ui};
 use je_widgets::count_badge::{CountBadge, ICountBadgeOptions, ICountBadgeStyles};
 use je_widgets::dom::create_el;
 use je_widgets::highlighted_label::{HighlightedLabel, HighlightedLabelStyles, IHighlight};
 use je_widgets::icon_label::{IIconLabelCreationOptions, IIconLabelValueOptions, IconLabel, IconLabelStyles, IconLabelText, IconLabelTitle};
 use je_widgets::list::list_styles::{IListStyles, LIST_FALLBACK_FOREGROUND};
-use je_widgets::list::list_types::{IIdentityProvider, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListVirtualDelegate, TemplateData};
+use je_widgets::list::list_types::{IIdentityProvider, IKeyboardNavigationDelegate, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListVirtualDelegate, TemplateData};
+use je_widgets::list::list_widget::ACTIVE_SELECTION_CLASS;
 use je_widgets::text::UI_FONT_SIZE;
 use je_widgets::tree::async_data_tree_node::{AsyncDataTreeNodeWrapper, IAsyncDataTreeRenderer};
 use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeElementRenderDetails, TreeNodeApi};
 
+use je_platform::keybinding::{IKeybindingService, KeyboardEvent};
 use je_platform::label::label::{ILabelService, UriLabelOptions};
 
 use crate::editor_extensions::ITextModelService;
@@ -209,7 +221,31 @@ impl IListVirtualDelegate<TreeElement> for Delegate {
 const ROW_HEIGHT: f64 = 23.0;
 
 /// `StringRepresentationProvider`.
-pub struct StringRepresentationProvider;
+pub struct StringRepresentationProvider {
+    /// `@IKeybindingService private readonly _keybindingService`.
+    keybinding_service: Rc<dyn IKeybindingService>,
+}
+
+impl StringRepresentationProvider {
+    pub fn new(keybinding_service: Rc<dyn IKeybindingService>) -> Self {
+        Self { keybinding_service }
+    }
+}
+
+impl IKeyboardNavigationDelegate for StringRepresentationProvider {
+    /// `mightProducePrintableCharacter(event)`: a do `IKeybindingService`, sobre o `IKeyboardEvent` da tecla.
+    fn might_produce_printable_character(&self, event: &KeyData) -> bool {
+        self.keybinding_service.might_produce_printable_character(&KeyboardEvent {
+            ctrl_key: event.modifiers.ctrl,
+            shift_key: event.modifiers.shift,
+            alt_key: event.modifiers.alt,
+            meta_key: event.modifiers.meta,
+            alt_graph_key: false,
+            key_code: event.key_code,
+            code: None,
+        })
+    }
+}
 
 impl IKeyboardNavigationLabelProvider<TreeElement> for StringRepresentationProvider {
     fn get_keyboard_navigation_label(&self, element: &TreeElement) -> Vec<Option<String>> {
@@ -258,6 +294,9 @@ pub struct ReferencesTreeStyles {
     pub list: IListStyles,
     /// `.reference-file`: o rótulo do arquivo.
     pub file: IconLabelStyles,
+    /// O `color` do `.reference-file`: `peekViewResult.fileForeground`, e `inherit` na linha selecionada de uma lista com foco
+    /// (sem a cor no tema, sempre `inherit`).
+    pub file_container: Foreground,
     /// `defaultCountBadgeStyles`.
     pub badge: ICountBadgeStyles,
     /// `.ref-tree`: o texto de uma referência, com o realce de busca da lista.
@@ -318,18 +357,21 @@ pub fn references_tree_styles(theme: &dyn IColorTheme) -> ReferencesTreeStyles {
     };
 
     let highlight_foreground = color("list.highlightForeground");
+    // `.ref-tree { color: lineForeground }`: o texto não fixa cor e herda a da linha ou a da lista (`foreground` abaixo).
     let reference = HighlightedLabelStyles {
         foreground: line_foreground.unwrap_or(fallback_foreground),
         highlight_foreground,
+        highlight_background: None,
         highlight_weight: 400,
         font_size: UI_FONT_SIZE,
         font_weight: 400,
         line_height: Some(ROW_HEIGHT),
         italic: false,
         strikethrough: false,
+        inherit_foreground: true,
     };
-    // `.referenceMatch .highlight { color: peekViewResult.fileForeground }`
-    let reference_match = HighlightedLabelStyles { highlight_foreground: file_foreground, ..reference };
+    // `.referenceMatch .highlight { color: peekViewResult.fileForeground; background-color: peekViewResult.matchHighlightBackground }`
+    let reference_match = HighlightedLabelStyles { highlight_foreground: file_foreground, highlight_background: color(PEEK_VIEW_RESULTS_MATCH_HIGHLIGHT), ..reference };
     // `.reference-file { color: peekViewResult.fileForeground }` e, no contraste alto, `font-weight: bold`
     let file = IconLabelStyles {
         text: HighlightedLabelStyles {
@@ -339,9 +381,10 @@ pub fn references_tree_styles(theme: &dyn IColorTheme) -> ReferencesTreeStyles {
         },
         disabled_foreground: color("disabledForeground"),
     };
+    let file_container = file_foreground.map_or(Foreground::Inherit, |color| Foreground::ColorUnlessUnder { color, class: ACTIVE_SELECTION_CLASS });
     let badge = ICountBadgeStyles { badge_background: color("badge.background"), badge_foreground: color("badge.foreground"), badge_border: color("contrastBorder") };
 
-    ReferencesTreeStyles { list, file, badge, reference, reference_match }
+    ReferencesTreeStyles { list, file, file_container, badge, reference, reference_match }
 }
 
 // #endregion
@@ -379,14 +422,17 @@ impl FileReferencesTemplate {
     fn new(services: &ReferencesTreeRendererServices, container: NodeId) -> Self {
         let styles = services.styles();
         let parent = create_el(&mut services.ui.tree_mut(), container, Role::Generic, "reference-file");
+        services.ui.tree_mut().style_mut(parent).foreground = styles.file_container;
         let file = IconLabel::new(&services.ui, parent, Some(IIconLabelCreationOptions { support_highlights: true, ..IIconLabelCreationOptions::default() }), styles.file);
         let count = create_el(&mut services.ui.tree_mut(), parent, Role::Generic, "count");
         let badge = CountBadge::new(&services.ui, count, &ICountBadgeOptions::default(), styles.badge);
         Self { services: services.clone(), container: parent, count, file, badge }
     }
 
-    /// `set(element, matches)`.
-    fn set(&self, element: &FileReferences, matches: Vec<Match>) {
+    /// `set(element, matches)`; `styles` são as cores do tema de agora.
+    fn set(&self, element: &FileReferences, matches: Vec<Match>, styles: &ReferencesTreeStyles) {
+        self.file.set_styles(styles.file);
+        self.services.ui.tree_mut().style_mut(self.container).foreground = styles.file_container;
         let label_service = &self.services.label_service;
         let parent = ext_uri().dirname(&element.uri);
         let parent_label = label_service.get_uri_label(&parent, &UriLabelOptions { relative: Some(true), ..UriLabelOptions::default() });
@@ -472,7 +518,7 @@ impl IAsyncDataTreeRenderer<ReferencesTreeInput, TreeElement, FuzzyScore> for Fi
         let (Some(template), InputOrElement::Element(TreeElement::File(file))) = (template_data.downcast_ref::<FileReferencesTemplate>(), node.element()) else {
             return;
         };
-        template.set(&file, create_matches(node.filter_data().as_deref()));
+        template.set(&file, create_matches(node.filter_data().as_deref()), &self.services.styles());
     }
 
     fn dispose_template(&self, template_data: &TemplateData) {

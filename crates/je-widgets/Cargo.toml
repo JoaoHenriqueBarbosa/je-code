@@ -9,6 +9,9 @@ description = "Porte de vs/base/browser/ui do VS Code: widgets nativos em cima d
 [dependencies]
 je-base = { path = "../je-base" }
 je-codicons = { path = "../je-codicons" }
+# O `ResourceNavigator` (`platform/list/browser/listService.ts`) lê a configuração `workbench.list.openMode` e usa as
+# `EditorOptions` do `je-platform`, que não depende do `je-widgets`.
+je-platform = { path = "../je-platform" }
 je-render = { path = "../je-render" }
 je-text = { path = "../je-text" }
 je-theme = { path = "../je-theme" }
@@ -19,6 +22,3 @@ workspace = true
 
 [dev-dependencies]
 png = "0.18"
-# O `actionbar.test.ts` confere o `quickInputButtonToAction` do `je-platform` (dependência de desenvolvimento: o
-# `je-platform` depende do `je-widgets`, e ciclo só por dev-dependency é permitido).
-je-platform = { path = "../je-platform" }
