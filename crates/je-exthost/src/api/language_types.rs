@@ -244,7 +244,7 @@ pub fn completion_result_from_js(value: &JsData) -> Result<Option<ApiCompletionR
     }
 }
 
-fn marked_string_from_js(value: &JsData) -> Result<MarkedString, Error> {
+pub(crate) fn marked_string_from_js(value: &JsData) -> Result<MarkedString, Error> {
     match value {
         JsData::Str(text) => Ok(MarkedString::Text(text.clone())),
         JsData::Object(_) => match (opt_string(field(value, "language")), opt_string(field(value, "value"))) {
