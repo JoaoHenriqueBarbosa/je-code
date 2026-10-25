@@ -18,3 +18,8 @@ pub mod search_ext_conversion_types;
 pub mod text_search_manager;
 
 pub mod file_walker;
+
+pub mod raw_search_service;
+pub mod ripgrep_disk_path;
+pub mod ripgrep_search_provider;
+pub mod text_search_adapter;
