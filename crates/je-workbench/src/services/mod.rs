@@ -92,3 +92,6 @@ pub mod commands;
 pub mod storage;
 
 pub mod themes;
+
+// Diálogos do workbench (`dialogs/browser/simpleFileDialog.ts`).
+pub mod dialogs;
