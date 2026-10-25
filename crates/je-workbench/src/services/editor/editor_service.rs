@@ -68,6 +68,23 @@ pub trait IActiveCodeEditor {
     /// `hasWidgetFocus()`.
     fn has_widget_focus(&self) -> bool;
 
+    /// `hasTextFocus()`: o texto do editor (não um widget dele) tem o foco. Tem implementação padrão (lança o erro do dublê)
+    /// para não quebrar quem implementa só o recorte acima.
+    fn has_text_focus(&self) -> bool {
+        not_implemented()
+    }
+
+    /// `focus()`: move o foco do teclado para o editor. Mesma observação de [`IActiveCodeEditor::has_text_focus`].
+    fn focus(&self) {
+        not_implemented()
+    }
+
+    /// `getModel()?.uri`: o recurso do modelo, ou `None` quando o editor não tem modelo. Mesma observação de
+    /// [`IActiveCodeEditor::has_text_focus`].
+    fn get_model_uri(&self) -> Option<URI> {
+        not_implemented()
+    }
+
     /// `getModel()?.getLanguageId()`: `None` quando o editor não tem modelo. Tem implementação padrão (sem modelo) para
     /// não quebrar quem implementa só o recorte acima.
     fn get_language_id(&self) -> Option<String> {

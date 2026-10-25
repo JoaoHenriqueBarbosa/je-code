@@ -21,3 +21,7 @@ pub mod modal_editor_part;
 pub mod text_editor;
 
 pub mod multi_row_editor_tabs_control;
+
+pub mod diff_editor_commands_service;
+pub mod editor_commands_context;
+pub mod text_diff_editor;
