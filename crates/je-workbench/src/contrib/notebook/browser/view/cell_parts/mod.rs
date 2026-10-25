@@ -11,8 +11,8 @@
 //! `cellComments.ts`, `cellDragRenderer.ts`, `codeCellExecutionIcon.ts` e `markupCell.ts` (`MarkupCell`, com os contratos estreitos do
 //! editor da célula, da fábrica do editor e do `IActiveNotebookEditorDelegate`, e o `MarkdownCellRenderTemplate`).
 //!
-//! Faltam, nesta ordem: `codeCell.ts` (a classe `CodeCell`, além do `CodeCellLayout`; fatia 4b, que reaproveita
-//! `in_composite_editor` e os contratos do editor de `markup_cell.rs`); depois o `cellRenderer.ts` (que monta os templates e fornece as
+//! Faltam, nesta ordem: a parte 2 de `codeCell.ts` (`code_cell.rs` tem a parte 1 da classe `CodeCell`, e o contrato da parte 2 está no
+//! `//!` dele); depois o `cellRenderer.ts` (que monta os templates e fornece as
 //! implementações dos contratos estreitos abaixo, inclusive o `IMarkupCellEditorFactory`, o `IMarkupCellEditorHost` e o
 //! `IRenderedEditors`) e os 5 casos de `cellEditorOverflowWidgets.test.ts` (fatia 5).
 //!
@@ -85,6 +85,7 @@ pub mod cell_status_part;
 pub mod cell_toolbar_sticky_scroll;
 pub mod cell_toolbars;
 pub mod cell_widgets;
+pub mod code_cell;
 pub mod code_cell_execution_icon;
 pub mod code_cell_layout;
 pub mod code_cell_run_toolbar;
