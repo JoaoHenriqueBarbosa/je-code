@@ -36,7 +36,7 @@ use je_platform::files::i_file_service::IFileService;
 use je_platform::resources::uri_file;
 use je_platform::workspace::{IWorkspaceContextService, test_workspace};
 use je_platform::workspaces::{
-    EnterWorkspaceResultCell, IWorkspacesService, Recent, RecentlyOpenedCell, WorkspaceFolderCreationData, WorkspaceIdentifier, WorkspaceIdentifierCell,
+    EnterWorkspaceResultCell, IWorkspacesService, Recent, RecentlyOpenedCell, WorkspaceFolderCreationData, WorkspaceIdentifierCell,
 };
 use je_platform::backup::BackupInfo;
 use je_workbench::contrib::workspaces::recent_remote_folder_pruner::prune_recent_remote_folder_if_missing;
@@ -156,7 +156,7 @@ impl IWorkspacesService for RecordingWorkspacesService {
         Self::not_mocked("createUntitledWorkspace")
     }
 
-    fn delete_untitled_workspace(&self, _workspace: &WorkspaceIdentifier) -> Promise<()> {
+    fn delete_untitled_workspace(&self, _workspace: &WorkspaceIdentifierCell) -> Promise<()> {
         Self::not_mocked("deleteUntitledWorkspace")
     }
 
