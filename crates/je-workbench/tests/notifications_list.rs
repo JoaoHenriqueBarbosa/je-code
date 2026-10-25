@@ -467,7 +467,8 @@ impl IWorkbenchLayoutService for TestLayoutService {
 fn renderer_services(guard: &LeakGuard, ui: &Ui, opener: Rc<dyn IOpenerService>) -> NotificationRendererServices {
     let storage = guard.add_rc(InMemoryStorageService::new());
     let storage_service: Rc<dyn StorageService> = Rc::new(storage);
-    let notification_service: Rc<dyn INotificationService> = guard.add_rc(NotificationService::new(storage_service));
+    let notification_service = guard.add_rc(NotificationService::new(storage_service));
+    let notification_service: Rc<dyn INotificationService> = notification_service;
     let configuration_service: Rc<dyn IConfigurationService> = TestConfigurationService::new(None);
     let telemetry_service: Rc<dyn ITelemetryService> = Rc::new(TestNotificationTelemetryService::new());
     let actions: Rc<dyn NotificationActionProvider> = WorkbenchNotificationActionProvider::new(Rc::new(NoCommandService), Rc::new(NoClipboard));
@@ -494,7 +495,8 @@ fn renderer_services(guard: &LeakGuard, ui: &Ui, opener: Rc<dyn IOpenerService>)
 }
 
 fn center_services(guard: &LeakGuard, ui: &Ui) -> NotificationsCenterServices {
-    let editor_groups_service: Rc<dyn IEditorGroupsService> = guard.add_rc(TestEditorGroupsService::new(None));
+    let editor_groups_service = TestEditorGroupsService::new(None);
+    let editor_groups_service: Rc<dyn IEditorGroupsService> = editor_groups_service;
     let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
     NotificationsCenterServices {
         renderer: renderer_services(guard, ui, Rc::new(RecordingOpener::default())),
@@ -670,7 +672,7 @@ fn primary_buttons_expose_and_track_disabled_actions_without_invoking_or_closing
     let ui = Ui::new();
     let container = detached_container(&ui, 450.0, 42.0);
     let services = renderer_services(&guard, &ui, Rc::new(RecordingOpener::default()));
-    let renderer = NotificationRenderer::new(guard.add_rc(ActionRunner::new()), None, services);
+    let renderer = NotificationRenderer::new({ let runner = guard.add_rc(ActionRunner::new()); runner }, None, services);
     let template = renderer.render_template(container);
     {
         let (renderer, template) = (renderer.clone(), template.clone());
@@ -721,7 +723,7 @@ fn renders_text_and_activates_only_explicit_links(message: NotificationMessage, 
     let container = detached_container(&ui, 2000.0, 42.0);
     let opener = Rc::new(RecordingOpener::default());
     let services = renderer_services(&guard, &ui, opener.clone());
-    let renderer = NotificationRenderer::new(guard.add_rc(ActionRunner::new()), None, services);
+    let renderer = NotificationRenderer::new({ let runner = guard.add_rc(ActionRunner::new()); runner }, None, services);
     let template = renderer.render_template(container);
     {
         let (renderer, template) = (renderer.clone(), template.clone());
@@ -785,7 +787,7 @@ fn releases_replaced_notification_action_view_items() {
     remove_on_dispose(&guard, &ui, container);
 
     let services = renderer_services(&guard, &ui, Rc::new(RecordingOpener::default()));
-    let renderer = NotificationRenderer::new(guard.add_rc(ActionRunner::new()), None, services);
+    let renderer = NotificationRenderer::new({ let runner = guard.add_rc(ActionRunner::new()); runner }, None, services);
     let template = renderer.render_template(container);
     {
         let (renderer, template) = (renderer.clone(), template.clone());
