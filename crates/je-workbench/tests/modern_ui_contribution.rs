@@ -1319,6 +1319,125 @@ fn keeps_a_gutter_between_horizontal_panels_and_the_right_activity_bar() {
 }
 
 #[test]
+fn centers_status_bar_items_within_the_status_bar_background() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let measure = |class_name: &str, status_bar_height: f64| {
+        let style = ModernUiStyle::new(&theme, class_name);
+        let padding = style.status_bar_padding();
+        // O item é um `display: inline-block` de `height: 100%`; o rótulo, um flex de `height: 100%` dentro dele. O
+        // contêiner de itens preenche a caixa de conteúdo, então o item começa depois do `padding-top` da barra.
+        let item_height = style.status_bar_item_height(status_bar_height);
+        let label_height = item_height;
+        let center_offset = padding.top + item_height / 2.0 - status_bar_height / 2.0;
+        (px(padding.top), px(padding.bottom), item_height, label_height, center_offset)
+    };
+
+    assert_eq!(
+        [
+            measure("monaco-workbench modern-ui floating-panels", 28.0),
+            measure("monaco-workbench modern-ui modern-ui-compact floating-panels", 26.0),
+            measure("monaco-workbench", 22.0),
+        ],
+        [
+            ("2px".to_owned(), "2px".to_owned(), 24.0, 24.0, 0.0),
+            ("2px".to_owned(), "2px".to_owned(), 22.0, 22.0, 0.0),
+            ("0px".to_owned(), "0px".to_owned(), 22.0, 22.0, 0.0),
+        ]
+    );
+}
+
+#[test]
+fn preserves_status_bar_item_margin_exceptions_across_layout_densities() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let scenarios = [
+        "",
+        "compact-left",
+        "compact-left compact-right",
+        "compact-right",
+        "has-background-color",
+        "has-background-color compact-left",
+        "has-background-color compact-right",
+    ];
+    let measure_density = |compact: bool| {
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui floating-panels{}", if compact { " modern-ui-compact" } else { "" }));
+        scenarios.map(|classes| {
+            let margin = style.status_bar_label_margin(&ClassList::new(&format!("statusbar-item {classes}")));
+            [px(margin.left), px(margin.right)]
+        })
+    };
+    let expected = |margins: [[&str; 2]; 7]| margins.map(|pair| pair.map(str::to_owned));
+
+    assert_eq!(
+        (measure_density(false), measure_density(true)),
+        (
+            expected([["3px", "3px"], ["0px", "5px"], ["0px", "0px"], ["5px", "0px"], ["0px", "0px"], ["0px", "0px"], ["0px", "0px"]]),
+            expected([["2px", "2px"], ["0px", "5px"], ["0px", "0px"], ["5px", "0px"], ["0px", "0px"], ["0px", "0px"], ["0px", "0px"]]),
+        )
+    );
+}
+
+#[test]
+fn keeps_colored_edge_item_hover_surfaces_flush_without_changing_their_content_offset() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let measure = |compact: bool, alignment: &str, colored: bool, joined_class: Option<&str>| {
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui floating-panels{}", if compact { " modern-ui-compact" } else { "" }));
+        let edge_class = if alignment == "left" { "first-visible-item" } else { "last-visible-item" };
+        let item = ClassList::new(&format!(
+            "statusbar-item {alignment} {edge_class}{}{}",
+            if colored { " has-background-color" } else { "" },
+            joined_class.map_or(String::new(), |class| format!(" {class}"))
+        ));
+        let (item_padding, label_padding) = (style.status_bar_item_padding(&item), style.status_bar_label_padding(&item));
+        [px(item_padding.left), px(item_padding.right), px(label_padding.left), px(label_padding.right)]
+    };
+    let expected = |values: [&str; 4]| values.map(str::to_owned);
+    let standard_left = measure(false, "left", false, None);
+
+    assert_eq!(
+        (
+            [standard_left[0].clone(), standard_left[2].clone()],
+            [
+                measure(false, "left", true, None),
+                measure(false, "left", true, Some("compact-right")),
+                measure(false, "right", true, None),
+                measure(false, "right", true, Some("compact-left")),
+            ],
+            [
+                measure(true, "left", true, None),
+                measure(true, "left", true, Some("compact-right")),
+                measure(true, "right", true, None),
+                measure(true, "right", true, Some("compact-left")),
+            ],
+        ),
+        (
+            ["4px".to_owned(), "4px".to_owned()],
+            [expected(["0px", "0px", "8px", "6px"]), expected(["0px", "0px", "8px", "6px"]), expected(["0px", "0px", "6px", "8px"]), expected(["0px", "0px", "6px", "8px"])],
+            [expected(["0px", "0px", "4px", "4px"]), expected(["0px", "0px", "4px", "4px"]), expected(["0px", "0px", "4px", "6px"]), expected(["0px", "0px", "4px", "6px"])],
+        )
+    );
+}
+
+#[test]
+fn compact_status_bar_keeps_its_horizontal_padding_independently_of_the_panel_perimeter() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let padding = |activity_bar_classes: &str| {
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-compact floating-panels {activity_bar_classes}"));
+        let padding = style.status_bar_padding();
+        [px(padding.left), px(padding.right)]
+    };
+    let expected = ["4px".to_owned(), "4px".to_owned()];
+
+    assert_eq!(
+        [padding(""), padding("activitybar-compact"), padding("noactivitybar"), padding("activitybar-compact noactivitybar")],
+        [expected.clone(), expected.clone(), expected.clone(), expected]
+    );
+}
+
+#[test]
 fn keeps_the_connected_editor_tab_color_audit_exhaustive() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ids: Vec<&str> = color_registry().get_colors().iter().map(|color| color.id).collect();
