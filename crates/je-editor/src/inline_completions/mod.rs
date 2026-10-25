@@ -49,7 +49,12 @@
 //!     O `GutterIndicatorMenuHost` implementa o `IGutterIndicatorHost` do indicador; o hover e o rastreador de foco
 //!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter` e a altura do sticky scroll
 //!     pelo construtor do host, ambos fechados pelo pintor nativo e pelo controller (4c-6);
-//!   - 4c-4: a `InlineEditsView` e o producer (`inlineEditsViewProducer`);
+//!   - 4c-4 (em andamento): a `InlineEditsView`, em `view/inline_edits/inline_edits_view` (o arquivo inteiro: o
+//!     `_uiState`, `_determineView`, `_determineRenderState`, as nove views portadas, o `JumpToView` e o clique), com o
+//!     `ILongDistanceHint` e o `ILongDistanceViewState` em `long_distance_hint`. Os serviços e as duas views sem porte
+//!     (`InlineEditsInsertionView` e `InlineEditsLongDistanceHint`) entram pelo `InlineEditsViewServices` e pela
+//!     `IInlineEditsViewFactory`. Faltam: `inlineEditsInsertionView`, `InlineEditsLongDistanceHint` (a view) e o producer
+//!     (`inlineEditsViewProducer`), que cria o `ModelPerInlineEdit` observável que a view lê;
 //!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
 //!     (`hintsWidget/*`, com o `StatusBarViewItem`);
 //!   - 4c-6: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os serviços
