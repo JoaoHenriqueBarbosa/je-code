@@ -16,11 +16,16 @@
 //!   `je_base::network`.
 //! - **Serviços.** Os decoradores `@ICodeEditorService` e `@ICommandService` viram argumentos de
 //!   [`OpenerService::new`]; `_serviceBrand` não existe.
-//! - **`ICodeEditorService`.** O serviço real (`codeEditorService.ts`) ainda não foi portado: [`ICodeEditorService`]
-//!   tem só os dois métodos que o `EditorOpener` usa (`openCodeEditor` e `getFocusedCodeEditor`). O `ICodeEditor`
-//!   é opaco ([`CodeEditorHandle`]): o opener só o repassa. [`TextResourceEditorInput`] e [`TextEditorOptions`]
-//!   são as formas mínimas de `ITextResourceEditorInput` e `ITextEditorOptions` (o recurso, as opções do
-//!   editor e a seleção), as únicas que este arquivo lê e escreve.
+//! - **`ICodeEditorService`.** O serviço real (`codeEditorService.ts`) tem aqui o contrato com os membros que os
+//!   consumidores portados leem: [`ICodeEditorService`] (`getFocusedCodeEditor`, `getActiveCodeEditor`, `listCodeEditors`,
+//!   `onCodeEditorAdd`, `onCodeEditorRemove` e `openCodeEditor`), com o identificador [`I_CODE_EDITOR_SERVICE`]. O
+//!   `ICodeEditor` é o [`CodeEditorWidget`] concreto (o porte não tem outro editor de código; o editor de diff vive em
+//!   outra frente). O registro de editores e as decorações do `AbstractCodeEditorService` estão em
+//!   `services::abstract_code_editor_service`; o que sobra do contrato (`registerDecorationType`, as propriedades
+//!   transitórias do modelo, `registerCodeEditorOpenHandler`) entra aqui quando um consumidor portado o ler.
+//!   [`TextResourceEditorInput`] e [`TextEditorOptions`] são as formas de `ITextResourceEditorInput` e
+//!   `ITextEditorOptions` com os campos que o porte lê e escreve (o recurso, as opções do editor, a seleção, o tipo de
+//!   revelação e a origem da seleção).
 //! - **Estado.** O original guarda tudo na classe e o `_externalResourceOpener` fecha sobre `this`. Em Rust
 //!   isso seria um ciclo de `Rc`, então o que o opener externo usa (resolvedores, mapa dos URIs resolvidos
 //!   e opener externo padrão) fica em `Core`, que o serviço e o opener externo compartilham.
@@ -34,7 +39,6 @@
 //! - **`encodeURI`.** É uma função global do JavaScript, sem equivalente em `je-base`: [`encode_uri`] a
 //!   reproduz (e deve migrar para lá quando houver o porte das funções globais).
 
-use std::any::Any;
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Stdio};
@@ -45,6 +49,7 @@ use je_base::async_::async_fn;
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
+use je_base::event::Event;
 use je_base::lifecycle::{DisposableRef, IDisposable, id_of, plain_disposable};
 use je_base::linked_list::{LinkedList, Removal};
 use je_base::map::ResourceMap;
@@ -54,23 +59,41 @@ use je_base::path::{Environment, ProcessEnvironment};
 use je_base::promise::Promise;
 use je_base::resources::ExtUri;
 use je_base::uri::{Field, MARSHALLED_ID_URI, URI, UriChange, UriState, decode_uri_component};
+use je_instantiation::service_id;
 use je_platform::commands::ICommandService;
-use je_platform::opener::editor_types::{EditorOpenSource, EditorOptions, TextEditorSelection, ViewColumn};
+use je_platform::opener::editor_types::{EditorOpenSource, EditorOptions, TextEditorSelection, TextEditorSelectionRevealType, ViewColumn};
 use je_platform::opener::{
     AllowCommands, AllowContributedOpeners, DEFAULT_EXTERNAL_URI_OPENER_ID, ExternalOpenerContext, ExtractedSelection, IExternalOpener,
     IExternalUriResolver, IOpener, IOpenerService, IValidator, OpenOptions, OpenResource, ResolveExternalUriOptions, ResolvedExternalUri,
     extract_selection,
 };
 
-/// `ICodeEditor`: o editor é opaco para o opener, que só o repassa ao serviço de editores.
-pub type CodeEditorHandle = Rc<dyn Any>;
+use crate::code_editor_widget::CodeEditorWidget;
+use crate::range::Range;
 
-/// `ITextEditorOptions`, só com o que o `EditorOpener` preenche: as opções do editor (`IEditorOptions`) e a
-/// seleção.
+/// `ICodeEditor`: o editor de código do porte é o [`CodeEditorWidget`] (ver "ICodeEditorService" no cabeçalho).
+pub type CodeEditorHandle = Rc<CodeEditorWidget>;
+
+/// `ITextEditorOptions`, com o que o porte preenche e lê: as opções do editor (`IEditorOptions`), a seleção, o tipo de
+/// revelação dela e a origem da mudança de seleção.
 #[derive(Clone, Default)]
 pub struct TextEditorOptions {
     pub editor: EditorOptions,
     pub selection: Option<TextEditorSelection>,
+    /// `selectionRevealType`: o original assume `Center` quando ausente.
+    pub selection_reveal_type: Option<TextEditorSelectionRevealType>,
+    /// `selectionSource` (`TextEditorSelectionSource | string`).
+    pub selection_source: Option<String>,
+}
+
+/// `ITextEditorOptions.selection` de um `IRange`: os quatro números do intervalo.
+pub fn range_to_text_editor_selection(range: &Range) -> TextEditorSelection {
+    TextEditorSelection {
+        start_line_number: f64::from(range.start_line_number),
+        start_column: f64::from(range.start_column),
+        end_line_number: Some(f64::from(range.end_line_number)),
+        end_column: Some(f64::from(range.end_column)),
+    }
 }
 
 /// `ITextResourceEditorInput`, só com o recurso e as opções.
@@ -80,10 +103,22 @@ pub struct TextResourceEditorInput {
     pub options: Option<TextEditorOptions>,
 }
 
-/// `ICodeEditorService`, só com o que o `EditorOpener` usa.
+/// `ICodeEditorService`, com os membros que os consumidores portados leem (ver "ICodeEditorService" no cabeçalho).
 pub trait ICodeEditorService {
-    /// O editor com o foco (no editor ou num widget dele), se houver.
+    /// `onCodeEditorAdd`.
+    fn on_code_editor_add(&self) -> Event<CodeEditorHandle>;
+
+    /// `onCodeEditorRemove`.
+    fn on_code_editor_remove(&self) -> Event<CodeEditorHandle>;
+
+    /// `listCodeEditors()`.
+    fn list_code_editors(&self) -> Vec<CodeEditorHandle>;
+
+    /// `getFocusedCodeEditor()`: o editor com o foco (no editor ou num widget dele), se houver.
     fn get_focused_code_editor(&self) -> Option<CodeEditorHandle>;
+
+    /// `getActiveCodeEditor()`.
+    fn get_active_code_editor(&self) -> Option<CodeEditorHandle>;
 
     fn open_code_editor(
         &self,
@@ -92,6 +127,8 @@ pub trait ICodeEditorService {
         side_by_side: Option<bool>,
     ) -> Promise<Option<CodeEditorHandle>>;
 }
+
+service_id!(pub I_CODE_EDITOR_SERVICE: dyn ICodeEditorService = "codeEditorService");
 
 /// `IExternalUriOpenTarget`.
 struct ExternalUriOpenTarget {
@@ -246,7 +283,7 @@ impl IOpener for EditorOpener {
                 editor.source = Some(if from_user_gesture { EditorOpenSource::User } else { EditorOpenSource::Api });
             }
 
-            let input = TextResourceEditorInput { resource: target, options: Some(TextEditorOptions { editor, selection }) };
+            let input = TextResourceEditorInput { resource: target, options: Some(TextEditorOptions { editor, selection, ..TextEditorOptions::default() }) };
             let side_by_side = options.as_ref().and_then(|options| options.open_to_side);
             editor_service.open_code_editor(input, editor_service.get_focused_code_editor(), side_by_side).await?;
 

@@ -38,6 +38,7 @@ use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_extensions::manifest::ExtensionIdentifier;
+use je_instantiation::ServiceId;
 
 use crate::code_action::languages::{CodeActionProvider, Command, TextEdit, WorkspaceEdit};
 use crate::folding::syntax_range_provider::FoldingRangeProvider;
@@ -806,6 +807,9 @@ pub trait DocumentDropEditProvider {
 }
 
 // ---- o serviço ----------------------------------------------------------------------------------------
+
+/// O identificador do `ILanguageFeaturesService` (o serviço é o [`LanguageFeaturesService`] concreto).
+pub const I_LANGUAGE_FEATURES_SERVICE: ServiceId<LanguageFeaturesService> = ServiceId::new("languageFeaturesService");
 
 /// `ILanguageFeaturesService` (a implementação é a `LanguageFeaturesService`): um registro por recurso.
 #[derive(Clone)]

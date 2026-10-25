@@ -1120,6 +1120,17 @@ impl CodeEditorWidget {
         *self.instantiation_service.borrow_mut() = Some(instantiation_service);
     }
 
+    /// `invokeWithinContext(fn)`: roda `f` com um `ServicesAccessor` do serviço de instanciação do editor (o que
+    /// [`CodeEditorWidget::set_instantiation_service`] instalou). O editor sem serviço próprio usa `fallback`, o serviço
+    /// de quem chama (o `accessor` do comando que o invocou), porque o original sempre tem o filho do editor.
+    pub fn invoke_within_context<R>(&self, fallback: &InstantiationService, f: impl FnOnce(&je_instantiation::ServicesAccessor) -> R) -> R {
+        let service = self.instantiation_service.borrow().clone();
+        match service {
+            Some(service) => service.invoke_function(f),
+            None => fallback.invoke_function(f),
+        }
+    }
+
     /// `instantiationService.invokeFunction((accessor) => command.runEditorCommand(accessor, this, args))`.
     fn run_command_with_services(&self, command: &Rc<dyn IEditorCommand>, args: &Dynamic) -> Promise<()> {
         let Some(editor) = self.me.upgrade() else {

@@ -22,6 +22,7 @@ use std::rc::Rc;
 use je_base::cancellation::{CancellationToken, CancellationTokenSource};
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
+use je_instantiation::ServiceId;
 use je_platform::contextkey::{ContextKeyMeta, IContextKey, IContextKeyService, RawContextKey};
 
 use crate::code_editor_widget::CodeEditorWidget;
@@ -53,6 +54,9 @@ impl EditorTokens {
         self.key.set(Dynamic::Bool(!self.tokens.borrow().is_empty()));
     }
 }
+
+/// `IEditorCancellationTokens` como identificador de serviço (`createDecorator('IEditorCancelService')`).
+pub const I_EDITOR_CANCELLATION_TOKENS: ServiceId<EditorCancellationTokens> = ServiceId::new("IEditorCancelService");
 
 /// `IEditorCancellationTokens`.
 pub struct EditorCancellationTokens {

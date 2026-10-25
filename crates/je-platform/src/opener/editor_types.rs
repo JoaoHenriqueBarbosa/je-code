@@ -200,6 +200,21 @@ pub struct TextEditorSelection {
     pub end_column: Option<f64>,
 }
 
+/// `TextEditorSelectionRevealType`: como revelar a seleção de `ITextEditorOptions.selectionRevealType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextEditorSelectionRevealType {
+    /// Option to scroll vertically or horizontally as necessary and reveal a range centered vertically.
+    Center = 0,
+    /// Option to scroll vertically or horizontally as necessary and reveal a range centered vertically only if it lies
+    /// outside the viewport.
+    CenterIfOutsideViewport = 1,
+    /// Option to scroll vertically or horizontally as necessary and reveal a range close to the top of the viewport, but
+    /// not quite at the top.
+    NearTop = 2,
+    /// Same as [`Self::NearTop`], only if it lies outside the viewport.
+    NearTopIfOutsideViewport = 3,
+}
+
 /// `IModalEditorOptions`: opções do editor modal por editor, dadas por uma entrada de editor que quer influenciar como
 /// é desenhada dentro da parte de editor modal. Ao contrário de [`ModalEditorPartOptions`], valem para um editor só e
 /// saem do editor ativo (não da API de opções da parte).
