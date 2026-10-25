@@ -12,8 +12,12 @@
 //! - `createScoped(this.domNode)` recebe o [`UiNodeTarget`], o nó como alvo do serviço de chaves de contexto: os atributos do alvo são
 //!   os do nó na árvore e o `parentElement` é o pai do nó. O adaptador é público porque as demais partes de célula que criam serviços
 //!   escopados por nó (barras de ferramentas, barra de status) o reutilizam.
-//! - Os 5 casos de `cellEditorOverflowWidgets.test.ts` entram depois da fatia do `cellRenderer.ts` (`view/renderers/cell_renderer.rs`),
-//!   que cria o editor da célula e este `CellEditorOverflowWidgets` como o original.
+//! - Os 5 casos de `cellEditorOverflowWidgets.test.ts` seguem adiados. O `cellRenderer` já existe (`view/renderers/cell_renderer.rs`),
+//!   mas os casos dependem do que ainda não existe no `je-editor`: o `ContentHoverController` (com `HoverStartMode` e
+//!   `MarkdownHoverParticipant`), o `ParameterHintsController` (só o modelo está portado), o nó DOM de overflow do `CodeEditorWidget`
+//!   (`getOverflowWidgetsDomNode`, onde o popup `.monaco-hover` e o `.suggest-widget` são anexados) e a implementação do
+//!   `ICellRendererEditorFactory` sobre o `CodeEditorWidget`. O [`ICellEditorOverflowEditor`] estreito continua até o `CodeEditorWidget`
+//!   expor os três cancelamentos.
 
 use std::cell::RefCell;
 use std::rc::Rc;
