@@ -5,8 +5,10 @@
 //! Divergências:
 //! - `onDidChangeActivity` e `getViewContainerActivities` entram com implementação padrão (nunca dispara, lista vazia), e o
 //!   `badge instanceof ProgressBadge` é `IBadge::is_progress_badge`.
-//! - O resto da interface (`showViewContainerActivity`, `showAccountsActivity`, `showGlobalActivity`, `getActivity`) e os
-//!   selos `IconBadge`, `WarningBadge` e `ErrorBadge` pertencem às partes de barra de atividade e de contas, que ainda não foram portadas.
+//! - O resto da interface (`showViewContainerActivity`, `showGlobalActivity`, `getActivity`) e os
+//!   selos `WarningBadge` e `ErrorBadge` pertencem às partes de barra de atividade e de contas, que ainda não foram portadas.
+//!   O `showAccountsActivity` entra com o corpo padrão que lança (como os membros ausentes de `IViewsService`), porque a
+//!   `EditSessionsContribution` o chama.
 //! - `IBadge.getColors(theme)` fica de fora: `IColorTheme` e `Color` são da camada de tema da interface. Só
 //!   `getDescription()` entra.
 //! - `IActivity` do original só tem o `badge`; o `priority` que o `CustomTreeView` põe no objeto literal é ignorado pelo
@@ -145,6 +147,13 @@ pub trait IActivityService {
 
     /// `showViewActivity(viewId, badge)`: mostra o selo da view até o descarte do retorno.
     fn show_view_activity(&self, view_id: &str, badge: IActivity) -> DisposableRef;
+
+    /// `showAccountsActivity(activity)`: mostra o selo do menu de contas até o descarte do retorno. Corpo padrão que lança
+    /// `TypeError: showAccountsActivity is not a function` (a barra de atividades e o menu de contas ainda não foram portados,
+    /// então só um serviço que os tenha o implementa).
+    fn show_accounts_activity(&self, _activity: IActivity) -> DisposableRef {
+        je_base::errors::throw(je_base::errors::Error::named("TypeError", "showAccountsActivity is not a function"))
+    }
 }
 
 je_instantiation::service_id!(pub I_ACTIVITY_SERVICE: dyn IActivityService = "activityService");

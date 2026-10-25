@@ -839,7 +839,7 @@ impl IEditSessionsStorageService for EditSessionsWorkbenchService {
                 this.log_error(&ex);
             }
 
-            // TODO@joyceerhl Validate session data, check schema version
+            // Pendente do original: validar os dados da sessão e checar a versão do esquema
             if let (Some(content), Some(r#ref)) = (content, r#ref) {
                 let resource_content = EditSessionResource { r#ref, content };
                 this.last_read_resources.borrow_mut().insert(resource, resource_content.clone());
