@@ -37,7 +37,7 @@ pub fn rewrite_elements(nodes: Vec<Node>, visit: &mut dyn FnMut(&mut Element) ->
     let mut out = Vec::with_capacity(nodes.len());
     for node in nodes {
         match node {
-            Node::Text(_) => out.push(node),
+            Node::Text(_) | Node::Comment(_) => out.push(node),
             Node::Element(mut element) => match visit(&mut element) {
                 Rewrite::Keep => {
                     element.children = rewrite_elements(std::mem::take(&mut element.children), visit);
@@ -77,6 +77,11 @@ fn serialize_node(out: &mut JsString, node: &Node, raw_text_parent: bool) {
     match node {
         Node::Text(text) if raw_text_parent => out.push_units(text.units()),
         Node::Text(text) => push_escaped(out, text.units(), false),
+        Node::Comment(data) => {
+            push_str(out, "<!--");
+            out.push_units(data.units());
+            push_str(out, "-->");
+        }
         Node::Element(element) => serialize_element(out, element),
     }
 }

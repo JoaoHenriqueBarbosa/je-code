@@ -29,7 +29,7 @@ pub(super) fn exec(pattern: &'static str, flags: &'static str, text: &[u16]) -> 
 }
 
 /// `regex.test(text)` sem a flag `g`.
-pub(super) fn test(pattern: &'static str, flags: &'static str, text: &[u16]) -> bool {
+pub(crate) fn test(pattern: &'static str, flags: &'static str, text: &[u16]) -> bool {
     exec(pattern, flags, text).is_some()
 }
 
@@ -60,6 +60,6 @@ pub(super) fn units(text: &str) -> Vec<u16> {
 }
 
 /// Acrescenta texto Rust a um `JsString`.
-pub(super) fn push_str(out: &mut JsString, text: &str) {
+pub(crate) fn push_str(out: &mut JsString, text: &str) {
     out.push_units(&units(text));
 }

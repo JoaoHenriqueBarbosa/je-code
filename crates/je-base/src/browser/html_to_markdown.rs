@@ -78,6 +78,7 @@ fn attribute_units<'a>(element: &'a Element, name: &str) -> &'a [u16] {
 fn convert_node(node: &Node) -> JsString {
     let element = match node {
         Node::Text(text) => return text.clone(),
+        Node::Comment(_) => return JsString::new(),
         Node::Element(element) => element,
     };
     let tag = element.tag_name.as_str();
