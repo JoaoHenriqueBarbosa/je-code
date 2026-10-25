@@ -1,5 +1,7 @@
 //! Porte de `src/vs/base/browser`: a parte que não depende do DOM do navegador.
 
+pub mod css_value;
+pub mod dom;
 pub mod dom_sanitize;
 pub mod formatted_text_renderer;
 pub mod html_entities;

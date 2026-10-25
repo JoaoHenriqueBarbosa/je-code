@@ -3443,19 +3443,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         state.submenu_pointer_grace_deadline = None;
     }
 
-    /// `new dom.SafeTriangle(origin.x, origin.y, panel).contains(x, y)`: os quatro triângulos da origem para as arestas
-    /// do retângulo do painel (os pontos são `Int16Array`, então truncam).
+    /// `new dom.SafeTriangle(origin.x, origin.y, panel).contains(x, y)`.
     fn safe_triangle_contains(&self, origin: (f64, f64), x: f64, y: f64) -> bool {
         let Some(panel) = self.panel_rect() else {
             return false;
         };
-        let to_i16 = |value: f64| f64::from(value as i16);
-        let (left, top, right, bottom) = (to_i16(panel.left), to_i16(panel.top), to_i16(panel.left + panel.width), to_i16(panel.top + panel.height));
-        let points = [(left, top), (right, top), (left, bottom), (right, bottom)];
-        (0..4).any(|i| {
-            let (p1, p2) = (points[i], points[(i + 1) % 4]);
-            je_base::numbers::is_point_within_triangle(x, y, origin.0, origin.1, p1.0, p1.1, p2.0, p2.1)
-        })
+        let target = je_base::browser::dom::ClientRect { left: panel.left, right: panel.left + panel.width, top: panel.top, bottom: panel.top + panel.height };
+        je_base::browser::dom::SafeTriangle::new(origin.0, origin.1, target).contains(x, y)
     }
 
     fn schedule_submenu_show(&self, element: &Rc<IActionListItem<T>>, pointer: PointerEvent) {
