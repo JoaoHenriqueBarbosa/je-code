@@ -74,7 +74,7 @@ fn moves_the_primary_side_bar_class_to_the_inward_boundary_sash() {
     let layout_service = PaneTestLayoutService::new(&[Parts::SidebarPart, Parts::ActivitybarPart, Parts::EditorPart]);
     let part = guard.add_rc(SidebarPart::new(SidebarPartServices {
         pane: pane_part_services(&deps, layout_service.clone(), StubPaneView::new(), empty_instantiation_service()),
-        host_service: guard.add_rc(TestHostService::new()),
+        host_service: { let service = guard.add_rc(TestHostService::new()); service },
     }));
 
     let ui = Ui::new();
