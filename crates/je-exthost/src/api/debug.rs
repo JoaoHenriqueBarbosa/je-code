@@ -61,7 +61,7 @@ use crate::api::js_object::{JsObjects, JsResult};
 use crate::api::language_types::location_from_js;
 use crate::api::languages::host_extension;
 use crate::api::workspace::folder_to_js;
-use crate::convert::{api_to_js, class_name, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js};
+use crate::convert::{api_to_js, class_name, exported, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js};
 
 // ---- as dependências do `ExtHostDebugService` que o host não tem
 
@@ -129,14 +129,6 @@ fn js_to_json(value: &JsData) -> Value {
                 .map(|(key, item)| (key.clone(), js_to_json(item)))
                 .collect::<Map<String, Value>>(),
         ),
-    }
-}
-
-/// O objeto da extensão (entregue por referência) como dado: a cópia que o motor faz dele.
-fn exported(runner: &NodeRunner, value: &JsData) -> JsData {
-    match value {
-        JsData::Handle(handle) => runner.export(handle),
-        other => other.clone(),
     }
 }
 

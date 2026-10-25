@@ -255,7 +255,8 @@ impl TreeContext {
     /// O `vscode.TreeDragAndDropController` da extensão como [`TreeDragAndDropController`].
     fn drag_and_drop_controller(&self, controller: &Rc<JsHandle>) -> Rc<TreeDragAndDropController> {
         let target = JsData::Handle(controller.clone());
-        let mime_types = |name: &str| strings_of(Some(&self.js.property(&target, name))).unwrap_or_default();
+        // a lista chega por referência: a cópia do motor é que se lê como lista de textos
+        let mime_types = |name: &str| strings_of(Some(&exported(self.js.runner(), &self.js.property(&target, name)))).unwrap_or_default();
         let handle_drag = self.js.is_function(&target, "handleDrag").then(|| {
             let (context, target) = (self.clone(), target.clone());
             Rc::new(move |sources: &[Dynamic], transfer: &Rc<DataTransfer>, token: &CancellationToken| {
