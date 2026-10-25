@@ -6,8 +6,10 @@
 //! carrega e expõe em [`CodeEditorRegistry::decoration_service`].
 //!
 //! Divergências:
-//! - O `ICodeEditorService` do porte (`opener_service.rs`) é o recorte que o `EditorOpener` usa e não muda. O que o
-//!   `CodeEditorWidget` chama no serviço (`willCreateCodeEditor`, `addCodeEditor`, `removeCodeEditor`) é o trait
+//! - O `ICodeEditorService` do porte (`opener_service.rs`) é o contrato com os membros que os consumidores leem (os eventos
+//!   `onCodeEditorAdd` e `onCodeEditorRemove`, `listCodeEditors`, `getFocusedCodeEditor`, `getActiveCodeEditor` e
+//!   `openCodeEditor`); o [`CodeEditorRegistry`] é a base que o implementa. O que o `CodeEditorWidget` chama no serviço
+//!   (`willCreateCodeEditor`, `addCodeEditor`, `removeCodeEditor`) é o trait
 //!   [`ICodeEditorRegistry`], que o widget recebe em `CodeEditorWidgetServices::code_editor_service`.
 //! - O editor registrado é o [`CodeEditorWidget`] concreto (o `ICodeEditor` do original): o porte não tem outra
 //!   implementação (o editor de diff não existe), então os eventos e a lista trazem `Rc<CodeEditorWidget>`.

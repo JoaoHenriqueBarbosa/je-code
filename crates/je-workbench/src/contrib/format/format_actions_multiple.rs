@@ -23,8 +23,7 @@
 //!   `_updateConfigValues` esvazia e preenche depois (o `length = 0` e o `push` do original sobre o mesmo array): são
 //!   `ArrayRef` compartilhados por thread.
 //! - **Serviços das ações.** `instaService.invokeFunction(formatDocumentWithProvider, ...)` lê os serviços do `accessor`; aqui
-//!   o [`formatting_services`] monta o `FormattingServices` do `je-editor`. O `IEditorCancellationTokens` não tem
-//!   identificador na fatia anterior, então o [`I_EDITOR_CANCELLATION_TOKENS`] é declarado aqui. O accessor só vale durante a
+//!   o [`formatting_services`] monta o `FormattingServices` do `je-editor`. O accessor só vale durante a
 //!   chamada, então as ações leem todos os serviços antes do primeiro `await`.
 //! - **Status.** `CancellationTokenSource.dispose(true)` é `dispose_with(true)`. O `selector.pattern` é o `fsPath` do documento.
 //!   O comando do status chama o `_pickAndPersistDefaultFormatter` e descarta a promessa (o `CommandHandler` devolve `Dynamic`).
@@ -58,7 +57,6 @@ use je_editor::format::{
     IFormattingEditProviderSelector, format_document_ranges_with_provider, format_document_with_provider,
     get_real_and_synthetic_document_formatters_ordered,
 };
-use je_editor::keybinding_cancellation::EditorCancellationTokens;
 use je_editor::language_selector::{FilterPattern, LanguageFilter, LanguageSelector};
 use je_editor::language_service::{ILanguageService, I_LANGUAGE_SERVICE};
 use je_editor::language_features_service::{
@@ -67,7 +65,6 @@ use je_editor::language_features_service::{
 use je_editor::range::Range;
 use je_editor::text_model::TextModel;
 use je_extensions::manifest::ExtensionIdentifier;
-use je_instantiation::ServiceId;
 use je_platform::commands::commands::{Command as RegisteredCommand, commands_registry};
 use je_platform::configuration::registry::{PropertySchema, configuration_registry, ConfigurationNode};
 use je_platform::configuration::service::{IConfigurationService, I_CONFIGURATION_SERVICE, update_overrides_of};
@@ -97,8 +94,8 @@ use crate::services::language_status::language_status_service::{
 };
 use crate::services::lifecycle::lifecycle::LifecyclePhase;
 
-/// `IEditorCancellationTokens` (o serviço de `editorState/browser/keybindingCancellation`).
-pub const I_EDITOR_CANCELLATION_TOKENS: ServiceId<EditorCancellationTokens> = ServiceId::new("IEditorCancelService");
+/// `IEditorCancellationTokens`: o identificador mora em `je_editor::keybinding_cancellation`, onde o serviço é definido.
+pub use je_editor::keybinding_cancellation::I_EDITOR_CANCELLATION_TOKENS;
 
 /// `DocumentFormattingEditProvider | DocumentRangeFormattingEditProvider` (`FormattingEditProvider`).
 pub trait FormattingEditProvider: 'static {

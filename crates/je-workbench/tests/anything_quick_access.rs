@@ -39,6 +39,7 @@ use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
+use je_base::event::Event;
 use je_base::js_string::JsString;
 use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::network::schemas;
@@ -235,7 +236,23 @@ impl IExternalOpener for RecordingExternalOpener {
 struct NoCodeEditors;
 
 impl ICodeEditorService for NoCodeEditors {
+    fn on_code_editor_add(&self) -> Event<CodeEditorHandle> {
+        Event::none()
+    }
+
+    fn on_code_editor_remove(&self) -> Event<CodeEditorHandle> {
+        Event::none()
+    }
+
+    fn list_code_editors(&self) -> Vec<CodeEditorHandle> {
+        Vec::new()
+    }
+
     fn get_focused_code_editor(&self) -> Option<CodeEditorHandle> {
+        None
+    }
+
+    fn get_active_code_editor(&self) -> Option<CodeEditorHandle> {
         None
     }
 

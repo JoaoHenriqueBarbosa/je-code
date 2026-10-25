@@ -9,8 +9,9 @@
 //!   no método do controlador que chamam, então são uma struct só, [`StickyScrollFocusedAction`], com o
 //!   [`StickyScrollFocusedActionKind`] como dado (o mesmo molde de `FoldingAction`).
 //! - `StickyScrollController.get(editor)?.m()` é `StickyScrollController::get(editor).map(|controller| controller.m())`.
-//! - `title: { ...localize2(key, msg), mnemonicTitle: localize({ key, comment }, msg) }` é um [`Title::Localized`] com o
-//!   `mnemonic_title`; `title: localize2(...)` é um [`Title::Localized`] sem ele.
+//! - `title: { ...localize2(key, msg), mnemonicTitle: localize({ key, comment }, msg) }` é um `Title::Localized` com o
+//!   `mnemonic_title` (`localized_title_with_mnemonic` de `editor_extensions`); `title: localize2(...)` é um
+//!   `Title::Localized` sem ele (`localized_title`).
 //! - `configurationService.getValue('editor.stickyScroll.enabled')` e `updateValue(...)` são os do
 //!   `IConfigurationService` de `je_platform`; a promessa de `updateValue` não é aguardada, como no original.
 
@@ -19,13 +20,12 @@ use std::rc::Rc;
 use je_base::dynamic::{Dynamic, Truthy};
 use je_base::key_codes::KeyCode;
 use je_base::nls::localize;
+use je_base::promise::Promise;
 use je_instantiation::ServicesAccessor;
 use je_platform::action::action_common_categories::Categories;
-use je_platform::action::{
-    Category, CommandAction, CommandActionTitle, CommandActionToggleInfo, Title, Toggled, localize2,
-};
+use je_platform::action::{Category, CommandAction, CommandActionToggleInfo, Toggled, localize2};
 use je_platform::actions::menu_ids::{command_palette, menubar_appearance_menu, sticky_scroll_context};
-use je_platform::actions::{Action2Keybinding, Action2MenuItem, Action2Options, MenuId};
+use je_platform::actions::{Action2Keybinding, Action2Options};
 use je_platform::commands::{CommandDescription, CommandMetadata};
 use je_platform::configuration::service::I_CONFIGURATION_SERVICE;
 use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression};
@@ -34,28 +34,7 @@ use je_platform::keybinding::keybindings_registry::{KeybindingWeight, Keybinding
 use super::sticky_scroll_controller::{IStickyScrollController, StickyScrollController};
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::editor_context_keys::{sticky_scroll_focused, sticky_scroll_visible};
-use crate::editor_extensions::EditorAction2;
-
-/// `localize2(key, message)` como título do comando (sem mnemônico).
-fn localized_title(key: &str, message: &str) -> Title {
-    let localized = localize2(key, message);
-    Title::Localized(CommandActionTitle { value: localized.value, original: localized.original, mnemonic_title: None })
-}
-
-/// `{ ...localize2(key, message), mnemonicTitle: localize({ key: mnemonic_key, ... }, mnemonic_message) }`.
-fn localized_title_with_mnemonic(key: &str, message: &str, mnemonic_key: &str, mnemonic_message: &str) -> Title {
-    let localized = localize2(key, message);
-    Title::Localized(CommandActionTitle {
-        value: localized.value,
-        original: localized.original,
-        mnemonic_title: Some(localize(mnemonic_key, mnemonic_message, &[])),
-    })
-}
-
-/// Um item de menu `{ id, group?, order? }`.
-fn menu_item(id: MenuId, group: Option<&str>, order: Option<f64>) -> Action2MenuItem {
-    Action2MenuItem { id, null_precondition: false, alt: None, when: None, group: group.map(str::to_owned), order, is_hidden_by_default: None }
-}
+use crate::editor_extensions::{EditorAction2, action2_menu_item as menu_item, localized_title, localized_title_with_mnemonic};
 
 /// `EditorContextKeys.stickyScrollFocused.isEqualTo(true)`.
 fn sticky_scroll_is_focused() -> ContextKeyExpression {
@@ -102,7 +81,7 @@ impl EditorAction2 for ToggleStickyScroll {
         }
     }
 
-    fn run_editor_command(&self, accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, _args: &[Dynamic]) {
+    fn run_editor_command(&self, accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, _args: &[Dynamic]) -> Promise<()> {
         let configuration_service = accessor.get(I_CONFIGURATION_SERVICE);
         let new_value = !configuration_service.get_value(Some("editor.stickyScroll.enabled"), None).is_truthy();
         let is_focused = StickyScrollController::get(editor).map(|controller| controller.is_focused());
@@ -110,6 +89,7 @@ impl EditorAction2 for ToggleStickyScroll {
         if is_focused == Some(true) {
             editor.focus();
         }
+        Promise::resolved(())
     }
 }
 
@@ -140,10 +120,11 @@ impl EditorAction2 for FocusStickyScroll {
         }
     }
 
-    fn run_editor_command(&self, _accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, _args: &[Dynamic]) {
+    fn run_editor_command(&self, _accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, _args: &[Dynamic]) -> Promise<()> {
         if let Some(controller) = StickyScrollController::get(editor) {
             controller.focus();
         }
+        Promise::resolved(())
     }
 }
 
@@ -212,15 +193,15 @@ impl EditorAction2 for StickyScrollFocusedAction {
         }
     }
 
-    fn run_editor_command(&self, _accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, _args: &[Dynamic]) {
-        let Some(controller) = StickyScrollController::get(editor) else {
-            return;
-        };
-        match self.kind {
-            StickyScrollFocusedActionKind::SelectNextStickyScrollLine => controller.focus_next(),
-            StickyScrollFocusedActionKind::SelectPreviousStickyScrollLine => controller.focus_previous(),
-            StickyScrollFocusedActionKind::GoToStickyScrollLine => controller.go_to_focused(),
-            StickyScrollFocusedActionKind::SelectEditor => controller.select_editor(),
+    fn run_editor_command(&self, _accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, _args: &[Dynamic]) -> Promise<()> {
+        if let Some(controller) = StickyScrollController::get(editor) {
+            match self.kind {
+                StickyScrollFocusedActionKind::SelectNextStickyScrollLine => controller.focus_next(),
+                StickyScrollFocusedActionKind::SelectPreviousStickyScrollLine => controller.focus_previous(),
+                StickyScrollFocusedActionKind::GoToStickyScrollLine => controller.go_to_focused(),
+                StickyScrollFocusedActionKind::SelectEditor => controller.select_editor(),
+            }
         }
+        Promise::resolved(())
     }
 }

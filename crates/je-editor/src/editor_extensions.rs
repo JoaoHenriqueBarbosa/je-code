@@ -39,8 +39,8 @@
 //!
 //! Divergências:
 //! - **Serviços.** O original lê `ICodeEditorService` (`getFocusedCodeEditor`/`getActiveCodeEditor`) do
-//!   `accessor`. O serviço real ainda não foi portado (`opener_service::ICodeEditorService` é um recorte opaco
-//!   sem os dois métodos tipados), então a fatia que os comandos de editor usam é [`ICodeEditorLookup`], com o
+//!   `accessor`. Os comandos de editor usam a fatia tipada [`ICodeEditorLookup`] (o `ICodeEditorService` completo, com o
+//!   identificador `I_CODE_EDITOR_SERVICE`, está em `opener_service`), com o
 //!   id [`I_CODE_EDITOR_LOOKUP`]. O mesmo vale para `ITextModelService` ([`ITextModelService`], só
 //!   `createModelReference`). `IModelService` é o recorte de `services_model`.
 //! - **`invokeWithinContext` e `contextMatchesRules`.** O widget não tem `IContextKeyService` próprio, então a
@@ -81,8 +81,8 @@ use je_base::themables::ThemeIcon;
 use je_base::types::assert_type;
 use je_base::uri::{URI, UriComponents};
 use je_instantiation::I_INSTANTIATION_SERVICE;
-use je_platform::action::{CommandAction, Icon, LocalizedString, Title};
-use je_platform::actions::{Action2, Action2Options, AnyMenuItem, MenuId, MenuItem, menu_ids, menu_registry};
+use je_platform::action::{CommandAction, CommandActionTitle, Icon, LocalizedString, Title, localize2};
+use je_platform::actions::{Action2, Action2MenuItem, Action2Options, AnyMenuItem, MenuId, MenuItem, menu_ids, menu_registry};
 use je_platform::commands::{Command as RegisteredCommand, CommandHandler, CommandMetadata, commands_registry};
 use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression, I_CONTEXT_KEY_SERVICE};
 use je_platform::log::{I_LOG_SERVICE, LogService};
@@ -685,13 +685,46 @@ impl EditorAction for MultiEditorAction {
 
 // #region EditorAction2
 
+/// `localize2(key, message)` como título do comando (sem mnemônico).
+pub fn localized_title(key: &str, message: &str) -> Title {
+    let localized = localize2(key, message);
+    Title::Localized(CommandActionTitle { value: localized.value, original: localized.original, mnemonic_title: None })
+}
+
+/// `{ ...localize2(key, message), mnemonicTitle: localize({ key: mnemonic_key, ... }, mnemonic_message) }`.
+pub fn localized_title_with_mnemonic(key: &str, message: &str, mnemonic_key: &str, mnemonic_message: &str) -> Title {
+    let localized = localize2(key, message);
+    Title::Localized(CommandActionTitle {
+        value: localized.value,
+        original: localized.original,
+        mnemonic_title: Some(localize(mnemonic_key, mnemonic_message, &[])),
+    })
+}
+
+/// Um item de menu de ação `{ id, group?, order? }`, sem `when`, sem alternativa e herdando a precondição do comando.
+pub fn action2_menu_item(id: MenuId, group: Option<&str>, order: Option<f64>) -> Action2MenuItem {
+    Action2MenuItem { id, null_precondition: false, alt: None, when: None, group: group.map(str::to_owned), order, is_hidden_by_default: None }
+}
+
 /// `abstract class EditorAction2`: o `runEditorCommand` abstrato (o `desc` é o do `Action2`).
 pub trait EditorAction2 {
     /// `desc`.
     fn desc(&self) -> Action2Options;
 
-    /// `runEditorCommand(accessor, editor, ...args)`.
-    fn run_editor_command(&self, accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, args: &[Dynamic]);
+    /// `runEditorCommand(accessor, editor, ...args)`: a promessa é o `void | Promise<void>` do original (uma ação
+    /// síncrona devolve uma já resolvida).
+    fn run_editor_command(&self, accessor: &ServicesAccessor, editor: &Rc<CodeEditorWidget>, args: &[Dynamic]) -> Promise<()>;
+}
+
+/// O começo de `EditorAction2.run(accessor, ...args)`: o editor com foco ou ativo, desde que a precondição valha.
+pub fn editor_for_action2(accessor: &ServicesAccessor, precondition: Option<&ContextKeyExpression>) -> Option<Rc<CodeEditorWidget>> {
+    // Find the editor with text focus or active
+    let code_editor_service = accessor.get(I_CODE_EDITOR_LOOKUP);
+    // well, at least we tried...
+    let editor = code_editor_service.get_focused_code_editor().or_else(|| code_editor_service.get_active_code_editor())?;
+
+    // precondition does hold
+    context_matches_rules(accessor, precondition).then_some(editor)
 }
 
 /// Liga um [`EditorAction2`] ao `Action2` do registro de ações, com o `run` de `EditorAction2`.
@@ -703,21 +736,11 @@ impl<A: EditorAction2> Action2 for EditorAction2Adapter<A> {
     }
 
     fn run(&self, accessor: &ServicesAccessor, args: &[Dynamic]) {
-        // Find the editor with text focus or active
-        let code_editor_service = accessor.get(I_CODE_EDITOR_LOOKUP);
-        let Some(editor) =
-            code_editor_service.get_focused_code_editor().or_else(|| code_editor_service.get_active_code_editor())
-        else {
-            // well, at least we tried...
+        let Some(editor) = editor_for_action2(accessor, self.0.desc().command.precondition.as_ref()) else {
             return;
         };
-
-        // precondition does hold
-        let precondition = self.0.desc().command.precondition;
-        if !context_matches_rules(accessor, precondition.as_ref()) {
-            return;
-        }
-        self.0.run_editor_command(accessor, &editor, args);
+        // O `Action2.run` do porte não devolve a promessa: uma rejeição vai para `onUnexpectedError`.
+        let _ = self.0.run_editor_command(accessor, &editor, args).catch(|error| errors::on_unexpected_error(&error));
     }
 }
 
@@ -737,7 +760,7 @@ pub fn position_from_dynamic(value: &Dynamic) -> Option<Position> {
 }
 
 /// `URI.isUri(thing)` e a leitura do recurso (ver "Divergências"): as partes de `toJSON` como texto.
-fn uri_from_dynamic(value: &Dynamic) -> Option<URI> {
+pub fn uri_from_dynamic(value: &Dynamic) -> Option<URI> {
     if !matches!(value, Dynamic::Object(_)) {
         return None;
     }
