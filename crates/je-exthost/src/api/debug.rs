@@ -14,11 +14,15 @@
 //! como JSON. Os objetos `DebugSession` e `Breakpoint` carregam só o `_id` (o id da sessão ou do breakpoint) e as propriedades são
 //! acessores do protótipo sobre o objeto vivo do `ExtHostDebugService`.
 //!
-//! Falta: `registerDebugAdapterTrackerFactory`, `asDebugSourceUri`, `activeStackItem` e `onDidChangeActiveStackItem`
-//! (`DebugThread` e `DebugStackFrame`), as propostas `debugVisualization`, `DebugSessionOptions#testRun` (o host não tem o namespace
-//! `tests`), `DataBreakpoint` como classe construível e `DebugAdapterInlineImplementation` (o adaptador chegaria ao construtor por
-//! cópia e perderia as funções dele; a classe existe e rejeita com uma mensagem explícita). O `${variable}` das configurações não é
-//! substituído: o host não tem o `IConfigurationResolverService`, e `$substituteVariables` rejeita com essa explicação.
+//! Também `registerDebugAdapterTrackerFactory` (o `DebugAdapterTracker` da extensão é chamado por referência: `onWillStartSession`,
+//! `onWillReceiveMessage`, `onDidSendMessage`, `onWillStopSession`, `onError` e `onExit`), `asDebugSourceUri`, `activeStackItem` e
+//! `onDidChangeActiveStackItem` (as classes `DebugThread` e `DebugStackFrame`), `DataBreakpoint` construível e
+//! `DebugAdapterInlineImplementation` (uma classe do próprio motor, para o adaptador chegar ao host POR REFERÊNCIA com as funções
+//! dele; `handleMessage`, `onDidSendMessage` e `dispose` do adaptador são chamados como no original).
+//!
+//! Falta: as propostas `debugVisualization` e `DebugSessionOptions#testRun` (o host não tem o namespace `tests`). O `${variable}` das
+//! configurações não é substituído: o host não tem o `IConfigurationResolverService`, e `$substituteVariables` rejeita com essa
+//! explicação.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões, então o host não sabe qual delas chama `registerDebugAdapterDescriptorFactory`. A
@@ -33,21 +37,24 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
-use je_base::errors::Error;
-use je_base::event::Event;
-use je_base::promise::Promise;
+use je_base::errors::{on_unexpected_error, Error};
+use je_base::event::{Event, Listener};
+use je_base::lifecycle::{plain_disposable, DisposableRef, IDisposable};
+use je_base::promise::{MaybePromise, Promise};
 use je_workbench::api::common::ext_host_debug_protocol::{MainThreadDebugServiceShape, NameOrConfig};
 use je_workbench::api::common::ext_host_debug_service::{
     DebugSession, ExtHostDebugServiceBase, IConfigurationResolver, IExtHostDebugExtensionService, IExtHostDebugTesting, IExtHostVariableResolverProvider,
 };
 use je_workbench::api::common::ext_host_debug_types::{
-    Breakpoint, BreakpointKind, BreakpointsChangeEvent, DebugAdapterDescriptor, DebugAdapterDescriptorFactory, DebugAdapterExecutable, DebugAdapterNamedPipeServer,
-    DebugAdapterServer, DebugConfigurationProvider, DebugConsoleMode, DebugSessionCustomEvent, DebugSessionOptions, ProviderResult,
+    Breakpoint, BreakpointKind, BreakpointsChangeEvent, DebugAdapter, DebugAdapterDescriptor, DebugAdapterDescriptorFactory, DebugAdapterExecutable,
+    DebugAdapterInlineImplementation, DebugAdapterNamedPipeServer, DebugAdapterServer, DebugAdapterTracker, DebugAdapterTrackerFactory, DebugConfigurationProvider,
+    DebugConsoleMode, DebugSessionCustomEvent, DebugSessionOptions, DebugStackItem, ProviderResult,
 };
 use je_workbench::api::common::ext_host_protocol::{IMainContext, MainContext, MainThreadTelemetryShape};
 use je_workbench::api::common::ext_host_testing::TestRun;
 use je_workbench::api::common::ext_host_workspace::WorkspaceFolder;
 use je_workbench::contrib::debug::debug::{DebugConfigurationProviderTriggerKind, IConfig, IDebugAdapterExecutableOptions};
+use je_workbench::contrib::debug::debug_protocol::ProtocolMessage;
 use je_workbench::services::extensions::extension_description_registry::ExtensionDescriptionRegistry;
 use serde_json::{Map, Number, Value};
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
@@ -61,7 +68,9 @@ use crate::api::js_object::{JsObjects, JsResult};
 use crate::api::language_types::location_from_js;
 use crate::api::languages::host_extension;
 use crate::api::workspace::folder_to_js;
-use crate::convert::{api_to_js, class_name, exported, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js};
+use crate::convert::{
+    api_to_js, class_name, error_to_js, exported, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js, uri_to_js,
+};
 
 // ---- as dependências do `ExtHostDebugService` que o host não tem
 
@@ -182,9 +191,20 @@ impl DebugObjects {
         let class = match breakpoint.kind() {
             BreakpointKind::Source { .. } => "SourceBreakpoint",
             BreakpointKind::Function { .. } => "FunctionBreakpoint",
-            BreakpointKind::Data { .. } => "Breakpoint",
+            BreakpointKind::Data { .. } => "DataBreakpoint",
         };
         object_of(class, &self.remember_breakpoint(breakpoint))
+    }
+
+    /// `DebugThread | DebugStackFrame` como o objeto da classe correspondente.
+    fn stack_item_to_js(&self, item: &DebugStackItem) -> JsData {
+        let (class, session, ids) = match item {
+            DebugStackItem::Thread(thread) => ("DebugThread", &thread.session, vec![("threadId", thread.thread_id)]),
+            DebugStackItem::StackFrame(frame) => ("DebugStackFrame", &frame.session, vec![("threadId", frame.thread_id), ("frameId", frame.frame_id)]),
+        };
+        let mut fields = vec![(CLASS_KEY.to_owned(), JsData::Str(class.to_owned()))];
+        fields.extend(stack_fields(self.session_to_js(session), &ids));
+        JsData::Object(fields)
     }
 
     fn breakpoint_of(&self, value: &JsData) -> Result<Rc<Breakpoint>, String> {
@@ -259,6 +279,39 @@ fn define_session_class(runner: &NodeRunner, objects: &Rc<DebugObjects>) {
     );
 }
 
+/// `session`, `threadId` e `frameId` de `DebugThread` e `DebugStackFrame`.
+fn stack_fields(session: JsData, ids: &[(&str, i64)]) -> Vec<(String, JsData)> {
+    let mut fields = vec![("session".to_owned(), session)];
+    fields.extend(ids.iter().map(|(name, value)| ((*name).to_owned(), JsData::Num(*value as f64))));
+    fields
+}
+
+/// `DebugThread` e `DebugStackFrame`, construíveis como no original: a sessão e os ids (números) viram propriedades.
+fn define_stack_classes(runner: &NodeRunner, objects: &Rc<DebugObjects>) -> Vec<(String, JsData)> {
+    let class = |name: &'static str, ids: &'static [&'static str]| {
+        let objects = objects.clone();
+        let constructor = runner.define_class(ClassSpec {
+            name: name.to_owned(),
+            length: 1 + ids.len() as u32,
+            construct: Rc::new(move |args| {
+                let session = objects.session_of(args.first().ok_or_else(|| format!("{name}: falta a sessão"))?)?;
+                let values = ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| opt_number(args.get(index + 1)).map(|value| (*id, value as i64)).ok_or_else(|| format!("{name}: {id} precisa ser um número")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(JsData::Object(stack_fields(objects.session_to_js(&session), &values)))
+            }),
+            methods: vec![],
+            getters: vec![],
+            statics: vec![],
+            parent: None,
+        });
+        (name.to_owned(), JsData::Handle(Rc::new(constructor)))
+    };
+    vec![class("DebugThread", &["threadId"]), class("DebugStackFrame", &["threadId", "frameId"])]
+}
+
 fn define_breakpoint_classes(runner: &NodeRunner, objects: &Rc<DebugObjects>) -> Vec<(String, JsData)> {
     let get = |name: &str, read: fn(&Breakpoint) -> JsData| -> (String, MethodCallback) {
         let objects = objects.clone();
@@ -315,10 +368,48 @@ fn define_breakpoint_classes(runner: &NodeRunner, objects: &Rc<DebugObjects>) ->
         statics: vec![],
         parent: Some("Breakpoint".to_owned()),
     });
+    let data_objects = objects.clone();
+    let data = runner.define_class(ClassSpec {
+        name: "DataBreakpoint".to_owned(),
+        length: 8,
+        construct: Rc::new(move |args| {
+            let label = string_arg(args, 0, "DataBreakpoint: o label")?;
+            let data_id = opt_string(args.get(1)).filter(|data_id| !data_id.is_empty()).ok_or("Illegal argument: dataId")?;
+            let breakpoint = Breakpoint::new_data(
+                &label,
+                &data_id,
+                opt_bool(args.get(2)).unwrap_or(false),
+                opt_bool(args.get(3)),
+                opt_string(args.get(4)),
+                opt_string(args.get(5)),
+                opt_string(args.get(6)),
+                opt_string(args.get(7)),
+            );
+            Ok(data_objects.new_breakpoint(&breakpoint))
+        }),
+        methods: vec![],
+        getters: vec![
+            get("label", |breakpoint| match breakpoint.kind() {
+                BreakpointKind::Data { label, .. } => JsData::Str(label),
+                _ => JsData::Undefined,
+            }),
+            get("dataId", |breakpoint| match breakpoint.kind() {
+                BreakpointKind::Data { data_id, .. } => JsData::Str(data_id),
+                _ => JsData::Undefined,
+            }),
+            get("canPersist", |breakpoint| match breakpoint.kind() {
+                BreakpointKind::Data { can_persist, .. } => JsData::Bool(can_persist),
+                _ => JsData::Undefined,
+            }),
+        ],
+        statics: vec![],
+        parent: Some("Breakpoint".to_owned()),
+    });
     vec![
         ("Breakpoint".to_owned(), JsData::Handle(Rc::new(base))),
         ("SourceBreakpoint".to_owned(), JsData::Handle(Rc::new(source))),
         ("FunctionBreakpoint".to_owned(), JsData::Handle(Rc::new(function))),
+        ("DataBreakpoint".to_owned(), JsData::Handle(Rc::new(data))),
     ]
 }
 
@@ -374,6 +465,14 @@ fn define_descriptor_classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
         let constructor = runner.define_class(ClassSpec { name: name.to_owned(), length, construct, methods: vec![], getters: vec![], statics: vec![], parent: None });
         (name.to_owned(), JsData::Handle(Rc::new(constructor)))
     };
+    // `DebugAdapterInlineImplementation` é uma classe do próprio motor (o `constructor(impl) { this.implementation = impl; }` do original):
+    // uma classe nativa receberia o adaptador por cópia e perderia as funções dele.
+    let inline = runner
+        .eval(
+            "(class DebugAdapterInlineImplementation { constructor(impl) { this.implementation = impl; } })",
+            "je-exthost/debug-adapter-inline-implementation.js",
+        )
+        .unwrap_or_else(|message| panic!("DebugAdapterInlineImplementation não avalia: {message}"));
     vec![
         class(
             "DebugAdapterExecutable",
@@ -400,13 +499,7 @@ fn define_descriptor_classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
             1,
             Rc::new(|args| Ok(JsData::Object(vec![("path".to_owned(), JsData::Str(string_arg(args, 0, "DebugAdapterNamedPipeServer: o path")?))]))),
         ),
-        class(
-            "DebugAdapterInlineImplementation",
-            1,
-            Rc::new(|_| {
-                Err("DebugAdapterInlineImplementation ainda não é suportado pelo host: o adaptador chegaria ao construtor por cópia e perderia as funções dele".to_owned())
-            }),
-        ),
+        ("DebugAdapterInlineImplementation".to_owned(), JsData::Handle(Rc::new(inline))),
     ]
 }
 
@@ -414,6 +507,7 @@ fn define_descriptor_classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
 pub fn classes(runner: &NodeRunner, objects: &Rc<DebugObjects>) -> Vec<(String, JsData)> {
     define_session_class(runner, objects);
     let mut members = define_breakpoint_classes(runner, objects);
+    members.extend(define_stack_classes(runner, objects));
     members.extend(define_descriptor_classes(runner));
     members
 }
@@ -426,6 +520,139 @@ struct ProviderContext {
     js: JsObjects,
     events: Rc<EventTables>,
     objects: Rc<DebugObjects>,
+    table: Rc<DisposableTable>,
+}
+
+/// Uma exceção síncrona de um membro opcional da extensão (tracker ou adaptador) chega ao tratador de erros inesperados, como no original,
+/// onde ela sobe pelo chamador.
+fn report_failure(result: MaybePromise<JsResult>) {
+    if let MaybePromise::Promise(promise) = result
+        && let Some(Err(error)) = promise.result()
+    {
+        on_unexpected_error(&error);
+    }
+}
+
+/// Chama `target[method](...args)` se ele existir como função (os membros do tracker e do adaptador são opcionais).
+fn call_optional(context: &ProviderContext, target: &JsData, method: &str, args: Vec<JsData>) {
+    if context.js.is_function(target, method) {
+        report_failure(context.js.invoke(target, method, args));
+    }
+}
+
+/// O `vscode.DebugAdapterTracker` da extensão.
+struct JsTracker {
+    context: ProviderContext,
+    target: JsData,
+}
+
+impl JsTracker {
+    fn call(&self, method: &str, args: Vec<JsData>) {
+        call_optional(&self.context, &self.target, method, args);
+    }
+}
+
+fn message_to_js(message: &ProtocolMessage) -> JsData {
+    json_to_js(&message.to_json())
+}
+
+impl DebugAdapterTracker for JsTracker {
+    fn on_will_start_session(&self) {
+        self.call("onWillStartSession", vec![]);
+    }
+
+    fn on_will_receive_message(&self, message: &ProtocolMessage) {
+        self.call("onWillReceiveMessage", vec![message_to_js(message)]);
+    }
+
+    fn on_did_send_message(&self, message: &ProtocolMessage) {
+        self.call("onDidSendMessage", vec![message_to_js(message)]);
+    }
+
+    fn on_will_stop_session(&self) {
+        self.call("onWillStopSession", vec![]);
+    }
+
+    fn on_error(&self, error: &Error) {
+        self.call("onError", vec![error_to_js(error)]);
+    }
+
+    fn on_exit(&self, code: Option<i32>, signal: Option<&str>) {
+        self.call("onExit", vec![code.map_or(JsData::Undefined, |code| JsData::Num(f64::from(code))), text_or_undefined(signal.map(str::to_owned))]);
+    }
+}
+
+/// O `vscode.DebugAdapterTrackerFactory` da extensão.
+struct JsTrackerFactory {
+    context: ProviderContext,
+    target: JsData,
+}
+
+impl DebugAdapterTrackerFactory for JsTrackerFactory {
+    fn create_debug_adapter_tracker(&self, session: Rc<DebugSession>) -> ProviderResult<Rc<dyn DebugAdapterTracker>> {
+        let args = vec![self.context.objects.session_to_js(&session)];
+        let context = self.context.clone();
+        convert_maybe(self.context.js.invoke(&self.target, "createDebugAdapterTracker", args), move |result| match result {
+            JsResult::Nullish => Ok(None),
+            JsResult::Single(target) => Ok(Some(Rc::new(JsTracker { context: context.clone(), target }) as Rc<dyn DebugAdapterTracker>)),
+            JsResult::Many(_) => Err(Error::new("createDebugAdapterTracker precisa devolver um tracker, não uma lista")),
+        })
+    }
+}
+
+/// O `vscode.DebugAdapter` da extensão dentro de um `DebugAdapterInlineImplementation`.
+struct JsDebugAdapter {
+    context: ProviderContext,
+    target: JsData,
+    on_did_send_message: Rc<zjsc::api::embed_node::JsHandle>,
+}
+
+impl JsDebugAdapter {
+    fn new(context: &ProviderContext, target: JsData) -> Result<Rc<dyn DebugAdapter>, Error> {
+        let JsData::Handle(_) = &target else { return Err(Error::new("DebugAdapterInlineImplementation: o adaptador precisa ser um objeto")) };
+        let on_did_send_message = match context.js.property(&target, "onDidSendMessage") {
+            JsData::Handle(event) => event,
+            _ => return Err(Error::new("DebugAdapterInlineImplementation: o adaptador precisa ter o evento onDidSendMessage")),
+        };
+        if !context.js.is_function(&target, "handleMessage") {
+            return Err(Error::new("DebugAdapterInlineImplementation: o adaptador precisa ter handleMessage"));
+        }
+        Ok(Rc::new(JsDebugAdapter { context: context.clone(), target, on_did_send_message }))
+    }
+}
+
+impl DebugAdapter for JsDebugAdapter {
+    fn on_did_send_message(&self) -> Event<ProtocolMessage> {
+        let (context, event) = (self.context.clone(), self.on_did_send_message.clone());
+        Event::new(move |listener: Listener<ProtocolMessage>| -> DisposableRef {
+            let runner = context.js.runner().clone();
+            let subscribed = context.js.listen(&event, move |result| match result {
+                JsResult::Single(value) => listener(&ProtocolMessage::from_json(&js_to_json(&exported(&runner, &value)))),
+                _ => on_unexpected_error(&Error::new("onDidSendMessage precisa disparar uma mensagem do protocolo")),
+            });
+            match subscribed {
+                Ok(Some(id)) => {
+                    let table = context.table.clone();
+                    plain_disposable(move || table.dispose(id))
+                }
+                Ok(None) => plain_disposable(|| {}),
+                Err(message) => {
+                    on_unexpected_error(&Error::new(message));
+                    plain_disposable(|| {})
+                }
+            }
+        })
+    }
+
+    fn handle_message(&self, message: &ProtocolMessage) {
+        report_failure(self.context.js.invoke(&self.target, "handleMessage", vec![message_to_js(message)]));
+    }
+}
+
+impl IDisposable for JsDebugAdapter {
+    fn dispose(&self) {
+        call_optional(&self.context, &self.target, "dispose", vec![]);
+    }
 }
 
 fn folder_arg(folder: Option<Rc<WorkspaceFolder>>) -> JsData {
@@ -490,17 +717,23 @@ impl DebugConfigurationProvider for JsConfigurationProvider {
     }
 }
 
-/// O descritor que a fábrica devolveu: `DebugAdapterExecutable`, `DebugAdapterServer` ou `DebugAdapterNamedPipeServer`.
-fn descriptor_of(runner: &NodeRunner, value: &JsData) -> Result<DebugAdapterDescriptor, Error> {
-    let data = exported(runner, value);
+/// O descritor que a fábrica devolveu: `DebugAdapterExecutable`, `DebugAdapterServer`, `DebugAdapterNamedPipeServer` ou
+/// `DebugAdapterInlineImplementation` (o adaptador lido por referência).
+fn descriptor_of(context: &ProviderContext, value: &JsData) -> Result<DebugAdapterDescriptor, Error> {
+    let data = exported(context.js.runner(), value);
     let kind = match class_name(&data) {
         Some(name) => name.to_owned(),
         None if field(&data, "command").is_some() => "DebugAdapterExecutable".to_owned(),
         None if field(&data, "port").is_some() => "DebugAdapterServer".to_owned(),
         None if field(&data, "path").is_some() => "DebugAdapterNamedPipeServer".to_owned(),
+        None if field(&data, "implementation").is_some() => "DebugAdapterInlineImplementation".to_owned(),
         None => String::new(),
     };
     match kind.as_str() {
+        "DebugAdapterInlineImplementation" => {
+            let adapter = JsDebugAdapter::new(context, context.js.property(value, "implementation"))?;
+            Ok(DebugAdapterDescriptor::Inline(DebugAdapterInlineImplementation::new(adapter)))
+        }
         "DebugAdapterExecutable" => {
             let command = opt_string(field(&data, "command")).ok_or_else(|| Error::new("DebugAdapterExecutable: falta o command"))?;
             Ok(DebugAdapterDescriptor::Executable(DebugAdapterExecutable::new(&command, Some(strings_of(field(&data, "args"))), executable_options_of(field(&data, "options")))))
@@ -526,10 +759,10 @@ struct JsDescriptorFactory {
 impl DebugAdapterDescriptorFactory for JsDescriptorFactory {
     fn create_debug_adapter_descriptor(&self, session: Rc<DebugSession>, executable: Option<DebugAdapterExecutable>) -> ProviderResult<DebugAdapterDescriptor> {
         let args = vec![self.context.objects.session_to_js(&session), executable.as_ref().map_or(JsData::Undefined, executable_to_js)];
-        let runner = self.context.js.runner().clone();
+        let context = self.context.clone();
         convert_maybe(self.context.js.invoke(&self.target, "createDebugAdapterDescriptor", args), move |result| match result {
             JsResult::Nullish => Ok(None),
-            JsResult::Single(value) => descriptor_of(&runner, &value).map(Some),
+            JsResult::Single(value) => descriptor_of(&context, &value).map(Some),
             JsResult::Many(_) => Err(Error::new("createDebugAdapterDescriptor precisa devolver um descritor, não uma lista")),
         })
     }
@@ -621,7 +854,20 @@ pub fn namespace(
     let (console_runner, console_service) = (runner.clone(), service.clone());
     let (breakpoint_objects, breakpoint_service) = (objects.clone(), service.clone());
     let (start_objects, terminate_objects, active_objects, custom_objects, change_objects) = (objects.clone(), objects.clone(), objects.clone(), objects.clone(), objects.clone());
+    let (stack_objects, stack_event_objects, stack_service) = (objects.clone(), objects.clone(), service.clone());
     let getters: Vec<(String, MethodCallback)> = vec![
+        (
+            "activeStackItem".to_owned(),
+            Rc::new(move |_, _| Ok(stack_service.active_stack_item().map_or(JsData::Undefined, |item| stack_objects.stack_item_to_js(&item)))),
+        ),
+        event_getter(
+            runner,
+            table,
+            service,
+            "onDidChangeActiveStackItem",
+            ExtHostDebugServiceBase::on_did_change_active_stack_item,
+            move |item: &Option<DebugStackItem>| item.as_ref().map_or(JsData::Undefined, |item| stack_event_objects.stack_item_to_js(item)),
+        ),
         (
             "activeDebugSession".to_owned(),
             Rc::new(move |_, _| Ok(session_service.active_debug_session().map_or(JsData::Undefined, |session| session_objects.session_to_js(&session)))),
@@ -695,7 +941,23 @@ pub fn namespace(
     let (stop_runner, stop_service, stop_objects) = (runner.clone(), service.clone(), objects.clone());
     let (add_runner, add_service, add_objects) = (runner.clone(), service.clone(), objects.clone());
     let (remove_runner, remove_service, remove_objects) = (runner.clone(), service.clone(), objects.clone());
+    let (source_service, source_objects) = (service.clone(), objects.clone());
     let methods: Vec<(String, u32, MethodCallback)> = vec![
+        (
+            "asDebugSourceUri".to_owned(),
+            2,
+            Rc::new(move |_, args| {
+                let source = match args.first() {
+                    Some(source @ JsData::Object(_)) => js_to_json(source),
+                    _ => return Err("asDebugSourceUri: o source precisa ser um objeto".to_owned()),
+                };
+                let session = match args.get(1) {
+                    Some(session @ JsData::Object(_)) => Some(source_objects.session_of(session)?),
+                    _ => None,
+                };
+                source_service.as_debug_source_uri(&source, session.as_deref()).map(|uri| uri_to_js(&uri)).map_err(|error| error.message)
+            }),
+        ),
         (
             "startDebugging".to_owned(),
             3,
@@ -740,11 +1002,24 @@ pub fn namespace(
     ];
 
     // Os provedores são objetos da extensão (o `this` e o protótipo contam): funções por referência, próprias do namespace.
-    let context = ProviderContext { js: js.clone(), events: events.clone(), objects: objects.clone() };
+    let context = ProviderContext { js: js.clone(), events: events.clone(), objects: objects.clone(), table: table.clone() };
     let reference = |name: &str, length: u32, body: NativeCallback| (name.to_owned(), JsData::Handle(Rc::new(runner.make_function_by_reference(name, length, body))));
     let (config_service, config_table, config_context) = (service.clone(), table.clone(), context.clone());
     let (factory_service, factory_table, factory_extensions) = (service.clone(), table.clone(), services.extensions.clone());
+    let (tracker_service, tracker_table, tracker_context) = (service.clone(), table.clone(), context.clone());
     let references = vec![
+        reference(
+            "registerDebugAdapterTrackerFactory",
+            2,
+            Rc::new(move |args| {
+                let debug_type = string_arg(args, 0, "registerDebugAdapterTrackerFactory: o tipo")?;
+                let factory: Option<Rc<dyn DebugAdapterTrackerFactory>> = match args.get(1) {
+                    Some(target @ JsData::Handle(_)) => Some(Rc::new(JsTrackerFactory { context: tracker_context.clone(), target: target.clone() })),
+                    _ => None,
+                };
+                Ok(tracker_table.to_js(tracker_service.register_debug_adapter_tracker_factory(&debug_type, factory)))
+            }),
+        ),
         reference(
             "registerDebugConfigurationProvider",
             3,

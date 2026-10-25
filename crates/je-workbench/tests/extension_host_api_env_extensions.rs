@@ -58,6 +58,10 @@ exports.activate = (context) => {
     remoteName: vscode.env.remoteName,
     openExternal: typeof vscode.env.openExternal,
     asExternalUri: typeof vscode.env.asExternalUri,
+    isAppPortable: vscode.env.isAppPortable,
+    appHost: vscode.env.appHost,
+    isNewAppInstall: vscode.env.isNewAppInstall,
+    onDidChangeShell: typeof vscode.env.onDidChangeShell,
   }));
   command('t.members', () => JSON.stringify({
     isTelemetryEnabled: typeof vscode.env.isTelemetryEnabled,
@@ -200,6 +204,9 @@ impl IMainThreadBinder for Binder {
             shell: "/bin/sh".to_owned(),
             ui_kind: 1,
             remote_authority: Some("ssh-remote+caixa".to_owned()),
+            is_portable: true,
+            app_host: "desktop".to_owned(),
+            first_session_date: "2020-01-01T00:00:00.000Z".to_owned(),
         })
     }
 
@@ -235,7 +242,8 @@ fn env_exposes_the_host_environment_and_hides_the_window_members_without_a_windo
             Dynamic::string(concat!(
                 r#"{"appName":"je-code-teste","appRoot":"/opt/je-code-teste","language":"pt-br","machineId":"machine-0001","#,
                 r#""sessionId":"session-0001","uriScheme":"je-code-teste","shell":"/bin/sh","uiKind":1,"remoteName":"ssh-remote","#,
-                r#""openExternal":"undefined","asExternalUri":"undefined"}"#,
+                r#""openExternal":"undefined","asExternalUri":"undefined","isAppPortable":true,"appHost":"desktop","isNewAppInstall":false,"#,
+                r#""onDidChangeShell":"undefined"}"#,
             ))
         );
     });

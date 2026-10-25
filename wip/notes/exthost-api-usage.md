@@ -211,7 +211,8 @@ Fonte: **eu** (leitura de `api/env.rs`, `api/extensions.rs` e do oráculo `extHo
 | `env.remoteName`, `env.asExternalUri` | entregue (`remoteName` do `HostEnvironment.remote_authority`; `asExternalUri` sobre `ExtHostWindow`, com `allowTunneling` e o recuo de `http`/`https` do original; sem o ramo do esquema do app, porque `ExtHostUrls` não está portado; `asExternalUri` sem teste, pede o cliente `MainThreadWindow`) | `api/env.rs` |
 | `env.isTelemetryEnabled`, `onDidChangeTelemetryEnabled`, `createTelemetryLogger` (`TelemetryLogger`: `logUsage`, `logError`, `isUsageEnabled`, `isErrorsEnabled`, `onDidChangeEnableStates`, `dispose`) | entregue (sobre o `ExtHostTelemetry` que o binder entrega por `IMainThreadBinder::telemetry`; extensão do logger é a do host; `sender` precisa ter as funções como propriedades próprias) | `api/env.rs`, `api/telemetry_logger.rs`, teste `extension_host_api_env_extensions` |
 | `env.logLevel`, `onDidChangeLogLevel` | entregue (sobre o serviço de log do host) | `api/env.rs`, teste `extension_host_api_env_extensions` (só o tipo, o serviço de teste não muda de nível) |
-| `env.isAppPortable`, `appHost`, `isNewAppInstall`, `onDidChangeShell` e as propostas | falta | |
+| `env.isAppPortable`, `appHost`, `isNewAppInstall` e `onDidChangeShell` | feito | `HostEnvironment` ganhou `is_portable`, `app_host` e `first_session_date`; `onDidChangeShell` vem do terminal do host |
+| as propostas de `env` (`devDeviceId`, `envIsConnectionMetered`) | falta | |
 | `extensions.onDidChange` | entregue (evento do registro das extensões do host; disparo sem teste, o registro não é alcançável pelo harness) | `api/extensions.rs` |
 | `extensions.allAcrossExtensionHosts` | falta | é proposta (`extensionsAny`) |
 | `extensions.all`, `getExtension(id)` | entregue | `api/extensions.rs`, sobre os registros do `ExtHostExtensionService` |
@@ -361,7 +362,8 @@ Fonte: **eu** (leitura de `api/debug.rs`, `ext_host_debug_service.rs`, `ext_host
 | `debug.activeDebugSession`, `onDidStartDebugSession`, `onDidTerminateDebugSession`, `onDidChangeActiveDebugSession`, `onDidReceiveDebugSessionCustomEvent`, `activeDebugConsole` (`append`, `appendLine`) | entregue | `api/debug.rs` |
 | `DebugSession` (`id`, `type`, `name` com atribuição, `workspaceFolder`, `configuration`, `parentSession`, `customRequest`, `getDebugProtocolBreakpoint`) | entregue | `api/debug.rs` |
 | `debug.breakpoints`, `addBreakpoints`, `removeBreakpoints`, `onDidChangeBreakpoints`, `SourceBreakpoint`, `FunctionBreakpoint`, `Breakpoint`, `DebugConsoleMode`, `DebugConfigurationProviderTriggerKind` | entregue | `api/debug.rs`, `api/enums.rs` |
-| `registerDebugAdapterTrackerFactory`, `asDebugSourceUri`, `activeStackItem`, `onDidChangeActiveStackItem`, `DebugAdapterInlineImplementation`, `DataBreakpoint` construível, `DebugSessionOptions#testRun`, as propostas `debugVisualization` | falta | o serviço tem; o `DebugAdapterInlineImplementation` pede o adaptador por referência no construtor (a classe existe e rejeita com mensagem explícita) |
+| `registerDebugAdapterTrackerFactory`, `asDebugSourceUri`, `activeStackItem`, `onDidChangeActiveStackItem`, `DebugAdapterInlineImplementation`, `DataBreakpoint` construível | feito | tracker e adaptador inline chamados por referência; `DebugThread` e `DebugStackFrame` construíveis |
+| `DebugSessionOptions#testRun`, as propostas `debugVisualization` | falta | o host não tem o namespace `tests` |
 
 `debug` entra em `vscode` quando o binder registra `MainThreadDebugService`. O encaminhador `LateExtHostDebugService` (`in_process.rs`) entrega ao `ExtHostDebugService` real
 as chamadas sem retorno do cliente. O host não tem o `IConfigurationResolverService` (`NoVariableResolver`: `$substituteVariables` rejeita com a explicação) nem o namespace
