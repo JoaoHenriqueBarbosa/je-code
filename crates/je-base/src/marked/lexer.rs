@@ -112,6 +112,13 @@ impl Lexer {
         Rules::for_options(options).sources()
     }
 
+    /// `lexer.tokens.links = links`: parte das definições de link já lidas (o `Lexer` de instância do original
+    /// as guarda entre chamadas de `lex`).
+    pub fn with_links(mut self, links: HashMap<JsString, LinkDefinition>) -> Lexer {
+        self.links = links;
+        self
+    }
+
     /// `Lexer.lex(src, options)`: os tokens de topo e o mapa `links`.
     pub fn lex(self, src: &[u16]) -> Result<TokensList, MarkedError> {
         let options = self.options.clone();
