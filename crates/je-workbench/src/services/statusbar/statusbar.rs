@@ -306,3 +306,25 @@ impl StatusbarEntryKind {
         }
     }
 }
+
+/// `IStatusbarStyleOverride`: o `background`, o `foreground` e a `border` (identificadores de cor do tema) que sobrescrevem
+/// a aparência da barra de status. Quem o cria o guarda num `Rc`: a barra o identifica pela identidade do objeto, como o
+/// `Set<IStatusbarStyleOverride>` do original.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StatusbarStyleOverride {
+    /// A prioridade: vale o de menor número.
+    pub priority: f64,
+    pub background: Option<String>,
+    pub foreground: Option<String>,
+    pub border: Option<String>,
+}
+
+/// `IStatusbarEntryAccessor`: atualiza ou remove (`dispose`) uma entrada adicionada à barra.
+pub trait StatusbarEntryAccessor: je_base::lifecycle::IDisposable {
+    /// `update(entry)`.
+    fn update(&self, entry: StatusbarEntry);
+}
+
+/// `Partial<IStatusbarEntry>`: o que `overrideEntry` troca na entrada (`{ ...entry, ...override }`). A identidade do `Rc` é a do
+/// objeto do original.
+pub type StatusbarEntryOverride = Rc<dyn Fn(&mut StatusbarEntry)>;
