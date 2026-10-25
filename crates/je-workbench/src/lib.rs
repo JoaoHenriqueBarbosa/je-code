@@ -12,6 +12,8 @@ pub mod api;
 
 pub mod common;
 
+pub mod platform;
+
 // Porte de `src/vs/workbench/test`: os serviços de teste (`workbench_test_services`) usados pelos testes de todas as
 // crates acima do workbench. É infraestrutura de teste compartilhada, por isso é um módulo público de produção, e não
 // um arquivo de `tests/support` repetido em cada crate.

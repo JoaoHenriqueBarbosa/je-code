@@ -26,6 +26,7 @@ pub mod action_bar;
 pub mod context_view;
 pub mod hover_widget;
 pub mod button;
+pub mod pixel_spinner;
 pub mod switch;
 pub mod toggle;
 pub mod radio;
