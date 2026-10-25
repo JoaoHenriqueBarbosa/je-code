@@ -62,7 +62,11 @@ impl EditorCommandsContextActionRunner {
                 merged.preserve_focus = Some(true);
             }
 
-            action.run(&[editor_commands_context_to_dynamic(&merged)])
+            let promise = action.run(&[editor_commands_context_to_dynamic(&merged)]);
+            je_base::async_::async_fn(async move {
+                promise.await?;
+                Ok(())
+            })
         });
 
         Self { runner: ActionRunner::with_run_action(run_action) }

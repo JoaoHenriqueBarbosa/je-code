@@ -490,7 +490,7 @@ impl LabelUpdateScheduler {
 }
 
 /// As medidas que o original pede ao navegador no `doLayoutTabsNonWrapping`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TabsMetrics {
     /// `tabsContainer.offsetWidth`.
     pub visible_tabs_width: f64,
