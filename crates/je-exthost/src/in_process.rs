@@ -77,11 +77,11 @@ use je_workbench::contrib::debug::debug::{
 use je_workbench::contrib::debug::debug_protocol::ProtocolMessage;
 use je_workbench::api::common::ext_host_protocol::{
     DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
     FileSystemEvents, IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWillRunFileOperationParticipation, IWorkspaceData, SerializedModelContentChangedEvent,
     SourceTargetPair, StatusBarItemDto, TextEditorPositionData,
 };
-use je_platform::files::files::FileOperation;
+use je_platform::files::files::{FileDeleteOptions, FileOpenOptions, FileOperation, FileOverwriteOptions, FileType, FileWriteOptions, Stat, WatchOptions};
 
 use crate::api::env::HostEnvironment;
 use crate::local_context::LocalContext;
@@ -294,6 +294,70 @@ pub struct LateExtHostProgress(pub Late<dyn ExtHostProgressShape>);
 impl ExtHostProgressShape for LateExtHostProgress {
     fn rpc_accept_progress_canceled(&self, handle: u32) {
         self.0.call_void(move |target| target.rpc_accept_progress_canceled(handle));
+    }
+}
+
+/// O `ExtHostFileSystemShape` que ainda não existe quando `MainThreadFileSystem` nasce (o `ExtHostFileSystem` só nasce no primeiro
+/// `registerFileSystemProvider`, e o cliente só o chama depois do registro).
+#[derive(Default)]
+pub struct LateExtHostFileSystem(pub Late<dyn ExtHostFileSystemShape>);
+
+impl ExtHostFileSystemShape for LateExtHostFileSystem {
+    fn rpc_stat(&self, handle: u32, resource: &URI) -> Promise<Stat> {
+        self.0.bound().rpc_stat(handle, resource)
+    }
+
+    fn rpc_readdir(&self, handle: u32, resource: &URI) -> Promise<Vec<(String, FileType)>> {
+        self.0.bound().rpc_readdir(handle, resource)
+    }
+
+    fn rpc_read_file(&self, handle: u32, resource: &URI) -> Promise<VSBuffer> {
+        self.0.bound().rpc_read_file(handle, resource)
+    }
+
+    fn rpc_write_file(&self, handle: u32, resource: &URI, content: VSBuffer, opts: FileWriteOptions) -> Promise<()> {
+        self.0.bound().rpc_write_file(handle, resource, content, opts)
+    }
+
+    fn rpc_rename(&self, handle: u32, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()> {
+        self.0.bound().rpc_rename(handle, resource, target, opts)
+    }
+
+    fn rpc_copy(&self, handle: u32, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()> {
+        self.0.bound().rpc_copy(handle, resource, target, opts)
+    }
+
+    fn rpc_mkdir(&self, handle: u32, resource: &URI) -> Promise<()> {
+        self.0.bound().rpc_mkdir(handle, resource)
+    }
+
+    fn rpc_delete(&self, handle: u32, resource: &URI, opts: FileDeleteOptions) -> Promise<()> {
+        self.0.bound().rpc_delete(handle, resource, opts)
+    }
+
+    fn rpc_watch(&self, handle: u32, session: u32, resource: &URI, opts: WatchOptions) {
+        let resource = resource.clone();
+        self.0.call_void(move |target| target.rpc_watch(handle, session, &resource, opts));
+    }
+
+    fn rpc_unwatch(&self, handle: u32, session: u32) {
+        self.0.call_void(move |target| target.rpc_unwatch(handle, session));
+    }
+
+    fn rpc_open(&self, handle: u32, resource: &URI, opts: FileOpenOptions) -> Promise<u32> {
+        self.0.bound().rpc_open(handle, resource, opts)
+    }
+
+    fn rpc_close(&self, handle: u32, fd: u32) -> Promise<()> {
+        self.0.bound().rpc_close(handle, fd)
+    }
+
+    fn rpc_read(&self, handle: u32, fd: u32, pos: u64, length: usize) -> Promise<VSBuffer> {
+        self.0.bound().rpc_read(handle, fd, pos, length)
+    }
+
+    fn rpc_write(&self, handle: u32, fd: u32, pos: u64, data: VSBuffer) -> Promise<usize> {
+        self.0.bound().rpc_write(handle, fd, pos, data)
     }
 }
 
@@ -1171,6 +1235,7 @@ pub struct LateForwarders {
     pub output: Rc<LateExtHostOutputService>,
     pub progress: Rc<LateExtHostProgress>,
     pub file_system_events: Rc<LateExtHostFileSystemEventService>,
+    pub file_system: Rc<LateExtHostFileSystem>,
     pub documents_and_editors: Rc<LateExtHostDocumentsAndEditors>,
     pub documents: Rc<LateExtHostDocuments>,
     pub editors: Rc<LateExtHostEditors>,
@@ -1189,6 +1254,9 @@ impl LateForwarders {
         let output = Rc::new(LateExtHostOutputService::default());
         let progress = Rc::new(LateExtHostProgress::default());
         let file_system_events = Rc::new(LateExtHostFileSystemEventService::default());
+        let file_system = Rc::new(LateExtHostFileSystem::default());
+        let as_file_system: Rc<dyn ExtHostFileSystemShape> = file_system.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_FILE_SYSTEM.sid, Rc::new(as_file_system));
         let documents_and_editors = Rc::new(LateExtHostDocumentsAndEditors::default());
         let documents = Rc::new(LateExtHostDocuments::default());
         let editors = Rc::new(LateExtHostEditors::default());
@@ -1248,7 +1316,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

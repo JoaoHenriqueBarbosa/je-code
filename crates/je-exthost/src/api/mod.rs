@@ -24,6 +24,7 @@ pub mod enums;
 pub mod env;
 pub mod events;
 pub mod extensions;
+pub mod file_system;
 pub mod file_system_events;
 pub mod l10n;
 pub mod js_object;
