@@ -92,6 +92,31 @@ pub trait IGhostTextWidgetData {
     fn handle_inline_completion_shown(&self, view_data: &InlineCompletionViewData);
 }
 
+/// O objeto literal `{ ghostText, handleInlineCompletionShown, warning }` que as views montam como `IGhostTextWidgetData`
+/// (a `InlineEditsInsertionView` e a `InlineSuggestionsView`).
+pub struct GhostTextWidgetData {
+    pub ghost_text: GhostTextOrReplacement,
+    pub warning: Option<GhostTextWidgetWarning>,
+    /// `handleInlineCompletionShown`; `None` é o `() => { /* no-op */ }` do original.
+    pub on_inline_completion_shown: Option<Rc<dyn Fn(&InlineCompletionViewData)>>,
+}
+
+impl IGhostTextWidgetData for GhostTextWidgetData {
+    fn ghost_text(&self) -> &GhostTextOrReplacement {
+        &self.ghost_text
+    }
+
+    fn warning(&self) -> Option<&GhostTextWidgetWarning> {
+        self.warning.as_ref()
+    }
+
+    fn handle_inline_completion_shown(&self, view_data: &InlineCompletionViewData) {
+        if let Some(on_shown) = &self.on_inline_completion_shown {
+            on_shown(view_data);
+        }
+    }
+}
+
 /// `GhostTextWidgetWarning`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GhostTextWidgetWarning {

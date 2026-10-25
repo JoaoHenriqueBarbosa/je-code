@@ -37,11 +37,14 @@
 //!     `inlineEditsModel`, `theme` e `utils/` com `utils` e `flexBoxLayout`; o `towersLayout` e o `scrollToReveal` do
 //!     `longDistanceHint` seguem em `towers_layout` e `long_distance_hint`), mais o `Rect` de `core_2d` e o
 //!     `getNewLineRanges` e o `toLineEdit` de `edits/line_edit`;
-//!   - 4c-2 (em andamento): as views de inline edits (`inlineEditsViews/*`). Prontas: inserção de palavra, colapsada,
-//!     exclusão, `jumpToView`, `inlineEditsCustomView`, `originalEditorInlineDiffView`, substituição de palavras,
-//!     substituição de linhas e lado a lado (`inline_edits_views/`, com o `NonOverflowOverlayWidget` que as views
-//!     compartilham; o lado a lado trouxe o `EmbeddedCodeEditorWidget`, em `embedded_code_editor_widget`).
-//!     Faltam: inserção em linha, inserção em várias linhas e long distance hint;
+//!   - 4c-2 (pronta): as views de inline edits (`inlineEditsViews/*`): inserção de palavra, colapsada, exclusão, `jumpToView`,
+//!     `inlineEditsCustomView`, `originalEditorInlineDiffView`, substituição de palavras, substituição de linhas, lado a
+//!     lado, inserção de várias linhas (`inline_edits_insertion_view`, que cria o `GhostTextView` direto) e `longDistanceHint/`
+//!     (`long_distance_hint/`: a dica `InlineEditsLongDistanceHint` e o `LongDistancePreviewEditor`). Todas em
+//!     `inline_edits_views/`, com o `NonOverflowOverlayWidget` que elas compartilham; o lado a lado trouxe o
+//!     `EmbeddedCodeEditorWidget`, em `embedded_code_editor_widget`. A trilha de símbolos e o arquivo alvo da dica de
+//!     longa distância (a fábrica de breadcrumbs do `HideUnchangedRegionsFeature`, `basename` e `getIconClasses`) entram pelo
+//!     `ILongDistanceHintHost`;
 //!   - 4c-3 (pronta): o gutter indicator, em `view/inline_edits/components/`: `gutterIndicatorView`
 //!     (`InlineEditsGutterIndicator`, `InlineEditsGutterIndicatorData`, `InlineSuggestionGutterMenuData`,
 //!     `SimpleInlineSuggestModel`, o posicionamento na margem, o hover e o pulso) e `gutterIndicatorMenu`
@@ -49,14 +52,17 @@
 //!     O `GutterIndicatorMenuHost` implementa o `IGutterIndicatorHost` do indicador; o hover e o rastreador de foco
 //!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter` e a altura do sticky scroll
 //!     pelo construtor do host, ambos fechados pelo pintor nativo e pelo controller (4c-6);
-//!   - 4c-4 (em andamento): a `InlineEditsView`, em `view/inline_edits/inline_edits_view` (o arquivo inteiro: o
-//!     `_uiState`, `_determineView`, `_determineRenderState`, as nove views portadas, o `JumpToView` e o clique), com o
-//!     `ILongDistanceHint` e o `ILongDistanceViewState` em `long_distance_hint`. Os serviços e as duas views sem porte
-//!     (`InlineEditsInsertionView` e `InlineEditsLongDistanceHint`) entram pelo `InlineEditsViewServices` e pela
-//!     `IInlineEditsViewFactory`. Faltam: `inlineEditsInsertionView`, `InlineEditsLongDistanceHint` (a view) e o producer
-//!     (`inlineEditsViewProducer`), que cria o `ModelPerInlineEdit` observável que a view lê;
-//!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
-//!     (`hintsWidget/*`, com o `StatusBarViewItem`);
+//!   - 4c-4 (pronta): a `InlineEditsView`, em `view/inline_edits/inline_edits_view` (o arquivo inteiro: o `_uiState`,
+//!     `_determineView`, `_determineRenderState`, as views portadas, o `JumpToView` e o clique), com o `ILongDistanceHint` e
+//!     o `ILongDistanceViewState` em `long_distance_hint`, e o producer (`inline_edits_view_producer`:
+//!     `InlineEditsViewAndDiffProducer`, que cria o `ModelPerInlineEdit` observável que a view lê). A inserção e a dica de
+//!     longa distância são criadas direto, como no original; o `InlineEditsViewServices` leva os serviços que as views pedem
+//!     e a `IPreviewTextModelFactory` (o `TextModel` de prévia, que o `IInstantiationService` criava);
+//!   - 4c-5 (em andamento): a `InlineSuggestionsView` (`view/inline_suggestions_view`: junta o `GhostTextView`, o
+//!     `InlineEditsViewAndDiffProducer` e o indicador da margem) está pronta. Faltam, ligados por contrato anotado no `//!` dela:
+//!     o hints widget (`hintsWidget/*`, com o `StatusBarViewItem`), que o construtor registra depois da folha de estilo, e a
+//!     `InlineEditsOnboardingExperience` (`inlineEditsNewUsers`), que o construtor cria por produtor e que depende do
+//!     armazenamento e da configuração do usuário;
 //!   - 4c-6: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os serviços
 //!     injetados;
 //! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
