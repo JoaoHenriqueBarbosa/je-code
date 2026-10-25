@@ -4202,6 +4202,7 @@ dependencies = [
  "je-codicons",
  "je-instantiation",
  "je-storage",
+ "je-theme",
  "jiff",
  "libc",
  "notify",
