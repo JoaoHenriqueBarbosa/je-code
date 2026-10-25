@@ -12,6 +12,16 @@ use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner};
 
 use crate::api::handle_object;
 
+/// Troca, na lista `table[owner]` de pares (item do host, objeto da extensão), os objetos que chegaram por cópia pelos `items` por
+/// referência (na mesma ordem): a extensão passa a receber de volta o objeto que ela atribuiu, com `===`.
+pub fn hold_by_reference<T>(table: &RefCell<HashMap<u32, Vec<(Rc<T>, JsData)>>>, owner: u32, items: Vec<JsData>) {
+    if let Some(pairs) = table.borrow_mut().get_mut(&owner) {
+        for (pair, item) in pairs.iter_mut().zip(items) {
+            pair.1 = item;
+        }
+    }
+}
+
 /// As instâncias vivas das classes de objetos com `_id`, por (classe, id).
 #[derive(Default)]
 pub struct Instances {

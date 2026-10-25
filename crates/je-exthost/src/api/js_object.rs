@@ -37,6 +37,16 @@ pub struct JsObjects {
     identity: Rc<JsHandle>,
     invoker: Rc<JsHandle>,
     event_wrapper: Rc<JsHandle>,
+    observer: Rc<JsHandle>,
+}
+
+/// O que [`JsObjects::observe`] observa em uma classe nativa.
+#[derive(Clone, Copy)]
+pub enum Observed {
+    /// A atribuição ao acessor: os itens são os do array atribuído.
+    Setter,
+    /// A chamada do método: os itens são os do argumento `argument`.
+    Method { argument: u32 },
 }
 
 impl JsObjects {
@@ -73,6 +83,51 @@ impl JsObjects {
                  else { emit(value); done(1); } }; })",
                 "je-exthost/event-wrapper.js",
             ),
+            observer: evaluate(
+                "(function (constructor, name, isSetter, index, after) { \
+                 var proto = constructor.prototype; var original = Object.getOwnPropertyDescriptor(proto, name); \
+                 var notify = function (self, result, list) { after.apply(null, [self, result].concat(Array.isArray(list) ? list : [])); }; \
+                 if (isSetter) { Object.defineProperty(proto, name, { get: original.get, configurable: true, enumerable: false, \
+                   set: function (value) { original.set.call(this, value); notify(this, undefined, value); } }); } \
+                 else { Object.defineProperty(proto, name, { configurable: true, enumerable: false, writable: true, \
+                   value: function () { var result = original.value.apply(this, arguments); notify(this, result, arguments[index]); return result; } }); } })",
+                "je-exthost/observer.js",
+            ),
+        }
+    }
+
+    /// Instala em `class` (a classe nativa) um observador do acessor `name` (a atribuição) ou do método `name` (a chamada): depois que o
+    /// corpo nativo, que recebe os argumentos por cópia, termina sem lançar, `hook(this, resultado, itens)` recebe o receptor, o
+    /// resultado do método (`undefined` na atribuição) e os itens do array atribuído ou passado, os três POR REFERÊNCIA. É assim que o
+    /// host guarda os objetos que a extensão passou, com a identidade intacta, sem mudar a cópia que o corpo nativo já usa.
+    pub fn observe(&self, class: &Rc<JsHandle>, name: &str, observed: Observed, hook: impl Fn(&JsData, &JsData, Vec<JsData>) + 'static) {
+        let after = self.runner.make_function_by_reference(
+            "after",
+            2,
+            Rc::new(move |args| {
+                let at = |index: usize| args.get(index).cloned().unwrap_or(JsData::Undefined);
+                hook(&at(0), &at(1), args.iter().skip(2).cloned().collect());
+                Ok(JsData::Undefined)
+            }),
+        );
+        let (is_setter, index) = match observed {
+            Observed::Setter => (true, 0.0),
+            Observed::Method { argument } => (false, f64::from(argument)),
+        };
+        let installed = self.runner.call_data(
+            &self.observer,
+            &[JsData::Handle(class.clone()), JsData::Str(name.to_owned()), JsData::Bool(is_setter), JsData::Num(index), JsData::Handle(Rc::new(after))],
+        );
+        if let Err(message) = installed {
+            panic!("{name} não instala o observador: {message}");
+        }
+    }
+
+    /// O `_id` do objeto da API (o `handle` do host), lido por referência; `None` se não for um objeto com `_id` numérico.
+    pub fn handle_id(&self, target: &JsData) -> Option<u32> {
+        match self.property(target, "_id") {
+            JsData::Num(id) => Some(id as u32),
+            _ => None,
         }
     }
 

@@ -34,8 +34,9 @@
 //! - O `vscode` é um só para todas as extensões: o controlador, o provedor, o serializador e os ouvintes de gravação são registrados em nome
 //!   da extensão `je.exthost`, e as propostas de API nunca estão habilitadas (`rendererScripts` do `createNotebookController` é ignorado, como
 //!   o original faz sem `notebookMessaging`; o quarto argumento `registration` de `registerNotebookSerializer` não existe).
-//! - O motor entrega objeto comum por cópia, então a identidade (`a === b`) de um notebook, de uma célula, de um editor ou de um controlador
-//!   não vale (cada leitura cria um objeto JavaScript novo com o mesmo `_id`); comparar por `uri` ou por `id` funciona.
+//! - O notebook e a célula são UMA instância por documento e por célula (o [`Instances`] guarda o objeto): `a === b` vale entre leituras e
+//!   nos argumentos de comando. O motor entrega objeto comum por cópia, então a identidade de um editor ou de um controlador não vale
+//!   (cada leitura cria um objeto JavaScript novo com o mesmo `_id`); comparar por `uri` ou por `id` funciona.
 //! - `NotebookCellOutputItem#data` é uma lista de números (os bytes), não um `Uint8Array`: o `Uint8Array` não atravessa o motor. O construtor
 //!   e `NotebookCellOutputItem.bytes` aceitam a lista de bytes (e um `Uint8Array` copiado como objeto de índices); `text`, `json`, `stdout`,
 //!   `stderr` e `error` produzem a lista. Para o serializador a ponte faz a conversão do lado JavaScript: `deserializeNotebook` recebe um
@@ -79,6 +80,7 @@ use crate::api::commands::{call_settled, convert_maybe, promise_to_js, HostArgum
 use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, event_function_with_epilogue, EventTables};
 use crate::api::file_system_events::thenable_edit;
+use crate::api::instances::Instances;
 use crate::api::js_object::{JsObjects, JsResult};
 use crate::api::language_types::command_from_js;
 use crate::api::languages::host_extension;
@@ -115,7 +117,7 @@ pub struct NotebookApi {
 
 /// Registra o resolvedor dos argumentos de comando que o `ArgumentProcessor` do `ExtHostNotebookController` produz: a célula
 /// (`NotebookCellActionContext`) e o notebook (`NotebookActionContext`) chegam ao comando da extensão como os objetos nativos
-/// `NotebookCell` e `NotebookDocument` (a identidade `===` não vale, como em todas as leituras de notebook).
+/// `NotebookCell` e `NotebookDocument` (as mesmas instâncias que as leituras entregam: `===` vale).
 pub fn register_arguments(objects: &Rc<NotebookObjects>, arguments: &HostArguments) {
     let objects = objects.clone();
     arguments.register(move |value| {
@@ -128,8 +130,10 @@ pub fn register_arguments(objects: &Rc<NotebookObjects>, arguments: &HostArgumen
 }
 
 /// Os notebooks, as células, os editores, os controladores e as execuções que o JavaScript segura, por id (os objetos carregam só o id).
-#[derive(Default)]
 pub struct NotebookObjects {
+    runner: NodeRunner,
+    /// As instâncias de `NotebookDocument` e `NotebookCell` que a extensão segura: uma por documento e por célula, a mesma em toda leitura.
+    instances: Instances,
     next: Cell<u32>,
     documents: RefCell<Vec<(u32, NotebookDocument)>>,
     cells: RefCell<Vec<(u32, NotebookCell)>>,
@@ -142,6 +146,21 @@ pub struct NotebookObjects {
 }
 
 impl NotebookObjects {
+    pub fn new(runner: &NodeRunner) -> Self {
+        Self {
+            runner: runner.clone(),
+            instances: Instances::default(),
+            next: Cell::default(),
+            documents: RefCell::default(),
+            cells: RefCell::default(),
+            editors: RefCell::default(),
+            controllers: RefCell::default(),
+            executions: RefCell::default(),
+            execute_handlers: RefCell::default(),
+            interrupt_handlers: RefCell::default(),
+        }
+    }
+
     fn next_id(&self) -> u32 {
         let id = self.next.get() + 1;
         self.next.set(id);
@@ -156,7 +175,7 @@ impl NotebookObjects {
             self.documents.borrow_mut().push((id, document.clone()));
             id
         });
-        handle_object("NotebookDocument", id)
+        self.instances.get(&self.runner, "NotebookDocument", id)
     }
 
     /// O `vscode.NotebookCell` da célula: a mesma célula volta com o mesmo `_id`.
@@ -167,7 +186,7 @@ impl NotebookObjects {
             self.cells.borrow_mut().push((id, cell.clone()));
             id
         });
-        handle_object("NotebookCell", id)
+        self.instances.get(&self.runner, "NotebookCell", id)
     }
 
     /// O `vscode.NotebookEditor` do editor: o mesmo editor volta com o mesmo `_id`.

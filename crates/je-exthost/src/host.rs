@@ -345,7 +345,7 @@ impl ExtensionHost {
         members.extend(tabs::classes(runner, &tab_objects));
         let debug_objects = Rc::new(debug::DebugObjects::default());
         members.extend(debug::classes(runner, &debug_objects));
-        let notebook_objects = Rc::new(notebooks::NotebookObjects::default());
+        let notebook_objects = Rc::new(notebooks::NotebookObjects::new(runner));
         notebooks::define_classes(runner, &notebook_objects, &window_state.text_objects, &table, &event_tables);
         let host_arguments = Rc::new(commands::HostArguments::default());
         scm::register_arguments(runner, &scm_objects, &host_arguments);

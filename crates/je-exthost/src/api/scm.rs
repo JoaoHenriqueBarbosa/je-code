@@ -21,11 +21,11 @@
 //! - O `quickDiffProvider` chega como cópia (a atribuição a uma propriedade não é por referência): vale um objeto com a função
 //!   `provideOriginalResource` como propriedade PRÓPRIA (um objeto literal ou o atribuído a campos); os métodos de protótipo de uma
 //!   classe e o `this` do provedor não chegam. A função roda sem `this`.
-//! - Os `resourceStates` que `resourceStates` devolve são as cópias que a extensão atribuiu (com as propriedades extras dela), e a
-//!   ordem é a atribuída (a ordenação por caminho é só a da lista que vai ao workbench).
+//! - Os `resourceStates` que `resourceStates` devolve são os objetos que a extensão atribuiu (com as propriedades extras dela, num array
+//!   novo a cada leitura), e a ordem é a atribuída (a ordenação por caminho é só a da lista que vai ao workbench).
 //! - Um comando recebe a `SourceControl` e o `SourceControlResourceGroup` como a mesma instância que a extensão criou (`===`,
-//!   [`register_arguments`]); o `SourceControlResourceState` é o objeto que a extensão atribuiu a `resourceStates`, como cópia (um
-//!   setter recebe o valor por cópia, então a identidade com o objeto original não existe).
+//!   [`register_arguments`]); o `SourceControlResourceState` é o MESMO objeto que a extensão atribuiu a `resourceStates` (o host observa
+//!   a atribuição com [`JsObjects::observe`] e guarda cada item por referência).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -46,7 +46,8 @@ use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRun
 
 use crate::api::commands::{call_settled, convert_maybe, HostArguments};
 use crate::api::events::EventTables;
-use crate::api::instances::Instances;
+use crate::api::instances::{hold_by_reference, Instances};
+use crate::api::js_object::{JsObjects, Observed};
 use crate::api::languages::host_extension;
 use crate::api::{getter, handle_field, handle_object, setter};
 use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js, uri_to_js};
@@ -367,7 +368,7 @@ fn define_resource_group(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
             Ok(JsData::Undefined)
         }),
     )];
-    runner.define_accessor_class(
+    let class = Rc::new(runner.define_accessor_class(
         ClassSpec {
             name: "SourceControlResourceGroup".to_owned(),
             length: 0,
@@ -378,7 +379,14 @@ fn define_resource_group(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
             parent: None,
         },
         setters,
-    );
+    ));
+    let (hold_js, hold_objects) = (JsObjects::new(runner), objects.clone());
+    let observer = hold_js.clone();
+    observer.observe(&class, "resourceStates", Observed::Setter, move |this, _, items| {
+        if let Some(group) = hold_js.handle_id(this) {
+            hold_by_reference(&hold_objects.states, group, items);
+        }
+    });
 }
 
 fn define_input_box(runner: &NodeRunner, objects: &Rc<ScmObjects>) {

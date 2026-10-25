@@ -122,6 +122,7 @@ exports.activate = (context) => {
       canReply: thread.canReply,
       state: thread.state,
       comments: thread.comments.map(bodyOf),
+      sameFirst: thread.comments[0] === first,
     });
   });
 
@@ -135,13 +136,14 @@ exports.activate = (context) => {
 
   command('t.commentsKeptComment', () => {
     const comment = { body: 'primeiro', mode: vscode.CommentMode.Preview, author: { name: 'Ana' }, extra: 'mantido' };
+    globalThis.__comment = comment;
     globalThis.__thread = globalThis.__controller.createCommentThread(vscode.Uri.file('/proj/a.txt'), new vscode.Range(0, 0, 0, 5), [comment]);
     return 'ok';
   });
   command('t.commentsOnThread', (thread) => JSON.stringify({ same: thread === globalThis.__thread, body: thread.comments.map(bodyOf) }));
   command('t.commentsOnController', (controller) => JSON.stringify({ same: controller === globalThis.__controller, id: controller.id }));
   command('t.commentsOnReply', (reply) => JSON.stringify({ same: reply.thread === globalThis.__thread, text: reply.text }));
-  command('t.commentsOnComment', (comment) => JSON.stringify({ extra: comment.extra, body: bodyOf(comment) }));
+  command('t.commentsOnComment', (comment) => JSON.stringify({ extra: comment.extra, body: bodyOf(comment), same: comment === globalThis.__comment }));
 
   command('t.commentsDispose', () => {
     const controller = globalThis.__controller;
@@ -383,7 +385,7 @@ fn create_comment_thread_forwards_the_thread_and_one_coalesced_update() {
         assert_eq!(
             run(workbench, "t.commentsThread"),
             Dynamic::string(
-                r#"{"uri":"/proj/a.txt","range":"1,0-1,4","label":"Revisão","contextValue":"aberta","collapsibleState":1,"canReply":false,"state":1,"comments":["primeiro","**dois**"]}"#
+                r#"{"uri":"/proj/a.txt","range":"1,0-1,4","label":"Revisão","contextValue":"aberta","collapsibleState":1,"canReply":false,"state":1,"comments":["primeiro","**dois**"],"sameFirst":true}"#
             )
         );
         settle(workbench);
@@ -484,7 +486,7 @@ fn command_arguments_are_the_same_objects_the_extension_created() {
         assert_eq!(workbench.execute("t.commentsOnReply", vec![reply]), Dynamic::string(r#"{"same":true,"text":"resposta"}"#));
         // `CommentNode`: o comentário que a extensão atribuiu, com as propriedades extras dela.
         let node = marshalled(MarshalledId::CommentNode, vec![("thread", marshalled_thread), ("commentUniqueId", number(unique_ids[0]))]);
-        assert_eq!(workbench.execute("t.commentsOnComment", vec![node]), Dynamic::string(r#"{"extra":"mantido","body":"primeiro"}"#));
+        assert_eq!(workbench.execute("t.commentsOnComment", vec![node]), Dynamic::string(r#"{"extra":"mantido","body":"primeiro","same":true}"#));
     });
 }
 
