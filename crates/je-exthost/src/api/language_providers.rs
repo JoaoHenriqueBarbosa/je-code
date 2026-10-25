@@ -5,14 +5,15 @@
 //! `registerSelectionRangeProvider`, `registerDocumentSemanticTokensProvider` (com `provideDocumentSemanticTokensEdits` e
 //! `onDidChangeSemanticTokens`), `registerDocumentRangeSemanticTokensProvider` e `registerInlayHintsProvider` (com `resolveInlayHint` e
 //! `onDidChangeInlayHints`), e, na terceira leva, `registerDocumentLinkProvider` (com `resolveDocumentLink`), `registerColorProvider`,
-//! `registerCallHierarchyProvider`, `registerTypeHierarchyProvider` e `registerWorkspaceSymbolProvider` (com `resolveWorkspaceSymbol`).
+//! `registerCallHierarchyProvider`, `registerTypeHierarchyProvider` e `registerWorkspaceSymbolProvider` (com `resolveWorkspaceSymbol`), e,
+//! na quarta, `registerEvaluatableExpressionProvider`, `registerInlineValuesProvider` (com `onDidChangeInlineValues`),
+//! `registerLinkedEditingRangeProvider`, `registerMultiDocumentHighlightProvider` e `setLanguageConfiguration`.
 //!
 //! Ligam o provedor JavaScript (por referência, com o `this` da classe) ao `ExtHostLanguageFeatures` portado, no mesmo molde dos de
 //! `languages`: a infraestrutura (`JsProvider`, `Registrar`, `member`, `simple`, `Originals`) é a de lá, as classes de valor e os leitores
 //! estão em `language_provider_types`. Os `has_*` do trait são `typeof provider.resolveX === 'function'` lido no objeto do provedor.
 //!
-//! Falta (o serviço do host tem, falta só a ponte): `registerEvaluatableExpressionProvider`, `registerInlineValuesProvider`,
-//! `registerLinkedEditingRangeProvider`, `registerMultiDocumentHighlightProvider`, `registerDocumentPasteEditProvider`,
+//! Falta (o serviço do host tem, falta só a ponte): `registerDocumentPasteEditProvider`,
 //! `registerDocumentDropEditProvider` e as propostas.
 //!
 //! Divergências:
@@ -34,7 +35,8 @@ use je_workbench::api::common::ext_host_document_data::TextDocument;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
     ApiCallHierarchyProvider, ApiCodeLensProvider, ApiColorPresentationContext, ApiDocumentColorProvider, ApiDocumentHighlightProvider, ApiDocumentLinkProvider,
-    ApiDocumentRangeSemanticTokensProvider, ApiDocumentSemanticTokensProvider, ApiFoldingRangeProvider, ApiInlayHintsProvider, ApiOnTypeFormattingEditProvider, ApiPrepareRename,
+    ApiDocumentRangeSemanticTokensProvider, ApiDocumentSemanticTokensProvider, ApiEvaluatableExpressionProvider, ApiFoldingRangeProvider, ApiInlayHintsProvider, ApiInlineValue,
+    ApiInlineValuesProvider, ApiLinkedEditingRangeProvider, ApiMultiDocumentHighlightProvider, ApiOnTypeFormattingEditProvider, ApiPrepareRename,
     ApiProviderResult, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider, ApiSemanticTokensResult, ApiSignatureHelpContext, ApiSignatureHelpProvider,
     ApiSignatureHelpRef, ApiTypeHierarchyProvider, ApiWorkspaceSymbolProvider, CodeLensRef, DocumentLinkRef, InlayHintRef, OneOrMany, SignatureHelpMetadataOrTriggerChars,
 };
@@ -42,23 +44,26 @@ use je_workbench::api::common::ext_host_protocol::{FormattingOptions, ReferenceC
 use je_workbench::api::common::ext_host_type_converters::DocumentSelectorInput;
 use je_workbench::api::common::ext_host_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Color, ColorInformation, ColorPresentation, DocumentHighlight, DocumentLink,
-    FoldingRange, InlayHint, Location, Position, Range, SelectionRange, SemanticTokens, SemanticTokensLegend, SymbolInformation, TextEdit, TypeHierarchyItem, WorkspaceEdit,
+    EvaluatableExpression, FoldingRange, InlayHint, InlineValueContext, LinkedEditingRanges, Location, MultiDocumentHighlight, Position, Range, SelectionRange, SemanticTokens,
+    SemanticTokensLegend, SymbolInformation, TextEdit, TypeHierarchyItem, WorkspaceEdit,
 };
 use je_extensions::scanner::ExtensionDescription;
 use je_base::lifecycle::DisposableRef;
 use zjsc::api::embed_node::{JsData, NodeRunner};
 
+use crate::api::language_configuration::language_configuration_from_js;
 use crate::api::language_provider_types::{
     call_hierarchy_incoming_calls_from_js, call_hierarchy_item_to_js, call_hierarchy_items_from_js, call_hierarchy_outgoing_calls_from_js, code_lens_from_js,
     code_lenses_from_js, color_informations_from_js, color_presentations_from_js, document_highlights_from_js, document_link_from_js, document_links_from_js,
-    folding_ranges_from_js, inlay_hint_from_js, inlay_hints_from_js, locations_from_js, prepare_rename_from_js, selection_ranges_from_js, semantic_tokens_from_js,
+    evaluatable_expression_from_js, folding_ranges_from_js, inlay_hint_from_js, inlay_hints_from_js, inline_value_context_to_js, inline_values_from_js,
+    linked_editing_ranges_from_js, locations_from_js, multi_document_highlights_from_js, prepare_rename_from_js, selection_ranges_from_js, semantic_tokens_from_js,
     semantic_tokens_legend_from_js, semantic_tokens_result_from_js, signature_help_from_js, signature_help_to_js, symbol_information_result_from_js,
     symbol_information_to_js, symbol_informations_from_js, type_hierarchy_item_list_from_js, type_hierarchy_item_to_js, type_hierarchy_items_from_js,
 };
 use crate::api::language_types::{strings_of, text_edits_from_js};
 use crate::api::languages::{formatting_options_to_js, member, simple, JsProvider, Originals, Registrar};
 use crate::api::types::{position_data, range_data};
-use crate::convert::{api_to_js, exported, field, is_nullish, opt_string};
+use crate::convert::{api_to_js, exported, field, is_nullish, opt_string, string_arg};
 
 // --- lente de código
 
@@ -370,6 +375,57 @@ impl ApiWorkspaceSymbolProvider for WorkspaceSymbolProvider {
     }
 }
 
+// --- expressões avaliáveis, valores embutidos, edição vinculada, destaque em vários documentos
+
+struct EvaluatableExpressionProvider(JsProvider);
+
+impl ApiEvaluatableExpressionProvider for EvaluatableExpressionProvider {
+    fn provide_evaluatable_expression(&self, document: &TextDocument, position: &Position, token: CancellationToken) -> ApiProviderResult<EvaluatableExpression> {
+        self.0.invoke("provideEvaluatableExpression", vec![self.0.document(document), position_data(*position), self.0.token(token)], evaluatable_expression_from_js)
+    }
+}
+
+struct InlineValuesProvider(JsProvider);
+
+impl ApiInlineValuesProvider for InlineValuesProvider {
+    fn on_did_change_inline_values(&self) -> Option<Event<()>> {
+        self.0.change_event("onDidChangeInlineValues")
+    }
+
+    fn provide_inline_values(&self, document: &TextDocument, view_port: &Range, context: &InlineValueContext, token: CancellationToken) -> ApiProviderResult<Vec<ApiInlineValue>> {
+        let args = vec![self.0.document(document), range_data(*view_port), inline_value_context_to_js(context), self.0.token(token)];
+        self.0.invoke("provideInlineValues", args, inline_values_from_js)
+    }
+}
+
+struct LinkedEditingRangeProvider(JsProvider);
+
+impl ApiLinkedEditingRangeProvider for LinkedEditingRangeProvider {
+    fn provide_linked_editing_ranges(&self, document: &TextDocument, position: &Position, token: CancellationToken) -> ApiProviderResult<LinkedEditingRanges> {
+        let js = self.0.js.clone();
+        self.0.invoke(
+            "provideLinkedEditingRanges",
+            vec![self.0.document(document), position_data(*position), self.0.token(token)],
+            move |value| linked_editing_ranges_from_js(&js, value),
+        )
+    }
+}
+
+struct MultiDocumentHighlightProvider(JsProvider);
+
+impl ApiMultiDocumentHighlightProvider for MultiDocumentHighlightProvider {
+    fn provide_multi_document_highlights(
+        &self,
+        document: &TextDocument,
+        position: &Position,
+        other_documents: &[TextDocument],
+        token: CancellationToken,
+    ) -> ApiProviderResult<Vec<MultiDocumentHighlight>> {
+        let others = JsData::Array(other_documents.iter().map(|other| self.0.document(other)).collect());
+        self.0.invoke("provideMultiDocumentHighlights", vec![self.0.document(document), position_data(*position), others, self.0.token(token)], multi_document_highlights_from_js)
+    }
+}
+
 // --- os registros
 
 /// `registerSignatureHelpProvider(selector, provider, firstItem?, ...remaining)`: um objeto é o `SignatureHelpProviderMetadata`, o resto são
@@ -420,6 +476,26 @@ pub(crate) fn members(runner: &NodeRunner, registrar: &Rc<Registrar>) -> Vec<(St
         }),
         simple(runner, registrar, "registerCodeLensProvider", |features, extension, selector, provider| {
             features.register_code_lens_provider(extension, selector, Rc::new(CodeLensProvider::new(provider)))
+        }),
+        simple(runner, registrar, "registerEvaluatableExpressionProvider", |features, extension, selector, provider| {
+            features.register_evaluatable_expression_provider(extension, selector, Rc::new(EvaluatableExpressionProvider(provider)))
+        }),
+        simple(runner, registrar, "registerInlineValuesProvider", |features, extension, selector, provider| {
+            features.register_inline_values_provider(extension, selector, Rc::new(InlineValuesProvider(provider)))
+        }),
+        simple(runner, registrar, "registerLinkedEditingRangeProvider", |features, extension, selector, provider| {
+            features.register_linked_editing_range_provider(extension, selector, Rc::new(LinkedEditingRangeProvider(provider)))
+        }),
+        simple(runner, registrar, "registerMultiDocumentHighlightProvider", |features, extension, selector, provider| {
+            features.register_multi_document_highlight_provider(extension, selector, Rc::new(MultiDocumentHighlightProvider(provider)))
+        }),
+        // `setLanguageConfiguration(language, configuration)`: a configuração é lida por referência (as `RegExp` não atravessam como cópia).
+        member(runner, registrar, "setLanguageConfiguration", 2, |registrar, args| {
+            let language = string_arg(args, 0, "setLanguageConfiguration: a linguagem")?;
+            let Some(configuration @ JsData::Handle(_)) = args.get(1) else { return Err("a configuração precisa ser um objeto".to_owned()) };
+            let configuration = language_configuration_from_js(&registrar.js, configuration).map_err(|error| error.message)?;
+            let registration = registrar.features.set_language_configuration(&registrar.extension, &language, &configuration).map_err(|error| error.message)?;
+            Ok(registrar.table.to_js(registration))
         }),
         simple(runner, registrar, "registerReferenceProvider", |features, extension, selector, provider| {
             features.register_reference_provider(extension, selector, Rc::new(ReferenceProvider(provider)))

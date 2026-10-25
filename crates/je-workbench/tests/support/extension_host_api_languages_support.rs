@@ -107,6 +107,8 @@ macro_rules! ignore_calls {
 pub struct RecordingLanguageFeatures {
     pub registered: RefCell<Vec<(&'static str, u32)>>,
     pub unregistered: RefCell<Vec<u32>>,
+    /// Os `$setLanguageConfiguration` recebidos: o handle, a linguagem e a configuração serializada.
+    pub configurations: RefCell<Vec<(u32, String, ILanguageConfigurationDto)>>,
 }
 
 impl RecordingLanguageFeatures {
@@ -184,7 +186,10 @@ impl MainThreadLanguageFeaturesShape for RecordingLanguageFeatures {
         rpc_emit_document_range_semantic_tokens_event(event_handle: u32);
         rpc_emit_inlay_hints_event(event_handle: u32);
         rpc_emit_folding_range_event(event_handle: u32, event: Option<Dynamic>);
-        rpc_set_language_configuration(handle: u32, language_id: &str, configuration: ILanguageConfigurationDto);
+    }
+
+    fn rpc_set_language_configuration(&self, handle: u32, language_id: &str, configuration: ILanguageConfigurationDto) {
+        self.configurations.borrow_mut().push((handle, language_id.to_owned(), configuration));
     }
 
     fn rpc_resolve_paste_file_data(&self, _handle: u32, _request_id: u32, _data_id: &str) -> Promise<VSBuffer> {
