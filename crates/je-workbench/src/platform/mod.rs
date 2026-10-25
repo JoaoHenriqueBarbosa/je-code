@@ -4,5 +4,6 @@
 
 pub mod actions;
 pub mod contextview;
+pub mod opener;
 pub mod theme;
 pub mod user_interaction;
