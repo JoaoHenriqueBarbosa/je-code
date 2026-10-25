@@ -38,7 +38,7 @@ use je_platform::quickinput::quick_input::{
 };
 use je_platform::quickinput::quick_input_browser::IQuickInputListUi;
 use je_platform::quickinput::quick_input_controller::{IQuickInputOptions, IQuickInputStyles, QuickInputController};
-use je_platform::storage::storage::{IStorageService, InMemoryStorageService};
+use je_platform::storage::storage::{StorageService, InMemoryStorageService};
 
 struct FixtureLayoutService {
     container: Rc<ViewElement>,
@@ -78,8 +78,10 @@ fn setup(guard: &LeakGuard) -> Env {
     let layout = Emitter::new();
     guard.add_rc(layout.clone());
     let layout_service: Rc<dyn ILayoutService> = Rc::new(FixtureLayoutService { container: fixture.clone(), layout });
-    let context_key_service: Rc<dyn IContextKeyService> = guard.add_rc(ContextKeyService::new(TestConfigurationService::new(None)));
-    let storage_service: Rc<dyn IStorageService> = guard.add_rc(InMemoryStorageService::new());
+    let context_key_service = guard.add_rc(ContextKeyService::new(TestConfigurationService::new(None)));
+    let context_key_service: Rc<dyn IContextKeyService> = context_key_service;
+    let storage_service = guard.add_rc(InMemoryStorageService::new());
+    let storage_service: Rc<dyn StorageService> = Rc::new(storage_service);
     let controller = guard.add_rc(QuickInputController::new(
         IQuickInputOptions {
             container: fixture.clone(),

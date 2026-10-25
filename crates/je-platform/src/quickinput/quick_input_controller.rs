@@ -58,7 +58,7 @@ use crate::contextkey::contextkey::{IContextKey, IContextKeyService};
 use crate::contextview::context_view::{AnchorTarget, get_anchor_rect};
 use crate::contextview::view_element::ViewElement;
 use crate::layout::layout_service::ILayoutService;
-use crate::storage::storage::{IStorageService, StorageScope, StorageTarget};
+use crate::storage::storage::{StorageService, StorageScope, StorageTarget};
 
 const VIEWSTATE_STORAGE_KEY: &str = "workbench.quickInput.viewState";
 const QUICK_INPUT_MOTION_CLOSING_CLASS: &str = "quick-input-widget-closing";
@@ -628,7 +628,7 @@ pub struct QuickInputController {
     base: Rc<Disposable>,
     options: IQuickInputOptions,
     layout_service: Rc<dyn ILayoutService>,
-    storage_service: Rc<dyn IStorageService>,
+    storage_service: Rc<dyn StorageService>,
     ui: RefCell<Option<Rc<QuickInputUi>>>,
     dimension: Cell<Option<ISize>>,
     title_bar_offset: Cell<f64>,
@@ -669,7 +669,7 @@ impl QuickInputController {
         options: IQuickInputOptions,
         layout_service: Rc<dyn ILayoutService>,
         context_key_service: Rc<dyn IContextKeyService>,
-        storage_service: Rc<dyn IStorageService>,
+        storage_service: Rc<dyn StorageService>,
     ) -> Rc<Self> {
         let base = Disposable::new();
         let (on_did_accept, on_did_custom, on_did_trigger_button, on_show, on_hide, on_alignment_change) =
@@ -1857,7 +1857,7 @@ impl QuickInputController {
     // -----------------------------------------------------------------------------------------
 
     /// Lê o `{"top":n,"left":n}` que [`Self::save_view_state`] escreve (só esse formato, só números).
-    fn load_view_state(storage: &dyn IStorageService) -> Option<QuickInputViewState> {
+    fn load_view_state(storage: &dyn StorageService) -> Option<QuickInputViewState> {
         let data = storage.get(VIEWSTATE_STORAGE_KEY, StorageScope::Application, Some("{}"))?;
         let number = |key: &str| -> Option<f64> {
             let marker = format!("\"{key}\":");

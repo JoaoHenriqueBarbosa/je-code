@@ -755,7 +755,7 @@ fn element_at_mut<'a>(element: &'a mut Element, path: &[usize]) -> Option<&'a mu
     let Some((first, rest)) = path.split_first() else { return Some(element) };
     match element.children.get_mut(*first)? {
         Node::Element(child) => element_at_mut(child, rest),
-        Node::Text(_) => None,
+        Node::Text(_) | Node::Comment(_) => None,
     }
 }
 

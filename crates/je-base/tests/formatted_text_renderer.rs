@@ -46,7 +46,8 @@ fn first_child(rendered: &RenderedFormattedText) -> &Node {
 
 fn text_content(node: &Node) -> String {
     match node {
-        Node::Text(text) => text.to_string_lossy(),
+        // o `textContent` de um comentário é o `data` dele, como no DOM
+        Node::Text(text) | Node::Comment(text) => text.to_string_lossy(),
         Node::Element(element) => element.text_content().to_string_lossy(),
     }
 }
