@@ -222,7 +222,9 @@ pub trait InlineCompletionsRequestTelemetry {
     fn send_empty_response(&self, event: EmptyResponseTelemetryEvent);
 }
 
-/// Os serviços que o construtor recebe por injeção.
+/// Os serviços que o construtor recebe por injeção. É `Clone` (tudo é `Rc`) porque o controller cria um modelo, e com ele
+/// uma fonte, a cada troca de modelo de texto.
+#[derive(Clone)]
 pub struct InlineCompletionsSourceServices {
     pub language_configuration_service: Rc<dyn ILanguageConfigurationService>,
     pub log_service: LogServiceRef,

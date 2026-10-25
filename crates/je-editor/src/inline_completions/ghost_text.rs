@@ -249,6 +249,22 @@ impl GhostTextOrReplacement {
             GhostTextOrReplacement::Replacement(r) => r.is_empty(),
         }
     }
+
+    /// `ghostText.lineCount` de qualquer das duas variantes.
+    pub fn line_count(&self) -> i32 {
+        match self {
+            GhostTextOrReplacement::GhostText(g) => g.line_count(),
+            GhostTextOrReplacement::Replacement(r) => r.line_count(),
+        }
+    }
+
+    /// `ghostText.renderForScreenReader(lineText)` de qualquer das duas variantes.
+    pub fn render_for_screen_reader(&self, line_text: &[u16]) -> JsString {
+        match self {
+            GhostTextOrReplacement::GhostText(g) => g.render_for_screen_reader(line_text),
+            GhostTextOrReplacement::Replacement(r) => r.render_for_screen_reader(line_text),
+        }
+    }
 }
 
 /// `ghostTextsOrReplacementsEqual`.
