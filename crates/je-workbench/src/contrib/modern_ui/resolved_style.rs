@@ -13,7 +13,7 @@
 //! - **Cores.** Saem como [`Color`]; o texto `rgb(...)` do computado é [`css_rgb`], e o valor de uma propriedade
 //!   personalizada (`getPropertyValue`) é o `to_string()` da cor, que é o texto que o `generateColorThemeCSS` escreve.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use je_theme::ColorTheme;
 use je_theme::color::Color;
@@ -21,6 +21,14 @@ use je_theme::color::format::css::format_rgb;
 use je_theme::registry::{as_css_variable_name, color_registry};
 use je_theme::size_utils::get_size_registry;
 use je_theme::sizes::base_sizes::{CODICON_FONT_SIZE, CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
+
+// Os traços de borda dos cartões compactos (`floatingPanels.css`, linhas 508 a 522).
+mod card_border_layers;
+// As abas conectadas do editor (`connectedEditorTabs.css` e as regras de `tabs.css` que ela cobre).
+mod connected_tabs;
+
+pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
+pub use connected_tabs::{TabBorderContainer, TabBorderIndicator, TabElement};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -130,6 +138,9 @@ pub struct ModernUiStyle<'a> {
     activity_bar_action_gap: Option<f64>,
     /// `--window-zoom-factor`, que `window.ts` publica na raiz (`var(--window-zoom-factor, 1)`: indefinida vale `1`).
     window_zoom_factor: f64,
+    /// As propriedades personalizadas de cor que o DOM escreve direto na raiz (`root.style.setProperty('--modern-ui-...')`),
+    /// que vencem as que os participantes de tema declaram na folha de estilo.
+    root_variables: BTreeMap<String, Color>,
 }
 
 impl<'a> ModernUiStyle<'a> {
@@ -142,7 +153,19 @@ impl<'a> ModernUiStyle<'a> {
             explicit_colors_only: false,
             activity_bar_action_gap: None,
             window_zoom_factor: 1.0,
+            root_variables: BTreeMap::new(),
         }
+    }
+
+    /// Define uma propriedade personalizada de cor na raiz (`root.style.setProperty(name, color)`), por exemplo
+    /// `--modern-ui-editor-tab-custom-active-border-top`.
+    pub fn set_root_variable(&mut self, name: &str, color: Color) {
+        self.root_variables.insert(name.to_owned(), color);
+    }
+
+    /// Remove uma propriedade personalizada da raiz (`root.style.removeProperty(name)`).
+    pub fn remove_root_variable(&mut self, name: &str) {
+        self.root_variables.remove(name);
     }
 
     /// Define `--window-zoom-factor` (`root.style.setProperty`).
@@ -202,6 +225,9 @@ impl<'a> ModernUiStyle<'a> {
     /// O valor de uma variável CSS, `--vscode-*` (a cor do tema) ou `--modern-ui-*` das abas (`tabs.css`, linhas 24 a 54).
     /// `None` é a variável indefinida.
     pub fn variable(&self, name: &str) -> Option<Color> {
+        if let Some(color) = self.root_variables.get(name) {
+            return Some(color.clone());
+        }
         if let Some(id) = modern_ui_tab_variable_color_id(name) {
             return self.has("modern-ui-tabs").then(|| self.color(id)).flatten();
         }
@@ -360,6 +386,10 @@ impl<'a> ModernUiStyle<'a> {
     /// `background-color` do `.tab-fill` de uma aba do editor fora do alto contraste (`tabs.css`, linhas 370 a 458). Os
     /// grupos sem foco usam as variáveis `unfocused-*`, que são aliases das focadas, então o grupo não muda o valor.
     pub fn editor_tab_fill_background(&self, tab: EditorTabState) -> Option<Color> {
+        if self.has("modern-ui-tabs") && self.has("modern-ui-connected-editor-tabs") {
+            // `connectedEditorTabs.css` (linhas 102 a 143 e 322 a 335) refaz as variáveis de fundo das abas.
+            return self.connected_tab_fill_background(&TabElement::from(tab));
+        }
         if !self.has("modern-ui-tabs") || self.high_contrast() {
             return None;
         }
@@ -890,7 +920,7 @@ impl<'a> ModernUiStyle<'a> {
     }
 
     /// `margin` do `.part.activitybar` e do `.part.panel` flutuantes (floatingPanels.css, linhas 76 a 102, 222 a 298 e 532 a
-    /// 535). `None` fora do `.floating-panels` ou para outro tipo de parte.
+    /// 535), da barra lateral e do editor principal. `None` fora do `.floating-panels` ou para outro tipo de parte.
     pub fn floating_part_margins(&self, part: &ClassList) -> Option<PartMargins> {
         if !self.has("floating-panels") {
             return None;
@@ -939,6 +969,33 @@ impl<'a> ModernUiStyle<'a> {
                 margins.top = card;
             }
             if self.compact() && part.contains("floating-part-outer-bottom") {
+                margins.bottom = outer;
+            }
+            return Some(margins);
+        }
+        if part.contains("editor") {
+            // Linhas 176 a 202, 441 a 443, 461 a 463 e 532 a 535 (o editor principal, filho da grade): a precedência é a da
+            // especificidade, que põe o painel em cima (linhas 187 e 461) acima da margem da janela (linhas 180 e 441).
+            let mut margins = PartMargins { top: inner, right: inner, bottom: card, left: card };
+            if self.has("top-window-edge") {
+                margins.top = outer;
+            }
+            if self.has("panel-position-top") && !self.has("nopanel") {
+                margins.top = card;
+            }
+            if part.contains("floating-editor-outer-left") {
+                margins.left = outer;
+            }
+            if part.contains("floating-editor-outer-right") {
+                margins.right = outer;
+            }
+            if self.has("nostatusbar") {
+                margins.bottom = outer;
+            }
+            if self.has("panel-position-bottom") && !self.has("nopanel") {
+                margins.bottom = inner;
+            }
+            if self.compact() && part.contains("floating-editor-outer-bottom") {
                 margins.bottom = outer;
             }
             return Some(margins);
