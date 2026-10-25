@@ -57,7 +57,7 @@ use super::quick_input_utils::{OnTrigger, quick_input_button_to_action, quick_in
 use crate::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression, RawContextKey};
 use crate::contextview::view_element::ViewElement;
 use je_base::actions::ActionRef;
-use je_base::async_::async_fn_maybe;
+use je_base::promise::Promise;
 use je_base::promise::MaybePromise;
 
 // ---------------------------------------------------------------------------------------------
@@ -739,7 +739,7 @@ impl QuickInputBase {
                         if let Some(this) = weak.upgrade() {
                             this.on_did_trigger_button.fire(triggered.clone());
                         }
-                        MaybePromise::Promise(async_fn_maybe(async { Ok(Dynamic::Undefined) }))
+                        MaybePromise::Promise(Promise::resolved(Dynamic::Undefined))
                     }),
                 )
             })
