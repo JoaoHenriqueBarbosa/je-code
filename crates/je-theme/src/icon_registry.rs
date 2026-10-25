@@ -478,13 +478,14 @@ fn register_icons_schema(registry: &IconRegistry) {
 }
 
 thread_local! {
-    static ICON_REGISTRY: Rc<IconRegistry> = {
+    // O registro e as inscrições dele nascem na importação do módulo no original, fora do rastreio de descartáveis.
+    static ICON_REGISTRY: Rc<IconRegistry> = without_disposable_tracker(|| {
         let registry = IconRegistry::new();
         initialize(&registry);
         register_icons_schema(&registry);
         register_common_icons(&registry);
         Rc::new(registry)
-    };
+    });
 }
 
 /// `registerIcon(id, defaults, description, deprecationMessage)` do módulo: registra no singleton.

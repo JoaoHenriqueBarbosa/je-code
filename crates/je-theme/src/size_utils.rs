@@ -448,12 +448,13 @@ fn register_sizes_schema(registry: &SizeRegistry) {
 }
 
 thread_local! {
-    static SIZE_REGISTRY: Rc<SizeRegistry> = {
+    // O registro e as inscrições dele nascem na importação do módulo no original, fora do rastreio de descartáveis.
+    static SIZE_REGISTRY: Rc<SizeRegistry> = je_base::lifecycle::without_disposable_tracker(|| {
         let registry = Rc::new(SizeRegistry::new());
         register_sizes_schema(&registry);
         register_base_sizes(&registry);
         registry
-    };
+    });
 }
 
 /// `getSizeRegistry()`: o registro global, com os tamanhos base do VS Code.
