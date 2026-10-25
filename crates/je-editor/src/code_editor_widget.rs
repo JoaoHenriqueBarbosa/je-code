@@ -83,9 +83,10 @@
 //!   tipos estão em `editor_browser` e não têm `getDomNode()`.
 //! - Widgets de margem de glifos: `addGlyphMarginWidget`, `layoutGlyphMarginWidget`, `removeGlyphMarginWidget`.
 //! - Eventos que só a `View` produz: `onMouseUp`, `onMouseDown`, `onMouseDrag`, `onMouseDrop`,
-//!   `onMouseDropCanceled`, `onContextMenu`, `onMouseWheel`, `onKeyUp`,
-//!   `onWillCopy`, `onWillCut`, `onWillPaste`, `onDropIntoEditor`. `onMouseMove`, `onMouseLeave` e `onKeyDown`
-//!   existem, e quem tem a `View` os dispara por `fire_mouse_move`, `fire_mouse_leave` e `fire_key_down`.
+//!   `onMouseDropCanceled`, `onContextMenu`, `onMouseWheel`,
+//!   `onWillCopy`, `onWillCut`, `onWillPaste`, `onDropIntoEditor`. `onMouseMove`, `onMouseLeave`, `onKeyDown` e
+//!   `onKeyUp` existem, e quem tem a `View` os dispara por `fire_mouse_move`, `fire_mouse_leave`, `fire_key_down` e
+//!   `fire_key_up`.
 //! - `ICodeEditorService`: `willCreateCodeEditor`, `addCodeEditor` e `removeCodeEditor` chegam pelo
 //!   [`ICodeEditorRegistry`] opcional de [`CodeEditorWidgetServices`] (o construtor e o `dispose` os chamam, como o
 //!   original).
@@ -862,6 +863,7 @@ editor_emitters! {
     end_update, on_end_update, (), direct, "`onEndUpdate`.";
     before_execute_edit, on_before_execute_edit, BeforeExecuteEditEvent, direct, "`onBeforeExecuteEdit`.";
     key_down, on_key_down, je_platform::keybinding::keybinding::KeyboardEvent, direct, "`onKeyDown`: quem tem a `View` (ou o host nativo que a substitui) entrega as teclas por `fire_key_down`.";
+    key_up, on_key_up, je_platform::keybinding::keybinding::KeyboardEvent, direct, "`onKeyUp`: quem tem a `View` (ou o host nativo que a substitui) entrega as teclas por `fire_key_up`.";
     mouse_move, on_mouse_move, EditorMouseEvent, direct, "`onMouseMove`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_move`.";
     mouse_leave, on_mouse_leave, PartialEditorMouseEvent, direct, "`onMouseLeave`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_leave`.";
 }
@@ -882,6 +884,11 @@ impl CodeEditorWidget {
     /// Entrega uma tecla pressionada aos ouvintes de `onKeyDown` (o `View` do original dispara o evento).
     pub fn fire_key_down(&self, event: je_platform::keybinding::keybinding::KeyboardEvent) {
         self.emitters.key_down.fire(event);
+    }
+
+    /// Entrega uma tecla solta aos ouvintes de `onKeyUp` (o `View` do original dispara o evento).
+    pub fn fire_key_up(&self, event: je_platform::keybinding::keybinding::KeyboardEvent) {
+        self.emitters.key_up.fire(event);
     }
 
     /// `_onKeyDown._size`: quantos ouvintes de `onKeyDown` estão registrados (os testes medem vazamento por aqui).

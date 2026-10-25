@@ -22,13 +22,23 @@
 //!   `observableCodeEditor` ainda não tem porte: o modelo monta os observáveis do editor que lê e recebe injetados o
 //!   `IInlineCompletionsService`, o `IDefaultAccountService`, o `openedPeekWidgets` e o `InlineCompletionsEditorHost`
 //!   (diff editor, editor ativo, abrir editor, `getInlineCompletionsController`, animação de fade). O `SuggestItemInfo`
-//!   está no modelo; a fábrica `fromSuggestion` e o `ObservableSuggestWidgetAdapter` entram com o controller;
-//! - fatia 4: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os
-//!   serviços injetados, com os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
+//!   está no modelo; a fábrica `fromSuggestion` e o `ObservableSuggestWidgetAdapter` entram na fatia 4a;
+//! - fatia 4a (pronta): os auxiliares do controller. `change_recorder` (`TextModelChangeRecorder`, com o
+//!   `StructuredLogger` injetado), `suggest_widget_adapter` (`SuggestWidgetAdaptor`, `SuggestItemInfo.fromSuggestion` e
+//!   `ObservableSuggestWidgetAdapter`; o que depende do `SuggestWidget` entra como o `SuggestWidgetHost`), o restante de
+//!   `utils.ts` (`addPositions`, `subtractPositions`, `substringPos`, `convertItemsToStableObservables` e
+//!   `ObservableContextKeyService`, que usa o `bindContextKey` de `je_platform`) e `controller/` (`commandIds`, `common` e
+//!   `inlineCompletionContextKeys`);
+//! - fatia 4b: a view `InlineSuggestionsView` com o `GhostTextView`;
+//! - fatia 4c: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os
+//!   serviços injetados;
+//! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
 //!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions.test.ts`
 //!   do oráculo.
 
+pub mod change_recorder;
 pub mod compute_ghost_text;
+pub mod controller;
 pub mod edit_kind;
 pub mod ghost_text;
 pub mod graph;
@@ -41,6 +51,7 @@ pub mod inline_suggestion_item;
 pub mod long_distance_hint;
 pub mod long_distance_widget_placement;
 pub mod provide_inline_completions;
+pub mod suggest_widget_adapter;
 pub mod text_model_value_reference;
 pub mod towers_layout;
 pub mod typing_speed;

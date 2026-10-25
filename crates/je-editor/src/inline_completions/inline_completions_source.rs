@@ -31,7 +31,7 @@ use je_base::async_::{AsyncIterable, RunOnceScheduler, async_fn};
 use je_base::cancellation::{CancellationToken, CancellationTokenSource};
 use je_base::dynamic::{Dynamic, json_stringify};
 use je_base::errors::Error;
-use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, MutableDisposable, plain_disposable, to_disposable};
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, MutableDisposable, to_disposable};
 use je_base::observable::base::{IObservable, ISettableObservable, ITransaction, Observable};
 use je_base::observable::change_tracker::{RecordedChanges, record_changes, record_changes_lazy};
 use je_base::observable::experimental::reducer::{ReducerOptions, observable_reducer_settable};
@@ -58,7 +58,7 @@ use crate::inline_completions::provide_inline_completions::{
     run_when_cancelled,
 };
 use crate::inline_completions::text_model_value_reference::TextModelValueReference;
-use crate::inline_completions::utils::wait;
+use crate::inline_completions::utils::{dispose_handle, wait};
 use crate::language_configuration_registry::ILanguageConfigurationService;
 use crate::language_feature_debounce::IFeatureDebounceInformation;
 use crate::languages::{
@@ -914,13 +914,6 @@ fn as_bool(value: &Dynamic) -> Option<bool> {
         Dynamic::Bool(b) => Some(*b),
         _ => None,
     }
-}
-
-/// O descarte de um colaborador compartilhado como `DisposableRef` (o `Rc<dyn Trait>` não vira `Rc<dyn IDisposable>`
-/// sem o laço de conversão).
-fn dispose_handle<T: IDisposable + ?Sized + 'static>(target: &Rc<T>) -> DisposableRef {
-    let target = Rc::clone(target);
-    plain_disposable(move || target.dispose())
 }
 
 /// `_updateCompletionsEnablement(enalementSetting)`.
