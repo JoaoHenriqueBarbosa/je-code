@@ -196,6 +196,18 @@ pub trait IEditorPane {
     fn as_any(&self) -> &dyn std::any::Any {
         &()
     }
+
+    /// `getControl()` quando `isDiffEditor(control)`: o `IDiffEditor` do painel, ou `None` quando o painel não tem controle ou
+    /// o controle não é um editor de diff (o padrão).
+    fn get_diff_editor_control(&self) -> Option<Rc<dyn crate::browser::parts::editor::text_diff_editor::IDiffEditor>> {
+        None
+    }
+
+    /// `hasDiffEditorWidthBasedLayoutReset(pane)`: o painel que tem `resetDiffEditorWidthBasedLayout` (o do editor de diff de
+    /// vários arquivos), ou `None` para qualquer outro (o padrão).
+    fn as_diff_editor_width_based_layout_reset(&self) -> Option<&dyn crate::browser::parts::editor::text_diff_editor::IDiffEditorWidthBasedLayoutReset> {
+        None
+    }
 }
 
 /// `isEditorPaneWithSelection`: o painel tem `getSelection` e `onDidChangeSelection`.

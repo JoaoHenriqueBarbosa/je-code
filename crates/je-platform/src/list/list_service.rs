@@ -55,6 +55,24 @@ pub trait IListWidget {
 
     /// `getHTMLElement().classList.add/remove('last-focused')`: marca a lista como a focada por último.
     fn set_last_focused(&self, _last_focused: bool) {}
+
+    /// `list instanceof List`: a lista é uma `List` (a de `base/browser/ui/list/listWidget.ts` ou uma derivada, como a
+    /// `WorkbenchList`), a única de que o contexto de comandos de editor lê os elementos em foco e selecionados. O padrão é
+    /// `false` (uma árvore, ou uma lista que o chamador não lê).
+    fn is_list(&self) -> bool {
+        false
+    }
+
+    /// `getFocusedElements()`: todos os elementos em foco. O padrão é o primeiro elemento em foco
+    /// ([`IListWidget::get_focused_element`]), que é o que toda lista sem foco múltiplo tem.
+    fn get_focused_elements(&self) -> Vec<Rc<dyn Any>> {
+        self.get_focused_element().into_iter().collect()
+    }
+
+    /// `getSelectedElements()`: os elementos selecionados. O padrão é nenhum (uma lista sem seleção).
+    fn get_selected_elements(&self) -> Vec<Rc<dyn Any>> {
+        Vec::new()
+    }
 }
 
 /// O recorte de `WorkbenchList` (`platform/list/browser/listService.ts`) que a visão acessível das notificações usa:
