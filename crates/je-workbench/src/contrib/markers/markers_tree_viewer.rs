@@ -1362,7 +1362,7 @@ impl MarkerViewModel {
                         auto_apply: None,
                         context: None,
                     };
-                    get_code_actions(&registry, &model, SelectionOrRange::Range(range), &trigger, Progress::none(), &cancellation_token).then(move |actions| {
+                    get_code_actions(&registry, &model, SelectionOrRange::Range(range), &trigger, Rc::new(je_editor::code_action::platform::ProgressNone), &cancellation_token).then(move |actions| {
                         // this._register(actions)
                         let to_dispose = actions.clone();
                         match weak.upgrade() {

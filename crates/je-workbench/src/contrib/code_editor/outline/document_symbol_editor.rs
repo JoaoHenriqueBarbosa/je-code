@@ -110,6 +110,7 @@ impl IDocumentSymbolEditor for CodeEditorSymbolAdapter {
                 editor: options.clone(),
                 selection: Some(text_editor_selection(&selection)),
                 selection_reveal_type: Some(TextEditorSelectionRevealType::NearTopIfOutsideViewport),
+                selection_source: None,
             }),
         };
         let source: CodeEditorHandle = self.editor.clone();

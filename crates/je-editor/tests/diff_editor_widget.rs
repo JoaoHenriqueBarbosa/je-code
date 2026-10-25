@@ -39,6 +39,7 @@ use je_editor::code_action::platform::{
 };
 use je_editor::code_editor_widget::CodeEditorWidgetOptions;
 use je_editor::core_2d::dimension::Dimension;
+use je_editor::diff::range_mapping::DetailedLineRangeMapping;
 use je_editor::diff_editor::components::diff_editor_editors::{CreateInnerEditor, DiffEditorSide};
 use je_editor::diff_editor::delegating_editor_impl::DelegatingEditor;
 use je_editor::diff_editor::diff_editor_features::{CreateDiffEditorViewZones, DiffEditorFeaturesImpl};
