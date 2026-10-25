@@ -2,4 +2,5 @@
 
 pub mod editors;
 pub mod file_commands;
+pub mod file_import_export;
 pub mod views;
