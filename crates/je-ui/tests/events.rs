@@ -5,10 +5,12 @@
 //! ancestral comum; captura do ponteiro). Cada caso diz qual comportamento do DOM ele fixa.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use je_base::key_codes::KeyCode;
 use je_render::kurbo::Rect;
-use je_ui::{Cursor, Event, EventKind, Modifiers, NodeId, Phase, PointerButton, PointerEvents, PointerInput, PointerInputKind, Role, Ui};
+use je_ui::{Cursor, DataTransfer, EffectAllowed, Event, EventKind, KeyData, Modifiers, NodeId, Phase, PointerButton, PointerEvents, PointerInput, PointerInputKind, Role, Ui};
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -327,4 +329,346 @@ fn only_the_closest_default_action_runs() {
     }
     ui.dispatch(&mut Event::new(EventKind::Click, c));
     assert_eq!(*log.borrow(), ["a"]);
+}
+
+// ---- Arrastar e soltar (o modelo de processamento do HTML) ----
+
+const DRAG_KINDS: [EventKind; 7] = [EventKind::DragStart, EventKind::Drag, EventKind::DragEnter, EventKind::DragOver, EventKind::DragLeave, EventKind::Drop, EventKind::DragEnd];
+
+fn set_draggable(ui: &Ui, node: NodeId) {
+    ui.tree_mut().set_attribute(node, "draggable", "true");
+}
+
+/// Registra na raiz (borbulha) os sete eventos de arrastar e soltar como `Tipo@rótulo` (o `Drop` leva o texto lido
+/// e o `DragEnd` o `dropEffect` final). O `DragStart` escreve `text/plain` e `effectAllowed = copyMove`; o `DragOver`
+/// aceita se `over_accepts`, o `Drop` se `drop_accepts`. No `DragOver` confere que o repositório está protegido.
+fn drag_log(ui: &Ui, labels: &[(NodeId, &'static str)], over_accepts: bool, drop_accepts: bool) -> Log {
+    let log: Log = Rc::default();
+    let labels: Vec<(NodeId, &'static str)> = labels.to_vec();
+    for kind in DRAG_KINDS {
+        let (log, labels) = (log.clone(), labels.clone());
+        std::mem::forget(ui.listen(ui.root(), kind, false, move |e: &mut Event| {
+            let label = labels.iter().find(|(n, _)| *n == e.target).map_or("?", |(_, l)| *l);
+            let dt = e.data_transfer.clone().expect("evento de arrastar sem dataTransfer");
+            let entry = match kind {
+                EventKind::DragStart => {
+                    dt.set_data("text/plain", "hello");
+                    dt.set_effect_allowed(EffectAllowed::CopyMove);
+                    format!("DragStart@{label}")
+                }
+                EventKind::DragOver => {
+                    assert_eq!(dt.get_data("text/plain"), "", "o dragover não pode ler a carga");
+                    assert!(!dt.types().is_empty(), "os tipos aparecem em todos os eventos");
+                    if over_accepts {
+                        e.prevent_default();
+                    }
+                    format!("DragOver@{label}")
+                }
+                EventKind::Drop => {
+                    if drop_accepts {
+                        e.prevent_default();
+                    }
+                    format!("Drop@{label}:{}", dt.get_data("text/plain"))
+                }
+                EventKind::DragEnd => format!("DragEnd@{label}:{}", dt.drop_effect().as_str()),
+                _ => format!("{kind:?}@{label}"),
+            };
+            log.borrow_mut().push(entry);
+        }));
+    }
+    log
+}
+
+fn pointer_log(ui: &Ui, kinds: &[EventKind]) -> Log {
+    let log: Log = Rc::default();
+    for kind in kinds {
+        let (log, kind) = (log.clone(), *kind);
+        std::mem::forget(ui.listen(ui.root(), kind, false, move |_| log.borrow_mut().push(format!("{kind:?}"))));
+    }
+    log
+}
+
+#[test]
+fn drag_starts_only_after_the_threshold_is_crossed() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    let drags = drag_log(&ui, &[(b, "b"), (c, "c")], true, true);
+    let pointer = pointer_log(&ui, &[EventKind::PointerMove]);
+    // O botão baixo sobre `c` (descendente de `b`, que é o `draggable` mais próximo).
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    assert!((ui.drag_threshold() - je_ui::DEFAULT_DRAG_THRESHOLD).abs() < f64::EPSILON);
+    // Dois pixels: abaixo do limiar, é um movimento comum.
+    ui.pointer_input(input(PointerInputKind::Move, 32.0, 30.0));
+    assert!(drags.borrow().is_empty());
+    assert_eq!(*pointer.borrow(), ["PointerMove"]);
+    assert!(!ui.is_dragging());
+    // Dez pixels: o arrasto começa na origem `b`, sem `PointerMove`.
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    assert!(ui.is_dragging());
+    assert_eq!(drags.borrow()[0], "DragStart@b");
+    assert_eq!(*pointer.borrow(), ["PointerMove"]);
+    // Durante o arrasto o movimento é `Drag` na origem e `DragOver` no alvo, não `PointerMove`.
+    ui.pointer_input(input(PointerInputKind::Move, 41.0, 30.0));
+    assert_eq!(*pointer.borrow(), ["PointerMove"]);
+    assert_eq!(drags.borrow().last().unwrap(), "DragOver@c");
+}
+
+#[test]
+fn drag_threshold_is_a_parameter_of_the_ui() {
+    let (ui, _root, _a, b, _c) = nested();
+    set_draggable(&ui, b);
+    ui.set_drag_threshold(20.0);
+    let drags = drag_log(&ui, &[(b, "b")], true, true);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 45.0, 30.0));
+    assert!(drags.borrow().is_empty());
+    ui.pointer_input(input(PointerInputKind::Move, 55.0, 30.0));
+    assert_eq!(drags.borrow()[0], "DragStart@b");
+}
+
+#[test]
+fn prevent_default_on_drag_start_cancels_the_drag() {
+    let (ui, _root, _a, b, _c) = nested();
+    set_draggable(&ui, b);
+    std::mem::forget(ui.listen(b, EventKind::DragStart, false, |e| e.prevent_default()));
+    let drags = drag_log(&ui, &[(b, "b")], true, true);
+    let pointer = pointer_log(&ui, &[EventKind::PointerMove, EventKind::PointerUp, EventKind::Click]);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    assert!(!ui.is_dragging());
+    ui.pointer_input(input(PointerInputKind::Move, 45.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Up, 45.0, 30.0));
+    // O único evento de arrasto é o `DragStart` cancelado; o ponteiro seguiu normal (movimento, soltar, clique).
+    assert_eq!(*drags.borrow(), ["DragStart@b"]);
+    assert_eq!(*pointer.borrow(), ["PointerMove", "PointerMove", "PointerUp", "Click"]);
+}
+
+#[test]
+fn a_node_without_draggable_true_never_starts_a_drag() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    // `draggable="false"` no mais próximo vale mais que o antepassado.
+    ui.tree_mut().set_attribute(c, "draggable", "false");
+    let drags = drag_log(&ui, &[(b, "b"), (c, "c")], true, true);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 60.0, 30.0));
+    assert!(drags.borrow().is_empty());
+    // Um botão que não é o principal também não arma o arrasto.
+    let mut secondary = input(PointerInputKind::Down, 15.0, 15.0);
+    secondary.button = PointerButton::Secondary;
+    ui.pointer_input(input(PointerInputKind::Up, 30.0, 30.0));
+    ui.pointer_input(secondary);
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 40.0));
+    assert!(drags.borrow().is_empty());
+}
+
+#[test]
+fn drag_runs_start_enter_over_leave_drop_end_in_order() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    let drags = drag_log(&ui, &[(b, "b"), (c, "c")], true, true);
+    let pointer = pointer_log(&ui, &[EventKind::PointerUp, EventKind::Click]);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    // Para `b` (fora de `c`): `DragEnter` no novo alvo vem antes do `DragLeave` no antigo.
+    ui.pointer_input(input(PointerInputKind::Move, 15.0, 15.0));
+    ui.pointer_input(input(PointerInputKind::Up, 15.0, 15.0));
+    assert_eq!(
+        *drags.borrow(),
+        [
+            "DragStart@b",
+            "Drag@b",
+            "DragEnter@c",
+            "DragOver@c",
+            "Drag@b",
+            "DragEnter@b",
+            "DragLeave@c",
+            "DragOver@b",
+            "Drag@b",
+            "DragOver@b",
+            // O repositório lê no `drop`; o `drop` cancelado mantém o efeito aceito (`copy`, de `copyMove`).
+            "Drop@b:hello",
+            "DragEnd@b:copy",
+        ]
+    );
+    // Sem `PointerUp` nem `Click` ao soltar um arrasto.
+    assert!(pointer.borrow().is_empty());
+    assert!(!ui.is_dragging());
+}
+
+#[test]
+fn drop_is_refused_when_dragover_is_not_prevented() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    let drags = drag_log(&ui, &[(b, "b"), (c, "c")], false, true);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Up, 40.0, 30.0));
+    let log = drags.borrow();
+    assert!(!log.iter().any(|e| e.starts_with("Drop")), "sem preventDefault no dragover não há drop: {log:?}");
+    assert_eq!(log[log.len() - 2], "DragLeave@c");
+    assert_eq!(log[log.len() - 1], "DragEnd@b:none");
+}
+
+#[test]
+fn drop_not_prevented_ends_with_drop_effect_none() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    let drags = drag_log(&ui, &[(b, "b"), (c, "c")], true, false);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Up, 40.0, 30.0));
+    let log = drags.borrow();
+    assert_eq!(log[log.len() - 2], "Drop@c:hello");
+    assert_eq!(log[log.len() - 1], "DragEnd@b:none");
+}
+
+#[test]
+fn drop_effect_must_be_allowed_by_the_source() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    // A origem permite só `move`; o alvo pede `link`: a soltura é recusada.
+    std::mem::forget(ui.listen(b, EventKind::DragStart, false, |e| e.data_transfer.as_ref().unwrap().set_effect_allowed(EffectAllowed::Move)));
+    std::mem::forget(ui.listen(c, EventKind::DragOver, false, |e| {
+        let dt = e.data_transfer.as_ref().unwrap();
+        assert_eq!(dt.drop_effect().as_str(), "move", "o dropEffect inicial vem de effectAllowed");
+        dt.set_drop_effect(je_ui::DropEffect::Link);
+        e.prevent_default();
+    }));
+    let seen: Log = Rc::default();
+    let seen_clone = seen.clone();
+    std::mem::forget(ui.listen(b, EventKind::DragEnd, false, move |e| seen_clone.borrow_mut().push(e.data_transfer.as_ref().unwrap().drop_effect().as_str().to_owned())));
+    let pointer = pointer_log(&ui, &[EventKind::Drop]);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Up, 40.0, 30.0));
+    assert!(pointer.borrow().is_empty());
+    assert_eq!(*seen.borrow(), ["none"]);
+}
+
+#[test]
+fn escape_cancels_the_drag_with_leave_and_end_none() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    let drags = drag_log(&ui, &[(b, "b"), (c, "c")], true, true);
+    let pointer = pointer_log(&ui, &[EventKind::KeyDown, EventKind::PointerUp, EventKind::Click]);
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    let escape = KeyData { key_code: KeyCode::Escape, modifiers: Modifiers::default() };
+    let proceed = ui.key_input(true, escape);
+    assert!(!proceed, "o Escape que cancelou o arrasto é consumido");
+    assert!(!ui.is_dragging());
+    let log = drags.borrow();
+    assert_eq!(log[log.len() - 2], "DragLeave@c");
+    assert_eq!(log[log.len() - 1], "DragEnd@b:none");
+    assert!(!log.iter().any(|e| e.starts_with("Drop")));
+    drop(log);
+    // Soltar o botão depois não solta nada nem dá clique; o `PointerUp` volta a ser comum.
+    ui.pointer_input(input(PointerInputKind::Up, 40.0, 30.0));
+    assert_eq!(*pointer.borrow(), ["PointerUp"]);
+    // Sem arrasto, o Escape segue o caminho normal do teclado.
+    assert!(ui.key_input(true, escape));
+    assert_eq!(*pointer.borrow(), ["PointerUp", "KeyDown"]);
+}
+
+#[test]
+fn external_file_drag_enters_overs_leaves_and_drops_without_a_source() {
+    let (ui, _root, _a, b, c) = nested();
+    let log: Log = Rc::default();
+    let files_seen: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    let labels = [(b, "b"), (c, "c")];
+    for kind in DRAG_KINDS {
+        let (log, files_seen) = (log.clone(), files_seen.clone());
+        std::mem::forget(ui.listen(ui.root(), kind, false, move |e: &mut Event| {
+            let label = labels.iter().find(|(n, _)| *n == e.target).map_or("?", |(_, l)| *l);
+            let dt = e.data_transfer.clone().expect("dataTransfer");
+            if matches!(kind, EventKind::DragOver | EventKind::Drop) {
+                e.prevent_default();
+            }
+            if kind == EventKind::DragOver {
+                assert_eq!(dt.types(), ["Files"]);
+                assert!(dt.files().is_empty(), "os arquivos só são legíveis no drop");
+            }
+            if kind == EventKind::Drop {
+                files_seen.borrow_mut().extend(dt.files());
+            }
+            log.borrow_mut().push(format!("{kind:?}@{label}"));
+        }));
+    }
+    let pointer = pointer_log(&ui, &[EventKind::PointerMove]);
+    // O winit manda um evento por arquivo: o segundo só acrescenta, sem novo `DragEnter`.
+    ui.external_drag_enter(vec![PathBuf::from("/tmp/a.txt")], 30.0, 30.0);
+    ui.external_drag_enter(vec![PathBuf::from("/tmp/b.txt")], 30.0, 30.0);
+    assert!(ui.is_dragging());
+    ui.external_drag_over(15.0, 15.0);
+    assert!(ui.external_drop(15.0, 15.0));
+    assert!(!ui.is_dragging());
+    assert_eq!(
+        *log.borrow(),
+        ["DragEnter@c", "DragOver@c", "DragOver@c", "DragEnter@b", "DragLeave@c", "DragOver@b", "DragOver@b", "Drop@b"]
+    );
+    assert_eq!(*files_seen.borrow(), [PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]);
+    assert!(pointer.borrow().is_empty());
+    // Fora de um arrasto externo as funções não fazem nada.
+    assert!(!ui.external_drop(15.0, 15.0));
+    ui.external_drag_over(15.0, 15.0);
+    ui.external_drag_leave();
+    assert_eq!(log.borrow().len(), 8);
+}
+
+#[test]
+fn external_drag_leave_sends_dragleave_to_the_target_and_no_dragend() {
+    let (ui, _root, _a, b, c) = nested();
+    let log = drag_log(&ui, &[(b, "b"), (c, "c")], false, false);
+    ui.external_drag_enter(vec![PathBuf::from("/tmp/a.txt")], 30.0, 30.0);
+    ui.external_drag_leave();
+    assert!(!ui.is_dragging());
+    assert_eq!(log.borrow().last().unwrap(), "DragLeave@c");
+    assert!(!log.borrow().iter().any(|e| e.starts_with("DragEnd") || e.starts_with("DragStart")));
+}
+
+#[test]
+fn external_drop_is_refused_when_dragover_is_not_prevented() {
+    let (ui, _root, _a, b, c) = nested();
+    let log = drag_log(&ui, &[(b, "b"), (c, "c")], false, true);
+    ui.external_drag_enter(vec![PathBuf::from("/tmp/a.txt")], 30.0, 30.0);
+    assert!(!ui.external_drop(30.0, 30.0));
+    assert!(!log.borrow().iter().any(|e| e.starts_with("Drop")));
+    assert_eq!(log.borrow().last().unwrap(), "DragLeave@c");
+}
+
+#[test]
+fn data_transfer_follows_the_html_data_store_rules() {
+    let dt = DataTransfer::new();
+    // Em modo de escrita (o início do arrasto): o tipo é normalizado e substituído no lugar.
+    dt.set_data("Text", "um");
+    dt.set_data("URL", "https://example.com");
+    dt.set_data("text/plain", "dois");
+    assert_eq!(dt.types(), ["text/plain", "text/uri-list"]);
+    dt.clear_data(Some("url"));
+    assert_eq!(dt.types(), ["text/plain"]);
+    dt.set_effect_allowed(EffectAllowed::LinkMove);
+    assert_eq!(dt.effect_allowed().as_str(), "linkMove");
+    assert_eq!(EffectAllowed::parse("copyLink"), Some(EffectAllowed::CopyLink));
+    assert_eq!(EffectAllowed::parse("nope"), None);
+    assert!(EffectAllowed::LinkMove.permits(je_ui::DropEffect::Move));
+    assert!(!EffectAllowed::LinkMove.permits(je_ui::DropEffect::Copy));
+    assert_eq!(EffectAllowed::Uninitialized.initial_drop_effect(), je_ui::DropEffect::Copy);
+    assert_eq!(EffectAllowed::None.initial_drop_effect(), je_ui::DropEffect::None);
+    assert_eq!(je_ui::DropEffect::parse("link"), Some(je_ui::DropEffect::Link));
+    // Só o `drop` lê (fora dele `getData` devolve vazio).
+    assert_eq!(dt.get_data("text"), "");
+    dt.clear_data(None);
+    assert!(dt.types().is_empty());
+}
+
+#[test]
+fn drag_image_is_kept_from_drag_start() {
+    let (ui, _root, _a, b, c) = nested();
+    set_draggable(&ui, b);
+    std::mem::forget(ui.listen(b, EventKind::DragStart, false, move |e| e.data_transfer.as_ref().unwrap().set_drag_image(c, 3.0, 4.0)));
+    ui.pointer_input(input(PointerInputKind::Down, 30.0, 30.0));
+    ui.pointer_input(input(PointerInputKind::Move, 40.0, 30.0));
+    let image = ui.drag_data_transfer().expect("arrasto em andamento").drag_image().expect("imagem de arrasto");
+    assert_eq!((image.node, image.x, image.y), (c, 3.0, 4.0));
 }

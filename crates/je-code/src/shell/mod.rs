@@ -520,6 +520,8 @@ pub struct Shell {
     context_menu: Option<(Rc<je_widgets::menu::Menu>, NodeId)>,
     /// A última posição do ponteiro (onde o menu de contexto abre).
     last_pointer: (f64, f64),
+    /// Arquivos soltos do sistema esperando o fim do lote de eventos do winit ([`Shell::flush_dropped_files`]).
+    dropped_files: Vec<std::path::PathBuf>,
     find: Option<FindWidget>,
     panel_visible: bool,
     panel_tab: PanelTab,
@@ -670,6 +672,7 @@ impl Shell {
             quick_pick: None,
             context_menu: None,
             last_pointer: (0.0, 0.0),
+            dropped_files: Vec::new(),
             find: None,
             panel_visible: false,
             panel_tab: PanelTab::Terminal,
@@ -4073,6 +4076,40 @@ impl Shell {
         self.run_commands();
     }
 
+    /// Arquivos do sistema passaram por cima da janela (`WindowEvent::HoveredFile`, um evento por arquivo). O winit 0.30
+    /// não informa a posição nesses eventos, então vale a última conhecida do ponteiro. Se o sistema entregar
+    /// `CursorMoved` durante o arrasto, ele chega por [`Shell::pointer`] e o `Ui` o trata como `DragOver`.
+    pub fn external_drag_enter(&mut self, path: std::path::PathBuf) {
+        let (x, y) = self.last_pointer;
+        self.ui.external_drag_enter(vec![path], x, y);
+        self.run_commands();
+    }
+
+    /// `WindowEvent::HoveredFileCancelled`: o arrasto saiu da janela ou foi cancelado.
+    pub fn external_drag_leave(&mut self) {
+        self.ui.external_drag_leave();
+        self.run_commands();
+    }
+
+    /// `WindowEvent::DroppedFile` (um evento por arquivo): guarda o caminho até o fim do lote de eventos do winit
+    /// ([`Shell::flush_dropped_files`]), para o `Drop` chegar uma vez só com todos os arquivos.
+    pub fn external_dropped_file(&mut self, path: std::path::PathBuf) {
+        self.dropped_files.push(path);
+    }
+
+    /// Solta os arquivos acumulados por [`Shell::external_dropped_file`] na última posição conhecida do ponteiro: abre o
+    /// arrasto externo se o sistema não anunciou os arquivos antes (sem `HoveredFile`) e dispara o `Drop`.
+    pub fn flush_dropped_files(&mut self) {
+        if self.dropped_files.is_empty() {
+            return;
+        }
+        let (x, y) = self.last_pointer;
+        let files = std::mem::take(&mut self.dropped_files);
+        self.ui.external_drag_enter(files, x, y);
+        self.ui.external_drop(x, y);
+        self.run_commands();
+    }
+
     pub fn cursor_at(&self, x: f64, y: f64) -> Cursor {
         if self.sash_drag.is_some() || self.sash_hit(x, y) {
             return Cursor::EwResize;
@@ -4215,6 +4252,11 @@ impl Shell {
     /// Entrega uma tecla: primeiro à árvore do `Ui` (a barra de menus escuta Alt e os mnemônicos na raiz); se nenhum
     /// widget tem o foco e ninguém consumiu, aos atalhos do workbench e então ao editor.
     pub fn key(&mut self, down: bool, key_code: KeyCode, mods: Modifiers, text: Option<&str>, editor_key: Option<EditorKey>) {
+        if down && key_code == KeyCode::Escape && self.ui.cancel_drag() {
+            // O `Escape` cancela o arrastar e soltar em andamento e não vai a mais ninguém.
+            self.run_commands();
+            return;
+        }
         if self.dialog.is_some() {
             self.ui.key_input(down, KeyData { key_code, modifiers: mods });
             je_base::runtime::turn();

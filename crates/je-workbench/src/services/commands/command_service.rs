@@ -17,12 +17,11 @@ use std::rc::{Rc, Weak};
 
 use je_base::async_::{not_cancellable_promise, race_cancellable_promises, timeout};
 use je_base::dynamic::Dynamic;
-use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::promise::{CancelablePromise, Promise};
 use je_instantiation::InstantiationService;
-use je_platform::commands::commands::{commands_registry, CommandEvent, ICommandService};
+use je_platform::commands::commands::{commands_registry, invoke_registered_command, CommandEvent, ICommandService};
 use je_platform::log::{LogArg, LogServiceRef};
 
 use crate::services::extensions::extensions::IExtensionService;
@@ -81,19 +80,7 @@ impl CommandService {
     }
 
     fn try_execute_command(&self, id: &str, args: Vec<Dynamic>) -> Promise<Dynamic> {
-        let Some(command) = commands_registry().get_command(id) else {
-            return Promise::rejected(Error::new(format!("command '{id}' not found")));
-        };
-        let result = errors::catch(|| {
-            self.on_will_execute_command.fire(CommandEvent { command_id: id.to_owned(), args: args.clone() });
-            let result = self.instantiation_service.invoke_function(|accessor| (command.handler)(accessor, &args));
-            self.on_did_execute_command.fire(CommandEvent { command_id: id.to_owned(), args: args.clone() });
-            result
-        });
-        match result {
-            Ok(result) => Promise::resolved(result),
-            Err(error) => Promise::rejected(error),
-        }
+        invoke_registered_command(&self.instantiation_service, id, args, &self.on_will_execute_command, &self.on_did_execute_command)
     }
 }
 

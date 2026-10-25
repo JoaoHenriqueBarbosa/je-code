@@ -996,6 +996,166 @@ impl QueryGlobTester {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// O que o processo de busca (`node/rawSearchService`, `node/textSearchAdapter`, `node/ripgrepTextSearchEngine`) lê de
+// `search.ts`: `SearchError` e a serialização, `IRawSearchService` e os itens de progresso serializados.
+//
+// Divergências:
+// - `IRawQuery` revivido (`reviveQuery`) já chega como `IFileQuery`/`ITextQuery`: os `UriComponents` do protocolo já são
+//   `URI` aqui (`IRawFileQuery = IFileQuery`).
+// - `ISerializedSearchProgressItem` e `IFileSearchProgressItem` são enums (item, lista de itens ou mensagem). O evento
+//   `Event<ISerializedSearchProgressItem | ISerializedSearchComplete>` é o enum [`ISerializedSearchEvent`].
+// - `ISerializedSearchError.error.stack` é `Option`, como o `error.stack` do [`Error`](je_base::errors::Error).
+// - `class SearchError extends Error` é uma struct com `message` e `code`; a conversão para `Error` é a
+//   [`serialize_search_error`] (um `Error` com o JSON, como no original).
+// ---------------------------------------------------------------------------------------------------------
+
+/// `SearchErrorCode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchErrorCode {
+    UnknownEncoding = 1,
+    RegexParseError,
+    GlobParseError,
+    InvalidLiteral,
+    RgProcessError,
+    Other,
+    Canceled,
+}
+
+impl SearchErrorCode {
+    /// O número do `enum` (`details.code` do JSON).
+    pub fn from_number(number: i64) -> Option<Self> {
+        match number {
+            1 => Some(SearchErrorCode::UnknownEncoding),
+            2 => Some(SearchErrorCode::RegexParseError),
+            3 => Some(SearchErrorCode::GlobParseError),
+            4 => Some(SearchErrorCode::InvalidLiteral),
+            5 => Some(SearchErrorCode::RgProcessError),
+            6 => Some(SearchErrorCode::Other),
+            7 => Some(SearchErrorCode::Canceled),
+            _ => None,
+        }
+    }
+}
+
+/// `SearchError`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchError {
+    pub message: String,
+    pub code: Option<SearchErrorCode>,
+}
+
+impl SearchError {
+    pub fn new(message: impl Into<String>, code: Option<SearchErrorCode>) -> Self {
+        Self { message: message.into(), code }
+    }
+}
+
+/// `deserializeSearchError`.
+pub fn deserialize_search_error(error: &je_base::errors::Error) -> SearchError {
+    let error_msg = error.message.clone();
+
+    if je_base::errors::is_cancellation_error(error) {
+        return SearchError::new(error_msg, Some(SearchErrorCode::Canceled));
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&error_msg) {
+        Ok(details) => {
+            let message = details.get("message").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+            let code = details.get("code").and_then(serde_json::Value::as_i64).and_then(SearchErrorCode::from_number);
+            SearchError::new(message, code)
+        }
+        Err(_) => SearchError::new(error_msg, Some(SearchErrorCode::Other)),
+    }
+}
+
+/// `serializeSearchError`: o `JSON.stringify({ message, code })` (um `code` indefinido some do JSON).
+pub fn serialize_search_error(search_error: &SearchError) -> je_base::errors::Error {
+    let message = serde_json::to_string(&search_error.message).unwrap_or_default();
+    let details = match search_error.code {
+        Some(code) => format!("{{\"message\":{message},\"code\":{}}}", code as i64),
+        None => format!("{{\"message\":{message}}}"),
+    };
+    je_base::errors::Error::new(details)
+}
+
+/// `ISerializedFileMatch`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ISerializedFileMatch {
+    pub path: String,
+    pub results: Option<Vec<ITextSearchResult>>,
+    pub num_matches: Option<i64>,
+}
+
+impl ISerializedFileMatch {
+    /// Um `{ path }` sem resultados.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into(), results: None, num_matches: None }
+    }
+}
+
+/// `ISerializedSearchProgressItem = ISerializedFileMatch | ISerializedFileMatch[] | IProgressMessage`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ISerializedSearchProgressItem {
+    FileMatch(ISerializedFileMatch),
+    FileMatches(Vec<ISerializedFileMatch>),
+    Message(IProgressMessage),
+}
+
+/// `IFileSearchProgressItem = IRawFileMatch | IRawFileMatch[] | IProgressMessage`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IFileSearchProgressItem {
+    Match(IRawFileMatch),
+    Matches(Vec<IRawFileMatch>),
+    Message(IProgressMessage),
+}
+
+/// `ISerializedSearchSuccess` (`type: 'success'`). O `stats` é `IFileSearchStats | ITextSearchStats`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ISerializedSearchSuccess {
+    pub limit_hit: bool,
+    pub messages: Vec<ITextSearchCompleteMessage>,
+    pub stats: Option<ISearchStats>,
+}
+
+/// `ISerializedSearchError` (`type: 'error'`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ISerializedSearchError {
+    pub message: String,
+    pub stack: Option<String>,
+}
+
+/// `ISerializedSearchComplete = ISerializedSearchSuccess | ISerializedSearchError`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ISerializedSearchComplete {
+    Success(ISerializedSearchSuccess),
+    Error(ISerializedSearchError),
+}
+
+/// `ISerializedSearchProgressItem | ISerializedSearchComplete`: o que o `Event` do `IRawSearchService` entrega.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ISerializedSearchEvent {
+    Progress(ISerializedSearchProgressItem),
+    Complete(ISerializedSearchComplete),
+}
+
+impl ISerializedSearchEvent {
+    /// `isSerializedSearchComplete`.
+    pub fn as_complete(&self) -> Option<&ISerializedSearchComplete> {
+        match self {
+            ISerializedSearchEvent::Complete(complete) => Some(complete),
+            ISerializedSearchEvent::Progress(_) => None,
+        }
+    }
+}
+
+/// `IRawSearchService`.
+pub trait IRawSearchService {
+    fn file_search(&self, search: IFileQuery) -> je_base::event::Event<ISerializedSearchEvent>;
+    fn text_search(&self, search: ITextQuery) -> je_base::event::Event<ISerializedSearchEvent>;
+    fn clear_cache(&self, cache_key: &str) -> Promise<()>;
+}
+
 /// `hasSiblingPromiseFn`.
 pub fn has_sibling_promise_fn(siblings_fn: Option<Rc<dyn Fn() -> Promise<Vec<String>>>>) -> Option<Rc<dyn Fn(&str) -> Promise<bool>>> {
     let siblings_fn = siblings_fn?;

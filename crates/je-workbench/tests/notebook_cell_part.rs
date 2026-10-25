@@ -278,7 +278,7 @@ fn code_cell_layout_editor_visibility_states() {
         let editor_part = StubEditorPart::new();
         let view_cell = cell(s.editor_height, s.output_container_offset, 0.0);
         let notebook_editor = notebook(s.scroll_top, s.viewport_height, s.element_top, s.element_height, s.output_container_offset);
-        let mut layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, s.editor_height));
+        let layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, s.editor_height));
 
         layout.layout_editor(CellLayoutChangeReason::Init);
         assert_eq!(
@@ -372,7 +372,7 @@ fn scrolling() {
         let editor_part = StubEditorPart::new();
         let view_cell = cell(EDITOR_HEIGHT, OUTPUT_CONTAINER_OFFSET, 0.0);
         let notebook_editor = notebook(scroll_top, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-        let mut layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, EDITOR_HEIGHT));
+        let layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, EDITOR_HEIGHT));
         layout.layout_editor(CellLayoutChangeReason::NbDidScroll);
         assert_eq!(editor_part.parsed_top(), expected.top, "scrollTop={scroll_top}: expected top {}, got {}", expected.top, editor_part.parsed_top());
         assert_eq!(
@@ -406,7 +406,7 @@ fn code_cell_layout_reuses_content_height_after_init() {
     let editor_part = StubEditorPart::new();
     let view_cell = cell(EDITOR_HEIGHT, OUTPUT_CONTAINER_OFFSET, 600.0);
     let notebook_editor = notebook(0.0, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-    let mut layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, EDITOR_HEIGHT));
+    let layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, EDITOR_HEIGHT));
 
     layout.layout_editor(CellLayoutChangeReason::Init);
     assert_eq!(layout.editor_visibility().map(|visibility| visibility.as_str()), Some("Full"));
@@ -437,7 +437,7 @@ fn code_cell_layout_refreshes_content_height_on_view_cell_layout_change() {
     let editor_part = StubEditorPart::new();
     let view_cell = cell(INITIAL_CONTENT_HEIGHT, OUTPUT_CONTAINER_OFFSET, 600.0);
     let notebook_editor = notebook(0.0, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-    let mut layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, INITIAL_CONTENT_HEIGHT));
+    let layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, INITIAL_CONTENT_HEIGHT));
 
     layout.layout_editor(CellLayoutChangeReason::Init);
     assert_eq!(editor.last_layout_height(), Some(INITIAL_CONTENT_HEIGHT));
@@ -469,7 +469,7 @@ fn code_cell_layout_maintains_content_height_after_paste_when_scrolling() {
     let editor_part = StubEditorPart::new();
     let view_cell = cell(INITIAL_EDITOR_HEIGHT, OUTPUT_CONTAINER_OFFSET, 600.0);
     let notebook_editor = notebook(0.0, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-    let mut layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, INITIAL_EDITOR_HEIGHT));
+    let layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, INITIAL_EDITOR_HEIGHT));
 
     // Layout inicial.
     layout.layout_editor(CellLayoutChangeReason::Init);
@@ -509,7 +509,7 @@ fn code_cell_layout_does_not_programmatically_scroll_editor_while_pointer_down()
     let editor_part = StubEditorPart::new();
     let view_cell = cell(EDITOR_HEIGHT, OUTPUT_CONTAINER_OFFSET, 0.0);
     let notebook_editor = notebook(SCROLL_TOP, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-    let mut layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, EDITOR_HEIGHT));
+    let layout = CodeCellLayout::new(true, &notebook_editor, &view_cell, &editor_part, &editor, &NoopLog, dimension(600.0, EDITOR_HEIGHT));
 
     layout.layout_editor(CellLayoutChangeReason::Init);
     editor.last_scroll_top_set.set(-1.0);
@@ -542,7 +542,7 @@ fn code_cell_layout_init_ignores_stale_pooled_editor_content_height() {
     // Primeiro, o layout de uma célula alta estabelece uma altura grande no editor reaproveitado.
     let tall_view_cell = cell(200.0, OUTPUT_CONTAINER_OFFSET, 600.0);
     let tall_notebook_editor = notebook(0.0, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-    let mut tall_layout = CodeCellLayout::new(true, &tall_notebook_editor, &tall_view_cell, &editor_part, &pooled_editor, &NoopLog, dimension(600.0, 200.0));
+    let tall_layout = CodeCellLayout::new(true, &tall_notebook_editor, &tall_view_cell, &editor_part, &pooled_editor, &NoopLog, dimension(600.0, 200.0));
 
     tall_layout.layout_editor(CellLayoutChangeReason::Init);
     assert_eq!(pooled_editor.last_layout_height(), Some(200.0), "Expected tall cell to lay out using its own height");
@@ -551,7 +551,7 @@ fn code_cell_layout_init_ignores_stale_pooled_editor_content_height() {
     pooled_editor.content_height.set(200.0);
     let short_view_cell = cell(37.0, OUTPUT_CONTAINER_OFFSET, 600.0);
     let short_notebook_editor = notebook(0.0, VIEWPORT_HEIGHT, ELEMENT_TOP, ELEMENT_HEIGHT, OUTPUT_CONTAINER_OFFSET);
-    let mut short_layout = CodeCellLayout::new(true, &short_notebook_editor, &short_view_cell, &editor_part, &pooled_editor, &NoopLog, dimension(600.0, 37.0));
+    let short_layout = CodeCellLayout::new(true, &short_notebook_editor, &short_view_cell, &editor_part, &pooled_editor, &NoopLog, dimension(600.0, 37.0));
 
     short_layout.layout_editor(CellLayoutChangeReason::Init);
     assert_eq!(

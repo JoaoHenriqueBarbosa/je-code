@@ -13,6 +13,17 @@
 //! - `DOM.IDimension` é [`CellEditorDimension`].
 //! - O `try/finally` do original (`_isUpdatingLayout` e `_initialized` ao fim) é a sequência das atribuições finais: a camada
 //!   lógica não propaga exceção do editor.
+//! - O estado da conta (`_initialized`, `_pointerDown`, `_isUpdatingLayout`...) é de células (`Cell`) e os métodos recebem `&self`: o
+//!   `layout(...)` do editor dispara, de forma síncrona, ouvintes da `CodeCell` que releem `isUpdatingLayout` e chamam
+//!   `layoutEditor` de novo, como no original, onde o objeto é compartilhado. Os campos públicos `_previousScrollBottom` e
+//!   `_lastChangedEditorScrolltop` são os acessores [`CodeCellLayout::previous_scroll_bottom`], [`CodeCellLayout::last_changed_editor_scrolltop`]
+//!   e [`CodeCellLayout::set_last_changed_editor_scrolltop`].
+//! - Os colaboradores são [`Collaborator`]: emprestados (a conta isolada, como nos casos de `codeCell.test.ts`) ou compartilhados
+//!   (`Rc`, a `CodeCell` que guarda a conta junto de si).
+
+use std::cell::Cell;
+use std::ops::Deref;
+use std::rc::Rc;
 
 use crate::contrib::notebook::browser::view_model::cell_view_model_types::CodeCellLayoutInfo;
 
@@ -117,22 +128,39 @@ fn clamp(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
+/// Um colaborador da conta: emprestado ou compartilhado (ver as divergências do módulo).
+pub enum Collaborator<'a, T: ?Sized + 'a> {
+    Borrowed(&'a T),
+    Shared(Rc<T>),
+}
+
+impl<'a, T: ?Sized + 'a> Deref for Collaborator<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Shared(value) => value,
+        }
+    }
+}
+
 /// `CodeCellLayout`.
 pub struct CodeCellLayout<'a> {
     enabled: bool,
-    notebook_editor: &'a dyn ICodeCellLayoutNotebook,
-    view_cell: &'a dyn ICodeCellLayoutCell,
-    editor_part: &'a dyn ICodeCellLayoutEditorPart,
-    editor: &'a dyn ICodeCellLayoutEditor,
-    log_service: &'a dyn ICodeCellLayoutLogService,
+    notebook_editor: Collaborator<'a, dyn ICodeCellLayoutNotebook + 'a>,
+    view_cell: Collaborator<'a, dyn ICodeCellLayoutCell + 'a>,
+    editor_part: Collaborator<'a, dyn ICodeCellLayoutEditorPart + 'a>,
+    editor: Collaborator<'a, dyn ICodeCellLayoutEditor + 'a>,
+    log_service: Collaborator<'a, dyn ICodeCellLayoutLogService + 'a>,
     initial_editor_dimension: CellEditorDimension,
-    editor_visibility: Option<CodeCellEditorVisibility>,
-    is_updating_layout: bool,
-    pub previous_scroll_bottom: Option<f64>,
-    pub last_changed_editor_scrolltop: Option<f64>,
-    initialized: bool,
-    pointer_down: bool,
-    established_content_height: Option<f64>,
+    editor_visibility: Cell<Option<CodeCellEditorVisibility>>,
+    is_updating_layout: Cell<bool>,
+    previous_scroll_bottom: Cell<Option<f64>>,
+    last_changed_editor_scrolltop: Cell<Option<f64>>,
+    initialized: Cell<bool>,
+    pointer_down: Cell<bool>,
+    established_content_height: Cell<Option<f64>>,
 }
 
 impl<'a> CodeCellLayout<'a> {
@@ -146,6 +174,49 @@ impl<'a> CodeCellLayout<'a> {
         log_service: &'a dyn ICodeCellLayoutLogService,
         initial_editor_dimension: CellEditorDimension,
     ) -> Self {
+        Self::with_collaborators(
+            enabled,
+            Collaborator::Borrowed(notebook_editor),
+            Collaborator::Borrowed(view_cell),
+            Collaborator::Borrowed(editor_part),
+            Collaborator::Borrowed(editor),
+            Collaborator::Borrowed(log_service),
+            initial_editor_dimension,
+        )
+    }
+
+    /// O mesmo de [`CodeCellLayout::new`] com colaboradores compartilhados, para a conta que a `CodeCell` guarda junto de si.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_shared(
+        enabled: bool,
+        notebook_editor: Rc<dyn ICodeCellLayoutNotebook>,
+        view_cell: Rc<dyn ICodeCellLayoutCell>,
+        editor_part: Rc<dyn ICodeCellLayoutEditorPart>,
+        editor: Rc<dyn ICodeCellLayoutEditor>,
+        log_service: Rc<dyn ICodeCellLayoutLogService>,
+        initial_editor_dimension: CellEditorDimension,
+    ) -> CodeCellLayout<'static> {
+        CodeCellLayout::with_collaborators(
+            enabled,
+            Collaborator::Shared(notebook_editor),
+            Collaborator::Shared(view_cell),
+            Collaborator::Shared(editor_part),
+            Collaborator::Shared(editor),
+            Collaborator::Shared(log_service),
+            initial_editor_dimension,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_collaborators(
+        enabled: bool,
+        notebook_editor: Collaborator<'a, dyn ICodeCellLayoutNotebook + 'a>,
+        view_cell: Collaborator<'a, dyn ICodeCellLayoutCell + 'a>,
+        editor_part: Collaborator<'a, dyn ICodeCellLayoutEditorPart + 'a>,
+        editor: Collaborator<'a, dyn ICodeCellLayoutEditor + 'a>,
+        log_service: Collaborator<'a, dyn ICodeCellLayoutLogService + 'a>,
+        initial_editor_dimension: CellEditorDimension,
+    ) -> Self {
         Self {
             enabled,
             notebook_editor,
@@ -154,33 +225,48 @@ impl<'a> CodeCellLayout<'a> {
             editor,
             log_service,
             initial_editor_dimension,
-            editor_visibility: None,
-            is_updating_layout: false,
-            previous_scroll_bottom: None,
-            last_changed_editor_scrolltop: None,
-            initialized: false,
-            pointer_down: false,
-            established_content_height: None,
+            editor_visibility: Cell::new(None),
+            is_updating_layout: Cell::new(false),
+            previous_scroll_bottom: Cell::new(None),
+            last_changed_editor_scrolltop: Cell::new(None),
+            initialized: Cell::new(false),
+            pointer_down: Cell::new(false),
+            established_content_height: Cell::new(None),
         }
     }
 
     /// `editorVisibility`.
     pub fn editor_visibility(&self) -> Option<CodeCellEditorVisibility> {
-        self.editor_visibility
+        self.editor_visibility.get()
     }
 
     /// `isUpdatingLayout`.
     pub fn is_updating_layout(&self) -> bool {
-        self.is_updating_layout
+        self.is_updating_layout.get()
+    }
+
+    /// `_previousScrollBottom`.
+    pub fn previous_scroll_bottom(&self) -> Option<f64> {
+        self.previous_scroll_bottom.get()
+    }
+
+    /// `_lastChangedEditorScrolltop`.
+    pub fn last_changed_editor_scrolltop(&self) -> Option<f64> {
+        self.last_changed_editor_scrolltop.get()
+    }
+
+    /// `_lastChangedEditorScrolltop = value`.
+    pub fn set_last_changed_editor_scrolltop(&self, value: Option<f64>) {
+        self.last_changed_editor_scrolltop.set(value);
     }
 
     /// `setPointerDown`.
-    pub fn set_pointer_down(&mut self, is_down: bool) {
-        self.pointer_down = is_down;
+    pub fn set_pointer_down(&self, is_down: bool) {
+        self.pointer_down.set(is_down);
     }
 
     /// `layoutEditor`: posiciona a parte do editor e dimensiona o editor para o viewport (ver o comentário longo do original).
-    pub fn layout_editor(&mut self, reason: CellLayoutChangeReason) {
+    pub fn layout_editor(&self, reason: CellLayoutChangeReason) {
         if !self.enabled {
             return;
         }
@@ -196,10 +282,11 @@ impl<'a> CodeCellLayout<'a> {
         let cell_outline_width = cell_layout.outline_width;
         let status_bar_height = cell_layout.status_bar_height;
 
-        let editor = self.editor;
+        let editor = &*self.editor;
+        let initialized = self.initialized.get();
         let editor_layout = editor.get_layout_info();
         // Depois da primeira vez, a largura vem do layout da célula (a janela ou o notebook mudou de largura).
-        let editor_width = if self.initialized && matches!(reason, CellLayoutChangeReason::NbLayoutChange | CellLayoutChangeReason::ViewCellLayoutChange) {
+        let editor_width = if initialized && matches!(reason, CellLayoutChangeReason::NbLayoutChange | CellLayoutChangeReason::ViewCellLayoutChange) {
             cell_layout.editor_width
         } else {
             editor_layout.width
@@ -209,27 +296,27 @@ impl<'a> CodeCellLayout<'a> {
         let element_top = self.notebook_editor.get_absolute_top_of_element();
         let element_bottom = self.notebook_editor.get_absolute_bottom_of_element();
         let element_height = self.notebook_editor.get_height_of_element();
-        let is_init = !self.initialized && reason == CellLayoutChangeReason::Init;
+        let is_init = !initialized && reason == CellLayoutChangeReason::Init;
         let editor_content_height = if is_init {
             // Editores são reaproveitados: na primeira vez o `getContentHeight()` pode ser o da célula anterior. O init usa
             // só a dimensão inicial da própria célula.
             let height = self.initial_editor_dimension.height;
-            self.established_content_height = Some(height);
+            self.established_content_height.set(Some(height));
             height
         } else {
             let got_content_height = editor.get_content_height();
             let fallback = if got_content_height == -1.0 { editor.get_layout_info().height.max(self.initial_editor_dimension.height) } else { got_content_height };
-            let should_refresh_content_height = !self.initialized
+            let should_refresh_content_height = !initialized
                 || matches!(
                     reason,
                     CellLayoutChangeReason::OnDidContentSizeChange | CellLayoutChangeReason::ViewCellLayoutChange | CellLayoutChangeReason::NbLayoutChange
                 );
             if should_refresh_content_height {
-                self.established_content_height = Some(fallback);
+                self.established_content_height.set(Some(fallback));
                 fallback
             } else {
                 // A rolagem reaproveita a altura estabelecida, para um valor transitório menor não encolher a linha.
-                self.established_content_height.unwrap_or(fallback)
+                self.established_content_height.get().unwrap_or(fallback)
             }
         };
         let editor_bottom = element_top + cell_layout.output_container_offset;
@@ -237,11 +324,11 @@ impl<'a> CodeCellLayout<'a> {
         // No carregamento, `scrollBottom - scrollTop === 0`.
         let viewport_height = if scroll_bottom - scroll_top == 0.0 { self.notebook_editor.layout_height() } else { scroll_bottom - scroll_top };
         let output_container_offset = cell_layout.output_container_offset;
-        let scroll_direction = match self.previous_scroll_bottom {
+        let scroll_direction = match self.previous_scroll_bottom.get() {
             Some(previous) if scroll_bottom < previous => "up",
             _ => "down",
         };
-        self.previous_scroll_bottom = Some(scroll_bottom);
+        self.previous_scroll_bottom.set(Some(scroll_bottom));
 
         let mut top = (scroll_top - element_top - cell_top_margin - cell_outline_width).max(0.0);
         let possible_editor_height = editor_height - top;
@@ -275,10 +362,10 @@ impl<'a> CodeCellLayout<'a> {
             visibility = if scroll_top > editor_bottom { CodeCellEditorVisibility::Invisible } else { CodeCellEditorVisibility::TopClipped };
             editor_scroll_top = editor_content_height - height;
         }
-        self.editor_visibility = Some(visibility);
+        self.editor_visibility.set(Some(visibility));
 
-        let log = self.log_service;
-        log.debug(&format!("{} ({}, {})", reason.as_str(), visibility.as_str(), self.initialized));
+        let log = &*self.log_service;
+        log.debug(&format!("{} ({}, {})", reason.as_str(), visibility.as_str(), initialized));
         log.debug(&format!("=> Editor Top = {top}px (editHeight = {editor_height}, editContentHeight: {editor_content_height})"));
         log.debug(&format!("=> eleTop = {element_top}, eleBottom = {element_bottom}, eleHeight = {element_height}"));
         log.debug(&format!("=> scrollTop = {scroll_top}, top = {top}"));
@@ -291,16 +378,16 @@ impl<'a> CodeCellLayout<'a> {
             self.initial_editor_dimension.width
         ));
 
-        self.is_updating_layout = true;
+        self.is_updating_layout.set(true);
         self.editor_part.set_top(Some(top));
-        editor.layout(CellEditorDimension { width: if self.initialized { editor_width } else { self.initial_editor_dimension.width }, height });
+        editor.layout(CellEditorDimension { width: if initialized { editor_width } else { self.initial_editor_dimension.width }, height });
         // Opção 3: sem rolagem programática enquanto o usuário arrasta a seleção.
-        if !self.pointer_down && editor_scroll_top >= 0.0 {
-            self.last_changed_editor_scrolltop = Some(editor_scroll_top);
+        if !self.pointer_down.get() && editor_scroll_top >= 0.0 {
+            self.last_changed_editor_scrolltop.set(Some(editor_scroll_top));
             editor.set_scroll_top(editor_scroll_top);
         }
-        self.initialized = true;
-        self.is_updating_layout = false;
+        self.initialized.set(true);
+        self.is_updating_layout.set(false);
         log.debug("Updated Editor Layout");
     }
 }

@@ -3036,10 +3036,15 @@ impl Injectable for TerminalInstance {
         let _ = ready
             .then_promise(move |_| {
                 let Some(this) = weak.upgrade() else { return Promise::resolved(()) };
-                let task = this.clone();
+                // A promessa da barreira não referencia a instância; a espera segura só uma referência fraca, senão a instância
+                // (dona da barreira) ficaria retida por esta tarefa pendente até a barreira abrir.
+                let container_ready = this.container_ready_barrier.wait();
+                let weak_task = Rc::downgrade(&this);
+                drop(this);
                 run_async(async move {
                     // Wait for a period to allow a container to be ready
-                    task.container_ready_barrier.wait().await?;
+                    container_ready.await?;
+                    let Some(task) = weak_task.upgrade() else { return Ok(()) };
 
                     // Resolve the executable ahead of time if shell integration is enabled, this should not be done for custom PTYs
                     // as that would cause extension Pseudoterminal-based terminals to hang in resolver extensions

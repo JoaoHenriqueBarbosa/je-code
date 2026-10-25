@@ -1,9 +1,9 @@
-//! Porte de `src/vs/workbench/services/search/node/ripgrepTextSearchEngine.ts` no que não depende do processo
-//! `rg`: o parser da saída JSON do ripgrep (`RipgrepParser`), a montagem dos argumentos (`getRgArgs`), os
+//! Porte de `src/vs/workbench/services/search/node/ripgrepTextSearchEngine.ts`: o parser da saída JSON do ripgrep
+//! (`RipgrepParser`), a montagem dos argumentos (`getRgArgs`), os
 //! ajustes de padrão (`fixRegexNewline`, `fixNewline`, `unicodeEscapesToPCRE2`), a expansão de chaves
-//! (`performBraceExpansionForRipgrep`) e os tipos da mensagem (`IRgMessage`, `IRgMatch`, `IRgSubmatch`,
-//! `IRgBytesOrText`). O `RipgrepTextSearchEngine` (que lança o `rg` e trata o stderr, com `SearchError`) fica
-//! para quando houver processo filho.
+//! (`performBraceExpansionForRipgrep`), os tipos da mensagem (`IRgMessage`, `IRgMatch`, `IRgSubmatch`,
+//! `IRgBytesOrText`) e, no fim do arquivo, o `RipgrepTextSearchEngine`, que lança o `rg` e trata o stderr (com
+//! `SearchError`), mais `rgErrorMsgForDisplay`.
 //!
 //! Diferenças de forma em relação ao original, nenhuma de comportamento:
 //! - `RipgrepParser extends EventEmitter` guarda ouvintes (`on_result`, `on_hit_limit`) em vez de herdar.
@@ -1149,4 +1149,482 @@ pub fn perform_brace_expansion_for_ripgrep(pattern: &str) -> Vec<String> {
             ends.iter().map(move |end| format!("{start}{end}"))
         })
         .collect()
+}
+
+// ---- o processo rg (RipgrepTextSearchEngine) -------------------------------------------------------------
+//
+// Diferenças de forma em relação ao original, nenhuma de comportamento:
+// - `provideTextSearchResults` é o `TextSearchProvider2::provide_text_search_results` do motor (o `Promise<TextSearchComplete2>`
+//   do original é o `ProviderResult` com `Some`). A consulta é compartilhada entre as pastas num `Rc<RefCell<..>>`, porque o
+//   `getRgArgs` a altera e o original passa o mesmo objeto a todas as pastas.
+// - `cp.spawn(rgDiskPath, args, { cwd })` é o [`ChildProcess`] de `file_walker`; `rgProc.on('error' | 'close')`,
+//   `stdout.on('data')` e `stderr.on('data')` chegam como [`ChildEvent`] a um ouvinte só. `await rgDiskPath()` é a chamada
+//   síncrona de [`rg_disk_path`].
+// - `RipgrepParser extends EventEmitter` guarda os ouvintes dentro do `RefCell` do parser: um `cancel()` pedido de dentro de
+//   um ouvinte (o limite de resultados, ou o consumidor cancelando o token ao receber um resultado) não pode reentrar no
+//   parser, então fica pendente (`parser_cancel_deferred`) e os resultados seguintes do mesmo bloco são descartados, como o
+//   `isDone` do parser faria no original.
+// - O ouvinte de `token.onCancellationRequested` é descartado quando o processo fecha (o original o deixa pendurado; depois
+//   do `close` o `cancel()` não tem mais efeito).
+// - `serializeSearchError(new SearchError(..))` é [`serialize_search_error`]; o `console.error(e)` é `eprintln!`.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::process::Command;
+use std::rc::Rc;
+
+use je_base::cancellation::CancellationToken;
+use je_base::lifecycle::{DisposableRef, IDisposable};
+use je_base::nls::localize;
+use je_base::promise::{Promise, Resolver};
+use je_platform::progress::progress::{IProgress, Progress};
+use je_platform::resources::fs_path;
+
+use super::file_walker::{ChildEvent, ChildProcess};
+use super::ripgrep_disk_path::rg_disk_path;
+use super::ripgrep_search_utils::{IOutputChannel, MAX_RIPGREP_SYMLINK_LOOPS, RipgrepSymlinkLoopDetector};
+use super::search::{DEFAULT_MAX_SEARCH_RESULTS, SearchError, SearchErrorCode, serialize_search_error};
+use super::search_ext_conversion_types::new_to_old_preview_options;
+use super::search_ext_types::{
+    ProviderResult, TextSearchComplete2, TextSearchCompleteMessage2, TextSearchCompleteMessageType, TextSearchProvider2,
+    TextSearchProviderOptions,
+};
+
+/// O `length` do JavaScript (unidades UTF-16).
+fn js_length(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// O `uri` das duas formas de resultado.
+fn text_search_result_uri(result: &TextSearchResult2) -> &URI {
+    match result {
+        TextSearchResult2::Match(text_match) => &text_match.uri,
+        TextSearchResult2::Context(context) => &context.uri,
+    }
+}
+
+/// O `{ limitHit: e.some(...), message: e.flatMap(...) }` com que o motor e o `RipgrepSearchProvider` juntam o resultado
+/// de cada pasta.
+pub fn merge_text_search_completes(completes: &[TextSearchComplete2]) -> TextSearchComplete2 {
+    let mut complete = TextSearchComplete2 {
+        // todo do original: get this to actually check
+        limit_hit: Some(completes.iter().any(|complete| complete.limit_hit == Some(true))),
+        message: None,
+    };
+    let messages: Vec<TextSearchCompleteMessage2> = completes.iter().flat_map(|complete| complete.message.clone().unwrap_or_default()).collect();
+    if !messages.is_empty() {
+        complete.message = Some(messages);
+    }
+    complete
+}
+
+/// O `JSON.stringify({ ...options, folder: options.folderOptions.folder.toString() })` do log: os campos indefinidos somem.
+fn options_log_json(options: &RipgrepTextSearchOptions) -> String {
+    let folder_options = &options.folder_options;
+    let excludes: Vec<Value> = folder_options
+        .excludes
+        .iter()
+        .map(|exclude| match exclude {
+            GlobPattern::Pattern(pattern) => json!(pattern),
+            GlobPattern::Relative(relative) => json!({ "baseUri": relative.base_uri.to_string(false).to_string_lossy(), "pattern": relative.pattern }),
+        })
+        .collect();
+    let mut folder_object = serde_json::Map::new();
+    folder_object.insert("folder".to_owned(), json!(folder_options.folder.to_string(false).to_string_lossy()));
+    folder_object.insert("includes".to_owned(), json!(folder_options.includes));
+    folder_object.insert("excludes".to_owned(), Value::Array(excludes));
+    if let Some(ignore_glob_case) = folder_options.ignore_glob_case {
+        folder_object.insert("ignoreGlobCase".to_owned(), json!(ignore_glob_case));
+    }
+    folder_object.insert("followSymlinks".to_owned(), json!(folder_options.follow_symlinks));
+    folder_object.insert(
+        "useIgnoreFiles".to_owned(),
+        json!({ "local": folder_options.use_ignore_files.local, "parent": folder_options.use_ignore_files.parent, "global": folder_options.use_ignore_files.global }),
+    );
+    folder_object.insert("encoding".to_owned(), json!(folder_options.encoding));
+
+    let mut object = serde_json::Map::new();
+    object.insert("folderOptions".to_owned(), Value::Object(folder_object));
+    if let Some(num_threads) = options.num_threads {
+        object.insert("numThreads".to_owned(), json!(num_threads));
+    }
+    if let Some(max_results) = options.max_results {
+        object.insert("maxResults".to_owned(), json!(max_results));
+    }
+    if let Some(preview_options) = options.preview_options {
+        object.insert("previewOptions".to_owned(), json!({ "matchLines": preview_options.match_lines, "charsPerLine": preview_options.chars_per_line }));
+    }
+    if let Some(max_file_size) = options.max_file_size {
+        object.insert("maxFileSize".to_owned(), json!(max_file_size));
+    }
+    if let Some(surrounding_context) = options.surrounding_context {
+        object.insert("surroundingContext".to_owned(), json!(surrounding_context));
+    }
+    object.insert("folder".to_owned(), json!(folder_options.folder.to_string(false).to_string_lossy()));
+    Value::Object(object).to_string()
+}
+
+/// O estado de uma execução do `rg` numa pasta, compartilhado entre os eventos do processo e o `cancel`.
+struct RgRun {
+    output_channel: Rc<dyn IOutputChannel>,
+    progress: Rc<dyn IProgress<TextSearchResult2>>,
+    parser: RefCell<RipgrepParser>,
+    parser_cancel_deferred: Cell<bool>,
+    proc: RefCell<Option<Rc<ChildProcess>>>,
+    got_result: Cell<bool>,
+    data_without_result: RefCell<String>,
+    got_data: Cell<bool>,
+    stderr: RefCell<String>,
+    is_done: Cell<bool>,
+    limit_hit: Cell<bool>,
+    is_retrying: Cell<bool>,
+    symlink_loop_detector: RefCell<Option<RipgrepSymlinkLoopDetector>>,
+    reported_paths: RefCell<Vec<String>>,
+}
+
+impl RgRun {
+    fn new(
+        output_channel: Rc<dyn IOutputChannel>,
+        progress: Rc<dyn IProgress<TextSearchResult2>>,
+        options: &RipgrepTextSearchOptions,
+    ) -> Rc<Self> {
+        Rc::new_cyclic(|this: &std::rc::Weak<RgRun>| {
+            let mut parser = RipgrepParser::new(
+                options.max_results.unwrap_or(DEFAULT_MAX_SEARCH_RESULTS as i64),
+                options.folder_options.folder.clone(),
+                new_to_old_preview_options(options.preview_options),
+            );
+            let on_result = this.clone();
+            parser.on_result(move |result| {
+                if let Some(run) = on_result.upgrade() {
+                    run.handle_result(result);
+                }
+            });
+            let on_hit_limit = this.clone();
+            parser.on_hit_limit(move || {
+                if let Some(run) = on_hit_limit.upgrade() {
+                    run.limit_hit.set(true);
+                    run.cancel();
+                }
+            });
+
+            // When ripgrep reports too many symbolic link loops, search the folder again without following
+            // symbolic links and skip the results that were already reported
+            let symlink_loop_detector = options.folder_options.follow_symlinks.then(RipgrepSymlinkLoopDetector::new);
+            RgRun {
+                output_channel,
+                progress,
+                parser: RefCell::new(parser),
+                parser_cancel_deferred: Cell::new(false),
+                proc: RefCell::new(None),
+                got_result: Cell::new(false),
+                data_without_result: RefCell::new(String::new()),
+                got_data: Cell::new(false),
+                stderr: RefCell::new(String::new()),
+                is_done: Cell::new(false),
+                limit_hit: Cell::new(false),
+                is_retrying: Cell::new(false),
+                symlink_loop_detector: RefCell::new(symlink_loop_detector),
+                reported_paths: RefCell::new(Vec::new()),
+            }
+        })
+    }
+
+    /// O ouvinte de `ripgrepParser.on('result')`.
+    fn handle_result(&self, result: &TextSearchResult2) {
+        if self.parser_cancel_deferred.get() {
+            return;
+        }
+        self.got_result.set(true);
+        self.data_without_result.borrow_mut().clear();
+        if self.symlink_loop_detector.borrow().is_some() {
+            self.reported_paths.borrow_mut().push(text_search_result_uri(result).path().to_string_lossy());
+        }
+        self.progress.report(result.clone());
+    }
+
+    /// `cancel`.
+    fn cancel(&self) {
+        self.is_done.set(true);
+
+        if let Some(proc) = self.proc.borrow().as_ref() {
+            proc.kill();
+        }
+
+        match self.parser.try_borrow_mut() {
+            Ok(mut parser) => parser.cancel(),
+            Err(_) => self.parser_cancel_deferred.set(true),
+        }
+    }
+
+    /// `rgProc.stdout.on('data')`.
+    fn handle_stdout(&self, data: &[u8]) {
+        self.parser.borrow_mut().handle_data(data);
+        if !self.got_result.get() {
+            self.data_without_result.borrow_mut().push_str(&String::from_utf8_lossy(data));
+        }
+        self.got_data.set(true);
+    }
+
+    /// `rgProc.stderr.on('data')`.
+    fn handle_stderr(&self, data: &[u8]) {
+        let message = String::from_utf8_lossy(data).into_owned();
+        self.output_channel.append_line(&message);
+
+        {
+            let mut stderr = self.stderr.borrow_mut();
+            if js_length(&stderr) + js_length(&message) < 1_000_000 {
+                stderr.push_str(&message);
+            }
+        }
+
+        let detected_loops = !self.is_done.get() && self.symlink_loop_detector.borrow_mut().as_mut().is_some_and(|detector| detector.handle_stderr(&message));
+        if detected_loops {
+            self.is_retrying.set(true);
+            self.cancel();
+        }
+    }
+}
+
+/// `RipgrepTextSearchEngine`.
+#[derive(Clone)]
+pub struct RipgrepTextSearchEngine {
+    output_channel: Rc<dyn IOutputChannel>,
+    num_threads: Option<i64>,
+}
+
+impl RipgrepTextSearchEngine {
+    pub fn new(output_channel: Rc<dyn IOutputChannel>, num_threads: Option<i64>) -> Self {
+        Self { output_channel, num_threads }
+    }
+
+    pub fn provide_text_search_results_with_rg_options(
+        &self,
+        query: &Rc<RefCell<TextSearchQuery2>>,
+        options: RipgrepTextSearchOptions,
+        progress: Rc<dyn IProgress<TextSearchResult2>>,
+        token: CancellationToken,
+    ) -> Promise<TextSearchComplete2> {
+        self.output_channel.append_line(&format!("provideTextSearchResults {}, {}", query.borrow().pattern, options_log_json(&options)));
+
+        if query.borrow().pattern.is_empty() {
+            return Promise::resolved(TextSearchComplete2 { limit_hit: Some(false), message: None });
+        }
+
+        let resolved_rg_disk_path = rg_disk_path();
+        let (engine, query) = (self.clone(), query.clone());
+        Promise::with_executor(move |resolver| engine.run_ripgrep(resolver, &query, options, progress, token, &resolved_rg_disk_path))
+    }
+
+    /// O corpo do executor de `new Promise((resolve, reject) => ...)`.
+    fn run_ripgrep(
+        &self,
+        resolver: Resolver<TextSearchComplete2>,
+        query: &Rc<RefCell<TextSearchQuery2>>,
+        options: RipgrepTextSearchOptions,
+        progress: Rc<dyn IProgress<TextSearchResult2>>,
+        token: CancellationToken,
+        resolved_rg_disk_path: &str,
+    ) {
+        let run = RgRun::new(self.output_channel.clone(), progress.clone(), &options);
+        let cancel_listener: Rc<RefCell<Option<DisposableRef>>> = Rc::default();
+        *cancel_listener.borrow_mut() = Some(token.on_cancellation_requested().listen({
+            let run = Rc::downgrade(&run);
+            move |_| {
+                if let Some(run) = run.upgrade() {
+                    run.cancel();
+                }
+            }
+        }));
+
+        let extended_options = RipgrepTextSearchOptions { num_threads: self.num_threads, ..options.clone() };
+        let rg_args = get_rg_args(&mut query.borrow_mut(), &extended_options);
+
+        let cwd = fs_path(&options.folder_options.folder);
+
+        let escaped_args = rg_args.iter().map(|arg| if arg.starts_with('-') { arg.clone() } else { format!("'{arg}'") }).collect::<Vec<_>>().join(" ");
+        self.output_channel.append_line(&format!("{resolved_rg_disk_path} {escaped_args}\n - cwd: {cwd}"));
+
+        let rg_proc = ChildProcess::spawn(Command::new(resolved_rg_disk_path).args(&rg_args).current_dir(&cwd));
+        *run.proc.borrow_mut() = Some(rg_proc.clone());
+
+        let (engine, query) = (self.clone(), query.clone());
+        rg_proc.listen(move |event| match event {
+            ChildEvent::Error(error) => {
+                eprintln!("{error}");
+                run.output_channel.append_line(&format!("Error: {}", error.message));
+                resolver.reject(serialize_search_error(&SearchError::new(error.message.clone(), Some(SearchErrorCode::RgProcessError))));
+            }
+            ChildEvent::Stdout(data) => run.handle_stdout(data),
+            ChildEvent::Stderr(data) => run.handle_stderr(data),
+            ChildEvent::Close(_) => {
+                if let Some(listener) = cancel_listener.borrow_mut().take() {
+                    listener.dispose();
+                }
+                let complete = TextSearchComplete2 { limit_hit: Some(run.limit_hit.get()), message: None };
+
+                run.output_channel.append_line(if run.got_data.get() { "Got data from stdout" } else { "No data from stdout" });
+                run.output_channel.append_line(if run.got_result.get() { "Got result from parser" } else { "No result from parser" });
+                let data_without_result = run.data_without_result.borrow().clone();
+                if !data_without_result.is_empty() {
+                    run.output_channel.append_line(&format!("Got data without result: {data_without_result}"));
+                }
+
+                run.output_channel.append_line("");
+
+                if run.is_retrying.get() && !token.is_cancellation_requested() {
+                    let reported_paths = run.reported_paths.borrow().clone();
+                    resolver.resolve_with(&engine.search_again_without_following_symlinks(&query, options.clone(), progress.clone(), token.clone(), &reported_paths));
+                } else if run.is_done.get() {
+                    resolver.resolve(complete);
+                } else {
+                    // Trigger last result
+                    run.parser.borrow_mut().flush();
+                    *run.proc.borrow_mut() = None;
+                    let stderr = run.stderr.borrow().clone();
+                    let search_error = if !stderr.is_empty() && !run.got_data.get() { rg_error_msg_for_display(&stderr) } else { None };
+                    match search_error {
+                        Some(search_error) => resolver.reject(serialize_search_error(&SearchError::new(search_error.message, search_error.code))),
+                        None => resolver.resolve(complete),
+                    }
+                }
+            }
+        });
+    }
+
+    fn search_again_without_following_symlinks(
+        &self,
+        query: &Rc<RefCell<TextSearchQuery2>>,
+        options: RipgrepTextSearchOptions,
+        progress: Rc<dyn IProgress<TextSearchResult2>>,
+        token: CancellationToken,
+        reported_paths: &[String],
+    ) -> Promise<TextSearchComplete2> {
+        let folder = options.folder_options.folder.clone();
+        self.output_channel.append_line(&format!(
+            "ripgrep reported more than {MAX_RIPGREP_SYMLINK_LOOPS} symbolic link loops, searching {} again without following symbolic links",
+            fs_path(&folder)
+        ));
+
+        // ripgrep reports the results of a file in the same order every time, so skip as many results of each
+        // file as were already reported. This also covers a file whose results were only partially reported.
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for path in reported_paths {
+            *counts.entry(path.clone()).or_insert(0) += 1;
+        }
+        let results_to_skip = Rc::new(RefCell::new(counts));
+
+        let skipping_progress = Progress::new({
+            let progress = progress.clone();
+            move |result: TextSearchResult2| {
+                let path = text_search_result_uri(&result).path().to_string_lossy();
+                let skipped = match results_to_skip.borrow_mut().get_mut(&path) {
+                    Some(to_skip) if *to_skip > 0 => {
+                        *to_skip -= 1;
+                        true
+                    }
+                    _ => false,
+                };
+                if !skipped {
+                    progress.report(result);
+                }
+            }
+        });
+
+        let mut retry_options = options;
+        retry_options.folder_options.follow_symlinks = false;
+        self.provide_text_search_results_with_rg_options(query, retry_options, Rc::new(skipping_progress), token).then(move |complete| {
+            let mut message = complete.message.unwrap_or_default();
+            message.push(TextSearchCompleteMessage2 {
+                text: localize(
+                    "symlinkLoops",
+                    "Symbolic links in '{0}' were not followed because they form too many loops, so results may be incomplete. Exclude the folders that contain the loops or turn off the '{1}' setting to avoid this.",
+                    &[fs_path(&folder).as_str(), "search.followSymlinks"],
+                ),
+                trusted: None,
+                message_type: TextSearchCompleteMessageType::Warning,
+            });
+            TextSearchComplete2 { limit_hit: complete.limit_hit, message: Some(message) }
+        })
+    }
+}
+
+impl TextSearchProvider2 for RipgrepTextSearchEngine {
+    fn provide_text_search_results(
+        &self,
+        query: &TextSearchQuery2,
+        options: &TextSearchProviderOptions,
+        progress: Rc<dyn IProgress<TextSearchResult2>>,
+        token: &CancellationToken,
+    ) -> ProviderResult<TextSearchComplete2> {
+        let query = Rc::new(RefCell::new(query.clone()));
+        let completes = options
+            .folder_options
+            .iter()
+            .map(|folder_option| {
+                let extended_options = RipgrepTextSearchOptions {
+                    folder_options: folder_option.clone(),
+                    num_threads: self.num_threads,
+                    max_results: Some(options.max_results),
+                    preview_options: Some(options.preview_options),
+                    max_file_size: options.max_file_size,
+                    surrounding_context: Some(options.surrounding_context),
+                };
+                self.provide_text_search_results_with_rg_options(&query, extended_options, progress.clone(), token.clone())
+            })
+            .collect();
+        Promise::all(completes).then(|completes| Some(merge_text_search_completes(&completes)))
+    }
+}
+
+/// Read the first line of stderr and return an error for display or undefined, based on a list of
+/// allowed properties.
+/// Ripgrep produces stderr output which is not from a fatal error, and we only want the search to be
+/// "failed" when a fatal error was produced.
+fn rg_error_msg_for_display(msg: &str) -> Option<SearchError> {
+    let lines: Vec<&str> = msg.split('\n').collect();
+    let first_line = lines[0].trim_matches(is_js_whitespace);
+
+    if lines.iter().any(|line| line.starts_with("regex parse error")) {
+        return Some(SearchError::new(build_regex_parse_error(&lines), Some(SearchErrorCode::RegexParseError)));
+    }
+
+    const UNKNOWN_ENCODING: &str = "grep config error: unknown encoding: ";
+    if let Some(position) = first_line.find(UNKNOWN_ENCODING) {
+        return Some(SearchError::new(format!("Unknown encoding: {}", &first_line[position + UNKNOWN_ENCODING.len()..]), Some(SearchErrorCode::UnknownEncoding)));
+    }
+
+    // Uppercase first letter
+    let capitalized = || {
+        let mut chars = first_line.chars();
+        chars.next().map(|first| first.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default()
+    };
+
+    if first_line.starts_with("error parsing glob") {
+        return Some(SearchError::new(capitalized(), Some(SearchErrorCode::GlobParseError)));
+    }
+
+    if first_line.starts_with("the literal") {
+        return Some(SearchError::new(capitalized(), Some(SearchErrorCode::InvalidLiteral)));
+    }
+
+    if first_line.starts_with("PCRE2: error compiling pattern") {
+        return Some(SearchError::new(first_line, Some(SearchErrorCode::RegexParseError)));
+    }
+
+    None
+}
+
+fn build_regex_parse_error(lines: &[&str]) -> String {
+    let mut error_message: Vec<String> = vec!["Regex parse error".to_owned()];
+    if let Some(pcre2_error_line) = lines.iter().find(|line| line.starts_with("PCRE2:")) {
+        let pcre2_error_message = pcre2_error_line.replacen("PCRE2:", "", 1);
+        if pcre2_error_message.contains(':')
+            && let Some(pcre2_actual_error_message) = pcre2_error_message.split(':').nth(1)
+        {
+            error_message.push(format!(":{pcre2_actual_error_message}"));
+        }
+    }
+
+    error_message.join("")
 }

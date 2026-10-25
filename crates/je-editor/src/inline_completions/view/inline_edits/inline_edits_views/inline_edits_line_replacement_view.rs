@@ -85,10 +85,10 @@ use super::NonOverflowOverlayWidget;
 /// `scrollbarShadow` (`scrollbar.shadow`).
 const SCROLLBAR_SHADOW: &str = "scrollbar.shadow";
 
-const DISABLE_MONOSPACE_OPTIMIZATIONS: Opt<bool> = Opt::new(EditorOption::DisableMonospaceOptimizations);
-const STOP_RENDERING_LINE_AFTER: Opt<f64> = Opt::new(EditorOption::StopRenderingLineAfter);
-const RENDER_WHITESPACE: Opt<String> = Opt::new(EditorOption::RenderWhitespace);
-const RENDER_CONTROL_CHARACTERS: Opt<bool> = Opt::new(EditorOption::RenderControlCharacters);
+pub(crate) const DISABLE_MONOSPACE_OPTIMIZATIONS: Opt<bool> = Opt::new(EditorOption::DisableMonospaceOptimizations);
+pub(crate) const STOP_RENDERING_LINE_AFTER: Opt<f64> = Opt::new(EditorOption::StopRenderingLineAfter);
+pub(crate) const RENDER_WHITESPACE: Opt<String> = Opt::new(EditorOption::RenderWhitespace);
+pub(crate) const RENDER_CONTROL_CHARACTERS: Opt<bool> = Opt::new(EditorOption::RenderControlCharacters);
 
 /// `Replacement`.
 #[derive(Clone, Copy, Debug, PartialEq)]

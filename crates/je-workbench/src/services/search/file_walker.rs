@@ -433,7 +433,7 @@ fn initial_directory_tree() -> DirectoryTree {
 }
 
 /// O `with` do `path` nativo do sistema.
-fn with_native_path<R>(f: impl FnOnce(&PathModule<'_>) -> R) -> R {
+pub(super) fn with_native_path<R>(f: impl FnOnce(&PathModule<'_>) -> R) -> R {
     let env = host_environment();
     f(&PathModule::native(env.as_ref()))
 }
@@ -1290,6 +1290,7 @@ fn decode_data(buffers: &[Vec<u8>]) -> String {
 // ---------------------------------------------------------------------------------------------------------
 
 /// `ISearchEngineSuccess`.
+#[derive(Clone)]
 pub struct ISearchEngineSuccess {
     pub limit_hit: bool,
     pub messages: Vec<ITextSearchCompleteMessage>,

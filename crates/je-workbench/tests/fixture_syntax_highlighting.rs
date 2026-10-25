@@ -66,7 +66,7 @@ struct Tokenizers {
 /// `createTokenizers(theme)`.
 fn create_tokenizers(disposables: &LeakGuard, document: &Rc<FixtureDocument>, dark_theme: &ColorThemeData, theme: &ColorThemeData) -> Tokenizers {
     let store = disposables.add_rc(DisposableStore::new());
-    let language_service = LanguageService::new(false);
+    let language_service = store.add_rc(LanguageService::new(false));
     register_fixture_languages(&store, &*language_service);
     let host = document.body().append_child("");
     {
@@ -123,10 +123,17 @@ fn try_finally(body: impl FnOnce(), cleanup: impl FnOnce()) {
     }
 }
 
+/// `const disposables = ensureNoDisposablesAreLeakedInTestSuite()`. O `TokenizationRegistry` é um singleton do módulo no
+/// original e nasce no import, antes do rastreio; aqui ele nasce na primeira chamada, então é criado antes do guarda.
+fn leak_guard() -> LeakGuard {
+    let _ = tokenization_registry();
+    ensure_no_disposables_are_leaked_in_test_suite()
+}
+
 #[test]
 fn registers_actual_text_mate_tokenizers_for_every_fixture_language() {
     run_with_real_timers(async move {
-        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let disposables = leak_guard();
         let dark_theme = load_theme("2026-dark", "2026-dark.json", "vs-dark").await;
         let document = FixtureDocument::new();
         let tokenizers = create_tokenizers(&disposables, &document, &dark_theme, &dark_theme);
@@ -173,7 +180,7 @@ fn registers_actual_text_mate_tokenizers_for_every_fixture_language() {
 #[test]
 fn uses_dark_2026_text_mate_scope_distinctions_and_generated_token_css() {
     run_with_real_timers(async move {
-        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let disposables = leak_guard();
         let dark_theme = load_theme("2026-dark", "2026-dark.json", "vs-dark").await;
         let document = FixtureDocument::new();
         let tokenizers = create_tokenizers(&disposables, &document, &dark_theme, &dark_theme);
@@ -202,7 +209,7 @@ fn uses_dark_2026_text_mate_scope_distinctions_and_generated_token_css() {
 #[test]
 fn preserves_multiline_text_mate_state_and_embedded_language_ids() {
     run_with_real_timers(async move {
-        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let disposables = leak_guard();
         let dark_theme = load_theme("2026-dark", "2026-dark.json", "vs-dark").await;
         let document = FixtureDocument::new();
         let tokenizers = create_tokenizers(&disposables, &document, &dark_theme, &dark_theme);
@@ -233,7 +240,7 @@ fn preserves_multiline_text_mate_state_and_embedded_language_ids() {
 #[test]
 fn uses_monochrome_token_styles_in_non_dark_fixtures_without_affecting_dark() {
     run_with_real_timers(async move {
-        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let disposables = leak_guard();
         let dark_theme = load_theme("2026-dark", "2026-dark.json", "vs-dark").await;
         let document = FixtureDocument::new();
         let variants = [("Light", "light_modern.json", "vs"), ("DarkHighContrast", "hc_black.json", "hc-black"), ("LightHighContrast", "hc_light.json", "hc-light"), ("Dark", "2026-dark.json", "vs-dark")];
@@ -280,7 +287,7 @@ fn uses_monochrome_token_styles_in_non_dark_fixtures_without_affecting_dark() {
 #[test]
 fn retains_shared_tokenizers_until_the_final_fixture_is_disposed() {
     run_with_real_timers(async move {
-        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let disposables = leak_guard();
         let dark_theme = load_theme("2026-dark", "2026-dark.json", "vs-dark").await;
         let document = FixtureDocument::new();
         let registry = tokenization_registry();

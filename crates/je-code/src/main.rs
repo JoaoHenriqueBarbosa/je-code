@@ -230,6 +230,7 @@ impl App {
     /// Roda o loop de eventos do runtime (tokenização em fatias, timers), aplica os pedidos do shell e pede quadro
     /// se algo mudou.
     fn tick(&mut self, event_loop: &ActiveEventLoop) {
+        self.shell.flush_dropped_files();
         runtime::turn();
         if self.shell.take_exit() {
             event_loop.exit();
@@ -354,6 +355,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => self.shell.pointer_left(),
+            // Arrastar arquivos do sistema para a janela (o winit 0.30 não manda posição nestes três).
+            WindowEvent::HoveredFile(path) => self.shell.external_drag_enter(path),
+            WindowEvent::HoveredFileCancelled => self.shell.external_drag_leave(),
+            WindowEvent::DroppedFile(path) => self.shell.external_dropped_file(path),
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = match button {
                     MouseButton::Left => PointerButton::Primary,

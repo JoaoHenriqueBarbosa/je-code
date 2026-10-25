@@ -1,33 +1,42 @@
 //! Utilitários do editor de diff (`src/vs/editor/browser/widget/diffEditor/utils.ts`) que os view models, os componentes e o widget
 //! usam: `filterWithPrevious`, `applyObservableDecorations`, `ObservableElementSizeObserver`, `IObservableViewZone`,
-//! `applyViewZones` e `translatePosition`. O `RefCounted` do mesmo arquivo vive em `je_base::lifecycle` ao lado do
-//! `RefCountedDisposable`. O restante do arquivo (`animatedObservable`, `ManagedOverlayWidget`, `PlaceholderViewZone`,
-//! `ViewZoneOverlayWidget`, `deepMerge`...) pertence às features do editor de diff (fatia 3) e entra com elas.
+//! `applyViewZones` e `translatePosition`, mais os que as features da fatia 3 usam: `PlaceholderViewZone`, `ManagedOverlayWidget` e
+//! `ViewZoneOverlayWidget`. O `RefCounted` do mesmo arquivo vive em `je_base::lifecycle` ao lado do `RefCountedDisposable`. O restante
+//! do arquivo (`animatedObservable`, `deepMerge`...) pertence às features do editor de diff que ainda faltam (fatia 3b) e entra com
+//! elas.
 //!
 //! Divergências:
 //! - **`ObservableElementSizeObserver`** recebe o `Option<Rc<dyn ReferenceDomElement>>` do [`ElementSizeObserver`] no lugar do
 //!   `HTMLElement | null`. O `observe(dimension)` do original só repassa ao `ElementSizeObserver` (e uma função de repasse não
 //!   existe neste projeto), então o observador interno é o campo público
 //!   [`ObservableElementSizeObserver::element_size_observer`] e o widget chama `observe` nele.
-//! - **`applyStyle` e `CSSStyle`** não são portados: escrevem no `style` de um `HTMLElement`, e o estilo do editor de diff é o dado
-//!   que o pintor lê (ver `DiffEditorElementsState` em `diff_editor::diff_editor_widget`).
+//! - **`applyStyle` e `CSSStyle`** não são portados como função: escrevem no `style` de um `HTMLElement`, e o estilo é o dado que o
+//!   pintor lê. O único uso destas utilidades, o `applyStyle(htmlElement, { height, top })` do `ViewZoneOverlayWidget`, é o autorun
+//!   que grava o [`ViewZoneOverlayLayout`] (ver [`ViewZoneOverlayWidget::layout`]); as features gravam o resto do estilo (largura,
+//!   posição) nos próprios dados de visão.
 //! - **`IObservableViewZone`** é o trait [`IObservableViewZone`] sobre o [`IViewZone`] nativo; `onChange?: IObservable<unknown>` é
 //!   `Option<ObservableRef>` (observável apagado) e `setZoneId?` tem corpo vazio por padrão. A zona se identifica pelo endereço do
 //!   `Rc` (a chave dos `Map` do original).
+//! - **`PlaceholderViewZone.domNode`** (um `div` vazio) é o [`PlaceholderViewZoneNode`], o dado que o pintor recupera de
+//!   [`IViewZone::dom_node`]; a zona é só o espaço reservado, e quem desenha é o overlay posicionado sobre ela.
+//! - **`ManagedOverlayWidget`** não recebe o `HTMLElement` (o `IOverlayWidget` nativo não tem `getDomNode`): o conteúdo é do dono do
+//!   widget, que o pintor localiza pelo id do overlay ([`ManagedOverlayWidget::id`]).
 //! - **`derivedDisposable`** de `je_base::observable` devolve um observável apagado (`Option<DisposableRef>`); o widget lê o objeto
 //!   criado (a feature) pelo tipo, então [`derived_disposable_with`], [`derived_disposable_of`] e
 //!   [`derived_optional_disposable_of`] têm a mesma semântica (descartam o objeto anterior a cada recálculo e quando o derivado
 //!   fica sem observadores) mas guardam o valor tipado.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
+use je_base::observable::base::ObservableRef;
 use je_base::observable::observables::observable_value::{ObservableValue, observable_value_owned};
 use je_base::observable::change_tracker::FnChangeTracker;
 use je_base::observable::{
-    AnyObservable, DebugNameOptions, DebugOwner, DerivedOptions, IObservable, IReader, Observable, ObservableRef, SettableExt, StrictEquals,
+    AnyObservable, DebugNameOptions, DebugOwner, DerivedOptions, IObservable, IReader, Observable, SettableExt, StrictEquals, autorun,
     autorun_handle_changes, autorun_opts, autorun_with_store, derived_opts, transaction,
 };
 
@@ -35,7 +44,7 @@ use crate::code_editor_widget::CodeEditorWidget;
 use crate::config::element_size_observer::{ElementSizeObserver, ReferenceDomElement};
 use crate::core_2d::dimension::Dimension;
 use crate::diff::range_mapping::DetailedLineRangeMapping;
-use crate::editor_browser::{IViewZone, IViewZoneChangeAccessor};
+use crate::editor_browser::{IOverlayWidget, IViewZone, IViewZoneChangeAccessor, OverlayWidgetPosition};
 use crate::model::ModelDeltaDecoration;
 use crate::position::Position;
 use crate::position_to_offset::TextLength;
@@ -254,6 +263,182 @@ pub fn apply_view_zones(
     }
 
     store
+}
+
+/// O `domNode` de uma [`PlaceholderViewZone`] (um `div` vazio): o dado que o pintor recupera de [`IViewZone::dom_node`] por `downcast`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlaceholderViewZoneNode;
+
+/// `PlaceholderViewZone`: uma zona de visão que só reserva espaço (`heightInPx`) depois da linha do observável, mesmo em áreas
+/// escondidas, e que conta ao dono onde (`actualTop`) e com que altura (`actualHeight`) o editor a colocou.
+pub struct PlaceholderViewZone {
+    dom_node: Rc<PlaceholderViewZoneNode>,
+    after_line_number: IObservable<i32>,
+    height_in_px: f64,
+    actual_top: Rc<ObservableValue<Option<f64>, ()>>,
+    actual_height: Rc<ObservableValue<Option<f64>, ()>>,
+}
+
+impl PlaceholderViewZone {
+    pub fn new(after_line_number: IObservable<i32>, height_in_px: f64) -> Rc<Self> {
+        let owner = DebugOwner::new("PlaceholderViewZone");
+        Rc::new(Self {
+            dom_node: Rc::new(PlaceholderViewZoneNode),
+            after_line_number,
+            height_in_px,
+            actual_top: observable_value_owned(owner.clone(), None),
+            actual_height: observable_value_owned(owner, None),
+        })
+    }
+
+    /// `actualTop`: o topo da zona como o editor a colocou (`onDomNodeTop`).
+    pub fn actual_top(&self) -> IObservable<Option<f64>> {
+        self.actual_top.to_observable()
+    }
+
+    /// `actualHeight`: a altura da zona como o editor a calculou (`onComputedHeight`).
+    pub fn actual_height(&self) -> IObservable<Option<f64>> {
+        self.actual_height.to_observable()
+    }
+}
+
+impl IViewZone for PlaceholderViewZone {
+    fn after_line_number(&self) -> i32 {
+        self.after_line_number.get()
+    }
+
+    fn show_in_hidden_areas(&self) -> bool {
+        true
+    }
+
+    fn height_in_px(&self) -> Option<f64> {
+        Some(self.height_in_px)
+    }
+
+    fn dom_node(&self) -> Rc<dyn Any> {
+        self.dom_node.clone()
+    }
+
+    fn on_dom_node_top(&self, top: f64) {
+        self.actual_top.set(Some(top), None);
+    }
+
+    fn on_computed_height(&self, height: f64) {
+        self.actual_height.set(Some(height), None);
+    }
+}
+
+impl IObservableViewZone for PlaceholderViewZone {
+    fn on_change(&self) -> Option<ObservableRef> {
+        Some(self.after_line_number.to_any_observable())
+    }
+}
+
+thread_local! {
+    /// `ManagedOverlayWidget._counter`.
+    static MANAGED_OVERLAY_WIDGET_COUNTER: Cell<u32> = const { Cell::new(0) };
+}
+
+/// O `IOverlayWidget` literal de `ManagedOverlayWidget`: `getId`, `getDomNode` e `getPosition: () => null`.
+struct ManagedOverlayWidgetHandle {
+    id: String,
+}
+
+impl IOverlayWidget for ManagedOverlayWidgetHandle {
+    fn get_id(&self) -> String {
+        self.id.clone()
+    }
+
+    fn get_position(&self) -> Option<OverlayWidgetPosition> {
+        None
+    }
+}
+
+/// `ManagedOverlayWidget`: registra um overlay sem posição no editor e o remove ao descartar.
+pub struct ManagedOverlayWidget {
+    editor: Rc<CodeEditorWidget>,
+    overlay_widget: Rc<dyn IOverlayWidget>,
+    id: String,
+}
+
+impl ManagedOverlayWidget {
+    pub fn new(editor: &Rc<CodeEditorWidget>) -> Rc<Self> {
+        let counter = MANAGED_OVERLAY_WIDGET_COUNTER.with(|counter| {
+            let current = counter.get();
+            counter.set(current + 1);
+            current
+        });
+        let id = format!("managedOverlayWidget-{counter}");
+        let overlay_widget: Rc<dyn IOverlayWidget> = Rc::new(ManagedOverlayWidgetHandle { id: id.clone() });
+        editor.add_overlay_widget(overlay_widget.clone());
+        Rc::new(Self { editor: editor.clone(), overlay_widget, id })
+    }
+
+    /// O id do overlay no editor (`_overlayWidgetId`), com que o pintor acha o conteúdo do widget.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl IDisposable for ManagedOverlayWidget {
+    fn dispose(&self) {
+        self.editor.remove_overlay_widget(&self.overlay_widget);
+    }
+}
+
+/// O estilo (`height` e `top`, em pixels) que o `applyStyle` de [`ViewZoneOverlayWidget`] grava; `None` é o valor ainda indefinido.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewZoneOverlayLayout {
+    pub top: Option<f64>,
+    pub height: Option<f64>,
+}
+
+/// `ViewZoneOverlayWidget`: a base dos widgets que se desenham sobre uma [`PlaceholderViewZone`], seguindo o topo e a altura dela. As
+/// subclasses do original são structs que a contêm (composição) e registram o que precisam descartar em [`Self::register`].
+pub struct ViewZoneOverlayWidget {
+    base: Rc<Disposable>,
+    managed: Rc<ManagedOverlayWidget>,
+    layout: Rc<Cell<ViewZoneOverlayLayout>>,
+}
+
+impl ViewZoneOverlayWidget {
+    pub fn new(editor: &Rc<CodeEditorWidget>, view_zone: &PlaceholderViewZone) -> Self {
+        let base = Disposable::new();
+        let managed = ManagedOverlayWidget::new(editor);
+        base.register(managed.clone());
+
+        let layout = Rc::new(Cell::new(ViewZoneOverlayLayout::default()));
+        {
+            let (layout, actual_top, actual_height) = (layout.clone(), view_zone.actual_top(), view_zone.actual_height());
+            base.register(autorun(move |reader| {
+                // applyStyle
+                let reader: &dyn IReader = reader;
+                layout.set(ViewZoneOverlayLayout { top: actual_top.read(reader), height: actual_height.read(reader) });
+            }));
+        }
+        Self { base, managed, layout }
+    }
+
+    /// `this._register(disposable)`.
+    pub fn register(&self, disposable: DisposableRef) -> DisposableRef {
+        self.base.register(disposable)
+    }
+
+    /// O estilo que o `applyStyle` gravou.
+    pub fn layout(&self) -> ViewZoneOverlayLayout {
+        self.layout.get()
+    }
+
+    /// O id do overlay no editor.
+    pub fn overlay_widget_id(&self) -> &str {
+        self.managed.id()
+    }
+}
+
+impl IDisposable for ViewZoneOverlayWidget {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
 }
 
 /// `lengthBetweenPositions(position1, position2)`.

@@ -541,6 +541,7 @@ impl MarkdownView {
         styles: &MarkdownViewStyles,
         rendered: Option<RenderedMarkdown>,
         plain_text: Option<&str>,
+        nodes: Option<&[Node]>,
         environment: Option<Rc<OwnedMarkdownEnvironment>>,
     ) -> Rc<Self> {
         let disposables = DisposableStore::new();
@@ -575,6 +576,9 @@ impl MarkdownView {
             let element = rendered.element.borrow();
             builder.walk(&element.children, &ctx);
         }
+        if let Some(nodes) = nodes {
+            builder.walk(nodes, &ctx);
+        }
         if let Some(text) = plain_text {
             // `innerText = text`: cada `\n` vira um `<br>`.
             for (index, line) in text.split('\n').enumerate() {
@@ -596,12 +600,18 @@ impl MarkdownView {
 
     /// O Markdown já renderizado (e sanitizado) como nós. `environment` serve à ativação dos links.
     pub fn from_rendered(ui: &Ui, rendered: RenderedMarkdown, environment: Rc<OwnedMarkdownEnvironment>, styles: &MarkdownViewStyles) -> Rc<Self> {
-        Self::build(ui, styles, Some(rendered), None, Some(environment))
+        Self::build(ui, styles, Some(rendered), None, None, Some(environment))
     }
 
     /// Um texto simples (`element.innerText = text`).
     pub fn from_plain_text(ui: &Ui, text: &str, styles: &MarkdownViewStyles) -> Rc<Self> {
-        Self::build(ui, styles, None, Some(text), None)
+        Self::build(ui, styles, None, Some(text), None, None)
+    }
+
+    /// Os nós de um HTML já sanitizado (o `DocumentFragment` de `safeSetInnerHtml`), sem ambiente: os links não se ativam, porque
+    /// o fragmento não carrega o destino de um `IMarkdownString`.
+    pub fn from_nodes(ui: &Ui, nodes: &[Node], styles: &MarkdownViewStyles) -> Rc<Self> {
+        Self::build(ui, styles, None, None, Some(nodes), None)
     }
 
     /// O nó raiz, solto: quem usa o anexa onde precisa.

@@ -24,7 +24,7 @@ use crate::diff_editor::registrations_contribution::diff_decoration_options;
 use crate::diff_editor_options::DiffEditorOptions;
 use crate::diff_editor_utils::apply_observable_decorations;
 use crate::diff_editor_view_model::DiffEditorViewModel;
-use crate::diff_editor_view_zones::allows_true_inline_diff_rendering;
+use crate::diff_editor::components::diff_editor_view_zones::allows_true_inline_diff_rendering;
 use crate::line_range::LineRange;
 use crate::model::{InjectedTextOptions, ModelDecorationOptionsInit, ModelDeltaDecoration};
 use crate::range::Range;

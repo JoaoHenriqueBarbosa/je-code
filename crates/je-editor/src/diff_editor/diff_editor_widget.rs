@@ -82,6 +82,7 @@ use je_platform::observable::platform_observable_utils::bind_context_key;
 use je_ui::{NodeId, Ui};
 use je_widgets::sash::BoundarySashes;
 
+use crate::cursor_common::CursorSimpleModel;
 use crate::code_action::platform::{AccessibilitySignal, IAccessibilitySignalService, IEditorProgressService, IProgressIndicator, ProgressTotal};
 use crate::code_editor_widget::{CodeEditorWidget, ExecuteEditsSource, ICodeEditor, SelectionOrRange};
 use crate::config::editor_options::layout_info::EditorLayoutInfo;

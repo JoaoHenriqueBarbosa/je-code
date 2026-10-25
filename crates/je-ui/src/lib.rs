@@ -12,7 +12,8 @@
 //! - **Pintura.** A árvore vira uma [`je_render::DisplayList`] por frame, pela ordem dos filhos (a
 //!   ordem do DOM), com recorte por nó (`overflow: hidden`).
 //! - **Eventos.** Ponteiro por hit test do nó mais ao fundo; teclado para o nó com foco; eventos com
-//!   fase de captura e de bolha como no DOM, porque os widgets do VS Code dependem disso. Ver [`events`].
+//!   fase de captura e de bolha como no DOM, porque os widgets do VS Code dependem disso; arrastar e soltar com o
+//!   `DataTransfer` ([`drag`]). Ver [`events`].
 //! - **Caixa.** O mínimo do modelo de caixa do CSS que o código dos widgets escreve ou herda:
 //!   `left/top/width/height` explícitos, `width/height: 100%` ([`Tree::set_fill`]), `right/bottom`
 //!   ([`Tree::set_right`], [`Tree::set_bottom`]), `z-index` entre irmãos, `pointer-events` e `display:
@@ -28,6 +29,7 @@
 //!   `Role::Link` sem caixa própria ([`Ui::sync_paragraph_links`]), com nome acessível, caixas vindas da disposição do
 //!   parágrafo ([`Tree::link_boxes`]), ordem de Tab, `Enter` e contorno de foco.
 
+pub mod drag;
 pub mod events;
 mod paragraph;
 mod tree;
@@ -36,7 +38,8 @@ pub mod wheel;
 #[cfg(test)]
 mod paragraph_link_tests;
 
-pub use events::{Event, EventKind, Handler, KeyData, Modifiers, Phase, PointerButton, PointerData, PointerInput, PointerInputKind, Ui};
+pub use drag::{DataTransfer, DragImage, DropEffect, EffectAllowed};
+pub use events::{DEFAULT_DRAG_THRESHOLD, Event, EventKind, Handler, KeyData, Modifiers, Phase, PointerButton, PointerData, PointerInput, PointerInputKind, Ui};
 pub use paragraph::{Paragraph, Span, SpanFrame, SpanKind};
 pub use wheel::{DeltaMode, StandardWheelEvent, WheelData};
 pub use tree::{Border, Content, Cursor, NodeId, PointerEvents, NodeStyle, Role, Tree};
