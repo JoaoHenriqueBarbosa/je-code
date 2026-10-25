@@ -38,7 +38,8 @@ use je_base::promise::{MaybePromise, Promise};
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;
 use je_editor::services::theme_service::{IColorTheme, IThemeService};
-use je_platform::actions::actions::{IMenu, IMenuService, MenuAction, MenuActionGroup, MenuActionOptions, MenuId, accounts_context, global_activity};
+use je_platform::actions::actions::{IMenu, IMenuService, MenuAction, MenuActionGroup, MenuActionOptions, MenuId};
+use je_platform::actions::menu_ids::{accounts_context, global_activity};
 use je_platform::actions::menu_entry_action_view_item::{get_context_menu_actions, menu_action_as_action};
 use je_platform::commands::commands::ICommandService;
 use je_platform::configuration::service::IConfigurationService;
@@ -229,6 +230,7 @@ impl GlobalCompositeBar {
         });
         let storage_service = services.storage_service.clone();
         let ui_for_items = ui.clone();
+        let (item_services, item_storage) = (services.clone(), storage_service.clone());
         let action_view_item_provider: IActionViewItemProvider = Rc::new(move |action, options| {
             let item_options = ICompositeBarActionViewItemOptions {
                 base: IActionViewItemOptions { draggable: false, ..options.clone() },
@@ -240,11 +242,11 @@ impl GlobalCompositeBar {
             };
             if action.id() == GLOBAL_ACTIVITY_ID {
                 let item: Rc<dyn IActionViewItem> =
-                    GlobalActivityActionViewItem::new(&ui_for_items, context_menu_actions_provider.clone(), item_options, context_menu_alignment_options.clone(), services.clone());
+                    GlobalActivityActionViewItem::new(&ui_for_items, context_menu_actions_provider.clone(), item_options, context_menu_alignment_options.clone(), item_services.clone());
                 return Some(item);
             }
             if action.id() == ACCOUNTS_ACTIVITY_ID {
-                let storage_service = storage_service.clone();
+                let storage_service = item_storage.clone();
                 let fill: FillContextMenuActions = Rc::new(move |actions| {
                     let storage_service = storage_service.clone();
                     let hide_accounts = to_action(ToActionProps {
@@ -264,7 +266,7 @@ impl GlobalCompositeBar {
                     actions.splice(0..0, [hide_accounts, separator]);
                 });
                 let item: Rc<dyn IActionViewItem> =
-                    AccountsActivityActionViewItem::new(&ui_for_items, context_menu_actions_provider.clone(), item_options, context_menu_alignment_options.clone(), fill, services.clone());
+                    AccountsActivityActionViewItem::new(&ui_for_items, context_menu_actions_provider.clone(), item_options, context_menu_alignment_options.clone(), fill, item_services.clone());
                 return Some(item);
             }
             // `throw new Error(`No view item for action '${action.id}'`)`.
@@ -281,7 +283,7 @@ impl GlobalCompositeBar {
                 ..IActionBarOptions::default()
             },
         );
-        let this = Self::from_action_bar(ui, element, action_bar, services.storage_service.clone());
+        let this = Self::from_action_bar(ui, element, action_bar, storage_service);
         this.register_listeners(&services);
         this
     }

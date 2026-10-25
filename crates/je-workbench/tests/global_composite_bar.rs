@@ -49,8 +49,8 @@ fn create_global_bar(guard: &LeakGuard, accounts_visible: bool) -> (Rc<GlobalCom
     let ui = Ui::new();
     let container = ui.tree_mut().create(ui.root(), Role::Generic);
     let action_bar = ActionBar::new(&ui, container, IActionBarOptions::default());
-    let storage = InMemoryStorageService::new();
-    let bar = GlobalCompositeBar::from_action_bar(&ui, container, action_bar.clone(), storage);
+    let storage = guard.add_rc(InMemoryStorageService::new());
+    let bar = GlobalCompositeBar::from_action_bar(&ui, container, action_bar.clone(), Rc::new(storage));
     // O estado inicial do original: `accountsVisibilityPreference: accountsVisible`, com as ações empurradas à mão.
     if bar.accounts_visibility_preference() != accounts_visible {
         bar.global_activity_action_bar().clear();
@@ -321,8 +321,10 @@ fn resolve_labels(initialized: bool) -> Vec<String> {
     core.set_initialized(initialized);
     let action_disposables = DisposableStore::new();
     guard.add(action_disposables.clone());
-    let github: ActionRef = guard.add_rc(Action::new("github", "Sign in with GitHub", "", true, None));
-    let manage: ActionRef = guard.add_rc(Action::new("manage", "Manage Language Model Access", "", true, None));
+    let github = guard.add_rc(Action::new("github", "Sign in with GitHub", "", true, None));
+    let github: ActionRef = github;
+    let manage = guard.add_rc(Action::new("manage", "Manage Language Model Access", "", true, None));
+    let manage: ActionRef = manage;
     let groups = vec![(ACCOUNTS_SHARED_SIGN_IN_GROUP.to_owned(), vec![github]), ("z_manage".to_owned(), vec![manage])];
 
     let labels = Rc::new(RefCell::new(Vec::new()));

@@ -424,7 +424,7 @@ impl CompositeBarItemCore {
         let theme = self.theme_service.get_color_theme();
         let colors = (self.options.colors)(&*theme);
         let checked = self.action.checked() == Some(true);
-        let mut tree = self.base.ui.tree_mut();
+        let mut tree = self.base.ui().tree_mut();
 
         if let Some(label) = self.label.get() {
             let foreground = if checked { colors.active_foreground_color } else { colors.inactive_foreground_color };
@@ -474,7 +474,7 @@ impl CompositeBarItemCore {
     pub fn render(self: &Rc<Self>, container: NodeId) {
         self.base.base_render(container);
         self.container.set(Some(container));
-        let ui = self.base.ui.clone();
+        let ui = self.base.ui().clone();
         let (label, badge, badge_content, indicator) = {
             let mut tree = ui.tree_mut();
             if self.options.icon {
@@ -512,7 +512,7 @@ impl CompositeBarItemCore {
                 move || {
                     if let Some(core) = weak.upgrade() {
                         core.mouse_up_timeout.borrow_mut().take();
-                        core.base.ui.tree_mut().remove_class(container, "clicked");
+                        core.base.ui().tree_mut().remove_class(container, "clicked");
                     }
                 },
                 800,
@@ -564,7 +564,7 @@ impl CompositeBarItemCore {
         let previous = self.badge_state.borrow_mut().take();
         let mut shown = BadgeShown::default();
         {
-            let mut tree = self.base.ui.tree_mut();
+            let mut tree = self.base.ui().tree_mut();
             if let Some(previous) = previous {
                 for class in &previous.classes {
                     tree.remove_class(badge, class);
@@ -583,7 +583,7 @@ impl CompositeBarItemCore {
             if self.options.compact {
                 classes.push("compact".to_owned());
             }
-            let mut tree = self.base.ui.tree_mut();
+            let mut tree = self.base.ui().tree_mut();
             match kind {
                 // Progress
                 Some(BadgeType::Progress) => {
@@ -669,7 +669,7 @@ impl CompositeBarItemCore {
         let item = self.composite_bar_action_item();
         let mut class_names = vec!["action-label".to_owned()];
         class_names.extend(item.class_names.clone().unwrap_or_default());
-        let mut tree = self.base.ui.tree_mut();
+        let mut tree = self.base.ui().tree_mut();
         tree.set_class_name(label, &class_names.join(" "));
         if self.options.icon {
             let color = match tree.style(label).content {
@@ -698,7 +698,7 @@ impl CompositeBarItemCore {
     /// `updateTitle()`.
     pub fn update_title(&self) {
         let title = self.compute_title();
-        let mut tree = self.base.ui.tree_mut();
+        let mut tree = self.base.ui().tree_mut();
         for node in [self.label.get(), self.badge.get(), self.container.get()].into_iter().flatten() {
             tree.set_label(node, title.clone());
         }
@@ -750,7 +750,7 @@ impl CompositeBarItemCore {
             return;
         };
         let metrics = if self.options.compact { &COMPACT_BADGE_METRICS } else { &BADGE_METRICS };
-        let mut tree = self.base.ui.tree_mut();
+        let mut tree = self.base.ui().tree_mut();
         for node in [label, badge, indicator] {
             tree.set_bounds(node, Rect::new(0.0, 0.0, width, height));
         }
@@ -767,7 +767,7 @@ impl CompositeBarItemCore {
         let badge = self.badge.take();
         self.base.base_dispose();
         if let Some(badge) = badge {
-            self.base.ui.remove(badge);
+            self.base.ui().remove(badge);
         }
     }
 }
