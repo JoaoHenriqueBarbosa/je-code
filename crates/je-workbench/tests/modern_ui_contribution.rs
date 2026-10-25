@@ -3,6 +3,8 @@
 //! as ações de densidade, as classes dos contêineres, o relayout, o tamanho do cabeçalho dos panes e as abas conectadas).
 //!
 //! Notas de tradução:
+//! - O DOM do original não recebe o CSS gerado pelo tema, só as variáveis `--vscode-*` que o caso define; o caso dos
+//!   separadores dos pane headers usa `with_explicit_colors_only` para não herdar o padrão registrado de `panel.border`.
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` é o guarda criado no começo de cada caso, e `store.add(...)` é
 //!   `guard.add_rc(...)`.
 //! - O `import` do módulo registra o submenu e as ações; aqui o começo de cada caso chama
@@ -675,7 +677,8 @@ fn uses_part_specific_pane_colors_and_only_draws_panel_header_separators_in_vert
 fn falls_back_to_the_surface_border_for_pane_header_separators() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     let theme = theme_with_colors(&[("surface.border", "#123456")]);
-    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui");
+    // O DOM do original só tem `--vscode-surface-border`: sem `--vscode-panel-border`, a cadeia do painel cai na superfície.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui").with_explicit_colors_only();
 
     let colors = [PaneHost::SideBar, PaneHost::Panel].map(|host| style.pane_header_separator_color(host).map(|color| css_rgb(&color)));
 

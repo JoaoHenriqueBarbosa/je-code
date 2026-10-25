@@ -121,11 +121,20 @@ pub struct ModernUiStyle<'a> {
     theme: &'a ColorTheme,
     root: ClassList,
     notification_insets: NotificationInsets,
+    /// Só as cores que o tema define de fato existem como `--vscode-*`: o DOM de um teste sem o CSS gerado pelo tema
+    /// (`generateColorThemeCSS`) não carrega os padrões registrados.
+    explicit_colors_only: bool,
 }
 
 impl<'a> ModernUiStyle<'a> {
     pub fn new(theme: &'a ColorTheme, root_class_name: &str) -> Self {
-        Self { theme, root: ClassList::new(root_class_name), notification_insets: NotificationInsets::default() }
+        Self { theme, root: ClassList::new(root_class_name), notification_insets: NotificationInsets::default(), explicit_colors_only: false }
+    }
+
+    /// Um DOM em que só as variáveis `--vscode-*` definidas pelo tema existem, sem os padrões registrados.
+    pub fn with_explicit_colors_only(mut self) -> Self {
+        self.explicit_colors_only = true;
+        self
     }
 
     /// Troca as classes da raiz (`root.className = ...`).
@@ -148,7 +157,7 @@ impl<'a> ModernUiStyle<'a> {
 
     /// `var(--vscode-<id>)`.
     fn color(&self, id: &str) -> Option<Color> {
-        self.theme.resolve_color(id, true)
+        self.theme.resolve_color(id, !self.explicit_colors_only)
     }
 
     /// `var(--vscode-a, var(--vscode-b, ...))`: a primeira cor definida da cadeia.
