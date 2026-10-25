@@ -3,6 +3,7 @@
 //! vira um identificador opaco ou um trait implementado por quem desenha.
 
 pub mod actions;
+pub mod editor;
 pub mod pane_composite;
 pub mod labels;
 pub mod parts;
