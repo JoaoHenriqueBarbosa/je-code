@@ -7,11 +7,12 @@
 //!   memória, das regras `seletor {texto}`, com a inserção no início (`insertRule(..., 0)`) e a remoção das regras cujo
 //!   seletor contém um nome (`removeCSSRulesContainingSelector`). O renderizador nativo lê as regras por
 //!   [`DecorationsService::style_rules`]; a medição de estilo computado no DOM (`getComputedStyle`) não existe.
-//! - **Tema de ícones de produto.** O `IThemeService` do porte não tem `getProductIconTheme`, e o registro de ícones
-//!   (`getIconRegistry().getIcon(id)`) não foi portado. A única leitura que o serviço faz do tema é o ícone da letra de uma
-//!   decoração, que é o [`IProductIconTheme::get_icon`] (recebe o id do ícone e devolve `None` quando o registro não o
-//!   conhece ou o tema não o define, como os dois `return` do original). O construtor recebe o tema de ícones no lugar do
-//!   `IThemeService`, e não há `registerSingleton` (o serviço de tema ainda não é injetável).
+//! - **Tema de ícones de produto.** O `IThemeService` do porte não tem `getProductIconTheme`. A única leitura que o serviço
+//!   faz do tema é o ícone da letra de uma decoração: o serviço consulta o registro de ícones
+//!   (`getIconRegistry().getIcon(id)`, de `je_theme::icon_registry`) e, se o ícone está registrado, pergunta a definição ao
+//!   [`IProductIconTheme::get_icon`] (que devolve `None` quando o tema não o define), como os dois `return` do original. O
+//!   construtor recebe o tema de ícones no lugar do `IThemeService`, e não há `registerSingleton` (o serviço de tema ainda
+//!   não é injetável).
 //! - **`IDecorationData | IDecorationData[]`.** `DecorationRule` só é criada pelo `asDecoration`, que sempre passa a lista;
 //!   o ramo de um dado só (`_appendForOne`) é inalcançável e não existe aqui. `keyOf` aceita as duas formas.
 //! - **`provider.onDidChange(uris => if (!uris) removeAll())`.** O evento do porte é `Event<Vec<URI>>` e não tem o
@@ -40,23 +41,17 @@ use je_base::ternary_search_tree::TernarySearchTree;
 use je_base::themables::{ColorIdentifier, ThemeIcon};
 use je_base::uri::URI;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
+use je_theme::icon_registry::{IconContribution, IconDefinition, get_icon_registry};
 use je_theme::registry::as_css_variable_name;
 
 use crate::services::decorations::decorations::{
     DecorationData, DecorationLetter, IDecoration, IDecorationsProvider, IDecorationsService, IResourceDecorationChangeEvent,
 };
 
-/// `IconDefinition` do tema de ícones de produto: o caractere da fonte e o id da fonte (`definition.font?.id`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IconDefinition {
-    pub font_character: String,
-    pub font_id: Option<String>,
-}
-
 /// O que o serviço lê do `IProductIconTheme` (ver as divergências no topo do módulo).
 pub trait IProductIconTheme {
-    /// `getIcon(getIconRegistry().getIcon(icon_id))`.
-    fn get_icon(&self, icon_id: &str) -> Option<IconDefinition>;
+    /// `getIcon(iconContribution)`: a definição do ícone no tema, ou `None` se o tema não a define.
+    fn get_icon(&self, contribution: &IconContribution) -> Option<IconDefinition>;
 }
 
 /// `asCssVariable`.
@@ -219,7 +214,10 @@ impl DecorationRule {
     fn create_icon_css_rule(&self, icon: &ThemeIcon, color: &str, element: &StyleSheet) {
         let modifier = ThemeIcon::get_modifier(icon).map(str::to_string);
         let icon = if modifier.is_some() { ThemeIcon::modify(icon, None) } else { icon.clone() };
-        let Some(definition) = self.product_icon_theme.get_icon(&icon.id) else {
+        let Some(icon_contribution) = get_icon_registry().get_icon(&icon.id) else {
+            return;
+        };
+        let Some(definition) = self.product_icon_theme.get_icon(&icon_contribution) else {
             return;
         };
         let icon_color = icon.color.as_ref().map_or_else(|| color.to_string(), |theme_color| get_color(Some(&theme_color.id)));
@@ -233,7 +231,7 @@ impl DecorationRule {
             &format!(
                 "content: '{}';\n\t\t\tcolor: {icon_color};\n\t\t\tfont-family: {};\n\t\t\tfont-size: 16px;\n\t\t\tmargin-right: 14px;\n\t\t\tfont-weight: normal;\n\t\t\t{spin};\n\t\t\t",
                 definition.font_character,
-                string_value(definition.font_id.as_deref().unwrap_or("codicon"))
+                string_value(definition.font.as_ref().map_or("codicon", |font| font.id.as_str()))
             ),
         );
     }
