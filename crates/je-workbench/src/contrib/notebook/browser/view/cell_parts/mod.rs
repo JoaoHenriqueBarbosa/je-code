@@ -8,11 +8,13 @@
 //! (`CellExecutionPart`), `cellToolbarStickyScroll.ts` (que `cellToolbars.ts` importa), `cellActionView.ts` (`CodiconActionViewItem`,
 //! `ActionViewWithLabel` e `UnifiedSubmenuActionView`, sobre as classes-base de `platform/actions/menu_entry_action_view_item.rs`),
 //! `codeCellRunToolbar.ts` (`RunToolbar`, sobre `platform/actions/dropdown_with_primary_action_view_item.rs`), `foldedCellHint.ts`,
-//! `cellComments.ts`, `cellDragRenderer.ts` e `codeCellExecutionIcon.ts`.
+//! `cellComments.ts`, `cellDragRenderer.ts`, `codeCellExecutionIcon.ts` e `markupCell.ts` (`MarkupCell`, com os contratos estreitos do
+//! editor da célula, da fábrica do editor e do `IActiveNotebookEditorDelegate`, e o `MarkdownCellRenderTemplate`).
 //!
-//! Faltam, nesta ordem: `codeCell.ts` (a classe `CodeCell`, além do `CodeCellLayout`) e `markupCell.ts` (fatia 4); depois o
-//! `cellRenderer.ts` (que monta os templates e fornece as implementações dos contratos estreitos abaixo) e os 5 casos de
-//! `cellEditorOverflowWidgets.test.ts` (fatia 5).
+//! Faltam, nesta ordem: `codeCell.ts` (a classe `CodeCell`, além do `CodeCellLayout`; fatia 4b, que reaproveita
+//! `in_composite_editor` e os contratos do editor de `markup_cell.rs`); depois o `cellRenderer.ts` (que monta os templates e fornece as
+//! implementações dos contratos estreitos abaixo, inclusive o `IMarkupCellEditorFactory`, o `IMarkupCellEditorHost` e o
+//! `IRenderedEditors`) e os 5 casos de `cellEditorOverflowWidgets.test.ts` (fatia 5).
 //!
 //! Divergências comuns a todas as partes desta pasta:
 //! - **DOM é a árvore do `je-ui`.** O `HTMLElement` que o construtor original recebe é um [`je_ui::NodeId`] da [`je_ui::Ui`] (o
@@ -90,3 +92,4 @@ pub mod collapsed_cell_input;
 pub mod collapsed_cell_output;
 pub mod cell_context_keys;
 pub mod folded_cell_hint;
+pub mod markup_cell;
