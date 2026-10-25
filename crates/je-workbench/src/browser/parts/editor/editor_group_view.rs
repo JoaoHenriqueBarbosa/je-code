@@ -724,6 +724,9 @@ impl EditorGroupView {
         let mut style = self.style.borrow_mut();
         style.container.toggle_class("max-height-478px", height <= 478.0);
         style.title.properties.insert("--title-border-bottom-width".to_string(), format!("{content_width}px"));
+
+        // The editor pane is inset on the right by `_contentRightInset` (0 = fill the group): `editorContainer.style.width`
+        style.editor.properties.insert("width".to_string(), format!("{content_width}px"));
     }
 
     /// `setContentRightInset(inset)`: reserva à direita do cabeçalho e do painel de editor, com as abas de largura total.
