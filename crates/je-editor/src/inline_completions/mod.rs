@@ -16,10 +16,16 @@
 //!   `StructuredLogger` do `logFetch` e o `DataChannelForwardingTelemetryService` ainda não têm porte: entram como traits
 //!   injetados (`InlineCompletionsRenameProcessor`, `InlineCompletionsFetchLogger`, `InlineCompletionsRequestTelemetry`)
 //!   no `InlineCompletionsSourceServices`; os portes reais fecham essas pontas;
-//! - fatia 3: `inlineCompletionsModel` (estado observável, aceitar, aceitar parcial, saltar, rejeitar, sugestão
-//!   selecionada) sobre a fonte e os itens;
-//! - fatia 4: o controller (`inlineCompletionsController`) com os utilitários de teste (`GhostTextContext`,
-//!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions`
+//! - fatia 3 (pronta): `inline_completions_model` (estado observável, aceitar, aceitar em parte, saltar, rejeitar,
+//!   sugestão selecionada) sobre a fonte e os itens, mais `getSecondaryEdits`, `isSuggestionInViewport` e os helpers de
+//!   `utils.ts` que faltavam (`getEndPositionsAfterApplying`, `removeTextReplacementCommonSuffixPrefix`). O
+//!   `observableCodeEditor` ainda não tem porte: o modelo monta os observáveis do editor que lê e recebe injetados o
+//!   `IInlineCompletionsService`, o `IDefaultAccountService`, o `openedPeekWidgets` e o `InlineCompletionsEditorHost`
+//!   (diff editor, editor ativo, abrir editor, `getInlineCompletionsController`, animação de fade). O `SuggestItemInfo`
+//!   está no modelo; a fábrica `fromSuggestion` e o `ObservableSuggestWidgetAdapter` entram com o controller;
+//! - fatia 4: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os
+//!   serviços injetados, com os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
+//!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions.test.ts`
 //!   do oráculo.
 
 pub mod compute_ghost_text;
@@ -28,6 +34,7 @@ pub mod ghost_text;
 pub mod graph;
 pub mod inline_completion_is_visible;
 pub mod inline_completion_view_data;
+pub mod inline_completions_model;
 pub mod inline_completions_source;
 pub mod inline_suggest_alternative_action;
 pub mod inline_suggestion_item;
