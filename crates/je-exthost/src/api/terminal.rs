@@ -8,18 +8,20 @@
 //! objeto da extensão com o `this` dele).
 //!
 //! Também: `TerminalOptions#location` (`TerminalLocation`, `{ viewColumn, preserveFocus }` e `{ parentTerminal }`), `iconPath` como
-//! `ThemeIcon`, `onDidChangeTerminalDimensions` e `onDidWriteTerminalData` (propostas `terminalDimensions` e `terminalDataWriteEvent`,
-//! conferidas com `checkProposedApiEnabled`) e `registerTerminalLinkProvider` (com a classe `TerminalLink`).
+//! `ThemeIcon`, `onDidChangeTerminalDimensions`, `onDidWriteTerminalData` e `onDidExecuteTerminalCommand` (propostas
+//! `terminalDimensions`, `terminalDataWriteEvent` e `terminalExecuteCommandEvent`, conferidas com `checkProposedApiEnabled`),
+//! `registerTerminalLinkProvider` (com a classe `TerminalLink`) e, quando o cliente `MainThreadTerminalShellIntegration` existe,
+//! `Terminal#shellIntegration`, `onDidChangeTerminalShellIntegration`, `onDidStartTerminalShellExecution` e
+//! `onDidEndTerminalShellExecution` (em [`crate::api::terminal_shell_integration`]).
 //!
-//! Falta: `Terminal#shellIntegration` e `onDidChangeTerminalShellIntegration`, `onDidStartTerminalShellExecution`,
-//! `onDidEndTerminalShellExecution` (o `ExtHostTerminalShellIntegration` portado existe, mas ainda não é criado nem ligado pelo host
-//! em processo), `onDidExecuteTerminalCommand`, `registerTerminalQuickFixProvider` e `registerTerminalCompletionProvider`
-//! (propostas de API fora do pedido). `environmentVariableCollection` do `ExtensionContext` está em
-//! [`crate::api::environment_variable_collection`].
+//! Falta: `registerTerminalQuickFixProvider` (proposta `terminalQuickFixProvider`: confere a proposta, que o host nunca habilita, e o
+//! adaptador do provedor e as classes `TerminalQuickFix*` não existem) e `registerTerminalCompletionProvider` (proposta de API fora
+//! do pedido). `environmentVariableCollection` do `ExtensionContext` está em [`crate::api::environment_variable_collection`].
 //!
 //! Divergências:
-//! - O `vscode` é um só para todas as extensões e a extensão do host não habilita proposta: `onDidChangeTerminalDimensions` e
-//!   `onDidWriteTerminalData` lançam o erro de `checkProposedApiEnabled` ao serem lidos (o original lança ao chamar o evento).
+//! - O `vscode` é um só para todas as extensões e a extensão do host não habilita proposta: `onDidChangeTerminalDimensions`,
+//!   `onDidWriteTerminalData`, `onDidExecuteTerminalCommand` e `registerTerminalQuickFixProvider` lançam o erro de
+//!   `checkProposedApiEnabled` ao serem lidos (o original lança ao chamar o evento).
 //! - `handleTerminalLink` recebe um objeto novo com os campos do `TerminalLink` (o serviço guarda o link portado, não o objeto da
 //!   extensão): `startIndex`, `length` e `tooltip` chegam, a identidade e propriedades extras não.
 //! - O `vscode` é um só para todas as extensões: `registerTerminalProfileProvider` usa a extensão `je.exthost`, então a proposta
@@ -57,6 +59,12 @@ use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::js_object::JsObjects;
 use crate::api::languages::host_extension;
+use crate::api::terminal_shell_integration::{self, ShellObjects};
+use je_workbench::api::common::ext_host_protocol::ITerminalCommandDto;
+use je_workbench::api::common::ext_host_terminal_service::WorkerTerminalCreation;
+use je_workbench::api::common::ext_host_terminal_shell_integration::{
+    ExtHostTerminalShellIntegration, TerminalShellExecutionEndEvent, TerminalShellExecutionStartEvent, TerminalShellIntegrationChangeEvent,
+};
 use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, uri_from_js, uri_to_js};
 
 // ---- os objetos `Terminal`
@@ -73,6 +81,8 @@ struct TerminalEntry {
 pub struct TerminalObjects {
     next: Cell<u64>,
     items: RefCell<Vec<TerminalEntry>>,
+    /// Os objetos de integração com o shell (`Terminal#shellIntegration` e as execuções de comando).
+    pub shell: ShellObjects,
 }
 
 impl TerminalObjects {
@@ -618,6 +628,10 @@ pub fn define_classes(runner: &NodeRunner, objects: &Rc<TerminalObjects>) {
             }),
         ),
         getter("state", Rc::new(|terminal, _| terminal_state_to_js(terminal))),
+        {
+            let objects = objects.clone();
+            getter("shellIntegration", Rc::new(move |terminal, _| terminal.shell_integration().map_or(JsData::Undefined, |integration| objects.shell.integration_to_js(&integration))))
+        },
     ];
     let methods: Vec<(String, u32, MethodCallback)> = vec![
         method("sendText", 2, Rc::new(|terminal, args| terminal.send_text(&opt_string(args.first()).unwrap_or_default(), opt_bool(args.get(1))))),
@@ -641,6 +655,7 @@ pub fn define_classes(runner: &NodeRunner, objects: &Rc<TerminalObjects>) {
         statics: vec![],
         parent: None,
     });
+    terminal_shell_integration::define_classes(runner, objects);
 }
 
 /// A classe `vscode.TerminalProfile` (`new TerminalProfile(options)`).
@@ -681,6 +696,7 @@ pub fn window_members(
     runner: &NodeRunner,
     js: &JsObjects,
     service: &Rc<WorkerExtHostTerminalService>,
+    shell_integration: Option<&Rc<ExtHostTerminalShellIntegration<WorkerTerminalCreation>>>,
     objects: &Rc<TerminalObjects>,
     table: &Rc<DisposableTable>,
     events: &Rc<EventTables>,
@@ -703,6 +719,14 @@ pub fn window_members(
             }),
         ),
         reference(
+            "registerTerminalQuickFixProvider",
+            2,
+            Rc::new(move |_| {
+                check_proposed_api_enabled(&host_extension(), "terminalQuickFixProvider").map_err(|error| error.message)?;
+                Err("registerTerminalQuickFixProvider: o adaptador do provedor de correções rápidas ainda não foi portado".to_owned())
+            }),
+        ),
+        reference(
             "registerTerminalProfileProvider",
             2,
             Rc::new(move |args| {
@@ -717,7 +741,7 @@ pub fn window_members(
 
     let (terminals_service, terminals_objects) = (service.clone(), objects.clone());
     let (active_service, active_objects) = (service.clone(), objects.clone());
-    let getters = vec![
+    let mut getters = vec![
         (
             "terminals".to_owned(),
             Rc::new(move |_: &JsData, _: &[JsData]| Ok(JsData::Array(terminals_service.terminals().iter().map(|terminal| terminals_objects.to_js(terminal, None)).collect()))) as MethodCallback,
@@ -781,7 +805,60 @@ pub fn window_members(
                 ),
             )
         },
+        {
+            let (source, to_js_objects) = (service.clone(), objects.clone());
+            proposed_getter(
+                "terminalExecuteCommandEvent",
+                event_getter(
+                    runner,
+                    table,
+                    "onDidExecuteTerminalCommand",
+                    move || source.on_did_execute_terminal_command(),
+                    move |(terminal, command): &(Rc<VscodeTerminal>, ITerminalCommandDto)| {
+                        JsData::Object(vec![
+                            ("terminal".to_owned(), to_js_objects.to_js(terminal, None)),
+                            ("commandLine".to_owned(), command.command_line.clone().map_or(JsData::Undefined, JsData::Str)),
+                            (
+                                "cwd".to_owned(),
+                                command.cwd.as_ref().map_or(JsData::Undefined, |cwd| match cwd {
+                                    ShellCwd::Path(path) => JsData::Str(path.clone()),
+                                    ShellCwd::Uri(uri) => uri_to_js(uri),
+                                }),
+                            ),
+                            ("exitCode".to_owned(), command.exit_code.map_or(JsData::Undefined, |code| JsData::Num(f64::from(code)))),
+                            ("output".to_owned(), command.output.clone().map_or(JsData::Undefined, JsData::Str)),
+                        ])
+                    },
+                ),
+            )
+        },
     ];
+    if let Some(integration) = shell_integration {
+        let (source, to_js_objects) = (integration.clone(), objects.clone());
+        getters.push(event_getter(
+            runner,
+            table,
+            "onDidChangeTerminalShellIntegration",
+            move || source.on_did_change_terminal_shell_integration(),
+            move |event: &TerminalShellIntegrationChangeEvent| terminal_shell_integration::change_event_to_js(&to_js_objects, event),
+        ));
+        let (source, to_js_objects) = (integration.clone(), objects.clone());
+        getters.push(event_getter(
+            runner,
+            table,
+            "onDidStartTerminalShellExecution",
+            move || source.on_did_start_terminal_shell_execution(),
+            move |event: &TerminalShellExecutionStartEvent| terminal_shell_integration::start_event_to_js(&to_js_objects, event),
+        ));
+        let (source, to_js_objects) = (integration.clone(), objects.clone());
+        getters.push(event_getter(
+            runner,
+            table,
+            "onDidEndTerminalShellExecution",
+            move || source.on_did_end_terminal_shell_execution(),
+            move |event: &TerminalShellExecutionEndEvent| terminal_shell_integration::end_event_to_js(&to_js_objects, event),
+        ));
+    }
     TerminalMembers { references, getters }
 }
 

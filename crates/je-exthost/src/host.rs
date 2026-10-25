@@ -45,13 +45,14 @@ use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
     ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookEditorsShape, ExtHostNotebookKernelsShape,
     ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
-    ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
+    ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTerminalShellIntegrationShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
 };
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_scm::ExtHostSCM;
 use je_workbench::api::common::ext_host_status_bar::ExtHostStatusBar;
-use je_workbench::api::common::ext_host_terminal_service::WorkerExtHostTerminalService;
+use je_workbench::api::common::ext_host_terminal_service::{WorkerExtHostTerminalService, WorkerTerminalCreation};
+use je_workbench::api::common::ext_host_terminal_shell_integration::ExtHostTerminalShellIntegration;
 use je_workbench::api::common::ext_host_tree_views::ExtHostTreeViews;
 use je_workbench::api::common::ext_host_window::ExtHostWindow;
 use je_workbench::api::common::ext_host_workspace::{ExtHostWorkspace, IExtHostInitDataService, IExtHostWorkspaceProvider, IURITransformerService, WorkspaceFolder};
@@ -253,6 +254,7 @@ struct BridgedServices {
     text_editors: Option<TextEditorServices>,
     language_features: Option<Rc<ExtHostLanguageFeatures>>,
     terminal: Option<Rc<WorkerExtHostTerminalService>>,
+    terminal_shell_integration: Option<Rc<ExtHostTerminalShellIntegration<WorkerTerminalCreation>>>,
     tree_views: Option<Rc<ExtHostTreeViews>>,
     debug: Option<Rc<ExtHostDebugServiceBase>>,
     /// Os serviços de que o `ExtensionContext` de cada extensão depende (ver `crate::api::extension_context`).
@@ -582,6 +584,14 @@ impl ExtensionHost {
                 late.terminal_service.0.bind(terminal_shape);
                 environment_variable_collection::define_class(runner, &table, terminal.clone(), extension_slot.clone());
                 bridged.context.environment_variable_collection = true;
+                // `Terminal#shellIntegration` e os eventos de execução pedem também o cliente `MainThreadTerminalShellIntegration`; o
+                // serviço é ligado depois do de terminais, que precisa já conhecer os terminais abertos que a integração anuncia.
+                if provided(MainContext::MAIN_THREAD_TERMINAL_SHELL_INTEGRATION.sid) {
+                    let integration = ExtHostTerminalShellIntegration::new(bridged_ref, terminal.clone());
+                    let integration_shape: Rc<dyn ExtHostTerminalShellIntegrationShape> = integration.clone();
+                    late.terminal_shell_integration.0.bind(integration_shape);
+                    bridged.terminal_shell_integration = Some(integration);
+                }
                 bridged.terminal = Some(terminal);
             }
 
@@ -730,6 +740,7 @@ impl ExtensionHost {
                     output: bridged.output.clone(),
                     progress: bridged.progress.clone(),
                     terminal: bridged.terminal.clone(),
+                    terminal_shell_integration: bridged.terminal_shell_integration.clone(),
                     tree_views: bridged.tree_views.clone(),
                     text_editors: text_editor_api,
                     tabs: tabs_api,
@@ -798,6 +809,9 @@ impl ExtensionHost {
         }
         if let Some(language_features) = &self.bridged.language_features {
             language_features.dispose();
+        }
+        if let Some(integration) = &self.bridged.terminal_shell_integration {
+            integration.dispose();
         }
         if let Some(terminal) = &self.bridged.terminal {
             terminal.dispose();

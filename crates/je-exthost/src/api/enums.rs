@@ -226,6 +226,7 @@ pub fn enums() -> Vec<(String, JsData)> {
         ("TreeItemCheckboxState".to_owned(), enum_object(&[("Unchecked", 0), ("Checked", 1)])),
         ("TerminalExitReason".to_owned(), enum_object(&[("Unknown", 0), ("Shutdown", 1), ("Process", 2), ("User", 3), ("Extension", 4)])),
         ("TerminalLocation".to_owned(), enum_object(&[("Panel", 1), ("Editor", 2)])),
+        ("TerminalShellExecutionCommandLineConfidence".to_owned(), enum_object(&[("Low", 0), ("Medium", 1), ("High", 2)])),
         // Os enums de arquivo (`extHostTypes.ts` e `vscode.d.ts`): `FileType`, `FileChangeType` e `FilePermission`.
         (
             "FileType".to_owned(),

@@ -27,9 +27,11 @@ use je_exthost::in_process::IMainThreadBinder;
 use je_platform::terminal::environment_variable::{ISerializableEnvironmentDescriptionMap, ISerializableEnvironmentVariableCollection};
 use je_platform::terminal::terminal::{IProcessProperty, IProcessReadyWindowsPty, ShellCwd, TerminalEnvironmentValue, TerminalExitReason as PlatformExitReason};
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostContext, ExtHostTerminalIdentifier, ExtHostTerminalServiceShape, ICreateContributedTerminalProfileOptions, IMainContext, IShellLaunchConfigDto, ITerminalDimensionsDto,
-    MainContext, MainThreadTerminalServiceShape, TerminalLaunchConfig, TerminalLaunchLocation,
+    ExtHostContext, ExtHostTerminalIdentifier, ExtHostTerminalServiceShape, ExtHostTerminalShellIntegrationShape, ICreateContributedTerminalProfileOptions, IMainContext,
+    IShellLaunchConfigDto, ITerminalDimensionsDto, MainContext, MainThreadTerminalServiceShape, MainThreadTerminalShellIntegrationShape, TerminalLaunchConfig,
+    TerminalLaunchLocation,
 };
+use je_workbench::api::common::ext_host_types::TerminalShellExecutionCommandLineConfidence;
 
 /// O JavaScript da extensão de exemplo.
 const EXTENSION_SOURCE: &str = r#"
@@ -47,6 +49,50 @@ exports.activate = (context) => {
     log('close:' + terminal.name + ':' + (status ? status.code + '/' + status.reason : 'none'));
   }));
   subscribe(vscode.window.onDidChangeActiveTerminal((terminal) => log('active:' + (terminal ? terminal.name : 'none'))));
+
+  globalThis.__shell = [];
+  const shellLog = (text) => globalThis.__shell.push(text);
+  subscribe(vscode.window.onDidChangeTerminalShellIntegration((e) => {
+    shellLog('si:' + e.terminal.name + ':' + (e.shellIntegration.cwd ? e.shellIntegration.cwd.fsPath : 'none'));
+  }));
+  subscribe(vscode.window.onDidStartTerminalShellExecution(async (e) => {
+    const line = e.execution.commandLine;
+    shellLog('start:' + line.value + ':' + line.confidence + ':' + line.isTrusted + ':' + (e.execution.cwd ? e.execution.cwd.fsPath : 'none'));
+    shellLog('match:' + (globalThis.__exec !== undefined && e.execution._id === globalThis.__exec._id));
+    let data = '';
+    for await (const chunk of e.execution.read()) { data += chunk; }
+    shellLog('read:' + data);
+  }));
+  subscribe(vscode.window.onDidEndTerminalShellExecution((e) => {
+    shellLog('end:' + e.execution.commandLine.value + ':' + e.exitCode + ':' + e.terminal.name);
+  }));
+  command('t.shellState', () => {
+    const integration = globalThis.__plain.shellIntegration;
+    if (!integration) { return 'none'; }
+    return JSON.stringify({ cwd: integration.cwd ? integration.cwd.fsPath : null, env: integration.env });
+  });
+  command('t.createSecond', () => {
+    globalThis.__second = vscode.window.createTerminal('second');
+    return globalThis.__second.name;
+  });
+  command('t.executeForm', (form) => {
+    const integration = (form === 'second' ? globalThis.__second : globalThis.__plain).shellIntegration;
+    try {
+      globalThis.__exec = form === 'args'
+        ? integration.executeCommand('echo', ['a b', 'c', "d'e"])
+        : integration.executeCommand(form === 'second' ? 'pwd' : 'ls -l');
+      return globalThis.__exec.commandLine.value + '|' + globalThis.__exec.commandLine.confidence + '|' + globalThis.__exec.commandLine.isTrusted;
+    } catch (error) {
+      return error.message;
+    }
+  });
+  command('t.proposedShell', () => {
+    const attempt = (call) => { try { call(); return 'sem erro'; } catch (error) { return error.message; } };
+    return JSON.stringify({
+      command: attempt(() => vscode.window.onDidExecuteTerminalCommand(() => {})),
+      quickFix: attempt(() => vscode.window.registerTerminalQuickFixProvider('fix', {})),
+    });
+  });
 
   command('t.createByName', () => {
     globalThis.__plain = vscode.window.createTerminal('plain', '/bin/bash', ['-i']);
@@ -177,6 +223,10 @@ struct Renderer {
     process_ready: RefCell<Vec<(u32, i32)>>,
     process_exits: RefCell<Vec<(u32, Option<i32>)>>,
     process_support: Cell<Option<bool>>,
+    /// O `ExtHostTerminalShellIntegration` do outro lado (o proxy que o `MainThreadTerminalShellIntegration` real pede no construtor).
+    shell_ext_host: RefCell<Option<Rc<dyn ExtHostTerminalShellIntegrationShape>>>,
+    /// Os `$executeCommand` que a extensão pediu (`execute:1:ls -l`).
+    shell_calls: RefCell<Vec<String>>,
 }
 
 impl Renderer {
@@ -193,7 +243,13 @@ impl Renderer {
             process_ready: RefCell::new(Vec::new()),
             process_exits: RefCell::new(Vec::new()),
             process_support: Cell::new(None),
+            shell_ext_host: RefCell::new(None),
+            shell_calls: RefCell::new(Vec::new()),
         })
+    }
+
+    fn shell(&self) -> Rc<dyn ExtHostTerminalShellIntegrationShape> {
+        self.shell_ext_host.borrow().clone().expect("o host já subiu e ligou o dublê")
     }
 
     /// O `ExtHostTerminalService` do outro lado (o proxy que o `MainThreadTerminalService` real pede no construtor).
@@ -342,6 +398,12 @@ impl MainThreadTerminalServiceShape for Renderer {
     }
 }
 
+impl MainThreadTerminalShellIntegrationShape for Renderer {
+    fn rpc_execute_command(&self, terminal_id: u32, command_line: &str) {
+        self.shell_calls.borrow_mut().push(format!("execute:{terminal_id}:{command_line}"));
+    }
+}
+
 /// Liga o dublê da thread principal ao host: registra o cliente e entrega a ele o proxy do ExtHost.
 struct Binder {
     renderer: Rc<Renderer>,
@@ -350,8 +412,11 @@ struct Binder {
 impl IMainThreadBinder for Binder {
     fn bind(&self, context: Rc<dyn IMainContext>) -> Vec<Rc<dyn IDisposable>> {
         *self.renderer.ext_host.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_TERMINAL_SERVICE));
+        *self.renderer.shell_ext_host.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_TERMINAL_SHELL_INTEGRATION));
         let renderer: Rc<dyn MainThreadTerminalServiceShape> = self.renderer.clone();
         context.set(&MainContext::MAIN_THREAD_TERMINAL_SERVICE, renderer);
+        let shell: Rc<dyn MainThreadTerminalShellIntegrationShape> = self.renderer.clone();
+        context.set(&MainContext::MAIN_THREAD_TERMINAL_SHELL_INTEGRATION, shell);
         Vec::new()
     }
 }
@@ -569,5 +634,121 @@ fn terminal_link_constructor_validates_its_arguments() {
     run_extension(EXTENSION_SOURCE, setup, |workbench, _renderer| {
         let message = format!("{:?}", run(workbench, "t.badLink"));
         assert!(message.contains("startIndex"), "{message}");
+    });
+}
+
+fn run_with(workbench: &Workbench, command: &str, argument: &str) -> Dynamic {
+    workbench.execute(command, vec![Dynamic::string(argument)])
+}
+
+fn shell_log(workbench: &Workbench) -> String {
+    workbench.probe("JSON.stringify(globalThis.__shell)")
+}
+
+/// Abre o terminal `plain` (id 1) e a thread principal anuncia a integração com o shell dele.
+fn open_with_shell_integration(workbench: &Workbench, renderer: &Renderer) {
+    run(workbench, "t.createByName");
+    open_pending(workbench, renderer);
+    renderer.shell().rpc_shell_integration_change(1, true);
+    workbench.pump();
+}
+
+#[test]
+fn terminal_shell_integration_appears_and_follows_cwd_and_env() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        run(workbench, "t.createByName");
+        open_pending(workbench, &renderer);
+        assert_eq!(run(workbench, "t.shellState"), Dynamic::string("none"), "sem $shellIntegrationChange o terminal não tem integração");
+
+        renderer.shell().rpc_shell_integration_change(1, true);
+        renderer.shell().rpc_cwd_change(1, Some("/proj"));
+        renderer.shell().rpc_shell_env_change(1, &["A".to_owned(), "B".to_owned()], &[Some("1".to_owned()), None], true);
+        workbench.pump();
+        assert_eq!(shell_log(workbench), r#"["si:plain:none","si:plain:/proj","si:plain:/proj"]"#);
+        assert_eq!(run(workbench, "t.shellState"), Dynamic::string(r#"{"cwd":"/proj","env":{"isTrusted":true,"value":{"A":"1"}}}"#));
+
+        // O mesmo diretório não é mudança.
+        renderer.shell().rpc_cwd_change(1, Some("/proj"));
+        workbench.pump();
+        assert_eq!(shell_log(workbench), r#"["si:plain:none","si:plain:/proj","si:plain:/proj"]"#);
+
+        // Depois de fechar o terminal a integração some e os eventos dela são ignorados.
+        renderer.shell().rpc_close_terminal(1);
+        renderer.shell().rpc_cwd_change(1, Some("/outro"));
+        workbench.pump();
+        assert_eq!(shell_log(workbench), r#"["si:plain:none","si:plain:/proj","si:plain:/proj"]"#);
+    });
+}
+
+#[test]
+fn shell_execution_started_by_the_shell_streams_data_and_ends_with_the_exit_code() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        open_with_shell_integration(workbench, &renderer);
+        renderer.shell().rpc_cwd_change(1, Some("/proj"));
+
+        // `$shellExecutionStart` de um terminal que o usuário digitou: nenhuma execução pendente.
+        renderer.shell().rpc_shell_execution_start(1, true, "ls -l", TerminalShellExecutionCommandLineConfidence::High, true, Some("/proj"));
+        workbench.pump();
+        renderer.shell().rpc_shell_execution_data(1, "a");
+        renderer.shell().rpc_shell_execution_data(1, "b");
+        workbench.pump();
+        renderer.shell().rpc_shell_execution_end(1, "ls -l", TerminalShellExecutionCommandLineConfidence::High, true, Some(3));
+        workbench.pump();
+
+        let log = shell_log(workbench);
+        for expected in ["start:ls -l:2:true:/proj", "match:false", "read:ab", "end:ls -l:3:plain"] {
+            assert!(log.contains(expected), "{expected} em {log}");
+        }
+    });
+}
+
+#[test]
+fn execute_command_reaches_the_main_thread_and_the_start_event_matches_the_execution() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        open_with_shell_integration(workbench, &renderer);
+        renderer.shell().rpc_cwd_change(1, Some("/proj"));
+        workbench.pump();
+
+        // `executeCommand(commandLine)`.
+        assert_eq!(run_with(workbench, "t.executeForm", "line"), Dynamic::string("ls -l|2|true"));
+        assert_eq!(*renderer.shell_calls.borrow(), vec!["execute:1:ls -l"]);
+
+        // O shell começa a execução da mesma linha: a execução pendente é a que o evento entrega.
+        renderer.shell().rpc_shell_execution_start(1, true, "ls -l", TerminalShellExecutionCommandLineConfidence::High, true, None);
+        workbench.pump();
+        renderer.shell().rpc_shell_execution_end(1, "ls -l", TerminalShellExecutionCommandLineConfidence::High, true, Some(0));
+        workbench.pump();
+        let log = shell_log(workbench);
+        for expected in ["start:ls -l:2:true:/proj", "match:true", "end:ls -l:0:plain"] {
+            assert!(log.contains(expected), "{expected} em {log}");
+        }
+
+        // `executeCommand(executable, args)`: só o argumento com espaço e sem aspas ganha aspas.
+        assert_eq!(run_with(workbench, "t.executeForm", "args"), Dynamic::string("echo \"a b\" c d'e|2|true"));
+        assert_eq!(renderer.shell_calls.borrow().last().map(String::as_str), Some("execute:1:echo \"a b\" c d'e"));
+    });
+}
+
+#[test]
+fn execute_command_throws_when_the_terminal_does_not_support_it() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        open_with_shell_integration(workbench, &renderer);
+        run(workbench, "t.createSecond");
+        assert_eq!(open_pending(workbench, &renderer), vec![2]);
+        renderer.shell().rpc_shell_integration_change(2, false);
+        workbench.pump();
+
+        assert_eq!(run_with(workbench, "t.executeForm", "second"), Dynamic::string("This terminal does not support the executeCommand API."));
+        assert!(renderer.shell_calls.borrow().is_empty(), "o pedido nem sai da extensão");
+    });
+}
+
+#[test]
+fn proposed_terminal_shell_members_throw_without_the_proposal() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, _renderer| {
+        let text = format!("{:?}", run(workbench, "t.proposedShell"));
+        assert!(text.contains("terminalExecuteCommandEvent"), "{text}");
+        assert!(text.contains("terminalQuickFixProvider"), "{text}");
+        assert!(!text.contains("sem erro"), "{text}");
     });
 }
