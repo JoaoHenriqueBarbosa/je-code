@@ -187,6 +187,10 @@ pub trait IStorage: IDisposable {
     fn items(&self) -> ItemMap;
     fn size(&self) -> usize;
 
+    /// `isInMemory()` de `Storage`: o Rust não tem a herança de `MigratingStorage extends Storage`, então a
+    /// pergunta entra na interface para quem guarda um `IStorage` (o `BaseStorageMain` do `electron-main`).
+    fn is_in_memory(&self) -> bool;
+
     fn init(&self) -> Promise<()>;
 
     fn get(&self, key: &str, fallback_value: Option<&str>) -> Option<String>;
@@ -332,10 +336,6 @@ impl Storage {
         }
     }
 
-    pub fn is_in_memory(&self) -> bool {
-        self.options.hint == Some(StorageHint::StorageInMemory)
-    }
-
     pub fn state(&self) -> StorageState {
         self.state.get()
     }
@@ -426,6 +426,10 @@ impl IStorage for Storage {
 
     fn size(&self) -> usize {
         self.cache.borrow().len()
+    }
+
+    fn is_in_memory(&self) -> bool {
+        self.options.hint == Some(StorageHint::StorageInMemory)
     }
 
     fn init(&self) -> Promise<()> {
@@ -660,6 +664,7 @@ const INTERNAL_KEY_PREFIX: &str = "__$__";
 /// `MigratingStorage extends Storage`. O Rust não tem herança: a estrutura guarda o `Storage` e o
 /// `Deref` expõe o resto; `init` e `get` são os métodos que o original sobrescreve.
 pub struct MigratingStorage {
+    me: Weak<MigratingStorage>,
     storage: Rc<Storage>,
     migrated_keys: RefCell<OrderedMap<String, ()>>,
     fallback_storage: RefCell<Option<Rc<dyn IStorage>>>,
@@ -676,7 +681,8 @@ impl std::ops::Deref for MigratingStorage {
 
 impl MigratingStorage {
     pub fn new(database: Rc<dyn StorageDatabase>, options: StorageOptions) -> Rc<Self> {
-        Rc::new(Self {
+        Rc::new_cyclic(|me| Self {
+            me: me.clone(),
             storage: Storage::new(database, options),
             migrated_keys: RefCell::new(OrderedMap::new()),
             fallback_storage: RefCell::new(None),
@@ -757,5 +763,79 @@ impl MigratingStorage {
             StorageValue::String(marshalling::stringify(&Value::Array(keys))),
             false,
         ));
+    }
+}
+
+impl IDisposable for MigratingStorage {
+    fn dispose(&self) {
+        self.storage.dispose();
+    }
+}
+
+/// `MigratingStorage` como `IStorage`: o `init` e o `get` são os sobrescritos; o resto é o do `Storage`. As leituras
+/// tipadas (`getBoolean`, `getNumber`, `getObject`) passam pelo `get` sobrescrito, como no original (o `Storage` as
+/// implementa com `this.get`): a migração acontece na primeira leitura da chave, e a leitura tipada vem depois dela.
+impl IStorage for MigratingStorage {
+    fn on_did_change_storage(&self) -> Event<StorageChangeEvent> {
+        self.storage.on_did_change_storage()
+    }
+
+    fn items(&self) -> ItemMap {
+        self.storage.items()
+    }
+
+    fn size(&self) -> usize {
+        self.storage.size()
+    }
+
+    fn is_in_memory(&self) -> bool {
+        self.storage.is_in_memory()
+    }
+
+    fn init(&self) -> Promise<()> {
+        MigratingStorage::init(&self.me.upgrade().expect("o storage está vivo enquanto um método dele roda"))
+    }
+
+    fn get(&self, key: &str, fallback_value: Option<&str>) -> Option<String> {
+        MigratingStorage::get(self, key, fallback_value)
+    }
+
+    fn get_boolean(&self, key: &str, fallback_value: Option<bool>) -> Option<bool> {
+        MigratingStorage::get(self, key, None);
+        self.storage.get_boolean(key, fallback_value)
+    }
+
+    fn get_number(&self, key: &str, fallback_value: Option<f64>) -> Option<f64> {
+        MigratingStorage::get(self, key, None);
+        self.storage.get_number(key, fallback_value)
+    }
+
+    fn get_object(&self, key: &str, fallback_value: Option<Value>) -> Option<Value> {
+        MigratingStorage::get(self, key, None);
+        self.storage.get_object(key, fallback_value)
+    }
+
+    fn set(&self, key: &str, value: StorageValue, external: bool) -> Promise<()> {
+        self.storage.set(key, value, external)
+    }
+
+    fn delete(&self, key: &str, external: bool) -> Promise<()> {
+        self.storage.delete(key, external)
+    }
+
+    fn flush(&self, delay: Option<u64>) -> Promise<()> {
+        self.storage.flush(delay)
+    }
+
+    fn when_flushed(&self) -> Promise<()> {
+        self.storage.when_flushed()
+    }
+
+    fn optimize(&self) -> Promise<()> {
+        self.storage.optimize()
+    }
+
+    fn close(&self) -> Promise<()> {
+        self.storage.close()
     }
 }
