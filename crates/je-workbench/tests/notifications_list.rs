@@ -28,6 +28,7 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+mod support;
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -82,13 +83,14 @@ use je_workbench::browser::parts::notifications::notifications_viewer::{
     set_notification_row_height,
 };
 use je_workbench::common::notifications::{INotificationsModel, NotificationViewItem, NotificationsFilterState, NotificationsModel};
-use je_workbench::services::editor::editor_groups_service::IEditorGroupsService;
+use je_workbench::services::editor::editor_groups_service::{IEditorGroup, IEditorGroupsService};
 use je_workbench::services::layout::layout_service::{
     AddedContainer, ContainerLayout, ILayoutService, IWorkbenchLayoutService, LayoutContainerId, LayoutOffsetInfo, LayoutPart, PanelAlignment, PartVisibilityChangeEvent, Parts, Position, WindowId,
     WindowMaximizedChange,
 };
 use je_workbench::services::notification::common::notification_service::NotificationService;
 use je_workbench::test::browser::workbench_test_services::TestEditorGroupsService;
+use support::test_editor_group_view::TestEditorGroupView;
 use je_workbench::test::common::test_notification_telemetry::TestNotificationTelemetryService;
 
 // region: dublês dos serviços
@@ -511,7 +513,9 @@ fn renderer_services_in(store: &DisposableStore, ui: &Ui, opener: Rc<dyn IOpener
 }
 
 fn center_services(guard: &LeakGuard, ui: &Ui) -> NotificationsCenterServices {
-    let editor_groups_service = TestEditorGroupsService::new(None);
+    // `new TestEditorGroupsService([new TestEditorGroupView(0)])`, como o `workbenchInstantiationService`.
+    let group: Rc<dyn IEditorGroup> = TestEditorGroupView::new(0);
+    let editor_groups_service = TestEditorGroupsService::new(Some(vec![group]));
     let editor_groups_service: Rc<dyn IEditorGroupsService> = editor_groups_service;
     let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
     NotificationsCenterServices {

@@ -165,8 +165,9 @@ pub trait NotificationActionProvider {
     /// `action instanceof ConfigureNotificationAction ? action.notification : undefined`.
     fn configure_action_notification(&self, action: &ActionRef) -> Option<Rc<NotificationViewItem>>;
     /// `new CopyNotificationMessageAction(CopyNotificationMessageAction.ID, CopyNotificationMessageAction.LABEL)`
-    /// (o menu de contexto da lista, em `notificationsList.ts`).
-    fn create_copy_message_action(&self) -> ActionRef;
+    /// (o menu de contexto da lista, em `notificationsList.ts`): a ação e o handle que a descarta (o
+    /// `this._register(...)` do original).
+    fn create_copy_message_action(&self) -> (ActionRef, DisposableRef);
 }
 
 /// Os serviços que o `NotificationRenderer` e o `NotificationTemplateRenderer` recebem por injeção no original.

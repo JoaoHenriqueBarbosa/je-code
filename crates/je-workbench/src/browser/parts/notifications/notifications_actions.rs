@@ -448,7 +448,10 @@ impl NotificationActionProvider for WorkbenchNotificationActionProvider {
         action.as_any().downcast_ref::<ConfigureNotificationAction>().map(|configure| configure.notification.clone())
     }
 
-    fn create_copy_message_action(&self) -> ActionRef {
-        CopyNotificationMessageAction::new(CopyNotificationMessageAction::ID, &CopyNotificationMessageAction::label(), self.clipboard_service.clone())
+    fn create_copy_message_action(&self) -> (ActionRef, DisposableRef) {
+        let action = CopyNotificationMessageAction::new(CopyNotificationMessageAction::ID, &CopyNotificationMessageAction::label(), self.clipboard_service.clone());
+        let disposable: DisposableRef = action.clone();
+        let action: ActionRef = action;
+        (action, disposable)
     }
 }
