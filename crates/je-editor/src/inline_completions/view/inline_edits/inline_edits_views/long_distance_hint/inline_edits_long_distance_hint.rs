@@ -217,7 +217,7 @@ impl InlineEditsLongDistanceHint {
                 let is_high_contrast = {
                     let themes = Rc::clone(&theme_service);
                     observable_from_event(theme_service.on_did_color_theme_change(), move |_| {
-                        matches!(themes.get_color_theme().theme_type(), ThemeType::HcDark | ThemeType::HcLight)
+                        matches!(themes.get_color_theme().theme_type(), ThemeType::HighContrastDark | ThemeType::HighContrastLight)
                     })
                     .read(reader)
                 };

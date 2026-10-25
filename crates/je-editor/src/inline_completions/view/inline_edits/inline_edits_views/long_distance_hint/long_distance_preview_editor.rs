@@ -284,7 +284,7 @@ impl LongDistancePreviewEditor {
                         class_name: Some("inlineCompletions-char-delete".to_owned()),
                         description: "char-delete".to_owned(),
                         is_whole_line: false,
-                        z_index: Some(1), // be on top of diff background decoration
+                        z_index: 1, // be on top of diff background decoration
                         ..Default::default()
                     })
                 };
@@ -326,7 +326,7 @@ impl LongDistancePreviewEditor {
                                             Some("inlineCompletions-char-delete"),
                                             i.original_range.is_empty().then_some("empty"),
                                         ])),
-                                        z_index: Some(1),
+                                        z_index: 1,
                                         ..Default::default()
                                     }),
                                 });

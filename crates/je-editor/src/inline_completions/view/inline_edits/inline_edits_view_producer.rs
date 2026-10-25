@@ -17,6 +17,7 @@ use std::rc::Rc;
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::observable::{IObservable, Observable, ObservableExt, derived};
 
+use crate::edits::edit::BaseEdit;
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::edits::text_edit::{TextEdit, TextReplacement};
 use crate::inline_completions::inline_completions_model::InlineCompletionsModel;
