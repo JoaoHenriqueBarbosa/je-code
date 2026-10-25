@@ -30,6 +30,20 @@ const POLL_INTERVAL_MS: u64 = 10;
 /// O `maxBuffer` padrão do `execFile`: `1024 * 1024`.
 const MAX_BUFFER: usize = 1024 * 1024;
 
+/// O erro que o Node entrega quando o programa não pôde ser iniciado: `spawn <programa> ENOENT` com `code = ENOENT` (ou
+/// `EACCES`), e `spawn <programa>: <causa>` sem `code` nos demais casos. Compartilhado com o `spawn` do túnel remoto.
+pub(crate) fn spawn_failure(command: &str, error: &std::io::Error) -> Error {
+    let code = match error.kind() {
+        std::io::ErrorKind::NotFound => Some("ENOENT"),
+        std::io::ErrorKind::PermissionDenied => Some("EACCES"),
+        _ => None,
+    };
+    match code {
+        Some(code) => Error::new(format!("spawn {command} {code}")).with_prop("code", code),
+        None => Error::new(format!("spawn {command}: {error}")),
+    }
+}
+
 /// O `cp.execFile` real.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessExecFile;
@@ -55,15 +69,7 @@ impl ExecFile for ProcessExecFile {
         match process.spawn() {
             Ok(child) => RunningProcess::start(child, format!("{command} {}", args.join(" ")), callback),
             Err(error) => {
-                let code = match error.kind() {
-                    std::io::ErrorKind::NotFound => Some("ENOENT"),
-                    std::io::ErrorKind::PermissionDenied => Some("EACCES"),
-                    _ => None,
-                };
-                let spawn_error = match code {
-                    Some(code) => Error::new(format!("spawn {command} {code}")).with_prop("code", code),
-                    None => Error::new(format!("spawn {command}: {error}")),
-                };
+                let spawn_error = spawn_failure(command, &error);
                 // O Node entrega o erro depois de quem chamou registrar o filho.
                 runtime::queue_microtask(move || callback(Some(spawn_error), String::new(), String::new()));
                 Rc::new(NotStarted)
