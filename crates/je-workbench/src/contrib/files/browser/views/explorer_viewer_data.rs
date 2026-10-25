@@ -201,7 +201,7 @@ impl IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>> for ExplorerDataSource {
         // reduce progress visibility when still restoring
         options.delay = Some(if self.layout_service.is_restored() { 800.0 } else { 1500.0 });
         let tracked = promise.clone();
-        let _ = self.progress_service.with_progress(options, Box::new(move |_progress| tracked.map_to_unit()), None);
+        let _ = self.progress_service.with_progress(options, Box::new(move |_progress| tracked.then(|_| ())), None);
 
         MaybePromise::Promise(promise)
     }
@@ -458,11 +458,11 @@ impl FilesFilter {
                     }
                 } else {
                     // Otherwise we create a new ignore file and add it to the tree
-                    let ignore_case = !this.file_service.has_capability(&ignore_file_resource, FileSystemProviderCapabilities::PathCaseSensitive);
+                    let ignore_case = !this.file_service.has_capability(&ignore_file_resource, FileSystemProviderCapabilities::PATH_CASE_SENSITIVE);
                     let location = dir_uri.path().to_string_lossy();
                     let ignore_file = {
                         let ignore_parent = ignore_tree.find_substr(&dir_uri);
-                        IgnoreFile::new(&text, &location, ignore_parent, ignore_case)?
+                        IgnoreFile::new(&text, &location, ignore_parent, ignore_case).map_err(|error| je_base::errors::Error::new(error.0))?
                     };
                     ignore_tree.set(dir_uri.clone(), ignore_file);
 
@@ -512,7 +512,7 @@ impl FilesFilter {
             let cached = self.hidden_expression_per_root.borrow();
             cached.get(&root_resource.to_string(false).to_string_lossy()).is_some_and(|cached| match &cached.parsed {
                 ParsedGlob::Expression(expression) => {
-                    let relative = je_base::path::posix().relative(&root_resource.path().to_string_lossy(), &stat.resource().path().to_string_lossy());
+                    let relative = je_base::path::PathModule::posix(&je_base::path::ProcessEnvironment).relative(&root_resource.path().to_string_lossy(), &stat.resource().path().to_string_lossy());
                     let parent = stat.parent();
                     let has_sibling = move |name: &str| -> Sibling { Sibling::Ready(parent.as_ref().is_some_and(|parent| parent.get_child(name).is_some())) };
                     !expression.matches(&relative, Some(&stat.name()), Some(&has_sibling)).is_none()
@@ -614,6 +614,7 @@ pub struct FindToggles {
 }
 
 /// `IAsyncFindResult<ExplorerItem>`.
+#[derive(Clone)]
 pub struct ExplorerFindResult {
     pub is_match: Rc<dyn Fn(&Rc<ExplorerItem>) -> bool>,
     pub match_count: usize,
@@ -770,7 +771,7 @@ impl<V: Clone + 'static> ExplorerFindProvider<V> {
         let mut options = ProgressOptions::new(ProgressLocation::Explorer);
         options.delay = Some(750.0);
         let tracked = promise.clone();
-        let _ = self.progress_service.with_progress(options, Box::new(move |_progress| tracked.map_to_unit()), None);
+        let _ = self.progress_service.with_progress(options, Box::new(move |_progress| tracked.then(|_| ())), None);
 
         promise
     }
