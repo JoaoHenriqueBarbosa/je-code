@@ -41,6 +41,27 @@ const HOVER_BORDER_WIDTH: f64 = 2.0;
 const HOVER_WINDOW_EDGE_MARGIN: f64 = 2.0;
 const DEFAULT_MOUSE_OUT_DEBOUNCE_MS: u64 = 200;
 
+/// A geometria do quadrado do ponteiro (`::after`), girado em torno do centro da sua caixa com borda.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoverPointerCaret {
+    /// `box-sizing: border-box`: a borda de 1px entra nos 6px, então o centro fica a `POINTER_SIZE` da origem.
+    pub border_box: bool,
+    pub width: f64,
+    pub height: f64,
+    /// `transform-origin` (padrão `50% 50%`): o centro da caixa com borda.
+    pub transform_origin: (f64, f64),
+}
+
+impl HoverPointerCaret {
+    /// `width: 6px; height: 6px` com `box-sizing: border-box` e a origem da rotação no centro.
+    pub const STANDARD: HoverPointerCaret = HoverPointerCaret {
+        border_box: true,
+        width: POINTER_SIZE * 2.0,
+        height: POINTER_SIZE * 2.0,
+        transform_origin: (POINTER_SIZE, POINTER_SIZE),
+    };
+}
+
 /// O que o pintor nativo mede do conteúdo de um hover.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HoverContentMetrics {
@@ -383,6 +404,11 @@ impl HoverWidget {
     /// O ponteiro, quando `showPointer`.
     pub fn hover_pointer(&self) -> Option<Rc<ViewElement>> {
         self.hover_pointer.clone()
+    }
+
+    /// A caixa do quadrado do ponteiro (`.workbench-hover-pointer:after` de `hover.css`), quando `showPointer`.
+    pub fn hover_pointer_caret(&self) -> Option<HoverPointerCaret> {
+        self.hover_pointer.as_ref().map(|_| HoverPointerCaret::STANDARD)
     }
 
     pub fn link_handler(&self) -> Option<Rc<dyn Fn(&str)>> {
