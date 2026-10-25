@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 
 use je_base::product::{
-    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExeBasedExtensionTip, IExtensionRecommendations,
+    ConfigurationSyncStore, EditSessionsStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExeBasedExtensionTip, IExtensionRecommendations,
     IExtensionsGallery, IRemoteExtensionTip, IStringDictionary, ITasConfig, IVirtualWorkspaceExtensionTip, StringsOrDictionary,
 };
 use je_base::product::IConfigBasedExtensionTip as IRawConfigBasedExtensionTip;
@@ -70,6 +70,10 @@ pub trait IProductService {
     fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>>;
     /// `configurationSync.store`: o servidor do Settings Sync, quando o produto declara.
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore>;
+    /// `editSessions.store`: o servidor do Cloud Changes (edit sessions), quando o produto declara. Padrão: nenhum.
+    fn edit_sessions_store(&self) -> Option<&EditSessionsStore> {
+        None
+    }
     /// `defaultChatAgent`, só com os dois identificadores de extensão que o `ExtensionEnablementService` lê
     /// (`extensionId` e `chatExtensionId`). Padrão: o produto não declara o agente de chat.
     fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
@@ -231,6 +235,7 @@ pub struct ProductService {
     pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
     pub extension_virtual_workspaces_support: Option<IStringDictionary<ExtensionVirtualWorkspaceSupport>>,
     pub configuration_sync_store: Option<ConfigurationSyncStore>,
+    pub edit_sessions_store: Option<EditSessionsStore>,
     pub default_chat_agent: Option<DefaultChatAgentExtensions>,
     pub sessions_window_allowed_extensions: Vec<String>,
     pub extensions_gallery: Option<IExtensionsGallery>,
@@ -295,6 +300,7 @@ impl Default for ProductService {
             extension_untrusted_workspace_support: None,
             extension_virtual_workspaces_support: None,
             configuration_sync_store: None,
+            edit_sessions_store: None,
             default_chat_agent: None,
             sessions_window_allowed_extensions: Vec::new(),
             extensions_gallery: None,
@@ -397,6 +403,9 @@ impl IProductService for ProductService {
     }
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
         self.configuration_sync_store.as_ref()
+    }
+    fn edit_sessions_store(&self) -> Option<&EditSessionsStore> {
+        self.edit_sessions_store.as_ref()
     }
     fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
         self.default_chat_agent.clone()
@@ -574,6 +583,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
         self.configuration_sync_store.as_ref()
+    }
+    fn edit_sessions_store(&self) -> Option<&EditSessionsStore> {
+        self.edit_sessions_store.as_ref()
     }
     fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
         Some(DefaultChatAgentExtensions { extension_id: self.default_chat_agent.extension_id.clone(), chat_extension_id: self.default_chat_agent.chat_extension_id.clone() })

@@ -15,7 +15,7 @@
 //!   original não é uma ordem total quando misturam views com e sem `group`).
 //! - **Eventos de contexto.** `Event.filter(onDidChangeContext, e => e.affectsSome(this.contextKeys))` é o `listen` com o
 //!   filtro dentro do ouvinte, e o `CounterSet` ganha o adaptador [`ContextKeySet`] para ser um `ReadableSet`.
-//! - **Logger.** `Lazy<ILogger>` com `windowLogGroup` (`services/log/common/logConstants.ts`, ainda não portado) está em
+//! - **Logger.** `Lazy<ILogger>` com `windowLogGroup` ([`window_log_group`]) está em
 //!   [`create_views_logger`]; os argumentos extras dos `trace` entram na própria mensagem.
 //! - **`move`** é [`IViewContainerModel::move_`]. O `move` do original com um id desconhecido falha com `TypeError` ao
 //!   ler `viewDescriptor` de `undefined`; aqui lança [`Error`] com a mesma mensagem.
@@ -30,11 +30,10 @@ use je_base::event::{Emitter, Event};
 use je_base::lazy::Lazy;
 use je_base::lifecycle::{Disposable, DisposableStore, IDisposable};
 use je_base::map::{CounterSet, OrderedMap};
-use je_base::nls::localize;
 use je_base::themables::ThemeIcon;
 use je_instantiation::{Injectable, InstantiationService};
 use je_platform::contextkey::{IContextKeyService, ReadableSet};
-use je_platform::log::{LoggerGroup, LoggerOptions, LoggerRef, LoggerService, ResourceOrId};
+use je_platform::log::{LoggerOptions, LoggerRef, LoggerService, ResourceOrId};
 use je_platform::resources::ext_uri;
 use je_platform::storage::{StorageScope, StorageService, StorageTarget};
 use je_storage::StorageValue;
@@ -44,6 +43,7 @@ use crate::common::views::{
     ContainerInfoChange, IAddedViewDescriptorRef, IAddedViewDescriptorState, IViewContainerModel, IViewDescriptorRef, VIEWS_LOG_ID, ViewContainerRc,
     ViewDescriptorMove, ViewDescriptorRc, ViewDescriptorsChange, ViewIcon, ViewSize, default_view_icon, views_log_name, views_registry,
 };
+use crate::services::log::log_constants::window_log_group;
 
 /// `getViewsStateStorageId(viewContainerStorageId)`.
 pub fn get_views_state_storage_id(view_container_storage_id: &str) -> String {
@@ -52,11 +52,9 @@ pub fn get_views_state_storage_id(view_container_storage_id: &str) -> String {
 
 /// `loggerService.createLogger(VIEWS_LOG_ID, { name: VIEWS_LOG_NAME, group: windowLogGroup })`.
 pub(crate) fn create_views_logger(logger_service: &dyn LoggerService) -> LoggerRef {
-    // `windowLogGroup`: `{ id: windowLogId, name: localize('window', "Window") }`, com `windowLogId = 'rendererLog'`.
-    let group = LoggerGroup { id: "rendererLog".to_string(), name: localize("window", "Window", &[]) };
     logger_service.create_logger(
         ResourceOrId::from(VIEWS_LOG_ID),
-        Some(LoggerOptions { name: Some(views_log_name()), group: Some(group), ..LoggerOptions::default() }),
+        Some(LoggerOptions { name: Some(views_log_name()), group: Some(window_log_group()), ..LoggerOptions::default() }),
     )
 }
 
