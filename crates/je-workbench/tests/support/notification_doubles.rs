@@ -431,7 +431,8 @@ pub fn test_editor_groups_service() -> Rc<dyn IEditorGroupsService> {
 /// O `TestLifecycleService` do `workbenchInstantiationService`, registrado no `store` do caso (o original o põe no
 /// `disposables` do `workbenchInstantiationService(undefined, store)`).
 pub fn test_lifecycle_service(store: &DisposableStore) -> Rc<dyn ILifecycleService> {
-    store.add_rc(TestLifecycleService::new())
+    let lifecycle_service = store.add_rc(TestLifecycleService::new());
+    lifecycle_service
 }
 
 /// Os serviços do renderer e da lista (`workbenchInstantiationService(undefined, store)`), com o opener dado.

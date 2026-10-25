@@ -37,7 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
-use je_base::actions::{Action, ActionRef, ActionRunner};
+use je_base::actions::{Action, ActionRef, ActionRunner, IAction};
 use je_base::dynamic::Dynamic;
 use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{IDisposable, to_disposable};
