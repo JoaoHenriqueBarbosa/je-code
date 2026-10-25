@@ -15,7 +15,9 @@
 //!   `TestStorageDatabase` por perfil). Ficam de fora o
 //!   `IMeteredConnectionService`, o `IGlobalExtensionEnablementService`, o `IExtensionStorageService`, o
 //!   `IIgnoredExtensionsManagementService`, o `IExtensionGalleryService` e o `IUserDataSyncMachinesService`, que
-//!   só os sincronizadores não portados e o serviço de máquinas leem. O `IExtensionManagementService` é o recorte
+//!   só os sincronizadores não portados e o serviço de máquinas leem: os de extensões moram no `je-workbench`, e o teste
+//!   de lá os monta e entrega a [`ExtensionsSynchroniserFactory`] por [`UserDataSyncClient::set_up_with_extensions`]
+//!   (sem ela, o cliente não tem o sincronizador de extensões). O `IExtensionManagementService` é o recorte
 //!   [`TestExtensionManagementService`]: `getInstalled` devolve `[]` e os eventos nunca disparam.
 //! - O stub de `IEnvironmentService` do original declara quatro campos e deixa o resto `undefined`;
 //!   [`TestEnvironmentService`] tem os quatro e valores neutros (caminhos sob `userRoamingDataHome`) para o
@@ -55,7 +57,7 @@ use je_platform::configuration::service::ConfigurationService;
 use je_platform::environment::environment::{DisableExtensions, EnvironmentService, ExtensionHostDebugParams, ExtensionKind, SyncMode};
 use je_platform::files::file_service::{FileContentSource, FileService};
 use je_platform::files::in_memory::InMemoryFileSystemProvider;
-use je_platform::log::NullLogService;
+use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::policy::NullPolicyService;
 use je_platform::product::ProductService;
 use je_platform::request::{AuthInfo, Credentials, IRequestService, RequestCompleteEvent};
@@ -74,7 +76,7 @@ use je_platform::user_data_sync::user_data_sync_account::{IUserDataSyncAccount, 
 use je_platform::user_data_sync::user_data_sync_enablement_service::UserDataSyncEnablementService;
 use je_platform::user_data_sync::user_data_sync_local_store_service::UserDataSyncLocalStoreService;
 use je_platform::user_data_sync::user_data_sync_machines::UserDataSyncMachinesService;
-use je_platform::user_data_sync::user_data_sync_service::{Synchroniser, SynchroniserExtraServices, UserDataSyncService};
+use je_platform::user_data_sync::user_data_sync_service::{ExtensionsSynchroniserFactory, Synchroniser, SynchroniserExtraServices, UserDataSyncService};
 use je_platform::user_data_sync::user_data_sync_store_service::{UserDataSyncStoreClientServices, UserDataSyncStoreManagementService, UserDataSyncStoreService};
 use je_storage::{InMemoryStorageDatabase, ItemMap, Recovery, StorageDatabase, StorageItemsChangeEvent, UpdateRequest};
 
@@ -581,6 +583,18 @@ impl EnvironmentService for TestEnvironmentService {
 
 // region: cliente
 
+/// Os serviços do cliente que o teste do `je-workbench` lê para montar o sincronizador de extensões (o original os
+/// registra no mesmo `TestInstantiationService`: o armazenamento, o do perfil, a configuração, o produto e o log).
+pub struct ExtensionsFactoryContext {
+    pub storage_service: Rc<dyn StorageService>,
+    pub user_data_profile_storage_service: Rc<AbstractUserDataProfileStorageService>,
+    pub configuration_service: Rc<ConfigurationService>,
+    pub product_service: Rc<ProductService>,
+    pub log_service: LogServiceRef,
+}
+
+/// Monta a fábrica do sincronizador de extensões a partir dos serviços do cliente.
+pub type ExtensionsFactoryBuilder = Box<dyn FnOnce(ExtensionsFactoryContext) -> Rc<dyn ExtensionsSynchroniserFactory>>;
 /// `UserDataSyncClient`: um dispositivo do usuário, com os serviços reais do porte sobre arquivos e
 /// armazenamento em memória, falando com o `testServer`.
 pub struct UserDataSyncClient {
@@ -611,8 +625,14 @@ impl IDisposable for UserDataSyncClient {
 }
 
 impl UserDataSyncClient {
-    /// `new UserDataSyncClient(testServer)` seguido de `setUp(empty)`.
+    /// `new UserDataSyncClient(testServer)` seguido de `setUp(empty)`, sem o sincronizador de extensões.
     pub async fn set_up(test_server: Rc<UserDataSyncTestServer>, empty: bool) -> Result<Rc<Self>, Error> {
+        Self::set_up_with_extensions(test_server, empty, None).await
+    }
+
+    /// [`Self::set_up`] com a fábrica do sincronizador de extensões, que `extensions_factory` monta com os serviços do
+    /// cliente.
+    pub async fn set_up_with_extensions(test_server: Rc<UserDataSyncTestServer>, empty: bool, extensions_factory: Option<ExtensionsFactoryBuilder>) -> Result<Rc<Self>, Error> {
         let base = Disposable::new();
         let log_service = NullLogService::shared();
         let ext_uri = ExtUri::unbiased(host_environment());
@@ -710,6 +730,15 @@ impl UserDataSyncClient {
             UserDataSyncEnablementService::new(storage_service.clone(), environment_service.clone(), user_data_sync_store_management_service.clone());
         base.register(user_data_sync_enablement_service.clone());
 
+        let extensions_synchroniser_factory = extensions_factory.map(|build| {
+            build(ExtensionsFactoryContext {
+                storage_service: storage_service.clone(),
+                user_data_profile_storage_service: user_data_profile_storage_service.clone(),
+                configuration_service: configuration_service.clone(),
+                product_service: product_service.clone(),
+                log_service: log_service.clone(),
+            })
+        });
         let user_data_sync_service = UserDataSyncService::new(
             SynchroniserServices {
                 file_service: file_service.clone(),
@@ -729,6 +758,7 @@ impl UserDataSyncClient {
             SynchroniserExtraServices {
                 user_data_profile_storage_service: user_data_profile_storage_service.clone(),
                 extension_management_service: Rc::new(TestExtensionManagementService),
+                extensions_synchroniser_factory,
             },
         );
         base.register(user_data_sync_service.clone());

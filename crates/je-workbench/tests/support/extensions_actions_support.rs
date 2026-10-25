@@ -175,5 +175,5 @@ pub fn did_uninstall_event(identifier: &ExtensionIdentifierInfo) -> DidUninstall
 
 /// `{ identifier, source, operation, local, profileLocation: null! }` (`InstallExtensionResult`).
 pub fn did_install_result(identifier: &ExtensionIdentifierInfo, source: Option<InstallExtensionSource>, operation: InstallOperation, local: ExtensionRef) -> InstallExtensionResult {
-    InstallExtensionResult { identifier: identifier.clone(), operation, source, profile_location: Some(profile()), local: Some(local), workspace_scoped: None }
+    InstallExtensionResult { identifier: identifier.clone(), operation, source, profile_location: Some(profile()), local: Some(local), workspace_scoped: None, error: None }
 }

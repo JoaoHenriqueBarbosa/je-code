@@ -171,6 +171,7 @@ impl ExtensionInstallService {
             profile_location: Some(path_uri(&result.profile_location)),
             local: result.local.clone().map(Rc::new),
             workspace_scoped: result.local.as_ref().map(|local| local.is_workspace_scoped),
+            error: result.error.clone(),
         }
     }
 
