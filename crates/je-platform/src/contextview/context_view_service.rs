@@ -4,7 +4,9 @@
 //!
 //! Divergências:
 //! - **`ContextViewDOMPosition` e raiz de sombra.** A visão nativa não tem posição de DOM (`absolute`, `fixed`, `fixed-shadow`),
-//!   então o `container` só dá o pai da visão (e as classes que a animação exige dos ancestrais).
+//!   então o `container` só dá o pai da visão (e as classes que a animação exige dos ancestrais); o `shadowRoot` não tem
+//!   efeito, e `useWindowContainerForShadowRoot` escolhe o contêiner da janela como esse pai
+//!   ([`ContextViewService::show_context_view_in`]).
 //! - **`prepareMenuCloseAnimation`.** Copia `opacity` e `transform` calculados do `.monaco-scrollable-element` para variáveis
 //!   de CSS; o pintor nativo anima o menu sem passar por variáveis, então o passo não existe.
 //! - **Medida da visão.** `DOM.getTotalWidth/Height(view)` é o [`ViewElement::size`] da visão, que o conteúdo renderizado
@@ -98,6 +100,21 @@ impl IDisposable for ContextViewService {
 }
 
 impl ContextViewService {
+    /// `showContextView(delegate, container, shadowRoot, useWindowContainerForShadowRoot)`: com um `container` e
+    /// `useWindowContainerForShadowRoot`, a visão monta no contêiner da janela (`getContainer(getWindow(container))`) e não no
+    /// `container`; sem `container`, monta no contêiner ativo. O `shadowRoot` só escolhe a posição de DOM (`fixed-shadow` ou
+    /// `fixed`), que a visão nativa não tem.
+    pub fn show_context_view_in(&self, delegate: Rc<dyn IContextViewDelegate>, container: Option<Rc<ViewElement>>, _shadow_root: bool, use_window_container_for_shadow_root: bool) {
+        let context_view_container = match container {
+            Some(_) if use_window_container_for_shadow_root => self.layout_service.get_container(),
+            Some(container) => container,
+            None => self.layout_service.active_container(),
+        };
+        self.view.set_parent(Some(context_view_container));
+
+        self.show(delegate);
+    }
+
     /// A posição resolvida na última vez que a visão foi posicionada.
     pub fn last_placement(&self) -> Option<ContextViewPlacement> {
         self.state.borrow().placement
@@ -241,11 +258,8 @@ impl ContextViewService {
 }
 
 impl IContextViewService for ContextViewService {
-    fn show_context_view(&self, delegate: Rc<dyn IContextViewDelegate>, container: Option<Rc<ViewElement>>, _shadow_root: bool) {
-        let context_view_container = container.unwrap_or_else(|| self.layout_service.active_container());
-        self.view.set_parent(Some(context_view_container));
-
-        self.show(delegate);
+    fn show_context_view(&self, delegate: Rc<dyn IContextViewDelegate>, container: Option<Rc<ViewElement>>, shadow_root: bool) {
+        self.show_context_view_in(delegate, container, shadow_root, false);
     }
 
     fn hide_context_view(&self, data: Option<HideData>) {

@@ -23,10 +23,11 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 
 use crate::async_::{IntervalHandle, clear_interval, set_interval};
+use crate::dynamic::Dynamic;
 use crate::errors::{Error, on_unexpected_error};
 use crate::lifecycle::{Disposable, DisposableRef, IDisposable, MutableDisposable, none, to_disposable};
 use crate::numbers::is_point_within_triangle;
-use crate::runtime;
+use crate::runtime::{self, TimerId};
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Documento e nós
@@ -81,11 +82,22 @@ pub struct Document {
     view: Weak<CodeWindow>,
     nodes: RefCell<Vec<NodeSlot>>,
     trackers: RefCell<Vec<Rc<AttributeTracker>>>,
+    hidden: Cell<bool>,
 }
 
 impl Document {
     fn new(view: Weak<CodeWindow>) -> Rc<Self> {
-        Rc::new(Self { view, nodes: RefCell::new(Vec::new()), trackers: RefCell::new(Vec::new()) })
+        Rc::new(Self { view, nodes: RefCell::new(Vec::new()), trackers: RefCell::new(Vec::new()), hidden: Cell::new(false) })
+    }
+
+    /// `document.visibilityState`: `visible` até alguém esconder a janela ([`Document::set_hidden`]).
+    pub fn visibility_state(&self) -> &'static str {
+        if self.hidden.get() { "hidden" } else { "visible" }
+    }
+
+    /// Esconde ou mostra a janela do documento (uma janela minimizada ou coberta).
+    pub fn set_hidden(&self, hidden: bool) {
+        self.hidden.set(hidden);
     }
 
     fn alloc(self: &Rc<Self>, data: NodeData) -> Node {
@@ -329,21 +341,44 @@ impl Node {
         self.set_class_name(&tokens.join(" "));
     }
 
-    /// `style.setProperty(name, value)`: o atributo `style` guarda `nome: valor;` por propriedade.
-    pub fn style_set_property(&self, name: &str, value: &str) {
-        let mut declarations: Vec<(String, String)> = self
-            .get_attribute("style")
+    /// As declarações do atributo `style` (`nome: valor;`), na ordem em que entraram.
+    fn style_declarations(&self) -> Vec<(String, String)> {
+        self.get_attribute("style")
             .unwrap_or_default()
             .split(';')
             .filter_map(|declaration| declaration.split_once(':'))
             .map(|(property, current)| (property.trim().to_owned(), current.trim().to_owned()))
-            .collect();
+            .collect()
+    }
+
+    /// `style.setProperty(name, value)`: o atributo `style` guarda `nome: valor;` por propriedade.
+    pub fn style_set_property(&self, name: &str, value: &str) {
+        let mut declarations = self.style_declarations();
         match declarations.iter_mut().find(|(property, _)| property == name) {
             Some((_, current)) => *current = value.to_owned(),
             None => declarations.push((name.to_owned(), value.to_owned())),
         }
         let style: Vec<String> = declarations.iter().map(|(property, current)| format!("{property}: {current};")).collect();
         self.set_attribute("style", &style.join(" "));
+    }
+
+    /// `style.getPropertyValue(name)`: vazio quando o nó não define a propriedade.
+    pub fn style_get_property_value(&self, name: &str) -> String {
+        self.style_declarations().into_iter().find(|(property, _)| property == name).map(|(_, value)| value).unwrap_or_default()
+    }
+
+    /// `getComputedStyle(node).getPropertyValue(name)` de uma propriedade personalizada (`--nome`), que herda: vale a do
+    /// próprio nó ou, sem ela, a do ancestral mais próximo que a define; vazio sem nenhuma.
+    pub fn computed_style_property_value(&self, name: &str) -> String {
+        let mut current = Some(self.clone());
+        while let Some(node) = current {
+            let value = node.style_get_property_value(name);
+            if !value.is_empty() {
+                return value;
+            }
+            current = node.parent_node();
+        }
+        String::new()
     }
 }
 
@@ -689,12 +724,50 @@ struct RecentResizeObserverContext {
     overflow: bool,
 }
 
-/// Uma janela de código: documento, id, quadros de animação e contexto dos `ResizeObserver`.
+/// O manipulador de `setTimeout(handler, timeout, ...args)`: recebe os `args` do timer.
+pub type TimerHandler = Rc<dyn Fn(&[Dynamic])>;
+
+/// `window.setTimeout(handler, timeout, ...args)`: devolve o identificador do timer.
+pub type SetTimeoutFn = Rc<dyn Fn(TimerHandler, u64, &[Dynamic]) -> i64>;
+
+/// `window.clearTimeout(timeoutId)`.
+pub type ClearTimeoutFn = Rc<dyn Fn(Option<i64>)>;
+
+/// Os timers da janela: os que valem agora (`window.setTimeout`, atribuíveis) e os originais que
+/// `enableMultiWindowAwareTimeout` define em `vscodeOriginalSetTimeout` e `vscodeOriginalClearTimeout`.
+struct WindowTimers {
+    set_timeout: SetTimeoutFn,
+    clear_timeout: ClearTimeoutFn,
+    original_set_timeout: Option<SetTimeoutFn>,
+    original_clear_timeout: Option<ClearTimeoutFn>,
+}
+
+impl WindowTimers {
+    /// Os timers nativos do `runtime` do thread.
+    fn native() -> Self {
+        Self {
+            set_timeout: Rc::new(|handler, timeout, args| {
+                let args = args.to_vec();
+                runtime::set_timeout(move || handler(&args), timeout).raw() as i64
+            }),
+            clear_timeout: Rc::new(|timeout_id| {
+                if let Some(timeout_id) = timeout_id {
+                    runtime::clear_timeout(TimerId::from_raw(timeout_id as u64));
+                }
+            }),
+            original_set_timeout: None,
+            original_clear_timeout: None,
+        }
+    }
+}
+
+/// Uma janela de código: documento, id, quadros de animação, timers e contexto dos `ResizeObserver`.
 pub struct CodeWindow {
     id: Cell<Option<u32>>,
     document: Rc<Document>,
     frames: RefCell<FrameQueues>,
     animation_frame_callbacks: RefCell<Vec<Box<dyn FnOnce()>>>,
+    timers: RefCell<WindowTimers>,
     resize_observer_ctor: RefCell<Option<ResizeObserverCtor>>,
     recent_resize_observers: RefCell<Option<RecentResizeObserverContext>>,
 }
@@ -707,6 +780,7 @@ impl CodeWindow {
             document: Document::new(view.clone()),
             frames: RefCell::new(FrameQueues::default()),
             animation_frame_callbacks: RefCell::new(Vec::new()),
+            timers: RefCell::new(WindowTimers::native()),
             resize_observer_ctor: RefCell::new(None),
             recent_resize_observers: RefCell::new(None),
         })
@@ -719,6 +793,52 @@ impl CodeWindow {
     /// `vscodeWindowId`.
     pub fn vscode_window_id(&self) -> Option<u32> {
         self.id.get()
+    }
+
+    /// `window.setTimeout(handler, timeout, ...args)`, o que estiver atribuído agora.
+    pub fn set_timeout(&self, handler: impl Fn(&[Dynamic]) + 'static, timeout: u64, args: &[Dynamic]) -> i64 {
+        let set_timeout = self.set_timeout_fn();
+        set_timeout(Rc::new(handler), timeout, args)
+    }
+
+    /// `window.clearTimeout(timeoutId)`, o que estiver atribuído agora.
+    pub fn clear_timeout(&self, timeout_id: Option<i64>) {
+        let clear_timeout = self.clear_timeout_fn();
+        clear_timeout(timeout_id);
+    }
+
+    /// O `window.setTimeout` de agora (para quem o guarda antes de sobrescrever).
+    pub fn set_timeout_fn(&self) -> SetTimeoutFn {
+        self.timers.borrow().set_timeout.clone()
+    }
+
+    /// O `window.clearTimeout` de agora.
+    pub fn clear_timeout_fn(&self) -> ClearTimeoutFn {
+        self.timers.borrow().clear_timeout.clone()
+    }
+
+    /// `window.setTimeout = ...; window.clearTimeout = ...`.
+    pub fn assign_timeout_fns(&self, set_timeout: SetTimeoutFn, clear_timeout: ClearTimeoutFn) {
+        let mut timers = self.timers.borrow_mut();
+        timers.set_timeout = set_timeout;
+        timers.clear_timeout = clear_timeout;
+    }
+
+    /// `Object.defineProperty(window, 'vscodeOriginalSetTimeout' | 'vscodeOriginalClearTimeout', { get })`.
+    pub fn define_original_timeout_fns(&self, set_timeout: SetTimeoutFn, clear_timeout: ClearTimeoutFn) {
+        let mut timers = self.timers.borrow_mut();
+        timers.original_set_timeout = Some(set_timeout);
+        timers.original_clear_timeout = Some(clear_timeout);
+    }
+
+    /// `window.vscodeOriginalSetTimeout`: indefinido enquanto ninguém o define.
+    pub fn vscode_original_set_timeout(&self) -> Option<SetTimeoutFn> {
+        self.timers.borrow().original_set_timeout.clone()
+    }
+
+    /// `window.vscodeOriginalClearTimeout`.
+    pub fn vscode_original_clear_timeout(&self) -> Option<ClearTimeoutFn> {
+        self.timers.borrow().original_clear_timeout.clone()
     }
 
     /// Instala o `ResizeObserver` da janela.
