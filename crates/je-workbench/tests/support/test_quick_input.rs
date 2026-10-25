@@ -22,6 +22,7 @@ use je_base::lifecycle::IDisposable;
 use je_base::observable::base::IObservable;
 use je_base::promise::Promise;
 use je_base::severity::Severity;
+use je_platform::quickinput::quick_access::IQuickAccessController;
 use je_platform::quickinput::quick_input::{
     IInputBox, IInputOptions, IKeyMods, IPickOptions, IQuickInput, IQuickInputHideEvent, IQuickInputService, IQuickNavigateConfiguration, IQuickPick,
     IQuickPickDidAcceptEvent, IQuickPickItem, IQuickPickItemButtonEvent, IQuickPickSeparatorButtonEvent, IQuickPickWillAcceptEvent, IQuickTree, ItemActivation,
@@ -49,6 +50,10 @@ pub struct TestQuickPick {
     this: std::rc::Weak<TestQuickPick>,
     disposed: Cell<bool>,
     key_mods: Cell<IKeyMods>,
+    /// `QuickInput.visible`.
+    visible: Cell<bool>,
+    /// O serviço que mostra este seletor (o controlador do `QuickInputController`), quando ele o criou.
+    service: RefCell<std::rc::Weak<TestQuickInputService>>,
 
     on_did_hide: Rc<Emitter<IQuickInputHideEvent>>,
     on_will_hide: Rc<Emitter<IQuickInputHideEvent>>,
@@ -113,6 +118,8 @@ impl TestQuickPick {
             this: this.clone(),
             disposed: Cell::new(false),
             key_mods: Cell::new(NO_KEY_MODS),
+            visible: Cell::new(false),
+            service: RefCell::new(std::rc::Weak::new()),
             on_did_hide: Emitter::new(),
             on_will_hide: Emitter::new(),
             on_dispose: Emitter::new(),
@@ -180,10 +187,13 @@ impl TestQuickPick {
 }
 
 impl IDisposable for TestQuickPick {
+    /// `QuickInput.dispose()`: esconde (se visível), dispara `onDispose` e descarta.
     fn dispose(&self) {
-        if self.disposed.replace(true) {
+        if self.disposed.get() {
             return;
         }
+        self.hide();
+        self.disposed.set(true);
         self.on_dispose.fire(());
     }
 }
@@ -223,14 +233,35 @@ impl IQuickInput for TestQuickPick {
         anchor_position, set_anchor_position, anchor_position: Option<QuickInputAnchorPosition>;
     }
 
-    fn show(&self) {}
+    /// `QuickInput.show()` e o `QuickInputController.show(controller)`: o seletor passa a ser o atual e o anterior, se havia, é
+    /// escondido por `didHide` (para os ouvintes dele não ficarem velhos).
+    fn show(&self) {
+        if self.visible.get() {
+            return;
+        }
+        self.visible.set(true);
 
+        let service = self.service.borrow().upgrade();
+        if let Some(service) = service {
+            service.show(self.self_rc());
+        }
+    }
+
+    /// `QuickInput.hide()`: sem efeito se o seletor não está visível.
     fn hide(&self) {
+        if !self.visible.get() {
+            return;
+        }
         self.will_hide(Some(QuickInputHideReason::Other));
         self.did_hide(Some(QuickInputHideReason::Other));
     }
 
     fn did_hide(&self, reason: Option<QuickInputHideReason>) {
+        self.visible.set(false);
+        let service = self.service.borrow().upgrade();
+        if let Some(service) = service {
+            service.release(self);
+        }
         self.on_did_hide.fire(IQuickInputHideEvent { reason: reason.unwrap_or(QuickInputHideReason::Other) });
     }
 
@@ -366,17 +397,23 @@ impl IQuickPick for TestQuickPick {
 
     fn focus(&self, _focus: QuickPickFocus) {}
 
-    /// `accept(inBackground)`: o item ativo vira o selecionado (sem `canSelectMany`) e `onDidAccept` dispara, a menos que um
-    /// ouvinte de `onWillAccept` use o `veto`.
+    /// `accept(inBackground)`: sem `canAcceptInBackground` o aceite em segundo plano não acontece; o item ativo vira o
+    /// selecionado (sem `canSelectMany`) e `onWillAccept` e `onDidAccept` disparam, este a menos que um ouvinte de
+    /// `onWillAccept` use o `veto`.
     fn accept(&self, in_background: Option<bool>) {
+        if in_background == Some(true) && !*self.can_accept_in_background.borrow() {
+            return; // needs to be enabled
+        }
+        if !*self.can_select_many.borrow() {
+            let active = self.active_items.borrow().clone();
+            if !active.is_empty() {
+                self.set_selected_items(active.into_iter().take(1).collect());
+            }
+        }
         let event = IQuickPickWillAcceptEvent::new();
         self.on_will_accept.fire(event.clone());
         if event.is_vetoed() {
             return;
-        }
-        if !*self.can_select_many.borrow() {
-            let active = self.active_items.borrow().clone();
-            self.set_selected_items(active);
         }
         self.on_did_accept.fire(IQuickPickDidAcceptEvent { in_background: in_background.unwrap_or(false) });
     }
@@ -388,14 +425,46 @@ impl TestQuickPick {
     }
 }
 
-/// O `IQuickInputService` com só o que os testes de acesso rápido usam: `createQuickPick`.
+/// O `IQuickInputService` com só o que os testes de acesso rápido usam: `createQuickPick`, o seletor atual (`show`), o
+/// aceite programático (`accept`) e o `quickAccess`.
 pub struct TestQuickInputService {
+    this: std::rc::Weak<TestQuickInputService>,
     pub created: RefCell<Vec<Rc<TestQuickPick>>>,
+    /// `controller`: o seletor visível, ou nenhum.
+    current: RefCell<Option<Rc<TestQuickPick>>>,
+    /// `quickAccess`, instalado por [`TestQuickInputService::set_quick_access`].
+    quick_access: RefCell<Option<Rc<dyn IQuickAccessController>>>,
 }
 
 impl TestQuickInputService {
     pub fn new() -> Rc<Self> {
-        Rc::new(Self { created: RefCell::new(Vec::new()) })
+        Rc::new_cyclic(|this| Self {
+            this: this.clone(),
+            created: RefCell::new(Vec::new()),
+            current: RefCell::new(None),
+            quick_access: RefCell::new(None),
+        })
+    }
+
+    /// O `QuickAccessController` que o `quickAccess` devolve (o original o cria na primeira leitura).
+    pub fn set_quick_access(&self, quick_access: Option<Rc<dyn IQuickAccessController>>) {
+        *self.quick_access.borrow_mut() = quick_access;
+    }
+
+    /// `QuickInputController.show(controller)`: o seletor passa a ser o atual e o anterior é escondido por `didHide`.
+    fn show(&self, controller: Rc<TestQuickPick>) {
+        let old_controller = self.current.borrow_mut().replace(controller);
+        if let Some(old_controller) = old_controller {
+            old_controller.did_hide(None);
+        }
+    }
+
+    /// O `this.controller = null` do `hide`: o seletor deixa de ser o atual, se era.
+    fn release(&self, picker: &TestQuickPick) {
+        let mut current = self.current.borrow_mut();
+        if current.as_ref().is_some_and(|current| std::ptr::eq(Rc::as_ptr(current), picker)) {
+            *current = None;
+        }
     }
 }
 
@@ -439,6 +508,7 @@ impl IQuickInputService for TestQuickInputService {
 
     fn create_quick_pick(&self, _options: Option<QuickPickCreateOptions>) -> Rc<dyn IQuickPick> {
         let quick_pick = TestQuickPick::new();
+        *quick_pick.service.borrow_mut() = self.this.clone();
         self.created.borrow_mut().push(quick_pick.clone());
         quick_pick
     }
@@ -461,7 +531,14 @@ impl IQuickInputService for TestQuickInputService {
         Promise::resolved(())
     }
 
-    fn accept(&self, _key_mods: Option<IKeyMods>) -> Promise<()> {
+    /// `QuickInputController.accept(keyMods)`: as teclas modificadoras passam a ser as dadas (ou nenhuma) e o seletor atual
+    /// aceita (o `onDidAccept` da interface, que seleciona o item ativo e dispara `onWillAccept` e `onDidAccept`).
+    fn accept(&self, key_mods: Option<IKeyMods>) -> Promise<()> {
+        let current = self.current.borrow().clone();
+        if let Some(current) = current {
+            current.set_key_mods(key_mods.unwrap_or(NO_KEY_MODS));
+            current.accept(None);
+        }
         Promise::resolved(())
     }
 
@@ -472,8 +549,12 @@ impl IQuickInputService for TestQuickInputService {
     fn toggle_hover(&self) {}
 
     fn current_quick_input(&self) -> Option<QuickInputRef> {
-        self.created.borrow().last().map(|quick_pick| QuickInputRef::QuickPick(quick_pick.clone()))
+        self.current.borrow().as_ref().map(|quick_pick| QuickInputRef::QuickPick(quick_pick.clone()))
     }
 
     fn set_alignment(&self, _alignment: QuickInputAlignmentSetting) {}
+
+    fn quick_access(&self) -> Rc<dyn IQuickAccessController> {
+        self.quick_access.borrow().clone().expect("o QuickAccessController foi instalado")
+    }
 }
