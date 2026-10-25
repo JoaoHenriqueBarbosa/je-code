@@ -70,10 +70,10 @@ pub fn explorer_root_error_emitter() -> Rc<Emitter<URI>> {
 // ExplorerDataSource
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// `ExplorerDataSource`.
-pub struct ExplorerDataSource {
+/// `ExplorerDataSource`. `V` é o estado de vista da árvore que o `ExplorerFindProvider` guarda (o `IAsyncDataTreeViewState`).
+pub struct ExplorerDataSource<V: Clone + 'static = ()> {
     file_filter: Rc<FilesFilter>,
-    find_provider: Rc<ExplorerFindProvider>,
+    find_provider: Rc<ExplorerFindProvider<V>>,
     progress_service: Rc<dyn IProgressService>,
     config_service: Rc<dyn IConfigurationService>,
     notification_service: Rc<dyn INotificationService>,
@@ -84,11 +84,11 @@ pub struct ExplorerDataSource {
     files_config_service: Rc<dyn IFilesConfigurationService>,
 }
 
-impl ExplorerDataSource {
+impl<V: Clone + 'static> ExplorerDataSource<V> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         file_filter: Rc<FilesFilter>,
-        find_provider: Rc<ExplorerFindProvider>,
+        find_provider: Rc<ExplorerFindProvider<V>>,
         progress_service: Rc<dyn IProgressService>,
         config_service: Rc<dyn IConfigurationService>,
         notification_service: Rc<dyn INotificationService>,
@@ -121,7 +121,7 @@ impl ExplorerDataSource {
     }
 }
 
-impl IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>> for ExplorerDataSource {
+impl<V: Clone + 'static> IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>> for ExplorerDataSource<V> {
     fn has_children(&self, element: &InputOrElement<ExplorerInput, Rc<ExplorerItem>>) -> bool {
         match element {
             // don't render nest parents as containing children when all the children are filtered out

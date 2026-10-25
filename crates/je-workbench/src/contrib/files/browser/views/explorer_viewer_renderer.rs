@@ -381,12 +381,11 @@ impl IDisposable for FilesRenderer {
     }
 }
 
-impl ITreeRenderer<Model> for FilesRenderer {
-    fn template_id(&self) -> String {
-        FILES_RENDERER_TEMPLATE_ID.to_owned()
-    }
-
-    fn render_template(&self, container: NodeId) -> TemplateData {
+/// Os passos do renderer sobre o item e o `templateData`, sem o formato do nó da árvore: o [`ITreeRenderer`] (modelo de
+/// árvore de objetos) e o renderer da `WorkbenchCompressibleAsyncDataTree` da vista chamam os mesmos.
+impl FilesRenderer {
+    /// `renderTemplate(container)`.
+    pub fn render_template_data(&self, container: NodeId) -> TemplateData {
         let template_disposables = DisposableStore::new();
         let label = self.services.labels.create(container, Some(je_widgets::icon_label::IIconLabelCreationOptions { support_highlights: true, ..Default::default() }));
         template_disposables.add(Rc::new(label.clone()));
@@ -413,40 +412,64 @@ impl ITreeRenderer<Model> for FilesRenderer {
         Rc::new(FileTemplateData { template_disposables, element_disposables, label, container, current_context }) as Rc<dyn Any>
     }
 
-    fn render_element(&self, node: &Rc<<Model as ITreeModel>::Node>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+    /// `renderElement(node, index, templateData)` para o item `stat` do nó.
+    pub fn render_stat_element(&self, stat: &Rc<ExplorerItem>, template_data: &TemplateData) {
         let template = Self::template(template_data);
-        let stat = node.element().expect("elemento da árvore");
         *template.current_context.borrow_mut() = Some(stat.clone());
 
-        let editable_data = self.services.explorer_service.get_editable_data(&stat);
+        let editable_data = self.services.explorer_service.get_editable_data(stat);
         self.services.ui.tree_mut().remove_class(template.label.element(), "compressed");
 
         match editable_data {
             // File Label
-            None => self.render_stat(&stat, IconLabelText::Single(stat.name()), None, template),
+            None => self.render_stat(stat, IconLabelText::Single(stat.name()), None, template),
             // Input Box
             Some(editable_data) => {
                 hide(&mut self.services.ui.tree_mut(), template.label.element());
-                template.element_disposables.add(self.render_input_box(template.container, &stat, editable_data));
+                template.element_disposables.add(self.render_input_box(template.container, stat, editable_data));
             }
         }
     }
 
-    fn dispose_element(&self, _node: &Rc<<Model as ITreeModel>::Node>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+    /// `disposeElement(node, index, templateData)`.
+    pub fn dispose_stat_element(&self, template_data: &TemplateData) {
         let template = Self::template(template_data);
         *template.current_context.borrow_mut() = None;
         template.element_disposables.clear();
     }
 
-    fn dispose_template(&self, template_data: &TemplateData) {
+    /// `disposeTemplate(templateData)`.
+    pub fn dispose_template_data(&self, template_data: &TemplateData) {
         Self::template(template_data).template_disposables.dispose();
     }
 }
 
-impl ICompressibleTreeRenderer<Rc<ExplorerItem>, ()> for FilesRenderer {
-    fn render_compressed_elements(&self, node: &Rc<CompressedNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+impl ITreeRenderer<Model> for FilesRenderer {
+    fn template_id(&self) -> String {
+        FILES_RENDERER_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        self.render_template_data(container)
+    }
+
+    fn render_element(&self, node: &Rc<<Model as ITreeModel>::Node>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.render_stat_element(&node.element().expect("elemento da árvore"), template_data);
+    }
+
+    fn dispose_element(&self, _node: &Rc<<Model as ITreeModel>::Node>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.dispose_stat_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.dispose_template_data(template_data);
+    }
+}
+
+impl FilesRenderer {
+    /// `renderCompressedElements(node, index, templateData)` para os itens, a profundidade e o estado colapsado do nó.
+    pub fn render_compressed_stats(&self, elements: Vec<Rc<ExplorerItem>>, depth: usize, collapsed: bool, template_data: &TemplateData) {
         let template = Self::template(template_data);
-        let elements = node.element.as_ref().expect("nó comprimido").elements.clone();
         let stat = elements.last().expect("nó comprimido sem elementos").clone();
         *template.current_context.borrow_mut() = Some(stat.clone());
 
@@ -466,7 +489,7 @@ impl ICompressibleTreeRenderer<Rc<ExplorerItem>, ()> for FilesRenderer {
             // A pontuação fuzzy não existe neste porte (ver o topo do módulo), então não há deslocamento a ajustar.
             self.render_stat(&stat, IconLabelText::Multiple(labels), Some(id.clone()), template);
 
-            let compressed_navigation_controller = CompressedNavigationController::new(id, elements.clone(), node.depth, node.collapsed.get());
+            let compressed_navigation_controller = CompressedNavigationController::new(id, elements.clone(), depth, collapsed);
             template.element_disposables.add(compressed_navigation_controller.clone());
 
             self.compressed_navigation_controllers.borrow_mut().entry(ById(stat.clone())).or_default().push(compressed_navigation_controller.clone());
@@ -504,9 +527,19 @@ impl ICompressibleTreeRenderer<Rc<ExplorerItem>, ()> for FilesRenderer {
         template.element_disposables.add(self.render_input_box(template.container, editable[0], editable_data));
     }
 
+    /// `disposeCompressedElements(node, index, templateData)`.
+    pub fn dispose_compressed_stats(&self, template_data: &TemplateData) {
+        self.dispose_stat_element(template_data);
+    }
+}
+
+impl ICompressibleTreeRenderer<Rc<ExplorerItem>, ()> for FilesRenderer {
+    fn render_compressed_elements(&self, node: &Rc<CompressedNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let elements = node.element.as_ref().expect("nó comprimido").elements.clone();
+        self.render_compressed_stats(elements, node.depth, node.collapsed.get(), template_data);
+    }
+
     fn dispose_compressed_elements(&self, _node: &Rc<CompressedNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
-        let template = Self::template(template_data);
-        *template.current_context.borrow_mut() = None;
-        template.element_disposables.clear();
+        self.dispose_compressed_stats(template_data);
     }
 }

@@ -183,6 +183,9 @@ pub struct ViewPaneServices {
 
 /// O que a subclasse da `ViewPane` sobrescreve. Os padrões são os do original.
 pub trait ViewPaneDelegate {
+    /// `renderHeader(container)` depois do `super.renderHeader` (a `ViewPane` monta o cabeçalho antes de chamar).
+    fn render_header(&self, _container: NodeId) {}
+
     /// `renderBody(container)` (a `ViewPane` cuida do `super.renderBody`, que cria a mensagem de boas-vindas).
     fn render_body(&self, _container: NodeId) {}
 
@@ -702,6 +705,11 @@ impl ViewPane {
         self.on_did_change_view_welcome_state.event()
     }
 
+    /// Dispara o `_onDidChangeTitleArea` (o `protected` do original, para a subclasse).
+    pub fn fire_did_change_title_area(&self) {
+        self.on_did_change_title_area.fire(());
+    }
+
     /// Dispara o `_onDidChangeViewWelcomeState` (o `protected` do original, para a subclasse).
     pub fn fire_did_change_view_welcome_state(&self) {
         self.on_did_change_view_welcome_state.fire(());
@@ -904,6 +912,15 @@ impl ViewPane {
         }));
         self.update_actions_visibility();
         self.update_actions_display();
+
+        if let Some(delegate) = self.delegate() {
+            delegate.render_header(container);
+        }
+    }
+
+    /// O nó do título do cabeçalho (o `container.querySelector('.title')` das subclasses), depois do `renderHeader`.
+    pub fn title_container(&self) -> Option<NodeId> {
+        self.header.borrow().title_container
     }
 
     /// O que `updateHeader` faz a mais depois do `Pane`: o ícone do twisty acompanha o estado.

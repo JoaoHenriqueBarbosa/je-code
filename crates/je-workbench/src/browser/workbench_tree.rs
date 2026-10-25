@@ -641,6 +641,17 @@ impl<W, T: Clone + 'static> Deref for WorkbenchTree<W, T> {
     }
 }
 
+impl<W: IDisposable, T: Clone + 'static> IDisposable for WorkbenchTree<W, T> {
+    fn dispose(&self) {
+        self.internals.dispose();
+        self.tree.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "WorkbenchTree"
+    }
+}
+
 impl<W, T: Clone + 'static> WorkbenchTree<W, T> {
     /// O widget por baixo, para quem precisa do `Rc`.
     pub fn widget(&self) -> &Rc<W> {
