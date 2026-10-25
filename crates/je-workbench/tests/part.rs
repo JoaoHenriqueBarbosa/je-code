@@ -228,7 +228,8 @@ fn create_content_with_id(document: &Rc<TestDocument>, parent: &Rc<ViewElement>)
 
 /// `new MyPart*(...)` com um `TestThemeService`, um `TestStorageService` e o serviço de layout dados.
 fn create_part<C: SimplePartContent + 'static>(guard: &LeakGuard, id: &str, options: PartOptions, layout_service: Rc<dyn IWorkbenchLayoutService>, content: C) -> Rc<Part> {
-    let theme_service: Rc<dyn IThemeService> = guard.add_rc(TestThemeService::new_default());
+    let theme_service = guard.add_rc(TestThemeService::new_default());
+    let theme_service: Rc<dyn IThemeService> = theme_service;
     let storage = guard.add_rc(TestStorageService::new());
     let storage_service: Rc<dyn StorageService> = Rc::new(storage);
 
