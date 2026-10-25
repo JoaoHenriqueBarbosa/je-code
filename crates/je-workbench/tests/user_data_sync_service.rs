@@ -1,10 +1,17 @@
 //! Porte de `src/vs/platform/userDataSync/test/common/userDataSyncService.test.ts` (suíte `UserDataSyncService`),
-//! caso a caso e na mesma ordem.
+//! caso a caso e na mesma ordem. Mora no `je-workbench` porque o cliente de teste monta o sincronizador de extensões
+//! (`ExtensionsSynchroniser`), que depende dos serviços de gerência de extensões daqui.
 //!
 //! Notas de tradução:
 //! - Os testes rodam sob [`async_test`] (o `ensureNoDisposablesAreLeakedInTestSuite` e o `runWithFakedTimers`), com
 //!   o `disposableStore` entregue ao corpo. `client.instantiationService.get(IFoo)` é o campo do
 //!   [`UserDataSyncClient`] (o `IUserDataSyncService` é `user_data_sync_service`, e assim por diante).
+//! - O cliente é o de `je-platform/tests/common/user_data_sync_client.rs` (incluído por `#[path]` junto com o resto de
+//!   `je-platform/tests/common`), e o [`UserDataSyncClient::set_up_with_extensions`] recebe a fábrica do sincronizador de
+//!   extensões que [`extensions_factory`] monta como o `setUp` do original: o `IExtensionManagementService` com
+//!   `getInstalled` devolvendo `[]` e os eventos que nunca disparam, o `IExtensionStorageService` real, o
+//!   `IIgnoredExtensionsManagementService` real e o `IExtensionGalleryService` com `isEnabled` verdadeiro. O
+//!   `IGlobalExtensionEnablementService` o sincronizador cria sobre o armazenamento do perfil.
 //! - `assert.deepStrictEqual(target.requests, [...])` é [`assert_requests`], sobre [`RecordedRequest`], com as
 //!   tuplas `(tipo, caminho sob /v1/, cabeçalhos)`.
 //! - As escritas de arquivos que os testes repetem (settings, keybindings, snippets, prompts, argv e, em dois
@@ -15,20 +22,28 @@
 //! - O `assert.fail` do teste "can run sync taks only once" está dentro do `try`, que o captura: o teste não
 //!   falha em nenhum dos dois desfechos da segunda execução, e aqui o resultado dela é ignorado.
 
+#[path = "../../je-platform/tests/common/mod.rs"]
 mod common;
+mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use common::files::async_test;
-use common::user_data_sync_client::{RecordedRequest, UserDataSyncClient, UserDataSyncTestServer};
+use common::user_data_sync_client::{ExtensionsFactoryBuilder, ExtensionsFactoryContext, RecordedRequest, UserDataSyncClient, UserDataSyncTestServer};
 use common::write_text;
 use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::parts::request::{HeaderValue, IHeaders};
 use je_base::path::ProcessEnvironment;
 use je_base::resources::ExtUri;
+use je_instantiation::Injectable;
+use je_platform::product::IProductService;
 use je_platform::user_data_profile::{IUserDataProfilesService, UseDefaultProfileFlags, UserDataProfileOptions};
 use je_platform::user_data_sync::user_data_sync::{IUserDataSyncEnablementService, SyncResource, SyncStatus};
+use je_workbench::services::extension_management::extension_storage::{ExtensionStorageService, IExtensionStorageService};
+use je_workbench::services::user_data_sync::extensions_sync::{ExtensionsSyncServices, WorkbenchExtensionsSynchroniserFactory};
+use je_workbench::services::user_data_sync::ignored_extensions::IgnoredExtensionsManagementService;
+use support::extensions_workbench_service_support::{StubExtensionManagementService, StubGalleryService};
 
 /// `{ type, url: `${target.url}/v1/<path>`, headers }`.
 type Expected<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
@@ -46,8 +61,26 @@ fn assert_requests(target: &UserDataSyncTestServer, expected: &[Expected]) {
     assert_eq!(target.requests(), expected);
 }
 
+/// A parte do `setUp` do `UserDataSyncClient` que registra os serviços de extensões e que o sincronizador lê.
+fn extensions_factory(d: &Rc<DisposableStore>) -> ExtensionsFactoryBuilder {
+    let d = d.clone();
+    Box::new(move |context: ExtensionsFactoryContext| {
+        let extension_management_service = StubExtensionManagementService::new_with_store(&d, Vec::new());
+        let product_service: Rc<dyn IProductService> = context.product_service.clone();
+        let extension_storage_service: Rc<dyn IExtensionStorageService> = d.add_rc(ExtensionStorageService::create((), (context.storage_service.clone(), product_service.clone(), context.log_service.clone())));
+        WorkbenchExtensionsSynchroniserFactory::new(ExtensionsSyncServices {
+            extension_management_service,
+            ignored_extensions_management_service: IgnoredExtensionsManagementService::new(context.configuration_service.clone()),
+            extension_storage_service,
+            user_data_profile_storage_service: context.user_data_profile_storage_service.clone(),
+            extension_gallery_service: StubGalleryService::new(),
+            product_service,
+        })
+    })
+}
+
 async fn set_up(d: &Rc<DisposableStore>, target: &Rc<UserDataSyncTestServer>, empty: bool) -> Rc<UserDataSyncClient> {
-    d.add_rc(UserDataSyncClient::set_up(target.clone(), empty).await.unwrap())
+    d.add_rc(UserDataSyncClient::set_up_with_extensions(target.clone(), empty, Some(extensions_factory(d))).await.unwrap())
 }
 
 /// `await (await service.createSyncTask(null)).run()`.

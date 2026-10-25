@@ -53,7 +53,7 @@ use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::DisposableRef;
+use je_base::lifecycle::{DisposableRef, DisposableStore};
 use je_base::map::ResourceMap;
 use je_base::network::schemas;
 use je_base::paging::{IPager, single_page_pager};
@@ -342,12 +342,17 @@ pub struct StubExtensionManagementService {
 impl StubExtensionManagementService {
     /// `createExtensionManagementService(installed)`: os emissores entram no `disposableStore`.
     pub fn new(guard: &LeakGuard, installed: Vec<ExtensionRef>) -> Rc<Self> {
+        Self::new_with_store(&guard.store(), installed)
+    }
+
+    /// Como [`Self::new`], para quem tem só o `disposableStore` (os testes que não usam o [`LeakGuard`]).
+    pub fn new_with_store(store: &DisposableStore, installed: Vec<ExtensionRef>) -> Rc<Self> {
         Rc::new(Self {
-            install_event: guard.add_rc(Emitter::new()),
-            did_install_event: guard.add_rc(Emitter::new()),
-            uninstall_event: guard.add_rc(Emitter::new()),
-            did_uninstall_event: guard.add_rc(Emitter::new()),
-            did_update_metadata_event: guard.add_rc(Emitter::new()),
+            install_event: store.add_rc(Emitter::new()),
+            did_install_event: store.add_rc(Emitter::new()),
+            uninstall_event: store.add_rc(Emitter::new()),
+            did_uninstall_event: store.add_rc(Emitter::new()),
+            did_update_metadata_event: store.add_rc(Emitter::new()),
             installed: RefCell::new(installed),
             update_metadata: RefCell::new(None),
         })
@@ -1006,6 +1011,14 @@ impl IIgnoredExtensionsManagementService for NoIgnoredExtensionsService {
 
     fn update_ignored_extensions(&self, _ignored_extension_id: &str, _ignore: bool) -> Promise<()> {
         Promise::resolved(())
+    }
+
+    fn update_synchronized_extensions(&self, _ignored_extension_id: &str, _sync: bool) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn get_ignored_extensions(&self, _installed: &[je_workbench::services::extension_management::extension_management::ExtensionRef]) -> Vec<String> {
+        Vec::new()
     }
 }
 

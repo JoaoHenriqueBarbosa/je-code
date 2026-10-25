@@ -27,6 +27,7 @@ pub mod host;
 // Contratos de serviço que os dublês de `test::common::workbench_test_services` implementam.
 pub mod lifecycle;
 pub mod user_data_profile;
+pub mod user_data_sync;
 pub mod working_copy;
 pub mod files_configuration;
 

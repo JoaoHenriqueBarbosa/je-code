@@ -94,7 +94,7 @@ fn did_uninstall_event(identifier: &ExtensionIdentifierInfo) -> DidUninstallExte
 
 /// `{ identifier, source, operation, local, profileLocation: null! }` (`InstallExtensionResult`).
 fn did_install_result(identifier: &ExtensionIdentifierInfo, source: Option<InstallExtensionSource>, operation: InstallOperation, local: ExtensionRef) -> InstallExtensionResult {
-    InstallExtensionResult { identifier: identifier.clone(), operation, source, profile_location: Some(profile()), local: Some(local), workspace_scoped: None }
+    InstallExtensionResult { identifier: identifier.clone(), operation, source, profile_location: Some(profile()), local: Some(local), workspace_scoped: None, error: None }
 }
 
 /// `aLocalExtension(gallery.name, gallery, { identifier })`: a extensão local com o identificador da galeria.

@@ -14,9 +14,12 @@
 //!   [`super::user_data_sync::IUserDataSyncService`] inteiro: expõe os métodos portados. `cleanUpRemoteData` é
 //!   portado, e o `getRemoteSyncedProfiles` do serviço de recursos que ele usa é o `get_remote_synced_profiles`
 //!   privado daqui (lê o recurso de perfis do servidor e valida o `ISyncData`).
-//! - O sincronizador de `extensions` ainda não existe no porte: [`ProfileSynchronizer::create_synchronizer`] devolve
+//! - O `ExtensionsSynchroniser` mora no `je-workbench` (depende dos serviços de gerência de extensões, que o
+//!   `je-platform` não conhece): quem monta o serviço o injeta por [`ExtensionsSynchroniserFactory`] em
+//!   [`SynchroniserExtraServices::extensions_synchroniser_factory`] e a variante [`Synchroniser::Extensions`] o guarda.
+//!   Sem fábrica o serviço segue sem o sincronizador de extensões: [`ProfileSynchronizer::create_synchronizer`] devolve
 //!   `None` para ele e o `registerSynchronizer` o pula. Existem os de perfis, `settings`, `keybindings`, `snippets`,
-//!   `prompts` (o de snippets com outro tipo), `tasks`, `mcp` e estado global.
+//!   `prompts` (o de snippets com outro tipo), `tasks`, `mcp`, estado global e, pela fábrica, `extensions`.
 //!
 //! Decisões de tradução:
 //! - `IUserDataManifest | IUserDataSyncLatestData | null` é `Option<`[`ManifestOrLatestData`]`>`: o
@@ -42,7 +45,7 @@ use je_base::dynamic::{Dynamic, number_to_js_string};
 use je_base::error_message::to_error_message_of;
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, to_disposable};
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::promise::{CancelablePromise, Promise};
 use je_base::runtime::date_now;
 use je_base::uri::URI;
@@ -156,6 +159,26 @@ fn report_user_data_sync_error(
 
 // region: sincronizadores
 
+/// O `ExtensionsSynchroniser` (`IUserDataSynchroniser & IDisposable` no original), que mora fora do `je-platform`.
+/// A base de um sincronizador guarda o sincronizador concreto só por `Weak`, então o `implementation` o mantém vivo
+/// enquanto o `ProfileSynchronizer` guarda o handle.
+pub struct ExtensionsSynchroniserHandle {
+    pub synchroniser: Rc<dyn IUserDataSynchroniser>,
+    pub disposable: DisposableRef,
+    pub implementation: Rc<dyn std::any::Any>,
+}
+
+/// O que o `je-workbench` injeta para o `ProfileSynchronizer` criar o `ExtensionsSynchroniser`
+/// (`instantiationService.createInstance(ExtensionsSynchroniser, this.profile, this.collection)`) e conferir o
+/// `extensionGalleryService.isEnabled()` do `registerSynchronizer`.
+pub trait ExtensionsSynchroniserFactory {
+    /// `IExtensionGalleryService.isEnabled()`.
+    fn is_gallery_enabled(&self) -> bool;
+
+    /// Cria o sincronizador de extensões do perfil e da coleção.
+    fn create(&self, profile: UserDataProfile, collection: Option<String>, services: SynchroniserServices) -> Rc<ExtensionsSynchroniserHandle>;
+}
+
 /// O sincronizador de um recurso que o `ProfileSynchronizer` guarda. Uma variante por sincronizador portado.
 #[derive(Clone)]
 pub enum Synchroniser {
@@ -168,6 +191,8 @@ pub enum Synchroniser {
     Tasks(Rc<TasksSynchroniser>),
     Mcp(Rc<McpSynchroniser>),
     GlobalState(Rc<GlobalStateSynchroniser>),
+    /// O `ExtensionsSynchroniser`, que o `je-workbench` cria pela [`ExtensionsSynchroniserFactory`].
+    Extensions(Rc<ExtensionsSynchroniserHandle>),
 }
 
 impl Synchroniser {
@@ -181,6 +206,7 @@ impl Synchroniser {
             Self::Tasks(_) => SyncResource::Tasks,
             Self::Mcp(_) => SyncResource::Mcp,
             Self::GlobalState(_) => SyncResource::GlobalState,
+            Self::Extensions(_) => SyncResource::Extensions,
         }
     }
 
@@ -194,6 +220,7 @@ impl Synchroniser {
             Self::Tasks(synchroniser) => synchroniser.base(),
             Self::Mcp(synchroniser) => synchroniser.base(),
             Self::GlobalState(synchroniser) => synchroniser.base.clone(),
+            Self::Extensions(handle) => handle.synchroniser.clone(),
         }
     }
 
@@ -277,6 +304,9 @@ impl Synchroniser {
             Self::GlobalState(synchroniser) => {
                 store.add_rc(synchroniser.clone());
             }
+            Self::Extensions(handle) => {
+                store.add(handle.disposable.clone());
+            }
         }
     }
 }
@@ -287,6 +317,9 @@ impl Synchroniser {
 pub struct SynchroniserExtraServices {
     pub user_data_profile_storage_service: Rc<dyn IUserDataProfileStorageService>,
     pub extension_management_service: Rc<dyn IExtensionManagementService>,
+    /// A fábrica do `ExtensionsSynchroniser` (do `je-workbench`). Sem ela o serviço não tem o sincronizador de
+    /// extensões (ver o cabeçalho do módulo).
+    pub extensions_synchroniser_factory: Option<Rc<dyn ExtensionsSynchroniserFactory>>,
 }
 
 /// `this.profile.useDefaultFlags?.[syncResource]`.
@@ -459,6 +492,13 @@ impl ProfileSynchronizer {
         if self.enabled.borrow().iter().any(|entry| entry.synchroniser.resource() == sync_resource) {
             return;
         }
+        if sync_resource == SyncResource::Extensions
+            && let Some(factory) = &self.extra_services.extensions_synchroniser_factory
+            && !factory.is_gallery_enabled()
+        {
+            self.services.log_service.info("Skipping extensions sync because gallery is not configured");
+            return;
+        }
         if sync_resource == SyncResource::Profiles && !self.profile.is_default {
             return;
         }
@@ -547,6 +587,11 @@ impl ProfileSynchronizer {
                 self.services.clone(),
                 self.extra_services.user_data_profile_storage_service.clone(),
             ))),
+            SyncResource::Extensions => self
+                .extra_services
+                .extensions_synchroniser_factory
+                .as_ref()
+                .map(|factory| Synchroniser::Extensions(factory.create(self.profile.clone(), self.collection.clone(), self.services.clone()))),
             _ => None,
         }
     }

@@ -996,13 +996,9 @@ pub struct ExtensionsWorkbenchServiceParts {
     pub uri_identity_service: Rc<dyn je_platform::uri_identity::uri_identity::IUriIdentityService>,
 }
 
-/// `IIgnoredExtensionsManagementService` (`platform/userDataSync/common/ignoredExtensions.ts`), recorte do que o
-/// `ExtensionsWorkbenchService` chama: o serviço ainda não foi portado.
-pub trait IIgnoredExtensionsManagementService {
-    fn has_to_never_sync_extension(&self, extension_id: &str) -> bool;
-    fn has_to_always_sync_extension(&self, extension_id: &str) -> bool;
-    fn update_ignored_extensions(&self, ignored_extension_id: &str, ignore: bool) -> Promise<()>;
-}
+/// `IIgnoredExtensionsManagementService` (`platform/userDataSync/common/ignoredExtensions.ts`): o contrato mora em
+/// [`crate::services::user_data_sync::ignored_extensions`] e é reexportado aqui para quem já o importa daqui.
+pub use crate::services::user_data_sync::ignored_extensions::IIgnoredExtensionsManagementService;
 
 /// `ExtensionsWorkbenchService`.
 pub struct ExtensionsWorkbenchService {
