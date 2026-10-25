@@ -65,6 +65,8 @@ use je_base::observable::{
 };
 use je_base::runtime::date_now;
 use je_platform::accessibility::IAccessibilityService;
+use je_platform::actions::IMenuService;
+use je_platform::commands::ICommandService;
 use je_platform::contextkey::IContextKeyService;
 use je_platform::keybinding::IKeybindingService;
 
@@ -202,6 +204,10 @@ pub struct InlineEditsViewServices {
     pub gutter_indicator_host: Rc<dyn IGutterIndicatorHost>,
     /// A trilha de símbolos e o arquivo alvo da dica de longa distância.
     pub long_distance_hint_host: Rc<dyn ILongDistanceHintHost>,
+    /// `@ICommandService` do hints widget (os botões anterior e próximo e as ações extras rodam comandos).
+    pub command_service: Rc<dyn ICommandService>,
+    /// `@IMenuService` do hints widget (os menus `InlineSuggestionToolbar` e `InlineCompletionsActions`).
+    pub menu_service: Rc<dyn IMenuService>,
 }
 
 /// O `dom_node` da view zone `div.minScrollHeightViewZone`: o pintor o reconhece e reserva a altura.
