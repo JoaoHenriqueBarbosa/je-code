@@ -19,6 +19,8 @@ mod shell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use je_base::browser::dom::main_window;
+use je_base::browser::pixel_ratio::PixelRatio;
 use je_base::key_codes::{KeyCode, KeyCodeUtils, ScanCodeUtils, immutable_code_to_key_code};
 use je_base::runtime;
 use je_editor_view::EditorKey;
@@ -214,6 +216,8 @@ impl App {
         let (Some(window), Some(presenter)) = (&self.window, &mut self.presenter) else { return (0.0, 0.0) };
         // A escala da tela vezes o zoom da janela (`window.zoomLevel`, Ctrl+= e Ctrl+-).
         let scale = window.scale_factor() * self.shell.zoom_factor();
+        // O zoom da janela muda a escala sem evento do winit: o `devicePixelRatio` do navegador acompanha os dois.
+        PixelRatio::get_instance(&main_window()).set_device_pixel_ratio(scale);
         let size = window.inner_size().to_logical::<f64>(scale);
         let started = Instant::now();
         self.shell.resize(size.width, size.height);
@@ -230,6 +234,7 @@ impl App {
     /// Roda o loop de eventos do runtime (tokenização em fatias, timers), aplica os pedidos do shell e pede quadro
     /// se algo mudou.
     fn tick(&mut self, event_loop: &ActiveEventLoop) {
+        self.shell.flush_dropped_files();
         runtime::turn();
         if self.shell.take_exit() {
             event_loop.exit();
@@ -304,6 +309,7 @@ impl ApplicationHandler for App {
                 return;
             }
         }
+        PixelRatio::get_instance(&main_window()).set_device_pixel_ratio(window.scale_factor() * self.shell.zoom_factor());
         window.request_redraw();
         self.window = Some(window);
     }
@@ -326,6 +332,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                    PixelRatio::get_instance(&main_window()).set_device_pixel_ratio(scale_factor * self.shell.zoom_factor());
+                }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -354,6 +363,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => self.shell.pointer_left(),
+            // Arrastar arquivos do sistema para a janela (o winit 0.30 não manda posição nestes três).
+            WindowEvent::HoveredFile(path) => self.shell.external_drag_enter(path),
+            WindowEvent::HoveredFileCancelled => self.shell.external_drag_leave(),
+            WindowEvent::DroppedFile(path) => self.shell.external_dropped_file(path),
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = match button {
                     MouseButton::Left => PointerButton::Primary,

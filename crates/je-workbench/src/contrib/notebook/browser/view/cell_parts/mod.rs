@@ -11,10 +11,10 @@
 //! `cellComments.ts`, `cellDragRenderer.ts`, `codeCellExecutionIcon.ts` e `markupCell.ts` (`MarkupCell`, com os contratos estreitos do
 //! editor da célula, da fábrica do editor e do `IActiveNotebookEditorDelegate`, e o `MarkdownCellRenderTemplate`).
 //!
-//! Faltam, nesta ordem: a parte 2 de `codeCell.ts` (`code_cell.rs` tem a parte 1 da classe `CodeCell`, e o contrato da parte 2 está no
-//! `//!` dele); depois o `cellRenderer.ts` (que monta os templates e fornece as
-//! implementações dos contratos estreitos abaixo, inclusive o `IMarkupCellEditorFactory`, o `IMarkupCellEditorHost` e o
-//! `IRenderedEditors`) e os 5 casos de `cellEditorOverflowWidgets.test.ts` (fatia 5).
+//! O `cellRenderer.ts` (`view/renderers/cell_renderer.rs`) monta os templates e fornece as implementações dos contratos estreitos
+//! abaixo (o `IRenderedEditors` e as fábricas e os anfitriões do editor da célula, que o widget implementa). `cell_dnd.rs` tem o
+//! `CellDragAndDropController` inteiro, a `CellDragAndDropPart` e `performCellDropEdits`. Faltam os 5 casos de
+//! `cellEditorOverflowWidgets.test.ts` (fatia 5).
 //!
 //! Divergências comuns a todas as partes desta pasta:
 //! - **DOM é a árvore do `je-ui`.** O `HTMLElement` que o construtor original recebe é um [`je_ui::NodeId`] da [`je_ui::Ui`] (o
