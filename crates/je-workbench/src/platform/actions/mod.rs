@@ -6,4 +6,4 @@ pub mod buttonbar;
 pub mod toolbar;
 
 pub use buttonbar::{IButtonConfig, IButtonConfigProvider, IMenuWorkbenchButtonBarOptions, IWorkbenchButtonBarOptions, MenuWorkbenchButtonBar, WorkbenchButtonBar};
-pub use toolbar::{HiddenItemStrategy, IToolBarRenderOptions, IWorkbenchToolBarOptions, OverflowBehavior, PrimaryGroup, WorkbenchToolBar};
+pub use toolbar::{HiddenItemStrategy, IMenuWorkbenchToolBarOptions, IToolBarRenderOptions, IWorkbenchToolBarOptions, MenuWorkbenchToolBar, OverflowBehavior, PrimaryGroup, WorkbenchToolBar};

@@ -53,7 +53,7 @@ use je_platform::contextview::context_view::{ContextMenuRequest, IContextMenuSer
 use je_platform::files::files::FileStat;
 use je_platform::opener::editor_types::{AuxiliaryEditorOptions, EditorOptions, ModalEditorPartOptions};
 use je_platform::quickinput::quick_access::{IQuickAccessController, IQuickAccessOptions};
-use je_platform::quickinput::quick_input::IQuickPickItem;
+use je_platform::quickinput::quick_input::{IQuickInputService, IQuickPickItem};
 use je_platform::resources::uri_file;
 use je_render::Rgba;
 use je_render::kurbo::Rect;
@@ -386,11 +386,19 @@ fn other_options_set(options: &TextEditorOptions) -> bool {
 #[derive(Default)]
 pub struct RecordingEditorService {
     opened: RefCell<Vec<OpenedEditor>>,
+    /// O que o caso faz a cada `openEditor` (por exemplo, trocar o grupo ativo como o `openEditor` do `mock` dele faz), depois de a
+    /// chamada ser gravada.
+    on_open: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl RecordingEditorService {
     pub fn opened(&self) -> Vec<OpenedEditor> {
         self.opened.borrow().clone()
+    }
+
+    /// Registra o que roda depois de cada `openEditor` gravado.
+    pub fn on_open(&self, hook: Rc<dyn Fn()>) {
+        *self.on_open.borrow_mut() = Some(hook);
     }
 }
 
@@ -419,6 +427,10 @@ impl IEditorService for RecordingEditorService {
 
     fn open_editor_in(&self, editor: UntypedEditorInput, group: Option<PreferredGroup>) -> Promise<Option<Rc<dyn IEditorPane>>> {
         self.opened.borrow_mut().push(OpenedEditor { input: editor, group: group.and_then(|group| group.as_number()) });
+        let hook = self.on_open.borrow().clone();
+        if let Some(hook) = hook {
+            hook();
+        }
         Promise::resolved(None)
     }
 
@@ -479,20 +491,37 @@ impl IContextMenuService for UnusedContextMenuService {
     }
 }
 
-/// O `IEditorResolverService` que só o seletor de tipo de editor lê (`showEditorTypePicker` fica desligado nestes casos).
-struct UnusedEditorResolverService;
+/// `getEditorMatches` do `IEditorResolverService` parcial.
+pub type GetEditorMatchesFn = Box<dyn Fn(&URI, Option<&EditorResolverServiceGetEditorMatchesOptions>) -> EditorMatches>;
 
-impl IEditorResolverService for UnusedEditorResolverService {
+/// `setDefaultEditor` do `IEditorResolverService` parcial.
+pub type SetDefaultEditorFn = Box<dyn Fn(&URI, &str, Option<bool>)>;
+
+/// O `mock<IEditorResolverService>()` com o que o caso sobrescreve (`getEditorMatches` e `setDefaultEditor`); todo outro membro
+/// lança `X is not a function`. O seletor de tipo de editor das migalhas só o lê com `showEditorTypePicker` ligado.
+#[derive(Default)]
+pub struct PartialEditorResolverService {
+    pub get_editor_matches: Option<GetEditorMatchesFn>,
+    pub set_default_editor: Option<SetDefaultEditorFn>,
+}
+
+impl IEditorResolverService for PartialEditorResolverService {
     fn get_associations_for_resource(&self, _resource: &URI) -> EditorAssociations {
         not_defined("getAssociationsForResource")
     }
 
-    fn get_editor_matches(&self, _resource: &URI, _options: Option<&EditorResolverServiceGetEditorMatchesOptions>) -> EditorMatches {
-        not_defined("getEditorMatches")
+    fn get_editor_matches(&self, resource: &URI, options: Option<&EditorResolverServiceGetEditorMatchesOptions>) -> EditorMatches {
+        match &self.get_editor_matches {
+            Some(get_editor_matches) => get_editor_matches(resource, options),
+            None => not_defined("getEditorMatches"),
+        }
     }
 
-    fn set_default_editor(&self, _resource: &URI, _editor_id: &str, _for_diff_editor: Option<bool>) {
-        not_defined("setDefaultEditor")
+    fn set_default_editor(&self, resource: &URI, editor_id: &str, for_diff_editor: Option<bool>) {
+        match &self.set_default_editor {
+            Some(set_default_editor) => set_default_editor(resource, editor_id, for_diff_editor),
+            None => not_defined("setDefaultEditor"),
+        }
     }
 
     fn remove_diff_editor_association(&self, _resource: &URI, _filename_pattern: &str) {
@@ -863,6 +892,85 @@ where
     }
 }
 
+/// Os [`BreadcrumbsControlServices`] que o `workbenchInstantiationService` dos casos monta: os serviços reais que o porte tem
+/// (`LabelService`, `TestFileService`, a configuração do caso...) e os dublês `mock<T>()` do que o caso não usa. O `setup` do
+/// `BreadcrumbsControl` e o do `EditorHeaderControl` (que cria uma `BreadcrumbsControlFactory`) montam os mesmos serviços.
+#[allow(clippy::too_many_arguments)]
+pub fn breadcrumbs_control_services(
+    guard: &LeakGuard,
+    ui: &Ui,
+    configuration_service: Rc<dyn IConfigurationService>,
+    workbench: &WorkbenchServices,
+    context_keys: Rc<dyn IContextKeyService>,
+    context_view_service: Rc<dyn IContextViewService>,
+    quick_input: Rc<dyn IQuickInputService>,
+    editor_service: Rc<dyn IEditorService>,
+    breadcrumbs_service: Rc<dyn IBreadcrumbsService>,
+) -> BreadcrumbsControlServices {
+    let theme_service: Rc<dyn IThemeService> = Rc::new(EmptyThemeService);
+    let language_service = guard.add_rc(LanguageService::new(false));
+    let model_service = guard.add_rc(ModelService::new(
+        configuration_service.clone(),
+        TestTextResourcePropertiesService::new(configuration_service.clone()),
+        UndoRedoService::for_tests(),
+    ));
+    let resource_labels = Rc::new(ResourceLabelsServices {
+        ui: ui.clone(),
+        configuration_service: configuration_service.clone(),
+        model_service,
+        workspace_service: workbench.context_service.clone(),
+        language_service,
+        decorations_service: Rc::new(TestDecorationsService),
+        theme_service: theme_service.clone(),
+        label_service: workbench.label_service.clone(),
+        text_file_service: Rc::new(StubTextFileService),
+        notebook_document_service: Rc::new(NoNotebookDocuments),
+        icon_label_styles: Rc::new(|| IconLabelStyles { text: label_styles(), disabled_foreground: None }),
+    });
+
+    let picker_services = Rc::new(BreadcrumbsPickerServices {
+        ui: ui.clone(),
+        theme_service: theme_service.clone(),
+        configuration_service: configuration_service.clone(),
+        text_resource_configuration_service: workbench.text_resource_configuration_service.clone(),
+        workspace_service: workbench.context_service.clone(),
+        editor_service: editor_service.clone(),
+        file_service: workbench.file_service.clone(),
+        resource_labels: resource_labels.clone(),
+        file_icon_theme: Rc::new(|| IFileIconTheme { has_file_icons: false, has_folder_icons: false, hides_explorer_arrows: false }),
+        on_did_file_icon_theme_change: Event::none(),
+    });
+
+    let model_services = BreadcrumbsModelServices {
+        configuration_service: configuration_service.clone(),
+        workspace_service: workbench.context_service.clone(),
+        workspace_folder_label_service: Rc::new(WorkspaceFolderLabelService),
+        outline_service: Rc::new(TestOutlineService { outline: None }),
+        label_service: workbench.label_service.clone(),
+        uri_identity_service: uri_identity_service(),
+    };
+
+    BreadcrumbsControlServices {
+        ui: ui.clone(),
+        context_key_service: context_keys,
+        context_view_service,
+        context_menu_service: Rc::new(UnusedContextMenuService),
+        quick_input_service: quick_input,
+        file_service: workbench.file_service.clone(),
+        editor_service,
+        editor_resolver_service: Rc::new(PartialEditorResolverService::default()),
+        command_service: Rc::new(NoCommandService),
+        label_service: workbench.label_service.clone(),
+        configuration_service,
+        hover_service: get_base_layer_hover_delegate(),
+        breadcrumbs_service,
+        theme_service,
+        model_services,
+        picker_services,
+        resource_labels_services: resource_labels,
+    }
+}
+
 /// O `setup` da suíte e os auxiliares dela.
 pub struct Harness {
     pub guard: LeakGuard,
@@ -936,68 +1044,17 @@ impl Harness {
         );
         guard.add_rc(instantiation_service.clone());
 
-        let theme_service: Rc<dyn IThemeService> = Rc::new(EmptyThemeService);
-        let language_service = guard.add_rc(LanguageService::new(false));
-        let model_service = guard.add_rc(ModelService::new(
-            configuration_service.clone(),
-            TestTextResourcePropertiesService::new(configuration_service.clone()),
-            UndoRedoService::for_tests(),
-        ));
-        let resource_labels = Rc::new(ResourceLabelsServices {
-            ui: ui.clone(),
-            configuration_service: configuration_service.clone(),
-            model_service,
-            workspace_service: workbench.context_service.clone(),
-            language_service,
-            decorations_service: Rc::new(TestDecorationsService),
-            theme_service: theme_service.clone(),
-            label_service: workbench.label_service.clone(),
-            text_file_service: Rc::new(StubTextFileService),
-            notebook_document_service: Rc::new(NoNotebookDocuments),
-            icon_label_styles: Rc::new(|| IconLabelStyles { text: label_styles(), disabled_foreground: None }),
-        });
-
-        let picker_services = Rc::new(BreadcrumbsPickerServices {
-            ui: ui.clone(),
-            theme_service: theme_service.clone(),
-            configuration_service: configuration_service.clone(),
-            text_resource_configuration_service: workbench.text_resource_configuration_service.clone(),
-            workspace_service: workbench.context_service.clone(),
-            editor_service: editor_service.clone(),
-            file_service: workbench.file_service.clone(),
-            resource_labels: resource_labels.clone(),
-            file_icon_theme: Rc::new(|| IFileIconTheme { has_file_icons: false, has_folder_icons: false, hides_explorer_arrows: false }),
-            on_did_file_icon_theme_change: Event::none(),
-        });
-
-        let model_services = BreadcrumbsModelServices {
-            configuration_service: configuration_service.clone(),
-            workspace_service: workbench.context_service.clone(),
-            workspace_folder_label_service: Rc::new(WorkspaceFolderLabelService),
-            outline_service: Rc::new(TestOutlineService { outline: None }),
-            label_service: workbench.label_service.clone(),
-            uri_identity_service: uri_identity_service(),
-        };
-
-        let base_services = BreadcrumbsControlServices {
-            ui: ui.clone(),
-            context_key_service: context_keys,
-            context_view_service: context_view_service.clone(),
-            context_menu_service: Rc::new(UnusedContextMenuService),
-            quick_input_service: quick_input,
-            file_service: workbench.file_service.clone(),
-            editor_service: editor_service.clone(),
-            editor_resolver_service: Rc::new(UnusedEditorResolverService),
-            command_service: Rc::new(NoCommandService),
-            label_service: workbench.label_service.clone(),
+        let base_services = breadcrumbs_control_services(
+            &guard,
+            &ui,
             configuration_service,
-            hover_service: get_base_layer_hover_delegate(),
-            breadcrumbs_service: breadcrumbs_service.clone(),
-            theme_service,
-            model_services,
-            picker_services,
-            resource_labels_services: resource_labels,
-        };
+            &workbench,
+            context_keys,
+            context_view_service.clone(),
+            quick_input,
+            editor_service.clone(),
+            breadcrumbs_service.clone(),
+        );
 
         Self {
             guard,

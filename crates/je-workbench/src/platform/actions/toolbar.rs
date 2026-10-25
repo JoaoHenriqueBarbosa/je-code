@@ -15,8 +15,8 @@
 //!   explícito do chamador não se distingue do padrão de um `bool`).
 //! - **Contexto das `menuIds`.** O `menuIds` do original é um parâmetro que o ouvinte relê e reatribui; aqui o ouvinte
 //!   guarda uma cópia e o `resetMenu` entra como `[resetMenu]` quando não há `menuIds`, a cada abertura.
-//! - **Fica de fora:** o `MenuWorkbenchToolBar` (depende do `createActionViewItem` de `menuEntryActionViewItem.ts` e do
-//!   `IActionViewItemService`, que não estão portados).
+//! - **`MenuWorkbenchToolBar`.** Está neste módulo (ver a documentação do tipo para o que muda: sem o
+//!   `IActionViewItemService` nem o `createActionViewItem`, que não existem numa UI de nós nativos).
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -25,11 +25,14 @@ use std::rc::{Rc, Weak};
 
 use je_base::actions::{ActionRef, Separator, ToActionProps, to_action};
 use je_base::dynamic::Dynamic;
+use je_base::errors::{self, Error};
+use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, DisposableStore, IDisposable};
 use je_base::nls::localize;
 use je_base::promise::MaybePromise;
+use je_platform::actions::menu_entry_action_view_item::get_action_bar_actions;
 use je_platform::actions::menu_service::create_configure_keybinding_action;
-use je_platform::actions::{IMenuService, MenuActionOptions, MenuId, MenuItemAction, MenuItemHide, SubmenuItemAction};
+use je_platform::actions::{IMenu, IMenuService, MenuActionOptions, MenuCreateOptions, MenuId, MenuItemAction, MenuItemHide, SubmenuItemAction};
 use je_platform::commands::ICommandService;
 use je_platform::contextkey::IContextKeyService;
 use je_platform::contextview::context_view::{AnchorTarget, ContextMenuRequest, IContextMenuDelegate, IContextMenuMenuDelegate, IContextMenuService};
@@ -424,5 +427,135 @@ impl IDisposable for WorkbenchToolBar {
 
     fn constructor_name(&self) -> &'static str {
         "WorkbenchToolBar"
+    }
+}
+
+// ---- MenuWorkbenchToolBar -------------------------------------------------
+
+/// `IMenuWorkbenchToolBarOptions`.
+#[derive(Clone, Default)]
+pub struct IMenuWorkbenchToolBarOptions {
+    /// A parte `IWorkbenchToolBarOptions` da interseção. O `resetMenu` do original só aceita `undefined` (desligar o comando
+    /// de redefinir); aqui `None` é o padrão do menu da barra.
+    pub base: IWorkbenchToolBarOptions,
+    /// Optional options to configure how the toolbar renderes items.
+    pub toolbar_options: Option<IToolBarRenderOptions>,
+    /// Customize the debounce delay for menu updates.
+    pub event_debounce_delay: Option<u64>,
+}
+
+/// A [`WorkbenchToolBar`] movida só por um [`MenuId`].
+///
+/// *Note* that Manual updates via `set_actions` are NOT supported.
+///
+/// Divergências de tradução:
+/// - **Herança.** `MenuWorkbenchToolBar extends WorkbenchToolBar` é composição com `Deref<Target = WorkbenchToolBar>`, e o
+///   `setActions` que lança é o [`MenuWorkbenchToolBar::set_actions`] próprio (um método do tipo de fora tem precedência sobre
+///   o do `Deref`).
+/// - **`IActionViewItemService` e `createActionViewItem`.** O `actionViewItemProvider` que consulta o serviço de view items e cai
+///   no `createActionViewItem` não existe: a UI é uma árvore de nós nativa e o `ToolBar` de `je-widgets` desenha cada ação, então
+///   não há provedor de view item por menu para consultar (nem o `onDidChange` do serviço, que só reconstruía a barra).
+/// - **`IInstantiationService`.** Quem cria a barra passa os serviços que o construtor injetava.
+pub struct MenuWorkbenchToolBar {
+    inner: Rc<WorkbenchToolBar>,
+    ui: Ui,
+    container: NodeId,
+    menu: Rc<dyn IMenu>,
+    menu_options: Option<MenuActionOptions>,
+    toolbar_options: Option<IToolBarRenderOptions>,
+    on_did_change_menu_items: Rc<Emitter<()>>,
+}
+
+impl MenuWorkbenchToolBar {
+    /// `new MenuWorkbenchToolBar(container, menuId, options, menuService, contextKeyService, contextMenuService,
+    /// keybindingService, commandService, telemetryService)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        ui: &Ui,
+        container: NodeId,
+        menu_id: &MenuId,
+        options: Option<IMenuWorkbenchToolBarOptions>,
+        menu_service: Rc<dyn IMenuService>,
+        context_key_service: Rc<dyn IContextKeyService>,
+        context_menu_service: Rc<dyn IContextMenuService>,
+        keybinding_service: Rc<dyn IKeybindingService>,
+        command_service: Rc<dyn ICommandService>,
+        telemetry_service: Rc<dyn ITelemetryService>,
+    ) -> Rc<Self> {
+        // `{ resetMenu: menuId, ...options }`
+        let mut base = options.as_ref().map(|o| o.base.clone()).unwrap_or_default();
+        if base.reset_menu.is_none() {
+            base.reset_menu = Some(menu_id.clone());
+        }
+        let inner = WorkbenchToolBar::new(ui, container, Some(base), menu_service.clone(), context_key_service.clone(), context_menu_service, keybinding_service, command_service, telemetry_service);
+
+        // `this._store`
+        let store = DisposableStore::new();
+        inner.base.register(store.clone());
+
+        // update logic
+        let menu: Rc<dyn IMenu> = menu_service.create_menu(
+            menu_id,
+            context_key_service,
+            Some(MenuCreateOptions { emit_events_for_submenu_changes: true, event_debounce_delay: options.as_ref().and_then(|o| o.event_debounce_delay) }),
+        );
+        store.add(menu.clone());
+        let on_did_change_menu_items = Emitter::new();
+        store.add(on_did_change_menu_items.clone());
+
+        let menu_options = options.as_ref().and_then(|o| o.base.menu_options.clone());
+        let toolbar_options = options.and_then(|o| o.toolbar_options);
+        let this = Rc::new(Self { inner, ui: ui.clone(), container, menu: menu.clone(), menu_options, toolbar_options, on_did_change_menu_items });
+
+        let weak = Rc::downgrade(&this);
+        store.add(menu.on_did_change().listen(move |_| {
+            let Some(this) = weak.upgrade() else { return };
+            this.update_toolbar();
+            this.on_did_change_menu_items.fire(());
+        }));
+        this.update_toolbar();
+        this
+    }
+
+    /// `onDidChangeMenuItems`.
+    pub fn on_did_change_menu_items(&self) -> Event<()> {
+        self.on_did_change_menu_items.event()
+    }
+
+    fn update_toolbar(&self) {
+        let is_primary_action = PrimaryGroup::predicate(self.toolbar_options.as_ref().and_then(|o| o.primary_group.as_ref()));
+        let use_separators_in_primary_actions = self.toolbar_options.as_ref().is_some_and(|o| o.use_separators_in_primary_actions);
+        let actions = get_action_bar_actions(&self.menu.get_actions(self.menu_options.as_ref()), &*is_primary_action, use_separators_in_primary_actions);
+        self.ui.tree_mut().toggle_class(self.container, "has-no-actions", actions.primary.is_empty() && actions.secondary.is_empty());
+        self.inner.set_actions(&actions.primary, &actions.secondary, None);
+    }
+
+    /// `refresh()`: force the toolbar to immediately re-evaluate its menu actions. Use this after synchronously updating context
+    /// keys to avoid layout shifts caused by the debounced menu change event.
+    pub fn refresh(&self) {
+        self.update_toolbar();
+    }
+
+    /// `override setActions()`: lança, a barra é alimentada pelo menu.
+    pub fn set_actions(&self) -> ! {
+        errors::throw(Error::bug_indicating(Some("This toolbar is populated from a menu.")))
+    }
+}
+
+impl Deref for MenuWorkbenchToolBar {
+    type Target = WorkbenchToolBar;
+
+    fn deref(&self) -> &WorkbenchToolBar {
+        &self.inner
+    }
+}
+
+impl IDisposable for MenuWorkbenchToolBar {
+    fn dispose(&self) {
+        self.inner.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "MenuWorkbenchToolBar"
     }
 }
