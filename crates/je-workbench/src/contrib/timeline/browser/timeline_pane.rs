@@ -73,6 +73,7 @@
 //! - **`MultiDiffEditorInput`.** Ainda não foi portado: o `instanceof` é a comparação do `editor_type_id` com o
 //!   `MultiDiffEditorInput.ID` ([`MULTI_DIFF_EDITOR_INPUT_ID`], definido no arquivo do input).
 
+use je_platform::resources::host_platform;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
@@ -97,7 +98,6 @@ use je_base::marshalling_ids::MarshalledId;
 use je_base::network::schemas;
 use je_base::nls::localize;
 use je_base::parts::contextmenu::IContextMenuEvent;
-use je_base::platform::Platform;
 use je_base::promise::Promise;
 use je_base::runtime::{self, TimerId};
 use je_base::strings::escape_reg_exp_characters;
@@ -865,7 +865,8 @@ impl TimelinePane {
             refresh_timer: RefCell::new(None),
         });
 
-        let delegate: Weak<dyn ViewPaneDelegate> = Rc::downgrade(&this);
+        let delegate: Rc<dyn ViewPaneDelegate> = this.clone();
+        let delegate: Weak<dyn ViewPaneDelegate> = Rc::downgrade(&delegate);
         this.view_pane.set_delegate(delegate);
 
         let host: Rc<dyn ITimelinePaneCommandsHost> = this.clone();
@@ -1109,8 +1110,7 @@ impl TimelinePane {
         // Fallback to match on fsPath if we are dealing with files or git schemes
         let same_fs_path = match (&uri, &current) {
             (Some(uri), Some(current)) => {
-                let platform = Platform::detect();
-                uri.fs_path(platform) == current.fs_path(platform) && is_file_or_git(uri) && is_file_or_git(current)
+                uri.fs_path(host_platform()) == current.fs_path(host_platform()) && is_file_or_git(uri) && is_file_or_git(current)
             }
             _ => false,
         };
