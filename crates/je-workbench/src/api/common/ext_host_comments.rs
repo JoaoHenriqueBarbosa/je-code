@@ -751,6 +751,11 @@ impl ExtHostCommentController {
         types::weak_host_dynamic(&self.value, &self.this)
     }
 
+    /// O controlador de um argumento criado por [`ExtHostCommentController::to_dynamic`], se ainda estiver vivo.
+    pub fn from_dynamic(value: &Dynamic) -> Option<Rc<ExtHostCommentController>> {
+        types::host_object::<ExtHostCommentController>(value)
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

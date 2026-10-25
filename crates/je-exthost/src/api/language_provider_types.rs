@@ -12,20 +12,27 @@
 //!   um objeto com `length` e índices numéricos), então `new SemanticTokens(new Uint32Array(...))` só funciona se o motor entregar o
 //!   array tipado como um desses dois formatos.
 //! - `CodeLens#isResolved` é um acessor de leitura do protótipo (vale `command` definido).
+//! - `InlineValue` (`InlineValueText`, `InlineValueVariableLookup`, `InlineValueEvaluatableExpression`) é distinguido pela forma do valor
+//!   (`text`; `variableName` ou `caseSensitiveLookup`; o resto), não por `instanceof`: um objeto sem nenhuma dessas marcas vale como
+//!   expressão avaliável, em vez de lançar `Unknown 'InlineValue' type`. `InlineValueContext` chega ao provedor como objeto comum
+//!   `{ frameId, stoppedLocation }`.
+//! - `LinkedEditingRanges#wordPattern` é lido por referência (`source` e `flags` da `RegExp`) e vira o `RegExp` do host.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use je_base::dynamic::{Dynamic, RegExpRef};
 use je_base::errors::Error;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiPrepareRename, ApiSemanticTokensResult, ApiSignatureHelpRef, CodeLensRef, DocumentLinkRef, InlayHintRef, OneOrMany,
+    ApiInlineValue, ApiPrepareRename, ApiSemanticTokensResult, ApiSignatureHelpRef, CodeLensRef, DocumentLinkRef, InlayHintRef, OneOrMany,
 };
 use je_workbench::api::common::ext_host_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Color, ColorInformation, ColorPresentation, Command, DocumentHighlight, DocumentLink,
     RangeOrPosition, Range, SymbolInformation, SymbolKind, SymbolTag, TypeHierarchyItem, DocumentHighlightKind, Documentation, FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, InlayHintLabelPart,
     Location, ParameterInformation, ParameterLabel, SelectionRange, SemanticTokens, SemanticTokensBuilder, SemanticTokensEdit, SemanticTokensEdits, SemanticTokensLegend,
-    SignatureHelp, SignatureInformation,
+    SignatureHelp, SignatureInformation, EvaluatableExpression, InlineValueContext, InlineValueEvaluatableExpression, InlineValueText, InlineValueVariableLookup,
+    LinkedEditingRanges, MultiDocumentHighlight,
 };
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner};
 
@@ -34,6 +41,7 @@ use crate::api::language_types::{
     symbol_kind_of, symbol_tags_of, text_arg, text_edit_from_js, text_edits_from_js,
 };
 use crate::api::types::{position_data, range_data, to_position, to_range};
+use crate::api::js_object::JsObjects;
 use crate::api::{handle_field, handle_object};
 use crate::convert::{api_to_js, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
 
@@ -555,6 +563,152 @@ pub fn symbol_information_to_js(symbol: &SymbolInformation) -> JsData {
     )
 }
 
+// --- expressões avaliáveis, valores embutidos, edição vinculada, destaque em vários documentos
+
+/// O `source` e as `flags` de uma `RegExp` da extensão. A `RegExp` não atravessa o motor como cópia: chega como referência, e os dois
+/// campos são lidos dela.
+pub(crate) fn regexp_parts(js: &JsObjects, value: &JsData, what: &str) -> Result<(String, String), Error> {
+    let source = opt_string(Some(&js.property(value, "source"))).ok_or_else(|| error(format!("{what} must be a RegExp")))?;
+    Ok((source, opt_string(Some(&js.property(value, "flags"))).unwrap_or_default()))
+}
+
+fn evaluatable_expression_value(value: &JsData) -> Result<EvaluatableExpression, Error> {
+    Ok(EvaluatableExpression::new(range_field(value, "range")?, opt_string(field(value, "expression")).as_deref()))
+}
+
+/// `EvaluatableExpression | undefined | null`.
+pub fn evaluatable_expression_from_js(value: &JsData) -> Result<Option<EvaluatableExpression>, Error> {
+    one_of(value, evaluatable_expression_value)
+}
+
+/// `InlineValueText | InlineValueVariableLookup | InlineValueEvaluatableExpression`, pela forma do valor: `text` é o texto,
+/// `variableName` ou `caseSensitiveLookup` é a consulta de variável, e o resto é a expressão.
+fn inline_value_from_js(value: &JsData) -> Result<ApiInlineValue, Error> {
+    let range = range_field(value, "range")?;
+    if let Some(text) = opt_string(field(value, "text")) {
+        return Ok(ApiInlineValue::Text(InlineValueText::new(range, text)));
+    }
+    if field(value, "variableName").is_some() || field(value, "caseSensitiveLookup").is_some() {
+        return Ok(ApiInlineValue::VariableLookup(InlineValueVariableLookup::new(
+            range,
+            opt_string(field(value, "variableName")).as_deref(),
+            opt_bool(field(value, "caseSensitiveLookup")),
+        )));
+    }
+    Ok(ApiInlineValue::EvaluatableExpression(InlineValueEvaluatableExpression::new(range, opt_string(field(value, "expression")).as_deref())))
+}
+
+/// `InlineValue[] | undefined | null`.
+pub fn inline_values_from_js(value: &JsData) -> Result<Option<Vec<ApiInlineValue>>, Error> {
+    list_of(value, inline_value_from_js)
+}
+
+/// O `InlineValueContext` como o objeto que o provedor recebe.
+pub fn inline_value_context_to_js(context: &InlineValueContext) -> JsData {
+    class_fields(vec![("frameId", Some(JsData::Num(context.frame_id))), ("stoppedLocation", Some(range_data(context.stopped_location)))])
+}
+
+/// `LinkedEditingRanges | undefined | null`: o `wordPattern` (uma `RegExp`) é lido por referência.
+pub fn linked_editing_ranges_from_js(js: &JsObjects, value: &JsData) -> Result<Option<LinkedEditingRanges>, Error> {
+    one_of(value, |value| {
+        let Some(JsData::Array(items)) = field(value, "ranges") else { return Err(error("LinkedEditingRanges.ranges must be an array of Range")) };
+        let ranges = items.iter().map(|range| to_range(range).map_err(error)).collect::<Result<Vec<_>, _>>()?;
+        let word_pattern = match field(value, "wordPattern") {
+            Some(pattern @ JsData::Handle(_)) => {
+                let (source, flags) = regexp_parts(js, pattern, "LinkedEditingRanges.wordPattern")?;
+                Some(Dynamic::RegExp(RegExpRef::new(&source, &flags)))
+            }
+            _ => None,
+        };
+        Ok(LinkedEditingRanges::new(ranges, word_pattern))
+    })
+}
+
+fn multi_document_highlight_from_js(value: &JsData) -> Result<MultiDocumentHighlight, Error> {
+    let uri = uri_from_js(field(value, "uri").ok_or_else(|| error("MultiDocumentHighlight.uri must be a Uri"))?).map_err(error)?;
+    let highlights = match field(value, "highlights") {
+        Some(highlights) => document_highlights_from_js(highlights)?.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok(MultiDocumentHighlight { uri, highlights })
+}
+
+/// `MultiDocumentHighlight[] | undefined | null`.
+pub fn multi_document_highlights_from_js(value: &JsData) -> Result<Option<Vec<MultiDocumentHighlight>>, Error> {
+    list_of(value, multi_document_highlight_from_js)
+}
+
+/// `new X(range, texto)`: o intervalo e um texto, na propriedade `text_field` (obrigatório ou não).
+fn range_and_text_class(runner: &NodeRunner, name: &'static str, text_field: &'static str, required_text: bool) -> (String, JsData) {
+    let construct = move |args: &[JsData]| -> Result<JsData, String> {
+        let range = range_data(to_range(required(args, 0, &format!("{name}: o intervalo"))?)?);
+        let text = if required_text { Some(JsData::Str(string_arg(args, 1, &format!("{name}: o texto"))?)) } else { text_arg(args, 1).map(JsData::Str) };
+        Ok(class_fields(vec![("range", Some(range)), (text_field, text)]))
+    };
+    (name.to_owned(), define(runner, name, 2, construct, vec![]))
+}
+
+/// As classes das expressões avaliáveis, dos valores embutidos, da edição vinculada e do destaque em vários documentos.
+fn debug_and_editing_classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
+    let entry = |name: &str, value: JsData| (name.to_owned(), value);
+    vec![
+        range_and_text_class(runner, "EvaluatableExpression", "expression", false),
+        range_and_text_class(runner, "InlineValueText", "text", true),
+        range_and_text_class(runner, "InlineValueEvaluatableExpression", "expression", false),
+        entry(
+            "InlineValueVariableLookup",
+            define(
+                runner,
+                "InlineValueVariableLookup",
+                3,
+                |args| {
+                    Ok(class_fields(vec![
+                        ("range", Some(range_data(to_range(required(args, 0, "InlineValueVariableLookup: o intervalo")?)?))),
+                        ("variableName", text_arg(args, 1).map(JsData::Str)),
+                        ("caseSensitiveLookup", Some(JsData::Bool(opt_bool(args.get(2)).unwrap_or(true)))),
+                    ]))
+                },
+                vec![],
+            ),
+        ),
+        entry(
+            "InlineValueContext",
+            define(
+                runner,
+                "InlineValueContext",
+                2,
+                |args| {
+                    Ok(class_fields(vec![
+                        ("frameId", Some(number_arg(args, 0).ok_or("InlineValueContext: frameId é obrigatório")?)),
+                        ("stoppedLocation", Some(range_data(to_range(required(args, 1, "InlineValueContext: o intervalo")?)?))),
+                    ]))
+                },
+                vec![],
+            ),
+        ),
+        entry(
+            "LinkedEditingRanges",
+            define(
+                runner,
+                "LinkedEditingRanges",
+                2,
+                |args| Ok(class_fields(vec![("ranges", Some(array_or_empty(args, 0))), ("wordPattern", optional_arg(args, 1))])),
+                vec![],
+            ),
+        ),
+        entry(
+            "MultiDocumentHighlight",
+            define(
+                runner,
+                "MultiDocumentHighlight",
+                2,
+                |args| Ok(class_fields(vec![("uri", Some(required(args, 0, "MultiDocumentHighlight: a uri")?.clone())), ("highlights", Some(array_or_empty(args, 1)))])),
+                vec![],
+            ),
+        ),
+    ]
+}
+
 // --- classes
 
 /// `new SymbolInformation(name, kind, containerName, location)` ou `new SymbolInformation(name, kind, range, uri?, containerName?)`.
@@ -863,5 +1017,6 @@ pub fn classes(runner: &NodeRunner, builders: &Rc<SemanticTokensBuilders>) -> Ve
     ]
     .into_iter()
     .chain(hierarchy_classes(runner))
+    .chain(debug_and_editing_classes(runner))
     .collect()
 }

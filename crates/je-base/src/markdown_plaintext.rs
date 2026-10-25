@@ -59,8 +59,17 @@ fn inline(parser: &Parser, tokens: &[Token]) -> String {
     parser.parse_inline_with(tokens, &PlainTextRenderer).map(|text| text.to_string_lossy()).unwrap_or_default()
 }
 
+/// As opções de `renderAsPlaintext`. `useLinkFormatter` não é lida por nenhum chamador portado e fica de fora.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlaintextOptions {
+    /// Mantém as cercas ``` dos blocos de código na saída.
+    pub include_code_blocks_fences: bool,
+    /// Reduz a sintaxe do Markdown ao texto também nos itens de lista (`parsedListItem` e `parsedText`).
+    pub omit_markdown_syntax: bool,
+}
+
 /// `Parser.parse(tokens, top)` com os `renderer.*` de bloco do texto puro.
-fn plain_text_blocks(parser: &Parser, tokens: &[Token]) -> String {
+fn plain_text_blocks(parser: &Parser, tokens: &[Token], options: PlaintextOptions) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -70,7 +79,14 @@ fn plain_text_blocks(parser: &Parser, tokens: &[Token]) -> String {
                 out.push_str(&inline(parser, &heading.tokens));
                 out.push('\n');
             }
-            Token::Code(code) => out.push_str(&escape(code.text.units(), true).to_string_lossy()),
+            Token::Code(code) => {
+                let escaped = escape(code.text.units(), true).to_string_lossy();
+                if options.include_code_blocks_fences {
+                    out.push_str(&format!("\n```\n{escaped}\n```\n"));
+                } else {
+                    out.push_str(&escaped);
+                }
+            }
             Token::Table(table) => {
                 let cell = |cell: &crate::marked::TableCell| inline(parser, &cell.tokens);
                 out.push_str(&table.header.iter().map(cell).collect::<Vec<_>>().join(" "));
@@ -87,6 +103,7 @@ fn plain_text_blocks(parser: &Parser, tokens: &[Token]) -> String {
                     .items
                     .iter()
                     .filter_map(|item| match item {
+                        Token::ListItem(item) if options.omit_markdown_syntax => Some(plain_text_blocks(parser, &item.tokens, options)),
                         Token::ListItem(item) => Some(format!("{}\n", item.text.to_string_lossy())),
                         _ => None,
                     })
@@ -101,8 +118,8 @@ fn plain_text_blocks(parser: &Parser, tokens: &[Token]) -> String {
             Token::Text(_) => {
                 let block_text = |token: &Token| match token {
                     Token::Text(text) => match &text.tokens {
-                        Some(tokens) => inline(parser, tokens),
-                        None => text.text.to_string_lossy(),
+                        Some(tokens) if options.omit_markdown_syntax => inline(parser, tokens),
+                        _ => text.text.to_string_lossy(),
                     },
                     _ => String::new(),
                 };
@@ -156,8 +173,13 @@ fn decode_entities(text: &str) -> String {
     out
 }
 
-/// `renderAsPlaintext(str)` para um `IMarkdownString` (`{ value }`) ou um texto.
+/// `renderAsPlaintext(str)` para um `IMarkdownString` (`{ value }`) ou um texto, sem opções.
 pub fn render_as_plaintext(value: &str) -> String {
+    render_as_plaintext_with(value, PlaintextOptions::default())
+}
+
+/// `renderAsPlaintext(str, options)`.
+pub fn render_as_plaintext_with(value: &str, plaintext_options: PlaintextOptions) -> String {
     // values that are too long will freeze the UI
     let units: Vec<u16> = value.encode_utf16().collect();
     let units: Vec<u16> = if units.len() > 100_000 {
@@ -173,5 +195,5 @@ pub fn render_as_plaintext(value: &str) -> String {
         return String::new();
     };
     let parser = Parser::new(options);
-    decode_entities(&plain_text_blocks(&parser, &list.tokens)).trim().to_string()
+    decode_entities(&plain_text_blocks(&parser, &list.tokens, plaintext_options)).trim().to_string()
 }

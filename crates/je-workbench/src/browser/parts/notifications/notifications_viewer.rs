@@ -32,11 +32,11 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use je_base::actions::{ActionRef, ActionRunner, IAction, IActionRunner, Separator, ToActionProps, to_action};
+use je_base::actions::{Action, ActionRef, ActionRunner, IAction, IActionRunner, Separator, ToActionProps, to_action};
 use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
 use je_base::key_codes::KeyCode;
-use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, to_disposable};
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::linked_text::LinkedTextNode;
 use je_base::nls::localize;
 use je_base::promise::MaybePromise;
@@ -159,13 +159,15 @@ pub trait NotificationActionProvider {
     fn create_expand_action(&self) -> ActionRef;
     /// `new CollapseNotificationAction(CollapseNotificationAction.ID, CollapseNotificationAction.LABEL)`.
     fn create_collapse_action(&self) -> ActionRef;
-    /// `new ConfigureNotificationAction(ConfigureNotificationAction.ID, ConfigureNotificationAction.LABEL, notification)`.
-    fn create_configure_action(&self, notification: &Rc<NotificationViewItem>) -> ActionRef;
+    /// `new ConfigureNotificationAction(ConfigureNotificationAction.ID, ConfigureNotificationAction.LABEL, notification)`:
+    /// a ação e o handle que a descarta (o `this.inputDisposables.add(configureNotificationAction)` do original).
+    fn create_configure_action(&self, notification: &Rc<NotificationViewItem>) -> (ActionRef, DisposableRef);
     /// `action instanceof ConfigureNotificationAction ? action.notification : undefined`.
     fn configure_action_notification(&self, action: &ActionRef) -> Option<Rc<NotificationViewItem>>;
     /// `new CopyNotificationMessageAction(CopyNotificationMessageAction.ID, CopyNotificationMessageAction.LABEL)`
-    /// (o menu de contexto da lista, em `notificationsList.ts`).
-    fn create_copy_message_action(&self) -> ActionRef;
+    /// (o menu de contexto da lista, em `notificationsList.ts`): a ação e o handle que a descarta (o
+    /// `this._register(...)` do original).
+    fn create_copy_message_action(&self) -> (ActionRef, DisposableRef);
 }
 
 /// Os serviços que o `NotificationRenderer` e o `NotificationTemplateRenderer` recebem por injeção no original.
@@ -378,53 +380,75 @@ impl NotificationMessageRenderer {
         let font = message_font();
 
         let mut tree = ui.tree_mut();
-        for piece in &wrapped.pieces {
-            let node = create_el(&mut tree, container, Role::Generic, "");
-            let top = piece.line as f64 * LINE_HEIGHT;
-            let mut text = piece.text.clone();
-            let mut piece_width = piece.width;
-            if !wrap && piece.x + piece_width > width {
-                // `text-overflow: ellipsis` na linha única recolhida
-                text = clip_text(&text, &font, (width - piece.x).max(0.0));
-                piece_width = (width - piece.x).max(0.0);
-            }
-            let link = match &message.linked_text.nodes[piece.node] {
+        let mut start = 0;
+        while start < wrapped.pieces.len() {
+            // Os trechos de um mesmo nó do texto são seguidos: um link vira um único `a`, mesmo quebrado em várias palavras.
+            let node_index = wrapped.pieces[start].node;
+            let end = wrapped.pieces[start..].iter().position(|piece| piece.node != node_index).map_or(wrapped.pieces.len(), |offset| start + offset);
+            let link = match &message.linked_text.nodes[node_index] {
                 LinkedTextNode::Link(link) => Some(link.clone()),
                 LinkedTextNode::Text(_) => None,
             };
             let color = if link.is_some() { styles.link_foreground } else { styles.foreground };
-            set_node_text(&mut tree, node, &text, &font, color, LINE_HEIGHT);
-            tree.set_bounds(node, Rect::new(piece.x, top, piece.x + piece_width, top + LINE_HEIGHT));
 
-            if let Some(link) = link {
-                let href = link.href.to_string_lossy();
-                let mut title = link.title.as_ref().map(|t| t.to_string_lossy()).unwrap_or_default();
-                if title.is_empty() && href.starts_with("command:") {
-                    title = localize("executeCommand", "Click to execute command '{0}'", &[&href["command:".len()..]]);
-                } else if title.is_empty() {
-                    title = href.clone();
-                }
-                tree.set_role(node, Role::Link);
-                tree.set_label(node, title);
+            let placed: Vec<(String, Rect)> = wrapped.pieces[start..end]
+                .iter()
+                .map(|piece| {
+                    let top = piece.line as f64 * LINE_HEIGHT;
+                    let mut text = piece.text.clone();
+                    let mut piece_width = piece.width;
+                    if !wrap && piece.x + piece_width > width {
+                        // `text-overflow: ellipsis` na linha única recolhida
+                        text = clip_text(&text, &font, (width - piece.x).max(0.0));
+                        piece_width = (width - piece.x).max(0.0);
+                    }
+                    (text, Rect::new(piece.x, top, piece.x + piece_width, top + LINE_HEIGHT))
+                })
+                .collect();
 
-                if let Some(handler) = action_handler {
-                    let open = {
-                        let callback = handler.callback.clone();
-                        let href = href.clone();
-                        move |e: &mut je_ui::Event| {
-                            e.stop(true);
-                            callback(&href);
-                        }
-                    };
-                    handler.to_dispose.add(ui.listen(node, EventKind::Click, false, open.clone()));
-                    handler.to_dispose.add(ui.listen(node, EventKind::KeyDown, false, move |e| {
-                        let Some(event) = StandardKeyboardEvent::from_event(e) else { return };
-                        if event.equals(KeyCode::Space.bits()) || event.equals(KeyCode::Enter.bits()) {
-                            open(e);
-                        }
-                    }));
+            let (parent, origin) = match &link {
+                Some(link) => {
+                    let union = placed.iter().skip(1).fold(placed[0].1, |acc, (_, rect)| acc.union(*rect));
+                    let anchor = create_el(&mut tree, container, Role::Link, "");
+                    tree.set_bounds(anchor, union);
+
+                    let href = link.href.to_string_lossy();
+                    let mut title = link.title.as_ref().map(|t| t.to_string_lossy()).unwrap_or_default();
+                    if title.is_empty() && href.starts_with("command:") {
+                        title = localize("executeCommand", "Click to execute command '{0}'", &[&href["command:".len()..]]);
+                    } else if title.is_empty() {
+                        title = href.clone();
+                    }
+                    tree.set_label(anchor, title);
+
+                    if let Some(handler) = action_handler {
+                        let open = {
+                            let callback = handler.callback.clone();
+                            let href = href.clone();
+                            move |e: &mut je_ui::Event| {
+                                e.stop(true);
+                                callback(&href);
+                            }
+                        };
+                        handler.to_dispose.add(ui.listen(anchor, EventKind::Click, false, open.clone()));
+                        handler.to_dispose.add(ui.listen(anchor, EventKind::KeyDown, false, move |e| {
+                            let Some(event) = StandardKeyboardEvent::from_event(e) else { return };
+                            if event.equals(KeyCode::Space.bits()) || event.equals(KeyCode::Enter.bits()) {
+                                open(e);
+                            }
+                        }));
+                    }
+                    (anchor, (union.x0, union.y0))
                 }
+                None => (container, (0.0, 0.0)),
+            };
+
+            for (text, rect) in placed {
+                let node = create_el(&mut tree, parent, Role::Generic, "");
+                set_node_text(&mut tree, node, &text, &font, color, LINE_HEIGHT);
+                tree.set_bounds(node, Rect::new(rect.x0 - origin.0, rect.y0 - origin.1, rect.x1 - origin.0, rect.y1 - origin.1));
             }
+            start = end;
         }
         wrapped
     }
@@ -465,7 +489,7 @@ impl NotificationRenderer {
     /// `new NotificationRenderer(actionRunner)`; `telemetry_surface` é o `actionRunner.telemetrySurface` quando o
     /// runner é um `NotificationActionRunner`.
     pub fn new(action_runner: Rc<dyn IActionRunner>, telemetry_surface: Option<NotificationTelemetrySurface>, services: NotificationRendererServices) -> Rc<Self> {
-        let shared_actions = SharedActions::new(&services);
+        let shared_actions = SharedActions::get_or_create(&services);
         Rc::new(Self { action_runner, telemetry_surface, services, shared_actions })
     }
 
@@ -568,35 +592,38 @@ impl IListRenderer<Rc<NotificationViewItem>> for NotificationRenderer {
     }
 }
 
-/// As ações compartilhadas entre as linhas (os `static` do `NotificationTemplateRenderer`).
+/// As ações compartilhadas entre as linhas (os `static` do `NotificationTemplateRenderer`): nascem no primeiro renderer
+/// do fio e nunca são descartadas, como os `static` do original.
 struct SharedActions {
     close: ActionRef,
     expand: ActionRef,
     collapse: ActionRef,
-    _configuration_listener: Rc<DisposableStore>,
+}
+
+thread_local! {
+    static SHARED_ACTIONS: RefCell<Option<Rc<SharedActions>>> = const { RefCell::new(None) };
 }
 
 impl SharedActions {
-    fn new(services: &NotificationRendererServices) -> Rc<Self> {
-        let close = services.actions.create_close_action();
-        let expand = services.actions.create_expand_action();
-        let collapse = services.actions.create_collapse_action();
-        Self::update_expand_collapse_icons(&expand, &collapse, &*services.configuration_service);
-
-        let store = DisposableStore::new();
-        let (expand_action, collapse_action, configuration_service) = (expand.clone(), collapse.clone(), services.configuration_service.clone());
-        store.add(services.configuration_service.on_did_change_configuration().listen(move |event| {
-            if event.affects_configuration(NotificationsSettings::NotificationsPosition.as_str(), None) {
-                Self::update_expand_collapse_icons(&expand_action, &collapse_action, &*configuration_service);
-            }
-        }));
-        Rc::new(Self { close, expand, collapse, _configuration_listener: store })
+    /// `if (!NotificationTemplateRenderer.closeNotificationAction) { ...create...; updateExpandCollapseIcons(...) }`.
+    fn get_or_create(services: &NotificationRendererServices) -> Rc<Self> {
+        if let Some(shared) = SHARED_ACTIONS.with(|cell| cell.borrow().clone()) {
+            return shared;
+        }
+        let shared = Rc::new(Self {
+            close: services.actions.create_close_action(),
+            expand: services.actions.create_expand_action(),
+            collapse: services.actions.create_collapse_action(),
+        });
+        SHARED_ACTIONS.with(|cell| *cell.borrow_mut() = Some(shared.clone()));
+        shared.update_expand_collapse_icons(&*services.configuration_service);
+        shared
     }
 
-    fn update_expand_collapse_icons(expand: &ActionRef, collapse: &ActionRef, configuration_service: &dyn IConfigurationService) {
+    fn update_expand_collapse_icons(&self, configuration_service: &dyn IConfigurationService) {
         let position = get_notifications_position(configuration_service);
-        expand.set_class(Some(ThemeIcon::as_class_name(&get_notification_expand_icon(position).to_theme_icon())));
-        collapse.set_class(Some(ThemeIcon::as_class_name(&get_notification_collapse_icon(position).to_theme_icon())));
+        self.expand.set_class(Some(ThemeIcon::as_class_name(&get_notification_expand_icon(position).to_theme_icon())));
+        self.collapse.set_class(Some(ThemeIcon::as_class_name(&get_notification_collapse_icon(position).to_theme_icon())));
     }
 }
 
@@ -717,6 +744,15 @@ impl NotificationTemplateRenderer {
                     && renderer.hovered.replace(hovered) != hovered
                 {
                     renderer.layout();
+                }
+            }));
+        }
+        {
+            let shared = this.shared.clone();
+            let configuration_service = this.services.configuration_service.clone();
+            this.base.register(this.services.configuration_service.on_did_change_configuration().listen(move |event| {
+                if event.affects_configuration(NotificationsSettings::NotificationsPosition.as_str(), None) {
+                    shared.update_expand_collapse_icons(&*configuration_service);
                 }
             }));
         }
@@ -866,8 +902,9 @@ impl NotificationTemplateRenderer {
 
         // Secondary Actions
         if !notification.actions().secondary.is_empty() {
-            let configure_notification_action = self.services.actions.create_configure_action(notification);
+            let (configure_notification_action, disposable) = self.services.actions.create_configure_action(notification);
             actions.push(configure_notification_action);
+            self.input_disposables.add(disposable);
         }
 
         // Expand / Collapse
@@ -967,9 +1004,14 @@ impl NotificationTemplateRenderer {
 
             button.set_label(ButtonLabel::Text(action.label()));
             button.set_enabled(action.enabled());
-            if let Some(choice) = action.as_any().downcast_ref::<ChoiceAction>() {
+            // `action instanceof Action` (o `ChoiceAction` estende `Action`, aqui é composição)
+            let on_did_change = match action.as_any().downcast_ref::<ChoiceAction>() {
+                Some(choice) => Some(choice.on_did_change()),
+                None => action.as_base_action().map(Action::on_did_change),
+            };
+            if let Some(on_did_change) = on_did_change {
                 let button = button.clone();
-                self.input_disposables.add(choice.on_did_change().listen(move |change| {
+                self.input_disposables.add(on_did_change.listen(move |change| {
                     if let Some(enabled) = change.enabled {
                         button.set_enabled(enabled);
                     }

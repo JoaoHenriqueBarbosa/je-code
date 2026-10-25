@@ -47,7 +47,7 @@ use super::action_widget_motion::{ACTION_WIDGET_ANIMATED_CLASS, ACTION_WIDGET_DR
 use crate::action::{CommandAction, CommandActionTitle, Title, localize2};
 use crate::actions::actions::{Action2, Action2Keybinding, Action2Options, register_action2};
 use crate::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression, IContextKey, IContextKeyService, RawContextKey};
-use crate::contextview::context_view::{AnchorTarget, IContextViewCloseAnimation, IContextViewDelegate, IContextViewService, has_required_ancestor_classes};
+use crate::contextview::context_view::{AnchorTarget, HideData, IContextViewCloseAnimation, IContextViewDelegate, IContextViewService, has_required_ancestor_classes, hide_data_to};
 use crate::contextview::view_element::{UiKeyEvent, ViewElement};
 use crate::keybinding::keybindings_registry::{KeybindingWeight, Keybindings, PlatformKeybindings};
 use crate::layout::layout_service::ILayoutService;
@@ -328,10 +328,10 @@ impl IContextViewDelegate for ActionWidgetViewDelegate {
         Some(service.render_widget(container, &self.list, &self.action_bar_actions, self.list_options.as_deref()))
     }
 
-    fn on_hide(&self, did_cancel: Option<bool>) {
+    fn on_hide(&self, data: Option<HideData>) {
         self.visible_context.reset();
         if let Some(service) = self.service.upgrade() {
-            service.on_widget_closed(did_cancel);
+            service.on_widget_closed(hide_data_to::<bool>(data.as_ref()));
         }
     }
 
@@ -538,7 +538,7 @@ impl ActionWidgetService {
                 let Some(service) = weak.upgrade() else { return };
                 let still_current = service.list.value().is_some_and(|current| Rc::ptr_eq(&current, &hidden_list));
                 if still_current {
-                    service.context_view_service.hide_context_view(did_cancel);
+                    service.context_view_service.hide_context_view(did_cancel.map(|did_cancel| Rc::new(did_cancel) as HideData));
                 }
             },
             close_animation.duration as u64,

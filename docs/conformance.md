@@ -4,17 +4,17 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 127 | 1879 | 82.48 |
-| `platform` | 192 | 2806 | 117 | 1947 | 69.39 |
+| `base` | 150 | 2278 | 128 | 2006 | 88.06 |
+| `platform` | 192 | 2806 | 121 | 2158 | 76.91 |
 | `editor` | 182 | 3144 | 146 | 2957 | 94.05 |
 | `workbench/services` | 137 | 2491 | 109 | 2146 | 86.15 |
 | `workbench/api` | 94 | 965 | 77 | 747 | 77.41 |
-| `workbench/contrib` | 370 | 4636 | 244 | 2426 | 52.33 |
-| `workbench (shell)` | 69 | 621 | 21 | 234 | 37.68 |
+| `workbench/contrib` | 370 | 4636 | 246 | 2470 | 53.28 |
+| `workbench (shell)` | 69 | 621 | 30 | 338 | 54.43 |
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 12364 | 67.23 |
+| **total** | | 18391 | | 12850 | 69.87 |
 
 ## Arquivos portados
 
@@ -29,6 +29,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/browser/highlightedLabel.test.ts` | 9 | `crates/je-widgets/tests/highlighted_label.rs` | 9 |
 | `src/vs/base/test/browser/htmlToMarkdown.test.ts` | 32 | `crates/je-base/tests/html_to_markdown.rs` | 32 |
 | `src/vs/base/test/browser/iconLabels.test.ts` | 6 | `crates/je-widgets/tests/icon_labels.rs` | 6 |
+| `src/vs/base/test/browser/markdownRenderer.test.ts` | 127 | `crates/je-base/tests/markdown_renderer.rs` | 127 |
 | `src/vs/base/test/browser/progressBar.test.ts` | 1 | `crates/je-widgets/tests/progress_bar.rs` | 1 |
 | `src/vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.ts` | 1 | `crates/je-widgets/tests/breadcrumbs_widget.rs` | 1 |
 | `src/vs/base/test/browser/ui/button/button.test.ts` | 1 | `crates/je-widgets/tests/button.rs` | 1 |
@@ -147,7 +148,10 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/test/node/ps.test.ts` | 9 | `crates/je-base/tests/ps.rs` | 9 |
 | `src/vs/base/test/node/unc.test.ts` | 1 | `crates/je-base/tests/unc.rs` | 1 |
 | `src/vs/base/test/node/zip/zip.test.ts` | 10 | `crates/je-base/tests/zip_node.rs` | 10 |
+| `src/vs/platform/accessibility/test/browser/accessibilityService.test.ts` | 10 | `crates/je-platform/tests/accessibility_service.rs` | 10 |
+| `src/vs/platform/actionWidget/test/browser/actionList.test.ts` | 133 | `crates/je-platform/tests/action_list.rs` | 133 |
 | `src/vs/platform/actionWidget/test/browser/actionWidget.test.ts` | 11 | `crates/je-platform/tests/action_widget.rs` | 11 |
+| `src/vs/platform/actionWidget/test/browser/tabbedActionListWidget.test.ts` | 48 | `crates/je-platform/tests/tabbed_action_list_widget.rs` | 16 |
 | `src/vs/platform/actions/test/common/menuService.test.ts` | 19 | `crates/je-platform/tests/menu_service.rs` | 14 |
 | `src/vs/platform/assignment/test/common/assignment.test.ts` | 1 | `crates/je-platform/tests/assignment.rs` | 1 |
 | `src/vs/platform/browserView/test/common/browserHistory.test.ts` | 26 | `crates/je-platform/tests/browser_history.rs` | 26 |
@@ -188,6 +192,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/files/test/node/diskFileSystemProvider.test.ts` | 2 | `crates/je-platform/tests/disk_file_system_provider.rs` | 2 |
 | `src/vs/platform/files/test/node/nodejsWatcher.test.ts` | 27 | `crates/je-platform/tests/nodejs_watcher.rs` | 27 |
 | `src/vs/platform/files/test/node/parcelWatcher.test.ts` | 29 | `crates/je-platform/tests/parcel_watcher.rs` | 29 |
+| `src/vs/platform/hover/test/browser/hoverService.test.ts` | 52 | `crates/je-platform/tests/hover_service.rs` | 52 |
 | `src/vs/platform/instantiation/test/common/graph.test.ts` | 5 | `crates/je-instantiation/tests/graph.rs` | 5 |
 | `src/vs/platform/instantiation/test/common/instantiationService.test.ts` | 24 | `crates/je-instantiation/tests/instantiation_service.rs` | 24 |
 | `src/vs/platform/keybinding/test/common/abstractKeybindingService.test.ts` | 21 | `crates/je-platform/tests/abstract_keybinding_service.rs` | 21 |
@@ -661,6 +666,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/issue/test/browser/issueFormService.test.ts` | 4 | `crates/je-workbench/tests/issue_form_service.rs` | 4 |
 | `src/vs/workbench/contrib/issue/test/browser/testReporterModel.test.ts` | 10 | `crates/je-workbench/tests/test_reporter_model.rs` | 10 |
 | `src/vs/workbench/contrib/languageStatus/test/common/languageStatusDedupe.test.ts` | 7 | `crates/je-workbench/tests/language_status_dedupe.rs` | 7 |
+| `src/vs/workbench/contrib/limitIndicator/test/browser/limitIndicator.test.ts` | 11 | `crates/je-workbench/tests/limit_indicator.rs` | 11 |
 | `src/vs/workbench/contrib/markdown/test/browser/markdownSettingRenderer.test.ts` | 3 | `crates/je-workbench/tests/markdown_setting_renderer.rs` | 3 |
 | `src/vs/workbench/contrib/markers/test/browser/markersFilterOptions.test.ts` | 34 | `crates/je-workbench/tests/markers_filter_options.rs` | 34 |
 | `src/vs/workbench/contrib/markers/test/browser/markersModel.test.ts` | 10 | `crates/je-workbench/tests/markers_model.rs` | 10 |
@@ -829,6 +835,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/testing/test/common/testingUri.test.ts` | 1 | `crates/je-workbench/tests/testing_uri.rs` | 1 |
 | `src/vs/workbench/contrib/timeline/test/browser/timeline.contribution.test.ts` | 1 | `crates/je-workbench/tests/timeline_contribution.rs` | 1 |
 | `src/vs/workbench/contrib/timeline/test/common/timelineService.test.ts` | 2 | `crates/je-workbench/tests/timeline_service.rs` | 2 |
+| `src/vs/workbench/contrib/update/test/browser/releaseNotesTryouts.test.ts` | 33 | `crates/je-workbench/tests/release_notes_tryouts.rs` | 33 |
 | `src/vs/workbench/contrib/update/test/browser/updateTitleBarEntry.test.ts` | 4 | `crates/je-workbench/tests/update_title_bar_entry.rs` | 2 |
 | `src/vs/workbench/contrib/update/test/common/updateInfoParser.test.ts` | 20 | `crates/je-workbench/tests/update_info_parser.rs` | 20 |
 | `src/vs/workbench/contrib/update/test/common/updateUtils.test.ts` | 36 | `crates/je-workbench/tests/update_utils.rs` | 36 |
@@ -841,21 +848,30 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/workbench/contrib/workspaces/test/browser/recentRemoteFolderPruner.test.ts` | 1 | `crates/je-workbench/tests/recent_remote_folder_pruner.rs` | 1 |
 | `src/vs/workbench/contrib/workspaces/test/browser/workspaces.contribution.test.ts` | 1 | `crates/je-workbench/tests/workspaces_contribution.rs` | 1 |
 | `src/vs/workbench/test/browser/actions/policyDiagnosticsMarkdown.test.ts` | 9 | `crates/je-workbench/tests/policy_diagnostics_markdown.rs` | 9 |
+| `src/vs/workbench/test/browser/customTreeViewDragAndDrop.test.ts` | 10 | `crates/je-workbench/tests/custom_tree_view_drag_and_drop.rs` | 10 |
+| `src/vs/workbench/test/browser/notificationAccessibleView.test.ts` | 9 | `crates/je-workbench/tests/notification_accessible_view.rs` | 9 |
+| `src/vs/workbench/test/browser/notificationTelemetry.test.ts` | 13 | `crates/je-workbench/tests/notification_telemetry_browser.rs` | 13 |
+| `src/vs/workbench/test/browser/notificationsList.test.ts` | 11 | `crates/je-workbench/tests/notifications_list.rs` | 11 |
 | `src/vs/workbench/test/browser/notificationsPosition.test.ts` | 24 | `crates/je-workbench/tests/notifications_position.rs` | 24 |
+| `src/vs/workbench/test/browser/notificationsToasts.test.ts` | 4 | `crates/je-workbench/tests/notifications_toasts.rs` | 4 |
+| `src/vs/workbench/test/browser/parts/activitybar/activitybarPart.test.ts` | 27 | `crates/je-workbench/tests/activitybar_part.rs` | 27 |
 | `src/vs/workbench/test/browser/parts/editor/breadcrumbModel.test.ts` | 15 | `crates/je-workbench/tests/breadcrumb_model.rs` | 15 |
 | `src/vs/workbench/test/browser/parts/editor/diffEditorInput.test.ts` | 4 | `crates/je-workbench/tests/diff_editor_input.rs` | 4 |
 | `src/vs/workbench/test/browser/parts/editor/editor.test.ts` | 18 | `crates/je-workbench/tests/editor_common.rs` | 5 |
 | `src/vs/workbench/test/browser/parts/editor/editorGroupModel.test.ts` | 49 | `crates/je-workbench/tests/editor_group_model.rs` | 49 |
 | `src/vs/workbench/test/browser/parts/editor/editorInput.test.ts` | 7 | `crates/je-workbench/tests/editor_input.rs` | 2 |
 | `src/vs/workbench/test/browser/parts/editor/editorModel.test.ts` | 2 | `crates/je-workbench/tests/editor_model.rs` | 1 |
+| `src/vs/workbench/test/browser/parts/editor/editorPane.test.ts` | 12 | `crates/je-workbench/tests/editor_pane.rs` | 12 |
 | `src/vs/workbench/test/browser/parts/editor/filteredEditorGroupModel.test.ts` | 18 | `crates/je-workbench/tests/filtered_editor_group_model.rs` | 18 |
 | `src/vs/workbench/test/browser/parts/editor/modalEditorCompactHeader.test.ts` | 4 | `crates/je-workbench/tests/modal_editor_compact_header.rs` | 4 |
 | `src/vs/workbench/test/browser/parts/editor/modalEditorNavigation.test.ts` | 5 | `crates/je-workbench/tests/modal_editor_navigation.rs` | 5 |
 | `src/vs/workbench/test/browser/parts/editor/modalEditorResize.test.ts` | 8 | `crates/je-workbench/tests/modal_editor_resize.rs` | 8 |
 | `src/vs/workbench/test/browser/parts/editor/modalEditorSidebar.test.ts` | 29 | `crates/je-workbench/tests/modal_editor_sidebar.rs` | 29 |
+| `src/vs/workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts` | 86 | `crates/je-workbench/tests/multi_editor_tabs_control.rs` | 8 |
 | `src/vs/workbench/test/browser/parts/editor/resourceEditorInput.test.ts` | 2 | `crates/je-workbench/tests/resource_editor_input.rs` | 2 |
 | `src/vs/workbench/test/browser/parts/editor/sideBySideEditorInput.test.ts` | 4 | `crates/je-workbench/tests/side_by_side_editor_input.rs` | 4 |
 | `src/vs/workbench/test/browser/parts/editor/textResourceEditorInput.test.ts` | 5 | `crates/je-workbench/tests/text_resource_editor_input.rs` | 5 |
+| `src/vs/workbench/test/browser/parts/statusbar/statusbarItem.test.ts` | 10 | `crates/je-workbench/tests/statusbar_item.rs` | 10 |
 | `src/vs/workbench/test/browser/parts/statusbar/statusbarModel.test.ts` | 10 | `crates/je-workbench/tests/statusbar_model.rs` | 10 |
 | `src/vs/workbench/test/browser/quickAccess.test.ts` | 11 | `crates/je-workbench/tests/quick_access.rs` | 11 |
 | `src/vs/workbench/test/common/memento.test.ts` | 4 | `crates/je-workbench/tests/memento.rs` | 4 |

@@ -2,19 +2,26 @@
 //! (`HTMLElement | StandardMouseEvent | IAnchor`), a animação de fechamento, o `IDelegate` e o serviço.
 //!
 //! Divergências:
-//! - **`onHide(data)`.** O `data: unknown` que o `ActionWidgetService` passa é o `didCancel`, então é `Option<bool>`.
+//! - **`onHide(data)` e `hideContextView(data)`.** O `data: any` do original é o [`HideData`] (`Rc<dyn Any>`): quem esconde
+//!   (o `ActionWidgetService` com o `didCancel`, as migalhas com `{ source, didPick, sideBySide }`) entrega o valor que
+//!   o `onHide` do delegado lê de volta com [`hide_data_to`], que é o `data?.didPick` do original.
 //! - **`IOpenContextView`.** O `showContextView` devolve `{ close }` no original; o `ActionWidgetService` descarta o retorno,
 //!   então o contrato não o devolve.
 //! - **`onDOMEvent`, `useWindowContainerForShadowRoot`.** Os eventos de DOM do contêiner e a raiz de sombra não existem na
 //!   árvore nativa; entram com os widgets que os usam.
 
+use std::any::Any;
 use std::rc::Rc;
 
+use je_base::actions::{ActionRef, IActionRunner};
+use je_base::event::Event;
 use je_base::layout::{AnchorAlignment, AnchorAxisAlignment, AnchorPosition, IAnchor, IRect};
 use je_base::lifecycle::DisposableRef;
 use je_instantiation::service_id;
 
 use super::view_element::ViewElement;
+use crate::actions::MenuId;
+use crate::contextkey::contextkey::IContextKeyService;
 
 pub const CONTEXT_VIEW_MENU_MOTION_CLASS: &str = "context-view-menu-motion";
 pub const CONTEXT_VIEW_MENU_MOTION_CLOSING_CLASS: &str = "context-view-menu-motion-closing";
@@ -51,10 +58,19 @@ pub fn has_required_ancestor_classes(element: &Rc<ViewElement>, class_names: &[V
     false
 }
 
+/// O `data?: any` de `hideContextView` e de `onHide`.
+pub type HideData = Rc<dyn Any>;
+
+/// Lê o `data` como `T` (o valor que quem escondeu entregou), ou `None` se faltar ou for de outro tipo.
+pub fn hide_data_to<T: Any + Clone>(data: Option<&HideData>) -> Option<T> {
+    data.and_then(|data| data.downcast_ref::<T>()).cloned()
+}
+
 /// `HTMLElement | StandardMouseEvent | IAnchor`.
 #[derive(Clone)]
 pub enum AnchorTarget {
-    /// Posiciona a visão no elemento.
+    /// Posiciona a visão no elemento. Um elemento nativo ([`ViewElement::from_native`]) é medido por quem o criou (o
+    /// serviço do workbench resolve o nó no `Ui`); o `rect` do elemento só vale para os não nativos.
     Element(Rc<ViewElement>),
     /// `StandardMouseEvent`: `posx` e `posy`.
     Mouse { posx: f64, posy: f64 },
@@ -99,7 +115,7 @@ pub trait IContextViewDelegate {
     }
     fn focus(&self) {}
     /// `onHide(data)`.
-    fn on_hide(&self, _did_cancel: Option<bool>) {}
+    fn on_hide(&self, _data: Option<HideData>) {}
     fn close_animation(&self) -> Option<IContextViewCloseAnimation> {
         None
     }
@@ -114,10 +130,77 @@ pub trait IContextViewService {
     /// `showContextView(delegate, container, shadowRoot)`.
     fn show_context_view(&self, delegate: Rc<dyn IContextViewDelegate>, container: Option<Rc<ViewElement>>, shadow_root: bool);
     /// `hideContextView(data)`.
-    fn hide_context_view(&self, data: Option<bool>);
+    fn hide_context_view(&self, data: Option<HideData>);
     fn layout(&self);
     /// `getContextViewElement()`.
     fn get_context_view_element(&self) -> Rc<ViewElement>;
 }
 
 service_id!(pub I_CONTEXT_VIEW_SERVICE: dyn IContextViewService = "contextViewService");
+
+/// `IContextMenuDelegate` (`contextmenu.ts`), no que não depende de widgets: o `getAnchor`, o `getActions` e as opções
+/// escalares. `getActionViewItem`, `getCheckedActionsRepresentation` e `getActionsContext` dependem dos tipos de
+/// `je-widgets` e entram com a implementação do `ContextMenuHandler`.
+pub trait IContextMenuDelegate {
+    fn get_anchor(&self) -> AnchorTarget;
+    fn get_actions(&self) -> Vec<ActionRef>;
+    fn get_menu_class_name(&self) -> Option<String> {
+        None
+    }
+    fn on_hide(&self, _did_cancel: bool) {}
+    fn close_animation(&self) -> Option<IContextViewCloseAnimation> {
+        None
+    }
+    fn action_runner(&self) -> Option<Rc<dyn IActionRunner>> {
+        None
+    }
+    fn skip_telemetry(&self) -> bool {
+        false
+    }
+    fn auto_select_first_item(&self) -> bool {
+        false
+    }
+    fn anchor_alignment(&self) -> Option<AnchorAlignment> {
+        None
+    }
+    fn anchor_axis_alignment(&self) -> Option<AnchorAxisAlignment> {
+        None
+    }
+    fn layer(&self) -> Option<i32> {
+        None
+    }
+}
+
+/// `IContextMenuMenuDelegate`: `{ menuId?, menuActionOptions?, contextKeyService?, getActions? } & Omit<IContextMenuDelegate, 'getActions'>`.
+/// O `Omit<IContextMenuDelegate, 'getActions'>` é o delegado base, cujo `get_actions` é ignorado.
+/// `menuActionOptions` (`IMenuActionOptions`) ainda não existe na plataforma e fica de fora.
+#[derive(Clone)]
+pub struct IContextMenuMenuDelegate {
+    /// O `MenuId` que preenche o menu de contexto.
+    pub menu_id: Option<MenuId>,
+    /// O serviço de chaves de contexto que guia o menu.
+    pub context_key_service: Option<Rc<dyn IContextKeyService>>,
+    /// `getActions?()`: ações extras, colocadas antes das do menu.
+    pub get_actions: Option<Rc<dyn Fn() -> Vec<ActionRef>>>,
+    /// O resto do `IContextMenuDelegate`.
+    pub base: Rc<dyn IContextMenuDelegate>,
+}
+
+/// `IContextMenuDelegate | IContextMenuMenuDelegate`.
+#[derive(Clone)]
+pub enum ContextMenuRequest {
+    Delegate(Rc<dyn IContextMenuDelegate>),
+    Menu(IContextMenuMenuDelegate),
+}
+
+/// `IContextMenuService`.
+pub trait IContextMenuService {
+    /// `onDidShowContextMenu`.
+    fn on_did_show_context_menu(&self) -> Event<()>;
+    /// `onDidHideContextMenu`.
+    fn on_did_hide_context_menu(&self) -> Event<()>;
+    /// `showContextMenu(delegate)`.
+    fn show_context_menu(&self, request: ContextMenuRequest);
+}
+
+service_id!(pub I_CONTEXT_MENU_SERVICE: dyn IContextMenuService = "contextMenuService");

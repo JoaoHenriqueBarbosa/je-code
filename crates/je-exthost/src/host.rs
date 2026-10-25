@@ -14,7 +14,9 @@ use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::request::request::{AuthInfo, Credentials};
 use je_platform::resources::ext_uri;
 use je_workbench::api::common::ext_host_notebook::{ExtHostNotebookController, IExtHostConsumerFileSystem};
+use je_workbench::api::common::ext_host_notebook_document_save_participant::ExtHostNotebookDocumentSaveParticipant;
 use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
+use je_workbench::api::common::ext_host_notebook_editors::ExtHostNotebookEditors;
 use je_workbench::api::common::ext_host_notebook_kernels::ExtHostNotebookKernels;
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
@@ -41,15 +43,16 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
+    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookEditorsShape, ExtHostNotebookKernelsShape,
     ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
-    ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
+    ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTerminalShellIntegrationShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
 };
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_scm::ExtHostSCM;
 use je_workbench::api::common::ext_host_status_bar::ExtHostStatusBar;
-use je_workbench::api::common::ext_host_terminal_service::WorkerExtHostTerminalService;
+use je_workbench::api::common::ext_host_terminal_service::{WorkerExtHostTerminalService, WorkerTerminalCreation};
+use je_workbench::api::common::ext_host_terminal_shell_integration::ExtHostTerminalShellIntegration;
 use je_workbench::api::common::ext_host_tree_views::ExtHostTreeViews;
 use je_workbench::api::common::ext_host_window::ExtHostWindow;
 use je_workbench::api::common::ext_host_workspace::{ExtHostWorkspace, IExtHostInitDataService, IExtHostWorkspaceProvider, IURITransformerService, WorkspaceFolder};
@@ -65,7 +68,7 @@ use je_workbench::api::common::ext_host_storage::{ExtHostSecretState, ExtHostSto
 use crate::api::events::EventTables;
 use crate::api::extensions::ExtensionServiceSlot;
 use crate::api::languages::{LanguagesServices, LanguagesState};
-use crate::api::notebooks::NotebookApi;
+use crate::api::notebooks::{NotebookApi, WillSaveApi};
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
@@ -251,6 +254,7 @@ struct BridgedServices {
     text_editors: Option<TextEditorServices>,
     language_features: Option<Rc<ExtHostLanguageFeatures>>,
     terminal: Option<Rc<WorkerExtHostTerminalService>>,
+    terminal_shell_integration: Option<Rc<ExtHostTerminalShellIntegration<WorkerTerminalCreation>>>,
     tree_views: Option<Rc<ExtHostTreeViews>>,
     debug: Option<Rc<ExtHostDebugServiceBase>>,
     /// Os serviços de que o `ExtensionContext` de cada extensão depende (ver `crate::api::extension_context`).
@@ -341,8 +345,12 @@ impl ExtensionHost {
         members.extend(tabs::classes(runner, &tab_objects));
         let debug_objects = Rc::new(debug::DebugObjects::default());
         members.extend(debug::classes(runner, &debug_objects));
-        let notebook_objects = Rc::new(notebooks::NotebookObjects::default());
+        let notebook_objects = Rc::new(notebooks::NotebookObjects::new(runner));
         notebooks::define_classes(runner, &notebook_objects, &window_state.text_objects, &table, &event_tables);
+        let host_arguments = Rc::new(commands::HostArguments::default());
+        scm::register_arguments(runner, &scm_objects, &host_arguments);
+        comments::register_arguments(runner, &comment_objects, &host_arguments);
+        notebooks::register_arguments(&notebook_objects, &host_arguments);
         members.extend(notebooks::classes(runner));
         let extension_slot = ExtensionServiceSlot::new();
         extensions::define_class(runner, &extension_slot);
@@ -451,8 +459,23 @@ impl ExtensionHost {
                     );
                     let controller_shape: Rc<dyn ExtHostNotebookShape> = controller.clone();
                     late.notebook.0.bind(controller_shape);
-                    let documents_shape: Rc<dyn ExtHostNotebookDocumentsShape> = ExtHostNotebookDocuments::new(controller.clone());
+                    let documents = ExtHostNotebookDocuments::new(controller.clone());
+                    let documents_shape: Rc<dyn ExtHostNotebookDocumentsShape> = documents.clone();
                     late.notebook_documents.0.bind(documents_shape);
+                    let editors = ExtHostNotebookEditors::new(log_service.clone(), controller.clone());
+                    let editors_shape: Rc<dyn ExtHostNotebookEditorsShape> = editors.clone();
+                    late.notebook_editors.0.bind(editors_shape);
+                    // O `onWillSaveNotebookDocument` aplica as edições que os ouvintes devolvem: pede o cliente `MainThreadBulkEdits`.
+                    let will_save = bulk_edits.as_ref().map(|(_, edits)| {
+                        let participant = Rc::new(ExtHostNotebookDocumentSaveParticipant::new(
+                            log_service.clone(),
+                            controller.clone(),
+                            bridged_ref.get_proxy(&MainContext::MAIN_THREAD_BULK_EDITS),
+                        ));
+                        let participant_shape: Rc<dyn ExtHostNotebookDocumentSaveParticipantShape> = participant.clone();
+                        late.notebook_save_participant.0.bind(participant_shape);
+                        WillSaveApi { participant, edits: edits.clone() }
+                    });
                     let kernels = provided(MainContext::MAIN_THREAD_NOTEBOOK_KERNELS.sid)
                         .then(|| ExtHostNotebookKernels::new(bridged_ref, controller.clone(), &commands, log_service.clone()))
                         .and_then(|kernels| match kernels {
@@ -466,7 +489,16 @@ impl ExtensionHost {
                                 None
                             }
                         });
-                    Some(NotebookApi { notebooks: controller, kernels, objects: notebook_objects.clone(), events: event_tables.clone() })
+                    Some(NotebookApi {
+                        notebooks: controller,
+                        documents,
+                        editors,
+                        will_save,
+                        kernels,
+                        objects: notebook_objects.clone(),
+                        events: event_tables.clone(),
+                        text: window_state.text_objects.clone(),
+                    })
                 }
                 _ => None,
             };
@@ -556,6 +588,15 @@ impl ExtensionHost {
                 late.terminal_service.0.bind(terminal_shape);
                 environment_variable_collection::define_class(runner, &table, terminal.clone(), extension_slot.clone());
                 bridged.context.environment_variable_collection = true;
+                env_services.shell_changes = Some(terminal.on_did_change_shell());
+                // `Terminal#shellIntegration` e os eventos de execução pedem também o cliente `MainThreadTerminalShellIntegration`; o
+                // serviço é ligado depois do de terminais, que precisa já conhecer os terminais abertos que a integração anuncia.
+                if provided(MainContext::MAIN_THREAD_TERMINAL_SHELL_INTEGRATION.sid) {
+                    let integration = ExtHostTerminalShellIntegration::new(bridged_ref, terminal.clone());
+                    let integration_shape: Rc<dyn ExtHostTerminalShellIntegrationShape> = integration.clone();
+                    late.terminal_shell_integration.0.bind(integration_shape);
+                    bridged.terminal_shell_integration = Some(integration);
+                }
                 bridged.terminal = Some(terminal);
             }
 
@@ -694,6 +735,7 @@ impl ExtensionHost {
                 || bridged.terminal.is_some()
                 || bridged.tree_views.is_some()
                 || text_editor_api.is_some()
+                || notebook_api.is_some()
             {
                 let window_services = Rc::new(WindowServices {
                     message_service,
@@ -703,16 +745,18 @@ impl ExtensionHost {
                     output: bridged.output.clone(),
                     progress: bridged.progress.clone(),
                     terminal: bridged.terminal.clone(),
+                    terminal_shell_integration: bridged.terminal_shell_integration.clone(),
                     tree_views: bridged.tree_views.clone(),
                     text_editors: text_editor_api,
                     tabs: tabs_api,
+                    notebooks: notebook_api.clone(),
                 });
                 members.push(("window".to_owned(), window::namespace(runner, window_services, &table, &event_tables, &window_state)));
             }
         }
 
         members.extend([
-            ("commands".to_owned(), commands::namespace(runner, &commands, &table)),
+            ("commands".to_owned(), commands::namespace(runner, &commands, &table, &host_arguments)),
             ("l10n".to_owned(), l10n::namespace(runner)),
             ("extensions".to_owned(), extensions::namespace(runner, &extension_slot, &table)),
         ]);
@@ -770,6 +814,9 @@ impl ExtensionHost {
         }
         if let Some(language_features) = &self.bridged.language_features {
             language_features.dispose();
+        }
+        if let Some(integration) = &self.bridged.terminal_shell_integration {
+            integration.dispose();
         }
         if let Some(terminal) = &self.bridged.terminal {
             terminal.dispose();

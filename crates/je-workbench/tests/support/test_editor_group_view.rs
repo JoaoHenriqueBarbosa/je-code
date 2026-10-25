@@ -44,6 +44,9 @@ impl IEditorGroup for TestEditorGroupView {
         None
     }
 
+    /// `focus(): void { }`.
+    fn focus(&self) {}
+
     fn editors(&self) -> Vec<EditorInputRef> {
         self.editors.borrow().clone()
     }

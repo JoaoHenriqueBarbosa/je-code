@@ -23,6 +23,7 @@ pub mod environment;
 pub mod extension_management;
 pub mod extension_recommendations;
 pub mod files;
+pub mod hover;
 pub mod js;
 pub mod keyboard_layout;
 pub mod keybinding;

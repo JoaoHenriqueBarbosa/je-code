@@ -11,6 +11,7 @@
 //!   botão com `QuickInputButtons.Back` por identidade (`button === QuickInputButtons.Back`) falha, comparar por `iconPath.id` funciona.
 
 use je_base::themables::ThemeIcon;
+use je_editor::language_configuration::IndentAction;
 use je_platform::files::files::FileType;
 use je_platform::log::LogLevel;
 use je_workbench::api::common::ext_host_debug_types::DebugConsoleMode;
@@ -19,7 +20,7 @@ use je_workbench::contrib::debug::debug::DebugConfigurationProviderTriggerKind;
 use je_workbench::api::common::ext_host_types::{
     CodeActionTriggerKind, CommentMode, CommentState, CommentThreadApplicability, CommentThreadCollapsibleState, CommentThreadFocus, CommentThreadState,
     CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, DocumentHighlightKind, ExtensionKind,
-    FileChangeType, FoldingRangeKind, InlayHintKind, InputBoxValidationSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment,
+    FileChangeType, FoldingRangeKind, InlayHintKind, InputBoxValidationSeverity, LanguageStatusSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment,
     NotebookControllerAffinity, NotebookEditorRevealType, ProgressLocation, QuickPickItemKind, SignatureHelpTriggerKind, StatusBarAlignment, SymbolKind, SymbolTag,
 };
 use zjsc::api::embed_node::JsData;
@@ -196,6 +197,23 @@ pub fn enums() -> Vec<(String, JsData)> {
         ),
         ("InlayHintKind".to_owned(), enum_object(&[("Type", InlayHintKind::Type.value()), ("Parameter", InlayHintKind::Parameter.value())])),
         (
+            "LanguageStatusSeverity".to_owned(),
+            enum_object(&[
+                ("Information", LanguageStatusSeverity::Information.value()),
+                ("Warning", LanguageStatusSeverity::Warning.value()),
+                ("Error", LanguageStatusSeverity::Error.value()),
+            ]),
+        ),
+        (
+            "IndentAction".to_owned(),
+            enum_object(&[
+                ("None", IndentAction::None as i32),
+                ("Indent", IndentAction::Indent as i32),
+                ("IndentOutdent", IndentAction::IndentOutdent as i32),
+                ("Outdent", IndentAction::Outdent as i32),
+            ]),
+        ),
+        (
             "SignatureHelpTriggerKind".to_owned(),
             enum_object(&[
                 ("Invoke", SignatureHelpTriggerKind::Invoke.value()),
@@ -208,6 +226,7 @@ pub fn enums() -> Vec<(String, JsData)> {
         ("TreeItemCheckboxState".to_owned(), enum_object(&[("Unchecked", 0), ("Checked", 1)])),
         ("TerminalExitReason".to_owned(), enum_object(&[("Unknown", 0), ("Shutdown", 1), ("Process", 2), ("User", 3), ("Extension", 4)])),
         ("TerminalLocation".to_owned(), enum_object(&[("Panel", 1), ("Editor", 2)])),
+        ("TerminalShellExecutionCommandLineConfidence".to_owned(), enum_object(&[("Low", 0), ("Medium", 1), ("High", 2)])),
         // Os enums de arquivo (`extHostTypes.ts` e `vscode.d.ts`): `FileType`, `FileChangeType` e `FilePermission`.
         (
             "FileType".to_owned(),

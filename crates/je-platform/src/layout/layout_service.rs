@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use je_base::event::Event;
 use je_base::layout::ISize;
+use je_base::lifecycle::DisposableStore;
 use je_instantiation::service_id;
 
 use crate::contextview::view_element::ViewElement;
@@ -24,6 +25,13 @@ pub struct LayoutContainerEvent {
     pub dimension: ISize,
 }
 
+/// `{ container: HTMLElement; disposables: DisposableStore }` do `onDidAddContainer`.
+#[derive(Clone)]
+pub struct LayoutAddContainerEvent {
+    pub container: Rc<ViewElement>,
+    pub disposables: Rc<DisposableStore>,
+}
+
 /// `ILayoutService`.
 pub trait ILayoutService {
     /// `mainContainer`.
@@ -36,6 +44,14 @@ pub trait ILayoutService {
     fn on_did_layout_container(&self) -> Event<LayoutContainerEvent>;
     /// As medidas do `window` do contêiner.
     fn window_viewport(&self) -> Viewport;
+    /// `containers`: todos os contêineres (o principal e os das janelas auxiliares). Sem janelas auxiliares, só o principal.
+    fn containers(&self) -> Vec<Rc<ViewElement>> {
+        vec![self.main_container()]
+    }
+    /// `onDidAddContainer`: sem janelas auxiliares, nunca dispara.
+    fn on_did_add_container(&self) -> Event<LayoutAddContainerEvent> {
+        Event::none()
+    }
 }
 
 service_id!(pub I_LAYOUT_SERVICE: dyn ILayoutService = "layoutService");

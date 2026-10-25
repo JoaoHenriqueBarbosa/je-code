@@ -55,15 +55,17 @@ use je_platform::terminal::environment_variable::ISerializableEnvironmentVariabl
 use je_platform::terminal::terminal::{ITerminalLaunchError, ITerminalProfile, TerminalExitReason as PlatformExitReason, TerminalShellType};
 use je_workbench::api::common::ext_host_protocol::{
     ActiveCommentInfo, CheckboxUpdate, CommentChanges, CommentReaction, CommentThreadChanges, CommentingRangesDto, ExtHostCommentsShape, ExtHostSCMShape, ExtHostTerminalServiceShape,
+    ExtHostTerminalShellIntegrationShape,
     ExtHostTreeViewsShape, ICreateContributedTerminalProfileOptions, ISCMHistoryOptions, ITerminalCommandDto,
     ITerminalCompletionContextDto, ITerminalDimensionsDto, ITerminalLinkDto, IShellLaunchConfigDto, SCMArtifactDto, SCMArtifactGroupDto, SCMHistoryItemChangeDto, SCMHistoryItemDto,
     SCMHistoryItemRefDto, TerminalCommandMatchResultDto, TerminalCompletionListDto, TerminalQuickFix, TreeChildrenBatch,
 };
+use je_workbench::api::common::ext_host_types::TerminalShellExecutionCommandLineConfidence;
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
 use je_workbench::api::common::ext_host_protocol::{ExtHostSecretStateShape, ExtHostStorageShape};use je_workbench::api::common::ext_host_protocol::{
-    ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
-    INotebookDocumentsAndEditorsDelta, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
+    ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookEditorsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape,
+    INotebookCellStatusBarListDto, INotebookDocumentsAndEditorsDelta, INotebookEditorPropertiesChangeData, INotebookEditorViewColumnInfo, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
 };
 use je_workbench::contrib::notebook::common::notebook_common::INotebookKernelSourceAction;
 use je_platform::files::files::WriteFileOptions;
@@ -799,6 +801,63 @@ impl ExtHostTerminalServiceShape for LateExtHostTerminalService {
     }
 }
 
+/// O `ExtHostTerminalShellIntegrationShape` que ainda não existe quando `MainThreadTerminalShellIntegration` nasce (o construtor dele
+/// já anuncia a integração dos terminais abertos e o diretório de trabalho). Todas as chamadas são sem retorno e esperam o `bind`.
+#[derive(Default)]
+pub struct LateExtHostTerminalShellIntegration(pub Late<dyn ExtHostTerminalShellIntegrationShape>);
+
+impl ExtHostTerminalShellIntegrationShape for LateExtHostTerminalShellIntegration {
+    fn rpc_shell_integration_change(&self, instance_id: u32, supports_execute_command_api: bool) {
+        self.0.call_void(move |target| target.rpc_shell_integration_change(instance_id, supports_execute_command_api));
+    }
+
+    fn rpc_shell_execution_start(
+        &self,
+        instance_id: u32,
+        supports_execute_command_api: bool,
+        command_line_value: &str,
+        command_line_confidence: TerminalShellExecutionCommandLineConfidence,
+        is_trusted: bool,
+        cwd: Option<&str>,
+    ) {
+        let (command_line_value, cwd) = (command_line_value.to_owned(), cwd.map(str::to_owned));
+        self.0.call_void(move |target| {
+            target.rpc_shell_execution_start(instance_id, supports_execute_command_api, &command_line_value, command_line_confidence, is_trusted, cwd.as_deref())
+        });
+    }
+
+    fn rpc_shell_execution_end(
+        &self,
+        instance_id: u32,
+        command_line_value: &str,
+        command_line_confidence: TerminalShellExecutionCommandLineConfidence,
+        is_trusted: bool,
+        exit_code: Option<i32>,
+    ) {
+        let command_line_value = command_line_value.to_owned();
+        self.0.call_void(move |target| target.rpc_shell_execution_end(instance_id, &command_line_value, command_line_confidence, is_trusted, exit_code));
+    }
+
+    fn rpc_shell_execution_data(&self, instance_id: u32, data: &str) {
+        let data = data.to_owned();
+        self.0.call_void(move |target| target.rpc_shell_execution_data(instance_id, &data));
+    }
+
+    fn rpc_shell_env_change(&self, instance_id: u32, shell_env_keys: &[String], shell_env_values: &[Option<String>], is_trusted: bool) {
+        let (keys, values) = (shell_env_keys.to_vec(), shell_env_values.to_vec());
+        self.0.call_void(move |target| target.rpc_shell_env_change(instance_id, &keys, &values, is_trusted));
+    }
+
+    fn rpc_cwd_change(&self, instance_id: u32, cwd: Option<&str>) {
+        let cwd = cwd.map(str::to_owned);
+        self.0.call_void(move |target| target.rpc_cwd_change(instance_id, cwd.as_deref()));
+    }
+
+    fn rpc_close_terminal(&self, instance_id: u32) {
+        self.0.call_void(move |target| target.rpc_close_terminal(instance_id));
+    }
+}
+
 /// O `ExtHostTreeViewsShape` que ainda não existe quando `MainThreadTreeViews` nasce.
 #[derive(Default)]
 pub struct LateExtHostTreeViews(pub Late<dyn ExtHostTreeViewsShape>);
@@ -1078,6 +1137,22 @@ impl ExtHostNotebookShape for LateExtHostNotebook {
     }
 }
 
+/// O `ExtHostNotebookEditorsShape` que ainda não existe quando o cliente `MainThreadNotebookEditors` do workbench nasce. As duas chamadas são
+/// sem retorno e ficam na fila se chegarem antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostNotebookEditors(pub Late<dyn ExtHostNotebookEditorsShape>);
+
+impl ExtHostNotebookEditorsShape for LateExtHostNotebookEditors {
+    fn rpc_accept_editor_properties_changed(&self, id: &str, data: INotebookEditorPropertiesChangeData) {
+        let id = id.to_owned();
+        self.0.call_void(move |target| target.rpc_accept_editor_properties_changed(&id, data));
+    }
+
+    fn rpc_accept_editor_view_columns(&self, data: INotebookEditorViewColumnInfo) {
+        self.0.call_void(move |target| target.rpc_accept_editor_view_columns(data));
+    }
+}
+
 /// O `ExtHostNotebookDocumentsShape` que ainda não existe quando o cliente `MainThreadNotebookDocuments` do workbench nasce. As três chamadas
 /// são sem retorno e ficam na fila se chegarem antes do `bind`.
 #[derive(Default)]
@@ -1097,6 +1172,17 @@ impl ExtHostNotebookDocumentsShape for LateExtHostNotebookDocuments {
     fn rpc_accept_model_saved(&self, uri: &URI) {
         let uri = uri.clone();
         self.0.call_void(move |target| target.rpc_accept_model_saved(&uri));
+    }
+}
+
+/// O `ExtHostNotebookDocumentSaveParticipantShape` que ainda não existe quando o cliente `MainThreadNotebookDocuments` do workbench nasce. O
+/// pedido de participação na gravação só chega com o host já ligado.
+#[derive(Default)]
+pub struct LateExtHostNotebookDocumentSaveParticipant(pub Late<dyn ExtHostNotebookDocumentSaveParticipantShape>);
+
+impl ExtHostNotebookDocumentSaveParticipantShape for LateExtHostNotebookDocumentSaveParticipant {
+    fn rpc_participate_in_save(&self, resource: &URI, reason: je_workbench::common::editor::SaveReason, token: CancellationToken) -> Promise<bool> {
+        self.0.bound().rpc_participate_in_save(resource, reason, token)
     }
 }
 
@@ -1283,9 +1369,12 @@ pub struct LateForwarders {
     pub authentication: Rc<LateExtHostAuthentication>,
     pub notebook: Rc<LateExtHostNotebook>,
     pub notebook_documents: Rc<LateExtHostNotebookDocuments>,
+    pub notebook_editors: Rc<LateExtHostNotebookEditors>,
+    pub notebook_save_participant: Rc<LateExtHostNotebookDocumentSaveParticipant>,
     pub notebook_kernels: Rc<LateExtHostNotebookKernels>,
     pub debug_service: Rc<LateExtHostDebugService>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
+    pub terminal_shell_integration: Rc<LateExtHostTerminalShellIntegration>,
     pub tree_views: Rc<LateExtHostTreeViews>,
     pub workspace: Rc<LateExtHostWorkspace>,
     pub configuration: Rc<LateExtHostConfiguration>,
@@ -1329,6 +1418,7 @@ impl LateForwarders {
         let languages = Rc::new(LateExtHostLanguages::default());
         let language_features = Rc::new(LateExtHostLanguageFeatures::default());
         let terminal_service = Rc::new(LateExtHostTerminalService::default());
+        let terminal_shell_integration = Rc::new(LateExtHostTerminalShellIntegration::default());
         let tree_views = Rc::new(LateExtHostTreeViews::default());
         let debug_service = Rc::new(LateExtHostDebugService::default());
         let as_debug_service: Rc<dyn ExtHostDebugServiceShape> = debug_service.clone();
@@ -1351,10 +1441,18 @@ impl LateForwarders {
         let notebook_documents = Rc::new(LateExtHostNotebookDocuments::default());
         let as_notebook_documents: Rc<dyn ExtHostNotebookDocumentsShape> = notebook_documents.clone();
         local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENTS.sid, Rc::new(as_notebook_documents));
+        let notebook_editors = Rc::new(LateExtHostNotebookEditors::default());
+        let as_notebook_editors: Rc<dyn ExtHostNotebookEditorsShape> = notebook_editors.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_EDITORS.sid, Rc::new(as_notebook_editors));
+        let notebook_save_participant = Rc::new(LateExtHostNotebookDocumentSaveParticipant::default());
+        let as_notebook_save_participant: Rc<dyn ExtHostNotebookDocumentSaveParticipantShape> = notebook_save_participant.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENT_SAVE_PARTICIPANT.sid, Rc::new(as_notebook_save_participant));
         let notebook_kernels = Rc::new(LateExtHostNotebookKernels::default());
         let as_notebook_kernels: Rc<dyn ExtHostNotebookKernelsShape> = notebook_kernels.clone();
         local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_KERNELS.sid, Rc::new(as_notebook_kernels));
         let as_terminal_service: Rc<dyn ExtHostTerminalServiceShape> = terminal_service.clone();
+        let as_terminal_shell_integration: Rc<dyn ExtHostTerminalShellIntegrationShape> = terminal_shell_integration.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SHELL_INTEGRATION.sid, Rc::new(as_terminal_shell_integration));
         let as_tree_views: Rc<dyn ExtHostTreeViewsShape> = tree_views.clone();
         local.set_erased(ExtHostContext::EXT_HOST_TERMINAL_SERVICE.sid, Rc::new(as_terminal_service));
         local.set_erased(ExtHostContext::EXT_HOST_TREE_VIEWS.sid, Rc::new(as_tree_views));
@@ -1384,7 +1482,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_editors, notebook_save_participant, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, terminal_shell_integration, tree_views }
     }
 }
 

@@ -21,9 +21,11 @@
 //! - O `quickDiffProvider` chega como cópia (a atribuição a uma propriedade não é por referência): vale um objeto com a função
 //!   `provideOriginalResource` como propriedade PRÓPRIA (um objeto literal ou o atribuído a campos); os métodos de protótipo de uma
 //!   classe e o `this` do provedor não chegam. A função roda sem `this`.
-//! - Os `resourceStates` que `resourceStates` devolve são as cópias que a extensão atribuiu (com as propriedades extras dela), e a
-//!   ordem é a atribuída (a ordenação por caminho é só a da lista que vai ao workbench).
-//! - Um comando com `arguments` de objeto comum recebe, no `ExtHostCommands`, a cópia que atravessou a fronteira.
+//! - Os `resourceStates` que `resourceStates` devolve são os objetos que a extensão atribuiu (com as propriedades extras dela, num array
+//!   novo a cada leitura), e a ordem é a atribuída (a ordenação por caminho é só a da lista que vai ao workbench).
+//! - Um comando recebe a `SourceControl` e o `SourceControlResourceGroup` como a mesma instância que a extensão criou (`===`,
+//!   [`register_arguments`]); o `SourceControlResourceState` é o MESMO objeto que a extensão atribuiu a `resourceStates` (o host observa
+//!   a atribuição com [`JsObjects::observe`] e guarda cada item por referência).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,8 +44,10 @@ use je_workbench::api::common::ext_host_types::Command;
 use je_workbench::api::common::ext_host_values::ApiValue;
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner};
 
-use crate::api::commands::{call_settled, convert_maybe};
+use crate::api::commands::{call_settled, convert_maybe, HostArguments};
 use crate::api::events::EventTables;
+use crate::api::instances::{hold_by_reference, Instances};
+use crate::api::js_object::{JsObjects, Observed};
 use crate::api::languages::host_extension;
 use crate::api::{getter, handle_field, handle_object, setter};
 use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js, uri_to_js};
@@ -57,15 +61,28 @@ pub struct ScmObjects {
     group_owners: RefCell<HashMap<u32, u32>>,
     /// O `quickDiffProvider` que a extensão atribuiu, por fonte (a leitura devolve o que ela passou).
     providers: RefCell<HashMap<u32, JsData>>,
-    /// Os `resourceStates` que a extensão atribuiu, por grupo.
-    states: RefCell<HashMap<u32, Vec<JsData>>>,
+    /// Os `resourceStates` que a extensão atribuiu, por grupo: o estado do host e o objeto que ela passou.
+    states: RefCell<HashMap<u32, Vec<(Rc<SourceControlResourceState>, JsData)>>>,
+    /// As instâncias de `SourceControl` e `SourceControlResourceGroup` que a extensão segura (a mesma em toda leitura).
+    instances: Instances,
 }
 
 impl ScmObjects {
-    fn add_control(&self, control: Rc<ExtHostSourceControl>) -> JsData {
-        let handle = control.handle();
-        self.controls.borrow_mut().insert(handle, control);
-        handle_object("SourceControl", handle)
+    /// O `SourceControl` que a extensão segura (o `value` do original), criado pela extensão ou entregue a um comando.
+    fn control_value(&self, runner: &NodeRunner, control: &Rc<ExtHostSourceControl>) -> JsData {
+        self.controls.borrow_mut().entry(control.handle()).or_insert_with(|| control.clone());
+        self.instances.get(runner, "SourceControl", control.handle())
+    }
+
+    fn group_value(&self, runner: &NodeRunner, group: &Rc<ExtHostSourceControlResourceGroup>) -> JsData {
+        self.groups.borrow_mut().entry(group.handle()).or_insert_with(|| group.clone());
+        self.instances.get(runner, "SourceControlResourceGroup", group.handle())
+    }
+
+    /// O `SourceControlResourceState` que a extensão atribuiu a um grupo, se o host o conhece; senão o estado do host.
+    fn state_value(&self, state: &Rc<SourceControlResourceState>) -> JsData {
+        let assigned = self.states.borrow().values().flatten().find(|(candidate, _)| Rc::ptr_eq(candidate, state)).map(|(_, value)| value.clone());
+        assigned.unwrap_or_else(|| dynamic_to_js(&state.to_dynamic()))
     }
 
     fn control_of(&self, this: &JsData) -> Result<Rc<ExtHostSourceControl>, String> {
@@ -84,7 +101,33 @@ impl ScmObjects {
         self.groups.borrow_mut().remove(&handle);
         self.group_owners.borrow_mut().remove(&handle);
         self.states.borrow_mut().remove(&handle);
+        self.instances.forget("SourceControlResourceGroup", handle);
     }
+
+    fn forget_control(&self, handle: u32) {
+        self.controls.borrow_mut().remove(&handle);
+        self.providers.borrow_mut().remove(&handle);
+        self.instances.forget("SourceControl", handle);
+        let owned: Vec<u32> = self.group_owners.borrow().iter().filter(|(_, owner)| **owner == handle).map(|(group, _)| *group).collect();
+        for group in owned {
+            self.forget_group(group);
+        }
+    }
+}
+
+/// Registra o resolvedor dos argumentos de comando que o `ArgumentProcessor` de `ExtHostSCM` produz: a fonte, o grupo e o estado de
+/// recurso chegam ao comando da extensão como os objetos que ela segura.
+pub fn register_arguments(runner: &NodeRunner, objects: &Rc<ScmObjects>, arguments: &HostArguments) {
+    let (runner, objects) = (runner.clone(), objects.clone());
+    arguments.register(move |value| {
+        if let Some(control) = ExtHostSourceControl::from_dynamic(value) {
+            return Some(objects.control_value(&runner, &control));
+        }
+        if let Some(group) = ExtHostSourceControlResourceGroup::from_dynamic(value) {
+            return Some(objects.group_value(&runner, &group));
+        }
+        SourceControlResourceState::from_dynamic(value).map(|state| objects.state_value(&state))
+    });
 }
 
 // ---- a conversão dos estados de recurso
@@ -236,6 +279,7 @@ fn define_source_control(runner: &NodeRunner, objects: &Rc<ScmObjects>, events: 
     ];
 
     let (group_objects, dispose_objects) = (objects.clone(), objects.clone());
+    let group_runner = runner.clone();
     let methods: Vec<(String, u32, MethodCallback)> = vec![
         (
             "createResourceGroup".to_owned(),
@@ -245,10 +289,8 @@ fn define_source_control(runner: &NodeRunner, objects: &Rc<ScmObjects>, events: 
                 let id = string_arg(args, 0, "createResourceGroup: o id")?;
                 let label = string_arg(args, 1, "createResourceGroup: o label")?;
                 let group = control.create_resource_group(&id, &label, None);
-                let handle = group.handle();
-                group_objects.groups.borrow_mut().insert(handle, group);
-                group_objects.group_owners.borrow_mut().insert(handle, control.handle());
-                Ok(handle_object("SourceControlResourceGroup", handle))
+                group_objects.group_owners.borrow_mut().insert(group.handle(), control.handle());
+                Ok(group_objects.group_value(&group_runner, &group))
             }),
         ),
         (
@@ -257,13 +299,7 @@ fn define_source_control(runner: &NodeRunner, objects: &Rc<ScmObjects>, events: 
             Rc::new(move |this, _| {
                 let control = dispose_objects.control_of(this)?;
                 control.dispose();
-                let handle = control.handle();
-                dispose_objects.controls.borrow_mut().remove(&handle);
-                dispose_objects.providers.borrow_mut().remove(&handle);
-                let owned: Vec<u32> = dispose_objects.group_owners.borrow().iter().filter(|(_, owner)| **owner == handle).map(|(group, _)| *group).collect();
-                for group in owned {
-                    dispose_objects.forget_group(group);
-                }
+                dispose_objects.forget_control(control.handle());
                 Ok(JsData::Undefined)
             }),
         ),
@@ -289,7 +325,9 @@ fn define_resource_group(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
         get("label", |_, group| JsData::Str(group.label())),
         get("hideWhenEmpty", |_, group| group.hide_when_empty().map_or(JsData::Undefined, JsData::Bool)),
         get("contextValue", |_, group| text_or_undefined(group.context_value())),
-        get("resourceStates", |objects, group| JsData::Array(objects.states.borrow().get(&group.handle()).cloned().unwrap_or_default())),
+        get("resourceStates", |objects, group| {
+            JsData::Array(objects.states.borrow().get(&group.handle()).map(|pairs| pairs.iter().map(|(_, value)| value.clone()).collect()).unwrap_or_default())
+        }),
     ];
 
     let set = |name: &str, write: fn(&ScmObjects, &Rc<ExtHostSourceControlResourceGroup>, &JsData) -> Result<(), String>| setter(objects, name, ScmObjects::group_of, write);
@@ -313,7 +351,7 @@ fn define_resource_group(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
                 _ => return Err("resourceStates precisa ser uma lista de SourceControlResourceState".to_owned()),
             };
             let states = list.iter().map(resource_state_of).collect::<Result<Vec<_>, String>>()?;
-            objects.states.borrow_mut().insert(group.handle(), list);
+            objects.states.borrow_mut().insert(group.handle(), states.iter().cloned().zip(list).collect());
             group.set_resource_states(states);
             Ok(())
         }),
@@ -330,7 +368,7 @@ fn define_resource_group(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
             Ok(JsData::Undefined)
         }),
     )];
-    runner.define_accessor_class(
+    let class = Rc::new(runner.define_accessor_class(
         ClassSpec {
             name: "SourceControlResourceGroup".to_owned(),
             length: 0,
@@ -341,7 +379,14 @@ fn define_resource_group(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
             parent: None,
         },
         setters,
-    );
+    ));
+    let (hold_js, hold_objects) = (JsObjects::new(runner), objects.clone());
+    let observer = hold_js.clone();
+    observer.observe(&class, "resourceStates", Observed::Setter, move |this, _, items| {
+        if let Some(group) = hold_js.handle_id(this) {
+            hold_by_reference(&hold_objects.states, group, items);
+        }
+    });
 }
 
 fn define_input_box(runner: &NodeRunner, objects: &Rc<ScmObjects>) {
@@ -395,7 +440,7 @@ pub fn define_classes(runner: &NodeRunner, objects: &Rc<ScmObjects>, events: &Rc
 
 /// O namespace `scm`: `createSourceControl(id, label, rootUri?)`.
 pub fn namespace(runner: &NodeRunner, scm: &Rc<ExtHostSCM>, objects: &Rc<ScmObjects>) -> JsData {
-    let (scm, objects) = (scm.clone(), objects.clone());
+    let (scm, objects, create_runner) = (scm.clone(), objects.clone(), runner.clone());
     let create = runner.make_function(
         "createSourceControl",
         3,
@@ -406,7 +451,8 @@ pub fn namespace(runner: &NodeRunner, scm: &Rc<ExtHostSCM>, objects: &Rc<ScmObje
                 Some(uri @ JsData::Object(_)) => Some(uri_from_js(uri)?),
                 _ => None,
             };
-            Ok(objects.add_control(scm.create_source_control(&host_extension(), &id, &label, root_uri, None, None, None)))
+            let control = scm.create_source_control(&host_extension(), &id, &label, root_uri, None, None, None);
+            Ok(objects.control_value(&create_runner, &control))
         }),
     );
     JsData::Object(vec![("createSourceControl".to_owned(), JsData::Handle(Rc::new(create)))])

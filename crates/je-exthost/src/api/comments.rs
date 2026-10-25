@@ -14,8 +14,11 @@
 //! Falta: `CommentThread#reveal` e `hide` (a proposta `commentReveal`, que o host nunca habilita: o original rejeitaria), `CommentThread#
 //! applicability`, `CommentController#activeComment` e `activeCommentThread` (a proposta `activeComment`), `commentingRangeProvider#
 //! resourceHints` (a proposta `commentingRangeHint`) e o `timestamp` de `Comment` (um `Date` não atravessa a fronteira do motor: só
-//! um número, em milissegundos). Os argumentos de comando criados pelo `ExtHostCommentsImpl` (`CommentThread`, `CommentNode`...) chegam
-//! ao comando da extensão como objetos de dados, sem o `this` da thread.
+//! um número, em milissegundos). Os argumentos de comando criados pelo `ExtHostCommentsImpl` chegam ao comando da extensão como os
+//! objetos que ela segura ([`register_arguments`]): a `CommentThread` e o `CommentController` são a mesma instância que
+//! `createCommentThread` e `createCommentController` devolveram (`===`), e o `Comment` é o objeto que a extensão atribuiu a `comments`
+//! (ou passou a `createCommentThread`), o MESMO objeto: o host observa a atribuição e a criação ([`JsObjects::observe`]) e guarda cada
+//! item por referência.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões: o controlador é criado em nome da extensão `je.exthost`, e as propostas de API nunca
@@ -25,7 +28,8 @@
 //!   provedor vale com `provideCommentingRanges` como propriedade PRÓPRIA (um objeto literal), e roda sem `this`; o comentário que o
 //!   `reactionHandler` recebe é uma cópia do comentário da thread.
 //! - Um comentário é um objeto de dados: a identidade que o original compara em `ExtHostCommentThread#comments` (um `Map` por objeto) é
-//!   a das cópias que a thread guardou. A leitura de `comments` devolve o que a extensão atribuiu (com as propriedades extras dela).
+//!   a dos itens que a thread guardou. A leitura de `comments` devolve os objetos que a extensão atribuiu (com as propriedades extras
+//!   dela), num array novo a cada leitura.
 //! - As tabelas de controladores e de threads não têm coletor além de `dispose` (o motor não avisa quando o objeto é descartado).
 
 use std::cell::RefCell;
@@ -45,13 +49,15 @@ use je_workbench::api::common::ext_host_types::{
 };
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner};
 
-use crate::api::commands::{call_settled, convert_maybe};
+use crate::api::commands::{call_settled, convert_maybe, HostArguments};
 use crate::api::events::EventTables;
+use crate::api::instances::{hold_by_reference, Instances};
+use crate::api::js_object::{JsObjects, Observed};
 use crate::api::language_types::markdown_from_js;
 use crate::api::languages::host_extension;
 use crate::api::text_editors::TextObjects;
 use crate::api::types::{range_data, to_range};
-use crate::api::{getter, handle_field, handle_object, setter};
+use crate::api::{getter, handle_field, setter};
 use crate::convert::{api_to_js, dynamic_to_js, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js, uri_to_js};
 
 /// O que o namespace `comments` guarda dos objetos que a extensão segura (os objetos JavaScript carregam só o `_id`, o `handle` do host).
@@ -65,8 +71,10 @@ pub struct CommentObjects {
     providers: RefCell<HashMap<u32, JsData>>,
     /// O `reactionHandler` que a extensão atribuiu, por controlador.
     reaction_handlers: RefCell<HashMap<u32, JsData>>,
-    /// Os comentários que a extensão atribuiu, por thread.
-    comments: RefCell<HashMap<u32, Vec<JsData>>>,
+    /// Os comentários que a extensão atribuiu, por thread: o `Comment` do host e o objeto que ela passou.
+    comments: RefCell<HashMap<u32, Vec<(Rc<Comment>, JsData)>>>,
+    /// As instâncias de `CommentController` e `CommentThread` que a extensão segura (a mesma em toda leitura).
+    instances: Instances,
 }
 
 impl CommentObjects {
@@ -78,21 +86,71 @@ impl CommentObjects {
         self.threads.borrow().get(&handle_field(this, "CommentThread")?).cloned().ok_or_else(|| "CommentThread: a thread já foi descartada".to_owned())
     }
 
+    /// Guarda os comentários de `value` (a lista que a extensão atribuiu) junto dos `Comment` do host que saíram dela.
+    fn assign_comments(&self, thread: u32, comments: &[Rc<Comment>], value: &JsData) {
+        let assigned = match value {
+            JsData::Array(items) => comments.iter().cloned().zip(items.iter().cloned()).collect(),
+            _ => Vec::new(),
+        };
+        self.comments.borrow_mut().insert(thread, assigned);
+    }
+
+    /// O `CommentThread` que a extensão segura (o `commentThread.value` do original), criado pela extensão ou pela interface.
+    fn thread_value(&self, runner: &NodeRunner, thread: &Rc<ExtHostCommentThread>) -> JsData {
+        self.threads.borrow_mut().entry(thread.handle()).or_insert_with(|| thread.clone());
+        self.instances.get(runner, "CommentThread", thread.handle())
+    }
+
+    fn controller_value(&self, runner: &NodeRunner, controller: &Rc<ExtHostCommentController>) -> JsData {
+        self.controllers.borrow_mut().entry(controller.handle()).or_insert_with(|| controller.clone());
+        self.instances.get(runner, "CommentController", controller.handle())
+    }
+
+    /// O `Comment` que a extensão atribuiu a uma thread, se o host o conhece; senão os dados que o host guarda dele.
+    fn comment_value(&self, comment: &Rc<Comment>) -> JsData {
+        let assigned = self.comments.borrow().values().flatten().find(|(candidate, _)| Rc::ptr_eq(candidate, comment)).map(|(_, value)| value.clone());
+        assigned.unwrap_or_else(|| comment_to_js(comment))
+    }
+
+    /// Guarda por referência os itens que a extensão atribuiu à thread `owner` (um `CommentThread`, lido por referência).
+    fn hold_comments(&self, js: &JsObjects, owner: &JsData, items: Vec<JsData>) {
+        if let Some(thread) = js.handle_id(owner) {
+            hold_by_reference(&self.comments, thread, items);
+        }
+    }
+
     fn forget_thread(&self, handle: u32) {
         self.threads.borrow_mut().remove(&handle);
         self.thread_owners.borrow_mut().remove(&handle);
         self.comments.borrow_mut().remove(&handle);
+        self.instances.forget("CommentThread", handle);
     }
 
     fn forget_controller(&self, handle: u32) {
         self.controllers.borrow_mut().remove(&handle);
         self.providers.borrow_mut().remove(&handle);
         self.reaction_handlers.borrow_mut().remove(&handle);
+        self.instances.forget("CommentController", handle);
         let owned: Vec<u32> = self.thread_owners.borrow().iter().filter(|(_, owner)| **owner == handle).map(|(thread, _)| *thread).collect();
         for thread in owned {
             self.forget_thread(thread);
         }
     }
+}
+
+/// Registra o resolvedor dos argumentos de comando que o `ArgumentProcessor` de `ExtHostCommentsImpl` produz: a thread, o
+/// controlador e o comentário chegam ao comando da extensão como os objetos que ela segura.
+pub fn register_arguments(runner: &NodeRunner, objects: &Rc<CommentObjects>, arguments: &HostArguments) {
+    let (runner, objects) = (runner.clone(), objects.clone());
+    arguments.register(move |value| {
+        if let Some(thread) = ExtHostCommentThread::from_dynamic(value) {
+            return Some(objects.thread_value(&runner, &thread));
+        }
+        if let Some(controller) = ExtHostCommentController::from_dynamic(value) {
+            return Some(objects.controller_value(&runner, &controller));
+        }
+        Comment::from_dynamic(value).map(|comment| objects.comment_value(&comment))
+    });
 }
 
 // ---- os valores de comentário
@@ -324,13 +382,13 @@ fn reaction_handler_of(runner: &NodeRunner, value: &JsData) -> Result<ReactionHa
 
 // ---- as classes
 
-fn define_thread(runner: &NodeRunner, objects: &Rc<CommentObjects>) {
+fn define_thread(runner: &NodeRunner, objects: &Rc<CommentObjects>, js: &JsObjects) {
     let get = |name: &str, read: fn(&CommentObjects, &Rc<ExtHostCommentThread>) -> JsData| getter(objects, name, CommentObjects::thread_of, read);
     let getters: Vec<(String, MethodCallback)> = vec![
         get("uri", |_, thread| uri_to_js(thread.uri())),
         get("range", |_, thread| thread.range().map_or(JsData::Undefined, range_data)),
         get("comments", |objects, thread| {
-            let assigned = objects.comments.borrow().get(&thread.handle()).cloned();
+            let assigned = objects.comments.borrow().get(&thread.handle()).map(|pairs| pairs.iter().map(|(_, value)| value.clone()).collect::<Vec<_>>());
             JsData::Array(assigned.unwrap_or_else(|| thread.comments().iter().map(|comment| comment_to_js(comment)).collect()))
         }),
         get("collapsibleState", |_, thread| thread.collapsible_state().map_or(JsData::Undefined, |state| JsData::Num(f64::from(state.value())))),
@@ -348,11 +406,7 @@ fn define_thread(runner: &NodeRunner, objects: &Rc<CommentObjects>) {
         }),
         set("comments", |objects, thread, value| {
             let comments = comments_of(value)?;
-            let assigned = match value {
-                JsData::Array(items) => items.clone(),
-                _ => Vec::new(),
-            };
-            objects.comments.borrow_mut().insert(thread.handle(), assigned);
+            objects.assign_comments(thread.handle(), &comments, value);
             thread.set_comments(comments);
             Ok(())
         }),
@@ -387,7 +441,7 @@ fn define_thread(runner: &NodeRunner, objects: &Rc<CommentObjects>) {
             Ok(JsData::Undefined)
         }),
     )];
-    runner.define_accessor_class(
+    let class = Rc::new(runner.define_accessor_class(
         ClassSpec {
             name: "CommentThread".to_owned(),
             length: 0,
@@ -398,10 +452,12 @@ fn define_thread(runner: &NodeRunner, objects: &Rc<CommentObjects>) {
             parent: None,
         },
         setters,
-    );
+    ));
+    let (hold_js, hold_objects) = (js.clone(), objects.clone());
+    js.observe(&class, "comments", Observed::Setter, move |this, _, items| hold_objects.hold_comments(&hold_js, this, items));
 }
 
-fn define_controller(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: &Rc<EventTables>, documents: &Rc<TextObjects>) {
+fn define_controller(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: &Rc<EventTables>, documents: &Rc<TextObjects>, js: &JsObjects) {
     let get = |name: &str, read: fn(&CommentObjects, &Rc<ExtHostCommentController>) -> JsData| getter(objects, name, CommentObjects::controller_of, read);
     let getters: Vec<(String, MethodCallback)> = vec![
         get("id", |_, controller| JsData::Str(controller.id().to_owned())),
@@ -456,6 +512,7 @@ fn define_controller(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: 
     ];
 
     let (create_objects, dispose_objects) = (objects.clone(), objects.clone());
+    let create_runner = runner.clone();
     let methods: Vec<(String, u32, MethodCallback)> = vec![
         (
             "createCommentThread".to_owned(),
@@ -465,14 +522,14 @@ fn define_controller(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: 
                 let uri: URI = uri_from_js(args.first().filter(|uri| !is_nullish(Some(*uri))).ok_or("Illegal argument: createCommentThread: a Uri")?)?;
                 let range = range_of(args.get(1).unwrap_or(&JsData::Undefined))?;
                 let comments = comments_of(args.get(2).unwrap_or(&JsData::Undefined))?;
-                let thread = controller.create_comment_thread(uri, range, comments).map_err(|error| error.message)?;
+                let thread = controller.create_comment_thread(uri, range, comments.clone()).map_err(|error| error.message)?;
                 let handle = thread.handle();
-                if let Some(JsData::Array(assigned)) = args.get(2) {
-                    create_objects.comments.borrow_mut().insert(handle, assigned.clone());
+                if let Some(assigned @ JsData::Array(_)) = args.get(2) {
+                    create_objects.assign_comments(handle, &comments, assigned);
                 }
                 create_objects.threads.borrow_mut().insert(handle, thread);
                 create_objects.thread_owners.borrow_mut().insert(handle, controller.handle());
-                Ok(handle_object("CommentThread", handle))
+                Ok(create_objects.instances.get(&create_runner, "CommentThread", handle))
             }),
         ),
         (
@@ -486,7 +543,7 @@ fn define_controller(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: 
             }),
         ),
     ];
-    runner.define_accessor_class(
+    let class = Rc::new(runner.define_accessor_class(
         ClassSpec {
             name: "CommentController".to_owned(),
             length: 0,
@@ -497,19 +554,23 @@ fn define_controller(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: 
             parent: None,
         },
         setters,
-    );
+    ));
+    let (hold_js, hold_objects) = (js.clone(), objects.clone());
+    js.observe(&class, "createCommentThread", Observed::Method { argument: 2 }, move |_, thread, items| hold_objects.hold_comments(&hold_js, thread, items));
 }
 
 /// Define as classes `CommentController` e `CommentThread` (protótipos dos objetos que o host entrega). `documents` é a tabela que dá o
 /// `vscode.TextDocument` que o `commentingRangeProvider` recebe.
 pub fn define_classes(runner: &NodeRunner, objects: &Rc<CommentObjects>, events: &Rc<EventTables>, documents: &Rc<TextObjects>) {
-    define_thread(runner, objects);
-    define_controller(runner, objects, events, documents);
+    let js = JsObjects::new(runner);
+    define_thread(runner, objects, &js);
+    define_controller(runner, objects, events, documents, &js);
 }
 
 /// O namespace `comments`: `createCommentController(id, label)`.
 pub fn namespace(runner: &NodeRunner, comments: &Rc<ExtHostComments>, objects: &Rc<CommentObjects>) -> JsData {
-    let (comments, objects) = (comments.clone(), objects.clone());
+    let (comments, objects, runner) = (comments.clone(), objects.clone(), runner.clone());
+    let create_runner = runner.clone();
     let create = runner.make_function(
         "createCommentController",
         2,
@@ -517,9 +578,7 @@ pub fn namespace(runner: &NodeRunner, comments: &Rc<ExtHostComments>, objects: &
             let id = string_arg(args, 0, "createCommentController: o id")?;
             let label = string_arg(args, 1, "createCommentController: o label")?;
             let controller = comments.create_comment_controller(&host_extension(), &id, &label);
-            let handle = controller.handle();
-            objects.controllers.borrow_mut().insert(handle, controller);
-            Ok(handle_object("CommentController", handle))
+            Ok(objects.controller_value(&create_runner, &controller))
         }),
     );
     JsData::Object(vec![("createCommentController".to_owned(), JsData::Handle(Rc::new(create)))])

@@ -10,7 +10,10 @@
 //! `ExtHostTelemetry` ([`IMainThreadBinder::telemetry`](crate::in_process::IMainThreadBinder::telemetry)) e `logLevel` do serviço de log
 //! do host (presente quando o host tem binder; sozinho ele não cria `env`).
 //!
-//! Falta: `isAppPortable`, `appHost`, `isNewAppInstall`, `onDidChangeShell` e as propostas.
+//! `isAppPortable`, `appHost` e `isNewAppInstall` (lido no instante da leitura, a partir de `firstSessionDate`) vêm do mesmo
+//! [`HostEnvironment`]; `onDidChangeShell` é o evento do `ExtHostTerminalService` (quando o host tem o cliente de terminais).
+//!
+//! Falta: as propostas (`devDeviceId`, `envIsConnectionMetered` e outras).
 //!
 //! Divergências:
 //! - O original lê os valores estáticos do `initData` (`environment.appName`, `appRoot`, `appLanguage`, `appUriScheme`,
@@ -31,13 +34,14 @@
 
 use std::rc::Rc;
 
+use je_base::event::Event;
 use je_base::network::{matches_scheme, UriOrString};
 use je_base::js_string::JsString;
 use je_editor::services::clipboard_service::IClipboardService;
 use je_platform::log::{LogServiceRef, Logger};
 use je_platform::remote::remote_hosts::get_remote_name;
 use je_workbench::api::common::ext_host_protocol::IOpenUriOptions;
-use je_workbench::api::common::ext_host_telemetry::ExtHostTelemetry;
+use je_workbench::api::common::ext_host_telemetry::{is_new_app_install, ExtHostTelemetry};
 use je_workbench::api::common::ext_host_window::{ExtHostWindow, UriOrString as WindowUriOrString};
 use zjsc::api::embed_node::{JsData, MethodCallback, NodeRunner};
 
@@ -70,6 +74,12 @@ pub struct HostEnvironment {
     pub ui_kind: i32,
     /// `initData.remote.authority` (`None` num host local).
     pub remote_authority: Option<String>,
+    /// `initData.environment.isPortable` (`undefined` no original vale `false`).
+    pub is_portable: bool,
+    /// `initData.environment.appHost`.
+    pub app_host: String,
+    /// `initData.telemetryInfo.firstSessionDate`: `isNewAppInstall` é lido a partir dela no instante da leitura.
+    pub first_session_date: String,
 }
 
 /// Os serviços do host que o namespace usa.
@@ -80,6 +90,8 @@ pub struct EnvServices {
     pub window: Option<Rc<ExtHostWindow>>,
     pub telemetry: Option<Rc<ExtHostTelemetry>>,
     pub log_service: Option<LogServiceRef>,
+    /// `ExtHostTerminalService.onDidChangeShell` (presente quando o host tem o cliente `MainThreadTerminalService`).
+    pub shell_changes: Option<Event<String>>,
 }
 
 impl EnvServices {
@@ -119,12 +131,19 @@ pub fn namespace(runner: &NodeRunner, services: &EnvServices, table: &Rc<Disposa
             text("shell", &environment.shell),
             ("uiKind".to_owned(), JsData::Num(f64::from(environment.ui_kind))),
         ]);
+        members.push(("isAppPortable".to_owned(), JsData::Bool(environment.is_portable)));
+        members.push(("appHost".to_owned(), JsData::Str(environment.app_host.clone())));
+        let first_session_date = environment.first_session_date.clone();
+        getters.push(("isNewAppInstall".to_owned(), Rc::new(move |_, _| Ok(JsData::Bool(is_new_app_install(&first_session_date))))));
         let remote_authority = environment.remote_authority.as_deref().map(JsString::from);
         authority = remote_authority.as_ref().is_some_and(|value| !value.is_empty());
         members.push((
             "remoteName".to_owned(),
             get_remote_name(remote_authority.as_ref()).map_or(JsData::Undefined, |name| JsData::Str(name.to_string_lossy())),
         ));
+    }
+    if let Some(shell_changes) = &services.shell_changes {
+        members.push(("onDidChangeShell".to_owned(), event_function(runner, table, "onDidChangeShell", shell_changes.clone(), |shell| JsData::Str(shell.clone()))));
     }
     if let Some(clipboard) = &services.clipboard {
         let (read_runner, read_clipboard) = (runner.clone(), clipboard.clone());

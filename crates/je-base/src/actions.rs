@@ -76,6 +76,10 @@ pub trait IAction {
     fn run(&self, args: &[Dynamic]) -> Promise<Dynamic>;
     /// Para o `instanceof` do original.
     fn as_any(&self) -> &dyn Any;
+    /// O `instanceof Action` do original: a [`Action`] que esta ação é ou estende (por composição), se houver.
+    fn as_base_action(&self) -> Option<&Action> {
+        None
+    }
 }
 
 /// O handle compartilhado de uma ação.
@@ -222,6 +226,10 @@ impl Action {
 
 impl IAction for Action {
     action_props!(|this: &Action, event| this.fire_changed(event));
+
+    fn as_base_action(&self) -> Option<&Action> {
+        Some(self)
+    }
 
     /// `run(event?, data?)`: chama o callback, se houver, e espera o resultado.
     fn run(&self, args: &[Dynamic]) -> Promise<Dynamic> {

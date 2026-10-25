@@ -22,6 +22,7 @@ use je_platform::js::from_json;
 use je_platform::log::NullLogService;
 use je_platform::workspace::{WorkspaceFolder, to_workspace_folder};
 
+pub mod action_list_support;
 pub mod contextkey;
 pub mod keybinding;
 

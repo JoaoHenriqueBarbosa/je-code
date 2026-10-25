@@ -355,13 +355,14 @@ pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<D
         methods.extend(file_methods);
         getters.extend(file_getters);
     }
+    // `registerFileSystemProvider` e `registerNotebookSerializer` recebem objetos da extensão: funções por referência, próprias do namespace.
+    let mut references: Vec<(String, JsData)> = Vec::new();
     if let Some(api) = &services.notebooks {
-        let (notebook_methods, notebook_getters) = notebooks::workspace_members(runner, api, table);
+        let (notebook_methods, notebook_getters, notebook_references) = notebooks::workspace_members(runner, api, table);
         methods.extend(notebook_methods);
         getters.extend(notebook_getters);
+        references.extend(notebook_references);
     }
-    // `registerFileSystemProvider` recebe o provedor da extensão: uma função por referência, própria do namespace.
-    let mut references: Vec<(String, JsData)> = Vec::new();
     if let Some(api) = &services.file_system {
         let members = file_system::workspace_members(runner, api);
         getters.extend(members.getters);

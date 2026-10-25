@@ -749,6 +749,11 @@ impl IModelService for ModelService {
         ModelService::on_model_removed(self)
     }
 
+    /// `onModelLanguageChanged`.
+    fn on_model_language_changed(&self) -> Event<ModelLanguageChanged> {
+        ModelService::on_model_language_changed(self)
+    }
+
     /// `createModel(value, languageSelection, resource?, isForSimpleWidget)`: o método genérico do `ModelService`, com o
     /// tipo de conteúdo que o contrato `dyn` aceita.
     fn create_model(&self, value: TextSource, language_selection: Option<&dyn ILanguageSelection>, resource: Option<&URI>, is_for_simple_widget: bool) -> Rc<TextModel> {

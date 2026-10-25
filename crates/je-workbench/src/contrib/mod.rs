@@ -74,3 +74,5 @@ pub mod opener;
 pub mod telemetry;
 // Formatar com (`contrib/format`): o `DefaultFormatter` (formatador padrão, seletor e status de conflito) e as ações "Format Document/Selection With...".
 pub mod format;
+// Indicador de limites (`contrib/limitIndicator`): a `LimitIndicatorContribution` e o `DiagnosticDecorationLimitReporter`.
+pub mod limit_indicator;

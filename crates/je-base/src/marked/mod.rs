@@ -367,7 +367,8 @@ impl Token {
         }
     }
 
-    pub(crate) fn raw_mut(&mut self) -> &mut JsString {
+    /// `token.raw = ...`: troca o trecho do fonte do token (o que o `ignoreRaw` dos testes faz).
+    pub fn raw_mut(&mut self) -> &mut JsString {
         match self {
             Token::Space(t) => &mut t.raw,
             Token::Code(t) => &mut t.raw,

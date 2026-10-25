@@ -179,7 +179,8 @@ impl NotificationsList {
         }
 
         // Context menu to copy message
-        let copy_action = self.services.actions.create_copy_message_action();
+        let (copy_action, copy_action_disposable) = self.services.actions.create_copy_message_action();
+        self.base.register(copy_action_disposable);
         {
             let (weak, runner, copy_action) = (self.weak_self.clone(), action_runner.clone() as Rc<dyn IActionRunner>, copy_action);
             self.base.register(list.view.on_context_menu().listen(move |e| {
@@ -397,6 +398,18 @@ impl NotificationsList {
         let Some(list_container) = self.list_container.get() else { return false }; // not created yet
 
         is_ancestor_of_active_element(self.ui(), list_container)
+    }
+
+    /// O nó do `.notifications-list-container` (o contêiner que o dono posiciona), depois de criada a lista.
+    pub fn container_node(&self) -> Option<NodeId> {
+        self.list_container.get()
+    }
+
+    /// A altura que a lista ocupa (`list.getHTMLElement().offsetHeight`): o conteúdo, limitado pelo teto.
+    pub fn display_height(&self) -> f64 {
+        let Some(list) = self.list() else { return 0.0 };
+        let content_height = list.content_height();
+        self.max_height.get().map_or(content_height, |max| content_height.min(max))
     }
 
     pub fn layout(&self, width: f64, max_height: Option<f64>) {

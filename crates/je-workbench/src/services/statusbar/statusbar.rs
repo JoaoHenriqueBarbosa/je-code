@@ -4,13 +4,13 @@
 //! Divergências:
 //! - **Só o que o modelo usa** é portado: [`StatusbarAlignment`], [`StatusbarEntryLocation`],
 //!   [`StatusbarEntryPriority`] e [`StatusbarEntryKind`]. O restante do arquivo é especificação:
-//!   - `IStatusbarService`, `IStatusbarEntryAccessor` e `IStatusbarEntry` descrevem o serviço e a entrada
-//!     declarativa que o resto do workbench consome, e dependem de `IInstantiationService`, `HTMLElement`
-//!     (`content`, `getPart(container)`, `createAuxiliaryStatusbarPart(container)`), `Command`, `IMarkdownString`
-//!     e dos tipos de dica de ferramenta (`IManagedHoverTooltipHTMLElement`...), todos DOM ou de camadas ainda
-//!     não portadas. Entram junto com a parte da barra de status (`statusbarPart.ts`).
-//!   - `ShowTooltipCommand` e `ToggleTooltipCommand` (`Command` com `id` e `title` vazio) e `IStatusbarStyleOverride`
-//!     também dependem de `Command` e de `ColorIdentifier`.
+//!   - `IStatusbarService` e `IStatusbarEntryAccessor` (o serviço, com `getPart(container)` e
+//!     `createAuxiliaryStatusbarPart(container)`) entram junto com a parte da barra de status (`statusbarPart.ts`).
+//!   - `IStatusbarStyleOverride` depende de `ColorIdentifier`.
+//!   - A entrada declarativa é [`StatusbarEntry`] (`IStatusbarEntry`), com `HTMLElement` como `ViewElement`, o
+//!     `command` como [`StatusbarCommand`] (`ShowTooltipCommand` e `ToggleTooltipCommand` são variantes, comparadas
+//!     por identidade como no original) e a dica como [`StatusbarTooltip`] (`isTooltipWithCommands` é
+//!     [`is_tooltip_with_commands`]).
 //! - `isStatusbarEntryLocation(thing: unknown)` e `isStatusbarEntryPriority(thing: unknown)` são guardas de tipo
 //!   sobre um valor desconhecido. Em Rust o tipo já distingue os casos: um `primary` é um número ou uma
 //!   localização ([`StatusbarEntryPrimaryPriority`]), e [`StatusbarEntryPrimaryPriority::location`] faz o papel de
@@ -20,6 +20,193 @@
 //!   `Number.MAX_VALUE`.
 //!
 //! [`StatusbarViewModel`]: crate::browser::parts::statusbar::statusbar_model::StatusbarViewModel
+
+use std::rc::Rc;
+
+use je_base::dynamic::Dynamic;
+use je_base::html_content::IMarkdownString;
+use je_base::themables::ThemeColor;
+use je_editor::code_action::languages::Command;
+use je_platform::contextview::view_element::ViewElement;
+use je_platform::hover::hover_service::ManagedHoverTooltip;
+
+use crate::services::progress::progress_service::StatusbarShowProgress;
+
+/// O `id` de `ShowTooltipCommand`.
+pub const SHOW_TOOLTIP_COMMAND_ID: &str = "statusBar.entry.showTooltip";
+
+/// O `id` de `ToggleTooltipCommand`.
+pub const TOGGLE_TOOLTIP_COMMAND_ID: &str = "statusBar.entry.toggleTooltip";
+
+/// O `command` de `IStatusbarEntry` (`string | Command | typeof ShowTooltipCommand | typeof ToggleTooltipCommand`).
+/// `ShowTooltipCommand` e `ToggleTooltipCommand` são objetos únicos no original e comparados por identidade, então cada
+/// um é uma variante; um `Command` qualquer é comparado pelo `Rc`, e um texto por valor, como o `!==` do JavaScript.
+#[derive(Clone)]
+pub enum StatusbarCommand {
+    Id(String),
+    Command(Rc<Command>),
+    ShowTooltip,
+    ToggleTooltip,
+}
+
+impl StatusbarCommand {
+    /// `command.id`, ou o próprio texto.
+    pub fn id(&self) -> String {
+        match self {
+            Self::Id(id) => id.clone(),
+            Self::Command(command) => command.id.clone(),
+            Self::ShowTooltip => SHOW_TOOLTIP_COMMAND_ID.to_owned(),
+            Self::ToggleTooltip => TOGGLE_TOOLTIP_COMMAND_ID.to_owned(),
+        }
+    }
+
+    /// `command.title` (vazio nos comandos de dica de ferramenta e no texto).
+    pub fn title(&self) -> String {
+        match self {
+            Self::Command(command) => command.title.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// `command.arguments ?? []`.
+    pub fn arguments(&self) -> Vec<Dynamic> {
+        match self {
+            Self::Command(command) => command.arguments.clone().unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `a === b`.
+    pub fn is_same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Id(a), Self::Id(b)) => a == b,
+            (Self::Command(a), Self::Command(b)) => Rc::ptr_eq(a, b),
+            (Self::ShowTooltip, Self::ShowTooltip) | (Self::ToggleTooltip, Self::ToggleTooltip) => true,
+            _ => false,
+        }
+    }
+}
+
+/// `a === b` sobre dois `command?` opcionais.
+pub fn is_same_command(a: Option<&StatusbarCommand>, b: Option<&StatusbarCommand>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.is_same(b),
+        _ => false,
+    }
+}
+
+/// `TooltipContent`: `string | IMarkdownString | HTMLElement | IManagedHoverTooltipMarkdownString | IManagedHoverTooltipHTMLElement`.
+/// Os dois últimos são o [`ManagedHoverTooltip`], comparado pelo `Rc` (objeto no original).
+#[derive(Clone)]
+pub enum TooltipContent {
+    Text(String),
+    Markdown(IMarkdownString),
+    Element(Rc<ViewElement>),
+    Managed(Rc<ManagedHoverTooltip>),
+}
+
+/// `ITooltipWithCommands`.
+pub struct TooltipWithCommands {
+    pub content: TooltipContent,
+    pub commands: Vec<StatusbarCommand>,
+    /// Called only after the tooltip is displayed.
+    pub on_did_show: Option<Rc<dyn Fn()>>,
+}
+
+/// O `tooltip` de `IStatusbarEntry` (`TooltipContent | ITooltipWithCommands`).
+#[derive(Clone)]
+pub enum StatusbarTooltip {
+    Content(TooltipContent),
+    WithCommands(Rc<TooltipWithCommands>),
+}
+
+/// `isTooltipWithCommands(thing)`: `!!candidate?.content && Array.isArray(candidate?.commands)`.
+pub fn is_tooltip_with_commands(tooltip: &StatusbarTooltip) -> Option<&Rc<TooltipWithCommands>> {
+    match tooltip {
+        StatusbarTooltip::WithCommands(with_commands) if !matches!(&with_commands.content, TooltipContent::Text(text) if text.is_empty()) => Some(with_commands),
+        _ => None,
+    }
+}
+
+/// O `color` e o `backgroundColor` de `IStatusbarEntry` (`string | ThemeColor`). O `ThemeColor` é um objeto no original e
+/// comparado por identidade, por isso o `Rc`.
+#[derive(Clone)]
+pub enum StatusbarColor {
+    Css(String),
+    Theme(Rc<ThemeColor>),
+}
+
+impl StatusbarColor {
+    /// `!!color`.
+    pub fn is_truthy(&self) -> bool {
+        !matches!(self, Self::Css(css) if css.is_empty())
+    }
+
+    /// `a === b`.
+    pub fn is_same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Css(a), Self::Css(b)) => a == b,
+            (Self::Theme(a), Self::Theme(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// `a === b` sobre duas cores opcionais.
+pub fn is_same_color(a: Option<&StatusbarColor>, b: Option<&StatusbarColor>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.is_same(b),
+        _ => false,
+    }
+}
+
+/// `IStatusbarEntry`: a descrição declarativa de uma entrada da barra de status.
+#[derive(Clone)]
+pub struct StatusbarEntry {
+    /// The (short) name to show for the entry like 'Language Indicator', 'Git Status' etc.
+    pub name: String,
+    /// The text to show for the entry. Icons are embedded with `$(icon name)`.
+    pub text: String,
+    /// Text to be read out by the screen reader.
+    pub aria_label: String,
+    /// Role of the status bar entry (default `button`).
+    pub role: Option<String>,
+    pub tooltip: Option<StatusbarTooltip>,
+    pub color: Option<StatusbarColor>,
+    pub background_color: Option<StatusbarColor>,
+    pub command: Option<StatusbarCommand>,
+    pub show_beak: Option<bool>,
+    pub show_progress: Option<StatusbarShowProgress>,
+    pub kind: Option<StatusbarEntryKind>,
+    pub show_in_all_windows: Option<bool>,
+    pub extension_id: Option<String>,
+    /// Allows to add content with custom rendering to the status bar entry (`HTMLElement`).
+    pub content: Option<Rc<ViewElement>>,
+}
+
+impl StatusbarEntry {
+    /// Uma entrada só com os campos obrigatórios.
+    pub fn new(name: impl Into<String>, text: impl Into<String>, aria_label: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            text: text.into(),
+            aria_label: aria_label.into(),
+            role: None,
+            tooltip: None,
+            color: None,
+            background_color: None,
+            command: None,
+            show_beak: None,
+            show_progress: None,
+            kind: None,
+            show_in_all_windows: None,
+            extension_id: None,
+            content: None,
+        }
+    }
+}
 
 /// `StatusbarAlignment`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

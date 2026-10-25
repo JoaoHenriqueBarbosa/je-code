@@ -9,6 +9,7 @@
 //! pela árvore de widgets nativa, não por HTML; `menuEntryActionViewItem.ts` e `toolbar.ts` dependem de widgets). Do
 //! `browser/` não sobra lógica pura de modelo além do que já está em `actions.rs`.
 
+pub mod menu_entry_action_view_item;
 pub mod menu_ids;
 pub mod menu_service;
 #[allow(clippy::module_inception)] // `actions.rs` é o porte de `actions.ts`, como no original

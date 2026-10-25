@@ -16,6 +16,9 @@ pub mod memento;
 
 pub mod resources;
 
+// As cores `NOTIFICATIONS_*` de `common/theme.ts`.
+pub mod theme;
+
 pub mod views;
 
 // `ITreeView`, `ITreeViewDataProvider` e `ITreeViewDragAndDropController` (`common/views.ts`).

@@ -57,7 +57,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use je_base::actions::{Action, ActionRef, ActionRunner, AltModeModifiers, IActionChangeEvent, IActionRunner, Separator, get_action_for_alt_mode};
+use je_base::actions::{ActionRef, ActionRunner, AltModeModifiers, IActionChangeEvent, IActionRunner, Separator, get_action_for_alt_mode};
 use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable};
 use je_base::nls::localize;
@@ -378,7 +378,7 @@ impl BaseActionViewItem {
             tab_index: Cell::new(-1),
             disposed: Cell::new(false),
         };
-        if let Some(action) = this.action.as_any().downcast_ref::<Action>() {
+        if let Some(action) = this.action.as_base_action() {
             let owner = this.owner.clone();
             this.base.register(action.on_did_change().listen(move |event| {
                 if let Some(owner) = owner.upgrade() {

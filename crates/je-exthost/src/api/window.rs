@@ -53,7 +53,8 @@ use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{MainThreadMessageOptions, MainThreadMessageServiceShape, MessageCommandDto, StatusBarColor};
 use je_workbench::api::common::ext_host_quick_open::ExtHostQuickOpen;
 use je_workbench::api::common::ext_host_status_bar::{ExtHostStatusBar, ExtHostStatusBarEntry, StatusBarCommand, TimeoutOrThenable};
-use je_workbench::api::common::ext_host_terminal_service::WorkerExtHostTerminalService;
+use je_workbench::api::common::ext_host_terminal_service::{WorkerExtHostTerminalService, WorkerTerminalCreation};
+use je_workbench::api::common::ext_host_terminal_shell_integration::ExtHostTerminalShellIntegration;
 use je_workbench::api::common::ext_host_tree_views::ExtHostTreeViews;
 use je_workbench::api::common::ext_host_types::{Command, Documentation, StatusBarAlignment};
 use je_workbench::api::common::ext_host_values::ApiValue;
@@ -63,6 +64,7 @@ use crate::api::commands::{promise_to_js, settle_js_result};
 use crate::api::disposable::DisposableTable;
 use crate::api::events::EventTables;
 use crate::api::js_object::JsObjects;
+use crate::api::notebooks::{self, NotebookApi};
 use crate::api::output_channel::{self, OutputChannels};
 use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
@@ -90,6 +92,8 @@ pub struct WindowServices {
     pub progress: Option<Rc<ExtHostProgress>>,
     /// Sem o cliente `MainThreadTerminalService` não há `createTerminal`, `terminals` nem os eventos de terminal.
     pub terminal: Option<Rc<WorkerExtHostTerminalService>>,
+    /// Sem o cliente `MainThreadTerminalShellIntegration` não há `Terminal#shellIntegration` nem os eventos de execução de comando.
+    pub terminal_shell_integration: Option<Rc<ExtHostTerminalShellIntegration<WorkerTerminalCreation>>>,
     /// Sem o cliente `MainThreadTreeViews` não há `createTreeView` nem `registerTreeDataProvider`.
     pub tree_views: Option<Rc<ExtHostTreeViews>>,
     /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `activeTextEditor`, `visibleTextEditors`,
@@ -97,6 +101,8 @@ pub struct WindowServices {
     pub text_editors: Option<TextEditorApi>,
     /// Sem o cliente `MainThreadEditorTabs` não há `tabGroups`.
     pub tabs: Option<TabsApi>,
+    /// Sem os clientes `MainThreadNotebook*` não há `activeNotebookEditor`, `visibleNotebookEditors`, `showNotebookDocument` nem os eventos.
+    pub notebooks: Option<NotebookApi>,
 }
 
 /// `isMessageItem(item)`: um objeto com `title` não vazio.
@@ -440,11 +446,17 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
         methods.extend(editor_methods);
         getters.extend(editor_getters);
     }
+    // Os membros de editor de notebook (`activeNotebookEditor`, `showNotebookDocument`...) vêm do módulo `notebooks`.
+    if let Some(api) = &services.notebooks {
+        let (notebook_methods, notebook_getters) = notebooks::window_members(runner, api, table);
+        methods.extend(notebook_methods);
+        getters.extend(notebook_getters);
+    }
     // Os membros que recebem objetos da extensão (o `pty`, o provedor de árvore) são funções por referência, próprias do namespace.
     let mut references: Vec<(String, JsData)> = Vec::new();
     let js = JsObjects::new(runner);
     if let Some(service) = &services.terminal {
-        let members = terminal::window_members(runner, &js, service, &state.terminal_objects, table, events);
+        let members = terminal::window_members(runner, &js, service, services.terminal_shell_integration.as_ref(), &state.terminal_objects, table, events);
         references.extend(members.references);
         getters.extend(members.getters);
     }

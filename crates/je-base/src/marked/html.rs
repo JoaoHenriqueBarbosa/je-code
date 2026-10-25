@@ -120,6 +120,30 @@ pub trait InlineRenderer {
     fn codespan(&self, token: &Token) -> JsString;
     fn br(&self) -> JsString;
     fn del(&self, parser: &Parser, token: &Token) -> JsString;
+
+    /// `renderer.code`: o bloco de código. Quem renderiza só inline não precisa trocar.
+    fn code(&self, token: &Code) -> JsString {
+        Renderer.code(token)
+    }
+
+    /// `renderer.blockquote`.
+    fn blockquote(&self, parser: &Parser, token: &crate::marked::Blockquote) -> Result<JsString, MarkedError> {
+        let mut out = Buf::default();
+        out.str("<blockquote>\n").js(&parser.parse(&token.tokens, true)?).str("</blockquote>\n");
+        Ok(out.done())
+    }
+
+    /// `renderer.html` de um token `html` de bloco.
+    fn block_html(&self, token: &crate::marked::Html) -> JsString {
+        token.text.clone()
+    }
+
+    /// `renderer.paragraph`.
+    fn paragraph(&self, parser: &Parser, token: &crate::marked::Paragraph) -> Result<JsString, MarkedError> {
+        let mut out = Buf::default();
+        out.str("<p>").js(&parser.parse_inline(&token.tokens)?).str("</p>\n");
+        Ok(out.done())
+    }
 }
 
 /// `Renderer`: o renderizador HTML padrão.
@@ -353,12 +377,17 @@ impl InlineRenderer for TextRenderer {
 /// `Parser`: percorre os tokens e chama o renderizador.
 pub struct Parser {
     options: Options,
-    renderer: Renderer,
+    renderer: Box<dyn InlineRenderer>,
 }
 
 impl Parser {
     pub fn new(options: Options) -> Self {
-        Self { options, renderer: Renderer }
+        Self::with_renderer(options, Box::new(Renderer))
+    }
+
+    /// `new Parser({ renderer })`: o `Parser` com o renderizador trocado.
+    pub fn with_renderer(options: Options, renderer: Box<dyn InlineRenderer>) -> Self {
+        Self { options, renderer }
     }
 
     /// Um token que o laço não sabe tratar: com `silent` devolve `''` (o original o registra no `console`).
@@ -389,19 +418,19 @@ impl Parser {
                     out.js(&self.renderer.code(code));
                 }
                 Token::Table(table) => {
-                    out.js(&self.renderer.table(self, table)?);
+                    out.js(&Renderer.table(self, table)?);
                 }
                 Token::Blockquote(quote) => {
-                    out.str("<blockquote>\n").js(&self.parse(&quote.tokens, true)?).str("</blockquote>\n");
+                    out.js(&self.renderer.blockquote(self, quote)?);
                 }
                 Token::List(list) => {
-                    out.js(&self.renderer.list(self, list)?);
+                    out.js(&Renderer.list(self, list)?);
                 }
                 Token::Html(html) => {
-                    out.js(&html.text);
+                    out.js(&self.renderer.block_html(html));
                 }
                 Token::Paragraph(paragraph) => {
-                    out.str("<p>").js(&self.parse_inline(&paragraph.tokens)?).str("</p>\n");
+                    out.js(&self.renderer.paragraph(self, paragraph)?);
                 }
                 Token::Text(_) => {
                     let mut body = Buf::default();
@@ -431,7 +460,7 @@ impl Parser {
 
     /// `parseInline(tokens)` com o renderizador padrão.
     pub fn parse_inline(&self, tokens: &[Token]) -> Result<JsString, MarkedError> {
-        self.parse_inline_with(tokens, &self.renderer)
+        self.parse_inline_with(tokens, self.renderer.as_ref())
     }
 
     /// `parseInline(tokens, renderer)`.

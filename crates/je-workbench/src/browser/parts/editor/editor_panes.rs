@@ -20,11 +20,14 @@
 //!   dessa seleção, `setSelection` ([`EditorPane::set_selection`]) troca as opções e avisa a mudança, e a mudança de conteúdo do
 //!   modelo de texto da entrada avisa `EDIT` (o `onDidChangeModelContent` do controle de `AbstractTextEditor`, que o painel
 //!   lógico não tem).
-//! - **Sem foco, sem janela, sem confiança.** `pane.focus()`, `hostService.moveTop`, `getActiveElement`, o
-//!   `IWorkbenchLayoutService.isRestored` (só afeta o atraso do progresso), o `IWorkspaceTrustManagementService` (o painel de
-//!   "confiança necessária" nunca é escolhido: o espaço de trabalho é de confiança), `setVisible`, `layout`,
-//!   `setBoundarySashes`, o `LongRunningOperation` com barra de progresso e o `onDidChangeSizeConstraints` não existem. Do
+//! - **Sem foco, sem janela.** `pane.focus()`, `hostService.moveTop`, `getActiveElement`, o
+//!   `IWorkbenchLayoutService.isRestored` (só afeta o atraso do progresso), `setBoundarySashes`, o `LongRunningOperation` com
+//!   barra de progresso e o `onDidChangeSizeConstraints` não existem. O `setVisible` só guarda o estado. Do
 //!   `LongRunningOperation` fica o que decide o fluxo: cada `start` invalida a operação anterior (`isCurrent`).
+//! - **Confiança no espaço de trabalho.** Uma entrada com `RequiresTrust` num espaço sem confiança abre o painel
+//!   [`WORKSPACE_TRUST_REQUIRED_EDITOR_ID`] (que não resolve a entrada), e cada mudança de confiança reabre a entrada do
+//!   painel ativo; o `groupView.openEditor` do original, que trata o erro, é o `open_editor` do próprio painel. Sem o serviço
+//!   no contêiner o espaço vale como de confiança.
 //! - **Erro ao abrir.** `doShowError` registra o erro no `ILogService` (se houver) e abre o painel de erro com a mesma
 //!   entrada; o diálogo modal (`doShowErrorDialog`, só para `source: USER`) depende do `IDialogService.prompt` com ações de
 //!   erro e não é portado: o erro vai sempre para o painel de erro.
@@ -44,12 +47,13 @@ use je_instantiation::InstantiationService;
 use je_platform::log::I_LOG_SERVICE;
 use je_platform::opener::editor_types::{EditorOptions, TextEditorSelection};
 use je_platform::registry::registry;
+use je_platform::workspace_trust::{I_WORKSPACE_TRUST_MANAGEMENT_SERVICE, IWorkspaceTrustManagementService};
 use je_editor::selection::Selection;
 
 use crate::browser::parts::editor::text_editor::TextEditorPaneSelection;
 use crate::common::editor::editor_model::IEditorModel;
 use crate::common::editor::{
-    EditorExtensions, EditorInputOrUntyped, EditorInputRef, EditorOpenContext, EditorPaneSelectionChangeEvent, EditorPaneSelectionChangeReason, GroupIdentifier,
+    EditorExtensions, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorOpenContext, EditorPaneSelectionChangeEvent, EditorPaneSelectionChangeReason, GroupIdentifier,
     IEditorDescriptor, IEditorPane, IEditorPaneSelection, TextEditorOptions, WillInstantiateEditorPaneEvent,
 };
 use crate::services::textfile::text_file_editor_model::TextFileEditorModel;
@@ -57,6 +61,10 @@ use crate::services::textfile::textfiles::ITextFileEditorModel;
 
 /// `ErrorPlaceholderEditor.ID`: o painel que mostra o erro de uma entrada que não abriu.
 pub const ERROR_EDITOR_ID: &str = "workbench.editors.errorEditor";
+
+/// `WorkspaceTrustRequiredPlaceholderEditor.ID`: o painel que ocupa o lugar de uma entrada que exige confiança no espaço de
+/// trabalho enquanto ele não é de confiança.
+pub const WORKSPACE_TRUST_REQUIRED_EDITOR_ID: &str = "workbench.editors.workspaceTrustRequiredEditor";
 
 /// `EditorPaneDescriptor`: o identificador e o nome do painel registrado.
 pub struct EditorPaneDescriptor {
@@ -97,7 +105,7 @@ impl EditorPaneDescriptor {
     }
 
     /// `instantiate(instantiationService, group)`: avisa que o painel vai nascer e o marca como instanciado depois de criado.
-    fn instantiate(&self, group_id: GroupIdentifier) -> Rc<EditorPane> {
+    pub fn instantiate(&self, group_id: GroupIdentifier) -> Rc<EditorPane> {
         ON_WILL_INSTANTIATE_EDITOR_PANE.with(|emitter| emitter.fire(WillInstantiateEditorPaneEvent { editor_type_id: self.id.clone() }));
 
         let pane = EditorPane::new(&self.id, group_id, self.with_selection);
@@ -146,6 +154,21 @@ impl EditorPaneRegistry {
         })
     }
 
+    /// `getEditorPaneByType(typeId)`.
+    pub fn get_editor_pane_by_type(&self, type_id: &str) -> Option<Rc<EditorPaneDescriptor>> {
+        self.editor_panes.borrow().iter().map(|(descriptor, _)| descriptor).find(|descriptor| descriptor.id == type_id).cloned()
+    }
+
+    /// `getEditorPanes()`.
+    pub fn get_editor_panes(&self) -> Vec<Rc<EditorPaneDescriptor>> {
+        self.editor_panes.borrow().iter().map(|(descriptor, _)| descriptor.clone()).collect()
+    }
+
+    /// `getEditors()`: as classes de entrada de todos os painéis registrados, na ordem do registro.
+    pub fn get_editors(&self) -> Vec<TypeId> {
+        self.editor_panes.borrow().iter().flat_map(|(_, input_types)| input_types.iter().copied()).collect()
+    }
+
     /// `getEditorPane(editor)`.
     pub fn get_editor_pane(&self, editor: &EditorInputRef) -> Option<Rc<EditorPaneDescriptor>> {
         let descriptors = self.find_editor_pane_descriptors(editor);
@@ -192,6 +215,8 @@ pub struct EditorPane {
     on_did_change_selection: Option<Rc<Emitter<EditorPaneSelectionChangeEvent>>>,
     /// A assinatura do conteúdo do modelo de texto (só no painel com seleção).
     model_listener: RefCell<Option<DisposableRef>>,
+    /// `isVisible()`: o que `setVisible` atribuiu por último.
+    visible: Cell<bool>,
 }
 
 impl EditorPane {
@@ -204,7 +229,23 @@ impl EditorPane {
             on_did_change_control: Emitter::new(),
             on_did_change_selection: with_selection.then(Emitter::new),
             model_listener: RefCell::new(None),
+            visible: Cell::new(false),
         })
+    }
+
+    /// `isVisible()`.
+    pub fn is_visible(&self) -> bool {
+        self.visible.get()
+    }
+
+    /// `setVisible(visible)`: o painel lógico só guarda o estado (não há controle a mostrar ou esconder).
+    pub fn set_visible(&self, visible: bool) {
+        self.visible.set(visible);
+    }
+
+    /// `getControl()`: o painel lógico não tem controle de editor, então nunca há um.
+    pub fn get_control(&self) -> Option<Dynamic> {
+        None
     }
 
     /// `options`: as opções com que a entrada foi atribuída.
@@ -238,13 +279,13 @@ impl EditorPane {
     /// `setInput(input, options, context, token)`: a entrada vale já; a promessa assenta quando o modelo foi resolvido. O painel
     /// com seleção passa a avisar `EDIT` a cada mudança de conteúdo do modelo de texto (o `onDidChangeModelContent` do controle
     /// de `AbstractTextEditor`).
-    fn set_input(self: &Rc<Self>, editor: &EditorInputRef, options: Option<TextEditorOptions>) -> Promise<()> {
+    pub fn set_input(self: &Rc<Self>, editor: &EditorInputRef, options: Option<TextEditorOptions>) -> Promise<()> {
         self.unbind_model();
 
         *self.input.borrow_mut() = Some(editor.clone());
         *self.options.borrow_mut() = options;
 
-        if self.id == ERROR_EDITOR_ID {
+        if self.id == ERROR_EDITOR_ID || self.id == WORKSPACE_TRUST_REQUIRED_EDITOR_ID {
             return Promise::resolved(());
         }
 
@@ -289,7 +330,7 @@ impl EditorPane {
     }
 
     /// `clearInput()`.
-    fn clear_input(&self) {
+    pub fn clear_input(&self) {
         self.unbind_model();
 
         *self.input.borrow_mut() = None;
@@ -357,6 +398,8 @@ impl IEditorPane for EditorPane {
 
 impl IDisposable for EditorPane {
     fn dispose(&self) {
+        *self.input.borrow_mut() = None;
+        *self.options.borrow_mut() = None;
         self.unbind_model();
         self.on_did_change_control.dispose();
         if let Some(emitter) = &self.on_did_change_selection {
@@ -395,12 +438,17 @@ pub struct EditorPanes {
     map_editor_pane_to_pending_set_input: RefCell<HashMap<DisposableId, Promise<()>>>,
     /// `editorOperation.currentOperationId`.
     current_operation_id: Cell<u64>,
+    /// `workspaceTrustService`: ausente quando o contêiner de serviços não o fornece (então o espaço de trabalho vale como de
+    /// confiança).
+    workspace_trust_service: Option<Rc<dyn IWorkspaceTrustManagementService>>,
     disposables: Rc<DisposableStore>,
 }
 
 impl EditorPanes {
     pub fn new(group_id: GroupIdentifier, instantiation_service: Rc<InstantiationService>) -> Rc<Self> {
-        Rc::new_cyclic(|this| Self {
+        let workspace_trust_service = instantiation_service.invoke_function(|accessor| accessor.try_get(I_WORKSPACE_TRUST_MANAGEMENT_SERVICE));
+
+        let editor_panes = Rc::new_cyclic(|this| Self {
             this: this.clone(),
             group_id,
             instantiation_service,
@@ -409,8 +457,42 @@ impl EditorPanes {
             editor_panes: RefCell::new(Vec::new()),
             map_editor_pane_to_pending_set_input: RefCell::new(HashMap::new()),
             current_operation_id: Cell::new(0),
+            workspace_trust_service,
             disposables: DisposableStore::new(),
-        })
+        });
+
+        editor_panes.register_listeners();
+
+        editor_panes
+    }
+
+    fn register_listeners(&self) {
+        let Some(workspace_trust_service) = &self.workspace_trust_service else {
+            return;
+        };
+
+        let this = self.this.clone();
+        self.disposables.add(workspace_trust_service.on_did_change_trust().listen(move |_| {
+            if let Some(this) = this.upgrade() {
+                this.on_did_change_workspace_trust();
+            }
+        }));
+    }
+
+    /// `onDidChangeWorkspaceTrust()`: se o painel ativo exige confiança no espaço de trabalho, a entrada é aberta de novo a
+    /// cada mudança de confiança. No original a abertura passa pelo `groupView.openEditor` para tratar os erros; aqui o
+    /// `open_editor` do próprio painel já os trata (painel de erro).
+    fn on_did_change_workspace_trust(&self) {
+        let Some(active) = self.active_editor_pane() else {
+            return;
+        };
+        let (Some(editor), options) = (active.input(), active.text_options()) else {
+            return;
+        };
+
+        if editor.has_capability(EditorInputCapabilities::REQUIRES_TRUST) {
+            let _ = self.open_editor_with_text_options(&editor, options, EditorOpenContext::default());
+        }
     }
 
     /// `activeEditorPane`.
@@ -485,6 +567,14 @@ impl EditorPanes {
 
     /// `getEditorPaneDescriptor(editor)`: `assertReturnsDefined(this.editorPanesRegistry.getEditorPane(editor))`.
     fn get_editor_pane_descriptor(&self, editor: &EditorInputRef) -> Result<Rc<EditorPaneDescriptor>, Error> {
+        // Workspace trust: if an editor signals it needs workspace trust but the current workspace is untrusted, we fallback
+        // to a generic editor descriptor to indicate this and do NOT load the registered editor.
+        if editor.has_capability(EditorInputCapabilities::REQUIRES_TRUST)
+            && self.workspace_trust_service.as_ref().is_some_and(|service| !service.is_workspace_trusted())
+        {
+            return Ok(EditorPaneDescriptor::new(WORKSPACE_TRUST_REQUIRED_EDITOR_ID, "Workspace Trust Required"));
+        }
+
         self.registry.get_editor_pane(editor).ok_or_else(|| Error::new("Assertion Failed: argument is undefined or null"))
     }
 

@@ -10,9 +10,9 @@
 //! `vscode.languages` se o binder registrou o cliente `MainThread*` de que ele depende (`MainThreadDiagnostics`, `MainThreadLanguages`,
 //! `MainThreadLanguageFeatures`) e os documentos de texto (`MainThreadDocuments` e `MainThreadTextEditors`) estão ligados.
 //!
-//! Falta (o serviço do host tem, falta só a ponte): `registerDocumentLinkProvider`, `registerWorkspaceSymbolProvider` e os demais;
-//! `setLanguageConfiguration`, `createLanguageStatusItem`, `tokenAtPosition` e `onDidChangeSyntaxHighlighting`;
-//! `DiagnosticCollection#[Symbol.iterator]`.
+//! Falta (o serviço do host tem, falta só a ponte): `tokenAtPosition` e `onDidChangeSyntaxHighlighting`;
+//! `DiagnosticCollection#[Symbol.iterator]`. `setLanguageConfiguration` está em `language_providers` (a leitura da configuração, em
+//! `language_configuration`) e `createLanguageStatusItem` aqui, com a classe em `language_status`.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões: o host não sabe qual delas chama, então os registros e as coleções usam a extensão
@@ -62,6 +62,7 @@ use crate::api::events::{event_function, EventTables};
 use crate::api::js_object::JsObjects;
 use crate::api::language_provider_types::{self, SemanticTokensBuilders};
 use crate::api::language_providers;
+use crate::api::language_status::{self, LanguageStatusItems};
 use crate::api::language_types::{
     self, code_action_kind_data, code_action_kind_from_js, code_action_raw_entries, code_action_ref_from_js, code_actions_from_js, command_from_js,
     completion_item_ref_from_js, completion_raw_items, completion_result_from_js, diagnostics_from_js, document_symbols_from_js, hover_data, hover_from_js, location_result_from_js,
@@ -117,6 +118,7 @@ impl DiagnosticCollections {
 pub struct LanguagesState {
     pub collections: Rc<DiagnosticCollections>,
     pub builders: Rc<SemanticTokensBuilders>,
+    pub status_items: Rc<LanguageStatusItems>,
 }
 
 /// A extensão que o host usa nos registros (ver as divergências do módulo).
@@ -139,7 +141,7 @@ pub fn host_extension() -> Rc<ExtensionDescription> {
 // --- seletores
 
 /// `vscode.DocumentSelector`: texto, `DocumentFilter` ou uma lista deles.
-fn selector_from(value: &JsData) -> Result<DocumentSelectorInput, String> {
+pub(crate) fn selector_from(value: &JsData) -> Result<DocumentSelectorInput, String> {
     match value {
         JsData::Str(language) => Ok(DocumentSelectorInput::Language(language.clone())),
         JsData::Array(items) => Ok(DocumentSelectorInput::Array(items.iter().map(selector_from).collect::<Result<Vec<_>, _>>()?)),
@@ -740,6 +742,15 @@ pub fn namespace(runner: &NodeRunner, services: &LanguagesServices, table: &Rc<D
                 Ok(promise_to_js(&set_runner, changed, move |document| result_objects.document_to_js(document)))
             }),
         ));
+        let (status_languages, status_items, status_extension) = (languages.clone(), state.status_items.clone(), host_extension());
+        members.push(function(
+            "createLanguageStatusItem",
+            2,
+            Rc::new(move |args| {
+                let id = string_arg(args, 0, "createLanguageStatusItem: o id")?;
+                status_items.create(&status_languages, &status_extension, &id, args.get(1).ok_or("createLanguageStatusItem: falta o seletor")?)
+            }),
+        ));
     }
 
     if let Some(diagnostics) = &services.diagnostics {
@@ -798,6 +809,7 @@ pub fn namespace(runner: &NodeRunner, services: &LanguagesServices, table: &Rc<D
 /// As classes deste módulo: as de valor (`language_types` e `language_provider_types`) e o protótipo de `DiagnosticCollection`.
 pub fn classes(runner: &NodeRunner, state: &LanguagesState) -> Vec<(String, JsData)> {
     define_collection_class(runner, &state.collections);
+    language_status::define_class(runner, &state.status_items);
     let mut classes = language_types::classes(runner);
     classes.extend(language_provider_types::classes(runner, &state.builders));
     classes

@@ -6,3 +6,4 @@ pub mod action_list;
 pub mod action_widget;
 pub mod action_widget_dropdown;
 pub mod action_widget_motion;
+pub mod tabbed_action_list_widget;

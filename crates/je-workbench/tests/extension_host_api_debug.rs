@@ -24,13 +24,13 @@ use je_exthost::in_process::IMainThreadBinder;
 use je_extensions::manifest::{DebuggerContribution, ExtensionContributions};
 use je_workbench::api::common::ext_host_debug_protocol::{
     BreakpointDto, ExtHostDebugServiceShape, IBreakpointDto, IBreakpointsDeltaDto, IDebugSessionDto, IDebugSessionFullDto, IFunctionBreakpointDto, ISourceBreakpointDto,
-    IStartDebuggingOptions, MainThreadDebugServiceShape, NameOrConfig, RegisterBreakpointDto,
+    IStackFrameFocusDto, IStartDebuggingOptions, IThreadFocusDto, MainThreadDebugServiceShape, NameOrConfig, RegisterBreakpointDto, StackFocusDto,
 };
 use je_workbench::api::common::ext_host_protocol::{ExtHostContext, IMainContext, MainContext};
 use je_workbench::contrib::debug::debug::{
     DebugConfigurationProviderTriggerKind, IAdapterDescriptor, IConfig, IDebugAdapterExecutable, IDebugAdapterExecutableOptions,
 };
-use je_workbench::contrib::debug::debug_protocol::ProtocolMessage;
+use je_workbench::contrib::debug::debug_protocol::{ProtocolMessage, Request};
 use serde_json::{json, Value};
 
 /// O JavaScript da extensão de exemplo: cada comando devolve um valor simples que o teste confere.
@@ -145,6 +145,66 @@ exports.activate = (context) => {
     return JSON.stringify(vscode.debug.breakpoints.map(describe));
   });
   command('t.breakpoints', () => JSON.stringify(vscode.debug.breakpoints.map(describe)));
+
+  const describeStack = (item) =>
+    (item instanceof vscode.DebugStackFrame ? 'frame:' : item instanceof vscode.DebugThread ? 'thread:' : '?:') + item.session.id + ':' + item.threadId + ':' + item.frameId;
+  command('t.stack', () => {
+    const item = vscode.debug.activeStackItem;
+    return item ? describeStack(item) : 'nenhum';
+  });
+  command('t.listenStack', () => {
+    context.subscriptions.push(vscode.debug.onDidChangeActiveStackItem((item) => push('stack:' + (item ? describeStack(item) : 'nenhum'))));
+    return 'ouvindo';
+  });
+  command('t.newStackItems', () => {
+    const session = vscode.debug.activeDebugSession;
+    return JSON.stringify([describeStack(new vscode.DebugThread(session, 2)), describeStack(new vscode.DebugStackFrame(session, 2, 5))]);
+  });
+  command('t.sourceUri', () => {
+    const parts = (uri) => uri.scheme + '|' + uri.path + '|' + uri.query;
+    return JSON.stringify([
+      parts(vscode.debug.asDebugSourceUri({ path: '/w/a.rs' })),
+      parts(vscode.debug.asDebugSourceUri({ path: 'mem', sourceReference: 7 }, vscode.debug.activeDebugSession)),
+      parts(vscode.debug.asDebugSourceUri({ sourceReference: 9 })),
+      (() => { try { vscode.debug.asDebugSourceUri({}); return 'sem erro'; } catch (error) { return error.message; } })(),
+    ]);
+  });
+  command('t.dataBreakpoint', () => {
+    const breakpoint = new vscode.DataBreakpoint('var x', 'id-1', true, false, 'x > 1');
+    let failure;
+    try { new vscode.DataBreakpoint('v', ''); } catch (error) { failure = error.message; }
+    return JSON.stringify([breakpoint instanceof vscode.Breakpoint, breakpoint.label, breakpoint.dataId, breakpoint.canPersist, breakpoint.enabled, breakpoint.condition, failure]);
+  });
+
+  command('t.registerInlineAndTracker', () => {
+    const emitter = new vscode.EventEmitter();
+    const adapter = {
+      onDidSendMessage: emitter.event,
+      handleMessage(message) {
+        push('adapter<-' + message.command);
+        emitter.fire({ seq: 2, type: 'response', request_seq: message.seq, success: true, command: message.command });
+      },
+      dispose() { push('adapter dispose'); },
+    };
+    context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('mock', {
+      createDebugAdapterDescriptor() { return new vscode.DebugAdapterInlineImplementation(adapter); },
+    }));
+    globalThis.__tracker = vscode.debug.registerDebugAdapterTrackerFactory('mock', {
+      createDebugAdapterTracker(session) {
+        return {
+          onWillStartSession: () => push('tracker start ' + session.id),
+          onWillReceiveMessage: (message) => push('tracker recv ' + message.command),
+          onDidSendMessage: (message) => push('tracker sent ' + message.type),
+          onWillStopSession: () => push('tracker stop'),
+        };
+      },
+    });
+    return 'registrado';
+  });
+  command('t.disposeTracker', () => {
+    globalThis.__tracker.dispose();
+    return 'descartado';
+  });
 };
 "#;
 
@@ -198,8 +258,8 @@ impl MainThreadDebugServiceShape for Panel {
         self.note(format!("sessionCached:{session_id}"));
     }
 
-    fn rpc_accept_da_message(&self, _handle: u32, _message: ProtocolMessage) {
-        panic!("o teste não exercita $acceptDAMessage");
+    fn rpc_accept_da_message(&self, handle: u32, message: ProtocolMessage) {
+        self.note(format!("acceptDAMessage:{handle}:{}", message.to_json()));
     }
 
     fn rpc_accept_da_error(&self, _handle: u32, _name: &str, _message: &str, _stack: Option<&str>) {
@@ -577,5 +637,82 @@ fn breakpoints_are_registered_listed_removed_and_follow_the_workbench_delta() {
             r#"["breakpoints:2/0/0","breakpoints:0/1/0","breakpoints:2/0/0","breakpoints:0/1/0"]"#,
             "cada mudança dispara onDidChangeBreakpoints com o que entrou, saiu e mudou"
         );
+    });
+}
+
+#[test]
+fn active_stack_item_follows_the_workbench_and_the_stack_classes_are_constructible() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, panel| {
+        assert_eq!(run(workbench, "t.listenStack"), "ouvindo");
+        assert_eq!(run(workbench, "t.stack"), "nenhum");
+
+        let ext_host = panel.ext_host();
+        let started = ext_host.rpc_accept_debug_session_started(session_dto("s1", "Primeira"));
+        settle(workbench, &started, "$acceptDebugSessionStarted");
+        let active = ext_host.rpc_accept_debug_session_active_changed(Some(session_id("s1")));
+        settle(workbench, &active, "$acceptDebugSessionActiveChanged");
+
+        let thread = ext_host.rpc_accept_stack_frame_focus(Some(StackFocusDto::Thread(IThreadFocusDto { session_id: "s1".to_owned(), thread_id: 7 })));
+        settle(workbench, &thread, "$acceptStackFrameFocus");
+        assert_eq!(run(workbench, "t.stack"), "thread:s1:7:undefined");
+        let frame = ext_host.rpc_accept_stack_frame_focus(Some(StackFocusDto::StackFrame(IStackFrameFocusDto { session_id: "s1".to_owned(), thread_id: 7, frame_id: 3 })));
+        settle(workbench, &frame, "$acceptStackFrameFocus");
+        assert_eq!(run(workbench, "t.stack"), "frame:s1:7:3");
+        let none = ext_host.rpc_accept_stack_frame_focus(None);
+        settle(workbench, &none, "$acceptStackFrameFocus");
+        assert_eq!(run(workbench, "t.stack"), "nenhum");
+
+        assert_eq!(global(workbench, "__events"), r#"["stack:thread:s1:7:undefined","stack:frame:s1:7:3","stack:nenhum"]"#);
+        assert_eq!(run(workbench, "t.newStackItems"), r#"["thread:s1:2:undefined","frame:s1:2:5"]"#, "DebugThread e DebugStackFrame são construíveis");
+    });
+}
+
+#[test]
+fn as_debug_source_uri_builds_the_file_or_the_debug_uri_and_refuses_an_empty_source() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, panel| {
+        let ext_host = panel.ext_host();
+        let started = ext_host.rpc_accept_debug_session_started(session_dto("s1", "Primeira"));
+        settle(workbench, &started, "$acceptDebugSessionStarted");
+        let active = ext_host.rpc_accept_debug_session_active_changed(Some(session_id("s1")));
+        settle(workbench, &active, "$acceptDebugSessionActiveChanged");
+        assert_eq!(
+            run(workbench, "t.sourceUri"),
+            r#"["file|/w/a.rs|","debug|mem|session=s1&ref=7","debug||ref=9","cannot create uri from DAP 'source' object; properties 'path' and 'sourceReference' are both missing."]"#
+        );
+    });
+}
+
+#[test]
+fn data_breakpoint_is_constructible_and_requires_a_data_id() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, _panel| {
+        assert_eq!(run(workbench, "t.dataBreakpoint"), r#"[true,"var x","id-1",true,false,"x > 1","Illegal argument: dataId"]"#);
+    });
+}
+
+#[test]
+fn tracker_observes_a_session_whose_adapter_is_an_inline_implementation_held_by_reference() {
+    run_extension_contributing(EXTENSION_SOURCE, mock_debugger_contribution(), setup, |workbench, panel| {
+        assert_eq!(run(workbench, "t.registerInlineAndTracker"), "registrado");
+        let ext_host = panel.ext_host();
+        let started = ext_host.rpc_start_da_session(5, session_dto("s1", "Primeira"));
+        settle(workbench, &started, "$startDASession");
+
+        ext_host.rpc_send_da_message(5, ProtocolMessage::Request(Request { seq: 1, command: "threads".to_owned(), arguments: None }));
+        workbench.pump();
+        assert_eq!(
+            panel.entries("acceptDAMessage"),
+            strings(&[r#"acceptDAMessage:5:{"seq":2,"type":"response","request_seq":1,"success":true,"command":"threads"}"#]),
+            "a resposta que o adaptador inline dispara chega ao workbench"
+        );
+
+        let stopped = ext_host.rpc_stop_da_session(5);
+        settle(workbench, &stopped, "$stopDASession");
+        let events: Vec<String> = serde_json::from_str(&global(workbench, "__events")).expect("os eventos são um array de textos");
+        assert_eq!(
+            events[..5],
+            strings(&["tracker start s1", "tracker recv threads", "adapter<-threads", "tracker sent response", "tracker stop"])[..],
+            "o tracker vê o início, a mensagem recebida, a enviada e o fim, na ordem do original"
+        );
+        assert_eq!(run(workbench, "t.disposeTracker"), "descartado");
     });
 }
