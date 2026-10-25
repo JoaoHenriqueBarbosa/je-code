@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
 
-use common::{assert_deep_strict_equal, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers, run_with_real_timers};
+use common::{assert_deep_strict_equal, run_with_faked_timers, run_with_real_timers};
 use je_base::async_::async_fn;
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
@@ -48,7 +48,7 @@ use je_editor::text_model::TextModel;
 use je_base::JsString;
 use support::inline_completions_test_utils::{
     GhostTextContext, InlineCompletionsTestContext, InlineCompletionsTestOptions, MockInlineCompletionsProvider,
-    with_async_test_code_editor_and_inline_completions_model,
+    ensure_no_leaks_after_global_registrations, with_async_test_code_editor_and_inline_completions_model,
 };
 
 // #region utilitários
@@ -91,7 +91,7 @@ where
 {
     let provider = Rc::clone(provider);
     run_with_faked_timers(async move {
-        let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let _guard = ensure_no_leaks_after_global_registrations();
         with_async_test_code_editor_and_inline_completions_model("", options, move |ctx| body(ctx, provider)).await;
     });
 }
@@ -156,7 +156,7 @@ impl InlineCompletionsProvider for DeferredResponseProvider {
 #[test]
 fn inline_completions_emits_empty_response_telemetry_after_instantiation_service_disposal() {
     run_with_real_timers(async {
-        let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let _guard = ensure_no_leaks_after_global_registrations();
         let provider_started = Rc::new(DeferredPromise::<()>::new());
         let provider_response = Rc::new(DeferredPromise::<Option<Rc<InlineCompletions>>>::new());
         let provider_id = ProviderId::from_extension_id(Some("GitHub.copilot"));
