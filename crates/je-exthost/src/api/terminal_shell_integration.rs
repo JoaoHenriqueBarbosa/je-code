@@ -21,7 +21,7 @@ use je_workbench::api::common::ext_host_terminal_shell_integration::{
     Terminal, TerminalShellExecution, TerminalShellExecutionCommandLine, TerminalShellExecutionEndEvent, TerminalShellExecutionStartEvent, TerminalShellIntegration,
     TerminalShellIntegrationChangeEvent,
 };
-use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS_KEY};
+use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeArg, NodeRunner, CLASS_KEY};
 
 use crate::api::commands::promise_to_js;
 use crate::api::terminal::TerminalObjects;
@@ -158,7 +158,9 @@ fn read_to_js(runner: &NodeRunner, adapter: &zjsc::api::embed_node::JsHandle, ex
             }),
         )
     };
-    runner.call_data(adapter, &[JsData::Handle(Rc::new(next)), JsData::Handle(Rc::new(close))])
+    // `call` devolve o objeto por referência: `call_data` o copiaria como dado e perderia o `[Symbol.asyncIterator]` e os métodos.
+    let iterable = runner.call(adapter, &[NodeArg::Handle(&next), NodeArg::Handle(&close)])?;
+    Ok(JsData::Handle(Rc::new(iterable)))
 }
 
 /// Define as classes `TerminalShellIntegration` e `TerminalShellExecution` (protótipo dos objetos que o host entrega).
