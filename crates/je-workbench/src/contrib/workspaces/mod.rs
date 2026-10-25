@@ -12,6 +12,8 @@
 //!   `workbench.action.openWorkspaceFromEditor` e o `recentRemoteFolderPruner` dependem de módulos que ainda não foram
 //!   portados e entram com cada um deles.
 
+pub mod recent_remote_folder_pruner;
+
 use std::rc::Rc;
 
 use je_base::JsString;
