@@ -16,3 +16,5 @@ pub mod guided_tryout_presentation;
 pub mod onboarding_tryout_service;
 pub mod onboarding_scenario_service;
 pub mod onboarding_service;
+pub mod spotlight_overlay;
+pub mod spotlight_presentation;
