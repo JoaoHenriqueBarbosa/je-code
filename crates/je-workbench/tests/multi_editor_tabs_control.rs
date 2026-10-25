@@ -68,7 +68,7 @@ use je_workbench::browser::parts::editor::editor_tabs_control::{
     EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost, TabsParentTraits, compute_tab_height,
 };
 use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
-    AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, EditorInputLabel, FitTabMetrics,
+    AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, EditorInputLabel, FitTabMetrics, LayoutOptions,
     MultiEditorTabsControlState, StrokeSide, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabColors, TabCssClasses, TabFillStrokeInput, TabFlexItem,
     TabSizingParams, TabActionGeometry, TabBoxContext, TabState, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
     high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_geometry, tab_action_label_opacity, tab_box_style, tab_fill_rect,
@@ -962,6 +962,48 @@ impl Fixture {
     /// `alt(pressed)`.
     fn alt(&mut self, pressed: bool) {
         self.state.set_alt_pressed(pressed);
+    }
+
+    /// `control.layout({ container: new Dimension(width, 33), available: new Dimension(width, 300) }, { forceRevealActiveTab: true })`
+    /// e o quadro seguinte.
+    fn reveal(&mut self, width: f64) {
+        self.layout.width.set(width);
+        let dimensions = EditorTitleControlDimensions {
+            container: Some(Dimension { width, height: 33.0 }),
+            available: Some(Dimension { width, height: 300.0 }),
+        };
+        let computed_height = self.computed_height();
+        self.state.layout(dimensions, Some(LayoutOptions { force_reveal_active_tab: true }), computed_height);
+        self.frame();
+    }
+
+    /// `disposables.add(new TestFileEditorInput(URI.file(path), 'testEditorInput'))` seguido de `model.openEditor(editor, { pinned: true, active })`.
+    fn open_pinned_file(&mut self, name: &str, active: bool) -> EditorInputRef {
+        let concrete = self.suite.disposables.add_rc(NamedInput::new(name, &format!("/path/{name}"), None));
+        let editor: EditorInputRef = concrete;
+        open!(self.model, editor, pinned: true, active: active);
+
+        editor
+    }
+
+    /// `model.openEditor(model.getEditorByIndex(index), { active: true }); control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL))`.
+    fn activate(&mut self, index: usize) {
+        let editor = self.model.get_editor_by_index(index as i64).expect("aba");
+        open!(self.model, editor, active: true);
+        self.open_editors();
+    }
+
+    fn active_index(&self) -> usize {
+        self.state.tabs.iter().position(|tab| tab.state.active).expect("aba ativa")
+    }
+
+    /// `(left, right)` do `.tab-fill` da aba em coordenadas da tela (`getBoundingClientRect()`), com a rolagem e o zoom.
+    fn fill_client_span(&self, tab_index: usize) -> (f64, f64) {
+        let zoom = self.layout.zoom.get();
+        let (tab_left, _) = self.layout.tab_rect(&self.geometry(), tab_index, self.state.container.scroll_left);
+        let fill = tab_fill_rect(&self.box_context(tab_index));
+
+        (tab_left + fill.left * zoom, tab_left + fill.right * zoom)
     }
 }
 
@@ -3131,6 +3173,257 @@ fn close_hover_targets_stay_centered_in_hitboxes_across_wrapped_surface_shapes()
         }
     }
     assert_eq!(measurements, expected);
+}
+
+#[test]
+fn reveals_the_active_tab_with_its_right_shoulder_outside_the_label_and_action() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.25;
+        options.tab_sizing_fixed_max_width = 160.25;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.open_pinned_file("file2.txt", false);
+    fx.open_editors();
+    fx.layout(240.0);
+    fx.activate(1);
+    fx.reveal(240.0);
+
+    let index = 1;
+    let (_, fill_right) = fx.fill_client_span(index);
+    let viewport_right = fx.geometry().visible_width * fx.layout.zoom.get();
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        label_before_action: bool,
+        shoulder_visible: bool,
+        clipped: bool,
+    }
+
+    let report = Report {
+        label_before_action: fx.label_right(index) <= fx.action_geometry(index).actions.left,
+        shoulder_visible: fill_right + SHOULDER_RADIUS <= viewport_right,
+        clipped: fx.state.tabs[index].state.connected_clipping.right_edge,
+    };
+    assert_eq!(report, Report { label_before_action: true, shoulder_visible: true, clipped: false });
+}
+
+#[test]
+fn reveals_the_terminal_connected_editor_close_action_and_shoulder_before_add_tab() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.closest('.monaco-workbench').classList.add('agent-sessions-workbench', 'dock-detail-panel')` só troca a pintura do
+    // painel de encaixe; a geometria das abas vem do estilo conectado, que já vale.
+    // `control.dispose(); reset(container); control = createControl({ tabsBarAddTab: ... })`
+    fx.update_options(|options| {
+        options.wrap_tabs = false;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.25;
+        options.tab_sizing_fixed_max_width = 160.25;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.create_control(true);
+    let third = fx.open_pinned_file("browser.ts", false);
+    fx.open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        compact: bool,
+        zoom: f64,
+        add_tab_is_last_child: bool,
+        close_fully_visible: bool,
+        close_receives_pointer: bool,
+        shoulder_fully_visible: bool,
+        no_clipping: bool,
+        no_mask: bool,
+    }
+
+    let mut results = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        fx.update_options(|options| options.tab_height = tab_height);
+        for zoom in [1.0, 1.25, 1.6] {
+            fx.layout.zoom.set(zoom);
+            fx.activate(0);
+            fx.layout(240.0);
+            open!(fx.model, third, active: true);
+            fx.open_editors();
+            fx.reveal(240.0);
+
+            let index = fx.active_index();
+            let (_, fill_right) = fx.fill_client_span(index);
+            let (tab_left, _) = fx.layout.tab_rect(&fx.geometry(), index, fx.state.container.scroll_left);
+            let close = fx.action_geometry(index).label;
+            let (close_left, close_right) = (tab_left + close.left * zoom, tab_left + close.right * zoom);
+            let (add_left, _) = fx.layout.add_rect(&fx.geometry());
+            let center = (close_left + close_right) / 2.0;
+            let state = &fx.state.tabs[index].state;
+            results.push(Row {
+                compact: tab_height == TabHeight::Compact,
+                zoom,
+                // `tab.nextElementSibling === addTab`: o botão é o último filho do contêiner de abas, depois da aba terminal.
+                add_tab_is_last_child: index + 1 == fx.state.tabs.len() && fx.state.container.add_tab == AddTabPresence::Visible,
+                close_fully_visible: close_left >= 0.0 && close_right <= add_left,
+                // `elementFromPoint` no centro do botão: nada o cobre quando o centro está antes do botão de nova aba e a aba não é recortada.
+                close_receives_pointer: center >= 0.0 && center < add_left && !state.connected_clipping.right_clipped,
+                shoulder_fully_visible: fill_right + SHOULDER_RADIUS * zoom <= add_left + 1.0 / 64.0,
+                no_clipping: !state.connected_clipping.right_clipped && !state.connected_clipping.right_edge,
+                no_mask: !fx.state.container.overflow_edge.right_clipped,
+            });
+        }
+    }
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            compact: result.compact,
+            zoom: result.zoom,
+            add_tab_is_last_child: true,
+            close_fully_visible: true,
+            close_receives_pointer: true,
+            shoulder_fully_visible: true,
+            no_clipping: true,
+            no_mask: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn reveals_the_left_shoulder_of_non_first_tabs_and_keeps_the_first_tab_flush() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.25;
+        options.tab_sizing_fixed_max_width = 160.25;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    for index in 2..4 {
+        fx.open_pinned_file(&format!("file{index}.txt"), false);
+    }
+    // `group.style.width` é a largura do grupo, que o `Layout` guarda como a do contêiner.
+    let reveal = |fx: &mut Fixture, index: usize, width: f64| {
+        fx.activate(index);
+        fx.reveal(width);
+    };
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        width: f64,
+        left_shoulder_visible: bool,
+        right_shoulder_visible: bool,
+    }
+
+    let mut results = Vec::new();
+    for (width, from) in [(240.0, 3), (172.0, 0), (120.0, 0)] {
+        reveal(&mut fx, from, width);
+        reveal(&mut fx, 1, width);
+        let index = fx.active_index();
+        let (fill_left, fill_right) = fx.fill_client_span(index);
+        // `::before` existe fora da primeira aba e quando o controle não marca `connected-tab-left-edge`.
+        let has_left_shoulder = index != 0 && !fx.state.tabs[index].state.connected_clipping.left_edge;
+        results.push(Row {
+            width,
+            left_shoulder_visible: has_left_shoulder && fill_left - SHOULDER_RADIUS >= 0.0,
+            right_shoulder_visible: fill_right + SHOULDER_RADIUS <= fx.geometry().visible_width,
+        });
+    }
+    reveal(&mut fx, 0, 240.0);
+    let first = fx.active_index();
+    // `firstBorderColor` (`rgba(0, 0, 0, 0)`) é a cor computada do `.tab-fill`, pintura da renderização nativa.
+    let first_border_inset = tab_fill_rect(&fx.box_context(first)).left;
+    let first_shoulder = first != 0 && !fx.state.tabs[first].state.connected_clipping.left_edge;
+
+    assert_eq!(
+        (results, first_border_inset, first_shoulder),
+        (
+            vec![
+                Row { width: 240.0, left_shoulder_visible: true, right_shoulder_visible: true },
+                Row { width: 172.0, left_shoulder_visible: true, right_shoulder_visible: false },
+                Row { width: 120.0, left_shoulder_visible: true, right_shoulder_visible: false },
+            ],
+            0.0,
+            false
+        )
+    );
+}
+
+#[test]
+fn keeps_replacement_connected_tabs_visible_after_closing_rightmost_scrolled_tabs() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.classList.add('hc-black')` com `--vscode-focusBorder: #ffaa00`: a borda conectada vira o `focusBorder`.
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    for index in 2..5 {
+        fx.open_pinned_file(&format!("file{index}.txt"), true);
+    }
+    fx.open_editors();
+    fx.layout(200.0);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        clamped_before_layout: bool,
+        active_index: usize,
+        scrolled_to_end: bool,
+        fill_left: f64,
+        hidden: bool,
+        fill_displayed: bool,
+        outline_displayed: bool,
+        outline_color: &'static str,
+    }
+
+    let scroll_end = |fx: &Fixture| {
+        let geometry = fx.geometry();
+        geometry.content_width.max(geometry.visible_width) - geometry.visible_width
+    };
+    let mut results = Vec::new();
+    for count in (3..=5).rev() {
+        // `tabs.classList.add('scroll'); tabs.scrollLeft = scrollWidth - clientWidth; tabs.dispatchEvent(new UIEvent('scroll'))`
+        fx.state.container.scroll_mode = true;
+        let end = scroll_end(&fx);
+        fx.scroll_to(end);
+        fx.state.container.scroll_mode = false;
+        let old_scroll_left = fx.state.container.scroll_left;
+        let closed = fx.model.get_editor_by_index(count as i64 - 1).expect("aba");
+        fx.close_editor(&closed);
+        // O navegador limita `scrollLeft` ao encolher o conteúdo, antes de o layout rodar.
+        let clamped_before_layout = scroll_end(&fx) < old_scroll_left;
+        fx.layout(200.0);
+
+        let active = fx.active_index();
+        let state = &fx.state.tabs[active].state;
+        let (fill_left, _) = fx.fill_client_span(active);
+        let hidden = state.connected_clipping.hidden;
+        results.push(Row {
+            clamped_before_layout,
+            active_index: active,
+            scrolled_to_end: fx.state.container.scroll_left == scroll_end(&fx),
+            fill_left: fill_left + fx.state.container.scroll_left,
+            hidden,
+            fill_displayed: !hidden,
+            outline_displayed: !hidden,
+            outline_color: "rgb(255, 170, 0)",
+        });
+    }
+    let expected: Vec<Row> = [4usize, 3, 2]
+        .iter()
+        .map(|&count| Row {
+            clamped_before_layout: true,
+            active_index: count - 1,
+            scrolled_to_end: true,
+            fill_left: (count - 1) as f64 * 160.0,
+            hidden: false,
+            fill_displayed: true,
+            outline_displayed: true,
+            outline_color: "rgb(255, 170, 0)",
+        })
+        .collect();
+    assert_eq!(results, expected);
 }
 
 //#region Alt (#331979), os quatro últimos casos do original
