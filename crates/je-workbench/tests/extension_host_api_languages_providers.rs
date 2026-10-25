@@ -148,13 +148,12 @@ exports.activate = (context) => {
     const edit = vscode.TextEdit.insert(new vscode.Position(1, 2), 'x');
     const location = new vscode.Location(vscode.Uri.file('/proj/a.txt'), new vscode.Position(3, 4));
     const markdown = new vscode.MarkdownString('texto', true);
-    let missingMethod;
-    try { markdown.appendText('mais'); missingMethod = 'sem erro'; } catch (error) { missingMethod = error.constructor.name; }
+    const chained = markdown.appendText('mais') === markdown;
     return JSON.stringify({
       edit: describe(edit.range) + ':' + edit.newText,
       location: location.uri.path + ':' + describe(location.range),
       markdown: markdown.value + ':' + markdown.supportThemeIcons,
-      missingMethod,
+      chained,
       severity: vscode.DiagnosticSeverity[vscode.DiagnosticSeverity.Hint],
       kind: vscode.SymbolKind[vscode.SymbolKind.Function] + ':' + vscode.CompletionItemKind[vscode.CompletionItemKind.Snippet],
     });
@@ -360,7 +359,7 @@ fn value_classes_build_the_objects_of_the_original() {
         assert_eq!(
             workbench.execute("t.valueClasses", Vec::new()),
             Dynamic::string(concat!(
-                r#"{"edit":"1,2-1,2:x","location":"/proj/a.txt:3,4-3,4","markdown":"texto:true","missingMethod":"TypeError","#,
+                r#"{"edit":"1,2-1,2:x","location":"/proj/a.txt:3,4-3,4","markdown":"textomais:true","chained":true,"#,
                 r#""severity":"Hint","kind":"Function:Snippet"}"#,
             ))
         );

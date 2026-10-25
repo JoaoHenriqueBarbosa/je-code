@@ -288,6 +288,7 @@ fn marked_string_data(value: &MarkedString) -> JsData {
 /// adaptador preencheu (o original altera o `Hover` da extensão no lugar) e as duas flags de verbosidade quando ela as definiu.
 pub fn hover_data(hover: &VerboseHover) -> JsData {
     class_fields(vec![
+        (CLASS_KEY, Some(JsData::Str("Hover".to_owned()))),
         ("contents", Some(JsData::Array(hover.hover.contents.iter().map(marked_string_data).collect()))),
         ("range", hover.hover.range.map(range_data)),
         ("canIncreaseVerbosity", hover.can_increase_verbosity.map(JsData::Bool)),
