@@ -40,6 +40,7 @@ use je_base::uri::URI;
 use je_instantiation::service_id;
 
 pub mod file_log;
+pub mod log_ipc;
 pub mod node;
 
 /// `LogLevel` de `log.ts` (os valores numéricos são os do original).

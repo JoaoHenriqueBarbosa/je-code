@@ -66,6 +66,9 @@ pub mod opener;
 
 pub mod terminal;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod shell;
+
 pub mod sandbox;
 pub mod network_filter;
 pub mod browser_view;
