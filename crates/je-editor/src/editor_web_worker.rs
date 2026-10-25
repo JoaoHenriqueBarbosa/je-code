@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::diff::string_diff;
@@ -31,11 +32,13 @@ use crate::languages::ILink;
 use crate::link_computer::{ILinkComputerTarget, compute_links};
 use crate::code_action::languages::TextEdit;
 use crate::diff::default_lines_diff_computer::default_lines_diff_computer::DefaultLinesDiffComputer;
-use crate::diff::legacy_lines_diff_computer::LegacyLinesDiffComputer;
-use crate::diff::lines_diff_computer::{ILinesDiffComputer, LinesDiffComputerOptions};
+use crate::diff::document_diff_provider::{DocumentDiff, DocumentDiffProviderOptions};
+use crate::diff::legacy_lines_diff_computer::{DiffComputer, DiffComputerOpts, LegacyLinesDiffComputer, LineChange};
+use crate::diff::lines_diff_computer::{ILinesDiffComputer, LinesDiff, LinesDiffComputerOptions};
 use crate::diff::range_mapping::DetailedLineRangeMapping;
 use crate::edits::string_edit::StringEdit;
 use crate::editor_worker::{DiffAlgorithmName, WordRanges};
+use crate::inplace_replace_support::{InplaceReplaceSupportResult, navigate_value_set};
 use crate::mirror_text_model::MirrorTextModel;
 use crate::model::Eol;
 use crate::position::Position;
@@ -44,7 +47,17 @@ use crate::range::Range;
 use crate::text::abstract_text::{AbstractText, StringText};
 use crate::text_model::TextModel;
 use crate::text_model_events::ModelContentChangedEvent;
-use crate::word_helper::WordAtPosition;
+use crate::word_helper::{WordAtPosition, ensure_valid_word_definition, get_word_at_text};
+
+/// `resolveLinesDiffComputer(algorithm)` e `.computeDiff(...)`: o `linesDiffComputers` do algoritmo pedido.
+fn compute_lines_diff(algorithm: DiffAlgorithmName, original_lines: &[JsString], modified_lines: &[JsString], options: &LinesDiffComputerOptions) -> LinesDiff {
+    match algorithm {
+        DiffAlgorithmName::Legacy => LegacyLinesDiffComputer.compute_diff(original_lines, modified_lines, options),
+        DiffAlgorithmName::Advanced | DiffAlgorithmName::AdvancedExternal | DiffAlgorithmName::AdvancedWasm => {
+            DefaultLinesDiffComputer::new().compute_diff(original_lines, modified_lines, options)
+        }
+    }
+}
 
 /// `computeStringDiff(original, modified, options, algorithm)` (`@internal` em `editorWebWorker.ts`): a
 /// diferença de linhas dos dois textos, refinada por caractere, como uma `StringEdit` sobre o original.
@@ -60,12 +73,7 @@ pub fn compute_string_diff(original: &JsString, modified: &JsString, max_computa
         compute_moves: false,
         extend_to_subwords: Some(false),
     };
-    let result = match algorithm {
-        DiffAlgorithmName::Legacy => LegacyLinesDiffComputer.compute_diff(&original_lines, &modified_lines, &options),
-        DiffAlgorithmName::Advanced | DiffAlgorithmName::AdvancedExternal | DiffAlgorithmName::AdvancedWasm => {
-            DefaultLinesDiffComputer::new().compute_diff(&original_lines, &modified_lines, &options)
-        }
-    };
+    let result = compute_lines_diff(algorithm, &original_lines, &modified_lines, &options);
 
     let text_edit = DetailedLineRangeMapping::to_text_edit(&result.changes, &modified_text);
     original_text.get_transformer().get_string_edit(&text_edit)
@@ -558,6 +566,83 @@ impl EditorWorker {
     pub fn compute_links(&self, model_url: &str) -> Promise<Option<Vec<ILink>>> {
         let models = self.models.borrow();
         Promise::resolved(models.get(model_url).map(|model| compute_links(Some(model as &dyn ILinkComputerTarget))))
+    }
+
+    /// `$computeDiff(originalUrl, modifiedUrl, options, algorithm)`: `None` se o worker não tem um dos modelos. O
+    /// resultado é o [`DocumentDiff`] (o `getLineChanges` do original só serializa as mudanças para o IPC).
+    pub fn compute_diff(&self, original_url: &str, modified_url: &str, options: &DocumentDiffProviderOptions, algorithm: DiffAlgorithmName) -> Promise<Option<DocumentDiff>> {
+        let models = self.models.borrow();
+        let (Some(original), Some(modified)) = (models.get(original_url), models.get(modified_url)) else {
+            return Promise::resolved(None);
+        };
+
+        let original_lines = original.get_lines_content();
+        let modified_lines = modified.get_lines_content();
+        let result = compute_lines_diff(algorithm, &original_lines, &modified_lines, options);
+
+        // `_modelsAreIdentical`: só olhado quando não há mudanças.
+        let identical = result.changes.is_empty() && original_lines == modified_lines;
+
+        Promise::resolved(Some(DocumentDiff { identical, quit_early: result.hit_timeout, changes: result.changes, moves: result.moves }))
+    }
+
+    /// `$computeDirtyDiff(originalUrl, modifiedUrl, ignoreTrimWhitespace)`: `None` se o worker não tem um dos modelos.
+    pub fn compute_dirty_diff(&self, original_url: &str, modified_url: &str, ignore_trim_whitespace: bool) -> Promise<Option<Vec<LineChange>>> {
+        let models = self.models.borrow();
+        let (Some(original), Some(modified)) = (models.get(original_url), models.get(modified_url)) else {
+            return Promise::resolved(None);
+        };
+
+        let diff_computer = DiffComputer::new(
+            original.get_lines_content(),
+            modified.get_lines_content(),
+            DiffComputerOpts {
+                should_compute_char_changes: false,
+                should_post_process_char_changes: false,
+                should_ignore_trim_whitespace: ignore_trim_whitespace,
+                should_make_pretty_diff: true,
+                max_computation_time: 1000.0,
+            },
+        );
+        Promise::resolved(Some(diff_computer.compute_diff().changes))
+    }
+
+    /// `$navigateValueSet(modelUrl, range, up, wordDef, wordDefFlags)`.
+    pub fn navigate_value_set(&self, model_url: &str, mut range: Range, up: bool, word_def: &[u16], word_def_flags: &str) -> Promise<Option<InplaceReplaceSupportResult>> {
+        let models = self.models.borrow();
+        let Some(model) = models.get(model_url) else {
+            return Promise::resolved(None);
+        };
+
+        let word_def_reg_exp = match JsRegExp::new(word_def, word_def_flags) {
+            Ok(reg_exp) => Rc::new(reg_exp),
+            Err(error) => return Promise::rejected(Error::named("SyntaxError", error.message())),
+        };
+
+        if range.start_column == range.end_column {
+            range.end_column += 1;
+        }
+
+        let selection_text = model.get_value_in_range(&range);
+
+        let word_at_text = get_word_at_text(
+            range.start_column,
+            &ensure_valid_word_definition(Some(&word_def_reg_exp)),
+            model.get_line_content(range.start_line_number).units(),
+            0,
+            None,
+        );
+        let Some(word_at_text) = word_at_text else {
+            return Promise::resolved(None);
+        };
+        let word_range = Range {
+            start_line_number: range.start_line_number,
+            start_column: word_at_text.start_column,
+            end_line_number: range.start_line_number,
+            end_column: word_at_text.end_column,
+        };
+        let word = model.get_value_in_range(&word_range);
+        Promise::resolved(navigate_value_set(&range, &selection_text, &word_range, Some(&word), up))
     }
 
     /// `$textualSuggest(modelUrls, leadingWord, wordDef, wordDefFlags)`.

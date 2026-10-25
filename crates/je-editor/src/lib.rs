@@ -236,6 +236,9 @@ pub mod bulk_edit_service;
 pub mod editor_state;
 
 pub mod editor_web_worker;
+pub mod inplace_replace_support;
+pub mod in_place_replace;
+pub mod in_place_replace_command;
 pub mod editor_worker;
 
 pub mod parameter_hints;

@@ -21,6 +21,7 @@ use je_instantiation::service_id;
 use crate::code_action::languages::TextEdit;
 use crate::diff::document_diff_provider::{DocumentDiff, DocumentDiffProviderOptions};
 use crate::edits::string_edit::StringEdit;
+use crate::inplace_replace_support::InplaceReplaceSupportResult;
 use crate::range::Range;
 
 /// `DiffAlgorithmName`: `'legacy' | 'advanced' | 'advanced-external' | 'advanced-wasm'`.
@@ -61,6 +62,18 @@ pub trait IEditorWorkerService {
     /// formatação sobrescreve este método.
     fn compute_more_minimal_edits(&self, _resource: &URI, _edits: Option<Vec<TextEdit>>) -> Promise<Option<Vec<TextEdit>>> {
         panic!("computeMoreMinimalEdits is not a function")
+    }
+
+    /// `canNavigateValueSet(resource)`. O `mock<IEditorWorkerService>()` do original deixa o membro ausente (chamá-lo lança
+    /// `TypeError`), e é isso que o corpo padrão faz: quem usa o serviço (o controlador de `inPlaceReplace`) o sobrescreve.
+    fn can_navigate_value_set(&self, _resource: &URI) -> bool {
+        panic!("canNavigateValueSet is not a function")
+    }
+
+    /// `navigateValueSet(resource, range, up)`: o worker (`EditorWorker::navigate_value_set`) tem o modelo sincronizado e
+    /// devolve o próximo valor do conjunto. O corpo padrão lança como o `mock<IEditorWorkerService>()`.
+    fn navigate_value_set(&self, _resource: &URI, _range: Range, _up: bool) -> Promise<Option<InplaceReplaceSupportResult>> {
+        panic!("navigateValueSet is not a function")
     }
 
     /// `computeStringEditFromDiff(original, modified, { maxComputationTimeMs }, algorithm)`. O worker roda no mesmo
