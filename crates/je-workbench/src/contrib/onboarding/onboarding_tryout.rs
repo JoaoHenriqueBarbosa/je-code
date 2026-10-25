@@ -3,15 +3,29 @@
 //! serviço.
 //!
 //! Divergências:
-//! - **Só os dados e os validadores puros.** O restante do arquivo é o serviço de tryout
-//!   (`IOnboardingTryoutService`, `IOnboardingTryoutPresentation` e o registro de apresentações, que usam
-//!   `CancellationToken`, `Promise`, `DisposableStore`, `IOnboardingTryoutRunOptions` de `platform/onboarding`), os
+//! - **Dados, validadores puros e a apresentação de tryout com o registro dela.** O restante do arquivo é o serviço
+//!   de tryout (`IOnboardingTryoutService`, que usa `IOnboardingTryoutRunOptions` de `platform/onboarding`), os
 //!   links `command:` e do protocolo do produto (`createOnboardingTryoutUri`, `parseOnboardingTryoutUri`,
 //!   `parseExternalOnboardingTryoutUri`) e `registerOnboardingTryout*`. Entram com o motor de onboarding, que é
 //!   quem os consome; o registro de cenários (`onboarding_registry`) só precisa dos metadados.
 //! - `arguments?: readonly unknown[]` é `Option<Vec<Dynamic>>`.
+//! - `IOnboardingTryoutRunContext` omite `options` (`IOnboardingTryoutRunOptions`, ainda não portado) e guarda o
+//!   `store` como `Rc<DisposableStore>`. `run: () => Promise<...>` é `Rc<dyn Fn() -> Promise<...>>`.
+//! - O registro de apresentações de tryout é o [`KindRegistry`] genérico (mesmo corpo do original, só muda o texto do
+//!   erro de duplicata), com a instância por thread em [`onboarding_tryout_presentation_registry`].
+//! - `onDidChangeAvailability?: Event<void>` é o método [`IOnboardingTryoutPresentation::on_did_change_availability`],
+//!   com `None` como padrão.
 
+use std::rc::Rc;
+
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
+use je_base::event::Event;
+use je_base::lifecycle::DisposableStore;
+use je_base::promise::Promise;
+
+use super::onboarding_presentation::KindRegistry;
+use super::onboarding_scenario::{OnboardingRunResult, OnboardingScenario};
 
 pub const RUN_ONBOARDING_TRYOUT_COMMAND_ID: &str = "workbench.action.onboarding.tryFeature";
 pub const ONBOARDING_TRYOUT_URL_AUTHORITY: &str = "tryout";
@@ -80,6 +94,49 @@ pub enum OnboardingTryoutResult {
     Routed,
     Cancelled,
     Unavailable(OnboardingTryoutUnavailable),
+}
+
+/// `IOnboardingTryoutRunContext`.
+#[derive(Clone)]
+pub struct OnboardingTryoutRunContext {
+    pub id: String,
+    pub token: CancellationToken,
+    pub store: Rc<DisposableStore>,
+    pub on_did_launch: Option<Rc<dyn Fn(OnboardingTryoutLaunchKind)>>,
+    pub on_did_finish_guidance: Option<Rc<dyn Fn(&OnboardingRunResult)>>,
+}
+
+/// `OnboardingTryoutPreparation`.
+#[derive(Clone)]
+pub enum OnboardingTryoutPreparation {
+    Ready { run: Rc<dyn Fn() -> Promise<OnboardingTryoutResult>> },
+    Cancelled,
+    Unavailable(OnboardingTryoutUnavailable),
+}
+
+/// `IOnboardingTryoutPresentation`.
+pub trait IOnboardingTryoutPresentation {
+    fn kind(&self) -> &str;
+
+    fn on_did_change_availability(&self) -> Option<Event<()>> {
+        None
+    }
+
+    fn get_availability(&self, scenario: &OnboardingScenario) -> OnboardingTryoutAvailability;
+
+    fn prepare(&self, scenario: &OnboardingScenario, context: &OnboardingTryoutRunContext) -> Promise<OnboardingTryoutPreparation>;
+}
+
+thread_local! {
+    static ONBOARDING_TRYOUT_PRESENTATION_REGISTRY: Rc<KindRegistry<dyn IOnboardingTryoutPresentation>> = Rc::new(KindRegistry::new(
+        "An onboarding tryout presentation",
+        |presentation| presentation.kind().to_string(),
+    ));
+}
+
+/// `onboardingTryoutPresentationRegistry`: o registro global das apresentações de tryout.
+pub fn onboarding_tryout_presentation_registry() -> Rc<KindRegistry<dyn IOnboardingTryoutPresentation>> {
+    ONBOARDING_TRYOUT_PRESENTATION_REGISTRY.with(Rc::clone)
 }
 
 /// `isOnboardingTryoutId`: `/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/`.
