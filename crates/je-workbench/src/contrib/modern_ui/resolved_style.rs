@@ -128,6 +128,8 @@ pub struct ModernUiStyle<'a> {
     explicit_colors_only: bool,
     /// `--activity-bar-action-gap`, que `activitybarPart.ts` publica na raiz (`None` é a variável indefinida, `0px`).
     activity_bar_action_gap: Option<f64>,
+    /// `--window-zoom-factor`, que `window.ts` publica na raiz (`var(--window-zoom-factor, 1)`: indefinida vale `1`).
+    window_zoom_factor: f64,
 }
 
 impl<'a> ModernUiStyle<'a> {
@@ -139,7 +141,13 @@ impl<'a> ModernUiStyle<'a> {
             activity_bar_metrics: ActivityBarMetrics::default(),
             explicit_colors_only: false,
             activity_bar_action_gap: None,
+            window_zoom_factor: 1.0,
         }
+    }
+
+    /// Define `--window-zoom-factor` (`root.style.setProperty`).
+    pub fn set_window_zoom_factor(&mut self, zoom_factor: f64) {
+        self.window_zoom_factor = zoom_factor;
     }
 
     /// Um DOM em que só as variáveis `--vscode-*` definidas pelo tema existem, sem os padrões registrados.
@@ -1308,5 +1316,239 @@ impl<'a> ModernUiStyle<'a> {
             outline: outline_style.map(|style| OutlineStyle { color: self.color("menubar.selectionBorder"), style, width: 1.0 }),
             font_size: modern.then(|| self.size(CODICON_FONT_SIZE)),
         }
+    }
+}
+
+/// Onde um `.monaco-sash` fica na árvore: os seletores de descendente de `sashHandles.css` e os `:not(.part .monaco-sash)`
+/// de `floatingPanels.css`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SashPlacement {
+    /// Dentro de um `.part`: os sashes internos de uma parte (divisões do editor, redimensionadores de árvore e de view).
+    pub inside_part: bool,
+    /// Dentro de um `.monaco-modal-editor-block`.
+    pub inside_modal_editor_block: bool,
+}
+
+/// O `content` calculado do `::after` de um sash que desenha a alça (`content: ''`).
+pub const SASH_GRIP_CONTENT_EMPTY: &str = "\"\"";
+
+/// O `content` calculado do `::after` que as regras de alça suprimem (`content: none`).
+pub const SASH_GRIP_CONTENT_NONE: &str = "none";
+
+/// O `content` calculado de um pseudo-elemento que nenhuma regra define (`normal`).
+pub const SASH_GRIP_CONTENT_NORMAL: &str = "normal";
+
+/// A alça de três pontos de um sash (`.monaco-sash::after`, `sashHandles.css`, linhas 30 a 60): um ponto de 2px e dois
+/// pontos de `box-shadow`, que lê `currentColor`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SashGrip {
+    /// `width` e `height` do ponto central.
+    pub dot_size: f64,
+    /// `background-color` do ponto central.
+    pub dot_color: Color,
+    /// `color` do pseudo-elemento, que é a cor dos dois pontos de `box-shadow` (`currentColor`).
+    pub shadow_color: Color,
+    /// Os deslocamentos `(x, y)` dos pontos de `box-shadow`.
+    pub shadow_offsets: Vec<(f64, f64)>,
+    /// `opacity`: a alça cede ao destaque do sash enquanto ele recebe o ponteiro ou arrasta (linhas 62 a 66).
+    pub opacity: f64,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// `--modern-ui-floating-card-statusbar-margin` (floatingPanels.css, linhas 24 a 34).
+    fn floating_card_statusbar_margin(&self) -> f64 {
+        if self.compact() { self.size(SPACING_NONE) } else { self.size(SPACING_SIZE40) }
+    }
+
+    /// `content` calculado do `::after` de um sash (sashHandles.css, linhas 30 a 87). As regras que escondem a alça
+    /// (`content: none`) vencem a que a desenha por vir depois com a mesma especificidade ou por ser mais específica; a
+    /// regra do compacto e a que desenha exigem o sash habilitado, as demais valem também para o sash desabilitado.
+    pub fn sash_grip_content(&self, sash: &ClassList, placement: SashPlacement) -> &'static str {
+        if !self.has("modern-ui") {
+            return SASH_GRIP_CONTENT_NORMAL;
+        }
+        let disabled = sash.contains("disabled");
+        let suppressed = placement.inside_part
+            || placement.inside_modal_editor_block
+            || (!disabled && self.has("modern-ui-compact"))
+            || (self.has("nopanel") && sash.contains("horizontal"))
+            || (self.has("nosidebar") && self.has("noactivitybar") && sash.contains("vertical") && sash.contains("primary-sidebar-sash"));
+        if suppressed {
+            SASH_GRIP_CONTENT_NONE
+        } else if disabled {
+            SASH_GRIP_CONTENT_NORMAL
+        } else {
+            SASH_GRIP_CONTENT_EMPTY
+        }
+    }
+
+    /// A alça de um sash (sashHandles.css, linhas 30 a 66). `None` quando o `::after` não desenha nada. A cor vem de
+    /// `modernSash.gripForeground`; uma variável sem cor deixa o fundo e a cor no padrão (transparente).
+    pub fn sash_grip(&self, sash: &ClassList, placement: SashPlacement) -> Option<SashGrip> {
+        if self.sash_grip_content(sash, placement) != SASH_GRIP_CONTENT_EMPTY {
+            return None;
+        }
+        let color = self.chain(&["modernSash.gripForeground"]);
+        let shadow_offsets = if sash.contains("vertical") {
+            vec![(0.0, -5.0), (0.0, 5.0)]
+        } else if sash.contains("horizontal") {
+            vec![(-5.0, 0.0), (5.0, 0.0)]
+        } else {
+            Vec::new()
+        };
+        Some(SashGrip {
+            dot_size: 2.0,
+            dot_color: color.clone(),
+            shadow_color: color,
+            shadow_offsets,
+            opacity: if sash.contains("hover") || sash.contains("active") { 0.0 } else { 1.0 },
+        })
+    }
+
+    /// `top` e `bottom` calculados do `::before` (o destaque) de um sash vertical da grade (floatingPanels.css, linhas 601
+    /// a 622): o destaque acompanha as margens dos cartões que o sash divide. `None` fora do `.floating-panels`, nos sashes
+    /// internos de uma parte e nos sashes horizontais.
+    pub fn vertical_sash_highlight_insets(&self, sash: &ClassList, placement: SashPlacement) -> Option<(f64, f64)> {
+        if !self.has("floating-panels") || placement.inside_part || !sash.contains("vertical") {
+            return None;
+        }
+        let top = if self.has("top-window-edge") { self.floating_card_outer_margin() } else { self.floating_card_inner_margin() };
+        // Sem barra de status e sem painel inferior, os cartões encostam na borda de baixo da janela e levam a margem externa.
+        let bottom = if self.has("nostatusbar") && (!self.has("panel-position-bottom") || self.has("nopanel")) {
+            self.floating_card_outer_margin()
+        } else {
+            self.floating_card_statusbar_margin()
+        };
+        Some((top, bottom))
+    }
+
+    /// `--window-corner-radius` (style.css, linhas 101 a 108): o raio da moldura nativa, fixo em coordenadas de tela, então
+    /// o zoom o divide.
+    fn window_corner_radius(&self) -> f64 {
+        let native = if self.has("macos-tahoe") { 16.0 } else { 10.0 };
+        native / self.window_zoom_factor
+    }
+
+    /// `--modern-ui-window-corner-radius` (floatingPanels.css, linhas 537 a 539): o raio concêntrico com a moldura nativa
+    /// do macOS, descontados a borda da janela (`.border:not(.fullscreen)`, style.css linhas 95 a 99) e a margem externa
+    /// do cartão. `None` fora dos casos em que a regra vale: macOS com cartões flutuantes e sem barra de status, nem na
+    /// web, nem em tela cheia, nem no compacto.
+    fn exposed_window_corner_radius(&self) -> Option<f64> {
+        let applies = self.has("monaco-workbench")
+            && self.has("mac")
+            && self.has("floating-panels")
+            && self.has("nostatusbar")
+            && !self.has("web")
+            && !self.has("fullscreen")
+            && !self.has("modern-ui-compact");
+        applies.then(|| {
+            let border_width = if self.has("border") { 1.0 } else { 0.0 };
+            (self.window_corner_radius() - border_width - self.floating_card_outer_margin()).max(0.0)
+        })
+    }
+
+    /// Os cantos de baixo voltados à moldura do macOS (floatingPanels.css, linhas 541 a 561): `inset` é o que o elemento
+    /// desconta do raio da janela (o traço do cartão, nos elementos de dentro dele).
+    fn with_exposed_bottom_corners(&self, mut radii: CornerRadii, bottom_left: bool, bottom_right: bool, inset: f64) -> CornerRadii {
+        if let Some(window_radius) = self.exposed_window_corner_radius() {
+            let radius = (window_radius - inset).max(0.0);
+            if bottom_left {
+                radii.3 = radius;
+            }
+            if bottom_right {
+                radii.2 = radius;
+            }
+        }
+        radii
+    }
+
+    /// `border-radius` de uma barra lateral, painel ou barra lateral secundária flutuante (floatingPanels.css, linhas 49,
+    /// 65 a 73, 79 e 123 a 127): a barra lateral primária encontra a trilha da barra de atividade sem canto do lado dela.
+    fn floating_card_corner_radii(&self, part: &ClassList) -> Option<CornerRadii> {
+        if !self.has("floating-panels") {
+            return None;
+        }
+        if self.has("modern-ui-compact") {
+            return Some(CornerRadii::uniform(0.0));
+        }
+        let mut radii = CornerRadii::uniform(self.size(CORNER_RADIUS_LARGE));
+        if part.contains("sidebar") && !self.has("noactivitybar") {
+            if part.contains("left") {
+                radii.0 = 0.0;
+                radii.3 = 0.0;
+            } else if part.contains("right") {
+                radii.1 = 0.0;
+                radii.2 = 0.0;
+            }
+        }
+        Some(radii)
+    }
+
+    /// `border-radius` do `.part.editor` (editorBorder.css, linhas 26 a 36). `None` sem o Modern UI e no editor modal.
+    fn editor_part_corner_radii(&self, part: &ClassList) -> Option<CornerRadii> {
+        if !self.has("modern-ui") || part.contains("modal-editor-part") {
+            return None;
+        }
+        Some(CornerRadii::uniform(if self.compact() { 0.0 } else { self.size(CORNER_RADIUS_LARGE) }))
+    }
+
+    /// `border-radius` de uma parte flutuante (barra de atividade, barra lateral, painel, barra lateral secundária ou
+    /// editor), com os cantos de baixo que ficam à vista da moldura nativa do macOS acompanhando a curva dela
+    /// (floatingPanels.css, linhas 537 a 562). `None` quando nenhuma regra de raio do Modern UI alcança a parte.
+    pub fn part_corner_radii(&self, part: &ClassList) -> Option<CornerRadii> {
+        let radii = if part.contains("activitybar") {
+            self.activity_bar_corner_radii(part)?
+        } else if part.any(&["sidebar", "auxiliarybar", "panel"]) {
+            self.floating_card_corner_radii(part)?
+        } else if part.contains("editor") {
+            self.editor_part_corner_radii(part)?
+        } else {
+            return None;
+        };
+        let rail = part.contains("activitybar");
+        let outer_bottom = part.contains("floating-part-outer-bottom");
+        let editor_outer_bottom = part.contains("editor") && part.contains("floating-editor-outer-bottom");
+        let bottom_left = (rail && part.contains("left"))
+            || (outer_bottom && part.contains("floating-part-outer-left"))
+            || (editor_outer_bottom && part.contains("floating-editor-outer-left"));
+        let bottom_right = (rail && part.contains("right"))
+            || (outer_bottom && part.contains("floating-part-outer-right"))
+            || (editor_outer_bottom && part.contains("floating-editor-outer-right"));
+        Some(self.with_exposed_bottom_corners(radii, bottom_left, bottom_right, 0.0))
+    }
+
+    /// `border-radius` do `> .content` de um `.part.editor` (floatingPanels.css, linhas 104 a 106, 123 a 127 e 553 a 561): o
+    /// conteúdo fica um traço de cartão para dentro, então o canto exposto perde esse traço. `None` fora do
+    /// `.floating-panels`.
+    pub fn editor_content_corner_radii(&self, editor: &ClassList) -> Option<CornerRadii> {
+        if !self.has("floating-panels") || !editor.contains("editor") {
+            return None;
+        }
+        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") { 0.0 } else { self.size(CORNER_RADIUS_LARGE) });
+        let outer_bottom = editor.contains("floating-editor-outer-bottom");
+        Some(self.with_exposed_bottom_corners(
+            radii,
+            outer_bottom && editor.contains("floating-editor-outer-left"),
+            outer_bottom && editor.contains("floating-editor-outer-right"),
+            self.size(STROKE_THICKNESS),
+        ))
+    }
+
+    /// `border-radius` de um `.webview-overlay-content` (floatingPanels.css, linhas 118 a 120, 123 a 127 e 553 a 561): o
+    /// webview modal mantém o raio do cartão no compacto e não acompanha a moldura do macOS. `None` fora do
+    /// `.floating-panels`.
+    pub fn webview_overlay_corner_radii(&self, overlay: &ClassList) -> Option<CornerRadii> {
+        if !self.has("floating-panels") || !overlay.contains("webview-overlay-content") {
+            return None;
+        }
+        let modal = overlay.contains("webview-overlay-modal");
+        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") && !modal { 0.0 } else { self.size(CORNER_RADIUS_LARGE) });
+        let outer_bottom = !modal && overlay.contains("webview-overlay-outer-bottom");
+        Some(self.with_exposed_bottom_corners(
+            radii,
+            outer_bottom && overlay.contains("webview-overlay-outer-left"),
+            outer_bottom && overlay.contains("webview-overlay-outer-right"),
+            self.size(STROKE_THICKNESS),
+        ))
     }
 }
