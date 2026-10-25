@@ -89,6 +89,7 @@ impl Lexer {
             indented: true,
             lang: None,
             text,
+            escaped: false,
         }))
     }
 
@@ -107,6 +108,7 @@ impl Lexer {
             indented: false,
             lang: Some(lang),
             text,
+            escaped: false,
         }))
     }
 
@@ -876,6 +878,8 @@ impl Lexer {
         Some(Token::Codespan(Codespan {
             raw: JsString::from(cap.whole()),
             text: escape(&text, true),
+            in_link: self.state.in_link,
+            in_raw_block: self.state.in_raw_block,
         }))
     }
 

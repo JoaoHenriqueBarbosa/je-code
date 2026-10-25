@@ -2,8 +2,10 @@
 //! `marked.parse` e o `marked.parseInline` do original.
 //!
 //! O renderizador padrão é o único: as opções `renderer`, `extensions`, `hooks`, `walkTokens` e `async` não
-//! existem (ver [`Options`]). Um `code` com `escaped` (que só um `walkTokens` ou uma extensão define) nunca
-//! ocorre, então o código é sempre escapado. Os trechos de texto são UTF-16, como o resto do módulo.
+//! existem (ver [`Options`]); quem estende o renderizador implementa [`InlineRenderer`] e o passa a
+//! [`Parser::with_renderer`], e o `walkTokens` é um laço sobre a [`TokensList`](crate::marked::TokensList) antes do
+//! `Parser`. Um `code` com `escaped` (que o `walkTokens` de quem destaca a sintaxe define) mantém o texto como está.
+//! Os trechos de texto são UTF-16, como o resto do módulo.
 
 use crate::JsString;
 use crate::js_string::is_js_whitespace;
@@ -126,6 +128,13 @@ pub trait InlineRenderer {
         Renderer.code(token)
     }
 
+    /// `renderer.heading`: `this.parser.parseInline(tokens)` é o `parser.parse_inline`.
+    fn heading(&self, parser: &Parser, token: &crate::marked::Heading) -> Result<JsString, MarkedError> {
+        let mut out = Buf::default();
+        out.str(&format!("<h{}>", token.depth)).js(&parser.parse_inline(&token.tokens)?).str(&format!("</h{}>\n", token.depth));
+        Ok(out.done())
+    }
+
     /// `renderer.blockquote`.
     fn blockquote(&self, parser: &Parser, token: &crate::marked::Blockquote) -> Result<JsString, MarkedError> {
         let mut out = Buf::default();
@@ -154,7 +163,8 @@ fn only_text(token: &Token) -> JsString {
 }
 
 impl Renderer {
-    fn code(&self, token: &Code) -> JsString {
+    /// `Renderer.code`: o texto de um token com `escaped` já vem em HTML e não é escapado de novo.
+    pub fn code(&self, token: &Code) -> JsString {
         let lang = token.lang.as_ref().map_or(&[][..], |l| l.units());
         // `(lang || '').match(/^\S*/)[0]`
         let lang_len = lang.iter().take_while(|&&c| !is_js_whitespace(c)).count();
@@ -164,11 +174,12 @@ impl Renderer {
             text.pop();
         }
         text.push(10);
+        let body = if token.escaped { JsString::from(&text[..]) } else { escape(&text, true) };
         let mut out = Buf::default();
         if lang_string.is_empty() {
-            out.str("<pre><code>").js(&escape(&text, true)).str("</code></pre>\n");
+            out.str("<pre><code>").js(&body).str("</code></pre>\n");
         } else {
-            out.str("<pre><code class=\"language-").js(&escape(lang_string, false)).str("\">").js(&escape(&text, true)).str("</code></pre>\n");
+            out.str("<pre><code class=\"language-").js(&escape(lang_string, false)).str("\">").js(&body).str("</code></pre>\n");
         }
         out.done()
     }
@@ -412,7 +423,7 @@ impl Parser {
                     out.str("<hr>\n");
                 }
                 Token::Heading(heading) => {
-                    out.str(&format!("<h{}>", heading.depth)).js(&self.parse_inline(&heading.tokens)?).str(&format!("</h{}>\n", heading.depth));
+                    out.js(&self.renderer.heading(self, heading)?);
                 }
                 Token::Code(code) => {
                     out.js(&self.renderer.code(code));
