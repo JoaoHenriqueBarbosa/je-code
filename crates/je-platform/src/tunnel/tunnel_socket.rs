@@ -134,6 +134,11 @@ impl NodeTcpSocket {
         self.destroyed.load(Ordering::SeqCst)
     }
 
+    /// `localAddress`: o endereço IP local da conexão (sem a porta); `None` com o soquete já fechado.
+    pub fn local_address(&self) -> Option<String> {
+        self.stream.local_addr().ok().map(|address| address.ip().to_string())
+    }
+
     /// `socket.on('error', listener)`: devolve o id para o `off_error`.
     pub fn add_error_listener(&self, listener: ErrorListener) -> u64 {
         let id = self.next_listener.fetch_add(1, Ordering::SeqCst);
