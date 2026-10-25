@@ -8,9 +8,9 @@
 //! `on_toggle_key_down(key, false)`; `aria-expanded` é o `aria_expanded` da visão do controle; `document.activeElement === toggle` é
 //! `is_toggle_focused`; `toggle.isConnected` é o controle continuar entre os controles atuais da feature (o mesmo `Rc`). O
 //! `container` é o nó raiz de um `Ui`. Os serviços são os do `createCodeEditorServices` do porte mais os que o widget pede (chaves de
-//! contexto e atalhos de teste, sinais de acessibilidade, progresso, provedor de diff). As features da fatia 3b (régua, zonas de
-//! visão, visão acessível, calha, blocos movidos) ainda não existem: o teste as substitui por dublês inertes (`InertFeature`), e as
-//! duas da fatia 3a são as reais.
+//! contexto e atalhos de teste, sinais de acessibilidade, progresso, provedor de diff, tema de cores). O widget é o completo, com as
+//! sete features reais (`DiffEditorFeaturesImpl`); só entram dublês para o que mora fora do `je-editor` ou ainda não foi portado: a
+//! barra de ações da calha (`MenuWorkbenchToolBar`, do `je-workbench`) e o `DiffEditorViewZones`.
 //!
 //! Notas de tradução:
 //! - O `deepStrictEqual` sobre objetos vira a comparação de tuplas de campos, na ordem do objeto do original.
@@ -30,42 +30,38 @@ use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
-use je_base::lifecycle::{DisposableRef, IDisposable, RefCounted, to_disposable};
-use je_base::observable::{IObservable, ITransaction, const_observable};
+use je_base::lifecycle::{IDisposable, RefCounted, to_disposable};
+use je_base::observable::{IObservable, const_observable};
 use je_base::promise::Thenable;
 use je_editor::code_action::platform::{
     I_ACCESSIBILITY_SIGNAL_SERVICE, I_EDITOR_PROGRESS_SERVICE, IAccessibilitySignalService, IEditorProgressService, IProgressIndicator,
     IProgressRunner, ProgressTotal,
 };
 use je_editor::code_editor_widget::CodeEditorWidgetOptions;
-use je_editor::config::editor_options::layout_info::EditorLayoutInfo;
 use je_editor::core_2d::dimension::Dimension;
-use je_editor::diff::range_mapping::DetailedLineRangeMapping;
 use je_editor::diff_editor::components::diff_editor_editors::{CreateInnerEditor, DiffEditorSide};
-use je_editor::diff_editor::components::diff_editor_sash::SashLayout;
 use je_editor::diff_editor::delegating_editor_impl::DelegatingEditor;
+use je_editor::diff_editor::diff_editor_features::{CreateDiffEditorViewZones, DiffEditorFeaturesImpl};
 use je_editor::diff_editor::diff_editor_widget::{DiffEditorWidget, DiffEditorWidgetArgs};
-use je_editor::diff_editor::feature_contracts::{
-    DiffEditorFeatureContext, DiffEditorFeatures, IAccessibleDiffViewer, IDiffEditorGutter, IDiffEditorViewZones, IHideUnchangedRegionsFeature,
-    IMovedBlocksLinesFeature, IOverviewRulerFeature, IsUpdatingViewZones, ObservableViewZonePair, SetAccessibleDiffViewerVisible,
-};
-use je_editor::diff_editor::features::hide_unchanged_regions_feature::{HiddenLinesOverlay, HideUnchangedRegionsFeature};
-use je_editor::diff_editor::features::revert_buttons_feature::RevertButtonsFeature;
-use je_editor::diff_editor::{DiffCodeEditorWidgetOptions, ScrollAnchorRunner};
+use je_editor::diff_editor::feature_contracts::{DiffEditorFeatureContext, IDiffEditorViewZones, IsUpdatingViewZones, ObservableViewZonePair};
+use je_editor::diff_editor::features::gutter_feature::{DiffGutterToolbarFactory, DiffGutterToolbarRequest, IDiffGutterToolbar};
+use je_editor::diff_editor::features::hide_unchanged_regions_feature::HiddenLinesOverlay;
+use je_editor::diff_editor::DiffCodeEditorWidgetOptions;
 use je_editor::diff_editor_options::DiffEditorVariant;
 use je_editor::diff_editor_utils::ViewZoneIdSet;
 use je_editor::diff_editor_view_model::DiffEditorModel;
 use je_editor::diff_provider_factory_service::{I_DIFF_PROVIDER_FACTORY_SERVICE, IDiffProviderFactoryService};
 use je_editor::model::RelaxedTextModelCreationOptions;
 use je_editor::multi_diff_editor::diff_editor_surface::IDiffEditorWidget;
+use je_editor::services::theme_service::{I_THEME_SERVICE, IThemeService};
 use je_instantiation::ServiceCollection;
 use je_platform::contextkey::{I_CONTEXT_KEY_SERVICE, IContextKeyService, IContextKeyServiceTarget};
 use je_platform::keybinding::keybinding::{I_KEYBINDING_SERVICE, IKeybindingService};
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_ui::Ui;
-use je_widgets::sash::BoundarySashes;
 use support::inline_completions_test_utils::{MockKeybindingService, SilentAccessibilitySignalService};
 use support::test_code_editor::{TestCodeEditor, create_code_editor_services, instantiate_test_code_editor_with_configuration};
+use support::test_color_theme_service::TestThemeService;
 use support::test_configuration::{StyledTestEnvironment, TestConfiguration};
 use support::test_diff_provider_factory_service::TestDiffProviderFactoryService;
 use support::test_text_model::instantiate_text_model;
@@ -261,117 +257,47 @@ impl IProgressIndicator for TestEditorProgressService {
 
 impl IEditorProgressService for TestEditorProgressService {}
 
-/// O dublê inerte das features da fatia 3b (ver o topo do arquivo).
-struct InertFeature;
+/// O dublê do `DiffEditorViewZones`, que ainda não foi portado (ver `je_editor::diff_editor`): sem zonas.
+struct InertViewZones;
 
-impl IDisposable for InertFeature {
+impl IDisposable for InertViewZones {
     fn dispose(&self) {}
 }
 
-impl IOverviewRulerFeature for InertFeature {
-    fn width(&self) -> f64 {
-        0.0
-    }
-}
-
-impl IMovedBlocksLinesFeature for InertFeature {
-    fn width(&self) -> IObservable<f64> {
-        const_observable(0.0)
-    }
-}
-
-impl IDiffEditorGutter for InertFeature {
-    fn width(&self) -> IObservable<f64> {
-        const_observable(0.0)
-    }
-    fn layout(&self, _left: f64) {}
-}
-
-impl IDiffEditorViewZones for InertFeature {
+impl IDiffEditorViewZones for InertViewZones {
     fn view_zones(&self) -> IObservable<Rc<ObservableViewZonePair>> {
         const_observable(Rc::new(ObservableViewZonePair { orig: Vec::new(), modified: Vec::new() }))
     }
 }
 
-impl IAccessibleDiffViewer for InertFeature {
-    fn next(&self) {}
-    fn prev(&self) {}
-    fn close(&self) {}
+/// O dublê da barra de ações da calha (o `MenuWorkbenchToolBar` mora no `je-workbench`): sem botões.
+struct EmptyGutterToolbar;
+
+impl IDisposable for EmptyGutterToolbar {
+    fn dispose(&self) {}
 }
 
-/// As features do widget: as duas da fatia 3a são as reais, e a feature de regiões sem mudanças fica guardada para o teste.
-#[derive(Default)]
-struct TestFeatures {
-    hide_unchanged_regions: RefCell<Option<Rc<HideUnchangedRegionsFeature>>>,
+impl IDiffGutterToolbar for EmptyGutterToolbar {
+    fn client_height(&self) -> f64 {
+        0.0
+    }
+    fn on_did_change_menu_items(&self) -> Event<()> {
+        Event::none()
+    }
 }
 
-impl DiffEditorFeatures for TestFeatures {
-    fn create_overview_ruler(
-        &self,
-        _context: &DiffEditorFeatureContext,
-        _root_width: IObservable<f64>,
-        _root_height: IObservable<f64>,
-        _modified_editor_layout_info: IObservable<EditorLayoutInfo>,
-    ) -> Rc<dyn IOverviewRulerFeature> {
-        Rc::new(InertFeature)
-    }
-
-    fn create_hide_unchanged_regions(
-        &self,
-        context: &DiffEditorFeatureContext,
-        run_with_original_editor_scroll_anchor: Option<ScrollAnchorRunner>,
-        run_with_modified_editor_scroll_anchor: Option<ScrollAnchorRunner>,
-        variant: DiffEditorVariant,
-    ) -> Rc<dyn IHideUnchangedRegionsFeature> {
-        let feature = HideUnchangedRegionsFeature::new(context, run_with_original_editor_scroll_anchor, run_with_modified_editor_scroll_anchor, variant);
-        *self.hide_unchanged_regions.borrow_mut() = Some(feature.clone());
-        feature
-    }
-
-    fn create_view_zones(
-        &self,
-        _context: &DiffEditorFeatureContext,
-        _is_updating_view_zones: IsUpdatingViewZones,
-        _orig_view_zone_ids_to_ignore: ViewZoneIdSet,
-        _mod_view_zone_ids_to_ignore: ViewZoneIdSet,
-    ) -> Rc<dyn IDiffEditorViewZones> {
-        Rc::new(InertFeature)
-    }
-
-    fn create_accessible_diff_viewer(
-        &self,
-        _context: &DiffEditorFeatureContext,
-        _visible: IObservable<bool>,
-        _set_visible: SetAccessibleDiffViewerVisible,
-        _can_close: IObservable<bool>,
-        _width: IObservable<f64>,
-        _height: IObservable<f64>,
-        _diffs: IObservable<Option<Rc<Vec<DetailedLineRangeMapping>>>>,
-    ) -> Rc<dyn IAccessibleDiffViewer> {
-        Rc::new(InertFeature)
-    }
-
-    fn create_gutter(
-        &self,
-        _context: &DiffEditorFeatureContext,
-        _sash_layout: Rc<SashLayout>,
-        _boundary_sashes: IObservable<Option<Rc<BoundarySashes>>>,
-    ) -> Rc<dyn IDiffEditorGutter> {
-        Rc::new(InertFeature)
-    }
-
-    fn create_moved_blocks_lines(
-        &self,
-        _context: &DiffEditorFeatureContext,
-        _original_editor_layout_info: IObservable<EditorLayoutInfo>,
-        _modified_editor_layout_info: IObservable<EditorLayoutInfo>,
-    ) -> Rc<dyn IMovedBlocksLinesFeature> {
-        Rc::new(InertFeature)
-    }
-
-    fn create_revert_buttons(&self, context: &DiffEditorFeatureContext) -> DisposableRef {
-        RevertButtonsFeature::new(context)
-    }
+/// As features do widget: as sete são as reais (`DiffEditorFeaturesImpl`), menos o `DiffEditorViewZones` e a barra da calha.
+fn create_features() -> Rc<DiffEditorFeaturesImpl> {
+    let create_gutter_toolbar: DiffGutterToolbarFactory =
+        Rc::new(|_request: DiffGutterToolbarRequest| -> Rc<dyn IDiffGutterToolbar> { Rc::new(EmptyGutterToolbar) });
+    let create_view_zones: CreateDiffEditorViewZones = Rc::new(
+        |_context: &DiffEditorFeatureContext,
+         _is_updating_view_zones: IsUpdatingViewZones,
+         _orig_view_zone_ids_to_ignore: ViewZoneIdSet,
+         _mod_view_zone_ids_to_ignore: ViewZoneIdSet|
+         -> Rc<dyn IDiffEditorViewZones> { Rc::new(InertViewZones) },
+    );
+    DiffEditorFeaturesImpl::new(create_gutter_toolbar, create_view_zones)
 }
 
 /// O corpo de `compact disclosures expand and collapse with a persistent keyboard target (side by side: ${renderSideBySide})`.
@@ -391,6 +317,8 @@ fn compact_disclosures_expand_and_collapse_with_a_persistent_keyboard_target(ren
         collection.set(I_ACCESSIBILITY_SERVICE, accessibility_service);
         let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
         collection.set(I_CONTEXT_KEY_SERVICE, context_key_service);
+        let theme_service: Rc<dyn IThemeService> = TestThemeService::new_default();
+        collection.set(I_THEME_SERVICE, theme_service);
         let keybinding_service: Rc<dyn IKeybindingService> = Rc::new(MockKeybindingService);
         collection.set(I_KEYBINDING_SERVICE, keybinding_service);
         let services = create_code_editor_services(&disposables.store(), Some(collection));
@@ -421,7 +349,7 @@ fn compact_disclosures_expand_and_collapse_with_a_persistent_keyboard_target(ren
             })
         };
 
-        let features = Rc::new(TestFeatures::default());
+        let features = create_features();
         let options = Dynamic::object([
             ("renderSideBySide", Dynamic::Bool(render_side_by_side)),
             ("renderGutterMenu", Dynamic::Bool(false)),
@@ -468,7 +396,7 @@ fn compact_disclosures_expand_and_collapse_with_a_persistent_keyboard_target(ren
 
         widget.wait_for_diff().await.unwrap();
         let region = model.object().unchanged_regions.get()[0].clone();
-        let feature = features.hide_unchanged_regions.borrow().clone().expect("a feature de regiões sem mudanças foi criada");
+        let feature = features.hide_unchanged_regions().expect("a feature de regiões sem mudanças foi criada");
         let HiddenLinesOverlay::Collapsed(toggle) = feature.overlays().modified[0].clone() else {
             panic!("o controle do editor modificado é o de disclosure");
         };

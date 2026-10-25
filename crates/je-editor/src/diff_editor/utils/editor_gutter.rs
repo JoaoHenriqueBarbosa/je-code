@@ -20,6 +20,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use je_base::errors::{self, Error};
 use je_base::lifecycle::{Disposable, DisposableMap, IDisposable};
 use je_base::observable::observables::observable_from_event::observable_from_event_owned;
 use je_base::observable::observables::observable_signal_from_event::observable_signal_from_event_owned;
@@ -53,6 +54,77 @@ impl PixelRange {
     /// `isEmpty`.
     pub fn is_empty(&self) -> bool {
         self.start >= self.end_exclusive
+    }
+
+    /// `OffsetRange.tryCreate(start, endExclusive)`.
+    pub fn try_create(start: f64, end_exclusive: f64) -> Option<Self> {
+        (start <= end_exclusive).then_some(Self { start, end_exclusive })
+    }
+
+    /// `clip(value)`: o valor dado se está contido, senão o valor contido mais próximo. O intervalo não pode ser vazio.
+    pub fn clip(&self, value: f64) -> f64 {
+        if self.is_empty() {
+            errors::throw(Error::bug_indicating(Some(&format!("Invalid clipping range: [{}, {})", self.start, self.end_exclusive))));
+        }
+        self.start.max((self.end_exclusive - 1.0).min(value))
+    }
+
+    /// `intersect(other)`.
+    pub fn intersect(&self, other: PixelRange) -> Option<Self> {
+        Self::try_create(self.start.max(other.start), self.end_exclusive.min(other.end_exclusive))
+    }
+}
+
+/// `OffsetRangeSet` sobre [`PixelRange`]: intervalos ordenados, sem sobreposição nem contato (a mesma lógica do
+/// `OffsetRangeSet` do porte, que é inteiro).
+#[derive(Clone, Debug, Default)]
+pub struct PixelRangeSet {
+    sorted_ranges: Vec<PixelRange>,
+}
+
+impl PixelRangeSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `addRange(range)` (`OffsetRange.addRange`): insere juntando os que tocam.
+    pub fn add_range(&mut self, range: PixelRange) {
+        let ranges = &mut self.sorted_ranges;
+        let mut i = 0;
+        while i < ranges.len() && ranges[i].end_exclusive < range.start {
+            i += 1;
+        }
+        let mut j = i;
+        while j < ranges.len() && ranges[j].start <= range.end_exclusive {
+            j += 1;
+        }
+        if i == j {
+            ranges.insert(i, range);
+        } else {
+            let start = range.start.min(ranges[i].start);
+            let end = range.end_exclusive.max(ranges[j - 1].end_exclusive);
+            ranges.splice(i..j, [PixelRange { start, end_exclusive: end }]);
+        }
+    }
+
+    /// `intersectsStrict(other)`: se há um valor contido neste conjunto e no intervalo dado.
+    pub fn intersects_strict(&self, other: PixelRange) -> bool {
+        let mut i = 0;
+        while i < self.sorted_ranges.len() && self.sorted_ranges[i].end_exclusive <= other.start {
+            i += 1;
+        }
+        i < self.sorted_ranges.len() && self.sorted_ranges[i].start < other.end_exclusive
+    }
+
+    /// `intersectWithRangeLength(other)`.
+    pub fn intersect_with_range_length(&self, other: PixelRange) -> f64 {
+        let mut result = PixelRangeSet::new();
+        for range in &self.sorted_ranges {
+            if let Some(intersection) = range.intersect(other) {
+                result.add_range(intersection);
+            }
+        }
+        result.sorted_ranges.iter().map(PixelRange::length).sum()
     }
 }
 

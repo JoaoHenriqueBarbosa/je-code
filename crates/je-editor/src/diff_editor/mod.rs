@@ -6,16 +6,22 @@
 //! [`embedded_diff_editor_widget::EmbeddedDiffEditorBase`] e o `IDiffEditorWidget` do editor de vários arquivos, e fica com a
 //! criação dos editores internos, do `DiffEditorEditors` e do `DiffEditorSash`.
 //!
-//! Fatia 3a (esta): `features/hideUnchangedRegionsFeature.ts` ([`features::hide_unchanged_regions_feature`]),
+//! Fatia 3a: `features/hideUnchangedRegionsFeature.ts` ([`features::hide_unchanged_regions_feature`]),
 //! `features/revertButtonsFeature.ts` ([`features::revert_buttons_feature`]) e `utils/editorGutter.ts`
 //! ([`utils::editor_gutter`]). O `utils.ts` do mesmo nível continua em [`crate::diff_editor_utils`], que ganhou o
 //! `PlaceholderViewZone`, o `ManagedOverlayWidget` e o `ViewZoneOverlayWidget`. O `CodeEditorWidget` ganhou os widgets da margem de
 //! glifos (`addGlyphMarginWidget` e afins) que o botão de reverter usa.
 //!
-//! Fatia seguinte (ainda não portada):
-//! - **Fatia 3b:** as features restantes (`movedBlocksLines`, `gutter`, `overviewRuler`), o `accessibleDiffViewer` e o
-//!   `diffEditorViewZones`, e a implementação inteira do [`feature_contracts::DiffEditorFeatures`], que chama os construtores das
-//!   features da 3a. O widget já as cria como o original, pelo contrato [`feature_contracts::DiffEditorFeatures`].
+//! Fatia 3b (esta): `features/movedBlocksLinesFeature.ts` ([`features::moved_blocks_lines_feature`]), `features/gutterFeature.ts`
+//! ([`features::gutter_feature`]), `features/overviewRulerFeature.ts` ([`features::overview_ruler_feature`]),
+//! `components/accessibleDiffViewer.ts` ([`components::accessible_diff_viewer`]) e a implementação do contrato
+//! [`feature_contracts::DiffEditorFeatures`] ([`diff_editor_features::DiffEditorFeaturesImpl`]), que chama os construtores das sete
+//! features. O `PixelRange` de `utils/editorGutter.ts` ganhou o `PixelRangeSet`, `tryCreate`, `clip` e `intersect`, e o
+//! `selectedDiffs` do `RevertButtonsFeature` ([`features::revert_buttons_feature::selected_diffs_observable`]) é compartilhado com a
+//! calha.
+//!
+//! Ainda não portado: o `components/diffEditorViewZones/` (`DiffEditorViewZones`, `renderLines.ts`, `inlineDiffDeletedCodeMargin.ts` e
+//! `copySelection.ts`). A criação dele é o parâmetro [`diff_editor_features::CreateDiffEditorViewZones`] da implementação do contrato.
 //!
 //! Onde ficam os arquivos `diff_editor_*` que já existiam em `crates/je-editor/src/`: `diff_editor_options`, `diff_editor_utils`,
 //! `diff_editor_view_model`, `diff_editor_view_zones` e `diff_provider_factory_service` continuam onde estão, porque outros
@@ -39,6 +45,7 @@ use crate::multi_diff_editor_options::DiffEditorVariant;
 
 pub mod components;
 pub mod delegating_editor_impl;
+pub mod diff_editor_features;
 pub mod diff_editor_widget;
 pub mod embedded_diff_editor_widget;
 pub mod feature_contracts;
@@ -46,8 +53,11 @@ pub mod features;
 pub mod registrations_contribution;
 pub mod utils;
 
-/// `OverviewRulerFeature.ENTIRE_DIFF_OVERVIEW_WIDTH` (`ONE_OVERVIEW_WIDTH * 2`, com `ONE_OVERVIEW_WIDTH = 15`).
-pub const ENTIRE_DIFF_OVERVIEW_WIDTH: f64 = 15.0 * 2.0;
+/// `OverviewRulerFeature.ONE_OVERVIEW_WIDTH`: a largura da régua de cada editor.
+pub const ONE_OVERVIEW_WIDTH: f64 = 15.0;
+
+/// `OverviewRulerFeature.ENTIRE_DIFF_OVERVIEW_WIDTH` (`ONE_OVERVIEW_WIDTH * 2`).
+pub const ENTIRE_DIFF_OVERVIEW_WIDTH: f64 = ONE_OVERVIEW_WIDTH * 2.0;
 
 /// `MovedBlocksLinesFeature.movedCodeBlockPadding`.
 pub const MOVED_CODE_BLOCK_PADDING: i32 = 4;

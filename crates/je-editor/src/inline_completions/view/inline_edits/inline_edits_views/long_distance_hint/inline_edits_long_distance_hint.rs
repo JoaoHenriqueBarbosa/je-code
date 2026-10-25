@@ -73,7 +73,8 @@ use super::super::super::utils::flex_box_layout::{
 use super::super::super::utils::utils::get_content_size_of_lines;
 use super::super::NonOverflowOverlayWidget;
 use super::long_distance_preview_editor::{LongDistancePreviewEditor, LongDistancePreviewProps};
-use super::{IBreadcrumbsSource, LongDistanceHintServices, OutlineItem};
+use super::LongDistanceHintServices;
+use crate::diff_editor::features::hide_unchanged_regions_feature::{BreadcrumbItem, IDiffEditorBreadcrumbsSource};
 
 const BORDER_RADIUS: f64 = 6.0;
 const MAX_WIDGET_WIDTH_EMPTY_SPACE: f64 = 425.0;
@@ -141,8 +142,8 @@ pub struct LongDistanceLayoutInfo {
 pub enum LowerBarLeft {
     /// `div.target-file`: o ícone do arquivo (pelas classes) e o nome.
     TargetFile { file_name: String, icon_classes: Vec<String> },
-    /// `div.outline-elements`: o primeiro símbolo (`slice(0, 1)`), com o ícone e o nome (`div.breadcrumb-item`).
-    Outline { item: Option<OutlineItem> },
+    /// `div.outline-elements`: o primeiro símbolo (`slice(0, 1)`), com o nome e o tipo (o ícone é `SymbolKind::to_icon`) (`div.breadcrumb-item`).
+    Outline { item: Option<BreadcrumbItem> },
 }
 
 /// O conteúdo da barra de baixo (`div.bar`): o lado esquerdo e o `div.go-to-label`.
@@ -475,7 +476,7 @@ impl InlineEditsLongDistanceHint {
             })
         };
 
-        let original_outline_source: IObservable<Option<Rc<dyn IBreadcrumbsSource>>> = {
+        let original_outline_source: IObservable<Option<Rc<dyn IDiffEditorBreadcrumbsSource>>> = {
             let (editor_obs, host) = (Rc::clone(&editor_obs), Rc::clone(&services.host));
             derived(move |reader| {
                 let model = editor_obs.model.read(reader)?;
