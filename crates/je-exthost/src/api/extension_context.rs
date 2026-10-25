@@ -205,7 +205,7 @@ pub fn load_extension_context(
         }
 
         let subscriptions = Rc::new(runner.eval("[]", "je-exthost/subscriptions.js").map_err(Error::new)?);
-        let extension_uri = je_base::uri::URI::parse(&description.extension_location, false);
+        let extension_uri = je_base::uri::URI::parse(description.extension_location.as_str(), false);
         let extension_path = je_platform::resources::fs_path(&extension_uri);
         let as_absolute_path = {
             let base = extension_path.clone();

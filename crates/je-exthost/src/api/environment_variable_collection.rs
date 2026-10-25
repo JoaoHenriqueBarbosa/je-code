@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use je_platform::terminal::environment_variable::{EnvironmentVariableScope, IEnvironmentVariableMutatorOptions};
 use je_platform::workspace::WorkspaceFolder;
+use je_workbench::services::extensions::extension_description_registry::IReadOnlyExtensionDescriptionRegistry;
 use je_workbench::api::common::ext_host_terminal_service::{EnvironmentVariableMutator, ScopedEnvironmentVariableCollection, WorkerExtHostTerminalService};
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner, CLASS_KEY};
 
@@ -115,7 +116,7 @@ pub fn define_class(runner: &NodeRunner, table: &Rc<DisposableTable>, terminal: 
             let (Some(JsData::Str(variable)), Some(JsData::Str(value))) = (args.first(), args.get(1)) else {
                 return Err(format!("{name}: a variável e o valor precisam ser texto"));
             };
-            apply(&lookup.collection(this)?, variable, value, options_from_js(args.get(2))).map_err(|error| error.message)?;
+            apply(&*lookup.collection(this)?, variable, value, options_from_js(args.get(2))).map_err(|error| error.message)?;
             Ok(JsData::Undefined)
         });
         (name.to_owned(), 3u32, callback)
