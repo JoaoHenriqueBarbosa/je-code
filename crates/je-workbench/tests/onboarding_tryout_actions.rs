@@ -860,7 +860,8 @@ fn cancelling_a_run_releases_a_late_sample_reference(part: &'static str) {
         }
         let configuration = TestConfigurationService::new(None);
         guard.add_rc(configuration.on_did_change_configuration_emitter.clone());
-        let context_keys: Rc<dyn IContextKeyService> = guard.add_rc(ContextKeyService::new(configuration));
+        let context_keys = guard.add_rc(ContextKeyService::new(configuration));
+        let context_keys: Rc<dyn IContextKeyService> = context_keys;
         let chat: Rc<dyn IChatEntitlementService> = Rc::new(StubChatEntitlementService);
         let environment: Rc<dyn IWorkbenchEnvironmentService> =
             TestEnvironmentService::with_overrides(EnvironmentOverrides { is_sessions_window: true, ..EnvironmentOverrides::default() });
@@ -911,7 +912,7 @@ fn cancelling_a_run_releases_a_late_modified_sample_reference() {
 async fn assert_provide_rejects(presentation: &EditorSampleTryoutPresentation, resource: &URI) {
     match presentation.provide_text_content(resource) {
         MaybePromise::Promise(promise) => {
-            let error = promise.await.expect_err("a promessa deveria rejeitar");
+            let Err(error) = promise.await else { panic!("a promessa deveria rejeitar") };
             assert!(error.to_string().contains("no longer available"), "mensagem inesperada: {error}");
         }
         MaybePromise::Value(_) => panic!("o conteúdo não deveria ser resolvido"),
