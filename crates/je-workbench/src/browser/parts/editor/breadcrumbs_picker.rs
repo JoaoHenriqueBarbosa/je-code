@@ -29,7 +29,8 @@
 //!   e a pintura fica para quando a primitiva existir. O `box-shadow` (`--vscode-shadow-lg`) e o `padding-top: 2px` do contêiner
 //!   da árvore também não têm campo no `NodeStyle`.
 //! - **`ILayoutInfo.inputHeight`** (sempre 0 e sem leitor) não é portado.
-//! - **`setTimeout(() => this._tree.dispose(), 0)`** é um `disposable_timeout` de 0 ms.
+//! - **`setTimeout(() => this._tree.dispose(), 0)`** é um `runtime::set_timeout` de 0 ms (o `setTimeout` simples do original, sem
+//!   disposable devolvido: um `disposable_timeout` descartado sem `dispose` apareceria como vazamento).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -47,7 +48,7 @@ use je_base::nls::localize;
 use je_base::path::{PathModule, ProcessEnvironment};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
-use je_base::async_::disposable_timeout;
+use je_base::runtime;
 use je_editor::text_resource_configuration_service::ITextResourceConfigurationService;
 use je_editor::services::theme_service::IThemeService;
 use je_platform::configuration::ConfigurationOverrides;
@@ -317,7 +318,7 @@ impl BreadcrumbsPicker {
         self.services.ui.tree_mut().remove(self.dom_node);
         // tree cannot be disposed while being opened...
         if let Some(tree) = self.tree.borrow_mut().take() {
-            disposable_timeout(move || tree.dispose(), 0, None);
+            runtime::set_timeout(move || tree.dispose(), 0);
         }
     }
 
@@ -372,7 +373,7 @@ impl BreadcrumbsPicker {
             }
         }));
 
-        // `this._domNode.focus()`: o foco do nó é da árvore do `je-ui`, que o seletor recebe do contexto que o abre.
+        self.services.ui.focus(self.dom_node);
         let picker = self.clone();
         self.kind.set_input(self, &input).then_result(move |result| {
             match result {

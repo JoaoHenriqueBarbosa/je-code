@@ -26,6 +26,8 @@
 //! - **`outline.reveal(element, ...)`** recebe o `OutlineElement2` embrulhado, como no original (o `element` ali é o
 //!   `OutlineElement2`, não o símbolo).
 //! - **`WorkbenchListFocusContextKey`** é `listFocus && !inputFocus && !treestickyScrollFocused`.
+//! - **O retorno de `picker.show(...)`.** O `spy(BreadcrumbsPicker.prototype, 'show')` do teste lê `lastCall.returnValue` para
+//!   esperar o seletor carregar; aqui o controle guarda a promessa da última chamada de `show` ([`BreadcrumbsControl::last_picker_show`]).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -40,6 +42,7 @@ use je_base::key_codes::{KeyCode, KeyMod};
 use je_base::layout::IAnchor;
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, MutableDisposable, to_disposable};
 use je_base::nls::localize;
+use je_base::promise::Promise;
 use je_base::scrollable::ScrollbarVisibility;
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;
@@ -544,6 +547,8 @@ pub struct BreadcrumbsControl {
     model: Rc<MutableDisposable<BreadcrumbsModel>>,
     breadcrumbs_picker_showing: Cell<bool>,
     breadcrumbs_picker_ignore_once_item: RefCell<Option<BreadcrumbsItemRef>>,
+    /// O retorno da última chamada de `picker.show(...)`.
+    last_picker_show: RefCell<Option<Promise<()>>>,
 
     hover_delegate: Rc<dyn IHoverDelegate>,
 
@@ -611,6 +616,7 @@ impl BreadcrumbsControl {
             model: MutableDisposable::new(),
             breadcrumbs_picker_showing: Cell::new(false),
             breadcrumbs_picker_ignore_once_item: RefCell::new(None),
+            last_picker_show: RefCell::new(None),
             hover_delegate: get_default_hover_delegate(HoverPlacement::Mouse),
             on_did_visibility_change,
             disposables,
@@ -679,6 +685,12 @@ impl BreadcrumbsControl {
     /// `model`.
     pub fn model(&self) -> Option<Rc<BreadcrumbsModel>> {
         self.model.value()
+    }
+
+    /// O retorno da última chamada de `picker.show(...)` (o `lastCall.returnValue` do `spy` do teste): a promessa que resolve
+    /// quando o seletor terminou de carregar e de medir a si mesmo. `None` até o primeiro seletor aparecer.
+    pub fn last_picker_show(&self) -> Option<Promise<()>> {
+        self.last_picker_show.borrow().clone()
     }
 
     /// `layout(dim)`.
@@ -1099,7 +1111,8 @@ impl IContextViewDelegate for PickerContextViewDelegate {
             let mouse_x = self.event.payload.as_ref().and_then(|payload| payload.downcast_ref::<PointerData>()).map(|pointer| pointer.x);
             let placement = compute_picker_placement(window_width, window_height, ItemRect { left: rect.x0, top: rect.y0, width: rect.width(), height: rect.height() }, mouse_x);
             if let Some(picker) = self.picker.borrow().clone() {
-                let _ = picker.show(self.element.clone(), placement.max_height, placement.width, placement.arrow_size, placement.arrow_offset);
+                let show = picker.show(self.element.clone(), placement.max_height, placement.width, placement.arrow_size, placement.arrow_offset);
+                *control.last_picker_show.borrow_mut() = Some(show);
             }
             self.picker_anchor.set(Some((placement.x, placement.y)));
         }
