@@ -42,6 +42,11 @@ use je_widgets::gridview::ViewDimensions;
 use je_widgets::progress_bar::IProgressBarStyles;
 use je_workbench::browser::parts::notifications::notifications_actions::WorkbenchNotificationActionProvider;
 use je_workbench::browser::parts::notifications::notifications_viewer::{NotificationActionProvider, NotificationRenderer, NotificationRendererServices, NotificationStyles};
+use crate::support::test_editor_group_view::TestEditorGroupView;
+use je_workbench::services::editor::editor_groups_service::{IEditorGroup, IEditorGroupsService};
+use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
+use je_workbench::test::browser::workbench_test_services::TestEditorGroupsService;
+use je_workbench::test::common::workbench_test_services::TestLifecycleService;
 use je_workbench::services::layout::layout_service::{
     AddedContainer, ContainerLayout, ILayoutService, IWorkbenchLayoutService, LayoutContainerId, LayoutOffsetInfo, LayoutPart, PanelAlignment, PartVisibilityChangeEvent, Parts, Position, WindowId,
     WindowMaximizedChange,
@@ -416,6 +421,18 @@ impl IWorkbenchLayoutService for TestLayoutService {
     }
 }
 
+
+/// `new TestEditorGroupsService([new TestEditorGroupView(0)])`, como o `workbenchInstantiationService`.
+pub fn test_editor_groups_service() -> Rc<dyn IEditorGroupsService> {
+    let group: Rc<dyn IEditorGroup> = TestEditorGroupView::new(0);
+    TestEditorGroupsService::new(Some(vec![group]))
+}
+
+/// O `TestLifecycleService` do `workbenchInstantiationService`, registrado no `store` do caso (o original o põe no
+/// `disposables` do `workbenchInstantiationService(undefined, store)`).
+pub fn test_lifecycle_service(store: &DisposableStore) -> Rc<dyn ILifecycleService> {
+    store.add_rc(TestLifecycleService::new())
+}
 
 /// Os serviços do renderer e da lista (`workbenchInstantiationService(undefined, store)`), com o opener dado.
 pub fn renderer_services_in(store: &DisposableStore, ui: &Ui, opener: Rc<dyn IOpenerService>) -> NotificationRendererServices {

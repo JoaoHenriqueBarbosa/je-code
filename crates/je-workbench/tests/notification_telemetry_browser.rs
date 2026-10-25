@@ -25,6 +25,7 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+mod support;
 #[path = "../../je-editor/tests/support/test_instantiation_service.rs"]
 mod test_instantiation_service;
 #[path = "support/notification_doubles.rs"]
@@ -75,15 +76,14 @@ use je_workbench::browser::parts::notifications::notifications_toasts::{Notifica
 use je_workbench::browser::parts::notifications::notifications_viewer::notification_row_height;
 use je_workbench::common::notification_telemetry::{NotificationTelemetrySurface, log_notification_shown};
 use je_workbench::common::notifications::{ChoiceAction, INotificationsModel, NotificationViewItem};
-use je_workbench::services::editor::editor_groups_service::IEditorGroupsService;
 use je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService;
 use je_workbench::services::host::host::IHostService;
-use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
 use je_workbench::services::notification::common::notification_service::NotificationService;
-use je_workbench::test::browser::workbench_test_services::{TestEditorGroupsService, TestEnvironmentService, TestHostService};
+use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestHostService};
 use je_workbench::test::common::test_notification_telemetry::TestNotificationTelemetryService;
-use je_workbench::test::common::workbench_test_services::TestLifecycleService;
-use notification_doubles::{EmptyThemeService, NoMenuService, RecordingOpener, SilentAccessibilitySignals, TestLayoutService, renderer_services_with, warm_up_static_actions};
+use notification_doubles::{
+    EmptyThemeService, NoMenuService, RecordingOpener, SilentAccessibilitySignals, TestLayoutService, renderer_services_with, test_editor_groups_service, test_lifecycle_service, warm_up_static_actions,
+};
 use test_instantiation_service::TestInstantiationService;
 
 // region: dublês
@@ -227,7 +227,7 @@ fn create_ui(resources: &DisposableStore) -> TestUi {
 
     let model: Rc<dyn INotificationsModel> = notifications.model.clone();
     let renderer = renderer_services_with(&ui, opener.clone(), notification_service.clone(), telemetry_service.clone(), menus.clone(), menus.clone(), command_service.clone());
-    let editor_groups_service: Rc<dyn IEditorGroupsService> = TestEditorGroupsService::new(None);
+    let editor_groups_service = test_editor_groups_service();
     let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
 
     let center = resources.add_rc(NotificationsCenter::new(
@@ -244,7 +244,7 @@ fn create_ui(resources: &DisposableStore) -> TestUi {
             command_service: command_service.clone(),
         },
     ));
-    let lifecycle_service: Rc<dyn ILifecycleService> = TestLifecycleService::new();
+    let lifecycle_service = test_lifecycle_service(resources);
     let host_service: Rc<dyn IHostService> = Rc::new(TestHostService);
     let environment_service: Rc<dyn IWorkbenchEnvironmentService> = TestEnvironmentService::new();
     let toasts = resources.add_rc(NotificationsToasts::new(
