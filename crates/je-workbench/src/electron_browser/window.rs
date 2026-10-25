@@ -9,13 +9,13 @@
 //!   [`NativeWindowUriResolverServices`], e o `environmentService.remoteAuthority` é o campo `remote_authority` desses serviços.
 //!   O `TestNativeWindow` do teste (que só anula `create`, `registerListeners` e `enableMultiWindowAwareTimeout`) não tem
 //!   equivalente: a fatia não faz nada ao ser criada.
-//! - **`ITunnelService`.** O contrato completo (`AbstractTunnelService`) depende de serviços ainda não portados; aqui é o
-//!   recorte [`IExternalUriTunnelService`] com os dois membros que a janela chama (`getExistingTunnel`, `openTunnel`).
+//! - **`ITunnelService`.** É o contrato real de `je_platform::tunnel` (`getExistingTunnel` e `openTunnel` entraram nele).
 //!   `RemoteTunnel | string | undefined` é `Option<TunnelResult>` (a `string` é a mensagem de erro do túnel).
 //!   `RemoteTunnel.dispose()` devolve uma promessa e é o campo [`RemoteTunnel::on_dispose`].
-//! - **`IAddressProvider` e `IAddress`** (`remoteAgentConnection.ts`) são o trait [`IAddressProvider`] e o
-//!   `ResolvedAuthority` do resolvedor de autoridade remota, que é o que o `getAddress` do original devolve.
-//! - **`IFileService`.** O trait do porte não tem `canHandleResource`; o recorte [`IResourceHandlerFileService`] tem só ele.
+//! - **`IAddressProvider` e `IAddress`** (`remoteAgentConnection.ts`) são o trait [`IAddressProvider`] (recorte provisório em
+//!   `je_platform::tunnel`, a unificar com o contrato que o w142 porta em `je_platform::remote`) e o `ResolvedAuthority` do
+//!   resolvedor de autoridade remota, que é o que o `getAddress` do original devolve.
+//! - **`IFileService`.** É o contrato real de `je_platform::files::i_file_service` (`canHandleResource` entrou nele).
 
 use std::rc::Rc;
 
@@ -24,62 +24,20 @@ use je_base::async_::async_fn;
 use je_base::lifecycle::to_disposable;
 use je_base::promise::Promise;
 use je_base::uri::{Field, URI, UriChange, UriComponents};
+use je_platform::files::i_file_service::IFileService;
 use je_platform::opener::opener::{OpenOptions, ResolvedExternalUri};
 use je_platform::product::IProductService;
 use je_platform::remote::remote_authority_resolver::{IRemoteAuthorityResolverService, ResolvedAuthority};
-use je_platform::tunnel::{extract_local_host_uri_meta_data_for_port_mapping, extract_query_local_host_uri_meta_data_for_port_mapping};
-
-/// `RemoteTunnel` (`tunnel.ts`).
-#[derive(Clone)]
-pub struct RemoteTunnel {
-    pub tunnel_remote_host: String,
-    pub tunnel_remote_port: u32,
-    pub local_address: String,
-    pub privacy: String,
-    /// O `dispose()` do túnel.
-    pub on_dispose: Rc<dyn Fn() -> Promise<()>>,
-}
-
-impl RemoteTunnel {
-    /// `dispose()`.
-    pub fn dispose(&self) -> Promise<()> {
-        (self.on_dispose)()
-    }
-}
-
-/// `RemoteTunnel | string`: o túnel, ou a mensagem de por que ele não abriu.
-#[derive(Clone)]
-pub enum TunnelResult {
-    Tunnel(RemoteTunnel),
-    Message(String),
-}
-
-/// `IAddressProvider` (`remoteAgentConnection.ts`).
-pub trait IAddressProvider {
-    /// `getAddress()`.
-    fn get_address(&self) -> Promise<ResolvedAuthority>;
-}
-
-/// O recorte do `ITunnelService` que a janela usa.
-pub trait IExternalUriTunnelService {
-    /// `getExistingTunnel(remoteHost, remotePort)`.
-    fn get_existing_tunnel(&self, remote_host: &str, remote_port: u32) -> Promise<Option<TunnelResult>>;
-
-    /// `openTunnel(addressProvider, remoteHost, remotePort, ...)`: `None` é o `undefined` que o original pode devolver.
-    fn open_tunnel(&self, address_provider: Option<Rc<dyn IAddressProvider>>, remote_host: Option<&str>, remote_port: u32) -> Option<Promise<Option<TunnelResult>>>;
-}
-
-/// O recorte do `IFileService` que a janela usa.
-pub trait IResourceHandlerFileService {
-    /// `canHandleResource(resource)`.
-    fn can_handle_resource(&self, resource: &URI) -> Promise<bool>;
-}
+use je_platform::tunnel::{
+    ITunnelService, extract_local_host_uri_meta_data_for_port_mapping, extract_query_local_host_uri_meta_data_for_port_mapping,
+};
+pub use je_platform::tunnel::{IAddressProvider, RemoteTunnel, TunnelResult};
 
 /// Os serviços de `NativeWindow.resolveExternalUri`.
 #[derive(Clone)]
 pub struct NativeWindowUriResolverServices {
-    pub tunnel_service: Rc<dyn IExternalUriTunnelService>,
-    pub file_service: Rc<dyn IResourceHandlerFileService>,
+    pub tunnel_service: Rc<dyn ITunnelService>,
+    pub file_service: Rc<dyn IFileService>,
     pub product_service: Rc<dyn IProductService>,
     pub remote_authority_resolver_service: Rc<dyn IRemoteAuthorityResolverService>,
     /// `environmentService.remoteAuthority`.

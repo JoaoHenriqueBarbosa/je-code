@@ -5,14 +5,14 @@
 //!   `test.skip`.
 //! - `TestNativeWindow` (que anula `create`, `registerListeners` e `enableMultiWindowAwareTimeout`) é o
 //!   [`NativeWindowUriResolver`], a fatia da `NativeWindow` que resolve URIs externas e que não faz nada ao nascer.
-//! - `TunnelMock implements Partial<ITunnelService>` é o `TunnelMock` abaixo, sobre o recorte [`IExternalUriTunnelService`].
+//! - `TunnelMock implements Partial<ITunnelService>` é o `TunnelMock` abaixo, sobre o [`ITunnelService`] real.
 //!   O estado (`assignedPorts`, `expectedDispose`) fica em células compartilhadas porque o `dispose` do túnel o lê depois que
 //!   `openTunnel` voltou.
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` não entra: o `dispose` do resultado é um objeto literal no original, que o
 //!   rastreador de vazamentos não vê; aqui o resultado nunca é descartado pelo teste, como no original.
 //! - `workbenchInstantiationService` é substituído pelos três serviços que o caminho dos casos lê (arquivos, produto e
 //!   resolvedor de autoridade remota); nenhum caso chega neles, porque todos passam `openExternal: true` e não há autoridade
-//!   remota, então os dois duplos de arquivos e de autoridade falham se forem chamados.
+//!   remota. O serviço de arquivos é o `FileService` real (sem provedores) e o duplo de autoridade falha se for chamado.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -25,12 +25,13 @@ use common::run_with_real_timers;
 use je_base::errors::Error;
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_platform::files::file_service::FileService;
+use je_platform::log::NullLogService;
 use je_platform::opener::opener::OpenOptions;
 use je_platform::product::ProductService;
 use je_platform::remote::remote_authority_resolver::{IRemoteAuthorityResolverService, ResolverResult};
-use je_workbench::electron_browser::window::{
-    IAddressProvider, IExternalUriTunnelService, IResourceHandlerFileService, NativeWindowUriResolver, NativeWindowUriResolverServices, RemoteTunnel, TunnelResult,
-};
+use je_platform::tunnel::ITunnelService;
+use je_workbench::electron_browser::window::{IAddressProvider, NativeWindowUriResolver, NativeWindowUriResolverServices, RemoteTunnel, TunnelResult};
 
 type PortMap = HashMap<u32, u32>;
 
@@ -64,7 +65,11 @@ impl TunnelMock {
     }
 }
 
-impl IExternalUriTunnelService for TunnelMock {
+impl ITunnelService for TunnelMock {
+    fn can_tunnel(&self, _uri: &URI) -> bool {
+        true
+    }
+
     fn get_existing_tunnel(&self, _remote_host: &str, _remote_port: u32) -> Promise<Option<TunnelResult>> {
         Promise::resolved(None)
     }
@@ -91,15 +96,6 @@ impl IExternalUriTunnelService for TunnelMock {
     }
 }
 
-/// O `IFileService` que nenhum caso consulta.
-struct UnusedFileService;
-
-impl IResourceHandlerFileService for UnusedFileService {
-    fn can_handle_resource(&self, _resource: &URI) -> Promise<bool> {
-        panic!("canHandleResource is not a function");
-    }
-}
-
 /// O `IRemoteAuthorityResolverService` que nenhum caso consulta (não há autoridade remota).
 struct UnusedRemoteAuthorityResolver;
 
@@ -123,7 +119,7 @@ fn setup() -> Fixture {
     let tunnel_mock = TunnelMock::new();
     let window = NativeWindowUriResolver::new(NativeWindowUriResolverServices {
         tunnel_service: tunnel_mock.clone(),
-        file_service: Rc::new(UnusedFileService),
+        file_service: FileService::new(NullLogService::shared()),
         product_service: Rc::new(ProductService::default()),
         remote_authority_resolver_service: Rc::new(UnusedRemoteAuthorityResolver),
         remote_authority: None,

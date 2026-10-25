@@ -11,14 +11,66 @@
 //! - O `port` do `{ address, port }` é `u32`: o `+match[2]` do original aceita qualquer número de dígitos, e um `u16` perderia
 //!   (ou rejeitaria) `localhost:99999`. Mais de dez dígitos (fora do `u32`) devolvem `None`.
 
+use std::rc::Rc;
+
 use je_base::platform::OperatingSystem;
+use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_instantiation::service_id;
 
-/// `ITunnelService`, reduzido a `canTunnel`.
+use crate::remote::remote_authority_resolver::ResolvedAuthority;
+
+/// `RemoteTunnel`: um túnel aberto. `RemoteTunnel.dispose()` devolve uma promessa e é o campo [`RemoteTunnel::on_dispose`].
+#[derive(Clone)]
+pub struct RemoteTunnel {
+    pub tunnel_remote_host: String,
+    pub tunnel_remote_port: u32,
+    pub local_address: String,
+    pub privacy: String,
+    /// O `dispose()` do túnel.
+    pub on_dispose: Rc<dyn Fn() -> Promise<()>>,
+}
+
+impl RemoteTunnel {
+    /// `dispose()`.
+    pub fn dispose(&self) -> Promise<()> {
+        (self.on_dispose)()
+    }
+}
+
+/// `RemoteTunnel | string`: o túnel, ou a mensagem de por que ele não abriu.
+#[derive(Clone)]
+pub enum TunnelResult {
+    Tunnel(RemoteTunnel),
+    Message(String),
+}
+
+/// `IAddressProvider` (`remoteAgentConnection.ts`): `IAddress` é o `ResolvedAuthority` que o resolvedor de autoridade remota
+/// devolve.
+///
+/// Recorte provisório: o contrato completo está sendo portado em `crate::remote` (w142) e este trait é unificado com ele na
+/// integração.
+pub trait IAddressProvider {
+    /// `getAddress()`.
+    fn get_address(&self) -> Promise<ResolvedAuthority>;
+}
+
+/// `ITunnelService`, reduzido a `canTunnel`, `getExistingTunnel` e `openTunnel`.
 pub trait ITunnelService {
     /// `canTunnel(uri)`: se o endereço pode ser encaminhado por um túnel.
     fn can_tunnel(&self, uri: &URI) -> bool;
+
+    /// `getExistingTunnel(remoteHost, remotePort)`: o túnel já aberto para o destino, se houver. O padrão é o de um serviço
+    /// sem túneis abertos.
+    fn get_existing_tunnel(&self, _remote_host: &str, _remote_port: u32) -> Promise<Option<TunnelResult>> {
+        Promise::resolved(None)
+    }
+
+    /// `openTunnel(addressProvider, remoteHost, remotePort, ...)`: `None` é o `undefined` que o original devolve quando não há
+    /// como abrir o túnel. O padrão é o de um serviço sem provedor de túnel.
+    fn open_tunnel(&self, _address_provider: Option<Rc<dyn IAddressProvider>>, _remote_host: Option<&str>, _remote_port: u32) -> Option<Promise<Option<TunnelResult>>> {
+        None
+    }
 }
 
 service_id!(pub I_TUNNEL_SERVICE: dyn ITunnelService = "tunnelService");

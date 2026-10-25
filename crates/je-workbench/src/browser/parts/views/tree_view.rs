@@ -808,6 +808,10 @@ pub struct CustomTreeView {
     batch: RefCell<Option<Vec<ITreeItem>>>,
     batch_promise: RefCell<Option<Promise<Option<Vec<Vec<ITreeItem>>>>>>,
 
+    /// `subTreeRefreshPromises` do `AsyncDataTree`: as recargas em andamento (identificador, nó, promessa).
+    sub_tree_refreshes: RefCell<Vec<(u64, String, Promise<()>)>>,
+    next_refresh_id: Cell<u64>,
+
     on_did_expand_item: Rc<Emitter<ITreeItem>>,
     on_did_collapse_item: Rc<Emitter<ITreeItem>>,
     on_did_change_selection_and_focus: Rc<Emitter<TreeSelectionAndFocus>>,
@@ -875,6 +879,8 @@ impl CustomTreeView {
             last_active: RefCell::new(root_item()),
             batch: RefCell::new(None),
             batch_promise: RefCell::new(None),
+            sub_tree_refreshes: RefCell::new(Vec::new()),
+            next_refresh_id: Cell::new(0),
             on_did_expand_item: emitter(&base),
             on_did_collapse_item: emitter(&base),
             on_did_change_selection_and_focus: emitter(&base),
@@ -1060,7 +1066,46 @@ impl CustomTreeView {
     }
 
     /// `tree.updateChildren(element, true, true)`: recarrega a raiz ou o nó expandido, e os expandidos abaixo dele.
+    ///
+    /// Como o `AsyncDataTree.refreshNode`: uma recarga que cruza (mesmo nó, ancestral ou descendente) com outra em andamento
+    /// espera por ela e só então começa. Sem isso, as recargas simultâneas da raiz entrariam no mesmo lote do `TreeDataSource`.
     fn update_children(self: &Rc<Self>, handle: String) -> Promise<()> {
+        let pending = {
+            let nodes = self.nodes.borrow();
+            let intersects = |ancestor: &str, descendant: &str| {
+                let mut current = descendant;
+                loop {
+                    if current == ancestor {
+                        return true;
+                    }
+                    match nodes.parents.get(current) {
+                        Some(parent) => current = parent,
+                        None => return false,
+                    }
+                }
+            };
+            self.sub_tree_refreshes.borrow().iter().find(|(_, other, _)| intersects(other, &handle) || intersects(&handle, other)).map(|(_, _, promise)| promise.clone())
+        };
+        if let Some(previous) = pending {
+            let this = Rc::clone(self);
+            return previous.then_result_promise(move |result| match result {
+                Ok(()) => this.update_children(handle),
+                Err(error) => Promise::rejected(error),
+            });
+        }
+        let refresh_id = self.next_refresh_id.get();
+        self.next_refresh_id.set(refresh_id + 1);
+        let promise = self.do_update_children(handle.clone());
+        self.sub_tree_refreshes.borrow_mut().push((refresh_id, handle, promise.clone()));
+        let this = Rc::clone(self);
+        let _ = promise.then_result(move |_| {
+            this.sub_tree_refreshes.borrow_mut().retain(|(id, _, _)| *id != refresh_id);
+            Ok(())
+        });
+        promise
+    }
+
+    fn do_update_children(self: &Rc<Self>, handle: String) -> Promise<()> {
         let this = Rc::clone(self);
         async_fn(async move {
             if !this.nodes.borrow().contains(&handle) {

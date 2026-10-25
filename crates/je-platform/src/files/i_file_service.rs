@@ -163,6 +163,13 @@ pub trait IFileService {
     fn activate_provider(&self, _scheme: &str) -> Promise<()> {
         Promise::resolved(())
     }
+
+    /// `canHandleResource(resource)`: ativa o provedor do esquema e diz se há um registrado para o recurso. O padrão é o
+    /// `hasProvider` sem ativação, coerente com o padrão de [`IFileService::activate_provider`]; o `FileService` o
+    /// sobrescreve com a ativação de verdade.
+    fn can_handle_resource(&self, resource: &URI) -> Promise<bool> {
+        Promise::resolved(self.has_provider(resource))
+    }
 }
 
 service_id!(pub I_FILE_SERVICE: dyn IFileService = "fileService");
@@ -280,5 +287,9 @@ impl IFileService for FileService {
 
     fn activate_provider(&self, scheme: &str) -> Promise<()> {
         FileService::activate_provider(&self.rc(), scheme)
+    }
+
+    fn can_handle_resource(&self, resource: &URI) -> Promise<bool> {
+        FileService::can_handle_resource(&self.rc(), resource)
     }
 }
