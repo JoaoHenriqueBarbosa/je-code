@@ -54,7 +54,7 @@ use je_widgets::hover_api::{IManagedHover, ManagedHoverContentOrFactory};
 use je_widgets::list::list_types::{IListRenderer, ListElementRenderDetails, ListEvent, TemplateData, list_error};
 use je_widgets::table::table_types::{ITableColumn, ITableRenderer, ITableVirtualDelegate};
 
-use crate::browser::resource_navigator::IOpenEvent;
+use je_widgets::list::resource_navigator::IOpenEvent;
 use crate::browser::workbench_table::{IWorkbenchTableOptions, WorkbenchTable};
 use crate::browser::workbench_tree::WorkbenchTreeServices;
 

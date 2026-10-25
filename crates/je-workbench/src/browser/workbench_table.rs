@@ -40,7 +40,7 @@ use je_widgets::table::table_types::{ITableColumn, ITableRenderer, ITableVirtual
 use je_widgets::table::table_widget::{ITableOptionsUpdate, Table, TableOptions};
 use je_widgets::tree::tree_types::{TreeEvent, TreeMouseEvent, TreeMouseEventTarget};
 
-use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
+use je_widgets::list::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use crate::browser::workbench_tree::{
     FAST_SCROLL_SENSITIVITY_KEY, LIST_SMOOTH_SCROLLING, MOUSE_WHEEL_SCROLL_SENSITIVITY_KEY, MULTI_SELECT_MODIFIER_SETTING_KEY, SCROLL_BY_PAGE_KEY, WorkbenchTreeServices, config_bool,
     config_number, create_scoped_context_key_service, create_scroll_observer, use_alt_as_multiple_selection_modifier,

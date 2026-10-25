@@ -54,7 +54,7 @@ use je_widgets::tree::object_tree_model::ObjectTreeModelSetChildrenOptions;
 use je_widgets::tree::tree_types::{IObjectTreeElement, ITreeRenderer, TreeDragOverResult, TreeEvent, TreeNodeApi, tree_error};
 
 use crate::browser::dnd::{FillEditorsDragData, ResourceListDnDHandler};
-use crate::browser::resource_navigator::IOpenEvent;
+use je_widgets::list::resource_navigator::IOpenEvent;
 use crate::browser::workbench_tree::{IWorkbenchTreeOptions, WorkbenchObjectTree, WorkbenchTreeServices};
 use crate::platform::dnd::dnd::{MarkerTransferData, fill_in_markers_drag_data};
 
