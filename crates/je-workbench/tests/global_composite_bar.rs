@@ -64,7 +64,7 @@ fn create_global_bar(guard: &LeakGuard, accounts_visible: bool) -> (Rc<GlobalCom
         if accounts_visible {
             bar.global_activity_action_bar().push_action(bar.account_action().clone(), IActionOptions::default());
         }
-        bar.global_activity_action_bar().push_action(guard.add_rc(Action::new(GLOBAL_ACTIVITY_ID, "", "", true, None)), IActionOptions::default());
+        bar.global_activity_action_bar().push_action({ let action = guard.add_rc(Action::new(GLOBAL_ACTIVITY_ID, "", "", true, None)); action }, IActionOptions::default());
     }
     guard.add_rc(bar.clone());
     (bar, action_bar)
