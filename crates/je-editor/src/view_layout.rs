@@ -8,9 +8,10 @@
 //!   do original que só repassavam ao `Scrollable` (`validateScrollPosition`, `setScrollPositionNow` etc.) não
 //!   existem nele: [`ViewLayout`] chama [`EditorScrollable::get_scrollable`] direto (regra DRY do projeto).
 //! - `ViewLayout` é compartilhado (`Rc`) e implementa [`IViewLayout`] com `&self`: o [`LinesLayout`] fica num
-//!   `RefCell` e os campos escalares em `Cell`. `changeWhitespace` e `changeSpecialLineHeights` seguram o
-//!   empréstimo do [`LinesLayout`] durante o callback, então um callback que reentre no layout dá pânico (o
-//!   original não tem esse limite, mas também não define o resultado de um callback assim).
+//!   `RefCell` e os campos escalares em `Cell`. `changeWhitespace` empresta o [`LinesLayout`] só durante cada
+//!   operação do acessor, então o callback pode ler o layout e rolar o editor (o `keepCursorStable` do ghost text faz
+//!   isso), vendo o estado ainda sem as mudanças pendentes, como no original. `changeSpecialLineHeights` segura o
+//!   empréstimo durante o callback: um callback dele que reentre no layout dá pânico.
 //! - `onDidScroll` e `onDidContentSizeChange` (campos de `Event` no original) são os métodos
 //!   [`ViewLayout::on_did_scroll`] e [`ViewLayout::on_did_content_size_change`], porque o `Event` do porte não
 //!   é clonável.
@@ -401,7 +402,7 @@ impl ViewLayout {
 
     /// `changeWhitespace`: aplica as mudanças e, se houve alguma, reavalia a altura.
     pub fn change_whitespace(&self, callback: impl FnOnce(&mut dyn IWhitespaceChangeAccessor)) -> bool {
-        let had_a_change = self.lines_layout.borrow_mut().change_whitespace(callback);
+        let had_a_change = LinesLayout::change_whitespace_of(&self.lines_layout, callback);
         if had_a_change {
             self.on_height_maybe_changed();
         }
