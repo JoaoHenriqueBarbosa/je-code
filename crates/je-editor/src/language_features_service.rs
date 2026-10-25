@@ -4,8 +4,8 @@
 //! editor ainda não tinha (localização, hover, lente de código, formatação, renomeação, tokens semânticos, dicas
 //! embutidas, links, cores, valores embutidos, edição ligada, colar e soltar).
 //!
-//! Pendentes: os registros `inlineCompletionsProvider` e `inlineEditProvider` (as completações em linha ainda não têm
-//! porte). As hierarquias de chamada e de tipo e os símbolos do workspace são registros de `src/vs/workbench/contrib`
+//! Pendentes: o registro `inlineEditProvider` (as edições em linha ainda não têm porte); o `inlineCompletionsProvider`
+//! (`languages::InlineCompletionsProvider`) já está registrado. As hierarquias de chamada e de tipo e os símbolos do workspace são registros de `src/vs/workbench/contrib`
 //! (ver o porte de `mainThreadLanguageFeatures`).
 //!
 //! Representação:
@@ -840,6 +840,7 @@ pub struct LanguageFeaturesService {
     pub linked_editing_range_provider: Registry<dyn LinkedEditingRangeProvider>,
     pub evaluatable_expression_provider: Registry<dyn EvaluatableExpressionProvider>,
     pub inline_values_provider: Registry<dyn InlineValuesProvider>,
+    pub inline_completions_provider: Registry<dyn crate::languages::InlineCompletionsProvider>,
 }
 
 impl LanguageFeaturesService {
@@ -879,6 +880,7 @@ impl LanguageFeaturesService {
             linked_editing_range_provider: registry(),
             evaluatable_expression_provider: registry(),
             inline_values_provider: registry(),
+            inline_completions_provider: registry(),
         }
     }
 }

@@ -13,6 +13,7 @@
 
 pub mod bracket_pairs_tree;
 pub mod colorized_bracket_pairs_decoration_provider;
+pub mod fix_brackets;
 
 use crate::cursor_common::CursorSimpleModel;
 use std::cell::{Cell, RefCell};
