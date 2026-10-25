@@ -223,11 +223,12 @@ fn setup(ds: &LeakGuard) -> Fixture {
     let log_service = NullLogService::shared();
     let language_features_service = LanguageFeaturesService::new();
     let language_service = ds.add_rc(LanguageService::new(false));
-    let semantic_tokens_styling_service: Rc<dyn ISemanticTokensStylingService> = ds.add_rc(SemanticTokensStylingService::new(
+    let semantic_tokens_styling_service = ds.add_rc(SemanticTokensStylingService::new(
         theme_service.clone() as Rc<dyn IThemeService>,
         Rc::clone(&log_service),
         language_service.clone() as Rc<dyn ILanguageService>,
     ));
+    let semantic_tokens_styling_service: Rc<dyn ISemanticTokensStylingService> = semantic_tokens_styling_service;
     let model_service = ds.add_rc(ModelService::new(
         Rc::clone(&configuration_service),
         TestTextResourcePropertiesService::new(Rc::clone(&configuration_service)),
