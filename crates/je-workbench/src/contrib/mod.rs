@@ -72,3 +72,5 @@ pub mod relauncher;
 pub mod opener;
 // Telemetria de configuração (`contrib/telemetry`): o `ConfigurationTelemetryContribution`, que reporta o valor explícito de configurações escolhidas.
 pub mod telemetry;
+// Formatar com (`contrib/format`): o `DefaultFormatter` (formatador padrão, seletor e status de conflito) e as ações "Format Document/Selection With...".
+pub mod format;

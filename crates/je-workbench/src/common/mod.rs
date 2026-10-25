@@ -2,6 +2,9 @@
 
 pub mod comments;
 
+// O registro das contribuições do workbench (`common/contributions.ts`).
+pub mod contributions;
+
 pub mod contextkeys;
 
 pub mod notification_telemetry;
