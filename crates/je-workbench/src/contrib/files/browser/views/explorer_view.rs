@@ -1534,7 +1534,7 @@ impl ExplorerView {
 
         match stat {
             Some(stat) => {
-                let enable_trash = self.services.pane.configuration_service.get_value(None, None).get_str("files").get_str("enableTrash").is_truthy();
+                let enable_trash = self.services.pane.configuration_service.get_value(None, None).get_str("files").optional_get_str("enableTrash").is_truthy();
                 let has_capability = self.services.file_service.has_capability(&stat.resource(), FileSystemProviderCapabilities::TRASH);
                 self.resource_moveable_to_trash.set(Dynamic::Bool(enable_trash && has_capability));
             }

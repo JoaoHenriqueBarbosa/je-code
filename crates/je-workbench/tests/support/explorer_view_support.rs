@@ -771,6 +771,7 @@ impl ExplorerViewHarness {
         let keybinding_service: Rc<dyn IKeybindingService> = Rc::new(NoKeybindingService);
         let menu_service = RecordingContextMenuService::new();
         let lifecycle_service = guard.add_rc(TestLifecycleService::new());
+        let menu_service_impl = guard.add_rc(MenuService::new(command_service.clone(), keybinding_service.clone(), storage.clone()));
 
         let pane = ViewPaneServices {
             ui: ui.clone(),
@@ -779,7 +780,7 @@ impl ExplorerViewHarness {
             configuration_service: config_service.clone(),
             context_key_service: context_keys.clone(),
             view_descriptor_service: Rc::new(StubViewDescriptorService),
-            menu_service: MenuService::new(command_service.clone(), keybinding_service, storage.clone()),
+            menu_service: menu_service_impl,
             opener_service: TestOpenerService::new(),
             hover_service: get_base_layer_hover_delegate(),
             lifecycle_service,
