@@ -295,7 +295,7 @@ fn settings_in(scope: &str, settings: TestSettings) -> Settings {
 }
 
 /// O caso de `reports explicit ${scope} glass ${enabled} and opacity ${opacity} using configuration telemetry`.
-fn reports_explicit_glass(scope: &str, source: &str, enabled: bool, opacity: f64) {
+fn reports_explicit_glass(scope: &'static str, source: &'static str, enabled: bool, opacity: f64) {
     run_with_faked_timers(async move {
         assert_eq!(
             report_settings(settings_in(scope, explicit_glass_settings(enabled, opacity))),
@@ -308,7 +308,7 @@ fn reports_explicit_glass(scope: &str, source: &str, enabled: bool, opacity: f64
 }
 
 /// O caso de `does not include arbitrary text from invalid ${scope} glass settings`.
-fn does_not_include_arbitrary_text(scope: &str, source: &str) {
+fn does_not_include_arbitrary_text(scope: &'static str, source: &'static str) {
     run_with_faked_timers(async move {
         let text = || Dynamic::string("arbitrary user text");
         let settings = vec![
