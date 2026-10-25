@@ -29,6 +29,7 @@ use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
 use je_workbench::api::common::ext_host_bulk_edits::ExtHostBulkEdits;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_editors::ExtHostEditors;
+use je_workbench::api::common::ext_host_editor_tabs::ExtHostEditorTabs;
 use je_workbench::api::common::ext_host_file_system::ExtHostFileSystem;
 use je_workbench::api::common::ext_host_file_system_consumer::ExtHostConsumerFileSystem;
 use je_workbench::api::common::ext_host_file_system_event_service::ExtHostFileSystemEventService;
@@ -40,7 +41,7 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
+    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
     ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
@@ -65,7 +66,7 @@ use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
 use crate::api::file_system::FileSystemApi;
 use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
-use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, file_system, l10n, languages, notebooks, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, file_system, l10n, languages, notebooks, scm, tabs, types, uri, window, workspace, workspace_edit};
 use crate::api::js_object::JsObjects;
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -329,6 +330,8 @@ impl ExtensionHost {
         scm::define_classes(runner, &scm_objects, &event_tables);
         let comment_objects = Rc::new(comments::CommentObjects::default());
         comments::define_classes(runner, &comment_objects, &event_tables, &window_state.text_objects);
+        let tab_objects = tabs::TabObjects::new(runner);
+        members.extend(tabs::classes(runner, &tab_objects));
         let debug_objects = Rc::new(debug::DebugObjects::default());
         members.extend(debug::classes(runner, &debug_objects));
         let notebook_objects = Rc::new(notebooks::NotebookObjects::default());
@@ -648,7 +651,15 @@ impl ExtensionHost {
             }
 
             let message_service = provided(MainContext::MAIN_THREAD_MESSAGE_SERVICE.sid).then(|| bridged_ref.get_proxy(&MainContext::MAIN_THREAD_MESSAGE_SERVICE));
+            // `window.tabGroups` pede o cliente `MainThreadEditorTabs`.
+            let tabs_api = provided(MainContext::MAIN_THREAD_EDITOR_TABS.sid).then(|| {
+                let tabs = ExtHostEditorTabs::new(bridged_ref);
+                let tabs_shape: Rc<dyn ExtHostEditorTabsShape> = tabs.clone();
+                late.editor_tabs.0.bind(tabs_shape);
+                tabs::TabsApi { tabs, objects: tab_objects.clone() }
+            });
             if message_service.is_some()
+                || tabs_api.is_some()
                 || bridged.status_bar.is_some()
                 || bridged.quick_open.is_some()
                 || bridged.output.is_some()
@@ -667,6 +678,7 @@ impl ExtensionHost {
                     terminal: bridged.terminal.clone(),
                     tree_views: bridged.tree_views.clone(),
                     text_editors: text_editor_api,
+                    tabs: tabs_api,
                 });
                 members.push(("window".to_owned(), window::namespace(runner, window_services, &table, &event_tables, &window_state)));
             }

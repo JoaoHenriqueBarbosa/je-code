@@ -38,6 +38,7 @@ pub mod progress;
 pub mod quick_input;
 pub mod quick_session;
 pub mod scm;
+pub mod tabs;
 pub mod terminal;
 pub mod text_editors;
 pub mod tree_views;

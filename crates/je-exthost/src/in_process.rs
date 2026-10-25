@@ -974,6 +974,25 @@ impl ExtHostCommentsShape for LateExtHostComments {
     }
 }
 
+/// O `ExtHostEditorTabsShape` que ainda não existe quando o cliente `MainThreadEditorTabs` do workbench nasce (ele empurra o modelo de
+/// abas inicial ao subir). As três chamadas são sem retorno e ficam na fila até o `bind`.
+#[derive(Default)]
+pub struct LateExtHostEditorTabs(pub Late<dyn je_workbench::api::common::ext_host_protocol::ExtHostEditorTabsShape>);
+
+impl je_workbench::api::common::ext_host_protocol::ExtHostEditorTabsShape for LateExtHostEditorTabs {
+    fn rpc_accept_editor_tab_model(&self, tab_groups: Vec<je_workbench::api::common::ext_host_protocol::EditorTabGroupDto>) {
+        self.0.call_void(move |target| target.rpc_accept_editor_tab_model(tab_groups));
+    }
+
+    fn rpc_accept_tab_group_update(&self, group_dto: je_workbench::api::common::ext_host_protocol::EditorTabGroupDto) {
+        self.0.call_void(move |target| target.rpc_accept_tab_group_update(group_dto));
+    }
+
+    fn rpc_accept_tab_operation(&self, operation: je_workbench::api::common::ext_host_protocol::TabOperation) {
+        self.0.call_void(move |target| target.rpc_accept_tab_operation(operation));
+    }
+}
+
 /// O `ExtHostAuthenticationShape` que ainda não existe quando o cliente `MainThreadAuthentication` do workbench nasce. Todas as chamadas
 /// têm retorno, então só acontecem depois de montado o host.
 #[derive(Default)]
@@ -1219,6 +1238,7 @@ impl ExtHostDebugServiceShape for LateExtHostDebugService {
 
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
+    pub editor_tabs: Rc<LateExtHostEditorTabs>,
     pub scm: Rc<LateExtHostSCM>,
     pub comments: Rc<LateExtHostComments>,
     pub authentication: Rc<LateExtHostAuthentication>,
@@ -1274,6 +1294,9 @@ impl LateForwarders {
         let comments = Rc::new(LateExtHostComments::default());
         let as_comments: Rc<dyn ExtHostCommentsShape> = comments.clone();
         local.set_erased(ExtHostContext::EXT_HOST_COMMENTS.sid, Rc::new(as_comments));
+        let editor_tabs = Rc::new(LateExtHostEditorTabs::default());
+        let as_editor_tabs: Rc<dyn je_workbench::api::common::ext_host_protocol::ExtHostEditorTabsShape> = editor_tabs.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_EDITOR_TABS.sid, Rc::new(as_editor_tabs));
         let authentication = Rc::new(LateExtHostAuthentication::default());
         let as_authentication: Rc<dyn ExtHostAuthenticationShape> = authentication.clone();
         local.set_erased(ExtHostContext::EXT_HOST_AUTHENTICATION.sid, Rc::new(as_authentication));
@@ -1316,7 +1339,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 
