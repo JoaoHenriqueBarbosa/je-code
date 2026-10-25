@@ -170,6 +170,8 @@ pub enum AccessibilitySignal {
     NotebookCellFailed,
     TaskCompleted,
     TaskFailed,
+    /// `AccessibilitySignal.clear`: uma notificação foi limpa.
+    Clear,
 }
 
 /// `IAccessbilitySignalOptions`, só com o `userGesture` (para ações como salvar e formatar, o sinal só toca quando o
