@@ -223,9 +223,11 @@ impl Header {
         let workbench = crate::editor_input_services::WorkbenchServices::new(guard, &configuration);
 
         // `store.add(instantiationService.createInstance(ContextKeyService))` e `store.add(createInstance(MenuService))`
-        let context_keys: Rc<dyn IContextKeyService> = guard.add_rc(ContextKeyService::new(configuration_service.clone()));
+        let context_keys = guard.add_rc(ContextKeyService::new(configuration_service.clone()));
+        let context_keys: Rc<dyn IContextKeyService> = context_keys;
         let storage = guard.add_rc(InMemoryStorageService::new());
-        let menu_service: Rc<dyn IMenuService> = guard.add_rc(MenuService::new(Rc::new(NoCommandService), Rc::new(MockKeybindingService), Rc::new(storage)));
+        let menu_service = guard.add_rc(MenuService::new(Rc::new(NoCommandService), Rc::new(MockKeybindingService), Rc::new(storage)));
+        let menu_service: Rc<dyn IMenuService> = menu_service;
 
         let has_actions = context_keys.create_key("test.editorHeader.hasActions", Dynamic::Bool(false));
         let menu_id = MenuId::for_id("test.editorHeader");
@@ -324,8 +326,10 @@ fn state(height: f64, display: Option<&'static str>, actions_display: Option<&'s
 fn reserves_header_height_across_tab_and_delayed_menu_changes(tab_height: TabHeight) {
     run_with_faked_timers(async move {
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
-        let first: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
-        let second: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
+        let first = guard.add_rc(TestHeaderEditorInput::new());
+        let first: EditorInputRef = first;
+        let second = guard.add_rc(TestHeaderEditorInput::new());
+        let second: EditorInputRef = second;
         let reserve: ReserveHeaderSpace = Rc::new({
             let (first, second) = (first.clone(), second.clone());
             move |editor: Option<&EditorInputRef>| is_editor(editor, &first) || is_editor(editor, &second)
@@ -385,8 +389,10 @@ fn reserves_header_height_across_tab_and_delayed_menu_changes_compact() {
 #[test]
 fn does_not_reserve_an_empty_header_for_other_editors_or_an_empty_group() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let reserved_editor: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
-    let other_editor: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
+    let reserved_editor = guard.add_rc(TestHeaderEditorInput::new());
+    let reserved_editor: EditorInputRef = reserved_editor;
+    let other_editor = guard.add_rc(TestHeaderEditorInput::new());
+    let other_editor: EditorInputRef = other_editor;
     let reserve: ReserveHeaderSpace = Rc::new({
         let reserved_editor = reserved_editor.clone();
         move |editor: Option<&EditorInputRef>| is_editor(editor, &reserved_editor)
@@ -419,7 +425,8 @@ fn layout_refreshes_header_reservation_when_editor_visibility_changes_without_sw
         move |_: Option<&EditorInputRef>| editor_visible.get()
     });
     let header = Header::new(&guard, true, Some(reserve), TabHeight::Default);
-    let editor: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
+    let editor = guard.add_rc(TestHeaderEditorInput::new());
+    let editor: EditorInputRef = editor;
     header.activate(Some(&editor));
     let mut states = vec![header.state()];
     editor_visible.set(true);
@@ -448,7 +455,8 @@ fn without_a_reservation_policy_header_visibility_follows_menu_contents() {
     run_with_faked_timers(async {
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
         let header = Header::new(&guard, true, None, TabHeight::Default);
-        let editor: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
+        let editor = guard.add_rc(TestHeaderEditorInput::new());
+        let editor: EditorInputRef = editor;
         header.activate(Some(&editor));
         let mut states = vec![header.state()];
         header.has_actions.set(Dynamic::Bool(true));
@@ -474,7 +482,8 @@ fn reservation_does_not_enable_a_group_header_when_show_header_is_false() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let reserve: ReserveHeaderSpace = Rc::new(|_: Option<&EditorInputRef>| true);
     let header = Header::new(&guard, false, Some(reserve), TabHeight::Default);
-    let editor: EditorInputRef = guard.add_rc(TestHeaderEditorInput::new());
+    let editor = guard.add_rc(TestHeaderEditorInput::new());
+    let editor: EditorInputRef = editor;
     header.activate(Some(&editor));
 
     assert_eq!(header.state(), state(0.0, None, None));

@@ -39,6 +39,7 @@
 
 use std::rc::Rc;
 
+use je_base::observable::Observable;
 use je_base::actions::{ActionRef, ToActionProps, to_action};
 use je_base::dynamic::Dynamic;
 use je_base::keybindings::ResolvedKeybinding;

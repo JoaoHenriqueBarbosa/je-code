@@ -31,6 +31,7 @@ use je_widgets::toolbar::IToolBarOptions;
 
 use super::breadcrumbs_control::{BreadcrumbsControl, BreadcrumbsControlFactory, BreadcrumbsControlOptions, BreadcrumbsControlServices};
 use super::editor::{IEditorGroupMenuIds, IEditorGroupView, IEditorGroupsView, ReserveHeaderSpace};
+use crate::api::common::ext_host_values::ApiValue;
 use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor};
 use crate::platform::actions::{IMenuWorkbenchToolBarOptions, IToolBarRenderOptions, IWorkbenchToolBarOptions, MenuWorkbenchToolBar, PrimaryGroup};
 use crate::services::editor::editor_groups_service::{ShowTabs, TabHeight};

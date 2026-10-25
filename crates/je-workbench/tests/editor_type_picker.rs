@@ -242,7 +242,8 @@ fn create_group(
     selection: Option<SelectionFn>,
     capabilities: EditorInputCapabilities,
 ) -> Rc<dyn IEditorGroupView> {
-    let source_editor: EditorInputRef = guard.add_rc(PickerInput::new(PickerInputSpec { type_id: "test.editor", capabilities, untyped: input, ..PickerInputSpec::default() }));
+    let source_editor = guard.add_rc(PickerInput::new(PickerInputSpec { type_id: "test.editor", capabilities, untyped: input, ..PickerInputSpec::default() }));
+    let source_editor: EditorInputRef = source_editor;
     let pane: Rc<dyn IEditorPane> = Rc::new(TestPane { input: source_editor.clone(), selection });
     Rc::new(TestGroup { source_editor, pane, groups_view: Rc::new(TestGroupsView { activate }) })
 }
@@ -320,7 +321,8 @@ fn resolver_returning(matches: &EditorMatches) -> Rc<PartialEditorResolverServic
 
 /// `new class extends TestEditorInput { typeId, editorId, resource, getName }`.
 fn input(guard: &LeakGuard, type_id: &'static str, editor_id: &'static str, resource: &URI) -> EditorInputRef {
-    guard.add_rc(PickerInput::new(PickerInputSpec { type_id, editor_id: Some(editor_id), resource: Some(resource.clone()), ..PickerInputSpec::default() }))
+    let input = guard.add_rc(PickerInput::new(PickerInputSpec { type_id, editor_id: Some(editor_id), resource: Some(resource.clone()), ..PickerInputSpec::default() }));
+    input
 }
 
 fn editor_ids(available: Option<IAvailableEditorTypes>) -> Option<Vec<String>> {
@@ -358,13 +360,14 @@ fn inline_custom_diff_editor_is_classified_as_a_diff_editor() {
     ];
     let matches = editor_matches(&registered_editors, DEFAULT_EDITOR_ASSOCIATION_ID);
     // `new class extends EditorInput implements IEditorInputWithDiffResources`
-    let input: EditorInputRef = guard.add_rc(PickerInput::new(PickerInputSpec {
+    let input = guard.add_rc(PickerInput::new(PickerInputSpec {
         type_id: "test.inlineCustomDiffEditor",
         editor_id: Some("test.markdownEditor"),
         resource: Some(modified.clone()),
         diff_resources: Some((original.clone(), modified.clone())),
         ..PickerInputSpec::default()
     }));
+    let input: EditorInputRef = input;
     let requested_resources: Rc<RefCell<Vec<String>>> = Rc::default();
     let requested_options: Rc<RefCell<Vec<Option<EditorResolverServiceGetEditorMatchesOptions>>>> = Rc::default();
     let editor_resolver_service = Rc::new(PartialEditorResolverService {
