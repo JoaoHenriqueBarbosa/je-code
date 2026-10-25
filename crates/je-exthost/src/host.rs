@@ -29,6 +29,8 @@ use je_workbench::api::common::ext_host_documents::ExtHostDocuments;
 use je_workbench::api::common::ext_host_bulk_edits::ExtHostBulkEdits;
 use je_workbench::api::common::ext_host_documents_and_editors::ExtHostDocumentsAndEditors;
 use je_workbench::api::common::ext_host_editors::ExtHostEditors;
+use je_workbench::api::common::ext_host_file_system::ExtHostFileSystem;
+use je_workbench::api::common::ext_host_file_system_consumer::ExtHostConsumerFileSystem;
 use je_workbench::api::common::ext_host_file_system_event_service::ExtHostFileSystemEventService;
 use je_workbench::api::common::ext_host_file_system_info::ExtHostFileSystemInfo;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
@@ -38,7 +40,7 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
     ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
@@ -61,8 +63,9 @@ use crate::api::notebooks::NotebookApi;
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
+use crate::api::file_system::FileSystemApi;
 use crate::api::file_system_events::{FileSystemEventsApi, WatcherServices};
-use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, l10n, languages, notebooks, scm, types, uri, window, workspace, workspace_edit};
+use crate::api::{authentication, commands, comments, debug, disposable, enums, env, events, extensions, file_system, l10n, languages, notebooks, scm, types, uri, window, workspace, workspace_edit};
 use crate::api::js_object::JsObjects;
 use crate::ext_host_extension_service::ExtHostExtensionService;
 use crate::in_process::{BridgedContext, IMainThreadBinder, LateForwarders};
@@ -317,6 +320,7 @@ impl ExtensionHost {
         members.push(uri::class(runner));
         members.extend(enums::enums());
         members.extend(workspace::classes(runner));
+        members.extend(file_system::classes(runner));
         let workspace_edit_objects = Rc::new(workspace_edit::WorkspaceEditObjects::default());
         members.extend(workspace_edit::classes(runner, &workspace_edit_objects));
         members.extend(window::classes(runner, &window_state, &table));
@@ -408,6 +412,14 @@ impl ExtensionHost {
                     events: event_tables.clone(),
                 }
             });
+            // `fs` e `registerFileSystemProvider` pedem o cliente `MainThreadFileSystem`; o `ExtHostFileSystem` (o registro) nasce no bloco de
+            // linguagens, que lhe dá o `ExtHostLanguageFeatures`.
+            let file_system_api = provided(MainContext::MAIN_THREAD_FILE_SYSTEM.sid).then(|| FileSystemApi {
+                consumer: ExtHostConsumerFileSystem::new(bridged_ref, file_system_info.clone()),
+                provider: Rc::default(),
+                js: JsObjects::new(runner),
+                table: table.clone(),
+            });
             // `vscode.notebooks` e os membros de notebook de `vscode.workspace` pedem os clientes `MainThreadNotebook`, `MainThreadNotebookDocuments` e
             // `MainThreadNotebookEditors` e os documentos de texto (cada célula é um documento de texto); o `createNotebookController` pede também
             // `MainThreadNotebookKernels`. O host não tem o `ExtHostConsumerFileSystem` (ver `NoConsumerFileSystem`).
@@ -447,12 +459,19 @@ impl ExtensionHost {
                 _ => None,
             };
 
-            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() || file_system_events.is_some() || notebook_api.is_some() {
+            if workspace_pair.is_some() || text_editor_api.is_some() || bulk_edits.is_some() || file_system_events.is_some() || notebook_api.is_some() || file_system_api.is_some() {
                 members.push((
                     "workspace".to_owned(),
                     workspace::namespace(
                         runner,
-                        &WorkspaceServices { workspace: workspace_pair, text_editors: text_editor_api.clone(), bulk_edits, file_system_events, notebooks: notebook_api.clone() },
+                        &WorkspaceServices {
+                            workspace: workspace_pair,
+                            text_editors: text_editor_api.clone(),
+                            bulk_edits,
+                            file_system_events,
+                            notebooks: notebook_api.clone(),
+                            file_system: file_system_api.clone(),
+                        },
                         &table,
                         &event_tables,
                     ),
@@ -617,6 +636,12 @@ impl ExtensionHost {
                 });
                 if languages.is_some() || diagnostics.is_some() || features.is_some() {
                     bridged.language_features = features.clone();
+                    if let (Some(api), Some(features)) = (&file_system_api, &features) {
+                        let service = ExtHostFileSystem::new(bridged_ref, features.clone());
+                        let service_shape: Rc<dyn ExtHostFileSystemShape> = service.clone();
+                        late.file_system.0.bind(service_shape);
+                        *api.provider.borrow_mut() = Some(service);
+                    }
                     let services = LanguagesServices { languages, diagnostics, features, text_editors: text_editor_api.clone(), workspace_edits: workspace_edit_objects.clone() };
                     members.push(("languages".to_owned(), languages::namespace(runner, &services, &table, &event_tables, &languages_state)));
                 }

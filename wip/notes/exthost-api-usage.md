@@ -299,6 +299,24 @@ número de ativação foi medido.
 
 Teste: `crates/je-workbench/tests/extension_host_api_workspace_edit.rs` (nenhum rodou).
 
+## Estado da entrega de `workspace.fs` e `registerFileSystemProvider` (2026-10-25, escrito sem compilar: o integrador confirma)
+
+Fonte: **eu** (leitura de `ext_host_file_system_consumer.rs`, `ext_host_file_system.rs` e do padrão de `comments.rs`). Nenhum número de ativação
+foi medido; a linha `workspace.fs` da lista medida (53 ativações) continua NÃO MEDIDO.
+
+| Membro | Estado | Onde |
+| --- | --- | --- |
+| `workspace.fs` com `stat`, `readDirectory`, `createDirectory`, `readFile`, `writeFile`, `delete`, `rename`, `copy`, `isWritableFileSystem` | entregue, sobre o `ExtHostConsumerFileSystem` (atalho no provedor da extensão, thread principal nos demais esquemas); precisa do cliente `MainThreadFileSystem` | `api/file_system.rs`, `host.rs` |
+| `workspace.registerFileSystemProvider(scheme, provider, options?)` com `isCaseSensitive` e `isReadonly` (booleano ou `MarkdownString`) | entregue, provedor por referência (`stat`, `readDirectory`, `createDirectory`, `readFile`, `writeFile`, `delete`, `rename`, `copy` opcional, `watch`, `onDidChangeFile`); pede também os clientes de linguagem, por causa do provedor de links de documento | `api/file_system.rs`, `host.rs`, `in_process.rs` (`LateExtHostFileSystem`) |
+| `FileType`, `FileChangeType`, `FilePermission`, `FileSystemError` (construtor e fábricas estáticas) | entregue | `api/enums.rs`, `api/file_system.rs` |
+| Binário (`Uint8Array`) | recorte, como `NotebookCellOutputItem#data`: `readFile` entrega e `writeFile` aceita a lista de bytes (ou texto, ou objeto de índices); a conversão é a `bytes_of` e a `bytes_to_js` de `convert.rs`, que o `notebooks.rs` agora reaproveita | `convert.rs` |
+| `FileSystemError` como `Error` | divergência: a classe não estende `Error` (tem `name`, `message`, `code`); a promessa de `fs` rejeita com `name` (com o código) e `message`, sem `code` | `api/file_system.rs` |
+| Quarteto `open`/`close`/`read`/`write` do provedor (proposta `fsChunks`) | falta: o registro de um provedor que o declara rejeita, como o original sem a proposta | `ext_host_file_system.rs` |
+
+Teste: `crates/je-workbench/tests/extension_host_api_file_system.rs`, com o dublê de `MainThreadFileSystem` e o provedor `memfs` em JavaScript (nenhum
+rodou). Pendências a confirmar na primeira compilação: `URI::parse` aceitar `String`; `js_to_error` manter o `name` do `FileSystemError` que o provedor
+lança (e o `mkdirp` reconhecer `FileNotFound`); `provider.readFile` assíncrono entregar a lista de bytes por referência ao `bytes_of`.
+
 ## Estado da entrega dos eventos de arquivo (2026-10-24, escrito sem compilar: o integrador confirma)
 
 Fonte: **eu** (leitura de `api/file_system_events.rs`, `ext_host_file_system_event_service.rs` e `extHost.api.impl.ts`). Nenhum número de

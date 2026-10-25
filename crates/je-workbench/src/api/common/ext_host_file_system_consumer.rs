@@ -57,7 +57,7 @@ use super::ext_host_types::{FileChangeType, FileSystemError, MarkdownString, Mes
 use super::ext_host_workspace::IExtHostFileSystemInfo;
 
 /// O sufixo do nome de um erro marcado como erro do provedor de arquivos (`createFileSystemProviderError`).
-const FILE_SYSTEM_ERROR_SUFFIX: &str = " (FileSystemError)";
+pub const FILE_SYSTEM_ERROR_SUFFIX: &str = " (FileSystemError)";
 
 /// Os códigos de erro do provedor de arquivos (`FileSystemProviderErrorCode`), para reconhecer o erro marcado.
 const ERROR_CODES: [FileSystemProviderErrorCode; 10] = [
