@@ -2,6 +2,7 @@
 //! (migalhas, o editor modal, o `EditorPart` e o grupo de editor lógicos).
 
 pub mod breadcrumbs;
+pub mod breadcrumbs_control;
 pub mod breadcrumbs_model;
 pub mod editor;
 pub mod editor_auto_save;

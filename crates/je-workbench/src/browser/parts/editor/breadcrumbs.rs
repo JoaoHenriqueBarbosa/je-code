@@ -370,3 +370,45 @@ pub fn register_configuration() {
         .with_properties(properties),
     ));
 }
+
+/// `IBreadcrumbsService`: o widget de migalhas de cada grupo de editor.
+pub trait IBreadcrumbsService {
+    /// `register(group, widget)`: falha se o grupo já tem um widget.
+    fn register(&self, group: crate::common::editor::GroupIdentifier, widget: Rc<je_widgets::breadcrumbs_widget::BreadcrumbsWidget>) -> DisposableRef;
+
+    /// `getWidget(group)`.
+    fn get_widget(&self, group: crate::common::editor::GroupIdentifier) -> Option<Rc<je_widgets::breadcrumbs_widget::BreadcrumbsWidget>>;
+}
+
+je_instantiation::service_id!(pub I_BREADCRUMBS_SERVICE: dyn IBreadcrumbsService = "IEditorBreadcrumbsService");
+
+type WidgetMap = std::cell::RefCell<std::collections::HashMap<crate::common::editor::GroupIdentifier, Rc<je_widgets::breadcrumbs_widget::BreadcrumbsWidget>>>;
+
+/// `BreadcrumbsService`.
+#[derive(Default)]
+pub struct BreadcrumbsService {
+    map: Rc<WidgetMap>,
+}
+
+impl BreadcrumbsService {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl IBreadcrumbsService for BreadcrumbsService {
+    fn register(&self, group: crate::common::editor::GroupIdentifier, widget: Rc<je_widgets::breadcrumbs_widget::BreadcrumbsWidget>) -> DisposableRef {
+        if self.map.borrow().contains_key(&group) {
+            je_base::errors::throw(je_base::errors::Error::new(format!("group ({group}) has already a widget")));
+        }
+        self.map.borrow_mut().insert(group, widget);
+        let map = self.map.clone();
+        je_base::lifecycle::to_disposable(move || {
+            map.borrow_mut().remove(&group);
+        })
+    }
+
+    fn get_widget(&self, group: crate::common::editor::GroupIdentifier) -> Option<Rc<je_widgets::breadcrumbs_widget::BreadcrumbsWidget>> {
+        self.map.borrow().get(&group).cloned()
+    }
+}
