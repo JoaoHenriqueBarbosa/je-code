@@ -95,6 +95,8 @@ struct NamedInput {
     name: String,
     /// A descrição curta e a longa (`Verbosity.LONG`), se o caso as define.
     descriptions: Option<(String, String)>,
+    /// `TestFileEditorInput.dirty`.
+    dirty: Cell<bool>,
 }
 
 impl NamedInput {
@@ -104,7 +106,13 @@ impl NamedInput {
             resource: uri_file(path),
             name: name.to_string(),
             descriptions: descriptions.map(|(short, long)| (short.to_string(), long.to_string())),
+            dirty: Cell::new(false),
         })
+    }
+
+    /// `TestFileEditorInput.setDirty()`.
+    fn set_dirty(&self) {
+        self.dirty.set(true);
     }
 }
 
@@ -137,6 +145,10 @@ impl EditorInput for NamedInput {
 
     fn get_description(&self, verbosity: Option<Verbosity>) -> Option<String> {
         self.descriptions.as_ref().map(|(short, long)| if verbosity == Some(Verbosity::Long) { long.clone() } else { short.clone() })
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.dirty.get()
     }
 }
 
@@ -764,13 +776,13 @@ impl Fixture {
         editors
     }
 
-    /// `openNamedEditors(names)` com `TestFileEditorInput` (o nome é o do arquivo), para os casos que marcam uma entrada como
-    /// modificada.
-    fn open_file_editors(&mut self, names: &[String]) -> Vec<Rc<TestFileEditorInput>> {
+    /// `openNamedEditors(names)` devolvendo as entradas concretas, para os casos que marcam uma entrada como modificada
+    /// (`getName()` devolve o nome pedido, não o do recurso).
+    fn open_file_editors(&mut self, names: &[String]) -> Vec<Rc<NamedInput>> {
         self.close_all_editors();
         let mut editors = Vec::new();
         for (index, name) in names.iter().enumerate() {
-            let concrete = self.suite.disposables.add_rc(TestFileEditorInput::new(uri_file(&format!("/workspace/project/src/{name}")), "testEditorInput"));
+            let concrete = self.suite.disposables.add_rc(NamedInput::new(name, &format!("/workspace/project/src/{name}"), Some(("src", "/workspace/project/src"))));
             let editor: EditorInputRef = concrete.clone();
             open!(self.model, editor, index: index as i64, pinned: true, active: index == names.len() - 1);
             editors.push(concrete);
