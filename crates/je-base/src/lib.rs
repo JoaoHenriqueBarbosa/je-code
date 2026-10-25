@@ -141,4 +141,5 @@ pub mod worker;
 pub mod execution_graph;
 
 pub mod virtual_scheduling;
+pub mod snapshot;
 pub mod browser;

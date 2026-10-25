@@ -83,11 +83,22 @@ pub struct Document {
     nodes: RefCell<Vec<NodeSlot>>,
     trackers: RefCell<Vec<Rc<AttributeTracker>>>,
     hidden: Cell<bool>,
+    body: Cell<Option<usize>>,
+    visibility_listeners: RefCell<Vec<(u64, Rc<dyn Fn()>)>>,
+    next_listener_id: Cell<u64>,
 }
 
 impl Document {
     fn new(view: Weak<CodeWindow>) -> Rc<Self> {
-        Rc::new(Self { view, nodes: RefCell::new(Vec::new()), trackers: RefCell::new(Vec::new()), hidden: Cell::new(false) })
+        Rc::new(Self {
+            view,
+            nodes: RefCell::new(Vec::new()),
+            trackers: RefCell::new(Vec::new()),
+            hidden: Cell::new(false),
+            body: Cell::new(None),
+            visibility_listeners: RefCell::new(Vec::new()),
+            next_listener_id: Cell::new(0),
+        })
     }
 
     /// `document.visibilityState`: `visible` até alguém esconder a janela ([`Document::set_hidden`]).
@@ -95,9 +106,48 @@ impl Document {
         if self.hidden.get() { "hidden" } else { "visible" }
     }
 
-    /// Esconde ou mostra a janela do documento (uma janela minimizada ou coberta).
+    /// `document.hidden`.
+    pub fn hidden(&self) -> bool {
+        self.hidden.get()
+    }
+
+    /// Esconde ou mostra a janela do documento (uma janela minimizada ou coberta). Mudar o estado dispara o
+    /// `visibilitychange` ([`Document::add_visibility_change_listener`]).
     pub fn set_hidden(&self, hidden: bool) {
-        self.hidden.set(hidden);
+        if self.hidden.replace(hidden) == hidden {
+            return;
+        }
+        let listeners: Vec<Rc<dyn Fn()>> = self.visibility_listeners.borrow().iter().map(|(_, listener)| listener.clone()).collect();
+        for listener in listeners {
+            listener();
+        }
+    }
+
+    /// `addDisposableListener(document, 'visibilitychange', listener)`.
+    pub fn add_visibility_change_listener(self: &Rc<Self>, listener: impl Fn() + 'static) -> DisposableRef {
+        let id = self.next_listener_id.get();
+        self.next_listener_id.set(id + 1);
+        self.visibility_listeners.borrow_mut().push((id, Rc::new(listener)));
+        let document = Rc::downgrade(self);
+        to_disposable(move || {
+            if let Some(document) = document.upgrade() {
+                document.visibility_listeners.borrow_mut().retain(|(candidate, _)| *candidate != id);
+            }
+        })
+    }
+
+    /// `document.body`: criado na primeira leitura. É a única raiz do modelo: um nó está conectado
+    /// ([`Node::is_connected`]) quando chega a ele.
+    pub fn body(self: &Rc<Self>) -> Node {
+        let index = match self.body.get() {
+            Some(index) => index,
+            None => {
+                let body = self.create_element("body");
+                self.body.set(Some(body.index));
+                body.index
+            }
+        };
+        Node { document: self.clone(), index }
     }
 
     fn alloc(self: &Rc<Self>, data: NodeData) -> Node {
@@ -204,6 +254,27 @@ impl Node {
 
     pub fn child_element_count(&self) -> usize {
         self.child_nodes().iter().filter(|child| child.is_html_element()).count()
+    }
+
+    /// `remove()`: tira o nó do pai; sem pai, não faz nada.
+    pub fn remove(&self) {
+        if let Some(parent) = self.parent_node() {
+            parent.with_mut(|slot| slot.children.retain(|candidate| *candidate != self.index));
+            self.with_mut(|slot| slot.parent = None);
+        }
+    }
+
+    /// `isConnected`: o nó é o `body` do documento ou descende dele.
+    pub fn is_connected(&self) -> bool {
+        let body = self.document.body();
+        let mut current = Some(self.clone());
+        while let Some(node) = current {
+            if node == body {
+                return true;
+            }
+            current = node.parent_node();
+        }
+        false
     }
 
     /// `appendChild`: tira o filho do pai anterior e o põe por último.
@@ -339,6 +410,18 @@ impl Node {
         let mut tokens = self.class_tokens();
         tokens.retain(|candidate| candidate != class);
         self.set_class_name(&tokens.join(" "));
+    }
+
+    /// `classList.toggle(class, force)`: devolve `force`. Só reescreve o `class` quando o token muda.
+    pub fn class_list_toggle(&self, class: &str, force: bool) -> bool {
+        if force != self.class_list_contains(class) {
+            if force {
+                self.class_list_add(class);
+            } else {
+                self.class_list_remove(class);
+            }
+        }
+        force
     }
 
     /// As declarações do atributo `style` (`nome: valor;`), na ordem em que entraram.
@@ -718,6 +801,53 @@ pub type ResizeObserverCallback = Rc<dyn Fn(&[ResizeObserverEntry]) -> Result<()
 /// O construtor de `ResizeObserver` de uma janela (`targetWindow.ResizeObserver`), ou o injetado nas opções.
 pub type ResizeObserverCtor = Rc<dyn Fn(Rc<dyn Fn(&[ResizeObserverEntry])>) -> Rc<dyn ResizeObserverBackend>>;
 
+/// Uma entrada de `IntersectionObserverEntry`: o alvo e se ele cruza a área visível do documento.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntersectionObserverEntry {
+    pub target: Node,
+    pub is_intersecting: bool,
+}
+
+/// O construtor de `IntersectionObserver` de uma janela (`targetWindow.IntersectionObserver`). O objeto devolvido tem o
+/// mesmo contrato do `ResizeObserver` (`observe`, `unobserve`, `disconnect`), por isso reusa [`ResizeObserverBackend`].
+pub type IntersectionObserverCtor = Rc<dyn Fn(Rc<dyn Fn(&[IntersectionObserverEntry])>) -> Rc<dyn ResizeObserverBackend>>;
+
+/// `Animation.playState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnimationPlayState {
+    Idle,
+    Running,
+    Paused,
+    Finished,
+}
+
+impl AnimationPlayState {
+    /// O texto do `playState` no navegador.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnimationPlayState::Idle => "idle",
+            AnimationPlayState::Running => "running",
+            AnimationPlayState::Paused => "paused",
+            AnimationPlayState::Finished => "finished",
+        }
+    }
+}
+
+/// Uma animação devolvida por `element.getAnimations()`.
+pub trait CssAnimation {
+    /// `CSSAnimation.animationName`: `None` numa animação que não é de keyframes (uma transição).
+    fn animation_name(&self) -> Option<String>;
+    fn play_state(&self) -> AnimationPlayState;
+    /// `Animation.startTime`: `None` é o `null` de uma animação ainda sem relógio.
+    fn start_time(&self) -> Option<f64>;
+    /// `animation.startTime = time`. O `Err` é a exceção que o navegador lança quando o valor ainda não pode ser
+    /// atribuído.
+    fn set_start_time(&self, time: f64) -> Result<(), Error>;
+}
+
+/// `element.getAnimations({ subtree })`.
+pub type GetAnimations = Rc<dyn Fn(&Node, bool) -> Vec<Rc<dyn CssAnimation>>>;
+
 #[derive(Default)]
 struct RecentResizeObserverContext {
     names: BTreeSet<String>,
@@ -769,6 +899,8 @@ pub struct CodeWindow {
     animation_frame_callbacks: RefCell<Vec<Box<dyn FnOnce()>>>,
     timers: RefCell<WindowTimers>,
     resize_observer_ctor: RefCell<Option<ResizeObserverCtor>>,
+    intersection_observer_ctor: RefCell<Option<IntersectionObserverCtor>>,
+    get_animations: RefCell<Option<GetAnimations>>,
     recent_resize_observers: RefCell<Option<RecentResizeObserverContext>>,
 }
 
@@ -782,6 +914,8 @@ impl CodeWindow {
             animation_frame_callbacks: RefCell::new(Vec::new()),
             timers: RefCell::new(WindowTimers::native()),
             resize_observer_ctor: RefCell::new(None),
+            intersection_observer_ctor: RefCell::new(None),
+            get_animations: RefCell::new(None),
             recent_resize_observers: RefCell::new(None),
         })
     }
@@ -844,6 +978,28 @@ impl CodeWindow {
     /// Instala o `ResizeObserver` da janela.
     pub fn set_resize_observer_ctor(&self, ctor: ResizeObserverCtor) {
         *self.resize_observer_ctor.borrow_mut() = Some(ctor);
+    }
+
+    /// Instala o `IntersectionObserver` da janela; sem ele, `typeof targetWindow.IntersectionObserver` não é `function`.
+    pub fn set_intersection_observer_ctor(&self, ctor: IntersectionObserverCtor) {
+        *self.intersection_observer_ctor.borrow_mut() = Some(ctor);
+    }
+
+    /// `targetWindow.IntersectionObserver`, se a janela o tem.
+    pub fn intersection_observer_ctor(&self) -> Option<IntersectionObserverCtor> {
+        self.intersection_observer_ctor.borrow().clone()
+    }
+
+    /// Instala o `getAnimations` dos elementos da janela (a Web Animations API).
+    pub fn set_get_animations(&self, get_animations: GetAnimations) {
+        *self.get_animations.borrow_mut() = Some(get_animations);
+    }
+
+    /// `element.getAnimations({ subtree })`; `None` quando a janela não tem a Web Animations API
+    /// (`typeof element.getAnimations !== 'function'`).
+    pub fn get_animations(&self, element: &Node, subtree: bool) -> Option<Vec<Rc<dyn CssAnimation>>> {
+        let get_animations = self.get_animations.borrow().clone()?;
+        Some(get_animations(element, subtree))
     }
 
     /// `requestAnimationFrame(callback)`: roda no próximo [`CodeWindow::render_frame`].
@@ -956,7 +1112,26 @@ pub fn register_window(target_window: &Rc<CodeWindow>) -> DisposableRef {
     to_disposable(move || {
         WINDOWS.with(|windows| windows.borrow_mut().remove(&id));
         window.reset_frames();
+        let listeners: Vec<UnregisterListener> = UNREGISTER_LISTENERS.with(|listeners| listeners.borrow().iter().map(|(_, listener)| listener.clone()).collect());
+        for listener in listeners {
+            listener(&window);
+        }
     })
+}
+
+/// O ouvinte de `onDidUnregisterWindow`.
+type UnregisterListener = Rc<dyn Fn(&Rc<CodeWindow>)>;
+
+thread_local! {
+    static UNREGISTER_LISTENERS: RefCell<Vec<(u64, UnregisterListener)>> = const { RefCell::new(Vec::new()) };
+    static NEXT_UNREGISTER_LISTENER_ID: Cell<u64> = const { Cell::new(0) };
+}
+
+/// `onDidUnregisterWindow`: dispara com a janela quando o disposable de [`register_window`] é descartado.
+pub fn on_did_unregister_window(listener: impl Fn(&Rc<CodeWindow>) + 'static) -> DisposableRef {
+    let id = NEXT_UNREGISTER_LISTENER_ID.with(|next| next.replace(next.get() + 1));
+    UNREGISTER_LISTENERS.with(|listeners| listeners.borrow_mut().push((id, Rc::new(listener))));
+    to_disposable(move || UNREGISTER_LISTENERS.with(|listeners| listeners.borrow_mut().retain(|(candidate, _)| *candidate != id)))
 }
 
 /// `getWindows()`.
