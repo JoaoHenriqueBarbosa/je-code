@@ -39,6 +39,10 @@ extensões do VS Code no host de extensões do je-code (Fase 5, `wip/notes/extho
    como `Handle` em vez de cópia). É o que os `register*Provider` da API `vscode` pedem: o provedor é um objeto da extensão, e só
    por referência o `this` e os métodos de classe dele sobrevivem à chamada.
 
+6. `src/api/embed_node.rs`: `NodeRunner::set_property` (`target[name] = data` num objeto já criado, com a exceção do motor
+   devolvida como mensagem). É o que os membros estáticos que não são funções pedem, como `ThemeIcon.File` e
+   `ThemeIcon.Folder` da API `vscode`; o `ClassSpec.statics` só aceita funções.
+
 ## Pendência de DRY
 
 `crates/zyarr` é o YARR extraído deste `src/yarr`: o código existe nas duas crates. Fundir (o zjsc dependendo do
