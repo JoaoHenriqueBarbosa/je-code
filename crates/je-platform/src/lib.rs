@@ -44,6 +44,7 @@ pub mod workspace_trust;
 pub mod workspaces;
 
 pub mod window;
+pub mod assignment;
 
 #[doc(hidden)]
 pub use je_base::event as __je_event;
