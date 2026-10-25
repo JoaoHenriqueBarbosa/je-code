@@ -31,7 +31,7 @@
 
 use je_workbench::services::configuration::common::experimental_settings::IExperimentalSettingsService;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use je_base::async_::{Delayer, MaybePromise, timeout};
@@ -40,7 +40,7 @@ use je_base::dynamic::{Dynamic, FunctionRef};
 use je_base::errors;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
-use je_base::policy::{ManagedSettingValue, ManagedSettingsData, PolicyValue};
+use je_base::policy::PolicyValue;
 use je_base::promise::{Promise, Thenable};
 use je_base::symbols::Delay;
 use je_editor::code_action::platform::{IEditorProgressService, IProgressIndicator, IProgressRunner, ProgressTotal};
@@ -49,19 +49,16 @@ use je_extensions::management::{
     ExtensionInfo, ExtensionQueryOptions, ExtensionsControlManifest, GalleryExtension, GalleryExtensionVersion, InstallOperation, ProductVersion, QueryOptions, StatisticType,
 };
 use je_extensions::manifest::{ExtensionIdentifierInfo, TargetPlatform};
-use je_platform::configuration::models::{ConfigurationChangeEvent, ConfigurationKeys};
-use je_platform::configuration::registry::{ConfigurationNode, ConfigurationScope, PropertySchema, configuration_registry};
-use je_platform::configuration::service::IConfigurationService;
-use je_platform::configuration::test_configuration_service::TestConfigurationService;
-use je_platform::configuration::{ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue};
+use je_platform::configuration::models::ConfigurationChangeEvent;
+use je_platform::configuration::registry::{ConfigurationScope, PropertySchema};
+use je_platform::configuration::ConfigurationTarget;
 use je_platform::policy::copilot_managed_settings::{
     COPILOT_SANDBOX_ALLOW_BYPASS_KEY, COPILOT_SANDBOX_ALLOW_DEV_TOOL_ACCESS_KEY, COPILOT_SANDBOX_ALLOW_LOCAL_NETWORK_KEY, COPILOT_SANDBOX_ALLOW_OUTBOUND_KEY,
-    COPILOT_SANDBOX_ENABLED_KEY, COPILOT_SANDBOX_LSP_SERVERS_KEY, COPILOT_SANDBOX_MCP_SERVERS_KEY, IManagedSettingsService,
+    COPILOT_SANDBOX_ENABLED_KEY, COPILOT_SANDBOX_LSP_SERVERS_KEY, COPILOT_SANDBOX_MCP_SERVERS_KEY,
 };
 use je_platform::sandbox::settings::AgentSandboxSettingId;
 use je_platform::storage::{InMemoryStorageService, StorageService};
 use je_platform::telemetry::telemetry_utils::null_telemetry_service;
-use je_platform::workspace::AnyWorkspaceIdentifier;
 use je_widgets::tree::tree_types::{ITreeElement, ITreeFilter, TreeFilterResult, TreeVisibility};
 use je_workbench::common::editor::editor_model::{EditorModel, IEditorModel};
 use je_workbench::contrib::preferences::common::preferences::{
@@ -70,147 +67,36 @@ use je_workbench::contrib::preferences::common::preferences::{
 use je_workbench::contrib::preferences::settings_editor2::{
     FocusTarget, FocusedSettingControl, IDefaultSettingsEditorModel, SettingsEditor2, SettingsEditor2Services, SettingsEditorView, is_settings_search_up_to_date,
 };
-use je_workbench::contrib::preferences::settings_layout::ITOCEntry;
 use je_workbench::contrib::preferences::settings_tree::SettingsTreeFilter;
 use je_workbench::contrib::preferences::settings_tree_models::{
-    SearchResultIdx, SearchResultModel, SettingsTreeElement, SettingsTreeGroupChild, SettingsTreeGroupElement, SettingsTreeModel, SettingsTreeServices, ViewStateRef,
-    parse_query,
+    SearchResultIdx, SearchResultModel, SettingsTreeElement, SettingsTreeGroupChild, SettingsTreeGroupElement, SettingsTreeModel, ViewStateRef, parse_query,
 };
 use je_workbench::contrib::preferences::toc_tree::TocTreeModel;
-use je_workbench::services::configuration::common::configuration::{IWorkbenchConfigurationService, RestrictedSettings};
 use je_workbench::services::configuration::common::experimental_settings::ExperimentalSettingsService;
-use je_workbench::services::configuration::common::managed_settings_presentation::{ManagedSettingsPresentationService, read_managed_setting};
+use je_workbench::services::configuration::common::managed_settings_presentation::read_managed_setting;
 use je_workbench::services::extension_management::extension_gallery_service::IExtensionGalleryService;
 use je_workbench::services::extension_management::extension_management::{DidUninstallExtensionEvent, ExtensionRef, IExtensionManagementService, InstallExtensionResult};
 use je_workbench::services::preferences::preferences::{
     IFilterResult, IGroupFilter, ISearchResult, ISearchResultGroup, ISetting, ISettingMatch, ISettingMatcher, ISettingsEditorModel, ISettingsGroup, ISettingsSection,
-    SettingMatchType, SettingSchemaType,
+    SettingMatchType,
 };
-use je_workbench::services::preferences::preferences_models::NULL_RANGE;
 use je_workbench::contrib::terminal_contrib::chat_agent_tools::terminal_chat_agent_tools_configuration::terminal_chat_agent_tools_managed_presentation_properties;
-use je_workbench::test::browser::workbench_test_services::{EnvironmentOverrides, TestEnvironmentService, TestExtensionService};
-use je_workbench::test::common::workbench_test_services::{TestChatEntitlementService, TestProductService, TestUserDataProfileService, TestWorkspaceTrustManagementService};
+use je_workbench::test::browser::workbench_test_services::TestExtensionService;
+use je_workbench::test::common::workbench_test_services::{TestChatEntitlementService, TestWorkspaceTrustManagementService};
 
-#[path = "../../je-platform/tests/common/mod.rs"]
-mod common;
+mod support;
 
-use common::{LeakGuard, change, empty_test_configuration, ensure_no_disposables_are_leaked_in_test_suite, node, null_log, prop_with, run_with_faked_timers, run_with_real_timers};
+use crate::support::preferences_support::common::{
+    LeakGuard, change, empty_test_configuration, ensure_no_disposables_are_leaked_in_test_suite, null_log, prop_with, run_with_faked_timers, run_with_real_timers,
+};
+use crate::support::preferences_support::{
+    ConfigurationRegistration, ManagedStore, StubManagedSettingsService, TestSettingsConfiguration, absent, create_services, mock_setting, register_managed_presentation_configuration,
+    settings_group, toc_entry,
+};
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Dublês e construtores comuns às suítes.
-
-fn absent(method: &str) -> ! {
-    panic!("`{method}` não existe no stub parcial")
-}
-
-/// `new class extends TestConfigurationService { readonly onDidChangeRestrictedSettings = Event.None; isSettingAppliedForAllProfiles() { return false; } }()`.
-struct TestSettingsConfiguration {
-    service: Rc<TestConfigurationService>,
-}
-
-impl TestSettingsConfiguration {
-    fn new(guard: &LeakGuard) -> Rc<Self> {
-        let service = TestConfigurationService::new(None);
-        guard.add_rc(service.on_did_change_configuration_emitter.clone());
-        Rc::new(Self { service })
-    }
-}
-
-impl IConfigurationService for TestSettingsConfiguration {
-    fn on_did_change_configuration(&self) -> Event<Rc<ConfigurationChangeEvent>> {
-        self.service.on_did_change_configuration()
-    }
-    fn get_configuration_data(&self) -> Option<ConfigurationData> {
-        self.service.get_configuration_data()
-    }
-    fn get_value(&self, section: Option<&str>, overrides: Option<&ConfigurationOverrides>) -> Dynamic {
-        self.service.get_value(section, overrides)
-    }
-    fn update_value(&self, key: &str, value: Dynamic, overrides: Option<ConfigurationUpdateOverrides>, target: Option<ConfigurationTarget>) -> Promise<()> {
-        self.service.update_value(key, value, overrides, target)
-    }
-    fn inspect(&self, key: &str, overrides: &ConfigurationOverrides) -> Rc<dyn ConfigurationValue> {
-        self.service.inspect(key, overrides)
-    }
-    fn reload_configuration(&self) -> Promise<()> {
-        self.service.reload_configuration()
-    }
-    fn keys(&self) -> ConfigurationKeys {
-        self.service.keys()
-    }
-}
-
-impl IWorkbenchConfigurationService for TestSettingsConfiguration {
-    fn restricted_settings(&self) -> RestrictedSettings {
-        RestrictedSettings::default()
-    }
-    fn on_did_change_restricted_settings(&self) -> Event<RestrictedSettings> {
-        Event::none()
-    }
-    fn when_remote_configuration_loaded(&self) -> Promise<()> {
-        Promise::resolved(())
-    }
-    fn initialize(&self, _arg: &AnyWorkspaceIdentifier) -> Promise<()> {
-        Promise::resolved(())
-    }
-    fn is_setting_applied_for_all_profiles(&self, _setting: &str) -> bool {
-        false
-    }
-}
-
-/// O objeto `managedSettings` que os casos mudam (`managedSettings[key] = value`, `delete managedSettings[key]`).
-#[derive(Default)]
-struct ManagedStore {
-    values: RefCell<HashMap<String, Option<PolicyValue>>>,
-}
-
-impl ManagedStore {
-    /// `managedSettings[key] = value`.
-    fn set(&self, key: &str, value: PolicyValue) {
-        self.values.borrow_mut().insert(key.to_owned(), Some(value));
-    }
-
-    /// `delete managedSettings[key]`.
-    fn delete(&self, key: &str) {
-        self.values.borrow_mut().remove(key);
-    }
-}
-
-/// `new class extends mock<IManagedSettingsService>() { onDidChangeManagedSettings = managedSettingsChanged.event; getManagedSettingValue(key) { return managedSettings[key]; } }`.
-struct StubManagedSettingsService {
-    store: Rc<ManagedStore>,
-    changed: Rc<Emitter<()>>,
-}
-
-impl IManagedSettingsService for StubManagedSettingsService {
-    fn on_did_change_managed_settings(&self) -> Event<()> {
-        self.changed.event()
-    }
-    fn get_managed_settings(&self) -> ManagedSettingsData {
-        absent("getManagedSettings")
-    }
-    fn get_managed_setting_value(&self, key: &str) -> Option<ManagedSettingValue> {
-        self.store.values.borrow().get(key).cloned().flatten()
-    }
-}
-
-/// O `registerConfiguration` do `suiteSetup` e o `deregisterConfigurations` do `suiteTeardown`.
-struct ConfigurationRegistration(ConfigurationNode);
-
-impl ConfigurationRegistration {
-    fn new(node: ConfigurationNode) -> Self {
-        configuration_registry().register_configuration(node.clone());
-        Self(node)
-    }
-}
-
-impl Drop for ConfigurationRegistration {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            configuration_registry().deregister_configurations(std::slice::from_ref(&self.0));
-        }
-    }
-}
+// Dublês e construtores comuns às suítes (a configuração de teste, o `IManagedSettingsService` e o registro do nó vivem em
+// `support/preferences_support.rs`).
 
 /// O `configurationNode` da suíte: as propriedades de `terminalContribConfiguration` com `managedSettingsPresentation` e o
 /// `test.managedGeneric`.
@@ -224,8 +110,7 @@ fn register_managed_editor_presentation_configuration() -> ConfigurationRegistra
         if matches!(read_managed_setting(&read, "test.genericPolicy"), Dynamic::Bool(false)) { Dynamic::Bool(false) } else { Dynamic::Undefined }
     });
     properties.push(("test.managedGeneric".to_owned(), prop_with("{ 'type': 'boolean' }", vec![("managedSettingsPresentation", Dynamic::Function(managed_generic))])));
-    let properties: Vec<(&str, PropertySchema)> = properties.iter().map(|(key, property)| (key.as_str(), property.clone())).collect();
-    ConfigurationRegistration::new(node("managedEditorPresentationTest", properties))
+    register_managed_presentation_configuration("managedEditorPresentationTest", properties)
 }
 
 /// O `IPreferencesSearchService` que o caso não lê (`{}`).
@@ -695,23 +580,13 @@ impl Fixture {
 /// `createEditor(query = '@tag:expassigned', advanced = false, settingKeys = ['test.assigned', 'test.unassigned'])`.
 fn create_editor(guard: &LeakGuard, query: &str, advanced: bool, setting_keys: &[&str]) -> Fixture {
     let registration = Rc::new(register_managed_editor_presentation_configuration());
-    let configuration = TestSettingsConfiguration::new(guard);
-    let assignments = guard.add_rc(ExperimentalSettingsService::new());
+    let configuration = TestSettingsConfiguration::new(guard, None);
     let managed_settings_changed = Emitter::new();
     guard.add_rc(managed_settings_changed.clone());
     let managed_settings = Rc::new(ManagedStore::default());
-    let managed_settings_service = Rc::new(StubManagedSettingsService { store: managed_settings.clone(), changed: managed_settings_changed.clone() });
-    let managed_settings_presentation_service = guard.add_rc(ManagedSettingsPresentationService::new(managed_settings_service));
-
-    let tree_services = SettingsTreeServices {
-        configuration_service: configuration.clone(),
-        language_service: { let service = guard.add_rc(LanguageService::new(false)); service },
-        user_data_profile_service: TestUserDataProfileService::new(),
-        product_service: Rc::new(TestProductService::default()),
-        environment_service: TestEnvironmentService::with_overrides(EnvironmentOverrides::default()),
-        experimental_settings_service: assignments.clone(),
-        managed_settings_presentation_service,
-    };
+    let managed_settings_service = Rc::new(StubManagedSettingsService::notifying(managed_settings.clone(), managed_settings_changed.clone()));
+    let (mut tree_services, assignments) = create_services(guard, &configuration, false, managed_settings_service);
+    tree_services.language_service = { let service = guard.add_rc(LanguageService::new(false)); service };
     let storage_service: Rc<dyn StorageService> = Rc::new(guard.add_rc(InMemoryStorageService::new()));
     let services = SettingsEditor2Services {
         tree: tree_services.clone(),
@@ -734,27 +609,16 @@ fn create_editor(guard: &LeakGuard, query: &str, advanced: bool, setting_keys: &
         .iter()
         .map(|key| {
             Rc::new(ISetting {
-                key: (*key).to_owned(),
-                r#type: Some(SettingSchemaType::Single("boolean".to_owned())),
                 description: vec!["Example setting".to_owned()],
                 scope: Some(ConfigurationScope::Resource),
                 tags: Some(if advanced { vec![ADVANCED_SETTING_TAG.to_owned()] } else { Vec::new() }),
-                ..ISetting::default()
+                ..mock_setting(key, "boolean")
             })
         })
         .collect();
-    let group = |sections: Vec<ISettingsSection>| ISettingsGroup {
-        id: String::new(),
-        range: NULL_RANGE,
-        title: String::new(),
-        title_range: NULL_RANGE,
-        sections,
-        order: None,
-        extension_info: None,
-    };
     let model = guard.add_rc(Rc::new(MockSettingsModel {
         base: EditorModel::new_inner(),
-        groups: vec![group(Vec::new()), group(vec![ISettingsSection { title: None, settings: settings.clone() }])],
+        groups: vec![settings_group(Vec::new()), settings_group(vec![ISettingsSection { title: None, settings: settings.clone() }])],
     }));
     editor.set_default_settings_editor_model(model);
 
@@ -766,7 +630,7 @@ fn create_editor(guard: &LeakGuard, query: &str, advanced: bool, setting_keys: &
     }
     let settings_model = SettingsTreeModel::new(view_state.clone(), true, tree_services.clone());
     editor.set_settings_tree_model(settings_model.clone());
-    settings_model.update(&ITOCEntry { id: "root".to_owned(), label: "Test".to_owned(), order: None, children: None, settings: Some(settings.clone()), hide: None });
+    settings_model.update(&toc_entry("root", "Test", settings.clone()));
     let toc_model = TocTreeModel::new(view_state.clone(), tree_services.environment_service.clone());
     editor.set_toc_tree_model(toc_model.clone());
     toc_model.set_settings_tree_root(settings_model.root());
