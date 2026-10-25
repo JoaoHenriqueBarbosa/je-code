@@ -390,11 +390,15 @@ impl Duplex for RemoteSocketStream {
         }
         let events = lock(&self.events);
         loop {
-            if self.ended.load(Ordering::SeqCst) || self.destroyed.load(Ordering::SeqCst) {
+            if self.ended.load(Ordering::SeqCst) {
                 return self.finish_read();
             }
-            match events.recv() {
-                Ok(RemoteEvent::Data(data)) => {
+            // Um `'close'` do transporte destrói o adaptador logo depois do último `'data'`; os pedaços que já estão na fila
+            // são entregues antes do fim do fluxo (no Node o `'data'` enfileirado chega antes do `'end'`), senão a resposta
+            // do destino se perde conforme a ordem das threads. Destruído, a fila não se espera: só se esvazia.
+            let next = if self.destroyed.load(Ordering::SeqCst) { events.try_recv().ok() } else { events.recv().ok() };
+            match next {
+                Some(RemoteEvent::Data(data)) => {
                     if data.is_empty() {
                         continue;
                     }
@@ -405,7 +409,7 @@ impl Duplex for RemoteSocketStream {
                     }
                     return Ok(count);
                 }
-                Ok(RemoteEvent::End | RemoteEvent::Closed) | Err(_) => {
+                Some(RemoteEvent::End | RemoteEvent::Closed) | None => {
                     self.ended.store(true, Ordering::SeqCst);
                     return self.finish_read();
                 }

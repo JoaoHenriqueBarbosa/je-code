@@ -940,11 +940,12 @@ impl<T: Clone + 'static, F: ReferencedObjects<T> + 'static> ReferenceCollection<
         if let Some(entry) = self.references.borrow_mut().get_mut(key) {
             entry.1 += 1;
         }
-        let references = Rc::downgrade(&self.references);
+        // O `dispose` do original fecha sobre `this` (a coleção inteira), então a referência mantém o mapa vivo: soltar a
+        // coleção antes das referências não pode impedir o `destroyReferencedObject` da última delas.
+        let references = self.references.clone();
         let factory = self.factory.clone();
         let key = key.to_owned();
         let release = plain_disposable(move || {
-            let Some(references) = references.upgrade() else { return };
             let finished = {
                 let mut map = references.borrow_mut();
                 match map.get_mut(&key) {
