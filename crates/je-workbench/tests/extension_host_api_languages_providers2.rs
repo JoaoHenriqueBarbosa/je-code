@@ -232,6 +232,7 @@ exports.activate = (context) => {
       kinds: vscode.DocumentHighlightKind[1] + ':' + vscode.SignatureHelpTriggerKind.TriggerCharacter + ':' + vscode.InlayHintKind[2],
     });
   });
+  globalThis.__activated = true;
 };
 "#;
 
