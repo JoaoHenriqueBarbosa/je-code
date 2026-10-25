@@ -46,7 +46,7 @@ use je_base::event::Event;
 use je_base::lifecycle::{DisposableRef, IDisposable, none, to_disposable};
 use je_base::network::{FileAccess, FileAccessContext, RemoteAuthorities};
 use je_base::path::ProcessEnvironment;
-use je_base::platform::Platform;
+use je_base::path::Platform;
 use je_base::policy::PolicyValue;
 use je_base::uri::URI;
 use je_platform::accessibility::accessibility_service::{IAccessibilityHost, IMediaQueryList};
@@ -74,6 +74,7 @@ use je_widgets::hover_api::{
 };
 use je_widgets::tree::index_tree_model::TreeNode;
 use je_widgets::tree::tree_types::{ITreeRenderer, TreeVisibility};
+use je_workbench::contrib::preferences::settings_tree_models::SettingsTreeElement;
 use je_workbench::contrib::preferences::preferences_widgets::SettingsTarget;
 use je_workbench::contrib::preferences::settings_markdown_view::OwnedMarkdownEnvironment;
 use je_workbench::contrib::preferences::settings_tree_models::{
