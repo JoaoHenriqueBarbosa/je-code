@@ -99,7 +99,7 @@ impl IMenuService for MenuService {
     }
 
     fn get_menu_contexts(&self, id: &MenuId) -> HashSet<String> {
-        let info = MenuInfoSnapshot::new(id.clone(), false);
+        let info = MenuInfoSnapshot::new(id.clone(), false, false);
         let mut contexts = info.structure_context_keys.clone();
         contexts.extend(info.precondition_context_keys.iter().cloned());
         contexts.extend(info.toggled_context_keys.iter().cloned());
@@ -366,7 +366,7 @@ struct MenuInfoSnapshot {
 }
 
 impl MenuInfoSnapshot {
-    fn new(id: MenuId, collect_context_keys_for_submenus: bool) -> Self {
+    fn new(id: MenuId, collect_context_keys_for_submenus: bool, sorted: bool) -> Self {
         let mut info = Self {
             id,
             collect_context_keys_for_submenus,
@@ -376,7 +376,7 @@ impl MenuInfoSnapshot {
             precondition_context_keys: HashSet::new(),
             toggled_context_keys: HashSet::new(),
         };
-        info.refresh(false);
+        info.refresh(sorted);
         info
     }
 
@@ -511,8 +511,7 @@ impl MenuImpl {
         context_key_service: Rc<dyn IContextKeyService>,
     ) -> Rc<Self> {
         let base = Disposable::new();
-        let menu_info = Rc::new(RefCell::new(MenuInfoSnapshot::new(id, emit_events_for_submenu_changes)));
-        menu_info.borrow_mut().refresh(true);
+        let menu_info = Rc::new(RefCell::new(MenuInfoSnapshot::new(id, emit_events_for_submenu_changes, true)));
 
         // When context keys or storage state changes we need to check if the menu also has changed. However,
         // we only do that when someone listens on this menu because (1) these events are

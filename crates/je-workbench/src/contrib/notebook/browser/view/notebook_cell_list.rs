@@ -5,7 +5,7 @@
 //! Divergências:
 //! - `extends WorkbenchList<CellViewModel>` (que é a `List` sobre um `ListView` de DOM) é a composição com uma lista lógica:
 //!   os elementos visíveis, os traits de foco e de seleção (com o `splice` do `Trait` do original) e as alturas pelo
-//!   [`NotebookCellsLayout`]. O widget visual, o `NotebookCellListView`, as view zones (`NotebookViewZones`), as sobreposições
+//!   [`NotebookCellsLayout`]. O widget visual, o `NotebookCellListView`, as sobreposições
 //!   de célula (`NotebookCellOverlays`), o webview, as variáveis de contexto de cursor (`NOTEBOOK_EDITOR_CURSOR_BOUNDARY`), a
 //!   âncora de rolagem (`NotebookCellAnchor`), o estilo, o foco do DOM e os `reveal*` (que rolam a view e esperam o editor de
 //!   código) são Fase 6 e não entram. O `NotebookCellAnchor` entra ([`super::notebook_cell_anchor`]), com o
@@ -48,6 +48,7 @@ use je_widgets::list::range_map::{IItem, IRangeMap};
 use super::notebook_cell_anchor::{ICellListView, NotebookCellAnchor};
 use super::notebook_cell_list_view::NotebookCellsLayout;
 use crate::contrib::notebook::browser::notebook_options::NotebookOptions;
+use crate::contrib::notebook::browser::view_parts::notebook_view_zones::{INotebookViewZoneChangeAccessor, NotebookViewZones};
 use crate::contrib::notebook::browser::view_model::cell_view_model_types::{CellFocusMode, INotebookViewCellsUpdateEvent};
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::{CellViewModel, NotebookViewModel};
 use crate::contrib::notebook::common::notebook_common::{CellKind, ISelectionHandleState, ISelectionIndexState, ISelectionState, diff};
@@ -145,6 +146,9 @@ pub struct NotebookCellList {
     hidden_ranges_prefix_sum: RefCell<Option<PrefixSumComputer>>,
     visible_ranges: RefCell<Vec<ICellRange>>,
     is_disposed: Cell<bool>,
+    view_zones: RefCell<Option<Rc<NotebookViewZones>>>,
+    /// `_lastWhitespaceId` do `NotebookCellListView`.
+    last_whitespace_id: Cell<u64>,
 }
 
 impl NotebookCellList {
@@ -215,7 +219,10 @@ impl NotebookCellList {
             hidden_ranges_prefix_sum: RefCell::new(None),
             visible_ranges: RefCell::new(Vec::new()),
             is_disposed: Cell::new(false),
+            view_zones: RefCell::new(None),
+            last_whitespace_id: Cell::new(0),
         });
+        *this.view_zones.borrow_mut() = Some(NotebookViewZones::new(Rc::downgrade(&this)));
 
         let weak = Rc::downgrade(&this);
         this.local_disposable_store.add(this.on_did_change_focus.event().listen(move |e| {
@@ -655,11 +662,13 @@ impl NotebookCellList {
         if self.is_element_above_viewport(index) {
             // update element above viewport
             self.update_element_height(index, size, anchor_element_index);
+            self.view_zones().layout();
             return;
         }
 
         if anchor_element_index.is_some() {
             self.update_element_height(index, size, anchor_element_index);
+            self.view_zones().layout();
             return;
         }
 
@@ -673,12 +682,79 @@ impl NotebookCellList {
 
             if self.notebook_cell_anchor.should_anchor(&ListViewMetrics { list: self }, focus, height_delta, &self.element(index)) {
                 self.update_element_height(index, size, Some(focus));
+                self.view_zones().layout();
                 return;
             }
         }
 
         self.update_element_height(index, size, None);
+        self.view_zones().layout();
     }
+
+    //#region View zones (`NotebookCellListView` e `NotebookViewZones`)
+    /// As view zones da lista (criadas junto com ela).
+    fn view_zones(&self) -> Rc<NotebookViewZones> {
+        self.view_zones.borrow().clone().expect("as view zones são criadas com a lista")
+    }
+
+    /// `insertWhitespace(afterPosition, size)` do `NotebookCellListView`.
+    pub fn insert_whitespace(&self, after_position: usize, size: f64) -> String {
+        let scroll_top = self.scroll_top.get();
+        self.last_whitespace_id.set(self.last_whitespace_id.get() + 1);
+        let id = self.last_whitespace_id.get().to_string();
+        let element_position = self.element_top(after_position);
+        let above_scroll_top = scroll_top > element_position;
+        self.layout.borrow_mut().insert_whitespace(&id, after_position, size);
+
+        let new_scroll_top = if above_scroll_top { scroll_top + size } else { scroll_top };
+        self.last_render_top.set(new_scroll_top);
+        self.eventually_update_scroll_dimensions();
+        self.update_visible_ranges();
+
+        id
+    }
+
+    /// `changeOneWhitespace(id, newAfterPosition, newSize)` do `NotebookCellListView`.
+    pub fn change_one_whitespace(&self, id: &str, new_after_position: usize, new_size: f64) {
+        let scroll_top = self.scroll_top.get();
+        let current_position = self.layout.borrow().get_whitespace_position(id);
+
+        self.layout.borrow_mut().change_one_whitespace(id, new_after_position, new_size);
+        if current_position > scroll_top {
+            self.last_render_top.set(scroll_top);
+        }
+        self.eventually_update_scroll_dimensions();
+        self.update_visible_ranges();
+    }
+
+    /// `removeWhitespace(id)` do `NotebookCellListView`.
+    pub fn remove_whitespace(&self, id: &str) {
+        let scroll_top = self.scroll_top.get();
+
+        self.layout.borrow_mut().remove_whitespace(id);
+        self.last_render_top.set(scroll_top);
+        self.eventually_update_scroll_dimensions();
+        self.update_visible_ranges();
+    }
+
+    /// `getWhitespacePosition(id)` do `NotebookCellListView` (o `_getView().getWhitespacePosition(id)` dos testes).
+    pub fn get_whitespace_position(&self, id: &str) -> f64 {
+        self.layout.borrow().get_whitespace_position(id)
+    }
+
+    /// `changeViewZones(callback)`.
+    pub fn change_view_zones(&self, callback: impl FnOnce(&INotebookViewZoneChangeAccessor)) {
+        let view_zones = self.view_zones();
+        if view_zones.change_view_zones(callback) {
+            view_zones.layout();
+        }
+    }
+
+    /// `getViewZoneLayoutInfo(viewZoneId)`: `(height, top)`.
+    pub fn get_view_zone_layout_info(&self, view_zone_id: &str) -> Option<(f64, f64)> {
+        self.view_zones().get_view_zone_layout_info(view_zone_id)
+    }
+    //#endregion
 
     /// `revealCells(range)`: a faixa é revelada com o mínimo de rolagem possível.
     pub fn reveal_cells(&self, range: ICellRange) {
@@ -849,6 +925,9 @@ impl NotebookCellList {
                 }
                 let Some(view_model) = this.view_model() else { return };
 
+                // update whitespaces which are anchored to the model indexes
+                this.view_zones().on_cells_changed(e);
+
                 let current_ranges: Vec<ICellRange> = this.hidden_range_ids.borrow().iter().filter_map(|id| view_model.get_tracked_range(id)).collect();
                 let new_visible_view_cells = get_visible_cells(&view_model.view_cells(), &current_ranges);
 
@@ -954,6 +1033,8 @@ impl NotebookCellList {
             if !has_difference {
                 // they call 'setHiddenAreas' for a reason, even if the ranges are still the same, it's possible that the hiddenRangeSum is not update to date
                 self.update_hidden_range_prefix_sum(&new_ranges);
+                self.view_zones().on_hidden_ranges_change();
+                self.view_zones().layout();
                 return false;
             }
         }
@@ -968,11 +1049,14 @@ impl NotebookCellList {
 
         // set hidden ranges prefix sum
         self.update_hidden_range_prefix_sum(&new_ranges);
+        // Update view zone positions after hidden ranges change
+        self.view_zones().on_hidden_ranges_change();
 
         if trigger_view_update {
             self.update_hidden_areas_in_view(&old_ranges, &new_ranges);
         }
 
+        self.view_zones().layout();
         true
     }
 
@@ -1035,6 +1119,8 @@ impl NotebookCellList {
                 "model",
             );
         }
+
+        self.view_zones().layout();
     }
 
     pub fn get_model_index(&self, cell: &CellViewModel) -> Option<i64> {
@@ -1275,6 +1361,7 @@ impl NotebookCellList {
 
     pub fn dispose(&self) {
         self.is_disposed.set(true);
+        self.view_zones().dispose();
         self.view_model_store.dispose();
         self.local_disposable_store.dispose();
         self.base.dispose();
