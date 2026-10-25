@@ -33,12 +33,13 @@ mod common;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use common::action_list_support::{Item, StubLayoutService, TestItem, action, rc, rcs, with_window_inner_height};
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use je_base::actions::{ActionRef, SubmenuAction, ToActionProps, to_action};
 use je_base::async_::{async_fn, timeout};
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
-use je_base::event::{Emitter, Event};
+use je_base::event::Emitter;
 use je_base::key_codes::KeyCode;
 use je_base::layout::{AnchorPosition, IAnchor, IRect};
 use je_base::lifecycle::IDisposable;
@@ -53,43 +54,11 @@ use je_platform::action_widget::action_list::{
 use je_base::uri::URI;
 use je_platform::contextview::context_view::{AnchorTarget, IContextViewDelegate, IContextViewService};
 use je_platform::contextview::view_element::{UiKeyEvent, ViewElement};
-use je_platform::layout::layout_service::{ILayoutService, LayoutContainerEvent, Viewport};
-
-/// `ITestActionItem`: `{ id, checked? }`.
-#[derive(Clone)]
-struct Item {
-    id: String,
-    checked: bool,
-}
-
-impl ActionListItemData for Item {
-    fn list_item_id(&self) -> Option<String> {
-        Some(self.id.clone())
-    }
-
-    fn list_item_checked(&self) -> bool {
-        self.checked
-    }
-}
-
-type TestItem = IActionListItem<Item>;
-
-/// `action(id)`.
-fn action(id: &str) -> TestItem {
-    IActionListItem::action(id, Item { id: id.to_owned(), checked: false })
-}
+use je_platform::layout::layout_service::ILayoutService;
 
 /// `separator(label)`.
 fn separator(label: Option<&str>) -> TestItem {
     IActionListItem { label: label.map(str::to_owned), ..IActionListItem::new(ActionListItemKind::Separator) }
-}
-
-fn rc(item: TestItem) -> Rc<TestItem> {
-    Rc::new(item)
-}
-
-fn rcs(items: Vec<TestItem>) -> Vec<Rc<TestItem>> {
-    items.into_iter().map(Rc::new).collect()
 }
 
 /// `toAction({ id, label, tooltip?, class?, run })`.
@@ -2030,51 +1999,6 @@ fn excludes_separators_from_accessible_list_positions_after_filtering() {
             vec![position("alpha", 2, 1), position("beta", 2, 2)],
         ),
     );
-}
-
-thread_local! {
-    /// `window.innerHeight` da janela dos casos de altura (o `Viewport` do serviço de layout).
-    static WINDOW_INNER_HEIGHT: Cell<f64> = const { Cell::new(800.0) };
-}
-
-/// `withWindowInnerHeight(height, callback)`: o valor anterior volta ao fim, mesmo se o `callback` falhar.
-fn with_window_inner_height<R>(height: f64, callback: impl FnOnce() -> R) -> R {
-    struct Restore(f64);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            WINDOW_INNER_HEIGHT.with(|inner_height| inner_height.set(self.0));
-        }
-    }
-    let _restore = Restore(WINDOW_INNER_HEIGHT.with(|inner_height| inner_height.replace(height)));
-    callback()
-}
-
-/// `instantiationService.stub(ILayoutService, { getContainer, mainContainer, activeContainer, ... })`.
-struct StubLayoutService {
-    container: Rc<ViewElement>,
-    layout: Rc<Emitter<LayoutContainerEvent>>,
-}
-
-impl ILayoutService for StubLayoutService {
-    fn main_container(&self) -> Rc<ViewElement> {
-        self.container.clone()
-    }
-
-    fn active_container(&self) -> Rc<ViewElement> {
-        self.container.clone()
-    }
-
-    fn get_container(&self) -> Rc<ViewElement> {
-        self.container.clone()
-    }
-
-    fn on_did_layout_container(&self) -> Event<LayoutContainerEvent> {
-        self.layout.event()
-    }
-
-    fn window_viewport(&self) -> Viewport {
-        Viewport { inner_width: 1280.0, inner_height: WINDOW_INNER_HEIGHT.with(Cell::get), page_x_offset: 0.0, page_y_offset: 0.0 }
-    }
 }
 
 /// `instantiationService.stub(IContextViewService, { layout, hideContextView, getContextViewElement })`.

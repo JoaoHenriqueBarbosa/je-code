@@ -69,7 +69,7 @@ const HEADER_LINE_HEIGHT: f64 = 24.0;
 const SEPARATOR_LINE_HEIGHT: f64 = 8.0;
 
 /// A altura do filtro e do rodapé que o `ActionList.computeHeight` desconta, e a do cabeçalho sem altura própria.
-const FILTER_HEIGHT: f64 = 36.0;
+pub const FILTER_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 32.0;
 const DEFAULT_HEADER_HEIGHT: f64 = 36.0;
 
@@ -2036,6 +2036,33 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 }
             }
         });
+    }
+
+    /// `focusItemAction(itemId, actionId)`: restores focus to an item action without scheduling a later list focus.
+    pub fn focus_item_action(&self, item_id: &str, action_id: &str) -> bool {
+        let item = self.state.borrow().all_menu_items.iter().find(|item| item.item_id().as_deref() == Some(item_id)).cloned();
+        let Some(item) = item else {
+            return false;
+        };
+        if let Some(section) = item.section.clone() {
+            if self.state.borrow().collapsed_sections.contains(&section) {
+                self.toggle_section(&section);
+            }
+        }
+        let Some(index) = self.list_index_of(&item) else {
+            return false;
+        };
+        self.set_focus(Some(index));
+        self.reveal(index);
+        let mut actions: Vec<String> = item.toolbar_actions.iter().flatten().map(|action| IAction::id(action.as_ref())).collect();
+        if item.on_remove.is_some() {
+            actions.push(REMOVE_TOOLBAR_ACTION_ID.to_owned());
+        }
+        let Some(action_index) = actions.iter().position(|id| id == action_id) else {
+            return false;
+        };
+        self.focus_toolbar_button(action_index);
+        self.focused_toolbar_button().is_some_and(|(focused, _)| focused == action_index)
     }
 
     fn focus_item(&self, item_id: &str) {
@@ -4867,6 +4894,10 @@ impl<T: ActionListItemData> ActionList<T> {
 
     pub fn focus_item_by_id(&self, item_id: &str) {
         self.widget.focus_item_by_id(item_id);
+    }
+
+    pub fn focus_item_action(&self, item_id: &str, action_id: &str) -> bool {
+        self.widget.focus_item_action(item_id, action_id)
     }
 
     fn compute_action_widget_vertical_chrome_height(&self) -> f64 {
