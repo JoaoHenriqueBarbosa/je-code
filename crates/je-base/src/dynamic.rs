@@ -646,6 +646,11 @@ impl Dynamic {
         self.get(&JsString::from(key))
     }
 
+    /// `value?.[key]`: `undefined` quando o valor é `undefined` ou `null`, senão `value[key]`.
+    pub fn optional_get_str(&self, key: &str) -> Dynamic {
+        if self.is_nullish() { Self::Undefined } else { self.get_str(key) }
+    }
+
     /// `key in value` (só propriedades próprias, ver o topo do módulo). Em primitivos lança
     /// `TypeError`, como o operador `in`.
     pub fn has_property(&self, key: &JsString) -> bool {

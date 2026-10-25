@@ -38,8 +38,6 @@ mod main_thread_support;
 mod notification_doubles;
 #[path = "../../je-editor/tests/support/test_clipboard_service.rs"]
 mod test_clipboard_service;
-#[path = "support/text_file_support.rs"]
-mod text_file_support;
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -371,7 +371,7 @@ impl FilesFilter {
 
     fn files_exclude(&self, resource: URI) -> (Dynamic, bool) {
         let configuration = self.configuration_service.get_value(None, Some(&ConfigurationOverrides::with_resource(resource)));
-        let exclude = configuration.get_str("files").get_str("exclude");
+        let exclude = configuration.optional_get_str("files").optional_get_str("exclude");
         let exclude = if exclude.is_truthy() { exclude } else { Dynamic::object(Vec::<(&str, Dynamic)>::new()) };
         let parse_ignore_file = configuration.get_str("explorer").get_str("excludeGitIgnore").is_truthy();
         (exclude, parse_ignore_file)

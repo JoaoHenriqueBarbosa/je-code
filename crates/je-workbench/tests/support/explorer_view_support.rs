@@ -92,7 +92,7 @@ use crate::extension_service_doubles::TestDialogService;
 use crate::main_thread_support::StubTextFileService;
 use crate::notification_doubles::{EmptyThemeService, NoCommandService, NoKeybindingService, TestLayoutService};
 use crate::test_clipboard_service::TestClipboardService;
-use crate::text_file_support::TestDecorationsService;
+use crate::support::text_file_support::TestDecorationsService;
 
 /// O membro que o objeto parcial do original não define: chamá-lo é um `TypeError`.
 fn not_defined(member: &str) -> ! {
@@ -505,11 +505,13 @@ impl ExplorerViewHarness {
         folder.add_child(&second);
 
         let ui = Ui::new();
-        let context_keys: Rc<dyn IContextKeyService> = guard.add_rc(ContextKeyService::new(config_service.clone()));
-        let storage: Rc<dyn StorageService> = InMemoryStorageService::new();
+        let context_keys = guard.add_rc(ContextKeyService::new(config_service.clone()));
+        let context_keys: Rc<dyn IContextKeyService> = context_keys;
+        let storage: Rc<dyn StorageService> = Rc::new(guard.add_rc(InMemoryStorageService::new()));
         let command_service: Rc<dyn ICommandService> = Rc::new(NoCommandService);
         let keybinding_service: Rc<dyn IKeybindingService> = Rc::new(NoKeybindingService);
         let menu_service = RecordingContextMenuService::new();
+        let lifecycle_service = guard.add_rc(TestLifecycleService::new());
 
         let pane = ViewPaneServices {
             ui: ui.clone(),
@@ -521,7 +523,7 @@ impl ExplorerViewHarness {
             menu_service: MenuService::new(command_service.clone(), keybinding_service, storage.clone()),
             opener_service: TestOpenerService::new(),
             hover_service: get_base_layer_hover_delegate(),
-            lifecycle_service: guard.add_rc(TestLifecycleService::new()),
+            lifecycle_service,
             accessible_view_information_service: None,
             header_styles: label_styles(),
             description_foreground: Rgba::opaque(0x99, 0x99, 0x99),
