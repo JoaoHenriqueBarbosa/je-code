@@ -19,9 +19,8 @@
 //!   tamanhos do tema, sem repetir as fórmulas.
 
 use je_theme::color::{Color, Srgba};
-use je_theme::size_utils::get_size_registry;
 use je_theme::sizes::base_sizes::{
-    CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, STROKE_THICKNESS,
+    CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, STROKE_THICKNESS,
 };
 
 use super::{BoxEdges, ClassList, CornerRadii, EditorTabState, ModernUiStyle, css_rgb};
@@ -148,7 +147,7 @@ impl<'a> ModernUiStyle<'a> {
     }
 
     /// O valor de uma propriedade personalizada declarada na raiz: a que o DOM escreveu direto vence a da folha de tema.
-    fn declared(&self, name: &str) -> Option<Color> {
+    pub(super) fn declared(&self, name: &str) -> Option<Color> {
         self.root_variables.get(name).cloned().or_else(|| self.participant_variable(name))
     }
 
@@ -556,7 +555,7 @@ impl<'a> ModernUiStyle<'a> {
             return Some(CornerRadii::uniform(small));
         }
         // `var(--vscode-cornerRadius-medium, var(--vscode-cornerRadius-small))`.
-        let radius = get_size_registry().resolve_default_size(CORNER_RADIUS_MEDIUM, self.theme).map_or(small, |size| size.value);
+        let radius = self.connected_tab_radius();
         Some(if left { CornerRadii(radius, 0.0, 0.0, 0.0) } else { CornerRadii(0.0, radius, 0.0, 0.0) })
     }
 
@@ -579,7 +578,7 @@ impl<'a> ModernUiStyle<'a> {
             size280: self.size(SPACING_SIZE280),
             stroke: self.size(STROKE_THICKNESS),
             corner_small: self.size(CORNER_RADIUS_SMALL),
-            corner_medium: self.size(CORNER_RADIUS_MEDIUM),
+            corner_medium: self.connected_tab_radius(),
         }
     }
 
@@ -622,7 +621,7 @@ impl<'a> ModernUiStyle<'a> {
         if in_grid_view && self.has("modern-ui") && !self.has("agent-sessions-workbench") && !part.contains("modal-editor-part") {
             return None;
         }
-        let size = |id| get_size_registry().resolve_default_size(id, self.theme).map_or(0.0, |size| size.value);
+        let size = |id| self.size(id);
         Some(ConnectedGroupFrame {
             border_width: size(STROKE_THICKNESS),
             // `--modern-ui-connected-well-border` (linha 27); `None` é a variável sem cor, que o `border` resolve como `currentColor`.
