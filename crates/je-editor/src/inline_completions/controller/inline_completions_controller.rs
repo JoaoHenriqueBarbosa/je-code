@@ -98,7 +98,7 @@ use crate::inline_completions::inline_completions_model::{
 use crate::inline_completions::inline_completions_source::InlineCompletionsSourceServices;
 use crate::inline_completions::inline_suggestion_item::{InlineSuggestionAction, InlineSuggestionItemBase};
 use crate::inline_completions::suggest_widget_adapter::{ObservableSuggestWidgetAdapter, SuggestWidgetHost};
-use crate::inline_completions::utils::ObservableContextKeyService;
+use crate::inline_completions::utils::{ObservableContextKeyService, dispose_handle};
 use crate::inline_completions::view::inline_edits::inline_edits_view::InlineEditsViewServices;
 use crate::inline_completions::view::inline_suggestions_view::InlineSuggestionsView;
 use crate::language_feature_debounce::{DebounceConfig, ILanguageFeatureDebounceService};
@@ -214,10 +214,45 @@ pub trait IInlineCompletionsCodeEditorService {
     fn start_edits_fadeout(&self, editor: &Rc<CodeEditorWidget>, ranges: Vec<Range>, on_finished: Rc<dyn Fn()>) -> DisposableRef;
 }
 
+/// O que o controller lê da view: `shouldShowHoverAtViewZone` e o descarte. É a fronteira em que os testes do oráculo trocam
+/// a `InlineSuggestionsView` (`instantiationService.stubInstance(InlineSuggestionsView, { shouldShowHoverAtViewZone: () =>
+/// false, dispose: () => { } })`) por um objeto com só esses dois membros.
+pub trait IInlineSuggestionsView: IDisposable {
+    /// `shouldShowHoverAtViewZone(viewZoneId)`.
+    fn should_show_hover_at_view_zone(&self, view_zone_id: &str) -> bool;
+}
+
+impl IInlineSuggestionsView for InlineSuggestionsView {
+    fn should_show_hover_at_view_zone(&self, view_zone_id: &str) -> bool {
+        InlineSuggestionsView::should_show_hover_at_view_zone(self, view_zone_id)
+    }
+}
+
+/// `createInstance(InlineSuggestionsView, ...)` trocado por um objeto de teste (o `stubInstance` do oráculo): cria a view a
+/// cada vez que o controller precisa de uma.
+pub type InlineSuggestionsViewFactory = Rc<dyn Fn() -> Rc<dyn IInlineSuggestionsView>>;
+
+/// De onde vem a view do controller.
+#[derive(Clone)]
+pub enum InlineSuggestionsViewSource {
+    /// A `InlineSuggestionsView` real, criada com estes serviços.
+    Real(InlineEditsViewServices),
+    /// Uma view de teste (ver [`IInlineSuggestionsView`]).
+    Custom(InlineSuggestionsViewFactory),
+}
+
 /// Os serviços que o construtor do controller recebe por injeção (ver as notas do módulo).
 pub struct InlineCompletionsControllerServices {
-    /// Os serviços da view; o controller lê deles o comando, a acessibilidade, o atalho e as chaves de contexto do editor.
-    pub view_services: InlineEditsViewServices,
+    /// `@ICommandService`.
+    pub command_service: Rc<dyn ICommandService>,
+    /// `@IAccessibilityService`.
+    pub accessibility_service: Rc<dyn IAccessibilityService>,
+    /// `@IKeybindingService`.
+    pub keybinding_service: Rc<dyn IKeybindingService>,
+    /// `@IContextKeyService` do próprio editor.
+    pub context_key_service: Rc<dyn IContextKeyService>,
+    /// A view do controller: a real, com os serviços dela, ou uma de teste.
+    pub view: InlineSuggestionsViewSource,
     /// Os serviços da fonte de sugestões de cada modelo; o controller lê deles a configuração.
     pub source_services: InlineCompletionsSourceServices,
     /// `@ILanguageFeatureDebounceService`.
@@ -379,7 +414,7 @@ pub struct InlineCompletionsController {
     pub model: IObservable<Option<Rc<InlineCompletionsModel>>>,
     suggest_model: IObservable<Option<Rc<dyn IInlineCompletionsModel>>>,
     accessibility_signal_trigger: Rc<ObservableSignal<()>>,
-    view: IObservable<Rc<InlineSuggestionsView>>,
+    view: IObservable<Rc<dyn IInlineSuggestionsView>>,
 }
 
 impl InlineCompletionsController {
@@ -400,7 +435,11 @@ impl InlineCompletionsController {
 
     pub fn new(editor: &Rc<CodeEditorWidget>, services: InlineCompletionsControllerServices) -> Rc<Self> {
         let InlineCompletionsControllerServices {
-            view_services,
+            command_service,
+            accessibility_service,
+            keybinding_service,
+            context_key_service,
+            view: view_source,
             source_services,
             debounce_service,
             language_features_service,
@@ -417,11 +456,7 @@ impl InlineCompletionsController {
 
         let base = Disposable::new();
         let editor_obs = observable_code_editor(editor);
-        let context_key_service = Rc::clone(&view_services.context_key_service);
         let configuration_service = Rc::clone(&source_services.configuration_service);
-        let command_service = Rc::clone(&view_services.command_service);
-        let accessibility_service = Rc::clone(&view_services.accessibility_service);
-        let keybinding_service = Rc::clone(&view_services.keybinding_service);
 
         let positions: IObservable<Rc<Vec<Position>>> = {
             let selections = Rc::clone(&editor_obs.selections);
@@ -544,15 +579,17 @@ impl InlineCompletionsController {
             let suggest_model: IObservable<Option<Rc<dyn IInlineCompletionsModel>>> =
                 model.map(|model, _| model.map(SuggestModelView::new));
 
-            let view: IObservable<Rc<InlineSuggestionsView>> = {
+            let view: IObservable<Rc<dyn IInlineSuggestionsView>> = {
                 let (editor, model, focus_is_in_menu) = (Rc::clone(editor), Rc::clone(&model), Rc::clone(&focus_is_in_menu));
                 derived_with_store(move |_reader, store| {
-                    store.add_rc(InlineSuggestionsView::new(
-                        Rc::clone(&editor),
-                        Rc::clone(&model),
-                        Rc::clone(&focus_is_in_menu),
-                        view_services.clone(),
-                    ))
+                    let view: Rc<dyn IInlineSuggestionsView> = match &view_source {
+                        InlineSuggestionsViewSource::Real(view_services) => {
+                            InlineSuggestionsView::new(Rc::clone(&editor), Rc::clone(&model), Rc::clone(&focus_is_in_menu), view_services.clone())
+                        }
+                        InlineSuggestionsViewSource::Custom(factory) => factory(),
+                    };
+                    store.add(dispose_handle(&view));
+                    view
                 })
             };
 

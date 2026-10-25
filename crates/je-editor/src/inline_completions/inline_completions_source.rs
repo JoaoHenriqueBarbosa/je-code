@@ -66,6 +66,7 @@ use crate::languages::{
     InlineCompletionsDisposeReason, InlineCompletionsDisposeReasonKind, InlineCompletionsProvider,
 };
 use crate::offset_range::OffsetRange;
+use crate::observable_code_editor::EditorChange;
 use crate::position::Position;
 use crate::range::Range;
 use crate::text_model::TextModel;
@@ -395,7 +396,7 @@ impl InlineCompletionsSource {
                 initial: Rc::new(SourceState::empty),
                 dispose_final: Some(Rc::new(|values: &SourceState| values.dispose())),
                 change_tracker: record_changes_lazy(move || {
-                    record_changes().add::<Option<i64>, ModelContentChangedEvent>("versionId", &tracked_version_id)
+                    record_changes().add::<Option<i64>, EditorChange>("versionId", &tracked_version_id)
                 }),
                 equality_comparer: None,
                 update: Rc::new(move |_reader: &dyn IDerivedReader<()>, previous_value: &SourceState, changes: &RecordedChanges| {
@@ -403,7 +404,12 @@ impl InlineCompletionsSource {
                         .changes
                         .borrow()
                         .iter()
-                        .map(|c| c.change::<ModelContentChangedEvent>().map_or_else(StringEdit::empty, |change| offset_edit_from_content_changes(&change.changes)))
+                        .map(|c| {
+                            // A mudança de `versionId` é um `EditorChange` (`Rc<dyn Any>`) que guarda o `ModelContentChangedEvent`.
+                            c.change::<EditorChange>()
+                                .and_then(|change| (**change).downcast_ref::<ModelContentChangedEvent>())
+                                .map_or_else(StringEdit::empty, |change| offset_edit_from_content_changes(&change.changes))
+                        })
                         .collect();
                     let edit = StringEdit::compose_all(&edits);
 

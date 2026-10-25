@@ -85,6 +85,7 @@ use crate::inline_completions::provide_inline_completions::{
 use crate::inline_completions::typing_speed::TypingInterval;
 use crate::language_configuration_registry::ILanguageConfigurationService;
 use crate::language_feature_debounce::IFeatureDebounceInformation;
+use crate::observable_code_editor::EditorChange;
 use crate::language_features_service::LanguageFeaturesService;
 use crate::languages::{
     CompletionItemKind, IInlineCompletionChangeHint, InlineCompletion, InlineCompletionCommand, InlineCompletionEndOfLifeReason,
@@ -103,6 +104,13 @@ use crate::text_model::TextModel;
 use crate::text_model_edit_source::{EditSources, InlineCompletionAcceptData, InlineCompletionPartialAcceptData, TextModelEditSource};
 use crate::text_model_events::ModelContentChangedEvent;
 use crate::text_model_text::TextModelText;
+
+/// `ctx.change` de `versionId`: o `ModelContentChangedEvent` que o `ObservableCodeEditor` anexa à mudança. A mudança do
+/// observável é um [`EditorChange`] (`Rc<dyn Any>`), então o evento está dentro dele, e a mudança indefinida (`undefined`)
+/// dá `None`.
+fn model_content_change(ctx: &dyn IChangeContext) -> Option<&ModelContentChangedEvent> {
+    (**ctx.change::<EditorChange>()?).downcast_ref::<ModelContentChangedEvent>()
+}
 
 // #region Igualdade estrita
 
@@ -798,7 +806,7 @@ impl InlineCompletionsModel {
             let tracker = FnChangeTracker::<Cell<bool>>::new(
                 |_| Cell::new(false),
                 move |ctx: &dyn IChangeContext, did_undo: &Cell<bool>| {
-                    did_undo.set(ctx.did_change(&*version_any) && ctx.change::<ModelContentChangedEvent>().is_some_and(|e| e.is_undoing));
+                    did_undo.set(ctx.did_change(&*version_any) && model_content_change(ctx).is_some_and(|e| e.is_undoing));
                     true
                 },
             );
@@ -1286,7 +1294,7 @@ impl InlineCompletionsModel {
                 move |ctx: &dyn IChangeContext, summary: &FetchChangeSummary| {
                     /* @description fetch inline completions */
                     if ctx.did_change(&*version_any) {
-                        let change = ctx.change::<ModelContentChangedEvent>();
+                        let change = model_content_change(ctx);
                         let reason = match change {
                             Some(e) if e.is_undoing => VersionIdChangeReason::Undo,
                             Some(e) if e.is_redoing => VersionIdChangeReason::Redo,
