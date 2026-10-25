@@ -192,6 +192,9 @@ pub struct TabsParentTraits {
     pub has_tabs_class: bool,
     /// `parent.closest('.modern-ui-tabs')`.
     pub in_modern_ui_tabs: bool,
+    /// `parent.closest('.modern-ui')`: a raiz do Modern UI, que `connectedEditorTabs.css` (L164) usa para recuar o `fill` da linha única
+    /// pelo traço. Sem ela a aba conectada mede como no Pill compartilhado.
+    pub in_modern_ui: bool,
     /// `parent.closest(CONNECTED_EDITOR_TABS_SELECTOR)`.
     pub in_connected_editor_tabs: bool,
 }

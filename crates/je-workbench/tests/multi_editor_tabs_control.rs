@@ -46,8 +46,17 @@
 //! aresta de rolagem (`ConnectedOverflowEdge`) é conferida em `connected_overflow_edge_style`, o realce de topo da aresta em
 //! `connected_edge_accent`, o sublinhado da pílula de cima em `connected_upper_row_bottom_accent` e o estilo do `.tab-actions` em
 //! `tab_actions_block_border_color`, `tab_action_overlay_background` e `tab_actions_fade_content`. A raiz `modern-ui` sem o estilo
-//! conectado (`pill` de `connected tabs reserve separator height ...`) não existe em `TabsParentTraits`: a classe só muda o recuo do
-//! preenchimento conectado, e as alturas lidas valem as do Pill compartilhado.
+//! conectado (`pill` de `connected tabs reserve separator height ...`) é a raiz com `TabsParentTraits::in_modern_ui` e sem
+//! `in_connected_editor_tabs`: a classe só muda o recuo do preenchimento conectado (`connectedEditorTabs.css` L164), então as alturas
+//! lidas valem as do Pill compartilhado, medidas com a raiz certa. As demais raízes dos casos têm `.modern-ui` (`connectedGroup()`).
+//!
+//! Casos `keeps the connected outline inside the visible scroll area` e `invalidates connected clipping geometry ...`: a raiz deles
+//! não declara `--vscode-cornerRadius-medium`, então o ombro e a tampa valem `cornerRadius-small` mais o traço (5px, `Layout::spacing`).
+//! As classes de corte das abas e da aresta de rolagem (`connected-tab-left-edge`, `-left-clipped`, `-right-edge`, `-right-clipped`,
+//! `-hovered`) são o estado do controle; o `display`, o `z-index`, a largura, o raio e a cor dos pseudoelementos da aresta
+//! (`ConnectedOverflowEdgeBox` e `ConnectedOverflowRightBox`) saem das regras de `connectedEditorTabs.css` L423 a L469 e L618 a L691, com
+//! as cores do `ModernUiStyle`. O controle não escreve posição em linha no `.tab-fill` nem no `.tab-connected-edge` (`style.left` e
+//! `style.right` do original ficam vazios), e a aresta de rolagem é irmã do contêiner rolável, não filha dele.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -100,12 +109,15 @@ use je_workbench::browser::parts::editor::multi_row_editor_tabs_control::MultiRo
 use je_workbench::common::editor::editor_group_model::{EditorGroupModel, EditorOrIndex, IReadonlyEditorGroupModel};
 use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
 use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase};
-use je_workbench::common::editor::{EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, Verbosity};
+use je_workbench::common::editor::{EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, Verbosity};
 use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
-    AlignItems, ConnectedEdgeAccent, ConnectedEdgeAccentInput, TabActionsContext, TabState, connected_edge_accent, connected_editor_actions_height, connected_overflow_edge_style,
+    AlignItems, ConnectedEdgeAccent, ConnectedEdgeAccentInput, ConnectedOverflowColors, ConnectedOverflowEdgeBox, ConnectedOverflowRightBox, TabActionsContext, TabState,
+    connected_edge_accent, connected_editor_actions_height, connected_overflow_edge_box, connected_overflow_edge_style, connected_overflow_right_box,
     connected_upper_row_bottom_accent, tab_action_overlay_background, tab_actions_block_border_color, tab_actions_fade_content, tab_connected_edge_rect, tabs_row_align_items,
 };
-use je_workbench::contrib::modern_ui::resolved_style::{ModernUiStyle, TabElement, css_rgb};
+use je_workbench::contrib::modern_ui::resolved_style::{
+    FillShoulder, ModernUiStyle, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TabElement, css_rgb, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
+};
 use je_workbench::contrib::modern_ui::tabs_header::{ModernHeaderBacking, modern_header_backing};
 use je_workbench::services::editor::editor_groups_service::{
     EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartOptions, IEditorGroup, IEditorPart, PinnedTabSizing, TabActionLocation, TabHeight, TabSizing,
@@ -126,6 +138,8 @@ struct NamedInput {
     descriptions: Option<(String, String)>,
     /// `TestFileEditorInput.dirty`.
     dirty: Cell<bool>,
+    /// `TestFileEditorInput.capabilities`.
+    capabilities: Cell<EditorInputCapabilities>,
 }
 
 impl NamedInput {
@@ -136,12 +150,18 @@ impl NamedInput {
             name: name.to_string(),
             descriptions: descriptions.map(|(short, long)| (short.to_string(), long.to_string())),
             dirty: Cell::new(false),
+            capabilities: Cell::new(EditorInputCapabilities::READONLY),
         })
     }
 
     /// `TestFileEditorInput.setDirty()`.
     fn set_dirty(&self) {
         self.dirty.set(true);
+    }
+
+    /// `input.capabilities = capabilities`.
+    fn set_capabilities(&self, capabilities: EditorInputCapabilities) {
+        self.capabilities.set(capabilities);
     }
 }
 
@@ -178,6 +198,10 @@ impl EditorInput for NamedInput {
 
     fn is_dirty(&self) -> bool {
         self.dirty.get()
+    }
+
+    fn capabilities(&self) -> EditorInputCapabilities {
+        self.capabilities.get()
     }
 }
 
@@ -268,8 +292,6 @@ const STROKE: f64 = 1.0;
 const SPACING_SIZE20: f64 = 2.0;
 /// `--vscode-spacing-size40`: o `--modern-ui-tab-terminal-gutter` do Modern UI sem o estilo conectado.
 const TAB_GUTTER: f64 = 4.0;
-/// `margin-inline-end` da última aba conectada fora da quebra: o ombro do terminal (`shoulder-radius + strokeThickness`).
-const SHOULDER_MARGIN: f64 = SHOULDER_RADIUS + STROKE;
 /// O espaçamento vertical do `tabs-and-actions-container` no Modern UI.
 const ROW_PADDING: f64 = 3.0;
 /// `padding-top` do `tabs-and-actions-container` quando as abas quebram (`connectedEditorTabs.css` L303: `size20`) e `padding-bottom`
@@ -315,9 +337,10 @@ struct Layout {
     badged: RefCell<Option<URI>>,
     /// O rótulo inclui o texto da descrição (`label-description`), nos casos que medem a descrição.
     show_descriptions: Cell<bool>,
-    /// `--modern-ui-connected-tab-shoulder-radius` (mais o traço, na conta da lacuna final das abas quebradas): o valor de
-    /// `connectedGroup()`, que um caso pode sobrescrever na raiz.
-    shoulder_radius: Cell<f64>,
+    /// As variáveis `--vscode-spacing-*`, `--vscode-strokeThickness` e `--vscode-cornerRadius-*` da raiz: o valor de `connectedGroup()`
+    /// (raio médio 6px, ombro de 7px), que um caso pode sobrescrever na raiz (`--modern-ui-connected-tab-shoulder-radius` vem de
+    /// `cornerRadius-medium` mais o traço).
+    spacing: Cell<ModernSpacing>,
     /// O DOM de tema do caso (as cores do tema, as variáveis escritas na raiz e no grupo e a classe de tema da raiz) que as regras do
     /// estilo conectado leem. Sem ele o controle recebe as variáveis da aresta vazias, como num DOM sem tema.
     paint: RefCell<Option<PaintContext>>,
@@ -344,10 +367,15 @@ impl Layout {
             fit_reads: RefCell::new(Vec::new()),
             badged: RefCell::new(None),
             show_descriptions: Cell::new(false),
-            shoulder_radius: Cell::new(SHOULDER_RADIUS),
+            spacing: Cell::new(ModernSpacing::default()),
             paint: RefCell::new(None),
             group_active: Cell::new(true),
         })
+    }
+
+    /// `--modern-ui-connected-tab-shoulder-radius`: `cornerRadius-medium` mais o traço.
+    fn shoulder_radius(&self) -> f64 {
+        self.spacing.get().shoulder_radius()
     }
 
     /// `--editor-group-tab-height` do Modern UI (`tabs.css`): 24px, ou 20px no modo compacto.
@@ -368,11 +396,13 @@ impl Layout {
     }
 
     /// As variáveis, classes do contêiner e da linha que as regras de geometria de `connectedEditorTabs.css` leem, sem a medida
-    /// da aba (`connectedGroup()` põe `.modern-ui` na raiz e o grupo `.active`).
+    /// da aba (`connectedGroup()` põe `.modern-ui` na raiz e o grupo `.active`; o caso `connected tabs reserve separator height ...`
+    /// a tira e a devolve, e `TabsParentTraits::in_modern_ui` carrega isso).
     fn base_context(&self, container: &TabsContainerView, tab: &Tab) -> TabBoxContext {
         TabBoxContext {
             connected: self.is_connected(),
-            modern_ui_root: true,
+            spacing: self.spacing.get(),
+            modern_ui_root: self.parent.get().in_modern_ui,
             modern_ui_tabs: self.parent.get().in_modern_ui_tabs,
             two_tab_bars: container.bars.two_tab_bars,
             first_tab_bar: container.bars.top_tab_bar,
@@ -453,7 +483,7 @@ impl Layout {
         let parent = self.parent.get();
         match (parent.in_modern_ui_tabs, parent.in_connected_editor_tabs && !container.connected_tab_upper_bar) {
             (false, _) => 0.0,
-            (true, true) => self.shoulder_radius.get(),
+            (true, true) => self.shoulder_radius(),
             (true, false) => TAB_GUTTER,
         }
     }
@@ -464,7 +494,7 @@ impl Layout {
     /// `multieditortabscontrol.css`, que [`tab_box_style`] resolve.
     fn terminal_extra_margin(&self, container: &TabsContainerView) -> f64 {
         if !container.wrapping {
-            return if self.parent.get().in_connected_editor_tabs { SHOULDER_MARGIN } else { 0.0 };
+            return if self.parent.get().in_connected_editor_tabs { self.shoulder_radius() + STROKE } else { 0.0 };
         }
 
         self.terminal_gutter(container)
@@ -475,7 +505,7 @@ impl Layout {
     /// `size20 - shoulder-radius - strokeThickness` (`connectedEditorTabs.css`, regra fora da quebra).
     fn add_button_near_edge(&self, tab: (f64, f64), terminal_margin: f64) -> f64 {
         let zoom = self.zoom.get();
-        let offset = (terminal_margin + SPACING_SIZE20 - SHOULDER_RADIUS - STROKE) * zoom;
+        let offset = (terminal_margin + SPACING_SIZE20 - self.shoulder_radius() - STROKE) * zoom;
         if self.rtl.get() { tab.0 - offset } else { tab.1 + offset }
     }
 
@@ -488,7 +518,9 @@ impl Layout {
     fn row_height(&self, container: &TabsContainerView) -> f64 {
         let parent = self.parent.get();
         let context = TabBoxContext {
+            spacing: self.spacing.get(),
             connected: self.is_connected(),
+            modern_ui_root: parent.in_modern_ui,
             modern_ui_tabs: parent.in_modern_ui_tabs,
             two_tab_bars: container.bars.two_tab_bars,
             first_tab_bar: container.bars.top_tab_bar,
@@ -778,7 +810,7 @@ impl TabsMeasurer for Layout {
             tab_border,
             overflow_top_border,
             overflow_top_background,
-            shoulder_extent: SHOULDER_RADIUS,
+            shoulder_extent: self.shoulder_radius(),
         })
     }
 
@@ -875,7 +907,7 @@ impl Fixture {
         }
 
         // `container = $('.title.tabs')`: a classe `tabs` existe, o resto vem de `connectedGroup()`.
-        let parent = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_connected_editor_tabs: false };
+        let parent = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_modern_ui: true, in_connected_editor_tabs: false };
         let layout = Layout::new(options.clone(), parent);
         let state = build_state(&model, &options, parent, AddTabPresence::None);
         let mut fixture = Self { suite, model, options, layout, state, row: None, parent, add_visible: true };
@@ -886,7 +918,7 @@ impl Fixture {
 
     /// `connectedGroup()`: o contêiner passa a viver numa raiz `modern-ui-tabs modern-ui-connected-editor-tabs`.
     fn connected_group(&mut self) {
-        self.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: true, in_connected_editor_tabs: true });
+        self.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: true, in_modern_ui: true, in_connected_editor_tabs: true });
     }
 
     /// `root.classList.toggle('modern-ui-connected-editor-tabs', connected)`.
@@ -1273,6 +1305,7 @@ fn keeps_connected_layout_current_when_an_add_tab_toolbar_follows_the_editor_tab
     let mut fx = Fixture::new();
     fx.connected_group();
     // `group.closest('.monaco-workbench').classList.remove('modern-ui')`: as classes do estilo conectado ficam.
+    fx.set_parent(TabsParentTraits { in_modern_ui: false, ..fx.parent });
     let editors = fx.model.get_editors(EditorsOrder::Sequential, None);
     for editor in &editors {
         fx.model.close_editor(editor, None, None);
@@ -2146,7 +2179,7 @@ fn action_reservation_does_not_make_inactive_clean_close_buttons_visible() {
     let mut expected = Vec::new();
     for style in ["legacy", "pill", "connected"] {
         // `root.classList.toggle('modern-ui-tabs', style !== 'legacy')` e `modern-ui-connected-editor-tabs`
-        fx.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected" });
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected", ..fx.parent });
         for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
             let high_contrast = theme.starts_with("hc");
             for tab_action_reserve_space in [false, true] {
@@ -2960,7 +2993,7 @@ fn action_reservation_changes_update_fit_widths_in_both_modern_styles_and_leave_
     let mut results = Vec::new();
     for style in ["legacy", "pill", "connected"] {
         // `root.classList.toggle('modern-ui-tabs', style !== 'legacy')` e `modern-ui-connected-editor-tabs`
-        fx.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected" });
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected", ..fx.parent });
         for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
             for layout in ["single", "wrapped", "pinned-wrapped"] {
                 let wrapped = layout != "single";
@@ -3957,7 +3990,7 @@ fn connected_wrapped_last_tab_adds_its_shoulder_to_the_editor_actions_margin() {
     // `tabsContainer.style.setProperty('--last-tab-margin-right', '17px')` e
     // `tabsContainer.style.setProperty('--modern-ui-connected-tab-shoulder-radius', '5px')`.
     fx.state.container.last_tab_margin_right = 17.0;
-    fx.layout.shoulder_radius.set(5.0);
+    fx.layout.spacing.set(ModernSpacing { corner_medium: 4.0, ..ModernSpacing::default() });
     let last_tab_active = fx.state.tabs.last().expect("última aba").state.active;
     let margin = *fx.geometry().margins.last().expect("margem da última aba");
 
@@ -6243,7 +6276,10 @@ impl Layout {
         let guard = self.paint.borrow();
         let paint = guard.as_ref()?;
         let parent = self.parent.get();
-        let mut classes = vec!["monaco-workbench", "modern-ui", "floating-panels", paint.theme_class];
+        let mut classes = vec!["monaco-workbench", "floating-panels", paint.theme_class];
+        if parent.in_modern_ui {
+            classes.push("modern-ui");
+        }
         if parent.in_modern_ui_tabs {
             classes.push("modern-ui-tabs");
         }
@@ -6772,7 +6808,7 @@ fn connected_action_overlays_leave_the_fill_and_modified_bar_as_paint_owners() {
 fn connected_tabs_reserve_separator_height_without_changing_classic_or_shared_modern_tabs() {
     let mut fx = Fixture::new();
     fx.connected_group();
-    let classic_root = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_connected_editor_tabs: false };
+    let classic_root = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_modern_ui: false, in_connected_editor_tabs: false };
 
     #[derive(Debug, PartialEq)]
     struct Heights {
@@ -6792,10 +6828,11 @@ fn connected_tabs_reserve_separator_height_without_changing_classic_or_shared_mo
         // `root.classList.add('modern-ui-tabs')`
         fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, ..classic_root });
         let shared_modern = fx.read_height();
-        // `root.classList.add('modern-ui')`: a classe só recua o preenchimento conectado, e `TabsParentTraits` não a representa
+        // `root.classList.add('modern-ui')`: a raiz do Pill, que só `connectedEditorTabs.css` distingue (e só com o estilo conectado)
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, in_modern_ui: true, ..classic_root });
         let pill = fx.read_height();
         // `root.classList.add('modern-ui-connected-editor-tabs')`
-        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, in_connected_editor_tabs: true, ..classic_root });
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, in_modern_ui: true, in_connected_editor_tabs: true, ..classic_root });
         let connected = fx.read_height();
         heights.push(Heights { compact: tab_height == TabHeight::Compact, classic, shared_modern, pill, connected });
     }
@@ -6872,5 +6909,669 @@ fn single_row_connected_tabs_align_their_tops_and_retain_inline_gutters() {
         }
     );
 }
+
+//#region Contorno conectado dentro da área visível da rolagem
+
+/// `--modern-ui-*` e `--vscode-editor-background` que os casos `keeps the connected outline inside the visible scroll area` e
+/// `invalidates connected clipping geometry ...` escrevem na raiz (`root.style.cssText`); o fundo do editor é o de cada tema do laço.
+fn outline_variables(editor_background: &str) -> [(&str, &str); 4] {
+    [
+        ("--vscode-editor-background", editor_background),
+        ("--modern-ui-connected-tab-surface", "#333333"),
+        ("--modern-ui-editor-tab-custom-active-background", "#333333"),
+        ("--modern-ui-editor-tab-custom-active-hover-background", "#654321"),
+    ]
+}
+
+/// O espaçamento da raiz desses casos: sem `--vscode-cornerRadius-medium`, o raio do ombro e o da tampa vêm de `cornerRadius-small`
+/// (4px) mais o traço (`--modern-ui-connected-tab-radius`, `connectedEditorTabs.css` L114).
+fn outline_spacing() -> ModernSpacing {
+    ModernSpacing { corner_medium: 4.0, ..ModernSpacing::default() }
+}
+
+/// `box-sizing` dos pseudoelementos da aresta de rolagem (`connectedEditorTabs.css` L441).
+const OVERFLOW_PSEUDO_BOX_SIZING: &str = "border-box";
+
+/// `tabs.classList.add('scroll'); tabs.scrollLeft = left; tabs.dispatchEvent(new UIEvent('scroll'))`: a classe `scroll` fica.
+fn scroll_tabs(fx: &mut Fixture, scroll_left: f64) {
+    fx.state.container.scroll_mode = true;
+    fx.scroll_to(scroll_left);
+}
+
+/// `layout(width)` dos casos: `control.layout({ container: new Dimension(width, 33), available: new Dimension(width, 200) })` e o quadro seguinte.
+fn layout_outline(fx: &mut Fixture, width: f64) {
+    fx.layout_with_available(width, 200.0);
+}
+
+/// `style.left`, `style.right` e as demais posições em linha: vazias quando o controle não as escreveu.
+fn px_or_empty(value: Option<f64>) -> String {
+    value.map_or_else(String::new, css_px)
+}
+
+/// `z-index` computado: `auto` sem regra.
+fn z_index_text(z_index: Option<i32>) -> String {
+    z_index.map_or_else(|| "auto".to_string(), |z| z.to_string())
+}
+
+/// `getComputedStyle(...).backgroundColor`: transparente sem fundo.
+fn background_text(background: Option<&Color>) -> String {
+    css_rgb(background.unwrap_or(&Color::transparent_color()))
+}
+
+impl Fixture {
+    /// `tab.dispatchEvent(new MouseEvent(EventType.MOUSE_LEAVE))`.
+    fn leave_tab(&mut self, tab_index: usize) {
+        self.state.handle_tab_mouse_leave(tab_index);
+    }
+
+    /// As regras de `connectedEditorTabs.css` lidas na aba `index` (as classes e as variáveis que o controle escreveu nela).
+    fn tab_style<R>(&self, index: usize, read: impl FnOnce(&ModernUiStyle<'_>, &TabElement) -> R) -> R {
+        let element = tab_element(&self.state.tabs[index].state, self.layout.group_active.get());
+
+        self.layout.with_style(|style, _| read(style, &element)).expect("o caso declara o DOM de tema")
+    }
+
+    /// `getComputedStyle(fill, '::before' ou '::after').content` da aba `index`.
+    fn fill_shoulder(&self, index: usize, shoulder: FillShoulder) -> &'static str {
+        let starts_row = index == 0 || self.state.tabs[index - 1].state.last_in_row;
+
+        self.tab_style(index, |style, element| style.fill_shoulder_content(element, starts_row, shoulder))
+    }
+
+    /// `(borderLeftWidth, borderRightWidth)` computadas do `.tab-fill` da aba `index`.
+    fn fill_side_widths(&self, index: usize) -> (f64, f64) {
+        self.tab_style(index, |style, element| style.tab_fill_border_widths(element).map(|edges| (edges.left, edges.right))).expect("o Modern UI declara o traço do preenchimento")
+    }
+
+    /// `getComputedStyle(fill).display`: `connectedEditorTabs.css` L471 a L476 esconde o preenchimento da aba ativa fora da área visível.
+    fn fill_display(&self, index: usize) -> &'static str {
+        if self.state.tabs[index].state.connected_clipping.hidden { "none" } else { "block" }
+    }
+
+    /// `getComputedStyle(.tab-connected-edge).display`: só a aba ativa fora da linha de cima a desenha, e a mesma regra a esconde.
+    fn edge_display(&self, index: usize) -> &'static str {
+        let drawn = tab_connected_edge_rect(&self.box_context(index)).is_some() && !self.state.tabs[index].state.connected_clipping.hidden;
+
+        if drawn { "block" } else { "none" }
+    }
+
+    /// `getComputedStyle(fill).borderRadius` da aba `index`: o canto de início da fileira é reto e a aba ativa tem a tampa de `cap-radius`.
+    fn fill_border_radius(&self, index: usize) -> String {
+        let context = self.box_context(index);
+        let container = &self.state.container;
+        let spacing = self.layout.spacing.get();
+        let cap_radius = spacing.cap_radius(container.wrapping, container.connected_tab_upper_bar);
+        let shape = tab_fill_shape(self.layout.is_connected(), context.active, context.upper_row, cap_radius, &spacing);
+
+        css_border_radius([context.fill_top_left_radius(), tab_fill_top_right_radius(&context), shape.border_radius[2], tab_fill_bottom_left_radius(&context)])
+    }
+
+    /// As cores do grupo (`.title.tabs`) que a aresta de rolagem lê.
+    fn overflow_colors(&self) -> ConnectedOverflowColors {
+        let group = TabElement::new("", self.layout.group_active.get());
+
+        self.layout
+            .with_style(|style, _| ConnectedOverflowColors {
+                active_background: style.tab_variable("--modern-ui-connected-tab-active-background", &group),
+                active_hover_background: style.tab_variable("--modern-ui-connected-tab-active-hover-background", &group),
+                strip_mask: style
+                    .tab_variable("--modern-ui-connected-tab-strip-background", &group)
+                    .or_else(|| style.variable("--vscode-editorGroupHeader-tabsBackground"))
+                    .or_else(|| style.variable("--vscode-editor-background")),
+            })
+            .expect("o caso declara o DOM de tema")
+    }
+
+    /// `getComputedStyle(overflowEdge)` e dos pseudoelementos dele.
+    fn overflow_edge_box(&self) -> ConnectedOverflowEdgeBox {
+        let container = &self.state.container;
+
+        connected_overflow_edge_box(&container.overflow_edge, container.wrapping, container.connected_tab_upper_bar, &self.layout.spacing.get(), &self.overflow_colors())
+    }
+
+    /// `getComputedStyle(.tab-connected-overflow-right ...)`, se o `overflowEdge` está cortado à direita.
+    fn overflow_right_box(&self) -> Option<ConnectedOverflowRightBox> {
+        let container = &self.state.container;
+
+        connected_overflow_right_box(&container.overflow_edge, container.wrapping, container.connected_tab_upper_bar, &self.layout.spacing.get(), &self.overflow_colors())
+    }
+
+    /// `[overflowEdge.style.left, overflowEdge.style.right]`.
+    fn overflow_edge_offsets(&self) -> [String; 2] {
+        let edge = &self.state.container.overflow_edge;
+
+        [px_or_empty(edge.left), px_or_empty(edge.right)]
+    }
+
+    /// `overflowEdge.classList.contains('connected-tab-top-row') && getComputedStyle(<tampa>).borderTopColor === 'rgb(51, 51, 51)'`: a tampa
+    /// tem o traço de cima próprio, com a cor da borda conectada do grupo.
+    fn overflow_edge_owns_cap_top(&self) -> bool {
+        let edge = &self.state.container.overflow_edge;
+
+        edge.top_row && connected_overflow_edge_style(edge, &self.layout.group_border_text()).top_border == "rgb(51, 51, 51)"
+    }
+
+    /// O `edgeOverlay` do corte à esquerda: o `::before` do preenchimento, o `display` e o `z-index` da aresta e o `::before` dela.
+    fn left_edge_overlay(&self, index: usize) -> Vec<String> {
+        let edge = self.overflow_edge_box();
+        let before = edge.before.as_ref().expect("a aba ativa está cortada à esquerda");
+
+        vec![
+            self.fill_shoulder(index, FillShoulder::Left).to_string(),
+            edge.display.to_string(),
+            z_index_text(edge.z_index),
+            css_px(before.width),
+            css_px(before.border_top_left_radius),
+            OVERFLOW_PSEUDO_BOX_SIZING.to_string(),
+            css_px(before.border_left_width),
+            css_px(before.border_top_width),
+            background_text(before.background.as_ref()),
+        ]
+    }
+
+    /// O `edgeOverlay` do corte à direita: o `::after` do preenchimento, o `display` e o `z-index` da aresta e o `::after` dela.
+    fn right_edge_overlay(&self, index: usize) -> Vec<String> {
+        let edge = self.overflow_edge_box();
+        let after = edge.after.as_ref().expect("a aba ativa está cortada à direita");
+
+        vec![
+            self.fill_shoulder(index, FillShoulder::Right).to_string(),
+            edge.display.to_string(),
+            z_index_text(edge.z_index),
+            css_px(after.width),
+            css_px(after.border_top_right_radius),
+            OVERFLOW_PSEUDO_BOX_SIZING.to_string(),
+            css_px(after.border_right_width),
+            css_px(after.border_top_width),
+            background_text(after.background.as_ref()),
+        ]
+    }
+
+    /// `{ hovered: overflowEdge.classList.contains('connected-tab-hovered'), background: getComputedStyle(overflowEdge, '::before').backgroundColor }`.
+    fn left_hover_read(&self) -> OverflowHoverRead {
+        OverflowHoverRead { hovered: self.state.container.overflow_edge.hovered, background: background_text(self.overflow_edge_box().before.as_ref().and_then(|before| before.background.as_ref())) }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct OverflowHoverRead {
+    hovered: bool,
+    background: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedLeftRead {
+    edge: bool,
+    clipped: bool,
+    fill_offset: String,
+    edge_offset: [String; 2],
+    inset: f64,
+    stationary_parent: bool,
+    own_cap_top: bool,
+    edge_overlay: Vec<String>,
+}
+
+#[derive(Debug, PartialEq)]
+struct MultiSelectedRead {
+    clipping: String,
+    edge: &'static str,
+    radius: String,
+    connected_class: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct SingleSelectedRead {
+    clipping: String,
+    connected_class: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct TerminalOutlineRead {
+    right: f64,
+    right_shoulder: &'static str,
+    right_mask: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct NormalOutlineRead {
+    left: f64,
+    right: f64,
+    left_shoulder: &'static str,
+    right_shoulder: &'static str,
+    edge: &'static str,
+    overflow_edge: &'static str,
+    masks: [&'static str; 2],
+}
+
+#[derive(Debug, PartialEq)]
+struct RightShoulderAtViewportRead {
+    edge: bool,
+    clipped: bool,
+    right: f64,
+    right_shoulder: &'static str,
+    right_mask: &'static str,
+    overflow_edge: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct RightShoulderRevealedRead {
+    edge: bool,
+    clipped: bool,
+    right_shoulder: &'static str,
+    right_mask: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct LeftShoulderAtViewportRead {
+    edge: bool,
+    clipped: bool,
+    left: f64,
+    left_shoulder: &'static str,
+    left_mask: &'static str,
+    overflow_edge: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct LeftShoulderRevealedRead {
+    edge: bool,
+    clipped: bool,
+    left_shoulder: &'static str,
+    left_mask: &'static str,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedRightHoverRead {
+    hovered: bool,
+    mask: String,
+    cap: String,
+    shoulder: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedRightHoverResetRead {
+    hovered: bool,
+    cap: String,
+    shoulder: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct OverflowRightOffsetRead {
+    right: String,
+    inset: f64,
+}
+
+#[derive(Debug, PartialEq)]
+struct ClippedRightRead {
+    edge: bool,
+    clipped: bool,
+    fill_offset: String,
+    edge_offset: [String; 2],
+    overflow_right_offsets: Vec<OverflowRightOffsetRead>,
+    edge_overlay: Vec<String>,
+    previous_tab_overflow: String,
+    own_cap_top: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct HighContrastRead {
+    clipping: String,
+    edge: &'static str,
+    connected_class: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct HighContrastRightRead {
+    theme: &'static str,
+    width: u32,
+    mask: String,
+    cap_reaches_bottom: bool,
+    strokes_align: bool,
+    baseline_aligns: bool,
+    separate_stroke: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct OutlineReport {
+    clipped_hover: OverflowHoverRead,
+    clipped_hover_reset: OverflowHoverRead,
+    clipped_left: ClippedLeftRead,
+    multi_selected: MultiSelectedRead,
+    single_selected: SingleSelectedRead,
+    terminal_outline: TerminalOutlineRead,
+    normal_outline: NormalOutlineRead,
+    right_shoulder_at_viewport: RightShoulderAtViewportRead,
+    right_shoulder_revealed: RightShoulderRevealedRead,
+    left_shoulder_at_viewport: LeftShoulderAtViewportRead,
+    left_shoulder_revealed: LeftShoulderRevealedRead,
+    clipped_right_hover: ClippedRightHoverRead,
+    clipped_right_hover_reset: ClippedRightHoverResetRead,
+    clipped_right: ClippedRightRead,
+    hidden_at_fill_edge: [&'static str; 2],
+    high_contrast: HighContrastRead,
+    high_contrast_right: Vec<HighContrastRightRead>,
+    reset: String,
+}
+
+#[test]
+fn keeps_the_connected_outline_inside_the_visible_scroll_area() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.cssText = '--vscode-spacing-size20: 2px; ...; --modern-ui-editor-tab-custom-active-hover-background: #654321;'`
+    fx.layout.spacing.set(outline_spacing());
+    fx.layout.set_paint(PaintContext::new(&[], &outline_variables("#ffffff")));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 40.0);
+    fx.hover_tab(0);
+    let clipped_hover = fx.left_hover_read();
+    fx.leave_tab(0);
+    let clipped_hover_reset = fx.left_hover_read();
+    let first = fx.state.tabs[0].state.connected_clipping;
+    let clipped_left = ClippedLeftRead {
+        edge: first.left_edge,
+        clipped: first.left_clipped,
+        // O controle não escreve posição em linha no `.tab-fill`: o recorte vai no `overflow_edge`.
+        fill_offset: String::new(),
+        edge_offset: fx.overflow_edge_offsets(),
+        // `overflowEdge.getBoundingClientRect().left - tabs.getBoundingClientRect().left`: a aresta parte da borda esquerda do contêiner.
+        inset: fx.state.container.overflow_edge.left.unwrap_or_default(),
+        // A aresta é filha do contêiner rolável de fora (`container.overflow_edge`), não do `.tabs-container` que rola.
+        stationary_parent: true,
+        own_cap_top: fx.overflow_edge_owns_cap_top(),
+        edge_overlay: fx.left_edge_overlay(0),
+    };
+
+    let active = fx.model.active_editor().expect("aba ativa");
+    let second = fx.model.get_editor_by_index(1).expect("segunda aba");
+    fx.set_selection(&active, &[second]);
+    fx.update_editor_selections();
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 40.0);
+    let multi_selected = MultiSelectedRead {
+        clipping: px_or_empty(fx.state.container.overflow_edge.left),
+        edge: fx.overflow_edge_box().display,
+        radius: fx.fill_border_radius(0),
+        connected_class: fx.state.tabs[0].state.connected_clipping.left_clipped,
+    };
+    fx.set_selection(&active, &[]);
+    fx.update_editor_selections();
+    layout_outline(&mut fx, 240.0);
+    let single_selected =
+        SingleSelectedRead { clipping: px_or_empty(fx.state.container.overflow_edge.left), connected_class: fx.state.tabs[0].state.connected_clipping.left_clipped };
+
+    fx.activate(1);
+    layout_outline(&mut fx, 400.0);
+    scroll_tabs(&mut fx, 0.0);
+    let terminal_outline = TerminalOutlineRead {
+        right: fx.fill_side_widths(1).1,
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        right_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+    };
+    fx.open_pinned_file("file2.txt", false);
+    fx.open_editors();
+    layout_outline(&mut fx, 400.0);
+    let normal_outline = NormalOutlineRead {
+        left: fx.fill_side_widths(1).0,
+        right: fx.fill_side_widths(1).1,
+        left_shoulder: fx.fill_shoulder(1, FillShoulder::Left),
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        edge: fx.edge_display(1),
+        overflow_edge: fx.overflow_edge_box().display,
+        masks: [TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_CONNECTED_EDGE_PSEUDO_CONTENT],
+    };
+
+    layout_outline(&mut fx, 324.0);
+    scroll_tabs(&mut fx, 0.0);
+    let second_clipping = |fx: &Fixture| fx.state.tabs[1].state.connected_clipping;
+    let right_shoulder_at_viewport = RightShoulderAtViewportRead {
+        edge: second_clipping(&fx).right_edge,
+        clipped: second_clipping(&fx).right_clipped,
+        right: fx.fill_side_widths(1).1,
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        right_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+        overflow_edge: fx.overflow_edge_box().display,
+    };
+    scroll_tabs(&mut fx, 8.0);
+    let right_shoulder_revealed = RightShoulderRevealedRead {
+        edge: second_clipping(&fx).right_edge,
+        clipped: second_clipping(&fx).right_clipped,
+        right_shoulder: fx.fill_shoulder(1, FillShoulder::Right),
+        right_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+    };
+    scroll_tabs(&mut fx, 156.0);
+    let left_shoulder_at_viewport = LeftShoulderAtViewportRead {
+        edge: second_clipping(&fx).left_edge,
+        clipped: second_clipping(&fx).left_clipped,
+        left: fx.fill_side_widths(1).0,
+        left_shoulder: fx.fill_shoulder(1, FillShoulder::Left),
+        left_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+        overflow_edge: fx.overflow_edge_box().display,
+    };
+    scroll_tabs(&mut fx, 152.0);
+    let left_shoulder_revealed = LeftShoulderRevealedRead {
+        edge: second_clipping(&fx).left_edge,
+        clipped: second_clipping(&fx).left_clipped,
+        left_shoulder: fx.fill_shoulder(1, FillShoulder::Left),
+        left_mask: TAB_CONNECTED_EDGE_PSEUDO_CONTENT,
+    };
+
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 0.0);
+    let mut overflow_right_offsets = Vec::new();
+    for position in [0.0, 1.0, 2.0, 3.0] {
+        scroll_tabs(&mut fx, position);
+        let edge = &fx.state.container.overflow_edge;
+        // `tabs.getBoundingClientRect().right - overflowEdge.getBoundingClientRect().right`: a aresta termina `right` antes da borda do contêiner.
+        overflow_right_offsets.push(OverflowRightOffsetRead { right: px_or_empty(edge.right), inset: edge.right.unwrap_or_default() });
+    }
+    fx.hover_tab(1);
+    let right_box = fx.overflow_right_box().expect("a aba ativa está cortada à direita");
+    let clipped_right_hover = ClippedRightHoverRead {
+        hovered: fx.state.container.overflow_edge.hovered,
+        mask: background_text(fx.overflow_edge_box().after.as_ref().and_then(|after| after.background.as_ref())),
+        cap: background_text(right_box.cap_background.as_ref()),
+        shoulder: right_box.shoulder_shadow.as_ref().map(css_rgb).is_some_and(|shadow| shadow.contains("rgb(101, 67, 33)")),
+    };
+    fx.leave_tab(1);
+    let right_box = fx.overflow_right_box().expect("a aba ativa está cortada à direita");
+    let clipped_right_hover_reset = ClippedRightHoverResetRead {
+        hovered: fx.state.container.overflow_edge.hovered,
+        cap: background_text(right_box.cap_background.as_ref()),
+        shoulder: right_box.shoulder_shadow.as_ref().map(css_rgb).is_some_and(|shadow| shadow.contains("rgb(51, 51, 51)")),
+    };
+    let clipped_right = ClippedRightRead {
+        edge: second_clipping(&fx).right_edge,
+        clipped: second_clipping(&fx).right_clipped,
+        // O controle não escreve posição em linha no `.tab-fill` nem no `.tab-connected-edge`: o recorte vai no `overflow_edge`.
+        fill_offset: String::new(),
+        edge_offset: fx.overflow_edge_offsets(),
+        overflow_right_offsets,
+        edge_overlay: fx.right_edge_overlay(1),
+        previous_tab_overflow: String::new(),
+        own_cap_top: fx.overflow_edge_owns_cap_top(),
+    };
+
+    fx.activate(0);
+    layout_outline(&mut fx, 100.0);
+    let first_tab_width = fx.geometry().widths[0];
+    scroll_tabs(&mut fx, first_tab_width - 5.0);
+    let hidden_at_fill_edge = [fx.fill_display(0), fx.overflow_edge_box().display];
+
+    // `root.classList.add('hc-black')`
+    fx.layout.set_theme("hc-black");
+    layout_outline(&mut fx, 240.0);
+    scroll_tabs(&mut fx, 40.0);
+    let high_contrast = HighContrastRead {
+        clipping: px_or_empty(fx.state.container.overflow_edge.left),
+        edge: fx.overflow_edge_box().display,
+        connected_class: fx.state.tabs[0].state.connected_clipping.left_clipped,
+    };
+
+    fx.activate(1);
+    let mut high_contrast_right = Vec::new();
+    for theme in ["hc-black", "hc-light"] {
+        // `root.classList.remove('hc-black', 'hc-light'); root.classList.add(theme)`, `--vscode-focusBorder: #f38518` e o fundo do editor do tema
+        let background = if theme == "hc-black" { "#000000" } else { "#ffffff" };
+        fx.layout.set_paint(PaintContext::new(&[("focusBorder", "#f38518")], &outline_variables(background)));
+        fx.layout.set_theme(theme);
+        for width in [240.0, 324.0] {
+            layout_outline(&mut fx, width);
+            scroll_tabs(&mut fx, 0.0);
+            let right_box = fx.overflow_right_box().expect("a aba ativa está cortada à direita");
+            let edge = &fx.state.container.overflow_edge;
+            let edge_style = connected_overflow_edge_style(edge, &fx.layout.group_border_text());
+            // `getBoundingClientRect()` do `.tab-connected-overflow-right`: ocupa a aresta, que termina `right` antes da borda direita e
+            // `bottom` antes da base do contêiner de abas.
+            let tabs_height = fx.layout.header_heights(&fx.state.container, fx.geometry().rows).0;
+            let outline_right = fx.geometry().visible_width - edge.right.unwrap_or_default();
+            let outline_bottom = tabs_height - edge.bottom.unwrap_or_default();
+            let cap_right = outline_right - right_box.cap_right;
+            let shoulder_left = outline_right - right_box.shoulder_right - right_box.shoulder_width;
+            high_contrast_right.push(HighContrastRightRead {
+                theme,
+                width: width as u32,
+                mask: background_text(fx.overflow_edge_box().after.as_ref().and_then(|after| after.background.as_ref())),
+                cap_reaches_bottom: right_box.cap_bottom == 0.0,
+                strokes_align: cap_right - right_box.cap_border_right_width == shoulder_left,
+                baseline_aligns: outline_bottom == tabs_height,
+                separate_stroke: right_box.cap_border_right_color == Color::transparent_color()
+                    && edge_style.border == "rgb(243, 133, 24)"
+                    && css_px(right_box.edge_clip_bottom) == css_px(right_box.shoulder_height),
+            });
+        }
+    }
+
+    // `root.classList.remove('modern-ui-connected-editor-tabs')`
+    fx.set_connected(false);
+    layout_outline(&mut fx, 100.0);
+    let reset = px_or_empty(fx.state.container.overflow_edge.left);
+
+    let report = OutlineReport {
+        clipped_hover,
+        clipped_hover_reset,
+        clipped_left,
+        multi_selected,
+        single_selected,
+        terminal_outline,
+        normal_outline,
+        right_shoulder_at_viewport,
+        right_shoulder_revealed,
+        left_shoulder_at_viewport,
+        left_shoulder_revealed,
+        clipped_right_hover,
+        clipped_right_hover_reset,
+        clipped_right,
+        hidden_at_fill_edge,
+        high_contrast,
+        high_contrast_right,
+        reset,
+    };
+    let hc_row = |theme, width, mask: &str| HighContrastRightRead {
+        theme,
+        width,
+        mask: mask.to_string(),
+        cap_reaches_bottom: true,
+        strokes_align: true,
+        baseline_aligns: true,
+        separate_stroke: true,
+    };
+    let expected = OutlineReport {
+        clipped_hover: OverflowHoverRead { hovered: true, background: "rgb(101, 67, 33)".to_string() },
+        clipped_hover_reset: OverflowHoverRead { hovered: false, background: "rgb(51, 51, 51)".to_string() },
+        clipped_left: ClippedLeftRead {
+            edge: true,
+            clipped: true,
+            fill_offset: String::new(),
+            edge_offset: ["0px".to_string(), "0px".to_string()],
+            inset: 0.0,
+            stationary_parent: true,
+            own_cap_top: true,
+            edge_overlay: ["none", "block", "8", "5px", "5px", "border-box", "1px", "1px", "rgb(51, 51, 51)"].map(String::from).to_vec(),
+        },
+        multi_selected: MultiSelectedRead { clipping: "0px".to_string(), edge: "block", radius: "0px 5px 0px 0px".to_string(), connected_class: true },
+        single_selected: SingleSelectedRead { clipping: "0px".to_string(), connected_class: true },
+        terminal_outline: TerminalOutlineRead { right: 1.0, right_shoulder: "\"\"", right_mask: "none" },
+        normal_outline: NormalOutlineRead { left: 1.0, right: 1.0, left_shoulder: "\"\"", right_shoulder: "\"\"", edge: "block", overflow_edge: "none", masks: ["none", "none"] },
+        right_shoulder_at_viewport: RightShoulderAtViewportRead { edge: true, clipped: false, right: 1.0, right_shoulder: "\"\"", right_mask: "none", overflow_edge: "block" },
+        right_shoulder_revealed: RightShoulderRevealedRead { edge: false, clipped: false, right_shoulder: "\"\"", right_mask: "none" },
+        left_shoulder_at_viewport: LeftShoulderAtViewportRead { edge: true, clipped: false, left: 1.0, left_shoulder: "none", left_mask: "none", overflow_edge: "none" },
+        left_shoulder_revealed: LeftShoulderRevealedRead { edge: false, clipped: false, left_shoulder: "\"\"", left_mask: "none" },
+        clipped_right_hover: ClippedRightHoverRead { hovered: true, mask: "rgb(255, 255, 255)".to_string(), cap: "rgb(101, 67, 33)".to_string(), shoulder: true },
+        clipped_right_hover_reset: ClippedRightHoverResetRead { hovered: false, cap: "rgb(51, 51, 51)".to_string(), shoulder: true },
+        clipped_right: ClippedRightRead {
+            edge: true,
+            clipped: true,
+            fill_offset: String::new(),
+            edge_offset: ["0px".to_string(), "0px".to_string()],
+            overflow_right_offsets: (0..4).map(|_| OverflowRightOffsetRead { right: "0px".to_string(), inset: 0.0 }).collect(),
+            edge_overlay: ["\"\"", "block", "8", "10px", "0px", "border-box", "0px", "0px", "rgb(255, 255, 255)"].map(String::from).to_vec(),
+            previous_tab_overflow: String::new(),
+            own_cap_top: true,
+        },
+        hidden_at_fill_edge: ["none", "none"],
+        high_contrast: HighContrastRead { clipping: "0px".to_string(), edge: "block", connected_class: true },
+        high_contrast_right: vec![
+            hc_row("hc-black", 240, "rgb(0, 0, 0)"),
+            hc_row("hc-black", 324, "rgb(0, 0, 0)"),
+            hc_row("hc-light", 240, "rgb(255, 255, 255)"),
+            hc_row("hc-light", 324, "rgb(255, 255, 255)"),
+        ],
+        reset: String::new(),
+    };
+    assert_eq!(report, expected);
+}
+
+#[test]
+fn invalidates_connected_clipping_geometry_after_dirty_and_capability_changes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.cssText = '--vscode-spacing-size20: 2px; ...; --vscode-spacing-size280: 28px; ...; --modern-ui-connected-tab-surface: #333333;'`
+    fx.layout.spacing.set(outline_spacing());
+    fx.layout.set_paint(PaintContext::new(&[], &[("--vscode-editor-background", "#ffffff"), ("--modern-ui-connected-tab-surface", "#333333")]));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.open_pinned_file("file2.txt", false);
+    fx.activate(1);
+    layout_outline(&mut fx, 180.0);
+    scroll_tabs(&mut fx, 0.0);
+
+    let first_editor = fx.model.get_editor_by_index(0).expect("primeira aba");
+    let first_input = first_editor.as_any().downcast_ref::<NamedInput>().expect("o caso abre `NamedInput`");
+    first_input.set_dirty();
+    let computed_height = fx.computed_height();
+    fx.state.update_editor_dirty(&first_editor, computed_height);
+    // `overflowEdge.style.left === '' && !activeTab.classList.contains('connected-tab-right-edge')`, antes do quadro seguinte
+    let invalidated_before_layout = fx.state.container.overflow_edge.left.is_none() && !fx.state.tabs[1].state.connected_clipping.right_edge;
+    fx.frame();
+
+    let rebuilt_after_layout = fx.state.container.overflow_edge.left.is_some();
+    first_input.set_capabilities(EditorInputCapabilities::CANNOT_CLOSE);
+    let computed_height = fx.computed_height();
+    fx.state.update_editor_capabilities(&first_editor, computed_height);
+    let capability_update_invalidated = fx.state.container.overflow_edge.left.is_none() && !fx.state.tabs[1].state.connected_clipping.right_edge;
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        first_tab_dirty: bool,
+        invalidated_before_layout: bool,
+        rebuilt_after_layout: bool,
+        capability_update_invalidated: bool,
+    }
+
+    assert_eq!(
+        Report { first_tab_dirty: fx.state.tabs[0].state.dirty, invalidated_before_layout, rebuilt_after_layout, capability_update_invalidated },
+        Report { first_tab_dirty: true, invalidated_before_layout: true, rebuilt_after_layout: true, capability_update_invalidated: true }
+    );
+}
+
+//#endregion
 
 //#endregion
