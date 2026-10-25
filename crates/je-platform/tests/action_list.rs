@@ -35,7 +35,7 @@ use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use je_base::actions::{ActionRef, SubmenuAction, ToActionProps, to_action};
-use je_base::async_::timeout;
+use je_base::async_::{async_fn, timeout};
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
@@ -43,10 +43,10 @@ use je_base::key_codes::KeyCode;
 use je_base::layout::{AnchorPosition, IAnchor};
 use je_base::promise::{DeferredPromise, Promise};
 use je_platform::action_widget::action_list::{
-    ACTION_WIDGET_VERTICAL_CHROME_HEIGHT, ActionList, ActionListBadge, ActionListGroup, ActionListItemData, ActionListItemKind, ActionListWidget, CssColor,
-    FilterRequest, HoverContent, HoverElement, IActionListDelegate, IActionListHeaderLink, IActionListItem, IActionListItemHover, IActionListItemInlineToggle,
-    IActionListOptions, IActionListUpdateOptions, KeyTarget, LIST_VERTICAL_SCROLLBAR_SIZE, PointerEvent, PointerTarget, ReserveSubmenuSpace, RowState,
-    SubmenuGutter, action_item_badge_metrics, toggle_info_icon_center_offset,
+    ACCEPT_SELECTED_ACTION_COMMAND, ACTION_WIDGET_VERTICAL_CHROME_HEIGHT, ActionList, ActionListBadge, ActionListGroup, ActionListItemData, ActionListItemKind,
+    ActionListWidget, CssColor, FilterRequest, HoverContent, HoverElement, IActionListDelegate, IActionListHeaderLink, IActionListItem, IActionListItemHover,
+    IActionListItemInlineToggle, IActionListOptions, IActionListUpdateOptions, KeyTarget, KeybindingResolver, LIST_VERTICAL_SCROLLBAR_SIZE, OnRemove, PointerEvent,
+    PointerTarget, REMOVE_TOOLBAR_ACTION_ID, RemovableAction, ReserveSubmenuSpace, RowState, SubmenuGutter, action_item_badge_metrics, toggle_info_icon_center_offset,
 };
 use je_base::uri::URI;
 use je_platform::contextview::context_view::{AnchorTarget, IContextViewDelegate, IContextViewService};
@@ -148,6 +148,8 @@ struct Config {
     on_hide: Rc<dyn Fn()>,
     on_select: Rc<dyn Fn(&Item)>,
     list_options: IActionListOptions,
+    /// O `keybindingService` do `createActionListWidget`: o `softDispatch` que o campo de filtro de um submenu consulta.
+    keybinding: Option<KeybindingResolver>,
 }
 
 /// Os `listOptions` de um caso (`{ showFilter: true, ...listOptions }`: o `show_filter` de quem chama vence).
@@ -158,6 +160,7 @@ fn config(items: Vec<TestItem>) -> Config {
         on_hide: noop(),
         on_select: Rc::new(|_| {}),
         list_options: IActionListOptions { show_filter: true, ..IActionListOptions::default() },
+        keybinding: None,
     }
 }
 
@@ -191,6 +194,9 @@ fn create_action_list_widget(_guard: &LeakGuard, config: Config) -> Widget {
     let delegate = Rc::new(TestDelegate { on_hide: config.on_hide, on_select: config.on_select, on_filter: config.on_filter });
     let items = rcs(if config.items.is_empty() { vec![action("initial")] } else { config.items });
     let widget = ActionListWidget::new(false, &items, delegate, Some(Rc::new(config.list_options)));
+    if let Some(keybinding) = config.keybinding {
+        widget.set_keybinding_resolver(keybinding);
+    }
     let body = ViewElement::new();
     // The header banner is a standalone element the caller attaches (like the filter container), so the test appends it.
     if let Some(header) = widget.header_container() {
@@ -2503,5 +2509,584 @@ fn hidden_hover_chevrons_preserve_keyboard_access_without_reserving_a_gutter() {
             (Some("false".to_owned()), true),
         ),
     );
+}
+
+/// `parseFloat(style.top)` e companhia: o número de um valor `Npx`.
+fn px(value: Option<String>) -> f64 {
+    value.expect("a propriedade de estilo foi definida").trim_end_matches("px").parse().expect("o valor é um número em px")
+}
+
+/// `document.activeElement` está dentro de `widget.domNode`: na lista, no filtro, no painel ou no que o painel abriu.
+fn focus_inside(widget: &ActionListWidget<Item>) -> bool {
+    widget.is_list_focused() || widget.is_panel_focused() || widget.panel_contains_focus() || widget.filter_input().is_some_and(|input| input.is_focused())
+}
+
+/// `widget.focus()` e o `ArrowRight` em `widget.domNode`, que abre o submenu da linha focada.
+fn open_submenu(widget: &ActionListWidget<Item>) -> Rc<ActionListWidget<ActionRef>> {
+    widget.focus();
+    dispatch_key(widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    widget.submenu_widget().expect("ArrowRight abre o submenu da linha focada")
+}
+
+/// `hover: { preserveVerticalPosition: true, alignToAnchorTop: true }`.
+fn anchored_hover() -> Option<IActionListItemHover> {
+    Some(IActionListItemHover { preserve_vertical_position: true, align_to_anchor_top: true, ..IActionListItemHover::default() })
+}
+
+/// `Object.assign(toAction({ id, label, run }), { onRemove: async () => { await timeout(20); } })`.
+fn removable_after_20ms(id: &str, label: &str, run: Rc<dyn Fn()>) -> ActionRef {
+    let on_remove: OnRemove = Rc::new(|| {
+        async_fn(async move {
+            timeout(20).await?;
+            Ok::<(), Error>(())
+        })
+    });
+    RemovableAction::new(to_action_with(id, label, None, None, run), on_remove)
+}
+
+/// As opções de submenu de `{ showFilter: true, filterAsCombobox: true, focusFilterOnOpen: true, ... }`.
+fn combobox_submenu_options(stop_toolbar_pointer_propagation: bool) -> Option<Rc<IActionListOptions>> {
+    Some(Rc::new(IActionListOptions {
+        show_filter: true,
+        filter_as_combobox: true,
+        focus_filter_on_open: true,
+        stop_toolbar_pointer_propagation,
+        ..IActionListOptions::default()
+    }))
+}
+
+#[test]
+fn nested_submenu_options_enable_filtering() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let action_widget_commands: Vec<(KeyCode, &'static str)> = vec![
+        (KeyCode::Space, "toggleSectionCodeAction"),
+        (KeyCode::Enter, ACCEPT_SELECTED_ACTION_COMMAND),
+        (KeyCode::Period, ACCEPT_SELECTED_ACTION_COMMAND),
+    ];
+    let keybinding: KeybindingResolver =
+        Rc::new(move |event| action_widget_commands.iter().find(|(key_code, _)| *key_code == event.key_code).map(|(_, command_id)| (*command_id).to_owned()));
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            keybinding: Some(keybinding),
+            ..config(vec![IActionListItem {
+                hover: anchored_hover(),
+                submenu_actions: Some(vec![
+                    to_action_with("alpha", "A long remote host label", Some("Remote host description"), None, noop()),
+                    to_action_with("beta", "Beta", None, None, noop()),
+                ]),
+                submenu_options: Some(Rc::new(IActionListOptions {
+                    show_filter: true,
+                    filter_placeholder: Some("Search Remote".to_owned()),
+                    filter_as_combobox: true,
+                    focus_filter_on_open: true,
+                    min_width: Some(180.0),
+                    max_width: Some(180.0),
+                    ..IActionListOptions::default()
+                })),
+                ..action("remote")
+            }])
+        },
+    );
+    let hidden = Rc::new(Cell::new(0));
+    let on_hide = hidden.clone();
+    let dismissible_widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            on_hide: Rc::new(move || on_hide.set(on_hide.get() + 1)),
+            ..config(vec![IActionListItem {
+                submenu_actions: Some(vec![to_action_with("alpha", "Alpha", None, None, noop())]),
+                submenu_options: combobox_submenu_options(false),
+                ..action("remote")
+            }])
+        },
+    );
+    let submenu = open_submenu(&widget);
+    let description_tooltip = (0..submenu.visible_labels().len())
+        .filter_map(|index| submenu.row_state(index))
+        .find(|row| row.title_text == "A long remote host label")
+        .map(|row| row.title_attribute);
+    // `filter.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, keyCode, ...init }))` e o ouvinte do `domNode` pai.
+    let mut bubbled_keys = Vec::new();
+    let key_events: [(&str, KeyCode, bool, bool); 7] = [
+        ("r", KeyCode::Unknown, false, false),
+        ("P", KeyCode::Unknown, true, false),
+        ("F1", KeyCode::Unknown, false, true),
+        (" ", KeyCode::Space, false, false),
+        ("Enter", KeyCode::Enter, true, false),
+        (".", KeyCode::Period, true, false),
+        ("Process", KeyCode::Unknown, false, false),
+    ];
+    for (key, key_code, ctrl_key, alt_key) in key_events {
+        let mut event = UiKeyEvent::new(key, key_code);
+        event.ctrl_key = ctrl_key;
+        event.alt_key = alt_key;
+        submenu.dispatch_key_down(&event, KeyTarget::FilterInput);
+        if !event.propagation_stopped() {
+            bubbled_keys.push(event.key.clone());
+        }
+    }
+    submenu.filter_input_input("bet");
+    let filter_aria = submenu.filter_aria().expect("o filtro tem os atributos de acessibilidade");
+    let filtered_state = (
+        filter_aria.label,
+        filter_aria.role,
+        widget.panel_style_width(),
+        (widget.panel_style_top(), Some(format!("{}px", widget.visible_row_rect(0).top - widget.dom_node().rect().top))),
+        bubbled_keys,
+        submenu.dom_node().style_get_property("width"),
+        description_tooltip,
+        widget.submenu_rows().expect("o submenu continua aberto"),
+    );
+
+    let dismissible_submenu = open_submenu(&dismissible_widget);
+    let focused_on_open = dismissible_submenu.filter_input().is_some_and(|input| input.is_focused());
+    // O `Escape` do campo sobe até o painel (nenhum tratador do campo o consome).
+    let escape = key_event("Escape");
+    dismissible_submenu.dispatch_key_down(&escape, KeyTarget::FilterInput);
+    if !escape.propagation_stopped() {
+        dismissible_widget.dispatch_key_down(&escape, KeyTarget::SubmenuPanel);
+    }
+    let hidden_from_filter = hidden.get();
+    let reopened = open_submenu(&dismissible_widget);
+    let escape = key_event("Escape");
+    reopened.dispatch_key_down(&escape, KeyTarget::List);
+    if !escape.propagation_stopped() {
+        dismissible_widget.dispatch_key_down(&escape, KeyTarget::SubmenuPanel);
+    }
+    assert_eq!(
+        (filtered_state, (focused_on_open, hidden_from_filter, hidden.get())),
+        (
+            (
+                "Search Remote".to_owned(),
+                Some("combobox".to_owned()),
+                Some("190px".to_owned()),
+                (Some("0px".to_owned()), Some("0px".to_owned())),
+                strings(&["P", "F1", "Process"]),
+                Some("180px".to_owned()),
+                Some("Remote host description".to_owned()),
+                vec![Some("Beta".to_owned())],
+            ),
+            (true, 1, 2),
+        ),
+    );
+}
+
+#[test]
+fn submenu_rows_do_not_duplicate_labels_as_descriptions() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                submenu_actions: Some(vec![to_action_with("local", "Local", None, None, noop()), to_action_with("remote", "Test Remote B", None, None, noop())]),
+                submenu_options: combobox_submenu_options(true),
+                ..action("chat")
+            }])
+        },
+    );
+
+    let submenu = open_submenu(&widget);
+    let rows: Vec<(String, Option<String>)> = (0..submenu.visible_labels().len())
+        .filter_map(|index| submenu.row_state(index))
+        .map(|row| {
+            let description = row.description_text.trim().to_owned();
+            (row.title_text, (!description.is_empty()).then_some(description))
+        })
+        .collect();
+
+    assert_eq!(rows, vec![("Local".to_owned(), None), ("Test Remote B".to_owned(), None)]);
+}
+
+#[test]
+fn mousedown_on_submenu_remove_toolbar_keeps_focus_in_the_picker() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                submenu_actions: Some(vec![removable_after_20ms("remove", "Test Remote A", noop())]),
+                submenu_options: combobox_submenu_options(true),
+                ..action("remote")
+            }])
+        },
+    );
+    let submenu = open_submenu(&widget);
+
+    let default_prevented = submenu.toolbar_pointer_down(0);
+
+    assert_eq!((default_prevented, focus_inside(&widget)), (true, true));
+}
+
+#[test]
+fn clicking_submenu_remove_toolbar_does_not_select_the_row() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let selected = Rc::new(RefCell::new(Vec::<String>::new()));
+        let run_selected = selected.clone();
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: no_filter(),
+                on_select: recording(&selected),
+                ..config(vec![IActionListItem {
+                    submenu_actions: Some(vec![removable_after_20ms(
+                        "remove",
+                        "Test Remote A",
+                        Rc::new(move || run_selected.borrow_mut().push("submenu-select".to_owned())),
+                    )]),
+                    submenu_options: combobox_submenu_options(true),
+                    ..action("remote")
+                }])
+            },
+        );
+        let submenu = open_submenu(&widget);
+        submenu.toolbar_pointer_down(0);
+        let _ = submenu.click_toolbar_action(0, REMOVE_TOOLBAR_ACTION_ID);
+        timeout(50).await.unwrap();
+
+        assert_eq!((selected.borrow().clone(), widget.panel_displayed()), (Vec::<String>::new(), true));
+    });
+}
+
+#[test]
+fn clicking_remove_in_a_wrapped_submenu_group_keeps_the_submenu_open() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let selected = Rc::new(RefCell::new(Vec::<String>::new()));
+        let run_selected = selected.clone();
+        let removable = removable_after_20ms("remove", "Manage Provider remote-a", Rc::new(move || run_selected.borrow_mut().push("submenu-select".to_owned())));
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: no_filter(),
+                on_select: recording(&selected),
+                ..config(vec![IActionListItem {
+                    submenu_actions: Some(vec![SubmenuAction::new("workspacePicker.remote.options", "", vec![removable], None) as ActionRef]),
+                    submenu_options: combobox_submenu_options(false),
+                    ..action("remote")
+                }])
+            },
+        );
+        let submenu = open_submenu(&widget);
+        submenu.toolbar_pointer_down(0);
+        let _ = submenu.click_toolbar_action(0, REMOVE_TOOLBAR_ACTION_ID);
+        timeout(50).await.unwrap();
+
+        assert_eq!(
+            (selected.borrow().clone(), widget.panel_displayed(), widget.panel_contains_focus()),
+            (Vec::<String>::new(), true, true),
+        );
+    });
+}
+
+#[test]
+fn filtering_replaces_a_submenu_trigger_with_matching_child_items_and_preserves_parent_matches() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        config(vec![
+            action("local"),
+            IActionListItem {
+                filter_items: Some(vec![rc(action("Alpha")), rc(action("Beta"))]),
+                submenu_actions: Some(vec![to_action_with("alpha", "Remote Alpha", None, None, noop())]),
+                ..action("remote")
+            },
+        ]),
+    );
+
+    widget.filter_input_input("alpha");
+    let child_match = visible_row_text(&widget);
+    widget.filter_input_input("remote");
+    let parent_match = visible_row_text(&widget);
+
+    assert_eq!((child_match, parent_match), (strings(&["Alpha"]), strings(&["Alpha", "Beta"])));
+}
+
+#[test]
+fn submenu_hover_labels_preserve_literal_markdown_characters() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let label = "host_*_[name](target)";
+        let child_action: ActionRef = RemovableAction::with_hover_content(to_action_with("remote", label, None, None, noop()), "**Online**");
+        let widget = create_action_list_widget(
+            &guard,
+            Config { list_options: no_filter(), ..config(vec![IActionListItem { submenu_actions: Some(vec![child_action]), ..action("remote") }]) },
+        );
+        let submenu = open_submenu(&widget);
+        submenu.pointer_over(0, &PointerEvent::default());
+        submenu.pointer_move(0, &moved(1.0, 0.0));
+        timeout(600).await.unwrap();
+
+        assert_eq!((submenu.panel_hover_text(), submenu.panel_hover_links()), (Some(format!("{label}Online")), 0));
+    });
+}
+
+#[test]
+fn nested_submenu_renders_footer_and_removes_the_list_strip_when_filtering_has_no_matches() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                hover: anchored_hover(),
+                submenu_actions: Some(vec![to_action_with("alpha", "Alpha", None, None, noop())]),
+                submenu_options: Some(Rc::new(IActionListOptions {
+                    show_filter: true,
+                    filter_as_combobox: true,
+                    footer_text: Some("Remote footer".to_owned()),
+                    ..IActionListOptions::default()
+                })),
+                ..action("remote")
+            }])
+        },
+    );
+    let submenu = open_submenu(&widget);
+    submenu.filter_input_input("missing");
+
+    assert_eq!(
+        (submenu.footer_text(), submenu.dom_node().style_get_property("height")),
+        (Some("Remote footer".to_owned()), Some("0px".to_owned())),
+    );
+}
+
+#[test]
+fn refreshing_parent_items_while_removing_a_nested_row_keeps_the_submenu_open() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let hidden = Rc::new(Cell::new(0));
+        let on_hide = hidden.clone();
+        let widget_ref: Rc<RefCell<Option<std::rc::Weak<ActionListWidget<Item>>>>> = Rc::new(RefCell::new(None));
+        let remaining = to_action_with("beta", "Beta", None, None, noop());
+        let on_remove: OnRemove = {
+            let (widget_ref, remaining) = (widget_ref.clone(), remaining.clone());
+            Rc::new(move || {
+                if let Some(widget) = widget_ref.borrow().as_ref().and_then(std::rc::Weak::upgrade) {
+                    widget.update_items(
+                        &[rc(IActionListItem {
+                            submenu_actions: Some(vec![remaining.clone()]),
+                            submenu_options: combobox_submenu_options(false),
+                            ..action("remote")
+                        })],
+                        None,
+                        Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }),
+                    );
+                }
+                Promise::resolved(())
+            })
+        };
+        let removed: ActionRef = RemovableAction::new(to_action_with("alpha", "Alpha", None, None, noop()), on_remove);
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: no_filter(),
+                on_hide: Rc::new(move || on_hide.set(on_hide.get() + 1)),
+                ..config(vec![IActionListItem {
+                    submenu_actions: Some(vec![removed, remaining]),
+                    submenu_options: combobox_submenu_options(false),
+                    ..action("remote")
+                }])
+            },
+        );
+        *widget_ref.borrow_mut() = Some(Rc::downgrade(&widget.widget));
+        let submenu = open_submenu(&widget);
+        submenu.filter_input_input("a");
+        let alpha_index = submenu.visible_labels().iter().position(|label| label.as_deref() == Some("Alpha")).expect("Alpha está nas linhas filtradas");
+        let _ = submenu.click_toolbar_action(alpha_index, REMOVE_TOOLBAR_ACTION_ID);
+        timeout(0).await.unwrap();
+
+        assert_eq!(
+            (hidden.get(), widget.panel_displayed(), submenu.filter_text(), widget.submenu_rows(), widget.panel_contains_focus()),
+            (0, true, "a".to_owned(), Some(vec![Some("Beta".to_owned())]), true),
+        );
+    });
+}
+
+/// `withWindowInnerHeight(300, ...)` com a lista de dez linhas de `a filtered submenu near the viewport bottom shifts enough to
+/// show all rows`: o `getBoundingClientRect` do `domNode` e da linha é o retângulo `40, 260, 180, 24`.
+#[test]
+fn a_filtered_submenu_near_the_viewport_bottom_shifts_enough_to_show_all_rows() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                hover: anchored_hover(),
+                submenu_actions: Some((0..10).map(|index| to_action_with(&format!("remote-{index}"), &format!("Remote {index}"), None, None, noop())).collect()),
+                submenu_options: Some(Rc::new(IActionListOptions {
+                    show_filter: true,
+                    filter_placeholder: Some("Search Remote".to_owned()),
+                    filter_as_combobox: true,
+                    min_width: Some(180.0),
+                    max_width: Some(180.0),
+                    ..IActionListOptions::default()
+                })),
+                ..action("remote")
+            }])
+        },
+    );
+    widget.set_window_size(1280.0, 300.0);
+    widget.dom_node().set_position(260.0, 40.0);
+    widget.dom_node().set_size(180.0, 24.0);
+    let submenu = open_submenu(&widget);
+    // `Object.defineProperty(filter, 'offsetHeight', { value: 30 })`, e o `resize` da janela.
+    submenu.filter_container().expect("o submenu tem filtro").set_size(190.0, 30.0);
+    widget.window_resized();
+
+    let top = px(widget.panel_style_top());
+    let list_height = px(submenu.dom_node().style_get_property("height"));
+    let viewport_height = widget.panel_viewport_height().expect("o painel tem viewport");
+    assert_eq!(
+        (list_height, 260.0 + top + 10.0 + 30.0 + list_height <= 300.0 - 8.0, viewport_height),
+        (240.0, true, 270.0),
+    );
+}
+
+/// O popup `.action-widget` em `top: 100px; left: 40px; width: 200px; padding: 8px` da lista de trinta linhas: a lista do
+/// `domNode` fica em `108, 48`.
+#[test]
+fn a_long_filtered_submenu_scrolls_its_rows_beneath_the_fixed_filter() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                hover: anchored_hover(),
+                submenu_actions: Some((0..30).map(|index| to_action_with(&format!("remote-{index}"), &format!("Remote {index}"), None, None, noop())).collect()),
+                submenu_options: Some(Rc::new(IActionListOptions {
+                    show_filter: true,
+                    filter_placeholder: Some("Search Remote".to_owned()),
+                    filter_as_combobox: true,
+                    min_width: Some(180.0),
+                    max_width: Some(180.0),
+                    ..IActionListOptions::default()
+                })),
+                ..action("remote")
+            }])
+        },
+    );
+    widget.set_window_size(1280.0, 300.0);
+    let popup = ViewElement::with_classes(&["action-widget"]);
+    popup.set_position(100.0, 40.0);
+    popup.set_size(200.0, 400.0);
+    widget.dom_node().set_parent(Some(popup.clone()));
+    widget.dom_node().set_position(108.0, 48.0);
+    widget.layout(24.0, Some(180.0));
+    let submenu = open_submenu(&widget);
+
+    let list = submenu.dom_node();
+    let filter = submenu.filter_container().expect("o submenu tem filtro");
+    assert_eq!(
+        (!Rc::ptr_eq(&list, &filter), px(list.style_get_property("height")) < 30.0 * 24.0, submenu.rows_height() > list.size().height),
+        (true, true, true),
+    );
+}
+
+#[test]
+fn scrolling_a_submenu_relayouts_an_open_child_hover() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let submenu_actions: Vec<ActionRef> = (0..30)
+            .map(|index| RemovableAction::with_hover_content(to_action_with(&format!("remote-{index}"), &format!("Remote {index}"), None, None, noop()), &format!("Status {index}")) as ActionRef)
+            .collect();
+        let widget = create_action_list_widget(
+            &guard,
+            Config { list_options: no_filter(), ..config(vec![IActionListItem { submenu_actions: Some(submenu_actions), ..action("remote") }]) },
+        );
+        widget.layout(24.0, Some(180.0));
+        let submenu = open_submenu(&widget);
+        submenu.pointer_over(0, &PointerEvent::default());
+        submenu.pointer_move(0, &moved(1.0, 0.0));
+        timeout(600).await.unwrap();
+        let layouts_before = submenu.submenu_layout_count();
+        submenu.set_scroll_top(24.0);
+
+        assert_eq!((submenu.panel_displayed(), submenu.submenu_layout_count() - layouts_before), (true, 1));
+    });
+}
+
+#[test]
+fn mouse_removal_from_a_row_toolbar_does_not_select_the_row() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let selected = Rc::new(RefCell::new(Vec::<String>::new()));
+        let removed = Rc::new(Cell::new(0));
+        let on_run = removed.clone();
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: no_filter(),
+                on_select: recording(&selected),
+                ..config(vec![IActionListItem {
+                    toolbar_actions: Some(vec![to_action_with("remove-reference", "Remove Reference from Session", None, None, Rc::new(move || on_run.set(on_run.get() + 1)))]),
+                    ..action("reference")
+                }])
+            },
+        );
+
+        let _ = widget.click_toolbar_action(0, "remove-reference");
+        timeout(0).await.unwrap();
+
+        assert_eq!((removed.get(), selected.borrow().clone()), (1, Vec::<String>::new()));
+    });
+}
+
+#[test]
+fn rebuilding_the_items_in_place_re_measures_only_when_the_row_count_changed() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(&guard, config(vec![action("one"), action("two")]));
+    let layouts = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (recorded, observed) = (layouts.clone(), widget.widget.clone());
+    guard.add(widget.on_did_request_layout().listen(move |_| recorded.borrow_mut().push(visible_row_text(&observed).join(","))));
+
+    widget.update_items(&rcs(vec![action("one"), action("two-renamed")]), None, None);
+    let after_same_count = layouts.borrow().len();
+    widget.update_items(&rcs(vec![action("one"), action("two-renamed"), action("three")]), None, None);
+
+    assert_eq!(
+        (after_same_count, layouts.borrow().clone(), visible_row_text(&widget)),
+        (0, strings(&["one,two-renamed,three"]), strings(&["one", "two-renamed", "three"])),
+    );
+}
+
+#[test]
+fn rebuilding_the_items_in_place_leaves_focus_alone_when_the_list_does_not_have_it() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(&guard, config(vec![action("one"), action("two")]));
+
+    widget.update_items(&rcs(vec![action("one"), action("two"), action("three")]), None, None);
+
+    assert_eq!((focus_inside(&widget), visible_row_text(&widget)), (false, strings(&["one", "two", "three"])));
+}
+
+#[test]
+fn rebuilding_the_items_in_place_can_preserve_the_scroll_position() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let items: Vec<TestItem> = (0..20).map(|index| action(&format!("item-{index}"))).collect();
+    let checked_first = |items: &[TestItem]| -> Vec<TestItem> {
+        items.iter().cloned().enumerate().map(|(index, item)| if index == 0 { IActionListItem { item: Some(Item { id: "item-0".to_owned(), checked: true }), ..item } } else { item }).collect()
+    };
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: true, focus_filter_on_open: true, ..IActionListOptions::default() },
+            ..config(checked_first(&items))
+        },
+    );
+    widget.layout(120.0, Some(200.0));
+    widget.focus();
+    widget.set_scroll_top(120.0);
+
+    widget.update_items(&rcs(items), None, Some(IActionListUpdateOptions { preserve_scroll_position: true, ..IActionListUpdateOptions::default() }));
+
+    // `list.scrollTop` é o deslocamento negativo de `.monaco-list-rows`.
+    assert_eq!(widget.rows_top(), -120.0);
 }
 
