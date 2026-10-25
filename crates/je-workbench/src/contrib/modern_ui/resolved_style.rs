@@ -28,7 +28,7 @@ mod card_border_layers;
 mod connected_tabs;
 
 pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
-pub use connected_tabs::{ConnectedGroupFrame, TabBorderContainer, TabBorderIndicator, TabElement, editor_group_child_display};
+pub use connected_tabs::{ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, TabBorderContainer, TabBorderIndicator, TabElement, TabRowPlacement, editor_group_child_display};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -275,6 +275,12 @@ impl<'a> ModernUiStyle<'a> {
         if !self.has("modern-ui") {
             return None;
         }
+        // `--modern-ui-editor-border-color` do editor com várias abas em alto contraste (connectedEditorTabs.css, linhas 50 a
+        // 53, com a especificidade acima de `editorBorder.css`, linha 26) e, com `.floating-panels`, a `!important` da linha
+        // 49 do `editorBorder.css` lê a mesma variável: a moldura do grupo é quem desenha o traço, não a borda da parte.
+        if self.connected_high_contrast_editor(part) {
+            return Some(self.floating_card_border_color().unwrap_or_else(|| self.first(&["modernPanel.border", "contrastBorder"]).unwrap_or_else(Color::transparent_color)));
+        }
         if !self.has("floating-panels") {
             // editorBorder.css, linha 27: só o editor principal; `color-mix(in srgb, foreground 12%, transparent)` é o
             // primeiro plano com 12% do seu alfa.
@@ -286,15 +292,24 @@ impl<'a> ModernUiStyle<'a> {
                 foreground.transparent(0.12)
             }));
         }
-        // `--modern-ui-editor-border-color` (floatingPanels.css linha 36; connectedEditorTabs.css linhas 13 e 51) vence a
-        // cadeia de `editorBorder.css` (linha 49, `!important`).
-        if self.connected_high_contrast_editor(part) {
-            return Some(self.floating_card_border_color().unwrap_or_else(|| self.first(&["modernPanel.border", "contrastBorder"]).unwrap_or_else(Color::transparent_color)));
-        }
+        // `--modern-ui-editor-border-color` (floatingPanels.css linha 36) vence a cadeia de `editorBorder.css` (linha 49,
+        // `!important`).
         if self.compact() {
             return Some(Color::transparent_color());
         }
         Some(self.chain(&["editor.border", "surface.border", "widget.border"]))
+    }
+
+    /// `border-width` do `.part.editor`: o traço de `strokeThickness` do editor principal com o Modern UI (editorBorder.css,
+    /// linha 27) e o `1px` fixo da parte modal (modalEditorPart.css, linha 40). Sem nenhuma das duas regras, sem borda.
+    pub fn editor_border_width(&self, part: &ClassList) -> f64 {
+        if part.contains("modal-editor-part") {
+            1.0
+        } else if self.has("modern-ui") {
+            self.size(STROKE_THICKNESS)
+        } else {
+            0.0
+        }
     }
 
     /// `border-color` das partes flutuantes (barra de atividade, barra lateral, painel). `part` leva `part` e o tipo

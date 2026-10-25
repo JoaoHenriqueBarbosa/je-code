@@ -3548,6 +3548,26 @@ impl TabBoxContext {
 
         self.connected_action_inset() + s.size240
     }
+
+    /// `margin-inline-end` da última aba conectada (`connected-tab-last`) fora da quebra e da linha de cima
+    /// (`connectedEditorTabs.css` L568 a L570): reserva o ombro terminal e o traço, nunca entre abas vizinhas. As demais abas
+    /// não têm essa margem; a da quebra soma a margem das ações e o vão do terminal (L598 e L599), que o contêiner mede.
+    pub fn connected_terminal_shoulder_margin(&self, connected_tab_last: bool) -> f64 {
+        if self.connected && !self.wrapping && connected_tab_last && !self.upper_row { self.spacing.shoulder_radius() + self.spacing.stroke } else { 0.0 }
+    }
+
+    /// `border-top-left-radius` do `.tab-fill` (`tabs.css` L154, e `connectedEditorTabs.css` L233, L333, L709, L715 e L723): o
+    /// raio pequeno nas pílulas e nas abas inativas; a aba ativa conectada tem a tampa de `cap_radius`, quadrada no canto em
+    /// que abre a fileira (a aresta do contêiner cola nela).
+    pub fn fill_top_left_radius(&self) -> f64 {
+        if !self.connected || !self.active || self.upper_row {
+            self.spacing.corner_small
+        } else if self.starts_row {
+            0.0
+        } else {
+            self.spacing.cap_radius(self.wrapping, self.upper_bar)
+        }
+    }
 }
 
 /// A caixa do `.tab-actions` e a do `.action-label` dentro dela.

@@ -12,15 +12,26 @@
 //!   [`ModernUiStyle::with_explicit_colors_only`]. O que o DOM escreve direto na raiz (`set_root_variable`) vence a folha.
 //! - **Alto contraste.** O contorno fechado do `.tab-fill` em alto contraste (linhas 96 a 100, 746 a 748, 759 a 769 e 802 a
 //!   805) é do `high_contrast_connected_tab_fill_stroke` (`multi_editor_tabs_control.rs`), que o desenho da aba usa;
-//!   [`ModernUiStyle::connected_tab_fill_border_top_color`] devolve `None` nesse caso.
+//!   [`ModernUiStyle::connected_tab_fill_border_top_color`] devolve `None` nesse caso, menos na aba ativa fora da linha de
+//!   cima, que a linha 330 deixa transparente em qualquer contraste.
+//! - **Geometria nativa.** [`ModernUiStyle::tab_box_context`] monta o `TabBoxContext` de `multi_editor_tabs_control.rs` (a
+//!   geometria que o desenho da aba usa: `tab_fill_rect`, `tab_action_geometry`) com as classes da raiz e da aba e os
+//!   tamanhos do tema, sem repetir as fórmulas.
 
 use je_theme::color::{Color, Srgba};
 use je_theme::size_utils::get_size_registry;
-use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, STROKE_THICKNESS};
+use je_theme::sizes::base_sizes::{
+    CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, STROKE_THICKNESS,
+};
 
-use super::{ClassList, EditorTabState, ModernUiStyle};
+use super::{BoxEdges, ClassList, EditorTabState, ModernUiStyle};
+use crate::browser::parts::editor::multi_editor_tabs_control::{ModernSpacing, TabBoxContext};
 use crate::common::theme::{EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BORDER};
 use crate::services::themes::modern_tab_color_customizations::collect_modern_tab_color_customizations;
+
+/// `z-index` do `.scrollbar` da barra de abas (`multieditortabscontrol.css`, linha 70, e `tabs.css`, linha 753): acima das
+/// abas fixadas, que ficam em 8 e, a ativa, em 9.
+pub const EDITOR_TABS_SCROLLBAR_Z_INDEX: i32 = 11;
 
 /// Uma aba do editor (`.tab`) dentro de um grupo (`.editor-group-container`), com o que as regras testam nela e as
 /// propriedades personalizadas que o controle das abas escreve no próprio elemento.
@@ -41,6 +52,25 @@ pub struct TabElement {
     pub dirty_border_top_color: Option<Color>,
     /// A aba está na primeira fileira de um `.title.two-tab-bars` (`.tabs-and-actions-container:first-child`).
     pub first_of_two_tab_bars: bool,
+    /// `:focus-within` na aba (uma ação dela tem o foco).
+    pub focus_within: bool,
+    /// O `.tabs-container` da aba tem `.disable-sticky-tabs`.
+    pub disable_sticky_tabs: bool,
+}
+
+/// Onde a aba está na fileira e quanto ela mede: o que o contêiner (`.title.tabs` e `.tabs-and-actions-container`) e o layout
+/// dão à geometria dela, além das classes da aba e da raiz.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TabRowPlacement {
+    /// `.title.tabs.compact-height` (a aba de 20px, não a de 24px; `tabs.css`, linhas 75 e 85).
+    pub compact_height: bool,
+    /// `.tabs-and-actions-container.wrapping` e `.connected-tab-upper-bar`.
+    pub wrapping: bool,
+    pub upper_bar: bool,
+    /// A aba abre a fileira (`:first-child` ou depois de `.last-in-row`).
+    pub starts_row: bool,
+    /// `getBoundingClientRect().width` da aba.
+    pub tab_width: f64,
 }
 
 impl TabElement {
@@ -264,10 +294,15 @@ impl<'a> ModernUiStyle<'a> {
     }
 
     /// `border-top-color` do `.tab-fill` de uma aba conectada fora do alto contraste. `None` fora das abas conectadas, em
-    /// alto contraste e quando a variável da regra não tem cor.
+    /// alto contraste (menos na aba ativa fora da linha de cima, abaixo) e quando a variável da regra não tem cor.
     pub fn connected_tab_fill_border_top_color(&self, tab: &TabElement) -> Option<Color> {
-        if !self.connected_tabs() || self.high_contrast() {
+        if !self.connected_tabs() {
             return None;
+        }
+        if self.high_contrast() {
+            // Linha 330: a aba ativa comum tem o contorno transparente em qualquer contraste (a aresta desenha o traço). O
+            // contorno fechado das demais abas em alto contraste é do `high_contrast_connected_tab_fill_stroke`.
+            return (tab.has("active") && !tab.has("connected-tab-upper-row")).then(Color::transparent_color);
         }
         let (active, selected, upper_row) = (tab.has("active"), tab.has("selected"), tab.has("connected-tab-upper-row"));
         let (tab_border_top, dirty_border_top, multi_selected) = (tab.has("tab-border-top"), tab.has("dirty-border-top"), tab.has("multi-selected"));
@@ -409,6 +444,80 @@ impl<'a> ModernUiStyle<'a> {
             return Color::transparent_color();
         }
         self.chain(&[EDITOR_GROUP_HEADER_TABS_BACKGROUND, "editor.background"])
+    }
+
+    /// `pointer-events` do `.tab-actions` (linhas 554 a 565) e, por herança, do `.action-label` dentro dele: a aba em repouso
+    /// (sem `.active`, `.dirty`, `.sticky`, `:hover` nem `:focus-within`) deixa a ranhura da ação fora do alvo do ponteiro,
+    /// para ela não interceptar o clique da aba vizinha; nos demais estados vale `auto`. Fora das abas conectadas a regra não
+    /// existe e vale o padrão `auto`.
+    pub fn tab_actions_pointer_events(&self, tab: &TabElement) -> &'static str {
+        let idle = !(tab.has("active") || tab.has("dirty") || tab.has("sticky") || tab.hovered || tab.focus_within);
+        if self.connected_tabs() && idle { "none" } else { "auto" }
+    }
+
+    /// `z-index` de uma aba (`multieditortabscontrol.css`, linhas 241 a 255 e 277 a 291, e `connectedEditorTabs.css`, linhas
+    /// 272 a 274): as abas fixadas compactas e `shrink` ficam acima das que rolam (8), e a ativa acima das demais fixadas (9). Com
+    /// `.disable-sticky-tabs` o `z-index` volta a `auto` (`None`), que é também o das abas que não são fixadas assim.
+    pub fn tab_z_index(&self, tab: &TabElement) -> Option<i32> {
+        let sized = tab.has("sizing-fit") || tab.has("sizing-shrink") || tab.has("sizing-fixed");
+        let pinned = sized && (tab.has("sticky-compact") || tab.has("sticky-shrink"));
+        if !pinned || tab.disable_sticky_tabs {
+            return None;
+        }
+        let raised = self.connected_tabs() && tab.has("active") && tab.has("sticky") && !tab.has("connected-tab-upper-row");
+        Some(if raised { 9 } else { 8 })
+    }
+
+    /// `border-*-width` do `.tab-fill` (`tabs.css`, linha 156, e `connectedEditorTabs.css`, linhas 330 a 331): o traço de
+    /// `strokeThickness` nos quatro lados, menos o de baixo na aba ativa conectada. `None` sem o `.modern-ui-tabs`.
+    pub fn tab_fill_border_widths(&self, tab: &TabElement) -> Option<BoxEdges> {
+        if !(self.has("monaco-workbench") && self.has("modern-ui-tabs")) {
+            return None;
+        }
+        let stroke = self.size(STROKE_THICKNESS);
+        let bottom = if self.connected_tabs() && tab.has("active") { 0.0 } else { stroke };
+        Some(BoxEdges { top: stroke, right: stroke, bottom, left: stroke })
+    }
+
+    /// As variáveis de tamanho que as regras da aba leem (`--vscode-spacing-*`, `--vscode-strokeThickness` e os raios), com
+    /// os valores do tema.
+    fn modern_spacing(&self) -> ModernSpacing {
+        ModernSpacing {
+            size20: self.size(SPACING_SIZE20),
+            size40: self.size(SPACING_SIZE40),
+            size160: self.size(SPACING_SIZE160),
+            size200: self.size(SPACING_SIZE200),
+            size240: self.size(SPACING_SIZE240),
+            size280: self.size(SPACING_SIZE280),
+            stroke: self.size(STROKE_THICKNESS),
+            corner_small: self.size(CORNER_RADIUS_SMALL),
+            corner_medium: self.size(CORNER_RADIUS_MEDIUM),
+        }
+    }
+
+    /// O `TabBoxContext` de uma aba: a geometria nativa (`tab_fill_rect`, `tab_action_geometry`...) lê as classes da raiz
+    /// (`.modern-ui-connected-editor-tabs`, `.modern-ui`), as da aba, os tamanhos do tema e a posição da aba na fileira. A
+    /// altura da aba é a da linha conectada (`--modern-ui-connected-tab-row-height`) e, fora das abas conectadas, a do
+    /// cabeçalho (`--editor-group-tab-height`: 24px, ou 20px com `.compact-height`).
+    pub fn tab_box_context(&self, tab: &TabElement, placement: TabRowPlacement) -> TabBoxContext {
+        let spacing = self.modern_spacing();
+        let mut context = TabBoxContext {
+            spacing,
+            connected: self.connected_tabs(),
+            modern_ui_root: self.has("modern-ui"),
+            editor_group_tab_height: if placement.compact_height { spacing.size200 } else { spacing.size240 },
+            wrapping: placement.wrapping,
+            upper_bar: placement.upper_bar,
+            upper_row: tab.has("connected-tab-upper-row"),
+            active: tab.has("active"),
+            hovered: tab.hovered,
+            starts_row: placement.starts_row,
+            group_active: tab.group_active,
+            tab_width: placement.tab_width,
+            tab_height: 0.0,
+        };
+        context.tab_height = if context.connected { context.connected_row_height() } else { context.editor_group_tab_height };
+        context
     }
 
     /// O `::after` do `.editor-group-container` em alto contraste (linhas 39 a 48, e 56 a 58 no editor da grade): a moldura
