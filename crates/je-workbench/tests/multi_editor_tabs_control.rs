@@ -68,11 +68,12 @@ use je_workbench::browser::parts::editor::editor_tabs_control::{
     EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost, TabsParentTraits, compute_tab_height,
 };
 use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
-    AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, EditorInputLabel, FitTabMetrics, LayoutOptions,
+    AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, FitTabMetrics, LayoutOptions,
     MultiEditorTabsControlState, StrokeSide, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabColors, TabCssClasses, TabFillStrokeInput, TabFlexItem,
-    TabSizingParams, TabActionGeometry, TabBoxContext, TabState, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
+    TabSizingParams, TabActionGeometry, TabBoxContext, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
     high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_geometry, tab_action_label_opacity, tab_box_style, tab_fill_rect,
 };
+use je_workbench::browser::parts::editor::multi_row_editor_tabs_control::MultiRowEditorControl;
 use je_workbench::common::editor::editor_group_model::{EditorGroupModel, EditorOrIndex, IReadonlyEditorGroupModel};
 use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
 use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase};
@@ -277,6 +278,9 @@ struct Layout {
     badged: RefCell<Option<URI>>,
     /// O rótulo inclui o texto da descrição (`label-description`), nos casos que medem a descrição.
     show_descriptions: Cell<bool>,
+    /// `--modern-ui-connected-tab-shoulder-radius` (mais o traço, na conta da lacuna final das abas quebradas): o valor de
+    /// `connectedGroup()`, que um caso pode sobrescrever na raiz.
+    shoulder_radius: Cell<f64>,
 }
 
 fn name_chars(tab: &Tab) -> f64 {
@@ -298,6 +302,7 @@ impl Layout {
             fit_reads: RefCell::new(Vec::new()),
             badged: RefCell::new(None),
             show_descriptions: Cell::new(false),
+            shoulder_radius: Cell::new(SHOULDER_RADIUS),
         })
     }
 
@@ -394,7 +399,7 @@ impl Layout {
         let parent = self.parent.get();
         match (parent.in_modern_ui_tabs, parent.in_connected_editor_tabs && !container.connected_tab_upper_bar) {
             (false, _) => 0.0,
-            (true, true) => SHOULDER_RADIUS,
+            (true, true) => self.shoulder_radius.get(),
             (true, false) => TAB_GUTTER,
         }
     }
@@ -672,15 +677,29 @@ impl TabsMeasurer for Layout {
 
 //#region Fixture (o setup da suíte)
 
+/// O `groupView` do caso sobre o modelo e as opções vigentes.
+fn group_host(model: &Rc<EditorGroupModel>, options: &Rc<RefCell<EditorPartOptions>>) -> Rc<dyn TabsControlHost> {
+    Rc::new(Host { model: model.clone(), options: options.clone() })
+}
+
+/// O modelo do grupo como a visão somente leitura que os controles de abas leem.
+fn readonly_model(model: &Rc<EditorGroupModel>) -> Rc<dyn IReadonlyEditorGroupModel> {
+    model.clone()
+}
+
+/// `IEditorTitleControlDimensions` de `layoutConnectedGroup(group, width)`: `{ container: Dimension(width, 33), available:
+/// Dimension(width, 300) }`.
+fn title_dimensions(width: f64) -> EditorTitleControlDimensions {
+    EditorTitleControlDimensions { container: Some(Dimension { width, height: 33.0 }), available: Some(Dimension { width, height: 300.0 }) }
+}
+
 fn build_state(
     model: &Rc<EditorGroupModel>,
     options: &Rc<RefCell<EditorPartOptions>>,
     parent: TabsParentTraits,
     add_tab: AddTabPresence,
 ) -> MultiEditorTabsControlState {
-    let host: Rc<dyn TabsControlHost> = Rc::new(Host { model: model.clone(), options: options.clone() });
-    let tabs_model: Rc<dyn IReadonlyEditorGroupModel> = model.clone();
-    let base = EditorTabsControlBase::new(host, tabs_model, parent, false, false);
+    let base = EditorTabsControlBase::new(group_host(model, options), readonly_model(model), parent, false, false);
     let mut state = MultiEditorTabsControlState::new(base);
     state.container.add_tab = add_tab;
 
@@ -693,6 +712,8 @@ struct Fixture {
     options: Rc<RefCell<EditorPartOptions>>,
     layout: Rc<Layout>,
     state: MultiEditorTabsControlState,
+    /// O `MultiRowEditorControl` dos casos que o criam (`create_multi_row`).
+    row: Option<MultiRowEditorControl>,
     parent: TabsParentTraits,
     add_visible: bool,
 }
@@ -713,7 +734,7 @@ impl Fixture {
         let parent = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_connected_editor_tabs: false };
         let layout = Layout::new(options.clone(), parent);
         let state = build_state(&model, &options, parent, AddTabPresence::None);
-        let mut fixture = Self { suite, model, options, layout, state, parent, add_visible: true };
+        let mut fixture = Self { suite, model, options, layout, state, row: None, parent, add_visible: true };
         fixture.open_editors();
 
         fixture
@@ -749,15 +770,7 @@ impl Fixture {
 
     /// `control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL))`.
     fn open_editors(&mut self) {
-        let model = self.model.clone();
-        let mut create_tab = |index: usize| {
-            let editor = model.get_editor_by_index(index as i64).expect("tab index out of range");
-            Tab {
-                label: EditorInputLabel { editor, name: None, description: None, force_description: false, title: None, aria_label: None },
-                state: TabState::default(),
-            }
-        };
-        self.state.handle_opened_editors(&mut create_tab);
+        self.state.open_editors();
     }
 
     /// `model.closeEditor(editor); control.closeEditor(editor)`.
@@ -815,31 +828,30 @@ impl Fixture {
         self.state.move_editor(from, to);
     }
 
-    /// `partOptions = { ...partOptions, ... }; control.updateOptions(oldOptions, partOptions)`.
-    fn update_options(&mut self, change: impl FnOnce(&mut EditorPartOptions)) {
+    /// `partOptions = { ...partOptions, ... }`: devolve as opções de antes e de depois (`oldOptions` e `partOptions`).
+    fn set_options(&self, change: impl FnOnce(&mut EditorPartOptions)) -> (EditorPartOptions, EditorPartOptions) {
         let old = self.options.borrow().clone();
         let mut new = old.clone();
         change(&mut new);
         *self.options.borrow_mut() = new.clone();
+
+        (old, new)
+    }
+
+    /// `partOptions = { ...partOptions, ... }; control.updateOptions(oldOptions, partOptions)`.
+    fn update_options(&mut self, change: impl FnOnce(&mut EditorPartOptions)) {
+        let (old, new) = self.set_options(change);
         let _ = self.state.update_options(&old, &new);
     }
 
     /// O quadro de animação: executa o layout agendado com as dimensões guardadas.
     fn frame(&mut self) {
-        // O `RunOnceScheduler` de `updateEditorLabel` dispara antes do layout agendado.
-        self.state.run_scheduled_label_update();
-        if let Some(options) = self.state.layout_scheduler.take() {
-            let dimensions = EditorTitleControlDimensions { container: self.state.dimensions.container, available: self.state.dimensions.available };
-            self.state.do_layout(dimensions, Some(options), &*self.layout);
-        }
+        self.state.run_frame(&*self.layout);
     }
 
     /// `computeHeight()` com o que o navegador mede.
     fn computed_height(&self) -> f64 {
-        let wrapping_or_connected = (self.options.borrow().wrap_tabs && self.state.container.wrapping) || self.parent.in_connected_editor_tabs;
-        let measured = wrapping_or_connected.then(|| self.layout.measure_wrapping(&self.state.container, &self.state.tabs).tabs_and_actions_height);
-
-        self.state.compute_height(measured)
+        self.state.computed_height(&*self.layout)
     }
 
     /// `control.getHeight()`.
@@ -855,12 +867,8 @@ impl Fixture {
     /// `layoutConnectedGroup(group, width)`.
     fn layout(&mut self, width: f64) {
         self.layout.width.set(width);
-        let dimensions = EditorTitleControlDimensions {
-            container: Some(Dimension { width, height: 33.0 }),
-            available: Some(Dimension { width, height: 300.0 }),
-        };
         let computed_height = self.computed_height();
-        self.state.layout(dimensions, None, computed_height);
+        self.state.layout(title_dimensions(width), None, computed_height);
         self.frame();
     }
 
@@ -968,13 +976,54 @@ impl Fixture {
     /// e o quadro seguinte.
     fn reveal(&mut self, width: f64) {
         self.layout.width.set(width);
-        let dimensions = EditorTitleControlDimensions {
-            container: Some(Dimension { width, height: 33.0 }),
-            available: Some(Dimension { width, height: 300.0 }),
-        };
         let computed_height = self.computed_height();
-        self.state.layout(dimensions, Some(LayoutOptions { force_reveal_active_tab: true }), computed_height);
+        self.state.layout(title_dimensions(width), Some(LayoutOptions { force_reveal_active_tab: true }), computed_height);
         self.frame();
+    }
+
+    /// `control.dispose(); reset(container); instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView,
+    /// groupsView, groupView, model, undefined, false, false)` sobre o modelo, as opções e a raiz vigentes. O controle de uma barra
+    /// do `setup` fica sem uso (o `Fixture` não tem descarte para ele).
+    fn create_multi_row(&mut self) {
+        self.row = Some(MultiRowEditorControl::new(group_host(&self.model, &self.options), readonly_model(&self.model), self.parent, false, false));
+    }
+
+    fn row(&self) -> &MultiRowEditorControl {
+        self.row.as_ref().expect("o caso cria o controle de duas barras")
+    }
+
+    fn row_mut(&mut self) -> &mut MultiRowEditorControl {
+        self.row.as_mut().expect("o caso cria o controle de duas barras")
+    }
+
+    /// `multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL))`.
+    fn row_open_editors(&mut self) {
+        self.row_mut().open_editors();
+    }
+
+    /// `multiRowControl.updateOptions(oldOptions, partOptions)`.
+    fn row_update_options(&mut self, old: &EditorPartOptions, new: &EditorPartOptions) {
+        self.row_mut().update_options(old, new);
+    }
+
+    /// O quadro de animação das duas barras.
+    fn row_frame(&mut self) {
+        let row = self.row.as_mut().expect("o caso cria o controle de duas barras");
+        row.run_frame(&*self.layout);
+    }
+
+    /// `layoutConnectedGroup(group, width, multiRowControl)`.
+    fn row_layout(&mut self, width: f64) {
+        self.layout.width.set(width);
+        let row = self.row.as_mut().expect("o caso cria o controle de duas barras");
+        row.layout(title_dimensions(width), &*self.layout);
+        self.row_frame();
+    }
+
+    /// `multiRowControl.updateEditorDirty(editor)`.
+    fn row_update_editor_dirty(&mut self, editor: &EditorInputRef) {
+        let row = self.row.as_mut().expect("o caso cria o controle de duas barras");
+        row.update_editor_dirty(editor, &*self.layout);
     }
 
     /// `disposables.add(new TestFileEditorInput(URI.file(path), 'testEditorInput'))` seguido de `model.openEditor(editor, { pinned: true, active })`.
@@ -2838,7 +2887,8 @@ fn fit_sized_connected_tabs_keep_stable_reservations_across_density_and_wrapping
     let editors = fx.open_file_editors(&names(&["a-long-persistent-editor-name.ts", "b.ts"]));
     editors[0].set_dirty();
     let persistent: EditorInputRef = editors[0].clone();
-    fx.state.update_editor_dirty(&persistent);
+    let computed_height = fx.computed_height();
+    fx.state.update_editor_dirty(&persistent, computed_height);
     fx.update_options(|options| {
         options.tab_sizing = TabSizing::Fit;
         options.tab_action_reserve_space = false;
@@ -3617,6 +3667,150 @@ fn connected_fixed_widths_settle_wrapping_on_the_first_scheduled_layout() {
     let widths_within_configured_range = fx.geometry().widths.iter().all(|width| (50.0..=160.0).contains(width));
 
     assert_eq!((unstable_layouts, widths_within_configured_range), (Vec::new(), true));
+}
+
+//#endregion
+
+//#region Controle de duas barras (`MultiRowEditorControl`) e abas conectadas
+//
+// `createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false)` é
+// `Fixture::create_multi_row`, e `layoutConnectedGroup(group, width, multiRowControl)` é `Fixture::row_layout`. As barras são
+// `tabBars[0]` (`row().sticky`) e `tabBars[1]` (`row().unsticky`); as classes `empty`, `wrapping`, `connected-tab-top-row` e
+// `connected-tabs-wrapping` do original são o estado que o controle escreve (`empty`, `container.wrapping`,
+// `TabState::connected_tab_top_row` e `connected_tabs_wrapping()`).
+
+#[test]
+fn the_first_nonempty_connected_tab_bar_owns_the_top_row_after_the_pinned_row_empties() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.create_multi_row();
+    fx.row_open_editors();
+    fx.row_layout(400.0);
+    let unsticky_top_rows = |fx: &Fixture| fx.row().unsticky.tabs.iter().map(|tab| tab.state.connected_tab_top_row).collect::<Vec<_>>();
+    let initially_empty = (fx.row().sticky.empty, unsticky_top_rows(&fx));
+
+    let sticky_editor = fx.model.get_editor_by_index(0).expect("aba 0");
+    fx.model.stick(&sticky_editor);
+    fx.row_mut().stick_editor(&sticky_editor);
+    fx.row_layout(400.0);
+    let with_pinned_row = unsticky_top_rows(&fx);
+
+    fx.model.unstick(&sticky_editor);
+    fx.row_mut().unstick_editor(&sticky_editor);
+    fx.row_layout(400.0);
+
+    assert_eq!(
+        (initially_empty, with_pinned_row, fx.row().sticky.empty, unsticky_top_rows(&fx)),
+        ((true, vec![true, true]), vec![false], true, vec![true, true])
+    );
+}
+
+#[test]
+fn connected_wrapping_state_aggregates_across_separate_pinned_and_unpinned_rows() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    for index in fx.model.count()..6 {
+        fx.open_pinned_file(&format!("aggregate-{index}.ts"), false);
+    }
+    let (old_options, new_options) = fx.set_options(|options| {
+        options.pinned_tabs_on_separate_row = true;
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.create_multi_row();
+    fx.row_update_options(&old_options, &new_options);
+    let sticky_editor = fx.model.get_editor_by_index(0).expect("aba 0");
+    fx.model.stick(&sticky_editor);
+    fx.row_open_editors();
+    fx.row_layout(150.0);
+    let initially_wrapped = (fx.row().sticky.container.wrapping, fx.row().unsticky.container.wrapping, fx.row().connected_tabs_wrapping());
+
+    fx.row_update_editor_dirty(&sticky_editor);
+    fx.row_frame();
+
+    assert_eq!((initially_wrapped, fx.row().connected_tabs_wrapping()), ((false, true, true), true));
+}
+
+#[test]
+fn connected_wrapped_last_tab_adds_its_shoulder_to_the_editor_actions_margin() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+
+    fx.layout(150.0);
+    // `tabsContainer.style.setProperty('--last-tab-margin-right', '17px')` e
+    // `tabsContainer.style.setProperty('--modern-ui-connected-tab-shoulder-radius', '5px')`.
+    fx.state.container.last_tab_margin_right = 17.0;
+    fx.layout.shoulder_radius.set(5.0);
+    let last_tab_active = fx.state.tabs.last().expect("última aba").state.active;
+    let margin = *fx.geometry().margins.last().expect("margem da última aba");
+
+    assert_eq!((fx.state.container.wrapping, last_tab_active, margin), (true, false, 22.0));
+}
+
+#[test]
+fn connected_tab_positions_and_spacing_stay_fixed_when_changing_selection() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    for index in 2..6 {
+        fx.open_pinned_file(&format!("file{index}.txt"), false);
+    }
+    fx.open_editors();
+    // `{ left: offsetLeft, top: offsetTop, width: getBoundingClientRect().width, margin: marginRight }` de cada aba.
+    let measure = |fx: &Fixture| -> Vec<[f64; 4]> {
+        let geometry = fx.geometry();
+        (0..fx.state.tabs.len()).map(|index| [geometry.offsets[index], geometry.tops[index], geometry.widths[index], geometry.margins[index]]).collect()
+    };
+    let mut mismatches: Vec<String> = Vec::new();
+    // O original repete tudo com `hc-black` ligado e desligado na raiz. A classe só troca as cores e as bordas das abas
+    // (pintura da renderização nativa) e a geometria do `Layout` não lê a raiz, então as duas voltas medem o mesmo e uma
+    // só cobre as duas.
+    for tab_sizing in [TabSizing::Fit, TabSizing::Fixed] {
+        let sizing = if tab_sizing == TabSizing::Fit { "fit" } else { "fixed" };
+        for wrap_tabs in [false, true] {
+            fx.update_options(|options| {
+                options.tab_sizing = tab_sizing;
+                options.wrap_tabs = wrap_tabs;
+                options.tab_sizing_fixed_min_width = 120.0;
+                options.tab_sizing_fixed_max_width = 120.0;
+                options.editor_actions_location = EditorActionsLocation::Hidden;
+            });
+            let widths: &[f64] = if wrap_tabs { &[245.0, 365.0] } else { &[1000.0] };
+            for &width in widths {
+                fx.layout(width);
+                let baseline = measure(&fx);
+                for active_index in 0..fx.state.tabs.len() {
+                    fx.activate(active_index);
+                    fx.layout(width);
+                    let actual = measure(&fx);
+                    if actual != baseline {
+                        mismatches.push(format!("{sizing} wrap={wrap_tabs} width={width} active={active_index} baseline={baseline:?} actual={actual:?}"));
+                    }
+
+                    let geometry = fx.geometry();
+                    let scroll = fx.state.container.scroll_left;
+                    for index in 1..fx.state.tabs.len() {
+                        let previous = fx.layout.tab_rect(&geometry, index - 1, scroll);
+                        let current = fx.layout.tab_rect(&geometry, index, scroll);
+                        if geometry.tops[index - 1] == geometry.tops[index] && (current.0 - previous.1).abs() > 0.01 {
+                            mismatches.push(format!("{sizing} wrap={wrap_tabs} width={width} active={active_index} gap_after={} gap={}", index - 1, current.0 - previous.1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(mismatches, Vec::<String>::new());
 }
 
 //#endregion

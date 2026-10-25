@@ -53,7 +53,7 @@ use je_base::platform::Platform;
 use je_base::scrollable::ScrollbarVisibility;
 use je_editor::core_2d::dimension::Dimension;
 
-use crate::browser::parts::editor::editor_tabs_control::{DragModifiers, EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost};
+use crate::browser::parts::editor::editor_tabs_control::{DragModifiers, EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost, TabsOpenOptions};
 use crate::common::editor::editor_group_model::{EditorOrIndex, IReadonlyEditorGroupModel};
 use crate::common::editor::{
     EditorCloseMethod, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, PreventPinnedEditorClose, SideBySideEditor, Verbosity,
@@ -816,6 +816,25 @@ pub struct Tab {
     pub state: TabState,
 }
 
+impl Tab {
+    /// A aba de índice `index` do modelo de abas (`createTab(index)`), ainda sem rótulo calculado nem estado desenhado: o
+    /// `computeTabLabels` e o `redraw` que `handleOpenedEditors` chama em seguida preenchem os dois.
+    pub fn for_model_index(model: &dyn IReadonlyEditorGroupModel, index: usize) -> Self {
+        let editor = model.get_editor_by_index(index as i64).expect("tab index out of range");
+
+        Self { label: EditorInputLabel { editor, name: None, description: None, force_description: false, title: None, aria_label: None }, state: TabState::default() }
+    }
+}
+
+/// O resultado de [`MultiEditorTabsControlState::run_frame`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameOutcome {
+    /// O `doLayoutTabs` rodou (havia layout agendado e as dimensões do título eram conhecidas).
+    pub laid_out_tabs: bool,
+    /// A altura usada mudou: o chamador faz `groupView.relayout()`.
+    pub relayout: bool,
+}
+
 /// O resultado de `handleOpenedEditors`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenedEditorsOutcome {
@@ -858,6 +877,9 @@ pub struct MultiEditorTabsControlState {
     /// `isMacintosh` e `isLinux`.
     pub is_macintosh: bool,
     pub is_linux: bool,
+    /// A aba que `openEditor(editor, { focusTabControl: true })` pede para receber o foco (`tabContainer.focus()`); quem
+    /// desenha a aba consome o pedido.
+    pub focus_tab_request: Option<usize>,
 }
 
 /// `dimensions: IEditorTitleControlDimensions & { used?: Dimension }`.
@@ -871,6 +893,13 @@ pub struct TitleDimensions {
 impl Default for TitleDimensions {
     fn default() -> Self {
         Self { container: None, available: None, used: None }
+    }
+}
+
+impl TitleDimensions {
+    /// As dimensões guardadas como o `IEditorTitleControlDimensions` que `layout(this.dimensions)` recebe, sem o `used`.
+    pub fn control_dimensions(&self) -> EditorTitleControlDimensions {
+        EditorTitleControlDimensions { container: self.container, available: self.available }
     }
 }
 
@@ -899,6 +928,7 @@ impl MultiEditorTabsControlState {
             connected_tab_bounds: None,
             is_macintosh: Platform::detect().is_macintosh,
             is_linux: Platform::detect().is_linux,
+            focus_tab_request: None,
         }
     }
 
@@ -987,6 +1017,26 @@ impl MultiEditorTabsControlState {
             self.redraw(Some(LayoutOptions { force_reveal_active_tab: true }));
         } else {
             self.layout_scheduler.schedule(Some(LayoutOptions { force_reveal_active_tab: true }));
+        }
+
+        changed
+    }
+
+    /// `openEditors`: as abas que faltam saem do modelo de abas (a lista de editores do original é ignorada, o controle relê o
+    /// modelo). Devolve se algo mudou.
+    pub fn open_editors(&mut self) -> bool {
+        let model = self.base.tabs_model.clone();
+
+        self.handle_opened_editors(&mut |index| Tab::for_model_index(model.as_ref(), index))
+    }
+
+    /// `openEditor`: o mesmo que [`Self::open_editors`] e, com `focusTabControl`, o pedido de foco para a aba do editor.
+    pub fn open_editor(&mut self, editor: &EditorInputRef, options: Option<TabsOpenOptions>) -> bool {
+        let changed = self.open_editors();
+
+        // Respect option to focus tab control if provided
+        if options.is_some_and(|options| options.focus_tab_control) {
+            self.focus_tab_request = self.tab_index_of(editor);
         }
 
         changed
@@ -1133,11 +1183,47 @@ impl MultiEditorTabsControlState {
         }
     }
 
-    /// `updateEditorDirty`.
-    pub fn update_editor_dirty(&mut self, editor: &EditorInputRef) {
-        let Some(index) = self.tab_index_of(editor) else { return };
-        self.tabs[index].state.fit_width = None;
-        self.redraw_tab_selected_active_and_dirty_at(index);
+    /// `updateEditorDirty`. `computed_height` é o de [`Self::computed_height`], para o `invalidateConnectedTabLayout`.
+    pub fn update_editor_dirty(&mut self, editor: &EditorInputRef, computed_height: f64) {
+        if let Some(index) = self.tab_index_of(editor) {
+            self.tabs[index].state.fit_width = None;
+            self.redraw_tab_selected_active_and_dirty_at(index);
+        }
+
+        self.invalidate_connected_tab_layout(computed_height);
+    }
+
+    /// `updateEditorCapabilities`.
+    pub fn update_editor_capabilities(&mut self, editor: &EditorInputRef, computed_height: f64) {
+        if let Some(index) = self.tab_index_of(editor) {
+            self.redraw_tab_at(index);
+        }
+
+        self.invalidate_connected_tab_layout(computed_height);
+    }
+
+    /// `updateEditorSelections`.
+    pub fn update_editor_selections(&mut self, computed_height: f64) {
+        for index in 0..self.tabs.len() {
+            self.redraw_tab_selected_active_and_dirty_at(index);
+        }
+
+        self.invalidate_connected_tab_layout(computed_height);
+    }
+
+    /// `invalidateConnectedTabLayout`: com abas conectadas, descarta o recorte e refaz o layout com as dimensões guardadas.
+    pub fn invalidate_connected_tab_layout(&mut self, computed_height: f64) {
+        if self.connected_tab_bounds.is_some() || self.base.parent.in_connected_editor_tabs {
+            self.clear_connected_tab_clipping();
+            self.layout_with_stored_dimensions(None, computed_height);
+        }
+    }
+
+    /// `this.layout(this.dimensions, options)`.
+    fn layout_with_stored_dimensions(&mut self, options: Option<LayoutOptions>, computed_height: f64) -> Option<Dimension> {
+        let dimensions = self.dimensions.control_dimensions();
+
+        self.layout(dimensions, options, computed_height)
     }
 
     /// `redrawTabLabel` de uma aba (os rótulos já calculados).
@@ -1181,8 +1267,7 @@ impl MultiEditorTabsControlState {
     /// decoração pode mudar o tamanho das abas.
     pub fn handle_decorations_change(&mut self, computed_height: f64) {
         self.clear_fit_widths();
-        let dimensions = EditorTitleControlDimensions { container: self.dimensions.container, available: self.dimensions.available };
-        self.layout(dimensions, None, computed_height);
+        self.layout_with_stored_dimensions(None, computed_height);
     }
 
     /// `setActive`.
@@ -4442,11 +4527,34 @@ impl MultiEditorTabsControlState {
 
         // Remember the dimensions used in the control so that we can return it fast from the `layout` call without having to
         // compute it over and over again
-        let wrapping_or_connected = (self.options().wrap_tabs && self.container.wrapping) || self.base.parent.in_connected_editor_tabs;
-        let measured_height = wrapping_or_connected.then(|| measurer.measure_wrapping(&self.container, &self.tabs).tabs_and_actions_height);
-        let height = self.compute_height(measured_height);
+        let height = self.computed_height(measurer);
 
         self.finish_layout(dimensions.container.map_or(0.0, |container| container.width), height)
+    }
+
+    /// `computeHeight()` com o que o navegador mede: o `offsetHeight` do contêiner quando há quebra de linha ou abas conectadas.
+    pub fn computed_height(&self, measurer: &dyn TabsMeasurer) -> f64 {
+        let wrapping_or_connected = (self.options().wrap_tabs && self.container.wrapping) || self.base.parent.in_connected_editor_tabs;
+        let measured_height = wrapping_or_connected.then(|| measurer.measure_wrapping(&self.container, &self.tabs).tabs_and_actions_height);
+
+        self.compute_height(measured_height)
+    }
+
+    /// O quadro de animação do controle: o `RunOnceScheduler` de `updateEditorLabel` dispara antes do layout agendado
+    /// (`scheduleAtNextAnimationFrame`), que roda com as dimensões guardadas. Uma barra sem abas não agenda layout no
+    /// original (`layout` só agenda `if (this.visible)`), então o pedido que sobrou do `redraw` é descartado.
+    pub fn run_frame(&mut self, measurer: &dyn TabsMeasurer) -> FrameOutcome {
+        self.run_scheduled_label_update();
+
+        let Some(options) = self.layout_scheduler.take() else { return FrameOutcome::default() };
+        if !self.visible() {
+            return FrameOutcome::default();
+        }
+
+        let dimensions = self.dimensions.control_dimensions();
+        let laid_out_tabs = dimensions.container.is_some() && dimensions.available.is_some();
+
+        FrameOutcome { laid_out_tabs, relayout: self.do_layout(dimensions, Some(options), measurer) }
     }
 }
 
