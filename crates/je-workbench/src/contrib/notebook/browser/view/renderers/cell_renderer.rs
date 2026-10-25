@@ -83,7 +83,8 @@ use je_widgets::list::list_types::{IListRenderer, IListVirtualDelegate, ListElem
 use je_widgets::progress_bar::IProgressBarStyles;
 
 use crate::contrib::notebook::browser::view::cell_part::{CellContentPart, CellOverlayPart, CellPartsCollection};
-use crate::contrib::notebook::browser::view::cell_parts::cell_comments::{CellComments, ICellCommentService, ICellCommentThreadWidgetFactory, ICellCommentsEditor};
+use crate::contrib::notebook::browser::view::cell_parts::cell_comments::{CellComments, ICellCommentThreadWidgetFactory, ICellCommentsEditor};
+use crate::contrib::comments::browser::comment_service::ICommentService;
 use crate::contrib::notebook::browser::view::cell_parts::cell_context_keys::{CellContextKeyPart, ICellContextKeyEditor};
 use crate::contrib::notebook::browser::view::cell_parts::cell_decorations::{CellDecorations, ICellDecorationsEditor};
 use crate::contrib::notebook::browser::view::cell_parts::cell_dnd::{CellDragAndDropController, CellDragAndDropPart, ICellDragHandleTemplate};
@@ -214,7 +215,7 @@ pub struct CellRendererServices {
     /// Os serviços da barra de status das células.
     pub status_bar: Rc<CellStatusBarServices>,
     /// `@ICommentService`.
-    pub comment_service: Rc<dyn ICellCommentService>,
+    pub comment_service: Rc<dyn ICommentService>,
     /// A fábrica das threads de comentário.
     pub comment_widget_factory_provider: CommentWidgetFactoryProvider,
     /// `IThemeService.onDidColorThemeChange`.
@@ -591,17 +592,17 @@ impl IListRenderer<CellViewModel> for MarkupCellRenderer {
 
         let mut content_parts: Vec<Rc<dyn CellContentPart>> = Vec::new();
         // `CellChatPart` fica fora do porte (ver as divergências do módulo).
-        content_parts.push(track(&template_disposables, CellEditorStatusBar::new(ui, editor.clone(), container, editor_part, None, services.status_bar.clone())));
+        content_parts.push(track(&template_disposables, CellEditorStatusBar::new(ui, editor.clone(), container, editor_part, None, services.status_bar.clone())) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellFocusIndicator::new(ui, editor.clone(), title_toolbar.clone(), focus_indicator_top, focus_indicator_left, focus_indicator_right, focus_indicator_bottom),
-        ));
+        ) as Rc<dyn CellContentPart>);
         let folded_hint_container = base.append(container, "notebook-folded-hint");
         content_parts.push(track(
             &template_disposables,
             FoldedCellHint::new(ui, editor.clone(), folded_hint_container, services.styles.label, services.notebook_execution_state_service.clone()),
-        ));
-        content_parts.push(track(&template_disposables, CellDecorations::new(ui, editor.clone(), root_container, decoration_container)));
+        ) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CellDecorations::new(ui, editor.clone(), root_container, decoration_container)) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellComments::new(
@@ -612,18 +613,18 @@ impl IListRenderer<CellViewModel> for MarkupCellRenderer {
                 services.comment_service.clone(),
                 comment_widget_factory,
             ),
-        ));
-        content_parts.push(track(&template_disposables, CollapsedCellInput::new(ui, editor.clone(), cell_input_collapsed_container)));
-        content_parts.push(track(&template_disposables, CellFocusPart::new(ui, container, None, editor.clone())));
-        content_parts.push(track(&template_disposables, CellDragAndDropPart::new(ui, container)));
+        ) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CollapsedCellInput::new(ui, editor.clone(), cell_input_collapsed_container)) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CellFocusPart::new(ui, container, None, editor.clone())) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CellDragAndDropPart::new(ui, container)) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellContextKeyPart::new(editor.clone(), scoped_context_key_service.clone(), services.notebook_execution_state_service.clone()),
-        ));
+        ) as Rc<dyn CellContentPart>);
 
         let mut overlay_parts: Vec<Rc<dyn CellOverlayPart>> = Vec::new();
         overlay_parts.push(title_toolbar);
-        overlay_parts.push(track(&template_disposables, BetweenCellToolbar::new(ui, editor.clone(), bottom_cell_container, toolbar_services)));
+        overlay_parts.push(track(&template_disposables, BetweenCellToolbar::new(ui, editor.clone(), bottom_cell_container, toolbar_services)) as Rc<dyn CellOverlayPart>);
 
         let cell_parts = CellPartsCollection::new(base.target_window(), content_parts, overlay_parts);
         track(&template_disposables, cell_parts.clone());
@@ -825,12 +826,12 @@ impl IListRenderer<CellViewModel> for CodeCellRenderer {
         content_parts.push(track(
             &template_disposables,
             CellEditorStatusBar::new(ui, editor.clone(), container, editor_part, Some(code_editor.clone()), services.status_bar.clone()),
-        ));
+        ) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellProgressBar::new(ui, editor_part, cell_input_collapsed_container, (services.styles.progress_bar)(), services.notebook_execution_state_service.clone()),
-        ));
-        content_parts.push(track(&template_disposables, CellDecorations::new(ui, editor.clone(), root_container, decoration_container)));
+        ) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CellDecorations::new(ui, editor.clone(), root_container, decoration_container)) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellComments::new(
@@ -841,34 +842,34 @@ impl IListRenderer<CellViewModel> for CodeCellRenderer {
                 services.comment_service.clone(),
                 comment_widget_factory,
             ),
-        ));
+        ) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellExecutionPart::new(ui, editor.clone(), execution_order_label, services.styles.label, services.notebook_execution_state_service.clone()),
-        ));
+        ) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CollapsedCellOutput::new(ui, editor.clone(), cell_output_collapsed_container, &*services.keybinding_service),
-        ));
-        content_parts.push(track(&template_disposables, CollapsedCellInput::new(ui, editor.clone(), cell_input_collapsed_container)));
-        content_parts.push(track(&template_disposables, CellFocusPart::new(ui, container, Some(focus_sink_element), editor.clone())));
-        content_parts.push(track(&template_disposables, CellDragAndDropPart::new(ui, container)));
+        ) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CollapsedCellInput::new(ui, editor.clone(), cell_input_collapsed_container)) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CellFocusPart::new(ui, container, Some(focus_sink_element), editor.clone())) as Rc<dyn CellContentPart>);
+        content_parts.push(track(&template_disposables, CellDragAndDropPart::new(ui, container)) as Rc<dyn CellContentPart>);
         content_parts.push(track(
             &template_disposables,
             CellContextKeyPart::new(editor.clone(), scoped_context_key_service.clone(), services.notebook_execution_state_service.clone()),
-        ));
+        ) as Rc<dyn CellContentPart>);
 
         let menu_ids = editor.cell_menu_ids();
         if let (Some(cell_execute_primary), Some(cell_execute_toolbar)) = (menu_ids.cell_execute_primary, menu_ids.cell_execute_toolbar) {
             content_parts.push(track(
                 &template_disposables,
                 RunToolbar::new(ui, editor.clone(), container, run_button_container, cell_execute_primary, cell_execute_toolbar, toolbar_services.clone()),
-            ));
+            ) as Rc<dyn CellContentPart>);
         }
 
         let mut overlay_parts: Vec<Rc<dyn CellOverlayPart>> = Vec::new();
         overlay_parts.push(title_toolbar);
-        overlay_parts.push(track(&template_disposables, BetweenCellToolbar::new(ui, editor.clone(), bottom_cell_toolbar_container, toolbar_services)));
+        overlay_parts.push(track(&template_disposables, BetweenCellToolbar::new(ui, editor.clone(), bottom_cell_toolbar_container, toolbar_services)) as Rc<dyn CellOverlayPart>);
 
         let cell_parts = CellPartsCollection::new(base.target_window(), content_parts, overlay_parts);
         track(&template_disposables, cell_parts.clone());
