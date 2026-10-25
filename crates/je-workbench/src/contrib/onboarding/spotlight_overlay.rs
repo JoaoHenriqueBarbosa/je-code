@@ -15,9 +15,10 @@
 //! - **`ResizeObserver`, `resize` e `scroll` da janela** não existem: a mudança de tamanho ou de posição do alvo é
 //!   vista pelo `animate` por quadro (a posição e o tamanho são comparados a cada quadro), e quem desenha chama
 //!   [`SpotlightOverlay::schedule_layout`] quando a janela muda.
-//! - **A descrição em markdown** guarda o [`SpotlightDescription`] como veio; os links dela não são focáveis (não há
-//!   subárvore), então a armadilha de foco considera só o alvo e os botões. A subárvore do alvo também não existe:
-//!   o alvo é o único focável dele.
+//! - **A descrição em markdown** guarda o [`SpotlightDescription`] como veio; quem desenha o markdown informa os links
+//!   focáveis por [`SpotlightOverlay::set_description_links`], e a armadilha de foco os põe entre o alvo e os botões.
+//!   A subárvore do alvo não existe: o alvo é o único focável dele. O `keydown` do balão é
+//!   [`SpotlightOverlay::callout_key_down`].
 //! - **`renderMarkdown`** não tem equivalente: o desenho do markdown é de quem pinta o balão.
 //! - **`localize`** é o texto em inglês do original.
 //! - `extends Disposable` é o `store` do overlay; descartar o overlay tira a raiz do contêiner, depois descarta o
@@ -241,6 +242,8 @@ pub struct SpotlightOverlay {
     title: RefCell<String>,
     description: RefCell<SpotlightDescription>,
     counter: RefCell<String>,
+    /// Os links focáveis que o desenho do markdown da descrição criou (o `a[href]` do `querySelectorAll`).
+    description_links: RefCell<Vec<OnboardingElement>>,
 
     back_button: Rc<SpotlightButton>,
     next_button: Rc<SpotlightButton>,
@@ -290,6 +293,7 @@ impl SpotlightOverlay {
                 title: RefCell::new(String::new()),
                 description: RefCell::new(SpotlightDescription::default()),
                 counter: RefCell::new(String::new()),
+                description_links: RefCell::new(Vec::new()),
                 skip_button: SpotlightButton::new(window, "End Tour", bubble.clone()),
                 back_button: SpotlightButton::new(window, "Back", bubble.clone()),
                 next_button: SpotlightButton::new(window, "Next", bubble),
@@ -442,6 +446,18 @@ impl SpotlightOverlay {
     /// O `offsetWidth` e o `offsetHeight` do balão, medidos por quem desenha.
     pub fn set_callout_size(&self, width: f64, height: f64) {
         self.callout_size.set(ISize { width, height });
+    }
+
+    /// Informa os controles focáveis que quem desenha o markdown criou na descrição, em ordem de documento. Valem até o
+    /// próximo `show` (o original refaz a subárvore da descrição a cada passo).
+    pub fn set_description_links(&self, links: Vec<OnboardingElement>) {
+        *self.description_links.borrow_mut() = links;
+    }
+
+    /// O `keydown` que chega ao próprio balão (o listener de `this._callout`): Escape encerra e Tab prende o foco.
+    pub fn callout_key_down(&self, key: OnboardingKey, shift_key: bool) {
+        let event = OnboardingEvent::new(OnboardingEventKind::KeyDown, key, shift_key, OnboardingElement::new(&self.window));
+        self.on_key_down(&event);
     }
 
     /// Show `content` spotlighting `target`.
@@ -712,6 +728,7 @@ impl SpotlightOverlay {
     fn render_content(&self, content: &SpotlightContent) {
         *self.title.borrow_mut() = content.title.clone();
         *self.description.borrow_mut() = content.description.clone();
+        self.description_links.borrow_mut().clear();
         *self.counter.borrow_mut() =
             if content.step_count > 1 { format!("{} of {}", content.step_index + 1, content.step_count) } else { String::new() };
 
@@ -782,11 +799,12 @@ impl SpotlightOverlay {
             },
             _ => Vec::new(),
         };
+        let description_focusables = self.description_links.borrow().clone();
         let buttons = [&self.skip_button, &self.back_button, &self.next_button]
             .into_iter()
             .filter(|button| !button.is_hidden())
             .map(|button| button.element.clone());
-        target_focusables.into_iter().chain(buttons).filter(is_tabbable).collect()
+        target_focusables.into_iter().chain(description_focusables).chain(buttons).filter(is_tabbable).collect()
     }
 
     pub fn schedule_layout(&self) {
