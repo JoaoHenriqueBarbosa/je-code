@@ -29,10 +29,10 @@ use je_base::event::{DebounceOptions, Emitter, Event};
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::promise::Promise;
 use je_base::symbols::Delay;
-use je_storage::{StorageChangeEvent, StorageValue};
+use je_storage::StorageValue;
 
 use super::storage::CompareAndSwapResult;
-use super::storage_main::IStorageMain;
+use super::storage_main::{IStorageMain, StorageMainChangeEvent};
 use super::storage_main_service::IStorageMainService;
 use crate::log::{LogServiceRef, Logger};
 use crate::user_data_profile::UserDataProfile;
@@ -124,7 +124,7 @@ impl StorageDatabaseChannel {
         // Listen for changes in provided storage to send to listeners that are listening. Use a debouncer to reduce IPC
         // traffic.
         let debounced = storage.on_did_change_storage().debounce(
-            |prev: Option<Vec<StorageChangeEvent>>, cur: &StorageChangeEvent| {
+            |prev: Option<Vec<StorageMainChangeEvent>>, cur: &StorageMainChangeEvent| {
                 let mut events = prev.unwrap_or_default();
                 events.push(cur.clone());
                 events
@@ -139,7 +139,7 @@ impl StorageDatabaseChannel {
         }));
     }
 
-    fn serialize_storage_change_events(events: &[StorageChangeEvent], storage: &dyn IStorageMain) -> SerializableItemsChangeEvent {
+    fn serialize_storage_change_events(events: &[StorageMainChangeEvent], storage: &dyn IStorageMain) -> SerializableItemsChangeEvent {
         let mut changed: IndexMap<String, String> = IndexMap::new();
         let mut deleted: IndexSet<String> = IndexSet::new();
         for event in events {

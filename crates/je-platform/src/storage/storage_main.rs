@@ -17,12 +17,21 @@
 //!   `je-storage` (o `MigratingStorage` o implementa sobrescrevendo `init` e `get`).
 //! - **`instanceof ApplicationSharedStorageMain`** do `StorageDatabaseChannel` é [`IStorageMain::application_storage_items`]
 //!   (`None` fora do armazém compartilhado).
-//! - **`IStorageChangeEvent`** do original só tem a `key`; aqui é o `StorageChangeEvent` do `je-storage`, que também
-//!   leva o `external` (o `BaseStorageMain` repassa o evento do `Storage` como veio).
+//! - **`IStorageChangeEvent`** de `storageMain.ts` só tem a `key`, e é o [`StorageMainChangeEvent`]: o `BaseStorageMain`
+//!   repassa o evento do `Storage` sem o `external`, como o original. O `external` pertence ao `IStorageChangeEvent` de
+//!   `base/parts/storage` (o do `Storage` do cliente, que o `RemoteStorageService` lê). No processo único o cliente e o
+//!   main dividem o mesmo `Storage`, então o evento dele, com o `external`, sai por
+//!   [`IStorageMain::on_did_change_client_storage`], que só o cliente ([`SqliteStorageService`](super::SqliteStorageService))
+//!   escuta; o `onDidChangeStorage` do main (o do canal de IPC e do serviço) é o do original.
 //! - **`IUserDataProfile`**: só o `globalStorageHome` é lido, então o `ProfileStorageMain` o recebe do perfil.
 //! - **`IEnvironmentService`**: o `WorkspaceStorageMain` só lê o `workspaceStorageHome`, lido na construção.
 //! - **`ensureWorkspaceStorageFolderMeta`** roda sem `await` (como o original): a promessa é descartada, e o erro vai
-//!   para o log.
+//!   para o log. Como no original, o `workspace.json` é gravado quando a pasta do armazém é criada (a primeira abertura
+//!   daquele `id`), com a origem do workspace completa; por isso toda abertura precisa receber o identificador inteiro
+//!   (o `switch` do cliente o recebe em [`StorageWorkspace`](super::StorageWorkspace)), nunca só o `id`.
+//! - **`close()`**: quem fecha os bancos é o dono (este `BaseStorageMain`), por `close()` direto ou pelo `onWillShutdown`
+//!   do [`StorageMainService`](super::StorageMainService); o cliente só fecha o que é exclusivamente dele (o armazém do
+//!   workspace), e o `onDidCloseStorage` tira o armazém do mapa do serviço, então o `onWillShutdown` não o fecha de novo.
 //! - **`new Date().toUTCString()`** é o `Timestamp` do `jiff` no formato `%a, %d %b %Y %H:%M:%S GMT`, sobre o relógio do
 //!   laço de eventos (`date_now`).
 
@@ -71,10 +80,20 @@ pub struct StorageMainOptions {
     pub use_in_memory_storage: bool,
 }
 
+/// `IStorageChangeEvent` de `storageMain.ts`: só a chave.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageMainChangeEvent {
+    pub key: String,
+}
+
 /// `IStorageMain`: acesso aos armazéns de aplicação, perfil e workspace, a partir do dono de todas as conexões.
 pub trait IStorageMain: IDisposable {
     /// `onDidChangeStorage`: emitido sempre que um dado é atualizado ou removido.
-    fn on_did_change_storage(&self) -> Event<StorageChangeEvent>;
+    fn on_did_change_storage(&self) -> Event<StorageMainChangeEvent>;
+
+    /// O `onDidChangeStorage` do `Storage` do cliente (`base/parts/storage`), com o `external`. No original ele nasce no
+    /// `Storage` do renderer; aqui o cliente usa o `Storage` do próprio main, então o evento sai daqui.
+    fn on_did_change_client_storage(&self) -> Event<StorageChangeEvent>;
 
     /// `onDidCloseStorage`: emitido quando o armazém é fechado.
     fn on_did_close_storage(&self) -> Event<()>;
@@ -179,7 +198,8 @@ pub struct BaseStorageMain {
     kind: Rc<dyn StorageMainKind>,
     log_service: LogServiceRef,
     file_service: Rc<dyn IFileService>,
-    on_did_change_storage: Rc<Emitter<StorageChangeEvent>>,
+    on_did_change_storage: Rc<Emitter<StorageMainChangeEvent>>,
+    on_did_change_client_storage: Rc<Emitter<StorageChangeEvent>>,
     on_did_close_storage: Rc<Emitter<()>>,
     /// `_storage`: em memória até o `init` criar o de verdade.
     storage: RefCell<Rc<dyn IStorage>>,
@@ -193,6 +213,8 @@ impl BaseStorageMain {
         let base = Disposable::new();
         let on_did_change_storage = Emitter::new();
         base.register(on_did_change_storage.clone());
+        let on_did_change_client_storage = Emitter::new();
+        base.register(on_did_change_client_storage.clone());
         let on_did_close_storage = Emitter::new();
         base.register(on_did_close_storage.clone());
         // storage is in-memory until initialized
@@ -206,6 +228,7 @@ impl BaseStorageMain {
             log_service,
             file_service,
             on_did_change_storage,
+            on_did_change_client_storage,
             on_did_close_storage,
             storage: RefCell::new(storage),
             initialize_promise: RefCell::new(None),
@@ -230,8 +253,11 @@ impl BaseStorageMain {
         in_memory.dispose();
 
         // Re-emit storage changes via event
-        let on_did_change_storage = self.on_did_change_storage.clone();
-        self.base.register(storage.on_did_change_storage().listen(move |e| on_did_change_storage.fire(e.clone())));
+        let (on_did_change_storage, on_did_change_client_storage) = (self.on_did_change_storage.clone(), self.on_did_change_client_storage.clone());
+        self.base.register(storage.on_did_change_storage().listen(move |e| {
+            on_did_change_storage.fire(StorageMainChangeEvent { key: e.key.clone() });
+            on_did_change_client_storage.fire(e.clone());
+        }));
 
         // Await storage init
         self.kind.do_init(storage.clone()).await?;
@@ -301,8 +327,12 @@ impl IDisposable for BaseStorageMain {
 }
 
 impl IStorageMain for BaseStorageMain {
-    fn on_did_change_storage(&self) -> Event<StorageChangeEvent> {
+    fn on_did_change_storage(&self) -> Event<StorageMainChangeEvent> {
         self.on_did_change_storage.event()
+    }
+
+    fn on_did_change_client_storage(&self) -> Event<StorageChangeEvent> {
+        self.on_did_change_client_storage.event()
     }
 
     fn on_did_close_storage(&self) -> Event<()> {

@@ -37,12 +37,13 @@ use je_platform::log::NullLogService;
 use je_platform::product::ProductService;
 use je_platform::resources::{join_path, uri_file};
 use je_platform::storage::{
-    CompareAndSwapResult, IS_NEW_KEY, IStorageMain, IStorageMainService, StorageCallResult, StorageDatabaseChannel, StorageMainOptions, StorageMainService, StorageRequest, StorageScope,
+    CompareAndSwapResult, IS_NEW_KEY, IStorageMain, IStorageMainService, StorageCallResult, StorageDatabaseChannel, StorageMainChangeEvent, StorageMainOptions, StorageMainService, StorageRequest,
+    StorageScope,
 };
 use je_platform::telemetry::{CURRENT_SESSION_DATE_STORAGE_KEY, FIRST_SESSION_DATE_STORAGE_KEY};
 use je_platform::user_data_profile::UserDataProfile;
 use je_platform::workspace::{AnyWorkspaceIdentifier, EmptyWorkspaceIdentifier};
-use je_storage::{StorageChangeEvent, StorageValue};
+use je_storage::StorageValue;
 
 fn in_memory_profile() -> UserDataProfile {
     let in_memory_profile_root = uri_file("/location").with(&UriChange { scheme: Field::Set(schemas::IN_MEMORY.into()), ..Default::default() });
@@ -132,7 +133,7 @@ impl Suite {
             storage.init().await.unwrap();
         }
 
-        let storage_change_event: Rc<RefCell<Option<StorageChangeEvent>>> = Rc::default();
+        let storage_change_event: Rc<RefCell<Option<StorageMainChangeEvent>>> = Rc::default();
         let last_event = storage_change_event.clone();
         self.disposables.add(storage.on_did_change_storage().listen(move |e| {
             *last_event.borrow_mut() = Some(e.clone());

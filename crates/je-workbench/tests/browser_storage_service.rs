@@ -243,7 +243,7 @@ async fn create_storage_service() -> (Rc<DisposableStore>, Rc<BrowserStorageServ
 
     let user_data_profile_service = disposables.add_rc(UserDataProfileService::create(in_memory_extra_profile, ()));
     let user_data_profile_service: Rc<dyn IUserDataProfileService> = user_data_profile_service;
-    let storage_service = disposables.add_rc(BrowserStorageService::new(StorageWorkspace { id: "workspace-storage-test".to_string() }, user_data_profile_service, log_service(), host()));
+    let storage_service = disposables.add_rc(BrowserStorageService::new(StorageWorkspace::from_id("workspace-storage-test"), user_data_profile_service, log_service(), host()));
 
     storage_service.initialize().await.unwrap();
 
