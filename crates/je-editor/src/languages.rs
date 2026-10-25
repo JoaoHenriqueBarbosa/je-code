@@ -104,6 +104,12 @@ pub trait ITokenizationSupport {
     ) -> Option<Rc<dyn IBackgroundTokenizer>> {
         None
     }
+
+    /// O suporte como `Any`, para o `instanceof` do original (o `MonarchTokenizer` consulta o suporte aninhado).
+    /// `None` quando o suporte não oferece a conversão.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 
 /// `IBackgroundTokenizer`.
@@ -478,5 +484,438 @@ impl ExternalUriOpenerPriority {
             3 => Some(Self::Preferred),
             _ => None,
         }
+    }
+}
+
+// Completações em linha de `src/vs/editor/common/languages.ts` (linhas 661 a 1142 do original).
+//
+// Decisões de tradução:
+// - `InlineCompletionsProvider<T>` não é genérico: o provedor devolve [`InlineCompletions`] e cada item é um
+//   `Rc<InlineCompletion>`, cuja identidade (`Rc::ptr_eq`) faz o papel da identidade de objeto do original (o
+//   `supersededBy` e o `handleEndOfLifetime` recebem o mesmo item que o provedor devolveu).
+// - `IdentifiableInlineCompletions` e `IdentifiableInlineCompletion` (`pid` e `idx` do protocolo) são os campos
+//   `pid` de [`InlineCompletions`] e `idx` de [`InlineCompletion`].
+// - `string | { snippet: string } | undefined` é [`InlineCompletionInsertText`]; `string | IMarkdownString` é
+//   [`StringOrMarkdown`]; `ISingleEditOperation` é a `SingleEditOperation`.
+// - `ProviderResult<T>` é `Promise<Option<T>>`; um membro opcional vira método com implementação padrão ("ausente"),
+//   com um `has_*` quando a presença muda o comportamento do consumidor.
+
+/// `PartialAcceptTriggerKind`: como uma aceitação parcial foi disparada.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartialAcceptTriggerKind {
+    Word = 0,
+    Line = 1,
+    Suggest = 2,
+}
+
+/// `PartialAcceptInfo`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartialAcceptInfo {
+    pub kind: PartialAcceptTriggerKind,
+    pub accepted_length: i32,
+}
+
+/// `InlineCompletionTriggerKind`: como o provedor foi disparado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineCompletionTriggerKind {
+    /// Disparo automático durante a edição; basta devolver um item.
+    Automatic = 0,
+    /// Disparo explícito por um gesto do usuário; devolver vários itens permite alternar entre eles.
+    Explicit = 1,
+}
+
+/// `IInlineCompletionChangeHint`: dado arbitrário que o provedor passa ao disparar `onDidChangeInlineCompletions`.
+#[derive(Clone, Debug, Default)]
+pub struct IInlineCompletionChangeHint {
+    /// `data?: unknown` (serializável em JSON).
+    pub data: Option<je_base::dynamic::Dynamic>,
+}
+
+/// `SelectedSuggestionInfo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedSuggestionInfo {
+    pub range: crate::range::Range,
+    pub text: String,
+    pub completion_kind: CompletionItemKind,
+    pub is_snippet_text: bool,
+}
+
+impl SelectedSuggestionInfo {
+    pub fn new(range: crate::range::Range, text: String, completion_kind: CompletionItemKind, is_snippet_text: bool) -> Self {
+        Self { range, text, completion_kind, is_snippet_text }
+    }
+
+    /// `equals(other)`.
+    pub fn equals(&self, other: &SelectedSuggestionInfo) -> bool {
+        self == other
+    }
+}
+
+/// `InlineCompletionContext`.
+#[derive(Clone, Debug)]
+pub struct InlineCompletionContext {
+    pub trigger_kind: InlineCompletionTriggerKind,
+    pub selected_suggestion_info: Option<SelectedSuggestionInfo>,
+    /// `userPrompt?` (experimental, interno).
+    pub user_prompt: Option<String>,
+    /// `requestUuid` (experimental, interno).
+    pub request_uuid: String,
+    pub include_inline_edits: bool,
+    pub include_inline_completions: bool,
+    pub request_issued_date_time: f64,
+    pub earliest_shown_date_time: f64,
+    /// O `changeHint` passado ao `onDidChangeInlineCompletions`; só existe quando o pedido veio desse evento.
+    pub change_hint: Option<IInlineCompletionChangeHint>,
+}
+
+/// `IInlineCompletionModel`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IInlineCompletionModel {
+    pub name: String,
+    pub id: String,
+}
+
+/// `IInlineCompletionModelInfo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IInlineCompletionModelInfo {
+    pub models: Vec<IInlineCompletionModel>,
+    pub current_model_id: String,
+}
+
+/// `IInlineCompletionProviderOptionValue`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IInlineCompletionProviderOptionValue {
+    pub id: String,
+    pub label: String,
+}
+
+/// `IInlineCompletionProviderOption`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IInlineCompletionProviderOption {
+    pub id: String,
+    pub label: String,
+    pub values: Vec<IInlineCompletionProviderOptionValue>,
+    pub current_value_id: String,
+}
+
+/// `string | { snippet: string } | undefined`: o `insertText` de um [`InlineCompletion`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InlineCompletionInsertText {
+    Text(String),
+    Snippet(String),
+}
+
+/// `InlineCompletionWarning`.
+#[derive(Clone, Debug)]
+pub struct InlineCompletionWarning {
+    pub message: StringOrMarkdown,
+    /// `icon?: IconPath` (`ThemeIcon`).
+    pub icon: Option<je_base::themables::ThemeIcon>,
+}
+
+/// `InlineCompletionHintStyle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineCompletionHintStyle {
+    Code = 1,
+    Label = 2,
+}
+
+/// `IInlineCompletionHint`.
+#[derive(Clone, Debug)]
+pub struct IInlineCompletionHint {
+    /// Refere-se ao documento atual.
+    pub range: crate::range::Range,
+    pub style: InlineCompletionHintStyle,
+    pub content: String,
+}
+
+/// `InlineCompletion`.
+#[derive(Clone, Debug, Default)]
+pub struct InlineCompletion {
+    /// O texto a inserir. Se tiver quebra de linha, o `range` termina no fim de uma linha; se trocar texto existente, o
+    /// texto existente é prefixo do inserido. Um snippet mostra a prévia com os parâmetros padrão e é inserido inteiro.
+    pub insert_text: Option<InlineCompletionInsertText>,
+    /// O trecho a trocar, na mesma linha, no documento atual ou no `uri`.
+    pub range: Option<crate::range::Range>,
+    /// Edições adicionais aplicadas ao aceitar; sem sobreposição com a principal nem entre si.
+    pub additional_text_edits: Option<Vec<crate::edit_operation::SingleEditOperation>>,
+    /// O arquivo ao qual a edição se aplica.
+    pub uri: Option<je_base::uri::UriComponents>,
+    /// Comando executado ao aceitar.
+    pub command: Option<crate::code_action::languages::Command>,
+    pub gutter_menu_link_action: Option<crate::code_action::languages::Command>,
+    /// Chamado na primeira vez que o item aparece (obsoleto: usar o `onDidShow` do provedor).
+    pub shown_command: Option<crate::code_action::languages::Command>,
+    /// Com `true`, fechamentos sem abertura são removidos e aberturas sem fechamento são fechadas.
+    pub complete_bracket_pairs: Option<bool>,
+    pub is_inline_edit: Option<bool>,
+    pub show_inline_edit_menu: Option<bool>,
+    /// Só mostra a sugestão quando o cursor está no `show_range`.
+    pub show_range: Option<crate::range::Range>,
+    pub warning: Option<InlineCompletionWarning>,
+    pub hint: Option<IInlineCompletionHint>,
+    pub supports_rename: Option<bool>,
+    /// Para telemetria.
+    pub correlation_id: Option<String>,
+    pub jump_to_position: Option<crate::position::Position>,
+    pub do_not_log: Option<bool>,
+    /// `idx` do `IdentifiableInlineCompletion`: o índice do item na lista do host de extensões.
+    pub idx: Option<u32>,
+}
+
+/// `InlineCompletionCommand`: `{ command: Command; icon?: ThemeIcon }`.
+#[derive(Clone, Debug)]
+pub struct InlineCompletionCommand {
+    pub command: crate::code_action::languages::Command,
+    pub icon: Option<je_base::themables::ThemeIcon>,
+}
+
+/// `InlineCompletions`.
+#[derive(Clone, Default)]
+pub struct InlineCompletions {
+    pub items: Vec<std::rc::Rc<InlineCompletion>>,
+    /// Comandos associados às completações em linha desta lista.
+    pub commands: Option<Vec<InlineCompletionCommand>>,
+    pub suppress_suggestions: Option<bool>,
+    /// Com `true`, digitar a sugestão sem divergir dela não a atualiza.
+    pub enable_forward_stability: Option<bool>,
+    /// `pid` do `IdentifiableInlineCompletions`: o identificador da lista no host de extensões.
+    pub pid: Option<u32>,
+}
+
+/// `InlineCompletionProviderGroupId`.
+pub type InlineCompletionProviderGroupId = String;
+
+/// `InlineCompletionsDisposeReason['kind']`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineCompletionsDisposeReasonKind {
+    LostRace,
+    TokenCancellation,
+    Other,
+    Empty,
+    NotTaken,
+}
+
+/// `InlineCompletionsDisposeReason`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlineCompletionsDisposeReason {
+    pub kind: InlineCompletionsDisposeReasonKind,
+}
+
+/// `InlineCompletionEndOfLifeReasonKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineCompletionEndOfLifeReasonKind {
+    Accepted = 0,
+    Rejected = 1,
+    Ignored = 2,
+}
+
+/// `InlineCompletionEndOfLifeReason<TInlineCompletion>`.
+#[derive(Clone, Debug)]
+pub enum InlineCompletionEndOfLifeReason<T = std::rc::Rc<InlineCompletion>> {
+    /// O usuário aceitou com uma ação explícita; `alternative_action` diz se foi uma ação alternativa.
+    Accepted { alternative_action: bool },
+    /// O usuário rejeitou com uma ação explícita.
+    Rejected,
+    Ignored { superseded_by: Option<T>, user_typing_disagreed: bool },
+}
+
+impl<T> InlineCompletionEndOfLifeReason<T> {
+    /// O `kind` da variante.
+    pub fn kind(&self) -> InlineCompletionEndOfLifeReasonKind {
+        match self {
+            Self::Accepted { .. } => InlineCompletionEndOfLifeReasonKind::Accepted,
+            Self::Rejected => InlineCompletionEndOfLifeReasonKind::Rejected,
+            Self::Ignored { .. } => InlineCompletionEndOfLifeReasonKind::Ignored,
+        }
+    }
+
+    /// `mapReason` do `mainThreadLanguageFeatures`: troca o `supersededBy` por `map`.
+    pub fn map<U>(&self, map: impl FnOnce(&T) -> U) -> InlineCompletionEndOfLifeReason<U> {
+        match self {
+            Self::Accepted { alternative_action } => InlineCompletionEndOfLifeReason::Accepted { alternative_action: *alternative_action },
+            Self::Rejected => InlineCompletionEndOfLifeReason::Rejected,
+            Self::Ignored { superseded_by, user_typing_disagreed } => InlineCompletionEndOfLifeReason::Ignored {
+                superseded_by: superseded_by.as_ref().map(map),
+                user_typing_disagreed: *user_typing_disagreed,
+            },
+        }
+    }
+}
+
+/// `LifetimeSummary`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LifetimeSummary {
+    pub request_uuid: String,
+    pub correlation_id: Option<String>,
+    pub partially_accepted: i32,
+    pub partially_accepted_count_since_original: i32,
+    pub partially_accepted_ratio_since_original: f64,
+    pub partially_accepted_characters_since_original: i32,
+    pub shown: bool,
+    pub shown_duration: f64,
+    pub shown_duration_uncollapsed: f64,
+    pub time_until_shown: Option<f64>,
+    pub time_until_actually_shown: Option<f64>,
+    pub time_until_provider_request: f64,
+    pub time_until_provider_response: f64,
+    pub not_shown_reason: Option<String>,
+    pub editor_type: String,
+    pub view_kind: Option<String>,
+    pub preceeded: bool,
+    pub language_id: String,
+    pub request_reason: String,
+    pub performance_markers: Option<String>,
+    pub cursor_column_distance: Option<i32>,
+    pub cursor_line_distance: Option<i32>,
+    pub line_count_original: Option<i32>,
+    pub line_count_modified: Option<i32>,
+    pub character_count_original: Option<i32>,
+    pub character_count_modified: Option<i32>,
+    pub disjoint_replacements: Option<i32>,
+    pub same_shape_replacements: Option<bool>,
+    pub typing_interval: f64,
+    pub typing_interval_character_count: i32,
+    pub selected_suggestion_info: bool,
+    pub available_providers: String,
+    pub sku_plan: Option<String>,
+    pub sku_type: Option<String>,
+    pub rename_created: Option<bool>,
+    pub rename_duration: Option<f64>,
+    pub rename_timed_out: Option<bool>,
+    pub rename_dropped_other_edits: Option<i32>,
+    pub rename_dropped_rename_edits: Option<i32>,
+    pub edit_kind: Option<String>,
+    pub long_distance_hint_visible: Option<bool>,
+    pub long_distance_hint_distance: Option<i32>,
+    pub is_for_another_document: Option<bool>,
+}
+
+/// `InlineCompletionsProvider`.
+pub trait InlineCompletionsProvider {
+    /// `provideInlineCompletions(model, position, context, token)`.
+    fn provide_inline_completions(
+        &self,
+        model: &std::rc::Rc<crate::text_model::TextModel>,
+        position: crate::position::Position,
+        context: &InlineCompletionContext,
+        token: &je_base::cancellation::CancellationToken,
+    ) -> crate::language_providers::ProviderResult<std::rc::Rc<InlineCompletions>>;
+
+    /// `handleItemDidShow?`: chamado quando um item aparece. `updated_insert_text` ajuda a entender o fechamento de
+    /// colchetes.
+    fn handle_item_did_show(
+        &self,
+        _completions: &std::rc::Rc<InlineCompletions>,
+        _item: &std::rc::Rc<InlineCompletion>,
+        _updated_insert_text: &str,
+        _edit_delta_info: crate::text_model_edit_source::EditDeltaInfo,
+    ) {
+    }
+
+    /// `handlePartialAccept?`: chamado quando um item é aceito em parte.
+    fn handle_partial_accept(
+        &self,
+        _completions: &std::rc::Rc<InlineCompletions>,
+        _item: &std::rc::Rc<InlineCompletion>,
+        _accepted_characters: i32,
+        _info: PartialAcceptInfo,
+    ) {
+    }
+
+    /// Se o provedor implementa o `handleRejection?` (obsoleto: usar `handleEndOfLifetime`).
+    fn has_handle_rejection(&self) -> bool {
+        false
+    }
+
+    /// `handleRejection?`.
+    fn handle_rejection(&self, _completions: &std::rc::Rc<InlineCompletions>, _item: &std::rc::Rc<InlineCompletion>) {}
+
+    /// Se o provedor implementa o `handleEndOfLifetime?`.
+    fn has_handle_end_of_lifetime(&self) -> bool {
+        false
+    }
+
+    /// `handleEndOfLifetime?`: o item deixou de ser usado, com o motivo.
+    fn handle_end_of_lifetime(
+        &self,
+        _completions: &std::rc::Rc<InlineCompletions>,
+        _item: &std::rc::Rc<InlineCompletion>,
+        _reason: &InlineCompletionEndOfLifeReason,
+        _lifetime_summary: &LifetimeSummary,
+    ) {
+    }
+
+    /// `disposeInlineCompletions`: a lista não está mais em uso.
+    fn dispose_inline_completions(&self, completions: &std::rc::Rc<InlineCompletions>, reason: InlineCompletionsDisposeReason);
+
+    /// `onDidChangeInlineCompletions?`: o provedor quer disparar um novo pedido; o `changeHint` vai no contexto dele.
+    fn on_did_change_inline_completions(&self) -> Option<je_base::event::Event<Option<IInlineCompletionChangeHint>>> {
+        None
+    }
+
+    /// `groupId?`: usado só por `yieldsToGroupIds`.
+    fn group_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// `providerId?` (interno).
+    fn provider_id(&self) -> Option<&crate::code_action::languages::ProviderId> {
+        None
+    }
+
+    /// `yieldsToGroupIds?`: o provedor só é consultado se nenhum de grupo preferido devolveu resultado.
+    fn yields_to_group_ids(&self) -> Option<&[InlineCompletionProviderGroupId]> {
+        None
+    }
+
+    /// `excludesGroupIds?`.
+    fn excludes_group_ids(&self) -> Option<&[InlineCompletionProviderGroupId]> {
+        None
+    }
+
+    /// `displayName?`.
+    fn display_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// `debounceDelayMs?`.
+    fn debounce_delay_ms(&self) -> Option<f64> {
+        None
+    }
+
+    /// `modelInfo?`.
+    fn model_info(&self) -> Option<IInlineCompletionModelInfo> {
+        None
+    }
+
+    /// `onDidModelInfoChange?`.
+    fn on_did_model_info_change(&self) -> Option<je_base::event::Event<()>> {
+        None
+    }
+
+    /// `setModelId?`.
+    fn set_model_id(&self, _model_id: &str) -> je_base::promise::Promise<()> {
+        je_base::promise::Promise::resolved(())
+    }
+
+    /// `providerOptions?`.
+    fn provider_options(&self) -> Option<Vec<IInlineCompletionProviderOption>> {
+        None
+    }
+
+    /// `onDidProviderOptionsChange?`.
+    fn on_did_provider_options_change(&self) -> Option<je_base::event::Event<()>> {
+        None
+    }
+
+    /// `setProviderOption?`.
+    fn set_provider_option(&self, _option_id: &str, _value_id: &str) -> je_base::promise::Promise<()> {
+        je_base::promise::Promise::resolved(())
+    }
+
+    /// `toString?()`.
+    fn to_display_string(&self) -> Option<String> {
+        None
     }
 }

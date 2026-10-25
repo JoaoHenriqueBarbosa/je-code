@@ -1,6 +1,7 @@
 //! Porte parcial de `src/vs/editor/browser/editorBrowser.ts`: o `MouseTargetType`, as interfaces de alvo do
 //! mouse (`IBaseMouseTarget` e derivadas, o union `IMouseTarget`) e `IEditorMouseEvent` /
-//! `IPartialEditorMouseEvent`. O resto do arquivo (`IEditor`, `ICodeEditor`, `IDiffEditor`, widgets,
+//! `IPartialEditorMouseEvent`, e os widgets de conteúdo e de overlay (`IContentWidget`, `IOverlayWidget` e as
+//! posições). O resto do arquivo (`IEditor`, `ICodeEditor`, `IDiffEditor`, widgets de margem de glifos,
 //! `IPasteEvent` e afins) não está aqui.
 //!
 //! Divergências:
@@ -18,8 +19,13 @@
 //! - `je-editor` não depende de `je-ui`, então o evento é definido aqui; quando o `je-ui` trouxer o evento
 //!   de mouse de base, este tipo passa a ser reexportado de lá.
 //! - `InjectedText` é o de `model_line_projection_data` e `GlyphMarginLane` o de `model`.
+//! - Os widgets de conteúdo e de overlay não têm `getDomNode()`: a UI é uma árvore nativa, e o dono do widget o
+//!   desenha. As propriedades opcionais da interface são métodos com valor padrão.
 
-use crate::model::GlyphMarginLane;
+use je_base::event::Event;
+
+use crate::core_2d::dimension::Dimension;
+use crate::model::{GlyphMarginLane, PositionAffinity};
 use crate::model_line_projection_data::InjectedText;
 use crate::position::Position;
 use crate::range::Range;
@@ -393,3 +399,135 @@ pub struct PartialEditorMouseEvent {
     pub event: MouseEvent,
     pub target: Option<MouseTarget>,
 }
+
+// #region Widgets de conteúdo e de overlay
+
+/// `ContentWidgetPositionPreference`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentWidgetPositionPreference {
+    /// Place the content widget exactly at a position.
+    Exact,
+    /// Place the content widget above a position.
+    Above,
+    /// Place the content widget below a position.
+    Below,
+}
+
+/// `IContentWidgetPosition`: a posição de um widget de conteúdo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentWidgetPosition {
+    /// Desired position which serves as an anchor for placing the content widget.
+    pub position: Option<Position>,
+    /// A secondary position with the same line number as the primary one.
+    pub secondary_position: Option<Position>,
+    /// Placement preference for position, in order of preference.
+    pub preference: Vec<ContentWidgetPositionPreference>,
+    /// Placement preference when multiple view positions refer to the same (model) position.
+    pub position_affinity: Option<PositionAffinity>,
+}
+
+/// `IContentWidgetRenderedCoordinate`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContentWidgetRenderedCoordinate {
+    /// Top position relative to the editor content.
+    pub top: f64,
+    /// Left position relative to the editor content.
+    pub left: f64,
+}
+
+/// `IContentWidget`: renders inline with the text and can be placed near an editor position. Sem DOM, o
+/// `getDomNode()` do original não existe: quem desenha o widget é o dono dele, a partir da posição que a
+/// `View` lê por [`IContentWidget::get_position`].
+pub trait IContentWidget {
+    /// `getId()`.
+    fn get_id(&self) -> String;
+
+    /// `getPosition()`: `None` põe o widget fora da tela.
+    fn get_position(&self) -> Option<ContentWidgetPosition>;
+
+    /// `allowEditorOverflow`.
+    fn allow_editor_overflow(&self) -> bool {
+        false
+    }
+
+    /// `useDisplayNone`: o widget não tem representação visual.
+    fn use_display_none(&self) -> bool {
+        false
+    }
+
+    /// `suppressMouseDown`.
+    fn suppress_mouse_down(&self) -> bool {
+        false
+    }
+
+    /// `beforeRender?()`.
+    fn before_render(&self) -> Option<Dimension> {
+        None
+    }
+
+    /// `afterRender?(position, coordinate)`.
+    fn after_render(&self, _position: Option<ContentWidgetPositionPreference>, _coordinate: Option<ContentWidgetRenderedCoordinate>) {}
+}
+
+/// `OverlayWidgetPositionPreference`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayWidgetPositionPreference {
+    /// Position the overlay widget in the top right corner.
+    TopRightCorner,
+    /// Position the overlay widget in the bottom right corner.
+    BottomRightCorner,
+    /// Position the overlay widget in the top center.
+    TopCenter,
+}
+
+/// `IOverlayWidgetPositionCoordinates`: coordenadas relativas ao editor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayWidgetPositionCoordinates {
+    /// The top position for the overlay widget, relative to the editor.
+    pub top: f64,
+    /// The left position for the overlay widget, relative to the editor.
+    pub left: f64,
+}
+
+/// `OverlayWidgetPositionPreference | IOverlayWidgetPositionCoordinates` do campo `preference`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OverlayWidgetPlacement {
+    Preference(OverlayWidgetPositionPreference),
+    Coordinates(OverlayWidgetPositionCoordinates),
+}
+
+/// `IOverlayWidgetPosition`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayWidgetPosition {
+    /// The position preference for the overlay widget (`null` é `None`).
+    pub preference: Option<OverlayWidgetPlacement>,
+    /// When set, stacks with other overlay widgets with the same preference.
+    pub stack_ordinal: Option<f64>,
+}
+
+/// `IOverlayWidget`: renders on top of the text. Sem DOM, o `getDomNode()` do original não existe (ver
+/// [`IContentWidget`]).
+pub trait IOverlayWidget {
+    /// `getId()`.
+    fn get_id(&self) -> String;
+
+    /// `getPosition()`: `None` deixa o widget se posicionar sozinho.
+    fn get_position(&self) -> Option<OverlayWidgetPosition>;
+
+    /// `onDidLayout?`: evento disparado quando o layout do widget muda.
+    fn on_did_layout(&self) -> Option<Event<()>> {
+        None
+    }
+
+    /// `allowEditorOverflow`.
+    fn allow_editor_overflow(&self) -> bool {
+        false
+    }
+
+    /// `getMinContentWidthInPx?()`: o editor garante que a largura de rolagem seja pelo menos esse valor.
+    fn get_min_content_width_in_px(&self) -> Option<f64> {
+        None
+    }
+}
+
+// #endregion

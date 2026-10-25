@@ -172,6 +172,10 @@ pub enum AccessibilitySignal {
     TaskFailed,
     /// `AccessibilitySignal.clear`: uma notificação foi limpa.
     Clear,
+    /// `AccessibilitySignal.diffLineInserted`: o cursor da visão acessível parou numa linha inserida do diff.
+    DiffLineInserted,
+    /// `AccessibilitySignal.diffLineDeleted`: o cursor da visão acessível parou numa linha removida do diff.
+    DiffLineDeleted,
 }
 
 /// `IAccessbilitySignalOptions`, só com o `userGesture` (para ações como salvar e formatar, o sinal só toca quando o

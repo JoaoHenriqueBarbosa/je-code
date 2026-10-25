@@ -53,7 +53,7 @@ impl IColorTheme for ColorTheme {
     }
 }
 
-/// `IThemeService` (ver as diferenças no topo do módulo).
+/// `IThemeService`.
 pub trait IThemeService {
     /// `getColorTheme()`.
     fn get_color_theme(&self) -> Rc<dyn IColorTheme>;
@@ -61,3 +61,5 @@ pub trait IThemeService {
     /// `onDidColorThemeChange`.
     fn on_did_color_theme_change(&self) -> Event<Rc<dyn IColorTheme>>;
 }
+
+je_instantiation::service_id!(pub I_THEME_SERVICE: dyn IThemeService = "themeService");

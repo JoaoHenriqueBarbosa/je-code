@@ -4,11 +4,15 @@
 Para cada `*.test.ts` de `ref/vscode/src/vs/<camada>` conta os `test(` (casos do oráculo) e procura o
 arquivo portado correspondente em `crates/*/tests/<nome>.rs`, contando os `#[test]` dele. Um arquivo
 portado declara o arquivo de origem na primeira linha de doc (`Porte de \\`src/vs/.../x.test.ts\\``).
-Escreve `docs/conformance.md`. Casos portados só contam se `cargo test` passa: o placar não roda os
-testes, ele lê a contagem; a CI roda `cargo test` antes.
+A contagem vem do binário de teste compilado (`--list` menos `--ignored`), que inclui os casos gerados por
+macro; sem binário atualizado, vale a contagem dos `#[test]` do texto. Escreve `docs/conformance.md`. Casos
+portados só contam se `cargo test` passa: o placar não roda os testes, ele lê a contagem; rode `cargo test`
+(com o mesmo `CARGO_TARGET_DIR`) antes.
 """
+import os
 import pathlib
 import re
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -27,6 +31,17 @@ LAYERS.append(('extensions', 'extensions'))
 SHELL_EXCLUDE = ['workbench/services', 'workbench/api', 'workbench/contrib']
 EXTENSIONS_OUT_OF_SCOPE = ['extensions/copilot/']
 TEST_RE = re.compile(r'^\s*test\(', re.M)
+# Num arquivo que declara um auxiliar local `function test(...)` (o `keyCodes.test.ts`), as chamadas desse auxiliar não são casos
+# do mocha: ali só conta a chamada `test(` com o nome do caso em texto literal.
+LOCAL_TEST_HELPER_RE = re.compile(r'\bfunction\s+test\s*\(')
+NAMED_TEST_RE = re.compile(r'^\s*test\(\s*[\'"`]', re.M)
+
+
+def oracle_cases(text):
+    """Os casos do mocha de um arquivo de teste do oráculo."""
+    if LOCAL_TEST_HELPER_RE.search(text):
+        return len(NAMED_TEST_RE.findall(text))
+    return len(TEST_RE.findall(text))
 PORT_RE = re.compile(r'Porte de `((?:src/vs|extensions)/[^`]+\.test\.ts)`')
 
 
@@ -44,6 +59,32 @@ def macro_cases(text):
     return len(re.findall(r'^\s+([a-z_0-9]+)\s*$', block, re.M))
 
 
+def listed_cases(path):
+    """Os casos ativos que o binário de teste compilado lista (`--list` menos os `--ignored`), que conta também os casos que
+    uma macro gera. `None` quando não há binário: aí vale a contagem do texto. O diretório dos binários vem de
+    `CARGO_TARGET_DIR` (o mesmo do `cargo test` que rodou antes) ou do `target/` do repositório."""
+    target = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target')) / 'debug' / 'deps'
+    if not target.is_dir():
+        return None
+    stem = path.stem
+    # O binário se chama `<nome>-<hash>`: com o mesmo nome de teste em dois crates não há como saber qual é qual
+    if sum(1 for _ in ROOT.glob(f'crates/*/tests/{stem}.rs')) > 1:
+        return None
+    binaries = [b for b in target.glob(f'{stem}-*') if b.is_file() and os.access(b, os.X_OK) and b.suffix == '']
+    if not binaries:
+        return None
+    binary = max(binaries, key=lambda b: b.stat().st_mtime)
+    if binary.stat().st_mtime < path.stat().st_mtime:
+        return None  # binário mais velho que o teste: não reflete o arquivo atual
+    def count(*args):
+        out = subprocess.run([str(binary), '--list', '--format', 'terse', *args], capture_output=True, text=True, timeout=60)
+        return sum(1 for line in out.stdout.splitlines() if line.endswith(': test'))
+    try:
+        return count() - count('--ignored')
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def ported():
     found = {}
     for path in ROOT.glob('crates/*/tests/*.rs'):
@@ -51,7 +92,9 @@ def ported():
         match = PORT_RE.search(text)
         if match:
             # `#[test]` seguido de `#[ignore...]` é caso pendente (falha conhecida registrada): não conta como portado
-            active = len(re.findall(r'#\[test\]\n(?!\s*#\[ignore)', text)) + macro_cases(text)
+            active = listed_cases(path)
+            if active is None:
+                active = len(re.findall(r'#\[test\]\n(?!\s*#\[ignore)', text)) + macro_cases(text)
             key = match.group(1)
             # Dois arquivos podem portar o mesmo arquivo de origem (a suíte `createSuite` de i/o roda em dois serviços): vale o maior.
             if key not in found or active > found[key][1]:
@@ -81,7 +124,7 @@ def main():
         files = sorted(p for p in (source / folder).rglob('*.test.ts') if in_scope(p))
         cases = ported_cases = ported_files = 0
         for f in files:
-            n = len(TEST_RE.findall(f.read_text(encoding='utf-8', errors='replace')))
+            n = oracle_cases(f.read_text(encoding='utf-8', errors='replace'))
             cases += n
             key = str(f.relative_to(source))
             if key in done:

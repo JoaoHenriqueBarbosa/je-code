@@ -8,3 +8,9 @@ pub mod frosted_glass;
 
 // A contribuição que liga as classes do Modern UI nos contêineres (`browser/modernUI.contribution.ts`).
 pub mod modern_ui_contribution;
+
+// O fundo do cabeçalho do grupo (`browser/media/tabs.css` e `connectedEditorTabs.css`).
+pub mod tabs_header;
+
+// O estilo resolvido das regras de `floatingPanels.css` e de `modernUI/browser/media/*.css` (o `getComputedStyle`).
+pub mod resolved_style;

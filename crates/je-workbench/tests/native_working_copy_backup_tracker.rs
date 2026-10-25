@@ -86,7 +86,7 @@ use je_workbench::services::working_copy::working_copy_backup_tracker::{BackupOp
 use je_workbench::services::working_copy::working_copy_service::IWorkingCopyService;
 use je_workbench::test::browser::workbench_test_services::TestEnvironmentService;
 use je_workbench::test::common::workbench_test_services::{TestContextService, TestFileService, TestFilesConfigurationService, TestLifecycleService, TestMarkerService, TestTextResourceConfigurationService, TestWorkingCopy};
-use je_workbench::services::files_configuration::files_configuration_service::HotExitConfiguration;
+use je_platform::files::files::HotExitConfiguration;
 use je_workbench::services::working_copy::stored_file_working_copy::StoredFileWorkingCopySaveEvent;
 use support::editor_service_support::EditorServiceAccessor;
 

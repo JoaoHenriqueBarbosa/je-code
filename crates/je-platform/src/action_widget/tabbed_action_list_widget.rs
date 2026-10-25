@@ -62,6 +62,8 @@ const TAB_BUTTON_HEIGHT: f64 = 22.0;
 /// O `padding` horizontal de uma aba, a largura do ícone (`--vscode-codiconFontSize`) com a margem de `0 0.2em` e o `gap`.
 const TAB_PADDING_HORIZONTAL: f64 = 6.0;
 const TAB_ICON_WIDTH: f64 = 16.0;
+/// `.action-widget { min-width: 100px }` de `actionWidget.css`.
+const ACTION_WIDGET_MIN_WIDTH: f64 = 100.0;
 const TAB_ICON_MARGIN: f64 = 4.0;
 /// A largura de um caractere do rótulo de uma aba, enquanto o renderizador nativo não mede.
 const DEFAULT_TAB_CHARACTER_WIDTH: f64 = 7.0;
@@ -508,6 +510,8 @@ trait PopupControl {
     fn list_focused_label(&self) -> Option<String>;
     fn list_filter_input(&self, value: &str);
     fn list_filter_composition(&self, start: bool);
+    /// O `ActionList` do popup, sem o tipo do item.
+    fn list_any(&self) -> Rc<dyn std::any::Any>;
 }
 
 /// Os elementos do popup, para o teste ler as classes, o estilo e o tamanho.
@@ -932,6 +936,11 @@ impl TabbedActionListWidget {
         get_tabbed_action_list_keybinding_labels(self.keybinding_service.as_ref())
     }
 
+    /// O `ActionList` do popup aberto: o teste lê dele o que o `querySelector` leria das linhas, da barra e do painel.
+    pub fn action_list<T: ActionListItemData>(&self) -> Option<Rc<ActionList<T>>> {
+        self.control()?.list_any().downcast::<ActionList<T>>().ok()
+    }
+
     /// A largura natural de uma aba com o texto `text`.
     fn natural_tab_box(&self, text: &str, has_image_icon: bool) -> TabBox {
         let (has_codicon, label) = match text.strip_prefix("$(").and_then(|rest| rest.split_once(')')) {
@@ -1076,6 +1085,11 @@ impl<T: ActionListItemData> RenderedPopup<T> {
     ) -> Rc<Self> {
         let widget = ViewElement::with_classes(&["action-widget"]);
         widget.set_parent(Some(container.clone()));
+        // The context view is as big as the popup it holds, so a re-anchor reads the popup's current height.
+        let measured_widget = Rc::downgrade(&widget);
+        container.set_measure(Rc::new(move || {
+            measured_widget.upgrade().map_or(je_base::layout::ISize { width: 0.0, height: 0.0 }, |popup| popup.size())
+        }));
         // Intercept mouse-down events outside the picker so those clicks do not interact with controls behind it.
         let block = ViewElement::with_classes(&["context-view-block"]);
         block.set_parent(Some(container.clone()));
@@ -1269,9 +1283,10 @@ impl<T: ActionListItemData> RenderedPopup<T> {
         self.elements.body_content.set_measure(measure(RenderedPopup::body_content_height));
     }
 
-    /// `parseFloat(widget.style.width)`.
+    /// A largura que o DOM mede no popup: `style.width` limitado por `min-width: 100px` do `.action-widget`
+    /// (`actionWidget.css`), que vale mesmo quando a largura do conteúdo é menor.
     fn widget_width(&self) -> f64 {
-        parse_px(self.elements.widget.style_get_property("width"))
+        parse_px(self.elements.widget.style_get_property("width")).max(ACTION_WIDGET_MIN_WIDTH)
     }
 
     // #endregion
@@ -2332,5 +2347,9 @@ impl<T: ActionListItemData> PopupControl for RenderedPopup<T> {
         } else {
             list.widget().filter_input_composition_end();
         }
+    }
+
+    fn list_any(&self) -> Rc<dyn std::any::Any> {
+        self.list()
     }
 }

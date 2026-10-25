@@ -14,13 +14,15 @@ use std::any::Any;
 use std::rc::Rc;
 
 use je_base::actions::{ActionRef, IActionRunner};
+use je_base::dynamic::Dynamic;
 use je_base::event::Event;
+use je_base::parts::contextmenu::IContextMenuEvent;
 use je_base::layout::{AnchorAlignment, AnchorAxisAlignment, AnchorPosition, IAnchor, IRect};
 use je_base::lifecycle::DisposableRef;
 use je_instantiation::service_id;
 
 use super::view_element::ViewElement;
-use crate::actions::MenuId;
+use crate::actions::{MenuActionOptions, MenuId};
 use crate::contextkey::contextkey::IContextKeyService;
 
 pub const CONTEXT_VIEW_MENU_MOTION_CLASS: &str = "context-view-menu-motion";
@@ -173,11 +175,16 @@ pub trait IContextMenuDelegate {
 
 /// `IContextMenuMenuDelegate`: `{ menuId?, menuActionOptions?, contextKeyService?, getActions? } & Omit<IContextMenuDelegate, 'getActions'>`.
 /// O `Omit<IContextMenuDelegate, 'getActions'>` é o delegado base, cujo `get_actions` é ignorado.
-/// `menuActionOptions` (`IMenuActionOptions`) ainda não existe na plataforma e fica de fora.
+/// `getActionsContext` do `IContextMenuDelegate` base é o campo [`IContextMenuMenuDelegate::get_actions_context`], porque o
+/// trait base não o carrega (o `IContextMenuEvent` de `base/parts/contextmenu` vem de `je-base`).
 #[derive(Clone)]
 pub struct IContextMenuMenuDelegate {
     /// O `MenuId` que preenche o menu de contexto.
     pub menu_id: Option<MenuId>,
+    /// `menuActionOptions`: como as ações do menu são invocadas (`arg`, `args`, `shouldForwardArgs`, `renderShortTitle`).
+    pub menu_action_options: Option<MenuActionOptions>,
+    /// `getActionsContext?(event?)`: o contexto passado às ações quando rodam.
+    pub get_actions_context: Option<GetActionsContext>,
     /// O serviço de chaves de contexto que guia o menu.
     pub context_key_service: Option<Rc<dyn IContextKeyService>>,
     /// `getActions?()`: ações extras, colocadas antes das do menu.
@@ -185,6 +192,9 @@ pub struct IContextMenuMenuDelegate {
     /// O resto do `IContextMenuDelegate`.
     pub base: Rc<dyn IContextMenuDelegate>,
 }
+
+/// `getActionsContext?(event?: IContextMenuEvent): unknown`.
+pub type GetActionsContext = Rc<dyn Fn(Option<&IContextMenuEvent>) -> Option<Dynamic>>;
 
 /// `IContextMenuDelegate | IContextMenuMenuDelegate`.
 #[derive(Clone)]

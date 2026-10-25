@@ -1,18 +1,15 @@
 //! Porte lógico de `src/vs/workbench/contrib/terminal/browser/xterm/xtermTerminal.ts`: o `XtermTerminal`, que embrulha o
 //! emulador (`raw`) com a configuração, a leitura do buffer como texto e a escrita.
 //!
-//! Fora do porte, porque dependem de DOM, de GPU, de addons do xterm.js ou de serviços que ainda não existem aqui (a
-//! interface `IXtermTerminal` inteira volta com a UI nativa da Fase 6):
-//! - os addons (`MarkNavigationAddon`, `DecorationAddon`, `ShellIntegrationAddon` ligado ao emulador, clipboard, progress,
-//!   search, serialize, image, unicode11, ligatures e webgl) e tudo que passa por eles (`clearBuffer`, `findNext`,
-//!   `getContentsAsHtml`, `getCommandOutputAsHtml`, `getRangeAsVT`, `copySelection`, `selectMarkedRange`, o progresso e os
-//!   eventos `onDidRequestRunCommand`/`onDidChangeFindResults`...);
-//! - o tema (`getXtermTheme`, `updateTheme`: dependem do `IThemeService` e do `terminalColorRegistry`), o
-//!   `xtermColorProvider`, os `IContextKey` de foco e seleção, o `ILifecycleService` do descarte das decorações, o serviço
-//!   de log (`logLevel` e `logger`) e o `ILayoutService`;
-//! - `attachToElement`, `refresh`, `forceRedraw`, `forceRefresh`, a rolagem, a seleção, `getLongestViewportWrappedLineLength`
-//!   (precisa do `viewportY`), o `scrollbar` (`_getScrollbarOptions`, `scrollbarWidth`), `updateTerminalFontRendering` e o
-//!   renderizador webgl dentro de `updateConfig`, e `_updateUnicodeVersion`.
+//! Fora do porte, porque dependem de DOM, de addons do xterm.js ou de serviços que ainda não existem aqui (a interface
+//! `IXtermTerminal` inteira volta com a UI nativa da Fase 6):
+//! - os addons de clipboard, progress, search, serialize, image, unicode11 e ligatures, e tudo que passa por eles
+//!   (`findNext`, `getContentsAsHtml`, `getCommandOutputAsHtml`, `getRangeAsVT`, `copySelection`, o progresso e os eventos
+//!   `onDidChangeFindResults`...); o `MarkNavigationAddon` e o `ShellIntegrationAddon` são criados por quem hospeda o
+//!   `XtermTerminal` (`TerminalInstance`);
+//! - os `IContextKey` de foco e seleção, o serviço de log (`logLevel` e `logger`) e o `ILayoutService`;
+//! - `forceRedraw`, `forceRefresh`, a rolagem, a seleção, `getLongestViewportWrappedLineLength` (precisa do `viewportY`), o
+//!   `scrollbar` (`_getScrollbarOptions`, `scrollbarWidth`) e `_updateUnicodeVersion`.
 //!
 //! Divergências:
 //! - **`xtermCtor`.** O construtor do xterm.js recebido pelo original é uma função ([`XtermCtor`]) que recebe as opções
@@ -22,12 +19,30 @@
 //!   ([`IHeadlessTerminal`], que já traz o buffer, o parser, os marcadores e os eventos) com as opções, o tamanho do buffer
 //!   e a escrita. `raw.options` é [`IXtermRaw::options`], um `RefCell` de [`XtermOptions`].
 //! - **Injeção.** Os parâmetros decorados do construtor que o porte lê são a tupla `Deps` do [`Injectable`], na ordem do
-//!   original (`IConfigurationService` e `ITerminalConfigurationService`), e `resource`, `xtermCtor` e `options` são os
-//!   `Args`. A classe herda de `Disposable`, aqui um `Disposable` guardado no campo `base`.
-//! - **`IXtermTerminalOptions`.** Ficam `cols`, `rows`, `scrollback` e `detached`. `xtermColorProvider`, `capabilities`,
-//!   `shellIntegrationNonce`, `disableShellIntegrationReporting`, `xtermAddonImporter` e `disableOverviewRuler` só alimentam
-//!   os addons, o tema e o `scrollbar`, que estão fora (o `detached` pula o ouvinte de configuração, como no original).
+//!   original (`IConfigurationService`, `IThemeService`, `ITerminalConfigurationService` e `ILifecycleService`), e
+//!   `resource`, `xtermCtor` e `options` são os `Args`. O `IThemeService` e o `ILifecycleService` são dependências opcionais
+//!   (`Option<Rc<..>>`): um hospedeiro sem eles não tem tema nem descarte das decorações no desligamento, que é o que os
+//!   `TerminalInstance` dos testes anteriores à portabilidade do tema esperam. A classe herda de `Disposable`, aqui um
+//!   `Disposable` guardado no campo `base`.
+//! - **`IXtermTerminalOptions`.** `xtermColorProvider` e `capabilities` são opcionais pelo mesmo motivo. O
+//!   `IContextMenuService`, o `IHoverService` e o `IAccessibilitySignalService` do `DecorationAddon` não têm identificador de
+//!   serviço no porte (ver `decoration_addon.rs`), então chegam em `decoration_services`; sem eles (e sem `capabilities`) o
+//!   `XtermTerminal` não cria o `DecorationAddon`. `shellIntegrationNonce`, `disableShellIntegrationReporting`,
+//!   `xtermAddonImporter` (que vira `gpu_renderer_importer`) e `disableOverviewRuler` só alimentam o `ShellIntegrationAddon`
+//!   e o `scrollbar`, que estão fora (o `detached` pula os ouvintes de configuração e de tema, como no original, e o do
+//!   desligamento).
 //! - **`getFont(dom.getActiveWindow(), ...)`.** Não há janela: o `devicePixelRatio` é [`DEVICE_PIXEL_RATIO`].
+//! - **`attachToElement(container, options)`.** Não há `HTMLElement`: [`XtermTerminal::attach_to_element`] recebe só as
+//!   opções, e o que o original faz com o elemento vira estado nativo. `raw.open(container)` é [`IXtermRaw::open`] (cria o
+//!   estado do terminal), e a classe CSS `terminal-font-rendering-grayscale` é o estado de `terminal_font_rendering.rs`. Os
+//!   ouvintes de foco e de roda do `textarea` e do `element` e o addon de ligaduras ficam fora (sem DOM e sem addon). O retorno
+//!   (`.xterm-screen`) não existe.
+//! - **`WebglAddon`.** O renderizador WebGL do xterm.js vira o renderizador por GPU do porte (wgpu): [`IXtermGpuRenderer`], criado
+//!   por [`IGpuRendererImporter`] (o `xtermAddonImporter.importAddon('webgl')`) com [`GpuRendererOptions`] (o
+//!   `{ customGlyphs }` do addon), ativado em [`IXtermGpuRenderer::activate`] (o `loadAddon`) e descartado em
+//!   `_disposeOfWebglRenderer`. A criação, o descarte e a recriação (`_webglAddonLoadId`, `_webglAddonLoading`,
+//!   `_webglAddonCustomGlyphs`) seguem o original passo a passo. `_refreshImageAddon` é chamado nos mesmos pontos, mas o addon de
+//!   imagens está fora e não há nada a fazer nele.
 //! - **`_setCursorBlink`, `_setTextBlinking`, `_setCursorStyle`, `_setCursorStyleInactive`, `_setCursorWidth`.** As guardas
 //!   `if (options.x !== value)` só evitam escrita repetida e viram atribuição; o `raw.refresh(0, rows - 1)` do
 //!   `_setCursorBlink` pede redesenho ao renderizador e fica com ele (Fase 6). O construtor e `updateConfig` compartilham
@@ -37,23 +52,45 @@
 //! - **`getContentsAsText`.** O `throw new Error(...)` é o `Err` de [`XtermTerminal::get_contents_as_text`].
 //! - **`getBufferReverseIterator`.** O gerador é um iterador de `String` que já leva o buffer e não empresta o terminal.
 //! - **`write(data, callback)`.** O `data` é texto (o `Uint8Array` não tem uso no porte).
+//! - **`ITheme`.** É [`XtermTheme`], com os mesmos campos; `toString()` de uma cor é o `Display` do `Color`.
+//! - **`_updateFindColors` e `PANEL_BACKGROUND`.** As cores de busca ficam com o addon de busca (fora). `PANEL_BACKGROUND`, que
+//!   o original usa no `terminalBackground`, não é lido em nenhum caminho que sobrou.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
 use je_base::dynamic::{Dynamic, Truthy};
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::js_string::JsString;
-use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::lifecycle::{Disposable, DisposableRef, IDisposable};
+use je_base::promise::Promise;
+use je_editor::code_action::platform::{AccessibilitySignal, IAccessibilitySignalService};
+use je_editor::services::theme_service::{IColorTheme, IThemeService};
 use je_instantiation::Injectable;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::js::{to_js_string, to_number};
-use je_platform::terminal::capabilities::capabilities::IMarker;
+use je_platform::terminal::capabilities::capabilities::{IMarker, ITerminalCapabilityStore, TerminalCapability, TerminalCapabilityImpl};
 use je_platform::terminal::xterm_headless::{IBuffer, IHeadlessTerminal};
+use je_theme::color::Color;
 
+use super::decoration_addon::{DecorationAddon, DecorationAddonServices, DecorationCopyAsHtmlRequest, DecorationRunCommandRequest, IDecorationAddonTerminal};
+use super::terminal_font_rendering::{IFontRenderingTerminal, update_terminal_font_rendering};
 use crate::contrib::terminal::browser::terminal::ITerminalConfigurationService;
 use crate::contrib::terminal::common::terminal::TerminalFont;
+use crate::contrib::terminal::common::terminal_color_registry::{
+    ANSI_COLOR_IDENTIFIERS, TERMINAL_CURSOR_BACKGROUND_COLOR, TERMINAL_CURSOR_FOREGROUND_COLOR, TERMINAL_FOREGROUND_COLOR,
+    TERMINAL_INACTIVE_SELECTION_BACKGROUND_COLOR, TERMINAL_OVERVIEW_RULER_BORDER_COLOR, TERMINAL_SELECTION_BACKGROUND_COLOR, TERMINAL_SELECTION_FOREGROUND_COLOR,
+};
+use crate::services::lifecycle::lifecycle::ILifecycleService;
+
+/// `scrollbarSliderActiveBackground` (`platform/theme/common/colorRegistry.ts`).
+const SCROLLBAR_SLIDER_ACTIVE_BACKGROUND: &str = "scrollbarSlider.activeBackground";
+/// `scrollbarSliderBackground`.
+const SCROLLBAR_SLIDER_BACKGROUND: &str = "scrollbarSlider.background";
+/// `scrollbarSliderHoverBackground`.
+const SCROLLBAR_SLIDER_HOVER_BACKGROUND: &str = "scrollbarSlider.hoverBackground";
+
 
 /// O `devicePixelRatio` da janela ativa (`dom.getActiveWindow()`).
 pub const DEVICE_PIXEL_RATIO: f64 = 1.0;
@@ -64,9 +101,29 @@ const SMOOTH_SCROLL_DURATION: f64 = 125.0;
 /// `TextBlinkConstants.IntervalDuration`.
 const TEXT_BLINK_INTERVAL_DURATION: f64 = 600.0;
 
+/// `ITheme` do xterm.js: as cores como texto CSS (`Color.toString()`), `None` onde o original deixa `undefined`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct XtermTheme {
+    pub background: Option<String>,
+    pub foreground: Option<String>,
+    pub cursor: Option<String>,
+    pub cursor_accent: Option<String>,
+    pub selection_background: Option<String>,
+    pub selection_inactive_background: Option<String>,
+    pub selection_foreground: Option<String>,
+    pub overview_ruler_border: Option<String>,
+    pub scrollbar_slider_active_background: Option<String>,
+    pub scrollbar_slider_background: Option<String>,
+    pub scrollbar_slider_hover_background: Option<String>,
+    /// As 16 cores ANSI, na ordem de `ansiColorIdentifiers` (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
+    /// `white` e as oito `bright*`).
+    pub ansi: [Option<String>; 16],
+}
+
 /// O subconjunto de `ITerminalOptions` do xterm.js que o `XtermTerminal` escreve.
 #[derive(Clone)]
 pub struct XtermOptions {
+    pub theme: XtermTheme,
     pub cols: i32,
     pub rows: i32,
     pub alt_click_moves_cursor: bool,
@@ -106,6 +163,7 @@ impl XtermOptions {
     /// Os padrões do xterm.js para as opções que o `XtermTerminal` escreve, com o tamanho dado.
     pub fn defaults(cols: i32, rows: i32) -> Self {
         Self {
+            theme: XtermTheme::default(),
             cols,
             rows,
             alt_click_moves_cursor: true,
@@ -142,8 +200,9 @@ impl XtermOptions {
 }
 
 /// O `Terminal` do xterm.js (`RawXtermTerminal`) com o que o `XtermTerminal` lê e escreve além do contrato do emulador sem
-/// tela: as opções, o tamanho do buffer ativo (`buffer.active.length`) e a escrita (`write(data, callback)`).
-pub trait IXtermRaw: IHeadlessTerminal + IDisposable {
+/// tela: as opções, o tamanho do buffer ativo (`buffer.active.length`) e a escrita (`write(data, callback)`). Estende também o
+/// estado de renderização da fonte do elemento ([`IFontRenderingTerminal`]) e o contrato de decorações ([`IDecorationAddonTerminal`]).
+pub trait IXtermRaw: IHeadlessTerminal + IFontRenderingTerminal + IDecorationAddonTerminal + IDisposable {
     /// `terminal.options`.
     fn options(&self) -> &RefCell<XtermOptions>;
 
@@ -158,22 +217,86 @@ pub trait IXtermRaw: IHeadlessTerminal + IDisposable {
 
     /// `terminal.modes.bracketedPasteMode`: se o modo de colagem entre colchetes (`CSI ? 2004 h`) está ligado.
     fn bracketed_paste_mode(&self) -> bool;
+
+    /// `terminal.open(container)`: cria o estado de tela do terminal (o `terminal.element`). Abrir um terminal já aberto não
+    /// o recria, como o `open` do xterm.js sobre um elemento que já tem o terminal.
+    fn open(&self);
+
+    /// `terminal.clear()`: limpa o buffer ativo, deixando a linha do cursor como a primeira.
+    fn clear(&self);
+
+    /// `terminal.input(data)`: entrada como se o usuário a digitasse (dispara `onData`).
+    fn input(&self, data: &str);
+
+    /// `terminal.buffer.normal.length`: o número de linhas do buffer normal.
+    fn normal_buffer_length(&self) -> i32;
 }
 
 /// `xtermCtor`: constrói o emulador a partir das opções.
 pub type XtermCtor = Box<dyn FnOnce(&XtermOptions) -> Rc<dyn IXtermRaw>>;
 
+/// `IXtermColorProvider` (`browser/terminal.ts`).
+pub trait IXtermColorProvider {
+    /// `getBackgroundColor(theme)`.
+    fn get_background_color(&self, theme: &dyn IColorTheme) -> Option<Color>;
+}
+
+/// `new Addon({ customGlyphs })`: as opções do renderizador por GPU (`IWebglAddonOptions`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuRendererOptions {
+    pub custom_glyphs: Option<bool>,
+}
+
+/// O `WebglAddon` do original, no porte o renderizador por GPU (wgpu) do terminal.
+pub trait IXtermGpuRenderer: IDisposable {
+    /// `activate(terminal)`, chamado por `loadAddon`: pode falhar (o `throw` de contexto indisponível).
+    fn activate(&self, terminal: Rc<dyn IXtermRaw>) -> Result<(), Error>;
+
+    /// `onContextLoss`.
+    fn on_context_loss(&self) -> Event<()>;
+}
+
+/// O construtor do addon que `importAddon('webgl')` devolve.
+pub type GpuRendererCtor = Rc<dyn Fn(GpuRendererOptions) -> Rc<dyn IXtermGpuRenderer>>;
+
+/// `XtermAddonImporter`, só com `importAddon('webgl')`.
+pub trait IGpuRendererImporter {
+    fn import_gpu_renderer(&self) -> Promise<GpuRendererCtor>;
+}
+
+/// `IXtermAttachToElementOptions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IXtermAttachToElementOptions {
+    /// Whether GPU rendering is enabled.
+    pub enable_gpu: bool,
+}
+
+impl Default for IXtermAttachToElementOptions {
+    fn default() -> Self {
+        Self { enable_gpu: true }
+    }
+}
+
 /// `IXtermTerminalOptions` (só o que o porte lê, ver o cabeçalho).
+#[derive(Default)]
 pub struct IXtermTerminalOptions {
     /// The columns to initialize the terminal with.
     pub cols: i32,
     /// The rows to initialize the terminal with.
     pub rows: i32,
+    /// The color provider for the terminal.
+    pub xterm_color_provider: Option<Rc<dyn IXtermColorProvider>>,
+    /// The capabilities of the terminal.
+    pub capabilities: Option<Rc<dyn ITerminalCapabilityStore>>,
+    /// Os serviços do `DecorationAddon` que não têm identificador de serviço no porte.
+    pub decoration_services: Option<DecorationAddonServices>,
+    /// O `xtermAddonImporter` no que o porte lê dele: o importador do renderizador por GPU. Sem ele não há renderizador.
+    pub gpu_renderer_importer: Option<Rc<dyn IGpuRendererImporter>>,
     /// The rows of scrollback to keep, overriding the `terminal.integrated.scrollback` setting.
     pub scrollback: Option<i32>,
-    /// When true, skips registering listeners on global singleton services (configuration) to avoid accumulating listeners
-    /// when many detached terminals are created concurrently. The caller should use [`XtermTerminal::update_config`] to apply
-    /// those changes externally.
+    /// When true, skips registering listeners on global singleton services (configuration, theme) to avoid accumulating
+    /// listeners when many detached terminals are created concurrently. The caller should use
+    /// [`XtermTerminal::update_config`] and [`XtermTerminal::update_theme`] to apply those changes externally.
     pub detached: bool,
 }
 
@@ -212,18 +335,45 @@ fn config_text(value: &Dynamic) -> String {
     to_js_string(value).to_string_lossy()
 }
 
+thread_local! {
+    /// `XtermTerminal._suggestedRendererType === 'dom'`: o renderizador por GPU falhou ao carregar e o `auto` cai no de software.
+    static SUGGESTED_RENDERER_IS_SOFTWARE: Cell<bool> = const { Cell::new(false) };
+}
+
 /// `XtermTerminal`: embrulha o xterm com funcionalidade adicional. A interação com o processo fica fora desta classe.
 pub struct XtermTerminal {
     base: Rc<Disposable>,
+    this: Weak<Self>,
     /// The raw xterm.js instance.
     raw: Rc<dyn IXtermRaw>,
     scrollback: Option<f64>,
     is_physical_mouse_wheel: bool,
     last_input_event: RefCell<Option<JsString>>,
     on_did_dispose: Rc<Emitter<()>>,
+    on_did_request_run_command: Rc<Emitter<DecorationRunCommandRequest>>,
+    on_did_request_copy_as_html: Rc<Emitter<DecorationCopyAsHtmlRequest>>,
+    on_did_request_refresh_dimensions: Rc<Emitter<()>>,
 
     configuration_service: Rc<dyn IConfigurationService>,
     terminal_configuration_service: Rc<dyn ITerminalConfigurationService>,
+    theme_service: Option<Rc<dyn IThemeService>>,
+    accessibility_signal_service: Option<Rc<dyn IAccessibilitySignalService>>,
+    xterm_color_provider: Option<Rc<dyn IXtermColorProvider>>,
+    capabilities: Option<Rc<dyn ITerminalCapabilityStore>>,
+    gpu_renderer_importer: Option<Rc<dyn IGpuRendererImporter>>,
+    decoration_addon: Option<Rc<DecorationAddon>>,
+
+    attached: Cell<Option<IXtermAttachToElementOptions>>,
+    /// `_webglAddon`.
+    gpu_renderer: RefCell<Option<Rc<dyn IXtermGpuRenderer>>>,
+    /// `_webglContextLossListener`.
+    gpu_context_loss_listener: RefCell<Option<DisposableRef>>,
+    /// `_webglAddonCustomGlyphs`.
+    gpu_renderer_custom_glyphs: Cell<Option<bool>>,
+    /// `_webglAddonLoading`.
+    gpu_renderer_loading: Cell<bool>,
+    /// `_webglAddonLoadId`.
+    gpu_renderer_load_id: Cell<u32>,
 }
 
 impl XtermTerminal {
@@ -244,6 +394,31 @@ impl XtermTerminal {
     /// `onDidDispose`.
     pub fn on_did_dispose(&self) -> Event<()> {
         self.on_did_dispose.event()
+    }
+
+    /// `onDidRequestRunCommand`.
+    pub fn on_did_request_run_command(&self) -> Event<DecorationRunCommandRequest> {
+        self.on_did_request_run_command.event()
+    }
+
+    /// `onDidRequestCopyAsHtml`.
+    pub fn on_did_request_copy_as_html(&self) -> Event<DecorationCopyAsHtmlRequest> {
+        self.on_did_request_copy_as_html.event()
+    }
+
+    /// `onDidRequestRefreshDimensions`.
+    pub fn on_did_request_refresh_dimensions(&self) -> Event<()> {
+        self.on_did_request_refresh_dimensions.event()
+    }
+
+    /// `decorationAddon`: `None` quando o hospedeiro não deu `capabilities` e `decoration_services`.
+    pub fn decoration_addon(&self) -> Option<&Rc<DecorationAddon>> {
+        self.decoration_addon.as_ref()
+    }
+
+    /// `isGpuAccelerated`.
+    pub fn is_gpu_accelerated(&self) -> bool {
+        self.gpu_renderer.borrow().is_some()
     }
 
     /// `getBufferReverseIterator`: as linhas do buffer da última para a primeira, cada uma com as suas continuações, sem as
@@ -301,6 +476,239 @@ impl XtermTerminal {
         let config = self.terminal_configuration_service.config();
         let editor_options = self.configuration_service.get_value(Some("editor"), None);
         apply_configuration(&mut self.raw.options().borrow_mut(), &config, &editor_options, self.scrollback, self.is_physical_mouse_wheel);
+        update_terminal_font_rendering(&*self.raw, &config.get_str("fontRendering"));
+
+        if let Some(attached) = self.attached.get()
+            && attached.enable_gpu
+        {
+            if self.should_load_gpu_renderer() {
+                let _ = self.enable_gpu_renderer();
+            } else {
+                self.dispose_of_gpu_renderer();
+            }
+        }
+    }
+
+    /// `attachToElement(container, partialOptions)` (ver o cabeçalho sobre o `container`).
+    pub fn attach_to_element(&self, partial_options: Option<IXtermAttachToElementOptions>) {
+        let options = partial_options.unwrap_or_default();
+        if self.attached.get().is_none() {
+            self.raw.open();
+        }
+
+        update_terminal_font_rendering(&*self.raw, &self.terminal_configuration_service.config().get_str("fontRendering"));
+
+        // TODO: Move before open so the DOM renderer doesn't initialize
+        if options.enable_gpu && self.should_load_gpu_renderer() {
+            let _ = self.enable_gpu_renderer();
+        }
+
+        self.attached.set(Some(options));
+    }
+
+    fn should_load_gpu_renderer(&self) -> bool {
+        let gpu_acceleration = self.terminal_configuration_service.config().get_str("gpuAcceleration");
+        (gpu_acceleration.strict_equals(&Dynamic::string("auto")) && !SUGGESTED_RENDERER_IS_SOFTWARE.with(Cell::get)) || gpu_acceleration.strict_equals(&Dynamic::string("on"))
+    }
+
+    /// `_enableWebglRenderer`: carrega o renderizador por GPU, recriando-o se a opção `customGlyphs` mudou.
+    fn enable_gpu_renderer(&self) -> Promise<()> {
+        // Currently webgl options can only be specified on addon creation
+        if !self.raw.is_open() {
+            return Promise::resolved(());
+        }
+        let custom_glyphs = self.custom_glyphs();
+        if (self.gpu_renderer.borrow().is_some() || self.gpu_renderer_loading.get()) && self.gpu_renderer_custom_glyphs.get() == custom_glyphs {
+            return Promise::resolved(());
+        }
+        let Some(importer) = self.gpu_renderer_importer.clone() else { return Promise::resolved(()) };
+
+        // Dispose of existing addon before creating a new one to avoid leaking WebGL contexts
+        self.dispose_of_gpu_renderer();
+
+        let load_id = self.gpu_renderer_load_id.get();
+        self.gpu_renderer_loading.set(true);
+        self.gpu_renderer_custom_glyphs.set(custom_glyphs);
+
+        let weak = self.this.clone();
+        let on_import_error = self.this.clone();
+        importer
+            .import_gpu_renderer()
+            .then_promise(move |ctor| {
+                let Some(this) = weak.upgrade() else { return Promise::resolved(()) };
+                if load_id != this.gpu_renderer_load_id.get() {
+                    return Promise::resolved(());
+                }
+
+                this.gpu_renderer_loading.set(false);
+                if !this.raw.is_open() {
+                    this.gpu_renderer_custom_glyphs.set(None);
+                    return Promise::resolved(());
+                }
+
+                let current_custom_glyphs = this.custom_glyphs();
+                if custom_glyphs != current_custom_glyphs {
+                    this.gpu_renderer_custom_glyphs.set(None);
+                    return this.enable_gpu_renderer();
+                }
+
+                let renderer = ctor(GpuRendererOptions { custom_glyphs });
+                *this.gpu_renderer.borrow_mut() = Some(renderer.clone());
+                match renderer.activate(this.raw.clone()) {
+                    Ok(()) => {
+                        let weak_for_loss = this.this.clone();
+                        *this.gpu_context_loss_listener.borrow_mut() = Some(renderer.on_context_loss().listen(move |_| {
+                            if let Some(this) = weak_for_loss.upgrade() {
+                                this.dispose_of_gpu_renderer();
+                            }
+                        }));
+                        this.refresh_image_addon();
+                        // WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal gets resized after
+                        // the webgl addon is loaded
+                        this.on_did_request_refresh_dimensions.fire(());
+                    }
+                    Err(_) => {
+                        SUGGESTED_RENDERER_IS_SOFTWARE.with(|suggested| suggested.set(true));
+                        this.dispose_of_gpu_renderer();
+                    }
+                }
+                Promise::resolved(())
+            })
+            .catch(move |error| {
+                if let Some(this) = on_import_error.upgrade()
+                    && load_id == this.gpu_renderer_load_id.get()
+                {
+                    this.gpu_renderer_loading.set(false);
+                    this.gpu_renderer_custom_glyphs.set(None);
+                }
+                je_base::errors::on_unexpected_error(&error);
+            })
+    }
+
+    /// `this._terminalConfigurationService.config.customGlyphs`: `undefined` quando a configuração não a define.
+    fn custom_glyphs(&self) -> Option<bool> {
+        match self.terminal_configuration_service.config().get_str("customGlyphs") {
+            Dynamic::Bool(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// `_refreshImageAddon`: o addon de imagens está fora do porte, não há o que carregar nem descartar.
+    fn refresh_image_addon(&self) {}
+
+    /// `_disposeOfWebglRenderer`.
+    fn dispose_of_gpu_renderer(&self) {
+        self.gpu_renderer_load_id.set(self.gpu_renderer_load_id.get().wrapping_add(1));
+        self.gpu_renderer_loading.set(false);
+        self.gpu_renderer_custom_glyphs.set(None);
+        let listener = self.gpu_context_loss_listener.borrow_mut().take();
+        if let Some(listener) = listener {
+            listener.dispose();
+        }
+        let renderer = self.gpu_renderer.borrow_mut().take();
+        let Some(renderer) = renderer else { return };
+        renderer.dispose();
+        self.refresh_image_addon();
+        // WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal gets resized after the webgl addon
+        // is disposed
+        self.on_did_request_refresh_dimensions.fire(());
+    }
+
+    /// `clearDecorations`.
+    pub fn clear_decorations(&self) {
+        if let Some(decoration_addon) = &self.decoration_addon {
+            decoration_addon.clear_decorations();
+        }
+    }
+
+    /// `clearBuffer`.
+    pub fn clear_buffer(&self) {
+        let is_normal_buffer = self.raw.is_active_buffer_normal();
+        // Clearing the alternate buffer leaves the normal buffer's output and markers intact.
+        if is_normal_buffer {
+            self.clear_decorations();
+            if let Some(TerminalCapabilityImpl::CommandDetection(capability)) = self.capability(TerminalCapability::CommandDetection) {
+                capability.clear_commands();
+            }
+            if let Some(TerminalCapabilityImpl::PartialCommandDetection(capability)) = self.capability(TerminalCapability::PartialCommandDetection) {
+                capability.clear_commands();
+            }
+        }
+        self.raw.clear();
+        if is_normal_buffer {
+            // xterm.js does not clear the first prompt, so trigger these to simulate the prompt being written
+            if let Some(TerminalCapabilityImpl::CommandDetection(capability)) = self.capability(TerminalCapability::CommandDetection) {
+                capability.handle_prompt_start(None);
+            }
+            if let Some(TerminalCapabilityImpl::CommandDetection(capability)) = self.capability(TerminalCapability::CommandDetection) {
+                capability.handle_command_start(None);
+            }
+        }
+        if let Some(accessibility_signal_service) = &self.accessibility_signal_service {
+            accessibility_signal_service.play_signal(AccessibilitySignal::Clear);
+        }
+    }
+
+    fn capability(&self, capability: TerminalCapability) -> Option<TerminalCapabilityImpl> {
+        self.capabilities.as_ref().and_then(|capabilities| capabilities.get_capability(capability))
+    }
+
+    /// `getXtermTheme`.
+    pub fn get_xterm_theme(&self, theme: Option<Rc<dyn IColorTheme>>) -> XtermTheme {
+        let theme = theme.or_else(|| self.theme_service.as_ref().map(|theme_service| theme_service.get_color_theme()));
+        build_xterm_theme(&self.terminal_configuration_service.config(), theme.as_deref(), self.xterm_color_provider.as_deref())
+    }
+
+    /// `_updateTheme`.
+    fn apply_theme(&self, theme: Option<Rc<dyn IColorTheme>>) {
+        let xterm_theme = self.get_xterm_theme(theme);
+        self.raw.options().borrow_mut().theme = xterm_theme;
+    }
+
+    /// `updateTheme`: refaz o tema do terminal. Serve para atualizar de fora os terminais `detached`, que não ouvem o serviço de
+    /// tema.
+    pub fn update_theme(&self) {
+        self.apply_theme(None);
+    }
+
+    /// `refresh`.
+    pub fn refresh(&self) {
+        self.apply_theme(None);
+        if let Some(decoration_addon) = &self.decoration_addon {
+            decoration_addon.refresh_layouts();
+        }
+    }
+}
+
+/// `getXtermTheme(theme)`, com a configuração, o tema e o provedor de fundo já resolvidos. Sem tema nenhuma cor é definida.
+fn build_xterm_theme(config: &Dynamic, theme: Option<&dyn IColorTheme>, color_provider: Option<&dyn IXtermColorProvider>) -> XtermTheme {
+    let decorations_enabled = to_js_string(&config.get_str("shellIntegration").get_str("decorationsEnabled")).to_string_lossy();
+    let hide_overview_ruler = decorations_enabled == "never" || decorations_enabled == "gutter";
+
+    let get_color = |id: &str| theme.and_then(|theme| theme.get_color(id, None));
+    let to_css = |color: Option<Color>| color.map(|color| color.to_string());
+
+    let foreground_color = get_color(TERMINAL_FOREGROUND_COLOR);
+    let background_color = theme.and_then(|theme| color_provider.and_then(|color_provider| color_provider.get_background_color(theme)));
+    let cursor_color = get_color(TERMINAL_CURSOR_FOREGROUND_COLOR).or_else(|| foreground_color.clone());
+    let cursor_accent_color = get_color(TERMINAL_CURSOR_BACKGROUND_COLOR).or_else(|| background_color.clone());
+    let selection_background_color = get_color(TERMINAL_SELECTION_BACKGROUND_COLOR);
+    let selection_inactive_background_color = get_color(TERMINAL_INACTIVE_SELECTION_BACKGROUND_COLOR);
+    let selection_foreground_color = get_color(TERMINAL_SELECTION_FOREGROUND_COLOR);
+
+    XtermTheme {
+        background: to_css(background_color),
+        foreground: to_css(foreground_color),
+        cursor: to_css(cursor_color),
+        cursor_accent: to_css(cursor_accent_color),
+        selection_background: to_css(selection_background_color),
+        selection_inactive_background: to_css(selection_inactive_background_color),
+        selection_foreground: to_css(selection_foreground_color),
+        overview_ruler_border: if hide_overview_ruler { Some("#0000".to_owned()) } else { to_css(get_color(TERMINAL_OVERVIEW_RULER_BORDER_COLOR)) },
+        scrollbar_slider_active_background: to_css(get_color(SCROLLBAR_SLIDER_ACTIVE_BACKGROUND)),
+        scrollbar_slider_background: to_css(get_color(SCROLLBAR_SLIDER_BACKGROUND)),
+        scrollbar_slider_hover_background: to_css(get_color(SCROLLBAR_SLIDER_HOVER_BACKGROUND)),
+        ansi: std::array::from_fn(|index| to_css(get_color(ANSI_COLOR_IDENTIFIERS[index]))),
     }
 }
 
@@ -335,21 +743,42 @@ fn apply_configuration(options: &mut XtermOptions, config: &Dynamic, editor_opti
 
 impl Injectable for XtermTerminal {
     type Args = XtermTerminalArgs;
-    type Deps = (Rc<dyn IConfigurationService>, Rc<dyn ITerminalConfigurationService>);
+    type Deps = (
+        Rc<dyn IConfigurationService>,
+        Option<Rc<dyn IThemeService>>,
+        Rc<dyn ITerminalConfigurationService>,
+        Option<Rc<dyn ILifecycleService>>,
+        Option<Rc<dyn IAccessibilitySignalService>>,
+    );
 
-    fn create(args: XtermTerminalArgs, (configuration_service, terminal_configuration_service): Self::Deps) -> Rc<Self> {
+    fn create(
+        args: XtermTerminalArgs,
+        (configuration_service, theme_service, terminal_configuration_service, lifecycle_service, accessibility_signal_service): Self::Deps,
+    ) -> Rc<Self> {
         let XtermTerminalArgs { xterm_ctor, options } = args;
+        let IXtermTerminalOptions { cols, rows, xterm_color_provider, capabilities, decoration_services, gpu_renderer_importer, scrollback, detached } = options;
         let base = Disposable::new();
         let on_did_dispose = Emitter::new();
         base.register(on_did_dispose.clone());
+        let on_did_request_run_command = Emitter::new();
+        base.register(on_did_request_run_command.clone());
+        let on_did_request_copy_as_html = Emitter::new();
+        base.register(on_did_request_copy_as_html.clone());
+        let on_did_request_refresh_dimensions = Emitter::new();
+        base.register(on_did_request_refresh_dimensions.clone());
 
-        let scrollback = options.scrollback.map(f64::from);
+        let scrollback = scrollback.map(f64::from);
         let font = terminal_configuration_service.get_font(DEVICE_PIXEL_RATIO, None, true);
         let config = terminal_configuration_service.config();
         let editor_options = configuration_service.get_value(Some("editor"), None);
 
         let is_physical_mouse_wheel = false;
-        let mut xterm_options = XtermOptions::defaults(options.cols, options.rows);
+        let mut xterm_options = XtermOptions::defaults(cols, rows);
+        xterm_options.theme = build_xterm_theme(
+            &config,
+            theme_service.as_ref().map(|theme_service| theme_service.get_color_theme()).as_deref(),
+            xterm_color_provider.as_deref(),
+        );
         xterm_options.font_family = font.font_family;
         xterm_options.font_weight = config.get_str("fontWeight");
         xterm_options.font_weight_bold = config.get_str("fontWeightBold");
@@ -362,23 +791,52 @@ impl Injectable for XtermTerminal {
         let raw = xterm_ctor(&xterm_options);
         base.register(raw.clone());
 
-        let this = Rc::new(Self {
+        // Load addons
+        let decoration_addon = match (&capabilities, decoration_services) {
+            (Some(capabilities), Some(decoration_services)) => {
+                let decoration_addon = DecorationAddon::new(capabilities.clone(), decoration_services);
+                base.register(decoration_addon.clone());
+                Some(decoration_addon)
+            }
+            _ => None,
+        };
+
+        let this = Rc::new_cyclic(|this| Self {
             base,
+            this: this.clone(),
             raw,
             scrollback,
             is_physical_mouse_wheel,
             last_input_event: RefCell::new(None),
             on_did_dispose,
+            on_did_request_run_command,
+            on_did_request_copy_as_html,
+            on_did_request_refresh_dimensions,
             configuration_service,
             terminal_configuration_service,
+            theme_service,
+            accessibility_signal_service,
+            xterm_color_provider,
+            capabilities,
+            gpu_renderer_importer,
+            decoration_addon,
+            attached: Cell::new(None),
+            gpu_renderer: RefCell::new(None),
+            gpu_context_loss_listener: RefCell::new(None),
+            gpu_renderer_custom_glyphs: Cell::new(None),
+            gpu_renderer_loading: Cell::new(false),
+            gpu_renderer_load_id: Cell::new(0),
         });
 
         // Skip global service listeners for detached terminals to avoid accumulating listeners when many detached instances
         // exist concurrently.
-        if !options.detached {
+        if !detached {
             let weak = Rc::downgrade(&this);
             let subscription = this.configuration_service.on_did_change_configuration().listen(move |event| {
                 let Some(this) = weak.upgrade() else { return };
+                if event.affects_configuration("terminal.integrated.gpuAcceleration", None) {
+                    SUGGESTED_RENDERER_IS_SOFTWARE.with(|suggested| suggested.set(false));
+                }
                 if event.affects_configuration("terminal.integrated", None)
                     || event.affects_configuration("editor.fastScrollSensitivity", None)
                     || event.affects_configuration("editor.mouseWheelScrollSensitivity", None)
@@ -386,8 +844,21 @@ impl Injectable for XtermTerminal {
                 {
                     this.update_config();
                 }
+                if event.affects_configuration("terminal.integrated.shellIntegration.decorationsEnabled", None) {
+                    this.apply_theme(None);
+                }
             });
             this.base.register(subscription);
+
+            if let Some(theme_service) = &this.theme_service {
+                let weak = Rc::downgrade(&this);
+                let subscription = theme_service.on_did_color_theme_change().listen(move |theme| {
+                    if let Some(this) = weak.upgrade() {
+                        this.apply_theme(Some(theme.clone()));
+                    }
+                });
+                this.base.register(subscription);
+            }
         }
 
         // Refire events
@@ -399,12 +870,30 @@ impl Injectable for XtermTerminal {
         });
         this.base.register(subscription);
 
+        if let Some(decoration_addon) = &this.decoration_addon {
+            let terminal: Rc<dyn IDecorationAddonTerminal> = this.raw.clone();
+            decoration_addon.activate(terminal);
+            let on_did_request_run_command = this.on_did_request_run_command.clone();
+            this.base.register(decoration_addon.on_did_request_run_command().listen(move |event| on_did_request_run_command.fire(event.clone())));
+            let on_did_request_copy_as_html = this.on_did_request_copy_as_html.clone();
+            this.base.register(decoration_addon.on_did_request_copy_as_html().listen(move |event| on_did_request_copy_as_html.fire(event.clone())));
+            if !detached && let Some(lifecycle_service) = lifecycle_service {
+                let weak = Rc::downgrade(decoration_addon);
+                this.base.register(lifecycle_service.on_will_shutdown().listen(move |_| {
+                    if let Some(decoration_addon) = weak.upgrade() {
+                        decoration_addon.clear_decorations();
+                    }
+                }));
+            }
+        }
+
         this
     }
 }
 
 impl IDisposable for XtermTerminal {
     fn dispose(&self) {
+        self.dispose_of_gpu_renderer();
         self.on_did_dispose.fire(());
         self.base.dispose();
     }

@@ -32,6 +32,7 @@ use je_workbench::contrib::terminal::browser::terminal_input_events::{ITerminalD
 use je_workbench::contrib::terminal::browser::xterm::decoration_addon::IDecorationAddonTerminal;
 use je_workbench::contrib::terminal::browser::xterm::line_data_event_addon::ILineFeedTerminal;
 use je_workbench::contrib::terminal::browser::xterm::mark_navigation_addon::IMarkNavigationTerminal;
+use je_workbench::contrib::terminal::browser::xterm::terminal_font_rendering::IFontRenderingTerminal;
 use je_workbench::contrib::terminal::browser::xterm::xterm_decoration::{IDecorationElement, IDecorationHost, IDecorationOptions, IXtermDecoration};
 use je_workbench::contrib::terminal::browser::xterm::xterm_terminal::{IXtermRaw, XtermOptions};
 use je_workbench::contrib::terminal::xterm_buffer as workbench;
@@ -332,6 +333,14 @@ impl Screen {
         self.ensure_lines(self.rows);
     }
 
+    /// Troca o conteúdo (as linhas e o cursor) com o de `other`: a troca de buffer normal e alternativo.
+    fn swap_content(&self, other: &Screen) {
+        self.lines.swap(&other.lines);
+        self.cursor_x.swap(&other.cursor_x);
+        self.cursor_y.swap(&other.cursor_y);
+        self.base_y.swap(&other.base_y);
+    }
+
     /// O avanço de linha (`\n` e a quebra automática): rola a área visível quando o cursor está na última linha.
     fn line_feed(&self, wrapped: bool) {
         if self.cursor_y.get() >= self.rows - 1 {
@@ -507,14 +516,26 @@ pub struct FakeXterm {
     deleted_lines: RefCell<Vec<(i32, i32)>>,
     /// Os marcadores registrados, descartados com o terminal (`Terminal.dispose()` descarta o buffer e os marcadores dele).
     markers: RefCell<Vec<Rc<FakeMarker>>>,
+    /// Os marcadores do buffer alternativo.
+    alt_markers: RefCell<Vec<Rc<FakeMarker>>>,
+    /// O buffer alternativo está ativo (`CSI ? 1049 h`).
+    alt_active: Cell<bool>,
+    /// O conteúdo do buffer que não está ativo.
+    stash: Rc<Screen>,
     /// `terminal.options`.
     options: RefCell<XtermOptions>,
+    /// `terminal.open(container)` já foi chamado (`terminal.element` existe).
+    opened: Cell<bool>,
+    /// A classe `terminal-font-rendering-grayscale` do elemento do terminal.
+    grayscale: Cell<bool>,
+    /// O estado da classe de tons de cinza em cada chamada de `clearTextureAtlas` (o `statesAtRedraw` do `sinon.stub`).
+    texture_atlas_clears: RefCell<Vec<bool>>,
 }
 
 impl IDisposable for FakeXterm {
     /// `terminal.dispose()`: descarta os marcadores registrados.
     fn dispose(&self) {
-        for marker in self.markers.take() {
+        for marker in self.markers.take().into_iter().chain(self.alt_markers.take()) {
             marker.dispose();
         }
     }
@@ -533,19 +554,30 @@ impl FakeXterm {
 
     fn with_options(options: XtermOptions, scrollback: Option<i32>) -> Rc<Self> {
         let (cols, rows) = (options.cols, options.rows);
-        let screen = Rc::new(Screen {
-            cols,
-            rows,
-            lines: RefCell::new(Vec::new()),
-            cursor_x: Cell::new(0),
-            cursor_y: Cell::new(0),
-            base_y: Cell::new(0),
-            scrollback,
-            trimmed: Cell::new(0),
-        });
-        screen.ensure_lines(rows);
+        let new_screen = || {
+            let screen = Rc::new(Screen {
+                cols,
+                rows,
+                lines: RefCell::new(Vec::new()),
+                cursor_x: Cell::new(0),
+                cursor_y: Cell::new(0),
+                base_y: Cell::new(0),
+                scrollback,
+                trimmed: Cell::new(0),
+            });
+            screen.ensure_lines(rows);
+            screen
+        };
+        let screen = new_screen();
+        let stash = new_screen();
         Rc::new(Self {
             screen,
+            stash,
+            alt_active: Cell::new(false),
+            alt_markers: RefCell::new(Vec::new()),
+            opened: Cell::new(false),
+            grayscale: Cell::new(false),
+            texture_atlas_clears: RefCell::new(Vec::new()),
             parser: Rc::new(FakeParser { state: Rc::default() }),
             on_data: Emitter::new(),
             on_cursor_move: Emitter::new(),
@@ -577,13 +609,34 @@ impl FakeXterm {
         self.screen.reset();
     }
 
+    /// Os marcadores do buffer ativo (o normal ou o alternativo): `clearAllMarkers` e o limite de scrollback só os tocam.
+    fn active_markers(&self) -> &RefCell<Vec<Rc<FakeMarker>>> {
+        if self.alt_active.get() { &self.alt_markers } else { &self.markers }
+    }
+
+    /// `CSI ? 1049 h` e `CSI ? 1049 l`: troca para o buffer alternativo (em branco, com os marcadores antigos dele descartados) e
+    /// volta para o normal. O conteúdo do outro buffer fica guardado em `stash`.
+    fn switch_buffer(&self, to_alternate: bool) {
+        if self.alt_active.get() == to_alternate {
+            return;
+        }
+        self.screen.swap_content(&self.stash);
+        self.alt_active.set(to_alternate);
+        if to_alternate {
+            self.screen.reset();
+            for marker in self.alt_markers.take() {
+                marker.dispose();
+            }
+        }
+    }
+
     /// `terminal.clear()`: limpa o buffer, deixando a linha do cursor como a primeira (o prompt). Não faz nada com o buffer já
-    /// limpo; descarta os marcadores (`clearAllMarkers`).
+    /// limpo; descarta os marcadores do buffer ativo (`clearAllMarkers`).
     pub fn clear(&self) {
         if self.screen.base_y.get() == 0 && self.screen.cursor_y.get() == 0 {
             return;
         }
-        for marker in self.markers.take() {
+        for marker in self.active_markers().take() {
             marker.dispose();
         }
         self.screen.clear();
@@ -592,6 +645,11 @@ impl FakeXterm {
     /// `terminal.buffer.active` com os membros próprios do dublê.
     pub fn buffer(&self) -> FakeBuffer {
         FakeBuffer { screen: self.screen.clone() }
+    }
+
+    /// `terminal.buffer.normal`: o conteúdo guardado enquanto o buffer alternativo está ativo.
+    fn normal_screen(&self) -> Rc<Screen> {
+        if self.alt_active.get() { self.stash.clone() } else { self.screen.clone() }
     }
 
     /// `terminal.buffer.active.cursorY`.
@@ -619,7 +677,7 @@ impl FakeXterm {
         }
         let trimmed = self.screen.trimmed.take();
         if trimmed > 0 {
-            let markers = self.markers.borrow().clone();
+            let markers = self.active_markers().borrow().clone();
             for marker in &markers {
                 marker.scroll_out(trimmed);
             }
@@ -692,6 +750,10 @@ impl FakeXterm {
         if params_text == "?2004" && (final_byte == 'h' || final_byte == 'l') {
             self.bracketed_paste_mode.set(final_byte == 'h');
         }
+        // `CSI ? 1049 h` e `CSI ? 1049 l` trocam para o buffer alternativo e voltam para o normal.
+        if params_text == "?1049" && (final_byte == 'h' || final_byte == 'l') {
+            self.switch_buffer(final_byte == 'h');
+        }
         let params: Vec<platform::CsiParam> = if params_text.is_empty() {
             Vec::new()
         } else {
@@ -727,11 +789,11 @@ impl platform::IHeadlessTerminal for FakeXterm {
     }
 
     fn buffer_normal(&self) -> Rc<dyn platform::IBuffer> {
-        Rc::new(self.buffer())
+        Rc::new(FakeBuffer { screen: self.normal_screen() })
     }
 
     fn is_active_buffer_normal(&self) -> bool {
-        true
+        !self.alt_active.get()
     }
 
     fn cols(&self) -> i32 {
@@ -749,7 +811,7 @@ impl platform::IHeadlessTerminal for FakeXterm {
         }
         self.next_marker_id.set(self.next_marker_id.get() + 1);
         let marker = FakeMarker::new(self.next_marker_id.get() as f64, f64::from(line));
-        self.markers.borrow_mut().push(marker.clone());
+        self.active_markers().borrow_mut().push(marker.clone());
         Some(marker)
     }
 
@@ -804,6 +866,48 @@ impl IXtermRaw for FakeXterm {
 
     fn bracketed_paste_mode(&self) -> bool {
         self.bracketed_paste_mode.get()
+    }
+
+    fn open(&self) {
+        self.opened.set(true);
+    }
+
+    fn clear(&self) {
+        FakeXterm::clear(self);
+    }
+
+    fn input(&self, data: &str) {
+        self.fire_data(data);
+    }
+
+    fn normal_buffer_length(&self) -> i32 {
+        i32::try_from(self.normal_screen().lines.borrow().len()).unwrap_or(i32::MAX)
+    }
+}
+
+impl IFontRenderingTerminal for FakeXterm {
+    fn is_open(&self) -> bool {
+        self.opened.get()
+    }
+
+    fn grayscale_font_rendering(&self) -> bool {
+        self.grayscale.get()
+    }
+
+    fn set_grayscale_font_rendering(&self, grayscale: bool) {
+        self.grayscale.set(grayscale);
+    }
+
+    /// `clearTextureAtlas`: o fake não tem atlas, e registra o estado da classe de tons de cinza no momento da chamada.
+    fn clear_texture_atlas(&self) {
+        self.texture_atlas_clears.borrow_mut().push(self.grayscale.get());
+    }
+}
+
+impl FakeXterm {
+    /// Os estados da classe de tons de cinza vistos em cada `clearTextureAtlas`, na ordem; esvazia a lista.
+    pub fn take_texture_atlas_clears(&self) -> Vec<bool> {
+        self.texture_atlas_clears.take()
     }
 }
 

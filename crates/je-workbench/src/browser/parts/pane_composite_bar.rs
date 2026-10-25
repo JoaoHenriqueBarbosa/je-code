@@ -21,6 +21,7 @@ use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_editor::services::theme_service::IColorTheme;
 use je_theme::color::Color;
+use je_ui::NodeId;
 use je_widgets::action_bar::ActionsOrientation;
 use je_widgets::hover_api::HoverPosition;
 
@@ -53,9 +54,20 @@ pub trait IPaneCompositePart {
 pub struct ContentElement {
     width: Cell<f64>,
     height: Cell<f64>,
+    node: Cell<Option<NodeId>>,
 }
 
 impl ContentElement {
+    /// O nó da árvore nativa que o elemento representa (onde `appendChild` põe a barra), quando a parte já o tem.
+    pub fn node(&self) -> Option<NodeId> {
+        self.node.get()
+    }
+
+    /// Liga o elemento ao nó da árvore nativa.
+    pub fn set_node(&self, node: NodeId) {
+        self.node.set(Some(node));
+    }
+
     /// `size(element, width, height)`.
     pub fn set_size(&self, width: f64, height: f64) {
         self.width.set(width);

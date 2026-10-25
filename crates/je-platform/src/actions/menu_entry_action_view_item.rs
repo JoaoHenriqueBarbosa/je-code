@@ -3,8 +3,9 @@
 //! `getContextMenuActions` e `getFlatContextMenuActions`). Os view items (`MenuEntryActionViewItem`,
 //! `SubmenuEntryActionViewItem`...) dependem de widgets e ficam fora: a UI é desenhada pela árvore nativa.
 //!
-//! Divergência: `shouldInlineSubmenu` e `useSeparatorsInPrimaryActions` de `fillInActionBarActions` não entram, porque
-//! `getContextMenuActions` e `getFlatContextMenuActions` usam os valores padrão (nunca inline, sem separador no primário).
+//! Divergência: `shouldInlineSubmenu` de `fillInActionBarActions` não entra (nunca inline, o padrão que todos os chamadores
+//! portados usam); o `useSeparatorsInPrimaryActions` só entra em `get_action_bar_actions` (`getActionBarActions`), que o
+//! `ViewMenuActions` usa. `getContextMenuActions` e `getFlatContextMenuActions` ficam sem separador no primário.
 
 use std::rc::Rc;
 
@@ -20,7 +21,7 @@ pub struct PrimaryAndSecondaryActions {
 }
 
 /// O `IAction` que representa a entrada do menu: o item, ou a `SubmenuAction` por baixo do submenu.
-fn menu_action_as_action(action: &MenuAction) -> ActionRef {
+pub fn menu_action_as_action(action: &MenuAction) -> ActionRef {
     match action {
         MenuAction::Item(item) => item.clone(),
         MenuAction::Submenu(submenu) => submenu.as_action(),
@@ -92,4 +93,28 @@ pub fn get_context_menu_actions(groups: &[MenuActionGroup], primary_group: Optio
 /// `getFlatContextMenuActions(groups, primaryGroup?)`: os dois baldes numa lista só.
 pub fn get_flat_context_menu_actions(groups: &[MenuActionGroup], primary_group: Option<&str>) -> Vec<ActionRef> {
     fill_in_actions(groups, &primary_group_predicate(primary_group), true).secondary
+}
+
+/// `getActionBarActions(groups, primaryGroup, undefined, useSeparatorsInPrimaryActions)`: o `fillInActions` com o padrão do
+/// `shouldInlineSubmenu` (nunca inline), mas com a opção de separar os grupos primários por separadores.
+pub fn get_action_bar_actions(groups: &[MenuActionGroup], is_primary_action: &dyn Fn(&str) -> bool, use_separators_in_primary_actions: bool) -> PrimaryAndSecondaryActions {
+    let mut target = PrimaryAndSecondaryActions::default();
+
+    for (group, actions) in groups {
+        let bucket = if is_primary_action(group) {
+            if !target.primary.is_empty() && use_separators_in_primary_actions {
+                target.primary.push(Separator::new());
+            }
+            &mut target.primary
+        } else {
+            if !target.secondary.is_empty() {
+                target.secondary.push(Separator::new());
+            }
+            &mut target.secondary
+        };
+
+        bucket.extend(actions.iter().map(menu_action_as_action));
+    }
+
+    target
 }

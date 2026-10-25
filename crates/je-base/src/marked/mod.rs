@@ -158,6 +158,8 @@ pub struct Code {
     /// `lang` do bloco cercado (vazio quando não há); `None` para bloco por recuo.
     pub lang: Option<JsString>,
     pub text: JsString,
+    /// `escaped`: o `text` já é HTML (o `walkTokens` de quem destaca a sintaxe o define); o lexer o deixa `false`.
+    pub escaped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -300,6 +302,10 @@ pub struct Em {
 pub struct Codespan {
     pub raw: JsString,
     pub text: JsString,
+    /// `lexer.state.inLink` no instante em que o tokenizador leu o código (o que uma extensão de `codespan` lê).
+    pub in_link: bool,
+    /// `lexer.state.inRawBlock` no mesmo instante.
+    pub in_raw_block: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

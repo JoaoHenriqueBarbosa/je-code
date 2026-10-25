@@ -192,7 +192,7 @@ fn assert_node_equals(actual: &RenderedMarkdown, expected_html: &str) {
         "Expected: {}\nActual: {}",
         match &expected {
             Node::Element(e) => outer_html(e).to_string_lossy(),
-            Node::Text(t) => t.to_string_lossy(),
+            Node::Text(t) | Node::Comment(t) => t.to_string_lossy(),
         },
         outer_html(&actual.element.borrow()).to_string_lossy()
     );

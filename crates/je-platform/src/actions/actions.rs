@@ -8,7 +8,7 @@
 //! - `Action2` é o trait [`Action2`]; `registerAction2(new X())` é [`register_action2`] com a instância.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -208,9 +208,18 @@ impl MenuRegistryChangeEvent {
 /// `MenuRegistry`.
 pub struct MenuRegistry {
     commands: RefCell<Vec<(String, CommandAction)>>,
-    menu_items: RefCell<HashMap<MenuId, LinkedList<AnyMenuItem>>>,
+    /// Os itens são compartilhados por referência, como os objetos do original: quem registrou o item o altera depois e o
+    /// registro enxerga a mudança na próxima leitura.
+    menu_items: RefCell<HashMap<MenuId, LinkedList<SharedMenuItem>>>,
     on_did_change_menu: Rc<MicrotaskEmitter<MenuRegistryChangeEvent>>,
+    /// Quantas vezes `get_menu_items` leu cada menu (para os testes que o espiam, como `sinon.spy`).
+    menu_item_reads: RefCell<HashMap<MenuId, usize>>,
+    /// Quantas vezes alguém assinou `on_did_change_menu`.
+    change_subscriptions: Cell<usize>,
 }
+
+/// Um item de menu registrado, alterável por quem o registrou.
+pub type SharedMenuItem = Rc<RefCell<AnyMenuItem>>;
 
 thread_local! {
     static MENU_REGISTRY: Rc<MenuRegistry> = {
@@ -219,6 +228,8 @@ thread_local! {
             commands: RefCell::new(Vec::new()),
             menu_items: RefCell::new(HashMap::new()),
             on_did_change_menu: MicrotaskEmitter::with_options(Default::default(), Some(merge)),
+            menu_item_reads: RefCell::new(HashMap::new()),
+            change_subscriptions: Cell::new(0),
         })
     };
 }
@@ -231,7 +242,18 @@ pub fn menu_registry() -> Rc<MenuRegistry> {
 impl MenuRegistry {
     /// `onDidChangeMenu`.
     pub fn on_did_change_menu(&self) -> Event<MenuRegistryChangeEvent> {
+        self.change_subscriptions.set(self.change_subscriptions.get() + 1);
         self.on_did_change_menu.event()
+    }
+
+    /// Quantas vezes `get_menu_items` leu o menu.
+    pub fn menu_item_reads(&self, id: &MenuId) -> usize {
+        self.menu_item_reads.borrow().get(id).copied().unwrap_or(0)
+    }
+
+    /// Quantas vezes `on_did_change_menu` foi consultado para assinar.
+    pub fn change_subscriptions(&self) -> usize {
+        self.change_subscriptions.get()
     }
 
     /// `addCommand`.
@@ -272,6 +294,11 @@ impl MenuRegistry {
 
     /// `appendMenuItem`.
     pub fn append_menu_item(self: &Rc<Self>, id: &MenuId, item: AnyMenuItem) -> DisposableRef {
+        self.append_shared_menu_item(id, Rc::new(RefCell::new(item)))
+    }
+
+    /// `appendMenuItem` com o objeto do item mantido por quem registra: as alterações feitas nele depois valem na leitura seguinte.
+    pub fn append_shared_menu_item(self: &Rc<Self>, id: &MenuId, item: SharedMenuItem) -> DisposableRef {
         let removal = {
             let mut menu_items = self.menu_items.borrow_mut();
             menu_items.entry(id.clone()).or_default().push(item)
@@ -296,8 +323,9 @@ impl MenuRegistry {
 
     /// `getMenuItems`.
     pub fn get_menu_items(&self, id: &MenuId) -> Vec<AnyMenuItem> {
+        *self.menu_item_reads.borrow_mut().entry(id.clone()).or_default() += 1;
         let mut result: Vec<AnyMenuItem> = match self.menu_items.borrow().get(id) {
-            Some(list) => list.iter().collect(),
+            Some(list) => list.iter().map(|item| item.borrow().clone()).collect(),
             None => Vec::new(),
         };
         if *id == menu_ids::command_palette() {

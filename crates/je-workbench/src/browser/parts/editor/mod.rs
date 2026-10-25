@@ -18,3 +18,5 @@ pub mod editors_observer;
 pub mod editor_parts;
 pub mod modal_editor_part;
 pub mod text_editor;
+
+pub mod multi_row_editor_tabs_control;

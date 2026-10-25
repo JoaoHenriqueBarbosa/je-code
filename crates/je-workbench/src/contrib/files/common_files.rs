@@ -118,6 +118,23 @@ pub const VIEW_ID: &str = "workbench.explorer.fileView";
 /// `SESSIONS_FILES_VIEW_ID`.
 pub const SESSIONS_FILES_VIEW_ID: &str = "sessions.files.explorer";
 
+/// `ExplorerFolderContext`: `explorerResourceIsFolder`, true when the focused item in the EXPLORER is a folder. A chave é
+/// criada (e registrada) na primeira chamada, como as de `common/contextkeys.rs`.
+pub fn explorer_folder_context() -> je_platform::contextkey::contextkey::RawContextKey {
+    use je_platform::contextkey::contextkey::{ContextKeyMeta, RawContextKey};
+    thread_local! {
+        static KEY: RawContextKey = RawContextKey::new(
+            "explorerResourceIsFolder",
+            je_base::dynamic::Dynamic::Bool(false),
+            ContextKeyMeta::Info {
+                ty: "boolean".to_string(),
+                description: je_base::nls::localize("explorerResourceIsFolder", "True when the focused item in the EXPLORER is a folder.", &[]),
+            },
+        );
+    }
+    KEY.with(Clone::clone)
+}
+
 /// `SortOrder` (`explorer.sortOrder`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortOrder {

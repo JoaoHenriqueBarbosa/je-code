@@ -1,19 +1,44 @@
 //! Porte parcial de `src/vs/workbench/contrib/update/browser/releaseNotesEditor.ts`: o tratamento do texto markdown das notas
-//! de versão que antecede o renderer (`processConditionalBlocks` e o começo de `renderReleaseNotesMarkdown`).
+//! de versão que antecede o renderer (`processConditionalBlocks`) e `renderReleaseNotesMarkdown`, o renderer das notas de
+//! versão sobre o markdown (`renderMarkdownDocument`, o `SimpleSettingRenderer` e os links "Try This").
 //!
 //! Recorte declarado:
 //! - Ficam de fora o `ReleaseNotesManager` (webview, abertura do editor, cache e telemetria), o HTML do documento e o
 //!   `applyReleaseNotesTokenization`, que dependem do DOM e do webview.
-//! - A renderização em si (`renderMarkdownDocument` com o `marked`, o sanitizador de HTML e o `SimpleSettingRenderer`) não existe
-//!   no porte ainda; o que está aqui é o texto que ela recebe.
 //!
 //! Decisões de tradução:
 //! - As expressões regulares do original viram busca manual com a mesma semântica (guloso, preguiçoso, sem diferenciar caixa
 //!   ASCII, `\s` do JavaScript e `\w` ASCII).
+//! - A extensão do `marked` que o original passa a `renderMarkdownDocument` é a [`ReleaseNotesExtension`]: o `tokenizer.codespan`
+//!   que guarda os códigos fora de link e de bloco bruto em `tryoutCodeSpans` é a leitura de `in_link` e `in_raw_block` do
+//!   token; o `WeakMap` dos ids dos blocos de código (`codeBlockIds`) é uma fila na ordem do documento, que o `walkTokens`
+//!   enche e o renderizador `code` esvazia (os dois percorrem os tokens na mesma ordem).
+//! - `TrustedHTML` é o [`JsString`] do HTML sanitizado; `safeSetInnerHtml(container, content, config)` é o `sanitize_html` do
+//!   porte com o resultado como filhos do `Element` `container`, e `container.innerHTML` é `inner_html`.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
+use std::rc::Rc;
 
+use je_base::JsString;
+use je_base::browser::html_parser::Element;
+use je_base::cancellation::CancellationToken;
+use je_base::markdown::dom::inner_html;
+use je_base::markdown::sanitize::{Protocols, sanitize_html};
+use je_base::marked::{Code, Codespan, Renderer, Token};
+use je_base::network::schemas;
+use je_base::promise::Promise;
+use je_base::uuid::generate_uuid;
+use je_editor::language_service::ILanguageService;
+
+use crate::contrib::markdown::markdown_document_renderer::{
+    MarkdownDocumentSanitizerConfig, MarkedExtension, RenderMarkdownDocumentOptions, markdown_document_dom_config, render_markdown_document,
+    serialize_nodes,
+};
+use crate::contrib::markdown::markdown_setting_renderer::SimpleSettingRenderer;
+use crate::contrib::update::browser::release_notes_tryouts::ReleaseNotesTryouts;
 use crate::contrib::update::update_info_parser::is_js_whitespace;
+use crate::services::extensions::extensions::IExtensionService;
 
 /// `text.startsWith(prefix)` sem diferenciar caixa ASCII (o `prefix` é ASCII).
 fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
@@ -190,4 +215,115 @@ pub fn prepare_release_notes_markdown(text: &str, quality: Option<&str>, has_try
 
     // Process conditional blocks based on active conditions
     process_conditional_blocks(&text, &release_notes_active_conditions(quality, has_tryouts))
+}
+
+/// `IReleaseNotesCodeBlock`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseNotesCodeBlock {
+    pub id: String,
+    pub text: String,
+    pub language: Option<String>,
+}
+
+/// A extensão do `marked` que `renderReleaseNotesMarkdown` passa a `renderMarkdownDocument`.
+struct ReleaseNotesExtension {
+    html_renderer: Box<dyn Fn(&str) -> String>,
+    code_span_renderer: Box<dyn Fn(&str) -> String>,
+    tryouts: Option<Rc<ReleaseNotesTryouts>>,
+    code_blocks: Option<Rc<RefCell<Vec<ReleaseNotesCodeBlock>>>>,
+    code_block_ids: RefCell<VecDeque<String>>,
+}
+
+impl MarkedExtension for ReleaseNotesExtension {
+    fn walk_token(&self, token: &Token) {
+        if let (Some(code_blocks), Token::Code(code)) = (&self.code_blocks, token) {
+            let id = format!("release-notes-code-{}", generate_uuid());
+            self.code_block_ids.borrow_mut().push_back(id.clone());
+            code_blocks.borrow_mut().push(ReleaseNotesCodeBlock {
+                id,
+                text: code.text.to_string_lossy(),
+                language: code.lang.as_ref().map(JsString::to_string_lossy),
+            });
+        }
+    }
+
+    /// `html: simpleSettingRenderer.getHtmlRenderer()`.
+    fn html(&self, raw: &str) -> Option<JsString> {
+        Some(JsString::from((self.html_renderer)(raw).as_str()))
+    }
+
+    /// `codespan: token => (tryoutCodeSpans.has(token) ? tryouts?.renderCodeSpan(token.text) : undefined) ?? renderCodeSpan(token)`.
+    fn codespan(&self, token: &Codespan) -> Option<JsString> {
+        let text = token.text.to_string_lossy();
+        let tryout = if token.in_link || token.in_raw_block { None } else { self.tryouts.as_ref().and_then(|tryouts| tryouts.render_code_span(&text)) };
+        Some(JsString::from(tryout.unwrap_or_else(|| (self.code_span_renderer)(&text)).as_str()))
+    }
+
+    /// `code: token => codeBlocks ? renderer.code(token).replace('<code', `<code id="..."`) : false`.
+    fn code(&self, token: &Code) -> Option<JsString> {
+        self.code_blocks.as_ref()?;
+        let id = self.code_block_ids.borrow_mut().pop_front()?;
+        let rendered = Renderer.code(token).to_string_lossy();
+        Some(JsString::from(rendered.replacen("<code", &format!("<code id=\"{id}\""), 1).as_str()))
+    }
+}
+
+/// O `sanitizerConfig` de `renderReleaseNotesMarkdown`.
+fn release_notes_sanitizer_config() -> MarkdownDocumentSanitizerConfig {
+    MarkdownDocumentSanitizerConfig {
+        allow_relative_media_paths: true,
+        allowed_link_protocols_override: Some(Protocols::List(
+            [schemas::HTTP, schemas::HTTPS, schemas::COMMAND, schemas::CODE_SETTING].iter().map(|scheme| (*scheme).to_owned()).collect(),
+        )),
+        allowed_tags_augment: ["nav", "svg", "path"].iter().map(|tag| (*tag).to_owned()).collect(),
+        allowed_attributes_augment: ["aria-role", "viewBox", "fill", "xmlns", "d"].iter().map(|name| (*name).to_owned()).collect(),
+        ..MarkdownDocumentSanitizerConfig::default()
+    }
+}
+
+/// O `tryoutSanitizerConfig`: o `sanitizerConfig` com `button` entre as tags e os atributos dos controles de tryout.
+fn tryout_sanitizer_config() -> MarkdownDocumentSanitizerConfig {
+    let mut config = release_notes_sanitizer_config();
+    config.allowed_tags_augment.push("button".to_owned());
+    config.allowed_attributes_augment.extend(
+        ["type", "hidden", "aria-label", "aria-disabled", "data-release-notes-tryout-id", "data-release-notes-tryout-index"].iter().map(|name| (*name).to_owned()),
+    );
+    config
+}
+
+/// O fim de `renderReleaseNotesMarkdown`: com links de tryout, o conteúdo é montado num contêiner, os links viram os controles
+/// e o resultado é sanitizado de novo.
+fn render_tryouts(content: JsString, tryouts: Option<&Rc<ReleaseNotesTryouts>>) -> JsString {
+    let Some(tryouts) = tryouts else { return content };
+    if !tryouts.needs_render(&content.to_string_lossy()) {
+        return content;
+    }
+    let config = markdown_document_dom_config(Some(&tryout_sanitizer_config()));
+    let mut container = Element::new("div", Vec::new());
+    container.children = sanitize_html(content.units(), &config);
+    tryouts.render(&mut container);
+    serialize_nodes(sanitize_html(inner_html(&container).units(), &config))
+}
+
+/// `renderReleaseNotesMarkdown(text, extensionService, languageService, simpleSettingRenderer, quality, tryouts, codeBlocks)`.
+pub fn render_release_notes_markdown(
+    text: &str,
+    extension_service: Rc<dyn IExtensionService>,
+    language_service: Rc<dyn ILanguageService>,
+    simple_setting_renderer: &Rc<SimpleSettingRenderer>,
+    quality: Option<&str>,
+    tryouts: Option<Rc<ReleaseNotesTryouts>>,
+    code_blocks: Option<Rc<RefCell<Vec<ReleaseNotesCodeBlock>>>>,
+) -> Promise<JsString> {
+    let text = prepare_release_notes_markdown(text, quality, tryouts.is_some());
+    let extension = ReleaseNotesExtension {
+        html_renderer: Box::new(simple_setting_renderer.get_html_renderer()),
+        code_span_renderer: Box::new(simple_setting_renderer.get_code_span_renderer()),
+        tryouts: tryouts.clone(),
+        code_blocks,
+        code_block_ids: RefCell::new(VecDeque::new()),
+    };
+    let options = RenderMarkdownDocumentOptions { sanitizer_config: Some(release_notes_sanitizer_config()), marked_extensions: vec![Rc::new(extension)] };
+    render_markdown_document(&text, extension_service, language_service, Some(options), CancellationToken::None)
+        .then(move |content| render_tryouts(content, tryouts.as_ref()))
 }

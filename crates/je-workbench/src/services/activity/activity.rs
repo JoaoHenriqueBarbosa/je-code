@@ -14,8 +14,10 @@
 
 use std::rc::Rc;
 
+use je_base::actions::ActionRef;
 use je_base::event::Event;
 use je_base::lifecycle::DisposableRef;
+use je_base::themables::ThemeIcon;
 
 /// `IBadge`.
 pub trait IBadge {
@@ -24,6 +26,16 @@ pub trait IBadge {
     /// O `badge instanceof ProgressBadge` do original: só o [`ProgressBadge`] responde `true`.
     fn is_progress_badge(&self) -> bool {
         false
+    }
+
+    /// O `badge instanceof NumberBadge ? badge.number : ...` do original: só o [`NumberBadge`] responde o número.
+    fn number(&self) -> Option<f64> {
+        None
+    }
+
+    /// O `badge instanceof IconBadge ? badge.icon : ...` do original: só o [`IconBadge`] responde o ícone.
+    fn icon(&self) -> Option<ThemeIcon> {
+        None
     }
 }
 
@@ -50,6 +62,33 @@ impl IBadge for NumberBadge {
     fn get_description(&self) -> String {
         (self.descriptor_fn)(self.number)
     }
+
+    fn number(&self) -> Option<f64> {
+        Some(self.number)
+    }
+}
+
+/// `IconBadge`: o selo que mostra um ícone no lugar de um número.
+pub struct IconBadge {
+    pub icon: ThemeIcon,
+    description_fn: Rc<dyn Fn() -> String>,
+}
+
+impl IconBadge {
+    /// `new IconBadge(icon, descriptorFn)`.
+    pub fn new(icon: ThemeIcon, description_fn: impl Fn() -> String + 'static) -> Self {
+        Self { icon, description_fn: Rc::new(description_fn) }
+    }
+}
+
+impl IBadge for IconBadge {
+    fn get_description(&self) -> String {
+        (self.description_fn)()
+    }
+
+    fn icon(&self) -> Option<ThemeIcon> {
+        Some(self.icon.clone())
+    }
 }
 
 /// `ProgressBadge`: o selo de progresso (o `getDescription` é o que o construtor recebe).
@@ -74,11 +113,29 @@ impl IBadge for ProgressBadge {
     }
 }
 
+/// O `string | IAction` de `onDidChangeActivity`: o identificador (do contêiner de views ou da ação global) ou a ação.
+#[derive(Clone)]
+pub enum ActivityChangeTarget {
+    Id(String),
+    Action(ActionRef),
+}
+
 /// `IActivityService`.
 pub trait IActivityService {
     /// `onDidChangeActivity`: dispara quando uma atividade muda (o padrão nunca dispara).
     fn on_did_change_activity(&self) -> Event<()> {
         Event::none()
+    }
+
+    /// `onDidChangeActivity` com o alvo que o original carrega (`string | IAction`): o consumidor que filtra pelo
+    /// identificador (os itens globais, `GlobalCompositeBar`) lê este. O padrão nunca dispara.
+    fn on_did_change_activity_target(&self) -> Event<ActivityChangeTarget> {
+        Event::none()
+    }
+
+    /// `getActivity(id)`: as atividades do identificador (o padrão é a lista vazia).
+    fn get_activity(&self, _id: &str) -> Vec<IActivity> {
+        Vec::new()
     }
 
     /// `getViewContainerActivities(viewContainerId)`: as atividades do contêiner de views (o padrão é a lista vazia).

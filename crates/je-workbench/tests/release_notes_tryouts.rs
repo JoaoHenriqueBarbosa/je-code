@@ -1,11 +1,12 @@
 //! Porte de `src/vs/workbench/contrib/update/test/browser/releaseNotesTryouts.test.ts` (suíte `Release notes Try This`),
 //! na mesma ordem do original.
 //!
-//! O porte não tem DOM, sanitizador de HTML nem o renderer markdown das notas (`renderReleaseNotesMarkdown` com o `marked`),
-//! e `ReleaseNotesTryouts` ficou sem `render(container)` (ver o cabeçalho de `release_notes_tryouts.rs`). O que cada caso
-//! afirma sobre o documento renderizado é conferido na decisão que `render` toma por link
-//! ([`ReleaseNotesTryouts::render_link`] e `render_code_span`) e no estado que o controle recebe; o que só existe no DOM
-//! fica de fora, e a lista está abaixo.
+//! O documento é a árvore `Element`/`Node` do `html_parser` (sem DOM): `renderReleaseNotesMarkdown` é
+//! `render_release_notes_markdown`, o `$('div')` com `safeSetInnerHtml(container, html, config)` é o [`container_of`] (o
+//! `sanitize_html` do porte com a mesma configuração), `querySelector`, `querySelectorAll` e `textContent` são percorridos aqui
+//! mesmo, e o `click()` do documento é o [`ReleaseNotesTryoutsClient::click`] com o caminho do alvo. O que cada caso afirma
+//! sobre o documento renderizado é conferido na árvore; os casos que o original escreve contra a decisão por link
+//! ([`ReleaseNotesTryouts::render_link`] e `render_code_span`) e contra as mensagens do webview seguem conferindo o dado.
 //!
 //! Casos portados por inteiro (mesmas entradas e mesmas afirmações): `renders ready links...`, `hides legacy/shorthand`
 //! (os dois), `renders an unavailable explanation` (os dois), `keeps a readable, inert fallback` (os 11), `accepts the ID
@@ -13,7 +14,9 @@
 //! actions`, `runs ready examples`, `coalesces repeated activation`, `resolves the setup command...`, `does not run stale
 //! setup actions`, `rejects forged protocol data` (os 7), `ignores messages from an earlier document`, `silently ignores
 //! malformed or unknown direct command links`, `restores source focus` (os 3), `does not reclaim focus`, `cancels pending
-//! preparation on webview disposal`.
+//! preparation on webview disposal`, `does not activate shorthand inside ...` (os 11), `preserves TOC, setting chips,
+//! command links and media sanitization...` e `serialized webview script sends only the document, occurrence, ID and
+//! action...` (o JavaScript serializado é o [`ReleaseNotesTryoutsClient`], o lado do documento em Rust).
 //!
 //! Casos portados por projeção (o que o DOM verificava vira a verificação do dado que o alimenta):
 //! - `renders shorthand with literal authored text...`: o rótulo é texto simples (o original passa HTML e markdown pelo
@@ -32,16 +35,14 @@
 //!   nas mensagens `releaseNotesTryouts` (rótulo, nome acessível, `aria-disabled`, `hidden`, `href`, mensagem); foco e
 //!   `mouseover` do DOM não existem.
 //!
-//! Fora (só existem no DOM e no webview HTML): `does not activate shorthand inside ...` (os 11, renderer markdown),
-//! `preserves TOC, setting chips, command links and media sanitization...` e `serialized webview script sends only the
-//! document, occurrence, ID and action...` (JavaScript serializado dentro do webview).
-//!
 //! Notas de tradução:
 //! - **`ensureNoDisposablesAreLeakedInTestSuite()`.** É o [`LeakGuard`] do [`Fixture`]; `store.add` vira `guard.add_rc`.
 //! - **`await timeout(0)`.** É o `timeout` do `common` e roda em `run_with_real_timers`.
 //! - **`deepStrictEqual` de mensagens.** É [`assert_deep_strict_equal`] sobre [`Dynamic`].
 //! - **`sinon.stub`.** São os dublês [`TestTryoutService`], [`TestCommandService`], [`TestNotificationService`],
 //!   [`TestLogService`] e [`TestWebview`], que guardam o que o original lia dos stubs.
+//! - **`instantiationService`.** O `IExtensionService`, o `ILanguageService` e o `SimpleSettingRenderer` (criado a cada
+//!   `render`, com o `IPreferencesService` que o caso definiu) são os do [`Fixture`].
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -52,21 +53,33 @@ use std::future::Future;
 use std::rc::Rc;
 
 use common::{LeakGuard, assert_deep_strict_equal, ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers, timeout};
+use je_base::JsString;
+use je_base::browser::html_parser::{Element, Node};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::html_content::create_command_uri;
 use je_base::lifecycle::IDisposable;
+use je_base::markdown::dom::inner_html;
+use je_base::markdown::sanitize::{AttributeRule, DomSanitizerConfig, Protocols, sanitize_html};
 use je_base::promise::{DeferredPromise, Promise};
 use je_base::uri::{Field, URI, UriChange};
+use je_editor::language_service::{ILanguageService, LanguageService};
+use je_editor::services::clipboard_service::IClipboardService;
 use je_platform::commands::{CommandEvent, ICommandService};
+use je_platform::configuration::service::IConfigurationService;
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::log::{LogArg, LogLevel, LogMessage, Logger};
 use je_platform::notification::{
     INotificationService, NoOpNotification, Notification, NotificationFilterSetting, NotificationHandle, NotificationMessage,
     NotificationSource, NotificationSourceFilter, NotificationsFilter, PromptChoiceKind, PromptOptions, Severity, StatusHandle,
     StatusMessageOptions,
 };
+use je_platform::telemetry::telemetry_utils::null_telemetry_service;
+use je_ui::Ui;
+use je_widgets::context_view_api::{IContextMenuDelegate, IContextMenuProvider};
+use je_workbench::contrib::markdown::markdown_setting_renderer::SimpleSettingRenderer;
 use je_workbench::contrib::onboarding::onboarding_scenario::{OnboardingPresentationRef, OnboardingScenario, OnboardingTrigger};
 use je_workbench::contrib::onboarding::onboarding_tryout::{
     OnboardingTryoutAvailability, OnboardingTryoutCommand, OnboardingTryoutMetadata, OnboardingTryoutResult,
@@ -75,11 +88,14 @@ use je_workbench::contrib::onboarding::onboarding_tryout::{
 use je_workbench::contrib::onboarding::onboarding_tryout_service::{
     IOnboardingTryoutService, OnboardingTryoutRunOptions, OnboardingTryoutSource, create_onboarding_tryout_uri,
 };
-use je_workbench::contrib::update::browser::release_notes_editor::prepare_release_notes_markdown;
+use je_workbench::contrib::update::browser::release_notes_editor::{prepare_release_notes_markdown, render_release_notes_markdown};
 use je_workbench::contrib::update::browser::release_notes_tryouts::{
-    ReleaseNotesTryoutState, ReleaseNotesTryouts, ReleaseNotesTryoutsWebview, RenderedLink,
+    ReleaseNotesTryoutState, ReleaseNotesTryouts, ReleaseNotesTryoutsClient, ReleaseNotesTryoutsWebview, RenderedLink,
 };
 use je_workbench::contrib::webview::browser_webview::WebviewMessageReceivedEvent;
+use je_workbench::services::extensions::extensions::IExtensionService;
+use je_workbench::services::preferences::preferences::{IOpenSettingsOptions, IPreferencesService, ISetting, SettingSchemaType};
+use je_workbench::test::browser::workbench_test_services::TestExtensionService;
 
 type RunImplementation = Rc<dyn Fn(&str, CancellationToken) -> Promise<OnboardingTryoutResult>>;
 
@@ -282,6 +298,68 @@ impl ReleaseNotesTryoutsWebview for TestWebview {
     }
 }
 
+/// `<Partial<IPreferencesService>>{ getSetting }`: só conhece a configuração que o caso define (`getSetting: () => new
+/// class extends mock<ISetting>() { key, value, type }`).
+struct TestPreferencesService {
+    setting: RefCell<Option<ISetting>>,
+}
+
+impl IPreferencesService for TestPreferencesService {
+    fn open_user_settings(&self, _options: Option<&IOpenSettingsOptions>) -> Promise<()> {
+        panic!("openUserSettings is not a function")
+    }
+
+    fn open_application_settings(&self, _options: Option<&IOpenSettingsOptions>) -> Promise<()> {
+        panic!("openApplicationSettings is not a function")
+    }
+
+    fn get_setting(&self, setting: &str) -> Option<ISetting> {
+        self.setting.borrow().clone().filter(|known| known.key == setting)
+    }
+}
+
+/// `<IContextMenuService>{}` (o `ContextMenuService` do original não é aberto por nenhum caso).
+struct TestContextMenuService;
+
+impl IContextMenuProvider for TestContextMenuService {
+    fn show_context_menu(&self, _delegate: Rc<dyn IContextMenuDelegate>) {
+        panic!("showContextMenu is not a function")
+    }
+}
+
+/// `IClipboardService` que o `SimpleSettingRenderer` recebe e nenhum caso usa.
+struct TestClipboardService;
+
+impl IClipboardService for TestClipboardService {
+    fn write_text(&self, _text: &str) -> Promise<()> {
+        Promise::resolved(())
+    }
+
+    fn read_text(&self) -> Promise<String> {
+        panic!("readText is not a function")
+    }
+
+    fn read_find_text(&self) -> Promise<JsString> {
+        panic!("readFindText is not a function")
+    }
+
+    fn write_find_text(&self, _text: &JsString) -> Promise<()> {
+        panic!("writeFindText is not a function")
+    }
+
+    fn write_resources(&self, _resources: Vec<URI>) -> Promise<()> {
+        panic!("writeResources is not a function")
+    }
+
+    fn read_resources(&self) -> Promise<Vec<URI>> {
+        panic!("readResources is not a function")
+    }
+
+    fn has_resources(&self) -> Promise<bool> {
+        panic!("hasResources is not a function")
+    }
+}
+
 struct Fixture {
     _guard: LeakGuard,
     service: Rc<TestTryoutService>,
@@ -291,6 +369,10 @@ struct Fixture {
     notifications: Rc<TestNotificationService>,
     log: Rc<TestLogService>,
     can_restore_focus: Rc<Cell<bool>>,
+    extension_service: Rc<dyn IExtensionService>,
+    language_service: Rc<dyn ILanguageService>,
+    configuration_service: Rc<dyn IConfigurationService>,
+    preferences: Rc<TestPreferencesService>,
 }
 
 impl Fixture {
@@ -320,7 +402,50 @@ impl Fixture {
             messages: RefCell::new(Vec::new()),
             focus_count: Cell::new(0),
         });
-        Self { _guard: guard, service, tryouts, webview, commands, notifications, log, can_restore_focus: Rc::new(Cell::new(true)) }
+        let language_service = guard.add_rc(LanguageService::new(false));
+        let configuration_service = TestConfigurationService::new(None);
+        guard.add_rc(configuration_service.on_did_change_configuration_emitter.clone());
+        let configuration_service: Rc<dyn IConfigurationService> = configuration_service;
+        Self {
+            _guard: guard,
+            service,
+            tryouts,
+            webview,
+            commands,
+            notifications,
+            log,
+            can_restore_focus: Rc::new(Cell::new(true)),
+            extension_service: TestExtensionService::new(),
+            language_service,
+            configuration_service,
+            preferences: Rc::new(TestPreferencesService { setting: RefCell::new(None) }),
+        }
+    }
+
+    /// `instantiationService.createInstance(SimpleSettingRenderer)`: o renderizador lê o `IPreferencesService` da hora.
+    fn setting_renderer(&self) -> Rc<SimpleSettingRenderer> {
+        SimpleSettingRenderer::new(
+            Rc::clone(&self.configuration_service),
+            Rc::new(TestContextMenuService),
+            self.preferences.clone(),
+            null_telemetry_service(),
+            Rc::new(TestClipboardService),
+            Ui::new(),
+        )
+    }
+
+    /// `render(markdown, enabled)`: o contêiner com o HTML das notas, sanitizado como o `safeSetInnerHtml` do original.
+    fn render_document(&self, markdown: &str, enabled: bool) -> Promise<Element> {
+        render_release_notes_markdown(
+            markdown,
+            Rc::clone(&self.extension_service),
+            Rc::clone(&self.language_service),
+            &self.setting_renderer(),
+            Some("stable"),
+            enabled.then(|| self.tryouts.clone()),
+            None,
+        )
+        .then(|html| container_of(&html))
     }
 
     fn fire_message(&self, message: Dynamic) {
@@ -391,6 +516,71 @@ impl Fixture {
 
 fn case<F: Future<Output = ()> + 'static>(body: impl FnOnce(Fixture) -> F + 'static) {
     run_with_real_timers(async move { body(Fixture::new()).await });
+}
+
+const TRYOUT_ID: &str = "data-release-notes-tryout-id";
+
+/// `element.dataset.releaseNotesTryoutId` (e os outros `data-*`): o valor do atributo.
+fn dataset(element: &Element, name: &str) -> Option<String> {
+    element.get_attribute(name).map(JsString::to_string_lossy)
+}
+
+/// O `$('div')` com `safeSetInnerHtml(container, html, ...)` do `render` do original: o `sanitize_html` com a mesma configuração.
+fn container_of(html: &JsString) -> Element {
+    let strings = |names: &[&str]| -> Vec<String> { names.iter().map(|name| (*name).to_owned()).collect() };
+    let config = DomSanitizerConfig {
+        allowed_link_protocols: Some(Protocols::List(strings(&["http", "https", "command", "code-setting"]))),
+        allowed_tags_augment: Some(strings(&["button", "nav", "svg", "path"])),
+        allowed_attributes_augment: Some(
+            strings(&[
+                "class",
+                "id",
+                "hidden",
+                "aria-label",
+                "aria-disabled",
+                "data-release-notes-tryout-id",
+                "data-release-notes-tryout-index",
+                "viewBox",
+                "fill",
+                "d",
+            ])
+            .into_iter()
+            .map(AttributeRule::Name)
+            .collect(),
+        ),
+        ..DomSanitizerConfig::default()
+    };
+    let mut container = Element::new("div", Vec::new());
+    container.children = sanitize_html(html.units(), &config);
+    container
+}
+
+/// `container.querySelectorAll(...)`: os descendentes que casam, em ordem de documento.
+fn select_all<'a>(root: &'a Element, matches: &dyn Fn(&Element) -> bool) -> Vec<&'a Element> {
+    let mut found = Vec::new();
+    for child in root.element_children() {
+        if matches(child) {
+            found.push(child);
+        }
+        found.extend(select_all(child, matches));
+    }
+    found
+}
+
+/// O caminho (índices em `children`) do primeiro descendente que casa: o alvo de um `click()`.
+fn path_to(root: &Element, matches: &dyn Fn(&Element) -> bool) -> Option<Vec<usize>> {
+    for (index, child) in root.children.iter().enumerate() {
+        if let Node::Element(child) = child {
+            if matches(child) {
+                return Some(vec![index]);
+            }
+            if let Some(mut rest) = path_to(child, matches) {
+                rest.insert(0, index);
+                return Some(rest);
+            }
+        }
+    }
+    None
 }
 
 fn uri_text(uri: &URI) -> String {
@@ -492,6 +682,43 @@ malformed_shorthand_cases! {
     keeps_malformed_shorthand_as_literal_code_with_an_oversized_id => format!("try({},Oversized ID)", "a".repeat(129)),
     keeps_malformed_shorthand_as_literal_code_with_trailing_code => "try(sample,Label) trailing code".to_string(),
     keeps_malformed_shorthand_as_literal_code_with_the_wrong_case => "Try(sample,Wrong case)".to_string(),
+}
+
+fn does_not_activate_shorthand_inside(markdown: &'static str) {
+    case(move |fx| async move {
+        let container = fx.render_document(&format!("{markdown}\n\n`try(other,Outside)`"), true).await.expect("renderReleaseNotesMarkdown");
+        let links: Vec<(Option<String>, Option<String>)> = select_all(&container, &|element| element.get_attribute(TRYOUT_ID).is_some())
+            .into_iter()
+            .map(|element| (dataset(element, TRYOUT_ID), element.query_selector("a").map(|link| link.text_content().to_string_lossy())))
+            .collect();
+        assert_eq!(links, vec![(Some("other".to_string()), Some("Outside".to_string()))]);
+        assert!(fx.runs().is_empty());
+    });
+}
+
+macro_rules! shorthand_context_cases {
+    ($($name:ident => $markdown:expr),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                does_not_activate_shorthand_inside($markdown);
+            }
+        )*
+    };
+}
+
+shorthand_context_cases! {
+    does_not_activate_shorthand_inside_bare_text => "try(sample,Literal)",
+    does_not_activate_shorthand_inside_fenced_code => "```text\n`try(sample,Literal)`\n```",
+    does_not_activate_shorthand_inside_indented_code => "    `try(sample,Literal)`",
+    does_not_activate_shorthand_inside_a_larger_code_span => "`const example = try(sample,Literal)`",
+    does_not_activate_shorthand_inside_a_markdown_link => "[`try(sample,Literal)`](https://example.com)",
+    does_not_activate_shorthand_inside_nested_link_formatting => "[**`try(sample,Literal)`**](https://example.com)",
+    does_not_activate_shorthand_inside_a_reference_link => "[`try(sample,Literal)`][example]\n\n[example]: https://example.com",
+    does_not_activate_shorthand_inside_an_html_link => "<a href=\"https://example.com\">`try(sample,Literal)`</a>",
+    does_not_activate_shorthand_inside_an_html_code_element => "<code>`try(sample,Literal)`</code>",
+    does_not_activate_shorthand_inside_a_plain_html_code_example => "<code>try(sample,Literal)</code>",
+    does_not_activate_shorthand_inside_an_image => "![`try(sample,Literal)`](https://example.com/image.png)",
 }
 
 #[test]
@@ -737,6 +964,22 @@ fn escapes_local_text_and_sanitizes_fetched_html_before_recognizing_raw_links() 
         assert_eq!(state.label, "Try This: <img src=x onerror=alert(1)>");
         assert_eq!(state.message, "<svg onload=alert(3)>");
         assert_eq!(state.setup_label, "<img onerror=alert(4)>");
+    });
+}
+
+#[test]
+fn preserves_toc_setting_chips_command_links_and_media_sanitization_with_the_integration() {
+    case(|fx| async move {
+        *fx.preferences.setting.borrow_mut() = Some(ISetting {
+            key: "editor.wordWrap".to_string(),
+            value: Dynamic::string("off"),
+            r#type: Some(SettingSchemaType::Single("string".to_string())),
+            ..ISetting::default()
+        });
+        let markdown = "<!-- TOC\n<nav id=\"toc-nav\"><a href=\"#heading\">Heading</a></nav>\nNavigation End -->\n## Heading\n[Settings](command:workbench.action.openSettings) [Summary](command:summarize.release.notes)\n`setting(editor.wordWrap:on)`\n<svg viewBox=\"0 0 16 16\"><path fill=\"currentColor\" d=\"M0 0\"></path></svg><img src=\"https://example.com/image.png\" onerror=\"alert(1)\">";
+        let legacy = fx.render_document(markdown, false).await.expect("renderReleaseNotesMarkdown");
+        let integrated = fx.render_document(markdown, true).await.expect("renderReleaseNotesMarkdown");
+        assert_eq!(inner_html(&integrated).to_string_lossy(), inner_html(&legacy).to_string_lossy());
     });
 }
 
@@ -1190,5 +1433,42 @@ fn updates_controls_in_place_without_executing_on_focus_or_hover() {
         assert_eq!(text(&state.get_str("href")), "");
         assert_eq!(text(&state.get_str("message")), "A new explanation.");
         assert!(fx.runs().is_empty());
+    });
+}
+
+#[test]
+fn serialized_webview_script_sends_only_the_document_occurrence_id_and_action_on_activation() {
+    case(|fx| async move {
+        fx.service.set_availability("sample", unavailable("Setup needed.", Some(("Set Up", "local.setup", vec![]))));
+        let container = fx
+            .render_document(&format!("`try(sample,Set Up Example)` [Ready]({})", tryout_href("other")), true)
+            .await
+            .expect("renderReleaseNotesMarkdown");
+        let client_messages: Rc<RefCell<Vec<Dynamic>>> = Rc::new(RefCell::new(Vec::new()));
+        let client = {
+            let client_messages = client_messages.clone();
+            ReleaseNotesTryoutsClient::initialize(&fx.tryouts.document_id, Rc::new(move |message| client_messages.borrow_mut().push(message)))
+        };
+        let button = path_to(&container, &|element| element.tag_name == "button").expect("o controle tem o botão de preparação");
+        let link = path_to(&container, &|element| element.tag_name == "a" && element.get_attribute("href").is_some()).expect("há um link com href");
+        assert!(client.click(&container, &button));
+        assert!(client.click(&container, &link));
+        client.dispose();
+
+        let message = |kind: &str, id: &str, index: f64, action: &str| {
+            Dynamic::object([
+                ("type", Dynamic::string(kind)),
+                ("documentId", Dynamic::string(&fx.tryouts.document_id)),
+                ("id", Dynamic::string(id)),
+                ("index", Dynamic::Number(index)),
+                ("action", Dynamic::string(action)),
+            ])
+        };
+        let expected = Dynamic::array([
+            Dynamic::object([("type", Dynamic::string("releaseNotesTryoutsReady")), ("documentId", Dynamic::string(&fx.tryouts.document_id))]),
+            message("releaseNotesTryout", "sample", 0.0, "setup"),
+            message("releaseNotesTryout", "other", 1.0, "run"),
+        ]);
+        assert_deep_strict_equal(&Dynamic::array(client_messages.borrow().iter().cloned()), &expected);
     });
 }

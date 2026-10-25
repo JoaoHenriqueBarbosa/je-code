@@ -1,10 +1,13 @@
 //! Porte de `src/vs/platform/backup/common/backup.ts` e `node/backup.ts`: os tipos de informação de backup por
 //! workspace, pasta e janela vazia, e a leitura do formato serializado.
 //!
-//! Fora do porte: `electron-main/backupMainService.ts` (e o teste `backupMainService.test.ts`), que gerencia os
-//! backups no processo principal do Electron (janelas, `IWorkspacesManagementMainService`, `IEnvironmentMainService`).
+//! O `electron-main/backupMainService.ts` e o `electron-main/backup.ts` estão em [`backup_main_service`]: no je-code
+//! não há processo principal do Electron, mas o papel dele (registrar e limpar os backups de workspaces, pastas e
+//! janelas vazias, o hot exit) existe no processo único.
 
 use je_base::uri::URI;
+
+pub mod backup_main_service;
 
 use crate::workspace::WorkspaceIdentifier;
 

@@ -12,14 +12,25 @@
 //!   (porta padrão, punycode).
 //! - `URLSearchParams` é [`UrlSearchParams`], com a codificação `application/x-www-form-urlencoded`.
 //!
-//! Não portado: `fetchDynamicRegistration`, `fetchResourceMetadata` e `fetchAuthorizationServerMetadata` (e as
-//! interfaces `IFetcher`, `IFetchResourceMetadataOptions` e `IFetchAuthorizationServerMetadataOptions` deles),
-//! que fazem requisições HTTP com `fetch`; a parte de `oauth.test.ts` que as cobre (suítes `Network Functions`,
-//! `Client ID Fallback Scenarios`, `fetchResourceMetadata` e `fetchAuthorizationServerMetadata`) fica pendente.
+//! - O `fetch` (o global e o injetável `IFetcher`) é o trait [`IFetcher`], e a `Response` é [`ICommonResponse`]; o
+//!   `fetch` global do JavaScript é o que [`set_global_fetch`] instala (o porte não tem pilha HTTP em `je-base`, e
+//!   sem um instalado a chamada falha com `ReferenceError: fetch is not defined`). `Promise` é `async fn` e a
+//!   exceção é `Err(Error)`; o `AggregateError` é [`Error::aggregate`].
+//! - `new URL(texto)` é [`WhatwgUrl`], o mínimo para `http(s)`: `origin`, `pathname` e `toString` com o host em
+//!   minúsculas, a porta padrão omitida e a barra do caminho vazio (sem a normalização de percent-encoding e de `.`
+//!   e `..` do WHATWG).
+//! - `fetchAuthorizationServerMetadata` e `fetchResourceMetadata` devolvem os metadados já tipados; um corpo que
+//!   passa no `is*` mas não cabe no tipo (por exemplo sem `response_types_supported`, que o TypeScript não confere)
+//!   conta como "não é um metadado" no primeiro e como erro no segundo.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::buffer::decode_base64;
 use crate::errors::Error;
 use crate::json::{self, Value};
+use crate::json_formatter::json_stringify;
+use crate::node::pfs::LocalFuture;
 use crate::record::JsNumber;
 use crate::uri::{Field, URI, UriChange};
 
@@ -712,3 +723,428 @@ pub fn scopes_match(scopes1: Option<&[&str]>, scopes2: Option<&[&str]>) -> bool 
     };
     sorted(scopes1) == sorted(scopes2)
 }
+
+//#region fetch
+
+/// `new URL(texto)` para `http(s)://`: o que `fetchResourceMetadata` e `fetchAuthorizationServerMetadata` leem
+/// (`origin`, `pathname`, `toString`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhatwgUrl {
+    scheme: String,
+    userinfo: String,
+    host: String,
+    port: Option<String>,
+    /// `pathname`: nunca vazio (`/` para o caminho vazio).
+    pub pathname: String,
+    search: String,
+    hash: String,
+}
+
+impl WhatwgUrl {
+    /// `new URL(input)`: `Err` com `TypeError: Invalid URL` quando não há `esquema://host`.
+    pub fn parse(input: &str) -> Result<Self, Error> {
+        let invalid = || Error::named("TypeError", "Invalid URL");
+        let input = js_trim(input);
+        let (scheme, rest) = input.split_once("://").ok_or_else(invalid)?;
+        let valid_scheme = scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+        if !valid_scheme {
+            return Err(invalid());
+        }
+        let scheme = scheme.to_ascii_lowercase();
+
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, tail) = rest.split_at(authority_end);
+        let (userinfo, host_port) = match authority.rfind('@') {
+            Some(at) => (format!("{}@", &authority[..at]), &authority[at + 1..]),
+            None => (String::new(), authority),
+        };
+        let (host, port) = match host_port.rfind(':').filter(|&colon| !host_port[colon..].contains(']')) {
+            Some(colon) => (&host_port[..colon], Some(&host_port[colon + 1..])),
+            None => (host_port, None),
+        };
+        if host.is_empty() || port.is_some_and(|p| !p.chars().all(|c| c.is_ascii_digit())) {
+            return Err(invalid());
+        }
+        let default_port = match scheme.as_str() {
+            "http" | "ws" => Some("80"),
+            "https" | "wss" => Some("443"),
+            _ => None,
+        };
+        let port = port.filter(|p| !p.is_empty()).map(|p| p.trim_start_matches('0')).map(|p| if p.is_empty() { "0" } else { p }).filter(|p| Some(*p) != default_port).map(str::to_owned);
+
+        let (before_hash, hash) = match tail.find('#') {
+            Some(i) => (&tail[..i], &tail[i..]),
+            None => (tail, ""),
+        };
+        let (path, search) = match before_hash.find('?') {
+            Some(i) => (&before_hash[..i], &before_hash[i..]),
+            None => (before_hash, ""),
+        };
+        let pathname = if path.is_empty() { "/".to_owned() } else { path.to_owned() };
+        Ok(Self { scheme, userinfo, host: host.to_ascii_lowercase(), port, pathname, search: if search == "?" { String::new() } else { search.to_owned() }, hash: if hash == "#" { String::new() } else { hash.to_owned() } })
+    }
+
+    /// `origin`.
+    pub fn origin(&self) -> String {
+        match &self.port {
+            Some(port) => format!("{}://{}:{port}", self.scheme, self.host),
+            None => format!("{}://{}", self.scheme, self.host),
+        }
+    }
+
+    /// `toString()` (`href`).
+    pub fn href(&self) -> String {
+        format!("{}://{}{}{}{}{}", self.scheme, self.userinfo, self.host_with_port(), self.pathname, self.search, self.hash)
+    }
+
+    fn host_with_port(&self) -> String {
+        self.origin().split_once("://").map(|(_, host)| host.to_owned()).unwrap_or_default()
+    }
+}
+
+/// `IFetcher` recebe `{ method, headers }`; o `fetch` global do `fetchDynamicRegistration` recebe também o `body`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct IFetchInit {
+    pub method: String,
+    /// `headers`, na ordem em que o objeto os escreve.
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+}
+
+impl IFetchInit {
+    /// `headers[name]`.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+}
+
+/// `headers[name] = value`: repetir a chave troca o valor e mantém a posição (como num objeto).
+fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
+    match headers.iter_mut().find(|(k, _)| k == name) {
+        Some(slot) => slot.1 = value.to_owned(),
+        None => headers.push((name.to_owned(), value.to_owned())),
+    }
+}
+
+/// `CommonResponse` (e, para o `fetchDynamicRegistration`, o `ok` da `Response`).
+pub trait ICommonResponse {
+    fn ok(&self) -> bool;
+    fn status(&self) -> u16;
+    fn status_text(&self) -> String;
+    fn json(&self) -> LocalFuture<'_, Result<Value, Error>>;
+    fn text(&self) -> LocalFuture<'_, Result<String, Error>>;
+}
+
+/// `IFetcher`: o `fetch`.
+pub trait IFetcher {
+    fn fetch(&self, input: &str, init: IFetchInit) -> LocalFuture<'static, Result<Rc<dyn ICommonResponse>, Error>>;
+}
+
+thread_local! {
+    static GLOBAL_FETCH: RefCell<Option<Rc<dyn IFetcher>>> = const { RefCell::new(None) };
+}
+
+/// `globalThis.fetch = fetcher` (e `sandbox.restore()` com o valor anterior que ela devolve).
+pub fn set_global_fetch(fetcher: Option<Rc<dyn IFetcher>>) -> Option<Rc<dyn IFetcher>> {
+    GLOBAL_FETCH.with(|slot| slot.replace(fetcher))
+}
+
+struct UnavailableFetch;
+
+impl IFetcher for UnavailableFetch {
+    fn fetch(&self, _input: &str, _init: IFetchInit) -> LocalFuture<'static, Result<Rc<dyn ICommonResponse>, Error>> {
+        Box::pin(async { Err(Error::named("ReferenceError", "fetch is not defined")) })
+    }
+}
+
+/// `fetch: fetchImpl = fetch`.
+fn resolve_fetch(custom: Option<Rc<dyn IFetcher>>) -> Rc<dyn IFetcher> {
+    custom.or_else(|| GLOBAL_FETCH.with(|slot| slot.borrow().clone())).unwrap_or_else(|| Rc::new(UnavailableFetch))
+}
+
+/// `JSON.parse(texto)`: o valor, ou `None` se o texto não é JSON.
+fn parse_json_text(text: &str) -> Option<Value> {
+    let mut errors = Vec::new();
+    json::parse_str(text, &mut errors).filter(|_| errors.is_empty())
+}
+
+/// O corpo que passou no `is*` lido como o tipo (as chaves desconhecidas vão para `extra`).
+fn typed_body<T: serde::de::DeserializeOwned>(body: &Value) -> Result<T, Error> {
+    serde_json::from_str(&json_stringify(body, None)).map_err(|e| Error::new(e.to_string()))
+}
+
+/// A `grantTypesSupported` do original: os grant types que o VS Code implementa.
+const GRANT_TYPES_SUPPORTED: [&str; 3] = ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"];
+
+/// `fetchDynamicRegistration`: registra o cliente no `registration_endpoint` com o `fetch` global.
+pub async fn fetch_dynamic_registration(server_metadata: &IAuthorizationServerMetadata, client_name: &str, scopes: Option<&[&str]>) -> Result<IAuthorizationDynamicClientRegistrationResponse, Error> {
+    let Some(registration_endpoint) = server_metadata.registration_endpoint.as_deref().filter(|e| !e.is_empty()) else {
+        return Err(Error::new("Server does not support dynamic registration"));
+    };
+
+    let to_strings = |items: &[&str]| items.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    let request_body = IAuthorizationDynamicClientRegistrationRequest {
+        client_name: Some(client_name.to_owned()),
+        client_uri: Some("https://code.visualstudio.com".to_owned()),
+        grant_types: Some(match &server_metadata.grant_types_supported {
+            Some(supported) => supported.iter().filter(|gt| GRANT_TYPES_SUPPORTED.contains(&gt.as_str())).cloned().collect(),
+            None => to_strings(&GRANT_TYPES_SUPPORTED),
+        }),
+        response_types: Some(to_strings(&["code"])),
+        redirect_uris: Some(vec![
+            "https://insiders.vscode.dev/redirect".to_owned(),
+            "https://vscode.dev/redirect".to_owned(),
+            "http://127.0.0.1/".to_owned(),
+            // Added these for any server that might do only exact match on the redirect URI even though the spec says it
+            // should not care about the port.
+            format!("http://127.0.0.1:{DEFAULT_AUTH_FLOW_PORT}/"),
+        ]),
+        scope: scopes.map(|scopes| scopes.join(AUTH_SCOPE_SEPARATOR)),
+        token_endpoint_auth_method: Some("none".to_owned()),
+        application_type: Some("native".to_owned()),
+        logo_uri: None,
+        contacts: None,
+        tos_uri: None,
+        policy_uri: None,
+        jwks_uri: None,
+        jwks: None,
+        software_id: None,
+        software_version: None,
+        software_statement: None,
+        extra: Default::default(),
+    };
+
+    let body = serde_json::to_string(&request_body).map_err(|e| Error::new(e.to_string()))?;
+    let init = IFetchInit { method: "POST".to_owned(), headers: vec![("Content-Type".to_owned(), "application/json".to_owned())], body: Some(body) };
+    let response = resolve_fetch(None).fetch(registration_endpoint, init).await?;
+
+    if !response.ok() {
+        let result = response.text().await?;
+        let mut error_details = result.clone();
+
+        if let Some(error_response) = parse_json_text(&result)
+            && is_authorization_registration_error_response(&error_response)
+        {
+            let field = |name: &str| match property(&error_response, name) {
+                Some(Value::String(s)) => s.to_string_lossy(),
+                Some(other) => json_stringify(other, None),
+                None => "undefined".to_owned(),
+            };
+            error_details = field("error");
+            if is_truthy(property(&error_response, "error_description")) {
+                error_details = format!("{error_details}: {}", field("error_description"));
+            }
+        }
+
+        return Err(Error::new(format!("Registration to {registration_endpoint} failed: {error_details}")));
+    }
+
+    let registration = response.json().await?;
+    if is_authorization_dynamic_client_registration_response(&registration) {
+        return typed_body(&registration);
+    }
+    Err(Error::new(format!("Invalid authorization dynamic client registration response: {}", json_stringify(&registration, None))))
+}
+
+/// `{ metadata, discoveryUrl, errors }`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IDiscoveryResult<T> {
+    pub metadata: T,
+    pub discovery_url: String,
+    pub errors: Vec<Error>,
+}
+
+/// `IFetchResourceMetadataOptions`.
+#[derive(Clone, Default)]
+pub struct IFetchResourceMetadataOptions {
+    /// Headers to include only when the resource metadata URL has the same origin as the target resource.
+    pub same_origin_headers: Vec<(String, String)>,
+    /// Optional custom fetch implementation (defaults to global fetch).
+    pub fetch: Option<Rc<dyn IFetcher>>,
+}
+
+/// `fetchPrm`, a função interna de `fetchResourceMetadata`.
+async fn fetch_prm(
+    fetch: &Rc<dyn IFetcher>,
+    target_origin: &str,
+    same_origin_headers: &[(String, String)],
+    prm_url: &str,
+    validate_url: &str,
+) -> Result<IAuthorizationProtectedResourceMetadata, Error> {
+    // Determine if we should include same-origin headers
+    let mut headers = vec![("Accept".to_owned(), "application/json".to_owned())];
+
+    let resource_metadata_url = WhatwgUrl::parse(prm_url)?;
+    if resource_metadata_url.origin() == target_origin {
+        for (name, value) in same_origin_headers {
+            set_header(&mut headers, name, value);
+        }
+    }
+
+    let response = fetch.fetch(prm_url, IFetchInit { method: "GET".to_owned(), headers, body: None }).await?;
+    if response.status() != 200 {
+        let error_text = match response.text().await {
+            Ok(text) => text,
+            Err(_) => response.status_text(),
+        };
+        return Err(Error::new(format!("Failed to fetch resource metadata from {prm_url}: {} {error_text}", response.status())));
+    }
+
+    let body = response.json().await?;
+    if is_authorization_protected_resource_metadata(&body) {
+        // Validate that the resource matches the target resource. Use URL constructor for normalization - it handles
+        // hostname case and trailing slashes
+        let resource = match property(&body, "resource") {
+            Some(Value::String(s)) => s.to_string_lossy(),
+            _ => return Err(Error::named("TypeError", "Invalid URL")),
+        };
+        let prm_value = WhatwgUrl::parse(&resource)?.href();
+        let expected_resource = WhatwgUrl::parse(validate_url)?.href();
+        if prm_value != expected_resource {
+            return Err(Error::new(format!("Protected Resource Metadata 'resource' property value \"{prm_value}\" does not match expected value \"{expected_resource}\" for URL {prm_url}. Per RFC 9728, these MUST match. See https://datatracker.ietf.org/doc/html/rfc9728#PRConfigurationValidation")));
+        }
+        typed_body(&body)
+    } else {
+        Err(Error::new(format!("Invalid resource metadata from {prm_url}. Expected to follow shape of https://datatracker.ietf.org/doc/html/rfc9728#name-protected-resource-metadata (Hints: is scopes_supported an array? Is resource a string?). Current payload: {}", json_stringify(&body, None))))
+    }
+}
+
+/// `fetchResourceMetadata`: busca e valida os metadados de recurso protegido (RFC 9728), primeiro na URL dada, depois
+/// no `well-known` com o caminho acrescentado e por fim no da raiz. `Err` é o erro único, ou o `AggregateError` de
+/// todas as tentativas.
+pub async fn fetch_resource_metadata(target_resource: &str, resource_metadata_url: Option<&str>, options: IFetchResourceMetadataOptions) -> Result<IDiscoveryResult<IAuthorizationProtectedResourceMetadata>, Error> {
+    let IFetchResourceMetadataOptions { same_origin_headers, fetch } = options;
+    let fetch = resolve_fetch(fetch);
+
+    let target = WhatwgUrl::parse(target_resource)?;
+    let target_origin = target.origin();
+
+    let mut errors: Vec<Error> = Vec::new();
+    if let Some(url) = resource_metadata_url.filter(|u| !u.is_empty()) {
+        match fetch_prm(&fetch, &target_origin, &same_origin_headers, url, target_resource).await {
+            Ok(metadata) => return Ok(IDiscoveryResult { metadata, discovery_url: url.to_owned(), errors }),
+            Err(e) => errors.push(e),
+        }
+    }
+
+    // Try well-known URIs starting with path-appended, then root
+    let has_path_component = target.pathname != "/";
+    let root_url = format!("{target_origin}{AUTH_PROTECTED_RESOURCE_METADATA_DISCOVERY_PATH}");
+
+    if has_path_component {
+        let path_appended_url = format!("{root_url}{}", target.pathname);
+        match fetch_prm(&fetch, &target_origin, &same_origin_headers, &path_appended_url, target_resource).await {
+            Ok(metadata) => return Ok(IDiscoveryResult { metadata, discovery_url: path_appended_url, errors }),
+            Err(e) => errors.push(e),
+        }
+    }
+
+    // Finally, try root discovery
+    match fetch_prm(&fetch, &target_origin, &same_origin_headers, &root_url, &target_origin).await {
+        Ok(metadata) => return Ok(IDiscoveryResult { metadata, discovery_url: root_url, errors }),
+        Err(e) => errors.push(e),
+    }
+
+    // If we've tried all methods and none worked, throw the error(s)
+    Err(single_or_aggregate(errors, "Failed to fetch resource metadata from all attempted URLs"))
+}
+
+/// `if (errors.length === 1) throw errors[0]; else throw new AggregateError(errors, message)`.
+fn single_or_aggregate(mut errors: Vec<Error>, message: &str) -> Error {
+    if errors.len() == 1 { errors.remove(0) } else { Error::aggregate(errors, message) }
+}
+
+/// `IFetchAuthorizationServerMetadataOptions`.
+#[derive(Clone, Default)]
+pub struct IFetchAuthorizationServerMetadataOptions {
+    /// Headers to include in the requests.
+    pub additional_headers: Vec<(String, String)>,
+    /// Optional custom fetch implementation (defaults to global fetch).
+    pub fetch: Option<Rc<dyn IFetcher>>,
+}
+
+/// `getErrText`.
+async fn get_err_text(response: &dyn ICommonResponse) -> String {
+    match response.text().await {
+        Ok(text) => text,
+        Err(_) => response.status_text(),
+    }
+}
+
+/// `tryParseAuthServerMetadata`.
+async fn try_parse_auth_server_metadata(response: &dyn ICommonResponse) -> Option<IAuthorizationServerMetadata> {
+    if response.status() != 200 {
+        return None;
+    }
+    // Failed to parse as JSON or not valid metadata
+    let body = response.json().await.ok()?;
+    if !is_authorization_server_metadata(&body).ok()? {
+        return None;
+    }
+    typed_body(&body).ok()
+}
+
+/// `doFetch`, a função interna de `fetchAuthorizationServerMetadata`: os erros vão para `errors`.
+async fn fetch_auth_server_metadata_from(fetch: &Rc<dyn IFetcher>, additional_headers: &[(String, String)], url: &str, errors: &mut Vec<Error>) -> Option<IAuthorizationServerMetadata> {
+    let mut headers = additional_headers.to_vec();
+    set_header(&mut headers, "Accept", "application/json");
+    match fetch.fetch(url, IFetchInit { method: "GET".to_owned(), headers, body: None }).await {
+        Ok(response) => {
+            if let Some(metadata) = try_parse_auth_server_metadata(response.as_ref()).await {
+                return Some(metadata);
+            }
+            // No metadata found, collect error from response
+            errors.push(Error::new(format!("Failed to fetch authorization server metadata from {url}: {} {}", response.status(), get_err_text(response.as_ref()).await)));
+            None
+        }
+        Err(e) => {
+            // Collect error from fetch failure
+            errors.push(e);
+            None
+        }
+    }
+}
+
+/// `fetchAuthorizationServerMetadata`: tenta o `oauth-authorization-server` com o caminho inserido (RFC 8414), o
+/// `openid-configuration` com o caminho inserido e o `openid-configuration` com o caminho acrescentado.
+pub async fn fetch_authorization_server_metadata(authorization_server: &str, options: IFetchAuthorizationServerMetadataOptions) -> Result<IDiscoveryResult<IAuthorizationServerMetadata>, Error> {
+    let IFetchAuthorizationServerMetadataOptions { additional_headers, fetch } = options;
+    let fetch = resolve_fetch(fetch);
+
+    let authorization_server_url = WhatwgUrl::parse(authorization_server)?;
+    let extra_path = if authorization_server_url.pathname == "/" { "" } else { authorization_server_url.pathname.as_str() };
+    let origin = authorization_server_url.origin();
+
+    let mut errors: Vec<Error> = Vec::new();
+
+    // For the oauth server metadata discovery path, we _INSERT_ the well known path after the origin and before the path.
+    // https://datatracker.ietf.org/doc/html/rfc8414#section-3
+    let path_to_fetch = format!("{origin}{AUTH_SERVER_METADATA_DISCOVERY_PATH}{extra_path}");
+    if let Some(metadata) = fetch_auth_server_metadata_from(&fetch, &additional_headers, &path_to_fetch, &mut errors).await {
+        return Ok(IDiscoveryResult { metadata, discovery_url: path_to_fetch, errors });
+    }
+
+    // Try fetching the OpenID Connect Discovery with path insertion. For issuer URLs with path components, this inserts
+    // the well-known path after the origin and before the path.
+    let openid_path_insertion_url = format!("{origin}{OPENID_CONNECT_DISCOVERY_PATH}{extra_path}");
+    if let Some(metadata) = fetch_auth_server_metadata_from(&fetch, &additional_headers, &openid_path_insertion_url, &mut errors).await {
+        return Ok(IDiscoveryResult { metadata, discovery_url: openid_path_insertion_url, errors });
+    }
+
+    // Try fetching the other discovery URL. For the openid metadata discovery path, we _ADD_ the well known path after
+    // the existing path. https://datatracker.ietf.org/doc/html/rfc8414#section-3
+    let openid_path_addition_url = if authorization_server.ends_with('/') {
+        // Remove leading slash if authServer ends with slash
+        format!("{authorization_server}{}", &OPENID_CONNECT_DISCOVERY_PATH[1..])
+    } else {
+        format!("{authorization_server}{OPENID_CONNECT_DISCOVERY_PATH}")
+    };
+    if let Some(metadata) = fetch_auth_server_metadata_from(&fetch, &additional_headers, &openid_path_addition_url, &mut errors).await {
+        return Ok(IDiscoveryResult { metadata, discovery_url: openid_path_addition_url, errors });
+    }
+
+    // If we've tried all URLs and none worked, throw the error(s)
+    Err(single_or_aggregate(errors, "Failed to fetch authorization server metadata from all attempted URLs"))
+}
+
+//#endregion

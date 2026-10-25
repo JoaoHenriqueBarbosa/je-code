@@ -13,10 +13,15 @@
 //!   para a expressão original) é um `Weak`, para o ciclo de `Rc` não vazar. Nas folhas a negação é
 //!   recalculada, o que é barato e dá o mesmo resultado estrutural.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
+
+thread_local! {
+    /// Contador de chamadas de [`ContextKeyExpression::keys`].
+    static KEYS_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 
 use je_base::JsString;
 use je_base::dynamic::{Dynamic, Truthy, number_to_js_string};
@@ -546,11 +551,21 @@ impl ContextKeyExpression {
 
     /// `keys`: as chaves que a expressão lê, com repetição.
     pub fn keys(&self) -> Vec<String> {
+        KEYS_CALLS.with(|calls| calls.set(calls.get() + 1));
+        self.keys_uncounted()
+    }
+
+    /// Quantas vezes `keys` foi chamado neste thread (para os testes que o espiam, como `sinon.spy(when, 'keys')`).
+    pub fn keys_call_count() -> usize {
+        KEYS_CALLS.with(Cell::get)
+    }
+
+    fn keys_uncounted(&self) -> Vec<String> {
         match &*self.0 {
             Expr::False | Expr::True => Vec::new(),
             Expr::In { key, value_key } | Expr::NotIn { key, value_key } => vec![key.clone(), value_key.clone()],
-            Expr::NotRegex(actual) => actual.keys(),
-            Expr::And { expr, .. } | Expr::Or { expr, .. } => expr.iter().flat_map(ContextKeyExpression::keys).collect(),
+            Expr::NotRegex(actual) => actual.keys_uncounted(),
+            Expr::And { expr, .. } | Expr::Or { expr, .. } => expr.iter().flat_map(ContextKeyExpression::keys_uncounted).collect(),
             _ => vec![self.key().unwrap_or_default().to_string()],
         }
     }

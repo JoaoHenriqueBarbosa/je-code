@@ -596,14 +596,8 @@ pub struct WindowMaximizedChange {
     pub maximized: bool,
 }
 
-/// `ILayoutOffsetInfo`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LayoutOffsetInfo {
-    /// Generic top offset.
-    pub top: f64,
-    /// Quick pick specific top offset.
-    pub quick_pick_top: f64,
-}
+/// `ILayoutOffsetInfo` (a mesma da plataforma: `top` e `quick_pick_top`).
+pub use je_platform::layout::layout_service::LayoutOffsetInfo;
 
 /// O `{ readonly container: HTMLElement; readonly dimension: IDimension }` de `onDidLayoutContainer`.
 #[derive(Clone, Copy, Debug, PartialEq)]
