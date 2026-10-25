@@ -103,7 +103,7 @@ use crate::common::editor::{TextEditorOptions, UntypedEditorInput};
 use crate::services::editor::editor_service::IEditorService;
 
 use super::markers_common::{MarkersViewMode, markers_view_mode_context_key};
-use super::markers_filter_options::FilterOptions;
+use super::markers_filter_options::{FilterOptions, TextFilter};
 use super::markers_model::{Marker, MarkerElement, MarkerTableItem, RelatedInformation, ResourceMarkers};
 use super::markers_view_actions::{QuickFixAction, QuickFixActionViewItem};
 use super::messages::Messages;
@@ -115,7 +115,7 @@ pub type MarkersTreeModel = ObjectTreeModel<MarkerElement, FilterData>;
 pub type MarkersTreeNode = <MarkersTreeModel as ITreeModel>::Node;
 
 /// A altura de uma linha (`line-height: 22px` de `.monaco-tl-contents`).
-const LINE_HEIGHT: f64 = 22.0;
+pub(crate) const LINE_HEIGHT: f64 = 22.0;
 
 /// `padding-right: 10px` de `.monaco-tl-contents`.
 const CONTENTS_PADDING_RIGHT: f64 = 10.0;
@@ -129,7 +129,7 @@ const ACTION_ITEM_MARGIN: f64 = 4.0;
 /// `margin: 0 6px` do `.marker-icon` mais o codicon de 16px.
 const MARKER_ICON_WIDTH: f64 = 28.0;
 
-const CODICON_SIZE: f64 = 16.0;
+pub(crate) const CODICON_SIZE: f64 = 16.0;
 
 /// `.count-badge-wrapper` com `.wide`: `margin-left: 10px`.
 const WIDE_BADGE_MARGIN_LEFT: f64 = 10.0;
@@ -308,7 +308,7 @@ pub struct MarkerViewModelServices {
 // Auxiliares de texto e de nós
 // ---------------------------------------------------------------------------------------------------------------------
 
-fn units(text: &str) -> Vec<u16> {
+pub(crate) fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
@@ -322,7 +322,7 @@ fn native_path() -> PathModule<'static> {
     PathModule::native(&ProcessEnvironment)
 }
 
-fn place(tree: &mut Tree, node: NodeId, x: f64, y: f64, width: f64, height: f64) {
+pub(crate) fn place(tree: &mut Tree, node: NodeId, x: f64, y: f64, width: f64, height: f64) {
     tree.set_bounds(node, Rect::new(x, y, x + width, y + height));
 }
 
@@ -349,7 +349,7 @@ fn ancestor_has_class(tree: &Tree, node: NodeId, class_name: &str) -> bool {
 }
 
 /// `.monaco-list-row:hover`, `.selected` e `.focused`: a linha que contém o nó está selecionada ou com foco?
-fn row_selected_or_focused(tree: &Tree, node: NodeId) -> bool {
+pub(crate) fn row_selected_or_focused(tree: &Tree, node: NodeId) -> bool {
     let mut current = Some(node);
     while let Some(id) = current {
         if tree.has_class(id, "monaco-list-row") {
@@ -360,8 +360,37 @@ fn row_selected_or_focused(tree: &Tree, node: NodeId) -> bool {
     false
 }
 
+/// O contêiner do rótulo de um recurso e o `ResourceLabel` dentro dele (`dom.append(container, dom.$('.resource-label-container'))` e
+/// `this.labels.create(labelContainer)`): o que os renderers de recurso do painel de problemas e do painel de comentários têm em
+/// comum. `class_name` é a classe do contêiner e `options` as do `IIconLabelCreationOptions`.
+pub(crate) fn create_resource_label(
+    ui: &Ui,
+    labels: &ResourceLabels,
+    container: NodeId,
+    class_name: &str,
+    options: Option<IIconLabelCreationOptions>,
+) -> (NodeId, Rc<dyn IResourceLabel>) {
+    let label_container = create_el(&mut ui.tree_mut(), container, Role::Generic, class_name);
+    let resource_label = labels.create(label_container, options);
+    (label_container, resource_label)
+}
+
+/// `resourceLabel.setFile(resource, { matches })`; sem `matches` é `setFile(resource)`.
+pub(crate) fn set_resource_label_file(resource_label: &dyn IResourceLabel, resource: &je_base::uri::URI, matches: Option<Vec<Match>>) {
+    resource_label.set_file(
+        resource,
+        matches.map(|matches| IFileLabelOptions {
+            resource: IResourceLabelOptions {
+                icon_label: IIconLabelValueOptions { matches: Some(matches), ..IIconLabelValueOptions::default() },
+                ..IResourceLabelOptions::default()
+            },
+            ..IFileLabelOptions::default()
+        }),
+    );
+}
+
 /// `hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), element, content)`.
-fn setup_mouse_hover(node: NodeId, content: &str) -> Rc<dyn IManagedHover> {
+pub(crate) fn setup_mouse_hover(node: NodeId, content: &str) -> Rc<dyn IManagedHover> {
     get_base_layer_hover_delegate().setup_managed_hover(get_default_hover_delegate(HoverPlacement::Mouse), node, ManagedHoverContentOrFactory::from(content), None)
 }
 
@@ -582,8 +611,13 @@ impl ITreeRenderer<MarkersTreeModel> for ResourceMarkersRenderer {
     }
 
     fn render_template(&self, container: NodeId) -> TemplateData {
-        let resource_label_container = create_el(&mut self.ui.tree_mut(), container, Role::Generic, "resource-label-container");
-        let resource_label = self.labels.create(resource_label_container, Some(IIconLabelCreationOptions { support_highlights: true, ..IIconLabelCreationOptions::default() }));
+        let (resource_label_container, resource_label) = create_resource_label(
+            &self.ui,
+            &self.labels,
+            container,
+            "resource-label-container",
+            Some(IIconLabelCreationOptions { support_highlights: true, ..IIconLabelCreationOptions::default() }),
+        );
 
         let badge_wrapper = create_el(&mut self.ui.tree_mut(), container, Role::Generic, "count-badge-wrapper");
         let count = CountBadge::new(&self.ui, badge_wrapper, &ICountBadgeOptions::default(), self.styles.count_badge);
@@ -599,16 +633,7 @@ impl ITreeRenderer<MarkersTreeModel> for ResourceMarkersRenderer {
             _ => Vec::new(),
         };
 
-        template.resource_label.set_file(
-            &resource_markers.resource,
-            Some(IFileLabelOptions {
-                resource: IResourceLabelOptions {
-                    icon_label: IIconLabelValueOptions { matches: Some(uri_matches), ..IIconLabelValueOptions::default() },
-                    ..IResourceLabelOptions::default()
-                },
-                ..IFileLabelOptions::default()
-            }),
-        );
+        set_resource_label_file(&*template.resource_label, &resource_markers.resource, Some(uri_matches));
 
         Self::update_count(node, template);
         self.rendered_nodes.borrow_mut().entry(resource_markers_key(&resource_markers)).or_default().push(template.clone());
@@ -1264,6 +1289,27 @@ impl ITreeRenderer<MarkersTreeModel> for RelatedInformationRenderer {
 // Filter
 // ---------------------------------------------------------------------------------------------------------------------
 
+/// O desfecho comum dos filtros por texto de `filterMarker`, `filterRelatedInformation` e (no painel de comentários)
+/// `filterCommentNode` depois de casar (ou não) o texto.
+pub(crate) fn text_filter_result<F>(text_filter: &TextFilter, matched: bool, parent_visibility: TreeVisibility, data: impl FnOnce() -> F) -> TreeFilterResult<F> {
+    // Matched and not negated
+    if matched && !text_filter.negate {
+        return TreeFilterResult::Data { visibility: VisibilityValue::Bool(true), data: data() };
+    }
+
+    // Matched and negated - exclude it only if parent visibility is not set
+    if matched && text_filter.negate && parent_visibility == TreeVisibility::Recurse {
+        return TreeFilterResult::Bool(false);
+    }
+
+    // Not matched and negated - include it only if parent visibility is not set
+    if !matched && text_filter.negate && parent_visibility == TreeVisibility::Recurse {
+        return TreeFilterResult::Bool(true);
+    }
+
+    TreeFilterResult::Visibility(parent_visibility)
+}
+
 /// `Filter`.
 pub struct Filter {
     options: RefCell<Rc<FilterOptions>>,
@@ -1311,26 +1357,6 @@ impl Filter {
         TreeFilterResult::Visibility(TreeVisibility::Recurse)
     }
 
-    /// O desfecho comum de `filterMarker` e `filterRelatedInformation` depois de casar (ou não) o texto.
-    fn text_filter_result(options: &FilterOptions, matched: bool, parent_visibility: TreeVisibility, data: impl FnOnce() -> FilterData) -> TreeFilterResult<FilterData> {
-        // Matched and not negated
-        if matched && !options.text_filter.negate {
-            return TreeFilterResult::Data { visibility: VisibilityValue::Bool(true), data: data() };
-        }
-
-        // Matched and negated - exclude it only if parent visibility is not set
-        if matched && options.text_filter.negate && parent_visibility == TreeVisibility::Recurse {
-            return TreeFilterResult::Bool(false);
-        }
-
-        // Not matched and negated - include it only if parent visibility is not set
-        if !matched && options.text_filter.negate && parent_visibility == TreeVisibility::Recurse {
-            return TreeFilterResult::Bool(true);
-        }
-
-        TreeFilterResult::Visibility(parent_visibility)
-    }
-
     fn filter_marker(&self, marker: &Marker, parent_visibility: TreeVisibility) -> TreeFilterResult<FilterData> {
         let options = self.options();
         let severity = marker.marker.severity;
@@ -1358,7 +1384,7 @@ impl Filter {
         let code_matches = marker.marker.code.as_ref().and_then(code_value).and_then(|code| (FilterOptions::FILTER)(&text, &units(code)));
         let matched = source_matches.is_some() || code_matches.is_some() || line_matches.iter().any(|line_match| !line_match.is_empty());
 
-        Self::text_filter_result(&options, matched, parent_visibility, || FilterData::Marker {
+        text_filter_result(&options.text_filter, matched, parent_visibility, || FilterData::Marker {
             line_matches,
             source_matches: source_matches.unwrap_or_default(),
             code_matches: code_matches.unwrap_or_default(),
@@ -1376,7 +1402,7 @@ impl Filter {
         let message_matches = (FilterOptions::MESSAGE_FILTER)(&text, &units(&native_path().basename(&related_information.raw.message, None)));
         let matched = uri_matches.is_some() || message_matches.is_some();
 
-        Self::text_filter_result(&options, matched, parent_visibility, || FilterData::RelatedInformation {
+        text_filter_result(&options.text_filter, matched, parent_visibility, || FilterData::RelatedInformation {
             uri_matches: uri_matches.unwrap_or_default(),
             message_matches: message_matches.unwrap_or_default(),
         })
