@@ -64,8 +64,9 @@ use je_workbench::browser::parts::editor::editor_tabs_control::{
 };
 use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
     AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, EditorInputLabel, FitTabMetrics,
-    MultiEditorTabsControlState, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabCssClasses, TabFlexItem, TabSizingParams, TabState,
-    TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure, layout_tabs_row, tab_action_label_opacity, tab_box_style,
+    MultiEditorTabsControlState, StrokeSide, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabColors, TabCssClasses, TabFillStrokeInput, TabFlexItem,
+    TabSizingParams, TabState, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
+    high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_label_opacity, tab_box_style,
 };
 use je_workbench::common::editor::editor_group_model::{EditorGroupModel, EditorOrIndex, IReadonlyEditorGroupModel};
 use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
@@ -360,7 +361,8 @@ impl Layout {
         let margins: Vec<f64> = items.iter().map(|item| item.style.margin_end).collect();
 
         // `.tabs-bar-add-tab { flex: 0 0 auto }` é um filho do `tabs-container` na quebra, com a mesma margem final da última aba.
-        let add_margin = if container.wrapping && add_width > 0.0 { container.last_tab_margin_right } else { 0.0 };
+        // O `tabs.css` soma o `--modern-ui-tab-terminal-gutter` à região do toolbar, também no botão de nova aba.
+        let add_margin = if container.wrapping && add_width > 0.0 { container.last_tab_margin_right + self.terminal_gutter(container) } else { 0.0 };
         if container.wrapping && add_width > 0.0 {
             let style = TabBoxStyle {
                 width: Some(add_width),
@@ -1214,7 +1216,7 @@ fn wrapped_add_tab_stays_unobscured_beside_the_terminal_tab_or_on_its_own_final_
                         wrapped: fx.state.container.wrapping,
                         same_row,
                         adjacent_gap: same_row.then_some(adjacent_gap),
-                        separate_row: (!same_row).then(|| geometry.add_top > geometry.tops[last] && (!connected || terminal.state.connected_tab_top_row)),
+                        separate_row: (!same_row).then(|| geometry.add_top > geometry.tops[last]),
                         contained: add_left >= -1.0 / 64.0 && add_right <= fx.layout.width.get() + 1.0 / 64.0,
                         visible_button_gap: same_row.then(|| !connected || (button_gap - fill_inset - SPACING_SIZE20).abs() <= 1.0 / 32.0),
                     });
@@ -1699,10 +1701,131 @@ fn action_reservation_does_not_make_inactive_clean_close_buttons_visible() {
     assert_eq!(measurements, expected);
 }
 
-// `HC modified pills retain hover and selection side strokes independently of their top bar` (linha 823) é o próximo caso:
-// confere as bordas computadas do `.tab-fill` (estilo, cor) e o acento superior da aba, pintura do Modern UI que o controle
-// não decide, e depende de uma cascata de bordas (`tabs.css`, `connectedEditorTabs.css`, regras de `hc-black` e `hc-light`)
-// que ainda não tem função nativa.
+const HC_TAB_BORDER: &str = "#00ffff";
+const HC_CONTRAST_ACTIVE_BORDER: &str = "#ffaa00";
+const HC_INACTIVE_MODIFIED_BORDER: &str = "#22d3ee";
+
+/// `getComputedStyle(...).borderXColor` como texto: a cor do tema ou o nome da variável de pintura que sobrou.
+fn describe_stroke_color(color: TabStrokeColor) -> String {
+    match color {
+        TabStrokeColor::Color(color) => color.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+#[test]
+fn hc_modified_pills_retain_hover_and_selection_side_strokes_independently_of_their_top_bar() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `model.getEditorByIndex(0)` é um `TestFileEditorInput` que o caso marca como modificado; o fixture daqui abre `NamedInput`,
+    // então as duas entradas são refeitas na mesma ordem (a modificada em 0 e `last` ativa).
+    for editor in fx.model.get_editors(EditorsOrder::Sequential, None) {
+        fx.close_editor(&editor);
+    }
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/file0.txt"), "testEditorInput"));
+    concrete.set_dirty();
+    let modified: EditorInputRef = concrete;
+    open!(fx.model, modified, index: 0, pinned: true, active: false);
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/last.ts"), "testEditorInput"));
+    let last: EditorInputRef = concrete;
+    open!(fx.model, last, index: 1, pinned: true, active: true);
+    fx.open_editors();
+    // `root.style.setProperty('--vscode-tab-border', '#00ffff')`, `--vscode-contrastActiveBorder` e
+    // `new TestColorTheme({ 'tab.inactiveModifiedBorder': '#22d3ee' })`
+    fx.state.set_colors(TabColors {
+        tab_border: Some(HC_TAB_BORDER.to_string()),
+        active_contrast_border: Some(HC_CONTRAST_ACTIVE_BORDER.to_string()),
+        tab_inactive_modified_border: Some(HC_INACTIVE_MODIFIED_BORDER.to_string()),
+        ..TabColors::default()
+    });
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        wrap_tabs: bool,
+        selected: bool,
+        /// `[borderLeftStyle, borderRightStyle, borderBottomStyle]`
+        styles: [TabStrokeStyle; 3],
+        /// `[borderLeftColor, borderRightColor, borderBottomColor]`
+        colors: [String; 3],
+        /// `[accent.color, accent.height, accent.topOffset]`
+        accent: Option<(String, f64, f64)>,
+        geometry_stable: bool,
+    }
+
+    let sides = [StrokeSide::Left, StrokeSide::Right, StrokeSide::Bottom];
+    let mut results = Vec::new();
+    for theme in ["hc-black", "hc-light"] {
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for wrap_tabs in [false, true] {
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.wrap_tabs = wrap_tabs;
+                    options.highlight_modified_tabs = true;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                });
+                for selected in [false, true] {
+                    // `model.setSelection(last, selected ? [modified] : [])` e `control.updateEditorSelections()`
+                    let selection: Vec<EditorInputRef> = if selected { fx.model.get_editors(EditorsOrder::Sequential, None).into_iter().take(1).collect() } else { Vec::new() };
+                    let active = fx.model.active_editor().expect("aba ativa");
+                    fx.model.set_selection(&active, &selection);
+                    fx.state.set_active();
+                    fx.layout(if wrap_tabs { 150.0 } else { 600.0 });
+
+                    let index = fx.state.tabs.iter().position(|tab| tab.state.dirty_border_top).expect("aba com `dirty-border-top`");
+                    let rect = |fx: &Fixture| fx.layout.tab_rect(&fx.geometry(), index, 0.0);
+                    let before = rect(&fx);
+                    // `tab.classList.add('hovered')`
+                    let state = &fx.state.tabs[index].state;
+                    let stroke = high_contrast_connected_tab_fill_stroke(&TabFillStrokeInput {
+                        wrapping: fx.state.container.wrapping,
+                        upper_bar: fx.state.container.connected_tab_upper_bar,
+                        active: state.active,
+                        selected: state.selected,
+                        multi_selected: state.multi_selected,
+                        dirty_border_top: state.dirty_border_top,
+                        upper_row: state.connected_tab_upper_row,
+                        hovered: true,
+                        tab_border: Some(HC_TAB_BORDER),
+                        contrast_active_border: Some(HC_CONTRAST_ACTIVE_BORDER),
+                        dirty_border_top_color: state.dirty_border_top_color.as_deref(),
+                        spacing_size20: SPACING_SIZE20,
+                        ..TabFillStrokeInput::default()
+                    });
+                    results.push(Row {
+                        theme,
+                        compact: tab_height == TabHeight::Compact,
+                        wrap_tabs,
+                        selected,
+                        styles: sides.map(|side| stroke.style(side)),
+                        colors: sides.map(|side| describe_stroke_color(stroke.color(side))),
+                        accent: stroke.top_accent.map(|accent| (describe_stroke_color(accent.color), accent.height, accent.top_offset)),
+                        geometry_stable: before == rect(&fx),
+                    });
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            theme: result.theme,
+            compact: result.compact,
+            wrap_tabs: result.wrap_tabs,
+            selected: result.selected,
+            styles: [if result.selected { TabStrokeStyle::Solid } else { TabStrokeStyle::Dashed }; 3],
+            colors: std::array::from_fn(|_| HC_CONTRAST_ACTIVE_BORDER.to_string()),
+            accent: Some((HC_INACTIVE_MODIFIED_BORDER.to_string(), 2.0, 0.0)),
+            geometry_stable: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
 
 //#region Alt (#331979), os quatro últimos casos do original
 

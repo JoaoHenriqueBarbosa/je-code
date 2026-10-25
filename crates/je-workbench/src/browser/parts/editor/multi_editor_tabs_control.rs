@@ -3265,6 +3265,185 @@ pub fn tab_box_style(classes: &TabCssClasses, params: &TabSizingParams) -> TabBo
     }
 }
 
+//#region Traço do `.tab-fill` em alto contraste (`tabs.css` e `connectedEditorTabs.css`)
+
+/// Um lado da borda do `.tab-fill`. `border-inline-color` declara [`StrokeSide::Right`] e [`StrokeSide::Left`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrokeSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+impl StrokeSide {
+    const ALL: [StrokeSide; 4] = [StrokeSide::Top, StrokeSide::Right, StrokeSide::Bottom, StrokeSide::Left];
+    const INLINE_AND_BOTTOM: [StrokeSide; 3] = [StrokeSide::Right, StrokeSide::Bottom, StrokeSide::Left];
+}
+
+/// `border-style` de um lado do `.tab-fill`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabStrokeStyle {
+    Solid,
+    Dashed,
+}
+
+/// `border-color` de um lado do `.tab-fill`. `CurrentColor` é o que sobra quando a variável do tema não existe (a declaração
+/// fica inválida na hora do cálculo e a propriedade volta ao valor inicial).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabStrokeColor<'a> {
+    Transparent,
+    CurrentColor,
+    /// `var(--modern-ui-editor-tab-border)`: a cor da borda base, definida pela pintura do tema.
+    EditorTabBorder,
+    /// `var(--modern-ui-connected-tab-border)`.
+    ConnectedTabBorder,
+    Color(&'a str),
+}
+
+impl<'a> TabStrokeColor<'a> {
+    fn of(color: Option<&'a str>) -> Self {
+        color.map_or(Self::CurrentColor, Self::Color)
+    }
+}
+
+/// O que as regras do `.tab-fill` leem: as classes da aba e do contêiner, os estados do ponteiro e do foco, as cores do tema.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TabFillStrokeInput<'a> {
+    /// `tabs-and-actions-container.wrapping` e `.connected-tab-upper-bar`.
+    pub wrapping: bool,
+    pub upper_bar: bool,
+    pub active: bool,
+    pub selected: bool,
+    pub multi_selected: bool,
+    pub dirty_border_top: bool,
+    /// `connected-tab-upper-row`.
+    pub upper_row: bool,
+    /// `:hover` e a classe `hovered`, que as regras tratam à parte.
+    pub pointer_hover: bool,
+    pub hovered: bool,
+    /// `:focus` e `:focus-within`.
+    pub focused: bool,
+    pub focus_within: bool,
+    pub tab_border: Option<&'a str>,
+    pub contrast_active_border: Option<&'a str>,
+    pub focus_border: Option<&'a str>,
+    /// `--tab-dirty-border-top-color`.
+    pub dirty_border_top_color: Option<&'a str>,
+    /// `--vscode-spacing-size20`.
+    pub spacing_size20: f64,
+}
+
+/// O realce de topo das abas modificadas: o gradiente de `linear-gradient(accent size20, transparent size20)` da regra
+/// `.tab-fill` com `dirty-border-top`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabTopAccent<'a> {
+    pub color: TabStrokeColor<'a>,
+    pub height: f64,
+    pub top_offset: f64,
+}
+
+/// A borda computada do `.tab-fill`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabFillStroke<'a> {
+    styles: [TabStrokeStyle; 4],
+    colors: [TabStrokeColor<'a>; 4],
+    pub top_accent: Option<TabTopAccent<'a>>,
+}
+
+impl<'a> TabFillStroke<'a> {
+    pub fn style(&self, side: StrokeSide) -> TabStrokeStyle {
+        self.styles[side as usize]
+    }
+
+    pub fn color(&self, side: StrokeSide) -> TabStrokeColor<'a> {
+        self.colors[side as usize]
+    }
+}
+
+fn declare_sides<T: Copy>(cascades: &mut [Cascade<T>; 4], sides: &[StrokeSide], important: bool, specificity: u32, value: T) {
+    for side in sides {
+        cascades[*side as usize].declare_flagged(important, specificity, value);
+    }
+}
+
+/// A cascata da borda do `.tab-fill` de uma aba do estilo conectado em alto contraste (`hc-black` e `hc-light`), com a
+/// especificidade de cada seletor contada no CSS: `tabs.css` (L148, L935, L940, L946, L952) e `connectedEditorTabs.css` (L244,
+/// L706, L746, L759, L764, L771, L802). A aba ativa fora da linha de cima desenha o traço no `.tab-connected-edge`, não aqui.
+pub fn high_contrast_connected_tab_fill_stroke<'a>(input: &TabFillStrokeInput<'a>) -> TabFillStroke<'a> {
+    let i = input;
+    let hover = i.pointer_hover || i.hovered;
+    let contrast = TabStrokeColor::of(i.contrast_active_border);
+    let accent = TabStrokeColor::of(i.dirty_border_top_color);
+    let mut styles = [Cascade::new(), Cascade::new(), Cascade::new(), Cascade::new()];
+    let mut colors = [Cascade::new(), Cascade::new(), Cascade::new(), Cascade::new()];
+
+    // L148 `.tab > .tab-fill { border: strokeThickness solid var(--modern-ui-editor-tab-border) }` (sete classes)
+    declare_sides(&mut styles, &StrokeSide::ALL, false, 7, TabStrokeStyle::Solid);
+    declare_sides(&mut colors, &StrokeSide::ALL, false, 7, TabStrokeColor::EditorTabBorder);
+    // L706 `.tab.connected-tab-upper-row > .tab-fill { border: strokeThickness solid transparent }` (treze)
+    if i.upper_row {
+        declare_sides(&mut styles, &StrokeSide::ALL, false, 13, TabStrokeStyle::Solid);
+        declare_sides(&mut colors, &StrokeSide::ALL, false, 13, TabStrokeColor::Transparent);
+    }
+    // L244 (vinte): fora da quebra e da barra superior, a aba inativa em repouso fica sem borda
+    if !i.wrapping && !i.upper_bar && !i.active && !i.selected && !i.pointer_hover && !i.hovered && !i.focus_within {
+        declare_sides(&mut colors, &StrokeSide::ALL, false, 20, TabStrokeColor::Transparent);
+    }
+    // L935 (dezesseis)
+    if !i.active && !i.selected && !i.focused && !i.pointer_hover {
+        declare_sides(&mut colors, &StrokeSide::ALL, false, 16, TabStrokeColor::of(i.tab_border));
+    }
+    // L746 (quinze)
+    if i.upper_row && i.active {
+        declare_sides(&mut colors, &StrokeSide::ALL, false, 15, TabStrokeColor::ConnectedTabBorder);
+    }
+    // L940 (dezesseis, `!important`): a aba selecionada inativa sem realce de topo
+    if i.selected && !i.active && !i.focused && !i.dirty_border_top {
+        declare_sides(&mut styles, &StrokeSide::ALL, true, 16, TabStrokeStyle::Solid);
+        declare_sides(&mut colors, &StrokeSide::ALL, true, 16, contrast);
+    }
+    // L946 (dezesseis, `!important`): o `:hover` real, não a classe `hovered`
+    if !i.active && !i.selected && !i.focused && i.pointer_hover && !i.dirty_border_top {
+        declare_sides(&mut styles, &StrokeSide::ALL, true, 16, TabStrokeStyle::Dashed);
+        declare_sides(&mut colors, &StrokeSide::ALL, true, 16, contrast);
+    }
+    // L952 (`!important`): o foco da aba inativa
+    if !i.active && i.focused {
+        declare_sides(&mut styles, &StrokeSide::ALL, true, 16, TabStrokeStyle::Solid);
+        declare_sides(&mut colors, &StrokeSide::ALL, true, 16, TabStrokeColor::of(i.focus_border));
+    }
+    // L759 (dezesseis)
+    if i.selected && !i.active && i.dirty_border_top {
+        declare_sides(&mut colors, &StrokeSide::INLINE_AND_BOTTOM, false, 16, contrast);
+    }
+    // L764 (dezessete): `border-style: dashed` e depois `border-top-style: solid`, na mesma regra
+    if !i.active && !i.selected && i.dirty_border_top && hover {
+        declare_sides(&mut colors, &StrokeSide::INLINE_AND_BOTTOM, false, 17, contrast);
+        declare_sides(&mut styles, &StrokeSide::ALL, false, 17, TabStrokeStyle::Dashed);
+        declare_sides(&mut styles, &[StrokeSide::Top], false, 17, TabStrokeStyle::Solid);
+    }
+    // L771 (catorze): o realce de topo da aba modificada
+    let top_accent = (i.dirty_border_top && (i.upper_row || !i.active)).then_some(TabTopAccent { color: accent, height: i.spacing_size20, top_offset: 0.0 });
+    if top_accent.is_some() {
+        declare_sides(&mut colors, &[StrokeSide::Top], false, 14, accent);
+        declare_sides(&mut styles, &[StrokeSide::Top], false, 14, TabStrokeStyle::Solid);
+    }
+    // L802 (dezessete): a aba ativa multisselecionada na linha de cima
+    if i.upper_row && i.active && i.multi_selected {
+        declare_sides(&mut colors, &StrokeSide::ALL, false, 17, contrast);
+        declare_sides(&mut colors, &[StrokeSide::Top], false, 17, if i.dirty_border_top { accent } else { contrast });
+    }
+
+    TabFillStroke {
+        styles: styles.map(|style| style.value_or(TabStrokeStyle::Solid)),
+        colors: colors.map(|color| color.value_or(TabStrokeColor::CurrentColor)),
+        top_accent,
+    }
+}
+
+//#endregion
+
 /// A largura intrínseca (`max-content`, a caixa de borda) de uma aba: os paddings, o rótulo (com o `padding-right` de 5px das
 /// abas `shrink` e a margem do selo das `shrink` e `fixed`), a coluna das ações (28px, a não ser com `display: none`) e o
 /// `tab-fade-hider` (5px). `label_width` é a largura do conteúdo do rótulo (ícone e nome) e `has_badge` diz se o rótulo tem
