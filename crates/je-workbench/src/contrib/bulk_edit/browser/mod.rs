@@ -6,3 +6,4 @@ pub mod bulk_file_edits;
 pub mod bulk_text_edits;
 pub mod conflicts;
 pub mod opaque_edits;
+pub mod preview;

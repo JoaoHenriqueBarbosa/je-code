@@ -2,6 +2,7 @@
 //! edições opacas).
 //!
 //! Fora do porte, por falta da infraestrutura de que dependem:
-//! - `browser/preview/*` (a vista de pré-visualização das edições): é a UI do `BulkEditPane`.
+//! - `browser/preview/bulkEditPane.ts` e `bulkEditPreview.ts#BulkEditPreviewProvider` (a vista de pré-visualização das
+//!   edições): é a UI do `BulkEditPane`. O modelo (`BulkFileOperations`) está em `browser/preview/bulk_edit_preview`.
 
 pub mod browser;
