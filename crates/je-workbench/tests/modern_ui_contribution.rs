@@ -40,6 +40,8 @@
 //! sashes, cantos do macOS, abas conectadas por tema) exceto os portados abaixo, e `uses the editor background for the
 //! connected surface` até `applies editor tab foregrounds ...`, `uses readable theme foregrounds ...` até `fades tab
 //! actions only when ...`, e de `uses legacy color customizations ...` até `keeps panel global actions above ...`.
+//! Portados com a geometria do resolvedor (`pane_composite_action_box`, `activity_rail_geometry`, `floating_part_margins`,
+//! `activity_bar_corner_radii`): de `pane composite actions fill ...` até `keeps a gutter between horizontal panels ...`.
 //! Nos casos parciais ficou só a parte que não é CSS: no terceiro caso `paneHeaderLineHeight` e
 //! `paneHeaderInlineLineHeight`; em `toggles uppercase view headers without relayout` o `text-transform` dos títulos;
 //! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`).
@@ -87,7 +89,7 @@ use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
-    ActionTabState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, ModernUiStyle, NotificationInsets, NotificationsPlacement, PaneHost, PaneState, css_rgb,
+    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, ModernUiStyle, NotificationInsets, NotificationsPlacement, PaneHost, PaneState, css_rgb,
 };
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
@@ -1068,6 +1070,252 @@ fn tab_divider_inherits_tab_border_unless_customized() {
     let customized = theme.resolve_color("tab.divider", true).map(|color| color.to_string());
 
     assert_eq!((inherited, customized), (Some("#123456".to_owned()), Some("#654321".to_owned())));
+}
+
+/// O `rgb(...)` do computado de uma cor opcional.
+fn rgb_of(color: Option<Color>) -> Option<String> {
+    color.map(|color| css_rgb(&color))
+}
+
+#[test]
+fn pane_composite_actions_fill_regular_and_agents_headers() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // O contêiner do título é mais alto (40) que os 32px fixos do Modern UI, para provar a altura fixa e não o 100%.
+    let regular = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs");
+    let agents = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs");
+    let regular_box = regular.pane_composite_action_box(40.0).unwrap();
+    let agents_box = agents.pane_composite_action_box(35.0).unwrap();
+    let agents_icon_box = agents.pane_composite_action_box(35.0).unwrap();
+    let (regular_badge_top, regular_badge_right) = regular.pane_composite_badge_content_offsets().unwrap();
+    let (agents_badge_top, agents_badge_right) = agents.pane_composite_badge_content_offsets().unwrap();
+
+    assert_eq!(
+        [
+            px(regular_box.item_height),
+            px(regular_box.indicator_height),
+            px(regular_badge_top),
+            px(regular_badge_right),
+            px(agents_box.item_height),
+            px(agents_box.indicator_height),
+            px(agents_icon_box.item_height),
+            px(agents_icon_box.indicator_height),
+            px(agents_badge_top),
+            px(agents_badge_right),
+        ],
+        ["32px", "24px", "13px", "2px", "35px", "24px", "35px", "24px", "13px", "2px"].map(str::to_owned)
+    );
+    assert_eq!((agents_icon_box.indicator_top_inset, agents_icon_box.indicator_bottom_inset), (5.5, 5.5));
+}
+
+#[test]
+fn panel_title_tabs_drop_the_classic_1px_title_border_so_the_32px_pills_center_in_the_32px_bar() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs");
+    let title_border_top = style.bottom_panel_title_border_top_width(&ClassList::new("part pane-composite-part panel basepanel bottom"));
+    // `border-top: none`: largura 0 e estilo `none`.
+    let (width, border_style) = title_border_top.map_or((1.0, "solid"), |width| (width, "none"));
+
+    assert_eq!(
+        (px(width), border_style, px(style.pane_composite_action_box(32.0).unwrap().item_border_block)),
+        ("0px".to_owned(), "none", "4px".to_owned())
+    );
+}
+
+#[test]
+fn pane_composite_actions_use_regular_label_weight() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let regular = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs");
+    let agents = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs");
+
+    // O item auxiliar (`.auxiliarybar`) usa a mesma regra do regular: as ações não são de ícone.
+    assert_eq!(
+        (regular.pane_composite_label_font_weight(false), regular.pane_composite_label_font_weight(false), agents.pane_composite_label_font_weight(false)),
+        (Some(400.0), Some(400.0), Some(400.0))
+    );
+}
+
+#[test]
+fn pane_composite_overflow_uses_the_icon_foreground() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[("icon.foreground", "#123456")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs");
+
+    // O `color` inline `rgba(231, 231, 231, 0.6)` perde para o `!important` da regra.
+    assert_eq!(rgb_of(style.pane_composite_overflow_foreground()), Some("rgb(18, 52, 86)".to_owned()));
+}
+
+#[test]
+fn preserves_modern_ui_activity_indicators_badges_and_horizontal_pane_dividers() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[
+        ("modernActivityBarItem.activeBackground", "#123456"),
+        ("modernActivityBarItem.activeForeground", "#abcdef"),
+        ("modernTab.activeBackground", "#654321"),
+        ("modernTab.activeForeground", "#fedcba"),
+    ]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs");
+    style.set_activity_bar_metrics(ActivityBarMetrics { width: Some(36.0), action_height: Some(36.0) });
+    let agents = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs");
+    let activity_bar = ClassList::new("activitybar");
+    let part = ClassList::new("part pane-composite-part");
+    let checked = ActivityItemState { checked: true, hovered: false };
+    let horizontal_checked = ActionTabState { checked: true, icon: true, hovered: false };
+    let (indicator, radius) = style.activity_bar_indicator_box(&activity_bar).unwrap();
+    let badge = style.activity_bar_badge_content(&activity_bar, true).unwrap();
+    let activity_colors = [
+        "modernActivityBar.background",
+        "modernActivityBar.inactiveBackground",
+        "modernActivityBarItem.activeBackground",
+        "modernActivityBarItem.activeForeground",
+        "modernActivityBarItem.hoverBackground",
+        "modernActivityBarItem.hoverForeground",
+    ];
+
+    assert_eq!(
+        (
+            activity_colors.map(is_registered),
+            rgb_of(style.activity_bar_indicator_background(checked)),
+            rgb_of(style.activity_bar_label_foreground(checked)),
+            rgb_of(agents.pane_tab_indicator_background(horizontal_checked)),
+            rgb_of(agents.action_tab_foreground(horizontal_checked)),
+            (px(indicator.width), px(indicator.height), px(radius)),
+            (px(badge.top), badge.width.map(px), px(badge.height)),
+            (
+                style.pane_composite_header_footer_border_width(&part).map(px),
+                style.pane_composite_header_overflow_visible(&part),
+                style.pane_composite_header_footer_border_width(&part).map(px),
+            ),
+        ),
+        (
+            [true; 6],
+            Some("rgb(18, 52, 86)".to_owned()),
+            Some("rgb(171, 205, 239)".to_owned()),
+            Some("rgb(101, 67, 33)".to_owned()),
+            Some("rgb(254, 220, 186)".to_owned()),
+            ("32px".to_owned(), "32px".to_owned(), "4px".to_owned()),
+            ("18px".to_owned(), Some("16px".to_owned()), "16px".to_owned()),
+            (Some("0px".to_owned()), true, Some("0px".to_owned())),
+        )
+    );
+}
+
+/// Os quatro `border-*-radius` computados, na ordem `top-left`, `top-right`, `bottom-right`, `bottom-left`.
+fn radii_css_list(radii: CornerRadii) -> [String; 4] {
+    let CornerRadii(top_left, top_right, bottom_right, bottom_left) = radii;
+    [top_left, top_right, bottom_right, bottom_left].map(px)
+}
+
+/// `ModernUiStyle` de uma raiz flutuante com as variáveis `--activity-bar-*` dos casos da barra de atividade.
+fn floating_style<'a>(theme: &'a ColorTheme, root_class_name: &str) -> ModernUiStyle<'a> {
+    let mut style = ModernUiStyle::new(theme, root_class_name);
+    style.set_activity_bar_metrics(ActivityBarMetrics { width: Some(36.0), action_height: Some(36.0) });
+    style
+}
+
+/// A geometria que o caso mede nas duas trilhas: a largura e o centro do item, a margem da janela, o vão até a barra
+/// lateral e a distância do indicador até ela, na ordem do objeto do original.
+fn rail_measures(style: &ModernUiStyle, rail: &str, side_bar: &str, rail_on_left: bool) -> [f64; 5] {
+    let rail_class = ClassList::new(rail);
+    let geometry = style.activity_rail_geometry(&rail_class).unwrap();
+    let rail_margins = style.floating_part_margins(&rail_class).unwrap();
+    let side_bar_margins = style.floating_part_margins(&ClassList::new(side_bar)).unwrap();
+    if rail_on_left {
+        let gap = side_bar_margins.left + rail_margins.right;
+        [geometry.action_width, geometry.action_center_offset, rail_margins.left, gap, gap + geometry.width - geometry.indicator_right]
+    } else {
+        let gap = rail_margins.left + side_bar_margins.right;
+        [geometry.action_width, geometry.action_center_offset, rail_margins.right, gap, gap + geometry.indicator_left]
+    }
+}
+
+#[test]
+fn centers_activity_bar_items_within_floating_navigation_rails() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = floating_style(&theme, "monaco-workbench modern-ui modern-ui-compact floating-panels");
+
+    assert_eq!(
+        (
+            rail_measures(&style, "part activitybar left", "part sidebar", true),
+            rail_measures(&style, "part activitybar right", "part sidebar", false),
+        ),
+        ([36.0, 0.0, 0.0, 0.0, 4.0], [36.0, 0.0, 0.0, 0.0, 4.0])
+    );
+}
+
+#[test]
+fn centers_default_density_activity_bar_items_and_meets_the_side_bar_flush() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = floating_style(&theme, "monaco-workbench modern-ui floating-panels");
+    let left = rail_measures(&style, "part activitybar left", "part sidebar left", true);
+    let right = rail_measures(&style, "part activitybar right", "part sidebar right", false);
+    let rail_widths = ["part activitybar left", "part activitybar right"].map(|rail| style.activity_rail_geometry(&ClassList::new(rail)).unwrap().width);
+
+    // A trilha leva o vão de 4px da janela de um lado, encontra a barra lateral sem vão do outro e centra a coluna de
+    // ícones na faixa própria de 8px, independente do vão: o cartão fica com 44px.
+    assert_eq!(
+        ((left[0], left[1], left[2], left[3]), (right[0], right[1], right[2], right[3]), rail_widths),
+        ((36.0, 0.0, 4.0, 0.0), (36.0, 0.0, 4.0, 0.0), [44.0, 44.0])
+    );
+}
+
+#[test]
+fn rounds_activity_bar_corners_exposed_by_horizontal_panels() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let corners = |layout_classes: &str| {
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui floating-panels {layout_classes}"));
+        let css = |rail: &str| radii_css_list(style.activity_bar_corner_radii(&ClassList::new(rail)).unwrap());
+        (css("part activitybar left"), css("part activitybar right"))
+    };
+    let expected = |left: [&str; 4], right: [&str; 4]| (left.map(str::to_owned), right.map(str::to_owned));
+
+    assert_eq!(
+        [
+            corners("panel-position-bottom panel-alignment-left"),
+            corners("panel-position-bottom panel-alignment-right"),
+            corners("panel-position-bottom panel-alignment-justify"),
+            corners("panel-position-bottom panel-alignment-center"),
+            corners("panel-position-top panel-alignment-left"),
+            corners("panel-position-top panel-alignment-right"),
+            corners("panel-position-top panel-alignment-justify"),
+            corners("panel-position-bottom panel-alignment-justify nopanel"),
+            corners("modern-ui-compact panel-position-bottom panel-alignment-justify"),
+        ],
+        [
+            expected(["8px", "0px", "8px", "8px"], ["0px", "8px", "8px", "0px"]),
+            expected(["8px", "0px", "0px", "8px"], ["0px", "8px", "8px", "8px"]),
+            expected(["8px", "0px", "8px", "8px"], ["0px", "8px", "8px", "8px"]),
+            expected(["8px", "0px", "0px", "8px"], ["0px", "8px", "8px", "0px"]),
+            expected(["8px", "8px", "0px", "8px"], ["0px", "8px", "8px", "0px"]),
+            expected(["8px", "0px", "0px", "8px"], ["8px", "8px", "8px", "0px"]),
+            expected(["8px", "8px", "0px", "8px"], ["8px", "8px", "8px", "0px"]),
+            expected(["8px", "0px", "0px", "8px"], ["0px", "8px", "8px", "0px"]),
+            expected(["0px", "0px", "0px", "0px"], ["0px", "0px", "0px", "0px"]),
+        ]
+    );
+}
+
+#[test]
+fn keeps_a_gutter_between_horizontal_panels_and_the_right_activity_bar() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let gap = |layout_classes: &str| {
+        let style = floating_style(&theme, &format!("monaco-workbench modern-ui floating-panels panel-position-bottom {layout_classes}"));
+        let panel = style.floating_part_margins(&ClassList::new("part panel bottom")).unwrap();
+        let activity_bar = style.floating_part_margins(&ClassList::new("part activitybar right")).unwrap();
+        (activity_bar.left + panel.right, px(panel.right), px(activity_bar.left))
+    };
+    let expected = |gap: f64, panel_margin_right: &str, activity_bar_margin_left: &str| (gap, panel_margin_right.to_owned(), activity_bar_margin_left.to_owned());
+
+    assert_eq!(
+        [gap("panel-alignment-justify"), gap("panel-alignment-right"), gap("panel-alignment-justify nosidebar"), gap("panel-alignment-justify modern-ui-compact")],
+        [expected(4.0, "4px", "0px"), expected(4.0, "4px", "0px"), expected(4.0, "0px", "4px"), expected(0.0, "0px", "0px")]
+    );
 }
 
 #[test]
