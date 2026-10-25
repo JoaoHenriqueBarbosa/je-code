@@ -332,6 +332,23 @@ fn path_separator(flavor: Platform) -> &'static str {
     }
 }
 
+/// Os campos que os testes do original atribuem direto ao diálogo (`Object.assign(Object.create(SimpleFileDialog.prototype), {
+/// ... })`); os `None` ficam como estão.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct DialogTestState {
+    pub scheme: Option<String>,
+    pub scoped_authority: Option<String>,
+    pub separator: Option<String>,
+    pub is_windows: Option<bool>,
+    pub current_folder: Option<URI>,
+    pub allow_file_selection: Option<bool>,
+    pub allow_folder_selection: Option<bool>,
+    pub requires_trailing: Option<bool>,
+    pub user_entered_path_segment: Option<String>,
+    pub auto_complete_path_segment: Option<String>,
+}
+
 /// O diálogo de arquivos simples (o `SimpleFileDialog`).
 pub struct SimpleFileDialog {
     this: Weak<SimpleFileDialog>,
@@ -475,6 +492,8 @@ impl Injectable for SimpleFileDialog {
         });
 
         dialog.get_show_dot_files();
+        // `this.onBusyChangeEmitter = this._register(new Emitter<boolean>())`.
+        dialog.store.add_rc(dialog.on_busy_change_emitter.clone());
         let disposable_store = DisposableStore::new();
         dialog.store.add_rc(disposable_store.clone());
         let weak = dialog.this.clone();
@@ -554,6 +573,68 @@ impl ISimpleFileDialog for SimpleFileDialog {
 }
 
 impl SimpleFileDialog {
+    /// Atribui os campos de `state` (o `Object.assign` dos testes do original).
+    #[doc(hidden)]
+    pub fn configure_for_testing(&self, state: DialogTestState) {
+        if let Some(scheme) = state.scheme {
+            *self.scheme.borrow_mut() = scheme;
+        }
+        if state.scoped_authority.is_some() {
+            *self.scoped_authority.borrow_mut() = state.scoped_authority;
+        }
+        if let Some(separator) = state.separator {
+            *self.separator.borrow_mut() = separator;
+        }
+        if let Some(is_windows) = state.is_windows {
+            self.is_windows.set(is_windows);
+        }
+        if let Some(current_folder) = state.current_folder {
+            *self.current_folder.borrow_mut() = current_folder;
+        }
+        if let Some(allow) = state.allow_file_selection {
+            self.allow_file_selection.set(allow);
+        }
+        if let Some(allow) = state.allow_folder_selection {
+            self.allow_folder_selection.set(allow);
+        }
+        if let Some(requires_trailing) = state.requires_trailing {
+            self.requires_trailing.set(requires_trailing);
+        }
+        if let Some(segment) = state.user_entered_path_segment {
+            *self.user_entered_path_segment.borrow_mut() = segment;
+        }
+        if let Some(segment) = state.auto_complete_path_segment {
+            *self.auto_complete_path_segment.borrow_mut() = segment;
+        }
+    }
+
+    /// O `filePickBox` que os testes do original atribuem ao diálogo: um quick pick do serviço, descartado com o diálogo.
+    #[doc(hidden)]
+    pub fn attach_pick_box_for_testing(&self) -> Rc<dyn IQuickPick> {
+        let pick_box = self.quick_input_service.create_quick_pick(None);
+        let pick_box_disposable: DisposableRef = pick_box.clone();
+        self.store.add(pick_box_disposable);
+        *self.file_pick_box.borrow_mut() = Some(pick_box.clone());
+        pick_box
+    }
+
+    /// Os itens (`{ label, uri, isFolder }`) que os testes do original põem em `filePickBox.items`; devolve os itens do quick
+    /// pick, na mesma ordem.
+    #[doc(hidden)]
+    pub fn set_items_for_testing(&self, items: Vec<(String, URI, bool)>) -> Vec<IQuickPickItem> {
+        let file_items: Vec<FileQuickPickItem> = items.into_iter().map(|(label, uri, is_folder)| FileQuickPickItem::new(&label, uri, is_folder, None)).collect();
+        let quick_pick_items: Vec<IQuickPickItem> = file_items.iter().map(|item| item.item.clone()).collect();
+        *self.file_items.borrow_mut() = file_items;
+        self.pick_box().set_items(quick_pick_items.iter().cloned().map(QuickPickInput::Item).collect());
+        quick_pick_items
+    }
+
+    /// O `isWindows` do diálogo.
+    #[doc(hidden)]
+    pub fn is_windows(&self) -> bool {
+        self.is_windows.get()
+    }
+
     fn rc(&self) -> Rc<Self> {
         self.this.upgrade().expect("o SimpleFileDialog está vivo enquanto um de seus métodos roda")
     }
@@ -566,11 +647,15 @@ impl SimpleFileDialog {
         self.scheme.borrow().clone()
     }
 
-    fn separator(&self) -> String {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn separator(&self) -> String {
         self.separator.borrow().clone()
     }
 
-    fn current_folder(&self) -> URI {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn current_folder(&self) -> URI {
         self.current_folder.borrow().clone()
     }
 
@@ -659,7 +744,9 @@ impl SimpleFileDialog {
         Some(OpenDialogOptions { default_uri: Some(default_uri), ..source.clone() })
     }
 
-    fn remote_uri_from(&self, path: &str, hint_uri: Option<&URI>) -> URI {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn remote_uri_from(&self, path: &str, hint_uri: Option<&URI>) -> URI {
         let scheme = self.scheme();
         if let Some(scoped_authority) = self.scoped_authority.borrow().clone() {
             let mut path = path.replace('\\', "/");
@@ -989,7 +1076,9 @@ impl SimpleFileDialog {
         });
     }
 
-    fn handle_value_change(&self, value: String) -> Promise<()> {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn handle_value_change(&self, value: String) -> Promise<()> {
         let this = self.rc();
         async_fn(async move {
             // Since any text can be entered in the input box, there is potential for error causing input. If this happens,
@@ -1094,7 +1183,9 @@ impl SimpleFileDialog {
         }
     }
 
-    fn on_did_accept(&self) -> Promise<Option<URI>> {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn on_did_accept(&self) -> Promise<Option<URI>> {
         let this = self.rc();
         async_fn(async move {
             this.set_busy(true);
@@ -1453,7 +1544,9 @@ impl SimpleFileDialog {
         promise
     }
 
-    fn validate(&self, uri: Option<URI>) -> Promise<bool> {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn validate(&self, uri: Option<URI>) -> Promise<bool> {
         let this = self.rc();
         async_fn(async move {
             let Some(uri) = uri else {
@@ -1589,7 +1682,9 @@ impl SimpleFileDialog {
     }
 
     // Returns true if there is a file at the end of the URI.
-    fn update_items(&self, new_folder: URI, force: bool, trailing: Option<String>) -> Promise<bool> {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn update_items(&self, new_folder: URI, force: bool, trailing: Option<String>) -> Promise<bool> {
         let this = self.rc();
         this.set_busy(true);
         *this.auto_complete_path_segment.borrow_mut() = String::new();
@@ -1673,7 +1768,9 @@ impl SimpleFileDialog {
         })
     }
 
-    fn resolve_path_formatting(&self) -> Promise<()> {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn resolve_path_formatting(&self) -> Promise<()> {
         let this = self.rc();
         async_fn(async move {
             let scoped_authority = this.scoped_authority.borrow().clone();
@@ -1693,7 +1790,9 @@ impl SimpleFileDialog {
         })
     }
 
-    fn path_from_uri(&self, uri: &URI, end_with_separator: bool) -> String {
+    /// Exposto à bancada de testes, que chama o que o original acessa pelo protótipo.
+    #[doc(hidden)]
+    pub fn path_from_uri(&self, uri: &URI, end_with_separator: bool) -> String {
         let is_windows = self.is_windows.get();
         let mut result = if self.scoped_authority.borrow().is_some() {
             let mut path = uri.path().to_string_lossy().replace('\n', "");
