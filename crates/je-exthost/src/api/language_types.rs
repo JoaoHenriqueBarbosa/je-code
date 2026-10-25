@@ -15,8 +15,8 @@
 //! - `CodeActionKind` é um objeto com os membros estáticos (`QuickFix`, `Refactor`, `SourceFixAll`...) cujas instâncias têm `append`,
 //!   `contains` e `intersects` (nenhum muda o receptor, como no original); `new CodeActionKind(value)` não existe, porque uma
 //!   classe nativa só carrega funções estáticas e os membros estáticos são valores.
-//! - `CodeAction#edit` (um `WorkspaceEdit`) não atravessa: um provedor que o devolve recebe o erro explícito `CodeAction.edit ainda não é
-//!   suportado pelo host`, a promessa de `provideCodeActions` rejeita e as outras ações do mesmo provedor se perdem.
+//! - `CodeAction#edit` (um `WorkspaceEdit`) é lido da tabela de edições (`workspace_edit`): só vale um `WorkspaceEdit` criado por `new
+//!   vscode.WorkspaceEdit()`, qualquer outro valor rejeita a promessa com `CodeAction.edit must be a WorkspaceEdit`.
 //! - `Diagnostic#code` como `{ value, target }` vale só o `value` (o `DiagnosticCode` de `ext_host_types` é texto ou número).
 
 use std::cell::RefCell;
@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use je_base::errors::Error;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiCompletionList, ApiCompletionResult, ApiDocumentSymbols, ApiLocationResult, CommandOrCodeAction, CompletionItemRef, DefinitionLink, LocationOrLink,
+    ApiCodeActionRef, ApiCompletionList, ApiCompletionResult, ApiDocumentSymbols, ApiLocationResult, CommandOrCodeAction, CompletionItemRef, DefinitionLink, LocationOrLink,
 };
 use je_workbench::api::common::ext_host_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionItemLabel, CompletionItemTag, CompletionLabel, CompletionRange,
@@ -35,13 +35,14 @@ use je_workbench::api::common::ext_host_values::ApiValue;
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
 
 use crate::api::types::{range_data, to_position, to_range};
+use crate::api::workspace_edit::WorkspaceEditObjects;
 use crate::convert::{api_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, uri_from_js};
 
 fn error(message: impl Into<String>) -> Error {
     Error::new(message.into())
 }
 
-fn range_field(value: &JsData, name: &str) -> Result<Range, Error> {
+pub(crate) fn range_field(value: &JsData, name: &str) -> Result<Range, Error> {
     let range = field(value, name).ok_or_else(|| error(format!("{name} must be a Range")))?;
     to_range(range).map_err(error)
 }
@@ -58,7 +59,7 @@ fn uri_field(value: &JsData, name: &str) -> Result<je_base::uri::URI, Error> {
     uri_from_js(uri).map_err(error)
 }
 
-fn strings_of(value: Option<&JsData>) -> Option<Vec<String>> {
+pub(crate) fn strings_of(value: Option<&JsData>) -> Option<Vec<String>> {
     match value {
         Some(JsData::Array(items)) => Some(items.iter().filter_map(|item| opt_string(Some(item))).collect()),
         _ => None,
@@ -82,7 +83,7 @@ pub fn markdown_from_js(value: &JsData) -> Result<MarkdownString, Error> {
     MarkdownString::from_dynamic(&js_to_dynamic(&JsData::Object(fields)))
 }
 
-fn documentation_from_js(value: Option<&JsData>) -> Result<Option<Documentation>, Error> {
+pub(crate) fn documentation_from_js(value: Option<&JsData>) -> Result<Option<Documentation>, Error> {
     match value {
         Some(JsData::Str(text)) => Ok(Some(Documentation::Text(text.clone()))),
         Some(markdown @ JsData::Object(_)) => Ok(Some(Documentation::Markdown(markdown_from_js(markdown)?))),
@@ -166,7 +167,7 @@ fn completion_label_from_js(value: Option<&JsData>) -> Result<CompletionLabel, E
     }
 }
 
-/// `CompletionItem`: todos os campos do `vscode.d.ts` (menos `resolveCompletionItem`, que o host não liga).
+/// `CompletionItem`: todos os campos do `vscode.d.ts`.
 pub fn completion_item_from_js(value: &JsData) -> Result<CompletionItem, Error> {
     let kind = opt_number(field(value, "kind")).and_then(|kind| CompletionItemKind::from_value(kind as i32));
     let mut item = CompletionItem::new(completion_label_from_js(field(value, "label"))?, kind);
@@ -205,8 +206,28 @@ pub fn completion_item_from_js(value: &JsData) -> Result<CompletionItem, Error> 
     Ok(item)
 }
 
+/// Os itens que `completion_result_from_js` leu de `value`, como o motor os entregou (a lista direta ou o `items` de uma `CompletionList`),
+/// na ordem dos [`CompletionItemRef`] do resultado.
+pub(crate) fn completion_raw_items(value: &JsData) -> &[JsData] {
+    match value {
+        JsData::Array(items) => items,
+        _ => match field(value, "items") {
+            Some(JsData::Array(items)) => items,
+            _ => &[],
+        },
+    }
+}
+
 fn completion_items(items: &[JsData]) -> Result<Vec<CompletionItemRef>, Error> {
     items.iter().map(|item| completion_item_from_js(item).map(|item| Rc::new(RefCell::new(item)))).collect()
+}
+
+/// `CompletionItem | undefined | null` (o resultado de `resolveCompletionItem`).
+pub fn completion_item_ref_from_js(value: &JsData) -> Result<Option<CompletionItemRef>, Error> {
+    if is_nullish(Some(value)) {
+        return Ok(None);
+    }
+    completion_item_from_js(value).map(|item| Some(Rc::new(RefCell::new(item))))
 }
 
 /// `CompletionItem[] | CompletionList | undefined | null`.
@@ -289,15 +310,16 @@ pub fn code_action_kind_data(kind: &CodeActionKind) -> JsData {
 }
 
 /// `Command` é distinguido de `CodeAction` pelo `command` texto (o `_isCommand` do adaptador).
-fn code_action_entry_from_js(value: &JsData) -> Result<CommandOrCodeAction, Error> {
+fn code_action_entry_from_js(value: &JsData, edits: &WorkspaceEditObjects) -> Result<CommandOrCodeAction, Error> {
     if matches!(field(value, "command"), Some(JsData::Str(_))) {
         return command_from_js(value).map(CommandOrCodeAction::Command);
     }
     let title = opt_string(field(value, "title")).ok_or_else(|| error("CodeAction.title must be a string"))?;
-    if field(value, "edit").is_some_and(|edit| !is_nullish(Some(edit))) {
-        return Err(error("CodeAction.edit ainda não é suportado pelo host"));
-    }
     let mut action = CodeAction::new(title, field(value, "kind").and_then(code_action_kind_from_js));
+    action.edit = match field(value, "edit") {
+        Some(edit) if !is_nullish(Some(edit)) => Some(edits.resolved_edit(edit).ok_or_else(|| error("CodeAction.edit must be a WorkspaceEdit"))?),
+        _ => None,
+    };
     action.command = match field(value, "command") {
         Some(command @ JsData::Object(_)) => Some(command_from_js(command)?),
         _ => None,
@@ -314,14 +336,28 @@ fn code_action_entry_from_js(value: &JsData) -> Result<CommandOrCodeAction, Erro
     Ok(CommandOrCodeAction::CodeAction(Rc::new(RefCell::new(action))))
 }
 
+/// `CodeAction | undefined | null` (o resultado de `resolveCodeAction`); um `Command` não serve.
+pub fn code_action_ref_from_js(value: &JsData, edits: &WorkspaceEditObjects) -> Result<Option<ApiCodeActionRef>, Error> {
+    if is_nullish(Some(value)) {
+        return Ok(None);
+    }
+    match code_action_entry_from_js(value, edits)? {
+        CommandOrCodeAction::CodeAction(action) => Ok(Some(action)),
+        CommandOrCodeAction::Command(_) => Err(error("resolveCodeAction must return a CodeAction")),
+    }
+}
+
 /// `(Command | CodeAction)[] | undefined | null`; os elementos ausentes são descartados (`if (!candidate) continue`).
-pub fn code_actions_from_js(value: &JsData) -> Result<Option<Vec<CommandOrCodeAction>>, Error> {
+pub fn code_actions_from_js(value: &JsData, edits: &WorkspaceEditObjects) -> Result<Option<Vec<CommandOrCodeAction>>, Error> {
     match value {
-        JsData::Array(entries) => {
-            Ok(Some(entries.iter().filter(|entry| !is_nullish(Some(*entry))).map(code_action_entry_from_js).collect::<Result<Vec<_>, _>>()?))
-        }
+        JsData::Array(entries) => Ok(Some(code_action_raw_entries(entries).map(|entry| code_action_entry_from_js(entry, edits)).collect::<Result<Vec<_>, _>>()?)),
         _ => Ok(None),
     }
+}
+
+/// Os elementos de `entries` que `code_actions_from_js` leu (os ausentes ficam de fora), na ordem do resultado.
+pub(crate) fn code_action_raw_entries(entries: &[JsData]) -> impl Iterator<Item = &JsData> {
+    entries.iter().filter(|entry| !is_nullish(Some(*entry)))
 }
 
 fn symbol_kind_of(value: &JsData) -> Result<SymbolKind, Error> {
@@ -373,31 +409,49 @@ pub fn document_symbols_from_js(value: &JsData) -> Result<Option<ApiDocumentSymb
 
 // --- classes
 
-fn define(runner: &NodeRunner, name: &str, length: u32, construct: impl Fn(&[JsData]) -> Result<JsData, String> + 'static, statics: Vec<(String, u32, NativeCallback)>) -> JsData {
+pub(crate) fn define(
+    runner: &NodeRunner,
+    name: &str,
+    length: u32,
+    construct: impl Fn(&[JsData]) -> Result<JsData, String> + 'static,
+    statics: Vec<(String, u32, NativeCallback)>,
+) -> JsData {
+    define_with_getters(runner, name, length, construct, statics, vec![])
+}
+
+/// [`define`] com acessores de leitura no protótipo (`CodeLens#isResolved`).
+pub(crate) fn define_with_getters(
+    runner: &NodeRunner,
+    name: &str,
+    length: u32,
+    construct: impl Fn(&[JsData]) -> Result<JsData, String> + 'static,
+    statics: Vec<(String, u32, NativeCallback)>,
+    getters: Vec<(String, MethodCallback)>,
+) -> JsData {
     JsData::Handle(Rc::new(runner.define_class(ClassSpec {
         name: name.to_owned(),
         length,
         construct: Rc::new(construct),
         methods: vec![],
-        getters: vec![],
+        getters,
         statics,
         parent: None,
     })))
 }
 
-fn required<'a>(args: &'a [JsData], index: usize, what: &str) -> Result<&'a JsData, String> {
+pub(crate) fn required<'a>(args: &'a [JsData], index: usize, what: &str) -> Result<&'a JsData, String> {
     args.get(index).filter(|value| !is_nullish(Some(*value))).ok_or_else(|| format!("{what} é obrigatório"))
 }
 
-fn text_arg(args: &[JsData], index: usize) -> Option<String> {
+pub(crate) fn text_arg(args: &[JsData], index: usize) -> Option<String> {
     opt_string(args.get(index))
 }
 
-fn class_fields(fields: Vec<(&str, Option<JsData>)>) -> JsData {
+pub(crate) fn class_fields(fields: Vec<(&str, Option<JsData>)>) -> JsData {
     JsData::Object(fields.into_iter().filter_map(|(name, value)| value.map(|value| (name.to_owned(), value))).collect())
 }
 
-fn number_arg(args: &[JsData], index: usize) -> Option<JsData> {
+pub(crate) fn number_arg(args: &[JsData], index: usize) -> Option<JsData> {
     opt_number(args.get(index)).map(JsData::Num)
 }
 

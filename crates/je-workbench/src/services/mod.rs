@@ -87,3 +87,5 @@ pub mod commands;
 
 // `BrowserStorageService` e `IndexedDBStorageDatabase` (`storage/browser/storageService.ts`).
 pub mod storage;
+
+pub mod themes;

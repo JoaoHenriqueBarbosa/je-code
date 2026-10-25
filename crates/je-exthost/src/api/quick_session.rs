@@ -37,7 +37,7 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS
 use crate::api::disposable::DisposableTable;
 use crate::api::events::event_function;
 use crate::api::quick_input::{icon_path_of, quick_pick_entry_of, validation_of};
-use crate::convert::{field, js_to_dynamic, opt_bool, opt_number, opt_string};
+use crate::convert::{field, js_to_dynamic, opt_bool, opt_number, opt_string, text_or_undefined};
 
 /// Os botões da sessão: o do host e a cópia que a extensão passou.
 type Buttons = RefCell<Vec<(Rc<QuickInputButton>, JsData)>>;
@@ -168,10 +168,6 @@ fn optional_text(value: &JsData) -> Option<String> {
 
 fn optional_count(value: &JsData) -> Option<u32> {
     opt_number(Some(value)).map(|count| count as u32)
-}
-
-fn text_or_undefined(value: Option<String>) -> JsData {
-    value.map_or(JsData::Undefined, JsData::Str)
 }
 
 fn count_or_undefined(value: Option<u32>) -> JsData {

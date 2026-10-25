@@ -9,11 +9,15 @@
 //! - [`color`]: a classe `Color` de `src/vs/base/common/color.ts`.
 //! - [`registry`]: `colorUtils.ts` e `colorRegistry.ts` (o registro e a resolução de valores).
 //! - [`registered_colors`]: as cores registradas pelo VS Code (gerado).
+//! - [`theme_defaults`]: os padrões por tipo de tema e `normalizeColor` de `colorThemeData.ts`.
+//! - [`token_classification_registry`]: `tokenClassificationRegistry.ts` (tipos e modificadores de semantic tokens).
 
 pub mod color;
 #[rustfmt::skip]
 pub mod registered_colors;
 pub mod registry;
+pub mod theme_defaults;
+pub mod token_classification_registry;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -108,6 +112,41 @@ impl ColorTheme {
             custom_colors: HashMap::new(),
             transient_colors: None,
         })
+    }
+
+    /// Um tema sem arquivo, só com o `colorMap` dado (o `createUnloadedTheme` do `ColorThemeData`).
+    pub fn unloaded(name: impl Into<String>, theme_type: ThemeType, colors: HashMap<String, Color>) -> Self {
+        Self {
+            name: name.into(),
+            theme_type,
+            colors,
+            custom_colors: HashMap::new(),
+            transient_colors: None,
+        }
+    }
+
+    /// O `colorMap`: as cores do arquivo do tema, sem customização nem cores transientes.
+    pub fn colors(&self) -> &HashMap<String, Color> {
+        &self.colors
+    }
+
+    /// Troca o `colorMap` (`this.colorMap = result.colors` do carregamento), mantendo as customizações e as cores
+    /// transientes.
+    pub fn set_colors(&mut self, colors: HashMap<String, Color>) {
+        self.colors = colors;
+    }
+
+    /// Se há um `transientColorMap` (`this.transientColorMap !== undefined`).
+    pub fn has_transient_colors(&self) -> bool {
+        self.transient_colors.is_some()
+    }
+
+    /// `getColorCustomization`: a cor da customização do usuário, se for uma cor (o `"default"` não conta).
+    pub fn get_color_customization(&self, id: &str) -> Option<&Color> {
+        match self.custom_colors.get(id) {
+            Some(CustomColor::Color(color)) => Some(color),
+            _ => None,
+        }
     }
 
     /// Troca o tipo do tema (o `uiTheme` da contribuição).

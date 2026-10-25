@@ -30,6 +30,20 @@ TEST_RE = re.compile(r'^\s*test\(', re.M)
 PORT_RE = re.compile(r'Porte de `((?:src/vs|extensions)/[^`]+\.test\.ts)`')
 
 
+SUITE_MACRO_RE = re.compile(r'text_file_service_io_cases!\(\s*[^;)]+\)')
+SUITE_MACRO_FILE = ROOT / 'crates/je-workbench/tests/support/text_file_service_io_suite.rs'
+
+
+def macro_cases(text):
+    """Casos que um teste gera por macro de suíte: a lista de casos da macro, a fonte única (não são `#[test]` literais no arquivo)."""
+    if not SUITE_MACRO_RE.search(text) or not SUITE_MACRO_FILE.exists():
+        return 0
+    body = SUITE_MACRO_FILE.read_text(encoding='utf-8')
+    start = body.index('(@each $accessor_factory;', body.index('macro_rules! text_file_service_io_cases'))
+    block = body[start:body.index(');', start)]
+    return len(re.findall(r'^\s+([a-z_0-9]+)\s*$', block, re.M))
+
+
 def ported():
     found = {}
     for path in ROOT.glob('crates/*/tests/*.rs'):
@@ -37,8 +51,11 @@ def ported():
         match = PORT_RE.search(text)
         if match:
             # `#[test]` seguido de `#[ignore...]` é caso pendente (falha conhecida registrada): não conta como portado
-            active = len(re.findall(r'#\[test\]\n(?!\s*#\[ignore)', text))
-            found[match.group(1)] = (path.relative_to(ROOT), active)
+            active = len(re.findall(r'#\[test\]\n(?!\s*#\[ignore)', text)) + macro_cases(text)
+            key = match.group(1)
+            # Dois arquivos podem portar o mesmo arquivo de origem (a suíte `createSuite` de i/o roda em dois serviços): vale o maior.
+            if key not in found or active > found[key][1]:
+                found[key] = (path.relative_to(ROOT), active)
     return found
 
 

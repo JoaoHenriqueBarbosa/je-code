@@ -10,8 +10,8 @@
 //!
 //! Falta (o serviço do host tem, falta só a ponte): `TextEditor#insertSnippet` (pede a classe `SnippetString`), `setDecorations` e
 //! `createTextEditorDecorationType` (pedem `DecorationRenderOptions` e `ThemeColor` de ponta a ponta), `TextEditor#options` com
-//! `cursorStyle` e `lineNumbers`, `diffInformation`, `workspace.onWillSaveTextDocument`, `registerTextDocumentContentProvider`,
-//! `notebookDocuments`.
+//! `cursorStyle` e `lineNumbers`, `diffInformation`, `workspace.onWillSaveTextDocument`, `registerTextDocumentContentProvider`
+//! (`workspace.notebookDocuments` e os membros de notebook estão em `notebooks`).
 //!
 //! Divergências:
 //! - O motor entrega objeto comum por cópia e só função, promessa e instância de classe nativa por identidade, então `TextDocument`,

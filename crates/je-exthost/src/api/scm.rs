@@ -32,7 +32,6 @@ use std::rc::Rc;
 use je_base::cancellation::CancellationToken;
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
-use je_base::promise::{MaybePromise, Promise};
 use je_base::themables::ThemeIcon;
 use je_base::uri::URI;
 use je_workbench::api::common::ext_host_scm::{
@@ -41,12 +40,13 @@ use je_workbench::api::common::ext_host_scm::{
 };
 use je_workbench::api::common::ext_host_types::Command;
 use je_workbench::api::common::ext_host_values::ApiValue;
-use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner, CLASS_KEY};
+use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner};
 
-use crate::api::commands::settle_js_result;
+use crate::api::commands::{call_settled, convert_maybe};
 use crate::api::events::EventTables;
 use crate::api::languages::host_extension;
-use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, js_to_error, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
+use crate::api::{getter, handle_field, handle_object, setter};
+use crate::convert::{class_name, dynamic_to_js, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, text_or_undefined, uri_from_js, uri_to_js};
 
 /// O que o namespace `scm` guarda dos objetos que a extensão segura (os objetos JavaScript carregam só o `_id`, o `handle` do host).
 #[derive(Default)]
@@ -61,26 +61,15 @@ pub struct ScmObjects {
     states: RefCell<HashMap<u32, Vec<JsData>>>,
 }
 
-fn object_of(class: &str, handle: u32) -> JsData {
-    JsData::Object(vec![(CLASS_KEY.to_owned(), JsData::Str(class.to_owned())), ("_id".to_owned(), JsData::Num(f64::from(handle)))])
-}
-
-fn handle_of(this: &JsData) -> Result<u32, String> {
-    match field(this, "_id") {
-        Some(JsData::Num(id)) => Ok(*id as u32),
-        _ => Err("SourceControl: this inválido".to_owned()),
-    }
-}
-
 impl ScmObjects {
     fn add_control(&self, control: Rc<ExtHostSourceControl>) -> JsData {
         let handle = control.handle();
         self.controls.borrow_mut().insert(handle, control);
-        object_of("SourceControl", handle)
+        handle_object("SourceControl", handle)
     }
 
     fn control_of(&self, this: &JsData) -> Result<Rc<ExtHostSourceControl>, String> {
-        self.controls.borrow().get(&handle_of(this)?).cloned().ok_or_else(|| "SourceControl: a fonte já foi descartada".to_owned())
+        self.controls.borrow().get(&handle_field(this, "SourceControl")?).cloned().ok_or_else(|| "SourceControl: a fonte já foi descartada".to_owned())
     }
 
     fn input_box_of(&self, this: &JsData) -> Result<Rc<ExtHostSCMInputBox>, String> {
@@ -88,7 +77,7 @@ impl ScmObjects {
     }
 
     fn group_of(&self, this: &JsData) -> Result<Rc<ExtHostSourceControlResourceGroup>, String> {
-        self.groups.borrow().get(&handle_of(this)?).cloned().ok_or_else(|| "SourceControlResourceGroup: o grupo já foi descartado".to_owned())
+        self.groups.borrow().get(&handle_field(this, "SourceControlResourceGroup")?).cloned().ok_or_else(|| "SourceControlResourceGroup: o grupo já foi descartado".to_owned())
     }
 
     fn forget_group(&self, handle: u32) {
@@ -176,50 +165,12 @@ fn original_uri_of(value: &JsData) -> Result<Option<URI>, Error> {
 impl QuickDiffProvider for JsQuickDiffProvider {
     fn provide_original_resource(&self, uri: &URI, token: &CancellationToken) -> Option<ProviderResult<URI>> {
         let function = self.provide_original_resource.as_ref()?;
-        Some(match self.runner.call_data_throwing(function, &[uri_to_js(uri), self.events.token_to_js(token.clone())]) {
-            Ok(result) => match settle_js_result(&self.runner, result) {
-                MaybePromise::Value(value) => match original_uri_of(&dynamic_to_js(&value)) {
-                    Ok(original) => MaybePromise::Value(original),
-                    Err(error) => MaybePromise::Promise(Promise::rejected(error)),
-                },
-                MaybePromise::Promise(promise) => MaybePromise::Promise(promise.then_result(|outcome| original_uri_of(&dynamic_to_js(&outcome?)))),
-            },
-            Err(thrown) => MaybePromise::Promise(Promise::rejected(js_to_error(&thrown))),
-        })
+        let result = call_settled(&self.runner, function, &[uri_to_js(uri), self.events.token_to_js(token.clone())]);
+        Some(convert_maybe(result, |value| original_uri_of(&dynamic_to_js(&value))))
     }
 }
 
 // ---- as classes
-
-fn getter<T: 'static>(
-    objects: &Rc<ScmObjects>,
-    name: &str,
-    lookup: impl Fn(&ScmObjects, &JsData) -> Result<Rc<T>, String> + 'static,
-    read: impl Fn(&ScmObjects, &Rc<T>) -> JsData + 'static,
-) -> (String, MethodCallback) {
-    let objects = objects.clone();
-    (name.to_owned(), Rc::new(move |this, _| Ok(read(&objects, &lookup(&objects, this)?))))
-}
-
-fn setter<T: 'static>(
-    objects: &Rc<ScmObjects>,
-    name: &str,
-    lookup: impl Fn(&ScmObjects, &JsData) -> Result<Rc<T>, String> + 'static,
-    write: impl Fn(&ScmObjects, &Rc<T>, &JsData) -> Result<(), String> + 'static,
-) -> (String, MethodCallback) {
-    let objects = objects.clone();
-    (
-        name.to_owned(),
-        Rc::new(move |this, args| {
-            write(&objects, &lookup(&objects, this)?, args.first().unwrap_or(&JsData::Undefined))?;
-            Ok(JsData::Undefined)
-        }),
-    )
-}
-
-fn text_or_undefined(value: Option<String>) -> JsData {
-    value.map_or(JsData::Undefined, JsData::Str)
-}
 
 fn command_to_js(command: &Command) -> JsData {
     dynamic_to_js(&command.to_dynamic())
@@ -231,7 +182,7 @@ fn define_source_control(runner: &NodeRunner, objects: &Rc<ScmObjects>, events: 
         get("id", |_, control| JsData::Str(control.id().to_owned())),
         get("label", |_, control| JsData::Str(control.label().to_owned())),
         get("rootUri", |_, control| control.root_uri().map_or(JsData::Undefined, uri_to_js)),
-        get("inputBox", |_, control| object_of("SourceControlInputBox", control.handle())),
+        get("inputBox", |_, control| handle_object("SourceControlInputBox", control.handle())),
         get("count", |_, control| control.count().map_or(JsData::Undefined, JsData::Num)),
         get("commitTemplate", |_, control| text_or_undefined(control.commit_template())),
         get("acceptInputCommand", |_, control| control.accept_input_command().as_ref().map_or(JsData::Undefined, command_to_js)),
@@ -297,7 +248,7 @@ fn define_source_control(runner: &NodeRunner, objects: &Rc<ScmObjects>, events: 
                 let handle = group.handle();
                 group_objects.groups.borrow_mut().insert(handle, group);
                 group_objects.group_owners.borrow_mut().insert(handle, control.handle());
-                Ok(object_of("SourceControlResourceGroup", handle))
+                Ok(handle_object("SourceControlResourceGroup", handle))
             }),
         ),
         (

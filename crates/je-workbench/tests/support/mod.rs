@@ -88,6 +88,10 @@ pub mod text_editor_service_support;
 // Porte de `terminalProcessManager.test.ts`: o processo, o serviço de instâncias e o `workbenchInstantiationService` do gerenciador.
 pub mod terminal_process_manager_support;
 
+// Porte de `terminalService.test.ts`: o `TestDialogService`, o serviço de instâncias com `stub`, o `ITerminalInstance` parcial e o
+// `TestPersistentTerminalBackend`.
+pub mod terminal_service_support;
+
 // Porte de `lineDataEventAddon.test.ts`, `markNavigationAddon.test.ts` e `decorationAddon.test.ts`: a decoração e o elemento do
 // `registerDecoration` do `TestTerminal`, e os dublês do `DecorationAddon`.
 pub mod fake_xterm_decoration;

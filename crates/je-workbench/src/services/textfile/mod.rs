@@ -4,7 +4,8 @@
 //! `common/textFileEditorModelManager.ts` em [`text_file_editor_model_manager`] e
 //! `common/textFileSaveParticipant.ts` em [`text_file_save_participant`]; `browser/textFileService.ts` (o
 //! `AbstractTextFileService` e o `EncodingOracle`) em [`abstract_text_file_service`] e
-//! `browser/browserTextFileService.ts` em [`browser_text_file_service`].
+//! `browser/browserTextFileService.ts` em [`browser_text_file_service`] e
+//! `electron-browser/nativeTextFileService.ts` em [`native_text_file_service`].
 //!
 //! [`collaborators`] traz os contratos reduzidos dos serviços que esses arquivos leem e que ainda não foram portados
 //! (progresso, backup de working copy, detecção de linguagem, acessibilidade e operações de arquivo de working copy), e
@@ -16,6 +17,7 @@ pub mod code_pages;
 pub mod collaborators;
 pub mod encoding;
 pub mod iconv_lite;
+pub mod native_text_file_service;
 pub mod text_buffer_factory;
 pub mod text_file_editor_model;
 pub mod text_file_editor_model_manager;

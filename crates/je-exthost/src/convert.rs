@@ -11,7 +11,7 @@ use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::errors::Error;
 use je_base::uri::URI;
 use je_workbench::api::common::ext_host_values::ApiValue;
-use zjsc::api::embed_node::{JsData, JsHandle, CLASS_KEY};
+use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner, CLASS_KEY};
 
 /// `Dynamic` para o motor. `Function`, `RegExp`, `Date` e arrays tipados ainda não atravessam: viram `undefined`.
 pub fn dynamic_to_js(value: &Dynamic) -> JsData {
@@ -72,6 +72,14 @@ pub fn string_arg(args: &[JsData], index: usize, what: &str) -> Result<String, S
     }
 }
 
+/// O argumento por referência como dado: o objeto (um [`JsData::Handle`]) é copiado, o resto fica como veio.
+pub fn exported(runner: &NodeRunner, value: &JsData) -> JsData {
+    match value {
+        JsData::Handle(handle) => runner.export(handle),
+        other => other.clone(),
+    }
+}
+
 /// O texto de um valor que é texto; `None` para `undefined`, `null` e qualquer outro tipo.
 pub fn opt_string(value: Option<&JsData>) -> Option<String> {
     match value {
@@ -94,6 +102,11 @@ pub fn opt_bool(value: Option<&JsData>) -> Option<bool> {
         Some(JsData::Bool(flag)) => Some(*flag),
         _ => None,
     }
+}
+
+/// O texto de uma propriedade opcional: `undefined` quando ausente.
+pub fn text_or_undefined(value: Option<String>) -> JsData {
+    value.map_or(JsData::Undefined, JsData::Str)
 }
 
 /// `value === undefined || value === null` (um argumento ausente conta como `undefined`).

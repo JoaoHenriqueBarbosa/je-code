@@ -18,6 +18,7 @@ pub mod policy_export;
 pub mod preferences;
 pub mod scm;
 pub mod search;
+pub mod search_editor;
 pub mod testing;
 
 pub mod browser_view;
@@ -59,3 +60,11 @@ pub mod url;
 
 // Acesso remoto (`contrib/remote`): o detector de URLs de servidores locais na saída dos terminais e das sessões de depuração.
 pub mod remote;
+
+// Modern UI (`contrib/modernUI`): a configuração do vidro fosco, o material e a contribuição que liga as classes.
+pub mod modern_ui;
+
+// Arquivos de workspace (`contrib/workspaces`): a contribuição que sugere abrir um `.code-workspace` da raiz da pasta.
+pub mod workspaces;
+// Reinício por configuração (`contrib/relauncher`): o `SettingsChangeRelauncher`, que pergunta se reinicia quando uma configuração que só vale após o reinício muda.
+pub mod relauncher;

@@ -17,3 +17,6 @@ pub mod views;
 
 // `ITreeView`, `ITreeViewDataProvider` e `ITreeViewDragAndDropController` (`common/views.ts`).
 pub mod tree_view_contracts;
+
+// Registro de migrações de configuração (`common/configuration.ts`).
+pub mod configuration;
