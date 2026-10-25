@@ -4197,6 +4197,7 @@ version = "0.0.0"
 dependencies = [
  "indexmap",
  "je-base",
+ "je-codicons",
  "je-instantiation",
  "je-storage",
  "jiff",
