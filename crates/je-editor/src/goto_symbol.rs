@@ -16,7 +16,16 @@
 //! - `Promise.resolve(provide(...)).then(undefined, err => { onUnexpectedExternalError(err); return undefined; })` é o
 //!   `then_result` que transforma a rejeição em `None`.
 //! - Os comandos `_execute*Provider` (`registerModelAndPositionCommand` com `_sortedAndDeduped`) dependem de
-//!   `ServicesAccessor`, `IModelService` e do `ReferencesModel` (a árvore de referências, sem porte): ficam de fora.
+//!   `ServicesAccessor` e `IModelService`: ficam de fora.
+//!
+//! O resto do módulo `src/vs/editor/contrib/gotoSymbol/browser` mora na pasta `goto_symbol/`: `referencesModel.ts`
+//! ([`references_model`], a árvore de referências agrupada por arquivo) e `symbolNavigation.ts`
+//! ([`symbol_navigation`], a navegação pelo teclado entre os resultados e a chave de contexto `hasSymbols`). A fatia
+//! seguinte é `goToCommands.ts` (`DefinitionAction` e companhia, com o `goToDefinitionWithLocation` que o sticky scroll
+//! espera pelo trait `IStickyScrollDefinitionNavigation`).
+
+pub mod references_model;
+pub mod symbol_navigation;
 
 use std::rc::Rc;
 
