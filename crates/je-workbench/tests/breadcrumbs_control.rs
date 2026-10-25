@@ -47,7 +47,8 @@ fn picker_placement_keyboard() {
     assert_eq!(placement.x, 100.0);
     assert_eq!(placement.y, 30.0);
     assert_eq!(placement.max_height, 300.0);
-    assert_eq!(placement.width, 992.0_f64 / 4.17);
+    // 992 / 4.17 = 237,89 < 240: o piso `Math.max(240, ...)` do original vence
+    assert_eq!(placement.width, 240.0);
     assert_eq!(placement.arrow_size, 8.0);
     assert_eq!(placement.arrow_offset, 24.0);
 }
