@@ -1,5 +1,7 @@
 //! Porte de `src/vs/base/browser`: a parte que não depende do DOM do navegador.
 
+#[allow(clippy::module_inception)] // `base/browser/browser.ts`
+pub mod browser;
 pub mod css_value;
 pub mod dom;
 pub mod dom_sanitize;
