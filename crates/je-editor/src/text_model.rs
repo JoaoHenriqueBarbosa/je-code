@@ -19,8 +19,7 @@
 //! modelo (`bracket_pairs()`, `guides()`, e as decorações somadas em `get_*_decorations`).
 //!
 //! Pendente, por depender de serviços ainda não portados: o provedor de decorações de fontes por token,
-//! `getFormattingOptions`
-//! (`languages.ts`), `edit(TextEdit)` (`edits/textEdit.ts`) e a criação do buffer a partir de stream
+//! `edit(TextEdit)` (`edits/textEdit.ts`) e a criação do buffer a partir de stream
 //! (`createTextBufferFactoryFromStream`, depende de `stream.ts`).
 
 use std::cell::{Cell, OnceCell, Ref, RefCell};
@@ -55,6 +54,7 @@ use crate::model::{
     ValidAnnotatedEditOperation, ValidEditOperation, CursorStateComputer, FindMatch, SearchData,
 };
 use crate::language_configuration_registry::{ILanguageConfigurationService, LanguageConfigurationService};
+use crate::language_features_service::FormattingOptions;
 use crate::language_service::{ILanguageService, LanguageService};
 use crate::piece_tree_text_buffer::PieceTreeTextBuffer;
 use crate::tokenization_text_model_part::{TokenizationTextModelPart, WordDefinitionProvider};
@@ -1651,6 +1651,13 @@ impl TextModel {
     pub fn get_options(&self) -> TextModelResolvedOptions {
         self.assert_not_disposed();
         self.options.get()
+    }
+
+    /// `getFormattingOptions()`.
+    pub fn get_formatting_options(&self) -> FormattingOptions {
+        self.assert_not_disposed();
+        let options = self.options.get();
+        FormattingOptions { tab_size: f64::from(options.indent_size), insert_spaces: options.insert_spaces }
     }
 
     /// `updateOptions(newOpts)`.

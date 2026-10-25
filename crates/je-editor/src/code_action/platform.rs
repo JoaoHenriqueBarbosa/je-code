@@ -165,13 +165,29 @@ je_instantiation::service_id!(pub I_BULK_EDIT_SERVICE: dyn IBulkEditService = "I
 pub enum AccessibilitySignal {
     CodeActionTriggered,
     CodeActionApplied,
+    Format,
     NotebookCellCompleted,
     NotebookCellFailed,
     TaskCompleted,
     TaskFailed,
 }
 
+/// `IAccessbilitySignalOptions`, só com o `userGesture` (para ações como salvar e formatar, o sinal só toca quando o
+/// usuário disparou a ação, conforme a configuração).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccessibilitySignalOptions {
+    pub user_gesture: Option<bool>,
+}
+
 /// `IAccessibilitySignalService`, só com `playSignal`.
 pub trait IAccessibilitySignalService {
     fn play_signal(&self, signal: AccessibilitySignal);
+
+    /// `playSignal(signal, options)`. Quem não distingue o gesto do usuário (o caso dos dublês) toca o sinal como
+    /// `play_signal`.
+    fn play_signal_with_options(&self, signal: AccessibilitySignal, _options: AccessibilitySignalOptions) {
+        self.play_signal(signal);
+    }
 }
+
+je_instantiation::service_id!(pub I_ACCESSIBILITY_SIGNAL_SERVICE: dyn IAccessibilitySignalService = "accessibilitySignalService");
