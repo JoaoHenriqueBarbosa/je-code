@@ -27,6 +27,7 @@ mod test_color_theme_service;
 #[path = "../../je-editor/tests/support/test_notification_service.rs"]
 mod test_notification_service;
 
+use je_workbench::browser::pane_composite::{extensions, pane_composite_registry};
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
@@ -68,6 +69,11 @@ fn deps(guard: &LeakGuard) -> PaneTestDeps {
 
 #[test]
 fn moves_the_primary_side_bar_class_to_the_inward_boundary_sash() {
+    // Os registros de `Registry.as<PaneCompositeRegistry>(...)` nascem na importação do módulo no original, antes do
+    // rastreio de vazamentos do caso.
+    for id in [extensions::VIEWLETS, extensions::PANELS, extensions::AUXILIARY] {
+        pane_composite_registry(id);
+    }
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
 
     let deps = deps(&guard);

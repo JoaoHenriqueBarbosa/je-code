@@ -42,6 +42,7 @@ mod test_color_theme_service;
 #[path = "../../je-editor/tests/support/test_notification_service.rs"]
 mod test_notification_service;
 
+use je_workbench::browser::pane_composite::{extensions, pane_composite_registry};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::{Rc, Weak};
@@ -251,7 +252,7 @@ fn create_test_auxiliary_bar_part(guard: &LeakGuard, ui: &Ui, container: NodeId)
     let context_key_service = guard.add_rc(ContextKeyService::new(configuration_service.clone()));
     let context_key_service: Rc<dyn IContextKeyService> = context_key_service;
     let menu_service: Rc<dyn IMenuService> =
-        Rc::new(RemappingMenuService { inner: MenuService::new(command_service.clone(), keybinding_service.clone(), storage_service.clone()) });
+        Rc::new(RemappingMenuService { inner: { let menu_service = guard.add_rc(MenuService::new(command_service.clone(), keybinding_service.clone(), storage_service.clone())); menu_service } });
     let context_menu_service = Rc::new(TestContextMenuService);
 
     for (order, (id, title, icon)) in [("test.maximize", "Maximize Secondary Side Bar", "screen-full"), ("test.close", "Hide Secondary Side Bar", "close")].into_iter().enumerate() {
@@ -347,7 +348,8 @@ fn create_test_auxiliary_bar_part(guard: &LeakGuard, ui: &Ui, container: NodeId)
         context_key_service.as_ref(),
         command_service.clone(),
     );
-    let history: ActionRef = Action::new("history", "History", "", true, None);
+    let history = guard.add_rc(Action::new("history", "History", "", true, None));
+    let history: ActionRef = history;
     set_title_actions(&part, "Chat", &[new_chat_submenu, settings], &[history]);
 
     TestAuxiliaryBarPart { part, view, toolbar_available_width }
@@ -366,6 +368,11 @@ struct State {
 #[test]
 fn overflows_new_chat_before_settings_and_restores_them_in_reverse_order() {
     for presentation in ["", "modern-ui modern-ui-tabs", "modern-ui modern-ui-tabs modern-ui-compact"] {
+        // Os registros de `Registry.as<PaneCompositeRegistry>(...)` nascem na importação do módulo no original, antes do
+        // rastreio de vazamentos do caso.
+        for id in [extensions::VIEWLETS, extensions::PANELS, extensions::AUXILIARY] {
+            pane_composite_registry(id);
+        }
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
 
         // setup: `root = append(document.body, $('.monaco-workbench'))`
