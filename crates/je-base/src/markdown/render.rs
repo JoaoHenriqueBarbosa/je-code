@@ -1,7 +1,7 @@
 //! Porte de `renderMarkdown` e de seus auxiliares em `src/vs/base/browser/markdownRenderer.ts`. Ver o plano em
 //! [`crate::markdown`] para o que cabe à fatia 2.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -12,6 +12,8 @@ use crate::extpath::is_unc;
 use crate::html_content::{IMarkdownString, IsTrusted, escape_double_quotes, is_portable_link_target, parse_href_and_dimensions, remove_markdown_escapes};
 use crate::icon_labels::markdown_escape_escaped_icons;
 use crate::id_generator::default_generator_next_id;
+use crate::lifecycle::{DisposableStore, IDisposable};
+use crate::promise::Promise;
 use crate::js_string::is_js_whitespace;
 use crate::map::OrderedMap;
 use crate::marked::{Blockquote, Code, Html, InlineRenderer, MarkedError, Options, Paragraph, Parser, Renderer, Token, lexer_with};
@@ -55,10 +57,14 @@ pub struct MarkdownSanitizerConfig {
     pub remote_image_is_allowed: Option<Rc<dyn Fn(&URI) -> bool>>,
 }
 
-/// `MarkdownRenderOptions`, sem o `codeBlockRenderer` assíncrono, o `asyncRenderCallback` e as extensões
-/// (fatia 2).
+/// `MarkdownRenderOptions`, sem `markedExtensions` (o `marked` portado não tem extensões) e sem o ouvinte de
+/// `load` das imagens, que é do widget.
 #[derive(Clone, Default)]
 pub struct MarkdownRenderOptions {
+    /// `codeBlockRenderer(languageId, value)`: o elemento (assíncrono) que substitui o bloco de código.
+    pub code_block_renderer: Option<Rc<dyn Fn(&JsString, &JsString) -> Promise<Element>>>,
+    /// `asyncRenderCallback`: chamado quando os blocos de código assíncronos entraram na árvore.
+    pub async_render_callback: Option<Rc<dyn Fn()>>,
     /// `codeBlockRendererSync(languageId, value, raw)`: o elemento que substitui o bloco de código.
     pub code_block_renderer_sync: Option<Rc<dyn Fn(&JsString, &JsString, &JsString) -> Element>>,
     pub action_handler: Option<MarkdownActionHandler>,
@@ -77,11 +83,22 @@ pub struct MarkdownEnvironment<'a> {
     pub file_access: &'a FileAccess,
 }
 
-/// `IRenderedMarkdown`: a árvore (um `div` raiz) e o que é preciso para ativar um link dela.
+/// `IRenderedMarkdown`: a árvore (um `div` raiz, ou o `target`) e o que é preciso para ativar um link dela. A
+/// árvore é compartilhada porque os blocos de código assíncronos entram nela depois; `dispose` os impede.
+#[derive(Clone)]
 pub struct RenderedMarkdown {
-    pub element: Element,
+    pub element: Rc<RefCell<Element>>,
     markdown: IMarkdownString,
     action_handler: Option<MarkdownActionHandler>,
+    is_disposed: Rc<Cell<bool>>,
+    disposables: Rc<DisposableStore>,
+}
+
+impl IDisposable for RenderedMarkdown {
+    fn dispose(&self) {
+        self.is_disposed.set(true);
+        self.disposables.dispose();
+    }
 }
 
 impl RenderedMarkdown {
@@ -237,6 +254,7 @@ struct MarkdownHtmlRenderer {
     options: MarkdownRenderOptions,
     platform: Platform,
     sync_code_blocks: Rc<RefCell<Vec<(String, Element)>>>,
+    async_code_blocks: Rc<RefCell<Vec<Promise<(String, Element)>>>>,
 }
 
 impl MarkdownHtmlRenderer {
@@ -362,12 +380,20 @@ impl InlineRenderer for MarkdownHtmlRenderer {
     }
 
     fn code(&self, token: &Code) -> JsString {
-        let Some(render) = &self.options.code_block_renderer_sync else {
+        let language = post_process_code_block_language_id(token.lang.as_ref());
+        let id = if let Some(render) = &self.options.code_block_renderer_sync {
+            let id = default_generator_next_id();
+            let element = render(&language, &token.text, &token.raw);
+            self.sync_code_blocks.borrow_mut().push((id.clone(), element));
+            id
+        } else if let Some(render) = &self.options.code_block_renderer {
+            let id = default_generator_next_id();
+            let tagged = id.clone();
+            self.async_code_blocks.borrow_mut().push(render(&language, &token.text).then(move |element| (tagged, element)));
+            id
+        } else {
             return InlineRenderer::code(&Renderer, token);
         };
-        let id = default_generator_next_id();
-        let element = render(&post_process_code_block_language_id(token.lang.as_ref()), &token.text, &token.raw);
-        self.sync_code_blocks.borrow_mut().push((id.clone(), element));
         let mut out = JsString::from(format!("<div class=\"code\" data-code=\"{id}\">"));
         out.push_units(escape(token.text.units()).units());
         push_str(&mut out, "</div>");
@@ -634,15 +660,47 @@ fn dom_sanitizer_config<'a>(markdown: &IMarkdownString, options: &MarkdownSaniti
     }
 }
 
-/// `renderMarkdown`: o Markdown vira uma árvore de elementos sanitizada (um `div` raiz). O `target`, o
-/// `codeBlockRenderer` assíncrono e os ouvintes de evento ficam para a fatia 2.
+/// Troca o conteúdo de cada `div[data-code]` pelo bloco de código renderizado com o mesmo id.
+fn place_code_blocks(nodes: Vec<Node>, blocks: &HashMap<String, Element>) -> Vec<Node> {
+    nodes
+        .into_iter()
+        .map(|node| match node {
+            Node::Element(mut element) => {
+                let block = if element.tag_name == "div" { element.get_attribute("data-code").and_then(|id| blocks.get(&id.to_string_lossy())) } else { None };
+                match block {
+                    Some(block) => element.children = vec![Node::Element(block.clone())],
+                    None => element.children = place_code_blocks(std::mem::take(&mut element.children), blocks),
+                }
+                Node::Element(element)
+            }
+            text => text,
+        })
+        .collect()
+}
+
+/// `renderMarkdown(markdown, options)`: o Markdown vira uma árvore de elementos sanitizada (um `div` raiz).
 pub fn render_markdown(markdown: &IMarkdownString, options: &MarkdownRenderOptions, env: &MarkdownEnvironment<'_>) -> Result<RenderedMarkdown, MarkedError> {
+    render_markdown_into(markdown, options, env, None)
+}
+
+/// `renderMarkdown(markdown, options, target)`. Com `target` os filhos dele são trocados pelo conteúdo novo (o
+/// `DOM.reset` do original) e o `target` é a árvore devolvida. A identidade dos nós que o
+/// `replaceChildrenPreservingCodeBlocks` mantém montados não existe numa árvore de valores: o resultado é o
+/// mesmo de uma renderização nova, que é o que esse caminho garante no original.
+pub fn render_markdown_into(
+    markdown: &IMarkdownString,
+    options: &MarkdownRenderOptions,
+    env: &MarkdownEnvironment<'_>,
+    target: Option<&Rc<RefCell<Element>>>,
+) -> Result<RenderedMarkdown, MarkedError> {
     let sync_code_blocks = Rc::new(RefCell::new(Vec::new()));
+    let async_code_blocks = Rc::new(RefCell::new(Vec::new()));
     let renderer = MarkdownHtmlRenderer {
         markdown: Rc::new(markdown.clone()),
         options: options.clone(),
         platform: env.env.platform(),
         sync_code_blocks: sync_code_blocks.clone(),
+        async_code_blocks: async_code_blocks.clone(),
     };
     let value = preprocess_markdown_string(markdown);
 
@@ -662,17 +720,10 @@ pub fn render_markdown(markdown: &IMarkdownString, options: &MarkdownRenderOptio
     // Reescreve links e imagens antes de a árvore ser usada.
     nodes = rewrite_rendered_links(markdown, options, nodes, env);
 
+    // Os blocos de código síncronos entram já; os assíncronos entram quando as promessas resolverem.
     let code_blocks: HashMap<String, Element> = sync_code_blocks.take().into_iter().collect();
     if !code_blocks.is_empty() {
-        nodes = rewrite_elements(nodes, &mut |element| {
-            if element.tag_name == "div"
-                && let Some(id) = element.get_attribute("data-code")
-                && let Some(block) = code_blocks.get(&id.to_string_lossy())
-            {
-                element.children = vec![Node::Element(block.clone())];
-            }
-            Rewrite::Keep
-        });
+        nodes = place_code_blocks(nodes, &code_blocks);
     }
 
     // Tira ou desabilita os `input`.
@@ -691,9 +742,40 @@ pub fn render_markdown(markdown: &IMarkdownString, options: &MarkdownRenderOptio
         }
     });
 
+    let out_element = match target {
+        Some(target) => {
+            target.borrow_mut().children = nodes;
+            target.clone()
+        }
+        None => Rc::new(RefCell::new(Element { tag_name: "div".to_owned(), attributes: Vec::new(), children: nodes })),
+    };
+    let is_disposed = Rc::new(Cell::new(false));
+
+    let pending = async_code_blocks.take();
+    if !pending.is_empty() {
+        let element = out_element.clone();
+        let disposed = is_disposed.clone();
+        let callback = options.async_render_callback.clone();
+        Promise::all(pending).then(move |tuples| {
+            if disposed.get() {
+                return;
+            }
+            let blocks: HashMap<String, Element> = tuples.into_iter().collect();
+            let mut root = element.borrow_mut();
+            let children = std::mem::take(&mut root.children);
+            root.children = place_code_blocks(children, &blocks);
+            drop(root);
+            if let Some(callback) = callback {
+                callback();
+            }
+        });
+    }
+
     Ok(RenderedMarkdown {
-        element: Element { tag_name: "div".to_owned(), attributes: Vec::new(), children: nodes },
+        element: out_element,
         markdown: markdown.clone(),
         action_handler: options.action_handler.clone(),
+        is_disposed,
+        disposables: DisposableStore::new(),
     })
 }
