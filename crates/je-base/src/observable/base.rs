@@ -181,7 +181,8 @@ pub fn observable_id(observable: &ObservableRef) -> usize {
     Rc::as_ptr(observable).cast::<()>() as usize
 }
 
-/// `change === undefined`.
+/// `change === undefined`. Um observável cujo tipo de mudança é `Rc<dyn Any>` (o `TChange | undefined` do original, com
+/// tipos de evento diferentes) representa a mudança indefinida como um `Rc<dyn Any>` que guarda `()`.
 pub fn is_undefined_change(change: &dyn Any) -> bool {
-    change.is::<()>()
+    change.is::<()>() || change.downcast_ref::<Rc<dyn Any>>().is_some_and(|inner| (**inner).is::<()>())
 }

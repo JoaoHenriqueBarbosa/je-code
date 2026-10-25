@@ -13,10 +13,10 @@
 //!   `_versionId`, `_selections`, `_beginUpdate`, `_endUpdate`, `_forceUpdate`) vive num `Core` compartilhado: os ouvintes
 //!   dos eventos do editor e os `getTransaction` dos observáveis de evento o capturam, em vez de capturar `this`. O
 //!   `try { _beginUpdate() ... } finally { _endUpdate() }` é o guarda `UpdateScope`.
-//! - O tipo da mudança (`TChange`) de `versionId` e `selections` é `()`: a mudança "indefinida" do original (o
-//!   `_forceUpdate` e o construtor passam `undefined`) é a única que o sistema de observáveis do porte representa
-//!   junto da checagem de igualdade que ela dispara. O evento de conteúdo e o de seleção, que o original anexa à
-//!   mudança, não chegam ao `IChangeContext`.
+//! - O tipo da mudança (`TChange`) de `versionId` e `selections` é [`EditorChange`] (`Rc<dyn Any>`): o evento de conteúdo
+//!   (`ModelContentChangedEvent`) ou o de seleção (`ICursorSelectionChangedEvent`) chega ao `IChangeContext` como o
+//!   original o anexa, e a mudança "indefinida" (o `_forceUpdate` e o construtor passam `undefined`) é um `Rc<dyn Any>`
+//!   que guarda `()`, que o `is_undefined_change` reconhece.
 //! - `Selection[] | null` e `readonly Position[] | null` são `Option<Rc<Vec<..>>>` (a igualdade dos arrays do original é a
 //!   comparação elemento a elemento, em `equalsFn`); um array novo a cada cálculo, onde o original devolve um array
 //!   novo (`observeLineHeightsForLineRange`), é `Rc<Vec<f64>>`, que a igualdade estrita compara por identidade como o `===`.
@@ -40,6 +40,7 @@
 //! - Os widgets de conteúdo e de overlay registrados pelo editor são o registro de `code_editor_widget`: sem `View`
 //!   real, `afterRender` só roda quando quem desenha chama; o `observePosition` fica, até lá, com o ponto inicial `(0, 0)`.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -47,7 +48,7 @@ use std::rc::{Rc, Weak};
 use je_base::JsString;
 use je_base::event::any;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
-use je_base::observable::base::{AnyObservable, IObservable, IReader, ISettableObservable, ITransaction, Observable};
+use je_base::observable::base::{AnyObservable, IObservable, IReader, ISettableObservable, ITransaction, Observable, Settable};
 use je_base::observable::change_tracker::IChangeTracker;
 use je_base::observable::debug_name::{DebugNameOptions, DebugNameSource, DebugOwner};
 use je_base::observable::deps::{EqualityComparer, StrictEquals};
@@ -127,9 +128,19 @@ struct Core {
     /// `_model`.
     model: ISettableObservable<Option<Rc<TextModel>>>,
     /// `_versionId`.
-    version_id: ISettableObservable<Option<i64>>,
+    version_id: ISettableObservable<Option<i64>, EditorChange>,
     /// `_selections`.
-    selections: ISettableObservable<Option<Rc<Vec<Selection>>>>,
+    selections: ISettableObservable<Option<Rc<Vec<Selection>>>, EditorChange>,
+}
+
+/// `TChange | undefined` de `_versionId` (`IModelContentChangedEvent`) e `_selections` (`ICursorSelectionChangedEvent`):
+/// o evento dentro de um `Rc<dyn Any>`, e a mudança indefinida como um `Rc<dyn Any>` que guarda `()` (ver
+/// `is_undefined_change`).
+pub type EditorChange = Rc<dyn Any>;
+
+/// A mudança `undefined`.
+fn undefined_change() -> EditorChange {
+    Rc::new(())
 }
 
 impl Core {
@@ -178,8 +189,8 @@ impl Core {
         let selections = self.editor.get_selections().map(Rc::new);
         self.with_transaction(|tx| {
             self.model.set(model, tx);
-            self.version_id.set(version_id, tx);
-            self.selections.set(selections, tx);
+            self.version_id.set_with_change(version_id, tx, undefined_change());
+            self.selections.set_with_change(selections, tx, undefined_change());
         });
     }
 
@@ -466,11 +477,11 @@ impl ObservableCodeEditor {
 
         let model_value = observable_value_owned::<Option<Rc<TextModel>>, ()>(owner.clone(), editor.get_model());
         let model_settable: ISettableObservable<Option<Rc<TextModel>>> = model_value;
-        let version_id_value = observable_value_opts::<Option<i64>, ()>(
+        let version_id_value = observable_value_opts::<Option<i64>, EditorChange>(
             ObservableValueOptions { debug: named(&owner, "versionId"), equals_fn: None, lazy: true },
             editor.get_model().map(|model| model.get_version_id()),
         );
-        let selections_value = observable_value_opts::<Option<Rc<Vec<Selection>>>, ()>(
+        let selections_value = observable_value_opts::<Option<Rc<Vec<Selection>>>, EditorChange>(
             ObservableValueOptions {
                 debug: named(&owner, "selections"),
                 equals_fn: Some(optional_array_equals(|a: &Selection, b: &Selection| a == b)),
@@ -651,20 +662,20 @@ impl ObservableCodeEditor {
 
         base.register(editor.on_did_change_model_content().listen({
             let core = Rc::clone(&core);
-            move |_| {
+            move |e| {
                 let _scope = core.scope();
                 let version_id = core.editor.get_model().map(|model| model.get_version_id());
-                core.with_transaction(|tx| core.version_id.set(version_id, tx));
+                core.with_transaction(|tx| core.version_id.set_with_change(version_id, tx, Rc::new(e.clone()) as EditorChange));
                 core.force_update();
             }
         }));
 
         base.register(editor.on_did_change_cursor_selection().listen({
             let core = Rc::clone(&core);
-            move |_| {
+            move |e| {
                 let _scope = core.scope();
                 let selections = core.editor.get_selections().map(Rc::new);
-                core.with_transaction(|tx| core.selections.set(selections, tx));
+                core.with_transaction(|tx| core.selections.set_with_change(selections, tx, Rc::new(e.clone()) as EditorChange));
                 core.force_update();
             }
         }));
