@@ -1054,6 +1054,44 @@ impl Fixture {
 
         (tab_left + fill.left * zoom, tab_left + fill.right * zoom)
     }
+
+    /// `action.getBoundingClientRect()` do `.action-label` da aba, em coordenadas da tela: `[x, y, width, height]`, com a
+    /// rolagem, o zoom e a direção do texto. Com o `.tab-actions` em `display: none` a caixa é vazia (`[0; 4]`), como no navegador.
+    /// A caixa vem da árvore nativa de widgets da aba (`tab_action_geometry`), não de um elemento.
+    fn action_bounds(&self, tab_index: usize) -> [f64; 4] {
+        let geometry = self.geometry();
+        let context = self.box_context(tab_index);
+        let classes = TabCssClasses::of(&self.state.tabs[tab_index].state, &self.state.container);
+        let Some(action) = tab_action_geometry(&classes, &context) else {
+            return [0.0; 4];
+        };
+        let zoom = self.layout.zoom.get();
+        let label = if self.layout.rtl.get() { action.label.mirrored(context.tab_width) } else { action.label };
+        let (tab_left, _) = self.layout.tab_rect(&geometry, tab_index, self.state.container.scroll_left);
+
+        [tab_left + label.left * zoom, geometry.tops[tab_index] + label.top * zoom, label.width() * zoom, label.height() * zoom]
+    }
+
+    /// `{ tab: tab.getBoundingClientRect(), action: ... .action-label.getBoundingClientRect() }` da aba:
+    /// `[left, right, top, action.x, action.y, action.width, action.height]`.
+    fn tab_and_action_bounds(&self, tab_index: usize) -> [f64; 7] {
+        let geometry = self.geometry();
+        let (left, right) = self.layout.tab_rect(&geometry, tab_index, self.state.container.scroll_left);
+        let [x, y, width, height] = self.action_bounds(tab_index);
+
+        [left, right, geometry.tops[tab_index], x, y, width, height]
+    }
+
+    /// `control.updateEditorSelections()`.
+    fn update_editor_selections(&mut self) {
+        let computed_height = self.computed_height();
+        self.state.update_editor_selections(computed_height);
+    }
+
+    /// `model.setSelection(editor, selection)`.
+    fn set_selection(&mut self, editor: &EditorInputRef, selection: &[EditorInputRef]) {
+        self.model.set_selection(editor, selection);
+    }
 }
 
 fn names(names: &[&str]) -> Vec<String> {
@@ -3811,6 +3849,335 @@ fn connected_tab_positions_and_spacing_stay_fixed_when_changing_selection() {
     }
 
     assert_eq!(mismatches, Vec::<String>::new());
+}
+
+// Os casos seguintes medem a caixa do `.action-label` e a do `.tab-fill`: o fixture as lê da árvore nativa de widgets da aba
+// (`tab_action_geometry` e `tab_fill_rect` sobre o `TabBoxContext` que o `Layout` monta), como os anteriores medem as abas. A
+// raiz do original ganha `vs`, `vs-dark`, `hc-black` e `hc-light` e `modern-ui-compact`; essas classes só trocam cor, borda e
+// raio (pintura da renderização nativa) e o `Layout` não as lê, então cada volta de tema mede o mesmo e uma só cobre todas.
+
+/// `[resting, focused]` do `.action-label` de cada aba: `resting` antes do `action.focus()` e `focused` com o foco nele.
+fn measure_action_bounds(fx: &mut Fixture) -> Vec<[[f64; 4]; 2]> {
+    (0..fx.state.tabs.len())
+        .map(|index| {
+            let resting = fx.action_bounds(index);
+            fx.focus_action(index);
+            let focused = fx.action_bounds(index);
+            [resting, focused]
+        })
+        .collect()
+}
+
+#[test]
+fn connected_close_action_bounds_stay_fixed_across_selection_and_focus_changes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    for index in 2..6 {
+        fx.open_pinned_file(&format!("file{index}.txt"), false);
+    }
+    fx.open_editors();
+    let mut mismatches: Vec<String> = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        for tab_action_location in [TabActionLocation::Right, TabActionLocation::Left] {
+            for wrap_tabs in [false, true] {
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.tab_action_location = tab_action_location;
+                    options.wrap_tabs = wrap_tabs;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                let width = if wrap_tabs { 245.0 } else { 1000.0 };
+                fx.layout(width);
+                let baseline: Vec<[[f64; 4]; 2]> = measure_action_bounds(&mut fx).into_iter().map(|[resting, _]| [resting, resting]).collect();
+                for active_index in 0..fx.state.tabs.len() {
+                    fx.activate(active_index);
+                    fx.layout(width);
+                    let actual = measure_action_bounds(&mut fx);
+                    if actual != baseline {
+                        mismatches.push(format!(
+                            "{tab_height:?} {tab_action_location:?} wrap={wrap_tabs} active={active_index} baseline={baseline:?} actual={actual:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!((fx.state.tabs.len(), mismatches), (fx.model.count(), Vec::<String>::new()));
+}
+
+#[test]
+fn connected_fills_share_pill_gutters_and_round_corners_away_from_the_frame() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    for index in 2..6 {
+        fx.open_pinned_file(&format!("file{index}.txt"), false);
+    }
+    fx.open_editors();
+
+    // `[compact, wrapTabs, activeIndex, index, insets]`. Os `corners` (`borderTopLeftRadius` e os demais) e o `leftBorder`
+    // são pintura da renderização nativa; ficam as `insets`: `[surface.left - bounds.left, bounds.right - surface.right,
+    // surface.top - bounds.top]` do `.tab-fill`.
+    type Inset = (bool, usize, usize, [f64; 3]);
+    let mut actual: Vec<Inset> = Vec::new();
+    let mut expected: Vec<Inset> = Vec::new();
+    for wrap_tabs in [false, true] {
+        fx.update_options(|options| {
+            options.wrap_tabs = wrap_tabs;
+            options.tab_sizing = TabSizing::Fixed;
+            options.tab_sizing_fixed_min_width = 120.0;
+            options.tab_sizing_fixed_max_width = 120.0;
+            options.editor_actions_location = EditorActionsLocation::Hidden;
+        });
+        for active_index in [0usize, 1, 4, 5] {
+            fx.activate(active_index);
+            fx.layout(if wrap_tabs { 245.0 } else { 1000.0 });
+            let geometry = fx.geometry();
+            for index in 0..fx.state.tabs.len() {
+                let fill = tab_fill_rect(&fx.box_context(index));
+                let row_start = index == 0 || geometry.tops[index - 1] != geometry.tops[index];
+                let upper = fx.state.tabs[index].state.connected_tab_upper_row;
+                let is_active = index == active_index;
+                actual.push((wrap_tabs, active_index, index, [fill.left, geometry.widths[index] - fill.right, fill.top]));
+                let insets = if is_active && !upper {
+                    [if wrap_tabs && row_start { -2.0 } else { 0.0 }, 0.0, if wrap_tabs { 2.0 } else { -1.0 }]
+                } else {
+                    [2.0, 2.0, if wrap_tabs { 2.0 } else { 3.5 }]
+                };
+                expected.push((wrap_tabs, active_index, index, insets));
+            }
+        }
+    }
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn fit_sized_connected_row_markers_stay_consistent_at_wrapping_boundaries() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fit;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    for index in 2..4 {
+        fx.open_pinned_file(&format!("file{index}.txt"), false);
+    }
+    fx.open_editors();
+    fx.layout(300.0);
+    let mut mismatches: Vec<String> = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        // `container.classList.toggle('compact-height', ...)` é a classe que o `Layout` já lê de `tab_height`.
+        fx.update_options(|options| options.tab_height = tab_height);
+        fx.layout(300.0);
+        let widths = fx.geometry().widths;
+        let boundary = widths[0] + widths[1];
+        let ascending: Vec<f64> = (0..21).map(|index| boundary - 10.0 + index as f64).collect();
+        let sweep: Vec<f64> = ascending.iter().chain(ascending.iter().rev()).copied().collect();
+        for width in sweep {
+            for active_index in [0usize, 1, 3] {
+                fx.activate(active_index);
+                fx.layout(width);
+                let wrapping = fx.state.container.wrapping;
+                let tops = fx.geometry().tops;
+                let count = fx.state.tabs.len();
+                for index in 0..count {
+                    let expected = (tops[index] == tops[0], tops[index] != tops[count - 1], wrapping && (index == count - 1 || tops[index] != tops[index + 1]));
+                    let state = &fx.state.tabs[index].state;
+                    let actual = (state.connected_tab_top_row, state.connected_tab_upper_row, state.last_in_row);
+                    if actual != expected {
+                        mismatches.push(format!("{tab_height:?} width={width} active={active_index} index={index} expected={expected:?} actual={actual:?}"));
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(mismatches, Vec::<String>::new());
+}
+
+#[test]
+fn selected_wrapped_tabs_and_focused_actions_use_the_document_surface_on_every_row() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    // `[activeIndex, actionFocused, upperRow]`. As cores computadas do `.tab-fill` e do `.tab-actions`, o `:focus` do CSS e o
+    // contorno `1px solid` dos temas `hc-*` são pintura da renderização nativa; o controle decide qual aba é a ativa, se ela
+    // está na linha de cima (`connected-tab-upper-row`) e se a ação existe para receber o foco.
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for active_index in [0usize, 1] {
+        fx.activate(active_index);
+        fx.layout(150.0);
+        let index = fx.active_index();
+        // `tab.querySelector('.tab-actions .action-label')` precisa existir: `action_geometry` falha sem ele.
+        let has_action = tab_action_geometry(&TabCssClasses::of(&fx.state.tabs[index].state, &fx.state.container), &fx.box_context(index)).is_some();
+        fx.focus_action(index);
+        measurements.push((active_index, index, has_action, fx.state.tabs[index].state.connected_tab_upper_row));
+        expected.push((active_index, active_index, true, active_index == 0));
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn hc_connected_multi_selection_keeps_the_selected_state_on_the_active_tab() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.classList.add('hc-black')` e as cores `contrastActiveBorder` e `focusBorder` só trocam o traço (pintura): o `outline`
+    // do `.tab-fill`, a cor do contorno da tampa, as quatro bordas do `.tab-border-top-container` e o `blur()` não são estado.
+    fx.open_editors();
+    let active = fx.model.active_editor().expect("aba ativa");
+    let second = fx.model.get_editor_by_index(1).expect("aba 1");
+    fx.set_selection(&active, &[second]);
+    fx.update_editor_selections();
+    fx.layout(320.0);
+    let state = &fx.state.tabs[fx.active_index()].state;
+
+    assert_eq!((state.multi_selected, state.aria_selected), (true, true));
+}
+
+#[test]
+fn regular_theme_connected_active_multi_selection_leaves_the_document_join_open() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-tab-activeBorderTop', ...)` e o `TestColorTheme` só definem a cor da tampa e do ombro
+    // (`capColor`, `capBottom`, `fillBottom`, `shoulderColor`, pintura da renderização nativa). Fica o que o controle decide:
+    // a aba ativa é multisselecionada e não fica na linha de cima, e por isso se junta ao documento (`attachedSelection`).
+    fx.activate(1);
+    let active = fx.model.get_editor_by_index(1).expect("aba 1");
+    let first = fx.model.get_editor_by_index(0).expect("aba 0");
+    let mut results = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        for wrap_tabs in [false, true] {
+            fx.update_options(|options| {
+                options.tab_height = tab_height;
+                options.wrap_tabs = wrap_tabs;
+                options.editor_actions_location = EditorActionsLocation::Hidden;
+                options.tab_sizing = TabSizing::Fixed;
+                options.tab_sizing_fixed_min_width = 120.0;
+                options.tab_sizing_fixed_max_width = 120.0;
+            });
+            fx.set_selection(&active, &[first.clone()]);
+            fx.update_editor_selections();
+            fx.layout(if wrap_tabs { 150.0 } else { 600.0 });
+            let state = &fx.state.tabs[fx.active_index()].state;
+            results.push((tab_height == TabHeight::Compact, wrap_tabs, state.multi_selected && !state.connected_tab_upper_row));
+        }
+    }
+    let expected: Vec<(bool, bool, bool)> = results.iter().map(|&(compact, wrap_tabs, _)| (compact, wrap_tabs, true)).collect();
+
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn hc_connected_selection_keeps_its_outline_independent_of_modified_highlighting() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `--vscode-contrastBorder`, `--vscode-focusBorder`, `--vscode-contrastActiveBorder` e `--vscode-tab-selectedBorderTop` do
+    // original viram as cores do tema. O `selectedStroke` (`rgb(255, 170, 0)`), a espessura do realce (o gradiente de
+    // `size20`), o `clippedToFill` e as quatro bordas computadas são pintura da renderização nativa; ficam a cor do realce de
+    // topo (`accent.color`, presente só nas abas modificadas com o destaque ligado), a estabilidade da geometria da aba e
+    // da ação e o `aria-selected`.
+    let mut editors = fx.model.get_editors(EditorsOrder::Sequential, None);
+    for name in ["modifiedOnly", "modifiedSelected"] {
+        let concrete = fx.suite.disposables.add_rc(NamedInput::new(name, &format!("/path/{name}.ts"), None));
+        concrete.set_dirty();
+        let editor: EditorInputRef = concrete;
+        open!(fx.model, editor, index: fx.model.count() as i64, pinned: true, active: false);
+        editors.push(editor);
+    }
+    fx.open_editors();
+    fx.state.set_colors(TabColors {
+        tab_active_modified_border: Some("#ffffff".to_string()),
+        tab_inactive_modified_border: Some("#ffffff".to_string()),
+        tab_selected_border_top: Some("#ffaa00".to_string()),
+        ..TabColors::default()
+    });
+
+    type Context = (bool, bool, bool, usize, bool, usize);
+    type Measure = (Context, Option<String>, bool, bool);
+    let mut measurements: Vec<Measure> = Vec::new();
+    let mut expected: Vec<Measure> = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        for wrap_tabs in [false, true] {
+            for highlight_modified_tabs in [false, true] {
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.wrap_tabs = wrap_tabs;
+                    options.highlight_modified_tabs = highlight_modified_tabs;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                });
+                let width = if wrap_tabs { 150.0 } else { 600.0 };
+                for active_index in [0usize, 3] {
+                    fx.activate(active_index);
+                    fx.set_selection(&editors[active_index], &[]);
+                    fx.update_editor_selections();
+                    fx.layout(width);
+                    let geometry: Vec<[f64; 7]> = (0..fx.state.tabs.len()).map(|index| fx.tab_and_action_bounds(index)).collect();
+                    for multi_selected in [false, true, false] {
+                        let selection: Vec<EditorInputRef> = if multi_selected {
+                            editors.iter().enumerate().filter(|&(index, _)| index != active_index && index != 2).map(|(_, editor)| editor.clone()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        fx.set_selection(&editors[active_index], &selection);
+                        fx.update_editor_selections();
+                        fx.layout(width);
+                        for index in 0..fx.state.tabs.len() {
+                            let state = &fx.state.tabs[index].state;
+                            let selected = multi_selected && index != 2;
+                            let modified = index >= 2 && highlight_modified_tabs;
+                            let context = (tab_height == TabHeight::Compact, wrap_tabs, highlight_modified_tabs, active_index, multi_selected, index);
+                            measurements.push((
+                                context,
+                                if state.dirty_border_top { state.dirty_border_top_color.clone() } else { None },
+                                geometry[index] == fx.tab_and_action_bounds(index),
+                                state.aria_selected,
+                            ));
+                            expected.push((context, modified.then(|| "#ffffff".to_string()), true, index == active_index || selected));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn freestanding_connected_neighbors_keep_one_stroke_each_and_equal_gutters_without_moving_hit_targets() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.classList.add('hc-light')` e o `borderLeftWidth` do `.tab-fill` vizinho da ativa (`1px`, o traço de
+    // `strokeThickness`) são pintura da renderização nativa; ficam a folga entre os preenchimentos e o contato dos alvos.
+    fx.open_pinned_file("third.ts", true);
+    fx.open_editors();
+    fx.layout(600.0);
+    let (_, first_right) = fx.fill_client_span(0);
+    let (second_left, _) = fx.fill_client_span(1);
+    let inactive_gap = second_left - first_right;
+    fx.activate(0);
+    fx.layout(600.0);
+    let geometry = fx.geometry();
+    let scroll = fx.state.container.scroll_left;
+    let hit_targets_contiguous = (1..fx.state.tabs.len()).all(|index| fx.layout.tab_rect(&geometry, index, scroll).0 == fx.layout.tab_rect(&geometry, index - 1, scroll).1);
+
+    assert_eq!((inactive_gap, hit_targets_contiguous), (4.0, true));
 }
 
 //#endregion
