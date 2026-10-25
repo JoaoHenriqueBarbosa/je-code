@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use je_ui::{Modifiers, NodeId, PointerButton};
+use je_ui::{Modifiers, NodeId, PointerButton, Role};
 
 /// Os renderers de uma lista por `templateId`, compartilhados com o cache de linhas.
 pub type RendererMap<T> = Rc<RefCell<HashMap<String, Rc<dyn IListRenderer<T>>>>>;
@@ -103,6 +103,23 @@ pub enum GroupId {
 pub trait IIdentityProvider<T> {
     fn get_id(&self, element: &T) -> String;
     fn get_group_id(&self, _element: &T) -> Option<GroupId> {
+        None
+    }
+}
+
+/// `IListAccessibilityProvider<T>`: o rótulo e o papel ARIA da lista e de cada linha. O `getAriaLevel`, o
+/// `isChecked` e o `onDidChangeActiveDescendant` não existem: o `je-ui` guarda só `role` e `label` por nó.
+pub trait IListAccessibilityProvider<T> {
+    /// `getAriaLabel(element)`: `null` ou vazio tira o rótulo da linha.
+    fn get_aria_label(&self, element: &T) -> Option<String>;
+    /// `getWidgetAriaLabel()`.
+    fn get_widget_aria_label(&self) -> String;
+    /// `getWidgetRole?()`: sem ele, `list`.
+    fn get_widget_role(&self) -> Option<Role> {
+        None
+    }
+    /// `getRole?(element)`: sem ele, `listitem`.
+    fn get_role(&self, _element: &T) -> Option<Role> {
         None
     }
 }

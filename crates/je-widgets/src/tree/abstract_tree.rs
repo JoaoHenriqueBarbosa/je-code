@@ -13,7 +13,8 @@
 //! - Os eventos do DOM são os do `je-ui`. `isButton`, `isEditableElement`, `isMonacoEditor`,
 //!   `isMonacoCustomToggle` e `isActionItem` (classes de widgets que o `je-ui` ainda não tem) não são
 //!   conferidos. A arrastar e soltar (`TreeNodeListDragAndDrop`), o tipo-para-navegar (a `List` do
-//!   `je-widgets` não o tem), o `aria-*`, o `createStyleSheet` e o `style()` (CSS gerado) ficam de fora.
+//!   `je-widgets` não o tem), o `aria-level`/`aria-expanded`, o `createStyleSheet` e o `style()` (CSS gerado) ficam de fora. O
+//!   `accessibilityProvider` das opções vira o papel (`tree`/`treeitem`) e o rótulo que a [`List`] aplica à árvore e aos nós.
 //! - O `Relay` de eventos do modelo é um `Emitter` que repassa (o modelo não é trocado depois do
 //!   construtor).
 
@@ -29,10 +30,10 @@ use je_base::lifecycle::{ById, DisposableRef, DisposableStore, IDisposable};
 use je_base::map::SetMap;
 use je_base::promise::MaybePromise;
 use je_base::symbols::Delay;
-use je_ui::{EventKind, KeyData, NodeId, Ui};
+use je_ui::{EventKind, KeyData, NodeId, Role, Ui};
 
 use crate::common::{store_emitter, throw};
-use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListRenderer, IListVirtualDelegate, ListMouseEvent};
+use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListRenderer, IListVirtualDelegate, ListMouseEvent};
 use crate::list::list_view::{ListViewOptions, ListViewOptionsUpdate};
 use crate::list::list_widget::{List, ListOptions, ListOverrides};
 use crate::tree::find::{DefaultFindVisibility, FindHandle};
@@ -267,6 +268,8 @@ pub struct AbstractTreeOptions<M: ITreeModel> {
     pub disable_expand_on_spacebar: bool,
     /// `findWidgetEnabled` (padrão: ligado, se houver `keyboard_navigation_label_provider`).
     pub find_widget_enabled: Option<bool>,
+    /// `accessibilityProvider`: o papel (`tree` e `treeitem`) e o rótulo da árvore e dos nós.
+    pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<M::Element>>>,
 }
 
 impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
@@ -285,6 +288,7 @@ impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
             sticky_scroll_node_source_range_provider: None,
             disable_expand_on_spacebar: false,
             find_widget_enabled: None,
+            accessibility_provider: None,
         }
     }
 }
@@ -305,7 +309,32 @@ impl<M: ITreeModel> Clone for AbstractTreeOptions<M> {
             sticky_scroll_node_source_range_provider: self.sticky_scroll_node_source_range_provider.clone(),
             disable_expand_on_spacebar: self.disable_expand_on_spacebar,
             find_widget_enabled: self.find_widget_enabled,
+            accessibility_provider: self.accessibility_provider.clone(),
         }
+    }
+}
+
+/// O `TreeNodeListAccessibilityProvider` do `asListOptions`: o provedor do usuário sobre o elemento visto como provedor da lista
+/// sobre o nó, com `tree` e `treeitem` no lugar de `list` e `listitem`. O `aria-level` e o `aria-expanded` não existem no `je-ui`.
+struct NodeAccessibilityProvider<M: ITreeModel> {
+    provider: Rc<dyn IListAccessibilityProvider<M::Element>>,
+}
+
+impl<M: ITreeModel> IListAccessibilityProvider<Rc<M::Node>> for NodeAccessibilityProvider<M> {
+    fn get_aria_label(&self, node: &Rc<M::Node>) -> Option<String> {
+        self.provider.get_aria_label(&node.element())
+    }
+
+    fn get_widget_aria_label(&self) -> String {
+        self.provider.get_widget_aria_label()
+    }
+
+    fn get_widget_role(&self) -> Option<Role> {
+        Some(self.provider.get_widget_role().unwrap_or(Role::Tree))
+    }
+
+    fn get_role(&self, node: &Rc<M::Node>) -> Option<Role> {
+        Some(self.provider.get_role(&node.element()).unwrap_or(Role::TreeItem))
     }
 }
 
@@ -635,6 +664,10 @@ where
                 multiple_selection_support: options.update.multiple_selection_support,
                 keyboard_support: Some(false),
                 overrides: Some(Rc::new(TreeListOverrides::<M> { tree: weak.clone() })),
+                accessibility_provider: options
+                    .accessibility_provider
+                    .clone()
+                    .map(|provider| Rc::new(NodeAccessibilityProvider::<M> { provider }) as Rc<dyn IListAccessibilityProvider<Rc<M::Node>>>),
             };
 
             let list_renderers: Vec<Rc<dyn IListRenderer<Rc<M::Node>>>> = tree_renderers.iter().map(|r| r.clone() as Rc<dyn IListRenderer<Rc<M::Node>>>).collect();

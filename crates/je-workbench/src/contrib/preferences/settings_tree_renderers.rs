@@ -190,7 +190,7 @@ use je_widgets::text::{UI_FONT_SIZE, WORKBENCH_LINE_HEIGHT, ellipsize, measure_t
 use je_widgets::toggle::Checkbox;
 use je_widgets::toolbar::{IToolBarOptions, ToolBar};
 use je_widgets::tree::index_tree_model::TreeNode;
-use je_widgets::tree::object_tree_model::ObjectTreeModel;
+use crate::contrib::preferences::settings_tree::NonCollapsibleObjectTreeModel;
 use je_widgets::tree::tree_types::{ITreeRenderer, TreeElementRenderDetails};
 use zyarr::RegExp;
 
@@ -449,8 +449,9 @@ impl Hash for SettingsTreeGroupChild {
     }
 }
 
-/// O modelo da árvore de configurações: um `ObjectTreeModel` de [`SettingsTreeGroupChild`].
-pub type SettingsObjectTreeModel = ObjectTreeModel<SettingsTreeGroupChild>;
+/// O modelo da árvore de configurações: o [`NonCollapsibleObjectTreeModel`] de [`SettingsTreeGroupChild`], que o `createModel`
+/// do `SettingsTree` devolve.
+pub type SettingsObjectTreeModel = NonCollapsibleObjectTreeModel<SettingsTreeGroupChild>;
 /// O nó desse modelo.
 pub type SettingsTreeNode = TreeNode<Option<SettingsTreeGroupChild>>;
 

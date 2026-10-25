@@ -15,7 +15,8 @@
 //!   mudança de `focused`/`selected`, de hover (`PointerEnter`/`PointerLeave` na linha) e de foco da lista.
 //!   TypeNavigationController (digitar para achar) e a arrastar e soltar ficam de fora
 //!   (`// TODO(integração)` quando o `je-ui` tiver entrada de texto).
-//! - `aria-*` não existem no `je-ui`; o `getActiveDescendantId` fica por [`List::get_element_id`].
+//! - `aria-*` não existem no `je-ui` (só `role` e `label`); o `getActiveDescendantId` fica por [`List::get_element_id`]. O
+//!   `accessibilityProvider` ([`IListAccessibilityProvider`]) dá o papel e o rótulo da lista e de cada linha.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -30,7 +31,7 @@ use je_ui::{Border, Content, EventKind, KeyData, NodeId, PointerButton, Role, Ui
 
 use crate::common::{registered_emitter, throw};
 use crate::sash::is_macintosh;
-use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IListRenderer, IListVirtualDelegate, ListEvent, ListMouseEvent, list_error};
+use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IListAccessibilityProvider, IListRenderer, IListVirtualDelegate, ListEvent, ListMouseEvent, list_error};
 use crate::list::list_styles::{IListStyles, RowState};
 use crate::list::list_view::{ListView, ListViewOptions};
 
@@ -249,11 +250,13 @@ pub struct ListOptions<T> {
     pub keyboard_support: Option<bool>,
     /// A subclasse da lista, quando há (ver [`ListOverrides`]).
     pub overrides: Option<Rc<dyn ListOverrides<T>>>,
+    /// `accessibilityProvider`: o papel e o rótulo da lista e das linhas.
+    pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<T>>>,
 }
 
 impl<T> Default for ListOptions<T> {
     fn default() -> Self {
-        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None, overrides: None }
+        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None, overrides: None, accessibility_provider: None }
     }
 }
 
@@ -310,6 +313,7 @@ impl<T: Clone + 'static> IListRenderer<T> for TraitsRenderer<T> {
             && let Some(node) = list.view.dom_element(index)
         {
             list.apply_traits(node, index);
+            list.apply_accessibility(node, element);
         }
         self.inner.render_element(element, index, template_data, details);
         if let Some(list) = self.list.borrow().upgrade()
@@ -359,6 +363,13 @@ impl<T: Clone + 'static> List<T> {
         });
         for renderer in &wrapped {
             *renderer.list.borrow_mut() = Rc::downgrade(&this);
+        }
+        if let Some(provider) = &options.accessibility_provider {
+            // `setAttribute('role', ...)` e `setAttribute('aria-label', ...)` do `domNode` da lista.
+            let (role, label) = (provider.get_widget_role().unwrap_or(Role::List), provider.get_widget_aria_label());
+            let mut tree = ui.tree_mut();
+            tree.set_role(this.view.dom_node, role);
+            tree.set_label(this.view.dom_node, label);
         }
         for t in [&this.focus, &this.selection, &this.anchor] {
             base.register(t.clone());
@@ -413,6 +424,20 @@ impl<T: Clone + 'static> List<T> {
             }));
         }
         this
+    }
+
+    /// O `role` e o `aria-label` da linha que o `ListView.insertItemInDOM` escreve com o `accessibilityProvider`, antes do
+    /// `renderElement`: sem papel do provedor a linha é `listitem`, e um rótulo `null` ou vazio tira o rótulo.
+    fn apply_accessibility(&self, row: NodeId, element: &T) {
+        let Some(provider) = &self.options.accessibility_provider else { return };
+        let role = provider.get_role(element).unwrap_or(Role::ListItem);
+        let label = provider.get_aria_label(element).filter(|label| !label.is_empty());
+        let mut tree = self.ui.tree_mut();
+        tree.set_role(row, role);
+        match label {
+            Some(label) => tree.set_label(row, label),
+            None => tree.clear_label(row),
+        }
     }
 
     /// `style(styles)` do `DefaultStyleController`: guarda os estilos e repinta as linhas renderizadas.

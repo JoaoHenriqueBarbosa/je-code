@@ -21,13 +21,12 @@
 //! - **`SettingsTreeDelegate`** compõe o [`CachedListVirtualDelegate`] (que o original estende) e acrescenta o `hasDynamicHeight`.
 //!   O `throw new Error('unknown element type')` não existe: o [`SettingsTreeGroupChild`] só tem os três elementos.
 //! - **`NonCollapsibleObjectTreeModel`** é uma envoltória do `ObjectTreeModel` que implementa o `ITreeModel` repassando tudo e
-//!   respondendo `false` em `isCollapsible` e `setCollapsed`, e dá `Deref` ao modelo (o `setChildren`). A `WorkbenchObjectTree`
-//!   do porte cria o `ObjectTreeModel` por dentro (não há o `createModel` protegido que o `SettingsTree` sobrescreve), então o
-//!   [`SettingsTree`] usa o modelo comum; o editor monta os elementos expandidos e a folha de estilo do original esconde os
-//!   twisties, de modo que nenhum controle colapsa um grupo.
-//! - **`SettingsTreeAccessibilityProvider`**: as árvores do `je-widgets` não têm o campo `accessibilityProvider` (ver
-//!   `breadcrumbs_picker.rs`), então o provedor é uma estrutura com `get_aria_label` e `get_widget_aria_label`, que o
-//!   [`SettingsTree`] guarda e expõe. O `IUserDataProfilesService` do construtor não é passado, porque o original nunca o lê.
+//!   respondendo `false` em `isCollapsible` e `setCollapsed`, e dá o `ObjectTreeModel` por `Deref` e por `Borrow` (o
+//!   `setChildren`). O `createModel` protegido que o `SettingsTree` sobrescreve é o parâmetro `create_model` do
+//!   `WorkbenchObjectTree::with_model`: o modelo é o terceiro parâmetro de tipo da árvore ([`SettingsObjectTreeModel`]).
+//! - **`SettingsTreeAccessibilityProvider`** implementa o [`IListAccessibilityProvider`] sobre o elemento da árvore de objetos
+//!   (`T | null`, a raiz não tem rótulo) e vai nas opções da árvore (`accessibilityProvider`), de onde a lista aplica o
+//!   `aria-label` aos nós e o da árvore. O `IUserDataProfilesService` do construtor não é passado, porque o original nunca o lê.
 //! - **`SettingsTree`**: o `styleController` (`DefaultStyleController` sobre uma folha de estilo) é o estilo da lista resolvido do
 //!   tema, entregue em `overrideStyles` (o `this.style(getListStyles({...}))` do original). `horizontalScrolling`,
 //!   `scrollToActiveElement` e `transformOptimization` não existem nas opções do `je-widgets`. O `IContextKeyService`, o
@@ -53,9 +52,8 @@ use je_editor::language_service::ILanguageService;
 use je_theme::ColorTheme;
 use je_ui::{NodeId, Ui};
 use je_widgets::list::list_styles::IListStyles;
-use je_widgets::list::list_types::{CachedListVirtualDelegate, IIdentityProvider, IListVirtualDelegate};
+use je_widgets::list::list_types::{CachedListVirtualDelegate, IIdentityProvider, IListAccessibilityProvider, IListVirtualDelegate};
 use je_widgets::tree::abstract_tree::{AbstractTreeOptions, AbstractTreeOptionsUpdate};
-use je_widgets::tree::object_tree::ObjectTreeOptions;
 use je_widgets::tree::object_tree_model::{ObjectTreeModel, ObjectTreeModelOptions};
 use je_widgets::tree::tree_renderer::RenderIndentGuides;
 use je_widgets::tree::tree_types::{
@@ -582,6 +580,14 @@ impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> Deref for NonCollapsibl
     }
 }
 
+/// O `ObjectTreeModel` por baixo, que a [`ObjectTree`](je_widgets::tree::object_tree::ObjectTree) usa para o `setChildren` e o
+/// `resort`. (O caminho completo do `Borrow` evita que o `.borrow()` dos `RefCell` do módulo passe a resolver para ele.)
+impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> std::borrow::Borrow<ObjectTreeModel<T, F>> for NonCollapsibleObjectTreeModel<T, F> {
+    fn borrow(&self) -> &ObjectTreeModel<T, F> {
+        &self.inner
+    }
+}
+
 impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> ITreeModel for NonCollapsibleObjectTreeModel<T, F> {
     type Element = Option<T>;
     type FilterData = F;
@@ -673,7 +679,8 @@ impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> ITreeModel for NonColla
     }
 }
 
-/// `SettingsTreeAccessibilityProvider`.
+/// `SettingsTreeAccessibilityProvider`: o `accessibilityProvider` das opções do `SettingsTree`, sobre o elemento da árvore de
+/// objetos (`T | null`).
 pub struct SettingsTreeAccessibilityProvider {
     configuration_service: Rc<dyn IWorkbenchConfigurationService>,
     language_service: Rc<dyn ILanguageService>,
@@ -683,10 +690,12 @@ impl SettingsTreeAccessibilityProvider {
     pub fn new(configuration_service: Rc<dyn IWorkbenchConfigurationService>, language_service: Rc<dyn ILanguageService>) -> Self {
         Self { configuration_service, language_service }
     }
+}
 
-    /// `getAriaLabel(element)`.
-    pub fn get_aria_label(&self, element: &SettingsTreeGroupChild) -> String {
-        match element {
+impl IListAccessibilityProvider<Option<SettingsTreeGroupChild>> for SettingsTreeAccessibilityProvider {
+    /// `getAriaLabel(element)`: a raiz (`null`) não tem rótulo.
+    fn get_aria_label(&self, element: &Option<SettingsTreeGroupChild>) -> Option<String> {
+        Some(match element.as_ref()? {
             SettingsTreeGroupChild::Setting(element) => {
                 let mut aria_label_sections: Vec<String> = Vec::new();
                 aria_label_sections.push(format!("{} {}.", element.display_category(), element.display_label()));
@@ -708,11 +717,11 @@ impl SettingsTreeAccessibilityProvider {
             }
             SettingsTreeGroupChild::Group(element) => element.label(),
             SettingsTreeGroupChild::NewExtensions(element) => element.id(),
-        }
+        })
     }
 
     /// `getWidgetAriaLabel()`.
-    pub fn get_widget_aria_label(&self) -> String {
+    fn get_widget_aria_label(&self) -> String {
         localize("settings", "Settings", &[])
     }
 }
@@ -761,8 +770,7 @@ fn settings_tree_list_styles(theme: &ColorTheme) -> IListStyles {
 /// `SettingsTree`.
 pub struct SettingsTree {
     base: Rc<Disposable>,
-    tree: Rc<WorkbenchObjectTree<SettingsTreeGroupChild>>,
-    accessibility_provider: SettingsTreeAccessibilityProvider,
+    tree: Rc<WorkbenchObjectTree<SettingsTreeGroupChild, (), SettingsObjectTreeModel>>,
 }
 
 impl SettingsTree {
@@ -777,19 +785,23 @@ impl SettingsTree {
         let mut tree_options = AbstractTreeOptions::<SettingsObjectTreeModel>::default();
         tree_options.view.support_dynamic_heights = true;
         tree_options.identity_provider = Some(Rc::new(SettingsTreeIdentityProvider));
+        tree_options.accessibility_provider = Some(Rc::new(SettingsTreeAccessibilityProvider::new(services.configuration_service.clone(), services.language_service.clone())));
         tree_options.filter = Some(Rc::new(OptionElementFilter(SettingsTreeFilter::new(view_state, true, services.environment_service.clone()))));
         tree_options.update.smooth_scrolling = Some(services.configuration_service.get_value(Some(SMOOTH_SCROLLING_SETTING), None).is_truthy());
         tree_options.update.multiple_selection_support = Some(false);
         tree_options.find_widget_enabled = Some(false);
         tree_options.update.render_indent_guides = Some(RenderIndentGuides::None);
 
-        let tree = WorkbenchObjectTree::<SettingsTreeGroupChild>::new(
+        // O `createModel` sobrescrito: o `NonCollapsibleObjectTreeModel`.
+        let tree = WorkbenchObjectTree::<SettingsTreeGroupChild, (), SettingsObjectTreeModel>::with_model(
             "SettingsTree",
             ui,
             container,
             Rc::new(SettingsTreeDelegate::new()),
             renderers,
-            ObjectTreeOptions { tree: tree_options, sorter: None },
+            tree_options,
+            None,
+            NonCollapsibleObjectTreeModel::new,
             IWorkbenchTreeOptions { override_styles: Some(settings_tree_list_styles(theme)), ..IWorkbenchTreeOptions::default() },
             &services.tree,
         );
@@ -807,21 +819,12 @@ impl SettingsTree {
             }
         }));
 
-        Rc::new(Self {
-            base,
-            tree,
-            accessibility_provider: SettingsTreeAccessibilityProvider::new(services.configuration_service.clone(), services.language_service.clone()),
-        })
-    }
-
-    /// O `accessibilityProvider` da árvore (ver as divergências do módulo).
-    pub fn accessibility_provider(&self) -> &SettingsTreeAccessibilityProvider {
-        &self.accessibility_provider
+        Rc::new(Self { base, tree })
     }
 }
 
 impl Deref for SettingsTree {
-    type Target = WorkbenchObjectTree<SettingsTreeGroupChild>;
+    type Target = WorkbenchObjectTree<SettingsTreeGroupChild, (), SettingsObjectTreeModel>;
 
     fn deref(&self) -> &Self::Target {
         &self.tree

@@ -626,5 +626,7 @@ where
         }),
         disable_expand_on_spacebar: options.disable_expand_on_spacebar,
         find_widget_enabled: Some(true),
+        // As opções da árvore de dados assíncrona não têm `accessibilityProvider`.
+        accessibility_provider: None,
     }
 }
