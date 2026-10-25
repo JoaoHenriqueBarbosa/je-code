@@ -9,6 +9,7 @@ pub mod editor;
 pub mod editor_auto_save;
 pub mod editor_group_view;
 pub mod editor_pane;
+pub mod editor_type_picker;
 pub mod editor_panes;
 pub mod editor_part;
 pub mod editors_observer;

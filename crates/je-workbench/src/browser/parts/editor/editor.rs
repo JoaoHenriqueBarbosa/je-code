@@ -280,3 +280,38 @@ pub const CONNECTED_EDITOR_TABS_CLASS: &str = "modern-ui-connected-editor-tabs";
 
 /// `CONNECTED_EDITOR_TABS_SELECTOR`.
 pub const CONNECTED_EDITOR_TABS_SELECTOR: &str = ".modern-ui-connected-editor-tabs";
+
+/// `IEditorGroupsView`, no recorte que o controle das migalhas e o seletor de tipo de editor leem: as opções da parte e a
+/// ativação de um grupo. (O `EditorGroupsView` de `editor_group_view.rs` é o recorte do grupo concreto, sobre
+/// `Rc<EditorGroupView>`; este é o contrato que os dublês e os controles de interface implementam.)
+pub trait IEditorGroupsView {
+    /// `activateGroup(group)`.
+    fn activate_group(&self, group: &Rc<dyn IEditorGroupView>);
+
+    /// `partOptions`.
+    fn part_options(&self) -> crate::services::editor::editor_groups_service::EditorPartOptions;
+
+    /// `onDidChangeEditorPartOptions`.
+    fn on_did_change_editor_part_options(&self) -> je_base::event::Event<crate::services::editor::editor_groups_service::EditorPartOptionsChangeEvent>;
+}
+
+/// `IEditorGroupView`, no recorte que os controles de interface leem: o `IEditorGroup` mais a visão de grupos que o contém.
+pub trait IEditorGroupView: IEditorGroup {
+    /// `groupsView`.
+    fn groups_view(&self) -> Rc<dyn IEditorGroupsView>;
+}
+
+/// `fillActiveEditorSelection(group, expectedActiveEditor, options)`: se o editor esperado é o ativo do grupo, a seleção do
+/// painel ativo (`getSelection?.()`) restaura as opções; senão elas voltam como vieram.
+pub fn fill_active_editor_selection(group: &dyn IEditorGroup, expected_active_editor: &EditorInputRef, options: crate::common::editor::TextEditorOptions) -> crate::common::editor::TextEditorOptions {
+    if let Some(active) = group.active_editor()
+        && expected_active_editor.matches(&EditorInputOrUntyped::Typed(active))
+    {
+        return match group.active_editor_pane().and_then(|pane| pane.get_selection()) {
+            Some(selection) => selection.restore(&options),
+            None => options,
+        };
+    }
+
+    options
+}

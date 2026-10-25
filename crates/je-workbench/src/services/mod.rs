@@ -96,3 +96,5 @@ pub mod themes;
 
 // Diálogos do workbench (`dialogs/browser/simpleFileDialog.ts`).
 pub mod dialogs;
+
+pub mod contextview;
