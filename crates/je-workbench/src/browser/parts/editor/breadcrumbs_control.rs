@@ -65,7 +65,6 @@ use je_render::kurbo::Rect;
 use je_theme::to_rgba8;
 use je_ui::{Content, EventKind, NodeId, PointerData, Role, Ui};
 use je_widgets::breadcrumbs_widget::{BreadcrumbsItem, BreadcrumbsItemRef, BreadcrumbsWidget, IBreadcrumbsItemEvent, IBreadcrumbsWidgetStyles};
-use je_widgets::context_view_api::Anchor;
 use je_widgets::dom::{FocusTracker, create_el, window_size};
 use je_widgets::hover_api::{HoverPlacement, IHoverDelegate, IHoverDelegate2, IManagedHover, ManagedHoverContentOrFactory, get_default_hover_delegate};
 use je_widgets::icon_label::{IIconLabelCreationOptions, IIconLabelValueOptions, IconLabelText};
@@ -83,7 +82,12 @@ use crate::browser::labels::{
     FileDecorations, IFileLabelOptions, IResourceLabel, IResourceLabelOptions, IResourceLabelProps, ResourceLabelResource, ResourceLabels, ResourceLabelsServices, default_labels_container,
 };
 use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor, TextEditorOptions, UntypedEditorInput};
-use crate::services::contextview::context_view::{HideData, IContextMenuService, IContextViewDelegate, IContextViewService, hide_data_to};
+use je_platform::contextview::context_view::{
+    AnchorTarget, ContextMenuRequest, HideData, IContextMenuDelegate, IContextMenuService, IContextViewDelegate, IContextViewService, hide_data_to,
+};
+use je_platform::contextview::view_element::ViewElement;
+
+use crate::services::contextview::native_context_view_service::{native_node, node_element};
 use crate::services::editor::editor_groups_service::{I_EDITOR_GROUPS_SERVICE, PreferredGroup};
 use crate::services::editor::editor_resolver_service::{HIDDEN_EDITOR_TYPES_SETTING_ID, IEditorResolverService};
 use crate::services::editor::editor_service::{I_EDITOR_SERVICE, IEditorService};
@@ -995,7 +999,7 @@ impl BreadcrumbsControl {
             self.services.command_service.clone(),
             self.services.editor_service.clone(),
         );
-        self.services.context_menu_service.show_context_menu(crate::services::contextview::context_view::ContextMenuRequest::Delegate(Rc::new(EditorTypeMenuDelegate { anchor: editor_type.node, actions })));
+        self.services.context_menu_service.show_context_menu(ContextMenuRequest::Delegate(Rc::new(EditorTypeMenuDelegate { anchor: editor_type.node, actions })));
     }
 
     /// `_onFocusEvent(event)`.
@@ -1021,9 +1025,9 @@ struct EditorTypeMenuDelegate {
     actions: Vec<ActionRef>,
 }
 
-impl je_widgets::context_view_api::IContextMenuDelegate for EditorTypeMenuDelegate {
-    fn get_anchor(&self) -> Anchor {
-        Anchor::Node(self.anchor)
+impl IContextMenuDelegate for EditorTypeMenuDelegate {
+    fn get_anchor(&self) -> AnchorTarget {
+        AnchorTarget::Element(node_element(self.anchor))
     }
 
     fn get_actions(&self) -> Vec<ActionRef> {
@@ -1043,7 +1047,8 @@ struct PickerContextViewDelegate {
 }
 
 impl IContextViewDelegate for PickerContextViewDelegate {
-    fn render(&self, container: NodeId) -> Option<DisposableRef> {
+    fn render(&self, container: &Rc<ViewElement>) -> Option<DisposableRef> {
+        let container = native_node(container)?;
         let control = self.control.upgrade()?;
         let services = control.services.picker_services.clone();
         let picker = if self.is_file {
@@ -1084,10 +1089,10 @@ impl IContextViewDelegate for PickerContextViewDelegate {
         Some(listeners_ref)
     }
 
-    fn get_anchor(&self) -> Anchor {
+    fn get_anchor(&self) -> AnchorTarget {
         if self.picker_anchor.get().is_none() {
             let Some(control) = self.control.upgrade() else {
-                return Anchor::Rect(IAnchor { x: 0.0, y: 0.0, width: None, height: None });
+                return AnchorTarget::Anchor(IAnchor { x: 0.0, y: 0.0, width: None, height: None });
             };
             let (window_width, window_height) = window_size(&control.services.ui);
             let rect = self.event.node.map(|node| control.services.ui.tree().absolute_bounds(node)).unwrap_or(Rect::ZERO);
@@ -1099,7 +1104,7 @@ impl IContextViewDelegate for PickerContextViewDelegate {
             self.picker_anchor.set(Some((placement.x, placement.y)));
         }
         let (x, y) = self.picker_anchor.get().unwrap_or((0.0, 0.0));
-        Anchor::Rect(IAnchor { x, y, width: None, height: None })
+        AnchorTarget::Anchor(IAnchor { x, y, width: None, height: None })
     }
 
     fn on_hide(&self, data: Option<HideData>) {

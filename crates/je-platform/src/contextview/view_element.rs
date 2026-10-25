@@ -2,6 +2,7 @@
 //! (`classList`, `style`, `parentElement`, `closest`, `getBoundingClientRect`, `clientHeight`) e o evento de teclado que
 //! eles tratam (`KeyboardEvent` com `defaultPrevented` e `stopPropagation`).
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -24,11 +25,28 @@ pub struct ViewElement {
     client_height: Cell<f64>,
     measure: RefCell<Option<MeasureFn>>,
     opening_animation_finished: Cell<bool>,
+    native: Option<Rc<dyn Any>>,
 }
 
 impl ViewElement {
     pub fn new() -> Rc<Self> {
+        Self::build(None)
+    }
+
+    /// Um elemento que representa um nó da árvore de widgets nativa. O identificador é opaco para a plataforma: quem
+    /// preenche (o workbench, com o `NodeId` do `Ui`) o lê de volta com [`ViewElement::native_as`].
+    pub fn from_native(node: Rc<dyn Any>) -> Rc<Self> {
+        Self::build(Some(node))
+    }
+
+    /// O identificador nativo lido como `T`, ou `None` se o elemento não é nativo ou o tipo é outro.
+    pub fn native_as<T: Any + Clone>(&self) -> Option<T> {
+        self.native.as_ref().and_then(|node| node.downcast_ref::<T>()).cloned()
+    }
+
+    fn build(native: Option<Rc<dyn Any>>) -> Rc<Self> {
         Rc::new(Self {
+            native,
             parent: RefCell::new(None),
             classes: RefCell::new(Vec::new()),
             style: RefCell::new(BTreeMap::new()),

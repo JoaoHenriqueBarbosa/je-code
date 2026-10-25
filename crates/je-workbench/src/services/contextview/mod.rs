@@ -1,4 +1,4 @@
-//! Porte da parte de interface de `src/vs/platform/contextview/browser/contextView.ts` que o workbench consome sobre a
-//! árvore de widgets nativa: o `IContextViewService` e o `IContextMenuService`.
+//! A implementação nativa (sobre a árvore de widgets) do contrato único `IContextViewService` e `IContextMenuService` de
+//! `je_platform::contextview`.
 
-pub mod context_view;
+pub mod native_context_view_service;
