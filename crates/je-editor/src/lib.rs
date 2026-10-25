@@ -287,3 +287,5 @@ pub mod diff_editor_utils;
 pub mod diff_editor_view_zones;
 pub mod diff_provider_factory_service;
 pub mod multi_diff_editor;
+
+pub mod sticky_scroll;
