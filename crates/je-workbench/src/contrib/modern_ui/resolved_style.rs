@@ -953,6 +953,191 @@ impl<'a> ModernUiStyle<'a> {
     }
 }
 
+/// Os quatro lados de uma caixa, em px (`padding-top` e os outros).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxEdges {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+/// Os lados esquerdo e direito de uma propriedade horizontal, em px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HorizontalEdges {
+    pub left: f64,
+    pub right: f64,
+}
+
+/// As classes de um `.statusbar-item` que as regras da barra de status testam.
+struct StatusBarItemFlags {
+    /// `.left.first-visible-item`.
+    edge_left: bool,
+    /// `.right.last-visible-item`.
+    edge_right: bool,
+    /// `.has-background-color`.
+    colored: bool,
+    /// `.compact-left`.
+    compact_left: bool,
+    /// `.compact-right`.
+    compact_right: bool,
+}
+
+impl StatusBarItemFlags {
+    fn new(item: &ClassList) -> Self {
+        Self {
+            edge_left: item.contains("left") && item.contains("first-visible-item"),
+            edge_right: item.contains("right") && item.contains("last-visible-item"),
+            colored: item.contains("has-background-color"),
+            compact_left: item.contains("compact-left"),
+            compact_right: item.contains("compact-right"),
+        }
+    }
+
+    fn edge(&self) -> bool {
+        self.edge_left || self.edge_right
+    }
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// `.modern-ui.modern-ui-compact` (statusBar.css): diferente de [`Self::compact`], que exige o `.floating-panels`.
+    fn modern_compact(&self) -> bool {
+        self.has("modern-ui") && self.has("modern-ui-compact")
+    }
+
+    /// `padding` do `.part.statusbar` (floatingPanels.css, linhas 352 a 385). O compacto (linhas 382 a 385) tem a própria
+    /// folga e exclui as duas regras que a tomam do cartão (linhas 368 a 379), então as densidades não competem. Fora do
+    /// `.floating-panels` a barra de status não tem `padding`.
+    pub fn status_bar_padding(&self) -> BoxEdges {
+        if !self.has("floating-panels") {
+            return BoxEdges { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 };
+        }
+        let horizontal = if self.has("modern-ui-compact") {
+            self.size(SPACING_SIZE40)
+        } else if self.has("noactivitybar") || self.has("activitybar-compact") {
+            self.floating_card_margin()
+        } else {
+            self.size(SPACING_SIZE60)
+        };
+        let vertical = self.size(SPACING_SIZE20);
+        BoxEdges { top: vertical, right: horizontal, bottom: vertical, left: horizontal }
+    }
+
+    /// `height` calculado de um `.statusbar-item` (statusbarpart.css, linha 60: `100%` do contêiner de itens, que preenche a
+    /// caixa de conteúdo da barra) e, por tabela, do `.statusbar-item-label` (linha 100). `status_bar_height` é a `height`
+    /// da barra, de caixa de borda.
+    pub fn status_bar_item_height(&self, status_bar_height: f64) -> f64 {
+        let padding = self.status_bar_padding();
+        status_bar_height - padding.top - padding.bottom
+    }
+
+    /// `padding-left` e `padding-right` de um `.statusbar-item` (statusbarpart.css, linhas 87 a 95; floatingPanels.css, linhas
+    /// 387 a 408). A folga do cartão no item da ponta esquerda cai para zero quando o item tem fundo próprio: o rótulo
+    /// assume o recuo e o fundo encosta na borda.
+    pub fn status_bar_item_padding(&self, item: &ClassList) -> HorizontalEdges {
+        let flags = StatusBarItemFlags::new(item);
+        let floating = self.has("floating-panels");
+        let left = if floating && flags.edge_left && flags.colored {
+            self.size(SPACING_NONE)
+        } else if floating && flags.edge_left {
+            self.floating_card_margin()
+        } else if flags.edge_left {
+            2.0
+        } else {
+            0.0
+        };
+        let right = if floating && flags.edge_right && flags.colored {
+            self.size(SPACING_NONE)
+        } else if flags.edge_right {
+            2.0
+        } else {
+            0.0
+        };
+        HorizontalEdges { left, right }
+    }
+
+    /// `margin-left` e `margin-right` do `.statusbar-item-label` (statusbarpart.css, linhas 97 a 135; statusBar.css, linhas
+    /// 44 a 57). Em empate de especificidade vale a regra de `statusbarpart.css`, que o caso do oráculo exige (o
+    /// `.compact-left` do compacto mantém os 5px da direita). Dentro de uma mesma especificidade vale a regra mais adiante.
+    pub fn status_bar_label_margin(&self, item: &ClassList) -> HorizontalEdges {
+        let flags = StatusBarItemFlags::new(item);
+        let compact = self.modern_compact();
+        // Especificidade 8: as pontas, `.compact-left.compact-right` (linha 123) e as exceções do compacto. Depois, a 7 e
+        // na ordem do arquivo: `.compact-left` (111), `.compact-right` (117), `.has-background-color` (130).
+        let left = if flags.edge()
+            || (flags.compact_left && flags.compact_right)
+            || (compact && (flags.compact_left || flags.colored))
+            || flags.colored
+            || flags.compact_left
+        {
+            0.0
+        } else if flags.compact_right {
+            5.0
+        } else if compact {
+            self.size(SPACING_SIZE20)
+        } else {
+            3.0
+        };
+        let right = if flags.edge()
+            || (flags.compact_left && flags.compact_right)
+            || (compact && (flags.compact_right || flags.colored))
+            || flags.colored
+            || flags.compact_right
+        {
+            0.0
+        } else if flags.compact_left {
+            5.0
+        } else if compact {
+            self.size(SPACING_SIZE20)
+        } else {
+            3.0
+        };
+        HorizontalEdges { left, right }
+    }
+
+    /// `padding-left` e `padding-right` do `.statusbar-item-label`, da regra de maior especificidade para a menor
+    /// (statusbarpart.css, linhas 97 a 145; statusBar.css, linhas 44 a 100; floatingPanels.css, linhas 387 a 423). Vale a
+    /// mesma regra de desempate de [`Self::status_bar_label_margin`]; o `.floating-panels` fica antes do Modern UI.
+    pub fn status_bar_label_padding(&self, item: &ClassList) -> HorizontalEdges {
+        let flags = StatusBarItemFlags::new(item);
+        let floating = self.has("floating-panels");
+        let compact = self.modern_compact();
+        let floating_compact = floating && self.has("modern-ui-compact");
+        let size40 = self.size(SPACING_SIZE40);
+        let size60 = self.size(SPACING_SIZE60);
+        let size80 = self.size(SPACING_SIZE80);
+        let colored_edge = floating && flags.colored && flags.edge();
+        // Especificidade 11 (floatingPanels.css, linhas 415 a 423) e 10 (linhas 401 a 413).
+        if colored_edge && floating_compact {
+            return HorizontalEdges { left: size40, right: if flags.edge_left { size40 } else { size60 } };
+        }
+        if colored_edge {
+            return if flags.edge_left { HorizontalEdges { left: size80, right: size60 } } else { HorizontalEdges { left: size60, right: size80 } };
+        }
+        // Especificidade 9: a ponta do compacto (statusBar.css, linhas 96 a 100) vence o `padding-left` da folga do cartão
+        // (floatingPanels.css, linhas 387 a 390), que só toca a esquerda e só na ponta esquerda.
+        if compact && flags.edge() {
+            return HorizontalEdges { left: size40, right: size40 };
+        }
+        let floating_left = (floating && flags.edge_left).then(|| self.floating_card_margin());
+        // Especificidade 8 e 7 do arquivo base, na ordem do arquivo (a regra mais adiante vence).
+        let base = if flags.compact_right && flags.colored {
+            HorizontalEdges { left: 10.0, right: 3.0 }
+        } else if flags.compact_left && flags.colored {
+            HorizontalEdges { left: 3.0, right: 10.0 }
+        } else if flags.edge() || flags.colored {
+            HorizontalEdges { left: 8.0, right: 8.0 }
+        } else if flags.compact_right || flags.compact_left {
+            HorizontalEdges { left: 3.0, right: 3.0 }
+        } else if compact {
+            HorizontalEdges { left: size40, right: size40 }
+        } else {
+            HorizontalEdges { left: 5.0, right: 5.0 }
+        };
+        HorizontalEdges { left: floating_left.unwrap_or(base.left), right: base.right }
+    }
+}
+
 /// O id da cor que cada variável `--modern-ui-*` das abas repassa (`tabs.css`, linhas 24 a 54). As variáveis
 /// `unfocused-*` são aliases das focadas.
 fn modern_ui_tab_variable_color_id(name: &str) -> Option<&'static str> {
