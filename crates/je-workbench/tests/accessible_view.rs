@@ -341,7 +341,7 @@ impl Harness {
         let menu_service: Rc<dyn IMenuService> = menu_service.unwrap_or_else(|| Rc::new(CountingMenuService { dispose_count: Rc::new(Cell::new(0)) }));
         let configuration_service: Rc<dyn IConfigurationService> = TestConfigurationService::new(None);
         let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
-        let storage_service: Rc<dyn StorageService> = InMemoryStorageService::new();
+        let storage_service: Rc<dyn StorageService> = Rc::new(InMemoryStorageService::new());
         let view = guard.add_rc(AccessibleView::new(AccessibleViewServices {
             opener_service: Rc::new(RecordingOpener::default()),
             configuration_service,
