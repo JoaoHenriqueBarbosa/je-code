@@ -879,7 +879,7 @@ impl IEditorGroupsService for TestEditorGroupsService {
 //   esvaziamento das microtarefas (o helper é síncrono), que deixa a restauração das partes completar.
 // ---------------------------------------------------------------------------------------------------------------------
 
-pub use editor_parts_doubles::{TestEditorPart, TestEditorParts, create_editor_parts, register_test_editor};
+pub use editor_parts_doubles::{TestEditorPart, TestEditorParts, create_editor_part, create_editor_parts, register_test_editor};
 
 mod editor_parts_doubles {
     use std::any::TypeId;
@@ -1041,6 +1041,16 @@ mod editor_parts_doubles {
         run_microtasks();
 
         Rc::new(TestEditorParts { parts, test_main_part })
+    }
+
+    /// `createEditorPart(instantiationService, disposables)`: a parte principal de `createEditorParts`, com o conjunto de
+    /// partes no guarda `disposables`.
+    pub fn create_editor_part(ui: &Ui, instantiation_service: &Rc<InstantiationService>, disposables: &DisposableStore) -> Rc<TestEditorPart> {
+        let parts = create_editor_parts(ui, instantiation_service);
+        let test_main_part = parts.test_main_part.clone();
+        disposables.add_rc(parts);
+
+        test_main_part
     }
 }
 
