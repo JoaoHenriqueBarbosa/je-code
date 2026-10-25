@@ -23,10 +23,8 @@
 //!   mensagem.
 
 use std::cell::{Cell, RefCell};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 
-use je_base::errors;
 use je_workbench::api::common::ext_host_editor_tabs::{AnyTabInput, CloseTarget, ExtHostEditorTabs, Tab, TabChangeEvent, TabGroup, TabGroupChangeEvent, TabGroups};
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner};
 
@@ -167,11 +165,6 @@ pub struct TabsApi {
     pub objects: Rc<TabObjects>,
 }
 
-/// Roda `read`, trocando o pânico com o `Error` do original (`assertReturnsDefined`, grupo descartado) pela mensagem dele.
-fn caught<T>(read: impl FnOnce() -> T) -> Result<T, String> {
-    catch_unwind(AssertUnwindSafe(read)).map_err(|payload| errors::from_panic(payload).message)
-}
-
 // ---- as entradas de aba
 
 fn input_to_js(input: &AnyTabInput) -> JsData {
@@ -254,9 +247,9 @@ fn input_class(runner: &NodeRunner, name: &'static str, fields: &'static [(&'sta
 fn define_tab(runner: &NodeRunner, objects: &Rc<TabObjects>) {
     let getters: Vec<(String, MethodCallback)> = vec![
         getter(objects, "label", TabObjects::tab_of, |_, tab| JsData::Str(tab.label())),
-        getter(objects, "group", TabObjects::tab_of, |objects, tab| match caught(|| tab.group()) {
-            Ok(group) => objects.group_to_js(&group),
-            Err(_) => JsData::Undefined,
+        getter(objects, "group", TabObjects::tab_of, |objects, tab| match tab.try_group() {
+            Some(group) => objects.group_to_js(&group),
+            None => JsData::Undefined,
         }),
         getter(objects, "input", TabObjects::tab_of, |_, tab| tab.input().map_or(JsData::Undefined, |input| input_to_js(&input))),
         getter(objects, "isActive", TabObjects::tab_of, |_, tab| JsData::Bool(tab.is_active())),
@@ -352,7 +345,11 @@ pub fn window_member(runner: &NodeRunner, api: &TabsApi, table: &Rc<DisposableTa
             "activeTabGroup".to_owned(),
             Rc::new(move |_, _| {
                 let _ = &active_keep;
-                caught(|| active_groups.active_tab_group()).map(|group| active_objects.group_to_js(&group))
+                // o erro do `assertReturnsDefined` do original
+                let group = active_groups
+                    .try_active_tab_group()
+                    .ok_or_else(|| format!("Assertion Failed: {}", je_base::types::UNDEFINED_ARGUMENT_MESSAGE))?;
+                Ok(active_objects.group_to_js(&group))
             }),
         ),
         ("onDidChangeTabs".to_owned(), Rc::new(move |_, _| Ok(on_did_change_tabs.clone()))),

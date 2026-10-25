@@ -229,7 +229,7 @@ fn push_model(workbench: &Workbench, panel: &Panel) {
 #[test]
 fn active_tab_group_throws_before_the_main_thread_pushes_a_model() {
     run_extension(EXTENSION_SOURCE, setup, |workbench, _panel| {
-        assert_eq!(run(workbench, "t.tabsNoGroup"), Dynamic::string("Assertion Failed: argument is undefined or null"));
+        assert_eq!(run(workbench, "t.tabsNoGroup"), Dynamic::string("Assertion Failed: Argument is `undefined` or `null`."));
     });
 }
 

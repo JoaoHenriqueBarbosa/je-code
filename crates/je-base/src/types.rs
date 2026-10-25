@@ -113,9 +113,12 @@ pub fn assert_type(condition: &impl Truthy, type_name: Option<&str>) {
 }
 
 /// Garante que o argumento não é `undefined` nem `null` e o devolve.
+/// A mensagem do `assertReturnsDefined`, para quem precisa lançar o mesmo erro sem passar pela função.
+pub const UNDEFINED_ARGUMENT_MESSAGE: &str = "Argument is `undefined` or `null`.";
+
 pub fn assert_returns_defined<N: Nullable>(arg: N) -> N::Value {
     let defined = arg.into_defined();
-    assert(defined.is_some(), "Argument is `undefined` or `null`.");
+    assert(defined.is_some(), UNDEFINED_ARGUMENT_MESSAGE);
     defined.expect("conferido acima")
 }
 
