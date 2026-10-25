@@ -98,3 +98,6 @@ pub mod themes;
 pub mod dialogs;
 
 pub mod contextview;
+
+// O contrato da conta do Codex (`agentHost/browser/codexAccountService.ts`), no recorte que a barra global lê.
+pub mod agent_host;

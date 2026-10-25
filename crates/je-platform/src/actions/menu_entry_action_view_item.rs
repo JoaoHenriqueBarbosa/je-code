@@ -20,7 +20,7 @@ pub struct PrimaryAndSecondaryActions {
 }
 
 /// O `IAction` que representa a entrada do menu: o item, ou a `SubmenuAction` por baixo do submenu.
-fn menu_action_as_action(action: &MenuAction) -> ActionRef {
+pub fn menu_action_as_action(action: &MenuAction) -> ActionRef {
     match action {
         MenuAction::Item(item) => item.clone(),
         MenuAction::Submenu(submenu) => submenu.as_action(),

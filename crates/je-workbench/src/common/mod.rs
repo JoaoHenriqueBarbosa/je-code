@@ -1,5 +1,7 @@
 //! Porte de `src/vs/workbench/common`: os tipos e os modelos de dados do workbench, sem interface.
 
+pub mod activity;
+
 pub mod comments;
 
 // O registro das contribuições do workbench (`common/contributions.ts`).
