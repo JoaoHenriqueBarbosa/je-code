@@ -39,6 +39,15 @@
 //! (`connected_inactive_tab_background`, `connected_active_tab_paint`), o `overflow` do título (`connected_title_overflow`), o recuo do
 //! botão de nova aba (`connected_add_tab_button_insets`) e o realce de topo (`dirty_top_accent`) vêm do que o controle resolve para a
 //! pintura nativa. O tema só troca cor e traço: os laços de temas percorrem todos e a geometria vale para cada um.
+//!
+//! Casos `clipped Connected caps ...` em diante: o que o original lê de `getComputedStyle` e a cor, o contorno e o fundo da aba conectada
+//! saem do `ModernUiStyle` (`contrib/modern_ui/resolved_style`), que resolve as regras de `connectedEditorTabs.css` e `tabs.css` para as
+//! classes da raiz, o tema e as variáveis `--modern-ui-*` do caso (`PaintContext`, que o `Layout` guarda como o DOM de tema). A
+//! aresta de rolagem (`ConnectedOverflowEdge`) é conferida em `connected_overflow_edge_style`, o realce de topo da aresta em
+//! `connected_edge_accent`, o sublinhado da pílula de cima em `connected_upper_row_bottom_accent` e o estilo do `.tab-actions` em
+//! `tab_actions_block_border_color`, `tab_action_overlay_background` e `tab_actions_fade_content`. A raiz `modern-ui` sem o estilo
+//! conectado (`pill` de `connected tabs reserve separator height ...`) não existe em `TabsParentTraits`: a classe só muda o recuo do
+//! preenchimento conectado, e as alturas lidas valem as do Pill compartilhado.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -52,7 +61,7 @@ mod test_color_theme_service;
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use editor_input_services::{WorkbenchServices, uri_identity_service};
@@ -70,6 +79,7 @@ use je_platform::resources::uri_file;
 use je_platform::storage::{I_STORAGE_SERVICE, InMemoryStorageService, StorageService};
 use je_platform::uri_identity::uri_identity::I_URI_IDENTITY_SERVICE;
 use je_theme::color::Color;
+use je_theme::{ColorTheme, ThemeType};
 use je_ui::Ui;
 use je_workbench::browser::parts::editor::editor::default_editor_part_options;
 use je_workbench::browser::parts::editor::editor_group_view::EditorGroupView;
@@ -91,7 +101,11 @@ use je_workbench::common::editor::editor_group_model::{EditorGroupModel, EditorO
 use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
 use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase};
 use je_workbench::common::editor::{EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, Verbosity};
-use je_workbench::contrib::modern_ui::resolved_style::css_rgb;
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
+    AlignItems, ConnectedEdgeAccent, ConnectedEdgeAccentInput, TabActionsContext, TabState, connected_edge_accent, connected_editor_actions_height, connected_overflow_edge_style,
+    connected_upper_row_bottom_accent, tab_action_overlay_background, tab_actions_block_border_color, tab_actions_fade_content, tab_connected_edge_rect, tabs_row_align_items,
+};
+use je_workbench::contrib::modern_ui::resolved_style::{ModernUiStyle, TabElement, css_rgb};
 use je_workbench::contrib::modern_ui::tabs_header::{ModernHeaderBacking, modern_header_backing};
 use je_workbench::services::editor::editor_groups_service::{
     EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartOptions, IEditorGroup, IEditorPart, PinnedTabSizing, TabActionLocation, TabHeight, TabSizing,
@@ -304,6 +318,11 @@ struct Layout {
     /// `--modern-ui-connected-tab-shoulder-radius` (mais o traço, na conta da lacuna final das abas quebradas): o valor de
     /// `connectedGroup()`, que um caso pode sobrescrever na raiz.
     shoulder_radius: Cell<f64>,
+    /// O DOM de tema do caso (as cores do tema, as variáveis escritas na raiz e no grupo e a classe de tema da raiz) que as regras do
+    /// estilo conectado leem. Sem ele o controle recebe as variáveis da aresta vazias, como num DOM sem tema.
+    paint: RefCell<Option<PaintContext>>,
+    /// `.editor-group-container.active`.
+    group_active: Cell<bool>,
 }
 
 fn name_chars(tab: &Tab) -> f64 {
@@ -326,6 +345,8 @@ impl Layout {
             badged: RefCell::new(None),
             show_descriptions: Cell::new(false),
             shoulder_radius: Cell::new(SHOULDER_RADIUS),
+            paint: RefCell::new(None),
+            group_active: Cell::new(true),
         })
     }
 
@@ -735,7 +756,14 @@ impl TabsMeasurer for Layout {
         let geometry = self.geometry(container, tabs);
         let zoom = self.zoom.get();
         let (left, right) = self.tab_rect(&geometry, active_tab_index, container.scroll_left);
-        let height = self.tab_height() * zoom;
+        // O `.tab-fill` da aba ativa em coordenadas da tela do `.tabs-container`, e o elemento rolável que o contém (as linhas somadas
+        // ao `padding-bottom` do contêiner de abas).
+        let context = self.box_context(container, tabs, active_tab_index, geometry.widths[active_tab_index]);
+        let fill = tab_fill_rect(&context);
+        let row_top = geometry.tops[active_tab_index];
+        let scrollable_height = self.header_heights(container, geometry.rows).0 * zoom;
+        let (tab_border, overflow_top_border, overflow_top_background) =
+            self.cap_style(&tabs[active_tab_index].state).map_or_else(|| (String::new(), String::new(), String::new()), |cap| (cap.variable, cap.top_color, cap.background_image));
 
         Some(ConnectedActiveTabMeasure {
             container_scroll_left: container.scroll_left,
@@ -743,13 +771,13 @@ impl TabsMeasurer for Layout {
             tabs_width: geometry.visible_width * zoom,
             fill_left: left,
             fill_right: right,
-            fill_top: 0.0,
-            fill_bottom: height,
+            fill_top: (row_top + fill.top) * zoom,
+            fill_bottom: (row_top + fill.bottom) * zoom,
             scrollable_top: 0.0,
-            scrollable_bottom: height,
-            tab_border: String::new(),
-            overflow_top_border: String::new(),
-            overflow_top_background: String::new(),
+            scrollable_bottom: scrollable_height,
+            tab_border,
+            overflow_top_border,
+            overflow_top_background,
             shoulder_extent: SHOULDER_RADIUS,
         })
     }
@@ -6104,6 +6132,745 @@ fn connected_shoulders_share_the_cap_baseline_at_fractional_zoom() {
     }
 
     assert_eq!(measurements, expected);
+}
+
+//#endregion
+
+//#region DOM de tema, aresta de rolagem e estilo das ações da aba conectada
+
+/// `--modern-ui-connected-tab-border`, que o grupo declara e a aba ativa recalcula.
+const CONNECTED_TAB_BORDER: &str = "--modern-ui-connected-tab-border";
+/// `--modern-ui-editor-tab-custom-active-border-top` e a variante do grupo sem foco, escritas no grupo.
+const CUSTOM_ACTIVE_BORDER_TOP: &str = "--modern-ui-editor-tab-custom-active-border-top";
+const CUSTOM_UNFOCUSED_ACTIVE_BORDER_TOP: &str = "--modern-ui-editor-tab-custom-unfocused-active-border-top";
+
+/// O DOM de tema de um caso: as cores `--vscode-*` que ele escreve na raiz (o tema), as `--modern-ui-*` que ele escreve na raiz ou no
+/// grupo e a classe de tema da raiz (`vs`, `vs-dark`, `hc-black`, `hc-light`).
+struct PaintContext {
+    theme: ColorTheme,
+    theme_class: &'static str,
+    variables: Vec<(String, Color)>,
+}
+
+/// O tipo do tema que a classe da raiz representa.
+fn theme_type_of(theme_class: &str) -> ThemeType {
+    match theme_class {
+        "vs" => ThemeType::Light,
+        "hc-black" => ThemeType::HighContrastDark,
+        "hc-light" => ThemeType::HighContrastLight,
+        _ => ThemeType::Dark,
+    }
+}
+
+impl PaintContext {
+    /// `colors` são as variáveis `--vscode-*` pelo id da cor do tema e `variables` as `--modern-ui-*` pelo nome, ambas em hexadecimal.
+    fn new(colors: &[(&str, &str)], variables: &[(&str, &str)]) -> Self {
+        let colors: HashMap<String, Color> = colors.iter().map(|(id, hex)| (id.to_string(), Color::from_hex(hex))).collect();
+
+        Self {
+            theme: ColorTheme::unloaded("test", ThemeType::Dark, colors),
+            theme_class: "vs-dark",
+            variables: variables.iter().map(|(name, hex)| (name.to_string(), Color::from_hex(hex))).collect(),
+        }
+    }
+
+    /// `root.classList.add(themeClass)`.
+    fn set_theme(&mut self, theme_class: &'static str) {
+        self.theme.theme_type = theme_type_of(theme_class);
+        self.theme_class = theme_class;
+    }
+
+    fn variable(&self, name: &str) -> Option<&Color> {
+        self.variables.iter().find(|(variable, _)| variable == name).map(|(_, color)| color)
+    }
+}
+
+/// A aba como os seletores de `connectedEditorTabs.css` a veem: as classes que o controle escreveu nela e as variáveis dela.
+fn tab_element(state: &TabState, group_active: bool) -> TabElement {
+    let classes = [
+        ("active", state.active),
+        ("selected", state.selected),
+        ("multi-selected", state.multi_selected),
+        ("dirty", state.dirty),
+        ("dirty-border-top", state.dirty_border_top),
+        ("tab-border-top", state.tab_border_top),
+        ("tab-border-bottom", state.tab_border_bottom),
+        ("sticky", state.sticky),
+        ("close-action-off", state.close_action_off),
+        ("tab-actions-left", state.tab_actions_left),
+        ("connected-tab-upper-row", state.connected_tab_upper_row),
+        ("connected-tab-left-edge", state.connected_clipping.left_edge),
+    ];
+    let class_name = std::iter::once("tab").chain(classes.iter().filter(|(_, present)| *present).map(|(name, _)| *name)).collect::<Vec<&str>>().join(" ");
+    let color = |value: &str| (!value.is_empty()).then(|| Color::from_hex(value));
+    let mut element = TabElement::new(&class_name, group_active);
+    element.border_top_color = color(&state.tab_border_top_color);
+    element.border_bottom_color = color(&state.tab_border_bottom_color);
+    element.dirty_border_top_color = state.dirty_border_top_color.as_deref().and_then(color);
+
+    element
+}
+
+/// O `background-image` computado do realce de topo: `none` ou `linear-gradient(<cor> <altura>px, <transparente> <altura>px)`.
+fn gradient_text(accent: Option<&ConnectedEdgeAccent>) -> String {
+    accent.map_or_else(
+        || "none".to_string(),
+        |accent| format!("linear-gradient({} {}px, rgba(0, 0, 0, 0) {}px)", css_rgb(&accent.color), accent.height, accent.height),
+    )
+}
+
+/// Um comprimento computado em pixels (`getComputedStyle(...).top`).
+fn css_px(value: f64) -> String {
+    format!("{}px", value + 0.0)
+}
+
+/// `getComputedStyle(.tab-connected-edge)` da aba ativa fora da linha de cima, e a variável que a aba declara.
+struct CapStyle {
+    /// `--modern-ui-connected-tab-border` computada na aba (`getPropertyValue`).
+    variable: String,
+    /// `border-right-color`, `border-top-color` e `background-image` da aresta.
+    border_right: String,
+    top_color: String,
+    background_image: String,
+    /// O realce de topo que o `background-image` pinta.
+    accent: Option<ConnectedEdgeAccent>,
+}
+
+impl Layout {
+    /// Resolve o que as regras do estilo conectado leem do DOM de tema: o `ModernUiStyle` das classes vigentes da raiz e o contexto
+    /// do caso. `None` sem DOM de tema.
+    fn with_style<R>(&self, read: impl FnOnce(&ModernUiStyle<'_>, &PaintContext) -> R) -> Option<R> {
+        let guard = self.paint.borrow();
+        let paint = guard.as_ref()?;
+        let parent = self.parent.get();
+        let mut classes = vec!["monaco-workbench", "modern-ui", "floating-panels", paint.theme_class];
+        if parent.in_modern_ui_tabs {
+            classes.push("modern-ui-tabs");
+        }
+        if parent.in_connected_editor_tabs {
+            classes.push("modern-ui-connected-editor-tabs");
+        }
+        let mut style = ModernUiStyle::new(&paint.theme, &classes.join(" ")).with_explicit_colors_only();
+        for (name, color) in &paint.variables {
+            style.set_root_variable(name, color.clone());
+        }
+
+        Some(read(&style, paint))
+    }
+
+    /// `root.style.setProperty(...)` e a classe de tema dos casos.
+    fn set_paint(&self, paint: PaintContext) {
+        *self.paint.borrow_mut() = Some(paint);
+    }
+
+    /// `root.classList.add(themeClass)` sobre o DOM de tema do caso.
+    fn set_theme(&self, theme_class: &'static str) {
+        if let Some(paint) = self.paint.borrow_mut().as_mut() {
+            paint.set_theme(theme_class);
+        }
+    }
+
+    /// `getComputedStyle(.tab-connected-edge)` da aba (o estado dela e o grupo), ou `None` sem DOM de tema.
+    fn cap_style(&self, state: &TabState) -> Option<CapStyle> {
+        let group_active = self.group_active.get();
+        let element = tab_element(state, group_active);
+        let dirty_color = state.dirty_border_top_color.as_deref().filter(|color| !color.is_empty()).map(Color::from_hex);
+
+        self.with_style(|style, paint| {
+            let accent = connected_edge_accent(
+                &ConnectedEdgeAccentInput {
+                    group_active,
+                    multi_selected: state.multi_selected,
+                    tab_border_top: state.tab_border_top,
+                    dirty_border_top: state.dirty_border_top,
+                    dirty_border_top_color: dirty_color.as_ref(),
+                    custom_active_border_top: paint.variable(CUSTOM_ACTIVE_BORDER_TOP),
+                    custom_unfocused_active_border_top: paint.variable(CUSTOM_UNFOCUSED_ACTIVE_BORDER_TOP),
+                },
+                &ModernSpacing::default(),
+            );
+
+            CapStyle {
+                variable: style.tab_variable(CONNECTED_TAB_BORDER, &element).as_ref().map(css_rgb).unwrap_or_default(),
+                border_right: style.connected_edge_border_color(&element, StrokeSide::Right, false).as_ref().map(css_rgb).unwrap_or_default(),
+                top_color: style.connected_edge_border_top_color(&element).as_ref().map(css_rgb).unwrap_or_default(),
+                background_image: gradient_text(accent.as_ref()),
+                accent,
+            }
+        })
+    }
+
+    /// `--modern-ui-connected-tab-border` do grupo (o elemento sem classes de aba), que a aresta de rolagem herda sem a variável própria.
+    fn group_border_text(&self) -> String {
+        let element = TabElement::new("", self.group_active.get());
+
+        self.with_style(|style, _| style.tab_variable(CONNECTED_TAB_BORDER, &element).as_ref().map(css_rgb).unwrap_or_default()).unwrap_or_default()
+    }
+
+    /// `getComputedStyle(.tab-actions).backgroundColor` da aba, com o foco dentro do `.tab-actions` ou fora dele.
+    fn tab_actions_background_text(&self, state: &TabState, focus_within: bool) -> String {
+        let element = tab_element(state, self.group_active.get());
+
+        self.with_style(|style, _| css_rgb(&style.tab_actions_background(&element, focus_within))).unwrap_or_default()
+    }
+}
+
+impl Fixture {
+    /// `readHeight()`: `control.layout({ container: Dimension.None, available: Dimension.None })`, o quadro seguinte e
+    /// `control.getHeight()`. As duas dimensões `None` pulam o layout das abas e só refazem a altura usada.
+    fn read_height(&mut self) -> f64 {
+        let computed_height = self.computed_height();
+        self.state.layout(EditorTitleControlDimensions { container: None, available: None }, None, computed_height);
+        self.frame();
+
+        self.get_height()
+    }
+
+    /// `getComputedStyle(cap).borderRightColor` da aba ativa.
+    fn active_cap_style(&self) -> CapStyle {
+        self.layout.cap_style(&self.state.tabs[self.active_index()].state).expect("o caso declara o DOM de tema")
+    }
+
+    /// O contexto das regras do `.tab-actions` da aba `index`.
+    fn tab_actions_context(&self, index: usize, high_contrast: bool, interacting: bool) -> TabActionsContext {
+        let state = &self.state.tabs[index].state;
+
+        TabActionsContext {
+            modern_ui_tabs: self.parent.in_modern_ui_tabs,
+            connected: self.layout.is_connected(),
+            high_contrast,
+            reserve_space: self.options.borrow().tab_action_reserve_space,
+            active: state.active,
+            selected: state.selected,
+            multi_selected: state.multi_selected,
+            dirty: state.dirty,
+            sticky: state.sticky,
+            close_action_off: state.close_action_off,
+            tab_border_top: state.tab_border_top,
+            interacting,
+        }
+    }
+}
+
+#[test]
+fn clipped_connected_caps_inherit_and_clear_the_active_multi_selection_outline_color() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-focusBorder', '#00ff00')`, `--vscode-contrastBorder` e `--vscode-contrastActiveBorder`
+    fx.layout.set_paint(PaintContext::new(&[("focusBorder", "#00ff00"), ("contrastBorder", "#00ffff"), ("contrastActiveBorder", "#ff0000")], &[]));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    let active = fx.model.active_editor().expect("aba ativa");
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        active_group: bool,
+        selected: bool,
+        clipped: bool,
+        cap: String,
+        overflow: String,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        for active_group in [true, false] {
+            // `group.classList.toggle('active', activeGroup)`
+            fx.layout.group_active.set(active_group);
+            for selected in [true, false] {
+                let selection: Vec<EditorInputRef> = if selected { fx.model.get_editor_by_index(1).into_iter().collect() } else { Vec::new() };
+                fx.set_selection(&active, &selection);
+                fx.update_editor_selections();
+                fx.layout(240.0);
+                // `tabs.classList.add('scroll'); tabs.scrollLeft = 40; tabs.dispatchEvent(new Event('scroll'))`
+                fx.state.container.scroll_mode = true;
+                fx.scroll_to(40.0);
+                let edge = &fx.state.container.overflow_edge;
+                results.push(Row {
+                    theme,
+                    active_group,
+                    selected,
+                    clipped: edge.left_clipped,
+                    cap: fx.active_cap_style().border_right,
+                    overflow: connected_overflow_edge_style(edge, &fx.layout.group_border_text()).border,
+                });
+            }
+        }
+    }
+    // `root.classList.remove('modern-ui-connected-editor-tabs')` e o layout seguinte
+    fx.set_connected(false);
+    fx.layout(240.0);
+    let override_cleared = fx.state.container.overflow_edge.border.clone().unwrap_or_default();
+
+    let rgb = |hex: &str| css_rgb(&Color::from_hex(hex));
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| {
+            let outline = if result.selected {
+                rgb("#ff0000")
+            } else if result.active_group {
+                rgb("#00ff00")
+            } else {
+                rgb("#00ffff")
+            };
+
+            Row { theme: result.theme, active_group: result.active_group, selected: result.selected, clipped: true, cap: outline.clone(), overflow: outline }
+        })
+        .collect();
+    assert_eq!((results, override_cleared), (expected, String::new()));
+}
+
+#[test]
+fn clipped_connected_caps_preserve_explicit_and_modified_top_paint_separately_from_side_strokes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-focusBorder', '#00ff00')`, `--vscode-contrastActiveBorder` e as customizações do grupo
+    fx.layout.set_paint(PaintContext::new(
+        &[("focusBorder", "#00ff00"), ("contrastActiveBorder", "#ff0000")],
+        &[(CUSTOM_ACTIVE_BORDER_TOP, "#22d3ee"), (CUSTOM_UNFOCUSED_ACTIVE_BORDER_TOP, "#c084fc")],
+    ));
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 160.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.activate(1);
+    let colors = ConnectedTabColors::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        active_group: bool,
+        modified: bool,
+        right_clipped: bool,
+        top_color: String,
+        same_sides: bool,
+        same_modified_paint: bool,
+        accent_inside_viewport: bool,
+        accent_starts_at_viewport_top: bool,
+    }
+
+    let mut results = Vec::new();
+    for theme in ["vs-dark", "hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        for active_group in [true, false] {
+            fx.layout.group_active.set(active_group);
+            for modified in [false, true] {
+                fx.layout(240.0);
+                // `tab.classList.add('tab-border-top')`, `tab.classList.toggle('dirty-border-top', modified)` e `--tab-dirty-border-top-color`
+                {
+                    let state = &mut fx.active_tab_mut().state;
+                    state.tab_border_top = true;
+                    state.dirty_border_top = modified;
+                    state.dirty_border_top_color = Some("#ffffff".to_string());
+                }
+                fx.reveal(240.0);
+                // `tabs.classList.add('scroll'); tabs.scrollLeft = 0; tabs.dispatchEvent(new Event('scroll'))`
+                fx.state.container.scroll_mode = true;
+                fx.scroll_to(0.0);
+
+                let bars = fx.live_bars();
+                let bar = &bars[0];
+                let views = fx.tab_views_of(bar, &colors);
+                let view = active_view(&views);
+                let cap = fx.layout.cap_style(&bar.state.tabs[fx.active_index()].state).expect("o caso declara o DOM de tema");
+                let edge = tab_connected_edge_rect(&view.context).expect("a aba ativa fora da linha de cima tem a aresta");
+                let accent = cap.accent.as_ref().expect("o realce de topo da aresta");
+                let zoom = fx.layout.zoom.get();
+                // `capBounds.top + parseFloat(capStyle.backgroundPositionY)`, contra os limites do `.tabs-container`
+                let accent_top = view.hitbox.top + (edge.top + accent.position_y) * zoom;
+                let accent_height = (if modified { 2.0 } else { 1.0 }) * zoom;
+                let tabs_top = (bar.top + fx.layout.strip_padding_top(&bar.state.container)) * zoom;
+                let tabs_bottom = tabs_top + fx.layout.measure_wrapping(&bar.state.container, &bar.state.tabs).tabs_container_height * zoom;
+                let overflow = &bar.state.container.overflow_edge;
+                let clipped = connected_overflow_edge_style(overflow, &fx.layout.group_border_text());
+                results.push(Row {
+                    theme,
+                    active_group,
+                    modified,
+                    right_clipped: overflow.right_clipped,
+                    top_color: clipped.top_border.clone(),
+                    same_sides: clipped.border == cap.border_right,
+                    same_modified_paint: clipped.background_image == cap.background_image,
+                    accent_inside_viewport: accent_top >= tabs_top && accent_top + accent_height <= tabs_bottom,
+                    accent_starts_at_viewport_top: (accent_top - tabs_top).abs() < 1.0 / 64.0,
+                });
+            }
+        }
+    }
+    // `root.classList.remove('modern-ui-connected-editor-tabs')` e o layout seguinte
+    fx.set_connected(false);
+    fx.layout(240.0);
+    let edge = &fx.state.container.overflow_edge;
+    let cleared = (edge.overflow_top_border.clone().unwrap_or_default(), edge.overflow_top_background.clone().unwrap_or_default());
+
+    let rgb = |hex: &str| css_rgb(&Color::from_hex(hex));
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            theme: result.theme,
+            active_group: result.active_group,
+            modified: result.modified,
+            right_clipped: true,
+            top_color: if result.modified {
+                rgb("#ffffff")
+            } else if result.active_group {
+                rgb("#22d3ee")
+            } else {
+                rgb("#c084fc")
+            },
+            same_sides: true,
+            same_modified_paint: true,
+            accent_inside_viewport: true,
+            accent_starts_at_viewport_top: true,
+        })
+        .collect();
+    assert_eq!((results, cleared), (expected, (String::new(), String::new())));
+}
+
+#[test]
+fn customized_bottom_accents_stay_inside_the_upper_connected_pill_clipping_boundary() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.layout(150.0);
+    let index = fx.state.tabs.iter().position(|tab| tab.state.active && tab.state.connected_tab_upper_row).expect("a aba ativa na linha de cima");
+    // `tab.classList.add('tab-border-bottom')` e `tab.style.setProperty('--tab-border-bottom-color', '#22d3ee')`
+    {
+        let state = &mut fx.state.tabs[index].state;
+        state.tab_border_bottom = true;
+        state.tab_border_bottom_color = "#22d3ee".to_string();
+    }
+    let views = fx.tab_views(&ConnectedTabColors::default());
+    let view = &views[index];
+    let state = &fx.state.tabs[index].state;
+    let bottom_color = Color::from_hex(&state.tab_border_bottom_color);
+    let accent = connected_upper_row_bottom_accent(view.context.upper_row, view.context.active, state.tab_border_bottom, Some(&bottom_color), &ModernSpacing::default())
+        .expect("o sublinhado da pílula de cima ativa");
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        color: String,
+        bottom: String,
+        height: String,
+        clipping: OverflowMode,
+    }
+
+    assert_eq!(
+        Report {
+            color: css_rgb(&accent.color),
+            bottom: css_px(accent.bottom),
+            height: css_px(accent.height),
+            clipping: if view.shape.overflow_hidden { OverflowMode::Hidden } else { OverflowMode::Visible },
+        },
+        Report { color: "rgb(34, 211, 238)".to_string(), bottom: "0px".to_string(), height: "1px".to_string(), clipping: OverflowMode::Hidden }
+    );
+}
+
+#[test]
+fn connected_multi_selection_focus_keeps_close_targets_stable_and_action_containers_borderless() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--vscode-focusBorder', '#ffaa00')`, `--vscode-contrastBorder` e `--vscode-contrastActiveBorder`
+    fx.layout.set_paint(PaintContext::new(&[("focusBorder", "#ffaa00"), ("contrastBorder", "#00ffff"), ("contrastActiveBorder", "#ffaa00")], &[]));
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        tab_action_location: TabActionLocation,
+        stable: bool,
+        inline_borders: [String; 2],
+        block_colors: [String; 2],
+        background: String,
+        focused: bool,
+    }
+
+    let border_top_color = Color::from_hex("#ffaa00");
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                // `container.classList.toggle('compact-height', tabHeight === 'compact')` é a altura que o `Layout` lê das opções
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.tab_action_location = tab_action_location;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 140.0;
+                    options.tab_sizing_fixed_max_width = 140.0;
+                });
+                let active = fx.model.active_editor().expect("aba ativa");
+                let second = fx.model.get_editor_by_index(1).expect("aba 1");
+                fx.set_selection(&active, &[second]);
+                fx.update_editor_selections();
+                fx.layout(400.0);
+                let index = fx.active_index();
+                // `tab.classList.add('tab-border-top')` e `--tab-border-top-color`
+                {
+                    let state = &mut fx.state.tabs[index].state;
+                    state.tab_border_top = true;
+                    state.tab_border_top_color = "#ffaa00".to_string();
+                }
+                let before = fx.action_bounds(index);
+                // `action.tabIndex = 0; action.focus()`: o foco entra no `.tab-actions` da aba
+                fx.focus_action(index);
+                let after = fx.action_bounds(index);
+                let geometry = fx.action_geometry(index);
+                let context = fx.tab_actions_context(index, high_contrast, true);
+                let block_color = css_rgb(&tab_actions_block_border_color(&context, Some(&border_top_color)));
+                let compact = tab_height == TabHeight::Compact;
+                measurements.push(Row {
+                    theme,
+                    compact,
+                    tab_action_location,
+                    stable: before == after,
+                    inline_borders: [css_px(geometry.border_left), css_px(geometry.border_right)],
+                    block_colors: [block_color.clone(), block_color],
+                    background: fx.layout.tab_actions_background_text(&fx.state.tabs[index].state, true),
+                    focused: tab_action_geometry(&TabCssClasses::of(&fx.state.tabs[index].state, &fx.state.container), &fx.box_context(index)).is_some(),
+                });
+                let inline_borders = if tab_action_location == TabActionLocation::Left { ["1px", "0px"] } else { ["0px", "0px"] };
+                let transparent = css_rgb(&Color::transparent_color());
+                expected.push(Row {
+                    theme,
+                    compact,
+                    tab_action_location,
+                    stable: true,
+                    inline_borders: inline_borders.map(str::to_string),
+                    block_colors: [transparent.clone(), transparent.clone()],
+                    background: transparent,
+                    focused: true,
+                });
+                // `action.blur()` e `tab.classList.remove('tab-border-top')`
+                let state = &mut fx.state.tabs[index].state;
+                state.tab_border_top = false;
+                state.tab_border_top_color = String::new();
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn connected_action_overlays_leave_the_fill_and_modified_bar_as_paint_owners() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.style.setProperty('--modern-ui-editor-tab-custom-action-*-background', '#654321')` nas quatro variáveis
+    fx.layout.set_paint(PaintContext::new(
+        &[],
+        &[
+            ("--modern-ui-editor-tab-custom-action-hover-background", "#654321"),
+            ("--modern-ui-editor-tab-custom-action-active-background", "#654321"),
+            ("--modern-ui-editor-tab-custom-action-active-hover-background", "#654321"),
+            ("--modern-ui-editor-tab-custom-action-selected-background", "#654321"),
+        ],
+    ));
+    let active = fx.model.active_editor().expect("aba ativa");
+    let second = fx.model.get_editor_by_index(1).expect("aba 1");
+    fx.set_selection(&active, &[second]);
+    fx.update_editor_selections();
+    let spacing = ModernSpacing::default();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        theme: &'static str,
+        compact: bool,
+        tab_action_reserve_space: bool,
+        tab_action_location: TabActionLocation,
+        index: usize,
+        overlay: String,
+        background: String,
+        fade: &'static str,
+        accent: (String, f64, f64),
+        stable_target: bool,
+    }
+
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        fx.layout.set_theme(theme);
+        let high_contrast = theme.starts_with("hc-");
+        for tab_height in [TabHeight::Default, TabHeight::Compact] {
+            for tab_action_reserve_space in [false, true] {
+                for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                    fx.update_options(|options| {
+                        options.tab_height = tab_height;
+                        options.tab_action_reserve_space = tab_action_reserve_space;
+                        options.tab_action_location = tab_action_location;
+                    });
+                    fx.layout(600.0);
+                    for index in 0..fx.state.tabs.len() {
+                        // `tab.classList.add('dirty', 'dirty-border-top')` e `--tab-dirty-border-top-color`
+                        {
+                            let state = &mut fx.state.tabs[index].state;
+                            state.dirty = true;
+                            state.dirty_border_top = true;
+                            state.dirty_border_top_color = Some("#22d3ee".to_string());
+                        }
+                        let before = fx.action_bounds(index);
+                        // `action.tabIndex = 0; action.focus()`
+                        fx.focus_action(index);
+                        let context = fx.tab_actions_context(index, high_contrast, true);
+                        let state = &fx.state.tabs[index].state;
+                        let accent = dirty_top_accent(fx.layout.is_connected(), state.dirty_border_top_color.as_deref(), &spacing);
+                        let accent_color = match accent.color {
+                            TabStrokeColor::Color(color) => css_rgb(&Color::from_hex(color)),
+                            other => describe_stroke_color(other),
+                        };
+                        let compact = tab_height == TabHeight::Compact;
+                        measurements.push(Row {
+                            theme,
+                            compact,
+                            tab_action_reserve_space,
+                            tab_action_location,
+                            index,
+                            overlay: tab_action_overlay_background(&context)
+                                .map_or_else(String::new, |color| if color == Color::transparent_color() { "transparent".to_string() } else { css_rgb(&color) }),
+                            background: fx.layout.tab_actions_background_text(state, true),
+                            fade: tab_actions_fade_content(&context),
+                            accent: (accent_color, accent.height, accent.top_offset),
+                            stable_target: before == fx.action_bounds(index),
+                        });
+                        expected.push(Row {
+                            theme,
+                            compact,
+                            tab_action_reserve_space,
+                            tab_action_location,
+                            index,
+                            overlay: "transparent".to_string(),
+                            background: css_rgb(&Color::transparent_color()),
+                            fade: "none",
+                            accent: ("rgb(34, 211, 238)".to_string(), 2.0, 0.0),
+                            stable_target: true,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn connected_tabs_reserve_separator_height_without_changing_classic_or_shared_modern_tabs() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let classic_root = TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: false, in_connected_editor_tabs: false };
+
+    #[derive(Debug, PartialEq)]
+    struct Heights {
+        compact: bool,
+        classic: f64,
+        shared_modern: f64,
+        pill: f64,
+        connected: f64,
+    }
+
+    let mut heights = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        fx.update_options(|options| options.tab_height = tab_height);
+        // `root.classList.remove('modern-ui', 'modern-ui-tabs', 'modern-ui-connected-editor-tabs')`
+        fx.set_parent(classic_root);
+        let classic = fx.read_height();
+        // `root.classList.add('modern-ui-tabs')`
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, ..classic_root });
+        let shared_modern = fx.read_height();
+        // `root.classList.add('modern-ui')`: a classe só recua o preenchimento conectado, e `TabsParentTraits` não a representa
+        let pill = fx.read_height();
+        // `root.classList.add('modern-ui-connected-editor-tabs')`
+        fx.set_parent(TabsParentTraits { in_modern_ui_tabs: true, in_connected_editor_tabs: true, ..classic_root });
+        let connected = fx.read_height();
+        heights.push(Heights { compact: tab_height == TabHeight::Compact, classic, shared_modern, pill, connected });
+    }
+
+    assert_eq!(
+        heights,
+        vec![
+            Heights { compact: false, classic: 35.0, shared_modern: 32.0, pill: 32.0, connected: 32.0 },
+            Heights { compact: true, classic: 22.0, shared_modern: 28.0, pill: 28.0, connected: 28.0 },
+        ]
+    );
+}
+
+#[test]
+fn single_row_connected_tabs_align_their_tops_and_retain_inline_gutters() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // A raiz do original declara só `size20`, `size40`, `size80` e `strokeThickness`; as regras medidas leem só os três primeiros e o
+    // traço, e `--editor-group-tab-height` vale 24px (`tabs.css` L73 a L76).
+    let spacing = ModernSpacing::default();
+    let (active_context, inactive_context) = (fx.box_context(0), fx.box_context(1));
+    let active_fill = tab_fill_rect(&active_context);
+    let active_edge = tab_connected_edge_rect(&active_context).expect("a aba ativa fora da linha de cima tem a aresta");
+    let inactive_fill = tab_fill_rect(&inactive_context);
+    let container = &fx.state.container;
+    let tabs_height = fx.layout.header_heights(container, 1).0;
+
+    #[derive(Debug, PartialEq)]
+    struct Insets {
+        top: String,
+        left: String,
+        right: String,
+        bottom: String,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        active: Insets,
+        active_edge_bottom: String,
+        inactive: Insets,
+        align_items: AlignItems,
+        editor_actions_height: String,
+        row_padding_left: String,
+        row_padding_top: String,
+    }
+
+    // `top`, `left`, `right` e `bottom` computados do elemento posicionado contra a caixa da aba
+    let insets = |context: &TabBoxContext, rect: &BoxRect| Insets {
+        top: css_px(rect.top),
+        left: css_px(rect.left),
+        right: css_px(context.tab_width - rect.right),
+        bottom: css_px(context.tab_height - rect.bottom),
+    };
+    let report = Report {
+        active: insets(&active_context, &active_fill),
+        active_edge_bottom: css_px(active_context.tab_height - active_edge.bottom),
+        inactive: insets(&inactive_context, &inactive_fill),
+        align_items: tabs_row_align_items(fx.parent.in_modern_ui_tabs, fx.layout.is_connected(), container.wrapping),
+        editor_actions_height: css_px(connected_editor_actions_height(tabs_height, container.connected_tab_upper_bar, &spacing)),
+        row_padding_left: css_px(fx.layout.strip_padding_left(container)),
+        row_padding_top: css_px(fx.layout.strip_padding_top(container)),
+    };
+
+    assert_eq!(
+        report,
+        Report {
+            active: Insets { top: "-1px".to_string(), left: "0px".to_string(), right: "0px".to_string(), bottom: "-1px".to_string() },
+            active_edge_bottom: "-1px".to_string(),
+            inactive: Insets { top: "3.5px".to_string(), left: "2px".to_string(), right: "2px".to_string(), bottom: "3.5px".to_string() },
+            align_items: AlignItems::FlexStart,
+            editor_actions_height: "31px".to_string(),
+            row_padding_left: "0px".to_string(),
+            row_padding_top: "0px".to_string(),
+        }
+    );
 }
 
 //#endregion
