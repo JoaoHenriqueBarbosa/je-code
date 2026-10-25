@@ -12,7 +12,7 @@ use je_base::actions::ActionRunner;
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::keybindings::{Keybinding, ResolvedKeybinding};
-use je_base::lifecycle::{DisposableRef, DisposableStore, none, plain_disposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, none, plain_disposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::code_action::platform::{AccessibilitySignal, IAccessibilitySignalService};

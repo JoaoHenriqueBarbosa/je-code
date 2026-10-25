@@ -25,7 +25,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
-use je_base::lifecycle::{DisposableStore, to_disposable};
+use je_base::lifecycle::{DisposableStore, IDisposable, to_disposable};
 use je_base::runtime::run_microtasks;
 use je_editor::core_2d::dimension::Dimension;
 use je_platform::contextkey::IContextKeyService;

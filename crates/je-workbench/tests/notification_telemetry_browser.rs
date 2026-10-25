@@ -41,7 +41,7 @@ use je_base::dynamic::{Dynamic, json_stringify};
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::key_codes::KeyCode;
-use je_base::lifecycle::{DisposableStore, to_disposable};
+use je_base::lifecycle::{DisposableStore, IDisposable, to_disposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::runtime::run_microtasks;
 use je_editor::code_action::platform::{I_ACCESSIBILITY_SIGNAL_SERVICE, IAccessibilitySignalService};
