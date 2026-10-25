@@ -20,7 +20,7 @@ use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
 use je_theme::registry::{as_css_variable_name, color_registry};
 use je_theme::size_utils::get_size_registry;
-use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, SPACING_NONE, SPACING_SIZE20, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
+use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -121,6 +121,8 @@ pub struct ModernUiStyle<'a> {
     theme: &'a ColorTheme,
     root: ClassList,
     notification_insets: NotificationInsets,
+    /// `--activity-bar-width` e `--activity-bar-action-height`, que o shell define na raiz.
+    activity_bar_metrics: ActivityBarMetrics,
     /// Só as cores que o tema define de fato existem como `--vscode-*`: o DOM de um teste sem o CSS gerado pelo tema
     /// (`generateColorThemeCSS`) não carrega os padrões registrados.
     explicit_colors_only: bool,
@@ -128,7 +130,7 @@ pub struct ModernUiStyle<'a> {
 
 impl<'a> ModernUiStyle<'a> {
     pub fn new(theme: &'a ColorTheme, root_class_name: &str) -> Self {
-        Self { theme, root: ClassList::new(root_class_name), notification_insets: NotificationInsets::default(), explicit_colors_only: false }
+        Self { theme, root: ClassList::new(root_class_name), notification_insets: NotificationInsets::default(), activity_bar_metrics: ActivityBarMetrics::default(), explicit_colors_only: false }
     }
 
     /// Um DOM em que só as variáveis `--vscode-*` definidas pelo tema existem, sem os padrões registrados.
@@ -621,6 +623,333 @@ impl<'a> ModernUiStyle<'a> {
     /// linhas 29 a 31, `!important`). `None` sem `.modern-ui`: vale o valor inline.
     pub fn pane_header_border_top_width(&self) -> Option<f64> {
         self.has("modern-ui").then_some(0.0)
+    }
+}
+
+/// `--activity-bar-width` e `--activity-bar-action-height` (`None` é a variável indefinida e vale o padrão da cadeia
+/// `var()` de cada regra).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ActivityBarMetrics {
+    pub width: Option<f64>,
+    pub action_height: Option<f64>,
+}
+
+/// Largura e altura calculadas de uma caixa, em px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Um `.action-item` da barra de atividade que as regras de `activityBar.css` testam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActivityItemState {
+    /// `.checked`.
+    pub checked: bool,
+    /// `:hover`.
+    pub hovered: bool,
+}
+
+/// O `.badge-content` de um item da barra de atividade.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActivityBadgeBox {
+    pub top: f64,
+    pub right: f64,
+    pub width: Option<f64>,
+    pub height: f64,
+}
+
+/// A geometria de um `.action-item` das abas de um painel composto (`tabs.css`, linhas 784 a 850): a caixa do item e o
+/// indicador `.active-item-indicator`, em px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneCompositeActionBox {
+    /// `height` calculado do `.action-item`.
+    pub item_height: f64,
+    /// `border-top-width` do `.action-item` (`border-block`).
+    pub item_border_block: f64,
+    /// `height` calculado do indicador.
+    pub indicator_height: f64,
+    /// Distância do topo da caixa de borda do item ao topo do indicador (`top: 50%` com `translateY(-50%)`).
+    pub indicator_top_inset: f64,
+    /// Distância da base do indicador à base da caixa de borda do item.
+    pub indicator_bottom_inset: f64,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// Define `--activity-bar-width` e `--activity-bar-action-height` (`root.style.setProperty`).
+    pub fn set_activity_bar_metrics(&mut self, metrics: ActivityBarMetrics) {
+        self.activity_bar_metrics = metrics;
+    }
+
+    fn activity_bar_action_height(&self, compact: bool) -> f64 {
+        self.activity_bar_metrics.action_height.unwrap_or(if compact { 28.0 } else { 36.0 })
+    }
+
+    /// `background-color` do `.active-item-indicator` da barra de atividade (activityBar.css, linhas 27 a 41 e 94 a 110):
+    /// o item marcado e o item com o ponteiro em cima têm a caixa preenchida; no alto contraste só o contorno.
+    pub fn activity_bar_indicator_background(&self, item: ActivityItemState) -> Option<Color> {
+        if !self.has("modern-ui") {
+            return None;
+        }
+        if self.high_contrast() && (item.checked || item.hovered) {
+            return Some(Color::transparent_color());
+        }
+        match (item.checked, item.hovered) {
+            (true, _) => self.color("modernActivityBarItem.activeBackground"),
+            (false, true) => self.color("modernActivityBarItem.hoverBackground"),
+            _ => None,
+        }
+    }
+
+    /// `color` do `.action-label.codicon` da barra de atividade (activityBar.css, linhas 31 a 45, `!important`).
+    pub fn activity_bar_label_foreground(&self, item: ActivityItemState) -> Option<Color> {
+        if !self.has("modern-ui") {
+            return None;
+        }
+        match (item.checked, item.hovered) {
+            (true, _) => self.color("modernActivityBarItem.activeForeground"),
+            (false, true) => self.color("modernActivityBarItem.hoverForeground"),
+            _ => None,
+        }
+    }
+
+    /// `width`, `height` e `border-radius` do indicador de um item marcado ou com o ponteiro em cima (activityBar.css, linhas
+    /// 17 a 25 e 51 a 56). `part` leva `activitybar` e, no compacto, `compact`.
+    pub fn activity_bar_indicator_box(&self, part: &ClassList) -> Option<(BoxSize, f64)> {
+        if !self.has("modern-ui") || !part.contains("activitybar") {
+            return None;
+        }
+        let side = self.activity_bar_action_height(part.contains("compact")) - 4.0;
+        Some((BoxSize { width: side, height: side }, self.size(CORNER_RADIUS_SMALL)))
+    }
+
+    /// O `.badge-content` da barra de atividade (activityaction.css, linhas 158 a 181; activityBar.css, linhas 248 a 268):
+    /// `empty` é o `:empty`, o selo redondo sem texto.
+    pub fn activity_bar_badge_content(&self, part: &ClassList, empty: bool) -> Option<ActivityBadgeBox> {
+        if !self.has("modern-ui") || !part.contains("activitybar") {
+            return None;
+        }
+        let compact = part.contains("compact");
+        let (top, side) = if compact { (13.0, 13.0) } else { (18.0, 16.0) };
+        Some(ActivityBadgeBox { top, right: 3.0, width: empty.then_some(side), height: side })
+    }
+
+    /// `.pane-composite-part > :is(.title, .header-or-footer)`: com `.modern-ui-tabs` o item ocupa a altura toda do
+    /// cabeçalho, e com `.modern-ui` ela é fixa em `spacing.size320`. `title_height` é a altura do `.title`.
+    pub fn pane_composite_action_box(&self, title_height: f64) -> Option<PaneCompositeActionBox> {
+        if !self.has("modern-ui-tabs") {
+            return None;
+        }
+        let item_height = if self.has("modern-ui") { self.size(SPACING_SIZE320) } else { title_height };
+        let item_border_block = self.size(SPACING_SIZE40);
+        let indicator_height = self.size(SPACING_SIZE240);
+        // `top: 50%` do bloco de conteúdo mais `translateY(-50%)`, com a borda do item de fora.
+        let inset = item_border_block + ((item_height - 2.0 * item_border_block) - indicator_height) / 2.0;
+        Some(PaneCompositeActionBox { item_height, item_border_block, indicator_height, indicator_top_inset: inset, indicator_bottom_inset: inset })
+    }
+
+    /// `top` e `right` do `.badge-content` de um `.badge.compact` num item de ícone (tabs.css, linhas 847 a 850).
+    pub fn pane_composite_badge_content_offsets(&self) -> Option<(f64, f64)> {
+        self.has("modern-ui-tabs").then(|| (13.0, self.size(SPACING_SIZE20)))
+    }
+
+    /// `font-weight` do `.action-label` de uma aba de painel composto (tabs.css, linha 859 para o item sem ícone;
+    /// activityBar.css, linha 193 para o ícone codicon). `None` é o peso que nenhuma regra do Modern UI define.
+    pub fn pane_composite_label_font_weight(&self, icon: bool) -> Option<f64> {
+        let applies = if icon { self.has("modern-ui") } else { self.has("modern-ui-tabs") };
+        applies.then(|| self.size(FONT_WEIGHT_REGULAR))
+    }
+
+    /// `border-top-width` do `.composite.title` do painel inferior (padding.css, linhas 274 a 277): o Modern UI zera a
+    /// borda de 1px que descentraliza as pílulas. `None` mantém a borda clássica.
+    pub fn bottom_panel_title_border_top_width(&self, part: &ClassList) -> Option<f64> {
+        (self.has("modern-ui") && self.has("monaco-workbench") && part.contains("panel") && part.contains("bottom")).then_some(0.0)
+    }
+
+    /// `color` do `.action-label.codicon-more` das abas de um painel composto (activityBar.css, linhas 201 a 206,
+    /// `!important`).
+    pub fn pane_composite_overflow_foreground(&self) -> Option<Color> {
+        (self.has("modern-ui") && self.has("monaco-workbench")).then(|| self.color("icon.foreground")).flatten()
+    }
+
+    /// `border-bottom-width` do `.header` e `border-top-width` do `.footer` de um `.pane-composite-part` que não está vazio
+    /// (activityBar.css, linhas 225 a 232). `None` mantém a borda clássica.
+    pub fn pane_composite_header_footer_border_width(&self, part: &ClassList) -> Option<f64> {
+        (self.has("modern-ui") && self.has("monaco-workbench") && !part.contains("empty")).then_some(0.0)
+    }
+
+    /// `overflow` do `.header` é `visible` (activityBar.css, linhas 225 a 228).
+    pub fn pane_composite_header_overflow_visible(&self, part: &ClassList) -> bool {
+        self.pane_composite_header_footer_border_width(part).is_some()
+    }
+}
+
+/// O `margin` calculado de uma parte flutuante, em px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartMargins {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+/// A geometria da trilha da barra de atividade (`.part.activitybar`) e do seu primeiro item marcado, em px, relativa à
+/// caixa de borda da trilha.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActivityRailGeometry {
+    /// `width` da trilha: a largura do item mais a faixa (`--modern-ui-activitybar-lane`).
+    pub width: f64,
+    /// `width` do `.action-item`.
+    pub action_width: f64,
+    /// Centro do item menos o centro da trilha.
+    pub action_center_offset: f64,
+    /// Borda esquerda do indicador do item marcado.
+    pub indicator_left: f64,
+    /// Borda direita do indicador do item marcado.
+    pub indicator_right: f64,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// `--modern-ui-floating-card-margin` (`floatingPanels.css`, linhas 24 a 34).
+    fn floating_card_margin(&self) -> f64 {
+        if self.compact() { self.size(SPACING_NONE) } else { self.size(SPACING_SIZE40) }
+    }
+
+    /// `--modern-ui-floating-card-inner-margin`.
+    fn floating_card_inner_margin(&self) -> f64 {
+        self.size(SPACING_NONE)
+    }
+
+    /// `--modern-ui-floating-card-outer-margin`: igual ao `--modern-ui-floating-card-margin`.
+    fn floating_card_outer_margin(&self) -> f64 {
+        self.floating_card_margin()
+    }
+
+    /// `--modern-ui-activitybar-lane` (linhas 227 e 294).
+    fn activity_bar_lane(&self) -> f64 {
+        self.size(if self.compact() { SPACING_SIZE40 } else { SPACING_SIZE80 })
+    }
+
+    /// `border-radius` do `.part.activitybar` (floatingPanels.css, linhas 239 a 274 e 293 a 298): arredondada do lado da
+    /// janela, quadrada onde encontra a barra lateral, e com o canto exposto por um painel horizontal arredondado.
+    /// `None` fora do `.floating-panels`. A ordem é a do shorthand.
+    pub fn activity_bar_corner_radii(&self, part: &ClassList) -> Option<CornerRadii> {
+        if !self.has("floating-panels") || !part.contains("activitybar") {
+            return None;
+        }
+        if self.compact() {
+            return Some(CornerRadii::uniform(0.0));
+        }
+        let large = self.size(CORNER_RADIUS_LARGE);
+        if self.has("nosidebar") {
+            return Some(CornerRadii::uniform(large));
+        }
+        let (left, right) = (part.contains("left"), part.contains("right"));
+        let has_panel = !self.has("nopanel");
+        let alignment = |names: &[&str]| names.iter().any(|name| self.has(&format!("panel-alignment-{name}")));
+        let (mut top_left, mut top_right, mut bottom_right, mut bottom_left) = if left {
+            (large, 0.0, 0.0, large)
+        } else {
+            (0.0, large, large, 0.0)
+        };
+        // Linhas 253 a 267: o canto exposto além da barra lateral encurtada pelo painel horizontal.
+        if has_panel && self.has("panel-position-top") {
+            if left && alignment(&["justify", "left"]) {
+                top_right = large;
+            }
+            if right && alignment(&["justify", "right"]) {
+                top_left = large;
+            }
+        }
+        if has_panel && self.has("panel-position-bottom") {
+            if left && alignment(&["justify", "left"]) {
+                bottom_right = large;
+            }
+            if right && alignment(&["justify", "right"]) {
+                bottom_left = large;
+            }
+        }
+        Some(CornerRadii(top_left, top_right, bottom_right, bottom_left))
+    }
+
+    /// `margin` do `.part.activitybar` e do `.part.panel` flutuantes (floatingPanels.css, linhas 76 a 102, 222 a 298 e 532 a
+    /// 535). `None` fora do `.floating-panels` ou para outro tipo de parte.
+    pub fn floating_part_margins(&self, part: &ClassList) -> Option<PartMargins> {
+        if !self.has("floating-panels") {
+            return None;
+        }
+        let (card, inner, outer) = (self.floating_card_margin(), self.floating_card_inner_margin(), self.floating_card_outer_margin());
+        if part.contains("activitybar") {
+            let mut margins = PartMargins { top: inner, right: inner, bottom: card, left: inner };
+            if part.contains("left") {
+                margins.left = outer;
+            } else if part.contains("right") {
+                margins.right = outer;
+                if self.has("nosidebar") && !self.compact() {
+                    margins.left = card;
+                }
+            }
+            if self.has("top-window-edge") {
+                margins.top = outer;
+            }
+            if self.has("nostatusbar") || self.compact() {
+                margins.bottom = outer;
+            }
+            return Some(margins);
+        }
+        if part.any(&["sidebar", "auxiliarybar"]) {
+            // Linhas 39 a 52 e 62 a 67: a barra lateral esquerda encontra a trilha sem vão.
+            let mut margins = PartMargins { top: inner, right: inner, bottom: card, left: card };
+            if part.contains("sidebar") && part.contains("left") && !self.has("noactivitybar") {
+                margins.left = inner;
+            }
+            return Some(margins);
+        }
+        if part.contains("panel") {
+            let mut margins = PartMargins { top: inner, right: inner, bottom: card, left: card };
+            let horizontal = part.any(&["top", "bottom"]);
+            if !self.has("nosidebar")
+                && (self.has("panel-alignment-justify") || self.has("panel-alignment-right"))
+                && horizontal
+                && !part.contains("floating-part-outer-right")
+            {
+                margins.right = card;
+            }
+            if part.contains("top") {
+                margins.bottom = if !self.compact() && part.contains("floating-part-outer-bottom") { outer } else { inner };
+            }
+            if self.has("panel-position-bottom") && !self.has("nopanel") && !self.has("nomaineditorarea") && part.contains("bottom") {
+                margins.top = card;
+            }
+            if self.compact() && part.contains("floating-part-outer-bottom") {
+                margins.bottom = outer;
+            }
+            return Some(margins);
+        }
+        None
+    }
+
+    /// A trilha da barra de atividade flutuante e o indicador do primeiro item marcado (floatingPanels.css, linhas 222 a
+    /// 249, 293 a 325 e 347 a 349; activityBar.css, linhas 17 a 25 e 51 a 56). `None` fora do `.floating-panels`.
+    pub fn activity_rail_geometry(&self, part: &ClassList) -> Option<ActivityRailGeometry> {
+        if !self.has("floating-panels") || !part.contains("activitybar") {
+            return None;
+        }
+        let stroke = self.size(STROKE_THICKNESS);
+        let lane = self.activity_bar_lane();
+        let action_width = self.activity_bar_metrics.width.unwrap_or(48.0);
+        let width = action_width + lane;
+        // `.content` desloca `(lane - 2px) / 2` e começa dentro da borda de um traço.
+        let action_left = stroke + (lane - 2.0 * stroke) / 2.0;
+        let action_height = self.activity_bar_action_height(part.contains("compact"));
+        let indicator_left = action_left + (action_width - action_height + 4.0) / 2.0;
+        Some(ActivityRailGeometry {
+            width,
+            action_width,
+            action_center_offset: action_left + action_width / 2.0 - width / 2.0,
+            indicator_left,
+            indicator_right: indicator_left + (action_height - 4.0),
+        })
     }
 }
 
