@@ -310,8 +310,8 @@ impl TextSystem {
                             width: glyph_run.advance(),
                             dx: 0.0,
                             runs: vec![Run { font: run.font().clone(), size: run.font_size(), glyphs: glyphs.into() }],
-                            ascent: run.metrics().ascent,
-                            descent: run.metrics().descent,
+                            ascent: run.font_metrics().ascent,
+                            descent: run.font_metrics().descent,
                             boxed: false,
                         });
                     }

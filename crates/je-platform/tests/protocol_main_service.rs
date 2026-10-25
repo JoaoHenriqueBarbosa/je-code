@@ -68,7 +68,8 @@ fn summarize(response: &GlobalResponse) -> Summary {
 #[test]
 fn loads_workbench_requests_with_an_empty_referrer() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let log_service: LogServiceRef = guard.add_rc(Rc::new(NullLogService));
+    let log_service = guard.add_rc(Rc::new(NullLogService));
+    let log_service: LogServiceRef = log_service;
 
     run_with_faked_timers(async move {
         let requested: Rc<RefCell<Vec<URI>>> = Rc::default();
@@ -98,7 +99,8 @@ fn loads_workbench_requests_with_an_empty_referrer() {
 #[test]
 fn returns_buffer_data_for_error_responses() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let log_service: LogServiceRef = guard.add_rc(Rc::new(NullLogService));
+    let log_service = guard.add_rc(Rc::new(NullLogService));
+    let log_service: LogServiceRef = log_service;
 
     run_with_faked_timers(async move {
         let request_count = Rc::new(Cell::new(0));
@@ -182,7 +184,8 @@ struct RemoteResourceLoad {
 #[test]
 fn loads_vscode_remote_resource_with_workbench_cors_headers() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let log_service: LogServiceRef = guard.add_rc(Rc::new(NullLogService));
+    let log_service = guard.add_rc(Rc::new(NullLogService));
+    let log_service: LogServiceRef = log_service;
 
     run_with_real_timers(async move {
         let request_headers = Arc::new(Mutex::new(HashMap::new()));
