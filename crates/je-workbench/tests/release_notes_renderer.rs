@@ -8,8 +8,8 @@
 //!   vem antes do `createInstance`, então o renderizador do caso já nasce com ele). Os demais serviços do renderizador
 //!   (configuração, menu de contexto, telemetria, área de transferência) não são lidos por nenhum caso.
 //! - `assertSnapshot(result.toString())` compara com o conteúdo de `__snapshots__/*.snap`, que o porte embute em
-//!   [`TOC_SNAPSHOT`] e [`code_settings_snapshot`]. O `.snap` do oráculo traz quatro espaços onde o conteúdo do caso e o
-//!   modelo do renderizador têm tabulação; o resultado do renderizador preserva a tabulação, e a expectativa a usa.
+//!   [`TOC_SNAPSHOT`] e [`code_settings_snapshot`], byte a byte. O conteúdo do caso tem tabulação e o `.snap` traz quatro
+//!   espaços no lugar dela: a renderização do original troca a tabulação, e a do porte também.
 //! - O `stub(IPreferencesService, <Partial<IPreferencesService>>{ ... getSetting })` é o [`TestPreferencesService`], que só
 //!   tem o `getSetting` (os outros métodos do `Partial` não são lidos).
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` vira o `LeakGuard` criado no começo de cada caso; `new Set(['IN_PRODUCT',
@@ -147,9 +147,9 @@ fn conditions(names: &[&str]) -> HashSet<String> {
 /// `__snapshots__/Release_notes_renderer_Should_render_TOC.0.snap`.
 const TOC_SNAPSHOT: &str = concat!(
     "<table class=\"highlights-table\">\n",
-    "\t<tbody><tr>\n",
-    "\t\t<th>a</th>\n",
-    "\t</tr>\n",
+    "    <tbody><tr>\n",
+    "        <th>a</th>\n",
+    "    </tr>\n",
     "</tbody></table>\n",
     "\n",
     "<br>\n",
@@ -158,13 +158,13 @@ const TOC_SNAPSHOT: &str = concat!(
     "<p>text</p>\n",
     "</blockquote>\n",
     "<div class=\"toc-nav-layout\">\n",
-    "\t<nav id=\"toc-nav\">\n",
-    "\t\t<div>In this update</div>\n",
-    "\t\t<ul>\n",
-    "\t\t\t<li><a href=\"#chat\">test</a></li>\n",
-    "\t\t</ul>\n",
-    "\t</nav>\n",
-    "\t<div class=\"notes-main\">\n",
+    "    <nav id=\"toc-nav\">\n",
+    "        <div>In this update</div>\n",
+    "        <ul>\n",
+    "            <li><a href=\"#chat\">test</a></li>\n",
+    "        </ul>\n",
+    "    </nav>\n",
+    "    <div class=\"notes-main\">\n",
     "\n",
     "<h2 id=\"test\">Test</h2>\n",
     "</div></div>",
