@@ -176,6 +176,8 @@ pub enum AccessibilitySignal {
     DiffLineInserted,
     /// `AccessibilitySignal.diffLineDeleted`: o cursor da visão acessível parou numa linha removida do diff.
     DiffLineDeleted,
+    /// `AccessibilitySignal.diffLineModified`: o cursor do editor de diff parou numa linha modificada.
+    DiffLineModified,
     /// `AccessibilitySignal.inlineSuggestion`: uma sugestão em linha (texto fantasma) apareceu.
     InlineSuggestion,
     /// `AccessibilitySignal.nextEditSuggestion`: uma sugestão da próxima edição (NES) apareceu.

@@ -1,14 +1,15 @@
-//! Porte de `src/vs/editor/browser/widget/diffEditor/`: o editor de diff do Monaco. Esta é a fatia 1: os dois editores internos
+//! Porte de `src/vs/editor/browser/widget/diffEditor/`: o editor de diff do Monaco. A fatia 1 trouxe os dois editores internos
 //! (`components/diffEditorEditors.ts`), o sash (`components/diffEditorSash.ts`), as decorações
 //! (`components/diffEditorDecorations.ts`), o editor delegante (`delegatingEditorImpl.ts`) e o editor de diff embutido
-//! (`embeddedDiffEditorWidget.ts`), mais o `registrations.contribution.ts` de que as decorações dependem.
+//! (`embeddedDiffEditorWidget.ts`), mais o `registrations.contribution.ts` de que as decorações dependem. A fatia 2 trouxe o
+//! `diffEditorWidget.ts` ([`diff_editor_widget`]): o `DiffEditorWidget`, que implementa [`delegating_editor_impl::DelegatingEditor`],
+//! [`embedded_diff_editor_widget::EmbeddedDiffEditorBase`] e o `IDiffEditorWidget` do editor de vários arquivos, e fica com a
+//! criação dos editores internos, do `DiffEditorEditors` e do `DiffEditorSash`.
 //!
-//! Fatias seguintes (ainda não portadas):
-//! - **Fatia 2:** `diffEditorWidget.ts` (o `DiffEditorWidget`, que implementa [`delegating_editor_impl::DelegatingEditor`] e
-//!   [`embedded_diff_editor_widget::EmbeddedDiffEditorBase`], e fica com a criação dos editores internos, do
-//!   `DiffEditorEditors` e do `DiffEditorSash`).
-//! - **Fatia 3:** as features (`hideUnchangedRegions`, `movedBlocksLines`, `gutter`, `revertButtons`, `overviewRuler`) e o
-//!   `accessibleDiffViewer`.
+//! Fatia seguinte (ainda não portada):
+//! - **Fatia 3:** as features (`hideUnchangedRegions`, `movedBlocksLines`, `gutter`, `revertButtons`, `overviewRuler`), o
+//!   `accessibleDiffViewer` e o `diffEditorViewZones`. O widget já as cria como o original, pelo contrato
+//!   [`feature_contracts::DiffEditorFeatures`], que a fatia 3 implementa.
 //!
 //! Onde ficam os arquivos `diff_editor_*` que já existiam em `crates/je-editor/src/`: `diff_editor_options`, `diff_editor_utils`,
 //! `diff_editor_view_model`, `diff_editor_view_zones` e `diff_provider_factory_service` continuam onde estão, porque outros
@@ -23,7 +24,7 @@
 //!   [`MOVED_CODE_BLOCK_PADDING`] (`MovedBlocksLinesFeature.movedCodeBlockPadding`) moram aqui até a fatia 3, que as reexporta
 //!   nas features.
 //! - **`IDiffCodeEditorWidgetOptions`** (de `diffEditorWidget.ts`) é [`DiffCodeEditorWidgetOptions`], aqui porque os componentes
-//!   o recebem; a fatia 2 o reexporta do módulo do widget.
+//!   o recebem; o módulo do widget o reexporta.
 
 use std::rc::Rc;
 
@@ -32,7 +33,9 @@ use crate::multi_diff_editor_options::DiffEditorVariant;
 
 pub mod components;
 pub mod delegating_editor_impl;
+pub mod diff_editor_widget;
 pub mod embedded_diff_editor_widget;
+pub mod feature_contracts;
 pub mod registrations_contribution;
 
 /// `OverviewRulerFeature.ENTIRE_DIFF_OVERVIEW_WIDTH` (`ONE_OVERVIEW_WIDTH * 2`, com `ONE_OVERVIEW_WIDTH = 15`).

@@ -65,8 +65,9 @@ pub struct DiffEditorModel {
     pub modified: Rc<TextModel>,
 }
 
-/// `IDiffEditorViewModel`.
-pub trait IDiffEditorViewModel: IDisposable {
+/// `IDiffEditorViewModel`. O `Any` como supertrait permite ao `DiffEditorWidget.setModel` recuperar o [`DiffEditorViewModel`]
+/// concreto (o `as DiffEditorViewModel` do original), do mesmo jeito que `IEditorContribution` com `getContribution<T>`.
+pub trait IDiffEditorViewModel: IDisposable + std::any::Any {
     fn model(&self) -> &DiffEditorModel;
 
     fn wait_for_diff(&self) -> Promise<()>;
