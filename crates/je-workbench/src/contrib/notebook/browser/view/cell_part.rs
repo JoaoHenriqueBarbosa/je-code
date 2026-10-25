@@ -28,6 +28,30 @@ use crate::contrib::notebook::common::notebook_execution_state_service::ICellExe
 /// A prioridade de `DOM.modify`: tarefas de escrita no DOM rodam por último no quadro.
 pub const MODIFY_PRIORITY: i32 = -10000;
 
+/// A parte de `ICellViewModel.layoutInfo` que as duas formas de célula (código e markup) compartilham e que as partes de
+/// `cellParts` leem sem distinguir uma da outra.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellLayoutInfoCommon {
+    pub editor_width: f64,
+    pub editor_height: f64,
+    pub status_bar_height: f64,
+    pub bottom_toolbar_offset: f64,
+}
+
+/// `element.layoutInfo` de uma `ICellViewModel`, nos campos de [`CellLayoutInfoCommon`].
+pub fn common_layout_info(cell: &CellViewModel) -> CellLayoutInfoCommon {
+    match cell {
+        CellViewModel::Code(cell) => {
+            let info = cell.layout_info();
+            CellLayoutInfoCommon { editor_width: info.editor_width, editor_height: info.editor_height, status_bar_height: info.status_bar_height, bottom_toolbar_offset: info.bottom_toolbar_offset }
+        }
+        CellViewModel::Markup(cell) => {
+            let info = cell.layout_info();
+            CellLayoutInfoCommon { editor_width: info.editor_width, editor_height: info.editor_height, status_bar_height: info.status_bar_height, bottom_toolbar_offset: info.bottom_toolbar_offset }
+        }
+    }
+}
+
 /// `safeInvokeNoArg`: o erro lançado vai para `onUnexpectedError` e a chamada devolve `None`.
 fn safe_invoke_no_arg<T>(func: impl FnOnce() -> T) -> Option<T> {
     match errors::catch(func) {
