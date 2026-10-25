@@ -95,12 +95,14 @@ pub fn check_proposed_api_enabled(extension: &ExtensionDescription, proposal: &s
     )))
 }
 
-/// `IExtensionDescription`, reduzido ao `extensionLocation`.
+/// `IExtensionDescription`, reduzido ao `extensionLocation`, ao `displayName` e ao `name`.
 #[derive(Clone, Debug)]
 pub struct IExtensionDescription {
     pub extension_location: URI,
     /// `displayName`, quando o manifesto declara.
     pub display_name: Option<String>,
+    /// `name`, a parte do identificador depois do editor, quando o descritor a traz.
+    pub name: Option<String>,
 }
 
 /// `ActivationKind`.

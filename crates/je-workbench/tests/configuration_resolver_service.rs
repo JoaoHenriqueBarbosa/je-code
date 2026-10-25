@@ -619,7 +619,7 @@ fn disallows_nested_keys_77289() {
 #[test]
 fn supports_extension_dir() {
     let f = Fixture::new();
-    f.extension_service.stub_get_extension("publisher.extId", IExtensionDescription { extension_location: uri_file("/some/path"), display_name: None });
+    f.extension_service.stub_get_extension("publisher.extId", IExtensionDescription { extension_location: uri_file("/some/path"), display_name: None, name: None });
     run_with_faked_timers(async move {
         assert_eq!(f.resolve(Some(&f.workspace), "${extensionInstallFolder:publisher.extId}").await, je_platform::resources::fs_path(&uri_file("/some/path")));
     });

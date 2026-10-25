@@ -249,7 +249,7 @@ impl IExtensionService for ExtensionServiceMock {
 
     fn get_extension(&self, id: &str) -> Promise<Option<IExtensionDescription>> {
         assert_eq!(id, EXTENSION_ID);
-        Promise::resolved(self.current_location.clone().map(|extension_location| IExtensionDescription { extension_location, display_name: None }))
+        Promise::resolved(self.current_location.clone().map(|extension_location| IExtensionDescription { extension_location, display_name: None, name: None }))
     }
 
     fn on_did_register_extensions(&self) -> Event<()> {

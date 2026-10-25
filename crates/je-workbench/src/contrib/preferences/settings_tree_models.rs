@@ -914,7 +914,7 @@ impl IDisposable for SettingsTreeSettingElement {
 }
 
 /// `createSettingMatchRegExp`: o padrão com `*` como curinga, sem distinguir a caixa.
-fn create_setting_match_reg_exp(pattern: &str) -> RegExp {
+pub(crate) fn create_setting_match_reg_exp(pattern: &str) -> RegExp {
     let units: Vec<u16> = pattern.encode_utf16().collect();
     let pattern = escape_reg_exp_characters(&units).to_string_lossy().replace("\\*", ".*");
     RegExp::from_str(&format!("^{pattern}$"), "i").unwrap_or_else(|error| errors::throw(Error::named("SyntaxError", error.message())))
@@ -1478,6 +1478,8 @@ pub struct SearchResultModel {
     search_result_count: Cell<Option<usize>>,
     settings_order_by_toc_index: Option<HashMap<String, f64>>,
     ai_filter_enabled: Cell<bool>,
+    /// Gancho de teste: quantas vezes `update_children` rodou (o `sinon.spy(model, 'updateChildren').callCount` do original).
+    update_children_calls: Cell<usize>,
 }
 
 impl Deref for SearchResultModel {
@@ -1507,6 +1509,7 @@ impl SearchResultModel {
             search_result_count: Cell::new(None),
             settings_order_by_toc_index,
             ai_filter_enabled: Cell::new(false),
+            update_children_calls: Cell::new(0),
         });
         model.update(&ITOCEntry { id: Self::ID.to_owned(), label: String::new(), order: None, children: None, settings: None, hide: None });
         model
@@ -1631,6 +1634,7 @@ impl SearchResultModel {
     }
 
     pub fn update_children(&self) {
+        self.update_children_calls.set(self.update_children_calls.get() + 1);
         self.base.update(&ITOCEntry {
             id: Self::ID.to_owned(),
             label: Self::ID.to_owned(),
@@ -1717,6 +1721,16 @@ impl SearchResultModel {
             raw[order as usize] = Some(result);
         }
         self.update_children();
+    }
+
+    /// Gancho de teste: quantas vezes `update_children` rodou desde o último [`Self::reset_update_children_calls`].
+    pub fn update_children_calls(&self) -> usize {
+        self.update_children_calls.get()
+    }
+
+    /// Gancho de teste: o `spy.resetHistory()`.
+    pub fn reset_update_children_calls(&self) {
+        self.update_children_calls.set(0);
     }
 
     pub fn get_unique_results_count(&self) -> usize {
