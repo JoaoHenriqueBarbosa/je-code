@@ -16,4 +16,5 @@ pub mod settings_layout;
 pub mod settings_search_menu;
 pub mod settings_tree;
 pub mod settings_tree_models;
+pub mod settings_widgets;
 pub mod toc_tree;

@@ -18,7 +18,9 @@
 //!   ([`Tree::set_right`], [`Tree::set_bottom`]), `z-index` entre irmãos, `pointer-events` e `display:
 //!   none`.
 //! - **Acessibilidade.** Cada nó declara papel e rótulo (`role`, `aria-label`), para a árvore do
-//!   AccessKit.
+//!   AccessKit, e guarda os demais atributos do elemento (`aria-checked`, `aria-disabled`, `disabled`,
+//!   `data-*`, `tabindex`, `draggable`) como texto, com `setAttribute`/`getAttribute`/`removeAttribute`
+//!   ([`Tree::set_attribute`], [`Tree::attribute`], [`Tree::remove_attribute`]).
 
 pub mod events;
 mod tree;
