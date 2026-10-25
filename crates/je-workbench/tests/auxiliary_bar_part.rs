@@ -331,7 +331,8 @@ fn overflows_new_chat_before_settings_and_restores_them_in_reverse_order() {
 
         // setup: `root = append(document.body, $('.monaco-workbench'))`
         let ui = Ui::new();
-        let root = ui.tree_mut().create(ui.root(), Role::Generic);
+        let ui_root = ui.root();
+        let root = ui.tree_mut().create(ui_root, Role::Generic);
         ui.tree_mut().set_bounds(root, Rect::new(0.0, 0.0, 1000.0, 800.0));
 
         // `root.className = 'monaco-workbench ' + presentation`

@@ -78,7 +78,8 @@ fn moves_the_primary_side_bar_class_to_the_inward_boundary_sash() {
     }));
 
     let ui = Ui::new();
-    let container = ui.tree_mut().create(ui.root(), Role::Generic);
+    let root = ui.root();
+    let container = ui.tree_mut().create(root, Role::Generic);
     let left_sash = guard.add_rc(Sash::new_vertical(&ui, container, Rc::new(|_: &Sash| 0.0), SashOptions::default()));
     let right_sash = guard.add_rc(Sash::new_vertical(&ui, container, Rc::new(|_: &Sash| 0.0), SashOptions::default()));
     let (left_sash_element, right_sash_element) = {
