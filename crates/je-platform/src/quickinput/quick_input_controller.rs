@@ -10,8 +10,8 @@
 //!   [`QuickInputUi`], que o desenho nativo lê.
 //! - **Medição.** `filterContainer.getBoundingClientRect()` (usado só por `alignOverlayInput`) é calculado do retângulo do widget:
 //!   o `.quick-input-header` tem `padding: 6px 6px 4px 6px` e a caixa tem a altura de `setHeight` (a de 26 do
-//!   `verticalPadding` quando não há). A altura da barra de título não foi medida e entra como [`QuickInputUi::set_title_bar_height`]
-//!   (0 por padrão).
+//!   `verticalPadding` quando não há). A altura da barra de título (`.quick-input-titlebar`) sai do CSS
+//!   (`QuickInputUi::title_bar_content_height`), e o deslocamento do topo (`quickPickTop`) vem do `ILayoutService`.
 //! - **Animação de fechamento.** O CSS dá `animation` ao widget só com `.modern-ui.monaco-enable-motion` num ancestral e fora do
 //!   modo `overlay`; `style.animation = 'none'` (propriedade do estilo do widget) a suprime. [`QuickInputCloseAnimation`] é o
 //!   `Animation` do Web Animations: `finish()` e `cancel()` disparam os eventos `finish` e `cancel` que o controlador escuta.
@@ -26,7 +26,8 @@
 //!   `je_base::promise`. O `Event.debounce` de 100 ms do `input` é o de `je_base::event`.
 //! - **Aux windows.** O `ILayoutService` daqui tem um contêiner só, então `reparentUI` por janela não existe; `reparent_ui` só
 //!   troca o contêiner (o `onWillUnregisterWindow` é do chamador).
-//! - **Fica de fora** o `QuickTree` e a árvore (`QuickInputTreeController`), que têm porte próprio.
+//! - **A árvore.** O `QuickTree` e a árvore (`QuickInputTreeController`) têm porte próprio em [`super::tree`]; o controlador
+//!   cria a árvore no `getUI()`, a liga ao campo de texto como a lista, e oferece `createQuickTree`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -36,6 +37,8 @@ use je_base::async_::{Sequencer, disposable_timeout};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::event::{DebounceOptions, Emitter, Event};
+use je_base::json;
+use je_base::json_formatter::json_stringify;
 use je_base::layout::{AnchorAlignment, AnchorPosition, IAnchor, ILayout2DOptions, IRect, ISize, layout2d};
 use je_base::lifecycle::{Disposable, DisposableStore, IDisposable};
 use je_base::promise::Promise;
@@ -46,6 +49,7 @@ use super::quick_input::{
     IInputBox, IInputOptions, IKeyMods, IPickOptions, IQuickInput, IQuickNavigateConfiguration, IQuickPick, IQuickPickItem,
     IQuickPickItemButtonContext, InputValidationResult, PickActiveItem, QuickInputAlignment, QuickInputAlignmentSetting, QuickInputAnchor,
     QuickInputAnchorPosition, QuickInputButtonRef, QuickInputHideReason, QuickInputRef, QuickInputType, QuickPickFocus, QuickPickInput, QuickPicks,
+    QuickTreeItemChecked,
 };
 use super::quick_input_box::{QuickInputBox, QuickInputBoxStyles, QuickInputFocus, QuickInputFocusTarget};
 use super::quick_input_browser::{
@@ -54,9 +58,12 @@ use super::quick_input_browser::{
     quick_input_type_context_key,
 };
 use super::quick_input_list::QuickInputList;
+use super::tree::quick_input_tree_controller::QuickInputTreeController;
+use super::tree::quick_tree::QuickTree;
 use crate::contextkey::contextkey::{IContextKey, IContextKeyService};
 use crate::contextview::context_view::{AnchorTarget, get_anchor_rect};
 use crate::contextview::view_element::ViewElement;
+use crate::hover::hover_service::IHoverDelegate;
 use crate::layout::layout_service::ILayoutService;
 use crate::storage::storage::{StorageService, StorageScope, StorageTarget};
 
@@ -106,6 +113,12 @@ pub struct IQuickInputOptions {
     pub set_context_key: Rc<dyn Fn(Option<&str>)>,
     pub link_opener_delegate: Rc<dyn Fn(&str)>,
     pub styles: IQuickInputStyles,
+    /// `hoverDelegate`: o delegate de hover das linhas da lista e da árvore (por exemplo, o
+    /// [`super::quick_input_hover::QuickInputHoverDelegate`]).
+    pub hover_delegate: Option<Rc<dyn IHoverDelegate>>,
+    /// `isDark(themeService.getColorTheme().type)`: o `IThemeService` que o renderizador da árvore consulta para escolher o
+    /// ícone (`dark` ou `light`).
+    pub is_dark_theme: Rc<dyn Fn() -> bool>,
 }
 
 /// `QuickInputViewState`.
@@ -156,6 +169,7 @@ type PickResult = Option<Vec<IQuickPickItem>>;
 enum Created {
     Pick(Weak<QuickPick>),
     Input(Weak<InputBox>),
+    Tree(Weak<QuickTree>),
 }
 
 fn same_object<A: ?Sized, B: ?Sized>(a: &Rc<A>, b: &Rc<B>) -> bool {
@@ -270,11 +284,14 @@ pub struct QuickInputUi {
     focus: Rc<QuickInputFocus>,
     input_box: Rc<QuickInputBox>,
     list: Rc<QuickInputList>,
+    tree: Rc<QuickInputTreeController>,
     title_text: RefCell<String>,
     description_text: RefCell<String>,
     visible_count: Cell<usize>,
     count: Cell<usize>,
     check_all_checked: Cell<bool>,
+    /// O estado `mixed` do `TriStateCheckbox` do `checkAll` (só o `QuickTree` o usa).
+    check_all_mixed: Cell<bool>,
     check_all_enabled: Cell<bool>,
     left_actions: RefCell<(Vec<ActionRef>, Vec<ActionRef>)>,
     right_actions: RefCell<(Vec<ActionRef>, Vec<ActionRef>)>,
@@ -292,15 +309,19 @@ pub struct QuickInputUi {
     ignore_focus_out: Cell<bool>,
     key_mods: Cell<IKeyMods>,
     context_key: RefCell<Option<String>>,
-    title_bar_height: Cell<f64>,
     inert: Cell<bool>,
     on_did_accept: Rc<Emitter<()>>,
     on_did_custom: Rc<Emitter<()>>,
     on_did_trigger_button: Rc<Emitter<QuickInputButtonRef>>,
     on_container_key_up: Rc<Emitter<QuickInputKeyUp>>,
+    on_did_change_check_all: Rc<Emitter<()>>,
 }
 
 impl QuickInputUi {
+    /// A árvore do `QuickTree` (`ui.tree`).
+    pub fn tree(&self) -> &Rc<QuickInputTreeController> {
+        &self.tree
+    }
     /// O prefixo dos ids do widget (`idPrefix`).
     pub fn id_prefix(&self) -> &str {
         &self.id_prefix
@@ -414,9 +435,16 @@ impl QuickInputUi {
         self.context_key.borrow().clone()
     }
 
-    /// A altura da barra de título quando visível (não medida: 0 até o desenho informar).
-    pub fn set_title_bar_height(&self, height: f64) {
-        self.title_bar_height.set(height);
+    /// A altura da `.quick-input-titlebar` (o `getBoundingClientRect().height` do original), calculada do CSS: o título tem
+    /// `padding: 3px 0` e a linha de `13px * 1.4em` do `.monaco-workbench` (a linha só existe com texto); as barras de ação têm
+    /// ícones de 16px com `padding: 2px`. A barra é `display: flex; align-items: center`, então vale o maior dos itens.
+    fn title_bar_content_height(&self) -> f64 {
+        const TITLE_PADDING: f64 = 3.0 * 2.0;
+        const TITLE_LINE_HEIGHT: f64 = 13.0 * 1.4;
+        const ACTION_HEIGHT: f64 = 16.0 + 2.0 * 2.0;
+        let has_actions = [self.left_actions.borrow(), self.right_actions.borrow()].iter().any(|actions| !actions.0.is_empty() || !actions.1.is_empty());
+        let title = TITLE_PADDING + if self.title_text.borrow().is_empty() { 0.0 } else { TITLE_LINE_HEIGHT };
+        if has_actions { title.max(ACTION_HEIGHT) } else { title }
     }
 
     pub fn set_key_mods(&self, key_mods: IKeyMods) {
@@ -442,16 +470,18 @@ impl QuickInputUi {
         self.on_container_key_up.fire(event);
     }
 
-    /// `checkAll.onChange`: marca ou desmarca tudo que está visível na lista.
+    /// `checkAll.onChange`: marca ou desmarca tudo que está visível na lista, e avisa quem ouve o `checkAll` (o `QuickTree`).
     pub fn set_check_all(&self, checked: bool) {
         self.check_all_checked.set(checked);
+        self.check_all_mixed.set(false);
         self.list.set_all_visible_checked(checked);
+        self.on_did_change_check_all.fire(());
     }
 
     /// O retângulo da caixa de filtro (`filterContainer.getBoundingClientRect()`), medido do retângulo do widget.
     pub fn filter_container_rect(&self) -> IRect {
         let widget = self.container.rect();
-        let title = if self.title_bar.is_hidden() { 0.0 } else { self.title_bar_height.get() };
+        let title = if self.title_bar.is_hidden() { 0.0 } else { self.title_bar_content_height() };
         IRect {
             top: widget.top + title + HEADER_PADDING_TOP,
             left: widget.left + HEADER_PADDING_LEFT,
@@ -473,6 +503,7 @@ impl QuickInputUi {
         *self.right_actions.borrow_mut() = (Vec::new(), Vec::new());
         *self.inline_actions.borrow_mut() = (Vec::new(), Vec::new());
         self.check_all_checked.set(false);
+        self.check_all_mixed.set(false);
         // ui.inputBox.value = ''; Avoid triggering an event.
         self.input_box.set_placeholder("");
         self.input_box.set_password(false);
@@ -488,6 +519,8 @@ impl QuickInputUi {
         self.list.set_match_on_detail(false);
         self.list.set_match_on_label(true);
         self.list.set_sort_by_label(true);
+        self.tree.update_filter_options(Some(true), Some(false));
+        self.tree.set_sort_by_label(true);
         self.ignore_focus_out.set(false);
         self.input_box.clear_toggles();
         self.input_box.clear_actions();
@@ -516,6 +549,25 @@ impl IQuickInputUi for QuickInputUi {
     }
     fn list(&self) -> Rc<dyn IQuickInputListUi> {
         self.list.clone()
+    }
+    fn tree(&self) -> Rc<QuickInputTreeController> {
+        self.tree.clone()
+    }
+    /// `checkAll.checked` do `TriStateCheckbox`.
+    fn check_all_state(&self) -> QuickTreeItemChecked {
+        if self.check_all_mixed.get() { QuickTreeItemChecked::Mixed } else { QuickTreeItemChecked::Bool(self.check_all_checked.get()) }
+    }
+    /// `checkAll.checked = state`: não dispara `onChange` (o original só o dispara no clique).
+    fn set_check_all_state(&self, state: QuickTreeItemChecked) {
+        self.check_all_checked.set(state == QuickTreeItemChecked::Bool(true));
+        self.check_all_mixed.set(state == QuickTreeItemChecked::Mixed);
+    }
+    fn on_did_change_check_all(&self) -> Event<()> {
+        self.on_did_change_check_all.event()
+    }
+    /// `count.setCount(count)`.
+    fn set_count(&self, count: usize) {
+        self.count.set(count);
     }
     fn title_text(&self) -> String {
         self.title_text.borrow().clone()
@@ -777,6 +829,7 @@ impl QuickInputController {
         created.iter().find_map(|entry| match entry {
             Created::Pick(weak) => weak.upgrade().filter(|pick| same_object(&current, pick)).map(|pick| QuickInputRef::QuickPick(pick)),
             Created::Input(weak) => weak.upgrade().filter(|input| same_object(&current, input)).map(|input| QuickInputRef::InputBox(input)),
+            Created::Tree(weak) => weak.upgrade().filter(|tree| same_object(&current, tree)).map(|tree| QuickInputRef::QuickTree(tree)),
         })
     }
 
@@ -868,6 +921,7 @@ impl QuickInputController {
         let list_id = format!("{}list", self.options.id_prefix);
         let list = QuickInputList::new(container.clone(), focus.clone(), &list_id);
         input_box.set_attribute("aria-controls", &list_id);
+        let tree = QuickInputTreeController::new(&container, self.options.hover_delegate.clone(), self.options.is_dark_theme.clone());
 
         let ui = Rc::new(QuickInputUi {
             controller: self.this.clone(),
@@ -891,11 +945,13 @@ impl QuickInputController {
             focus,
             input_box,
             list,
+            tree,
             title_text: RefCell::new(String::new()),
             description_text: RefCell::new(String::new()),
             visible_count: Cell::new(0),
             count: Cell::new(0),
             check_all_checked: Cell::new(false),
+            check_all_mixed: Cell::new(false),
             check_all_enabled: Cell::new(true),
             left_actions: RefCell::new((Vec::new(), Vec::new())),
             right_actions: RefCell::new((Vec::new(), Vec::new())),
@@ -913,16 +969,18 @@ impl QuickInputController {
             ignore_focus_out: Cell::new(false),
             key_mods: Cell::new(self.key_mods.get()),
             context_key: RefCell::new(None),
-            title_bar_height: Cell::new(0.0),
             inert: Cell::new(false),
             on_did_accept: self.on_did_accept.clone(),
             on_did_custom: self.on_did_custom.clone(),
             on_did_trigger_button: self.on_did_trigger_button.clone(),
             on_container_key_up: Emitter::new(),
+            on_did_change_check_all: Emitter::new(),
         });
         self.base.register(ui.on_container_key_up.clone());
+        self.base.register(ui.on_did_change_check_all.clone());
         self.base.register(ui.input_box.clone());
         self.base.register(ui.list.clone());
+        self.base.register(ui.tree.clone());
         self.wire_ui(&ui);
         *self.ui.borrow_mut() = Some(ui.clone());
         self.update_styles();
@@ -999,6 +1057,51 @@ impl QuickInputController {
                 0,
                 Some(leave_store.clone()),
             );
+        }));
+
+        // Tree
+        let tree = ui.tree.clone();
+        let (tree_for_focus, box_for_tree_focus) = (tree.clone(), input_box.clone());
+        self.base.register(tree.on_did_change_focus().listen(move |_| {
+            if box_for_tree_focus.has_focus() {
+                match tree_for_focus.get_active_descendant() {
+                    Some(active_descendant) => {
+                        box_for_tree_focus.set_attribute("aria-activedescendant", &active_descendant);
+                        box_for_tree_focus.set_list_focus_mode(true);
+                    }
+                    None => {
+                        box_for_tree_focus.remove_attribute("aria-activedescendant");
+                        box_for_tree_focus.set_list_focus_mode(false);
+                    }
+                }
+            }
+        }));
+        let (weak_tree_leave, box_for_tree_leave, tree_for_leave) = (weak.clone(), input_box.clone(), tree.clone());
+        let tree_leave_store = self.base_store();
+        self.base.register(tree.on_leave().listen(move |()| {
+            // Defer to avoid the input field reacting to the triggering key.
+            let (weak, input_box, tree) = (weak_tree_leave.clone(), box_for_tree_leave.clone(), tree_for_leave.clone());
+            disposable_timeout(
+                move || {
+                    let Some(this) = weak.upgrade() else { return };
+                    if this.controller.borrow().is_none() {
+                        return;
+                    }
+                    input_box.set_focus();
+                    tree.clear_focus();
+                },
+                0,
+                Some(tree_leave_store.clone()),
+            );
+        }));
+        // Wire up tree's accept event to the UI's accept emitter for non-pickable items
+        let on_did_accept = self.on_did_accept.clone();
+        self.base.register(tree.on_did_accept().listen(move |()| on_did_accept.fire(())));
+        let weak_for_height = weak.clone();
+        self.base.register(tree.on_did_change_content_height().listen(move |()| {
+            if let Some(this) = weak_for_height.upgrade() {
+                this.update_layout();
+            }
         }));
 
         self.base.register(input_box.on_key_down().listen({
@@ -1091,6 +1194,14 @@ impl QuickInputController {
     pub fn create_quick_widget(&self) -> Rc<QuickWidget> {
         let ui = self.get_ui();
         QuickWidget::new(ui)
+    }
+
+    /// `createQuickTree()`.
+    pub fn create_quick_tree(&self) -> Rc<QuickTree> {
+        let ui = self.get_ui();
+        let tree = QuickTree::new(ui);
+        self.created.borrow_mut().push(Created::Tree(Rc::downgrade(&tree)));
+        tree
     }
 
     /// `withQuickInputAnchor(anchor, anchorPosition, operation)`.
@@ -1518,6 +1629,7 @@ impl QuickInputController {
         toggle_display(&ui.message, flag(visibilities.message));
         toggle_display(&ui.progress_bar, flag(visibilities.progress_bar));
         ui.list.set_displayed(flag(visibilities.list));
+        ui.tree.set_displayed(flag(visibilities.tree));
         for (class_name, on) in [("show-checkboxes", flag(visibilities.check_box)), ("hidden-input", !flag(visibilities.input_box) && !flag(visibilities.description))] {
             if on {
                 ui.container.class_list_add(class_name);
@@ -1620,8 +1732,13 @@ impl QuickInputController {
 
     /// `toggle()`.
     pub fn toggle(&self) {
-        if self.is_visible() && self.current_can_select_many() {
+        if !self.is_visible() {
+            return;
+        }
+        if self.current_can_select_many() {
             self.get_ui().list.toggle_checkbox();
+        } else if matches!(self.current_quick_input(), Some(QuickInputRef::QuickTree(_))) {
+            self.get_ui().tree.toggle_checkbox();
         }
     }
 
@@ -1792,6 +1909,7 @@ impl QuickInputController {
         }
         ui.input_box.layout();
         ui.list.layout(Some(list_height));
+        ui.tree.layout(Some(list_height));
     }
 
     fn align_overlay_input(&self, ui: &Rc<QuickInputUi>, anchor: IRect) {
@@ -1856,20 +1974,23 @@ impl QuickInputController {
     // Estado da posição (`viewState`) e o arrastar.
     // -----------------------------------------------------------------------------------------
 
-    /// Lê o `{"top":n,"left":n}` que [`Self::save_view_state`] escreve (só esse formato, só números).
+    /// `loadViewState`: o `JSON.parse` do valor guardado (estrito, então texto inválido, comentário ou vírgula final dão `undefined`).
     fn load_view_state(storage: &dyn StorageService) -> Option<QuickInputViewState> {
         let data = storage.get(VIEWSTATE_STORAGE_KEY, StorageScope::Application, Some("{}"))?;
-        let number = |key: &str| -> Option<f64> {
-            let marker = format!("\"{key}\":");
-            let start = data.find(&marker)? + marker.len();
-            let rest = data[start..].trim_start();
-            let end = rest.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))).unwrap_or(rest.len());
-            rest[..end].parse::<f64>().ok()
+        let units: Vec<u16> = data.encode_utf16().collect();
+        let mut errors = Vec::new();
+        let options = json::ParseOptions { disallow_comments: true, allow_trailing_comma: false, allow_empty_content: false };
+        let parsed = json::parse(&units, &mut errors, options).filter(|_| errors.is_empty())?;
+        let json::Value::Object(object) = parsed else { return None };
+        let number = |key: &str| match object.get(key) {
+            Some(json::Value::Number(value)) => Some(*value),
+            _ => None,
         };
         let (top, left) = (number("top"), number("left"));
         (top.is_some() || left.is_some()).then_some(QuickInputViewState { top, left })
     }
 
+    /// `saveViewState`: o `JSON.stringify` do estado (as propriedades `undefined` não entram).
     fn save_view_state(&self, view_state: Option<QuickInputViewState>) {
         let is_main_window = Rc::ptr_eq(&self.layout_service.active_container(), &self.layout_service.main_container());
         if !is_main_window {
@@ -1877,9 +1998,14 @@ impl QuickInputController {
         }
         match view_state {
             Some(state) => {
-                let fields: Vec<String> = [("top", state.top), ("left", state.left)].into_iter().filter_map(|(key, value)| value.map(|value| format!("\"{key}\":{value}"))).collect();
-                let json = format!("{{{}}}", fields.join(","));
-                self.storage_service.store(VIEWSTATE_STORAGE_KEY, json.as_str().into(), StorageScope::Application, StorageTarget::Machine);
+                let mut object = json::Object::new();
+                for (key, value) in [("top", state.top), ("left", state.left)] {
+                    if let Some(value) = value {
+                        object.insert(key.into(), json::Value::Number(value));
+                    }
+                }
+                let text = json_stringify(&json::Value::Object(object), None);
+                self.storage_service.store(VIEWSTATE_STORAGE_KEY, text.as_str().into(), StorageScope::Application, StorageTarget::Machine);
             }
             None => self.storage_service.remove(VIEWSTATE_STORAGE_KEY, StorageScope::Application),
         }
@@ -1935,7 +2061,7 @@ impl QuickInputController {
     }
 
     fn top_snap_value(&self) -> f64 {
-        self.title_bar_offset.get()
+        self.layout_service.active_container_offset().quick_pick_top
     }
 
     fn center_y_snap_value(&self) -> f64 {

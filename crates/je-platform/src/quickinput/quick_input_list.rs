@@ -15,8 +15,8 @@
 //!   só dispara quando o valor muda.
 //! - **Foco assíncrono de página.** O `focusNextPage` do `ListWidget` espera um `timeout(0)` entre rolar e focar; aqui a
 //!   segunda volta roda na hora (o desenho nativo não tem a pintura intermediária que o motivou).
-//! - **Dicas (`showHover`, `toggleHover`).** Dependem do `WorkbenchHoverDelegate`, ainda não portado; a lista só guarda se há
-//!   tooltip no elemento focado ([`QuickInputList::focused_tooltip`]).
+//! - **Dicas (`showHover`, `toggleHover`).** O `WorkbenchHoverDelegate` (`crate::hover::workbench_hover_delegate`) mostra a dica na
+//!   hora do desenho; a lista só guarda se há tooltip no elemento focado ([`QuickInputList::focused_tooltip`]).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
