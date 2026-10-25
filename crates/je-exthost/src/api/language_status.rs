@@ -76,7 +76,7 @@ struct Members {
 impl Members {
     fn read(&mut self, name: &str, read: impl Fn(&StatusEntry) -> JsData + 'static) {
         let items = self.items.clone();
-        self.getters.push((name.to_owned(), Rc::new(move |this, _| Ok(read(&items.entry_of(this)?)))));
+        self.getters.push((name.to_owned(), Rc::new(move |this, _| Ok(read(&*items.entry_of(this)?)))));
     }
 
     fn write(&mut self, name: &str, write: impl Fn(&StatusEntry, &JsData) -> Result<(), String> + 'static) {
@@ -84,7 +84,7 @@ impl Members {
         self.setters.push((
             name.to_owned(),
             Rc::new(move |this, args| {
-                write(&items.entry_of(this)?, args.first().unwrap_or(&JsData::Undefined))?;
+                write(&*items.entry_of(this)?, args.first().unwrap_or(&JsData::Undefined))?;
                 Ok(JsData::Undefined)
             }),
         ));
