@@ -17,6 +17,8 @@ je-storage = { path = "../je-storage" }
 je-instantiation = { path = "../je-instantiation" }
 # Os ids dos codicons (`getAllCodicons`) do esquema `terminalIconSchema` da configuração do terminal.
 je-codicons = { path = "../je-codicons" }
+# A `Color` (`Color.Format.CSS.parse`) que o `dimColor` dos controles de janela (`windowImpl.ts`) usa; depende só de je-base e je-render.
+je-theme = { path = "../je-theme" }
 # O motor de `RegExp` ECMAScript (as regex do `when`, do scanner).
 zyarr = { path = "../zyarr" }
 
