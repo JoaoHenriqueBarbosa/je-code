@@ -5,12 +5,14 @@
 //! `CodeCellLayout`), `cellEditorOptions.ts`, `cellContextKeys.ts`, `cellFocusIndicator.ts`, `cellDecorations.ts`, `cellFocus.ts`,
 //! `cellWidgets.ts`, `cellEditorOverflowWidgets.ts`, `collapsedCellInput.ts`, `collapsedCellOutput.ts`, `cellProgressBar.ts`,
 //! `cellToolbars.ts` (`BetweenCellToolbar` e `CellTitleToolbarPart`), `cellStatusPart.ts` (`CellEditorStatusBar`), `cellExecution.ts`
-//! (`CellExecutionPart`) e `cellToolbarStickyScroll.ts` (que `cellToolbars.ts` importa).
+//! (`CellExecutionPart`), `cellToolbarStickyScroll.ts` (que `cellToolbars.ts` importa), `cellActionView.ts` (`CodiconActionViewItem`,
+//! `ActionViewWithLabel` e `UnifiedSubmenuActionView`, sobre as classes-base de `platform/actions/menu_entry_action_view_item.rs`),
+//! `codeCellRunToolbar.ts` (`RunToolbar`, sobre `platform/actions/dropdown_with_primary_action_view_item.rs`), `foldedCellHint.ts`,
+//! `cellComments.ts`, `cellDragRenderer.ts` e `codeCellExecutionIcon.ts`.
 //!
-//! Faltam, nesta ordem: `codeCellRunToolbar`, `foldedCellHint`, `cellComments`, `cellDragRenderer`, `cellActionView` (o
-//! `CodiconActionViewItem` que o `BetweenCellToolbar` recebe como argumento), `codeCellExecutionIcon`; depois `codeCell.ts` (a classe
-//! `CodeCell`, além do `CodeCellLayout`) e `markupCell.ts`; depois o `cellRenderer.ts` (que monta os templates e fornece as
-//! implementações dos contratos estreitos abaixo) e os 5 casos de `cellEditorOverflowWidgets.test.ts`.
+//! Faltam, nesta ordem: `codeCell.ts` (a classe `CodeCell`, além do `CodeCellLayout`) e `markupCell.ts` (fatia 4); depois o
+//! `cellRenderer.ts` (que monta os templates e fornece as implementações dos contratos estreitos abaixo) e os 5 casos de
+//! `cellEditorOverflowWidgets.test.ts` (fatia 5).
 //!
 //! Divergências comuns a todas as partes desta pasta:
 //! - **DOM é a árvore do `je-ui`.** O `HTMLElement` que o construtor original recebe é um [`je_ui::NodeId`] da [`je_ui::Ui`] (o
@@ -65,8 +67,11 @@ macro_rules! impl_cell_overlay_part {
     };
 }
 
+pub mod cell_action_view;
+pub mod cell_comments;
 pub mod cell_decorations;
 pub mod cell_dnd;
+pub mod cell_drag_renderer;
 pub mod cell_editor_options;
 pub mod cell_editor_overflow_widgets;
 pub mod cell_execution;
@@ -78,7 +83,10 @@ pub mod cell_status_part;
 pub mod cell_toolbar_sticky_scroll;
 pub mod cell_toolbars;
 pub mod cell_widgets;
+pub mod code_cell_execution_icon;
 pub mod code_cell_layout;
+pub mod code_cell_run_toolbar;
 pub mod collapsed_cell_input;
 pub mod collapsed_cell_output;
 pub mod cell_context_keys;
+pub mod folded_cell_hint;

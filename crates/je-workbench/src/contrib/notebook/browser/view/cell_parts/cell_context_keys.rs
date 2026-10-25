@@ -42,6 +42,8 @@ macro_rules! raw_keys {
 raw_keys! {
     /// `NOTEBOOK_EDITOR_FOCUSED`.
     notebook_editor_focused: "notebookEditorFocused", false, ContextKeyMeta::None;
+    /// `NOTEBOOK_CELL_LIST_FOCUSED`.
+    notebook_cell_list_focused: "notebookCellListFocused", false, ContextKeyMeta::None;
     /// `NOTEBOOK_CELL_TYPE` (`'code' | 'markup'`).
     notebook_cell_type: "notebookCellType", Dynamic::Undefined, ContextKeyMeta::None;
     /// `NOTEBOOK_CELL_EDITABLE`.
