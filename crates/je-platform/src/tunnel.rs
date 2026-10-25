@@ -14,3 +14,18 @@ pub trait ITunnelService {
 }
 
 service_id!(pub I_TUNNEL_SERVICE: dyn ITunnelService = "tunnelService");
+
+// `src/vs/platform/tunnel/common/tunnelProxy.ts`.
+pub mod tunnel_proxy_info;
+
+// `src/vs/platform/tunnel/node`: o proxy de túnel, com E/S de rede (`std::net`), fora do `wasm32`.
+#[cfg(not(target_arch = "wasm32"))]
+mod http_wire;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod self_signed_cert;
+#[cfg(not(target_arch = "wasm32"))]
+mod tls_stream;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tunnel_proxy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tunnel_socket;
