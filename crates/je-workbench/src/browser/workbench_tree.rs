@@ -810,7 +810,7 @@ impl<TInput: Clone + 'static, T: Clone + Eq + Hash + 'static, F: Clone + 'static
         };
         workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.update, &mut options.keyboard_support);
 
-        let tree = AsyncDataTree::new(user, ui, container, delegate, renderers, data_source, options);
+        let tree = AsyncDataTree::<TInput, T, F, ObjectBackend>::new(user, ui, container, delegate, renderers, data_source, options);
         async_data_tree_parts(ui, tree, &workbench, internals_options, services)
     }
 }
@@ -839,7 +839,7 @@ impl<TInput: Clone + 'static, T: Clone + Eq + Hash + 'static, F: Clone + 'static
         };
         workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.base.update, &mut options.base.keyboard_support);
 
-        let tree = AsyncDataTree::new(user, ui, container, virtual_delegate, compression_delegate, renderers, data_source, options);
+        let tree = AsyncDataTree::<TInput, T, F, CompressibleBackend<T, F>>::new(user, ui, container, virtual_delegate, compression_delegate, renderers, data_source, options);
         async_data_tree_parts(ui, tree, &workbench, internals_options, services)
     }
 }
