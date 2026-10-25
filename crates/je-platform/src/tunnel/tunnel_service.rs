@@ -1,14 +1,25 @@
 //! Porte de `src/vs/platform/tunnel/node/tunnelService.ts`: o `NodeRemoteTunnel`, que escuta uma porta local e leva cada
 //! conexão que chega pelo túnel do agente remoto (`createRemoteTunnel` com as três tentativas contra as portas que o
-//! navegador restringe).
+//! navegador restringe), o `BaseTunnelService` / `TunnelService` (o `AbstractTunnelService` com o `retainOrCreateTunnel` que
+//! abre o túnel pelo agente remoto) e o `SharedTunnelsService`.
 //!
 //! Decisões de tradução:
 //! - O original roda no laço de eventos do Node (`net.Server`, `net.Socket`, `pipe`). Aqui a E/S é bloqueante com `std::net`
 //!   e threads, como no `TunnelProxy`: uma thread aceita as conexões, uma thread atende cada uma e cada ponte tem a sua
 //!   thread de leitura. `net.Socket` é [`NodeTcpSocket`], o `NodeSocket` é [`NodeSocket`] e o `ISocket` genérico é
 //!   [`IManagedSocket`].
-//! - `connectRemoteAgentTunnel(options, host, port)` é a [`ITunnelConnectFn`] injetada (a mesma do `TunnelProxy`): o
-//!   `remoteAgentConnection` ainda não foi portado, então quem cria o túnel entrega a função que já carrega as opções.
+//! - `connectRemoteAgentTunnel(options, host, port)` é o [`ITunnelConnectFn`] (o mesmo do `TunnelProxy`) que o
+//!   `BaseTunnelService` monta com `RemoteAgentBridge::start` sobre as `IConnectionOptions` do original (`commit` e
+//!   `quality` do produto, o provedor de endereço, a fábrica de soquetes, o serviço de assinatura e o de log, o
+//!   `ipcLogger: null`): a ponte leva o pedido da thread de cada conexão ao laço de eventos, onde roda o
+//!   [`connect_remote_agent_tunnel`](crate::remote::remote_agent_connection::connect_remote_agent_tunnel) de verdade.
+//!   `NodeRemoteTunnel` continua recebendo só o [`ITunnelConnectFn`], como o do proxy.
+//! - **Classes.** `BaseTunnelService` e `TunnelService` são o [`AbstractTunnelService`] com os [`TunnelServiceHooks`] do
+//!   `BaseTunnelService`: [`BaseTunnelService`] e [`TunnelService`] são o mesmo tipo, porque `TunnelService` só repassa o
+//!   construtor. O `RemoteTunnel` que o `createRemoteTunnel` devolve é o [`ForwardedTunnel`] (o `NodeRemoteTunnel` mais a
+//!   ponte, que o `dispose` fecha). `os.release()` é o `os_release` do `je-base`; `OS`, o alvo da compilação.
+//! - O `RemoteAuthorities.getServerRootPath()` do handshake é o argumento `server_root_path` dos construtores.
+//! - O `createRemoteTunnel` assíncrono é uma tarefa que roda a versão síncrona (a espera do original é só o `listen`).
 //! - O `write` do `net.Socket` do Node guarda o que não coube no kernel e o `end()` só fecha depois de esvaziar esse buffer;
 //!   [`LocalSocketWriter`] é essa fila (com o `writableLength`). A ponte genérica escreve por ela; a ponte de `NodeSocket`
 //!   escreve direto (o `pipe` do Node respeita a contrapressão, aqui o próprio bloqueio da escrita).
@@ -24,18 +35,36 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use je_base::errors::Error;
-use je_base::parts::ipc::net::SocketCloseEvent;
+use std::cell::RefCell;
 
+use je_base::async_::async_fn;
+use je_base::errors::Error;
+use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::node::windows_version::os_release;
+use je_base::parts::ipc::net::SocketCloseEvent;
+use je_base::platform::OperatingSystem;
+use je_base::promise::Promise;
+
+use super::loop_bridge::RemoteAgentBridge;
 use super::tunnel_proxy::ITunnelConnectFn;
 use super::tunnel_socket::{Duplex, IManagedSocket, NodeTcpSocket, TunnelSocket, lock};
-use super::{TunnelPrivacyId, is_all_interfaces, is_localhost};
+use super::{
+    AbstractTunnelService, AddressOrTunnelProvider, ISharedTunnelsService, ITunnelServiceApi, RemoteTunnel, TunnelOpenResult, TunnelPrivacyId, TunnelServiceHooks, is_all_interfaces,
+    is_localhost, is_port_privileged,
+};
+use crate::configuration::service::IConfigurationService;
+use crate::log::{LogServiceRef, Logger};
+use crate::product::IProductService;
+use crate::remote::remote_agent_connection::{IAddressProvider, IConnectionOptions};
+use crate::remote::remote_socket_factory_service::IRemoteSocketFactoryService;
+use crate::sign::ISignService;
 
 /// O tamanho de cada leitura do soquete local.
 const PUMP_BUFFER: usize = 64 * 1024;
@@ -547,4 +576,244 @@ pub fn create_remote_tunnel(connect: &ITunnelConnectFn, default_tunnel_host: &st
         }
     }
     ready_tunnel.ok_or_else(|| Error::new("no tunnel was created"))
+}
+
+/// O `RemoteTunnel` que o `createRemoteTunnel` entrega ao serviço: o [`NodeRemoteTunnel`] com a ponte para o laço de eventos
+/// que o seu [`ITunnelConnectFn`] usa.
+pub struct ForwardedTunnel {
+    tunnel: NodeRemoteTunnel,
+    bridge: RemoteAgentBridge,
+}
+
+impl RemoteTunnel for ForwardedTunnel {
+    fn tunnel_remote_port(&self) -> u32 {
+        u32::from(self.tunnel.tunnel_remote_port())
+    }
+
+    fn tunnel_remote_host(&self) -> String {
+        self.tunnel.tunnel_remote_host().to_owned()
+    }
+
+    fn tunnel_local_port(&self) -> Option<u32> {
+        self.tunnel.tunnel_local_port().map(u32::from)
+    }
+
+    fn local_address(&self) -> String {
+        self.tunnel.local_address().unwrap_or_default()
+    }
+
+    fn privacy(&self) -> String {
+        self.tunnel.privacy().as_str().to_owned()
+    }
+
+    fn protocol(&self) -> Option<String> {
+        None
+    }
+
+    /// `override async dispose()`: encerra as conexões ativas (que mandam o fim pela ponte) e só então fecha a ponte.
+    fn dispose(&self, _silent: bool) -> Promise<()> {
+        self.tunnel.dispose();
+        self.bridge.close();
+        Promise::resolved(())
+    }
+}
+
+/// `createRemoteTunnel`, assíncrono: abre a ponte para o laço de eventos e o túnel local por cima dela.
+fn create_forwarded_tunnel(options: IConnectionOptions, default_tunnel_host: String, tunnel_remote_host: String, tunnel_remote_port: u32, tunnel_local_port: Option<u32>) -> Promise<TunnelOpenResult> {
+    async_fn(async move {
+        let to_port = |port: u32| u16::try_from(port).map_err(|_| Error::new(format!("port should be >= 0 and < 65536. Received {port}.")));
+        let remote_port = to_port(tunnel_remote_port)?;
+        let local_port = tunnel_local_port.map(to_port).transpose()?;
+        let (bridge, connect) = RemoteAgentBridge::start(options);
+        match create_remote_tunnel(&connect, &default_tunnel_host, &tunnel_remote_host, remote_port, local_port) {
+            Ok(tunnel) => Ok(TunnelOpenResult::Tunnel(Rc::new(ForwardedTunnel { tunnel, bridge }))),
+            Err(error) => {
+                bridge.close();
+                Err(error)
+            }
+        }
+    })
+}
+
+/// O `OS` do original: o sistema para o qual o binário foi compilado.
+fn current_os() -> OperatingSystem {
+    if cfg!(windows) {
+        OperatingSystem::Windows
+    } else if cfg!(target_os = "macos") {
+        OperatingSystem::Macintosh
+    } else {
+        OperatingSystem::Linux
+    }
+}
+
+/// Os membros abstratos de `BaseTunnelService`.
+struct BaseTunnelHooks {
+    remote_socket_factory_service: Rc<dyn IRemoteSocketFactoryService>,
+    sign_service: Rc<dyn ISignService>,
+    product_service: Rc<dyn IProductService>,
+    server_root_path: String,
+}
+
+impl TunnelServiceHooks for BaseTunnelHooks {
+    fn is_port_privileged(&self, service: &AbstractTunnelService, port: u32) -> bool {
+        is_port_privileged(port, &service.default_tunnel_host(), current_os(), &os_release())
+    }
+
+    fn retain_or_create_tunnel(
+        &self,
+        service: &AbstractTunnelService,
+        address_or_tunnel_provider: AddressOrTunnelProvider,
+        remote_host: &str,
+        remote_port: u32,
+        local_host: &str,
+        local_port: Option<u32>,
+        elevate_if_needed: bool,
+        privacy: Option<&str>,
+        protocol: Option<&str>,
+    ) -> Option<Promise<TunnelOpenResult>> {
+        let existing = service.get_tunnel_from_map(remote_host, remote_port);
+        if let Some(existing) = existing {
+            existing.refcount.set(existing.refcount.get() + 1);
+            return Some(existing.value.clone());
+        }
+
+        match address_or_tunnel_provider {
+            AddressOrTunnelProvider::TunnelProvider(tunnel_provider) => service.create_with_provider(&tunnel_provider, remote_host, remote_port, local_port, elevate_if_needed, privacy, protocol),
+            AddressOrTunnelProvider::AddressProvider(address_provider) => {
+                service.log_service().trace(&format!(
+                    "ForwardedPorts: (TunnelService) Creating tunnel without provider {remote_host}:{remote_port} on local port {}.",
+                    local_port.map_or_else(|| "undefined".to_owned(), |port| port.to_string())
+                ));
+                let options = IConnectionOptions {
+                    commit: self.product_service.commit().map(str::to_owned),
+                    quality: self.product_service.quality().map(str::to_owned),
+                    address_provider,
+                    remote_socket_factory_service: self.remote_socket_factory_service.clone(),
+                    sign_service: self.sign_service.clone(),
+                    log_service: service.log_service().clone(),
+                    ipc_logger: None,
+                    server_root_path: self.server_root_path.clone(),
+                };
+
+                let tunnel = create_forwarded_tunnel(options, local_host.to_owned(), remote_host.to_owned(), remote_port, local_port);
+                service.log_service().trace("ForwardedPorts: (TunnelService) Tunnel created without provider.");
+                service.add_tunnel_to_map(remote_host, remote_port, tunnel.clone());
+                Some(tunnel)
+            }
+        }
+    }
+}
+
+/// `BaseTunnelService` e `TunnelService`: o mesmo tipo (ver o topo).
+pub type BaseTunnelService = AbstractTunnelService;
+pub type TunnelService = AbstractTunnelService;
+
+impl BaseTunnelService {
+    /// O construtor de `BaseTunnelService` (e de `TunnelService`, que só o repassa).
+    pub fn new(
+        remote_socket_factory_service: Rc<dyn IRemoteSocketFactoryService>,
+        log_service: LogServiceRef,
+        sign_service: Rc<dyn ISignService>,
+        product_service: Rc<dyn IProductService>,
+        configuration_service: Rc<dyn IConfigurationService>,
+        server_root_path: String,
+    ) -> Rc<Self> {
+        let hooks = Rc::new(BaseTunnelHooks { remote_socket_factory_service, sign_service, product_service, server_root_path });
+        Self::with_hooks(log_service, configuration_service, hooks)
+    }
+}
+
+/// `SharedTunnelsService`.
+pub struct SharedTunnelsService {
+    me: Weak<SharedTunnelsService>,
+    base: Rc<Disposable>,
+    remote_socket_factory_service: Rc<dyn IRemoteSocketFactoryService>,
+    log_service: LogServiceRef,
+    product_service: Rc<dyn IProductService>,
+    sign_service: Rc<dyn ISignService>,
+    configuration_service: Rc<dyn IConfigurationService>,
+    server_root_path: String,
+    tunnel_services: RefCell<HashMap<String, Rc<TunnelService>>>,
+}
+
+impl SharedTunnelsService {
+    pub fn new(
+        remote_socket_factory_service: Rc<dyn IRemoteSocketFactoryService>,
+        log_service: LogServiceRef,
+        product_service: Rc<dyn IProductService>,
+        sign_service: Rc<dyn ISignService>,
+        configuration_service: Rc<dyn IConfigurationService>,
+        server_root_path: String,
+    ) -> Rc<Self> {
+        Rc::new_cyclic(|me| Self {
+            me: me.clone(),
+            base: Disposable::new(),
+            remote_socket_factory_service,
+            log_service,
+            product_service,
+            sign_service,
+            configuration_service,
+            server_root_path,
+            tunnel_services: RefCell::new(HashMap::new()),
+        })
+    }
+}
+
+impl IDisposable for SharedTunnelsService {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+}
+
+impl ISharedTunnelsService for SharedTunnelsService {
+    fn open_tunnel(
+        &self,
+        authority: &str,
+        address_provider: Option<Rc<dyn IAddressProvider>>,
+        remote_host: Option<&str>,
+        remote_port: u32,
+        local_host: &str,
+        local_port: Option<u32>,
+        elevate_if_needed: Option<bool>,
+        privacy: Option<&str>,
+        protocol: Option<&str>,
+    ) -> Option<Promise<TunnelOpenResult>> {
+        self.log_service.trace(&format!(
+            "ForwardedPorts: (SharedTunnelService) openTunnel request for {}:{remote_port} on local port {}.",
+            remote_host.unwrap_or("undefined"),
+            local_port.map_or_else(|| "undefined".to_owned(), |port| port.to_string())
+        ));
+        let existing = self.tunnel_services.borrow().get(authority).cloned();
+        let tunnel_service = match existing {
+            Some(tunnel_service) => tunnel_service,
+            None => {
+                let tunnel_service = TunnelService::new(
+                    self.remote_socket_factory_service.clone(),
+                    self.log_service.clone(),
+                    self.sign_service.clone(),
+                    self.product_service.clone(),
+                    self.configuration_service.clone(),
+                    self.server_root_path.clone(),
+                );
+                self.base.register(tunnel_service.clone());
+                self.tunnel_services.borrow_mut().insert(authority.to_owned(), tunnel_service.clone());
+                let (closing, shared, authority) = (tunnel_service.clone(), self.me.clone(), authority.to_owned());
+                tunnel_service.on_tunnel_closed().listen(move |_| {
+                    let (service, shared, authority) = (closing.clone(), shared.clone(), authority.clone());
+                    async_fn(async move {
+                        if service.tunnels().await?.is_empty() {
+                            let _ = service.dispose_async();
+                            if let Some(shared) = shared.upgrade() {
+                                shared.tunnel_services.borrow_mut().remove(&authority);
+                            }
+                        }
+                        Ok(())
+                    });
+                });
+                tunnel_service
+            }
+        };
+        let opened = tunnel_service.open_tunnel(address_provider, remote_host, remote_port, Some(local_host), local_port, elevate_if_needed.unwrap_or(false), privacy, protocol);
+        Some(opened.unwrap_or_else(|| Promise::resolved(TunnelOpenResult::Undefined)))
+    }
 }

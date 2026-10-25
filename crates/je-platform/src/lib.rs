@@ -85,6 +85,7 @@ pub mod encryption;
 pub mod external_terminal;
 pub mod registry;
 pub mod secrets;
+pub mod sign;
 
 pub mod label;
 pub mod list;
