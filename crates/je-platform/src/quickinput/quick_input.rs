@@ -13,8 +13,9 @@
 //!   lista). A forma antiga do porte parcial (lista direta, sem `token`) ficou como [`IQuickInputService::pick_items`],
 //!   e o `input` ganhou o `token`.
 //! - **`anchor`** (`HTMLElement | { x, y }`) é só o `{ x, y }` ([`QuickInputAnchor`]): não há DOM.
-//! - Fora do porte: `IQuickWidget` e `createQuickWidget` (o `widget` é um `HTMLElement`), `quickAccess` (o
-//!   `IQuickAccessController` de `quickAccess.ts` ainda não está portado) e o setter de `currentQuickInput`.
+//! - Fora do porte: `IQuickWidget` e `createQuickWidget` (o `widget` é um `HTMLElement`) e o setter de `currentQuickInput`.
+//! - `quickAccess` é o método [`IQuickInputService::quick_access`], que lança `quickAccess is not defined` por padrão (o objeto
+//!   parcial do original, sem a propriedade); o serviço completo o sobrescreve com o `QuickAccessController`.
 //! - `withQuickInputAnchor<T>` apaga o `T` num [`Dynamic`] (método genérico não é objeto de trait).
 //! - `IQuickInputButtonWithToggle` não é portado (nada o usa); `QuickInputType` é enum com [`QuickInputType::as_str`].
 //!
@@ -37,6 +38,7 @@ use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::cancellation::CancellationToken;
+use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::filters::Match;
 use je_base::fuzzy_scorer::ItemAccessor;
@@ -48,6 +50,8 @@ use je_base::observable::base::IObservable;
 use je_base::severity::Severity;
 use je_base::themables::ThemeColor;
 use je_base::uri::URI;
+
+use super::quick_access::IQuickAccessController;
 
 /// `IQuickItemHighlights`.
 #[derive(Clone, Debug, Default)]
@@ -1006,6 +1010,11 @@ pub trait IQuickInputService {
 
     /// Set the alignment of the quick input.
     fn set_alignment(&self, alignment: QuickInputAlignmentSetting);
+
+    /// Provides access to the quick access providers.
+    fn quick_access(&self) -> Rc<dyn IQuickAccessController> {
+        errors::throw(Error::new("quickAccess is not defined"))
+    }
 }
 
 je_instantiation::service_id!(pub I_QUICK_INPUT_SERVICE: dyn IQuickInputService = "quickInputService");

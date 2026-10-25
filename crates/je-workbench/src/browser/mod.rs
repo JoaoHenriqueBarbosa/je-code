@@ -4,3 +4,4 @@
 
 pub mod actions;
 pub mod parts;
+pub mod quickaccess;
