@@ -1,14 +1,57 @@
-//! Porte da primeira metade de `src/vs/workbench/contrib/preferences/browser/settingsWidgets.ts` (+
-//! `media/settingsWidgets.css`): os tipos de item das listas de configuração (`IListDataItem`, `IObjectDataItem`,
-//! `ObjectKey`, `ObjectValue`, `IObjectEnumData`, os sugeridores), o modelo da lista ([`ListSettingListModel`]), a base
-//! [`AbstractListSettingWidget`] (estado, edição de linha, navegação por teclado, seleção, `onDidChangeList`) e o
-//! [`ListSettingWidget`] completo (linha com valor e irmão, edição com `InputBox` ou `SelectBox`, botões OK e
-//! Cancelar, ações de editar e remover, dica de cada linha, arrastar para reordenar).
+//! Porte de `src/vs/workbench/contrib/preferences/browser/settingsWidgets.ts` (+ `media/settingsWidgets.css`), da parte
+//! que é das listas de configuração: os tipos de item (`IListDataItem`, `IObjectDataItem`, `IBoolObjectDataItem`,
+//! `IIncludeExcludeDataItem`, `ObjectKey`, `ObjectValue`, `IObjectEnumData`, os sugeridores), o modelo da lista
+//! ([`ListSettingListModel`]), a base [`AbstractListSettingWidget`] (estado, edição de linha, navegação por teclado,
+//! seleção, `onDidChangeList`) e os widgets concretos: o [`ListSettingWidget`] (linha com valor e irmão, edição com
+//! `InputBox` ou `SelectBox`, botões OK e Cancelar, ações de editar e remover, dica de cada linha, arrastar para
+//! reordenar), o [`IncludeSettingWidget`] e o [`ExcludeSettingWidget`] (o `ListSettingWidget` com outras classes,
+//! textos, dica em Markdown e sem arrastar, que são [`ListSettingWidgetOptions`]), o [`ObjectSettingDropdownWidget`]
+//! (cabeçalho, linhas de chave e valor com zebra, chave inválida, edição com campo ou lista para a chave e para o
+//! valor, sugestão de valor) e o [`ObjectSettingCheckboxWidget`] (uma linha de edição por item, com a caixa de
+//! marcação). `ISettingListChangeEvent` e os demais são o [`SettingListEvent`].
 //!
-//! Fica para a fatia 2 (segunda metade do arquivo): `ObjectSettingDropdownWidget`, `ObjectSettingCheckboxWidget`,
-//! `IBoolObjectDataItem`, `IIncludeExcludeDataItem` e os `IncludeSettingWidget`/`ExcludeSettingWidget`. Estes dois
-//! últimos são o `ListSettingWidget` com outras classes, textos, dica em Markdown e sem arrastar: já existem como
-//! [`ListSettingWidgetOptions`] (`container_classes`, `drag_and_drop`, `strings`, `tooltip`, `monospace`).
+//! O arquivo do original termina no `ObjectSettingCheckboxWidget`: não há mais nada depois dele. As regras de
+//! `.settings-tabs-widget` e `.settings-header-widget` do mesmo CSS não são de lista e ficam com os widgets que usam
+//! essas classes.
+//!
+//! Divergências da fatia 2:
+//!
+//! - **Caixa de marcação.** O original usa um `Toggle` com o ícone `check` e as classes `setting-value-checkbox`, e o
+//!   CSS (`.setting-item-bool .setting-value-checkbox`) o deixa com `18px`, borda transparente de `1px` pintada por
+//!   `!important` com `settings.checkboxBorder`, `settings.checkboxBackground` e `settings.checkboxForeground`, e o
+//!   `::before` do ícone sem opacidade quando desmarcado. É exatamente o `Checkbox` do `je-widgets` (`18px`, ícone só
+//!   marcado, cores do estilo), então o widget usa ele com [`SettingsWidgetStyles::checkbox`], mais a classe
+//!   `setting-value-checkbox`. O `domNode` do `Toggle` também ganha `monaco-checkbox`, que o original não tem.
+//! - **Item de caixa de marcação.** `IBoolObjectDataItem.key` (`IObjectStringData`) e `.value` (`IObjectBoolData`) são o
+//!   texto e o `bool`; `removable: false` é fixo e não é campo. O `changedItem.value.data = newValue` do original muda
+//!   o objeto compartilhado com o modelo (e com o `originalItem`): aqui o item novo vai ao modelo
+//!   ([`ListSettingListModel::set_data_item`]) e é também o `original_item` do evento.
+//! - **`IIncludeExcludeDataItem.elementType`** é `Option`: o `getEmptyItem` do original o deixa ausente (o cast `as
+//!   TListDataItem`).
+//! - **Tipo da chave de objeto.** `renderEditWidget(keyOrValue: ObjectKey | ObjectValue)` recebe um [`ObjectValue`] (a
+//!   chave vira valor por `From`), e o `update` devolve um [`ObjectValue`] que a chave volta a [`ObjectKey`] com
+//!   [`ObjectValue::into_key`] (a chave nunca é booleana).
+//! - **TDZ.** O `okButton` e o `renderLatestValue` do `renderEdit` são `const` declarados depois do primeiro `update` da
+//!   chave: se a chave começa como lista com um dado fora das opções, o original lança `ReferenceError`; aqui o `update`
+//!   só não encontra o botão (ainda não existe) e segue.
+//!
+//! Layout da fatia 2 (sem motor de CSS, como a fatia 1):
+//!
+//! - **Linha de objeto.** `padding-right: 4px`; a chave tem `margin: 0 3px 0 4px` e `width: 40%`, o valor `60%` (os
+//!   percentuais são da largura do conteúdo da linha) com `padding-right: 40px` (`box-sizing: border-box`) só na linha de
+//!   dados; `flex: none`, então a soma passa da linha em `11px`, como no navegador. O cabeçalho é a mesma coisa em negrito,
+//!   com o valor sem o `padding-right`. A zebra (`:nth-child(odd)`, contando o cabeçalho) e o `invalid-key`
+//!   ([`SettingsWidgetStyles::list_error_foreground`]) ficam em [`AbstractListSettingWidget::refresh_rows`].
+//! - **Linha de edição de objeto.** O `flex` da linha: o campo (ou lista) da chave com `min-width: 40%` e `flex-shrink: 1`
+//!   (a margem de `4px` do `.setting-list-object-input` fica dentro dele no campo de texto e fora na lista), o contêiner do
+//!   valor com `width: 100%` e `flex-shrink: 1`, os botões rígidos. `resolve_flex_shrink` é o laço de encolher do
+//!   CSS Flexbox (itens congelados por `min-width`). Sem `showAddButton` a chave é texto rígido.
+//! - **Linha de caixa de marcação.** Contêiner de `4px` de margem esquerda, `27px` de largura (a caixa `18px` mais a margem
+//!   de `9px`) e `24px` de altura, com a caixa a `3px` do topo, e o valor ocupando o resto (`flex: 1`).
+//! - NÃO MEDIDO contra o oráculo: a largura intrínseca da chave em lista (`natural_size` do `SelectBox`), a altura de
+//!   `24px` imposta à lista da chave e do valor (o `select` do CSS), a largura intrínseca do campo de texto da chave
+//!   (a mesma do `<input>` de `size="20"` da fatia 1, sem o teto de `320px`, que o objeto anula com `max-width: unset`) e o
+//!   desenho da zebra com a cor `rgba(130, 130, 130, 0.04)` arredondada em oito bits (`10/255`).
 //!
 //! Como o DOM e o CSS viram [`je_ui`]:
 //!
@@ -53,10 +96,12 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
+use je_base::JsString;
 use je_base::actions::{ActionRef, ToActionProps, to_action};
 use je_base::async_::disposable_timeout;
 use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event as BaseEvent};
+use je_base::html_content::{IMarkdownString, MarkdownString, TrustedOrOptions};
 use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable};
 use je_base::nls::localize;
@@ -76,6 +121,10 @@ use je_widgets::hover_api::{HoverContent, HoverTarget, IHoverDelegate2, IHoverOp
 use je_widgets::input_box::{InputBox, InputBoxOptions, InputBoxStyles, default_input_box_styles};
 use je_widgets::select_box::{ISelectBoxDelegate, ISelectBoxStyles, ISelectOptionItem, SelectBox, default_select_box_styles};
 use je_widgets::text::{UI_FONT_SIZE, ellipsize, measure_text, ui_font};
+use je_widgets::toggle::{Checkbox, CheckboxStyles, default_checkbox_styles};
+
+use crate::services::preferences::preferences::SettingValueType;
+use crate::services::preferences::preferences_validation::validate_property_name;
 
 /// `registerIcon('settings-edit', Codicon.edit)`: o ícone registrado é o próprio codicon padrão dele (como o
 /// `view-pane-container-expanded` de `view_pane.rs`).
@@ -113,6 +162,28 @@ const INPUT_CHROME_WIDTH: f64 = 2.0 * 6.0 + 2.0;
 const INPUT_INTRINSIC_CHARS: usize = 20;
 /// O movimento, em px, que começa um arraste.
 const DRAG_THRESHOLD: f64 = 4.0;
+/// O `padding-right: 4px` das linhas e do cabeçalho do widget de objeto.
+const OBJECT_ROW_PADDING_RIGHT: f64 = 4.0;
+/// `.setting-list-object-key`: `margin-left: 4px`, `margin-right: 3px`, `width: 40%`; o valor, `width: 60%`.
+const OBJECT_KEY_MARGIN_LEFT: f64 = 4.0;
+const OBJECT_KEY_MARGIN_RIGHT: f64 = 3.0;
+const OBJECT_KEY_WIDTH: f64 = 0.4;
+const OBJECT_VALUE_WIDTH: f64 = 0.6;
+/// O `padding-right: 40px` do valor da linha de dados (`.setting-list-row .setting-list-object-value`).
+const OBJECT_VALUE_PADDING_RIGHT: f64 = 40.0;
+/// `.setting-list-object-input-key { min-width: 40% }`.
+const OBJECT_KEY_MIN_WIDTH: f64 = 0.4;
+/// O `margin: 0 4px` do botão OK, que ocupa `8px` da linha de edição além dos botões.
+const OBJECT_BUTTONS_MARGIN: f64 = 2.0 * OK_BUTTON_MARGIN;
+/// A caixa de marcação: `18px`, `margin-right: 9px`, `margin-top: 3px` e o `margin-left: 4px` do contêiner.
+const CHECKBOX_SIZE: f64 = 18.0;
+const CHECKBOX_MARGIN_RIGHT: f64 = 9.0;
+const CHECKBOX_MARGIN_TOP: f64 = 3.0;
+const CHECKBOX_WRAPPER_MARGIN_LEFT: f64 = 4.0;
+/// `rgba(130, 130, 130, 0.04)`, a zebra e o fundo do cabeçalho: `0.04 * 255` arredondado.
+const ZEBRA_ALPHA: u8 = 10;
+/// `getContainerClasses()` dos dois widgets de objeto.
+const OBJECT_WIDGET_CLASS: &str = "setting-list-object-widget";
 
 // ---- tipos de item ---------------------------------------------------------------------------------------------------
 
@@ -164,6 +235,15 @@ impl ObjectValue {
             Self::Boolean(data) => data.to_string(),
         }
     }
+
+    /// A volta de [`From<ObjectKey>`]: `None` para o booleano (uma chave nunca é booleana).
+    pub fn into_key(self) -> Option<ObjectKey> {
+        match self {
+            Self::String(data) => Some(ObjectKey::String(data)),
+            Self::Enum(enum_data) => Some(ObjectKey::Enum(enum_data)),
+            Self::Boolean(_) => None,
+        }
+    }
 }
 
 impl From<ObjectKey> for ObjectValue {
@@ -193,6 +273,26 @@ pub struct IObjectDataItem {
     pub resetable: bool,
 }
 
+/// `IBoolObjectDataItem`: `key` e `value` são o `data` de `IObjectStringData` e de `IObjectBoolData`, e `removable` é
+/// sempre `false` (o tipo do original o fixa), por isso não é campo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IBoolObjectDataItem {
+    pub key: String,
+    pub value: bool,
+    pub key_description: Option<String>,
+    pub source: Option<String>,
+    pub resetable: bool,
+}
+
+/// `IIncludeExcludeDataItem`. `element_type` é `Option` porque o `getEmptyItem` do original não o preenche.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IIncludeExcludeDataItem {
+    pub value: ObjectKey,
+    pub element_type: Option<SettingValueType>,
+    pub sibling: Option<String>,
+    pub source: Option<String>,
+}
+
 /// `IObjectValueSuggester`.
 pub type ObjectValueSuggester = Rc<dyn Fn(&str) -> Option<ObjectValue>>;
 
@@ -205,10 +305,36 @@ pub trait ListDataItem: Clone + 'static {
     fn empty() -> Self;
     fn value(&self) -> &ObjectKey;
     fn sibling(&self) -> Option<&str>;
+    /// `source` (os itens de inclusão e exclusão o têm; o `IListDataItem` não).
+    fn source(&self) -> Option<&str> {
+        None
+    }
     /// O item editado: `{ ...item, value, sibling }` (a troca de valor do sugeridor) e o `{ value, sibling } as
     /// TListDataItem` do OK da edição. Os campos além de valor e irmão ficam como no original do item (o TypeScript
     /// os deixa ausentes no segundo caso, o que um tipo com campos obrigatórios não representa).
     fn with_value(&self, value: ObjectKey, sibling: Option<String>) -> Self;
+}
+
+impl ListDataItem for IIncludeExcludeDataItem {
+    fn empty() -> Self {
+        Self { value: ObjectKey::String(String::new()), element_type: None, sibling: None, source: None }
+    }
+
+    fn value(&self) -> &ObjectKey {
+        &self.value
+    }
+
+    fn sibling(&self) -> Option<&str> {
+        self.sibling.as_deref()
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    fn with_value(&self, value: ObjectKey, sibling: Option<String>) -> Self {
+        Self { value, sibling, ..self.clone() }
+    }
 }
 
 impl ListDataItem for IListDataItem {
@@ -241,8 +367,13 @@ pub struct SettingsWidgetStyles {
     /// `defaultButtonStyles`.
     pub button: ButtonStyles,
     pub action_bar: Rc<ActionBarStyles>,
+    /// O `Checkbox` do `ObjectSettingCheckboxWidget`: `.setting-value-checkbox` pinta o fundo, o texto e a borda com
+    /// `settings.checkboxBackground`, `settings.checkboxForeground` e `settings.checkboxBorder`.
+    pub checkbox: CheckboxStyles,
     /// O `color` herdado do texto das linhas.
     pub foreground: Rgba,
+    /// `--vscode-list-errorForeground`: a chave inválida das linhas de objeto.
+    pub list_error_foreground: Option<Rgba>,
     pub list_hover_background: Option<Rgba>,
     pub list_hover_foreground: Option<Rgba>,
     pub list_active_selection_background: Option<Rgba>,
@@ -264,12 +395,18 @@ impl SettingsWidgetStyles {
         select_box.select_foreground = color("settings.dropdownForeground");
         select_box.select_border = color("settings.dropdownBorder");
         select_box.select_list_border = color("settings.dropdownListBorder");
+        let mut checkbox = default_checkbox_styles(theme);
+        checkbox.checkbox_background = color("settings.checkboxBackground");
+        checkbox.checkbox_foreground = color("settings.checkboxForeground");
+        checkbox.checkbox_border = color("settings.checkboxBorder");
         Self {
             input_box,
             select_box,
             button: default_button_styles(theme),
             action_bar: Rc::new(default_action_bar_styles(theme)),
+            checkbox,
             foreground: color("foreground").unwrap_or(Rgba::opaque(0xcc, 0xcc, 0xcc)),
+            list_error_foreground: color("list.errorForeground"),
             list_hover_background: color("list.hoverBackground"),
             list_hover_foreground: color("list.hoverForeground"),
             list_active_selection_background: color("list.activeSelectionBackground"),
@@ -347,6 +484,14 @@ impl<T: Clone> ListSettingListModel<T> {
         self.data_items = list_data;
     }
 
+    /// `this._dataItems[idx] = item`: a escrita de um objeto que o original compartilha com o modelo (o
+    /// `changedItem.value.data = ...` do `ObjectSettingCheckboxWidget`). Índice fora da lista não faz nada.
+    pub fn set_data_item(&mut self, idx: usize, item: T) {
+        if let Some(slot) = self.data_items.get_mut(idx) {
+            *slot = item;
+        }
+    }
+
     pub fn select(&mut self, idx: Option<i64>) {
         self.selected_idx = idx;
     }
@@ -390,15 +535,43 @@ pub struct RowElementGroup {
     pub value_element: Option<NodeId>,
 }
 
-/// O que `getLocalizedStrings()` devolve: os três textos que a base lê, mais os dois campos que o
-/// `ListSettingWidget` soma (os `placeholder` da edição).
+/// O que `getLocalizedStrings()` devolve e a base lê: os três textos. Os campos que cada widget soma (os `placeholder`
+/// da edição do `ListSettingWidget`, o `resetActionTooltip` e os cabeçalhos do widget de objeto) ficam em
+/// [`ListPlaceholderStrings`] e [`ObjectSettingStrings`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListSettingStrings {
     pub delete_action_tooltip: String,
     pub edit_action_tooltip: String,
     pub add_button_label: String,
+}
+
+/// Os dois campos que o `ListSettingWidget` soma aos textos da base: os `placeholder` da edição.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListPlaceholderStrings {
     pub input_placeholder: String,
     pub sibling_input_placeholder: String,
+}
+
+/// O que `getLocalizedStrings()` dos dois widgets de objeto devolve (é o mesmo nos dois).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectSettingStrings {
+    pub list: ListSettingStrings,
+    pub reset_action_tooltip: String,
+    pub key_header_text: String,
+    pub value_header_text: String,
+}
+
+fn object_strings() -> ObjectSettingStrings {
+    ObjectSettingStrings {
+        list: ListSettingStrings {
+            delete_action_tooltip: localize("removeItem", "Remove Item", &[]),
+            edit_action_tooltip: localize("editItem", "Edit Item", &[]),
+            add_button_label: localize("addItem", "Add Item", &[]),
+        },
+        reset_action_tooltip: localize("resetItem", "Reset Item", &[]),
+        key_header_text: localize("objectKeyHeader", "Item", &[]),
+        value_header_text: localize("objectValueHeader", "Value", &[]),
+    }
 }
 
 /// Os métodos abstratos (e os `protected` sobrescritos) do `AbstractListSettingWidget`.
@@ -423,6 +596,10 @@ pub trait ListSettingDelegate<T> {
         true
     }
     fn is_read_only(&self) -> bool {
+        false
+    }
+    /// O `renderDataOrEditItem` sobrescrito do `ObjectSettingCheckboxWidget`: toda linha, editando ou não, é a de edição.
+    fn force_edit_rows(&self) -> bool {
         false
     }
 }
@@ -663,7 +840,7 @@ impl<T: Clone + 'static> AbstractListSettingWidget<T> {
     }
 
     fn render_data_or_edit_item(&self, delegate: &dyn ListSettingDelegate<T>, item: &ListViewItem<T>, idx: usize, list_focused: bool) -> NodeId {
-        let row = if item.editing {
+        let row = if item.editing || delegate.force_edit_rows() {
             self.row_bars.borrow_mut().push(None);
             delegate.render_edit(&item.item, idx)
         } else {
@@ -784,6 +961,70 @@ impl<T: Clone + 'static> AbstractListSettingWidget<T> {
         total
     }
 
+    // ---- peças que os widgets concretos montam e posicionam do mesmo jeito ----------------------------------------------
+
+    /// `this.listDisposables.add(this.hoverService.setupDelayedHover(element, { content }))`.
+    pub fn setup_row_hover(&self, node: NodeId, content: HoverContent) {
+        let hover = self.services.hover_service.setup_delayed_hover(node, Rc::new(move || IHoverOptions::new(content.clone(), HoverTarget::Node(node))), None);
+        self.list_disposables.add(hover);
+    }
+
+    /// `this.listDisposables.add(new Button(row, defaultButtonStyles))` com o rótulo e a classe.
+    pub fn make_button(&self, row: NodeId, label: String, class: &str, secondary: bool) -> Rc<Button> {
+        let button = Button::new(&self.ui, row, ButtonOptions { styles: self.services.styles.button, secondary, ..ButtonOptions::default() });
+        button.set_label(ButtonLabel::Text(label));
+        self.ui.tree_mut().add_class(button.element(), class);
+        self.list_disposables.add_rc(button.clone());
+        button
+    }
+
+    /// Texto numa caixa de `width` px (`overflow: hidden`, `text-overflow: ellipsis`), com a faixa de `padding_right` px
+    /// à direita sem texto.
+    pub fn place_text(&self, node: NodeId, text: &str, style: &TextStyle, x: f64, width: f64, padding_right: f64) {
+        let mut tree = self.ui.tree_mut();
+        tree.set_bounds(node, Rect::new(x, 0.0, x + width, ROW_HEIGHT));
+        tree.style_mut(node).clip = true;
+        let shown = if width > 0.0 { ellipsize(text, style, (width - padding_right).max(0.0)) } else { text.to_owned() };
+        let color = match &tree.style(node).content {
+            Content::Text { color, .. } => *color,
+            _ => self.services.styles.foreground,
+        };
+        tree.style_mut(node).content = if shown.is_empty() { Content::None } else { Content::Text { text: shown, style: style.clone(), color, line_height: ROW_HEIGHT } };
+    }
+
+    /// Uma caixa da altura e da largura dadas, na posição `x` do pai.
+    pub fn place_box(&self, node: NodeId, x: f64, width: f64, height: f64) {
+        let mut tree = self.ui.tree_mut();
+        tree.set_fill(node, false, false);
+        tree.set_bounds(node, Rect::new(x, 0.0, x + width, height));
+    }
+
+    /// Um `InputBox` com `height: 24px` e a largura dada, na posição `x` do pai.
+    pub fn place_input(&self, input: &InputBox, x: f64, width: f64) {
+        let element = input.element();
+        self.place_box(element, x, width, ROW_HEIGHT);
+        input.layout();
+        self.ui.tree_mut().set_bounds(element, Rect::new(x, 0.0, x + width, ROW_HEIGHT));
+    }
+
+    /// Os botões OK (`margin: 0 4px`) e Cancelar a partir de `x`, com a altura mínima `height`; devolve a altura da linha
+    /// (`align-items: stretch`: os botões a acompanham).
+    pub fn place_edit_buttons(&self, ok: &Rc<Button>, cancel: &Rc<Button>, mut x: f64, mut height: f64) -> f64 {
+        x += OK_BUTTON_MARGIN;
+        for button in [ok, cancel] {
+            let button_width = button.min_content_width();
+            button.set_height(None);
+            button.set_width(Some(button_width));
+            button.set_position(x, 0.0);
+            height = height.max(button.size().1);
+            x += button_width + if Rc::ptr_eq(button, ok) { OK_BUTTON_MARGIN } else { 0.0 };
+        }
+        for button in [ok, cancel] {
+            button.set_height(Some(height));
+        }
+        height
+    }
+
     /// `.monaco-action-bar { position: absolute; right: 0; top: 0 }`.
     fn layout_action_bar(&self, bar: &ActionBar) {
         bar.layout();
@@ -798,45 +1039,61 @@ impl<T: Clone + 'static> AbstractListSettingWidget<T> {
     }
 
     /// As regras de `:hover`, `.selected:focus`, `.selected:not(:focus)`, `.draggable` e `.drag-hover` das linhas de
-    /// dados, e a visibilidade da barra de ações (`display: none` até `:hover` ou `.selected`).
+    /// dados, e a visibilidade da barra de ações (`display: none` até `:hover` ou `.selected`). As linhas de objeto
+    /// (`.setting-list-object-row`, de dados ou de edição) ganham a zebra (`:nth-child(odd)`, contando o cabeçalho; a de
+    /// dados só sem `:hover`, `:focus` e `.selected`) e a de dados com `.invalid-key` pinta a chave com
+    /// `list.errorForeground`.
     pub fn refresh_rows(&self) {
         let rows = self.row_elements.borrow().clone();
         let bars = self.row_bars.borrow().clone();
         let focused = self.ui.focused();
         let hovered = self.hovered_row.get();
         let styles = &self.services.styles;
+        let header_offset = usize::from(self.header.get().is_some());
         let mut tree = self.ui.tree_mut();
         for (i, row) in rows.iter().enumerate() {
-            if !tree.has_class(*row, "setting-list-row") {
+            let is_data_row = tree.has_class(*row, "setting-list-row");
+            let is_object_row = tree.has_class(*row, "setting-list-object-row");
+            if !is_data_row && !is_object_row {
                 continue;
             }
             let is_hovered = hovered == Some(*row);
             let selected = tree.has_class(*row, "selected");
             let mut background = None;
             let mut foreground = styles.foreground;
-            if is_hovered {
-                background = styles.list_hover_background;
-                foreground = styles.list_hover_foreground.unwrap_or(styles.foreground);
+            if is_data_row {
+                if is_hovered {
+                    background = styles.list_hover_background;
+                    foreground = styles.list_hover_foreground.unwrap_or(styles.foreground);
+                }
+                if selected {
+                    let (selection_background, selection_foreground) = if focused == Some(*row) {
+                        (styles.list_active_selection_background, styles.list_active_selection_foreground)
+                    } else {
+                        (styles.list_inactive_selection_background, styles.list_inactive_selection_foreground)
+                    };
+                    background = selection_background;
+                    foreground = selection_foreground.unwrap_or(styles.foreground);
+                }
+                if tree.has_class(*row, "drag-hover") {
+                    background = styles.list_drop_background;
+                }
             }
-            if selected {
-                let (selection_background, selection_foreground) = if focused == Some(*row) {
-                    (styles.list_active_selection_background, styles.list_active_selection_foreground)
-                } else {
-                    (styles.list_inactive_selection_background, styles.list_inactive_selection_foreground)
-                };
-                background = selection_background;
-                foreground = selection_foreground.unwrap_or(styles.foreground);
+            let odd = (i + 1 + header_offset) % 2 == 1;
+            if is_object_row && odd && (!is_data_row || (!is_hovered && focused != Some(*row) && !selected)) {
+                background = Some(zebra_background());
             }
-            if tree.has_class(*row, "drag-hover") {
-                background = styles.list_drop_background;
+            tree.style_mut(*row).background = background;
+            if !is_data_row {
+                continue;
             }
             let draggable = tree.has_class(*row, "draggable");
-            let style = tree.style_mut(*row);
-            style.background = background;
-            style.cursor = draggable.then_some(Cursor::Pointer);
+            let invalid_key = tree.has_class(*row, "invalid-key");
+            tree.style_mut(*row).cursor = draggable.then_some(Cursor::Pointer);
             for child in tree.children(*row).to_vec() {
+                let color_for_child = if invalid_key && tree.has_class(child, "setting-list-object-key") { styles.list_error_foreground.unwrap_or(foreground) } else { foreground };
                 if let Content::Text { color, .. } = &mut tree.style_mut(child).content {
-                    *color = foreground;
+                    *color = color_for_child;
                 }
             }
             if let Some(Some(bar)) = bars.get(i) {
@@ -949,10 +1206,73 @@ pub struct ListSettingWidgetOptions<T> {
     pub drag_and_drop: bool,
     /// `getLocalizedStrings()`.
     pub strings: ListSettingStrings,
+    /// Os `placeholder` da edição, também de `getLocalizedStrings()`.
+    pub placeholders: ListPlaceholderStrings,
     /// O título que `addTooltipsToRow` monta para o item.
     pub tooltip: Rc<dyn Fn(&T) -> ListRowTooltip>,
     /// `font-family: var(--monaco-monospace-font)` do valor e do irmão (`.setting-list-include-exclude-widget`).
     pub monospace: bool,
+}
+
+/// `new MarkdownString().appendMarkdown(text)` como conteúdo de hover.
+fn markdown_hover(text: &str) -> HoverContent {
+    let mut markdown = MarkdownString::new(None, TrustedOrOptions::default());
+    markdown.append_markdown(JsString::from(text).units());
+    HoverContent::Markdown(IMarkdownString {
+        value: markdown.value,
+        is_trusted: markdown.is_trusted,
+        support_theme_icons: markdown.support_theme_icons,
+        support_html: markdown.support_html,
+        support_alert_syntax: markdown.support_alert_syntax,
+        base_uri: markdown.base_uri,
+        uris: markdown.uris,
+    })
+}
+
+/// Qual das duas subclasses do `ListSettingWidget`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IncludeExclude {
+    Include,
+    Exclude,
+}
+
+impl<T: ListDataItem> ListSettingWidgetOptions<T> {
+    /// `ExcludeSettingWidget` e `IncludeSettingWidget`: as duas só mudam as palavras (`Exclude` e `Include`).
+    fn include_exclude(kind: IncludeExclude) -> Self {
+        let exclude = kind == IncludeExclude::Exclude;
+        let pick = |exclude_text: String, include_text: String| if exclude { exclude_text } else { include_text };
+        Self {
+            container_classes: vec!["setting-list-include-exclude-widget".to_owned()],
+            drag_and_drop: false,
+            strings: ListSettingStrings {
+                delete_action_tooltip: pick(localize("removeExcludeItem", "Remove Exclude Item", &[]), localize("removeIncludeItem", "Remove Include Item", &[])),
+                edit_action_tooltip: pick(localize("editExcludeItem", "Edit Exclude Item", &[]), localize("editIncludeItem", "Edit Include Item", &[])),
+                add_button_label: localize("addPattern", "Add Pattern", &[]),
+            },
+            placeholders: ListPlaceholderStrings {
+                input_placeholder: pick(localize("excludePatternInputPlaceholder", "Exclude Pattern...", &[]), localize("includePatternInputPlaceholder", "Include Pattern...", &[])),
+                sibling_input_placeholder: pick(
+                    localize("excludeSiblingInputPlaceholder", "When Pattern Is Present...", &[]),
+                    localize("includeSiblingInputPlaceholder", "When Pattern Is Present...", &[]),
+                ),
+            },
+            tooltip: Rc::new(move |item: &T| {
+                let value = item.value().data();
+                let mut title = match (item.sibling(), exclude) {
+                    (None, true) => localize("excludePatternHintLabel", "Exclude files matching `{0}`", &[value]),
+                    (None, false) => localize("includePatternHintLabel", "Include files matching `{0}`", &[value]),
+                    (Some(sibling), true) => localize("excludeSiblingHintLabel", "Exclude files matching `{0}`, only when a file matching `{1}` is present", &[value, sibling]),
+                    (Some(sibling), false) => localize("includeSiblingHintLabel", "Include files matching `{0}`, only when a file matching `{1}` is present", &[value, sibling]),
+                };
+                if let Some(source) = item.source().filter(|source| !source.is_empty()) {
+                    title += &localize("excludeIncludeSource", ". Default value provided by `{0}`", &[source]);
+                }
+                let hover = Some(markdown_hover(&title));
+                ListRowTooltip { title, hover }
+            }),
+            monospace: true,
+        }
+    }
 }
 
 impl<T: ListDataItem> ListSettingWidgetOptions<T> {
@@ -965,6 +1285,8 @@ impl<T: ListDataItem> ListSettingWidgetOptions<T> {
                 delete_action_tooltip: localize("removeItem", "Remove Item", &[]),
                 edit_action_tooltip: localize("editItem", "Edit Item", &[]),
                 add_button_label: localize("addItem", "Add Item", &[]),
+            },
+            placeholders: ListPlaceholderStrings {
                 input_placeholder: localize("itemInputPlaceholder", "Item...", &[]),
                 sibling_input_placeholder: localize("listSiblingInputPlaceholder", "Sibling...", &[]),
             },
@@ -1022,7 +1344,7 @@ pub struct ListSettingWidget<T: ListDataItem> {
     show_add_button: Cell<bool>,
     is_editable: Cell<bool>,
     pending_drag: RefCell<Option<PendingDrag<T>>>,
-    row_layouts: RefCell<HashMap<NodeId, RowLayout>>,
+    row_layouts: RowLayouts<RowLayout>,
 }
 
 impl<T: ListDataItem> Deref for ListSettingWidget<T> {
@@ -1050,7 +1372,7 @@ impl<T: ListDataItem> ListSettingWidget<T> {
                 show_add_button: Cell::new(true),
                 is_editable: Cell::new(true),
                 pending_drag: RefCell::new(None),
-                row_layouts: RefCell::new(HashMap::new()),
+                row_layouts: RowLayouts::default(),
             }
         });
         this.base.init();
@@ -1089,14 +1411,6 @@ impl<T: ListDataItem> ListSettingWidget<T> {
 
     fn value_font(&self, scale: f32) -> TextStyle {
         if self.options.monospace { TextStyle::new("monospace", UI_FONT_SIZE * scale, 400) } else { ui_font(UI_FONT_SIZE * scale, 400) }
-    }
-
-    /// Esquece as posições de linhas que já saíram da árvore e guarda a desta.
-    fn register_row_layout(&self, row: NodeId, layout: RowLayout) {
-        let tree = self.ui.tree();
-        let mut layouts = self.row_layouts.borrow_mut();
-        layouts.retain(|id, _| tree.is_alive(*id));
-        layouts.insert(row, layout);
     }
 
     // ---- linha de dados ----------------------------------------------------------------------------------------------
@@ -1177,7 +1491,7 @@ impl<T: ListDataItem> ListSettingWidget<T> {
 
     fn render_input_box(&self, data: &str, row: NodeId) -> Rc<InputBox> {
         let mut options = InputBoxOptions::new(self.services.styles.input_box.clone());
-        options.placeholder = Some(self.options.strings.input_placeholder.clone());
+        options.placeholder = Some(self.options.placeholders.input_placeholder.clone());
         let input = InputBox::new(&self.ui, row, Some(self.services.context_view_provider.clone()), options);
         self.ui.tree_mut().add_class(input.element(), "setting-list-valueInput");
         self.base.list_disposables().add_rc(input.clone());
@@ -1194,28 +1508,7 @@ impl<T: ListDataItem> ListSettingWidget<T> {
         (wrapper, select)
     }
 
-    fn make_button(&self, row: NodeId, label: String, class: &str, secondary: bool) -> Rc<Button> {
-        let button = Button::new(&self.ui, row, ButtonOptions { styles: self.services.styles.button, secondary, ..ButtonOptions::default() });
-        button.set_label(ButtonLabel::Text(label));
-        self.ui.tree_mut().add_class(button.element(), class);
-        self.base.list_disposables().add_rc(button.clone());
-        button
-    }
-
     // ---- posição -----------------------------------------------------------------------------------------------------
-
-    /// Texto da linha de dados dentro da caixa de `width` px (`overflow: hidden`, `text-overflow: ellipsis`).
-    fn place_text(&self, node: NodeId, text: &str, style: &TextStyle, x: f64, width: f64, padding_right: f64) {
-        let mut tree = self.ui.tree_mut();
-        tree.set_bounds(node, Rect::new(x, 0.0, x + width, ROW_HEIGHT));
-        tree.style_mut(node).clip = true;
-        let shown = if width > 0.0 { ellipsize(text, style, (width - padding_right).max(0.0)) } else { text.to_owned() };
-        let color = match &tree.style(node).content {
-            Content::Text { color, .. } => *color,
-            _ => self.services.styles.foreground,
-        };
-        tree.style_mut(node).content = if shown.is_empty() { Content::None } else { Content::Text { text: shown, style: style.clone(), color, line_height: ROW_HEIGHT } };
-    }
 
     fn layout_data_row(&self, value_node: NodeId, sibling_node: NodeId, value_text: &str, sibling_text: Option<&str>, width: f64) -> f64 {
         let value_font = self.value_font(1.0);
@@ -1227,22 +1520,9 @@ impl<T: ListDataItem> ListSettingWidget<T> {
         ROW_HEIGHT
     }
 
-    /// Um `InputBox` com `height: 24px` e a largura dada, na posição `x` da linha.
-    fn place_input(&self, input: &InputBox, x: f64, width: f64) {
-        let element = input.element();
-        {
-            let mut tree = self.ui.tree_mut();
-            tree.set_fill(element, false, false);
-            tree.set_bounds(element, Rect::new(x, 0.0, x + width, ROW_HEIGHT));
-        }
-        input.layout();
-        self.ui.tree_mut().set_bounds(element, Rect::new(x, 0.0, x + width, ROW_HEIGHT));
-    }
-
     /// O flex da linha de edição: valor, irmão, OK (`margin: 0 4px`) e Cancelar.
     fn layout_edit_row(&self, layout: &EditRowLayout, width: f64) -> f64 {
-        let font = ui_font(UI_FONT_SIZE, 400);
-        let intrinsic = (measure_text(&"0".repeat(INPUT_INTRINSIC_CHARS), &font) + INPUT_CHROME_WIDTH).min(INPUT_MAX_WIDTH);
+        let intrinsic = input_intrinsic_width(INPUT_MAX_WIDTH);
         let (ok_width, cancel_width) = (layout.ok.min_content_width(), layout.cancel.min_content_width());
         let has_sibling = layout.sibling.is_some();
         let value_flexible = matches!(layout.value, EditValue::Input(_));
@@ -1270,11 +1550,7 @@ impl<T: ListDataItem> ListSettingWidget<T> {
             }
             EditValue::Select { wrapper, select } => {
                 let select_height = select.natural_size().1;
-                {
-                    let mut tree = self.ui.tree_mut();
-                    tree.set_fill(*wrapper, false, false);
-                    tree.set_bounds(*wrapper, Rect::new(x, 0.0, x + SELECT_WIDTH, select_height));
-                }
+                self.place_box(*wrapper, x, SELECT_WIDTH, select_height);
                 select.layout();
                 height = height.max(select_height);
                 x += SELECT_WIDTH;
@@ -1285,19 +1561,7 @@ impl<T: ListDataItem> ListSettingWidget<T> {
             self.place_input(sibling, x, sibling_width);
             x += sibling_width + INPUT_MARGIN_RIGHT;
         }
-        x += OK_BUTTON_MARGIN;
-        for (button, button_width) in [(&layout.ok, ok_width), (&layout.cancel, cancel_width)] {
-            button.set_height(None);
-            button.set_width(Some(button_width));
-            button.set_position(x, 0.0);
-            height = height.max(button.size().1);
-            x += button_width + if Rc::ptr_eq(button, &layout.ok) { OK_BUTTON_MARGIN } else { 0.0 };
-        }
-        // `align-items: stretch`: os botões acompanham a altura da linha.
-        for button in [&layout.ok, &layout.cancel] {
-            button.set_height(Some(height));
-        }
-        height
+        self.place_edit_buttons(&layout.ok, &layout.cancel, x, height)
     }
 }
 
@@ -1328,37 +1592,17 @@ impl<T: ListDataItem> ListSettingDelegate<T> for ListSettingWidget<T> {
         }
         let strings = &self.options.strings;
         let weak = self.weak_self.clone();
-        let edit = to_action(ToActionProps {
-            id: "workbench.action.editListItem".to_owned(),
-            label: String::new(),
-            tooltip: Some(strings.edit_action_tooltip.clone()),
-            enabled: Some(true),
-            checked: None,
-            class: Some(ThemeIcon::from_id(SETTINGS_EDIT_ICON).as_class_name()),
-            alt: None,
-            run: Rc::new(move |_args: &[Dynamic]| {
-                if let Some(this) = weak.upgrade() {
-                    this.edit_setting(idx);
-                }
-                MaybePromise::Value(Dynamic::Undefined)
-            }),
+        let edit = list_action("workbench.action.editListItem", &strings.edit_action_tooltip, SETTINGS_EDIT_ICON, move || {
+            if let Some(this) = weak.upgrade() {
+                this.edit_setting(idx);
+            }
         });
         let weak = self.weak_self.clone();
         let item = item.clone();
-        let remove = to_action(ToActionProps {
-            id: "workbench.action.removeListItem".to_owned(),
-            label: String::new(),
-            tooltip: Some(strings.delete_action_tooltip.clone()),
-            enabled: Some(true),
-            checked: None,
-            class: Some(ThemeIcon::from_id(SETTINGS_REMOVE_ICON).as_class_name()),
-            alt: None,
-            run: Rc::new(move |_args: &[Dynamic]| {
-                if let Some(this) = weak.upgrade() {
-                    this.fire_list_event(SettingListEvent::Remove { original_item: item.clone(), target_index: idx });
-                }
-                MaybePromise::Value(Dynamic::Undefined)
-            }),
+        let remove = list_action("workbench.action.removeListItem", &strings.delete_action_tooltip, SETTINGS_REMOVE_ICON, move || {
+            if let Some(this) = weak.upgrade() {
+                this.fire_list_event(SettingListEvent::Remove { original_item: item.clone(), target_index: idx });
+            }
         });
         vec![edit, remove]
     }
@@ -1377,7 +1621,7 @@ impl<T: ListDataItem> ListSettingDelegate<T> for ListSettingWidget<T> {
         if sibling_text.is_none() {
             self.ui.tree_mut().add_class(value, "no-sibling");
         }
-        self.register_row_layout(row, RowLayout::Data { value_node: value, sibling_node: sibling, value_text: item.value().data().to_owned(), sibling_text });
+        self.row_layouts.register(&self.ui, row, RowLayout::Data { value_node: value, sibling_node: sibling, value_text: item.value().data().to_owned(), sibling_text });
         if self.options.drag_and_drop {
             self.add_drag_and_drop(row, item, idx);
         }
@@ -1447,7 +1691,7 @@ impl<T: ListDataItem> ListSettingDelegate<T> for ListSettingWidget<T> {
 
         if let Some(sibling) = item.sibling() {
             let mut options = InputBoxOptions::new(self.services.styles.input_box.clone());
-            options.placeholder = Some(self.options.strings.sibling_input_placeholder.clone());
+            options.placeholder = Some(self.options.placeholders.sibling_input_placeholder.clone());
             let input = InputBox::new(&ui, row, Some(self.services.context_view_provider.clone()), options);
             ui.tree_mut().add_class(input.element(), "setting-list-siblingInput");
             self.base.list_disposables().add_rc(input.clone());
@@ -1498,22 +1742,19 @@ impl<T: ListDataItem> ListSettingDelegate<T> for ListSettingWidget<T> {
         ));
 
         let sibling = sibling_input.borrow().clone();
-        self.register_row_layout(row, RowLayout::Edit(EditRowLayout { value: value_input, sibling, ok, cancel }));
+        self.row_layouts.register(&self.ui, row, RowLayout::Edit(EditRowLayout { value: value_input, sibling, ok, cancel }));
         row
     }
 
     fn add_tooltips_to_row(&self, row_element: &RowElementGroup, item: &T) {
         let tooltip = (self.options.tooltip)(item);
         let row = row_element.row_element;
-        let content = tooltip.hover.clone().unwrap_or_else(|| HoverContent::Text(tooltip.title.clone()));
-        let hover = self.services.hover_service.setup_delayed_hover(row, Rc::new(move || IHoverOptions::new(content.clone(), HoverTarget::Node(row))), None);
-        self.base.list_disposables().add(hover);
+        self.base.setup_row_hover(row, tooltip.hover.clone().unwrap_or_else(|| HoverContent::Text(tooltip.title.clone())));
         self.ui.tree_mut().set_label(row, tooltip.title);
     }
 
     fn layout_row(&self, row: NodeId, width: f64) -> f64 {
-        let layout = self.row_layouts.borrow().get(&row).cloned();
-        match layout {
+        match self.row_layouts.get(row) {
             Some(RowLayout::Data { value_node, sibling_node, value_text, sibling_text }) => self.layout_data_row(value_node, sibling_node, &value_text, sibling_text.as_deref(), width),
             Some(RowLayout::Edit(edit)) => self.layout_edit_row(&edit, width),
             None => ROW_HEIGHT,
@@ -1524,6 +1765,912 @@ impl<T: ListDataItem> ListSettingDelegate<T> for ListSettingWidget<T> {
 impl<T: ListDataItem> IDisposable for ListSettingWidget<T> {
     fn dispose(&self) {
         self.own.dispose();
+        self.base.dispose();
+    }
+}
+
+// ---- Include e Exclude -----------------------------------------------------------------------------------------------
+
+/// `ExcludeSettingWidget`: o [`ListSettingWidget`] de [`IIncludeExcludeDataItem`] com o que a subclasse muda
+/// ([`ListSettingWidgetOptions`]: classes, textos, dica em Markdown, sem arrastar, fonte monoespaçada).
+pub struct ExcludeSettingWidget;
+
+impl ExcludeSettingWidget {
+    pub fn new(services: SettingsWidgetServices, container: NodeId) -> Rc<ListSettingWidget<IIncludeExcludeDataItem>> {
+        ListSettingWidget::new(services, container, ListSettingWidgetOptions::include_exclude(IncludeExclude::Exclude))
+    }
+}
+
+/// `IncludeSettingWidget`: igual ao [`ExcludeSettingWidget`], com os textos de inclusão.
+pub struct IncludeSettingWidget;
+
+impl IncludeSettingWidget {
+    pub fn new(services: SettingsWidgetServices, container: NodeId) -> Rc<ListSettingWidget<IIncludeExcludeDataItem>> {
+        ListSettingWidget::new(services, container, ListSettingWidgetOptions::include_exclude(IncludeExclude::Include))
+    }
+}
+
+// ---- peças dos widgets concretos -------------------------------------------------------------------------------------
+
+/// Como cada widget guarda o que a linha montada precisa para ser posicionada: por nó da linha.
+struct RowLayouts<V>(RefCell<HashMap<NodeId, V>>);
+
+impl<V> Default for RowLayouts<V> {
+    fn default() -> Self {
+        Self(RefCell::new(HashMap::new()))
+    }
+}
+
+impl<V: Clone> RowLayouts<V> {
+    /// Esquece as posições de linhas que já saíram da árvore e guarda a desta.
+    fn register(&self, ui: &Ui, row: NodeId, layout: V) {
+        let tree = ui.tree();
+        let mut layouts = self.0.borrow_mut();
+        layouts.retain(|id, _| tree.is_alive(*id));
+        layouts.insert(row, layout);
+    }
+
+    fn get(&self, row: NodeId) -> Option<V> {
+        self.0.borrow().get(&row).cloned()
+    }
+}
+
+/// `rgba(130, 130, 130, 0.04)`: a zebra das linhas de objeto e o fundo do cabeçalho.
+fn zebra_background() -> Rgba {
+    Rgba::new(130, 130, 130, ZEBRA_ALPHA)
+}
+
+/// A largura intrínseca do `<input>` (vinte vezes a largura de `0`, mais padding e borda), até `max_width`.
+fn input_intrinsic_width(max_width: f64) -> f64 {
+    let font = ui_font(UI_FONT_SIZE, 400);
+    (measure_text(&"0".repeat(INPUT_INTRINSIC_CHARS), &font) + INPUT_CHROME_WIDTH).min(max_width)
+}
+
+/// Uma ação de linha (`{ class: ThemeIcon.asClassName(icon), enabled: true, id, label: '', tooltip, run }`).
+fn list_action(id: &str, tooltip: &str, icon: &str, run: impl Fn() + 'static) -> ActionRef {
+    to_action(ToActionProps {
+        id: id.to_owned(),
+        label: String::new(),
+        tooltip: Some(tooltip.to_owned()),
+        enabled: Some(true),
+        checked: None,
+        class: Some(ThemeIcon::from_id(icon).as_class_name()),
+        alt: None,
+        run: Rc::new(move |_args: &[Dynamic]| {
+            run();
+            MaybePromise::Value(Dynamic::Undefined)
+        }),
+    })
+}
+
+/// O laço de encolher do CSS Flexbox para itens com `flex-shrink: 1`: `items` são o tamanho base e o `min-width` de cada
+/// um, `available` é o espaço da linha sem os itens rígidos. Itens cujo base é menor que o mínimo congelam no mínimo; os
+/// demais encolhem na proporção do tamanho base, e quem passar a ficar abaixo do mínimo congela e o laço repete.
+fn resolve_flex_shrink(available: f64, items: &[(f64, f64)]) -> Vec<f64> {
+    let mut sizes: Vec<f64> = items.iter().map(|&(base, min)| base.max(min)).collect();
+    if sizes.iter().sum::<f64>() <= available {
+        return sizes;
+    }
+    let mut frozen: Vec<bool> = items.iter().map(|&(base, min)| base < min).collect();
+    while frozen.iter().any(|is_frozen| !is_frozen) {
+        let frozen_total: f64 = (0..items.len()).filter(|&i| frozen[i]).map(|i| sizes[i]).sum();
+        let unfrozen: Vec<usize> = (0..items.len()).filter(|&i| !frozen[i]).collect();
+        let bases_total: f64 = unfrozen.iter().map(|&i| items[i].0).sum();
+        let free = (available - frozen_total - bases_total).min(0.0);
+        let targets: Vec<f64> = unfrozen.iter().map(|&i| if bases_total > 0.0 { items[i].0 + free * items[i].0 / bases_total } else { items[i].0 }).collect();
+        let total_violation: f64 = unfrozen.iter().zip(&targets).map(|(&i, &target)| target.max(items[i].1) - target).sum();
+        for (&i, &target) in unfrozen.iter().zip(&targets) {
+            let clamped = target.max(items[i].1);
+            if total_violation == 0.0 || clamped > target {
+                sizes[i] = clamped;
+                frozen[i] = true;
+            }
+        }
+    }
+    sizes
+}
+
+// ---- widgets de objeto -----------------------------------------------------------------------------------------------
+
+/// `IObjectSetValueOptions`.
+pub struct ObjectSetValueOptions {
+    pub setting_key: String,
+    pub show_add_button: bool,
+    pub is_read_only: Option<bool>,
+    pub key_suggester: Option<ObjectKeySuggester>,
+    pub value_suggester: Option<ObjectValueSuggester>,
+    /// `propertyNames?: IJSONSchema`, o esquema dinâmico que `validate_property_name` lê.
+    pub property_names: Option<Dynamic>,
+}
+
+/// `IBoolObjectSetValueOptions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoolObjectSetValueOptions {
+    pub setting_key: String,
+}
+
+/// `ObjectWidget`: `InputBox | SelectBox`.
+#[derive(Clone)]
+enum ObjectWidgetKind {
+    Input(Rc<InputBox>),
+    Select(Rc<SelectBox>),
+}
+
+/// O que `renderEditWidget` devolve: o `widget` e o `element` (o contêiner `.setting-list-object-input-*`).
+#[derive(Clone)]
+struct ObjectEditWidget {
+    wrapper: NodeId,
+    kind: ObjectWidgetKind,
+}
+
+impl ObjectEditWidget {
+    /// `widget.focus(); if (widget instanceof InputBox) widget.select();`.
+    fn focus(&self) {
+        match &self.kind {
+            ObjectWidgetKind::Input(input) => {
+                input.focus();
+                input.select(None);
+            }
+            ObjectWidgetKind::Select(select) => select.focus(),
+        }
+    }
+}
+
+/// A chave da linha de edição: o campo ou a lista (com `showAddButton`) ou só o texto.
+#[derive(Clone)]
+enum ObjectEditKey {
+    Widget(ObjectEditWidget),
+    Text { node: NodeId, text: String },
+}
+
+/// O que as linhas dos widgets de objeto guardam para ser posicionadas.
+#[derive(Clone)]
+enum ObjectRowLayout {
+    /// A linha de dados e o cabeçalho (`.setting-list-row-header`): chave e valor em texto.
+    Text { key_node: NodeId, value_node: NodeId, key_text: String, value_text: String, header: bool },
+    /// A linha de edição do `ObjectSettingDropdownWidget`. `value` é o `valueWidget` mais recente.
+    Edit { key: ObjectEditKey, value_container: NodeId, value: Rc<RefCell<Option<ObjectEditWidget>>>, ok: Rc<Button>, cancel: Rc<Button> },
+    /// A linha do `ObjectSettingCheckboxWidget`.
+    Checkbox { wrapper: NodeId, checkbox: Rc<Checkbox>, value_node: NodeId, text: String },
+}
+
+/// Posiciona uma linha (ou o cabeçalho) dos widgets de objeto com a largura dada e devolve a altura.
+fn layout_object_row<T: Clone + 'static>(base: &AbstractListSettingWidget<T>, layouts: &RowLayouts<ObjectRowLayout>, row: NodeId, width: f64) -> f64 {
+    let Some(layout) = layouts.get(row) else { return ROW_HEIGHT };
+    match layout {
+        ObjectRowLayout::Text { key_node, value_node, key_text, value_text, header } => {
+            // `padding-right: 4px`; os percentuais são da largura do conteúdo. `flex: none`: nada encolhe.
+            let content_width = (width - OBJECT_ROW_PADDING_RIGHT).max(0.0);
+            let font = ui_font(UI_FONT_SIZE, if header { 700 } else { 400 });
+            let key_width = OBJECT_KEY_WIDTH * content_width;
+            base.place_text(key_node, &key_text, &font, OBJECT_KEY_MARGIN_LEFT, key_width, 0.0);
+            let value_x = OBJECT_KEY_MARGIN_LEFT + key_width + OBJECT_KEY_MARGIN_RIGHT;
+            base.place_text(value_node, &value_text, &font, value_x, OBJECT_VALUE_WIDTH * content_width, if header { 0.0 } else { OBJECT_VALUE_PADDING_RIGHT });
+            ROW_HEIGHT
+        }
+        ObjectRowLayout::Edit { key, value_container, value, ok, cancel } => {
+            let value = value.borrow().clone();
+            layout_object_edit_row(base, &key, value_container, value, &ok, &cancel, width)
+        }
+        ObjectRowLayout::Checkbox { wrapper, checkbox, value_node, text } => {
+            let wrapper_width = CHECKBOX_SIZE + CHECKBOX_MARGIN_RIGHT;
+            base.place_box(wrapper, CHECKBOX_WRAPPER_MARGIN_LEFT, wrapper_width, ROW_HEIGHT);
+            checkbox.set_position(0.0, CHECKBOX_MARGIN_TOP);
+            // `.setting-list-object-input { margin-right: 4px }`; o valor ocupa o resto (`flex: 1`).
+            let value_x = CHECKBOX_WRAPPER_MARGIN_LEFT + wrapper_width + INPUT_MARGIN_RIGHT;
+            base.place_text(value_node, &text, &ui_font(UI_FONT_SIZE, 400), value_x, (width - value_x).max(0.0), 0.0);
+            ROW_HEIGHT
+        }
+    }
+}
+
+/// O flex da linha de edição do `ObjectSettingDropdownWidget`: a chave, o contêiner do valor e os botões OK
+/// (`margin: 0 4px`) e Cancelar. Ver o `//!` do módulo.
+fn layout_object_edit_row<T: Clone + 'static>(
+    base: &AbstractListSettingWidget<T>,
+    key: &ObjectEditKey,
+    value_container: NodeId,
+    value: Option<ObjectEditWidget>,
+    ok: &Rc<Button>,
+    cancel: &Rc<Button>,
+    width: f64,
+) -> f64 {
+    let buttons = OBJECT_BUTTONS_MARGIN + ok.min_content_width() + cancel.min_content_width();
+    let key_min = OBJECT_KEY_MIN_WIDTH * width;
+    // O item flexível da chave (tamanho base e mínimo) e o que ela tem de rígido (as margens fora do `min-width`).
+    let (key_flexible, key_rigid) = match key {
+        ObjectEditKey::Text { .. } => (None, OBJECT_KEY_MARGIN_LEFT + OBJECT_KEY_WIDTH * width + OBJECT_KEY_MARGIN_RIGHT),
+        ObjectEditKey::Widget(ObjectEditWidget { kind: ObjectWidgetKind::Input(_), .. }) => (Some((input_intrinsic_width(f64::INFINITY) + INPUT_MARGIN_RIGHT, key_min)), 0.0),
+        ObjectEditKey::Widget(ObjectEditWidget { kind: ObjectWidgetKind::Select(select), .. }) => (Some((select.natural_size().0, key_min)), INPUT_MARGIN_RIGHT),
+    };
+    let mut items: Vec<(f64, f64)> = key_flexible.into_iter().collect();
+    // O contêiner do valor: `width: 100%`, e o mínimo de um item flex cujo conteúdo tem largura em percentual é zero.
+    items.push((width, 0.0));
+    let sizes = resolve_flex_shrink(width - key_rigid - buttons, &items);
+    let value_width = sizes[sizes.len() - 1];
+
+    let mut x = match key {
+        ObjectEditKey::Text { node, text } => {
+            let key_width = OBJECT_KEY_WIDTH * width;
+            base.place_text(*node, text, &ui_font(UI_FONT_SIZE, 400), OBJECT_KEY_MARGIN_LEFT, key_width, 0.0);
+            OBJECT_KEY_MARGIN_LEFT + key_width + OBJECT_KEY_MARGIN_RIGHT
+        }
+        ObjectEditKey::Widget(widget) => {
+            let key_width = sizes[0];
+            base.place_box(widget.wrapper, 0.0, key_width, ROW_HEIGHT);
+            match &widget.kind {
+                // A margem de `4px` do `.setting-list-object-input` é do `InputBox` e fica dentro do contêiner da chave.
+                ObjectWidgetKind::Input(input) => {
+                    base.place_input(input, 0.0, (key_width - INPUT_MARGIN_RIGHT).max(0.0));
+                    key_width
+                }
+                // Na lista a margem é do próprio contêiner, fora do `min-width`.
+                ObjectWidgetKind::Select(select) => {
+                    select.layout();
+                    key_width + INPUT_MARGIN_RIGHT
+                }
+            }
+        }
+    };
+
+    base.place_box(value_container, x, value_width, ROW_HEIGHT);
+    if let Some(widget) = value {
+        base.place_box(widget.wrapper, 0.0, value_width, ROW_HEIGHT);
+        match &widget.kind {
+            ObjectWidgetKind::Input(input) => {
+                base.place_input(input, 0.0, value_width);
+            }
+            ObjectWidgetKind::Select(select) => {
+                select.layout();
+            }
+        }
+    }
+    x += value_width;
+    base.place_edit_buttons(ok, cancel, x, ROW_HEIGHT)
+}
+
+/// `shouldUseSuggestion(originalValue, previousValue, newValue)`.
+fn should_use_suggestion(original_value: &ObjectValue, previous_value: &ObjectValue, new_value: &ObjectValue) -> bool {
+    let same_type = std::mem::discriminant(previous_value) == std::mem::discriminant(new_value);
+    let new_is_enum = matches!(new_value, ObjectValue::Enum(_));
+    // suggestion is exactly the same
+    if !new_is_enum && same_type && new_value.data_string() == previous_value.data_string() {
+        return false;
+    }
+    // item is new, use suggestion
+    if matches!(original_value, ObjectValue::String(data) | ObjectValue::Enum(ObjectEnumData { data, .. }) if data.is_empty()) {
+        return true;
+    }
+    if same_type && !new_is_enum {
+        return false;
+    }
+    // check if all enum options are the same
+    if let (ObjectValue::Enum(previous), ObjectValue::Enum(new)) = (previous_value, new_value) {
+        let mut previous_enums: std::collections::HashSet<&str> = previous.options.iter().map(|option| option.value.as_str()).collect();
+        for option in &new.options {
+            previous_enums.remove(option.value.as_str());
+        }
+        // all options are the same
+        if previous_enums.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+/// O `{ ...changedKeyOrValue, data: selected }` do `onDidSelect` (e do "inválido no json"): o booleano vira `selected ===
+/// 'true'`, a lista mantém as opções do molde.
+fn with_enum_selection(template: &ObjectValue, selected: &str) -> ObjectValue {
+    match template {
+        ObjectValue::Boolean(_) => ObjectValue::Boolean(selected == "true"),
+        ObjectValue::Enum(enum_data) => ObjectValue::Enum(ObjectEnumData { data: selected.to_owned(), options: enum_data.options.clone() }),
+        ObjectValue::String(_) => ObjectValue::String(selected.to_owned()),
+    }
+}
+
+/// `getEnumDescription`: a descrição da opção escolhida.
+fn enum_description(enum_data: &ObjectEnumData) -> Option<String> {
+    enum_data.options.iter().find(|option| option.value == enum_data.data).and_then(|option| option.description.clone())
+}
+
+/// `IObjectRenderEditWidgetOptions`.
+struct ObjectEditContext {
+    is_key: bool,
+    idx: usize,
+    original_item: IObjectDataItem,
+    changed_item: Rc<RefCell<IObjectDataItem>>,
+    update: Rc<dyn Fn(ObjectValue)>,
+}
+
+/// `ObjectSettingDropdownWidget`.
+pub struct ObjectSettingDropdownWidget {
+    weak_self: Weak<Self>,
+    ui: Ui,
+    base: Rc<AbstractListSettingWidget<IObjectDataItem>>,
+    editable: Cell<bool>,
+    current_setting_key: RefCell<String>,
+    show_add_button: Cell<bool>,
+    key_suggester: RefCell<ObjectKeySuggester>,
+    value_suggester: RefCell<ObjectValueSuggester>,
+    property_names: RefCell<Option<Dynamic>>,
+    row_layouts: RowLayouts<ObjectRowLayout>,
+}
+
+impl Deref for ObjectSettingDropdownWidget {
+    type Target = AbstractListSettingWidget<IObjectDataItem>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl ObjectSettingDropdownWidget {
+    pub fn new(services: SettingsWidgetServices, container: NodeId) -> Rc<Self> {
+        let ui = services.ui.clone();
+        let this = Rc::new_cyclic(|weak: &Weak<Self>| {
+            let delegate: Weak<dyn ListSettingDelegate<IObjectDataItem>> = weak.clone();
+            let empty_item = IObjectDataItem {
+                key: ObjectKey::String(String::new()),
+                value: ObjectValue::String(String::new()),
+                key_description: None,
+                source: None,
+                removable: true,
+                resetable: false,
+            };
+            Self {
+                base: AbstractListSettingWidget::new(services, container, empty_item, delegate),
+                weak_self: weak.clone(),
+                ui,
+                editable: Cell::new(true),
+                current_setting_key: RefCell::new(String::new()),
+                show_add_button: Cell::new(true),
+                key_suggester: RefCell::new(Rc::new(|_: &[String], _: Option<usize>| None)),
+                value_suggester: RefCell::new(Rc::new(|_: &str| None)),
+                property_names: RefCell::new(None),
+                row_layouts: RowLayouts::default(),
+            }
+        });
+        this.base.init();
+        this
+    }
+
+    /// `get isReadOnly()`.
+    fn is_read_only_now(&self) -> bool {
+        !self.editable.get()
+    }
+
+    /// `setValue(listData, options?)`.
+    pub fn set_value(&self, list_data: Vec<IObjectDataItem>, options: Option<ObjectSetValueOptions>) {
+        self.editable.set(!options.as_ref().and_then(|options| options.is_read_only).unwrap_or(false));
+        match options {
+            Some(options) => {
+                self.show_add_button.set(options.show_add_button);
+                if let Some(suggester) = options.key_suggester {
+                    *self.key_suggester.borrow_mut() = suggester;
+                }
+                if let Some(suggester) = options.value_suggester {
+                    *self.value_suggester.borrow_mut() = suggester;
+                }
+                *self.property_names.borrow_mut() = options.property_names;
+                if options.setting_key != *self.current_setting_key.borrow() {
+                    self.base.with_model(|model| {
+                        model.set_edit_key(EditKey::None);
+                        model.select(None);
+                    });
+                    *self.current_setting_key.borrow_mut() = options.setting_key;
+                }
+            }
+            None => *self.property_names.borrow_mut() = None,
+        }
+        self.base.set_value(list_data);
+    }
+
+    // ---- linha de edição ---------------------------------------------------------------------------------------------
+
+    fn render_edit_widget(&self, key_or_value: ObjectValue, context: &ObjectEditContext) -> ObjectEditWidget {
+        match key_or_value {
+            ObjectValue::String(data) => self.render_string_edit_widget(&data, context),
+            ObjectValue::Enum(enum_data) => self.render_enum_edit_widget(&enum_data, context),
+            ObjectValue::Boolean(data) => {
+                let options = ["true", "false"].map(|value| ObjectEnumOption { value: value.to_owned(), description: None }).to_vec();
+                self.render_enum_edit_widget(&ObjectEnumData { data: data.to_string(), options }, context)
+            }
+        }
+    }
+
+    fn render_string_edit_widget(&self, data: &str, context: &ObjectEditContext) -> ObjectEditWidget {
+        let services = self.base.services();
+        let wrapper = create_detached_el(&mut self.ui.tree_mut(), Role::Generic, if context.is_key { "setting-list-object-input-key" } else { "setting-list-object-input-value" });
+        let mut options = InputBoxOptions::new(services.styles.input_box.clone());
+        options.placeholder = Some(if context.is_key { localize("objectKeyInputPlaceholder", "Key", &[]) } else { localize("objectValueInputPlaceholder", "Value", &[]) });
+        let input = InputBox::new(&self.ui, wrapper, Some(services.context_view_provider.clone()), options);
+        self.ui.tree_mut().add_class(input.element(), "setting-list-object-input");
+        self.base.list_disposables().add_rc(input.clone());
+        input.set_value(data);
+
+        let update = context.update.clone();
+        self.base.list_disposables().add(input.on_did_change().listen(move |value| update(ObjectValue::String(value.clone()))));
+
+        let (weak, original_item, changed_item, idx) = (self.weak_self.clone(), context.original_item.clone(), context.changed_item.clone(), context.idx);
+        self.base.list_disposables().add(self.ui.listen(input.input_element(), EventKind::KeyDown, false, move |e| {
+            let Some(key) = StandardKeyboardEvent::from_event(e) else { return };
+            let Some(this) = weak.upgrade() else { return };
+            if key.equals(KeyCode::Enter.bits()) {
+                let changed = changed_item.borrow().clone();
+                this.handle_item_change(original_item.clone(), changed, idx);
+            } else if key.equals(KeyCode::Escape.bits()) {
+                this.cancel_edit();
+                e.stop(true);
+            }
+        }));
+        ObjectEditWidget { wrapper, kind: ObjectWidgetKind::Input(input) }
+    }
+
+    fn render_enum_edit_widget(&self, key_or_value: &ObjectEnumData, context: &ObjectEditContext) -> ObjectEditWidget {
+        let select = self.base.create_basic_select_box(key_or_value);
+        self.base.list_disposables().add_rc(select.clone());
+
+        // `changedKeyOrValue`: o objeto que o `onDidSelect` espalha, o do momento em que o widget foi montado.
+        let template = if context.is_key { ObjectValue::from(context.changed_item.borrow().key.clone()) } else { context.changed_item.borrow().value.clone() };
+        {
+            let (update, template) = (context.update.clone(), template.clone());
+            self.base.list_disposables().add(select.on_did_select().listen(move |data| update(with_enum_selection(&template, &data.selected))));
+        }
+
+        let classes = if context.is_key { "setting-list-object-input setting-list-object-input-key" } else { "setting-list-object-input setting-list-object-input-value" };
+        let wrapper = create_detached_el(&mut self.ui.tree_mut(), Role::Generic, classes);
+        select.render(wrapper);
+
+        // Switch to the first item if the user set something invalid in the json
+        let selected = key_or_value.options.iter().position(|option| key_or_value.data == option.value);
+        if selected.is_none() && let Some(first) = key_or_value.options.first() {
+            let value = match &template {
+                ObjectValue::Boolean(_) => ObjectValue::Boolean(true),
+                other => with_enum_selection(other, &first.value),
+            };
+            (context.update)(value);
+        } else if matches!(template, ObjectValue::Boolean(_)) {
+            // https://github.com/microsoft/vscode/issues/129581
+            (context.update)(ObjectValue::Boolean(key_or_value.data == "true"));
+        }
+        ObjectEditWidget { wrapper, kind: ObjectWidgetKind::Select(select) }
+    }
+}
+
+impl ListSettingDelegate<IObjectDataItem> for ObjectSettingDropdownWidget {
+    fn is_item_new(&self, item: &IObjectDataItem) -> bool {
+        item.key.data().is_empty() && item.value.data_string().is_empty()
+    }
+
+    fn get_container_classes(&self) -> Vec<String> {
+        vec![OBJECT_WIDGET_CLASS.to_owned()]
+    }
+
+    fn is_add_button_visible(&self) -> bool {
+        self.show_add_button.get()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.is_read_only_now()
+    }
+
+    fn get_localized_strings(&self) -> ListSettingStrings {
+        object_strings().list
+    }
+
+    fn get_actions_for_item(&self, item: &IObjectDataItem, idx: usize) -> Vec<ActionRef> {
+        if self.is_read_only_now() {
+            return Vec::new();
+        }
+        let strings = object_strings();
+        // Uma ação que dispara o evento da lista para o item.
+        let fire = |event: fn(IObjectDataItem, usize) -> SettingListEvent<IObjectDataItem>| {
+            let (weak, item) = (self.weak_self.clone(), item.clone());
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    this.fire_list_event(event(item.clone(), idx));
+                }
+            }
+        };
+        let weak = self.weak_self.clone();
+        let mut actions = vec![list_action("workbench.action.editListItem", &strings.list.edit_action_tooltip, SETTINGS_EDIT_ICON, move || {
+            if let Some(this) = weak.upgrade() {
+                this.edit_setting(idx);
+            }
+        })];
+        if item.resetable {
+            actions.push(list_action(
+                "workbench.action.resetListItem",
+                &strings.reset_action_tooltip,
+                SETTINGS_DISCARD_ICON,
+                fire(|original_item, target_index| SettingListEvent::Reset { original_item, target_index }),
+            ));
+        }
+        if item.removable {
+            actions.push(list_action(
+                "workbench.action.removeListItem",
+                &strings.list.delete_action_tooltip,
+                SETTINGS_REMOVE_ICON,
+                fire(|original_item, target_index| SettingListEvent::Remove { original_item, target_index }),
+            ));
+        }
+        actions
+    }
+
+    fn render_header(&self) -> Option<NodeId> {
+        let strings = object_strings();
+        let (header, key, value) = {
+            let mut tree = self.ui.tree_mut();
+            let header = create_detached_el(&mut tree, Role::Generic, "setting-list-row-header");
+            let key = create_el(&mut tree, header, Role::Generic, "setting-list-object-key");
+            let value = create_el(&mut tree, header, Role::Generic, "setting-list-object-value");
+            tree.style_mut(header).background = Some(zebra_background());
+            (header, key, value)
+        };
+        self.row_layouts.register(&self.ui, header, ObjectRowLayout::Text { key_node: key, value_node: value, key_text: strings.key_header_text, value_text: strings.value_header_text, header: true });
+        Some(header)
+    }
+
+    fn layout_header(&self, header: NodeId, width: f64) -> f64 {
+        layout_object_row(&self.base, &self.row_layouts, header, width)
+    }
+
+    fn render_item(&self, item: &IObjectDataItem, _idx: usize) -> RowElementGroup {
+        // Mark row as invalid if the key doesn't match propertyNames.pattern
+        let invalid_key = self.property_names.borrow().as_ref().is_some_and(|names| !item.key.data().is_empty() && !validate_property_name(names, &JsString::from(item.key.data())));
+        let (row, key, value) = {
+            let mut tree = self.ui.tree_mut();
+            let row = create_detached_el(&mut tree, Role::Generic, "setting-list-row setting-list-object-row");
+            if invalid_key {
+                tree.add_class(row, "invalid-key");
+            }
+            let key = create_el(&mut tree, row, Role::Generic, "setting-list-object-key");
+            let value = create_el(&mut tree, row, Role::Generic, "setting-list-object-value");
+            (row, key, value)
+        };
+        let layout = ObjectRowLayout::Text { key_node: key, value_node: value, key_text: item.key.data().to_owned(), value_text: item.value.data_string(), header: false };
+        self.row_layouts.register(&self.ui, row, layout);
+        RowElementGroup { row_element: row, key_element: key, value_element: Some(value) }
+    }
+
+    fn render_edit(&self, item: &IObjectDataItem, idx: usize) -> NodeId {
+        let ui = self.ui.clone();
+        let (row, value_container) = {
+            let mut tree = ui.tree_mut();
+            (
+                create_detached_el(&mut tree, Role::Generic, "setting-list-edit-row setting-list-object-row"),
+                create_detached_el(&mut tree, Role::Generic, "setting-list-object-value-container"),
+            )
+        };
+        let changed = Rc::new(RefCell::new(item.clone()));
+        let ok_button: Rc<RefCell<Option<Rc<Button>>>> = Rc::default();
+        let value_widget: Rc<RefCell<Option<ObjectEditWidget>>> = Rc::default();
+        // Verdadeiro até o fim desta função: uma troca de chave durante a montagem não reposiciona a lista.
+        let rendering = Rc::new(Cell::new(true));
+
+        let on_value_change: Rc<dyn Fn(ObjectValue)> = {
+            let changed = changed.clone();
+            Rc::new(move |value: ObjectValue| changed.borrow_mut().value = value)
+        };
+
+        let render_latest_value: Rc<dyn Fn()> = {
+            let (weak, changed, item, update, value_widget) = (self.weak_self.clone(), changed.clone(), item.clone(), on_value_change.clone(), value_widget.clone());
+            Rc::new(move || {
+                let Some(this) = weak.upgrade() else { return };
+                let current = changed.borrow().value.clone();
+                let context = ObjectEditContext { is_key: false, idx, original_item: item.clone(), changed_item: changed.clone(), update: update.clone() };
+                let widget = this.render_edit_widget(current, &context);
+                let old_children = this.ui.tree().children(value_container).to_vec();
+                for child in old_children {
+                    this.ui.remove(child);
+                }
+                this.ui.tree_mut().append_child(value_container, widget.wrapper);
+                *value_widget.borrow_mut() = Some(widget);
+            })
+        };
+
+        let on_key_change: Rc<dyn Fn(ObjectKey)> = {
+            let (weak, changed, item, ok_button, on_value_change, render_latest_value, rendering) =
+                (self.weak_self.clone(), changed.clone(), item.clone(), ok_button.clone(), on_value_change.clone(), render_latest_value.clone(), rendering.clone());
+            Rc::new(move |key: ObjectKey| {
+                let Some(this) = weak.upgrade() else { return };
+                let key_is_empty = key.data().is_empty();
+                let suggester = this.value_suggester.borrow().clone();
+                let suggested_value = suggester(key.data()).unwrap_or_else(|| item.value.clone());
+                changed.borrow_mut().key = key;
+                if let Some(ok) = ok_button.borrow().as_ref() {
+                    ok.set_enabled(!key_is_empty);
+                }
+                let previous_value = changed.borrow().value.clone();
+                if should_use_suggestion(&item.value, &previous_value, &suggested_value) {
+                    on_value_change(suggested_value);
+                    render_latest_value();
+                    if !rendering.get() {
+                        this.base.layout();
+                    }
+                }
+            })
+        };
+
+        let (key_widget, key_element) = if self.show_add_button.get() {
+            if self.is_item_new(item) {
+                let existing: Vec<String> = self.base.items().iter().map(|existing| existing.item.key.data().to_owned()).collect();
+                let key_suggester = self.key_suggester.borrow().clone();
+                if let Some(suggested_key) = key_suggester(&existing, None) {
+                    let value_suggester = self.value_suggester.borrow().clone();
+                    let suggested_value = value_suggester(&suggested_key.data);
+                    changed.borrow_mut().key = ObjectKey::Enum(suggested_key);
+                    let value = suggested_value.unwrap_or_else(|| changed.borrow().value.clone());
+                    on_value_change(value);
+                }
+            }
+            let key_update: Rc<dyn Fn(ObjectValue)> = {
+                let on_key_change = on_key_change.clone();
+                Rc::new(move |value: ObjectValue| {
+                    if let Some(key) = value.into_key() {
+                        on_key_change(key);
+                    }
+                })
+            };
+            let current_key = ObjectValue::from(changed.borrow().key.clone());
+            let context = ObjectEditContext { is_key: true, idx, original_item: item.clone(), changed_item: changed.clone(), update: key_update };
+            let widget = self.render_edit_widget(current_key, &context);
+            (Some(widget.clone()), ObjectEditKey::Widget(widget))
+        } else {
+            let node = create_detached_el(&mut ui.tree_mut(), Role::Generic, "setting-list-object-key");
+            (None, ObjectEditKey::Text { node, text: item.key.data().to_owned() })
+        };
+
+        render_latest_value();
+        {
+            let key_node = match &key_element {
+                ObjectEditKey::Widget(widget) => widget.wrapper,
+                ObjectEditKey::Text { node, .. } => *node,
+            };
+            let mut tree = ui.tree_mut();
+            tree.append_child(row, key_node);
+            tree.append_child(row, value_container);
+        }
+
+        let ok = self.base.make_button(row, localize("okButton", "OK", &[]), "setting-list-ok-button", false);
+        ok.set_enabled(!changed.borrow().key.data().is_empty());
+        *ok_button.borrow_mut() = Some(ok.clone());
+        {
+            let (weak, item, changed) = (self.weak_self.clone(), item.clone(), changed.clone());
+            self.base.list_disposables().add(ok.on_did_click().listen(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    let changed_item = changed.borrow().clone();
+                    this.handle_item_change(item.clone(), changed_item, idx);
+                }
+            }));
+        }
+
+        let cancel = self.base.make_button(row, localize("cancelButton", "Cancel", &[]), "setting-list-cancel-button", true);
+        {
+            let weak = self.weak_self.clone();
+            self.base.list_disposables().add(cancel.on_did_click().listen(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.cancel_edit();
+                }
+            }));
+        }
+
+        {
+            let (key_widget, value_widget) = (key_widget, value_widget.clone());
+            self.base.list_disposables().add(disposable_timeout(
+                move || {
+                    let widget = key_widget.clone().or_else(|| value_widget.borrow().clone());
+                    if let Some(widget) = widget {
+                        widget.focus();
+                    }
+                },
+                0,
+                None,
+            ));
+        }
+
+        rendering.set(false);
+        self.row_layouts.register(&ui, row, ObjectRowLayout::Edit { key: key_element, value_container, value: value_widget, ok, cancel });
+        row
+    }
+
+    fn add_tooltips_to_row(&self, row_element: &RowElementGroup, item: &IObjectDataItem) {
+        let value_text = item.value.data_string();
+        let key_text = item.key.data();
+        let accessible_description = match item.source.as_deref().filter(|source| !source.is_empty()) {
+            Some(source) => localize("objectPairHintLabelWithSource", "The property `{0}` is set to `{1}` by `{2}`.", &[key_text, &value_text, source]),
+            None => localize("objectPairHintLabel", "The property `{0}` is set to `{1}`.", &[key_text, &value_text]),
+        };
+        let markdown = markdown_hover(&accessible_description);
+
+        let key_enum_description = match &item.key {
+            ObjectKey::Enum(enum_data) => enum_description(enum_data),
+            ObjectKey::String(_) => None,
+        };
+        let key_description = key_enum_description.or_else(|| item.key_description.clone()).map_or_else(|| markdown.clone(), HoverContent::Text);
+        self.base.setup_row_hover(row_element.key_element, key_description);
+
+        let value_enum_description = match &item.value {
+            ObjectValue::Enum(enum_data) => enum_description(enum_data),
+            ObjectValue::String(_) | ObjectValue::Boolean(_) => None,
+        };
+        if let Some(value_element) = row_element.value_element {
+            self.base.setup_row_hover(value_element, value_enum_description.map_or(markdown, HoverContent::Text));
+        }
+        self.ui.tree_mut().set_label(row_element.row_element, accessible_description);
+    }
+
+    fn layout_row(&self, row: NodeId, width: f64) -> f64 {
+        layout_object_row(&self.base, &self.row_layouts, row, width)
+    }
+}
+
+impl IDisposable for ObjectSettingDropdownWidget {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+}
+
+// ---- ObjectSettingCheckboxWidget -------------------------------------------------------------------------------------
+
+/// `ObjectSettingCheckboxWidget`.
+pub struct ObjectSettingCheckboxWidget {
+    weak_self: Weak<Self>,
+    ui: Ui,
+    base: Rc<AbstractListSettingWidget<IBoolObjectDataItem>>,
+    current_setting_key: RefCell<String>,
+    row_layouts: RowLayouts<ObjectRowLayout>,
+}
+
+impl Deref for ObjectSettingCheckboxWidget {
+    type Target = AbstractListSettingWidget<IBoolObjectDataItem>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl ObjectSettingCheckboxWidget {
+    pub fn new(services: SettingsWidgetServices, container: NodeId) -> Rc<Self> {
+        let ui = services.ui.clone();
+        let this = Rc::new_cyclic(|weak: &Weak<Self>| {
+            let delegate: Weak<dyn ListSettingDelegate<IBoolObjectDataItem>> = weak.clone();
+            let empty_item = IBoolObjectDataItem { key: String::new(), value: false, key_description: None, source: None, resetable: true };
+            Self {
+                base: AbstractListSettingWidget::new(services, container, empty_item, delegate),
+                weak_self: weak.clone(),
+                ui,
+                current_setting_key: RefCell::new(String::new()),
+                row_layouts: RowLayouts::default(),
+            }
+        });
+        this.base.init();
+        this
+    }
+
+    /// `setValue(listData, options?)`.
+    pub fn set_value(&self, list_data: Vec<IBoolObjectDataItem>, options: Option<BoolObjectSetValueOptions>) {
+        if let Some(options) = options
+            && options.setting_key != *self.current_setting_key.borrow()
+        {
+            self.base.with_model(|model| {
+                model.set_edit_key(EditKey::None);
+                model.select(None);
+            });
+            *self.current_setting_key.borrow_mut() = options.setting_key;
+        }
+        self.base.set_value(list_data);
+    }
+}
+
+impl ListSettingDelegate<IBoolObjectDataItem> for ObjectSettingCheckboxWidget {
+    fn is_item_new(&self, item: &IBoolObjectDataItem) -> bool {
+        item.key.is_empty() && !item.value
+    }
+
+    fn get_container_classes(&self) -> Vec<String> {
+        vec![OBJECT_WIDGET_CLASS.to_owned()]
+    }
+
+    fn get_actions_for_item(&self, _item: &IBoolObjectDataItem, _idx: usize) -> Vec<ActionRef> {
+        Vec::new()
+    }
+
+    fn is_add_button_visible(&self) -> bool {
+        false
+    }
+
+    fn force_edit_rows(&self) -> bool {
+        true
+    }
+
+    fn get_localized_strings(&self) -> ListSettingStrings {
+        object_strings().list
+    }
+
+    fn render_item(&self, _item: &IBoolObjectDataItem, _idx: usize) -> RowElementGroup {
+        // Return just the containers, since we always render in edit mode anyway
+        let mut tree = self.ui.tree_mut();
+        let row_element = create_detached_el(&mut tree, Role::Generic, "blank-row");
+        let key_element = create_detached_el(&mut tree, Role::Generic, "blank-row-key");
+        RowElementGroup { row_element, key_element, value_element: None }
+    }
+
+    fn render_edit(&self, item: &IBoolObjectDataItem, idx: usize) -> NodeId {
+        let row = create_detached_el(&mut self.ui.tree_mut(), Role::Generic, "setting-list-edit-row setting-list-object-row setting-item-bool");
+
+        let on_value_change: Rc<dyn Fn(bool)> = {
+            let (weak, item) = (self.weak_self.clone(), item.clone());
+            Rc::new(move |new_value: bool| {
+                let Some(this) = weak.upgrade() else { return };
+                // `changedItem.value.data = newValue` escreve no objeto que o modelo e o `originalItem` compartilham.
+                let changed = IBoolObjectDataItem { value: new_value, ..item.clone() };
+                this.base.with_model(|model| model.set_data_item(idx, changed.clone()));
+                this.handle_item_change(changed.clone(), changed, idx);
+            })
+        };
+
+        let checkbox_description = match item.key_description.as_deref().filter(|description| !description.is_empty()) {
+            Some(description) => format!("{description} ({})", item.key),
+            None => item.key.clone(),
+        };
+        let checkbox = Checkbox::new(&self.ui, &checkbox_description, item.value, self.base.services().styles.checkbox.clone());
+        self.base.list_disposables().add_rc(checkbox.clone());
+        let (checkbox_wrapper, value_element) = {
+            let mut tree = self.ui.tree_mut();
+            let wrapper = create_detached_el(&mut tree, Role::Generic, "setting-list-object-input setting-list-object-input-key-checkbox");
+            tree.add_class(checkbox.dom_node(), "setting-value-checkbox");
+            tree.append_child(wrapper, checkbox.dom_node());
+            tree.append_child(row, wrapper);
+            let value_element = create_el(&mut tree, row, Role::Generic, "setting-list-object-value");
+            tree.style_mut(value_element).cursor = Some(Cursor::Pointer);
+            (wrapper, value_element)
+        };
+
+        // Without `stopPropagation`, the settings editor assumes we lost focus on this setting completely.
+        {
+            let (checkbox, on_value_change) = (checkbox.clone(), on_value_change.clone());
+            self.base.list_disposables().add(self.ui.listen(checkbox_wrapper, EventKind::PointerDown, false, move |e| {
+                checkbox.set_checked(!checkbox.checked());
+                on_value_change(checkbox.checked());
+                e.stop_propagation();
+            }));
+        }
+        {
+            let (checkbox, on_value_change) = (checkbox.clone(), on_value_change.clone());
+            self.base.list_disposables().add(self.ui.listen(value_element, EventKind::PointerDown, false, move |e| {
+                checkbox.set_checked(!checkbox.checked());
+                on_value_change(checkbox.checked());
+                e.stop(true);
+            }));
+        }
+
+        // We add the tooltips here, because the method is not called by default for widgets in edit mode
+        let row_element_group = RowElementGroup { row_element: row, key_element: value_element, value_element: Some(checkbox.dom_node()) };
+        self.add_tooltips_to_row(&row_element_group, item);
+
+        self.row_layouts.register(&self.ui, row, ObjectRowLayout::Checkbox { wrapper: checkbox_wrapper, checkbox, value_node: value_element, text: checkbox_description });
+        row
+    }
+
+    fn add_tooltips_to_row(&self, row_element: &RowElementGroup, item: &IBoolObjectDataItem) {
+        let accessible_description = localize("objectPairHintLabel", "The property `{0}` is set to `{1}`.", &[item.key.as_str(), &item.value.to_string()]);
+        let title = item.key_description.clone().unwrap_or_else(|| accessible_description.clone());
+        self.base.setup_row_hover(row_element.key_element, HoverContent::Text(title));
+        let mut tree = self.ui.tree_mut();
+        if let Some(value_element) = row_element.value_element {
+            tree.set_label(value_element, accessible_description.clone());
+        }
+        tree.set_label(row_element.row_element, accessible_description);
+    }
+
+    fn layout_row(&self, row: NodeId, width: f64) -> f64 {
+        layout_object_row(&self.base, &self.row_layouts, row, width)
+    }
+}
+
+impl IDisposable for ObjectSettingCheckboxWidget {
+    fn dispose(&self) {
         self.base.dispose();
     }
 }
