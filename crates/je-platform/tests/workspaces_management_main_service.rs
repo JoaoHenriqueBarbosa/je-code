@@ -144,7 +144,7 @@ fn tmp_dir() -> String {
     std::env::temp_dir().to_string_lossy().into_owned()
 }
 
-fn path_module() -> PathModule {
+fn path_module() -> PathModule<'static> {
     PathModule::native(&ProcessEnvironment)
 }
 

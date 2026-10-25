@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
 mod support;
 
 use std::cell::Cell;
@@ -119,7 +121,7 @@ fn transaction_batches_the_editor_updates_and_on_did_type_fires() {
             })
         };
         assert_eq!(typed.get(), 1);
-        editor.trigger(None, Handler::TYPE, Some(TypePayload { text: JsString::from("a") }.to_dynamic()));
+        editor.trigger(Some("keyboard"), Handler::TYPE, Some(TypePayload { text: JsString::from("a") }.to_dynamic()));
         assert_eq!(typed.get(), 2);
         type_reaction.dispose();
     });

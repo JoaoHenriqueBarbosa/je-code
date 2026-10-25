@@ -718,6 +718,15 @@ struct Fixture {
     add_visible: bool,
 }
 
+/// O `disposables.add(...)` do controle de duas barras: descartado antes de o `Suite` conferir os vazamentos.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(row) = &self.row {
+            row.dispose();
+        }
+    }
+}
+
 impl Fixture {
     /// O `setup`: opções padrão, o modelo com `file0.txt` (ativo) e `file1.txt`, e o primeiro controle.
     fn new() -> Self {
@@ -4165,7 +4174,10 @@ fn freestanding_connected_neighbors_keep_one_stroke_each_and_equal_gutters_witho
     fx.connected_group();
     // `root.classList.add('hc-light')` e o `borderLeftWidth` do `.tab-fill` vizinho da ativa (`1px`, o traço de
     // `strokeThickness`) são pintura da renderização nativa; ficam a folga entre os preenchimentos e o contato dos alvos.
-    fx.open_pinned_file("third.ts", true);
+    let concrete = fx.suite.disposables.add_rc(NamedInput::new("third.ts", "/path/third.ts", None));
+    let third: EditorInputRef = concrete;
+    let count = fx.model.count() as i64;
+    open!(fx.model, third, index: count, pinned: true, active: true);
     fx.open_editors();
     fx.layout(600.0);
     let (_, first_right) = fx.fill_client_span(0);

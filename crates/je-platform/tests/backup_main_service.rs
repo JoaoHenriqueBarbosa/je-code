@@ -239,9 +239,11 @@ fn run<F>(body: impl FnOnce(Rc<Fixture>) -> F + 'static)
 where
     F: Future<Output = ()> + 'static,
 {
-    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_on_real_loop(async move {
+        // O `setup` do original vem antes do `ensureNoDisposablesAreLeakedInTestSuite()`, então o rastreio começa depois
+        // dele: o `LogService` do fixture não entra na conta.
         let fixture = Fixture::new().await;
+        let _guard = ensure_no_disposables_are_leaked_in_test_suite();
         body(fixture).await;
     });
 }
