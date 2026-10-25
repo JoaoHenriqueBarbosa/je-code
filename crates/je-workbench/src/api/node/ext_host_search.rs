@@ -10,10 +10,10 @@
 //!   (`$getAIName`, `$provideAITextSearchResults`, `$provideTextSearchResults`) são os do trait; `protected createTextSearchManager`
 //!   é o [`TextSearchManagerFactory`] que o construtor entrega à base.
 //! - **Ripgrep e motor interno.** `RipgrepSearchProvider` (`node/ripgrepSearchProvider.ts`) e `SearchService`
-//!   (`node/rawSearchService.ts`) lançam o processo `rg` e não fazem parte deste módulo: entram pelo [`NativeSearchBackends`]
-//!   do construtor, como fábricas que recebem o `OutputChannel` e o `getNumThreads` (o provedor de texto) ou o tipo de
-//!   processo e o `getNumThreads` (o [`IInternalFileSearchService`]). O `ISerializedSearchProgressItem` do `search.ts` é o
-//!   [`SerializedSearchProgressItem`].
+//!   (`node/rawSearchService.ts`) lançam o processo `rg` e entram pelo [`NativeSearchBackends`] do construtor, como fábricas
+//!   que recebem o `OutputChannel` e o `getNumThreads` (o provedor de texto) ou o tipo de processo e o `getNumThreads` (o
+//!   [`IInternalFileSearchService`]). O `NativeSearchBackends::default()` são os motores reais, os do original; só os testes
+//!   entregam dublês. O `ISerializedSearchProgressItem` do `search.ts` é o [`SerializedSearchProgressItem`].
 //! - **Dependências.** `IExtHostRpcService` é o [`IMainContext`]; `IExtHostInitDataService` é o [`ExtHostSearchInitData`] (só o
 //!   `remote`); `IURITransformerService` é o trait mínimo de `ext_host_workspace`; `ILogService` é o [`LogServiceRef`]. O
 //!   `IExtHostConfiguration` é o [`IExtHostSearchConfiguration`] (só o `getConfigProvider` e o que o host lê do provedor:
@@ -46,28 +46,18 @@ use crate::api::common::ext_host_configuration::{ExtHostConfigProvider, ExtHostC
 use crate::api::common::ext_host_protocol::{ExtHostSearchShape, IMainContext, IRawAITextQuery, IRawFileQuery, IRawTextQuery};
 use crate::api::common::ext_host_search::{ExtHostSearch, IExtHostSearch, TextSearchManagerFactory};
 use crate::api::common::ext_host_workspace::IURITransformerService;
+use crate::services::search::raw_search_service::SearchService;
+use crate::services::search::ripgrep_search_provider::{GetNumThreadsFn, RipgrepSearchProvider};
 use crate::services::search::ripgrep_search_utils::OutputChannel;
-use crate::services::search::search::{IFileQuery, ISearchCompleteStats, ITextQuery, TextSearchStatsType};
+use crate::services::search::search::{FileSearchStatsType, IFileQuery, IRawSearchService, ISearchCompleteStats, ISerializedSearchProgressItem, ITextQuery, TextSearchStatsType};
 use crate::services::search::search_ext_types::TextSearchProvider2;
 use crate::services::search::text_search_manager::NativeTextSearchManager;
 
-/// `ISerializedFileMatch`: um arquivo achado pelo motor interno (só o `path` interessa).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SerializedFileMatch {
-    pub path: String,
-}
-
 /// `ISerializedSearchProgressItem = ISerializedFileMatch | ISerializedFileMatch[] | IProgressMessage`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SerializedSearchProgressItem {
-    FileMatch(SerializedFileMatch),
-    Matches(Vec<SerializedFileMatch>),
-    /// `IProgressMessage`: o `message?: string`.
-    Message(Option<String>),
-}
+pub type SerializedSearchProgressItem = ISerializedSearchProgressItem;
 
 /// `getNumThreads` entregue aos motores de busca.
-pub type NumThreadsFn = Rc<dyn Fn() -> Promise<Option<i64>>>;
+pub type NumThreadsFn = GetNumThreadsFn;
 
 /// `SearchService` (`node/rawSearchService.ts`), no que o host usa: a busca de arquivo com callback e o descarte do cache.
 pub trait IInternalFileSearchService {
@@ -78,17 +68,45 @@ pub trait IInternalFileSearchService {
     fn clear_cache(&self, cache_key: &str);
 }
 
+impl IInternalFileSearchService for SearchService {
+    fn do_file_search(&self, query: &IFileQuery, num_threads: Option<i64>, on_result: Rc<dyn Fn(SerializedSearchProgressItem)>, token: &CancellationToken) -> Promise<ISearchCompleteStats> {
+        SearchService::do_file_search(self, query, num_threads, on_result, Some(token)).then(|success| ISearchCompleteStats { limit_hit: Some(success.limit_hit), messages: success.messages, stats: success.stats })
+    }
+
+    fn clear_cache(&self, cache_key: &str) {
+        drop(IRawSearchService::clear_cache(self, cache_key));
+    }
+}
+
 /// `new RipgrepSearchProvider(outputChannel, getNumThreads)`.
 pub type RipgrepSearchProviderFactory = Rc<dyn Fn(OutputChannel, NumThreadsFn) -> Rc<dyn TextSearchProvider2>>;
 
 /// `new SearchService(processType, getNumThreads)`.
 pub type InternalFileSearchServiceFactory = Rc<dyn Fn(&str, NumThreadsFn) -> Rc<dyn IInternalFileSearchService>>;
 
-/// Os motores que lançam o ripgrep (ver as notas do módulo).
+/// Os motores que lançam o ripgrep (ver as notas do módulo). O `default` são os do original: o `RipgrepSearchProvider` e o
+/// `SearchService`; os testes entregam dublês.
 #[derive(Clone)]
 pub struct NativeSearchBackends {
     pub create_ripgrep_search_provider: RipgrepSearchProviderFactory,
     pub create_internal_file_search_service: InternalFileSearchServiceFactory,
+}
+
+impl Default for NativeSearchBackends {
+    fn default() -> Self {
+        Self {
+            create_ripgrep_search_provider: Rc::new(|output_channel: OutputChannel, get_num_threads: NumThreadsFn| {
+                Rc::new(RipgrepSearchProvider::new(output_channel, get_num_threads)) as Rc<dyn TextSearchProvider2>
+            }),
+            create_internal_file_search_service: Rc::new(|process_type: &str, get_num_threads: NumThreadsFn| {
+                let process_type = match process_type {
+                    "fileSearchProvider" => FileSearchStatsType::FileSearchProvider,
+                    _ => FileSearchStatsType::SearchProcess,
+                };
+                SearchService::new(process_type, Some(get_num_threads)) as Rc<dyn IInternalFileSearchService>
+            }),
+        }
+    }
 }
 
 /// O `remote` de `IExtHostInitDataService`, no que o host lê.
@@ -331,10 +349,10 @@ impl IExtHostSearch for NativeExtHostSearch {
         let on_result: Rc<dyn Fn(SerializedSearchProgressItem)> = Rc::new(move |ev: SerializedSearchProgressItem| {
             let matches = match ev {
                 SerializedSearchProgressItem::FileMatch(file_match) => vec![file_match],
-                SerializedSearchProgressItem::Matches(matches) => matches,
+                SerializedSearchProgressItem::FileMatches(matches) => matches,
                 SerializedSearchProgressItem::Message(message) => {
-                    if let Some(message) = message.filter(|message| !message.is_empty()) {
-                        log_service.debug_args("ExtHostSearch", &[LogArg::from(message.as_str())]);
+                    if !message.message.is_empty() {
+                        log_service.debug_args("ExtHostSearch", &[LogArg::from(message.message.as_str())]);
                     }
                     return;
                 }
