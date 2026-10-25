@@ -63,6 +63,7 @@ use crate::api::commands::{promise_to_js, settle_js_result};
 use crate::api::disposable::DisposableTable;
 use crate::api::events::EventTables;
 use crate::api::js_object::JsObjects;
+use crate::api::notebooks::{self, NotebookApi};
 use crate::api::output_channel::{self, OutputChannels};
 use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
@@ -97,6 +98,8 @@ pub struct WindowServices {
     pub text_editors: Option<TextEditorApi>,
     /// Sem o cliente `MainThreadEditorTabs` não há `tabGroups`.
     pub tabs: Option<TabsApi>,
+    /// Sem os clientes `MainThreadNotebook*` não há `activeNotebookEditor`, `visibleNotebookEditors`, `showNotebookDocument` nem os eventos.
+    pub notebooks: Option<NotebookApi>,
 }
 
 /// `isMessageItem(item)`: um objeto com `title` não vazio.
@@ -439,6 +442,12 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
         let (editor_methods, editor_getters) = text_editors::window_members(runner, text_editors, table);
         methods.extend(editor_methods);
         getters.extend(editor_getters);
+    }
+    // Os membros de editor de notebook (`activeNotebookEditor`, `showNotebookDocument`...) vêm do módulo `notebooks`.
+    if let Some(api) = &services.notebooks {
+        let (notebook_methods, notebook_getters) = notebooks::window_members(runner, api, table);
+        methods.extend(notebook_methods);
+        getters.extend(notebook_getters);
     }
     // Os membros que recebem objetos da extensão (o `pty`, o provedor de árvore) são funções por referência, próprias do namespace.
     let mut references: Vec<(String, JsData)> = Vec::new();

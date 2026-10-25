@@ -80,8 +80,9 @@ impl JsObjects {
         &self.runner
     }
 
-    /// `target[name]`, com objetos e funções como [`JsData::Handle`]; `undefined` se a leitura lança ou o alvo não é um objeto.
-    pub fn property(&self, target: &JsData, name: &str) -> JsData {
+    /// Chama `function(...args, sink)` e devolve o que ela entregou ao `sink`, por referência (objetos e funções como
+    /// [`JsData::Handle`]); `undefined` se ela não chamou o `sink`.
+    pub fn capture(&self, function: &JsHandle, args: &[JsData]) -> Result<JsData, String> {
         let slot = Rc::new(RefCell::new(JsData::Undefined));
         let sink = {
             let slot = slot.clone();
@@ -94,11 +95,16 @@ impl JsObjects {
                 }),
             )
         };
-        if self.runner.call_data(&self.reader, &[target.clone(), JsData::Str(name.to_owned()), JsData::Handle(Rc::new(sink))]).is_err() {
-            return JsData::Undefined;
-        }
+        let mut all = args.to_vec();
+        all.push(JsData::Handle(Rc::new(sink)));
+        self.runner.call_data(function, &all)?;
         let value = slot.borrow().clone();
-        value
+        Ok(value)
+    }
+
+    /// `target[name]`, com objetos e funções como [`JsData::Handle`]; `undefined` se a leitura lança ou o alvo não é um objeto.
+    pub fn property(&self, target: &JsData, name: &str) -> JsData {
+        self.capture(&self.reader, &[target.clone(), JsData::Str(name.to_owned())]).unwrap_or(JsData::Undefined)
     }
 
     /// `typeof target[name] === 'function'`.

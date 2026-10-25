@@ -62,7 +62,7 @@ use je_workbench::api::common::ext_host_protocol::{
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
 use je_workbench::api::common::ext_host_protocol::{ExtHostSecretStateShape, ExtHostStorageShape};use je_workbench::api::common::ext_host_protocol::{
-    ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
+    ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
     INotebookDocumentsAndEditorsDelta, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
 };
 use je_workbench::contrib::notebook::common::notebook_common::INotebookKernelSourceAction;
@@ -1100,6 +1100,17 @@ impl ExtHostNotebookDocumentsShape for LateExtHostNotebookDocuments {
     }
 }
 
+/// O `ExtHostNotebookDocumentSaveParticipantShape` que ainda não existe quando o cliente `MainThreadNotebookDocuments` do workbench nasce. O
+/// pedido de participação na gravação só chega com o host já ligado.
+#[derive(Default)]
+pub struct LateExtHostNotebookDocumentSaveParticipant(pub Late<dyn ExtHostNotebookDocumentSaveParticipantShape>);
+
+impl ExtHostNotebookDocumentSaveParticipantShape for LateExtHostNotebookDocumentSaveParticipant {
+    fn rpc_participate_in_save(&self, resource: &URI, reason: je_workbench::common::editor::SaveReason, token: CancellationToken) -> Promise<bool> {
+        self.0.bound().rpc_participate_in_save(resource, reason, token)
+    }
+}
+
 /// O `ExtHostNotebookKernelsShape` que ainda não existe quando o cliente `MainThreadNotebookKernels` do workbench nasce. A associação de
 /// notebook e a mensagem do renderizador são sem retorno e ficam na fila se chegarem antes do `bind`.
 #[derive(Default)]
@@ -1283,6 +1294,7 @@ pub struct LateForwarders {
     pub authentication: Rc<LateExtHostAuthentication>,
     pub notebook: Rc<LateExtHostNotebook>,
     pub notebook_documents: Rc<LateExtHostNotebookDocuments>,
+    pub notebook_save_participant: Rc<LateExtHostNotebookDocumentSaveParticipant>,
     pub notebook_kernels: Rc<LateExtHostNotebookKernels>,
     pub debug_service: Rc<LateExtHostDebugService>,
     pub terminal_service: Rc<LateExtHostTerminalService>,
@@ -1351,6 +1363,9 @@ impl LateForwarders {
         let notebook_documents = Rc::new(LateExtHostNotebookDocuments::default());
         let as_notebook_documents: Rc<dyn ExtHostNotebookDocumentsShape> = notebook_documents.clone();
         local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENTS.sid, Rc::new(as_notebook_documents));
+        let notebook_save_participant = Rc::new(LateExtHostNotebookDocumentSaveParticipant::default());
+        let as_notebook_save_participant: Rc<dyn ExtHostNotebookDocumentSaveParticipantShape> = notebook_save_participant.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENT_SAVE_PARTICIPANT.sid, Rc::new(as_notebook_save_participant));
         let notebook_kernels = Rc::new(LateExtHostNotebookKernels::default());
         let as_notebook_kernels: Rc<dyn ExtHostNotebookKernelsShape> = notebook_kernels.clone();
         local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_KERNELS.sid, Rc::new(as_notebook_kernels));
@@ -1384,7 +1399,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_save_participant, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 
