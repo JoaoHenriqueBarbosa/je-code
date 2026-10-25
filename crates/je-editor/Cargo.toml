@@ -24,6 +24,8 @@ je-instantiation = { path = "../je-instantiation" }
 # A árvore de widgets nativa e o `Sash`: o `DiffEditorSash` do editor de diff cria o sash dentro de um nó dela.
 je-ui = { path = "../je-ui" }
 je-widgets = { path = "../je-widgets" }
+# O `Rect` (kurbo) dos limites dos nós de `je-ui`: o `ZoneWidget` posiciona o nó dele e o do cabeçalho do peek.
+je-render = { path = "../je-render" }
 # O `new Date()` (fuso do sistema) do `TimeBasedVariableResolver` dos snippets: o mesmo `jiff` do `je-base`.
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
