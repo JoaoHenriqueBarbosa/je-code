@@ -6,8 +6,9 @@
 //! - **Gramáticas pelo `TextMateTokenizationFeature`.** O original monta o `TMGrammarFactory` e um
 //!   `TextMateTokenizationSupport` por linguagem à mão. Aqui as mesmas gramáticas (a tabela [`GRAMMAR_DESCRIPTORS`]) entram
 //!   como `GrammarContribution` no `TextMateTokenizationFeature` de `je-languages` (o `ferriki-textmate` sobre o `ferroni`),
-//!   que cria o suporte de cada linguagem sob demanda (`get_or_create`, resolvido numa microtarefa) e registra no
-//!   `TokenizationRegistry`. O `onig.wasm` do `vscode-oniguruma` não existe: o Oniguruma é o `ferroni`, compilado na crate.
+//!   que faz o papel do `TMGrammarFactory`; cada `TextMateTokenizationSupport` é criado à mão
+//!   (`create_text_mate_tokenization_support`), guardado no `store` e registrado no `TokenizationRegistry`, como o original.
+//!   O `onig.wasm` do `vscode-oniguruma` não existe: o Oniguruma é o `ferroni`, compilado na crate.
 //! - **Tema.** `setTheme(rawTheme, darkTheme.tokenColorMap)` é `set_raw_theme` com o `IRawTheme` montado das
 //!   `tokenColors` do `ColorThemeData` e o `tokenColorMap` como mapa de cores (os ids das classes `.mtkN` do CSS).
 //! - **Mapa de cores do registro.** O `TokenizationRegistry` do porte guarda o mapa como texto (`#rrggbb`), e não como
@@ -24,7 +25,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, to_disposable};
-use je_base::runtime;
 use je_editor::encoded_token_attributes::color_id;
 use je_editor::language_service::{ILanguageService, LanguageService};
 use je_editor::modes_registry::LanguageExtensionPoint;
@@ -238,7 +238,7 @@ struct FixtureTextMateTokenizerInstance {
 impl FixtureTextMateTokenizerInstance {
     fn create(dark_theme: &ColorThemeData) -> Result<Self, String> {
         let store = DisposableStore::new();
-        let language_service = LanguageService::new(false);
+        let language_service = store.add_rc(LanguageService::new(false));
         register_fixture_languages(&store, &*language_service);
         let language_service: Rc<dyn ILanguageService> = language_service;
         let feature = TextMateTokenizationFeature::new(language_service, &grammar_contributions(), HashMap::new());
@@ -250,10 +250,15 @@ impl FixtureTextMateTokenizerInstance {
         let token_color_map: Vec<String> = dark_theme.token_color_map().into_iter().map(Option::unwrap_or_default).collect();
         feature.set_raw_theme(raw_theme(dark_theme), Some(token_color_map));
 
+        // Como o original, cada suporte é criado à mão, guardado no `store` e registrado (o registro também sai no descarte).
         for language_id in FIXTURE_LANGUAGE_IDS {
-            let _ = registry.get_or_create(language_id);
+            if registry.get(language_id).is_some() {
+                continue;
+            }
+            let Some(support) = feature.create_text_mate_tokenization_support(language_id) else { continue };
+            store.add_rc(support.clone());
+            store.add(registry.register(language_id, support));
         }
-        runtime::run_microtasks();
 
         let installed_color_map = registry.get_color_map().ok_or_else(|| "o tokenizador não publicou o mapa de cores".to_owned())?;
         Ok(Self { store, installed_color_map, previous_color_map })
