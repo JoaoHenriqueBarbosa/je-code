@@ -469,6 +469,8 @@ impl FocusState {
 /// O `<input>` do filtro: o texto, o foco e os eventos `focus` e `blur`.
 pub struct FilterInput {
     value: RefCell<String>,
+    /// `selectionStart` e `selectionEnd`, em caracteres.
+    selection: Cell<(usize, usize)>,
     focus_state: Rc<FocusState>,
     on_did_focus: Rc<Emitter<()>>,
     on_did_blur: Rc<Emitter<()>>,
@@ -476,7 +478,8 @@ pub struct FilterInput {
 
 impl FilterInput {
     fn new(value: String, focus_state: Rc<FocusState>) -> Rc<Self> {
-        Rc::new(Self { value: RefCell::new(value), focus_state, on_did_focus: Emitter::new(), on_did_blur: Emitter::new() })
+        let end = value.chars().count();
+        Rc::new(Self { value: RefCell::new(value), selection: Cell::new((end, end)), focus_state, on_did_focus: Emitter::new(), on_did_blur: Emitter::new() })
     }
 
     /// `value`.
@@ -484,8 +487,22 @@ impl FilterInput {
         self.value.borrow().clone()
     }
 
+    /// `input.value = value`: o cursor vai para o fim do texto, como no DOM.
     pub fn set_value(&self, value: &str) {
         *self.value.borrow_mut() = value.to_owned();
+        let end = value.chars().count();
+        self.selection.set((end, end));
+    }
+
+    /// `input.setSelectionRange(start, end)`.
+    pub fn set_selection_range(&self, start: usize, end: usize) {
+        let length = self.value.borrow().chars().count();
+        self.selection.set((start.min(length), end.min(length)));
+    }
+
+    /// `[input.selectionStart, input.selectionEnd]`.
+    pub fn selection(&self) -> (usize, usize) {
+        self.selection.get()
     }
 
     /// `dom.isActiveElement(input)`.
@@ -525,10 +542,11 @@ impl FilterInput {
     }
 }
 
-/// O `CancellationTokenSource` de uma requisição de `onFilter`.
-#[derive(Default)]
+/// O `CancellationTokenSource` de uma requisição de `onFilter`. Clonar devolve outra referência ao mesmo token, como guardar
+/// o `CancellationToken` e lê-lo depois.
+#[derive(Clone, Default)]
 pub struct FilterRequest {
-    cancelled: Cell<bool>,
+    cancelled: Rc<Cell<bool>>,
 }
 
 impl FilterRequest {
@@ -548,6 +566,8 @@ pub enum KeyTarget {
     FilterInput,
     List,
     SubmenuPanel,
+    /// Um controle embutido na lista: `input`, `textarea`, `button`, `a` ou um elemento `contenteditable`.
+    EmbeddedControl,
     /// O próprio `domNode` (`widget.domNode.dispatchEvent(...)`), fora da lista.
     DomNode,
 }
@@ -660,6 +680,31 @@ pub struct ActionListWidget<T: ActionListItemData> {
     is_submenu_panel: Cell<bool>,
     disposed: Cell<bool>,
     panel_subscriptions: Rc<DisposableStore>,
+    /// `_list.domId`: o prefixo do id de cada linha (`getElementID`).
+    list_dom_id: String,
+}
+
+/// Os atributos de acessibilidade do campo de filtro (`role`, `aria-*`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FilterAria {
+    pub role: Option<String>,
+    pub label: String,
+    pub autocomplete: Option<String>,
+    pub expanded: Option<String>,
+    pub controls: Option<String>,
+    pub active_descendant: Option<String>,
+}
+
+std::thread_local! {
+    static NEXT_LIST_DOM_ID: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `List.domId`: um id único por lista.
+fn next_list_dom_id() -> String {
+    NEXT_LIST_DOM_ID.with(|next| {
+        next.set(next.get() + 1);
+        format!("list_id_{}", next.get())
+    })
 }
 
 fn has_submenu_actions<T: ActionListItemData>(item: &IActionListItem<T>) -> bool {
@@ -760,6 +805,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             is_submenu_panel: Cell::new(false),
             disposed: Cell::new(false),
             panel_subscriptions: DisposableStore::new(),
+            list_dom_id: next_list_dom_id(),
         });
 
         widget.apply_filter(false, true, None);
@@ -808,6 +854,45 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// `closeAnimation`.
     pub fn close_animation(&self) -> Option<IContextViewCloseAnimation> {
         self.opts().and_then(|o| o.close_animation.clone())
+    }
+
+    /// Os atributos `role` e `aria-*` do campo de filtro. `aria-activedescendant` segue o foco da lista enquanto o campo é
+    /// o elemento ativo (`_updateFilterActiveDescendant`).
+    pub fn filter_aria(&self) -> Option<FilterAria> {
+        let input = self.filter_input.as_ref()?;
+        let placeholder = self.opts().and_then(|o| o.filter_placeholder.clone()).unwrap_or_else(|| "Search...".to_owned());
+        if !self.opts().is_some_and(|o| o.filter_as_combobox) {
+            return Some(FilterAria { label: "Filter items".to_owned(), ..FilterAria::default() });
+        }
+        let focused = self.state.borrow().focus;
+        let active_descendant = match focused {
+            Some(index) if input.is_focused() => Some(self.row_element_id(index)),
+            _ => None,
+        };
+        Some(FilterAria {
+            role: Some("combobox".to_owned()),
+            label: placeholder,
+            autocomplete: Some("list".to_owned()),
+            expanded: Some("true".to_owned()),
+            controls: Some(self.list_dom_id.clone()),
+            active_descendant,
+        })
+    }
+
+    /// `_list.getElementID(index)`.
+    fn row_element_id(&self, index: usize) -> String {
+        format!("{}_{index}", self.list_dom_id)
+    }
+
+    /// `document.getElementById(id)` de uma linha: o estado dela.
+    pub fn row_by_element_id(&self, id: &str) -> Option<RowState> {
+        let index = id.strip_prefix(self.list_dom_id.as_str())?.strip_prefix('_')?.parse::<usize>().ok()?;
+        self.row_state(index)
+    }
+
+    /// `document.getElementById(id)?.getAttribute('role')` da lista (`getWidgetRole`).
+    pub fn list_role_by_id(&self, id: &str) -> Option<String> {
+        (id == self.list_dom_id).then(|| "listbox".to_owned())
     }
 
     /// `onDidRequestLayout`.
@@ -1696,7 +1781,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         match target {
             KeyTarget::FilterInput => self.filter_input_key_down(e),
             KeyTarget::SubmenuPanel => self.submenu_panel_key_down(e),
-            KeyTarget::List | KeyTarget::DomNode => {}
+            KeyTarget::List | KeyTarget::EmbeddedControl | KeyTarget::DomNode => {}
         }
         // `stopPropagation()` no campo ou no painel impede o evento de subir até o `domNode`.
         if e.propagation_stopped() {
@@ -1770,7 +1855,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         if self.filter_input.is_some() || self.opts().is_some_and(|o| o.on_type.is_some()) {
             let on_type = self.opts().is_some_and(|o| o.on_type.is_some());
             let combobox = self.opts().is_some_and(|o| o.filter_as_combobox);
-            let is_editable_target = target == KeyTarget::FilterInput;
+            let is_editable_target = matches!(target, KeyTarget::FilterInput | KeyTarget::EmbeddedControl);
             if (on_type || combobox) && (is_editable_target || target == KeyTarget::SubmenuPanel) {
                 return;
             }
@@ -2994,6 +3079,11 @@ pub struct RowState {
     pub inline_toggle_label_count: usize,
     /// `.action-list-submenu-indicator.has-submenu`.
     pub submenu_indicator: bool,
+    /// `role` da linha (`getRole`): `option` para ações, `separator` para o resto.
+    pub role: String,
+    /// `aria-setsize` e `aria-posinset` (`getSetSize` e `getPosInSet`): só as ações contam.
+    pub aria_set_size: usize,
+    pub aria_pos_in_set: usize,
 }
 
 fn row_badges(badges: &[ActionListBadge]) -> Vec<RowBadge> {
@@ -3079,7 +3169,21 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// O estado renderizado da linha visível `index` (`renderElement` e o `aria-label` do `List`).
     pub fn row_state(&self, index: usize) -> Option<RowState> {
         let element = self.element(index)?;
-        let mut row = RowState { aria_label: self.aria_label_for(&element), ..RowState::default() };
+        let (aria_set_size, aria_pos_in_set) = {
+            let state = self.state.borrow();
+            let is_action = |item: &Rc<IActionListItem<T>>| item.kind == ActionListItemKind::Action;
+            let set_size = state.visible_menu_items.iter().filter(|item| is_action(item)).count();
+            let pos_in_set = state.visible_menu_items.iter().take(index + 1).filter(|item| is_action(item)).count().max(1);
+            (set_size, pos_in_set)
+        };
+        let role = if element.kind == ActionListItemKind::Action { "option" } else { "separator" };
+        let mut row = RowState {
+            aria_label: self.aria_label_for(&element),
+            role: role.to_owned(),
+            aria_set_size,
+            aria_pos_in_set,
+            ..RowState::default()
+        };
 
         match element.kind {
             ActionListItemKind::Separator => {

@@ -37,6 +37,7 @@ use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with
 use je_base::actions::{ActionRef, SubmenuAction, ToActionProps, to_action};
 use je_base::async_::timeout;
 use je_base::dynamic::Dynamic;
+use je_base::errors::Error;
 use je_base::key_codes::KeyCode;
 use je_base::promise::{DeferredPromise, Promise};
 use je_platform::action_widget::action_list::{
@@ -1403,5 +1404,522 @@ fn cancels_an_in_flight_dynamic_filter_when_a_composition_starts() {
         timeout(0).await.unwrap();
         assert!(!widget.visible_labels().contains(&Some("stale-result".to_owned())));
     });
+}
+
+/// `keyCode` na codificação do VS Code, com o `key` do DOM.
+fn key_with_code(key: &str, key_code: KeyCode) -> UiKeyEvent {
+    UiKeyEvent::new(key, key_code)
+}
+
+/// `dispatchKeyDown(target, init)`: devolve o evento para ler `defaultPrevented`.
+fn dispatch_key(widget: &ActionListWidget<Item>, event: UiKeyEvent, target: KeyTarget) -> UiKeyEvent {
+    widget.dispatch_key_down(&event, target);
+    event
+}
+
+/// O `aria-activedescendant` do campo de filtro resolvido para a linha (`document.getElementById(...)?.textContent`).
+fn active_result_text(widget: &ActionListWidget<Item>) -> Option<String> {
+    let id = widget.filter_aria()?.active_descendant?;
+    widget.row_by_element_id(&id).map(|row| row.title_text)
+}
+
+mod combobox_filtering {
+    use super::*;
+
+    /// `{ filterAsCombobox: true, focusFilterOnOpen: true }` com o filtro à mostra (`showFilter: true` é o padrão do helper).
+    fn combobox_options() -> IActionListOptions {
+        IActionListOptions { show_filter: true, filter_as_combobox: true, focus_filter_on_open: true, ..IActionListOptions::default() }
+    }
+
+    #[test]
+    fn initializes_the_query_and_exposes_the_active_result_to_assistive_technology() {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions {
+                    initial_filter_value: Some("al".to_owned()),
+                    filter_placeholder: Some("Search models".to_owned()),
+                    ..combobox_options()
+                },
+                ..config(vec![action("alpha"), action("beta"), action("alpine")])
+            },
+        );
+        widget.focus();
+        let input = widget.filter_input().expect("o campo de filtro");
+        let aria = widget.filter_aria().expect("os atributos do campo");
+        let controlled_list_role = aria.controls.as_deref().and_then(|id| widget.list_role_by_id(id));
+
+        assert_eq!(
+            (
+                input.value(),
+                visible_row_text(&widget),
+                input.is_focused(),
+                aria.role.clone(),
+                aria.label.clone(),
+                aria.autocomplete.clone(),
+                aria.expanded.clone(),
+                controlled_list_role,
+                active_result_text(&widget),
+            ),
+            (
+                "al".to_owned(),
+                strings(&["alpha", "alpine"]),
+                true,
+                Some("combobox".to_owned()),
+                "Search models".to_owned(),
+                Some("list".to_owned()),
+                Some("true".to_owned()),
+                Some("listbox".to_owned()),
+                Some("alpha".to_owned()),
+            ),
+        );
+    }
+
+    #[test]
+    fn arrow_navigation_skips_disabled_rows_and_separators_without_leaving_the_input() {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions { initial_filter_value: Some("a".to_owned()), ..combobox_options() },
+                ..config(vec![action("alpha"), separator(Some("Models")), IActionListItem { disabled: true, ..action("beta") }, action("gamma")])
+            },
+        );
+        widget.focus();
+        let input = widget.filter_input().expect("o campo de filtro");
+        input.set_selection_range(0, 1);
+
+        #[derive(Debug, PartialEq)]
+        struct State {
+            result: Option<String>,
+            input_focused: bool,
+            selection: (usize, usize),
+            active_result: Option<String>,
+            default_prevented: bool,
+        }
+        let states: Vec<State> = [("ArrowDown", KeyCode::DownArrow), ("ArrowUp", KeyCode::UpArrow), ("ArrowUp", KeyCode::UpArrow), ("ArrowDown", KeyCode::DownArrow)]
+            .into_iter()
+            .map(|(key, key_code)| {
+                let event = dispatch_key(&widget, key_with_code(key, key_code), KeyTarget::FilterInput);
+                State {
+                    result: widget.get_focused_element().and_then(|element| element.label.clone()),
+                    input_focused: input.is_focused(),
+                    selection: input.selection(),
+                    active_result: active_result_text(&widget),
+                    default_prevented: event.default_prevented(),
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            states,
+            ["gamma", "alpha", "gamma", "alpha"]
+                .into_iter()
+                .map(|result| State {
+                    result: Some(result.to_owned()),
+                    input_focused: true,
+                    selection: (0, 1),
+                    active_result: Some(result.to_owned()),
+                    default_prevented: true,
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn typing_can_refine_the_query_after_navigation_and_enter_accepts_the_new_result() {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let selected = Rc::new(RefCell::new(Vec::new()));
+        let widget = create_action_list_widget(
+            &guard,
+            Config { on_select: recording(&selected), list_options: combobox_options(), ..config(vec![action("first"), action("second"), action("third")]) },
+        );
+        widget.focus();
+        let input = widget.filter_input().expect("o campo de filtro");
+        dispatch_key(&widget, key_with_code("ArrowDown", KeyCode::DownArrow), KeyTarget::FilterInput);
+        widget.filter_input_input("thi");
+        dispatch_key(&widget, key_with_code("Enter", KeyCode::Enter), KeyTarget::FilterInput);
+
+        assert_eq!(
+            (input.value(), input.is_focused(), visible_row_text(&widget), selected.borrow().clone()),
+            ("thi".to_owned(), true, strings(&["third"]), strings(&["third"])),
+        );
+    }
+
+    #[test]
+    fn empty_and_disabled_results_cannot_accept_a_stale_selection() {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let selected = Rc::new(RefCell::new(Vec::new()));
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                on_select: recording(&selected),
+                list_options: combobox_options(),
+                ..config(vec![action("first"), IActionListItem { disabled: true, ..action("disabled") }])
+            },
+        );
+        widget.focus();
+        let input = widget.filter_input().expect("o campo de filtro");
+        let states: Vec<_> = ["missing", "disabled"]
+            .into_iter()
+            .map(|query| {
+                widget.filter_input_input(query);
+                dispatch_key(&widget, key_with_code("ArrowDown", KeyCode::DownArrow), KeyTarget::FilterInput);
+                dispatch_key(&widget, key_with_code("ArrowUp", KeyCode::UpArrow), KeyTarget::FilterInput);
+                dispatch_key(&widget, key_with_code("Enter", KeyCode::Enter), KeyTarget::FilterInput);
+                (input.is_focused(), widget.filter_aria().and_then(|aria| aria.active_descendant), focused_id(&widget), selected.borrow().clone())
+            })
+            .collect();
+
+        assert_eq!(states, vec![(true, None, None, Vec::<String>::new()); 2]);
+    }
+
+    #[test]
+    fn unrelated_shortcuts_still_reach_the_workbench_keybinding_handler() {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(&guard, Config { list_options: combobox_options(), ..config(Vec::new()) });
+        widget.focus();
+        let mut ctrl_shift_p = key_with_code("P", KeyCode::KeyP);
+        ctrl_shift_p.ctrl_key = true;
+        ctrl_shift_p.shift_key = true;
+        let mut meta_shift_p = key_with_code("P", KeyCode::KeyP);
+        meta_shift_p.meta_key = true;
+        meta_shift_p.shift_key = true;
+        let mut ctrl_enter = key_with_code("Enter", KeyCode::Enter);
+        ctrl_enter.ctrl_key = true;
+        let events: Vec<UiKeyEvent> = [ctrl_shift_p, meta_shift_p, ctrl_enter].into_iter().map(|event| dispatch_key(&widget, event, KeyTarget::FilterInput)).collect();
+
+        // O ouvinte de `keydown` no `filterContainer` só recebe o evento que ninguém parou no campo.
+        let received: Vec<String> = events.iter().filter(|event| !event.propagation_stopped()).map(|event| event.key.clone()).collect();
+        let prevented: Vec<String> = events.iter().filter(|event| event.default_prevented()).map(|event| event.key.clone()).collect();
+        assert_eq!((received, prevented), (strings(&["P", "P", "Enter"]), Vec::<String>::new()));
+    }
+
+    /// O corpo de `retaining filter focus is opt-in: ${filterAsCombobox}`.
+    fn retaining_filter_focus_is_opt_in(filter_as_combobox: bool) {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions { filter_as_combobox, ..combobox_options() },
+                ..config(vec![action("first"), action("second")])
+            },
+        );
+        widget.focus();
+        widget.focus_next();
+
+        let aria = widget.filter_aria().expect("os atributos do campo");
+        assert_eq!(
+            (focused_id(&widget), widget.filter_input().is_some_and(|input| input.is_focused()), aria.role),
+            (Some("second".to_owned()), filter_as_combobox, if filter_as_combobox { Some("combobox".to_owned()) } else { None }),
+        );
+    }
+
+    #[test]
+    fn retaining_filter_focus_is_opt_in_undefined() {
+        retaining_filter_focus_is_opt_in(false);
+    }
+
+    #[test]
+    fn retaining_filter_focus_is_opt_in_true() {
+        retaining_filter_focus_is_opt_in(true);
+    }
+}
+
+#[test]
+fn typing_requests_a_filter_instead_of_performing_list_type_navigation_when_opted_in() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let typed = Rc::new(RefCell::new(Vec::new()));
+    let record = typed.clone();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: false, on_type: Some(Rc::new(move |text| record.borrow_mut().push(text.to_owned()))), ..IActionListOptions::default() },
+            ..config(vec![action("alpha"), action("beta")])
+        },
+    );
+    widget.focus();
+    let event = dispatch_key(&widget, key_with_code("b", KeyCode::KeyB), KeyTarget::List);
+
+    assert_eq!((typed.borrow().clone(), focused_id(&widget), event.default_prevented()), (strings(&["b"]), Some("alpha".to_owned()), true));
+}
+
+#[test]
+fn type_to_filter_leaves_shortcuts_composition_and_embedded_controls_alone() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let typed = Rc::new(RefCell::new(Vec::new()));
+    let record = typed.clone();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: false, on_type: Some(Rc::new(move |text| record.borrow_mut().push(text.to_owned()))), ..IActionListOptions::default() },
+            ..config(Vec::new())
+        },
+    );
+    widget.focus();
+    let modified = |ctrl: bool, meta: bool, alt: bool, composing: bool| {
+        let mut event = key_with_code("b", KeyCode::KeyB);
+        event.ctrl_key = ctrl;
+        event.meta_key = meta;
+        event.alt_key = alt;
+        event.is_composing = composing;
+        event
+    };
+    let mut events: Vec<UiKeyEvent> = vec![
+        dispatch_key(&widget, key_with_code(" ", KeyCode::Space), KeyTarget::List),
+        dispatch_key(&widget, modified(true, false, false, false), KeyTarget::List),
+        dispatch_key(&widget, modified(false, true, false, false), KeyTarget::List),
+        dispatch_key(&widget, modified(false, false, true, false), KeyTarget::List),
+        dispatch_key(&widget, modified(false, false, false, true), KeyTarget::List),
+    ];
+    // `input`, `textarea`, `button`, `a` e o `span` dentro de um `contenteditable="true"`.
+    for _ in 0..5 {
+        events.push(dispatch_key(&widget, key_with_code("b", KeyCode::KeyB), KeyTarget::EmbeddedControl));
+    }
+    events.push(dispatch_key(&widget, key_with_code("b", KeyCode::KeyB), KeyTarget::SubmenuPanel));
+
+    let prevented: Vec<String> = events.iter().filter(|event| event.default_prevented()).map(|event| event.key.clone()).collect();
+    assert_eq!((typed.borrow().clone(), prevented), (Vec::<String>::new(), Vec::<String>::new()));
+}
+
+/// Os pares `(filter, request)` que um `onFilter` dinâmico recebeu, e a promessa que cada chamada devolve.
+struct FilterLog {
+    filters: Rc<RefCell<Vec<String>>>,
+    requests: Rc<RefCell<Vec<FilterRequest>>>,
+}
+
+impl FilterLog {
+    fn new() -> Self {
+        Self { filters: Rc::default(), requests: Rc::default() }
+    }
+
+    /// O `onFilter` que registra e devolve `answer(número da chamada)`.
+    fn on_filter(&self, answer: impl Fn(usize) -> Promise<Vec<Rc<TestItem>>> + 'static) -> FilterFn {
+        let (filters, requests) = (self.filters.clone(), self.requests.clone());
+        Rc::new(move |filter, request| {
+            filters.borrow_mut().push(filter.to_owned());
+            requests.borrow_mut().push(request.clone());
+            answer(filters.borrow().len())
+        })
+    }
+
+    fn cancelled(&self) -> Vec<bool> {
+        self.requests.borrow().iter().map(FilterRequest::is_cancellation_requested).collect()
+    }
+}
+
+fn deferred() -> Rc<DeferredPromise<Vec<Rc<TestItem>>>> {
+    Rc::new(DeferredPromise::new())
+}
+
+fn shows(widget: &ActionListWidget<Item>, label: &str) -> bool {
+    widget.visible_labels().contains(&Some(label.to_owned()))
+}
+
+#[test]
+fn restarts_a_cancelled_dynamic_filter_when_ime_composition_leaves_the_query_unchanged() {
+    common::run_with_real_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let (first, second) = (deferred(), deferred());
+        let log = FilterLog::new();
+        let (answer_first, answer_second) = (first.clone(), second.clone());
+        let widget = create_action_list_widget(
+            &guard,
+            Config { on_filter: Some(log.on_filter(move |call| if call == 1 { answer_first.promise.clone() } else { answer_second.promise.clone() })), ..config(Vec::new()) },
+        );
+
+        widget.filter_input_input("release");
+        widget.filter_input_composition_start();
+        widget.filter_input_input("releases");
+        widget.filter_input().unwrap().set_value("release");
+        widget.filter_input_composition_end();
+        widget.filter_input_input("release");
+        first.complete(vec![rc(action("release-stale-result"))]);
+        second.complete(vec![rc(action("release-fresh-result"))]);
+        timeout(0).await.unwrap();
+
+        assert_eq!(
+            (log.filters.borrow().clone(), log.cancelled(), shows(&widget, "release-stale-result"), shows(&widget, "release-fresh-result")),
+            (strings(&["release", "release"]), vec![true, false], false, true),
+        );
+    });
+}
+
+/// O corpo de `does not retry a ${outcome} dynamic filter when IME composition leaves the query unchanged`.
+fn does_not_retry_a_settled_dynamic_filter(completed: bool) {
+    common::run_with_real_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let result = deferred();
+        let log = FilterLog::new();
+        let answer = result.clone();
+        let widget = create_action_list_widget(&guard, Config { on_filter: Some(log.on_filter(move |_| answer.promise.clone())), ..config(Vec::new()) });
+        widget.filter_input_input("release");
+        if completed {
+            result.complete(vec![rc(action("release-result"))]);
+        } else {
+            result.error(Error::new("Search failed".to_owned()));
+        }
+        timeout(0).await.unwrap();
+        let rows = visible_row_text(&widget);
+        widget.filter_input_composition_start();
+        widget.filter_input_input("releases");
+        widget.filter_input().unwrap().set_value("release");
+        widget.filter_input_composition_end();
+        widget.filter_input_input("release");
+        timeout(0).await.unwrap();
+
+        assert_eq!((log.filters.borrow().clone(), log.cancelled(), visible_row_text(&widget)), (strings(&["release"]), vec![false], rows));
+    });
+}
+
+#[test]
+fn does_not_retry_a_completed_dynamic_filter_when_ime_composition_leaves_the_query_unchanged() {
+    does_not_retry_a_settled_dynamic_filter(true);
+}
+
+#[test]
+fn does_not_retry_a_failed_dynamic_filter_when_ime_composition_leaves_the_query_unchanged() {
+    does_not_retry_a_settled_dynamic_filter(false);
+}
+
+#[test]
+fn settling_a_superseded_dynamic_filter_preserves_ime_retry_for_the_pending_request() {
+    common::run_with_real_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let (first, second, retry) = (deferred(), deferred(), deferred());
+        let log = FilterLog::new();
+        let (answer_first, answer_second, answer_retry) = (first.clone(), second.clone(), retry.clone());
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                on_filter: Some(log.on_filter(move |call| match call {
+                    1 => answer_first.promise.clone(),
+                    2 => answer_second.promise.clone(),
+                    _ => answer_retry.promise.clone(),
+                })),
+                ..config(Vec::new())
+            },
+        );
+        widget.filter_input_input("old");
+        widget.filter_input_input("release");
+        first.complete(vec![rc(action("old-result"))]);
+        timeout(0).await.unwrap();
+        widget.filter_input_composition_start();
+        widget.filter_input_composition_end();
+        widget.filter_input_input("release");
+        second.complete(vec![rc(action("release-stale-result"))]);
+        retry.complete(vec![rc(action("release-fresh-result"))]);
+        timeout(0).await.unwrap();
+
+        assert_eq!(
+            (log.filters.borrow().clone(), shows(&widget, "release-stale-result"), shows(&widget, "release-fresh-result")),
+            (strings(&["old", "release", "release"]), false, true),
+        );
+    });
+}
+
+#[test]
+fn batches_row_width_writes_before_reading_layout() {
+    // O DOM mede as linhas com `getBoundingClientRect` depois de pôr todas em `width: auto` (escritas antes das leituras, sem
+    // layout forçado entre elas) e as restaura depois. A lista nativa não escreve estilo nas linhas: a medida de cada linha é a
+    // do `ItemMeasurer`, que o `measure_item_widths` lê de uma vez para todas, e a largura é a maior mais a barra de ferramentas.
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![
+                action("first"),
+                IActionListItem { toolbar_actions: Some(vec![to_action_with("toolbar", "Toolbar", None, None, noop())]), ..action("second") },
+                action("third"),
+            ])
+        },
+    );
+    widget.set_item_measurer(Rc::new(|item| match item.label.as_deref() {
+        Some("first") => 120.0,
+        Some("second") => 240.0,
+        _ => 180.0,
+    }));
+
+    assert_eq!(widget.compute_max_width(0.0), 278.0);
+}
+
+#[test]
+fn does_not_double_count_a_detail_row_toolbar_when_computing_max_width() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                detail: Some("Description".to_owned()),
+                toolbar_actions: Some(vec![to_action_with("toolbar", "Toolbar", None, None, noop())]),
+                ..action("detail")
+            }])
+        },
+    );
+    widget.set_item_measurer(Rc::new(|_| 240.0));
+
+    assert_eq!(widget.compute_max_width(0.0), 240.0);
+}
+
+#[test]
+fn keeps_titled_separator_above_first_filtered_match() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        config(vec![separator(Some("Provider A")), action("alpha"), separator(Some("Provider B")), action("beta")]),
+    );
+
+    widget.filter_input_input("alpha");
+
+    assert_eq!(visible_row_text(&widget), strings(&["Provider A", "alpha"]));
+}
+
+#[test]
+fn keeps_only_titled_separators_for_sections_with_filtered_matches() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        config(vec![
+            separator(Some("Provider A")),
+            action("alpha"),
+            separator(Some("Provider B")),
+            action("beta"),
+            separator(Some("Provider C")),
+            action("gamma"),
+        ]),
+    );
+
+    widget.filter_input_input("beta");
+
+    assert_eq!(visible_row_text(&widget), strings(&["Provider B", "beta"]));
+}
+
+#[test]
+fn excludes_separators_from_accessible_list_positions_after_filtering() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(&guard, config(vec![action("selected"), separator(None), action("alpha"), action("beta")]));
+    let aria_positions = || -> Vec<(Option<String>, usize, usize)> {
+        (0..widget.visible_labels().len())
+            .filter_map(|index| widget.row_state(index))
+            .filter(|row| row.role == "option")
+            .map(|row| (row.aria_label, row.aria_set_size, row.aria_pos_in_set))
+            .collect()
+    };
+
+    let initial = aria_positions();
+    widget.filter_input_input("a");
+    let filtered = aria_positions();
+
+    let position = |label: &str, set_size: usize, pos_in_set: usize| (Some(label.to_owned()), set_size, pos_in_set);
+    assert_eq!(
+        (initial, filtered),
+        (
+            vec![position("selected", 3, 1), position("alpha", 3, 2), position("beta", 3, 3)],
+            vec![position("alpha", 2, 1), position("beta", 2, 2)],
+        ),
+    );
 }
 
