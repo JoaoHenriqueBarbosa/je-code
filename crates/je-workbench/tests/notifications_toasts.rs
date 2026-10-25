@@ -18,6 +18,7 @@
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+mod support;
 #[path = "support/notification_doubles.rs"]
 mod notification_doubles;
 
@@ -36,13 +37,10 @@ use je_ui::{NodeId, Role, Ui};
 use je_workbench::browser::parts::notifications::notifications_toasts::{NotificationsToasts, NotificationsToastsServices};
 use je_workbench::browser::parts::notifications::notifications_viewer::{DEFAULT_NOTIFICATION_ROW_HEIGHT, set_notification_row_height};
 use je_workbench::common::notifications::{INotificationsModel, NotificationsModel};
-use je_workbench::services::editor::editor_groups_service::IEditorGroupsService;
 use je_workbench::services::environment::environment_service::IWorkbenchEnvironmentService;
 use je_workbench::services::host::host::IHostService;
-use je_workbench::services::lifecycle::lifecycle::ILifecycleService;
-use je_workbench::test::browser::workbench_test_services::{TestEditorGroupsService, TestEnvironmentService, TestHostService};
-use je_workbench::test::common::workbench_test_services::TestLifecycleService;
-use notification_doubles::{EmptyThemeService, RecordingOpener, TestLayoutService, renderer_services_in};
+use je_workbench::test::browser::workbench_test_services::{TestEnvironmentService, TestHostService};
+use notification_doubles::{EmptyThemeService, RecordingOpener, TestLayoutService, renderer_services_in, test_editor_groups_service, test_lifecycle_service};
 
 /// O `teardown(() => setNotificationRowHeight(DEFAULT_NOTIFICATION_ROW_HEIGHT))`.
 struct RowHeightReset;
@@ -84,9 +82,9 @@ impl Fixture {
 }
 
 fn toasts_services(store: &DisposableStore, ui: &Ui) -> NotificationsToastsServices {
-    let editor_groups_service: Rc<dyn IEditorGroupsService> = TestEditorGroupsService::new(None);
+    let editor_groups_service = test_editor_groups_service();
     let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::new();
-    let lifecycle_service: Rc<dyn ILifecycleService> = TestLifecycleService::new();
+    let lifecycle_service = test_lifecycle_service(store);
     let host_service: Rc<dyn IHostService> = Rc::new(TestHostService);
     let environment_service: Rc<dyn IWorkbenchEnvironmentService> = TestEnvironmentService::new();
     NotificationsToastsServices {
