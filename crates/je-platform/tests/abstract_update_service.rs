@@ -18,14 +18,24 @@
 //!   que delega ao serviço de teste do porte e sobrescreve `getValue` e `inspect`. O
 //!   `{ affectsConfiguration: () => true }` do original é um `ConfigurationChangeEvent` real com a chave `update.mode`.
 //! - Os mocks por literal (`lifecycleMainService`, `environmentMainService`, `requestService`, `productService`,
-//!   `applicationStorageMainService`) são estruturas que implementam os contratos mínimos do serviço.
+//!   `applicationStorageMainService`) usam os contratos reais do porte: o `lifecycleMainService` é uma estrutura que
+//!   implementa o [`LifecycleMainService`] (`when` resolve, `quit` não é vetado), o `environmentMainService` é o
+//!   [`AbstractNativeEnvironmentService`] com o ambiente fixo (`isBuilt` é a ausência de `VSCODE_DEV`) e o argumento
+//!   `disable-updates`, o `productService` é o [`ProductService`] e o `applicationStorageMainService` é o
+//!   [`ApplicationStorageMainService`] sobre o `InMemoryStorageService`. O `requestService` é uma estrutura que conta a
+//!   requisição.
+//! - O `teardown` do mocha roda depois de as microtarefas do caso esvaziarem (o `await changeMode()` retoma no meio do
+//!   `doReconfigure`, que ainda agenda a verificação periódica antes de o `teardown` descartar o serviço). O [`Teardown`]
+//!   esvazia as microtarefas antes de descartar o [`LeakGuard`]; sem isso o agendamento acontecia com o serviço já
+//!   descartado, o temporizador ficava sem dono e se repetia a cada hora para sempre no laço real.
 
 mod common;
 
 use std::cell::{Cell, RefCell};
+use std::ops::Deref;
 use std::rc::Rc;
 
-use common::{LeakGuard, change, empty_test_configuration, ensure_no_disposables_are_leaked_in_test_suite, null_log, run_with_faked_timers, run_with_real_timers};
+use common::{LeakGuard, change, empty_test_configuration, ensure_no_disposables_are_leaked_in_test_suite as ensure_leak_guard, null_log, run_with_faked_timers, run_with_real_timers};
 use je_base::async_::{async_fn, timeout};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
@@ -33,21 +43,48 @@ use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::parts::request::{IRequestContext, IRequestOptions};
+use je_base::path::{FixedEnvironment, Platform};
 use je_base::promise::{DeferredPromise, Promise};
 use je_base::runtime;
 use je_platform::configuration::models::{ConfigurationChangeEvent, ConfigurationKeys};
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::{TestConfigurationService, TestConfigurationValue};
 use je_platform::configuration::{ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue};
+use je_platform::environment::environment_service::{AbstractNativeEnvironmentService, NativeEnvironmentPaths};
+use je_platform::environment::native_parsed_args::NativeParsedArgs;
 use je_platform::log::NullLogService;
 use je_platform::metered_connection::IMeteredConnectionService;
+use je_platform::product::ProductService;
 use je_platform::request::{AuthInfo, Credentials, IRequestService, RequestCompleteEvent};
+use je_platform::storage::{ApplicationStorageMainService, InMemoryStorageService};
 use je_platform::telemetry::telemetry_utils::null_telemetry_service;
-use je_platform::update::abstract_update_service::{
-    AbstractUpdateService, AbstractUpdateServiceHooks, UpdateApplicationStorage, UpdateEnvironmentMainService, UpdateLifecycleMainService, UpdateProductService, UpdateUrlOptions,
-};
+use je_platform::update::abstract_update_service::{AbstractUpdateService, AbstractUpdateServiceHooks, UpdateUrlOptions};
 use je_platform::update::{AvailableForDownload, DisablementReason, State, StateType, Update, UpdateService};
 use je_platform::user_data_profile::user_data_profiles_handler::{LifecycleMainPhase, LifecycleMainService, ProfilesWindow, ShutdownEvent, WindowLoadEvent};
+
+/// O [`LeakGuard`] com o `teardown` do mocha: as microtarefas pendentes do caso esvaziam antes de o serviço ser descartado.
+struct Teardown(LeakGuard);
+
+impl Deref for Teardown {
+    type Target = LeakGuard;
+
+    fn deref(&self) -> &LeakGuard {
+        &self.0
+    }
+}
+
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            runtime::run_microtasks();
+        }
+    }
+}
+
+/// `ensureNoDisposablesAreLeakedInTestSuite()`, com o `teardown` depois das microtarefas.
+fn ensure_no_disposables_are_leaked_in_test_suite() -> Teardown {
+    Teardown(ensure_leak_guard())
+}
 
 /// `TestMeteredConnectionService`.
 struct TestMeteredConnectionService {
@@ -268,27 +305,25 @@ impl LifecycleMainService for TestLifecycleMainService {
     fn when(&self, _phase: LifecycleMainPhase) -> Promise<()> {
         Promise::resolved(())
     }
-}
 
-impl UpdateLifecycleMainService for TestLifecycleMainService {
     fn quit(&self, _will_restart: bool) -> Promise<bool> {
         Promise::resolved(false)
     }
 }
 
-struct TestEnvironmentMainService {
-    is_built: bool,
-    disable_updates: bool,
-}
-
-impl UpdateEnvironmentMainService for TestEnvironmentMainService {
-    fn is_built(&self) -> bool {
-        self.is_built
+/// O `environmentMainService` do literal do original (`isBuilt` e `disableUpdates`): o serviço de ambiente nativo, com
+/// `isBuilt` falso quando `VSCODE_DEV` está definida.
+fn environment_main_service(is_built: bool, disable_updates: bool) -> Rc<AbstractNativeEnvironmentService> {
+    let mut environment = FixedEnvironment::new(Platform::Posix, "/");
+    if !is_built {
+        environment.vars.insert("VSCODE_DEV".to_owned(), "1".to_owned());
     }
-
-    fn disable_updates(&self) -> bool {
-        self.disable_updates
+    let args = NativeParsedArgs::default();
+    if disable_updates {
+        args.set("disable-updates", Dynamic::Bool(true));
     }
+    let paths = NativeEnvironmentPaths { user_data_dir: "/user-data".to_owned(), home_dir: "/home".to_owned(), tmp_dir: "/tmp".to_owned(), app_root: "/app".to_owned() };
+    Rc::new(AbstractNativeEnvironmentService::new(args, paths, ProductService::default(), Rc::new(environment)))
 }
 
 /// O mock de `IRequestService`: conta a requisição e a rejeita (`not expected`).
@@ -323,40 +358,14 @@ impl IRequestService for TestRequestService {
     }
 }
 
-struct TestProductService {
-    update_url: String,
+/// O `productService` do literal do original.
+fn product_service(update_url: String) -> ProductService {
+    ProductService { update_url: Some(update_url), commit: Some("abc123".to_owned()), quality: Some("stable".to_owned()), version: "1.0.0".to_owned(), ..ProductService::default() }
 }
 
-impl UpdateProductService for TestProductService {
-    fn version(&self) -> &str {
-        "1.0.0"
-    }
-
-    fn commit(&self) -> Option<&str> {
-        Some("abc123")
-    }
-
-    fn quality(&self) -> Option<&str> {
-        Some("stable")
-    }
-
-    fn update_url(&self) -> Option<&str> {
-        Some(&self.update_url)
-    }
-}
-
-struct TestApplicationStorageMainService;
-
-impl UpdateApplicationStorage for TestApplicationStorageMainService {
-    fn when_ready(&self) -> Promise<()> {
-        Promise::resolved(())
-    }
-
-    fn get(&self, _key: &str) -> Option<String> {
-        None
-    }
-
-    fn store(&self, _key: &str, _value: &str) {}
+/// O `applicationStorageMainService` do literal do original: já pronto, sobre o armazenamento em memória.
+fn application_storage_main_service() -> Rc<ApplicationStorageMainService> {
+    Rc::new(ApplicationStorageMainService::from_service(InMemoryStorageService::new(), Promise::resolved(())))
 }
 
 #[derive(Default)]
@@ -405,12 +414,12 @@ fn create_service(store: &LeakGuard, mode: &str, options: Options) -> Fixture {
     let core = AbstractUpdateService::new(
         Rc::new(TestLifecycleMainService),
         configuration_service.clone(),
-        Rc::new(TestEnvironmentMainService { is_built: options.is_built.unwrap_or(true), disable_updates: options.disable_updates.unwrap_or(false) }),
+        environment_main_service(options.is_built.unwrap_or(true), options.disable_updates.unwrap_or(false)),
         Rc::new(TestRequestService { request_count: request_count.clone() }),
         NullLogService::shared(),
-        Rc::new(TestProductService { update_url: options.update_url.clone().unwrap_or_else(|| "https://update.example".to_string()) }),
+        Rc::new(product_service(options.update_url.clone().unwrap_or_else(|| "https://update.example".to_string()))),
         null_telemetry_service(),
-        Rc::new(TestApplicationStorageMainService),
+        store.add_rc(application_storage_main_service()),
         metered_connection_service.clone(),
         options.supports_update_overwrite.unwrap_or(false),
         hooks.clone(),

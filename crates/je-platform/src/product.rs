@@ -37,6 +37,11 @@ pub trait IProductService {
     fn shared_data_folder_name(&self) -> &str;
     /// `quality` (`stable`, `insider`), quando o produto declara.
     fn quality(&self) -> Option<&str>;
+    /// `updateUrl`: o servidor de atualizações do produto, quando ele declara (lido pelo `AbstractUpdateService`).
+    /// Padrão: o produto não declara.
+    fn update_url(&self) -> Option<&str> {
+        None
+    }
     /// `trustedExtensionProtocolHandlers`: as extensões cujas URLs abrem sem confirmação (vazio quando o produto não declara).
     fn trusted_extension_protocol_handlers(&self) -> Vec<String>;
     /// `commit`, quando o produto declara.
@@ -191,6 +196,8 @@ pub struct ProductService {
     pub data_folder_name: String,
     pub shared_data_folder_name: String,
     pub quality: Option<String>,
+    /// `updateUrl`.
+    pub update_url: Option<String>,
     pub trusted_extension_protocol_handlers: Vec<String>,
     pub commit: Option<String>,
     pub enable_telemetry: bool,
@@ -249,6 +256,7 @@ impl Default for ProductService {
             data_folder_name: ".vscode".to_owned(),
             shared_data_folder_name: ".vscode-shared".to_owned(),
             quality: Some("stable".to_owned()),
+            update_url: None,
             trusted_extension_protocol_handlers: Vec::new(),
             commit: None,
             enable_telemetry: true,
@@ -318,6 +326,9 @@ impl IProductService for ProductService {
     }
     fn quality(&self) -> Option<&str> {
         self.quality.as_deref()
+    }
+    fn update_url(&self) -> Option<&str> {
+        self.update_url.as_deref()
     }
     fn trusted_extension_protocol_handlers(&self) -> Vec<String> {
         self.trusted_extension_protocol_handlers.clone()
@@ -471,6 +482,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn quality(&self) -> Option<&str> {
         self.quality.as_deref()
+    }
+    fn update_url(&self) -> Option<&str> {
+        self.update_url.as_deref()
     }
     fn trusted_extension_protocol_handlers(&self) -> Vec<String> {
         self.trusted_extension_protocol_handlers.clone().unwrap_or_default()

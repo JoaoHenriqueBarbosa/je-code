@@ -494,6 +494,13 @@ impl ApplicationStorageMainService {
     pub fn new(user_data_profiles_service: Rc<dyn IUserDataProfilesService>, storage_main_service: Rc<dyn IStorageMainService>) -> Self {
         let when_ready = when_application_storages_init(storage_main_service.as_ref());
         let service = AbstractStorageService::new(Rc::new(ApplicationStorageMainBackend { user_data_profiles_service, storage_main_service }), StorageServiceCoreOptions::default());
+        Self::from_service(service, when_ready)
+    }
+
+    /// O `IApplicationStorageMainService` sobre um serviço de armazenamento já montado e o `whenReady` dele: para quem
+    /// não tem os serviços principais (`StorageMainService` e perfis) por trás, como os testes que usam o
+    /// `InMemoryStorageService`.
+    pub fn from_service(service: Rc<AbstractStorageService>, when_ready: Promise<()>) -> Self {
         Self { service, when_ready }
     }
 

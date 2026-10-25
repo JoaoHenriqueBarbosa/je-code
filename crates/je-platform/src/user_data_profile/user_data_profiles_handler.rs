@@ -123,6 +123,9 @@ pub trait LifecycleMainService {
 
     /// `when(phase)`: assenta quando o ciclo de vida chega à fase (ou já passou dela).
     fn when(&self, phase: LifecycleMainPhase) -> Promise<()>;
+
+    /// `quit(willRestart)`: resolve `true` quando o encerramento foi vetado.
+    fn quit(&self, will_restart: bool) -> Promise<bool>;
 }
 
 /// `IWindowsMainService`, com o que o `handler` lê.

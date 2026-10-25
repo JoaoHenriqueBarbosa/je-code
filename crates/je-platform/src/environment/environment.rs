@@ -132,6 +132,12 @@ pub trait NativeEnvironmentServiceApi: EnvironmentService {
     fn cross_origin_isolated(&self) -> bool;
     fn export_policy_data(&self) -> Option<String>;
     fn export_default_keybindings(&self) -> Option<String>;
+
+    // --- update (`IEnvironmentMainService`)
+    /// `disableUpdates` (`--disable-updates`): `!!args['disable-updates']`.
+    fn disable_updates(&self) -> bool {
+        self.args().get_bool("disable-updates")
+    }
 }
 
 je_instantiation::service_id!(pub I_NATIVE_ENVIRONMENT_SERVICE: dyn NativeEnvironmentServiceApi = "environmentService");

@@ -4,8 +4,9 @@
 //! coordena o download, a aplicação e o `quitAndInstall` (inclusive a checagem de update "overwrite" do estado `Ready`).
 //!
 //! Não há processo principal do Electron no je-code, mas o papel dele existe no processo único; por isso o serviço é o
-//! mesmo, sem janelas nem IPC: o `ILifecycleMainService`, o `IEnvironmentMainService` e o `IApplicationStorageMainService`
-//! viram contratos mínimos deste arquivo (o que a base lê deles), porque os serviços de plataforma ainda não têm porte.
+//! mesmo, sem janelas nem IPC. As dependências são os contratos reais do porte (o `LifecycleMainService`, o
+//! `NativeEnvironmentServiceApi`, o `IProductService` e o `ApplicationStorageMainService`), cada um com o membro que a
+//! base lê (`quit`, `disableUpdates` e `updateUrl` foram acrescentados a eles).
 //!
 //! Decisões de tradução:
 //! - **Classe abstrata e membros `protected`**: o Rust não tem herança. O serviço concreto é um [`AbstractUpdateService`]
@@ -20,13 +21,12 @@
 //!   a mais que o contrato (`isLatestVersion()`), então a forma completa é [`AbstractUpdateService::is_latest_version_with`].
 //! - **`async`**: as funções `async` do original são [`async_fn`]: o corpo roda já, de forma síncrona, até o primeiro
 //!   `await`, como no JavaScript. `void promise` é descartar a [`Promise`].
-//! - **`@IProductService`**: o trait [`UpdateProductService`] tem só os campos que a base lê (`version`, `commit`,
-//!   `quality`, `updateUrl`); o `IProductService` do porte ainda não expõe `updateUrl`.
-//! - **`@IEnvironmentMainService`**: [`UpdateEnvironmentMainService`] (`isBuilt` e `disableUpdates`).
-//! - **`@ILifecycleMainService`**: [`UpdateLifecycleMainService`] acrescenta o `quit(willRestart)` ao contrato mínimo
-//!   [`LifecycleMainService`] (`when(phase)`).
-//! - **`@IApplicationStorageMainService`**: [`UpdateApplicationStorage`] (`whenReady`, `get` e `store` no escopo da
-//!   aplicação), implementado para o [`ApplicationStorageMainService`] portado.
+//! - **`@IProductService`**: o [`IProductService`] do porte (com `updateUrl`).
+//! - **`@IEnvironmentMainService`**: o `IEnvironmentMainService` estende o `INativeEnvironmentService`, que aqui é o
+//!   [`NativeEnvironmentServiceApi`] (com `disableUpdates`); `isBuilt` vem do `EnvironmentService`.
+//! - **`@ILifecycleMainService`**: o [`LifecycleMainService`] (com `quit(willRestart)`).
+//! - **`@IApplicationStorageMainService`**: o [`ApplicationStorageMainService`] portado (`whenReady` e o armazenamento
+//!   no escopo da aplicação, por [`ApplicationStorageMainService::service`]).
 //! - **`IUpdateURLOptions`** é [`UpdateUrlOptions`]; `createUpdateURL` é [`create_update_url`], com o `new URL` do
 //!   padrão WHATWG (lança `TypeError: Invalid URL`, como o Node).
 //! - **`getUpdateRequestHeaders`**: o `User-Agent` do Windows leva `Electron/${process.versions.electron}` no original;
@@ -63,6 +63,8 @@ use crate::metered_connection::IMeteredConnectionService;
 use crate::request::IRequestService;
 use crate::storage::{ApplicationStorageMainService, StorageScope, StorageService, StorageTarget};
 use crate::telemetry::ITelemetryService;
+use crate::environment::environment::{EnvironmentService, NativeEnvironmentServiceApi};
+use crate::product::IProductService;
 use crate::user_data_profile::user_data_profiles_handler::{LifecycleMainPhase, LifecycleMainService};
 use je_storage::StorageValue;
 
@@ -199,56 +201,6 @@ fn headers_to_dynamic(headers: &IHeaders) -> Dynamic {
     }))
 }
 
-/// O que a base lê do `IProductService` (ver o topo do arquivo).
-pub trait UpdateProductService {
-    /// `version`.
-    fn version(&self) -> &str;
-    /// `commit`, quando o produto declara.
-    fn commit(&self) -> Option<&str>;
-    /// `quality`, quando o produto declara.
-    fn quality(&self) -> Option<&str>;
-    /// `updateUrl`, quando o produto declara.
-    fn update_url(&self) -> Option<&str>;
-}
-
-/// O que a base lê do `IEnvironmentMainService`.
-pub trait UpdateEnvironmentMainService {
-    /// `isBuilt`.
-    fn is_built(&self) -> bool;
-    /// `disableUpdates` (`--disable-updates`).
-    fn disable_updates(&self) -> bool;
-}
-
-/// O `ILifecycleMainService` da base: o contrato mínimo mais o `quit`.
-pub trait UpdateLifecycleMainService: LifecycleMainService {
-    /// `quit(willRestart)`: resolve `true` quando o encerramento foi vetado.
-    fn quit(&self, will_restart: bool) -> Promise<bool>;
-}
-
-/// O que a base lê do `IApplicationStorageMainService`, no escopo da aplicação.
-pub trait UpdateApplicationStorage {
-    /// `whenReady`.
-    fn when_ready(&self) -> Promise<()>;
-    /// `get(key, StorageScope.APPLICATION)`.
-    fn get(&self, key: &str) -> Option<String>;
-    /// `store(key, value, StorageScope.APPLICATION, StorageTarget.MACHINE)`.
-    fn store(&self, key: &str, value: &str);
-}
-
-impl UpdateApplicationStorage for ApplicationStorageMainService {
-    fn when_ready(&self) -> Promise<()> {
-        ApplicationStorageMainService::when_ready(self)
-    }
-
-    fn get(&self, key: &str) -> Option<String> {
-        StorageService::get(&self.service(), key, StorageScope::Application, None)
-    }
-
-    fn store(&self, key: &str, value: &str) {
-        StorageService::store(&self.service(), key, StorageValue::from(value), StorageScope::Application, StorageTarget::Machine);
-    }
-}
-
 /// Os métodos que as subclasses de `AbstractUpdateService` sobrescrevem. Os corpos padrão são os da base.
 pub trait AbstractUpdateServiceHooks {
     /// `protected async initialize()`.
@@ -324,14 +276,14 @@ pub struct AbstractUpdateService {
     base: Rc<Disposable>,
     hooks: Rc<dyn AbstractUpdateServiceHooks>,
 
-    pub lifecycle_main_service: Rc<dyn UpdateLifecycleMainService>,
+    pub lifecycle_main_service: Rc<dyn LifecycleMainService>,
     pub configuration_service: Rc<dyn IConfigurationService>,
-    pub environment_main_service: Rc<dyn UpdateEnvironmentMainService>,
+    pub environment_main_service: Rc<dyn NativeEnvironmentServiceApi>,
     pub request_service: Rc<dyn IRequestService>,
     pub log_service: LogServiceRef,
-    pub product_service: Rc<dyn UpdateProductService>,
+    pub product_service: Rc<dyn IProductService>,
     pub telemetry_service: Rc<dyn ITelemetryService>,
-    pub application_storage_main_service: Rc<dyn UpdateApplicationStorage>,
+    pub application_storage_main_service: Rc<ApplicationStorageMainService>,
     pub metered_connection_service: Rc<dyn IMeteredConnectionService>,
     pub supports_update_overwrite: bool,
 
@@ -360,14 +312,14 @@ impl AbstractUpdateService {
     /// roda, e quando a conexão deixa de ser cobrada as atualizações automáticas são retomadas.
     #[allow(clippy::too_many_arguments)] // são as dependências injetadas do construtor do original
     pub fn new(
-        lifecycle_main_service: Rc<dyn UpdateLifecycleMainService>,
+        lifecycle_main_service: Rc<dyn LifecycleMainService>,
         configuration_service: Rc<dyn IConfigurationService>,
-        environment_main_service: Rc<dyn UpdateEnvironmentMainService>,
+        environment_main_service: Rc<dyn NativeEnvironmentServiceApi>,
         request_service: Rc<dyn IRequestService>,
         log_service: LogServiceRef,
-        product_service: Rc<dyn UpdateProductService>,
+        product_service: Rc<dyn IProductService>,
         telemetry_service: Rc<dyn ITelemetryService>,
-        application_storage_main_service: Rc<dyn UpdateApplicationStorage>,
+        application_storage_main_service: Rc<ApplicationStorageMainService>,
         metered_connection_service: Rc<dyn IMeteredConnectionService>,
         supports_update_overwrite: bool,
         hooks: Rc<dyn AbstractUpdateServiceHooks>,
@@ -706,7 +658,8 @@ impl AbstractUpdateService {
         async_fn(async move {
             this.application_storage_main_service.when_ready().await?;
 
-            let from: Option<Dynamic> = this.application_storage_main_service.get(LAST_KNOWN_VERSION_STORAGE_KEY).and_then(|raw| {
+            let application_storage = this.application_storage_main_service.service();
+            let from: Option<Dynamic> = StorageService::get(&application_storage, LAST_KNOWN_VERSION_STORAGE_KEY, StorageScope::Application, None).and_then(|raw| {
                 let mut errors = Vec::new();
                 json::parse_str(&raw, &mut errors).filter(|_| errors.is_empty()).map(|value| from_json(&value))
             });
@@ -730,7 +683,13 @@ impl AbstractUpdateService {
                 to.push(("commit", Dynamic::string(commit)));
             }
             to.push(("timestamp", Dynamic::Number(to_timestamp)));
-            this.application_storage_main_service.store(LAST_KNOWN_VERSION_STORAGE_KEY, &json_stringify(&Dynamic::object(to)).unwrap_or_default());
+            StorageService::store(
+                &application_storage,
+                LAST_KNOWN_VERSION_STORAGE_KEY,
+                StorageValue::from(json_stringify(&Dynamic::object(to)).unwrap_or_default().as_str()),
+                StorageScope::Application,
+                StorageTarget::Machine,
+            );
 
             let Some(from) = from.filter(Truthy::is_truthy) else {
                 return Ok(());

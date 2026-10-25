@@ -2,8 +2,8 @@
 //! `ILifecycleMainService` de teste, que já está na fase `Ready` (o `when` assenta de uma vez) e deixa o teste disparar o
 //! `onWillShutdown` e esperar o que os ouvintes juntaram (`fireOnWillShutdown`).
 //!
-//! Só os membros do contrato [`LifecycleMainService`] existem; o resto do original (`registerWindow`, `reload`, `quit`...)
-//! não tem como ser chamado por quem usa o contrato portado.
+//! Só os membros do contrato [`LifecycleMainService`] existem; o resto do original (`registerWindow`, `reload`...)
+//! não tem como ser chamado por quem usa o contrato portado. O `quit` não é vetado.
 
 use std::rc::Rc;
 
@@ -46,5 +46,9 @@ impl LifecycleMainService for TestLifecycleMainService {
 
     fn when(&self, _phase: LifecycleMainPhase) -> Promise<()> {
         Promise::resolved(())
+    }
+
+    fn quit(&self, _will_restart: bool) -> Promise<bool> {
+        Promise::resolved(false)
     }
 }
