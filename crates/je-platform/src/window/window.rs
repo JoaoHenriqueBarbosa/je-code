@@ -13,8 +13,10 @@ use je_base::dynamic::{Dynamic, Truthy};
 use je_base::errors;
 use je_base::network::AGENTS_AUTHORITY;
 use je_base::oauth::UrlSearchParams;
-use je_base::platform::is_tahoe_or_newer;
+use je_base::platform::{Platform, is_tahoe_or_newer};
 use je_base::uri::URI;
+
+use crate::configuration::service::IConfigurationService;
 
 /// `DEFAULT_CUSTOM_TITLEBAR_HEIGHT`: altura da barra de título customizada, em pixels, incluindo o espaço da
 /// central de comandos.
@@ -93,6 +95,76 @@ pub fn get_macos_window_controls_position(height: f64, os_version: &str, horizon
     } else {
         Some(IPoint { x: horizontal_inset.unwrap_or(offset + 1.0), y: offset })
     }
+}
+
+/// `TitlebarStyle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitlebarStyle {
+    Native,
+    Custom,
+}
+
+impl TitlebarStyle {
+    /// O valor de `window.titleBarStyle`; `None` para qualquer outro texto.
+    fn from_setting(value: &Dynamic) -> Option<Self> {
+        match value {
+            Dynamic::String(text) => match text.to_string_lossy().as_str() {
+                "native" => Some(Self::Native),
+                "custom" => Some(Self::Custom),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// `getTitleBarStyle(configurationService)`.
+pub fn get_title_bar_style(configuration_service: &dyn IConfigurationService) -> TitlebarStyle {
+    let platform = Platform::detect();
+    if platform.is_web {
+        return TitlebarStyle::Custom;
+    }
+
+    let configuration = configuration_service.get_value(Some("window"), None);
+    if configuration.is_truthy() {
+        let use_native_tabs = platform.is_macintosh && matches!(configuration.get_str("nativeTabs"), Dynamic::Bool(true));
+        if use_native_tabs {
+            return TitlebarStyle::Native; // native tabs on macOS do not work with custom title style
+        }
+
+        let use_simple_full_screen = platform.is_macintosh && matches!(configuration.get_str("nativeFullScreen"), Dynamic::Bool(false));
+        if use_simple_full_screen {
+            return TitlebarStyle::Native; // simple fullscreen does not work well with custom title style (https://github.com/microsoft/vscode/issues/63291)
+        }
+
+        if let Some(style) = TitlebarStyle::from_setting(&configuration.get_str("titleBarStyle")) {
+            return style;
+        }
+    }
+
+    TitlebarStyle::Custom // default to custom on all OS
+}
+
+/// `hasNativeTitlebar(configurationService, titleBarStyle?)`.
+pub fn has_native_titlebar(configuration_service: &dyn IConfigurationService, title_bar_style: Option<TitlebarStyle>) -> bool {
+    title_bar_style.unwrap_or_else(|| get_title_bar_style(configuration_service)) == TitlebarStyle::Native
+}
+
+/// `useNativeFullScreen(configurationService)`.
+pub fn use_native_full_screen(configuration_service: &dyn IConfigurationService) -> bool {
+    let window_config = configuration_service.get_value(Some("window"), None);
+    let Dynamic::Bool(native_full_screen) = window_config.get_str("nativeFullScreen") else {
+        return true; // default
+    };
+    if !window_config.is_truthy() {
+        return true; // default
+    }
+
+    if window_config.get_str("nativeTabs").is_truthy() {
+        return true; // https://github.com/electron/electron/issues/16142
+    }
+
+    native_full_screen
 }
 
 /// `IAgentsWindowDraft`.

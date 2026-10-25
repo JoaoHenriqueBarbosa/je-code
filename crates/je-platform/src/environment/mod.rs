@@ -13,6 +13,7 @@ pub mod argv;
 pub mod argv_helper;
 #[allow(clippy::module_inception)] // `environment.rs` é o porte de `environment.ts`, como no original
 pub mod environment;
+pub mod environment_main_service;
 pub mod environment_service;
 pub mod minimist;
 pub mod native;
