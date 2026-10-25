@@ -102,6 +102,12 @@ pub fn head_text(root: &Path, path: &str) -> Option<String> {
     git(root, &["show", &format!("HEAD:{path}")]).ok()
 }
 
+/// O conteúdo de `path` (relativo à raiz) no índice (a área de stage), para o diff da árvore de trabalho; `None` se o
+/// arquivo não está no índice.
+pub fn index_text(root: &Path, path: &str) -> Option<String> {
+    git(root, &["show", &format!(":{path}")]).ok()
+}
+
 /// O histórico de um arquivo para a Timeline: assunto e data relativa dos últimos 50 commits que o tocaram.
 pub fn file_history(root: &Path, path: &Path) -> Vec<(String, String)> {
     let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/");

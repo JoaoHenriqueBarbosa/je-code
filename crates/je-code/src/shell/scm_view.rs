@@ -200,8 +200,8 @@ impl ScmView {
             let queue = queue.clone();
             move |event| {
                 for entry in event.elements.iter().flatten() {
-                    if let Entry::File(_, path) = entry {
-                        queue.borrow_mut().push(Command::ScmOpen(path.clone()));
+                    if let Entry::File(group, path) = entry {
+                        queue.borrow_mut().push(Command::ScmOpenChanges(*group, path.clone()));
                     }
                 }
             }

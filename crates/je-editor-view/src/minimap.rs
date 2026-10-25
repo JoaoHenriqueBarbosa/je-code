@@ -121,6 +121,10 @@ impl EditorView {
     }
 
     pub(crate) fn paint_scrollbar(&mut self, list: &mut DisplayList, origin: (f64, f64), scale: f64) {
+        // Dentro do editor de diff a janela de visão da régua faz o papel do botão da barra.
+        if self.embedded {
+            return;
+        }
         let (top, size) = self.scrollbar_slider();
         let left = self.layout.width - crate::layout::ViewLayout::SCROLLBAR_WIDTH;
         let device = |x: f64, y: f64| (((origin.0 + x) * scale).round(), ((origin.1 + y) * scale).round());

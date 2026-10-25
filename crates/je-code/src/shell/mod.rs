@@ -12,7 +12,7 @@ mod file_icons;
 mod find;
 mod menus;
 mod search_backend;
-mod scm_view;
+pub mod scm_view;
 mod search_view;
 mod excludes;
 mod extensions_view;
@@ -35,7 +35,7 @@ use je_editor::model::EndOfLinePreference;
 use je_editor::text_model::{TextModel, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
 use je_editor_view::environment::find_builtin_extensions;
-use je_editor_view::{EditorColors, EditorEnvironment, EditorKey, EditorView, GutterChange, GutterKind};
+use je_editor_view::{DiffColors, DiffEditor, EditorColors, EditorEnvironment, EditorKey, EditorView, GutterChange, GutterKind, Side};
 use je_render::kurbo::{Rect, RoundedRect, RoundedRectRadii};
 use je_render::{DisplayList, Rgba, Shape};
 use je_theme::ColorTheme;
@@ -249,6 +249,8 @@ pub enum Command {
     ScmCommit,
     ScmRefresh,
     ScmOpen(String),
+    /// Clicar num arquivo da vista Source Control: abre o diff dele (o arquivo, se não há o que comparar).
+    ScmOpenChanges(scm_view::Group, String),
     ScmContextMenu(scm_view::Entry),
     ScmMoreMenu,
     ScmOp(git::Operation),
@@ -332,11 +334,97 @@ pub struct OpenEditor {
     /// A aba de pré-visualização (`workbench.editor.enablePreview`): título em itálico, trocada pela próxima
     /// aberta do mesmo jeito; editar o texto ou clicar duas vezes a fixa.
     preview: bool,
+    /// O editor de diff lado a lado quando a aba compara o arquivo com a versão do git; o `view` é o modificado.
+    diff: Option<DiffEditor>,
 }
 
 impl OpenEditor {
     pub fn is_modified(&self) -> bool {
         self.view.model().get_alternative_version_id() != self.saved_version
+    }
+
+    /// O editor de diff da aba, se ela compara o arquivo com o git.
+    #[cfg(test)]
+    pub fn diff(&self) -> Option<&DiffEditor> {
+        self.diff.as_ref()
+    }
+
+    /// Ajusta o editor (e o diff, se for o caso) à área `width` x `height`.
+    fn resize(&mut self, width: f64, height: f64) {
+        match &mut self.diff {
+            Some(diff) => diff.resize(&mut self.view, width, height),
+            None => self.view.resize(width, height),
+        }
+    }
+
+    fn paint(&mut self, list: &mut DisplayList, origin: (f64, f64), scale: f64, now: Instant) {
+        match &mut self.diff {
+            Some(diff) => diff.paint(&mut self.view, list, origin, scale, now),
+            None => self.view.paint(list, origin, scale, now),
+        }
+    }
+
+    fn mouse_down(&mut self, x: f64, y: f64, input: &PointerInput) {
+        match &mut self.diff {
+            Some(diff) => diff.mouse_down(&mut self.view, x, y, input.button, input.click_count, input.modifiers),
+            None => self.view.mouse_down(x, y, input.button, input.click_count, input.modifiers),
+        }
+    }
+
+    fn mouse_drag(&mut self, x: f64, y: f64) {
+        match &mut self.diff {
+            Some(diff) => diff.mouse_drag(&mut self.view, x, y),
+            None => self.view.mouse_drag(x, y),
+        }
+    }
+
+    fn mouse_up(&mut self) {
+        match &mut self.diff {
+            Some(diff) => diff.mouse_up(&mut self.view),
+            None => self.view.mouse_up(),
+        }
+    }
+
+    fn mouse_move(&mut self, x: f64, y: f64) {
+        match &mut self.diff {
+            Some(diff) => diff.mouse_move(&mut self.view, x, y),
+            None => self.view.mouse_move(x, y),
+        }
+    }
+
+    fn scroll_by(&mut self, x: f64, dx: f64, dy: f64) {
+        match &mut self.diff {
+            Some(diff) => diff.scroll_by(&mut self.view, x, dx, dy),
+            None => self.view.scroll_by(dx, dy),
+        }
+    }
+
+    fn key_down(&mut self, key: EditorKey, mods: Modifiers) -> bool {
+        match &mut self.diff {
+            Some(diff) => diff.key_down(&mut self.view, key, mods),
+            None => self.view.key_down(key, mods),
+        }
+    }
+
+    fn type_text(&mut self, text: &str) {
+        match &mut self.diff {
+            Some(diff) => diff.type_text(&mut self.view, text),
+            None => self.view.type_text(text),
+        }
+    }
+
+    /// A view que recebe desfazer e a área de transferência: o lado focado do diff, ou o próprio editor.
+    fn focused_view_mut(&mut self) -> &mut EditorView {
+        match &mut self.diff {
+            Some(diff) if diff.focused_side() == Side::Original => diff.original_mut(),
+            _ => &mut self.view,
+        }
+    }
+
+    /// O próximo comando de atalho do `keybindings.json` que não é do editor, do lado que recebeu a tecla.
+    fn take_workbench_command(&mut self) -> Option<(String, je_base::dynamic::Dynamic)> {
+        let diff = self.diff.as_mut().map(DiffEditor::original_mut);
+        self.view.take_workbench_command().or_else(|| diff.and_then(EditorView::take_workbench_command))
     }
 }
 
@@ -658,10 +746,17 @@ impl Shell {
         self.theme_file = (path.to_path_buf(), ui_theme.to_owned());
         let colors = EditorColors::from_theme(&self.theme);
         let token_colors = self.environment.as_ref().map(|env| env.color_map());
+        let diff_colors = DiffColors::from_theme(&self.theme);
         for editor in self.all_editors_mut() {
-            editor.view.set_colors(colors.clone());
+            match &mut editor.diff {
+                Some(diff) => diff.set_colors(&mut editor.view, colors.clone(), diff_colors.clone()),
+                None => editor.view.set_colors(colors.clone()),
+            }
             if let Some(map) = &token_colors {
                 editor.view.set_token_colors(map);
+                if let Some(diff) = &mut editor.diff {
+                    diff.set_token_colors(map);
+                }
             }
         }
         self.terminal_palette = terminal_panel::palette(&self.theme);
@@ -769,7 +864,7 @@ impl Shell {
         let saved_version = model.get_alternative_version_id();
         let index = self.active.map_or(self.editors.len(), |i| i + 1);
         let needs_head = path.is_some();
-        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None, preview: false });
+        self.editors.insert(index, OpenEditor { path, name, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: None, preview: false, diff: None });
         if needs_head {
             self.reload_heads();
         }
@@ -778,7 +873,7 @@ impl Shell {
 
     /// Abre `path` numa aba (ou ativa a aba que já o mostra).
     pub fn open_file(&mut self, path: &Path) -> Result<(), String> {
-        if let Some(index) = self.editors.iter().position(|e| e.path.as_deref() == Some(path)) {
+        if let Some(index) = self.editors.iter().position(|e| e.diff.is_none() && e.path.as_deref() == Some(path)) {
             self.activate(index);
             return Ok(());
         }
@@ -807,6 +902,71 @@ impl Shell {
         Ok(())
     }
 
+    /// O editor de diff do `original` contra o `modified` (o modelo da aba), nas medidas e cores do shell.
+    fn new_diff(&self, original: Rc<TextModel>, modified: &mut EditorView) -> DiffEditor {
+        let rect = self.editor_rect();
+        let mut diff = DiffEditor::new(original, modified, rect.width(), rect.height(), EditorColors::from_theme(&self.theme), DiffColors::from_theme(&self.theme));
+        if let Some(env) = &self.environment {
+            diff.set_token_colors(&env.color_map());
+        }
+        diff.original_mut().apply_configuration(&themes::user_settings());
+        diff
+    }
+
+    /// Abre o diff de um arquivo da vista Source Control: a árvore de trabalho contra o índice (`arquivo (Working Tree)`,
+    /// o lado direito é o arquivo, editável) ou o índice contra o HEAD (`arquivo (Index)`, somente leitura). Os arquivos
+    /// sem o que comparar (novos e em conflito) abrem como arquivo.
+    fn open_changes(&mut self, group: scm_view::Group, relative: &str) {
+        let Some(root) = self.git_root.clone() else { return };
+        let full = root.join(relative);
+        let staged = group == scm_view::Group::Staged;
+        let kind = self.scm.changes_of(group).into_iter().find(|c| c.path == relative).map(|c| c.kind);
+        if matches!(kind, Some(git::Kind::Untracked | git::Kind::Conflict)) || (!staged && !full.is_file()) {
+            if full.is_file() {
+                let _ = self.open_file(&full);
+            }
+            return;
+        }
+        let file_name = full.file_name().map_or_else(|| relative.to_owned(), |n| n.to_string_lossy().into_owned());
+        let title = format!("{file_name} ({})", if staged { "Index" } else { "Working Tree" });
+        if let Some(index) = self.editors.iter().position(|e| e.diff.is_some() && e.name == title && (staged || e.path.as_deref() == Some(full.as_path()))) {
+            self.activate(index);
+            return;
+        }
+        let index_text = git::index_text(&root, relative);
+        let (original_text, modified_text) = if staged {
+            (git::head_text(&root, relative).unwrap_or_default(), index_text.unwrap_or_default())
+        } else {
+            let Ok(bytes) = std::fs::read(&full) else { return };
+            (index_text.or_else(|| git::head_text(&root, relative)).unwrap_or_default(), String::from_utf8_lossy(&bytes).into_owned())
+        };
+        // O arquivo já aberto empresta o modelo: o diff e a aba comum editam o mesmo texto.
+        let shared = (!staged).then(|| self.editors.iter().find(|e| e.diff.is_none() && e.path.as_deref() == Some(full.as_path()))).flatten().map(|e| (e.view.model().clone(), e.language_name.clone(), e.saved_version));
+        let (model, language_name, saved_version) = match shared {
+            Some(shared) => shared,
+            None => {
+                let (model, language_name) = self.model_for(&file_name, &modified_text.replace("\r\n", "\n"));
+                let version = model.get_alternative_version_id();
+                (model, language_name, version)
+            }
+        };
+        let (original, _) = self.model_for(&file_name, &original_text);
+        let rect = self.editor_rect();
+        let mut view = EditorView::new(model, rect.width(), rect.height(), EditorColors::from_theme(&self.theme));
+        if let Some(env) = &self.environment {
+            view.set_token_colors(&env.color_map());
+        }
+        view.apply_configuration(&themes::user_settings());
+        if staged {
+            view.set_read_only(true);
+        }
+        let diff = self.new_diff(original, &mut view);
+        let editor = OpenEditor { path: (!staged).then(|| full.clone()), name: title, language_name, view, saved_version, head: None, diff_version: -1, disk_mtime: (!staged).then(|| Self::mtime(&full)).flatten(), preview: false, diff: Some(diff) };
+        let position = self.active.map_or(self.editors.len(), |i| i + 1);
+        self.editors.insert(position, editor);
+        self.activate(position);
+    }
+
     fn new_untitled(&mut self) {
         let n = (1..).find(|n| !self.editors.iter().any(|e| e.path.is_none() && e.name == format!("Untitled-{n}"))).unwrap_or(1);
         self.push_editor(None, format!("Untitled-{n}"), "");
@@ -819,7 +979,7 @@ impl Shell {
         self.active = Some(index);
         let rect = self.editor_rect();
         let editor = &mut self.editors[index];
-        editor.view.resize(rect.width(), rect.height());
+        editor.resize(rect.width(), rect.height());
         editor.view.set_focus(true);
         editor.view.mark_dirty();
         if let Some(explorer) = &self.explorer {
@@ -1002,6 +1162,10 @@ impl Shell {
 
     fn save(&mut self, index: usize) {
         let editor = &mut self.editors[index];
+        if editor.diff.is_some() && editor.path.is_none() {
+            // O lado do índice é somente leitura: não há arquivo para gravar.
+            return;
+        }
         let Some(path) = editor.path.clone() else {
             // Sem arquivo ainda: o Save vira o Save As.
             self.open_prompt(PromptAction::SaveAs(index));
@@ -1039,6 +1203,7 @@ impl Shell {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let name = self.editors[index].name.clone();
+                let diff_original = self.editors[index].diff.as_ref().map(|d| d.original().model().clone());
                 let (model, language_name) = self.model_for(&name, &String::from_utf8_lossy(&bytes));
                 let rect = self.editor_rect();
                 let mut view = EditorView::new(model.clone(), rect.width(), rect.height(), EditorColors::from_theme(&self.theme));
@@ -1046,7 +1211,8 @@ impl Shell {
                     view.set_token_colors(&env.color_map());
                 }
                 view.apply_configuration(&themes::user_settings());
-                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None, preview: false };
+                let diff = diff_original.map(|original| self.new_diff(original, &mut view));
+                self.editors[index] = OpenEditor { path: Some(path), name, language_name, view, saved_version: model.get_alternative_version_id(), head: None, diff_version: -1, disk_mtime: None, preview: false, diff };
                 self.activate(index);
             }
             Err(e) => self.notify(Severity::Error, format!("falha ao reverter: {e}")),
@@ -1191,7 +1357,7 @@ impl Shell {
             }
             Command::Undo | Command::Redo | Command::Cut | Command::Copy | Command::Paste | Command::SelectAll => {
                 if let Some(editor) = self.active_editor_mut() {
-                    let view = &mut editor.view;
+                    let view = editor.focused_view_mut();
                     match command {
                         Command::Undo => view.undo(),
                         Command::Redo => view.redo(),
@@ -1393,6 +1559,7 @@ impl Shell {
                     }
                 }
             }
+            Command::ScmOpenChanges(group, path) => self.open_changes(group, &path),
             Command::ScmContextMenu(entry) => self.scm_menu(entry),
             Command::ScmMoreMenu => {
                 // O `...` da vista Source Control: as operações com o remoto.
@@ -1797,6 +1964,10 @@ impl Shell {
     fn update_gutter_diff(&mut self) {
         use je_editor::diff::lines_diff_computer::{ILinesDiffComputer, LinesDiffComputerOptions};
         let Some(editor) = self.active.map(|i| &mut self.editors[i]) else { return };
+        // O editor de diff mostra as próprias mudanças, sem as barras da margem.
+        if editor.diff.is_some() {
+            return;
+        }
         let version = editor.view.model().get_version_id();
         if editor.diff_version == version {
             return;
@@ -1848,6 +2019,9 @@ impl Shell {
         // As configurações do editor (`editor.*`, `files.*` e os blocos de linguagem) e os atalhos do usuário.
         for editor in &mut self.editors {
             editor.view.apply_configuration(&settings);
+            if let Some(diff) = &mut editor.diff {
+                diff.original_mut().apply_configuration(&settings);
+            }
         }
         if let Some(text) = themes::user_data_dir().and_then(|d| std::fs::read_to_string(d.join("User/keybindings.json")).ok())
             && let Err(e) = je_editor_view::set_user_keybindings(&text)
@@ -2517,7 +2691,7 @@ impl Shell {
     fn resize_editors(&mut self) {
         let rect = self.editor_rect();
         for editor in &mut self.editors {
-            editor.view.resize(rect.width(), rect.height());
+            editor.resize(rect.width(), rect.height());
         }
         self.needs_render = true;
     }
@@ -2621,7 +2795,8 @@ impl Shell {
         if let Some(env) = &self.environment {
             view.set_token_colors(&env.color_map());
         }
-        let copy = OpenEditor { path: editor.path.clone(), name: editor.name.clone(), language_name: editor.language_name.clone(), view, saved_version: editor.saved_version, head: editor.head.clone(), diff_version: -1, disk_mtime: editor.disk_mtime, preview: false };
+        let diff = editor.diff.as_ref().map(|d| d.original().model().clone()).map(|original| self.new_diff(original, &mut view));
+        let copy = OpenEditor { path: editor.path.clone(), name: editor.name.clone(), language_name: editor.language_name.clone(), view, saved_version: editor.saved_version, head: editor.head.clone(), diff_version: -1, disk_mtime: editor.disk_mtime, preview: false, diff };
         self.groups.insert(self.group_index + 1, Some(Group { editors: vec![copy], active: Some(0) }));
         self.focus_group(self.group_index + 1);
         self.resize_editors();
@@ -3708,16 +3883,16 @@ impl Shell {
         let editor = self.active.map(|i| &mut self.editors[i]);
         let mut editor = editor;
         if let Some(e) = editor.as_deref_mut() {
-            e.view.resize(rect.width(), rect.height());
+            e.resize(rect.width(), rect.height());
         }
         let (terminal, palette, terminal_focused) = (&self.terminal, &self.terminal_palette, self.terminal_focused);
         let groups = &mut self.groups;
         tree.paint_hosted(list, scale, &mut |surface, area, list| {
             if surface >= 100 {
                 // O editor ativo de um grupo fora de foco, sem cursor piscando.
-                let Some(view) = groups.get_mut((surface - 100) as usize).and_then(Option::as_mut).and_then(|g| g.active.and_then(|a| g.editors.get_mut(a))).map(|e| &mut e.view) else { return };
+                let Some(view) = groups.get_mut((surface - 100) as usize).and_then(Option::as_mut).and_then(|g| g.active.and_then(|a| g.editors.get_mut(a))) else { return };
                 view.resize(area.width(), area.height());
-                view.set_focus(false);
+                view.view.set_focus(false);
                 let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
                 list.push_clip(Shape::RoundedRect(RoundedRect::from_rect(device, RoundedRectRadii::new(0.0, 0.0, 7.0 * scale, 7.0 * scale))));
                 view.paint(list, (area.x0, area.y0), scale, now);
@@ -3738,7 +3913,7 @@ impl Shell {
             let device = Rect::new(area.x0 * scale, area.y0 * scale, area.x1 * scale, area.y1 * scale);
             let radii = RoundedRectRadii::new(0.0, 0.0, 7.0 * scale, 7.0 * scale);
             list.push_clip(Shape::RoundedRect(RoundedRect::from_rect(device, radii)));
-            e.view.paint(list, (area.x0, area.y0), scale, now);
+            e.paint(list, (area.x0, area.y0), scale, now);
             list.pop_clip();
         });
         let _ = host;
@@ -3810,8 +3985,8 @@ impl Shell {
             let rect = self.editor_rect();
             if let Some(editor) = self.active_editor_mut() {
                 match input.kind {
-                    PointerInputKind::Move => editor.view.mouse_drag(x - rect.x0, y - rect.y0),
-                    PointerInputKind::Up => editor.view.mouse_up(),
+                    PointerInputKind::Move => editor.mouse_drag(x - rect.x0, y - rect.y0),
+                    PointerInputKind::Up => editor.mouse_up(),
                     PointerInputKind::Down => {}
                 }
             }
@@ -3850,7 +4025,7 @@ impl Shell {
             let local = self.editor_local(x, y);
             if let Some(editor) = self.active_editor_mut() {
                 let (lx, ly) = local.unwrap_or((-1.0, -1.0));
-                editor.view.mouse_move(lx, ly);
+                editor.mouse_move(lx, ly);
             }
         }
         let target = self.ui.pointer_input(input);
@@ -3864,7 +4039,7 @@ impl Shell {
                 && let Some(editor) = self.active_editor_mut()
             {
                 editor.view.set_focus(true);
-                editor.view.mouse_down(lx, ly, input.button, input.click_count, input.modifiers);
+                editor.mouse_down(lx, ly, &input);
                 self.editor_drag = true;
             }
         }
@@ -3907,10 +4082,10 @@ impl Shell {
             }
             return;
         }
-        if self.editor_local(x, y).is_some()
+        if let Some((local_x, _)) = self.editor_local(x, y)
             && let Some(editor) = self.active_editor_mut()
         {
-            editor.view.scroll_by(dx, dy);
+            editor.scroll_by(local_x, dx, dy);
         }
     }
 
@@ -4150,10 +4325,10 @@ impl Shell {
         }
         let Some(editor) = self.active_editor_mut() else { return };
         if let Some(key) = editor_key {
-            editor.view.key_down(key, mods);
+            editor.key_down(key, mods);
             // Os atalhos do `keybindings.json` que apontam para comandos do workbench ficam na fila do editor.
             let mut commands = Vec::new();
-            while let Some((id, _args)) = editor.view.take_workbench_command() {
+            while let Some((id, _args)) = editor.take_workbench_command() {
                 commands.extend(Self::command_of_id(&id));
             }
             for command in commands {
@@ -4165,7 +4340,7 @@ impl Shell {
         if (!ctrl || mods.alt)
             && let Some(text) = text
         {
-            editor.view.type_text(text);
+            editor.type_text(text);
         }
     }
 

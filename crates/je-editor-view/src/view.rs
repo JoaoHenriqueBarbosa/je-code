@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use je_base::dynamic::Dynamic;
 use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
 use je_base::runtime;
 use je_base::scrollable::{INewScrollDimensions, INewScrollPosition, IScrollableOptions, Scrollable};
@@ -102,6 +103,32 @@ pub struct GutterChange {
     pub kind: GutterKind,
 }
 
+/// O sinal da margem de uma decoração de linhas (o `linesDecorationsClassName` do diff: `+` e `-`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineSign {
+    Add,
+    Remove,
+}
+
+/// Uma decoração de linhas inteiras (`isWholeLine`): o fundo cobre da área do texto até a borda direita da view,
+/// a margem leva `margin_background` (o `marginClassName`) e `sign` desenha o `+` ou `-` das decorações de linha.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineDecoration {
+    pub start_line: i32,
+    pub end_line: i32,
+    pub background: Rgba,
+    pub margin_background: Option<Rgba>,
+    pub sign: Option<LineSign>,
+}
+
+/// Uma decoração de trecho (`className` com fundo): a quebra de linha no meio do trecho também é preenchida
+/// (`shouldFillLineOnLineBreak`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RangeDecoration {
+    pub range: Range,
+    pub background: Rgba,
+}
+
 /// O último casamento de colchetes: a posição e a versão do modelo para as quais valeu, e o resultado.
 type BracketMatchCache = ((Position, i64), Option<(Range, Range)>);
 
@@ -156,6 +183,16 @@ pub struct EditorView {
     /// As ocorrências da busca (o widget de busca do shell) e o índice da atual.
     /// As barras de diff da margem (o `quickDiff` do SCM): linhas e tipo.
     gutter_changes: Vec<GutterChange>,
+    /// As decorações de linhas e de trechos do editor de diff, e a cor do hachurado dos espaços entre linhas.
+    line_decorations: Vec<LineDecoration>,
+    range_decorations: Vec<RangeDecoration>,
+    zone_fill: Option<Rgba>,
+    /// Somente leitura (o lado original do diff): vai como a opção `readOnly` do widget.
+    read_only: bool,
+    /// Dentro de outro widget (o editor de diff): sem minimapa.
+    pub(crate) embedded: bool,
+    /// O último `set_focus` pedido pelo dono da view.
+    pub(crate) focus_requested: bool,
     pub(crate) find_matches: Vec<Range>,
     find_current: Option<usize>,
     /// As configurações do usuário em vigor (as do `settings.json`, resolvidas para a linguagem do modelo).
@@ -259,6 +296,12 @@ impl EditorView {
             hover_margin: false,
             bracket_match: RefCell::new(None),
             gutter_changes: Vec::new(),
+            line_decorations: Vec::new(),
+            range_decorations: Vec::new(),
+            zone_fill: None,
+            read_only: false,
+            embedded: false,
+            focus_requested: true,
             find_matches: Vec::new(),
             find_current: None,
             settings: crate::settings::EditorSettings::default(),
@@ -301,10 +344,15 @@ impl EditorView {
             self.max_line_width = 0.0;
         }
         self.layout.show_line_numbers = s.line_numbers != crate::settings::LineNumbers::Off;
-        self.layout.minimap_enabled = s.minimap;
+        self.layout.minimap_enabled = s.minimap && !self.embedded;
         // As chaves que saíram do `settings.json` voltam ao padrão (`undefined` no `applyUpdate`).
         let removed: Vec<String> = previous.editor_keys().filter(|k| !self.settings.editor_keys().any(|n| n == *k)).cloned().collect();
         let options = self.settings.editor_options(&removed);
+        if self.read_only
+            && let Dynamic::Object(object) = &options
+        {
+            object.set(&je_base::JsString::from("readOnly"), Dynamic::Bool(true));
+        }
         let wrap = self.settings.word_wrap;
         self.core.update_options(&self.metrics, &options);
         self.word_wrap = wrap;
@@ -351,6 +399,51 @@ impl EditorView {
     pub fn set_gutter_changes(&mut self, changes: Vec<GutterChange>) {
         if self.gutter_changes != changes {
             self.gutter_changes = changes;
+            self.mark_dirty();
+        }
+    }
+
+    /// As decorações de linhas inteiras, em linhas do modelo.
+    pub fn set_line_decorations(&mut self, decorations: Vec<LineDecoration>) {
+        if self.line_decorations != decorations {
+            self.line_decorations = decorations;
+            self.mark_dirty();
+        }
+    }
+
+    /// As decorações de trechos, em posições do modelo.
+    pub fn set_range_decorations(&mut self, decorations: Vec<RangeDecoration>) {
+        if self.range_decorations != decorations {
+            self.range_decorations = decorations;
+            self.mark_dirty();
+        }
+    }
+
+    /// Os espaços entre linhas (em linhas do modelo, sem quebra nem dobra) e a cor do hachurado que os preenche.
+    pub fn set_zones(&mut self, zones: Vec<crate::layout::ViewZone>, fill: Option<Rgba>) {
+        let changed = self.layout.zones().ne(zones.iter().copied()) || self.zone_fill != fill;
+        if changed {
+            self.layout.set_zones(zones);
+            self.zone_fill = fill;
+            self.mark_dirty();
+        }
+    }
+
+    /// Liga o modo somente leitura (as edições do usuário não valem, o cursor e a seleção seguem).
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
+            let value = Dynamic::object([("readOnly", Dynamic::Bool(read_only))]);
+            self.core.update_options(&self.metrics, &value);
+        }
+    }
+
+    /// Marca a view como parte de outro widget: sem minimapa.
+    pub fn set_embedded(&mut self, embedded: bool) {
+        if self.embedded != embedded {
+            self.embedded = embedded;
+            self.layout.minimap_enabled = self.settings.minimap && !embedded;
+            self.layout.decorations_width = if embedded { 16.0 } else { crate::layout::LINE_DECORATIONS_WIDTH };
             self.mark_dirty();
         }
     }
@@ -404,7 +497,14 @@ impl EditorView {
         self.shared.dirty.set(true);
     }
 
+    /// O foco que o dono da view pediu (o shell): no editor de diff o lado focado é quem fica com ele.
     pub fn set_focus(&mut self, focused: bool) {
+        self.focus_requested = focused;
+        self.apply_focus(focused);
+    }
+
+    /// O foco de fato (cursor piscando e seleção ativa), sem mexer no pedido do dono.
+    pub(crate) fn apply_focus(&mut self, focused: bool) {
         if self.focused != focused {
             self.focused = focused;
             self.core.set_focus(focused);
@@ -884,6 +984,55 @@ impl EditorView {
             }
         }
 
+        // 2c. O fundo das linhas e dos trechos do editor de diff e o hachurado dos espaços entre linhas. O fundo vai até a
+        // borda direita da view (passa por baixo da barra de rolagem), fora do recorte do texto.
+        if !self.line_decorations.is_empty() || !self.range_decorations.is_empty() || self.zone_fill.is_some() {
+            list.pop_clip();
+            list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, view_width, view_height)));
+            let model_lines = self.model.get_line_count();
+            for d in self.line_decorations.clone() {
+                let (start, end) = (d.start_line.clamp(1, model_lines), d.end_line.clamp(1, model_lines));
+                let view_start = self.to_view(Position::new(start, 1)).line_number.max(first);
+                let view_end = self.to_view(Position::new(end, self.model.get_line_max_column(end))).line_number.min(last);
+                if view_start <= view_end {
+                    let (top, bottom) = (self.layout.line_top(view_start, scroll_top), self.layout.line_top(view_end, scroll_top) + lh);
+                    list.fill_rect(rect(content_left, top, view_width, bottom), d.background);
+                }
+            }
+            for d in self.range_decorations.clone() {
+                let range = self.to_view_range(d.range);
+                for l in range.start_line_number.max(first)..=range.end_line_number.min(last) {
+                    let layout = &laid_out[(l - first) as usize].1;
+                    let start_col = if l == range.start_line_number { range.start_column } else { layout.min_column };
+                    let end_col = if l == range.end_line_number { range.end_column } else { layout.units.len() as i32 + 1 };
+                    let x0 = content_left + self.column_x_in(layout, start_col) - scroll_left;
+                    let mut x1 = content_left + self.column_x_in(layout, end_col) - scroll_left;
+                    if l < range.end_line_number && !layout.continues {
+                        // A quebra de linha dentro do trecho preenche o resto da linha até a borda da view
+                        // (`shouldFillLineOnLineBreak`).
+                        x1 = view_width;
+                    }
+                    if x1 > x0 {
+                        let top = self.layout.line_top(l, scroll_top);
+                        list.fill_rect(rect(x0, top, x1, top + lh), d.background);
+                    }
+                }
+            }
+            if let Some(fill) = self.zone_fill {
+                for (top, height) in self.layout.zone_spans() {
+                    let y0 = top - scroll_top;
+                    if y0 + height >= 0.0 && y0 <= view_height {
+                        // Só a parte visível do espaço vira geometria; a fase é a do canto dele.
+                        let visible = rect(content_left, y0.max(0.0), view_width, (y0 + height).min(view_height));
+                        let corner = rect(content_left - scroll_left, y0, content_left - scroll_left, y0);
+                        paint_hatch(list, visible, (corner.x0, corner.y0), fill, scale);
+                    }
+                }
+            }
+            list.pop_clip();
+            list.push_clip(je_render::Shape::Rect(rect(content_left, 0.0, text_right, view_height)));
+        }
+
         // 3. Colchetes casando.
         if let Some((a, b)) = self.bracket_match() {
             for r in [self.to_view_range(a), self.to_view_range(b)] {
@@ -1064,6 +1213,36 @@ impl EditorView {
             let baseline = text_baseline(top_dev, lh * scale, &line);
             line.paint(list, x_dev, (baseline - f64::from(line.baseline)) as f32, color);
         }
+        // As decorações de linhas do editor de diff na margem: o fundo da margem (`marginClassName`) e o `+`/`-` na
+        // coluna das decorações (11 px, 70% de opacidade, alinhado à esquerda dela).
+        if !self.line_decorations.is_empty() {
+            let model_lines = self.model.get_line_count();
+            let sign_px = (11.0 * scale) as f32;
+            for d in self.line_decorations.clone() {
+                let (start, end) = (d.start_line.clamp(1, model_lines), d.end_line.clamp(1, model_lines));
+                let view_start = self.to_view(Position::new(start, 1)).line_number.max(first);
+                let view_end = self.to_view(Position::new(end, self.model.get_line_max_column(end))).line_number.min(last);
+                if let Some(background) = d.margin_background
+                    && view_start <= view_end
+                {
+                    let (top, bottom) = (self.layout.line_top(view_start, scroll_top), self.layout.line_top(view_end, scroll_top) + lh);
+                    list.fill_rect(rect(0.0, top, content_left, bottom), background);
+                }
+                let Some(sign) = d.sign else { continue };
+                let id = if sign == LineSign::Add { "add" } else { "remove" };
+                let Some(glyph) = with_text_system(|t| t.codicon(id, sign_px)) else { continue };
+                let color = Rgba { a: (f32::from(colors.line_number.a) * 0.7).round() as u8, ..colors.line_number };
+                for (l, layout) in &laid_out {
+                    if !layout.first || layout.model_line < start || layout.model_line > end {
+                        continue;
+                    }
+                    let top = self.layout.line_top(*l, scroll_top);
+                    let x = (origin.0 + ln_left + ln_width) * scale;
+                    let y = (origin.1 + top) * scale + (lh * scale - f64::from(glyph.line_height)) / 2.0;
+                    glyph.paint(list, x.round() as f32, y.round() as f32, color);
+                }
+            }
+        }
         // As barras do diff contra o HEAD: 3 px de largura, 5 px à direita da margem dos números.
         let bar_left = ln_left + ln_width + 5.0;
         let model_lines = self.model.get_line_count();
@@ -1129,6 +1308,49 @@ impl EditorView {
         self.paint_overview_ruler(list, origin, scale);
         list.pop_clip();
     }
+}
+
+/// O hachurado dos espaços entre linhas do editor de diff (`.diagonal-fill`): o gradiente de -45 graus em ladrilhos
+/// de 8 px vira listras de 2 px na direção `/`, uma a cada 8 px na horizontal. No oráculo o pixel `(x, y)` é da listra
+/// quando `(x - x0) + (y - y0)` módulo 8 cai em 6 ou 7, com `(x0, y0)` o canto do espaço (o `x0` é o início do
+/// conteúdo). `area` é a parte visível do espaço em px de dispositivo, `phase` o canto do espaço e `scale` o fator de
+/// escala; as bordas caem no pixel (sem suavização), como a imagem do gradiente do Chromium.
+fn paint_hatch(list: &mut DisplayList, area: Rect, phase: (f64, f64), color: Rgba, scale: f64) {
+    use je_render::kurbo::BezPath;
+    let period = (8.0 * scale).round().max(4.0);
+    let (from, width) = (period * 0.75, period * 0.25);
+    let (x0, x1) = (area.x0.round(), area.x1.round());
+    let (y0, y1) = (area.y0.round(), area.y1.round());
+    let rows = (y1 - y0).max(0.0) as usize;
+    if rows == 0 || x1 <= x0 {
+        return;
+    }
+    // Para cada listra, a escada: na linha `v` (do topo do espaço) ela cobre `u` de `k * período + from - v` até
+    // `+ width`, com `u` contado desde `phase.0`.
+    let top_v = y0 - phase.1.round();
+    let (first, last) = (((x0 - phase.0.round() + top_v - from - width) / period).floor() as i64, ((x1 - phase.0.round() + top_v + rows as f64 - from) / period).ceil() as i64);
+    let origin_x = phase.0.round();
+    let mut path = BezPath::new();
+    for k in first..=last {
+        let base = origin_x + k as f64 * period + from;
+        // O lado esquerdo desce da linha de cima para a de baixo, o direito sobe de volta.
+        let left = |row: usize| base - (top_v + row as f64);
+        path.move_to((left(0), y0));
+        for row in 0..rows {
+            path.line_to((left(row), y0 + row as f64 + 1.0));
+            path.line_to((left(row + 1), y0 + row as f64 + 1.0));
+        }
+        path.line_to((left(rows) + width, y1));
+        for row in (0..rows).rev() {
+            path.line_to((left(row + 1) + width, y0 + row as f64 + 1.0));
+            path.line_to((left(row) + width, y0 + row as f64 + 1.0));
+            path.line_to((left(row) + width, y0 + row as f64));
+        }
+        path.close_path();
+    }
+    list.push_clip(je_render::Shape::Rect(Rect::new(x0, y0, x1, y1)));
+    list.fill(je_render::Shape::Path(path), color);
+    list.pop_clip();
 }
 
 /// As colunas (1) dos espaços e tabulações a desenhar numa linha da view (`_applyRenderWhitespace`): `units` é o
