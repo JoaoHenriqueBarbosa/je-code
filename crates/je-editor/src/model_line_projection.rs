@@ -672,6 +672,7 @@ mod tests {
             inline_class_name_affects_letter_spacing: false,
             width_in_em: None,
             cursor_stops: None,
+            ..InjectedTextOptions::default()
         }
     }
 

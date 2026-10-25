@@ -176,6 +176,7 @@ pub fn normalize_injected_text_options(options: &InjectedTextOptions) -> Rc<Inje
         inline_class_name_affects_letter_spacing: options.inline_class_name_affects_letter_spacing,
         width_in_em: options.width_in_em.filter(|width| width.is_finite() && *width >= 0.0),
         cursor_stops: options.cursor_stops,
+        attached_data: options.attached_data.clone(),
     })
 }
 

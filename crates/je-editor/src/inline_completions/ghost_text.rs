@@ -225,6 +225,32 @@ pub enum GhostTextOrReplacement {
     Replacement(GhostTextReplacement),
 }
 
+impl GhostTextOrReplacement {
+    /// `ghostText.lineNumber` de qualquer das duas variantes.
+    pub fn line_number(&self) -> i32 {
+        match self {
+            GhostTextOrReplacement::GhostText(g) => g.line_number,
+            GhostTextOrReplacement::Replacement(r) => r.line_number,
+        }
+    }
+
+    /// `ghostText.parts` de qualquer das duas variantes.
+    pub fn parts(&self) -> &[GhostTextPart] {
+        match self {
+            GhostTextOrReplacement::GhostText(g) => &g.parts,
+            GhostTextOrReplacement::Replacement(r) => &r.parts,
+        }
+    }
+
+    /// `ghostText.isEmpty()` de qualquer das duas variantes.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            GhostTextOrReplacement::GhostText(g) => g.is_empty(),
+            GhostTextOrReplacement::Replacement(r) => r.is_empty(),
+        }
+    }
+}
+
 /// `ghostTextsOrReplacementsEqual`.
 pub fn ghost_texts_or_replacements_equal(
     a: Option<&[GhostTextOrReplacement]>,
