@@ -6,4 +6,6 @@ pub mod explorer_decorations_provider;
 pub mod explorer_view;
 pub mod explorer_viewer;
 pub mod explorer_viewer_data;
+pub mod explorer_viewer_dnd;
+pub mod explorer_viewer_renderer;
 pub mod open_editors_view;

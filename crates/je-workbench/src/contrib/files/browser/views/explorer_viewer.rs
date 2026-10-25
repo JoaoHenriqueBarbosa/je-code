@@ -6,12 +6,16 @@
 //! a decisão de `FileDragAndDrop.handleDragOver` ([`handle_drag_over`]) e o `ICompressedNavigationController` com o
 //! `CompressedNavigationController`.
 //!
-//! Plano (estado após a fatia 2a). FEITO em [`super::explorer_viewer_data`]: `ExplorerDataSource`, `FilesFilter`,
-//! `ExplorerFindProvider` (com `PhantomExplorerItem` por identidade) e `getMatchingDirectoriesFromFiles`. PENDENTE
-//! (fatia 2b): `FilesRenderer` sobre `ResourceLabels` de `labels.rs` (o `IconLabel`/`renderInputBox` dependem do widget de
-//! rótulo e do `InlineEditInputBox`) e o restante do `FileDragAndDrop` (`drop`, `handleExplorerDrop`, `doHandleRootDrop`,
-//! cópia e movimento com `applyBulkEdit`). Fatia 3: `explorerView.ts` inteiro e os 16 casos da suíte `context menu` de
-//! `explorer_view.rs`, que também implementa `ExplorerFindTree` e `ExplorerFindActiveKey` sobre a árvore real.
+//! Plano (estado após a fatia 2b). FEITO em [`super::explorer_viewer_data`]: `ExplorerDataSource`, `FilesFilter`,
+//! `ExplorerFindProvider` (com `PhantomExplorerItem` por identidade) e `getMatchingDirectoriesFromFiles`. FEITO em
+//! [`super::explorer_viewer_renderer`]: `FilesRenderer` (rótulo, edição em linha do nome sobre o `InlineEditInputBox` de
+//! `browser/parts/views`, validação, seleção do nome sem extensão e F2, navegação comprimida, acessibilidade). FEITO em
+//! [`super::explorer_viewer_dnd`]: o restante do `FileDragAndDrop` (`onDragOver`, `onDragStart`, `drop`,
+//! `handleExplorerDrop`, `doHandleRootDrop`, cópia e movimento com confirmação e sobrescrita). PENDENTE: o
+//! `ExternalFileImport`/`BrowserFileUpload` de `fileImportExport.ts` (o drop de arquivos de fora entra como
+//! `ExternalFileDropHandler`). Fatia 3: `explorerView.ts` inteiro e os 16 casos da suíte `context menu` de
+//! `explorer_view.rs`, que também implementa `ExplorerFindTree` e `ExplorerFindActiveKey` sobre a árvore real e liga o
+//! `FilesRenderer`, o `FileDragAndDrop` e o `ExplorerDataSource` à `CompressibleAsyncDataTree`.
 //!
 //! Divergências:
 //! - **DOM.** A UI é nativa: o `templateData` (`container`, `label.onDidRender`) e os `labels: HTMLElement[]` não existem. O
