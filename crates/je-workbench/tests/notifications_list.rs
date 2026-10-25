@@ -5,8 +5,9 @@
 //! - **`ensureNoDisposablesAreLeakedInTestSuite()`.** É o [`LeakGuard`] criado no começo de cada caso (declarado antes de
 //!   tudo, para ser o último a cair); `store.add` vira `guard.add` / `guard.add_rc`. O `teardown` da primeira suíte
 //!   (`setNotificationRowHeight(DEFAULT_NOTIFICATION_ROW_HEIGHT)`) é o `Drop` de [`RowHeightReset`].
-//! - **`suiteSetup` de aquecimento.** Existe só para o JIT e o carregamento de módulos do Chromium não estourarem o tempo do
-//!   primeiro caso; o porte compilado não tem o que aquecer, então ele não existe.
+//! - **`suiteSetup` de aquecimento.** No original ele também cria as ações `static` do `NotificationTemplateRenderer` antes
+//!   do rastreador de vazamentos ligar; [`warm_up_static_actions`] faz o mesmo no começo de cada caso que monta um renderer
+//!   (o rastreador e as `static` são por fio, e cada caso roda no seu).
 //! - **`workbenchInstantiationService(undefined, store)` e `instantiationService.stub(...)`.** São os serviços montados à mão
 //!   em [`renderer_services`] e [`center_services`], com os dublês locais (`NoKeybindingService`, `RecordingOpener`,
 //!   `NoCommandService`, `NoClipboard`, `EmptyThemeService`, `NoMenuService`, `SilentAccessibilitySignals`, `TestLayoutService`).
@@ -40,7 +41,7 @@ use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::key_codes::KeyCode;
 use je_base::keybindings::{Keybinding, ResolvedKeybinding};
-use je_base::lifecycle::{DisposableRef, IDisposable, none, plain_disposable, to_disposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, none, plain_disposable, to_disposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
 use je_editor::code_action::platform::{AccessibilitySignal, IAccessibilitySignalService};
@@ -465,9 +466,24 @@ impl IWorkbenchLayoutService for TestLayoutService {
 
 /// Os serviços do renderer e da lista (`workbenchInstantiationService(undefined, store)`), com o opener dado.
 fn renderer_services(guard: &LeakGuard, ui: &Ui, opener: Rc<dyn IOpenerService>) -> NotificationRendererServices {
-    let storage = guard.add_rc(InMemoryStorageService::new());
+    renderer_services_in(&guard.store(), ui, opener)
+}
+
+/// O `suiteSetup` da suíte `NotificationRenderer`: um renderer descartável cria as ações `static` do
+/// `NotificationTemplateRenderer` antes de o guarda de vazamentos ligar (o rastreador é por fio, então cada caso repete).
+fn warm_up_static_actions() {
+    let store = DisposableStore::new();
+    let ui = Ui::new();
+    let services = renderer_services_in(&store, &ui, Rc::new(RecordingOpener::default()));
+    let runner = store.add_rc(ActionRunner::new());
+    let _renderer = NotificationRenderer::new(runner, None, services);
+    store.dispose();
+}
+
+fn renderer_services_in(store: &DisposableStore, ui: &Ui, opener: Rc<dyn IOpenerService>) -> NotificationRendererServices {
+    let storage = store.add_rc(InMemoryStorageService::new());
     let storage_service: Rc<dyn StorageService> = Rc::new(storage);
-    let notification_service = guard.add_rc(NotificationService::new(storage_service));
+    let notification_service = store.add_rc(NotificationService::new(storage_service));
     let notification_service: Rc<dyn INotificationService> = notification_service;
     let configuration_service: Rc<dyn IConfigurationService> = TestConfigurationService::new(None);
     let telemetry_service: Rc<dyn ITelemetryService> = Rc::new(TestNotificationTelemetryService::new());
@@ -603,6 +619,7 @@ fn deduplicates_row_height_changes() {
 
 #[test]
 fn notification_center_updates_row_heights_and_preserves_the_focused_row_viewport_position() {
+    warm_up_static_actions();
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let _reset = RowHeightReset;
     set_notification_row_height(34.0);
@@ -668,6 +685,7 @@ fn notification_center_updates_row_heights_and_preserves_the_focused_row_viewpor
 
 #[test]
 fn primary_buttons_expose_and_track_disabled_actions_without_invoking_or_closing_the_notification() {
+    warm_up_static_actions();
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ui = Ui::new();
     let container = detached_container(&ui, 450.0, 42.0);
@@ -717,6 +735,7 @@ fn primary_buttons_expose_and_track_disabled_actions_without_invoking_or_closing
 
 /// O corpo dos três casos `renders ${name} text and activates only explicit links with mouse and keyboard`.
 fn renders_text_and_activates_only_explicit_links(message: NotificationMessage, legacy: bool, expected_text: &str, expected_links: &[&str]) {
+    warm_up_static_actions();
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ui = Ui::new();
     // larga o bastante para a mensagem não ser cortada com reticências (o `textContent` do DOM não é cortado)
@@ -781,6 +800,7 @@ fn renders_legacy_extension_text_and_activates_only_explicit_links_with_mouse_an
 
 #[test]
 fn releases_replaced_notification_action_view_items() {
+    warm_up_static_actions();
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ui = Ui::new();
     let container = attached_container(&ui, None, 450.0, 42.0);
@@ -910,6 +930,7 @@ fn severity_prefix_consistency() {
 
 #[test]
 fn updates_dismissal_affordances_when_progress_starts_completes_and_restarts() {
+    warm_up_static_actions();
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ui = Ui::new();
     let container = attached_container(&ui, Some("monaco-workbench"), 800.0, 600.0);
