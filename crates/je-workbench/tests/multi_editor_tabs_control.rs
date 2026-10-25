@@ -3517,7 +3517,8 @@ fn connected_sticky_offsets_follow_rendered_widths_without_preserving_filename_e
         options.editor_actions_location = EditorActionsLocation::Hidden;
     });
     // `getName()` devolve `example.dockerignore`.
-    let long_extension: EditorInputRef = fx.suite.disposables.add_rc(NamedInput::new("example.dockerignore", "/path/example.dockerignore", None));
+    let long_extension = fx.suite.disposables.add_rc(NamedInput::new("example.dockerignore", "/path/example.dockerignore", None));
+    let long_extension: EditorInputRef = long_extension;
     open!(fx.model, long_extension, index: 0, pinned: true, sticky: true);
     fx.open_editors();
     for (index, editor) in fx.model.get_editors(EditorsOrder::Sequential, None).into_iter().enumerate() {
