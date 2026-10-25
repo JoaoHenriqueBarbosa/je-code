@@ -21,6 +21,9 @@ je-platform = { path = "../je-platform" }
 je-extensions = { path = "../je-extensions" }
 # Os identificadores de serviço e o `Injectable` (`createDecorator` e os parâmetros `@IFoo`).
 je-instantiation = { path = "../je-instantiation" }
+# A árvore de widgets nativa e o `Sash`: o `DiffEditorSash` do editor de diff cria o sash dentro de um nó dela.
+je-ui = { path = "../je-ui" }
+je-widgets = { path = "../je-widgets" }
 # O `new Date()` (fuso do sistema) do `TimeBasedVariableResolver` dos snippets: o mesmo `jiff` do `je-base`.
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
