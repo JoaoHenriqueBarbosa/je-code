@@ -1,34 +1,57 @@
 //! Porte de `src/vs/workbench/contrib/files/test/browser/explorerView.test.ts` (suíte `Files - ExplorerView`), caso a caso e na
 //! mesma ordem.
 //!
-//! Casos de fora (a suíte aninhada `context menu`, 17 casos entre os `for` expandidos), todos exigem infraestrutura que o
-//! porte não tem: `WorkbenchCompressibleAsyncDataTree` com `setInput`/`expand`/`setSelection`/`setFocus`, o `ExplorerView`
-//! como `ViewPane` (`renderBody`, `setTreeInput`, `selectResource`), `MouseEvent`/`KeyboardEvent` despachados em elementos
-//! do DOM, `IContextMenuService.showContextMenu` e `FilesRenderer`/`FilesFilter`/`ExplorerFindProvider` instanciados por
-//! `stubInstance`. A UI é nativa e essas peças (árvore de widgets, menu de contexto, vistas) ainda não existem.
-//! Os casos: `waits for a newly queued tree refresh before selecting a folder`, `preserves folder selection after
-//! reopening a hidden Explorer`, `selects an unselected item with {0,1,2} previously selected items`, `preserves {1,2}
-//! selected items when the target belongs to the selection`, `replaces a selection hidden in a collapsed folder`, `keeps the
-//! compressed-folder navigation target when replacing the selection`, `selects the keyboard context-menu target without
-//! opening it`, `preserves multi-selection for a keyboard context menu on a selected item`, `preserves the selection when
-//! cancelling the context menu`, `keeps the newly selected target when cancelling the context menu`, `leaves the selection
-//! unchanged for an editable input`, `preserves the background context menu`, `keeps bulk keyboard commands on the
-//! selection after deselecting the focused item`.
-//!
 //! Notas de tradução:
 //! - **`assert.deepStrictEqual` sobre `ExplorerItem[]`.** Os itens são os mesmos objetos: identidade (`Rc::ptr_eq`).
 //! - **`createStat.call(this, ...)`.** O título completo do caso do mocha é o primeiro argumento de `to_resource`.
 //! - **`CompressedNavigationController`.** Sem o `templateData` de DOM (ver `explorer_viewer.rs`); o caso exercita o
 //!   índice, a contagem e o item corrente.
 //! - **`TestEnvironmentService`.** O [`TestEnvironmentService`] do porte.
+//! - **A suíte `context menu`.** Monta o [`ExplorerView`] real com a árvore real ([`ExplorerViewHarness`], ver as divergências em
+//!   `support/explorer_view_support.rs`). O `dispatchEvent` do `contextmenu` é o [`ExplorerView::on_context_menu`] com o
+//!   evento que a árvore emitiria; `await shown` é a promessa dele; `menu` é o delegado que o `IContextMenuService` de teste
+//!   guardou (`menu.base.on_hide(true)` é o `menu.onHide(true)`); `menu?.menuActionOptions?.arg` e `menu?.getActionsContext?.()`
+//!   são lidos como `URI`.
+//! - **Os dois casos de `refresh`.** O `refreshGate` do original trava o `getChildren` da fonte de dados de teste do próprio
+//!   caso. A fonte de dados do porte é a real (`createTree` a cria, sem `stubInstance`) e não tem ponto de injeção: o caso confere
+//!   a mesma garantia, que o `selectResource` espera a atualização já enfileirada, pela ordem em que as duas promessas assentam
+//!   (a atualização antes da seleção) e pelo estado final.
+//! - **`keeps the compressed-folder navigation target ...`.** Os controladores são os do `FilesRenderer` real, criados quando o
+//!   nó `compact/child` é desenhado; o `mock<ICompressedNavigationController>` com `index = 0` é o `set_index(0)` do controlador
+//!   real (o corrente passa a ser `compact`).
+//! - **`opened`.** O `tree.onDidOpen` registrado depois do `setup`; as seleções do menu não abrem nada.
 
+#[path = "../../je-base/tests/common/mod.rs"]
+mod common;
+#[path = "editor_input_services/mod.rs"]
+mod editor_input_services;
+mod support;
+#[path = "support/anything_quick_access_support.rs"]
+mod anything_quick_access_support;
+#[path = "support/explorer_view_support.rs"]
+mod explorer_view_support;
+#[path = "support/extension_service_doubles.rs"]
+mod extension_service_doubles;
+#[path = "support/main_thread_support.rs"]
+mod main_thread_support;
+#[path = "support/notification_doubles.rs"]
+mod notification_doubles;
+#[path = "../../je-editor/tests/support/test_clipboard_service.rs"]
+mod test_clipboard_service;
+#[path = "support/text_file_support.rs"]
+mod text_file_support;
+
+use std::cell::RefCell;
 use std::rc::Rc;
 
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers, timeout};
+use explorer_view_support::ExplorerViewHarness;
 use je_base::errors::Error;
+use je_base::lifecycle::IDisposable;
 use je_base::path::{PathModule, ProcessEnvironment};
+use je_base::promise::Promise;
 use je_base::runtime::date_now;
 use je_base::uri::{Field, URI, UriChange};
-use je_base::lifecycle::IDisposable;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::environment::environment::EnvironmentService;
@@ -38,16 +61,12 @@ use je_platform::workspace::{IWorkspace, WorkbenchState, WorkspaceFolder};
 use je_workbench::contrib::files::browser::views::explorer_decorations_provider::{LIST_INVALID_ITEM_FOREGROUND, provide_decorations};
 use je_workbench::contrib::files::browser::views::explorer_view::{self, CompressedNavigationControllerProvider, should_preserve_workspace_name_case};
 use je_workbench::contrib::files::browser::views::explorer_viewer::{CompressedNavigationController, ICompressedNavigationController};
+use je_workbench::contrib::files::browser_files::{ExplorerReveal, IExplorerView};
 use je_workbench::contrib::files::explorer_model::ExplorerItem;
 use je_workbench::services::decorations::decorations::{DecorationData, DecorationLetter};
 use je_workbench::services::files_configuration::files_configuration_service::IFilesConfigurationService;
 use je_workbench::test::browser::workbench_test_services::TestEnvironmentService;
 use je_workbench::test::common::workbench_test_services::{NullFilesConfigurationService, TestFileService};
-
-#[path = "../../je-base/tests/common/mod.rs"]
-mod common;
-
-use common::ensure_no_disposables_are_leaked_in_test_suite;
 
 /// `join` do `path` nativo.
 fn join(paths: &[&str]) -> String {
@@ -145,6 +164,266 @@ fn get_context() {
     assert_same_items(&explorer_view::get_context(&[], &[s3.clone(), s1.clone(), s4.clone()], true, &no_navigation_controller), &[&s3, &s1, &s4]);
 }
 
+/// `resources(items)`: `items.map(item => item.resource)`.
+fn resources(items: &[Rc<ExplorerItem>]) -> Vec<URI> {
+    items.iter().map(|item| item.resource()).collect()
+}
+
+/// `tree.onDidOpen(e => opened.push(e.element))`, registrado depois do `setup`.
+fn track_opened(guard: &LeakGuard, harness: &ExplorerViewHarness) -> Rc<RefCell<Vec<Rc<ExplorerItem>>>> {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let sink = opened.clone();
+    guard.add(harness.view.tree().on_did_open().listen(move |event| sink.borrow_mut().push(event.element.clone())));
+    opened
+}
+
+/// `assertContext(expected, clicked)`.
+fn assert_context(harness: &ExplorerViewHarness, opened: &RefCell<Vec<Rc<ExplorerItem>>>, expected: &[&Rc<ExplorerItem>], clicked: &Rc<ExplorerItem>) {
+    let expected: Vec<URI> = expected.iter().map(|item| item.resource()).collect();
+    assert_eq!(resources(&harness.view.tree().get_selection()), expected);
+    assert_eq!(resources(&harness.view.get_context(true)), expected);
+    assert_eq!(harness.menu_target(), Some(clicked.resource()));
+    assert_eq!(harness.menu_selection(), Some(expected));
+    assert_eq!(resources(&opened.borrow()), Vec::<URI>::new());
+}
+
+/// O corpo dos casos assíncronos da suíte `context menu`: o `setup` roda antes e o guarda de vazamento fecha depois.
+fn run_context_menu_case<F, Fut>(case: F)
+where
+    F: FnOnce(LeakGuard, Rc<ExplorerViewHarness>) -> Fut + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    run_with_real_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let harness = Rc::new(ExplorerViewHarness::new(&guard));
+        harness.setup().await;
+        case(guard, harness).await;
+    });
+}
+
+#[test]
+fn context_menu_waits_for_a_newly_queued_tree_refresh_before_selecting_a_folder() {
+    run_context_menu_case(|_guard, h| async move {
+        h.view.set_visible(true);
+        h.view.set_tree_input().await.unwrap();
+        let tree = h.view.tree();
+        tree.set_focus(&[h.target.clone()], None);
+        tree.set_selection(&[h.target.clone()], None);
+
+        let settled = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let record = |label: &'static str| {
+            let settled = settled.clone();
+            move |_: ()| settled.borrow_mut().push(label)
+        };
+        let refresh = h.view.set_tree_input().then(record("refresh"));
+        let selection = h.view.select_resource(Some(&h.folder.resource()), Some(ExplorerReveal::Mode("force".to_string())), None).then(record("selection"));
+        timeout(0).await.unwrap();
+        Promise::all(vec![refresh, selection]).await.unwrap();
+
+        assert_eq!(*settled.borrow(), vec!["refresh", "selection"]);
+        assert_eq!(resources(&tree.get_focus()), vec![h.folder.resource()]);
+        assert_eq!(resources(&tree.get_selection()), vec![h.folder.resource()]);
+    });
+}
+
+#[test]
+fn context_menu_preserves_folder_selection_after_reopening_a_hidden_explorer() {
+    run_context_menu_case(|_guard, h| async move {
+        h.view.set_visible(true);
+        h.view.set_tree_input().await.unwrap();
+        let tree = h.view.tree();
+        tree.set_focus(&[h.target.clone()], None);
+        tree.set_selection(&[h.target.clone()], None);
+        h.view.set_visible(false);
+        h.view.set_visible(true);
+        h.view.select_resource(Some(&h.folder.resource()), Some(ExplorerReveal::Mode("force".to_string())), None).await.unwrap();
+
+        assert_eq!(resources(&tree.get_focus()), vec![h.folder.resource()]);
+        assert_eq!(resources(&tree.get_selection()), vec![h.folder.resource()]);
+    });
+}
+
+/// Os casos `selects an unselected item with ${selectionSize} previously selected items`.
+fn selects_an_unselected_item(selection_size: usize) {
+    run_context_menu_case(move |guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        let previous: Vec<Rc<ExplorerItem>> = [h.first.clone(), h.second.clone()].into_iter().take(selection_size).collect();
+        h.view.tree().set_selection(&previous, None);
+
+        h.show_context_menu(Some(&h.target), false).await.unwrap();
+
+        assert_context(&h, &opened, &[&h.target], &h.target);
+    });
+}
+
+#[test]
+fn context_menu_selects_an_unselected_item_with_0_previously_selected_items() {
+    selects_an_unselected_item(0);
+}
+
+#[test]
+fn context_menu_selects_an_unselected_item_with_1_previously_selected_items() {
+    selects_an_unselected_item(1);
+}
+
+#[test]
+fn context_menu_selects_an_unselected_item_with_2_previously_selected_items() {
+    selects_an_unselected_item(2);
+}
+
+/// Os casos `preserves ${selectionSize} selected items when the target belongs to the selection`.
+fn preserves_selected_items(selection_size: usize) {
+    run_context_menu_case(move |guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        let selection: Vec<Rc<ExplorerItem>> = [h.first.clone(), h.second.clone()].into_iter().take(selection_size).collect();
+        h.view.tree().set_selection(&selection, None);
+
+        h.show_context_menu(Some(&h.first), false).await.unwrap();
+
+        let expected: Vec<&Rc<ExplorerItem>> = selection.iter().collect();
+        assert_context(&h, &opened, &expected, &h.first);
+    });
+}
+
+#[test]
+fn context_menu_preserves_1_selected_items_when_the_target_belongs_to_the_selection() {
+    preserves_selected_items(1);
+}
+
+#[test]
+fn context_menu_preserves_2_selected_items_when_the_target_belongs_to_the_selection() {
+    preserves_selected_items(2);
+}
+
+#[test]
+fn context_menu_replaces_a_selection_hidden_in_a_collapsed_folder() {
+    run_context_menu_case(|guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        let tree = h.view.tree();
+        tree.set_selection(&[h.first.clone(), h.second.clone()], None);
+        tree.collapse(&h.folder, false);
+        assert_same_items(&tree.get_selection(), &[&h.first, &h.second]);
+
+        h.show_context_menu(Some(&h.target), false).await.unwrap();
+
+        assert_context(&h, &opened, &[&h.target], &h.target);
+    });
+}
+
+#[test]
+fn context_menu_keeps_the_compressed_folder_navigation_target_when_replacing_the_selection() {
+    run_context_menu_case(|_guard, h| async move {
+        let parent = h.create_item("/workspace/compact", true, Some(&h.root));
+        let child = h.create_item("/workspace/compact/child", true, Some(&parent));
+        h.root.add_child(&parent);
+        parent.add_child(&child);
+        let tree = h.view.tree();
+        // tree.updateOptions({ compressionEnabled: true }); await tree.updateChildren(root);
+        tree.set_compression_enabled(true);
+        h.view.refresh(true, Some(&h.root), None).await.unwrap();
+        let controllers = h.view.renderer().get_compressed_navigation_controller(&parent).expect("o nó compact/child foi desenhado comprimido");
+        // `current = parent`, `items = [parent, child]`, `index = 0`, `count = 2`
+        controllers[0].set_index(0);
+        tree.set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        h.show_context_menu(Some(&child), false).await.unwrap();
+
+        assert_same_items(&tree.get_selection(), &[&child]);
+        assert_same_items(&h.view.get_context(true), &[&parent]);
+        assert_eq!(h.menu_target(), Some(parent.resource()));
+    });
+}
+
+#[test]
+fn context_menu_selects_the_keyboard_context_menu_target_without_opening_it() {
+    run_context_menu_case(|guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        h.view.tree().set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        h.show_context_menu(Some(&h.target), true).await.unwrap();
+
+        assert_context(&h, &opened, &[&h.target], &h.target);
+    });
+}
+
+#[test]
+fn context_menu_preserves_multi_selection_for_a_keyboard_context_menu_on_a_selected_item() {
+    run_context_menu_case(|guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        h.view.tree().set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        h.show_context_menu(Some(&h.first), true).await.unwrap();
+
+        assert_context(&h, &opened, &[&h.first, &h.second], &h.first);
+    });
+}
+
+#[test]
+fn context_menu_preserves_the_selection_when_cancelling_the_context_menu() {
+    run_context_menu_case(|guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        h.view.tree().set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        h.show_context_menu(Some(&h.first), false).await.unwrap();
+        h.menu().expect("o menu foi mostrado").base.on_hide(true);
+
+        assert_context(&h, &opened, &[&h.first, &h.second], &h.first);
+    });
+}
+
+#[test]
+fn context_menu_keeps_the_newly_selected_target_when_cancelling_the_context_menu() {
+    run_context_menu_case(|guard, h| async move {
+        let opened = track_opened(&guard, &h);
+        h.view.tree().set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        h.show_context_menu(Some(&h.target), false).await.unwrap();
+        h.menu().expect("o menu foi mostrado").base.on_hide(true);
+
+        assert_context(&h, &opened, &[&h.target], &h.target);
+    });
+}
+
+#[test]
+fn context_menu_leaves_the_selection_unchanged_for_an_editable_input() {
+    run_context_menu_case(|_guard, h| async move {
+        let tree = h.view.tree();
+        tree.set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        let input = h.append_input();
+        h.view.on_context_menu(&h.context_menu_event(Some(&h.target), false, Some(input))).await.unwrap();
+
+        assert_same_items(&tree.get_selection(), &[&h.first, &h.second]);
+        assert!(h.menu().is_none());
+    });
+}
+
+#[test]
+fn context_menu_preserves_the_background_context_menu() {
+    run_context_menu_case(|_guard, h| async move {
+        let tree = h.view.tree();
+        tree.set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        h.show_context_menu(None, false).await.unwrap();
+
+        assert_same_items(&tree.get_selection(), &[&h.first, &h.second]);
+        assert_eq!(h.menu_target(), Some(h.root.resource()));
+        assert_eq!(h.menu_selection(), Some(Vec::<URI>::new()));
+    });
+}
+
+#[test]
+fn context_menu_keeps_bulk_keyboard_commands_on_the_selection_after_deselecting_the_focused_item() {
+    run_context_menu_case(|_guard, h| async move {
+        let tree = h.view.tree();
+        tree.set_selection(&[h.first.clone(), h.second.clone(), h.target.clone()], None);
+        tree.set_focus(&[h.target.clone()], None);
+        tree.set_selection(&[h.first.clone(), h.second.clone()], None);
+
+        assert_same_items(&h.view.get_context(true), &[&h.first, &h.second]);
+    });
+}
+
 #[test]
 fn decoration_provider() {
     const TITLE: &str = "Files - ExplorerView decoration provider";
@@ -239,122 +518,6 @@ fn preserves_workspace_name_case_only_for_user_named_workspaces() {
         &workspace(Some(uri_file("/some/path/myWorkspace.code-workspace"))),
         &*environment
     ));
-}
-
-/// O `controllers` (`Map<ExplorerItem, ICompressedNavigationController[]>`) da suíte `context menu`.
-struct Controllers(Vec<(Rc<ExplorerItem>, Rc<CompressedNavigationController>)>);
-
-impl CompressedNavigationControllerProvider for Controllers {
-    fn get_compressed_navigation_controller(&self, stat: &Rc<ExplorerItem>) -> Option<Vec<Rc<dyn ICompressedNavigationController>>> {
-        self.0.iter().find(|(item, _)| Rc::ptr_eq(item, stat)).map(|(_, controller)| {
-            let controller: Rc<dyn ICompressedNavigationController> = controller.clone();
-            vec![controller]
-        })
-    }
-}
-
-fn resources(items: &[&Rc<ExplorerItem>]) -> Vec<URI> {
-    items.iter().map(|item| item.resource()).collect()
-}
-
-const MENU_TITLE: &str = "Files - ExplorerView context menu";
-
-/// Os itens do `setup` da suíte `context menu`: a raiz, `first`, `second` e `target`.
-fn menu_items(services: &Services) -> (Rc<ExplorerItem>, Rc<ExplorerItem>, Rc<ExplorerItem>, Rc<ExplorerItem>) {
-    let d = date_now() as f64;
-    (
-        services.create_stat(MENU_TITLE, "/workspace", "workspace", true, d, false, false),
-        services.create_stat(MENU_TITLE, "/workspace/first.txt", "first.txt", false, d, false, false),
-        services.create_stat(MENU_TITLE, "/workspace/second.txt", "second.txt", false, d, false, false),
-        services.create_stat(MENU_TITLE, "/workspace/target.txt", "target.txt", false, d, false, false),
-    )
-}
-
-#[test]
-#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
-fn context_menu_selects_an_unselected_item_with_previously_selected_items() {
-    let services = Services::new();
-    let (_root, first, second, target) = menu_items(&services);
-    let no_controllers = NoNavigationController;
-    for selection_size in [0usize, 1, 2] {
-        let previous: Vec<Rc<ExplorerItem>> = [first.clone(), second.clone()].into_iter().take(selection_size).collect();
-        let selection = explorer_view::selection_for_context_menu(Some(&target), &previous).expect("o alvo substitui a seleção");
-        assert_same_items(&selection, &[&target]);
-        assert_same_items(&explorer_view::get_context(&[target.clone()], &selection, true, &no_controllers), &[&target]);
-        assert_eq!(explorer_view::context_menu_arg(Some(&target), &no_controllers, &[]), explorer_view::ContextMenuArg::Resource(target.resource()));
-        assert_eq!(explorer_view::context_menu_actions_context(Some(&target), &selection), resources(&[&target]));
-    }
-}
-
-#[test]
-#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
-fn context_menu_preserves_selected_items_when_the_target_belongs_to_the_selection() {
-    let services = Services::new();
-    let (_root, first, second, _target) = menu_items(&services);
-    let no_controllers = NoNavigationController;
-    for selection_size in [1usize, 2] {
-        let selection: Vec<Rc<ExplorerItem>> = [first.clone(), second.clone()].into_iter().take(selection_size).collect();
-        assert!(explorer_view::selection_for_context_menu(Some(&first), &selection).is_none());
-        let expected: Vec<&Rc<ExplorerItem>> = selection.iter().collect();
-        assert_same_items(&explorer_view::get_context(&[first.clone()], &selection, true, &no_controllers), &expected);
-        assert_eq!(explorer_view::context_menu_arg(Some(&first), &no_controllers, &[]), explorer_view::ContextMenuArg::Resource(first.resource()));
-        assert_eq!(explorer_view::context_menu_actions_context(Some(&first), &selection), resources(&expected));
-    }
-}
-
-#[test]
-#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
-fn context_menu_keeps_the_compressed_folder_navigation_target_when_replacing_the_selection() {
-    let services = Services::new();
-    let (_root, first, second, _target) = menu_items(&services);
-    let d = date_now() as f64;
-    let parent = services.create_stat(MENU_TITLE, "/workspace/compact", "compact", true, d, false, false);
-    let child = services.create_stat(MENU_TITLE, "/workspace/compact/child", "child", true, d, false, false);
-    let controller = CompressedNavigationController::new("compact", vec![parent.clone(), child.clone()], 1, false);
-    controller.set_index(0);
-    let controllers = Controllers(vec![(parent.clone(), controller.clone()), (child.clone(), controller.clone())]);
-    let previous = vec![first.clone(), second.clone()];
-
-    let selection = explorer_view::selection_for_context_menu(Some(&child), &previous).expect("o filho substitui a seleção");
-    assert_same_items(&selection, &[&child]);
-    assert_same_items(&explorer_view::get_context(&[child.clone()], &selection, true, &controllers), &[&parent]);
-    assert_eq!(explorer_view::context_menu_arg(Some(&child), &controllers, &[]), explorer_view::ContextMenuArg::Resource(parent.resource()));
-}
-
-#[test]
-#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
-fn context_menu_selects_the_keyboard_target_without_opening_it() {
-    let services = Services::new();
-    let (_root, first, second, target) = menu_items(&services);
-    let selection = explorer_view::selection_for_context_menu(Some(&target), &[first, second]).expect("o alvo substitui a seleção");
-    assert_same_items(&selection, &[&target]);
-    assert_eq!(explorer_view::compressed_anchor(true, false), explorer_view::CompressedAnchor::CurrentLabel);
-    assert_eq!(explorer_view::compressed_anchor(false, true), explorer_view::CompressedAnchor::CurrentLabel);
-    assert_eq!(explorer_view::compressed_anchor(false, false), explorer_view::CompressedAnchor::LastSegment);
-}
-
-#[test]
-#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
-fn context_menu_preserves_the_background_context_menu() {
-    let services = Services::new();
-    let (root, first, second, _target) = menu_items(&services);
-    let no_controllers = NoNavigationController;
-    let selection = vec![first, second];
-
-    assert!(explorer_view::selection_for_context_menu(None, &selection).is_none());
-    assert_eq!(explorer_view::context_menu_arg(None, &no_controllers, &[root.clone()]), explorer_view::ContextMenuArg::Resource(root.resource()));
-    assert_eq!(explorer_view::context_menu_arg(None, &no_controllers, &[root.clone(), root.clone()]), explorer_view::ContextMenuArg::Empty);
-    assert!(explorer_view::context_menu_actions_context(None, &selection).is_empty());
-}
-
-#[test]
-#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
-fn context_menu_keeps_bulk_keyboard_commands_on_the_selection_after_deselecting_the_focused_item() {
-    let services = Services::new();
-    let (_root, first, second, target) = menu_items(&services);
-    let no_controllers = NoNavigationController;
-    // tree.setSelection([first, second, target]); tree.setFocus([target]); tree.setSelection([first, second]);
-    assert_same_items(&explorer_view::get_context(&[target.clone()], &[first.clone(), second.clone()], true, &no_controllers), &[&first, &second]);
 }
 
 #[test]

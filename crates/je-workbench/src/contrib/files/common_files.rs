@@ -135,6 +135,101 @@ pub fn explorer_folder_context() -> je_platform::contextkey::contextkey::RawCont
     KEY.with(Clone::clone)
 }
 
+/// Define uma chave de contexto do explorador (`new RawContextKey<boolean>(key, default, { type: 'boolean', description })`),
+/// criada e registrada na primeira chamada, como [`explorer_folder_context`].
+macro_rules! explorer_boolean_context_key {
+    ($(#[$doc:meta])* $name:ident, $key:literal, $default:literal, $description_id:literal, $description:literal) => {
+        $(#[$doc])*
+        pub fn $name() -> je_platform::contextkey::contextkey::RawContextKey {
+            use je_platform::contextkey::contextkey::{ContextKeyMeta, RawContextKey};
+            thread_local! {
+                static KEY: RawContextKey = RawContextKey::new(
+                    $key,
+                    je_base::dynamic::Dynamic::Bool($default),
+                    ContextKeyMeta::Info { ty: "boolean".to_string(), description: je_base::nls::localize($description_id, $description, &[]) },
+                );
+            }
+            KEY.with(Clone::clone)
+        }
+    };
+}
+
+explorer_boolean_context_key!(
+    /// `FoldersViewVisibleContext`.
+    folders_view_visible_context, "foldersViewVisible", true, "foldersViewVisible",
+    "True when the FOLDERS view (the file tree within the explorer view container) is visible."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerResourceReadonlyContext`.
+    explorer_resource_readonly_context, "explorerResourceReadonly", false, "explorerResourceReadonly",
+    "True when the focused item in the EXPLORER is read-only."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerResourceParentReadOnlyContext`.
+    explorer_resource_parent_read_only_context, "explorerResourceParentReadonly", false, "explorerResourceParentReadonly",
+    "True when the focused item in the EXPLORER's parent is read-only."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerRootContext`.
+    explorer_root_context, "explorerResourceIsRoot", false, "explorerResourceIsRoot",
+    "True when the focused item in the EXPLORER is a root folder."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerResourceCut`.
+    explorer_resource_cut, "explorerResourceCut", false, "explorerResourceCut",
+    "True when an item in the EXPLORER has been cut for cut and paste."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerResourceMoveableToTrash`.
+    explorer_resource_moveable_to_trash, "explorerResourceMoveableToTrash", false, "explorerResourceMoveableToTrash",
+    "True when the focused item in the EXPLORER can be moved to trash."
+);
+explorer_boolean_context_key!(
+    /// `FilesExplorerFocusedContext`.
+    files_explorer_focused_context, "filesExplorerFocus", true, "filesExplorerFocus",
+    "True when the focus is inside the EXPLORER view."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerFocusedContext`.
+    explorer_focused_context, "explorerViewletFocus", true, "explorerViewletFocus",
+    "True when the focus is inside the EXPLORER viewlet."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerFindProviderActive`.
+    explorer_find_provider_active, "explorerFindProviderActive", false, "explorerFindProviderActive",
+    "True when the explorer tree is using the explorer find provider."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerCompressedFocusContext`.
+    explorer_compressed_focus_context, "explorerViewletCompressedFocus", true, "explorerViewletCompressedFocus",
+    "True when the focused item in the EXPLORER view is a compact item."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerCompressedFirstFocusContext`.
+    explorer_compressed_first_focus_context, "explorerViewletCompressedFirstFocus", true, "explorerViewletCompressedFirstFocus",
+    "True when the focus is inside a compact item's first part in the EXPLORER view."
+);
+explorer_boolean_context_key!(
+    /// `ExplorerCompressedLastFocusContext`.
+    explorer_compressed_last_focus_context, "explorerViewletCompressedLastFocus", true, "explorerViewletCompressedLastFocus",
+    "True when the focus is inside a compact item's last part in the EXPLORER view."
+);
+explorer_boolean_context_key!(
+    /// `ViewHasSomeCollapsibleRootItemContext`.
+    view_has_some_collapsible_root_item_context, "viewHasSomeCollapsibleItem", false, "viewHasSomeCollapsibleItem",
+    "True when a workspace in the EXPLORER view has some collapsible root child."
+);
+
+/// `ExplorerResourceAvailableEditorIdsContext`: `new RawContextKey<string>('explorerResourceAvailableEditorIds', '')`, sem
+/// metadado.
+pub fn explorer_resource_available_editor_ids_context() -> je_platform::contextkey::contextkey::RawContextKey {
+    use je_platform::contextkey::contextkey::{ContextKeyMeta, RawContextKey};
+    thread_local! {
+        static KEY: RawContextKey = RawContextKey::new("explorerResourceAvailableEditorIds", je_base::dynamic::Dynamic::string(""), ContextKeyMeta::None);
+    }
+    KEY.with(Clone::clone)
+}
+
 /// `SortOrder` (`explorer.sortOrder`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortOrder {

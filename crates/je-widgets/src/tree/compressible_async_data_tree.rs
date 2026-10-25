@@ -415,4 +415,14 @@ impl<TInput: Clone + 'static, T: Clone + Eq + Hash + 'static, F: Clone + 'static
         let node = self.get_data_node(element);
         self.tree.model.compressed_model().get_node(&Some(node))
     }
+
+    /// `updateOptions({ compressionEnabled })`: liga ou desliga a compressão das pastas de filho único.
+    pub fn set_compression_enabled(&self, enabled: bool) {
+        self.tree.model.set_compression_enabled(enabled);
+    }
+
+    /// `isCompressionEnabled`.
+    pub fn is_compression_enabled(&self) -> bool {
+        self.tree.model.is_compression_enabled()
+    }
 }
