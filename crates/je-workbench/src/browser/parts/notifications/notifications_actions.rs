@@ -28,7 +28,7 @@ use je_base::actions::{Action, ActionRef, IAction, IActionChangeEvent};
 use je_base::async_::async_fn;
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
-use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::lifecycle::{Disposable, DisposableRef, IDisposable};
 use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::themables::ThemeIcon;
@@ -164,6 +164,9 @@ macro_rules! impl_action_wrapper {
             }
             fn as_any(&self) -> &dyn std::any::Any {
                 self
+            }
+            fn as_base_action(&self) -> Option<&Action> {
+                Some(&*self.action)
             }
         }
 
@@ -434,8 +437,11 @@ impl NotificationActionProvider for WorkbenchNotificationActionProvider {
         CollapseNotificationAction::new(CollapseNotificationAction::ID, &CollapseNotificationAction::label(), self.command_service.clone())
     }
 
-    fn create_configure_action(&self, notification: &Rc<NotificationViewItem>) -> ActionRef {
-        ConfigureNotificationAction::new(ConfigureNotificationAction::ID, &ConfigureNotificationAction::label(), notification.clone())
+    fn create_configure_action(&self, notification: &Rc<NotificationViewItem>) -> (ActionRef, DisposableRef) {
+        let action = ConfigureNotificationAction::new(ConfigureNotificationAction::ID, &ConfigureNotificationAction::label(), notification.clone());
+        let disposable: DisposableRef = action.clone();
+        let action: ActionRef = action;
+        (action, disposable)
     }
 
     fn configure_action_notification(&self, action: &ActionRef) -> Option<Rc<NotificationViewItem>> {
