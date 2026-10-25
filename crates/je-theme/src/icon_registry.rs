@@ -388,10 +388,10 @@ impl IconRegistry {
 impl fmt::Display for IconRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.state.borrow();
-        let sorted = |mut contributions: Vec<&IconContribution>| {
+        fn sorted(mut contributions: Vec<&IconContribution>) -> Vec<&IconContribution> {
             contributions.sort_by(|a, b| locale_compare(&a.id, &b.id));
             contributions
-        };
+        }
 
         let mut reference = vec![
             "| preview     | identifier                        | default codicon ID                | description".to_owned(),

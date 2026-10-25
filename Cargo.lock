@@ -4276,6 +4276,7 @@ name = "je-theme"
 version = "0.0.0"
 dependencies = [
  "je-base",
+ "je-codicons",
  "je-render",
  "serde_json",
 ]
