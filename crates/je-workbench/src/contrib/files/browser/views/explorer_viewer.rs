@@ -492,10 +492,10 @@ pub fn get_file_or_folder_label_suffix(items: &[Rc<ExplorerItem>]) -> String {
     }
 
     if items.iter().all(|item| item.is_directory()) {
-        return localize("numberOfFolders", "{0} folders", &[items.len().to_string()]);
+        return localize("numberOfFolders", "{0} folders", &[&items.len().to_string()]);
     }
     if items.iter().all(|item| !item.is_directory()) {
-        return localize("numberOfFiles", "{0} files", &[items.len().to_string()]);
+        return localize("numberOfFiles", "{0} files", &[&items.len().to_string()]);
     }
 
     format!("{} files and folders", items.len())
@@ -650,7 +650,7 @@ pub fn handle_drag_over(input: &DragOverInput) -> DragOverReaction {
     }
 
     let target_resource = target.resource();
-    if input.context_service.get_workspace().folders().iter().all(|folder| folder.uri.to_string() != target_resource.to_string()) {
+    if input.context_service.get_workspace().folders().iter().all(|folder| folder.uri.to_string(false) != target_resource.to_string(false)) {
         return DragOverReaction::Accept { bubble: Some(TreeDragOverBubble::Up), effect, auto_expand: None };
     }
 
