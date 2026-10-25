@@ -247,7 +247,7 @@ impl NotificationsList {
 
     pub fn update_notifications_list(&self, start: usize, delete_count: usize, items: Vec<Item>) {
         let (Some(list), Some(list_container)) = (self.list(), self.list_container.get()) else {
-            crate::common::throw("NotificationsList: a lista ainda não foi criada")
+            je_base::errors::throw(je_base::errors::Error::new("NotificationsList: a lista ainda não foi criada"))
         };
         let list_has_dom_focus = is_ancestor_of_active_element(self.ui(), list_container);
 
@@ -304,7 +304,7 @@ impl NotificationsList {
     pub fn update_notification_height(&self, item: &Item) {
         let Some(index) = self.view_model.borrow().iter().position(|candidate| Rc::ptr_eq(candidate, item)) else { return };
         let (Some(list), Some(list_delegate)) = (self.list(), self.list_delegate.borrow().clone()) else {
-            crate::common::throw("NotificationsList: a lista ainda não foi criada")
+            je_base::errors::throw(je_base::errors::Error::new("NotificationsList: a lista ainda não foi criada"))
         };
 
         use je_widgets::list::list_types::IListVirtualDelegate;

@@ -53,7 +53,7 @@ use je_render::kurbo::Rect;
 use je_ui::{Content, EventKind, NodeId, PointerButton, Role, Ui};
 use je_widgets::action_bar::{ActionBar, IActionBarOptions, IActionOptions};
 use je_widgets::action_view_items::{IActionViewItem, IActionViewItemOptions};
-use je_widgets::button::composite::{ButtonBar, ButtonDropdownActions, ButtonWithDropdownOptions, IContextMenuProvider as IButtonContextMenuProvider};
+use je_widgets::button::{ButtonBar, ButtonDropdownActions, ButtonWithDropdownOptions, IContextMenuProvider as IButtonContextMenuProvider};
 use je_widgets::button::{ButtonLabel, ButtonOptions, ButtonStyles, ButtonTitle, IButton};
 use je_widgets::context_view_api::IContextMenuProvider;
 use je_widgets::dom::{StandardKeyboardEvent, clear_node, create_el};
@@ -220,7 +220,7 @@ fn message_texts(notification: &NotificationViewItem) -> Vec<String> {
 }
 
 /// O texto da mensagem na fonte da UI (13px), como o `.notification-list-item-message` o desenha.
-fn message_font() -> je_render::TextStyle {
+fn message_font() -> je_text::TextStyle {
     ui_font(UI_FONT_SIZE, 400)
 }
 
@@ -477,7 +477,7 @@ impl NotificationRenderer {
 
     fn template_of(template_data: &TemplateData) -> Rc<NotificationTemplateData> {
         let any: Rc<dyn Any> = template_data.clone();
-        any.downcast::<NotificationTemplateData>().unwrap_or_else(|_| crate::common::throw("template de notificação inesperado"))
+        any.downcast::<NotificationTemplateData>().unwrap_or_else(|_| je_base::errors::throw(je_base::errors::Error::new("template de notificação inesperado")))
     }
 }
 
