@@ -701,7 +701,7 @@ fn tracker_observes_a_session_whose_adapter_is_an_inline_implementation_held_by_
         workbench.pump();
         assert_eq!(
             panel.entries("acceptDAMessage"),
-            strings(&[r#"acceptDAMessage:5:{"command":"threads","request_seq":1,"seq":2,"success":true,"type":"response"}"#]),
+            strings(&[r#"acceptDAMessage:5:{"seq":2,"type":"response","request_seq":1,"success":true,"command":"threads"}"#]),
             "a resposta que o adaptador inline dispara chega ao workbench"
         );
 

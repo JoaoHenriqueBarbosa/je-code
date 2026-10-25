@@ -206,7 +206,8 @@ impl IMainThreadBinder for Binder {
             remote_authority: Some("ssh-remote+caixa".to_owned()),
             is_portable: true,
             app_host: "desktop".to_owned(),
-            first_session_date: "2020-01-01T00:00:00.000Z".to_owned(),
+            // anterior a 1970: mais de um dia antes de qualquer relógio, o do loop de teste (perto de zero) ou o de parede
+            first_session_date: "1969-12-30T00:00:00.000Z".to_owned(),
         })
     }
 
