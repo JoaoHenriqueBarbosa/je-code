@@ -10,10 +10,10 @@
 //! argumento serializável (`IBaseSerializableStorageRequest`), que o original ignora.
 //!
 //! Decisões de tradução:
-//! - **`IStorageMainService` e `IStorageMain`** (de `storageMainService.ts` e `storageMain.ts`, ainda sem porte) são os
-//!   contratos [`StorageMainService`] e [`StorageMain`], só com os membros que o canal lê: `applicationStorage`,
-//!   `onDidChangeProfileStorage`, e de cada `IStorageMain` o `storage` e o `onDidChangeStorage`.
-//!   `IProfileStorageChangeEvent` é [`ProfileStorageChangeEvent`].
+//! - **`IStorageMainService`, `IStorageMain` e `IProfileStorageChangeEvent`** (de `storageMainService.ts` e
+//!   `storageMain.ts`) são [`IStorageMainService`], [`IStorageMain`] e [`ProfileStorageChangeEvent`], do módulo
+//!   `crate::storage`; o canal lê só `applicationStorage`, `onDidChangeProfileStorage`, e de cada `IStorageMain` o
+//!   `storage` e o `onDidChangeStorage`.
 //! - **`Event.debounce(event, merge, 100)`** é [`Event::debounce`] com as opções padrão (100 ms): o `merge` do primeiro
 //!   evento recebe `undefined` (aqui `None`) e devolve a lista de chaves, ou o mapa por perfil (um `IndexMap`, que
 //!   guarda a ordem de inserção como o `Map`).
@@ -29,44 +29,18 @@ use je_base::errors::Error;
 use je_base::event::{DebounceOptions, Emitter, EmitterOptions, Event};
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, MutableDisposable};
 use je_base::promise::Promise;
-use je_storage::{IStorage, StorageChangeEvent};
+use je_storage::StorageChangeEvent;
 
 use super::user_data_profile_storage_service::{ProfileStorageChanges, ProfileStorageValueChanges};
 use super::{IUserDataProfilesService, UserDataProfile};
 use crate::log::{LogServiceRef, Logger};
-use crate::storage::{StorageScope, StorageTarget, StorageValueChangeEvent, TARGET_KEY, load_key_targets};
-
-/// `IStorageMain`, com os membros que o canal lê.
-pub trait StorageMain {
-    /// `storage`: o armazém de chave e valor (de onde saem os alvos das chaves).
-    fn storage(&self) -> Rc<dyn IStorage>;
-
-    /// `onDidChangeStorage`.
-    fn on_did_change_storage(&self) -> Event<StorageChangeEvent>;
-}
-
-/// `IProfileStorageChangeEvent`.
-#[derive(Clone)]
-pub struct ProfileStorageChangeEvent {
-    pub storage: Rc<dyn StorageMain>,
-    pub profile: UserDataProfile,
-    pub key: String,
-}
-
-/// `IStorageMainService`, com os membros que o canal lê.
-pub trait StorageMainService {
-    /// `applicationStorage`.
-    fn application_storage(&self) -> Rc<dyn StorageMain>;
-
-    /// `onDidChangeProfileStorage`.
-    fn on_did_change_profile_storage(&self) -> Event<ProfileStorageChangeEvent>;
-}
+use crate::storage::{IStorageMain, IStorageMainService, ProfileStorageChangeEvent, StorageScope, StorageTarget, StorageValueChangeEvent, TARGET_KEY, load_key_targets};
 
 /// O valor acumulado por perfil durante o debounce: `{ profile, keys, storage }`.
 struct PendingProfileChanges {
     profile: UserDataProfile,
     keys: Vec<String>,
-    storage: Rc<dyn StorageMain>,
+    storage: Rc<dyn IStorageMain>,
 }
 
 /// `Map<string, { profile; keys; storage }>`, pelo id do perfil.
@@ -76,7 +50,7 @@ type PendingChanges = IndexMap<String, PendingProfileChanges>;
 pub struct ProfileStorageChangesListenerChannel {
     me: Weak<ProfileStorageChangesListenerChannel>,
     base: Rc<Disposable>,
-    storage_main_service: Rc<dyn StorageMainService>,
+    storage_main_service: Rc<dyn IStorageMainService>,
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
     log_service: LogServiceRef,
     disposable: Rc<MutableDisposable<dyn IDisposable>>,
@@ -84,7 +58,7 @@ pub struct ProfileStorageChangesListenerChannel {
 }
 
 impl ProfileStorageChangesListenerChannel {
-    pub fn new(storage_main_service: Rc<dyn StorageMainService>, user_data_profiles_service: Rc<dyn IUserDataProfilesService>, log_service: LogServiceRef) -> Rc<Self> {
+    pub fn new(storage_main_service: Rc<dyn IStorageMainService>, user_data_profiles_service: Rc<dyn IUserDataProfilesService>, log_service: LogServiceRef) -> Rc<Self> {
         Rc::new_cyclic(|me: &Weak<Self>| {
             let base = Disposable::new();
             let disposable = MutableDisposable::<dyn IDisposable>::new();

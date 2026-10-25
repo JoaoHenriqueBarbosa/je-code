@@ -8,8 +8,9 @@
 //!
 //! Decisões de tradução:
 //! - **`ILifecycleMainService` e `IWindowsMainService`** (ainda sem porte: dependem de `BrowserWindow`) são os contratos
-//!   [`LifecycleMainService`] e [`WindowsMainService`], só com o que o `handler` lê: `onWillLoadWindow`,
-//!   `onBeforeCloseWindow` e `getWindows()`.
+//!   [`LifecycleMainService`] e [`WindowsMainService`], só com o que os consumidores portados leem: `onWillLoadWindow`,
+//!   `onBeforeCloseWindow` e `getWindows()` (o `handler`), `onWillShutdown` e `when(phase)` (o `StorageMainService`).
+//!   `ShutdownReason`, `ShutdownEvent` e `LifecycleMainPhase` são os de `lifecycleMainService.ts`.
 //! - **`ICodeWindow`** é [`CodeWindow`] mais [`ProfilesWindow`]: o contrato do porte dos workspaces tem `openedWorkspace`,
 //!   e o `handler` lê também `backupPath` e `isExtensionDevelopmentHost`, que [`ProfilesWindow`] acrescenta.
 //! - **`LoadReason`** (de `window.ts` de `electron-main`) é [`LoadReason`], com os mesmos três valores.
@@ -20,6 +21,7 @@
 //! - **`toWorkspaceIdentifier(window.backupPath, window.isExtensionDevelopmentHost)`** é o
 //!   [`to_empty_workspace_identifier`], que devolve o identificador da janela vazia.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::async_::RunOnceScheduler;
@@ -27,7 +29,7 @@ use je_base::event::Event;
 use je_base::lifecycle::{Disposable, IDisposable};
 use je_base::promise::Promise;
 
-use super::{IUserDataProfilesService, UserDataProfilesMainService};
+use super::{IUserDataProfilesService, UserDataProfile, UserDataProfilesMainService};
 use crate::workspace::{AnyWorkspaceIdentifier, to_empty_workspace_identifier};
 use crate::workspaces::workspaces_management_main_service::CodeWindow;
 
@@ -49,22 +51,78 @@ pub trait ProfilesWindow: CodeWindow {
 
     /// `isExtensionDevelopmentHost`.
     fn is_extension_development_host(&self) -> bool;
+
+    /// `profile`: o perfil da janela (o `StorageMainService` esquenta o armazém dele quando a janela carrega).
+    fn profile(&self) -> Option<UserDataProfile>;
 }
 
-/// `IWindowLoadEvent` (o `onWillLoadWindow`), com o que o `handler` lê.
+/// `IWindowLoadEvent` (o `onWillLoadWindow`), com o que o `handler` e o `StorageMainService` leem.
 #[derive(Clone)]
 pub struct WindowLoadEvent {
     pub window: Rc<dyn ProfilesWindow>,
+    /// `workspace`: o workspace que a janela vai carregar, se houver.
+    pub workspace: Option<AnyWorkspaceIdentifier>,
     pub reason: LoadReason,
 }
 
-/// `ILifecycleMainService`, com os eventos que o `handler` ouve.
+/// `ShutdownReason` (`lifecycleMainService.ts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShutdownReason {
+    /// The application exits normally.
+    Quit = 1,
+    /// The application exits abnormally and is being killed with an exit code (e.g. from integration test run).
+    Kill,
+}
+
+/// `LifecycleMainPhase` (`lifecycleMainService.ts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LifecycleMainPhase {
+    /// The first phase signals that we are about to startup.
+    Starting = 1,
+    /// Services are ready and first window is about to open.
+    Ready = 2,
+    /// This phase signals a point in time after the window has opened and is typically the best place to do work that is not required for the window to open.
+    AfterWindowOpen = 3,
+    /// The last phase after a window has opened and some time has passed (2-5 seconds).
+    Eventually = 4,
+}
+
+/// `ShutdownEvent` (`lifecycleMainService.ts`): o motivo e o `join`, que bloqueia o encerramento até as promessas assentarem.
+#[derive(Clone)]
+pub struct ShutdownEvent {
+    pub reason: ShutdownReason,
+    joiners: Rc<RefCell<Vec<(String, Promise<()>)>>>,
+}
+
+impl ShutdownEvent {
+    pub fn new(reason: ShutdownReason) -> Self {
+        Self { reason, joiners: Rc::new(RefCell::new(Vec::new())) }
+    }
+
+    /// `join(id, promise)`.
+    pub fn join(&self, id: &str, promise: Promise<()>) {
+        self.joiners.borrow_mut().push((id.to_string(), promise));
+    }
+
+    /// As promessas que os ouvintes juntaram, com o id de cada uma.
+    pub fn joiners(&self) -> Vec<(String, Promise<()>)> {
+        self.joiners.borrow().clone()
+    }
+}
+
+/// `ILifecycleMainService`, com o que o `handler` e o `StorageMainService` leem.
 pub trait LifecycleMainService {
     /// `onWillLoadWindow`.
     fn on_will_load_window(&self) -> Event<WindowLoadEvent>;
 
     /// `onBeforeCloseWindow`.
     fn on_before_close_window(&self) -> Event<Rc<dyn ProfilesWindow>>;
+
+    /// `onWillShutdown`.
+    fn on_will_shutdown(&self) -> Event<ShutdownEvent>;
+
+    /// `when(phase)`: assenta quando o ciclo de vida chega à fase (ou já passou dela).
+    fn when(&self, phase: LifecycleMainPhase) -> Promise<()>;
 }
 
 /// `IWindowsMainService`, com o que o `handler` lê.
