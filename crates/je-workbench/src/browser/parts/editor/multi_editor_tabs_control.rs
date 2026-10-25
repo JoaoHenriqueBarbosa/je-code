@@ -3524,6 +3524,15 @@ impl TabBoxContext {
         (s.size40, s.size40)
     }
 
+    /// `offsetHeight` da `.tab` do estilo Pill (`tabs.css` L130 a L133, L327 a L333 e L359 a L365): a altura do `.title.tabs`
+    /// (`--editor-group-tab-height`) somada ao `border-block` transparente de [`TabBoxContext::pill_border_block`], que muda com a
+    /// quebra (`size20` dos dois lados, 28px), com as duas barras e com a linha única (`size40`, 32px).
+    pub fn pill_tab_height(&self) -> f64 {
+        let (border_top, border_bottom) = self.pill_border_block();
+
+        self.editor_group_tab_height + border_top + border_bottom
+    }
+
     /// `--modern-ui-connected-tab-row-height`: `tab-height + size40` e, na linha única fora da barra superior,
     /// `tab-height + size40 * 2 - strokeThickness` (`connectedEditorTabs.css` L119 e L158). É também a altura da aba.
     pub fn connected_row_height(&self) -> f64 {
