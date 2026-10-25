@@ -1,46 +1,68 @@
-//! Porte da primeira metade de `src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`: o modelo de rótulos das
+//! Porte de `src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`.
+//!
+//! Fatia 1: o modelo de rótulos das
 //! abas (`computeTabLabels`, `shortenTabLabels`, `getLabelConfigFlags`, `equalsEditorInputLabel`), o estado desenhado de cada
 //! aba (`redrawTab`, `redrawTabAction`, `redrawTabLabel`, `redrawTabSelectedActiveAndDirty`, `redrawTabBorders`), a escolha da
 //! ação da aba com o Alt e a aba sob o mouse, os dimensionamentos `fit`, `shrink` e `fixed`, a largura das abas fixadas, o
 //! agendamento do layout, a rolagem para revelar a aba ativa (`doLayoutTabsNonWrapping`), a rolagem do mouse para trocar de
 //! aba e o que `handleOpenedEditors`, `handleClosedEditors`, `moveEditor`, `pinEditor` e as trocas de estado decidem.
 //!
+//! Fatia 2: `registerTabListeners` (clique, toque, duplo clique, botão do meio, teclado, menu de contexto, entrada e saída do
+//! mouse), `registerTabsContainerListeners` (rolagem, duplo clique no vazio, Alt, roda do mouse, menu da barra), a seleção
+//! múltipla (`selectEditor`, `selectEditorsBetween`, `unselectEditor`, `unselectAllEditors`), o arrastar e soltar entre abas
+//! e grupos (`isSupportedDropTransfer`, `updateDropFeedback`, `updateDropTarget`, `computeDropTarget`,
+//! `getTabDragOverLocation`, `onDrop`), `doLayout`, `doLayoutTabs`, `doLayoutTabsWrapping`, `updateWrappedAddTabAlignment`,
+//! `layoutFitTabsWithoutReservedActions`, `getFitTabWidth` (com as medidas), o recorte das abas conectadas
+//! (`clearConnectedTabClipping`, `updateConnectedTabClipping`, e as duas funções de `connectedTabClipping.ts`),
+//! `originatesFromTabActionBar` e `preventEditorClose` (de `common/editor.ts`).
+//!
 //! Divergências:
-//! - **Sem DOM.** A árvore de abas é o [`TabsView`]: uma linha por aba com o que o original escreve no `HTMLElement` (classes,
-//!   `--tab-sizing-fit-width`, `left`, bordas, `aria-*`). O desenho nativo lê essas linhas; as medidas que o original pede ao
-//!   navegador (`offsetWidth`, `scrollWidth`, `offsetLeft`) chegam como [`TabsMetrics`].
+//! - **Sem DOM.** A árvore de abas é `tabs` ([`Tab`]): uma linha por aba com o que o original escreve no `HTMLElement` (classes,
+//!   `--tab-sizing-fit-width`, `left`, bordas, `aria-*`, `clip-path`), e [`TabsContainerView`] guarda o que ele escreve nos
+//!   contêineres. O desenho nativo lê essas estruturas; as medidas que o original pede ao navegador (`offsetWidth`,
+//!   `scrollWidth`, `offsetLeft`, `getBoundingClientRect`, `getComputedStyle`) chegam pelo [`TabsMeasurer`] (e por
+//!   [`TabsMetrics`] no layout sem quebra), que responde pelo estado vigente a cada leitura, porque o layout reflui quando o
+//!   controle escreve uma classe (por exemplo `wrapping`).
 //! - **Cores do tema** (`getColor`) chegam como [`TabColors`], já resolvidas pelo chamador (o `Themable`).
-//! - **Serviços** (`IPathService`, `IEditorService`, `IKeybindingService`, `IContextMenuService`) chegam como o separador de
-//!   caminho ([`PathSeparator`]) e as decisões que eles tomariam; a abertura de editor, o menu e a montagem dos widgets
-//!   (`ActionBar`, `ScrollableElement`, `ResourceLabels.create`) ficam com a renderização nativa.
+//! - **Serviços e grupo** (`IPathService`, `IEditorService`, `IKeybindingService`, `IContextMenuService`, o `groupView` e o
+//!   `editorPartsView`) chegam como o separador de caminho ([`PathSeparator`]), as consultas de [`TabsControlHost`] e as
+//!   ações de [`TabsGroupOps`] (abrir, selecionar, fixar, mover, copiar, mesclar, menus); a montagem dos widgets
+//!   (`ActionBar`, `ScrollableElement`, `ResourceLabels.create`) fica com a renderização nativa.
+//! - **Eventos.** Cada listener é um método que recebe o evento já decodificado ([`TabPointerEvent`], [`TabKey`], [`TabTap`],
+//!   [`DragModifiers`], [`DropTransfer`], [`WheelInput`]) e devolve o que o original faz com o `Event` (interromper, impedir o
+//!   padrão, o `dropEffect`). `EventHelper.stop` e `preventDefault` ficam com quem entrega o evento.
+//! - **Transferências de arrastar** (`LocalSelectionTransfer`, `DataTransfer`) são [`DropTransfer`], e o que o `onDrop` faz
+//!   com recursos e itens de árvore (`ResourcesDropHandler`, `ITreeViewsDnDService`) é o [`TabsGroupOps`].
 //! - **Agendamento.** `scheduleAtNextAnimationFrame` é o [`LayoutScheduler`]: guarda as opções do layout pedido e quem
 //!   executa o quadro chama [`LayoutScheduler::take`]. O `RunOnceScheduler` dos rótulos é [`LabelUpdateScheduler`].
-//! - **Aba conectada** (`connectedTabBounds`, `clearConnectedTabClipping`, `updateConnectedTabClipping`) mede retângulos do DOM
-//!   e fica na fatia 2.
+//! - **Assíncrono.** As funções `async` do original (`selectEditor`, `onDrop`...) são síncronas: o que elas aguardam
+//!   (`groupView.openEditor`, `setSelection`) é do [`TabsGroupOps`], que o host resolve.
+//! - **Ficam com a renderização nativa**: o `onGroupDragStart` e o `onGroupDragEnd` (da base, ver
+//!   `editor_tabs_control.rs`), `doFillResourceDataTransfers` e `applyDragImage`.
 //!
 //! Plano das fatias seguintes (o que NÃO está aqui):
-//! - Fatia 2, o resto da produção: `registerTabListeners` (clique, duplo clique, toque, teclado, seleção com Ctrl e Shift:
-//!   `selectEditor`, `selectEditorsBetween`, `unselectEditor`, `unselectAllEditors`), o arrastar e soltar de uma aba
-//!   (`isSupportedDropTransfer`, `updateDropFeedback`, `computeDropTarget`, `getTabDragOverLocation`, `onDrop`), o menu de
-//!   contexto da barra, `doLayoutTabsWrapping` e `updateWrappedAddTabAlignment`, `getFitTabWidth` (medição), o recorte das
-//!   abas conectadas, `originatesFromTabActionBar` e `dispose`.
 //! - Fatia 3: o porte do teste `multiEditorTabsControl.test.ts` (86 casos) sobre este controle.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use je_base::errors::Error;
 use je_base::labels::shorten;
 use je_base::lifecycle::id_of;
+use je_base::platform::Platform;
 use je_base::scrollable::ScrollbarVisibility;
 use je_editor::core_2d::dimension::Dimension;
 
-use crate::browser::parts::editor::editor_tabs_control::{EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost};
+use crate::browser::parts::editor::editor_tabs_control::{DragModifiers, EditorTabsControlBase, EditorTitleControlDimensions, TabsControlHost};
 use crate::common::editor::editor_group_model::{EditorOrIndex, IReadonlyEditorGroupModel};
-use crate::common::editor::{EditorInputCapabilities, EditorInputRef, EditorsOrder, SideBySideEditor, Verbosity};
+use crate::common::editor::{
+    EditorCloseMethod, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, PreventPinnedEditorClose, SideBySideEditor, Verbosity,
+};
 use crate::common::editor::EditorResourceAccessor;
 use crate::common::editor::EditorResourceAccessorOptions;
 use crate::services::editor::editor_groups_service::{
-    EditorLabelFormat, EditorPartOptions, PinnedTabSizing, TabActionLocation, TabSizing, TitleScrollbarSizing, TitleScrollbarVisibility,
+    DoubleClickTabAction, EditorLabelFormat, EditorPartOptions, MergeGroupMode, MergeGroupOptions, PinnedTabSizing, TabActionLocation, TabSizing, TitleScrollbarSizing,
+    TitleScrollbarVisibility,
 };
 
 /// `MultiEditorTabsControl.SCROLLBAR_SIZES`.
@@ -336,6 +358,40 @@ pub struct TabState {
     pub action: Option<TabAction>,
     /// O rótulo desenhado.
     pub label: TabLabelDraw,
+    /// `drop-target-left` e `drop-target-right` (`updateDropTarget`).
+    pub drop_target_left: bool,
+    pub drop_target_right: bool,
+    /// `tab-action-sizing-rest`: a aba é medida sem a coluna da ação (`layoutFitTabsWithoutReservedActions`).
+    pub tab_action_sizing_rest: bool,
+    /// `connected-tab-last`, `connected-tab-upper-row` e `connected-tab-top-row`.
+    pub connected_tab_last: bool,
+    pub connected_tab_upper_row: bool,
+    pub connected_tab_top_row: bool,
+    /// `last-in-row` (só com as abas quebradas em linhas).
+    pub last_in_row: bool,
+    /// `style.clipPath` das abas que passam da borda das abas conectadas.
+    pub clip_path: Option<TabClipPath>,
+    /// As classes `connected-tab-*` que `updateConnectedTabClipping` liga na aba ativa.
+    pub connected_clipping: ConnectedTabClasses,
+}
+
+/// `style.clipPath` de uma aba: `inset(-stroke <fim> -stroke <início>)`, onde o lado do fim recebe `clipped` pixels e o outro
+/// recebe o ombro (`--modern-ui-connected-tab-shoulder-radius` mais a espessura do traço), invertidos com o texto da direita
+/// para a esquerda.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabClipPath {
+    pub clipped: f64,
+    pub right_to_left: bool,
+}
+
+/// As classes que `updateConnectedTabClipping` alterna na aba conectada.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnectedTabClasses {
+    pub left_edge: bool,
+    pub right_edge: bool,
+    pub left_clipped: bool,
+    pub right_clipped: bool,
+    pub hidden: bool,
 }
 
 /// A ação mostrada na barra de ações de uma aba.
@@ -522,11 +578,26 @@ pub struct NonWrappingLayout {
     pub block_reveal_active_tab: bool,
 }
 
-/// `doLayoutTabsNonWrapping` sem o recorte das abas conectadas (fatia 2): posiciona as abas fixadas, mede o espaço e decide a
-/// rolagem que revela a aba ativa.
-#[allow(clippy::too_many_arguments)]
-pub fn layout_tabs_non_wrapping(
-    options: Option<LayoutOptions>,
+/// A primeira metade de `doLayoutTabsNonWrapping`: o espaço das abas fixadas e o que sobra para as demais.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StickyTabsLayout {
+    /// `style.left` de cada aba fixada.
+    pub sticky_lefts: Vec<f64>,
+    /// `stickyTabsWidth` (zero quando o posicionamento fixo é desligado).
+    pub sticky_tabs_width: f64,
+    /// A classe `disable-sticky-tabs`.
+    pub disable_sticky_tabs: bool,
+    /// `availableTabsContainerWidth`.
+    pub available_tabs_container_width: f64,
+    /// `activeTabPositionStatic`.
+    pub active_tab_position_static: bool,
+    /// `visibleEditorTabsWidth`.
+    pub visible_editor_tabs_width: f64,
+}
+
+/// Posiciona as abas fixadas (`style.left`), soma a largura delas e decide se o posicionamento fixo precisa ser desligado
+/// por falta de espaço.
+pub fn layout_sticky_tabs(
     metrics: &TabsMetrics,
     sticky_count: usize,
     pinned_tab_sizing: PinnedTabSizing,
@@ -534,13 +605,8 @@ pub fn layout_tabs_non_wrapping(
     connected_tab_labels: bool,
     active_tab_index: Option<usize>,
     active_tab_sticky: bool,
-    block_reveal_active_tab: bool,
-    old_scroll: (f64, f64),
-    scroll_left: f64,
-) -> NonWrappingLayout {
-    let visible_tabs_width = metrics.visible_tabs_width;
-    let all_tabs_width = metrics.all_tabs_width;
-    let visible_editor_tabs_width = visible_tabs_width - metrics.connected_add_tab_width;
+) -> StickyTabsLayout {
+    let visible_editor_tabs_width = metrics.visible_tabs_width - metrics.connected_add_tab_width;
 
     // Compute slot width of sticky tabs depending on pinned tab sizing
     // - compact: sticky-tabs * compact slot width
@@ -575,47 +641,153 @@ pub fn layout_tabs_non_wrapping(
         active_tab_position_static = false;
     }
 
-    let active = if block_reveal_active_tab { None } else { metrics.active_tab };
+    StickyTabsLayout { sticky_lefts, sticky_tabs_width, disable_sticky_tabs, available_tabs_container_width, active_tab_position_static, visible_editor_tabs_width }
+}
 
-    let (old_visible_tabs_width, old_all_tabs_width) = old_scroll;
-    let dimensions_changed = old_visible_tabs_width != visible_tabs_width || old_all_tabs_width != all_tabs_width;
+/// O que as abas conectadas mudam na conta que revela a aba ativa (`connectedTabBounds`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConnectedReveal {
+    pub fill_left: f64,
+    pub fill_right: f64,
+    pub shoulder_extent: f64,
+    /// `previousElementSibling` existe e não é a última da linha: o ombro esquerdo conta.
+    pub has_previous_tab_in_row: bool,
+    /// A aba ativa tem a classe `connected-tab-last`.
+    pub tab_connected_last: bool,
+}
 
-    let skip = block_reveal_active_tab
-        || active.is_none()
-        || active_tab_position_static
-        || (!dimensions_changed && !options.is_some_and(|options| options.force_reveal_active_tab));
-
-    let mut layout = NonWrappingLayout {
-        sticky_lefts,
-        sticky_tabs_width,
-        disable_sticky_tabs,
-        scroll_width: all_tabs_width,
-        scroll_visible_width: visible_tabs_width,
-        reveal_scroll_left: None,
-        block_reveal_active_tab: false,
-    };
-
-    let Some((active_tab_pos_x, active_tab_width)) = active else { return layout };
-    if skip {
-        return layout;
+/// A segunda metade de `doLayoutTabsNonWrapping`: a rolagem que revela a aba ativa, ou `None` se a revelação é pulada ou
+/// desnecessária. `active` é `(offsetLeft, offsetWidth)` da aba ativa (já `None` com `blockRevealActiveTab`).
+#[allow(clippy::too_many_arguments)]
+pub fn reveal_active_tab_scroll(
+    options: Option<LayoutOptions>,
+    active: Option<(f64, f64)>,
+    sticky_tabs_width: f64,
+    available_tabs_container_width: f64,
+    active_tab_position_static: bool,
+    block_reveal_active_tab: bool,
+    dimensions_changed: bool,
+    scroll_left: f64,
+    connected: Option<ConnectedReveal>,
+) -> Option<f64> {
+    // Revealing the active tab is skipped under some conditions
+    let (active_tab_pos_x, active_tab_width) = active?;
+    if block_reveal_active_tab || active_tab_position_static || (!dimensions_changed && !options.is_some_and(|options| options.force_reveal_active_tab)) {
+        return None;
     }
 
     // Reveal the active one
-    let adjusted_active_tab_pos_x = active_tab_pos_x - sticky_tabs_width;
-    let active_tab_right = adjusted_active_tab_pos_x + active_tab_width;
+    let adjusted_active_tab_pos_x = match connected {
+        // Round outwards so fractional bounds cannot leave either shoulder clipped.
+        Some(c) => (c.fill_left - if c.has_previous_tab_in_row { c.shoulder_extent } else { 0.0 }).floor(),
+        None => active_tab_pos_x,
+    } - sticky_tabs_width;
+    let active_tab_right = match connected {
+        Some(c) => (c.fill_right + c.shoulder_extent).ceil() + if c.tab_connected_last { 1.0 } else { 0.0 } - sticky_tabs_width,
+        None => adjusted_active_tab_pos_x + active_tab_width,
+    };
     let active_tab_fits = active_tab_right - adjusted_active_tab_pos_x <= available_tabs_container_width;
 
     // Tab is overflowing to the right: Scroll minimally until the element is fully visible to the right. Note: only try to do
     // this if we actually have enough width to give to show the tab fully!
     if active_tab_fits && scroll_left + available_tabs_container_width < active_tab_right {
-        layout.reveal_scroll_left = Some(scroll_left + (active_tab_right - (scroll_left + available_tabs_container_width)));
+        Some(scroll_left + (active_tab_right - (scroll_left + available_tabs_container_width)))
     }
     // Tab is overflowing to the left or does not fit: Scroll it into view to the left
     else if scroll_left > adjusted_active_tab_pos_x || !active_tab_fits {
-        layout.reveal_scroll_left = Some(adjusted_active_tab_pos_x);
+        Some(adjusted_active_tab_pos_x)
+    } else {
+        None
+    }
+}
+
+/// `doLayoutTabsNonWrapping` sem o recorte das abas conectadas: posiciona as abas fixadas, mede o espaço e decide a rolagem
+/// que revela a aba ativa. Com as abas conectadas, [`MultiEditorTabsControlState::do_layout_tabs_non_wrapping`] compõe as
+/// mesmas duas metades com o recorte no meio.
+#[allow(clippy::too_many_arguments)]
+pub fn layout_tabs_non_wrapping(
+    options: Option<LayoutOptions>,
+    metrics: &TabsMetrics,
+    sticky_count: usize,
+    pinned_tab_sizing: PinnedTabSizing,
+    has_modern_ui_tabs: bool,
+    connected_tab_labels: bool,
+    active_tab_index: Option<usize>,
+    active_tab_sticky: bool,
+    block_reveal_active_tab: bool,
+    old_scroll: (f64, f64),
+    scroll_left: f64,
+) -> NonWrappingLayout {
+    let visible_tabs_width = metrics.visible_tabs_width;
+    let all_tabs_width = metrics.all_tabs_width;
+    let sticky = layout_sticky_tabs(metrics, sticky_count, pinned_tab_sizing, has_modern_ui_tabs, connected_tab_labels, active_tab_index, active_tab_sticky);
+    let active = if block_reveal_active_tab { None } else { metrics.active_tab };
+    let (old_visible_tabs_width, old_all_tabs_width) = old_scroll;
+    let dimensions_changed = old_visible_tabs_width != visible_tabs_width || old_all_tabs_width != all_tabs_width;
+
+    NonWrappingLayout {
+        reveal_scroll_left: reveal_active_tab_scroll(
+            options,
+            active,
+            sticky.sticky_tabs_width,
+            sticky.available_tabs_container_width,
+            sticky.active_tab_position_static,
+            block_reveal_active_tab,
+            dimensions_changed,
+            scroll_left,
+            None,
+        ),
+        sticky_lefts: sticky.sticky_lefts,
+        sticky_tabs_width: sticky.sticky_tabs_width,
+        disable_sticky_tabs: sticky.disable_sticky_tabs,
+        scroll_width: all_tabs_width,
+        scroll_visible_width: visible_tabs_width,
+        block_reveal_active_tab: false,
+    }
+}
+
+/// Os três primeiros testes do `MOUSE_WHEEL`: há editores suficientes, o Shift está como a configuração pede e o último evento
+/// não foi recente demais. Só com `true` o tempo do último evento é atualizado.
+#[allow(clippy::too_many_arguments)]
+pub fn mouse_wheel_gate_passes(
+    editor_count: usize,
+    has_active_editor: bool,
+    scroll_to_switch_tabs: bool,
+    shift_key: bool,
+    now_ms: f64,
+    last_event_ms: f64,
+    delta_x: f64,
+    delta_y: f64,
+) -> bool {
+    if !has_active_editor || editor_count < 2 {
+        return false; // need at least 2 open editors
     }
 
-    layout
+    // Shift-key enables or disables this behaviour depending on the setting
+    if scroll_to_switch_tabs {
+        if shift_key {
+            return false; // 'on': only enable this when Shift-key is not pressed
+        }
+    } else if !shift_key {
+        return false; // 'off': only enable this when Shift-key is pressed
+    }
+
+    // Ignore event if the last one happened too recently (https://github.com/microsoft/vscode/issues/96409). The restriction is
+    // relaxed according to the absolute value of `deltaX` and `deltaY` to support discrete (mouse wheel) and contiguous
+    // scrolling (touchpad) equally well
+    now_ms - last_event_ms >= MOUSE_WHEEL_EVENT_THRESHOLD - 2.0 * (delta_x.abs() + delta_y.abs())
+}
+
+/// A direção da rolagem (`-1` ou `1`), ou `None` se for sutil demais.
+pub fn mouse_wheel_direction(delta_x: f64, delta_y: f64) -> Option<i64> {
+    // Figure out scrolling direction but ignore it if too subtle
+    if delta_x + delta_y < -MOUSE_WHEEL_DISTANCE_THRESHOLD {
+        Some(-1)
+    } else if delta_x + delta_y > MOUSE_WHEEL_DISTANCE_THRESHOLD {
+        Some(1)
+    } else {
+        None
+    }
 }
 
 /// A mudança de aba pelo mouse wheel (`MOUSE_WHEEL`): `Some(direção)` (`-1` ou `1`) ou `None` se o evento é ignorado.
@@ -630,34 +802,11 @@ pub fn mouse_wheel_tab_direction(
     delta_x: f64,
     delta_y: f64,
 ) -> Option<i64> {
-    if !has_active_editor || editor_count < 2 {
-        return None; // need at least 2 open editors
-    }
-
-    // Shift-key enables or disables this behaviour depending on the setting
-    if scroll_to_switch_tabs {
-        if shift_key {
-            return None; // 'on': only enable this when Shift-key is not pressed
-        }
-    } else if !shift_key {
-        return None; // 'off': only enable this when Shift-key is pressed
-    }
-
-    // Ignore event if the last one happened too recently (https://github.com/microsoft/vscode/issues/96409). The restriction is
-    // relaxed according to the absolute value of `deltaX` and `deltaY` to support discrete (mouse wheel) and contiguous
-    // scrolling (touchpad) equally well
-    if now_ms - last_event_ms < MOUSE_WHEEL_EVENT_THRESHOLD - 2.0 * (delta_x.abs() + delta_y.abs()) {
+    if !mouse_wheel_gate_passes(editor_count, has_active_editor, scroll_to_switch_tabs, shift_key, now_ms, last_event_ms, delta_x, delta_y) {
         return None;
     }
 
-    // Figure out scrolling direction but ignore it if too subtle
-    if delta_x + delta_y < -MOUSE_WHEEL_DISTANCE_THRESHOLD {
-        Some(-1)
-    } else if delta_x + delta_y > MOUSE_WHEEL_DISTANCE_THRESHOLD {
-        Some(1)
-    } else {
-        None
-    }
+    mouse_wheel_direction(delta_x, delta_y)
 }
 
 /// Uma aba da árvore: o rótulo e o estado desenhado.
@@ -695,6 +844,20 @@ pub struct MultiEditorTabsControlState {
     pub colors_cell: RefCell<TabColors>,
     /// O contêiner de abas está vazio (`tabs-and-actions-container.empty`).
     pub empty: bool,
+    /// O modelo de abas é o grupo inteiro, só as fixadas ou só as não fixadas (`StickyEditorGroupModel` e
+    /// `UnstickyEditorGroupModel`).
+    pub model_kind: TabsModelKind,
+    /// `lastSingleSelectSelectedEditor` (a âncora da seleção com Shift).
+    pub last_single_select_selected_editor: Option<EditorInputRef>,
+    /// `dropTarget`.
+    pub drop_target: Option<DropTarget>,
+    /// O que o original escreve nos contêineres (classes e variáveis CSS).
+    pub container: TabsContainerView,
+    /// `connectedTabBounds`.
+    pub connected_tab_bounds: Option<ConnectedTabBounds>,
+    /// `isMacintosh` e `isLinux`.
+    pub is_macintosh: bool,
+    pub is_linux: bool,
 }
 
 /// `dimensions: IEditorTitleControlDimensions & { used?: Dimension }`.
@@ -729,6 +892,13 @@ impl MultiEditorTabsControlState {
             connected_tab_labels: false,
             colors_cell: RefCell::new(TabColors::default()),
             empty: true,
+            model_kind: TabsModelKind::Group,
+            last_single_select_selected_editor: None,
+            drop_target: None,
+            container: TabsContainerView::default(),
+            connected_tab_bounds: None,
+            is_macintosh: Platform::detect().is_macintosh,
+            is_linux: Platform::detect().is_linux,
         }
     }
 
@@ -1358,3 +1528,1790 @@ pub struct UpdateOptionsOutcome {
     pub update_tab_sizing: bool,
     pub redrawn: bool,
 }
+
+/// `tabsModel`: o grupo inteiro, só as abas fixadas (`StickyEditorGroupModel`) ou só as não fixadas
+/// (`UnstickyEditorGroupModel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabsModelKind {
+    Group,
+    Sticky,
+    Unsticky,
+}
+
+/// `preventEditorClose` (de `common/editor.ts`): só editores fixados podem ter o fechamento barrado.
+pub fn prevent_editor_close(group: &dyn IReadonlyEditorGroupModel, editor: &EditorInputRef, method: EditorCloseMethod, options: &EditorPartOptions) -> bool {
+    if !group.is_sticky(&EditorOrIndex::Editor(editor.clone())) {
+        return false; // only interested in sticky editors
+    }
+
+    match options.prevent_pinned_editor_close {
+        PreventPinnedEditorClose::KeyboardAndMouse => method == EditorCloseMethod::Mouse || method == EditorCloseMethod::Keyboard,
+        PreventPinnedEditorClose::Mouse => method == EditorCloseMethod::Mouse,
+        PreventPinnedEditorClose::Keyboard => method == EditorCloseMethod::Keyboard,
+        PreventPinnedEditorClose::Never => false,
+    }
+}
+
+/// `a.matches(b)` entre dois editores.
+fn editors_match(a: &EditorInputRef, b: &EditorInputRef) -> bool {
+    a.matches(&EditorInputOrUntyped::Typed(b.clone()))
+}
+
+/// O `editors[index]` de JavaScript: índice negativo ou fora do intervalo é `undefined`.
+fn editor_at(editors: &[EditorInputRef], index: i64) -> Option<EditorInputRef> {
+    usize::try_from(index).ok().and_then(|index| editors.get(index)).cloned()
+}
+
+/// Os modificadores de um evento de mouse, toque ou teclado.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputModifiers {
+    pub shift_key: bool,
+    pub ctrl_key: bool,
+    pub meta_key: bool,
+    pub alt_key: bool,
+}
+
+impl InputModifiers {
+    /// `(e.ctrlKey && !isMacintosh) || (e.metaKey && isMacintosh)`.
+    pub fn is_ctrl_cmd(self, is_macintosh: bool) -> bool {
+        (self.ctrl_key && !is_macintosh) || (self.meta_key && is_macintosh)
+    }
+
+    /// `StandardKeyboardEvent.equals(keyCode)` compara a tecla sem modificadores: nenhum pode estar pressionado.
+    pub fn is_none(self) -> bool {
+        !self.shift_key && !self.ctrl_key && !self.meta_key && !self.alt_key
+    }
+}
+
+/// Um clique, toque ou soltar do mouse sobre uma aba.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TabPointerEvent {
+    /// `e.button`; `None` é um toque (`GestureEvent`).
+    pub button: Option<u8>,
+    pub modifiers: InputModifiers,
+    /// `originatesFromTabActionBar(e)`.
+    pub from_action_bar: bool,
+}
+
+impl TabPointerEvent {
+    /// O teste que os listeners repetem: botão do meio, direito ou, no macOS, Ctrl com clique (menu de contexto).
+    fn is_secondary_button(&self, is_macintosh: bool) -> bool {
+        self.button.is_some_and(|button| button != 0 || (is_macintosh && self.modifiers.ctrl_key))
+    }
+}
+
+/// `originatesFromTabActionBar`: `findParentWithClass(element, 'action-item', 'tab')`, com `target_to_root` sendo as classes
+/// de cada elemento do alvo do evento até a raiz.
+pub fn originates_from_tab_action_bar(target_to_root: &[&[&str]]) -> bool {
+    for classes in target_to_root {
+        if classes.contains(&"action-item") {
+            return true;
+        }
+
+        if classes.contains(&"tab") {
+            return false; // stop at the tab itself
+        }
+    }
+
+    false
+}
+
+/// As teclas que os listeners das abas distinguem (`KeyCode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabKey {
+    Enter,
+    Space,
+    LeftArrow,
+    RightArrow,
+    UpArrow,
+    DownArrow,
+    Home,
+    End,
+    F10,
+    Other,
+}
+
+/// Duplo clique (`DBLCLICK`) ou toque (`TouchEventType.Tap`, que só conta com `tapCount` igual a 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabTap {
+    DoubleClick,
+    Tap { tap_count: u32 },
+}
+
+/// `IEditorOptions` do `openEditor` do grupo que os listeners das abas pedem.
+#[derive(Clone, Default)]
+pub struct TabOpenRequest {
+    pub preserve_focus: bool,
+    /// `activation: EditorActivation.ACTIVATE`.
+    pub activate: bool,
+    /// `inactiveSelection`.
+    pub inactive_selection: Option<Vec<EditorInputRef>>,
+    /// `focusTabControl`.
+    pub focus_tab_control: bool,
+}
+
+/// O âncora do menu de contexto da barra de abas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContextMenuAnchor {
+    /// O ponto do mouse (`StandardMouseEvent`).
+    Point { x: f64, y: f64 },
+    /// O contêiner de abas (o gesto de menu de contexto por toque ou o teclado).
+    TabsContainer,
+}
+
+/// `DraggedEditorIdentifier`: um editor arrastado e o grupo de onde ele vem.
+#[derive(Clone)]
+pub struct DraggedEditor {
+    pub group_id: GroupIdentifier,
+    pub editor: EditorInputRef,
+}
+
+/// O que as transferências locais (`LocalSelectionTransfer`) e o `DataTransfer` carregam ao soltar ou arrastar sobre as abas.
+#[derive(Clone, Default)]
+pub struct DropTransfer {
+    /// `groupTransfer`: `Some` é `hasData`, com os `DraggedEditorGroupIdentifier.identifier`.
+    pub group: Option<Vec<GroupIdentifier>>,
+    /// `editorTransfer`: `Some` é `hasData`.
+    pub editors: Option<Vec<DraggedEditor>>,
+    /// `treeItemsTransfer`: `Some` é `hasData`, com a quantidade de itens.
+    pub tree_items: Option<usize>,
+    /// `e.dataTransfer.types.length`.
+    pub external_types: usize,
+}
+
+/// `dropEffect`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropEffect {
+    None,
+    Copy,
+}
+
+/// O que `onDragEnter` decide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragEnterOutcome {
+    /// O `dropEffect` a escrever no evento, se ele muda.
+    pub drop_effect: Option<DropEffect>,
+    /// O feedback de soltar foi atualizado.
+    pub feedback_updated: bool,
+}
+
+/// O lado da aba sobre o qual o arrasto passa (`getTabDragOverLocation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragLocation {
+    Left,
+    Right,
+}
+
+/// `getTabDragOverLocation`: `rect.left`, `rect.width` e `e.clientX`.
+pub fn tab_drag_over_location(client_x: f64, rect_left: f64, rect_width: f64) -> DragLocation {
+    if client_x - rect_left <= rect_width / 2.0 { DragLocation::Left } else { DragLocation::Right }
+}
+
+/// `dropTarget`: as abas (por índice) que recebem `drop-target-left` e `drop-target-right`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DropTarget {
+    pub left_index: Option<usize>,
+    pub right_index: Option<usize>,
+}
+
+/// `computeDropTarget`.
+pub fn compute_drop_target(tab_index: usize, tab_count: usize, location: DragLocation) -> DropTarget {
+    let is_left_side_of_tab = location == DragLocation::Left;
+    let is_last_tab = tab_index + 1 == tab_count;
+    let is_first_tab = tab_index == 0;
+
+    // Before first tab
+    if is_left_side_of_tab && is_first_tab {
+        return DropTarget { left_index: None, right_index: Some(tab_index) };
+    }
+
+    // After last tab
+    if !is_left_side_of_tab && is_last_tab {
+        return DropTarget { left_index: Some(tab_index), right_index: None };
+    }
+
+    // Between two tabs
+    let tab_before = if is_left_side_of_tab { tab_index.checked_sub(1) } else { Some(tab_index) };
+    let tab_after = if is_left_side_of_tab { Some(tab_index) } else { Some(tab_index + 1) };
+
+    DropTarget { left_index: tab_before, right_index: tab_after }
+}
+
+/// A imagem do arrastar de uma aba.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TabDragImage {
+    /// `applyDragImage(e, tab, label)`: uma imagem de texto limpo.
+    Label(String),
+    /// `setDragImage(tab, 0, 0)`: a própria aba, com o canto superior esquerdo no cursor.
+    TabElement,
+}
+
+/// O que `onDragStart` de uma aba decide.
+#[derive(Clone)]
+pub struct TabDragStart {
+    /// `isNewWindowOperation`.
+    pub is_new_window_operation: bool,
+    /// Os editores selecionados, que viram os `DraggedEditorIdentifier` da transferência local e os dados de recurso.
+    pub selected_editors: Vec<DraggedEditor>,
+    pub drag_image: TabDragImage,
+}
+
+/// O `groupView` e o `editorPartsView` que os listeners das abas acionam: tudo que muda o grupo, abre o menu ou move
+/// editores. As consultas ao grupo ficam em [`TabsControlHost`].
+pub trait TabsGroupOps {
+    /// `groupView.openEditor(editor, options, internalOptions)`.
+    fn open_editor(&self, editor: &EditorInputRef, request: TabOpenRequest);
+    /// `groupView.setSelection(activeSelectedEditor, inactiveSelectedEditors)`.
+    fn set_selection(&self, active_selected_editor: &EditorInputRef, inactive_selected_editors: Vec<EditorInputRef>);
+    /// `groupView.pinEditor(editor)`.
+    fn pin_editor(&self, editor: &EditorInputRef);
+    /// `groupsView.toggleMaximizeGroup(groupView)`.
+    fn toggle_maximize_group(&self);
+    /// `groupsView.toggleExpandGroup(groupView)`.
+    fn toggle_expand_group(&self);
+    /// `groupView.focus()`.
+    fn focus_group(&self);
+    /// `groupView.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)`.
+    fn group_editors_most_recently_active(&self) -> Vec<EditorInputRef>;
+    /// `groupView.stickyCount`.
+    fn group_sticky_count(&self) -> usize;
+    /// `groupView.isSticky(editor)`.
+    fn group_is_sticky(&self, editor: &EditorInputRef) -> bool;
+    /// `groupView.unstickEditor(editor)`.
+    fn unstick_editor(&self, editor: &EditorInputRef);
+    /// `closeEditorAction.run({ groupId, editorIndex })`.
+    fn run_close_editor_action(&self, editor_index: i64);
+    /// `editorService.openEditor({ resource: undefined, options: { pinned: true, index: groupView.count, override: DEFAULT_EDITOR_ASSOCIATION.id } }, groupView.id)`.
+    fn open_new_editor_at_end(&self);
+    /// `onTabContextMenu(editor, e, tab)`.
+    fn show_tab_context_menu(&self, editor: &EditorInputRef);
+    /// `contextMenuService.showContextMenu` com o menu `EditorTabsBarContext`.
+    fn show_tabs_bar_context_menu(&self, anchor: ContextMenuAnchor);
+    /// `editorPartsView.getGroup(id)` existe.
+    fn has_group(&self, group_id: GroupIdentifier) -> bool;
+    /// `sourceGroup.getIndexOfEditor(editor)`.
+    fn group_index_of_editor(&self, group_id: GroupIdentifier, editor: &EditorInputRef) -> i64;
+    /// `sourceGroup.moveEditor(editor, groupView, options)`.
+    fn move_editor_from(&self, source_group_id: GroupIdentifier, editor: &EditorInputRef, options: DropEditorOptions);
+    /// `sourceGroup.copyEditor(editor, groupView, options)`.
+    fn copy_editor_from(&self, source_group_id: GroupIdentifier, editor: &EditorInputRef, options: DropEditorOptions);
+    /// `groupsView.mergeGroup(sourceGroup, groupView, options)`.
+    fn merge_group(&self, source_group_id: GroupIdentifier, options: MergeGroupOptions);
+    /// `treeViewsDragAndDropService` e `editorService.openEditors(editors, groupView, { validateTrust: true })` com cada
+    /// editor `{ pinned: true, index }`.
+    fn open_tree_items_drop(&self, options: DropEditorOptions);
+    /// `ResourcesDropHandler.handleDrop(e, window, () => groupView, () => groupView.focus(), options)`.
+    fn handle_resources_drop(&self, options: DropEditorOptions);
+    /// `groupTransfer.clearData(DraggedEditorGroupIdentifier.prototype)`.
+    fn clear_group_transfer(&self);
+    /// `editorTransfer.clearData(DraggedEditorIdentifier.prototype)`.
+    fn clear_editor_transfer(&self);
+    /// `treeItemsTransfer.clearData(DraggedTreeItemsIdentifier.prototype)`.
+    fn clear_tree_items_transfer(&self);
+    /// O fim de `onDragEnd` com a operação de janela nova: `editorTransfer.getData` seguido de `clearData`.
+    fn take_dragged_editors(&self) -> Vec<DraggedEditor>;
+    /// `maybeCreateAuxiliaryEditorPartAt(e, tab)`: o id do grupo ativo da janela auxiliar, ou `None` se foi recusada.
+    fn create_auxiliary_part_for_drag(&self) -> Option<GroupIdentifier>;
+    /// `groupView.moveEditors(prepareMoveCopyEditors(groupView, editors), targetGroup)`.
+    fn move_editors_to(&self, editors: &[EditorInputRef], target_group_id: GroupIdentifier);
+    /// `groupView.copyEditors(prepareMoveCopyEditors(groupView, editors), targetGroup)`.
+    fn copy_editors_to(&self, editors: &[EditorInputRef], target_group_id: GroupIdentifier);
+    /// `targetGroup.focus()`.
+    fn focus_other_group(&self, group_id: GroupIdentifier);
+}
+
+/// `IEditorOptions` do `onDrop` (`sticky` e `index`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DropEditorOptions {
+    pub sticky: bool,
+    pub index: i64,
+}
+
+/// As rolagens do mouse (`WheelEvent`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WheelInput {
+    pub shift_key: bool,
+    pub delta_x: f64,
+    pub delta_y: f64,
+}
+
+impl MultiEditorTabsControlState {
+    /// `groupView.isSelected(editor)`.
+    fn group_is_selected(&self, editor: &EditorInputRef) -> bool {
+        self.host().selected_editors().iter().any(|selected| id_of(selected) == id_of(editor))
+    }
+
+    /// `assertReturnsDefined(groupView.activeEditor)`.
+    fn assert_active_editor(&self) -> Result<EditorInputRef, Error> {
+        self.host().active_editor().ok_or_else(|| Error::new("Assertion Failed: argument is undefined or null".to_string()))
+    }
+
+    /// `blockRevealActiveTabOnce`: ao fechar abas em sequência, revelar a ativa a cada fechamento atrapalharia.
+    pub fn block_reveal_active_tab_once(&mut self) {
+        self.block_reveal_active_tab = true;
+    }
+
+    /// `setAltPressed`.
+    pub fn set_alt_pressed(&mut self, is_alt_pressed: bool) {
+        if let Some(index) = self.hover_alt.set_alt_pressed(is_alt_pressed) {
+            self.redraw_tab_action_at_index(index);
+        }
+    }
+
+    /// `setHoveredTab`.
+    pub fn set_hovered_tab(&mut self, tab_index: Option<usize>) {
+        if self.hover_alt.hovered_tab_index == tab_index {
+            return;
+        }
+
+        for index in self.hover_alt.set_hovered_tab(tab_index) {
+            self.redraw_tab_action_at_index(index);
+        }
+        self.update_connected_tab_overflow_hover();
+    }
+
+    /// `updateConnectedTabOverflowHover`.
+    pub fn update_connected_tab_overflow_hover(&mut self) {
+        let host = self.host();
+        let hovered_active = self
+            .hover_alt
+            .hovered_tab_index
+            .and_then(|index| self.base.tabs_model.get_editor_by_index(index as i64))
+            .is_some_and(|editor| host.is_active(&editor));
+        self.container.overflow_edge.hovered = hovered_active;
+    }
+
+    /// O `MOUSE_DOWN` e o `MOUSE_MOVE` do contêiner de abas, em fase de captura: confere o Alt, que o evento sempre carrega.
+    pub fn handle_tabs_container_mouse_event(&mut self, alt_key: bool) {
+        self.set_alt_pressed(alt_key);
+    }
+
+    /// O `MOUSE_DOWN` do contêiner de abas: o botão do meio não pode iniciar a rolagem automática
+    /// (https://github.com/microsoft/vscode/issues/16690). Devolve se o evento deve ter o padrão impedido.
+    pub fn tabs_container_mouse_down_prevents_default(&self, button: u8) -> bool {
+        button == 1
+    }
+
+    /// O `MOUSE_UP` do contêiner de abas no Linux: o botão do meio não pode colar (https://github.com/microsoft/vscode/issues/201696).
+    pub fn tabs_container_mouse_up_prevents_default(&self, button: u8) -> bool {
+        self.is_linux && button == 1
+    }
+
+    /// O `MOUSE_LEAVE` do contêiner de abas: limpa a aba sob o mouse e, com o tamanho `fixed`, solta as larguras fixadas.
+    pub fn handle_tabs_container_mouse_leave(&mut self) {
+        self.set_hovered_tab(None);
+
+        if self.options().tab_sizing == TabSizing::Fixed {
+            self.is_mouse_over_tabs = false;
+            self.update_tabs_fixed_width(false, &[]);
+        }
+    }
+
+    /// O `MOUSE_ENTER` do contêiner de abas com o tamanho `fixed` (`updateTabSizing`).
+    pub fn handle_tabs_container_mouse_enter(&mut self) {
+        if self.options().tab_sizing == TabSizing::Fixed {
+            self.is_mouse_over_tabs = true;
+        }
+    }
+
+    /// O `SCROLL` do contêiner de abas: durante o arrastar o contêiner rola, então a barra customizada acompanha.
+    pub fn handle_tabs_container_scroll(&mut self, scroll_left: f64, measurer: &dyn TabsMeasurer) {
+        if self.container.scroll_mode {
+            self.container.scroll_left = scroll_left;
+            self.update_connected_tab_clipping(scroll_left, measurer);
+        }
+    }
+
+    /// O duplo clique ou toque no contêiner de abas (não nas abas) abre um arquivo novo no fim. `target_is_container` é
+    /// `e.target === tabsContainer` (ou `initialTarget`, no toque). Devolve se o evento foi interrompido.
+    pub fn handle_tabs_container_double_click(&self, tap: TabTap, target_is_container: bool, ops: &dyn TabsGroupOps) -> bool {
+        if let TabTap::Tap { tap_count } = tap
+            && tap_count != 2
+        {
+            return false; // ignore single taps
+        }
+
+        if !target_is_container {
+            return false; // ignore if target is not tabs container
+        }
+
+        ops.open_new_editor_at_end();
+
+        true
+    }
+
+    /// O `MOUSE_WHEEL` do contêiner de abas: troca de aba se a configuração e o Shift deixam. Devolve se o evento foi
+    /// interrompido (a rolagem normal é desligada, o `openEditor` já revela a aba).
+    pub fn handle_mouse_wheel(&mut self, wheel: WheelInput, now_ms: f64, ops: &dyn TabsGroupOps) -> bool {
+        let host = self.host();
+        let Some(active_editor) = host.active_editor() else { return false };
+        if !mouse_wheel_gate_passes(
+            host.group_count(),
+            true,
+            self.options().scroll_to_switch_tabs,
+            wheel.shift_key,
+            now_ms,
+            self.last_mouse_wheel_event_time,
+            wheel.delta_x,
+            wheel.delta_y,
+        ) {
+            return false;
+        }
+
+        self.last_mouse_wheel_event_time = now_ms;
+
+        let Some(direction) = mouse_wheel_direction(wheel.delta_x, wheel.delta_y) else { return false };
+        let Some(next_editor) = editor_at(&host.group_editors(), host.index_of_editor(&active_editor) + direction) else { return false };
+
+        // Open it
+        ops.open_editor(&next_editor, TabOpenRequest::default());
+
+        true
+    }
+
+    /// O menu de contexto do contêiner de abas (`showContextMenu`): `point` é a posição do mouse, ausente no gesto de toque.
+    pub fn show_tabs_bar_context_menu(&self, point: Option<(f64, f64)>, ops: &dyn TabsGroupOps) {
+        ops.show_tabs_bar_context_menu(match point {
+            Some((x, y)) => ContextMenuAnchor::Point { x, y },
+            None => ContextMenuAnchor::TabsContainer,
+        });
+    }
+
+    /// `handleClickOrTouch`. Devolve se o padrão do evento deve ser impedido (o botão do meio, para não rolar sozinho).
+    pub fn handle_click_or_touch(&mut self, tab_index: usize, e: &TabPointerEvent, preserve_focus: bool, ops: &dyn TabsGroupOps) -> Result<bool, Error> {
+        if e.is_secondary_button(self.is_macintosh) {
+            return Ok(e.button == Some(1)); // required to prevent auto-scrolling (https://github.com/microsoft/vscode/issues/16690)
+        }
+
+        if e.from_action_bar {
+            return Ok(false); // not when clicking on actions
+        }
+
+        // Open tabs editor
+        let Some(editor) = self.base.tabs_model.get_editor_by_index(tab_index as i64) else { return Ok(false) };
+        if e.modifiers.shift_key {
+            let last_selected = self
+                .last_single_select_selected_editor
+                .clone()
+                .filter(|last| self.base.tabs_model.is_selected(&EditorOrIndex::Editor(last.clone())));
+            let anchor = match last_selected {
+                // The last selected editor is the anchor
+                Some(last) => last,
+                // The active editor is the anchor
+                None => {
+                    let active_editor = self.assert_active_editor()?;
+                    self.last_single_select_selected_editor = Some(active_editor.clone());
+                    active_editor
+                }
+            };
+            self.select_editors_between(&editor, &anchor, ops)?;
+        } else if e.modifiers.is_ctrl_cmd(self.is_macintosh) {
+            if self.base.tabs_model.is_selected(&EditorOrIndex::Editor(editor.clone())) {
+                self.unselect_editor(&editor, ops)?;
+            } else {
+                self.select_editor(&editor, ops);
+                self.last_single_select_selected_editor = Some(editor);
+            }
+        } else {
+            // Even if focus is preserved make sure to activate the group. If a new active editor is selected, keep the current
+            // selection on key down such that drag and drop can operate over the selection. The selection is removed on key
+            // up in this case.
+            let inactive_selection = if self.base.tabs_model.is_selected(&EditorOrIndex::Editor(editor.clone())) {
+                self.host().selected_editors().into_iter().filter(|selected| !editors_match(selected, &editor)).collect()
+            } else {
+                Vec::new()
+            };
+            ops.open_editor(&editor, TabOpenRequest { preserve_focus, activate: true, inactive_selection: Some(inactive_selection), focus_tab_control: true });
+        }
+
+        Ok(false)
+    }
+
+    /// O `MOUSE_UP` de uma aba: soltar sem Ctrl ou Shift desfaz a seleção múltipla.
+    pub fn handle_tab_mouse_up(&mut self, e: &TabPointerEvent, ops: &dyn TabsGroupOps) -> Result<(), Error> {
+        if e.is_secondary_button(self.is_macintosh) {
+            return Ok(());
+        }
+
+        if e.from_action_bar {
+            return Ok(()); // not when clicking on actions
+        }
+
+        if !e.modifiers.is_ctrl_cmd(self.is_macintosh) && !e.modifiers.shift_key && self.host().selected_editors().len() > 1 {
+            self.unselect_all_editors(ops)?;
+        }
+
+        Ok(())
+    }
+
+    /// O `MOUSE_ENTER` de uma aba: congela a largura `fit` e marca a aba sob o mouse.
+    pub fn handle_tab_mouse_enter(&mut self, tab_index: usize, measurer: &dyn TabsMeasurer) {
+        self.freeze_fit_tab_width_without_reserved_actions(tab_index, measurer);
+        self.set_hovered_tab(Some(tab_index));
+    }
+
+    /// O `MOUSE_LEAVE` de uma aba.
+    pub fn handle_tab_mouse_leave(&mut self, tab_index: usize) {
+        if self.hover_alt.hovered_tab_index == Some(tab_index) {
+            self.set_hovered_tab(None);
+        }
+    }
+
+    /// O `FOCUS` (em captura) de uma aba.
+    pub fn handle_tab_focus(&mut self, tab_index: usize, measurer: &dyn TabsMeasurer) {
+        self.freeze_fit_tab_width_without_reserved_actions(tab_index, measurer);
+    }
+
+    /// O `CHANGE` do toque numa aba: a rolagem acompanha o dedo. Devolve a nova posição da barra.
+    pub fn handle_tab_touch_scroll(&mut self, translation_x: f64) -> f64 {
+        self.container.scroll_left -= translation_x;
+        self.container.scroll_left
+    }
+
+    /// O `AUXCLICK` de uma aba: o botão do meio fecha. Devolve se o evento foi interrompido.
+    pub fn handle_tab_aux_click(&mut self, tab_index: usize, button: u8, ops: &dyn TabsGroupOps) -> bool {
+        if button != 1 {
+            return false;
+        }
+
+        if let Some(editor) = self.base.tabs_model.get_editor_by_index(tab_index as i64) {
+            if editor.has_capability(EditorInputCapabilities::CANNOT_CLOSE)
+                || prevent_editor_close(self.base.tabs_model.as_ref(), &editor, EditorCloseMethod::Mouse, &self.options())
+            {
+                return true;
+            }
+
+            self.block_reveal_active_tab_once();
+            ops.run_close_editor_action(self.host().index_of_editor(&editor));
+        }
+
+        true
+    }
+
+    /// O `KEY_DOWN` de uma aba: Shift+F10 abre o menu de contexto. Devolve se o evento foi interrompido.
+    pub fn handle_tab_key_down(&self, tab_index: usize, key: TabKey, modifiers: InputModifiers, ops: &dyn TabsGroupOps) -> bool {
+        if modifiers.shift_key && key == TabKey::F10 {
+            return self.show_tab_context_menu(tab_index, ops);
+        }
+
+        false
+    }
+
+    /// `showContextMenu` e o `CONTEXT_MENU` de uma aba. Devolve se o evento foi interrompido (sempre).
+    pub fn show_tab_context_menu(&self, tab_index: usize, ops: &dyn TabsGroupOps) -> bool {
+        if let Some(editor) = self.base.tabs_model.get_editor_by_index(tab_index as i64) {
+            ops.show_tab_context_menu(&editor);
+        }
+
+        true
+    }
+
+    /// O `KEY_UP` de uma aba: Enter e Espaço abrem, as setas, Home e End navegam. Devolve se o evento foi tratado (e
+    /// interrompido). Depois dele a barra de rolagem customizada acompanha o `scrollLeft` do contêiner.
+    pub fn handle_tab_key_up(&self, tab_index: usize, key: TabKey, modifiers: InputModifiers, ops: &dyn TabsGroupOps) -> bool {
+        let mut handled = false;
+
+        // Run action on Enter/Space
+        if modifiers.is_none() && matches!(key, TabKey::Enter | TabKey::Space) {
+            handled = true;
+            if let Some(editor) = self.base.tabs_model.get_editor_by_index(tab_index as i64) {
+                ops.open_editor(&editor, TabOpenRequest::default());
+            }
+        }
+        // Navigate in editors
+        else if modifiers.is_none() && matches!(key, TabKey::LeftArrow | TabKey::RightArrow | TabKey::UpArrow | TabKey::DownArrow | TabKey::Home | TabKey::End) {
+            let host = self.host();
+            let editor_index = match key {
+                TabKey::LeftArrow | TabKey::UpArrow => self.to_editor_index(tab_index) - 1,
+                TabKey::RightArrow | TabKey::DownArrow => self.to_editor_index(tab_index) + 1,
+                TabKey::Home => 0,
+                _ => host.group_count() as i64 - 1,
+            };
+
+            if let Some(target) = editor_at(&host.group_editors(), editor_index) {
+                handled = true;
+                ops.open_editor(&target, TabOpenRequest { preserve_focus: true, focus_tab_control: true, ..TabOpenRequest::default() });
+            }
+        }
+
+        handled
+    }
+
+    /// O duplo clique ou o toque duplo numa aba: fixa a aba ou, se já fixada, alterna o tamanho do grupo. Devolve se o
+    /// evento foi interrompido (só o `DBLCLICK`).
+    pub fn handle_tab_double_click(&self, tab_index: usize, tap: TabTap, ops: &dyn TabsGroupOps) -> bool {
+        if let TabTap::Tap { tap_count } = tap
+            && tap_count != 2
+        {
+            return false; // ignore single taps
+        }
+
+        match self.base.tabs_model.get_editor_by_index(tab_index as i64) {
+            Some(editor) if self.base.tabs_model.is_pinned(&EditorOrIndex::Editor(editor.clone())) => match self.options().double_click_tab_to_toggle_editor_group_sizes {
+                DoubleClickTabAction::Maximize => ops.toggle_maximize_group(),
+                DoubleClickTabAction::Expand => ops.toggle_expand_group(),
+                DoubleClickTabAction::Off => {}
+            },
+            Some(editor) => ops.pin_editor(&editor),
+            None => {}
+        }
+
+        tap == TabTap::DoubleClick
+    }
+
+    /// `selectEditor`.
+    pub fn select_editor(&self, editor: &EditorInputRef, ops: &dyn TabsGroupOps) {
+        if self.host().is_active(editor) {
+            return;
+        }
+
+        ops.set_selection(editor, self.host().selected_editors());
+    }
+
+    /// `selectEditorsBetween`.
+    pub fn select_editors_between(&self, target: &EditorInputRef, anchor: &EditorInputRef, ops: &dyn TabsGroupOps) -> Result<(), Error> {
+        let host = self.host();
+        let editor_index = host.index_of_editor(target);
+        if editor_index == -1 {
+            return Err(Error::bug_indicating(None));
+        }
+
+        let anchor_editor_index = host.index_of_editor(anchor);
+        if anchor_editor_index == -1 {
+            return Err(Error::bug_indicating(None));
+        }
+
+        let editors = host.group_editors();
+        let mut selection = host.selected_editors();
+
+        // Unselect editors on other side of anchor in relation to the target
+        let mut current_editor_index = anchor_editor_index;
+        while current_editor_index >= 0 && current_editor_index <= host.group_count() as i64 - 1 {
+            current_editor_index = if anchor_editor_index < editor_index { current_editor_index - 1 } else { current_editor_index + 1 };
+
+            let Some(current_editor) = editor_at(&editors, current_editor_index) else { break };
+            if !self.group_is_selected(&current_editor) {
+                break;
+            }
+
+            selection.retain(|editor| !editors_match(editor, &current_editor));
+        }
+
+        // Select editors between anchor and target
+        let from_editor_index = anchor_editor_index.min(editor_index);
+        let to_editor_index = anchor_editor_index.max(editor_index);
+
+        for editor in editors.iter().skip(from_editor_index as usize).take((to_editor_index - from_editor_index + 1) as usize) {
+            if !self.group_is_selected(editor) {
+                selection.push(editor.clone());
+            }
+        }
+
+        let inactive_selected_editors = selection.into_iter().filter(|editor| !editors_match(editor, target)).collect();
+        ops.set_selection(target, inactive_selected_editors);
+
+        Ok(())
+    }
+
+    /// `unselectEditor`.
+    pub fn unselect_editor(&self, editor: &EditorInputRef, ops: &dyn TabsGroupOps) -> Result<(), Error> {
+        let host = self.host();
+        let is_unselecting_active_editor = host.is_active(editor);
+
+        // If there is only one editor selected, do not unselect it
+        if is_unselecting_active_editor && host.selected_editors().len() == 1 {
+            return Ok(());
+        }
+
+        let mut new_active_editor = self.assert_active_editor()?;
+
+        // If active editor is bing unselected then find the most recently opened selected editor that is not the editor being
+        // unselected
+        if is_unselecting_active_editor {
+            let recent_editors = ops.group_editors_most_recently_active();
+            for recent_editor in recent_editors.iter().skip(1) {
+                // First one is the active editor
+                if self.group_is_selected(recent_editor) {
+                    new_active_editor = recent_editor.clone();
+                    break;
+                }
+            }
+        }
+
+        let inactive_selected_editors = host
+            .selected_editors()
+            .into_iter()
+            .filter(|selected| !editors_match(selected, editor) && !editors_match(selected, &new_active_editor))
+            .collect();
+        ops.set_selection(&new_active_editor, inactive_selected_editors);
+
+        Ok(())
+    }
+
+    /// `unselectAllEditors`.
+    pub fn unselect_all_editors(&self, ops: &dyn TabsGroupOps) -> Result<(), Error> {
+        if self.host().selected_editors().len() > 1 {
+            let active_editor = self.assert_active_editor()?;
+            ops.set_selection(&active_editor, Vec::new());
+        }
+
+        Ok(())
+    }
+
+    /// `isSupportedDropTransfer`.
+    pub fn is_supported_drop_transfer(&self, transfer: &DropTransfer) -> bool {
+        if let Some(data) = &transfer.group {
+            if let Some(group_id) = data.first()
+                && *group_id == self.host().group_id()
+            {
+                return false; // groups cannot be dropped on group it originates from
+            }
+
+            return true;
+        }
+
+        if transfer.editors.is_some() {
+            return true; // (local) editors can always be dropped
+        }
+
+        // optimistically allow external data (// see https://github.com/microsoft/vscode/issues/25789)
+        transfer.external_types > 0
+    }
+
+    /// `updateDropFeedback`: `tab` é a aba sob o arrasto e o lado dela; sem ela o alvo é depois da última aba. Sem `is_dnd`
+    /// o feedback é limpo.
+    pub fn update_drop_feedback(&mut self, is_dnd: bool, tab: Option<(usize, DragLocation)>) {
+        let drop_target = if !is_dnd {
+            None
+        } else if let Some((tab_index, location)) = tab {
+            Some(compute_drop_target(tab_index, self.base.tabs_model.count(), location))
+        } else {
+            Some(DropTarget { left_index: self.tabs.len().checked_sub(1), right_index: None })
+        };
+
+        self.update_drop_target(drop_target);
+    }
+
+    /// `updateDropTarget`.
+    pub fn update_drop_target(&mut self, new_target: Option<DropTarget>) {
+        if self.drop_target == new_target {
+            return;
+        }
+
+        if let Some(old) = self.drop_target {
+            if let Some(tab) = old.left_index.and_then(|index| self.tabs.get_mut(index)) {
+                tab.state.drop_target_left = false;
+            }
+            if let Some(tab) = old.right_index.and_then(|index| self.tabs.get_mut(index)) {
+                tab.state.drop_target_right = false;
+            }
+        }
+
+        if let Some(new) = new_target {
+            if let Some(tab) = new.left_index.and_then(|index| self.tabs.get_mut(index)) {
+                tab.state.drop_target_left = true;
+            }
+            if let Some(tab) = new.right_index.and_then(|index| self.tabs.get_mut(index)) {
+                tab.state.drop_target_right = true;
+            }
+        }
+
+        self.drop_target = new_target;
+    }
+
+    /// O `onDragEnter` comum: sem suporte o efeito é `none`; sem dados locais só dá para copiar.
+    fn drag_enter_effect(&self, transfer: &DropTransfer) -> Result<Option<DropEffect>, ()> {
+        if !self.is_supported_drop_transfer(transfer) {
+            return Err(());
+        }
+
+        Ok(if transfer.editors.is_none() { Some(DropEffect::Copy) } else { None })
+    }
+
+    /// O `onDragStart` de uma aba. Depois dele, no próximo quadro, o chamador limpa o feedback com
+    /// `update_drop_feedback(false, None)`.
+    pub fn on_tab_drag_start(&self, tab_index: usize, modifiers: DragModifiers) -> Option<TabDragStart> {
+        let editor = self.base.tabs_model.get_editor_by_index(tab_index as i64)?;
+        let is_new_window_operation = self.base.is_new_window_operation(modifiers);
+        let host = self.host();
+        let selected_editors = host.selected_editors();
+        let group_id = host.group_id();
+
+        let drag_image = if selected_editors.len() > 1 {
+            TabDragImage::Label(format!("{} + {}", editor.get_name(), selected_editors.len() - 1))
+        } else {
+            let options = self.options();
+            let is_tab_sticky = self.base.tabs_model.is_sticky(&EditorOrIndex::Index(tab_index as i64));
+            let is_shrink_sizing = options.tab_sizing == TabSizing::Shrink || (is_tab_sticky && options.pinned_tab_sizing == PinnedTabSizing::Shrink);
+            if is_shrink_sizing {
+                // When tab sizing is 'shrink', the tab label may be truncated. Using the tab DOM element as a drag image can
+                // cause parts of the tab header UI to visually drag along. Instead, use a clean text-only drag image with the
+                // editor name.
+                TabDragImage::Label(editor.get_name())
+            } else {
+                TabDragImage::TabElement // top left corner of dragged tab set to cursor position to make room for drop-border feedback
+            }
+        };
+
+        Some(TabDragStart {
+            is_new_window_operation,
+            selected_editors: selected_editors.into_iter().map(|editor| DraggedEditor { group_id, editor }).collect(),
+            drag_image,
+        })
+    }
+
+    /// O `onDragEnter` de uma aba.
+    pub fn on_tab_drag_enter(&mut self, tab_index: usize, location: DragLocation, transfer: &DropTransfer) -> DragEnterOutcome {
+        match self.drag_enter_effect(transfer) {
+            Err(()) => DragEnterOutcome { drop_effect: Some(DropEffect::None), feedback_updated: false },
+            Ok(drop_effect) => {
+                self.update_drop_feedback(true, Some((tab_index, location)));
+                DragEnterOutcome { drop_effect, feedback_updated: true }
+            }
+        }
+    }
+
+    /// O `onDragOver` de uma aba: arrastar sobre ela por tempo demais a abre.
+    pub fn on_tab_drag_over(&mut self, tab_index: usize, location: DragLocation, drag_duration_ms: u64, ops: &dyn TabsGroupOps) {
+        if drag_duration_ms >= DRAG_OVER_OPEN_TAB_THRESHOLD
+            && let Some(dragged_over_tab) = self.base.tabs_model.get_editor_by_index(tab_index as i64)
+            && self.base.tabs_model.active_editor().is_none_or(|active| id_of(&active) != id_of(&dragged_over_tab))
+        {
+            ops.open_editor(&dragged_over_tab, TabOpenRequest { preserve_focus: true, ..TabOpenRequest::default() });
+        }
+
+        self.update_drop_feedback(true, Some((tab_index, location)));
+    }
+
+    /// O `onDragEnd` de uma aba: com a operação de janela nova solta o arrasto numa janela auxiliar.
+    pub fn on_tab_drag_end(&mut self, is_new_window_operation: bool, is_window_dragged_over: bool, last_drag_modifiers: DragModifiers, ops: &dyn TabsGroupOps) {
+        self.update_drop_feedback(false, None);
+        let dragged_editors = ops.take_dragged_editors();
+
+        if !is_new_window_operation || is_window_dragged_over || dragged_editors.is_empty() {
+            return; // drag to open in new window is disabled
+        }
+
+        let Some(target_group_id) = ops.create_auxiliary_part_for_drag() else { return };
+
+        let editors: Vec<EditorInputRef> = dragged_editors.iter().map(|dragged| dragged.editor.clone()).collect();
+        if self.base.is_move_operation(last_drag_modifiers, target_group_id, Some(&dragged_editors[0].editor), self.is_macintosh) {
+            ops.move_editors_to(&editors, target_group_id);
+        } else {
+            ops.copy_editors_to(&editors, target_group_id);
+        }
+
+        ops.focus_other_group(target_group_id);
+    }
+
+    /// O `onDrop` de uma aba: o índice é o da aba, mais um se o soltar foi na metade direita.
+    pub fn on_tab_drop(&mut self, tab_index: usize, location: DragLocation, modifiers: DragModifiers, transfer: &DropTransfer, ops: &dyn TabsGroupOps) {
+        self.update_drop_feedback(false, None);
+
+        // compute the target index
+        let target_index = if location == DragLocation::Right { tab_index + 1 } else { tab_index };
+
+        self.on_drop(modifiers, target_index, transfer, ops);
+    }
+
+    /// O `onDragEnter` do contêiner de abas: liga o modo de rolagem durante o arrasto e só dá feedback se o alvo é o contêiner.
+    pub fn on_container_drag_enter(&mut self, target_is_container: bool, transfer: &DropTransfer) -> DragEnterOutcome {
+        // Always enable support to scroll while dragging
+        self.container.scroll_mode = true;
+
+        // Return if the target is not on the tabs container
+        if !target_is_container {
+            return DragEnterOutcome { drop_effect: None, feedback_updated: false };
+        }
+
+        match self.drag_enter_effect(transfer) {
+            Err(()) => DragEnterOutcome { drop_effect: Some(DropEffect::None), feedback_updated: false },
+            Ok(drop_effect) => {
+                self.update_drop_feedback(true, None);
+                DragEnterOutcome { drop_effect, feedback_updated: true }
+            }
+        }
+    }
+
+    /// O `onDragLeave` e o `onDragEnd` do contêiner de abas.
+    pub fn on_container_drag_leave(&mut self) {
+        self.update_drop_feedback(false, None);
+        self.container.scroll_mode = false;
+    }
+
+    /// O `onDrop` do contêiner de abas: soltar no vazio vai para o fim (do grupo, se for um grupo arrastado).
+    pub fn on_container_drop(&mut self, target_is_container: bool, modifiers: DragModifiers, transfer: &DropTransfer, ops: &dyn TabsGroupOps) {
+        self.update_drop_feedback(false, None);
+        self.container.scroll_mode = false;
+
+        if target_is_container {
+            let is_group_transfer = transfer.group.is_some();
+            let target_index = if is_group_transfer { self.host().group_count() } else { self.base.tabs_model.count() };
+            self.on_drop(modifiers, target_index, transfer, ops);
+        }
+    }
+
+    /// `onDrop`: aplica o que foi solto (um grupo, editores, itens de árvore ou recursos) no índice da aba de destino.
+    pub fn on_drop(&mut self, modifiers: DragModifiers, target_tab_index: usize, transfer: &DropTransfer, ops: &dyn TabsGroupOps) {
+        self.update_drop_feedback(false, None);
+        self.container.scroll_mode = false;
+
+        let host = self.host();
+        let mut target_editor_index = if self.model_kind == TabsModelKind::Unsticky { (target_tab_index + ops.group_sticky_count()) as i64 } else { target_tab_index as i64 };
+        let options = DropEditorOptions { sticky: self.model_kind == TabsModelKind::Sticky && self.base.tabs_model.sticky_count() as i64 == target_editor_index, index: target_editor_index };
+
+        // Check for group transfer
+        if let Some(data) = &transfer.group {
+            if let Some(&source_group_id) = data.first() {
+                if ops.has_group(source_group_id) {
+                    let mut merge_group_options = MergeGroupOptions { index: usize::try_from(target_editor_index).ok(), ..MergeGroupOptions::default() };
+                    if !self.base.is_move_operation(modifiers, source_group_id, None, self.is_macintosh) {
+                        merge_group_options.mode = Some(MergeGroupMode::CopyEditors);
+                    }
+
+                    ops.merge_group(source_group_id, merge_group_options);
+                }
+
+                ops.focus_group();
+                ops.clear_group_transfer();
+            }
+        }
+        // Check for editor transfer
+        else if let Some(data) = &transfer.editors {
+            if let Some(first) = data.first()
+                && ops.has_group(first.group_id)
+            {
+                let source_group_id = first.group_id;
+                for dragged in data {
+                    let editor = &dragged.editor;
+
+                    // Only allow moving/copying from a single group source
+                    if source_group_id != dragged.group_id {
+                        continue;
+                    }
+
+                    // Keep the same order when moving / copying editors within the same group
+                    let source_editor_index = ops.group_index_of_editor(source_group_id, editor);
+                    if source_group_id == host.group_id() && source_editor_index < target_editor_index {
+                        target_editor_index -= 1;
+                    }
+
+                    let editor_options = DropEditorOptions { index: target_editor_index, ..options };
+                    if self.base.is_move_operation(modifiers, dragged.group_id, Some(editor), self.is_macintosh) {
+                        ops.move_editor_from(source_group_id, editor, editor_options);
+
+                        if self.model_kind == TabsModelKind::Unsticky && ops.group_is_sticky(editor) {
+                            ops.unstick_editor(editor);
+                        }
+                    } else {
+                        ops.copy_editor_from(source_group_id, editor, editor_options);
+                    }
+
+                    target_editor_index += 1;
+                }
+            }
+
+            ops.focus_group();
+            ops.clear_editor_transfer();
+        }
+        // Check for tree items
+        else if let Some(count) = transfer.tree_items {
+            if count > 0 {
+                ops.open_tree_items_drop(options);
+            }
+
+            ops.clear_tree_items_transfer();
+        }
+        // Check for URI transfer
+        else {
+            ops.handle_resources_drop(options);
+        }
+    }
+}
+
+/// O contêiner de abas e o contêiner de ações e abas: o que o original escreve neles (classes, variáveis CSS e estilos) e
+/// que o desenho nativo lê.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TabsContainerView {
+    /// `tabs-and-actions-container.wrapping`.
+    pub wrapping: bool,
+    /// `tabs-container.scroll`: o contêiner rola durante o arrastar.
+    pub scroll_mode: bool,
+    /// `--last-tab-add-tab-width`.
+    pub last_tab_add_tab_width: f64,
+    /// `--last-tab-margin-right`.
+    pub last_tab_margin_right: f64,
+    /// `stickyTabsBackground.style.width`.
+    pub sticky_tabs_background_width: f64,
+    /// `tabs-container.disable-sticky-tabs`.
+    pub disable_sticky_tabs: bool,
+    /// `connected-tab-upper-bar`.
+    pub connected_tab_upper_bar: bool,
+    /// `has-add-tab`.
+    pub has_add_tab: bool,
+    /// `connected-tabs-labels` no pai.
+    pub connected_tabs_labels: bool,
+    /// `connected-tabs-wrapping` no pai.
+    pub connected_tabs_wrapping: bool,
+    /// `style.overflow = 'visible'` (senão `hidden`) no contêiner de abas e na barra de rolagem.
+    pub overflow_visible: bool,
+    /// `tabsScrollbar.getScrollDimensions()`: `(width, scrollWidth)`.
+    pub scroll_dimensions: (f64, f64),
+    /// `tabsScrollbar.getScrollPosition().scrollLeft`.
+    pub scroll_left: f64,
+    /// `controls-only-row` no `addTabContainer`.
+    pub add_tab_controls_only_row: bool,
+    /// `--modern-ui-editor-tab-left-inset`, se definida.
+    pub add_tab_left_inset: Option<f64>,
+    /// O botão de nova aba (`addTabContainer`).
+    pub add_tab: AddTabPresence,
+    /// A barra de abas entre as barras do pai.
+    pub bars: TabsBarContext,
+    /// O `connectedTabOverflowEdge`.
+    pub overflow_edge: ConnectedOverflowEdge,
+}
+
+/// O `addTabContainer`: inexistente, escondido (`hidden`) ou visível.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AddTabPresence {
+    #[default]
+    None,
+    Hidden,
+    Visible,
+}
+
+/// O que `doLayoutTabs` lê dos irmãos desta barra de abas no elemento pai.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TabsBarContext {
+    /// Esta é a primeira barra de abas visível do pai (`firstVisibleTabBar === tabsAndActionsContainer`).
+    pub top_tab_bar: bool,
+    /// `parent.classList.contains('two-tab-bars')`.
+    pub two_tab_bars: bool,
+    /// Alguma outra barra de abas do pai tem a classe `wrapping`.
+    pub other_bar_wrapping: bool,
+}
+
+/// O `connectedTabOverflowEdge`: posição, variáveis e classes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConnectedOverflowEdge {
+    pub top: Option<f64>,
+    pub right: Option<f64>,
+    pub bottom: Option<f64>,
+    pub left: Option<f64>,
+    /// `--modern-ui-connected-tab-border`.
+    pub border: Option<String>,
+    /// `--modern-ui-connected-tab-overflow-top-border`.
+    pub overflow_top_border: Option<String>,
+    /// `--modern-ui-connected-tab-overflow-top-background`.
+    pub overflow_top_background: Option<String>,
+    pub left_clipped: bool,
+    pub right_clipped: bool,
+    /// `connected-tab-hovered`.
+    pub hovered: bool,
+    /// `connected-tab-top-row`.
+    pub top_row: bool,
+    /// `connected-tab-adjacent-sticky`.
+    pub adjacent_sticky: bool,
+}
+
+/// `IConnectedTabBounds` (de `connectedTabClipping.ts`): `tab` é o índice da aba ativa.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConnectedTabBounds {
+    pub tab: usize,
+    pub fill_left: f64,
+    pub fill_right: f64,
+    pub viewport_left: f64,
+    pub viewport_right: f64,
+    pub shoulder_extent: f64,
+}
+
+/// As classes que `updateConnectedTabClipping` (de `connectedTabClipping.ts`) alterna na aba e no `overflowEdge`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnectedClipping {
+    pub tab: ConnectedTabClasses,
+    pub edge_left_clipped: bool,
+    pub edge_right_clipped: bool,
+}
+
+/// `updateConnectedTabClipping(bounds, scrollLeft)`, sem DOM: devolve as classes.
+pub fn connected_tab_clipping(bounds: &ConnectedTabBounds, scroll_left: f64) -> ConnectedClipping {
+    let ConnectedTabBounds { fill_left, fill_right, viewport_left, viewport_right, shoulder_extent, .. } = *bounds;
+    let visible_left = scroll_left + viewport_left;
+    let visible_right = scroll_left + viewport_right;
+    let visible_fill_left = fill_left.max(visible_left);
+    let visible_fill_right = fill_right.min(visible_right);
+    let left_clipped = fill_left < visible_left;
+    let right_clipped = fill_right > visible_right;
+    let left_edge = fill_left - shoulder_extent < visible_left;
+    let right_edge = fill_right + shoulder_extent > visible_right;
+    let hidden = visible_fill_left + shoulder_extent >= visible_fill_right;
+
+    ConnectedClipping {
+        tab: ConnectedTabClasses { left_edge, right_edge, left_clipped, right_clipped, hidden },
+        edge_left_clipped: left_clipped && !hidden,
+        edge_right_clipped: right_edge && !hidden,
+    }
+}
+
+/// As medidas de uma aba `fit` que `getFitTabWidth` pede ao navegador (`getComputedStyle`), com o `max-width` solto
+/// (`getFitTabWidths`: a largura intrínseca, não a restrição da linha atual).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FitTabMetrics {
+    /// `Number.parseFloat(style.width)`.
+    pub width: f64,
+    pub font_size: f64,
+    pub padding_left: f64,
+    pub padding_right: f64,
+    pub border_left_width: f64,
+    pub border_right_width: f64,
+    /// `--modern-ui-tab-action-fit-padding`, `None` se vazia ou inválida (o `|| 28` do original).
+    pub action_fit_padding: Option<f64>,
+    /// A largura de `.monaco-icon-name-container` dentro de `.tab-label`, se existe.
+    pub name_width: Option<f64>,
+    /// As larguras de `.tab-label` e de `.monaco-icon-label-container`, se os dois existem.
+    pub label_widths: Option<(f64, f64)>,
+}
+
+/// `getFitTabWidth`, com as medidas já lidas e o estado da aba.
+pub fn get_fit_tab_width(state: &TabState, metrics: &FitTabMetrics) -> f64 {
+    let width = metrics.width;
+    let has_persistent_action = (state.dirty && !(state.close_action_off && state.dirty_border_top)) || (state.sticky && !state.pinned_action_off);
+    if (state.close_action_off && !has_persistent_action) || state.sticky_compact {
+        return width;
+    }
+
+    let label_padding = if state.tab_actions_left { metrics.padding_right } else { metrics.padding_left };
+    let action_padding = metrics.action_fit_padding.filter(|padding| padding.is_finite() && *padding != 0.0).unwrap_or(28.0);
+    let current_action_padding = if state.tab_actions_left { metrics.padding_left } else { metrics.padding_right };
+    let intrinsic_width = if has_persistent_action { width + (action_padding - current_action_padding).max(0.0) } else { width };
+    let name_width = metrics.name_width.unwrap_or(0.0);
+    let adornment_width = metrics.label_widths.map_or(0.0, |(label, container)| label - container);
+    let border_width = metrics.border_left_width + metrics.border_right_width;
+    let short_name_width = metrics.font_size.max(TabWidth::FIT - label_padding - action_padding - adornment_width - border_width);
+    let minimum_label_width = adornment_width + name_width.min(short_name_width);
+
+    // Keep short fit names complete without reserving the action column on naturally wider tabs.
+    intrinsic_width.max(label_padding + action_padding + minimum_label_width + border_width)
+}
+
+/// As medidas de uma aba no layout com quebra de linha.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WrapTabMeasure {
+    /// `getTotalWidth(tab)`: largura mais as margens.
+    pub total_width: f64,
+    /// `tab.offsetWidth`.
+    pub offset_width: f64,
+    /// `tab.offsetTop`.
+    pub offset_top: f64,
+}
+
+/// O que `doLayoutTabsWrapping` e `computeHeight` leem do navegador, refeito a cada leitura (o layout reflui quando a classe
+/// `wrapping` muda).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WrappingMeasure {
+    /// `tabsContainer.offsetWidth`.
+    pub visible_tabs_width: f64,
+    /// `tabsContainer.scrollWidth`.
+    pub all_tabs_width: f64,
+    /// `tabsContainer.offsetHeight`.
+    pub tabs_container_height: f64,
+    /// `tabsAndActionsContainer.offsetHeight`.
+    pub tabs_and_actions_height: f64,
+    /// `getContentWidth(tabsAndActionsContainer)`.
+    pub tabs_and_actions_content_width: f64,
+    /// `editorToolbarsContainer.offsetWidth`.
+    pub editor_toolbar_width: f64,
+    /// `addTabContainer?.offsetWidth ?? 0`.
+    pub add_tab_offset_width: f64,
+    /// `getTotalWidth(addTabContainer)`.
+    pub add_tab_total_width: f64,
+    /// `addTabContainer.offsetTop`.
+    pub add_tab_offset_top: f64,
+    pub tabs: Vec<WrapTabMeasure>,
+}
+
+/// As medidas de uma aba para `updateWrappedAddTabAlignment`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AlignTabMeasure {
+    pub top: f64,
+    /// `getBoundingClientRect().left` e `.right`.
+    pub left: f64,
+    pub right: f64,
+    pub padding_left: f64,
+    pub padding_right: f64,
+}
+
+/// O que `updateWrappedAddTabAlignment` lê do navegador.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AddTabAlignmentMeasure {
+    /// `addTabContainer.offsetTop`.
+    pub add_tab_top: f64,
+    pub tabs: Vec<AlignTabMeasure>,
+    /// `getComputedStyle(tabsContainer).direction === 'rtl'`.
+    pub right_to_left: bool,
+    /// `tabsContainer.getBoundingClientRect().width` e `tabsContainer.offsetWidth`.
+    pub tabs_bounds_width: f64,
+    pub tabs_offset_width: f64,
+    pub add_tab_left: f64,
+    pub add_tab_right: f64,
+    pub toolbar_left: f64,
+    pub toolbar_right: f64,
+    /// `inset-inline-end` do `::before` do `addTabContainer`, se for um número.
+    pub backing_end_inset: Option<f64>,
+}
+
+/// `updateWrappedAddTabAlignment`: a classe `controls-only-row` e `--modern-ui-editor-tab-left-inset`.
+pub fn compute_add_tab_alignment(tabs_wrap_multi_line: bool, measure: &AddTabAlignmentMeasure) -> (bool, Option<f64>) {
+    let preceding_row_top = measure.tabs.iter().map(|tab| tab.top).filter(|top| *top < measure.add_tab_top).fold(f64::NEG_INFINITY, f64::max);
+    let preceding_row_tabs: Vec<&AlignTabMeasure> = measure.tabs.iter().filter(|tab| tab.top == preceding_row_top).collect();
+    let controls_only_row = tabs_wrap_multi_line && !preceding_row_tabs.is_empty() && measure.tabs.iter().all(|tab| tab.top != measure.add_tab_top);
+    if !controls_only_row {
+        return (false, None);
+    }
+
+    let right_to_left = measure.right_to_left;
+    let Some(leading_tab) = preceding_row_tabs.iter().copied().reduce(|leading, tab| {
+        if right_to_left {
+            if tab.right > leading.right { tab } else { leading }
+        } else if tab.left < leading.left {
+            tab
+        } else {
+            leading
+        }
+    }) else {
+        return (false, None);
+    };
+
+    let desired_inset = if right_to_left { leading_tab.padding_right } else { leading_tab.padding_left };
+    let scale = if measure.tabs_offset_width > 0.0 { measure.tabs_bounds_width / measure.tabs_offset_width } else { 1.0 };
+    let backing_overflow = measure.backing_end_inset.filter(|inset| inset.is_finite()).map_or(0.0, |inset| (-inset).max(0.0));
+    let available_inset =
+        (if right_to_left { measure.add_tab_left - measure.toolbar_right } else { measure.toolbar_left - measure.add_tab_right }) / scale - backing_overflow;
+
+    (true, Some(desired_inset.min(available_inset.max(0.0))))
+}
+
+/// As medidas da aba ativa conectada (`doLayoutTabsNonWrapping`, com `closest(CONNECTED_EDITOR_TABS_SELECTOR)`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConnectedActiveTabMeasure {
+    /// `tabsContainer.scrollLeft`: reflete o ajuste nativo antes de a barra customizada atualizar.
+    pub container_scroll_left: f64,
+    /// `tabsContainer.getBoundingClientRect()`: `left` e `width`.
+    pub tabs_left: f64,
+    pub tabs_width: f64,
+    /// `activeTab.firstElementChild.getBoundingClientRect()`.
+    pub fill_left: f64,
+    pub fill_right: f64,
+    pub fill_top: f64,
+    pub fill_bottom: f64,
+    /// `tabsScrollbar.getDomNode().getBoundingClientRect()`: `top` e `bottom`.
+    pub scrollable_top: f64,
+    pub scrollable_bottom: f64,
+    /// `--modern-ui-connected-tab-border` calculada na aba ativa.
+    pub tab_border: String,
+    /// `borderTopColor` e `backgroundImage` do irmão seguinte do preenchimento.
+    pub overflow_top_border: String,
+    pub overflow_top_background: String,
+    /// A largura do `::after` do preenchimento (o ombro).
+    pub shoulder_extent: f64,
+}
+
+/// As medidas de `updateConnectedTabClipping`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConnectedClippingMeasure {
+    /// `addTabContainer?.offsetWidth`, `None` sem o botão de nova aba.
+    pub add_tab_offset_width: Option<f64>,
+    /// `tabsContainer.offsetWidth`.
+    pub tabs_offset_width: f64,
+    /// `tabsContainer.getBoundingClientRect()`: `left` e `width`.
+    pub tabs_left: f64,
+    pub tabs_width: f64,
+    /// `addTabContainer.getBoundingClientRect()`: `left` e `right`.
+    pub add_tab_left: f64,
+    pub add_tab_right: f64,
+    pub right_to_left: bool,
+    /// `marginInlineEnd` da última aba.
+    pub shoulder_space: f64,
+    /// `getBoundingClientRect()` de cada aba: `(left, right)`.
+    pub tab_bounds: Vec<(f64, f64)>,
+    /// `connectedTabBounds.tab.getBoundingClientRect().left`.
+    pub active_tab_left: f64,
+}
+
+/// O que o desenho nativo mede para o controle de abas. Cada método responde com o layout vigente do estado recebido (as
+/// classes e variáveis que o controle já escreveu), como as leituras de `offsetWidth` e `getBoundingClientRect` do original.
+pub trait TabsMeasurer {
+    /// `getFitTabWidths`: as medidas de cada aba pedida, com o `max-width` solto e a classe `tab-action-sizing-rest` do estado.
+    fn measure_fit_tabs(&self, tabs: &[Tab], indexes: &[usize]) -> Vec<FitTabMetrics>;
+    /// As leituras de `doLayoutTabsNonWrapping`.
+    fn measure_tabs(&self, container: &TabsContainerView, tabs: &[Tab]) -> TabsMetrics;
+    /// As leituras de `doLayoutTabsWrapping` e de `computeHeight`.
+    fn measure_wrapping(&self, container: &TabsContainerView, tabs: &[Tab]) -> WrappingMeasure;
+    /// As leituras de `updateWrappedAddTabAlignment`.
+    fn measure_add_tab_alignment(&self, container: &TabsContainerView, tabs: &[Tab]) -> AddTabAlignmentMeasure;
+    /// As leituras do recorte da aba ativa conectada, `None` se o preenchimento da aba não existe.
+    fn measure_connected_active_tab(&self, container: &TabsContainerView, tabs: &[Tab], active_tab_index: usize) -> Option<ConnectedActiveTabMeasure>;
+    /// As leituras de `updateConnectedTabClipping`.
+    fn measure_connected_clipping(&self, container: &TabsContainerView, tabs: &[Tab], active_tab_index: Option<usize>) -> ConnectedClippingMeasure;
+}
+
+/// `compute_last_in_row`: marca a última aba de cada linha pelas posições `offsetTop`; a última de todas é sempre a última da
+/// linha.
+pub fn compute_last_in_row(tab_tops: &[f64]) -> Vec<bool> {
+    let mut last_in_row = vec![false; tab_tops.len()];
+    let mut current_tabs_pos_y: Option<f64> = None;
+    let mut last_tab: Option<usize> = None;
+    for (index, &tab_pos_y) in tab_tops.iter().enumerate() {
+        // Marks a new or the first row of tabs
+        if current_tabs_pos_y != Some(tab_pos_y) {
+            current_tabs_pos_y = Some(tab_pos_y);
+            if let Some(previous) = last_tab {
+                last_in_row[previous] = true; // previous tab must be last in row then
+            }
+        }
+
+        // Always remember last tab and ensure the last-in-row class is not present until we know the tab is last
+        last_tab = Some(index);
+        last_in_row[index] = false;
+    }
+
+    // Last tab overally is always last-in-row
+    if let Some(last) = last_tab {
+        last_in_row[last] = true;
+    }
+
+    last_in_row
+}
+
+impl MultiEditorTabsControlState {
+    /// `getFitTabWidths`.
+    fn fit_tab_widths(&self, indexes: &[usize], measurer: &dyn TabsMeasurer) -> Vec<f64> {
+        measurer.measure_fit_tabs(&self.tabs, indexes).iter().zip(indexes).map(|(metrics, &index)| get_fit_tab_width(&self.tabs[index].state, metrics)).collect()
+    }
+
+    /// `layoutFitTabsWithoutReservedActions`.
+    pub fn layout_fit_tabs_without_reserved_actions(&mut self, measurer: &dyn TabsMeasurer) {
+        if self.base.parent_style.tab_actions_reserve_space || !self.base.parent.in_modern_ui_tabs {
+            for tab in &mut self.tabs {
+                tab.state.fit_width = None;
+            }
+            return;
+        }
+
+        let mut indexes = Vec::new();
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            if tab.state.sizing_fit && tab.state.fit_width.is_none() {
+                tab.state.tab_action_sizing_rest = !tab.state.dirty && !tab.state.sticky;
+                indexes.push(index);
+            }
+        }
+
+        let widths = self.fit_tab_widths(&indexes, measurer);
+        for (index, width) in indexes.into_iter().zip(widths) {
+            self.tabs[index].state.fit_width = Some(width);
+            self.tabs[index].state.tab_action_sizing_rest = false;
+        }
+    }
+
+    /// `freezeFitTabWidthWithoutReservedActions`.
+    pub fn freeze_fit_tab_width_without_reserved_actions(&mut self, tab_index: usize, measurer: &dyn TabsMeasurer) {
+        let Some(tab) = self.tabs.get(tab_index) else { return };
+        if !tab.state.sizing_fit || tab.state.fit_width.is_some() || self.base.parent_style.tab_actions_reserve_space || !self.base.parent.in_modern_ui_tabs {
+            return;
+        }
+
+        self.tabs[tab_index].state.tab_action_sizing_rest = !tab.state.dirty && !tab.state.sticky;
+        let width = self.fit_tab_widths(&[tab_index], measurer)[0];
+        self.tabs[tab_index].state.fit_width = Some(width);
+        self.tabs[tab_index].state.tab_action_sizing_rest = false;
+    }
+
+    /// `tabsFitWrapped`: as abas (e o botão de nova aba) cabem quando quebradas em linhas?
+    fn tabs_fit_wrapped(&self, measure: &WrappingMeasure, tabs_wrap_multi_line: bool, available_width: f64) -> bool {
+        if self.tabs.is_empty() {
+            return true; // no tab always fits
+        }
+
+        let editor_toolbar_width = measure.editor_toolbar_width;
+        let last_item_is_last_tab = self.container.add_tab != AddTabPresence::Visible;
+        let available_width = if tabs_wrap_multi_line { measure.visible_tabs_width.min(measure.tabs_and_actions_content_width).min(available_width) } else { available_width };
+        let mut required_width = if last_item_is_last_tab { 0.0 } else { measure.add_tab_total_width + if tabs_wrap_multi_line { 0.0 } else { editor_toolbar_width } };
+        let last_tab_index = self.tabs.len() - 1;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let Some(tab_measure) = measure.tabs.get(index) else { continue };
+            let toolbar_reserve = if !tabs_wrap_multi_line && index == last_tab_index && last_item_is_last_tab { editor_toolbar_width } else { 0.0 };
+            let margin = tab_measure.total_width - tab_measure.offset_width;
+            let modern_fit = tab.state.sizing_fit && self.base.parent.in_modern_ui_tabs;
+            let width = if modern_fit {
+                tab_measure.offset_width.min(TabWidth::SHRINK.max(available_width - margin - toolbar_reserve))
+            } else {
+                tab_measure.offset_width
+            };
+            required_width = required_width.max(width + margin + toolbar_reserve);
+        }
+
+        let last_tab_overlap_with_toolbar_width = required_width - available_width;
+
+        // Allow for slight rounding errors related to zooming here (https://github.com/microsoft/vscode/issues/116385)
+        last_tab_overlap_with_toolbar_width <= 1.0
+    }
+
+    /// `updateTabsWrapping`.
+    fn update_tabs_wrapping(&mut self, enabled: bool, measurer: &dyn TabsMeasurer) {
+        // Toggle the `wrapped` class to enable wrapping
+        self.container.wrapping = enabled;
+
+        // Update `last-tab-margin-right` CSS variable to account for the absolute positioned editor actions container when
+        // tabs wrap. The margin needs to be the width of the editor actions container to avoid screen cheese.
+        self.container.last_tab_margin_right = if enabled { measurer.measure_wrapping(&self.container, &self.tabs).editor_toolbar_width } else { 0.0 };
+
+        // Remove old css classes that are not needed anymore
+        for tab in &mut self.tabs {
+            tab.state.last_in_row = false;
+        }
+    }
+
+    /// `doLayoutTabsWrapping`: decide se as abas quebram em linhas e marca a última de cada linha. Com `force` o resultado é
+    /// imposto (usado pelo teste de largura). Devolve se quebram.
+    pub fn layout_tabs_wrapping(&mut self, dimensions: EditorTitleControlDimensions, force_tabs_wrap_multi_line: Option<bool>, measurer: &dyn TabsMeasurer) -> bool {
+        let available = dimensions.available.unwrap_or(Dimension { width: 0.0, height: 0.0 });
+
+        // Handle wrapping tabs according to setting:
+        // - enabled: only add class if tabs wrap and don't exceed available dimensions
+        // - disabled: remove class and margin-right variable
+        let did_tabs_wrap_multi_line = self.container.wrapping;
+        let mut tabs_wrap_multi_line = did_tabs_wrap_multi_line;
+        self.container.last_tab_add_tab_width = measurer.measure_wrapping(&self.container, &self.tabs).add_tab_offset_width;
+
+        if let Some(enabled) = force_tabs_wrap_multi_line {
+            self.update_tabs_wrapping(enabled, measurer);
+            tabs_wrap_multi_line = enabled;
+        }
+        // Setting enabled: selectively enable wrapping if possible
+        else if self.options().wrap_tabs {
+            let measure = measurer.measure_wrapping(&self.container, &self.tabs);
+            let visible_tabs_width = measure.visible_tabs_width;
+            let all_tabs_width = measure.all_tabs_width;
+
+            // If tabs wrap or should start to wrap (when width exceeds visible width) we must trigger `updateWrapping` to set
+            // the `last-tab-margin-right` accordingly based on the number of actions. The margin is important to properly
+            // position the last tab apart from the actions
+            //
+            // We already check here if the tabs would fit when wrapped given the editor toolbar will also show right next to
+            // it. This ensures we are not enabling wrapping only to disable it again in the code below (this fixes flickering
+            // issue https://github.com/microsoft/vscode/issues/115050)
+            if tabs_wrap_multi_line || (all_tabs_width > visible_tabs_width && self.tabs_fit_wrapped(&measure, tabs_wrap_multi_line, available.width)) {
+                self.update_tabs_wrapping(true, measurer);
+                tabs_wrap_multi_line = true;
+            }
+
+            // Tabs wrap multiline: remove wrapping under certain size constraint conditions
+            if tabs_wrap_multi_line {
+                let measure = measurer.measure_wrapping(&self.container, &self.tabs);
+                if measure.tabs_and_actions_height > available.height // if the complete wrapped title exceeds available height
+                    || (all_tabs_width == visible_tabs_width && measure.tabs_container_height == self.base.tab_height()) // if wrapping is not needed anymore
+                    || !self.tabs_fit_wrapped(&measure, true, available.width)
+                // if a tab or the trailing controls do not fit anymore
+                {
+                    self.update_tabs_wrapping(false, measurer);
+                    tabs_wrap_multi_line = false;
+                }
+            }
+        }
+        // Setting disabled: remove CSS traces only if tabs did wrap
+        else if did_tabs_wrap_multi_line {
+            self.update_tabs_wrapping(false, measurer);
+            tabs_wrap_multi_line = false;
+        }
+
+        // If we transitioned from non-wrapping to wrapping, we need to update the scrollbar to have an equal `width` and
+        // `scrollWidth`. Otherwise a scrollbar would appear which is never desired when wrapping.
+        if tabs_wrap_multi_line && !did_tabs_wrap_multi_line {
+            let visible_tabs_width = measurer.measure_wrapping(&self.container, &self.tabs).visible_tabs_width;
+            self.set_scroll_dimensions(visible_tabs_width, visible_tabs_width);
+        }
+
+        // Update the `last-in-row` class on tabs when wrapping is enabled (it doesn't do any harm otherwise). This class
+        // controls additional properties of tab when it is the last tab in a row
+        if tabs_wrap_multi_line {
+            let measure = measurer.measure_wrapping(&self.container, &self.tabs);
+            let tops: Vec<f64> = measure.tabs.iter().map(|tab| tab.offset_top).collect();
+            for (tab, last_in_row) in self.tabs.iter_mut().zip(compute_last_in_row(&tops)) {
+                tab.state.last_in_row = last_in_row;
+            }
+        }
+
+        tabs_wrap_multi_line
+    }
+
+    /// `tabsScrollbar.setScrollDimensions`: a posição de rolagem acompanha o limite novo (`Scrollable` a valida).
+    fn set_scroll_dimensions(&mut self, width: f64, scroll_width: f64) {
+        self.container.scroll_dimensions = (width, scroll_width);
+        self.container.scroll_left = self.container.scroll_left.min(scroll_width - width).max(0.0);
+    }
+
+    /// `updateWrappedAddTabAlignment`.
+    pub fn update_wrapped_add_tab_alignment(&mut self, tabs_wrap_multi_line: bool, measurer: &dyn TabsMeasurer) {
+        if self.container.add_tab == AddTabPresence::None {
+            return;
+        }
+
+        let measure = measurer.measure_add_tab_alignment(&self.container, &self.tabs);
+        let (controls_only_row, left_inset) = compute_add_tab_alignment(tabs_wrap_multi_line, &measure);
+        self.container.add_tab_controls_only_row = controls_only_row;
+        self.container.add_tab_left_inset = left_inset;
+    }
+
+    /// `clearConnectedTabClipping`.
+    pub fn clear_connected_tab_clipping(&mut self) {
+        if let Some(bounds) = self.connected_tab_bounds.take()
+            && let Some(tab) = self.tabs.get_mut(bounds.tab)
+        {
+            tab.state.connected_clipping = ConnectedTabClasses::default();
+        }
+
+        let edge = &mut self.container.overflow_edge;
+        edge.top = None;
+        edge.right = None;
+        edge.bottom = None;
+        edge.left = None;
+        edge.left_clipped = false;
+        edge.right_clipped = false;
+        edge.hovered = false;
+        edge.border = None;
+        edge.overflow_top_border = None;
+        edge.overflow_top_background = None;
+
+        for tab in &mut self.tabs {
+            tab.state.clip_path = None;
+        }
+    }
+
+    /// `updateConnectedTabClipping(bounds, scrollLeft)` aplicado à aba e ao `overflowEdge`.
+    fn apply_connected_clipping(&mut self, bounds: &ConnectedTabBounds, scroll_left: f64) {
+        let clipping = connected_tab_clipping(bounds, scroll_left);
+        if let Some(tab) = self.tabs.get_mut(bounds.tab) {
+            tab.state.connected_clipping = clipping.tab;
+        }
+        self.container.overflow_edge.left_clipped = clipping.edge_left_clipped;
+        self.container.overflow_edge.right_clipped = clipping.edge_right_clipped;
+    }
+
+    /// `updateConnectedTabClipping(scrollLeft)`.
+    pub fn update_connected_tab_clipping(&mut self, scroll_left: f64, measurer: &dyn TabsMeasurer) {
+        let measure = measurer.measure_connected_clipping(&self.container, &self.tabs, self.connected_tab_bounds.map(|bounds| bounds.tab));
+        let add_tab_visible_width = measure.add_tab_offset_width.is_some_and(|width| width > 0.0);
+        if add_tab_visible_width && !self.tabs.is_empty() && self.base.parent.in_connected_editor_tabs && !self.container.wrapping {
+            let scale = if measure.tabs_offset_width > 0.0 { measure.tabs_width / measure.tabs_offset_width } else { 1.0 };
+            let rtl = measure.right_to_left;
+            let viewport_edge = if rtl { measure.add_tab_right + measure.shoulder_space * scale } else { measure.add_tab_left - measure.shoulder_space * scale };
+            let clipping: Vec<f64> = measure
+                .tab_bounds
+                .iter()
+                .map(|&(left, right)| ((if rtl { viewport_edge - left } else { right - viewport_edge }) / scale).max(0.0))
+                .collect();
+            if let Some(bounds) = self.connected_tab_bounds {
+                let viewport_left = if rtl {
+                    bounds.viewport_left.max(((if measure.active_tab_left < viewport_edge { viewport_edge } else { measure.add_tab_right }) - measure.tabs_left) / scale)
+                } else {
+                    bounds.viewport_left
+                };
+                let viewport_right = if rtl { measure.tabs_offset_width } else { (measure.add_tab_left - measure.tabs_left) / scale };
+                self.container.overflow_edge.left = Some(viewport_left);
+                self.container.overflow_edge.right = Some(measure.tabs_offset_width - viewport_right);
+                self.apply_connected_clipping(&ConnectedTabBounds { viewport_left, viewport_right, ..bounds }, scroll_left);
+            }
+
+            for (tab, clipped) in self.tabs.iter_mut().zip(clipping) {
+                tab.state.clip_path = (clipped > 0.0).then_some(TabClipPath { clipped, right_to_left: rtl });
+            }
+        } else {
+            if let Some(bounds) = self.connected_tab_bounds {
+                let viewport_right = if measure.add_tab_offset_width == Some(0.0) { measure.tabs_offset_width } else { bounds.viewport_right };
+                self.container.overflow_edge.left = Some(bounds.viewport_left);
+                self.container.overflow_edge.right = Some(measure.tabs_offset_width - viewport_right);
+                self.apply_connected_clipping(&ConnectedTabBounds { viewport_right, ..bounds }, scroll_left);
+            }
+
+            for tab in &mut self.tabs {
+                tab.state.clip_path = None;
+            }
+        }
+    }
+
+    /// `doLayoutTabsNonWrapping`: posiciona as abas fixadas, calcula o recorte da aba ativa conectada e revela a ativa.
+    /// Devolve a nova posição da barra de rolagem, se ela mudou para revelar a aba.
+    pub fn do_layout_tabs_non_wrapping(&mut self, options: Option<LayoutOptions>, measurer: &dyn TabsMeasurer) -> Option<f64> {
+        //
+        // Synopsis
+        // - allTabsWidth:   sum of all tabs widths
+        // - visibleTabsWidth: size of tabs container
+        // - availableTabsContainerWidth: size of tabs container minus size of sticky tabs
+        //
+        // [only sticky tabs inside tabs container]
+        //
+        // | active-tab | sticky-tabs | sticky-tabs |
+        //
+        let metrics = measurer.measure_tabs(&self.container, &self.tabs);
+        let visible_tabs_width = metrics.visible_tabs_width;
+        let all_tabs_width = metrics.all_tabs_width;
+
+        let pinned_tab_sizing = self.options().pinned_tab_sizing;
+        let active_tab_index = self.base.tabs_model.active_editor().and_then(|editor| self.tab_index_of(&editor)).filter(|index| *index < self.tabs.len());
+        let active_tab_sticky = active_tab_index.is_some_and(|index| self.base.tabs_model.is_sticky(&EditorOrIndex::Index(index as i64)));
+        let sticky = layout_sticky_tabs(
+            &metrics,
+            self.base.tabs_model.sticky_count(),
+            pinned_tab_sizing,
+            self.base.parent.in_modern_ui_tabs,
+            self.connected_tab_labels,
+            active_tab_index,
+            active_tab_sticky,
+        );
+        for (tab_index, left) in sticky.sticky_lefts.iter().enumerate() {
+            if let Some(tab) = self.tabs.get_mut(tab_index) {
+                tab.state.left = Some(*left);
+            }
+        }
+        self.container.disable_sticky_tabs = sticky.disable_sticky_tabs;
+        self.container.sticky_tabs_background_width = sticky.sticky_tabs_width;
+        self.container.overflow_edge.adjacent_sticky = sticky.sticky_tabs_width > 0.0;
+
+        self.clear_connected_tab_clipping();
+        self.container.overflow_edge.top_row = active_tab_index.is_some_and(|index| self.tabs[index].state.connected_tab_top_row);
+        if let Some(active_index) = active_tab_index
+            && !self.tabs[active_index].state.connected_tab_upper_row
+            && !sticky.active_tab_position_static
+            && self.base.parent.in_connected_editor_tabs
+            && let Some(measure) = measurer.measure_connected_active_tab(&self.container, &self.tabs, active_index)
+        {
+            let edge = &mut self.container.overflow_edge;
+            edge.border = Some(measure.tab_border.clone());
+            edge.overflow_top_border = Some(measure.overflow_top_border.clone());
+            edge.overflow_top_background = Some(measure.overflow_top_background.clone());
+
+            // DOM rectangles include CSS zoom; scroll offsets and viewport widths do not.
+            let scale = if visible_tabs_width > 0.0 { measure.tabs_width / visible_tabs_width } else { 1.0 };
+            let fill_left = (measure.fill_left - measure.tabs_left) / scale + measure.container_scroll_left;
+            let viewport_right = sticky.visible_editor_tabs_width;
+            edge.top = Some((measure.fill_top - measure.scrollable_top) / scale);
+            edge.right = Some(visible_tabs_width - viewport_right);
+            edge.bottom = Some((measure.scrollable_bottom - measure.fill_bottom) / scale);
+            edge.left = Some(sticky.sticky_tabs_width);
+            self.connected_tab_bounds = Some(ConnectedTabBounds {
+                tab: active_index,
+                fill_left,
+                fill_right: (measure.fill_right - measure.tabs_left) / scale + measure.container_scroll_left,
+                viewport_left: sticky.sticky_tabs_width,
+                viewport_right,
+                shoulder_extent: measure.shoulder_extent,
+            });
+            self.update_connected_tab_overflow_hover();
+        }
+
+        let active = if self.block_reveal_active_tab { None } else { metrics.active_tab };
+
+        // Update scrollbar
+        let (old_visible_tabs_width, old_all_tabs_width) = self.container.scroll_dimensions;
+        self.set_scroll_dimensions(visible_tabs_width, all_tabs_width);
+        self.update_connected_tab_clipping(self.container.scroll_left, measurer);
+        let dimensions_changed = old_visible_tabs_width != visible_tabs_width || old_all_tabs_width != all_tabs_width;
+
+        let connected_reveal = self.connected_tab_bounds.map(|bounds| ConnectedReveal {
+            fill_left: bounds.fill_left,
+            fill_right: bounds.fill_right,
+            shoulder_extent: bounds.shoulder_extent,
+            has_previous_tab_in_row: bounds.tab.checked_sub(1).is_some_and(|previous| !self.tabs[previous].state.last_in_row),
+            tab_connected_last: self.tabs[bounds.tab].state.connected_tab_last,
+        });
+        let reveal = reveal_active_tab_scroll(
+            options,
+            active,
+            sticky.sticky_tabs_width,
+            sticky.available_tabs_container_width,
+            sticky.active_tab_position_static,
+            self.block_reveal_active_tab,
+            dimensions_changed,
+            self.container.scroll_left,
+            connected_reveal,
+        );
+
+        // Whether revealing or skipping, the one-time block is consumed
+        self.block_reveal_active_tab = false;
+
+        if let Some(scroll_left) = reveal {
+            self.container.scroll_left = scroll_left;
+        }
+
+        reveal
+    }
+
+    /// `doLayoutTabs`: marca as abas (última, linha de cima, linha do topo), mede as abas `fit`, decide a quebra de linha e
+    /// segue para o layout sem quebra ou limpa o recorte conectado.
+    pub fn layout_tabs(&mut self, dimensions: EditorTitleControlDimensions, options: Option<LayoutOptions>, measurer: &dyn TabsMeasurer) {
+        let connected = self.base.parent.in_connected_editor_tabs;
+        let bars = self.container.bars;
+        let top_tab_bar = bars.top_tab_bar;
+        let upper_tab_bar = bars.two_tab_bars && top_tab_bar;
+        let count = self.base.tabs_model.count();
+        self.container.connected_tab_upper_bar = connected && upper_tab_bar;
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            tab.state.last_tab = index + 1 == count;
+            tab.state.connected_tab_last = connected && index + 1 == count;
+        }
+        self.container.has_add_tab = self.container.add_tab == AddTabPresence::Visible;
+        if connected && upper_tab_bar {
+            for tab in &mut self.tabs {
+                tab.state.connected_tab_upper_row = true;
+            }
+        }
+        self.container.connected_tabs_labels = connected;
+        if connected != self.connected_tab_labels {
+            self.connected_tab_labels = connected;
+            for index in 0..self.tabs.len() {
+                self.redraw_tab_label_at(index);
+            }
+        }
+        self.layout_fit_tabs_without_reserved_actions(measurer);
+
+        // Always first layout tabs with wrapping support even if wrapping is disabled. The result indicates if tabs wrap and
+        // if not, we need to proceed with the layout without wrapping because even if wrapping is enabled in settings, there
+        // are cases where wrapping is disabled (e.g. due to space constraints)
+        let tabs_wrap_multi_line = self.layout_tabs_wrapping(dimensions, None, measurer);
+        let measure = measurer.measure_wrapping(&self.container, &self.tabs);
+        let top = measure.tabs.first().map(|tab| tab.offset_top);
+        let bottom = if tabs_wrap_multi_line && self.container.add_tab == AddTabPresence::Visible { Some(measure.add_tab_offset_top) } else { measure.tabs.last().map(|tab| tab.offset_top) };
+        for (tab, tab_measure) in self.tabs.iter_mut().zip(&measure.tabs) {
+            tab.state.connected_tab_upper_row = connected && (upper_tab_bar || Some(tab_measure.offset_top) != bottom);
+            tab.state.connected_tab_top_row = connected && top_tab_bar && Some(tab_measure.offset_top) == top;
+        }
+        self.update_wrapped_add_tab_alignment(tabs_wrap_multi_line, measurer);
+        self.container.connected_tabs_wrapping = connected && (bars.other_bar_wrapping || self.container.wrapping);
+        self.container.overflow_visible = connected && tabs_wrap_multi_line;
+        if !tabs_wrap_multi_line {
+            self.do_layout_tabs_non_wrapping(options, measurer);
+        } else {
+            self.container.sticky_tabs_background_width = 0.0;
+            self.clear_connected_tab_clipping();
+        }
+    }
+
+    /// `doLayout`: desenha as abas e guarda a dimensão usada. Devolve se a altura mudou, e então o chamador precisa chamar
+    /// `groupView.relayout()` para o controle do editor se ajustar.
+    pub fn do_layout(&mut self, dimensions: EditorTitleControlDimensions, options: Option<LayoutOptions>, measurer: &dyn TabsMeasurer) -> bool {
+        // Layout tabs
+        if dimensions.container.is_some() && dimensions.available.is_some() {
+            self.layout_tabs(dimensions, options, measurer);
+        }
+
+        // Remember the dimensions used in the control so that we can return it fast from the `layout` call without having to
+        // compute it over and over again
+        let wrapping_or_connected = (self.options().wrap_tabs && self.container.wrapping) || self.base.parent.in_connected_editor_tabs;
+        let measured_height = wrapping_or_connected.then(|| measurer.measure_wrapping(&self.container, &self.tabs).tabs_and_actions_height);
+        let height = self.compute_height(measured_height);
+
+        self.finish_layout(dimensions.container.map_or(0.0, |container| container.width), height)
+    }
+}
+
+
