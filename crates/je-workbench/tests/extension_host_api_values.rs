@@ -72,6 +72,21 @@ exports.activate = (context) => {
       validIcon: vscode.ThemeIcon.isThemeIcon(icon), invalidIcon: vscode.ThemeIcon.isThemeIcon({ id: 3 }),
     };
   });
+  command('t.strings', () => {
+    const markdown = new vscode.MarkdownString('# t');
+    const markdownChain = markdown.appendText(' a*b').appendMarkdown(' **x**').appendCodeblock('let x;', 'rs');
+    const bare = new vscode.MarkdownString().appendCodeblock('y');
+    const snippet = new vscode.SnippetString();
+    const snippetChain = snippet.appendText('a$b').appendTabstop().appendPlaceholder('x}', 2);
+    snippet.appendPlaceholder((nested) => { nested.appendTabstop().appendText('y'); });
+    snippet.appendChoice(['a,b', 'c']).appendVariable('TM_FILENAME', 'd$').appendVariable('X');
+    let thrown = '';
+    try { snippet.appendPlaceholder(() => { throw new Error('boom'); }); } catch (error) { thrown = String(error.message); }
+    return {
+      markdown: markdown.value, markdownChains: markdownChain === markdown, bare: bare.value, markdownIsInstance: markdown instanceof vscode.MarkdownString,
+      snippet: snippet.value, snippetChains: snippetChain === snippet, snippetIsInstance: snippet instanceof vscode.SnippetString, thrown,
+    };
+  });
   command('t.enums', () => ({
     left: vscode.StatusBarAlignment.Left, rightName: vscode.StatusBarAlignment[2],
     global: vscode.ConfigurationTarget.Global, workspaceFolder: vscode.ConfigurationTarget.WorkspaceFolder, web: vscode.UIKind.Web,
@@ -162,6 +177,25 @@ fn theme_icon_and_theme_color_are_classes_with_the_original_members() {
         assert_eq!(theme.get_str("fileIsInstance"), Dynamic::Bool(true));
         assert_eq!(theme.get_str("validIcon"), Dynamic::Bool(true));
         assert_eq!(theme.get_str("invalidIcon"), Dynamic::Bool(false));
+    });
+}
+
+#[test]
+fn markdown_string_and_snippet_string_append_methods_change_the_receiver_and_chain() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, ()| {
+        let strings = workbench.execute("t.strings", Vec::new());
+        assert_eq!(text(&strings, "markdown"), "# t a\\*b **x**\n```rs\nlet x;\n```\n", "appendText escapa o markdown, appendMarkdown não, appendCodeblock cerca o código");
+        assert_eq!(strings.get_str("markdownChains"), Dynamic::Bool(true), "os métodos devolvem this");
+        assert_eq!(text(&strings, "bare"), "\n```\ny\n```\n", "a linguagem padrão é vazia");
+        assert_eq!(strings.get_str("markdownIsInstance"), Dynamic::Bool(true));
+        assert_eq!(
+            text(&strings, "snippet"),
+            r"a\$b$1${2:x\}}${2:$3y}${4|a\,b,c|}${TM_FILENAME:d\$}${X}",
+            "o contador de tabstops segue pelo receptor e pelo snippet aninhado"
+        );
+        assert_eq!(strings.get_str("snippetChains"), Dynamic::Bool(true));
+        assert_eq!(strings.get_str("snippetIsInstance"), Dynamic::Bool(true));
+        assert!(text(&strings, "thrown").contains("boom"), "o erro da função de construção sobe ao chamador");
     });
 }
 
