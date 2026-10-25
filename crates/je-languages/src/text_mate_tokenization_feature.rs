@@ -305,8 +305,10 @@ impl TextMateTokenizationFeature {
         factory
     }
 
-    /// `_createTokenizationSupport(languageId)`.
-    fn create_tokenization_support(&self, language_id: &str) -> Option<SupportRef> {
+    /// O `new TextMateTokenizationSupport(grammar, initialState, containsEmbeddedLanguages, ..., false)` de uma linguagem,
+    /// sem o limite de linha e sem registro: quem o chama é o dono do suporte e o descarta (é o caminho do
+    /// `FixtureTextMateTokenizerInstance`, que cria os suportes à mão e os guarda no próprio `DisposableStore`).
+    pub fn create_text_mate_tokenization_support(&self, language_id: &str) -> Option<Rc<TextMateTokenizationSupport>> {
         if !self.language_service.is_registered_language_id(Some(language_id)) {
             return None;
         }
@@ -323,14 +325,19 @@ impl TextMateTokenizationFeature {
                 return None;
             }
         };
+        Some(TextMateTokenizationSupport::new(result.grammar, result.initial_state, result.contains_embedded_languages, false))
+    }
+
+    /// `_createTokenizationSupport(languageId)`.
+    fn create_tokenization_support(&self, language_id: &str) -> Option<SupportRef> {
+        let tokenization = self.create_text_mate_tokenization_support(language_id)?;
+        let encoded_language_id = self.language_service.language_id_codec().encode_language_id(language_id);
         let max_length = self
             .max_tokenization_line_length
             .borrow()
             .get(language_id)
             .copied()
             .unwrap_or(DEFAULT_MAX_TOKENIZATION_LINE_LENGTH);
-        let tokenization =
-            TextMateTokenizationSupport::new(result.grammar, result.initial_state, result.contains_embedded_languages, false);
         let language_service = self.language_service.clone();
         let encountered = RefCell::new(Vec::<bool>::new());
         let subscription = tokenization.on_did_encounter_language().listen(move |&encoded| {
