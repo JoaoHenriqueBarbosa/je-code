@@ -356,9 +356,10 @@ impl FileContentProvider {
                 return Vec::new();
             }
             let mut log_entries = Vec::new();
-            let mut log_entry_start_line_number = last_log_entry.map_or(1, |entry| entry.range.end_line_number + 1);
-            for entry in log_entry_iterator(&model, |entry| change_start_line_number(&entry, log_entry_start_line_number)) {
-                log_entry_start_line_number = entry.range.end_line_number + 1;
+            // O closure lê o número a cada entrada, como o `logEntryStartLineNumber` capturado no original.
+            let log_entry_start_line_number = std::cell::Cell::new(last_log_entry.map_or(1, |entry| entry.range.end_line_number + 1));
+            for entry in log_entry_iterator(&model, |entry| change_start_line_number(&entry, log_entry_start_line_number.get())) {
+                log_entry_start_line_number.set(entry.range.end_line_number + 1);
                 log_entries.push(entry);
             }
             log_entries
