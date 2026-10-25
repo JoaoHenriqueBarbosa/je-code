@@ -2,8 +2,8 @@
 //! `AccessibilitySupport`.
 //!
 //! Divergências:
-//! - `CONTEXT_ACCESSIBILITY_MODE_ENABLED` (a `RawContextKey`), `isAccessibilityInformation` e
-//!   `ACCESSIBLE_VIEW_SHOWN_STORAGE_PREFIX` não são portados aqui: nenhum consumidor portado os lê.
+//! - `isAccessibilityInformation` e `ACCESSIBLE_VIEW_SHOWN_STORAGE_PREFIX` não são portados aqui: nenhum consumidor
+//!   portado os lê. `CONTEXT_ACCESSIBILITY_MODE_ENABLED` é [`context_accessibility_mode_enabled`].
 //!   `IAccessibilityInformation` é portado (o item da barra de status de célula de notebook o carrega).
 //! - `alwaysUnderlineAccessKeys(): Promise<boolean>` é `Promise<bool>`.
 
@@ -11,6 +11,9 @@ use je_base::event::Event;
 use je_base::promise::Promise;
 use je_instantiation::service_id;
 
+use crate::contextkey::contextkey::{ContextKeyMeta, RawContextKey};
+
+pub mod accessibility_service;
 pub mod accessible_view;
 pub mod accessible_view_registry;
 
@@ -49,3 +52,12 @@ pub trait IAccessibilityService {
 }
 
 service_id!(pub I_ACCESSIBILITY_SERVICE: dyn IAccessibilityService = "accessibilityService");
+
+thread_local! {
+    static CONTEXT_ACCESSIBILITY_MODE_ENABLED: RawContextKey = RawContextKey::new("accessibilityModeEnabled", false, ContextKeyMeta::None);
+}
+
+/// `CONTEXT_ACCESSIBILITY_MODE_ENABLED`.
+pub fn context_accessibility_mode_enabled() -> RawContextKey {
+    CONTEXT_ACCESSIBILITY_MODE_ENABLED.with(RawContextKey::clone)
+}
