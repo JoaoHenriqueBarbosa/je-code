@@ -71,7 +71,6 @@ use support::test_diff_provider_factory_service::TestDiffProviderFactoryService;
 use support::test_text_model::instantiate_text_model;
 use je_base::observable::Observable;
 use je_base::promise::Promise;
-use je_editor::diff::range_mapping::DetailedLineRangeMapping;
 use je_editor::diff_editor_options::DiffEditorOptions;
 use je_editor::diff_editor_view_model::UnchangedRegion;
 use je_editor::line_range::LineRange;
