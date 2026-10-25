@@ -67,7 +67,8 @@ fn extensions_factory(d: &Rc<DisposableStore>) -> ExtensionsFactoryBuilder {
     Box::new(move |context: ExtensionsFactoryContext| {
         let extension_management_service = StubExtensionManagementService::new_with_store(&d, Vec::new());
         let product_service: Rc<dyn IProductService> = context.product_service.clone();
-        let extension_storage_service: Rc<dyn IExtensionStorageService> = d.add_rc(ExtensionStorageService::create((), (context.storage_service.clone(), product_service.clone(), context.log_service.clone())));
+        let extension_storage_service = d.add_rc(ExtensionStorageService::create((), (context.storage_service.clone(), product_service.clone(), context.log_service.clone())));
+        let extension_storage_service: Rc<dyn IExtensionStorageService> = extension_storage_service;
         WorkbenchExtensionsSynchroniserFactory::new(ExtensionsSyncServices {
             extension_management_service,
             ignored_extensions_management_service: IgnoredExtensionsManagementService::new(context.configuration_service.clone()),
