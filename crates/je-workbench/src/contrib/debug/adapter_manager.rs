@@ -12,19 +12,25 @@
 //!   é a fábrica [`AdapterManagerServices::debugger_services`] (os serviços do `Debugger`).
 //! - **`ITextModel`.** `canSetBreakpointsIn(model)` só lê `model.getLanguageId()`: [`AdapterManager::can_set_breakpoints_in`]
 //!   recebe esse id.
-//! - NÃO foram portados: o esquema JSON de `launch.json` (`updateDebugAdapterSchema`, `launchSchema`, `jsonRegistry`, o
-//!   `TaskDefinitionRegistry` e o agendador de rótulos de tarefa de 5 s), porque o registro de esquemas JSON e o serviço de
-//!   tarefas não existem no porte e nada lógico do gerenciador lê o esquema; e o `lifecycleService.when(Eventually)`, que
-//!   é [`AdapterManager::on_lifecycle_eventually`] (quem possui o ciclo de vida o chama).
+//! - **Esquema de `launch.json`.** [`AdapterManager::update_debug_adapter_schema`] muda o `launchSchema` vivo
+//!   ([`launch_schema`]) e o registra em `je_base::json_contribution_registry` (`jsonRegistry.registerSchema`), com o
+//!   `TaskDefinitionRegistry.getJsonSchema()` do porte. Os esquemas dos depuradores (`getSchemaAttributes`) são
+//!   `serde_json::Value` e entram no esquema por `schema_from_json`.
+//! - **`ITaskService`.** É o recorte [`IAdapterManagerTasks`] (`getKnownTasks` reduzido aos rótulos, `onDidChangeTaskConfig`
+//!   e `onDidChangeTaskProviders`). O agendador de 5 s é o `RunOnceScheduler` do `je-base`.
+//! - O `lifecycleService.when(Eventually)` é [`AdapterManager::on_lifecycle_eventually`] (quem possui o ciclo de vida o
+//!   chama).
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 
 use indexmap::IndexMap;
-use je_base::async_::async_fn;
-use je_base::dynamic::Dynamic;
-use je_base::event::{Emitter, Event};
+use je_base::JsString;
+use je_base::async_::{RunOnceScheduler, async_fn};
+use je_base::dynamic::{Dynamic, json_stringify};
+use je_base::event::{Emitter, Event, any};
+use je_base::json_contribution_registry::{get_json_contribution_registry, schema_from_json};
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::nls::localize;
 use je_base::promise::Promise;
@@ -33,12 +39,15 @@ use je_platform::configuration::ConfigurationOverrides;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression, ContextKeyMeta, IContextKey, IContextKeyService, RawContextKey};
 use je_platform::workspace::WorkspaceFolder;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use super::configuration_manager::{ConfigurationManager, DynamicPick, DynamicProvider, GuessedDebugger, IManagerAdapterManager};
 use super::debug::{IAdapterDescriptor, IAdapterManager, IConfig, IDebugAdapter, IDebugAdapterDescriptorFactory, IDebugAdapterFactory, IDebugSession};
 use super::debugger::{Debugger, DebuggerServices, IDebuggerAdapterManager};
+use super::debug_schemas::{internal_console_options_schema, launch_schema, presentation_schema};
 use super::debug_types::IDebugSessionFull;
+use crate::contrib::tasks::task_definition_registry::{ITaskDefinitionRegistry, task_definition_registry};
+use crate::services::configuration::common::configuration::LAUNCH_SCHEMA_ID;
 use crate::services::extensions::extensions::IExtensionService;
 
 /// `CONTEXT_DEBUGGERS_AVAILABLE`.
@@ -115,6 +124,16 @@ pub trait IAdapterManagerUi {
     fn extensions_with_activation_times(&self) -> Vec<String>;
 }
 
+/// O que o `AdapterManager` usa do `ITaskService`.
+pub trait IAdapterManagerTasks {
+    /// `tasksService.getKnownTasks()` reduzido aos rótulos (`task._label`).
+    fn get_known_tasks(&self) -> Promise<Vec<String>>;
+    /// `tasksService.onDidChangeTaskConfig`.
+    fn on_did_change_task_config(&self) -> Event<()>;
+    /// `tasksService.onDidChangeTaskProviders`.
+    fn on_did_change_task_providers(&self) -> Event<()>;
+}
+
 /// Um `added`/`extensions` do ponto de extensão `debuggers`.
 #[derive(Clone)]
 pub struct DebuggersContribution {
@@ -131,6 +150,7 @@ pub struct AdapterManagerServices {
     pub extension_service: Rc<dyn IExtensionService>,
     pub context_key_service: Rc<dyn IContextKeyService>,
     pub ui: Rc<dyn IAdapterManagerUi>,
+    pub task_service: Rc<dyn IAdapterManagerTasks>,
     /// Os serviços do `Debugger` (o `createInstance(Debugger, ...)`), sem o gerenciador de adaptadores.
     pub debugger_services: Rc<dyn Fn() -> DebuggerServices>,
 }
@@ -149,6 +169,7 @@ pub struct AdapterManager {
     on_did_debuggers_ext_point_read: Rc<Emitter<()>>,
     breakpoint_contributions: RefCell<Vec<Breakpoints>>,
     debugger_when_keys: RefCell<HashSet<String>>,
+    task_labels: RefCell<Vec<String>>,
     /// Extensions that were already active before any debugger activation events
     early_activated_extensions: RefCell<Option<HashSet<String>>>,
     used_debug_types: RefCell<HashSet<String>>,
@@ -185,6 +206,7 @@ impl AdapterManager {
             on_did_debuggers_ext_point_read,
             breakpoint_contributions: RefCell::new(Vec::new()),
             debugger_when_keys: RefCell::new(HashSet::new()),
+            task_labels: RefCell::new(Vec::new()),
             early_activated_extensions: RefCell::new(None),
             used_debug_types: RefCell::new(HashSet::new()),
             me: me.clone(),
@@ -199,6 +221,7 @@ impl AdapterManager {
             let keys = this.debugger_when_keys.borrow().clone();
             if e.affects_some(&keys) {
                 this.debuggers_available.set(Dynamic::Bool(this.has_enabled_debuggers()));
+                this.update_debug_adapter_schema();
             }
         }));
         let read_weak = weak.clone();
@@ -207,6 +230,26 @@ impl AdapterManager {
                 this.debug_extensions_available.set(Dynamic::Bool(!this.debuggers.borrow().is_empty()));
             }
         }));
+
+        // generous debounce since this will end up calling `resolveTask` internally
+        let task_weak = weak.clone();
+        let update_task_scheduler = RunOnceScheduler::new(
+            move || {
+                if let Some(this) = task_weak.upgrade() {
+                    this.update_task_labels();
+                }
+            },
+            5000,
+        );
+        store.add(update_task_scheduler.clone());
+        let scheduler = update_task_scheduler.clone();
+        store.add(
+            any(vec![services.task_service.on_did_change_task_config(), services.task_service.on_did_change_task_providers()]).listen(move |_| {
+                scheduler.cancel();
+                scheduler.schedule(None);
+            }),
+        );
+
         let session_weak = weak;
         store.add(delegate.on_did_new_session().listen(move |s| {
             if let Some(this) = session_weak.upgrade() {
@@ -214,7 +257,97 @@ impl AdapterManager {
                 this.used_debug_types.borrow_mut().insert(debug_type);
             }
         }));
+
+        update_task_scheduler.schedule(None);
         this
+    }
+
+    fn update_task_labels(&self) {
+        let me = self.me.clone();
+        self.services.task_service.get_known_tasks().then(move |labels| {
+            if let Some(this) = me.upgrade() {
+                *this.task_labels.borrow_mut() = labels;
+                this.update_debug_adapter_schema();
+            }
+        });
+    }
+
+    /// `updateDebugAdapterSchema`: refaz as definições, os `oneOf` e os `defaultSnippets` do `launchSchema` com todos os
+    /// atributos, trechos e tipos das extensões e registra o esquema.
+    pub fn update_debug_adapter_schema(&self) {
+        // update the schema to include all attributes, snippets and types from extensions.
+        let launch_schema = launch_schema();
+        let Dynamic::Object(items) = Dynamic::Object(launch_schema.clone()).get_str("properties").get_str("configurations").get_str("items") else {
+            panic!("o launchSchema não tem properties.configurations.items");
+        };
+        let task_schema = task_definition_registry().get_json_schema();
+        let task_labels = self.task_labels.borrow().clone();
+        let presentation = json_stringify(&presentation_schema()).and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
+        let internal_console_options =
+            json_stringify(&internal_console_options_schema()).and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(Value::Null);
+        let mut definitions: Map<String, Value> = Map::new();
+        definitions.insert(
+            "common".to_owned(),
+            json!({
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": localize("debugName", "Name of configuration; appears in the launch configuration dropdown menu.", &[]),
+                        "default": "Launch",
+                    },
+                    "debugServer": {
+                        "type": "number",
+                        "description": localize(
+                            "debugServer",
+                            "For debug extension development only: if a port is specified VS Code tries to connect to a debug adapter running in server mode",
+                            &[],
+                        ),
+                        "default": 4711,
+                    },
+                    "preLaunchTask": {
+                        "anyOf": [task_schema, { "type": ["string"] }],
+                        "default": "",
+                        "defaultSnippets": [{ "body": { "task": "", "type": "" } }],
+                        "description": localize("debugPrelaunchTask", "Task to run before debug session starts.", &[]),
+                        "examples": task_labels,
+                    },
+                    "postDebugTask": {
+                        "anyOf": [task_schema, { "type": ["string"] }],
+                        "default": "",
+                        "defaultSnippets": [{ "body": { "task": "", "type": "" } }],
+                        "description": localize("debugPostDebugTask", "Task to run after debug session ends.", &[]),
+                        "examples": task_labels,
+                    },
+                    "presentation": presentation,
+                    "internalConsoleOptions": internal_console_options,
+                    "suppressMultipleSessionWarning": {
+                        "type": "boolean",
+                        "description": localize(
+                            "suppressMultipleSessionWarning",
+                            "Disable the warning when trying to start the same debug configuration more than once.",
+                            &[],
+                        ),
+                        "default": true,
+                    },
+                }
+            }),
+        );
+
+        let mut one_of: Vec<Value> = Vec::new();
+        let mut default_snippets: Vec<Value> = Vec::new();
+        let debuggers: Vec<Rc<Debugger>> = self.debuggers.borrow().clone();
+        for adapter in debuggers {
+            if let Some(schema_attributes) = adapter.get_schema_attributes(&mut definitions) {
+                one_of.extend(schema_attributes);
+            }
+            if let Some(configuration_snippets) = adapter.configuration_snippets() {
+                default_snippets.extend(configuration_snippets);
+            }
+        }
+        launch_schema.set(&JsString::from("definitions"), schema_from_json(&Value::Object(definitions)));
+        items.set(&JsString::from("oneOf"), Dynamic::array(one_of.iter().map(schema_from_json)));
+        items.set(&JsString::from("defaultSnippets"), Dynamic::array(default_snippets.iter().map(schema_from_json)));
+        get_json_contribution_registry().register_schema(LAUNCH_SCHEMA_ID, Dynamic::Object(launch_schema), None);
     }
 
     fn this(&self) -> Rc<AdapterManager> {
@@ -268,6 +401,7 @@ impl AdapterManager {
             self.debuggers.borrow_mut().retain(|d| !removed_types.contains(&Some(d.debug_type())));
         }
 
+        self.update_debug_adapter_schema();
         self.on_did_debuggers_ext_point_read.fire(());
     }
 

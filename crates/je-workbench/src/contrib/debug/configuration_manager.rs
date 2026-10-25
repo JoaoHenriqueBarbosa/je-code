@@ -15,9 +15,10 @@
 //! - **`IConfig`, `ICompound` e `IGlobalConfig`** são objetos JSON; os valores `Dynamic` do serviço de configuração são
 //!   convertidos em [`dynamic_to_value`] e [`value_to_dynamic`].
 //! - **`IAdapterManager`.** O que o gerenciador usa dele é o [`IManagerAdapterManager`] (o `AdapterManager` o implementa).
-//! - `launchSchema` e o registro de esquemas JSON (`jsonRegistry.registerSchema`, `setCompoundSchemaValues`) NÃO foram
-//!   portados: o registro de contribuições JSON não existe no porte (o esquema não influencia nenhum comportamento lógico
-//!   do gerenciador).
+//! - `launchSchema` é [`super::debug_schemas::launch_schema`] (o objeto vivo, registrado em
+//!   `je_base::json_contribution_registry` quando nasce) e o `setCompoundSchemaValues` é
+//!   [`ConfigurationManager::set_compound_schema_values`], chamado onde o original o chama: no construtor, nas mudanças de
+//!   pastas e de estado do workbench, depois da seleção ao mudar o `launch` e quando os depuradores são lidos.
 //! - `Event.any(onDidChangeWorkspaceFolders, onDidChangeWorkbenchState)` é o `any` dos dois eventos mapeados para `()`.
 
 use std::cell::{Cell, RefCell};
@@ -29,6 +30,8 @@ use je_base::cancellation::{CancellationToken, CancellationTokenSource};
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event, any};
+use je_base::json_contribution_registry::get_json_contribution_registry;
+use je_base::JsString;
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::nls::localize;
 use je_base::platform::{OperatingSystem, Platform};
@@ -45,10 +48,12 @@ use je_storage::StorageValue;
 use serde_json::{Map, Value, json};
 
 use crate::services::extensions::extensions::IExtensionService;
+use crate::services::configuration::common::configuration::LAUNCH_SCHEMA_ID;
 use crate::services::history::history::IHistoryService;
 use crate::services::remote::remote_agent_service::IRemoteAgentService;
 
 use super::debug::{DebugConfigurationProviderTriggerKind, IConfig, IConfigurationManager, IDebugConfigurationProvider, ILaunch};
+use super::debug_schemas::launch_schema;
 use super::debugger::Debugger;
 use super::debug_utils::{get_effective_config_for_platform, get_visible_and_sorted};
 
@@ -658,6 +663,7 @@ impl ConfigurationManager {
             me: me.clone(),
         });
         this.init_launches();
+        this.set_compound_schema_values();
         this.register_listeners();
 
         let storage = &this.services.storage_service;
@@ -984,6 +990,7 @@ impl ConfigurationManager {
             if let Some(this) = listener_weak.upgrade() {
                 this.init_launches();
                 this.select_configuration(None, None, None, None);
+                this.set_compound_schema_values();
             }
         }));
 
@@ -993,9 +1000,48 @@ impl ConfigurationManager {
                 && let Some(this) = configuration_weak.upgrade()
             {
                 // A change happen in the launch.json. If there is already a launch configuration selected, do not change the selection.
-                this.select_configuration(None, None, None, None);
+                let after_selection = configuration_weak.clone();
+                this.select_configuration(None, None, None, None).then(move |()| {
+                    if let Some(this) = after_selection.upgrade() {
+                        this.set_compound_schema_values();
+                    }
+                });
             }
         }));
+
+        let ext_point_weak = weak;
+        self.to_dispose.add(self.adapter_manager.on_did_debuggers_ext_point_read().listen(move |_| {
+            if let Some(this) = ext_point_weak.upgrade() {
+                this.set_compound_schema_values();
+            }
+        }));
+    }
+
+    /// `setCompoundSchemaValues`: os nomes das configurações e das pastas viram as enumerações do `launchSchema`, que é
+    /// registrado de novo (o que avisa os ouvintes de `onDidChangeSchema`).
+    fn set_compound_schema_values(&self) {
+        let launches = self.launches.borrow().clone();
+        let launch_names: Vec<String> = launches.iter().flat_map(|launch| launch.get_configuration_names(true)).collect();
+        let folder_names: Vec<String> = self.services.context_service.get_workspace().folders().into_iter().map(|folder| folder.name).collect();
+
+        let schema = launch_schema();
+        let at = |root: Dynamic, path: &[&str]| path.iter().fold(root, |value, key| value.get_str(key));
+        let configurations = at(Dynamic::Object(schema.clone()), &["properties", "compounds", "items", "properties", "configurations"]);
+        let Dynamic::Array(one_of) = at(configurations, &["items", "oneOf"]) else {
+            unreachable!("o launchSchema nasce com compounds.items.properties.configurations.items.oneOf");
+        };
+        let set_enum = |target: Dynamic, names: &[String]| {
+            let Dynamic::Object(target) = target else {
+                unreachable!("o launchSchema nasce com os objetos de enumeração dos compounds");
+            };
+            target.set(&JsString::from("enum"), Dynamic::array(names.iter().map(|name| Dynamic::string(name))));
+        };
+        let by_name = one_of.get(1);
+        set_enum(one_of.get(0), &launch_names);
+        set_enum(at(by_name.clone(), &["properties", "name"]), &launch_names);
+        set_enum(at(by_name, &["properties", "folder"]), &folder_names);
+
+        get_json_contribution_registry().register_schema(LAUNCH_SCHEMA_ID, Dynamic::Object(schema), None);
     }
 
     fn init_launches(&self) {

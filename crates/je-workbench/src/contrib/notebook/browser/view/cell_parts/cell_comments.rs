@@ -2,12 +2,12 @@
 //! célula, os widgets das threads de comentário dela e informa à célula a altura que eles ocupam.
 //!
 //! Divergências:
-//! - **O serviço de comentários não tem porte.** `ICommentService` (`contrib/comments/browser/commentService.ts`) e o
-//!   `CommentThreadWidget` (`commentThreadWidget.ts`) entram como contratos estreitos, só com o que a parte chama:
-//!   [`ICellCommentService`] (`onDidUpdateCommentThreads` e `getNotebookComments`), [`ICellCommentThread`] (`languages.CommentThread`,
-//!   só com o `threadId`), [`ICellCommentThreadWidget`] e a fábrica [`ICellCommentThreadWidgetFactory`], que é o
+//! - **O `CommentThreadWidget` não tem porte.** `commentThreadWidget.ts` entra como contrato estreito, só com o que a parte chama:
+//!   [`ICellCommentThreadWidget`] e a fábrica [`ICellCommentThreadWidgetFactory`], que é o
 //!   `instantiationService.createInstance(CommentThreadWidget, ...)` com os argumentos fixos do original (o `actionRunner` vazio e o
-//!   `collapse` que devolve `true` pertencem à fábrica). `INotebookCommentInfo` é a struct de mesmo nome.
+//!   `collapse` que devolve `true` pertencem à fábrica). O `ICommentService`, o `INotebookCommentInfo` e o
+//!   `languages.CommentThread<ICellRange>` são os de `contrib/comments` (`ICommentService`, `INotebookCommentInfo` e
+//!   `CommentThread<ICellRange>`).
 //! - **Funções assíncronas são [`Promise`].** `initialize`, `_createCommentTheadWidget`, `_updateThread` e
 //!   `_getCommentThreadsForCell` devolvem a promessa; os `await` em sequência de `_updateThread` (um por thread, na ordem) são
 //!   `process_threads`, que encadeia uma thread por vez. `coalesce` é o `flatten` sobre as listas de `Option`.
@@ -33,39 +33,21 @@ use je_base::lifecycle::{DisposableMap, DisposableRef, DisposableStore, IDisposa
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::config::font_info::FontInfo;
+use je_editor::languages::CommentThread;
 use je_ui::{NodeId, Ui};
 
+use crate::contrib::comments::browser::comment_service::{ICommentService, INotebookCommentInfo};
 use crate::contrib::notebook::browser::view::cell_part::{CellContentPart, CellPart, CellPartState};
 use crate::contrib::notebook::browser::view::cell_parts::cell_toolbar_sticky_scroll::StickyTopNode;
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
-
-/// `languages.CommentThread<ICellRange>`, só com o que `CellComments` lê.
-pub trait ICellCommentThread {
-    /// `threadId`.
-    fn thread_id(&self) -> String;
-}
-
-/// `INotebookCommentInfo`.
-#[derive(Clone)]
-pub struct INotebookCommentInfo {
-    pub unique_owner: String,
-    pub threads: Vec<Rc<dyn ICellCommentThread>>,
-}
-
-/// `ICommentService`, só com o que `CellComments` chama.
-pub trait ICellCommentService {
-    /// `onDidUpdateCommentThreads`. O evento carrega o `ICommentThreadChangedEvent`, que a parte ignora.
-    fn on_did_update_comment_threads(&self) -> Event<()>;
-    /// `getNotebookComments(resource)`.
-    fn get_notebook_comments(&self, resource: &URI) -> Promise<Vec<Option<INotebookCommentInfo>>>;
-}
+use crate::contrib::notebook::common::notebook_range::ICellRange;
 
 /// `CommentThreadWidget<ICellRange>`, só com o que `CellComments` chama.
 pub trait ICellCommentThreadWidget: IDisposable {
     /// `display(lineHeight, focus)`.
     fn display(&self, line_height: f64, focus: bool) -> Promise<()>;
     /// `updateCommentThread(commentThread)`.
-    fn update_comment_thread(&self, comment_thread: &Rc<dyn ICellCommentThread>) -> Promise<()>;
+    fn update_comment_thread(&self, comment_thread: &Rc<dyn CommentThread<ICellRange>>) -> Promise<()>;
     /// `getDimensions().height`.
     fn get_dimensions_height(&self) -> f64;
     /// `onDidResize`.
@@ -77,7 +59,7 @@ pub trait ICellCommentThreadWidget: IDisposable {
 /// O `createInstance(CommentThreadWidget, container, notebookEditor, owner, uri, contextKeyService, instantiationService,
 /// commentThread, undefined, undefined, {}, undefined, { actionRunner, collapse })` do original.
 pub trait ICellCommentThreadWidgetFactory {
-    fn create(&self, container: NodeId, owner: &str, resource: &URI, comment_thread: &Rc<dyn ICellCommentThread>) -> Rc<dyn ICellCommentThreadWidget>;
+    fn create(&self, container: NodeId, owner: &str, resource: &URI, comment_thread: &Rc<dyn CommentThread<ICellRange>>) -> Rc<dyn ICellCommentThreadWidget>;
 }
 
 /// O que `CellComments` chama do `INotebookEditorDelegate`.
@@ -124,7 +106,7 @@ pub struct CellComments {
     me: Weak<CellComments>,
     notebook_editor: Rc<dyn ICellCommentsEditor>,
     container: Rc<StickyTopNode>,
-    comment_service: Rc<dyn ICellCommentService>,
+    comment_service: Rc<dyn ICommentService>,
     widget_factory: Rc<dyn ICellCommentThreadWidgetFactory>,
     /// keyed by threadId
     comment_thread_widgets: Rc<DisposableMap<String, CommentThreadWidgetEntry>>,
@@ -137,7 +119,7 @@ impl CellComments {
         notebook_editor: Rc<dyn ICellCommentsEditor>,
         container: NodeId,
         on_did_color_theme_change: Event<()>,
-        comment_service: Rc<dyn ICellCommentService>,
+        comment_service: Rc<dyn ICommentService>,
         widget_factory: Rc<dyn ICellCommentThreadWidgetFactory>,
     ) -> Rc<Self> {
         ui.tree_mut().add_class(container, "review-widget");
@@ -182,7 +164,7 @@ impl CellComments {
     }
 
     /// `_createCommentTheadWidget(owner, commentThread)`.
-    fn create_comment_thread_widget(&self, owner: &str, comment_thread: &Rc<dyn ICellCommentThread>) -> Promise<()> {
+    fn create_comment_thread_widget(&self, owner: &str, comment_thread: &Rc<dyn CommentThread<ICellRange>>) -> Promise<()> {
         let Some(text_model_uri) = self.notebook_editor.text_model_uri() else {
             return Promise::rejected(Error::new("CellComments: o editor do notebook não tem modelo de texto"));
         };
@@ -234,7 +216,7 @@ impl CellComments {
             let mut widgets_to_delete: HashSet<String> = part.comment_thread_widgets.keys().into_iter().collect();
             part.container.set_top(Some(comment_offset(&current_element)));
 
-            let mut work: VecDeque<(String, Rc<dyn ICellCommentThread>)> = VecDeque::new();
+            let mut work: VecDeque<(String, Rc<dyn CommentThread<ICellRange>>)> = VecDeque::new();
             for info in infos {
                 for thread in info.threads {
                     widgets_to_delete.remove(&thread.thread_id());
@@ -252,7 +234,7 @@ impl CellComments {
     }
 
     /// O laço `for (const thread of info.threads) { await ... }` de `_updateThread`: uma thread por vez, na ordem.
-    fn process_threads(part: Rc<Self>, mut work: VecDeque<(String, Rc<dyn ICellCommentThread>)>) -> Promise<()> {
+    fn process_threads(part: Rc<Self>, mut work: VecDeque<(String, Rc<dyn CommentThread<ICellRange>>)>) -> Promise<()> {
         let Some((owner, thread)) = work.pop_front() else {
             return Promise::resolved(());
         };
