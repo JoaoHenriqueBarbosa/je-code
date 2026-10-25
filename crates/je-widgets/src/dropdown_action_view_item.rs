@@ -158,8 +158,8 @@ impl DropdownMenuActionViewItem {
     /// `setAriaLabelAttributes(element)`: `role="button"` e o rótulo da ação.
     fn set_aria_label_attributes(&self, element: NodeId) {
         let mut tree = self.base.ui.tree_mut();
-        tree.set_role(element, Role::Button);
-        tree.set_label(element, self.base.action().label());
+        tree.set_attribute(element, "role", "button");
+        tree.set_attribute(element, "aria-label", self.base.action().label());
     }
 
     /// `renderLabel(element)`: as classes do ícone, o codicon e a dica do rótulo da ação.

@@ -31,7 +31,7 @@ use je_render::kurbo::Rect;
 use je_theme::ColorTheme;
 use je_ui::{Border, Cursor, EventKind, NodeId, Role, Ui};
 
-use crate::button::{Attributes, OutlineSpec, update_outline};
+use crate::button::{OutlineSpec, update_outline};
 use crate::common::registered_emitter;
 use crate::dom::{StandardKeyboardEvent, create_el};
 use crate::hover_api::{HoverContent, HoverStyle, HoverTarget, IHoverOptions, get_base_layer_hover_delegate};
@@ -87,7 +87,6 @@ pub struct Switch {
     checked: Cell<bool>,
     disabled: Cell<bool>,
     title: Rc<RefCell<String>>,
-    attributes: Attributes,
     focused: Cell<bool>,
     outline: Cell<Option<NodeId>>,
     on_change: Rc<Emitter<bool>>,
@@ -120,14 +119,13 @@ impl Switch {
             checked: Cell::new(options.checked),
             disabled: Cell::new(false),
             title,
-            attributes: Attributes::default(),
             focused: Cell::new(false),
             outline: Cell::new(None),
             on_change: registered_emitter(&base),
             disposed: Cell::new(false),
             base,
         });
-        this.attributes.set("type", "button");
+        this.ui.tree_mut().set_attribute(dom_node, "type", "button");
         this.set_aria_label(&options.aria_label, options.title.as_deref());
         this.set_disabled(options.disabled);
         this.apply_state();
@@ -208,13 +206,12 @@ impl Switch {
     }
 
     pub fn attribute(&self, name: &str) -> Option<String> {
-        self.attributes.get(name)
+        self.ui.tree().attribute(self.dom_node, name).map(str::to_owned)
     }
 
     /// `setAriaLabel(ariaLabel, title = ariaLabel)`.
     pub fn set_aria_label(&self, aria_label: &str, title: Option<&str>) {
-        self.attributes.set("aria-label", aria_label);
-        self.ui.tree_mut().set_label(self.dom_node, aria_label);
+        self.ui.tree_mut().set_attribute(self.dom_node, "aria-label", aria_label);
         *self.title.borrow_mut() = title.unwrap_or(aria_label).to_owned();
     }
 
@@ -230,8 +227,10 @@ impl Switch {
     }
 
     fn apply_state(&self) {
-        self.attributes.set("aria-checked", self.checked.get().to_string());
-        self.ui.tree_mut().toggle_class(self.dom_node, "checked", self.checked.get());
+        let mut tree = self.ui.tree_mut();
+        tree.set_attribute(self.dom_node, "aria-checked", self.checked.get().to_string());
+        tree.toggle_class(self.dom_node, "checked", self.checked.get());
+        drop(tree);
         self.refresh();
     }
 
