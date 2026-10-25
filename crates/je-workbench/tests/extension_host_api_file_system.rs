@@ -379,7 +379,7 @@ fn workspace_fs_reports_file_system_errors_and_serves_schemes_without_a_provider
         assert_eq!(
             run(workbench, "t.fsErrors"),
             Dynamic::string(
-                r#"{"provider":"FileNotFound (FileSystemError)|memfs:/nope.txt","main":"FileNotFound (FileSystemError)|missing","other":[1,7,null],"otherBytes":[1,2,3],"otherListing":[["x",1]],"factory":"FileExists (FileSystemError)|FileExists|x"}"#
+                r#"{"provider":"EntryNotFound (FileSystemError)|memfs:/nope.txt","main":"EntryNotFound (FileSystemError)|missing","other":[1,7,null],"otherBytes":[1,2,3],"otherListing":[["x",1]],"factory":"EntryExists (FileSystemError)|FileExists|x"}"#
             )
         );
     });

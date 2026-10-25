@@ -34,7 +34,7 @@ use std::rc::Rc;
 
 use je_base::errors::{on_unexpected_error, throw, Error};
 use je_base::event::{Event, Listener};
-use je_base::lifecycle::{plain_disposable, to_disposable, DisposableRef};
+use je_base::lifecycle::{combined_disposable, plain_disposable, to_disposable, DisposableRef};
 use je_base::promise::MaybePromise;
 use je_base::uri::URI;
 use je_platform::files::files::{FileDeleteOptions, FileOverwriteOptions, FileSystemProviderErrorCode, FileType, FileWriteOptions, WatchOptions};
@@ -423,9 +423,12 @@ fn register_provider(runner: &NodeRunner, api: &FileSystemApi, args: &[JsData]) 
         .borrow()
         .clone()
         .ok_or("registerFileSystemProvider: o host não tem os clientes de linguagem (MainThreadLanguageFeatures e MainThreadDiagnostics)")?;
-    let adapter = Rc::new(JsFileSystemProvider { js: api.js.clone(), provider: provider.clone(), table: api.table.clone() });
+    let adapter: Rc<dyn ApiFileSystemProvider> = Rc::new(JsFileSystemProvider { js: api.js.clone(), provider: provider.clone(), table: api.table.clone() });
+    // Como no `extHost.api.impl.ts`: o registro no main thread e o atalho do consumidor (`workspace.fs` fala com o provedor local
+    // sem atravessar o protocolo) saem juntos, num só `Disposable`.
+    let consumer = api.consumer.add_file_system_provider(&scheme, adapter.clone(), Some(&options));
     let registration = service.register_file_system_provider(&host_extension(), &scheme, adapter, options).map_err(|error| error.message)?;
-    Ok(api.table.to_js(registration))
+    Ok(api.table.to_js(combined_disposable(vec![registration, consumer])))
 }
 
 /// Os membros de `vscode.workspace` do sistema de arquivos: `fs` e `registerFileSystemProvider`.
