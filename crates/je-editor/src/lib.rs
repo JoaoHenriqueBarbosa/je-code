@@ -206,6 +206,7 @@ pub mod hover;
 pub mod view_parts;
 
 pub mod code_editor_widget;
+pub mod embedded_code_editor_widget;
 
 pub mod trigger_inline_edit_commands_registry;
 pub mod editor_extensions;

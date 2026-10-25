@@ -78,7 +78,7 @@
 //! Divergências (fora do escopo deste porte, por nome de membro do original):
 //! - A `View` e o DOM: `_createView`, `View`, `ModelData.view`/`hasRealView` (sempre sem `View` real, salvo as view
 //!   zones, que existem por modelo),
-//!   `layout`, `render`, `renderAsync`, `getDomNode`, `getContainerDomNode`, `getOverflowWidgetsDomNode`,
+//!   `render`, `renderAsync`, `getDomNode`, `getContainerDomNode`, `getOverflowWidgetsDomNode`,
 //!   `onVisible`, `onHide` (os dois só chamam `view.refreshFocusState`), `writeScreenReaderContent`,
 //!   `applyFontInfo`, `setBanner`, `setAriaOptions`, `createOverviewRuler`, `delegateVerticalScrollbarPointerDown`,
 //!   `delegateScrollFromMouseWheelEvent`, `getTargetAtClientPoint`, `getScrolledVisiblePosition`,
@@ -141,6 +141,7 @@ use crate::config::editor_options::registry::{MULTI_CURSOR_LIMIT, READ_ONLY, WOR
 use crate::config::editor_options::word_segmenter_locales::WORD_SEGMENTER_LOCALES;
 use crate::config::editor_options::{ComputedEditorOptions, ConfigurationChangedEvent, Opt};
 use crate::config::editor_configuration::IEditorConfiguration;
+use crate::core_2d::dimension::Dimension;
 use crate::cursor::SavedCursorState;
 use crate::cursor_columns;
 use crate::editor_decorations_collection::EditorDecorationsCollection;
@@ -1424,6 +1425,12 @@ impl CodeEditorWidget {
 
     /// `resetLineWidthCaches()`: sem `View` real (`hasRealView` falso) não faz nada.
     pub fn reset_line_width_caches(&self) {}
+
+    /// `layout(dimension?, postponeRendering)`: a parte do original que não é da `View`, o
+    /// `this._configuration.observeContainer(dimension)`. O `render` que vem depois é de quem tem a `View`.
+    pub fn layout(&self, dimension: Option<Dimension>) {
+        self.configuration.observe_container(dimension);
+    }
 
     // #endregion
 
