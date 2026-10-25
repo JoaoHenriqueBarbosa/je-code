@@ -30,6 +30,12 @@ pub trait IListWidget {
     fn as_workbench_list(self: Rc<Self>) -> Option<Rc<dyn IWorkbenchList>> {
         None
     }
+
+    /// `tree instanceof WorkbenchDataTree || tree instanceof WorkbenchAsyncDataTree` seguido de `tree.getInput()`: `None` para uma
+    /// lista que não é uma dessas árvores (o padrão), `Some(entrada)` para elas, com a entrada (`None` se ainda não há).
+    fn workbench_data_tree_input(&self) -> Option<Option<Rc<dyn Any>>> {
+        None
+    }
 }
 
 /// O recorte de `WorkbenchList` (`platform/list/browser/listService.ts`) que a visão acessível das notificações usa:
@@ -40,12 +46,6 @@ pub trait IWorkbenchList {
 
     /// `domFocus()`.
     fn dom_focus(&self);
-
-    /// `tree instanceof WorkbenchDataTree || tree instanceof WorkbenchAsyncDataTree` seguido de `tree.getInput()`: `None` para uma
-    /// lista que não é uma dessas árvores (o padrão), `Some(entrada)` para elas, com a entrada (`None` se ainda não há).
-    fn workbench_data_tree_input(&self) -> Option<Option<Rc<dyn Any>>> {
-        None
-    }
 
     /// `setFocus(indexes)`: lança (devolve o erro) para um índice fora da lista.
     fn set_focus(&self, indexes: &[isize]) -> Result<(), Error>;
