@@ -531,30 +531,6 @@ fn inline_suggest_mode_to_ghost(mode: &InlineSuggestMode) -> GhostTextMode {
     }
 }
 
-/// `ghostText.isEmpty()` de qualquer das duas variantes.
-fn ghost_is_empty(ghost: &GhostTextOrReplacement) -> bool {
-    match ghost {
-        GhostTextOrReplacement::GhostText(g) => g.is_empty(),
-        GhostTextOrReplacement::Replacement(r) => r.is_empty(),
-    }
-}
-
-/// `ghostText.lineNumber` de qualquer das duas variantes.
-fn ghost_line_number(ghost: &GhostTextOrReplacement) -> i32 {
-    match ghost {
-        GhostTextOrReplacement::GhostText(g) => g.line_number,
-        GhostTextOrReplacement::Replacement(r) => r.line_number,
-    }
-}
-
-/// `ghostText.parts` de qualquer das duas variantes.
-fn ghost_parts(ghost: &GhostTextOrReplacement) -> &[crate::inline_completions::ghost_text::GhostTextPart] {
-    match ghost {
-        GhostTextOrReplacement::GhostText(g) => &g.parts,
-        GhostTextOrReplacement::Replacement(r) => &r.parts,
-    }
-}
-
 /// `URI.from(<any>value)` sobre o argumento do comando.
 fn uri_from_dynamic(value: &Dynamic) -> Option<URI> {
     let component = |key: &str| match value.get_str(key) {
@@ -1611,12 +1587,12 @@ impl InlineCompletionsModel {
         let mut starts_with_indentation_less_than_tab_size = true;
         let ghost_text = self.primary_ghost_text.read(reader);
         if let Some(ghost_text) = ghost_text.as_deref()
-            && let Some(first_part) = ghost_parts(ghost_text).first()
+            && let Some(first_part) = ghost_text.parts().first()
         {
             let column = first_part.column;
             let first_line = first_part.lines[0].line.clone();
 
-            let indentation_end_column = self.text_model.get_line_indent_column(ghost_line_number(ghost_text));
+            let indentation_end_column = self.text_model.get_line_indent_column(ghost_text.line_number());
             let in_indentation = column <= indentation_end_column;
 
             if in_indentation {
@@ -1755,7 +1731,7 @@ impl InlineCompletionsModel {
                     let Some(inline_suggestion) = &s.inline_suggestion else {
                         return Ok(());
                     };
-                    if ghost_is_empty(&s.primary_ghost_text) {
+                    if s.primary_ghost_text.is_empty() {
                         return Ok(());
                     }
                     completion = InlineSuggestionItem::Completion(inline_suggestion.clone());
@@ -1954,7 +1930,7 @@ impl InlineCompletionsModel {
             let Some(completion) = state.inline_suggestion.clone() else {
                 return Ok(());
             };
-            if ghost_is_empty(&state.primary_ghost_text) {
+            if state.primary_ghost_text.is_empty() {
                 return Ok(());
             }
             let ghost_text = &state.primary_ghost_text;
@@ -1964,9 +1940,9 @@ impl InlineCompletionsModel {
                 return this.accept(&editor, false).await;
             }
 
-            let parts = ghost_parts(ghost_text);
+            let parts = ghost_text.parts();
             let first_part = &parts[0];
-            let ghost_text_pos = Position::new(ghost_line_number(ghost_text), first_part.column);
+            let ghost_text_pos = Position::new(ghost_text.line_number(), first_part.column);
             let ghost_text_val = first_part.text.clone();
             let accept_until_index_exclusive = get_accept_until_index(ghost_text_pos, ghost_text_val.units());
             if accept_until_index_exclusive == ghost_text_val.len() && parts.len() == 1 {

@@ -29,7 +29,9 @@
 //!   `utils.ts` (`addPositions`, `subtractPositions`, `substringPos`, `convertItemsToStableObservables` e
 //!   `ObservableContextKeyService`, que usa o `bindContextKey` de `je_platform`) e `controller/` (`commandIds`, `common` e
 //!   `inlineCompletionContextKeys`);
-//! - fatia 4b: a view `InlineSuggestionsView` com o `GhostTextView`;
+//! - fatia 4b (ghost text pronto): `view/ghost_text_view` (`GhostTextView`, `AdditionalLinesWidget`, as decorações
+//!   inline e o realce). A `View` do editor ainda não tem porte: as view zones e o `onMouseUp` chegam pelo
+//!   `IGhostTextViewHost`. A `InlineSuggestionsView`, que junta ghost text, hints e inline edits, vem depois;
 //! - fatia 4c: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os
 //!   serviços injetados;
 //! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
@@ -56,3 +58,4 @@ pub mod text_model_value_reference;
 pub mod towers_layout;
 pub mod typing_speed;
 pub mod utils;
+pub mod view;
