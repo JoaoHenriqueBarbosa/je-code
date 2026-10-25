@@ -70,8 +70,8 @@ use je_workbench::browser::parts::editor::editor_tabs_control::{
 use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
     AddTabAlignmentMeasure, AddTabPresence, AlignTabMeasure, ConnectedActiveTabMeasure, ConnectedClippingMeasure, CssLength, EditorInputLabel, FitTabMetrics,
     MultiEditorTabsControlState, StrokeSide, Tab, TabAction, TabActionLabelContext, TabBoxStyle, TabClipPath, TabColors, TabCssClasses, TabFillStrokeInput, TabFlexItem,
-    TabSizingParams, TabState, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
-    high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_label_opacity, tab_box_style,
+    TabSizingParams, TabActionGeometry, TabBoxContext, TabState, TabStrokeColor, TabStrokeStyle, TabsContainerView, TabsMeasurer, TabsMetrics, WrapTabMeasure, WrappingMeasure,
+    high_contrast_connected_tab_fill_stroke, layout_tabs_row, tab_action_geometry, tab_action_label_opacity, tab_box_style, tab_fill_rect,
 };
 use je_workbench::common::editor::editor_group_model::{EditorGroupModel, EditorOrIndex, IReadonlyEditorGroupModel};
 use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
@@ -245,9 +245,6 @@ const SHOULDER_MARGIN: f64 = SHOULDER_RADIUS + STROKE;
 const ROW_PADDING: f64 = 3.0;
 /// A largura do selo de decoração (`::after` com a letra e a margem de 5px dos dois lados).
 const BADGE_WIDTH: f64 = 17.0;
-/// `--vscode-spacing-size200` e `--vscode-spacing-size240` de `connectedGroup()`.
-const SPACING_SIZE200: f64 = 20.0;
-const SPACING_SIZE240: f64 = 24.0;
 
 /// As posições de cada aba, na ordem lógica do texto.
 struct Geometry {
@@ -312,12 +309,45 @@ impl Layout {
     /// `--modern-ui-tab-action-fit-padding`: 28px (`--vscode-spacing-size280`, o valor inicial) e, no estilo conectado,
     /// `calc((tab-height + size40 * 2 + strokeThickness - size200) / 2 + size240)` (`connectedEditorTabs.css`).
     fn action_column_width(&self) -> f64 {
+        TabBoxContext { connected: self.is_connected(), editor_group_tab_height: self.css_tab_height(), ..TabBoxContext::default() }.action_fit_padding()
+    }
+
+    /// `.modern-ui-tabs.modern-ui-connected-editor-tabs` na raiz.
+    fn is_connected(&self) -> bool {
         let parent = self.parent.get();
-        if parent.in_modern_ui_tabs && parent.in_connected_editor_tabs {
-            (self.css_tab_height() + TAB_GUTTER * 2.0 + STROKE - SPACING_SIZE200) / 2.0 + SPACING_SIZE240
-        } else {
-            ACTION_COLUMN
+        parent.in_modern_ui_tabs && parent.in_connected_editor_tabs
+    }
+
+    /// As variáveis, classes do contêiner e da linha que as regras de geometria de `connectedEditorTabs.css` leem, sem a medida
+    /// da aba (`connectedGroup()` põe `.modern-ui` na raiz e o grupo `.active`).
+    fn base_context(&self, container: &TabsContainerView, tab: &Tab) -> TabBoxContext {
+        TabBoxContext {
+            connected: self.is_connected(),
+            modern_ui_root: true,
+            editor_group_tab_height: self.css_tab_height(),
+            wrapping: container.wrapping,
+            upper_bar: container.connected_tab_upper_bar,
+            upper_row: tab.state.connected_tab_upper_row,
+            active: tab.state.active,
+            ..TabBoxContext::default()
         }
+    }
+
+    /// O contexto de geometria da aba `index`, com a largura que o layout deu a ela (`getBoundingClientRect()`) e a altura da
+    /// linha (`--modern-ui-connected-tab-row-height`, que é também a altura da aba conectada).
+    fn box_context(&self, container: &TabsContainerView, tabs: &[Tab], index: usize, tab_width: f64) -> TabBoxContext {
+        let mut context = self.base_context(container, &tabs[index]);
+        context.starts_row = index == 0 || tabs[index - 1].state.last_in_row;
+        context.tab_width = tab_width;
+        context.tab_height = if context.connected { context.connected_row_height() } else { self.tab_height() };
+        context
+    }
+
+    /// `(left, right)` do `.monaco-icon-label-container` dentro da aba: o rótulo vai do recuo ao início da coluna da ação (ação
+    /// à direita) ou do fim da coluna ao recuo do outro lado (ação à esquerda).
+    fn label_span(&self, box_width: f64, action_padding: Option<f64>, actions_left: bool) -> (f64, f64) {
+        let side = TAB_PADDING / 2.0;
+        if actions_left { (action_padding.unwrap_or(side), box_width - side) } else { (side, side + self.label_width(box_width, action_padding)) }
     }
 
     /// `--modern-ui-tab-action-padding` computado da aba: o recuo real do lado da ação, que difere do `fit-padding` no estilo
@@ -327,20 +357,7 @@ impl Layout {
     /// com `fill-block-inset = size20` (L119 e L125) e o resto `tab-height + size40 * 2 - strokeThickness` com
     /// `fill-block-inset = -strokeThickness` (L158 e L164). Na quebra vale `size280` (L121).
     fn action_padding(&self, tab: &Tab, container: &TabsContainerView) -> f64 {
-        let parent = self.parent.get();
-        if !(parent.in_modern_ui_tabs && parent.in_connected_editor_tabs) {
-            return ACTION_COLUMN;
-        }
-        if tab.state.connected_tab_upper_row {
-            return if tab.state.dirty || tab.state.sticky { self.action_column_width() } else { ACTION_COLUMN };
-        }
-        if container.wrapping {
-            return ACTION_COLUMN;
-        }
-        let height = self.css_tab_height();
-        let (row_height, fill_inset) =
-            if container.connected_tab_upper_bar { (height + TAB_GUTTER, SPACING_SIZE20) } else { (height + TAB_GUTTER * 2.0 - STROKE, -STROKE) };
-        (row_height - fill_inset + STROKE - SPACING_SIZE200) / 2.0 + SPACING_SIZE240
+        self.base_context(container, tab).action_padding(&TabCssClasses::of(&tab.state, container))
     }
 
     /// A aba aloca a coluna da ação na largura: sem o Modern UI a coluna é sempre alocada, com ele só com a reserva de espaço
@@ -913,6 +930,23 @@ impl Fixture {
     /// `getBoundingClientRect().width` do `.tab-label` da aba.
     fn label_width(&self, tab_index: usize, transient: bool) -> f64 {
         self.layout.label_width(self.geometry().widths[tab_index], self.action_padding(tab_index, transient))
+    }
+
+    /// O contexto de geometria da aba `tab_index` com a largura que o layout deu a ela.
+    fn box_context(&self, tab_index: usize) -> TabBoxContext {
+        self.layout.box_context(&self.state.container, &self.state.tabs, tab_index, self.geometry().widths[tab_index])
+    }
+
+    /// `tab.querySelector('.action-label')` e `.tab-actions` em coordenadas da aba, e o `.monaco-icon-label-container`.
+    fn action_geometry(&self, tab_index: usize) -> TabActionGeometry {
+        let classes = TabCssClasses::of(&self.state.tabs[tab_index].state, &self.state.container);
+        tab_action_geometry(&classes, &self.box_context(tab_index)).expect("a aba mostra o `.tab-actions`")
+    }
+
+    /// `right` do `.monaco-icon-label-container` da aba, com a coluna da ação visível (a aba ativa ou com ação persistente).
+    fn label_right(&self, tab_index: usize) -> f64 {
+        let tab = &self.state.tabs[tab_index];
+        self.layout.label_span(self.geometry().widths[tab_index], self.action_padding(tab_index, false), tab.state.tab_actions_left).1
     }
 
     /// `hoverTab(tabIndex)`.
@@ -2839,6 +2873,264 @@ fn fit_sized_connected_tabs_keep_stable_reservations_across_density_and_wrapping
             sticky_left_default_widths,
         )
     );
+}
+
+/// O que `measure()` lê da aba ativa em `connected close actions keep consistent spacing ...`.
+#[derive(Debug, PartialEq)]
+struct ActionMeasure {
+    top: f64,
+    bottom: f64,
+    right: f64,
+    left: f64,
+    width: f64,
+    target: [f64; 2],
+    action_insets: [f64; 2],
+    padding: [f64; 4],
+}
+
+/// `measure()` do caso: as distâncias do `.action-label` às bordas da aba ativa e ao rótulo, a largura do `.tab-fill`, o alvo, o
+/// recuo do botão dentro do `.tab-actions` e o `padding` computado.
+fn measure_active_action(fx: &Fixture) -> ActionMeasure {
+    let index = fx.state.tabs.iter().position(|tab| tab.state.active).expect("aba ativa");
+    let context = fx.box_context(index);
+    let geometry = fx.action_geometry(index);
+    let (actions, label) = (geometry.actions, geometry.label);
+
+    ActionMeasure {
+        top: label.top,
+        bottom: context.tab_height - label.bottom,
+        right: context.tab_width - label.right,
+        left: label.left - fx.label_right(index),
+        width: tab_fill_rect(&context).width(),
+        target: [label.width(), label.height()],
+        action_insets: [label.left - actions.left - geometry.border_left, actions.right - geometry.border_right - label.right],
+        padding: geometry.label_padding,
+    }
+}
+
+#[test]
+fn connected_close_actions_keep_consistent_spacing_across_terminal_and_wrapped_tabs() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `group.style.setProperty('--vscode-editorGroupHeader-tabsBorder', '#333333')` é pintura.
+    fx.layout(400.0);
+    let multiple = measure_active_action(&fx);
+    let stroke = STROKE;
+
+    let second = fx.model.get_editor_by_index(1).expect("aba 1");
+    fx.close_editor(&second);
+    fx.layout(400.0);
+    let single = measure_active_action(&fx);
+
+    open!(fx.model, second, pinned: true, active: true);
+    fx.open_editors();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.layout(150.0);
+    let wrapped_bottom = measure_active_action(&fx);
+
+    let first = fx.model.get_editor_by_index(0).expect("aba 0");
+    open!(fx.model, first, active: true);
+    fx.open_editors();
+    fx.layout(150.0);
+    let wrapped_upper = measure_active_action(&fx);
+
+    fx.update_options(|options| {
+        options.wrap_tabs = false;
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_location = TabActionLocation::Left;
+    });
+    fx.layout(400.0);
+    let left_multiple = measure_active_action(&fx);
+
+    fx.close_editor(&second);
+    fx.layout(400.0);
+    let left_single = measure_active_action(&fx);
+
+    #[derive(Debug, PartialEq)]
+    struct Report {
+        single: [bool; 4],
+        clearance: Vec<[f64; 4]>,
+        left_action: [bool; 4],
+        balanced_action_surface: bool,
+        action_padding: bool,
+        targets: Vec<[f64; 2]>,
+    }
+
+    let measurements = [&multiple, &single, &wrapped_bottom, &wrapped_upper];
+    let report = Report {
+        single: [single.top == multiple.top, single.right == multiple.right, single.left == multiple.left, single.width == multiple.width],
+        clearance: measurements.iter().map(|measurement| [measurement.top, measurement.right, measurement.bottom, measurement.left]).collect(),
+        left_action: [left_single.top == left_multiple.top, left_single.right == left_multiple.right, left_single.left == left_multiple.left, left_single.width == left_multiple.width],
+        balanced_action_surface: [&multiple, &single, &wrapped_bottom, &wrapped_upper, &left_multiple, &left_single]
+            .iter()
+            .all(|measurement| (measurement.action_insets[0] - measurement.action_insets[1]).abs() <= stroke),
+        action_padding: measurements.iter().all(|measurement| measurement.padding.iter().all(|&value| value == measurement.padding[0]) && measurement.padding[0] == multiple.padding[0]),
+        targets: measurements.iter().map(|measurement| measurement.target).collect(),
+    };
+    let expected = Report {
+        single: [true; 4],
+        clearance: vec![[5.5, 6.5, 5.5, 4.0], [5.5, 6.5, 5.5, 4.0], [4.0, 3.5, 4.0, 4.5], [4.0, 4.0, 4.0, 4.0]],
+        left_action: [true; 4],
+        balanced_action_surface: true,
+        action_padding: true,
+        targets: vec![[20.0, 20.0]; 4],
+    };
+    assert_eq!(report, expected);
+}
+
+#[test]
+fn pin_and_close_actions_share_geometry_across_tab_styles_and_wrapping() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let sticky_editor = fx.model.get_editor_by_index(0).expect("aba 0");
+    let active_editor = fx.model.get_editor_by_index(1).expect("aba 1");
+    fx.model.stick(&sticky_editor);
+    fx.state.handle_sticky_editor_change(0);
+    open!(fx.model, active_editor, active: true);
+    fx.open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        tab_action_location: TabActionLocation,
+        wrap_tabs: bool,
+        targets_match: bool,
+        clearance_matches: bool,
+        labels: [TabAction; 2],
+    }
+
+    // O `clearance` do original: topo, a ponta da ação (a direita ou a esquerda) e a base, e a ação que o `aria-label` nomeia.
+    let measure = |fx: &Fixture, index: usize, location: TabActionLocation| {
+        let context = fx.box_context(index);
+        let label = fx.action_geometry(index).label;
+        let edge = if location == TabActionLocation::Right { context.tab_width - label.right } else { label.left };
+
+        ([label.width(), label.height()], [label.top, edge, context.tab_height - label.bottom], fx.state.tabs[index].state.action.expect("ação da aba"))
+    };
+
+    let mut results = Vec::new();
+    for connected in [true, false] {
+        fx.set_connected(connected);
+        for tab_action_location in [TabActionLocation::Right, TabActionLocation::Left] {
+            for wrap_tabs in [false, true] {
+                fx.update_options(|options| {
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                    options.pinned_tab_sizing = PinnedTabSizing::Normal;
+                    options.tab_action_location = tab_action_location;
+                    options.tab_action_unpin_visibility = true;
+                    options.tab_sizing = if wrap_tabs { TabSizing::Fixed } else { TabSizing::Fit };
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                    options.wrap_tabs = wrap_tabs;
+                });
+                fx.layout(if wrap_tabs { 150.0 } else { 400.0 });
+                let sticky = fx.state.tabs.iter().position(|tab| tab.state.sticky).expect("aba fixada");
+                let active = fx.state.tabs.iter().position(|tab| tab.state.active && !tab.state.sticky).expect("aba ativa");
+                let (pin_target, pin_clearance, pin_action) = measure(&fx, sticky, tab_action_location);
+                let (close_target, close_clearance, close_action) = measure(&fx, active, tab_action_location);
+                results.push(Row {
+                    connected,
+                    tab_action_location,
+                    wrap_tabs,
+                    targets_match: pin_target == close_target,
+                    clearance_matches: pin_clearance.iter().zip(&close_clearance).all(|(pin, close)| (pin - close).abs() <= 1.0),
+                    labels: [pin_action, close_action],
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            connected: result.connected,
+            tab_action_location: result.tab_action_location,
+            wrap_tabs: result.wrap_tabs,
+            targets_match: true,
+            clearance_matches: true,
+            labels: [TabAction::Unpin, TabAction::Close],
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn close_hover_targets_stay_centered_in_hitboxes_across_wrapped_surface_shapes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        compact: bool,
+        tab_action_location: TabActionLocation,
+        wrap_tabs: bool,
+        active_index: usize,
+        top: f64,
+        bottom: f64,
+        trailing: f64,
+        target: [f64; 2],
+    }
+
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for tab_height in [TabHeight::Default, TabHeight::Compact] {
+        for tab_action_location in [TabActionLocation::Right, TabActionLocation::Left] {
+            for wrap_tabs in [false, true] {
+                fx.update_options(|options| {
+                    options.tab_height = tab_height;
+                    options.tab_action_location = tab_action_location;
+                    options.wrap_tabs = wrap_tabs;
+                    options.tab_sizing = TabSizing::Fixed;
+                    options.tab_sizing_fixed_min_width = 120.0;
+                    options.tab_sizing_fixed_max_width = 120.0;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                for active_index in [0usize, 1] {
+                    let editor = fx.model.get_editor_by_index(active_index as i64).expect("aba");
+                    open!(fx.model, editor, active: true);
+                    fx.open_editors();
+                    fx.layout(if wrap_tabs { 150.0 } else { 400.0 });
+                    let index = fx.state.tabs.iter().position(|tab| tab.state.active).expect("aba ativa");
+                    let context = fx.box_context(index);
+                    let label = fx.action_geometry(index).label;
+                    // `leftBorder` é a cor computada do `.tab-fill`, pintura da renderização nativa.
+                    measurements.push(Row {
+                        compact: tab_height == TabHeight::Compact,
+                        tab_action_location,
+                        wrap_tabs,
+                        active_index,
+                        top: label.top,
+                        bottom: context.tab_height - label.bottom,
+                        trailing: if tab_action_location == TabActionLocation::Left { label.left } else { context.tab_width - label.right },
+                        target: [label.width(), label.height()],
+                    });
+                    let compact = tab_height == TabHeight::Compact;
+                    let clearance = match (wrap_tabs, compact) {
+                        (true, true) => 2.0,
+                        (true, false) => 4.0,
+                        (false, true) => 3.5,
+                        (false, false) => 5.5,
+                    };
+                    let trailing = match (tab_action_location, wrap_tabs, active_index, compact) {
+                        (TabActionLocation::Left, ..) => 5.0,
+                        (_, false, _, true) => 4.5,
+                        (_, false, _, false) => 6.5,
+                        (_, true, 1, true) => 1.5,
+                        (_, true, 1, false) => 3.5,
+                        (_, true, ..) => 4.0,
+                    };
+                    expected.push(Row { compact, tab_action_location, wrap_tabs, active_index, top: clearance, bottom: clearance, trailing, target: [20.0, 20.0] });
+                }
+            }
+        }
+    }
+    assert_eq!(measurements, expected);
 }
 
 //#region Alt (#331979), os quatro últimos casos do original
