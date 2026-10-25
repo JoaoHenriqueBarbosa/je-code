@@ -115,6 +115,11 @@ pub const CLASS_KEY: &str = "$$class";
 /// O corpo de um método de classe: recebe o `this` (copiado, com `$$class`) e os argumentos.
 pub type MethodCallback = Rc<dyn Fn(&JsData, &[JsData]) -> Result<JsData, String>>;
 
+/// O corpo de um método de classe por referência ([`NodeRunner::define_reference_class`]): recebe o [`NodeRunner`], o `this`
+/// como o próprio objeto (para ler com [`NodeRunner::export`] e escrever com [`NodeRunner::set_property`]) e os argumentos
+/// copiados. Devolver `JsData::Handle(this.clone())` é o `return this` que encadeia.
+pub type ReferenceMethodCallback = Rc<dyn Fn(&NodeRunner, &Rc<JsHandle>, &[JsData]) -> Result<JsData, String>>;
+
 /// A descrição de uma classe nativa para [`NodeRunner::define_class`].
 pub struct ClassSpec {
     pub name: String,
@@ -149,6 +154,7 @@ impl Drop for ProgramState {
         let _ = REFERENCE_NATIVES.try_with(|natives| natives.borrow_mut().clear());
         let _ = CONSTRUCTORS.try_with(|constructors| constructors.borrow_mut().clear());
         let _ = METHODS.try_with(|methods| methods.borrow_mut().clear());
+        let _ = REFERENCE_METHODS.try_with(|methods| methods.borrow_mut().clear());
         let _ = CLASSES.try_with(|classes| classes.borrow_mut().clear());
         let _ = CLASS_CONSTRUCTORS.try_with(|constructors| constructors.borrow_mut().clear());
         let _ = HOST_MODULES.try_with(|modules| modules.borrow_mut().clear());
@@ -213,6 +219,32 @@ fn native_method_body(global_object: &JSGlobalObject, call: &HostCall) -> HostRe
     }
 }
 host_function!(native_method, native_method_body);
+
+/// O corpo de um método de classe por referência: o `this` chega como o próprio objeto ([`JsHandle`]), não como cópia.
+type ReferenceMethodBody = Rc<dyn Fn(&Rc<JsHandle>, &[JsData]) -> Result<JsData, String>>;
+
+thread_local! {
+    /// Os métodos por referência vivos, pelo id da célula da função.
+    static REFERENCE_METHODS: RefCell<HashMap<usize, ReferenceMethodBody>> = RefCell::new(HashMap::new());
+}
+
+fn reference_method_body(global_object: &JSGlobalObject, call: &HostCall) -> HostResult {
+    let Some(callback) = REFERENCE_METHODS.with(|methods| methods.borrow().get(&call.callee()).cloned()) else {
+        return Err(Thrown::type_error("método nativo sem implementação registrada"));
+    };
+    let Some(global) = global_object.to_ref() else { return Ok(JSValue::undefined()) };
+    let this = call.this_value();
+    if !this.is_object() {
+        return Err(Thrown::type_error("o receptor do método nativo precisa ser um objeto"));
+    }
+    let this = Rc::new(JsHandle::new(this));
+    let arguments: Vec<JsData> = call.arguments().iter().map(|argument| read_value(&global, *argument, 0)).collect();
+    match callback(&this, &arguments) {
+        Ok(data) => Ok(write_value(&global, &data)),
+        Err(message) => Err(Thrown::TypeError(message)),
+    }
+}
+host_function!(reference_method, reference_method_body);
 
 /// Marca `object` com a classe `name` (propriedade não enumerável [`CLASS_KEY`]).
 fn mark_class(global: &JSGlobalObjectRef, object: &JSObject, name: &str) {
@@ -514,6 +546,17 @@ impl NodeRunner {
     /// `this` copiado e o valor atribuído como único argumento. Um nome que está em `spec.getters` e em `setters` vira um
     /// acessor único (leitura e escrita); um nome só em `setters` é um acessor só de escrita.
     pub fn define_accessor_class(&self, spec: ClassSpec, setters: Vec<(String, MethodCallback)>) -> JsHandle {
+        self.define_class_with(spec, setters, Vec::new())
+    }
+
+    /// Como [`NodeRunner::define_class`], com `reference_methods`: métodos de protótipo em que o `this` chega por referência
+    /// ([`ReferenceMethodCallback`]), então o corpo pode ler e escrever as propriedades do receptor
+    /// (`md.appendText(...)` altera o `md`). Cada um vem depois dos de `spec.methods` e vale o mesmo nome.
+    pub fn define_reference_class(&self, spec: ClassSpec, reference_methods: Vec<(String, u32, ReferenceMethodCallback)>) -> JsHandle {
+        self.define_class_with(spec, Vec::new(), reference_methods)
+    }
+
+    fn define_class_with(&self, spec: ClassSpec, setters: Vec<(String, MethodCallback)>, reference_methods: Vec<(String, u32, ReferenceMethodCallback)>) -> JsHandle {
         let vm = &self.vm;
         let global = &self.global_object;
         let constructor = JSFunction::create_native(
@@ -558,6 +601,24 @@ impl NodeRunner {
                 METHODS.with(|methods| methods.borrow_mut().insert(id, callback.clone()));
             }
             prototype.put_direct(vm, &key(name), function.as_value(), DONT_ENUM);
+        }
+        for (name, length, callback) in reference_methods {
+            let function = JSFunction::create_native(
+                vm,
+                global,
+                length,
+                &WtfString::from_utf8(name.as_bytes()),
+                reference_method,
+                ImplementationVisibility::Public,
+                crate::runtime::intrinsic::Intrinsic::NoIntrinsic,
+                crate::runtime::js_function::call_host_function_as_constructor,
+            );
+            if let JSValue::Cell(id) = function.as_value() {
+                let runner = self.clone();
+                let body: ReferenceMethodBody = Rc::new(move |this, args| callback(&runner, this, args));
+                REFERENCE_METHODS.with(|methods| methods.borrow_mut().insert(id, body));
+            }
+            prototype.put_direct(vm, &key(&name), function.as_value(), DONT_ENUM);
         }
         // Um acessor por nome, com o getter e o setter que houver (a união dos dois conjuntos).
         let mut accessor_names: Vec<&String> = spec.getters.iter().map(|(name, _)| name).collect();
