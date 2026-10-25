@@ -46,6 +46,7 @@ use je_base::promise::{DeferredPromise, Promise};
 use je_base::uri::URI;
 use je_instantiation::{ServiceCollection, ServicesAccessor};
 use je_platform::opener::editor_types::EditorOptions;
+use je_workbench::services::editor::editor_groups_service::IEditorPart;
 use je_workbench::common::contributions::{IWorkbenchContribution, WorkbenchContributionCtor, WorkbenchContributionInstantiation, WorkbenchContributionsRegistry, WorkbenchPhase};
 use je_workbench::common::editor::{EditorInputRef, TextEditorOptions};
 use je_workbench::services::editor::editor_groups_service::PreferredGroup;
