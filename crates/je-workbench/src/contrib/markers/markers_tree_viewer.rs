@@ -21,13 +21,15 @@
 //!   o estado `selected` e `focused` da linha só é relido no `layout` (a seleção não dispara um novo).
 //! - **`FileResourceMarkersRenderer extends ResourceMarkersRenderer {}`** (subclasse vazia) é o alias
 //!   [`FileResourceMarkersRenderer`].
-//! - **`ToggleMultilineActionViewItem extends ActionViewItem`** só acrescenta o atributo `aria-expanded`, que o `je-ui` não
-//!   modela (só `role` e `label`); a ação usa o [`ActionViewItem`] direto, com `icon: true` como o original.
+//! - **`ToggleMultilineActionViewItem extends ActionViewItem`** é composição ([`ActionViewItem::new_with_owner`], como o
+//!   `QuickFixActionViewItem`): acrescenta o atributo `aria-expanded` ao elemento do item (`Tree::set_attribute`) no
+//!   `render` e no `updateClass`, com `icon: true` como o original.
 //! - **`Link` (`platform/opener/browser/link.ts`).** O porte ainda não tem o widget; o código com `target` desenha o `a.monaco-link`
 //!   ([`Role::Link`]) com o rótulo dentro, a dica com o endereço e a abertura (clique, `Enter` ou `Space`) por
 //!   `IOpenerService.open(href, { allowCommands: true })`, o que o `Link` faz.
-//! - **Ícones registrados.** O porte não tem o registro de ícones (`registerIcon`); os ícones `markers-view-multi-line-expanded`
-//!   e `markers-view-multi-line-collapsed` usam o codicon padrão (`chevron-up` e `chevron-down`) direto.
+//! - **Ícones registrados.** Os ícones `markers-view-multi-line-expanded` e `markers-view-multi-line-collapsed` são
+//!   registrados no registro de ícones (`registerIcon` de `je_theme::icon_registry`, com `chevron-up` e `chevron-down` como
+//!   padrão). As constantes de módulo do original são preguiçosas: o registro roda no primeiro uso, não no carregamento.
 //! - **`IListAccessibilityProvider<MarkerElement | MarkerTableItem>`.** O provedor implementa o trait para os dois elementos
 //!   (a árvore e a tabela); o `MarkerTableItem` é um `Marker` por composição (`base`).
 //! - **`ITreeFilter`.** `Filter.options` (público e mutável) é um `RefCell<Rc<FilterOptions>>` com [`Filter::options`] e
@@ -83,7 +85,8 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_ui::{Content, EventKind, NodeId, Role, Tree, Ui};
 use je_widgets::action_bar::{ActionBar, IActionBarOptions, IActionOptions, IActionViewItemProvider};
-use je_widgets::action_view_items::{ActionBarStyles, ActionViewItem, IActionViewItem, IActionViewItemOptions};
+use je_theme::icon_registry::register_icon;
+use je_widgets::action_view_items::{ActionBarStyles, ActionViewItem, BaseActionViewItem, IActionViewItem, IActionViewItemOptions, ItemSize};
 use je_widgets::count_badge::{CountBadge, ICountBadgeOptions, ICountBadgeStyles};
 use je_widgets::dom::{StandardKeyboardEvent, clear_node, create_el};
 use je_widgets::highlighted_label::{HighlightedLabel, HighlightedLabelStyles, IHighlight};
@@ -131,7 +134,134 @@ const CODICON_SIZE: f64 = 16.0;
 /// `.count-badge-wrapper` com `.wide`: `margin-left: 10px`.
 const WIDE_BADGE_MARGIN_LEFT: f64 = 10.0;
 
+thread_local! {
+    static EXPANDED_ICON: ThemeIcon = register_icon(
+        "markers-view-multi-line-expanded",
+        ThemeIcon::from_id("chevron-up"),
+        &localize("expandedIcon", "Icon indicating that multiple lines are shown in the markers view.", &[]),
+        None,
+    );
+    static COLLAPSED_ICON: ThemeIcon = register_icon(
+        "markers-view-multi-line-collapsed",
+        ThemeIcon::from_id("chevron-down"),
+        &localize("collapsedIcon", "Icon indicating that multiple lines are collapsed in the markers view.", &[]),
+        None,
+    );
+}
+
+/// `expandedIcon`.
+fn expanded_icon() -> ThemeIcon {
+    EXPANDED_ICON.with(Clone::clone)
+}
+
+/// `collapsedIcon`.
+fn collapsed_icon() -> ThemeIcon {
+    COLLAPSED_ICON.with(Clone::clone)
+}
+
 const TOGGLE_MULTILINE_ACTION: &str = "problems.action.toggleMultiline";
+
+/// `ToggleMultilineActionViewItem extends ActionViewItem`: acrescenta o atributo `aria-expanded` ao elemento do item,
+/// verdadeiro quando a classe da ação é a do ícone expandido.
+struct ToggleMultilineActionViewItem {
+    inner: Rc<ActionViewItem>,
+    ui: Ui,
+    disposed: Cell<bool>,
+}
+
+impl ToggleMultilineActionViewItem {
+    /// `new ToggleMultilineActionViewItem(undefined, action, options)`.
+    fn new(ui: &Ui, action: ActionRef, options: IActionViewItemOptions) -> Rc<Self> {
+        Rc::new_cyclic(|weak: &Weak<Self>| Self {
+            inner: ActionViewItem::new_with_owner(ui, None, action, options, weak.clone() as Weak<dyn IActionViewItem>),
+            ui: ui.clone(),
+            disposed: Cell::new(false),
+        })
+    }
+
+    /// `updateExpandedAttribute()`.
+    fn update_expanded_attribute(&self) {
+        let Some(element) = self.inner.base().element() else { return };
+        let expanded = self.inner.base().action().class().as_deref() == Some(expanded_icon().as_class_name().as_str());
+        self.ui.tree_mut().set_attribute(element, "aria-expanded", expanded.to_string());
+    }
+}
+
+impl IActionViewItem for ToggleMultilineActionViewItem {
+    fn base(&self) -> &BaseActionViewItem {
+        self.inner.base()
+    }
+
+    fn render(&self, container: NodeId) {
+        self.inner.render(container);
+        self.update_expanded_attribute();
+    }
+
+    fn focus(&self, from_right: bool) {
+        self.inner.focus(from_right);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.inner.is_focused()
+    }
+
+    fn blur(&self) {
+        self.inner.blur();
+    }
+
+    fn set_focusable(&self, focusable: bool) {
+        self.inner.set_focusable(focusable);
+    }
+
+    fn tab_stops(&self) -> usize {
+        self.inner.tab_stops()
+    }
+
+    fn update_enabled(&self) {
+        self.inner.update_enabled();
+    }
+
+    fn update_label(&self) {
+        self.inner.update_label();
+    }
+
+    fn update_class(&self) {
+        self.inner.update_class();
+        self.update_expanded_attribute();
+    }
+
+    fn update_checked(&self) {
+        self.inner.update_checked();
+    }
+
+    fn get_tooltip(&self) -> Option<String> {
+        self.inner.get_tooltip()
+    }
+
+    fn update_aria_label(&self) {
+        self.inner.update_aria_label();
+    }
+
+    fn size(&self, vertical: bool) -> ItemSize {
+        self.inner.size(vertical)
+    }
+
+    fn layout(&self, vertical: bool, width: f64, height: f64) {
+        self.inner.layout(vertical, width, height);
+    }
+}
+
+impl IDisposable for ToggleMultilineActionViewItem {
+    fn dispose(&self) {
+        if !self.disposed.replace(true) {
+            self.inner.dispose();
+        }
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "ToggleMultilineActionViewItem"
+    }
+}
 
 /// Os estilos que o original deixa para a folha de estilo e para os `defaultXStyles`.
 #[derive(Clone)]
@@ -723,7 +853,7 @@ impl MarkerWidget {
                 if action.id() != TOGGLE_MULTILINE_ACTION {
                     return None;
                 }
-                Some(ActionViewItem::new(&ui, None, action.clone(), IActionViewItemOptions { icon: Some(true), ..options.clone() }) as Rc<dyn IActionViewItem>)
+                Some(ToggleMultilineActionViewItem::new(&ui, action.clone(), IActionViewItemOptions { icon: Some(true), ..options.clone() }) as Rc<dyn IActionViewItem>)
             })
         };
         let multiline_actionbar = ActionBar::new(ui, multiline_actions, IActionBarOptions { action_view_item_provider: Some(provider), styles: self.services.styles.action_bar.clone(), ..IActionBarOptions::default() });
@@ -746,7 +876,8 @@ impl MarkerWidget {
         );
         self.disposables.add(action.clone());
         action.set_tooltip(if multiline { localize("single line", "Show message in single line", &[]) } else { localize("multi line", "Show message in multiple lines", &[]) });
-        action.set_class(Some(ThemeIcon::from_id(if multiline { "chevron-up" } else { "chevron-down" }).as_class_name()));
+        let toggle_icon = if multiline { expanded_icon() } else { collapsed_icon() };
+        action.set_class(Some(toggle_icon.as_class_name()));
         multiline_actionbar.push(
             &[action as ActionRef],
             IActionOptions { item: IActionViewItemOptions { icon: Some(true), label: Some(false), styles: self.services.styles.action_bar.clone(), ..IActionViewItemOptions::default() }, index: None },
