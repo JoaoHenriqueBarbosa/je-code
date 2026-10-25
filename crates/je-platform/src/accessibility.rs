@@ -11,6 +11,9 @@ use je_base::event::Event;
 use je_base::promise::Promise;
 use je_instantiation::service_id;
 
+pub mod accessible_view;
+pub mod accessible_view_registry;
+
 /// `IAccessibilityInformation`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IAccessibilityInformation {
