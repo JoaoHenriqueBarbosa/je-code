@@ -6,6 +6,8 @@ pub mod browser;
 
 pub mod contrib;
 
+pub mod electron_browser;
+
 pub mod services;
 
 pub mod api;

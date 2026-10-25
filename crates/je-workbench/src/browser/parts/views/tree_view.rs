@@ -2,13 +2,15 @@
 //! `CustomTreeViewDragAndDrop` e do cascateamento de checkboxes, que o `MainThreadTreeViews` e a suíte
 //! `mainThreadTreeViews.test.ts` exercitam.
 //!
-//! Fora do porte (camada de interface, sem equivalente nativo ainda): `TreeViewPane` (o `ViewPane`), `TreeView` (a variante
-//! sem extensão), `TreeRenderer`, `Aligner`, `TreeMenus`, `MultipleSelectionActionRunner`, `CheckboxStateHandler`, o menu de
+//! Fora do porte (camada de interface, sem equivalente nativo ainda): `TreeViewPane` (o `ViewPane`), `TreeRenderer`, `Aligner`,
+//! `TreeMenus`, `MultipleSelectionActionRunner`, `CheckboxStateHandler`, o menu de
 //! contexto, o `onDidOpen` (execução do comando do item), o `resolveCommand`, os `RawContextKey` e as ações
 //! `refresh`/`collapseAll` registradas por `registerActions`, a renderização da mensagem (`showMessage`, `processMessage`),
 //! `show(container)`, `container`, `viewContainer`/`viewLocation` (cores por local) e `showRefreshAction`.
 //!
 //! Divergências:
+//! - **`TreeView`** (a variante sem extensão) é o [`CustomTreeView::new_without_extension`]: a mesma struct com `extension_id`
+//!   ausente, em que `activate` só cria a árvore.
 //! - **A árvore (`WorkbenchAsyncDataTree`)** é o modelo lógico de nós: o [`TreeNodes`] guarda, por `handle`, o item, os
 //!   filhos carregados, o pai, o conjunto de expandidos, a seleção e o foco. `expand`, `reveal`, `setSelection`, `setFocus`,
 //!   `isCollapsed` e o recarregamento (`updateChildren`, que só recarrega a raiz e os nós expandidos) seguem o que a árvore
@@ -768,7 +770,8 @@ pub struct CustomTreeView {
     base: Rc<Disposable>,
     this: Weak<CustomTreeView>,
     id: String,
-    extension_id: String,
+    /// `None` na variante `TreeView` (sem extensão).
+    extension_id: Option<String>,
     services: CustomTreeViewServices,
 
     is_visible: Cell<bool>,
@@ -820,6 +823,16 @@ pub struct CustomTreeView {
 impl CustomTreeView {
     /// `new CustomTreeView(id, title, extensionId, ...services)`.
     pub fn new(id: &str, title: &str, extension_id: &str, services: CustomTreeViewServices) -> Rc<Self> {
+        Self::build(id, title, Some(extension_id.to_owned()), services)
+    }
+
+    /// `new TreeView(id, title, ...services)`: a variante sem extensão, que ao ativar só cria a árvore (sem telemetria, sem
+    /// progresso e sem `activateByEvent`). Os serviços de extensão e telemetria do `services` não são usados.
+    pub fn new_without_extension(id: &str, title: &str, services: CustomTreeViewServices) -> Rc<Self> {
+        Self::build(id, title, None, services)
+    }
+
+    fn build(id: &str, title: &str, extension_id: Option<String>, services: CustomTreeViewServices) -> Rc<Self> {
         let base = Disposable::new();
         fn emitter<T: Clone + 'static>(base: &Rc<Disposable>) -> Rc<Emitter<T>> {
             let emitter = Emitter::new();
@@ -833,7 +846,7 @@ impl CustomTreeView {
         Rc::new_cyclic(|this| Self {
             this: this.clone(),
             id: id.to_owned(),
-            extension_id: extension_id.to_owned(),
+            extension_id,
             services,
             is_visible: Cell::new(false),
             is_initialized: Cell::new(false),
@@ -952,10 +965,15 @@ impl CustomTreeView {
         if self.activated.get() {
             return;
         }
+        let Some(extension_id) = &self.extension_id else {
+            self.create_tree();
+            self.activated.set(true);
+            return;
+        };
         self.services.telemetry_service.public_log2(
             "Extension:ViewActivate",
             Some(Dynamic::object([
-                ("extensionId", TelemetryTrustedValue { value: Dynamic::string(&self.extension_id) }.to_dynamic()),
+                ("extensionId", TelemetryTrustedValue { value: Dynamic::string(extension_id) }.to_dynamic()),
                 ("id", Dynamic::string(&self.id)),
             ])),
         );
