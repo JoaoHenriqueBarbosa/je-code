@@ -28,7 +28,8 @@ use je_platform::configuration::service::IConfigurationService;
 
 use crate::api::common::ext_host_protocol::{ExtHostContext, ExtHostOutputServiceShape, IMainContext, MainThreadOutputServiceShape};
 use crate::services::output::output::{
-    output_channel_registry, IOutputChannel, IOutputChannelDescriptor, IOutputChannelRegistry, IOutputContentSource, IOutputService, OutputChannelUpdateMode, OUTPUT_VIEW_ID,
+    output_channel_registry, IOutputChannel, IOutputChannelDescriptor, IOutputChannelRegistry, IOutputContentSource, IOutputService, OutputChannelSource, OutputChannelUpdateMode,
+    OUTPUT_VIEW_ID,
 };
 
 /// O que `MainThreadOutputService` lê do `IViewsService`.
@@ -160,7 +161,7 @@ impl MainThreadOutputServiceShape for MainThreadOutputService {
             label: label.to_owned(),
             log: false,
             language_id,
-            source: Some(vec![IOutputContentSource { name: None, resource: file }]),
+            source: Some(OutputChannelSource::Single(IOutputContentSource { name: None, resource: file })),
             extension_id: Some(extension_id.to_owned()),
             user: None,
         });

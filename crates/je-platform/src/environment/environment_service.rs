@@ -314,7 +314,7 @@ impl EnvironmentService for AbstractNativeEnvironmentService {
 }
 
 /// `.replace(/-|:|\.\d+Z$/g, '')` do carimbo do nome da pasta de logs.
-fn strip_log_key_separators(key: &str) -> String {
+pub fn strip_log_key_separators(key: &str) -> String {
     let without_suffix = match key.rfind('.') {
         Some(dot) if key.ends_with('Z') && key[dot + 1..key.len() - 1].chars().all(|c| c.is_ascii_digit()) && dot + 2 < key.len() => &key[..dot],
         _ => key,

@@ -16,6 +16,7 @@ pub mod user_attention;
 pub mod extensions;
 pub mod statusbar;
 pub mod output;
+pub mod log;
 pub mod layout;
 pub mod accounts;
 
