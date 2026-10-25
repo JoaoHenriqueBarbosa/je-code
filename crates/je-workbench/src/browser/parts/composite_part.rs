@@ -334,6 +334,12 @@ pub trait CompositePartBehavior {
         part.actions_context_provider_base()
     }
 
+    /// `getActiveComposite()` como a subclasse o sobrescreve: o que a parte lê do composite ativo (`getId`, ou só a presença)
+    /// passa por aqui. O padrão é o composite ativo da parte.
+    fn get_active_composite(&self, part: &CompositePart) -> Option<Rc<dyn IComposite>> {
+        part.get_active_composite().map(|composite| -> Rc<dyn IComposite> { composite })
+    }
+
     /// `getTitleAreaDropDownAnchorAlignment()`.
     fn get_title_area_drop_down_anchor_alignment(&self) -> AnchorAlignment {
         AnchorAlignment::Right
@@ -480,7 +486,7 @@ impl ICompositeTitleLabel for DefaultTitleLabel {
         let Some(part) = self.part.upgrade() else { return };
 
         // The title label is shared for all composites in the base CompositePart
-        let active = part.get_active_composite();
+        let active = part.get_overridable_active_composite();
         if active.is_none_or(|active| active.get_id() == id) {
             self.label.set_text(title);
             self.label.update_hover(&match keybinding {
@@ -964,6 +970,11 @@ impl CompositePart {
 
     pub fn get_active_composite(&self) -> Option<Rc<Composite>> {
         self.state.borrow().active_composite.clone()
+    }
+
+    /// `getActiveComposite()` com a sobrescrita da subclasse ([`CompositePartBehavior::get_active_composite`]).
+    pub fn get_overridable_active_composite(&self) -> Option<Rc<dyn IComposite>> {
+        self.behavior.get_active_composite(self)
     }
 
     pub fn get_last_active_composite_id(&self) -> String {

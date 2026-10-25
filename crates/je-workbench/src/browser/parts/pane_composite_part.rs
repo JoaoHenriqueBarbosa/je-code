@@ -58,7 +58,7 @@ use je_platform::contextview::view_element::ViewElement;
 use je_widgets::sash::BoundarySashes;
 use je_widgets::toolbar::IToolBarResponsiveBehaviorOptions;
 
-use crate::browser::composite::{Composite, CompositeEntry, CompositeFactory, FocusTrackerFactory, ICompositeRegistry, IFocusTracker};
+use crate::browser::composite::{Composite, CompositeEntry, CompositeFactory, FocusTrackerFactory, IComposite, ICompositeRegistry, IFocusTracker};
 use crate::browser::dnd::{CompositeDragAndDropObserver, CompositeDragAndDropObserverCallbacks, CompositeDragData, DragAndDropHost, DraggedCompositeData, ViewType};
 use crate::browser::part::{LayoutContentResult, Part, PartOptions, assert_returns_defined};
 use crate::browser::pane_composite::{PaneCompositeDescriptor, PaneCompositeRegistry, pane_composite_registry};
@@ -237,6 +237,11 @@ pub trait PaneCompositePartBehavior {
         AnchorAlignment::Right
     }
 
+    /// `getActiveComposite()` como a subclasse o sobrescreve: o padrão é o composite ativo da parte.
+    fn get_active_composite(&self, part: &AbstractPaneCompositePart) -> Option<Rc<dyn IComposite>> {
+        part.get_active_composite().map(|composite| -> Rc<dyn IComposite> { composite })
+    }
+
     /// `getToolbarResponsiveBehavior()`.
     fn get_toolbar_responsive_behavior(&self) -> Option<IToolBarResponsiveBehaviorOptions> {
         None
@@ -373,6 +378,13 @@ impl CompositePartBehavior for PaneCompositePartProxy {
             this.create_title_label_extras(&title_label);
         }
         title_label
+    }
+
+    fn get_active_composite(&self, part: &CompositePart) -> Option<Rc<dyn IComposite>> {
+        match self.part.upgrade() {
+            Some(this) => self.behavior.get_active_composite(&this),
+            None => part.get_active_composite().map(|composite| -> Rc<dyn IComposite> { composite }),
+        }
     }
 
     fn get_toolbar_responsive_behavior(&self) -> Option<IToolBarResponsiveBehaviorOptions> {
@@ -1431,7 +1443,7 @@ impl AbstractPaneCompositePart {
 
     /// `layoutEmptyMessage()`.
     pub fn layout_empty_message(&self) {
-        let visible = self.get_active_composite().is_none();
+        let visible = self.behavior.get_active_composite(self).is_none();
         if let Some(element) = self.element() {
             toggle_class(&element, "empty", visible);
         }
