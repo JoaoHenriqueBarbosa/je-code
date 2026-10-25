@@ -846,6 +846,7 @@ struct WidgetState<T: ActionListItemData> {
     /// A linha que o painel aberto reporta como `aria-expanded` (`_expandedTrigger`).
     expanded_trigger: Option<Rc<IActionListItem<T>>>,
     submenu_pointer_origin: Option<(f64, f64)>,
+    submenu_pointer_grace_deadline: Option<u64>,
     /// `getDomNodeZoomLevel(domNode)` e o tamanho da janela (`innerWidth`, `innerHeight`).
     zoom: f64,
     window_size: (f64, f64),
@@ -1062,6 +1063,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 submenu_hide_timer: None,
                 expanded_trigger: None,
                 submenu_pointer_origin: None,
+                submenu_pointer_grace_deadline: None,
                 zoom: 1.0,
                 window_size: (1280.0, 800.0),
                 panel_rect: None,
@@ -3375,11 +3377,30 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     }
 
     fn update_submenu_pointer(&self, event: &PointerEvent) {
-        self.state.borrow_mut().submenu_pointer_origin = Some((event.client_x, event.client_y));
+        let mut state = self.state.borrow_mut();
+        state.submenu_pointer_origin = Some((event.client_x, event.client_y));
+        state.submenu_pointer_grace_deadline = None;
     }
 
     fn reset_submenu_pointer(&self) {
-        self.state.borrow_mut().submenu_pointer_origin = None;
+        let mut state = self.state.borrow_mut();
+        state.submenu_pointer_origin = None;
+        state.submenu_pointer_grace_deadline = None;
+    }
+
+    /// `new dom.SafeTriangle(origin.x, origin.y, panel).contains(x, y)`: os quatro triângulos da origem para as arestas
+    /// do retângulo do painel (os pontos são `Int16Array`, então truncam).
+    fn safe_triangle_contains(&self, origin: (f64, f64), x: f64, y: f64) -> bool {
+        let Some(panel) = self.panel_rect() else {
+            return false;
+        };
+        let to_i16 = |value: f64| f64::from(value as i16);
+        let (left, top, right, bottom) = (to_i16(panel.left), to_i16(panel.top), to_i16(panel.left + panel.width), to_i16(panel.top + panel.height));
+        let points = [(left, top), (right, top), (left, bottom), (right, bottom)];
+        (0..4).any(|i| {
+            let (p1, p2) = (points[i], points[(i + 1) % 4]);
+            je_base::numbers::is_point_within_triangle(x, y, origin.0, origin.1, p1.0, p1.1, p2.0, p2.1)
+        })
     }
 
     fn schedule_submenu_show(&self, element: &Rc<IActionListItem<T>>, pointer: PointerEvent) {
@@ -3388,6 +3409,16 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         let mut delay = self.opts().and_then(|o| o.submenu_hover_delay).unwrap_or(500);
         if self.uses_submenu_pointer_intent() {
             delay = 0;
+            let origin = self.state.borrow().submenu_pointer_origin;
+            let has_current = self.state.borrow().current_submenu_element.is_some();
+            if let Some(origin) = origin {
+                if pointer.client_x != origin.0 && has_current && self.safe_triangle_contains(origin, pointer.client_x, pointer.client_y) {
+                    // Give a diagonal path into the current card a bounded grace period.
+                    let now = je_base::runtime::date_now();
+                    let deadline = *self.state.borrow_mut().submenu_pointer_grace_deadline.get_or_insert(now + 200);
+                    delay = deadline.saturating_sub(now);
+                }
+            }
         }
         if delay == 0 {
             self.run_scheduled_submenu_show(pointer);
@@ -4464,10 +4495,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         } else {
             SubmenuGutter::None
         };
+        // `_layoutSubmenu` marca a linha do painel aberto com `aria-expanded="true"` mesmo sem painel expansível.
+        let expanded = self.state.borrow().expanded_trigger.as_ref().is_some_and(|trigger| Rc::ptr_eq(trigger, &element));
         if has_expandable_panel(&element) {
             row.aria_haspopup = Some(if element.hover.as_ref().is_some_and(|hover| hover.expandable) { "dialog" } else { "menu" }.to_owned());
-            let expanded = self.state.borrow().expanded_trigger.as_ref().is_some_and(|trigger| Rc::ptr_eq(trigger, &element));
             row.aria_expanded = Some(expanded.to_string());
+        } else if expanded {
+            row.aria_expanded = Some("true".to_owned());
         } else if element.is_section_toggle {
             row.aria_expanded = Some(section_expanded.to_string());
         }
