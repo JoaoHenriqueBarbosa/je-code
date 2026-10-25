@@ -20,12 +20,12 @@
 
 use je_theme::color::{Color, Srgba};
 use je_theme::sizes::base_sizes::{
-    CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, STROKE_THICKNESS,
+    CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80, STROKE_THICKNESS,
 };
 
-use super::{BoxEdges, ClassList, CornerRadii, EditorTabState, ModernUiStyle, css_rgb};
+use super::{BoxEdges, ClassList, CornerRadii, EditorTabState, HorizontalEdges, ModernUiStyle, css_rgb};
 use crate::browser::parts::editor::multi_editor_tabs_control::{
-    ModernSpacing, StrokeSide, TabBoxContext, TabFillStrokeInput, TabStrokeColor, high_contrast_connected_tab_fill_stroke,
+    ModernSpacing, StrokeSide, TabBoxContext, TabCssClasses, TabFillStrokeInput, TabStrokeColor, high_contrast_connected_tab_fill_stroke,
 };
 use crate::common::theme::{EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BORDER};
 use crate::services::themes::modern_tab_color_customizations::collect_modern_tab_color_customizations;
@@ -60,6 +60,11 @@ pub struct TabElement {
     pub focus_within: bool,
     /// O `.tabs-container` da aba tem `.disable-sticky-tabs`.
     pub disable_sticky_tabs: bool,
+    /// As classes do `.title` da aba (`tabs`, `show-file-icons`, `tab-actions-reserve-space`...).
+    pub title: ClassList,
+    /// A aba está em `.part.editor > .content .editor-group-container > .title`, o caminho que as regras de `tabs.css` e
+    /// `connectedEditorTabs.css` exigem para as ações da aba e para o recuo dos ícones.
+    pub in_editor_group: bool,
 }
 
 /// Onde a aba está na fileira e quanto ela mede: o que o contêiner (`.title.tabs` e `.tabs-and-actions-container`) e o layout
@@ -93,9 +98,28 @@ impl TabElement {
         self
     }
 
+    /// O `.title` da aba, com as classes de `title_class_name`, e se ele está no caminho `.content .editor-group-container`.
+    pub fn with_title(mut self, title_class_name: &str, in_editor_group: bool) -> Self {
+        self.title = ClassList::new(title_class_name);
+        self.in_editor_group = in_editor_group;
+        self
+    }
+
     fn has(&self, class_name: &str) -> bool {
         self.classes.contains(class_name)
     }
+}
+
+/// A cascata de uma propriedade: vence a declaração de maior especificidade e, no empate, a mais tardia na ordem de carga.
+/// `None` quando nenhuma regra a declara.
+fn cascade<T>(declarations: impl IntoIterator<Item = (u32, T)>) -> Option<T> {
+    let mut winner: Option<(u32, T)> = None;
+    for (specificity, value) in declarations {
+        if winner.as_ref().is_none_or(|(best, _)| specificity >= *best) {
+            winner = Some((specificity, value));
+        }
+    }
+    winner.map(|(_, value)| value)
 }
 
 impl From<EditorTabState> for TabElement {
@@ -481,13 +505,201 @@ impl<'a> ModernUiStyle<'a> {
         self.chain(&[EDITOR_GROUP_HEADER_TABS_BACKGROUND, "editor.background"])
     }
 
-    /// `pointer-events` do `.tab-actions` (linhas 554 a 565) e, por herança, do `.action-label` dentro dele: a aba em repouso
-    /// (sem `.active`, `.dirty`, `.sticky`, `:hover` nem `:focus-within`) deixa a ranhura da ação fora do alvo do ponteiro,
-    /// para ela não interceptar o clique da aba vizinha; nos demais estados vale `auto`. Fora das abas conectadas a regra não
-    /// existe e vale o padrão `auto`.
+    /// `pointer-events` do `.tab-actions` e, por herança, do `.action-label` dentro dele: a cascata de
+    /// `multieditortabscontrol.css` (linha 547, 10 classes: `close-action-off`), de `tabs.css` (linha 518, 10 classes: a ranhura
+    /// sobreposta não recebe o ponteiro; linha 583, 12: `auto` sob o ponteiro ou o foco; linha 721, 13: `auto` no título com
+    /// `tab-actions-reserve-space`) e de `connectedEditorTabs.css` (linha 555, 17: a aba em repouso, sem `.active`, `.dirty`,
+    /// `.sticky`, `:hover` nem `:focus-within`, deixa a ranhura fora do alvo; linha 564, 14: a ativa com a ação de fechar
+    /// ligada). Sem nenhuma regra (fora do `.modern-ui-tabs` e da aba com a ação desligada) vale o padrão `auto`.
     pub fn tab_actions_pointer_events(&self, tab: &TabElement) -> &'static str {
-        let idle = !(tab.has("active") || tab.has("dirty") || tab.has("sticky") || tab.hovered || tab.focus_within);
-        if self.connected_tabs() && idle { "none" } else { "auto" }
+        if !(self.has("monaco-workbench") && tab.in_editor_group) {
+            return "auto";
+        }
+        let (active, close_action_off) = (tab.has("active"), tab.has("close-action-off"));
+        let interacting = tab.hovered || tab.focus_within;
+        let mut declarations: Vec<(u32, &'static str)> = Vec::new();
+        if close_action_off {
+            declarations.push((10, "none"));
+        }
+        if self.has("modern-ui-tabs") {
+            declarations.push((10, "none"));
+            if !close_action_off && interacting {
+                declarations.push((12, "auto"));
+            }
+            if tab.title.contains("tab-actions-reserve-space") && !tab.has("sticky-compact") && !close_action_off {
+                declarations.push((13, "auto"));
+            }
+            if self.connected_tabs() && tab.title.contains("tabs") {
+                if active && !close_action_off {
+                    declarations.push((14, "auto"));
+                }
+                if !active && !tab.has("dirty") && !tab.has("sticky") && !interacting {
+                    declarations.push((17, "none"));
+                }
+            }
+        }
+        cascade(declarations).unwrap_or("auto")
+    }
+
+    /// `background-color` do `.tab-actions` sob o ponteiro ou o foco (`tabs.css`, linhas 580 a 606 e 645 a 649), fora do alto
+    /// contraste: cada regra lê `var(--modern-ui-editor-tab-action-overlay-background, <variável do estado>)`, e o overlay
+    /// (`transparent`) existe nas abas conectadas e no título com `tab-actions-reserve-space`. A variável do estado é a do
+    /// grupo (ativo ou sem foco) e da aba (`active`, `:hover`, `selected`); uma variável indefinida invalida a declaração e o
+    /// fundo volta a `transparent`. Em alto contraste vale a máscara `!important` de [`ModernUiStyle::tab_actions_background`].
+    pub fn tab_actions_state_background(&self, tab: &TabElement) -> Color {
+        let interacting = tab.hovered || tab.focus_within;
+        if !(self.has("modern-ui-tabs") && tab.in_editor_group && interacting) {
+            return Color::transparent_color();
+        }
+        if self.high_contrast() {
+            return self.tab_actions_background(tab, tab.focus_within);
+        }
+        let (active, selected, group_active) = (tab.has("active"), tab.has("selected"), tab.group_active);
+        if tab.has("close-action-off") {
+            return Color::transparent_color();
+        }
+        let overlay = (self.connected_tabs() || tab.title.contains("tab-actions-reserve-space")).then(Color::transparent_color);
+        let state = |color: Option<Color>| overlay.clone().or(color);
+        let variable = |name: &str| state(self.tab_variable(name, tab));
+        let mut declarations: Vec<(u32, Option<Color>)> = vec![(12, variable("--modern-ui-editor-tab-action-hover-background"))];
+        if !group_active {
+            declarations.push((13, variable("--modern-ui-editor-tab-action-unfocused-hover-background")));
+        }
+        if active {
+            declarations.push((13, variable("--modern-ui-editor-tab-action-active-background")));
+        }
+        if active && !group_active {
+            declarations.push((14, variable("--modern-ui-editor-tab-action-unfocused-active-background")));
+        }
+        if active && tab.hovered {
+            declarations.push((13, variable("--modern-ui-editor-tab-action-active-hover-background")));
+        }
+        if active && tab.hovered && !group_active {
+            declarations.push((14, variable("--modern-ui-editor-tab-action-unfocused-active-hover-background")));
+        }
+        if selected && !active {
+            declarations.push((14, state(self.color("modernEditorTab.selectedActionBackground"))));
+        }
+        cascade(declarations).flatten().unwrap_or_else(Color::transparent_color)
+    }
+
+    /// `background-image` do `::before` do `.tab-actions` (`tabs.css`, linhas 554 a 643 e 676 a 684), fora do alto contraste e
+    /// com a ação de fechar ligada: o degradê de `transparent` até a variável do estado, para a direita (`to right`) ou, com
+    /// `.tab-actions-left`, para a esquerda. `none` sem regra ou com a variável indefinida.
+    pub fn tab_actions_fade_gradient(&self, tab: &TabElement) -> String {
+        let interacting = tab.hovered || tab.focus_within;
+        if !(self.has("modern-ui-tabs") && tab.in_editor_group && interacting) || self.high_contrast() || tab.has("close-action-off") {
+            return "none".to_owned();
+        }
+        let (active, selected, group_active) = (tab.has("active"), tab.has("selected"), tab.group_active);
+        let variable = |name: &str| self.tab_variable(name, tab);
+        let mut declarations: Vec<(u32, Option<Color>)> = vec![(14, variable("--modern-ui-editor-tab-action-hover-background"))];
+        if !group_active {
+            declarations.push((15, variable("--modern-ui-editor-tab-action-unfocused-hover-background")));
+        }
+        if active {
+            declarations.push((15, variable("--modern-ui-editor-tab-action-active-background")));
+        }
+        if active && !group_active {
+            declarations.push((16, variable("--modern-ui-editor-tab-action-unfocused-active-background")));
+        }
+        if active && tab.hovered {
+            declarations.push((15, variable("--modern-ui-editor-tab-action-active-hover-background")));
+        }
+        if active && tab.hovered && !group_active {
+            declarations.push((16, variable("--modern-ui-editor-tab-action-unfocused-active-hover-background")));
+        }
+        if selected && !active {
+            declarations.push((16, self.color("modernEditorTab.selectedActionBackground")));
+        }
+        let direction = if tab.has("tab-actions-left") { "left" } else { "right" };
+        match cascade(declarations).flatten() {
+            Some(color) => format!("linear-gradient(to {direction}, {}, {})", css_rgb(&Color::transparent_color()), css_rgb(&color)),
+            None => "none".to_owned(),
+        }
+    }
+
+    /// `padding-left` e `padding-right` da `.tab` (`tabs.css`, linhas 99 a 110, 175 a 182 e 208 a 253, todas `!important`):
+    /// `0 size80 0 <recuo>` com o recuo `--modern-ui-editor-tab-left-inset` (`size60`, ou `size80` sem ícones: a raiz sem
+    /// `.file-icons-enabled` ou o `.title.tabs` sem `.show-file-icons`, nas abas que não são `sticky-compact` nem
+    /// `tab-actions-left`); a coluna das ações (`--modern-ui-tab-action-padding`, `size280` ou a fórmula conectada) no lado da
+    /// ação quando a aba é suja, fixada, ou no título com `tab-actions-reserve-space` e na aba `sizing-fit` sob o ponteiro, e
+    /// zero na `sticky-compact`. `None` fora do `.modern-ui-tabs`.
+    pub fn tab_padding(&self, tab: &TabElement, placement: TabRowPlacement) -> Option<HorizontalEdges> {
+        if !self.has("modern-ui-tabs") {
+            return None;
+        }
+        let (size60, size80) = (self.size(SPACING_SIZE60), self.size(SPACING_SIZE80));
+        let title = &tab.title;
+        let reserve = title.contains("tab-actions-reserve-space");
+        let (sticky_compact, actions_left, close_action_off) = (tab.has("sticky-compact"), tab.has("tab-actions-left"), tab.has("close-action-off"));
+        let (dirty, sticky, sizing_fit) = (tab.has("dirty"), tab.has("sticky"), tab.has("sizing-fit"));
+        let rest = tab.has("tab-action-sizing-rest");
+        // `:is(.active, :hover, :focus-within)` das regras de `.sizing-fit`, no título que não reserva o espaço das ações.
+        let fit_interacting = !reserve && sizing_fit && (tab.has("active") || tab.hovered || tab.focus_within);
+        let dirty_shown = dirty && !(close_action_off && tab.has("dirty-border-top"));
+        let sticky_shown = sticky && !tab.has("pinned-action-off");
+        let flat = !sticky_compact;
+        // Linhas 107 e 108: o recuo sem ícones vale só no caminho `.content .editor-group-container > .title.tabs`.
+        let iconless = tab.in_editor_group
+            && title.contains("tabs")
+            && ((self.has("monaco-workbench") && !self.has("file-icons-enabled")) || !title.contains("show-file-icons"));
+        let inset = if iconless && flat && !actions_left { size80 } else { size60 };
+        let classes = TabCssClasses { dirty, sticky, sticky_compact, ..TabCssClasses::default() };
+        let action_padding = self.tab_box_context(tab, placement).action_padding(&classes);
+
+        // As especificidades contam as classes e pseudoclasses de cada seletor, na ordem do arquivo.
+        let mut left: Vec<(u32, f64)> = vec![(5, inset)];
+        let mut right: Vec<(u32, f64)> = vec![(5, size80)];
+        if sticky_compact {
+            left.push((6, 0.0));
+            right.push((6, 0.0));
+        }
+        if actions_left && flat {
+            left.push((7, size60));
+            right.push((7, size80));
+        }
+        if close_action_off && flat {
+            left.push((7, inset));
+            right.push((7, size80));
+        }
+        let ends_with_action = !actions_left && flat;
+        if reserve && ends_with_action && !close_action_off {
+            right.push((9, action_padding));
+        }
+        if fit_interacting && ends_with_action && !close_action_off {
+            right.push((12, action_padding));
+        }
+        if dirty_shown && ends_with_action {
+            right.push((10, action_padding));
+        }
+        if sticky_shown && ends_with_action {
+            right.push((9, action_padding));
+        }
+        let starts_with_action = actions_left && flat;
+        if reserve && starts_with_action && !close_action_off {
+            left.push((9, action_padding));
+            right.push((9, size80));
+        }
+        if fit_interacting && starts_with_action && !close_action_off {
+            left.push((12, action_padding));
+            right.push((12, size80));
+        }
+        if dirty_shown && starts_with_action {
+            left.push((10, action_padding));
+            right.push((10, size80));
+        }
+        if sticky_shown && starts_with_action {
+            left.push((9, action_padding));
+            right.push((9, size80));
+        }
+        if fit_interacting && rest && ends_with_action {
+            right.push((12, size80));
+        }
+        if fit_interacting && rest && starts_with_action {
+            left.push((12, inset));
+        }
+        Some(HorizontalEdges { left: cascade(left)?, right: cascade(right)? })
     }
 
     /// `z-index` de uma aba (`multieditortabscontrol.css`, linhas 241 a 255 e 277 a 291, e `connectedEditorTabs.css`, linhas

@@ -77,6 +77,13 @@
 //! foregrounds ...`. `uses the registered modern tab colors` (linha 3459 do oráculo) está portado acima, junto das cores
 //! do tema. Portados com os primeiros planos legíveis e os padrões do participante de tema (`editor_tab_foreground` com
 //! `declared`): `uses readable theme foregrounds ...` e `preserves pill and HC label defaults ...`.
+//! Portados com o recuo da aba (`tab_padding`, as regras `!important` de `tabs.css` L99 a L253), a opacidade e o
+//! `pointer-events` das ações (`tab_action_label_opacity`, `tab_actions_pointer_events`), o degradê de saída
+//! (`tab_actions_fade_content`) e o fundo das ações por estado (`tab_actions_state_background`, `tab_actions_fade_gradient`):
+//! de `keeps clean editor tabs compact ...` até `applies the correct action background for each editor tab state`.
+//! `tab divider inherits tab border unless customized` e `keeps the connected editor tab color audit exhaustive` já estão
+//! portados acima, junto das cores do tema. No último caso os quatro estados com `:hover` que o oráculo deixa comentados
+//! (`activeHover` e os outros) entram com o ponteiro na aba (`TabElement::hovered`) e os valores dos comentários.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -114,7 +121,7 @@ use je_theme::ThemeType;
 use je_theme::color::Color;
 use je_theme::registry::ColorValue::Id;
 use je_theme::registry::{ColorDefaults, ColorTransform, ColorValue, Defaults, color_registry};
-use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, SPACING_SIZE20, STROKE_THICKNESS};
+use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, SPACING_SIZE20, SPACING_SIZE280, SPACING_SIZE60, SPACING_SIZE80, STROKE_THICKNESS};
 use je_theme::to_rgba8;
 use je_workbench::contrib::files::browser::views::explorer_view::should_preserve_workspace_name_case;
 use je_base::actions::{Action, ActionRef, Separator};
@@ -132,11 +139,13 @@ use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
-    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, FillShoulder, GradientKind, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle,
+    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, FillShoulder, GradientKind, HorizontalEdges, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle,
     NotificationInsets, NotificationsPlacement, PaneHost, PaneState, PartMargins, SashPlacement, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderIndicator, TabElement, TabRowPlacement,
     EDITOR_TABS_SCROLLBAR_Z_INDEX, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
 };
-use je_workbench::browser::parts::editor::multi_editor_tabs_control::{BoxRect, StrokeSide, TabBoxContext, TabCssClasses, TabSizingParams, tab_action_geometry, tab_box_style, tab_fill_rect};
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{
+    BoxRect, StrokeSide, TabActionLabelContext, TabActionsContext, TabBoxContext, TabCssClasses, TabSizingParams, tab_action_geometry, tab_action_label_opacity, tab_actions_fade_content, tab_box_style, tab_fill_rect,
+};
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
     AddedContainer, LayoutContainerId, LayoutSettings, ModernUiDensity, ModernUiEditorTabStyle,
@@ -2634,7 +2643,7 @@ fn hidden_connected_close_slots_do_not_intercept_pointer_input() {
     for state in ["", "active", "dirty", "sticky", "focus", ""] {
         // `action.blur()` e depois, no estado `focus`, `action.focus()`: o foco está na ação, então a aba tem `:focus-within`.
         let class_name = if state == "focus" { "" } else { state };
-        let tab = TabElement { focus_within: state == "focus", ..TabElement::new(&format!("tab sizing-fit {class_name}"), true) };
+        let tab = TabElement { focus_within: state == "focus", ..TabElement::new(&format!("tab sizing-fit {class_name}"), true) }.with_title("title tabs tab-actions-reserve-space", true);
         // O `.action-label` herda o `pointer-events` do `.tab-actions`, e nenhuma regra o troca.
         let pointer_events = style.tab_actions_pointer_events(&tab);
         assert_eq!([pointer_events, pointer_events], [if state.is_empty() { "none" } else { "auto" }; 2], "{}", if state.is_empty() { "hidden" } else { state });
@@ -3294,6 +3303,213 @@ fn preserves_pill_and_hc_label_defaults_and_explicit_connected_foreground_custom
     assert_eq!(
         (connected, high_contrast, custom, unfocused_custom),
         (Some("rgb(157, 157, 157)".to_owned()), [pill.clone(), pill], Some("rgb(18, 52, 86)".to_owned()), Some("rgb(101, 67, 33)".to_owned()))
+    );
+}
+
+#[test]
+fn keeps_clean_editor_tabs_compact_while_reserving_persistent_indicators() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `--vscode-spacing-size60/80/280` são as únicas variáveis de tamanho que o caso define na raiz.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only().with_root_sizes(&[(SPACING_SIZE60, 6.0), (SPACING_SIZE80, 8.0), (SPACING_SIZE280, 28.0)]);
+    // As abas do caso estão em `.part.editor > .title > .tabs-container`, fora de `.content .editor-group-container`.
+    let padding = |tab_class_name: &str, title_class_name: &str| {
+        let tab = TabElement::new(tab_class_name, true).with_title(title_class_name, false);
+        let HorizontalEdges { left, right } = style.tab_padding(&tab, TabRowPlacement::default()).expect("o recuo da aba com o Modern UI das abas");
+        [px(left), px(right)]
+    };
+    let compact = "title tabs";
+    let reserved = "title tabs tab-actions-reserve-space";
+    let pair = |left: &str, right: &str| [left.to_owned(), right.to_owned()];
+
+    assert_eq!(
+        [
+            padding("tab", compact),
+            padding("tab dirty", compact),
+            padding("tab dirty close-action-off", compact),
+            padding("tab dirty dirty-border-top close-action-off", compact),
+            padding("tab dirty dirty-border-top", compact),
+            padding("tab sticky", compact),
+            padding("tab sticky pinned-action-off close-action-off", compact),
+            padding("tab dirty tab-actions-left", compact),
+            padding("tab dirty dirty-border-top close-action-off tab-actions-left", compact),
+            padding("tab dirty dirty-border-top tab-actions-left", compact),
+            padding("tab", reserved),
+            padding("tab tab-actions-left", reserved),
+            padding("tab dirty dirty-border-top", reserved),
+            padding("tab dirty dirty-border-top tab-actions-left", reserved),
+        ],
+        [
+            pair("6px", "8px"),
+            pair("6px", "28px"),
+            pair("6px", "28px"),
+            pair("6px", "8px"),
+            pair("6px", "28px"),
+            pair("6px", "28px"),
+            pair("6px", "8px"),
+            pair("28px", "8px"),
+            pair("6px", "8px"),
+            pair("28px", "8px"),
+            pair("6px", "28px"),
+            pair("28px", "8px"),
+            pair("6px", "28px"),
+            pair("28px", "8px"),
+        ]
+    );
+}
+
+#[test]
+fn uses_iconless_leading_spacing_when_the_file_icon_theme_is_disabled() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only().with_root_sizes(&[(SPACING_SIZE60, 6.0), (SPACING_SIZE80, 8.0)]);
+    let leading = |style: &ModernUiStyle, title_class_name: &str| {
+        let tab = TabElement::new("tab", true).with_title(title_class_name, true);
+        px(style.tab_padding(&tab, TabRowPlacement::default()).expect("o recuo da aba com o Modern UI das abas").left)
+    };
+
+    let file_icon_theme_none = leading(&style, "title tabs show-file-icons");
+    // `root.classList.add('file-icons-enabled')`
+    style.set_root_class_name("monaco-workbench modern-ui-tabs file-icons-enabled");
+    let file_icons_enabled = leading(&style, "title tabs show-file-icons");
+    // `title.classList.remove('show-file-icons')`
+    let icons_setting_disabled = leading(&style, "title tabs");
+
+    assert_eq!((file_icon_theme_none, file_icons_enabled, icons_setting_disabled), ("8px".to_owned(), "6px".to_owned(), "8px".to_owned()));
+}
+
+#[test]
+fn preserves_contrast_tab_action_visibility_across_reservation_and_connected_states() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors([("contrastActiveBorder", "#FFFFFF")]);
+    let plain = "active-contrast-theme monaco-workbench modern-ui-tabs";
+    let high_contrast_connected = "active-contrast-theme hc-black monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs";
+    let high_contrast = "active-contrast-theme hc-black monaco-workbench modern-ui-tabs";
+    // `{ opacity, pointerEvents }`: a opacidade do `.action-label` e o `pointer-events` do `.tab-actions` pai dele.
+    let measure = |root_class_name: &str, group_active: bool, title_class_name: &str, tab_class_name: &str| {
+        let style = ModernUiStyle::new(&theme, root_class_name);
+        let (root, title, tab_classes) = (ClassList::new(root_class_name), ClassList::new(title_class_name), ClassList::new(tab_class_name));
+        let opacity = tab_action_label_opacity(&TabActionLabelContext {
+            modern_ui_tabs: root.contains("modern-ui-tabs"),
+            connected_editor_tabs: root.contains("modern-ui-connected-editor-tabs"),
+            high_contrast: root.contains("hc-black") || root.contains("hc-light"),
+            group_active,
+            title_reserves_action_space: title.contains("tab-actions-reserve-space"),
+            active: tab_classes.contains("active"),
+            ..TabActionLabelContext::default()
+        });
+        let tab = TabElement::new(tab_class_name, group_active).with_title(title_class_name, true);
+        (opacity, style.tab_actions_pointer_events(&tab))
+    };
+
+    assert_eq!(
+        [
+            // reservedActive
+            measure(plain, true, "title tab-actions-reserve-space", "tab active"),
+            // reservedInactiveGroup
+            measure(plain, false, "title tab-actions-reserve-space", "tab"),
+            // transientActive
+            measure(plain, true, "title", "tab active"),
+            // highContrastReservedActive
+            measure(high_contrast_connected, true, "title tabs tab-actions-reserve-space", "tab active"),
+            // highContrastConnectedActive
+            measure(high_contrast_connected, true, "title tabs", "tab active"),
+            // highContrastConnectedInactiveGroup
+            measure(high_contrast_connected, false, "title tabs", "tab active"),
+            // highContrastTransientActive
+            measure(high_contrast, true, "title tabs", "tab active"),
+        ],
+        [(1.0, "auto"), (0.0, "auto"), (1.0, "none"), (1.0, "auto"), (1.0, "auto"), (0.5, "auto"), (1.0, "none")]
+    );
+}
+
+#[test]
+fn fades_tab_actions_only_when_they_overlay_clean_tabs() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // O `.action-label` tem o foco, então o `.tab-actions` tem `:focus-within`.
+    let fade_content = |root_class_name: &str, title_class_name: &str, tab_class_name: &str| {
+        let (root, title, tab) = (ClassList::new(root_class_name), ClassList::new(title_class_name), ClassList::new(tab_class_name));
+        tab_actions_fade_content(&TabActionsContext {
+            modern_ui_tabs: root.contains("modern-ui-tabs"),
+            connected: root.contains("modern-ui-connected-editor-tabs"),
+            reserve_space: title.contains("tab-actions-reserve-space"),
+            dirty: tab.contains("dirty"),
+            sticky: tab.contains("sticky"),
+            interacting: true,
+            ..TabActionsContext::default()
+        })
+    };
+    let plain = "monaco-workbench modern-ui-tabs";
+    let connected_root = "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs";
+
+    let overlaid = fade_content(plain, "title tabs", "tab");
+    let reserved = fade_content(plain, "title tabs tab-actions-reserve-space", "tab");
+    let connected = fade_content(connected_root, "title tabs connected-tabs-labels", "tab");
+    assert_eq!(
+        (overlaid, reserved, connected, fade_content(plain, "title", "tab dirty"), fade_content(plain, "title", "tab sticky")),
+        ("\"\"", "none", "none", "none", "none")
+    );
+}
+
+#[test]
+fn applies_the_correct_action_background_for_each_editor_tab_state() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    // `--vscode-modernEditorTab-selectedActionBackground` é a cor do tema.
+    theme.set_custom_colors([("modernEditorTab.selectedActionBackground", "#131415")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only();
+    for (name, hex) in [
+        ("--modern-ui-editor-tab-action-active-background", "#010203"),
+        ("--modern-ui-editor-tab-action-unfocused-active-background", "#040506"),
+        ("--modern-ui-editor-tab-action-hover-background", "#070809"),
+        ("--modern-ui-editor-tab-action-unfocused-hover-background", "#0A0B0C"),
+        ("--modern-ui-editor-tab-action-active-hover-background", "#0D0E0F"),
+        ("--modern-ui-editor-tab-action-unfocused-active-hover-background", "#101112"),
+    ] {
+        style.set_root_variable(name, Color::from_hex(hex));
+    }
+    // `[backgroundColor do .tab-actions, backgroundImage do ::before]`, com o foco na ação (`:focus-within`) e, nos casos que o
+    // oráculo deixa comentados por exigirem `:hover`, com o ponteiro na aba.
+    let colors = |group_active: bool, tab_class_name: &str, hovered: bool| {
+        let tab = TabElement { hovered, focus_within: true, ..TabElement::new(tab_class_name, group_active) }.with_title("title", true);
+        [css_rgb(&style.tab_actions_state_background(&tab)), style.tab_actions_fade_gradient(&tab)]
+    };
+    let expected = |rgb: &str, direction: &str| [format!("rgb({rgb})"), format!("linear-gradient(to {direction}, rgba(0, 0, 0, 0), rgb({rgb}))")];
+
+    assert_eq!(
+        [
+            colors(true, "tab active", false),
+            colors(true, "tab active tab-actions-left", false),
+            colors(false, "tab active", false),
+            colors(false, "tab active tab-actions-left", false),
+            colors(true, "tab", false),
+            colors(true, "tab tab-actions-left", false),
+            colors(false, "tab", false),
+            colors(false, "tab tab-actions-left", false),
+            colors(true, "tab active", true),
+            colors(true, "tab active tab-actions-left", true),
+            colors(false, "tab active", true),
+            colors(false, "tab active tab-actions-left", true),
+            colors(true, "tab selected", false),
+            colors(true, "tab selected tab-actions-left", false),
+        ],
+        [
+            expected("1, 2, 3", "right"),
+            expected("1, 2, 3", "left"),
+            expected("4, 5, 6", "right"),
+            expected("4, 5, 6", "left"),
+            expected("7, 8, 9", "right"),
+            expected("7, 8, 9", "left"),
+            expected("10, 11, 12", "right"),
+            expected("10, 11, 12", "left"),
+            expected("13, 14, 15", "right"),
+            expected("13, 14, 15", "left"),
+            expected("16, 17, 18", "right"),
+            expected("16, 17, 18", "left"),
+            expected("19, 20, 21", "right"),
+            expected("19, 20, 21", "left"),
+        ]
     );
 }
 
