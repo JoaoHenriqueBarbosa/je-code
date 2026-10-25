@@ -341,7 +341,8 @@ fn fill_active_editor_selection_transfers_the_current_selection_only_for_the_sou
 #[test]
 fn fill_active_editor_selection_preserves_options_when_selection_is_unsupported() {
     let disposables = ensure_no_disposables_are_leaked_in_test_suite();
-    let source: EditorInputRef = disposables.add_rc(TestEditorInput::new(uri_file("/source"), "test"));
+    let source = disposables.add_rc(TestEditorInput::new(uri_file("/source"), "test"));
+    let source: EditorInputRef = source;
     let pane = Rc::new(MockPane { input: source.clone(), selection: None });
     let group = MockGroup { active_editor: source.clone(), active_editor_pane: pane };
     let options = preset_options(None);
