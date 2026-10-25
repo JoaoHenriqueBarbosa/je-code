@@ -8,9 +8,12 @@
 //!   no `MultiDiffEditorItem`; `IDiffEditorOptions` é um objeto [`Dynamic`] (ver `diff_editor_options`).
 //! - `RefCounted<IDocumentDiffItem>` é um [`DocumentDiffItemRef`]: o `RefCounted` de `je_base::lifecycle` sobre o `Rc<dyn
 //!   IDocumentDiffItem>`, que cada referência (`Rc<RefCounted<...>>`) mantém vivo.
+//! - Os subtipos estruturais de `IDocumentDiffItem` (como o `IDocumentDiffItemWithMultiDiffEditorItem` do workbench) são lidos por
+//!   [`IDocumentDiffItem::as_any`] e `downcast_ref`, no lugar do `as` do TypeScript.
 //! - `documents: IValueWithChangeEvent<readonly RefCounted<IDocumentDiffItem>[] | 'loading'>` devolve o [`DocumentsValue`] (o
 //!   array, imutável e compartilhado, ou `'loading'`); a igualdade dos observáveis é a identidade do array, como no original.
 
+use std::any::Any;
 use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
@@ -57,6 +60,13 @@ pub trait IDocumentDiffItem {
 
     /// `contextKeys?`.
     fn context_keys(&self) -> Option<ContextKeys> {
+        None
+    }
+
+    /// O objeto como `dyn Any`, para quem lê os campos extras de uma implementação concreta (o `item as
+    /// IDocumentDiffItemWithMultiDiffEditorItem` do original). `None` por padrão: uma implementação sem campos extras não precisa
+    /// responder.
+    fn as_any(&self) -> Option<&dyn Any> {
         None
     }
 }

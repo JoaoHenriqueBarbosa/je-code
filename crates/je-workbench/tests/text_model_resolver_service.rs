@@ -1,8 +1,8 @@
 //! Porte de `src/vs/workbench/services/textmodelResolver/test/browser/textModelResolverService.test.ts` (suíte `Workbench - TextModelResolverService`), caso a caso e na mesma ordem.
 //!
-//! Casos de fora (sete `#[test]` expandidos, quatro `test(...)` do original), todos porque dependem do
-//! `TestDiffProviderFactoryService` (`editor/test/browser/diff/testDiffProviderFactoryService.ts`), que ainda não existe no porte
-//! (o `MultiDiffEditorViewModel`, o `DiffItemSource` e o `RefCounted` já existem); sem ele o caso não pode ser fiel:
+//! Os quatro `test(...)` que usam o `MultiDiffEditorViewModel` (sete `#[test]` expandidos) criam o view model pelo serviço de
+//! instanciação filho, com o `TestDiffProviderFactoryService` (`editor/test/browser/diff/testDiffProviderFactoryService.ts`, incluído
+//! por `#[path]` do `je-editor/tests/support`):
 //! - `multi-diff synthetic side shares its lifetime with document references (added: false)` e `(added: true)`;
 //! - `multi-diff releases pending synthetic sides (dispose parent: false, side: 1)`, `(false, 2)`, `(true, 1)` e `(true, 2)`;
 //! - `multi-diff releases a partially resolved item when remaining resolution fails after disposal`.
@@ -34,10 +34,18 @@
 //!   cuja construção lança (`errors::throw`), registrado por `SyncDescriptor` no `createChild`; os membros do trait nunca
 //!   são chamados porque a construção falha antes.
 //! - **`for (const ...of [false, true])`.** Cada valor do laço é um `#[test]` que chama o mesmo corpo.
+//! - **Casos do multi diff.** O `IDocumentDiffItem` literal `{ original, modified }` é o [`PlainDocumentDiffItem`], o
+//!   `IMultiDiffEditorModel` literal `{ documents }` é o [`DocumentsModel`] (o `ValueWithChangeEvent.const([document])` é o
+//!   `ConstValueWithChangeEvent`, e o `{ get value() {...}, onDidChange }` é o [`MutableDocuments`]), o `mock<ITextModelService>()` com
+//!   `createSyntheticDocument` é o [`SyntheticDocumentService`], e `services.createInstance(MultiDiffEditorViewModel, model)` é
+//!   [`create_view_model`]. `await finish.complete()` é `resolver.resolve(())` (a promessa pendente só avança quando o caso espera).
+//!   `item.originalUri`/`item.modifiedUri` ausentes (`undefined`) são `None`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
 mod support;
+#[path = "../../je-editor/tests/support/test_diff_provider_factory_service.rs"]
+mod test_diff_provider_factory_service;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -47,22 +55,26 @@ use je_base::JsString;
 use je_base::async_::async_fn;
 use je_base::buffer::{VSBuffer, encode_base64};
 use je_base::errors::{self, Error};
-use je_base::event::Event;
-use je_base::lifecycle::IDisposable;
+use je_base::event::{ConstValueWithChangeEvent, Emitter, Event, ValueWithChangeEventLike};
+use je_base::lifecycle::{DisposableRef, IDisposable, RefCounted, to_disposable};
 use je_base::network::schemas;
+use je_base::observable::Observable;
 use je_base::path::PathModule;
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::{URI, UriComponents};
+use je_editor::diff_provider_factory_service::{I_DIFF_PROVIDER_FACTORY_SERVICE, IDiffProviderFactoryService};
 use je_editor::language_service::ILanguageService;
 use je_editor::modes_registry::LanguageExtensionPoint;
+use je_editor::multi_diff_editor::model::{DiffItemSource, DocumentDiffItemRef, DocumentsValue, IDocumentDiffItem, IMultiDiffEditorModel};
 use je_editor::text_model::{TextModel, TextSource, create_text_buffer_factory};
-use je_instantiation::{Injectable, ServiceCollection, SyncDescriptor, service_impl};
+use je_instantiation::{Injectable, InstantiationService, ServiceCollection, SyncDescriptor, service_impl};
 use je_platform::resources::{host_environment, uri_file};
 use je_platform::uri_identity::uri_identity::{I_URI_IDENTITY_SERVICE, IUriIdentityService};
 use je_workbench::common::editor::editor_input::EditorInput;
 use je_workbench::common::editor::editor_model::IEditorModel;
 use je_workbench::common::editor::text_resource_editor_input::TextResourceEditorInput;
 use je_workbench::common::editor::text_resource_editor_model::TextResourceEditorModel;
+use je_workbench::contrib::multi_diff_editor::browser::multi_diff_editor_view_model::MultiDiffEditorViewModel;
 use je_workbench::services::environment::environment_service::{IWorkbenchEnvironmentService, I_WORKBENCH_ENVIRONMENT_SERVICE};
 use je_workbench::services::language_detection::language_detection_worker_service::{ILanguageDetectionService, I_LANGUAGE_DETECTION_SERVICE};
 use je_workbench::services::textfile::text_file_editor_model::TextFileEditorModel;
@@ -220,6 +232,90 @@ impl ILanguageDetectionService for ThrowingLanguageDetectionService {
 
     fn detect_language(&self, _resource: &URI, _supported_langs: Option<&[String]>) -> Promise<Option<String>> {
         Promise::resolved(None)
+    }
+}
+
+/// O `IDocumentDiffItem` literal `{ original, modified }`.
+struct PlainDocumentDiffItem {
+    original: Option<DiffItemSource>,
+    modified: Option<DiffItemSource>,
+}
+
+impl IDocumentDiffItem for PlainDocumentDiffItem {
+    fn original(&self) -> Option<&DiffItemSource> {
+        self.original.as_ref()
+    }
+
+    fn modified(&self) -> Option<&DiffItemSource> {
+        self.modified.as_ref()
+    }
+}
+
+/// `RefCounted.createOfNonDisposable<IDocumentDiffItem>({ original, modified }, disposable)`.
+fn document_ref(original: Option<DiffItemSource>, modified: Option<DiffItemSource>, disposable: DisposableRef) -> DocumentDiffItemRef {
+    let item: Rc<dyn IDocumentDiffItem> = Rc::new(PlainDocumentDiffItem { original, modified });
+    RefCounted::create_of_non_disposable(item, disposable)
+}
+
+/// O `IMultiDiffEditorModel` literal `{ documents }`.
+struct DocumentsModel {
+    documents: Rc<dyn ValueWithChangeEventLike<DocumentsValue>>,
+}
+
+impl IMultiDiffEditorModel for DocumentsModel {
+    fn documents(&self) -> Rc<dyn ValueWithChangeEventLike<DocumentsValue>> {
+        self.documents.clone()
+    }
+}
+
+/// `ValueWithChangeEvent.const([document])`.
+fn const_documents(documents: Vec<DocumentDiffItemRef>) -> Rc<dyn ValueWithChangeEventLike<DocumentsValue>> {
+    Rc::new(ConstValueWithChangeEvent::new(DocumentsValue::Items(Rc::new(documents))))
+}
+
+/// `{ get value() { return documents; }, onDidChange: changed.event }`.
+struct MutableDocuments {
+    documents: RefCell<Vec<DocumentDiffItemRef>>,
+    changed: Rc<Emitter<()>>,
+}
+
+impl ValueWithChangeEventLike<DocumentsValue> for MutableDocuments {
+    fn on_did_change(&self) -> Event<()> {
+        self.changed.event()
+    }
+
+    fn value(&self) -> DocumentsValue {
+        DocumentsValue::Items(Rc::new(self.documents.borrow().clone()))
+    }
+}
+
+/// `services.createInstance(MultiDiffEditorViewModel, { documents })`.
+fn create_view_model(services: &InstantiationService, documents: Rc<dyn ValueWithChangeEventLike<DocumentsValue>>) -> Rc<MultiDiffEditorViewModel> {
+    let model: Rc<dyn IMultiDiffEditorModel> = Rc::new(DocumentsModel { documents });
+    services.create_instance::<MultiDiffEditorViewModel>(model)
+}
+
+/// `disposables.add(instantiationService.createChild(new ServiceCollection(...)))`.
+fn create_child_services(fixture: &Fixture, disposables: &LeakGuard, services: ServiceCollection) -> Rc<InstantiationService> {
+    fixture.accessor.instantiation_service.create_child(services, Some(&*disposables.store()))
+}
+
+/// `[IDiffProviderFactoryService, new TestDiffProviderFactoryService()]`.
+fn with_test_diff_provider(services: ServiceCollection) -> ServiceCollection {
+    let provider: Rc<dyn IDiffProviderFactoryService> = Rc::new(test_diff_provider_factory_service::TestDiffProviderFactoryService);
+    services.with(I_DIFF_PROVIDER_FACTORY_SERVICE, provider)
+}
+
+/// O `mock<ITextModelService>()` com só o `createSyntheticDocument`.
+struct SyntheticDocumentService(Box<dyn Fn() -> Promise<TextModelReference>>);
+
+impl ITextModelService for SyntheticDocumentService {
+    fn create_model_reference(&self, _resource: &URI) -> Promise<TextModelReference> {
+        unreachable!("createModelReference is not a function")
+    }
+
+    fn create_synthetic_document(&self, _value: TextSource, _language_selection: Option<Rc<dyn je_editor::language_service::ILanguageSelection>>) -> Promise<TextModelReference> {
+        (self.0)()
     }
 }
 
@@ -614,6 +710,163 @@ fn failed_synthetic_wrapper_construction_releases_the_text_model() {
         let error = resolver.create_synthetic_document("".into(), None).await.err().expect("a criação do documento sintético rejeita");
         assert!(error.to_string().contains("Wrapper construction failed"), "{error}");
         assert_eq!(fixture.accessor.model_service.get_models().len(), 0);
+    });
+}
+
+/// O corpo de `multi-diff synthetic side shares its lifetime with document references (added: ${added})`.
+fn multi_diff_synthetic_side_shares_its_lifetime_with_document_references(added: bool) {
+    run_with_real_timers(async move {
+        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let fixture = setup(&disposables);
+
+        let services = create_child_services(&fixture, &disposables, with_test_diff_provider(ServiceCollection::new()));
+        let text_model = fixture.accessor.model_service.create_model("content", None, None, false);
+        let source = DiffItemSource::new(text_model.uri(), Some(text_model.clone()));
+        let document = disposables.add_rc(document_ref(if added { None } else { Some(source.clone()) }, if added { Some(source) } else { None }, text_model));
+        let parent = disposables.add_rc(create_view_model(&services, const_documents(vec![document.clone()])));
+        parent.wait_for_diff_or_1s().await.unwrap();
+        let item = parent.items.get()[0].clone();
+        let diff_reference = disposables.add_rc(item.diff_editor_view_model_ref.create_new_ref());
+        let model = &item.diff_editor_view_model().model;
+        let empty = if added { model.original.clone() } else { model.modified.clone() };
+        let first = fixture.resolver.create_model_reference(&empty.uri()).await.unwrap();
+        track(&disposables, &first);
+        first.dispose();
+        timeout(0).await.unwrap();
+        let missing_uri = if added { item.original_uri() } else { item.modified_uri() };
+        assert_eq!(
+            (empty.get_value().to_string_lossy(), missing_uri.map(|uri| uri.to_string(false).to_string_lossy()), item.is_alive.get()),
+            (String::new(), None, true)
+        );
+
+        let second = fixture.resolver.create_model_reference(&empty.uri()).await.unwrap();
+        track(&disposables, &second);
+        parent.dispose();
+        assert!(!empty.is_disposed());
+        diff_reference.dispose();
+        assert!(!empty.is_disposed());
+        let disposed = empty.on_will_dispose().to_promise(None);
+        second.dispose();
+        disposed.await.unwrap();
+    });
+}
+
+#[test]
+fn multi_diff_synthetic_side_shares_its_lifetime_with_document_references_added_false() {
+    multi_diff_synthetic_side_shares_its_lifetime_with_document_references(false);
+}
+
+#[test]
+fn multi_diff_synthetic_side_shares_its_lifetime_with_document_references_added_true() {
+    multi_diff_synthetic_side_shares_its_lifetime_with_document_references(true);
+}
+
+/// O corpo de `multi-diff releases pending synthetic sides (dispose parent: ${disposeParent}, side: ${pendingSide})`.
+fn multi_diff_releases_pending_synthetic_sides(dispose_parent: bool, pending_side: usize) {
+    run_with_real_timers(async move {
+        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let fixture = setup(&disposables);
+
+        let (created, created_resolver) = Promise::<Rc<TextModel>>::new();
+        let (finish, finish_resolver) = Promise::<()>::new();
+        let creation_count = Rc::new(Cell::new(0));
+        let (text_model_resolver, store, count) = (fixture.resolver.clone(), disposables.store(), creation_count.clone());
+        let resolver: Rc<dyn ITextModelService> = Rc::new(SyntheticDocumentService(Box::new(move || {
+            let (text_model_resolver, store, count) = (text_model_resolver.clone(), store.clone(), count.clone());
+            let (created_resolver, finish) = (created_resolver.clone(), finish.clone());
+            async_fn(async move {
+                let reference = text_model_resolver.create_synthetic_document("".into(), None).await?;
+                store.add(Rc::new(reference.clone()));
+                count.set(count.get() + 1);
+                if count.get() == pending_side {
+                    created_resolver.resolve(text_model_of(&reference));
+                    finish.await?;
+                }
+                Ok(reference)
+            })
+        })));
+        let services = create_child_services(&fixture, &disposables, with_test_diff_provider(ServiceCollection::new().with(I_TEXT_MODEL_SERVICE, resolver)));
+        let source_disposed = Rc::new(Cell::new(false));
+        let flag = source_disposed.clone();
+        let document = disposables.add_rc(document_ref(None, None, to_disposable(move || flag.set(true))));
+        let changed = disposables.add_rc(Emitter::<()>::new());
+        let documents = Rc::new(MutableDocuments { documents: RefCell::new(vec![document.clone()]), changed: changed.clone() });
+        let parent = disposables.add_rc(create_view_model(&services, documents.clone()));
+        let pending = parent.wait_for_diff_or_1s();
+        let model = created.await.unwrap();
+        if dispose_parent {
+            parent.dispose();
+        } else {
+            documents.documents.borrow_mut().clear();
+            changed.fire(());
+        }
+        document.dispose();
+        assert!(!source_disposed.get());
+        let disposed = model.on_will_dispose().to_promise(None);
+        finish_resolver.resolve(());
+        pending.await.unwrap();
+        disposed.await.unwrap();
+        assert_eq!((source_disposed.get(), creation_count.get(), fixture.accessor.model_service.get_models().len()), (true, pending_side, 0));
+    });
+}
+
+#[test]
+fn multi_diff_releases_pending_synthetic_sides_dispose_parent_false_side_1() {
+    multi_diff_releases_pending_synthetic_sides(false, 1);
+}
+
+#[test]
+fn multi_diff_releases_pending_synthetic_sides_dispose_parent_false_side_2() {
+    multi_diff_releases_pending_synthetic_sides(false, 2);
+}
+
+#[test]
+fn multi_diff_releases_pending_synthetic_sides_dispose_parent_true_side_1() {
+    multi_diff_releases_pending_synthetic_sides(true, 1);
+}
+
+#[test]
+fn multi_diff_releases_pending_synthetic_sides_dispose_parent_true_side_2() {
+    multi_diff_releases_pending_synthetic_sides(true, 2);
+}
+
+#[test]
+fn multi_diff_releases_a_partially_resolved_item_when_remaining_resolution_fails_after_disposal() {
+    run_with_real_timers(async {
+        let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+        let fixture = setup(&disposables);
+
+        let (second_requested, second_requested_resolver) = Promise::<()>::new();
+        let (fail, fail_resolver) = Promise::<()>::new();
+        let creation_count = Rc::new(Cell::new(0));
+        let (text_model_resolver, count) = (fixture.resolver.clone(), creation_count.clone());
+        let resolver: Rc<dyn ITextModelService> = Rc::new(SyntheticDocumentService(Box::new(move || {
+            count.set(count.get() + 1);
+            let (number, text_model_resolver) = (count.get(), text_model_resolver.clone());
+            let (second_requested_resolver, fail) = (second_requested_resolver.clone(), fail.clone());
+            async_fn(async move {
+                if number == 2 {
+                    second_requested_resolver.resolve(());
+                    fail.await?;
+                    return Err(Error::new("Synthetic resolution failed"));
+                }
+                text_model_resolver.create_synthetic_document("".into(), None).await
+            })
+        })));
+        let services = create_child_services(&fixture, &disposables, ServiceCollection::new().with(I_TEXT_MODEL_SERVICE, resolver));
+        let source_disposed = Rc::new(Cell::new(false));
+        let flag = source_disposed.clone();
+        let document = disposables.add_rc(document_ref(None, None, to_disposable(move || flag.set(true))));
+        let parent = disposables.add_rc(create_view_model(&services, const_documents(vec![document.clone()])));
+        let waiting = parent.wait_for_diff_or_1s();
+        second_requested.await.unwrap();
+        parent.dispose();
+        document.dispose();
+        fail_resolver.resolve(());
+
+        let error = waiting.await.err().expect("a espera do diff rejeita");
+        assert!(error.to_string().contains("Synthetic resolution failed"), "{error}");
+        assert_eq!((source_disposed.get(), fixture.accessor.model_service.get_models().len()), (true, 0));
     });
 }
 

@@ -2138,6 +2138,14 @@ pub struct ConstValueWithChangeEvent<T> {
     value: T,
 }
 
+impl<T> ConstValueWithChangeEvent<T> {
+    /// A mesma construção de [`ValueWithChangeEvent::constant`], para o valor que não é `PartialEq` (a struct
+    /// [`ValueWithChangeEvent`] exige a comparação, que o evento constante nunca usa).
+    pub fn new(value: T) -> Self {
+        Self { value }
+    }
+}
+
 impl<T: Clone> ValueWithChangeEventLike<T> for ConstValueWithChangeEvent<T> {
     fn on_did_change(&self) -> Event<()> {
         Event::none()
