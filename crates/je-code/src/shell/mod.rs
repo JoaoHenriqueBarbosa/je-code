@@ -3317,10 +3317,23 @@ impl Shell {
         let cw = terminal_panel::cell_width();
         match &mut self.terminal {
             Some(terminal) => terminal.resize(columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16),
-            None => match je_terminal::Terminal::new(self.workspace_for_terminal.take().or_else(|| self.workspace.clone()), None, columns, rows, cw.round() as u16, terminal_panel::ROW_HEIGHT as u16, self.wake.clone()) {
-                Ok(terminal) => self.terminal = Some(terminal),
-                Err(e) => self.notify(Severity::Error, format!("não foi possível abrir o terminal: {e}")),
-            },
+            None => {
+                let (cell_width, cell_height) = (cw.round() as u16, terminal_panel::ROW_HEIGHT as u16);
+                let working_directory = self.workspace_for_terminal.take().or_else(|| self.workspace.clone());
+                // Fora do wasm o terminal abre um shell local no workspace.
+                #[cfg(not(target_arch = "wasm32"))]
+                match je_terminal::Terminal::new(working_directory, None, columns, rows, cell_width, cell_height, self.wake.clone()) {
+                    Ok(terminal) => self.terminal = Some(terminal),
+                    Err(e) => self.notify(Severity::Error, format!("não foi possível abrir o terminal: {e}")),
+                }
+                // No wasm não há processo local (o pty mora no servidor): a grade nasce vazia e sem backend, como o
+                // terminal do VS Code web sem servidor, até uma conexão remota chamar `Terminal::connect`.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    drop(working_directory);
+                    self.terminal = Some(je_terminal::Terminal::detached("terminal", columns, rows, cell_width, cell_height, self.wake.clone()));
+                }
+            }
         }
     }
 
