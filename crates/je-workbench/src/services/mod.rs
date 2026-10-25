@@ -19,6 +19,7 @@ pub mod output;
 pub mod log;
 pub mod layout;
 pub mod accounts;
+pub mod banner;
 
 pub mod extension_management;
 pub mod extension_recommendations;

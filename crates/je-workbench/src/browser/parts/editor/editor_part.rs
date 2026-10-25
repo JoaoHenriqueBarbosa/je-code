@@ -251,6 +251,9 @@ pub struct EditorPart {
     when_restored_promise: DeferredPromise<()>,
 }
 
+/// A classe do contêiner da parte que `createContentArea` alterna conforme `showTabs === 'multiple'`.
+pub const EDITOR_TABS_MULTIPLE_CLASS: &str = "editor-tabs-multiple";
+
 fn invalid_group() -> ! {
     throw(Error::new("Invalid editor group provided!"))
 }
@@ -1479,8 +1482,25 @@ impl EditorPart {
 
     // region: criação da parte e estado
 
+    /// `container.classList.contains(name)`: as classes que `createContentArea` e `layout` escrevem no contêiner da parte.
+    pub fn container_has_class(&self, name: &str) -> bool {
+        self.ui.tree().has_class(self.container, name)
+    }
+
     /// `createContentArea(parent, options)`: cria a grade (restaurando o estado anterior se pedido) e o layout centralizado.
     pub fn create(&self, options: Option<EditorPartCreationOptions>) {
+        // Container: `editor-tabs-multiple` segue `partOptions.showTabs`
+        let weak = self.this.clone();
+        let update_editor_tabs_class: Rc<dyn Fn()> = Rc::new(move || {
+            let Some(part) = weak.upgrade() else { return };
+
+            let multiple = part.state.borrow().part_options.show_tabs == ShowTabs::Multiple;
+            part.ui.tree_mut().toggle_class(part.container, EDITOR_TABS_MULTIPLE_CLASS, multiple);
+        });
+        update_editor_tabs_class();
+        let update = update_editor_tabs_class.clone();
+        self.store.add(self.on_did_change_editor_part_options.event().listen(move |_| update()));
+
         // Grid control
         self.state.borrow_mut().will_restore_state = options.is_none_or(|options| options.restore_previous_state);
         self.do_create_grid_control();

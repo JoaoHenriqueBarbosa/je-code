@@ -11,33 +11,64 @@
 //! - `toString()` de URI é `to_string(false)`; `getCanonicalUri(x, { supportSideBySide: BOTH })` com resultado
 //!   `{ primary, secondary }` é a variante `_sides` do acessor.
 //!
-//! Fora deste arquivo (e por quê): `fillActiveEditorSelection` (2 casos, `browser/parts/editor/editor.ts` e
-//! `TextEditorPaneSelection`), `isEditorIdentifier` e `isEditorInputWithOptionsAndGroup` (checagens de forma sobre `unknown`
-//! que o sistema de tipos do Rust resolve em tempo de compilação, e o `IEditorGroup` não foi portado), os 4 casos de
-//! `createEditorPart` (parte de editores com interface) e os 6 `whenEditorClosed` (`EditorService`).
+//! - `fillActiveEditorSelection`: o `mock<IEditorGroup>` e o `mock<IEditorPane>` são `MockGroup` e `MockPane`, que só respondem
+//!   ao que a função lê; `deepStrictEqual` sobre as opções compara `override`, `pinned`, `selection` e `selectionRevealType`, e
+//!   o `strictEqual(..., options)` (identidade) do caso sem seleção é a igualdade desses mesmos campos, porque as opções
+//!   passam por valor.
+//! - Os casos de `createEditorPart`: a parte vem de `create_part` (`create_editor_parts` sobre um `InstantiationService` com a
+//!   configuração do caso). `getComputedStyle(title, '::after').width` é a variável `--title-border-bottom-width` que a regra
+//!   lê, e `.editor-container` `style.width` é a propriedade `width` do contêiner do editor (o grupo não depende de ter um
+//!   editor aberto para escrevê-los); `classList.contains('editor-tabs-multiple')` é `container_has_class`.
+//!
+//! Fora deste arquivo (e por quê): `isEditorIdentifier` e `isEditorInputWithOptionsAndGroup` (checagens de forma sobre
+//! `unknown` que o sistema de tipos do Rust resolve em tempo de compilação: `EditorIdentifier` e `EditorInputWithOptions`
+//! já são o tipo) e os 6 `whenEditorClosed` (a função de `browser/editor.ts` não foi portada).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
+mod editor_input_services;
 
 use std::any::Any;
 use std::rc::Rc;
 
-use common::ensure_no_disposables_are_leaked_in_test_suite;
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use editor_input_services::{WorkbenchServices, uri_identity_service};
+use je_base::JsString;
 use je_base::dynamic::Dynamic;
+use je_base::errors::{Error, throw};
+use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::network::schemas;
 use je_base::uri::{Field, URI, UriChange, UriComponents};
+use je_editor::selection::Selection;
+use je_platform::opener::editor_types::{EditorOverride, TextEditorSelection};
 use je_platform::resources::uri_file;
+use je_instantiation::{InstantiationService, ServiceCollection};
+use je_platform::configuration::service::{I_CONFIGURATION_SERVICE, IConfigurationService};
+use je_platform::configuration::test_configuration_service::TestConfigurationService;
+use je_platform::contextkey::contextkey::{I_CONTEXT_KEY_SERVICE, IContextKeyService};
+use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
+use je_platform::storage::{I_STORAGE_SERVICE, InMemoryStorageService, StorageService};
+use je_platform::uri_identity::uri_identity::I_URI_IDENTITY_SERVICE;
+use je_ui::Ui;
+use je_widgets::gridview::GridViewView;
+use je_workbench::browser::parts::editor::editor::{default_editor_part_options, fill_active_editor_selection};
+use je_workbench::browser::parts::editor::editor_group_view::EditorGroupView;
+use je_workbench::browser::parts::editor::text_editor::TextEditorPaneSelection;
+use je_workbench::common::editor::editor_factory_registry::editor_factory_registry;
+use je_workbench::services::editor::editor_groups_service::{IEditorGroup, IEditorPart};
+use je_workbench::services::files_configuration::files_configuration_service::{I_FILES_CONFIGURATION_SERVICE, IFilesConfigurationService};
+use je_workbench::services::layout::layout_service::WindowId;
 use je_workbench::common::editor::diff_editor_input::DiffEditorInput;
 use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase};
 use je_workbench::common::editor::side_by_side_editor_input::SideBySideEditorInput;
 use je_workbench::common::editor::{
-    EditorInputCapabilities, EditorInputOrUntyped, EditorResourceAccessor, EditorResourceAccessorOptions, EditorUri, SchemeFilter, SideBySideEditor,
-    UntypedEditorInput, is_resource_diff_editor_input, is_resource_editor_input, is_resource_merge_editor_input, is_resource_side_by_side_editor_input,
+    EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, EditorResourceAccessor, EditorResourceAccessorOptions, EditorUri, GroupIdentifier, IEditorPane,
+    IEditorPaneSelection, SchemeFilter, SideBySideEditor, TextEditorOptions, TextEditorSelectionRevealType, UntypedEditorInput, is_resource_diff_editor_input, is_resource_editor_input, is_resource_merge_editor_input, is_resource_side_by_side_editor_input,
     is_text_editor_view_state, is_untitled_resource_editor_input,
 };
 use je_workbench::services::editor::editor_service::IEditorService;
-use je_workbench::test::browser::workbench_test_services::{TestEditorInput, TestEditorService, TestFileEditorInput};
+use je_workbench::test::browser::workbench_test_services::{TestEditorInput, TestEditorPart, TestEditorService, TestFileEditorInput, create_editor_parts};
 
 /// `class TestEditorInputWithPreferredResource extends TestEditorInput implements EditorInputWithPreferredResource`.
 struct TestEditorInputWithPreferredResource {
@@ -195,6 +226,129 @@ fn assert_compound_editor(editor: &EditorInputOrUntyped, file: &URI, untitled: &
         assert_eq!(accessor(editor, scheme(schemas::UNTITLED)).1, untitled);
         assert_eq!(accessor(editor, schemes(schemas::FILE, schemas::UNTITLED)).1, untitled);
     }
+}
+
+/// `new class extends mock<IEditorGroup>() { activeEditor; activeEditorPane }`: só o que `fillActiveEditorSelection` lê
+/// responde, e o resto lança como o `mock` faria.
+struct MockGroup {
+    active_editor: EditorInputRef,
+    active_editor_pane: Rc<dyn IEditorPane>,
+}
+
+impl IEditorGroup for MockGroup {
+    fn id(&self) -> GroupIdentifier {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn window_id(&self) -> WindowId {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn active_editor(&self) -> Option<EditorInputRef> {
+        Some(self.active_editor.clone())
+    }
+
+    fn editors(&self) -> Vec<EditorInputRef> {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn is_locked(&self) -> bool {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn is_active(&self, _editor: &EditorInputOrUntyped) -> bool {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn active_editor_pane(&self) -> Option<Rc<dyn IEditorPane>> {
+        Some(self.active_editor_pane.clone())
+    }
+}
+
+/// `new class extends mock<IEditorPane>() { input; getSelection? }`.
+struct MockPane {
+    input: EditorInputRef,
+    selection: Option<Selection>,
+}
+
+impl IEditorPane for MockPane {
+    fn input(&self) -> Option<EditorInputRef> {
+        Some(self.input.clone())
+    }
+
+    fn group_id(&self) -> GroupIdentifier {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn get_view_state(&self) -> Option<Dynamic> {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn on_did_change_control(&self) -> Event<()> {
+        throw(Error::new("Method not implemented."))
+    }
+
+    fn get_selection(&self) -> Option<Rc<dyn IEditorPaneSelection>> {
+        self.selection.map(|selection| Rc::new(TextEditorPaneSelection::new(selection)) as Rc<dyn IEditorPaneSelection>)
+    }
+}
+
+/// `{ override: 'new-type', pinned: true }` mais, quando dada, a `selection` do original.
+fn preset_options(selection: Option<TextEditorSelection>) -> TextEditorOptions {
+    let mut options = TextEditorOptions { selection, ..TextEditorOptions::default() };
+    options.base.override_ = Some(EditorOverride::Id(JsString::from("new-type")));
+    options.base.pinned = Some(true);
+    options
+}
+
+/// As três chaves que o original compara: `override`, `pinned` e `selection`, mais o `selectionRevealType`.
+type OptionsView = (Option<EditorOverride>, Option<bool>, Option<TextEditorSelection>, Option<TextEditorSelectionRevealType>);
+
+fn options_view(options: &TextEditorOptions) -> OptionsView {
+    (options.base.override_.clone(), options.base.pinned, options.selection, options.selection_reveal_type)
+}
+
+#[test]
+fn fill_active_editor_selection_transfers_the_current_selection_only_for_the_source_editor() {
+    let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let source = disposables.add_rc(TestEditorInput::new(uri_file("/source"), "test"));
+    let other = disposables.add_rc(TestEditorInput::new(uri_file("/other"), "test"));
+    let source: EditorInputRef = source;
+    let other: EditorInputRef = other;
+    let selection = Selection::new(30, 4, 32, 9);
+    let pane = Rc::new(MockPane { input: source.clone(), selection: Some(selection) });
+    let group = MockGroup { active_editor: source.clone(), active_editor_pane: pane };
+    let start_selection = TextEditorSelection { start_line_number: 1.0, start_column: 1.0, end_line_number: None, end_column: None };
+    let options = preset_options(Some(start_selection));
+
+    let source_result = options_view(&fill_active_editor_selection(&group, &source, options.clone()));
+    let other_result = options_view(&fill_active_editor_selection(&group, &other, options.clone()));
+
+    let new_type = Some(EditorOverride::Id(JsString::from("new-type")));
+    assert_eq!(
+        source_result,
+        (
+            new_type.clone(),
+            Some(true),
+            Some(TextEditorSelection { start_line_number: 30.0, start_column: 4.0, end_line_number: Some(32.0), end_column: Some(9.0) }),
+            Some(TextEditorSelectionRevealType::CenterIfOutsideViewport),
+        )
+    );
+    assert_eq!(other_result, (new_type.clone(), Some(true), Some(start_selection), None));
+    assert_eq!(options_view(&options), (new_type, Some(true), Some(start_selection), None));
+}
+
+#[test]
+fn fill_active_editor_selection_preserves_options_when_selection_is_unsupported() {
+    let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+    let source: EditorInputRef = disposables.add_rc(TestEditorInput::new(uri_file("/source"), "test"));
+    let pane = Rc::new(MockPane { input: source.clone(), selection: None });
+    let group = MockGroup { active_editor: source.clone(), active_editor_pane: pane };
+    let options = preset_options(None);
+
+    let result = fill_active_editor_selection(&group, &source, options.clone());
+
+    assert_eq!(options_view(&result), options_view(&options));
 }
 
 #[test]
@@ -409,4 +563,108 @@ fn is_text_editor_view_state_cases() {
     let diff_editor_view_state = object(vec![("original", code_editor_view_state.clone()), ("modified", code_editor_view_state)]);
 
     assert!(is_text_editor_view_state(&diff_editor_view_state));
+}
+
+/// `createEditorPart(workbenchInstantiationService({ configurationService }), disposables)`: o `InstantiationService` com a
+/// configuração dada, o armazenamento, o `IContextKeyService` e os serviços que o grupo lê, e a parte principal de
+/// `createEditorParts` (as partes ficam no guarda).
+fn create_part(guard: &LeakGuard, configuration: Rc<TestConfigurationService>) -> Rc<TestEditorPart> {
+    guard.add_rc(configuration.on_did_change_configuration_emitter.clone());
+    let workbench_services = WorkbenchServices::new(guard, &configuration);
+    let files_configuration_service: Rc<dyn IFilesConfigurationService> = workbench_services.files_configuration_service.clone();
+    let configuration_service: Rc<dyn IConfigurationService> = configuration;
+    let storage = InMemoryStorageService::new();
+    let storage_service: Rc<dyn StorageService> = Rc::new(storage.clone());
+    let context_key_service: Rc<dyn IContextKeyService> = MockContextKeyService::scopable();
+
+    let services = ServiceCollection::new()
+        .with(I_FILES_CONFIGURATION_SERVICE, files_configuration_service)
+        .with(I_URI_IDENTITY_SERVICE, uri_identity_service())
+        .with(I_CONFIGURATION_SERVICE, configuration_service)
+        .with(I_STORAGE_SERVICE, storage_service)
+        .with(I_CONTEXT_KEY_SERVICE, context_key_service);
+    let instantiation_service = InstantiationService::new(services);
+    guard.add_rc(storage);
+    guard.add_rc(instantiation_service.clone());
+    instantiation_service.invoke_function(|accessor| editor_factory_registry().start(accessor));
+
+    let parts = guard.add_rc(create_editor_parts(&Ui::new(), &instantiation_service));
+    parts.test_main_part.clone()
+}
+
+/// `new TestConfigurationService({ workbench: { editor: { <key>: <value> } } })`.
+fn editor_configuration(key: &str, value: Dynamic) -> Rc<TestConfigurationService> {
+    let editor = Dynamic::object([(key, value)]);
+    TestConfigurationService::new(Some(Dynamic::object([("workbench", Dynamic::object([("editor", editor)]))])))
+}
+
+/// `part.activeGroup` como a vista do grupo (`part.activeGroup instanceof EditorGroupView`).
+fn active_group_view(part: &TestEditorPart) -> Rc<EditorGroupView> {
+    let group: Rc<dyn IEditorGroup> = part.active_group();
+    match group.as_any_rc().and_then(|any| any.downcast::<EditorGroupView>().ok()) {
+        Some(view) => view,
+        None => panic!("o grupo ativo da parte é um EditorGroupView"),
+    }
+}
+
+#[test]
+fn editor_tab_action_space_reservation_reserves_by_default_and_can_be_configured_or_enforced() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    assert!(default_editor_part_options().tab_action_reserve_space);
+
+    let part = create_part(&guard, editor_configuration("tabActionReserveSpace", Dynamic::Bool(false)));
+
+    let configured = part.part_options().tab_action_reserve_space;
+    let enforced_override = part.enforce_part_options(Dynamic::object([("tabActionReserveSpace", Dynamic::Bool(true))]));
+    assert_eq!((configured, part.part_options().tab_action_reserve_space), (false, true));
+
+    enforced_override.dispose();
+    assert!(!part.part_options().tab_action_reserve_space);
+}
+
+#[test]
+fn title_separator_follows_the_inset_editor_content_while_tabs_remain_full_width() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let part = create_part(&guard, TestConfigurationService::new(None));
+    let group = active_group_view(&part);
+
+    // `getComputedStyle(title, '::after').width` é a variável `--title-border-bottom-width` que a regra de `.title::after`
+    // lê, e `.editor-container` `style.width` é a propriedade `width` do contêiner do editor.
+    let mut results = Vec::new();
+    for (width, inset) in [(600.0, 0.0), (600.0, 220.0), (750.0, 220.0), (750.0, 0.0), (400.0, 500.0)] {
+        group.layout(width, 400.0, 0.0, 0.0);
+        group.set_content_right_inset(inset);
+        results.push((
+            width,
+            inset,
+            group.title_container_style().property("--title-border-bottom-width").map(str::to_string),
+            group.editor_container_style().property("width").map(str::to_string),
+        ));
+    }
+
+    let expected: Vec<_> = results
+        .iter()
+        .map(|&(width, inset, _, _)| {
+            let content_width = format!("{}px", (width - inset).max(0.0));
+            (width, inset, Some(content_width.clone()), Some(content_width))
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn editor_tab_mode_class_follows_configured_and_enforced_part_options() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let part = create_part(&guard, editor_configuration("showTabs", Dynamic::string("single")));
+    let has_multiple_tabs = || part.container_has_class("editor-tabs-multiple");
+
+    let mut states = vec![has_multiple_tabs()];
+    for show_tabs in ["multiple", "none", "single"] {
+        let override_options = part.enforce_part_options(Dynamic::object([("showTabs", Dynamic::string(show_tabs))]));
+        states.push(has_multiple_tabs());
+        override_options.dispose();
+        states.push(has_multiple_tabs());
+    }
+
+    assert_eq!(states, [false, true, false, false, false, false, false]);
 }
