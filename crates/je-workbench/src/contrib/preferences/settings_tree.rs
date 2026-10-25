@@ -2,8 +2,9 @@
 //! da árvore sem depender de widget. A resolução do sumário em árvore de configurações (`resolveSettingsTree`,
 //! `getMatchingSettings`, `sortSettings`, `getFlatSettings`), as configurações restritas do espaço não confiável
 //! (`resolveConfiguredUntrustedSettings`), o sumário das extensões (`createTocTreeForExtensionSettings`) e o filtro da
-//! árvore (`SettingsTreeFilter`). Os renderizadores, o delegado de alturas e o `SettingsTree` em si são widgets e entram
-//! com a árvore de widgets nativa.
+//! árvore (`SettingsTreeFilter`). Os renderizadores da faixa 856 a 1327 (a base, o grupo, as extensões novas e o complexo) estão em
+//! `settings_tree_renderers.rs`; o resto dos renderizadores, o delegado de alturas e o `SettingsTree` em si são widgets e entram
+//! com as fatias seguintes.
 //!
 //! Divergências:
 //! - **`Set<ISetting>`** (com `delete` durante o `forEach`) é o [`SettingSet`], um `IndexMap` ordenado pela identidade
