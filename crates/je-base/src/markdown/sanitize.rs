@@ -280,7 +280,8 @@ impl<'c, 'a> Sanitizer<'c, 'a> {
     /// `_sanitizeAttributes` com o gancho `uponSanitizeAttribute` de `domSanitize.ts`.
     fn sanitize_attributes(&self, element: &Element) -> Vec<Attribute> {
         let mut kept = Vec::new();
-        for attribute in element.attributes.iter().rev() {
+        // O DOMPurify só reescreve o atributo quando o valor muda, então a ordem de inserção sobrevive.
+        for attribute in element.attributes.iter() {
             let name = attribute.name.to_lowercase();
             let mut value = if name == "value" { attribute.value.clone() } else { JsString::from(js_string::trim(attribute.value.units())) };
             let mut keep = true;
