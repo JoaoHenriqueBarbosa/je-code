@@ -24,7 +24,7 @@ use je_editor::modes_registry::LanguageExtensionPoint;
 use je_editor::monarch::compile::compile;
 use je_editor::monarch::lexer::MonarchTokenizer;
 use je_editor::monarch::types::{MonarchAction, MonarchAttr, MonarchLanguage, MonarchRule, MonarchTokenAction};
-use je_editor::standalone_configuration_service::StandaloneConfigurationService;
+use je_editor::standalone::standalone_services::StandaloneConfigurationService;
 use je_editor::tokenization_registry::tokenization_registry;
 use je_platform::configuration::service::IConfigurationService;
 use je_platform::log::NullLogService;

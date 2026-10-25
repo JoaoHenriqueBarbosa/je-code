@@ -41,7 +41,7 @@ pub mod compressed_virtualized_scroll_layout;
 pub mod compressed_virtualized_scroll_view;
 pub mod multi_diff_editor_options;
 pub mod monarch;
-pub mod standalone_configuration_service;
+pub mod standalone;
 pub mod languages;
 pub mod languages_registry;
 pub mod line_range;
