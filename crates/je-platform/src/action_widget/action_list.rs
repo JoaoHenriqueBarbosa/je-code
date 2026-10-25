@@ -27,8 +27,12 @@
 //!
 //! Fica para a fatia seguinte: o `onHover` assíncrono do delegate (`canPreview`), o triângulo seguro do ponteiro com
 //! intenção, as ações do rodapé do hover (`hover.actions`), os links de `detail`, o foco das barras de ferramentas por linha
-//! (`focusItemAction`, `tabThroughItemActions`), o `softDispatch` de atalhos no filtro do submenu, a animação de movimento
-//! de item, o `markdown` das descrições e os atalhos resolvidos (`keybinding`, o título com `{0} to Apply`).
+//! (`focusItemAction`, `tabThroughItemActions`), a animação de movimento de item, o `markdown` das descrições e os atalhos
+//! resolvidos (`keybinding`, o título com `{0} to Apply`).
+//!
+//! Entram na fatia do submenu com lista: o `softDispatch` do campo de filtro ([`KeybindingResolver`]), o posicionamento do
+//! painel de lista (`preserveVerticalPosition`, `alignToAnchorTop`, a altura filtrada perto da borda do viewport), o
+//! `hoverContent` das ações filhas ([`RemovableAction::with_hover_content`]) e o clique na barra de remoção do submenu.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -190,6 +194,42 @@ pub enum HoverContent {
     Text(String),
     Element(Rc<HoverElement>),
     Lazy(Rc<dyn Fn() -> Rc<HoverElement>>),
+    /// `new MarkdownString().appendText(text).appendMarkdown(markdown)`: o texto entra literal (com os caracteres do
+    /// markdown escapados) e o resto é renderizado como markdown.
+    Markdown { text: String, markdown: String },
+}
+
+/// O texto e a quantidade de links que o markdown de `appendMarkdown` renderiza: `**negrito**`, `__negrito__`, `` `código` ``
+/// e `[texto](destino)` (o link vira o texto, e conta como um `<a>`).
+fn render_markdown(markdown: &str) -> (String, usize) {
+    let mut text = String::new();
+    let mut links = 0;
+    let chars: Vec<char> = markdown.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let rest: String = chars[index..].iter().collect();
+        if rest.starts_with("**") || rest.starts_with("__") {
+            index += 2;
+            continue;
+        }
+        if chars[index] == '`' {
+            index += 1;
+            continue;
+        }
+        if chars[index] == '[' {
+            if let Some(close) = rest.find("](") {
+                if let Some(end) = rest[close..].find(')') {
+                    text.push_str(&rest[1..close]);
+                    links += 1;
+                    index += rest[..close + end + 1].chars().count();
+                    continue;
+                }
+            }
+        }
+        text.push(chars[index]);
+        index += 1;
+    }
+    (text, links)
 }
 
 /// `IActionListItemHover`: os campos que mudam estado ou geometria do painel.
@@ -206,6 +246,12 @@ pub struct IActionListItemHover {
     pub get_tabbable_elements: Option<Rc<dyn Fn() -> Vec<Rc<HoverElement>>>>,
     /// Align the panel's bottom with the parent popup, keeping content above its trigger.
     pub align_to_parent_bottom: bool,
+    /// Align the panel with the outer border of the parent popup instead of the row's own edge.
+    pub align_to_parent: bool,
+    /// Keep the panel where it opened as its content changes size.
+    pub preserve_vertical_position: bool,
+    /// Align the panel's top with the trigger row (with `preserve_vertical_position`, shifting up only to fit the viewport).
+    pub align_to_anchor_top: bool,
 }
 
 /// `IActionListHeaderLink`: o link do cabeçalho e da linha com detalhe.
@@ -434,19 +480,30 @@ pub struct IActionListOptions {
 
 // #region ação com remoção
 
-/// `IAction & { onRemove }`: a ação embrulhada com o `onRemove` que o `Object.assign` do original acrescenta.
+/// `IAction & { onRemove?, hoverContent? }`: a ação embrulhada com o que o `Object.assign` do original acrescenta.
 pub struct RemovableAction {
     action: ActionRef,
-    on_remove: OnRemove,
+    on_remove: Option<OnRemove>,
+    hover_content: Option<String>,
 }
 
 impl RemovableAction {
+    /// `Object.assign(action, { onRemove })`.
     pub fn new(action: ActionRef, on_remove: OnRemove) -> Rc<Self> {
-        Rc::new(Self { action, on_remove })
+        Rc::new(Self { action, on_remove: Some(on_remove), hover_content: None })
     }
 
-    pub fn on_remove(&self) -> OnRemove {
+    /// `Object.assign(action, { hoverContent })`: o markdown que o hover da linha do submenu mostra depois do rótulo.
+    pub fn with_hover_content(action: ActionRef, hover_content: &str) -> Rc<Self> {
+        Rc::new(Self { action, on_remove: None, hover_content: Some(hover_content.to_owned()) })
+    }
+
+    pub fn on_remove(&self) -> Option<OnRemove> {
         self.on_remove.clone()
+    }
+
+    pub fn hover_content(&self) -> Option<String> {
+        self.hover_content.clone()
     }
 }
 
@@ -497,7 +554,12 @@ impl IAction for RemovableAction {
 
 /// `(action as IAction & { onRemove?: () => void }).onRemove`.
 fn on_remove_of(action: &ActionRef) -> Option<OnRemove> {
-    action.as_any().downcast_ref::<RemovableAction>().map(RemovableAction::on_remove)
+    action.as_any().downcast_ref::<RemovableAction>().and_then(RemovableAction::on_remove)
+}
+
+/// `(action as IAction & { hoverContent?: string }).hoverContent`.
+fn hover_content_of(action: &ActionRef) -> Option<String> {
+    action.as_any().downcast_ref::<RemovableAction>().and_then(RemovableAction::hover_content)
 }
 
 // #endregion
@@ -713,12 +775,28 @@ struct WidgetState<T: ActionListItemData> {
     window_size: (f64, f64),
     /// O retângulo do painel depois do último `_layoutSubmenu` (`top`, `left`, largura, altura).
     panel_rect: Option<(f64, f64, f64, f64)>,
+    /// `openingPanelTop` e `openingPanelHeight` do `_showSubmenuForElement` (já divididos pelo zoom): onde o painel que preserva a
+    /// posição vertical abriu.
+    opening_panel_top: Option<f64>,
+    opening_panel_height: Option<f64>,
+    /// `maxWidth` do `_showSubmenuForElement`: a largura da lista do submenu aberto.
+    submenu_max_width: f64,
+    /// `_submenuContainer.style.top` e `style.left` (px, já divididos pelo zoom), `style.width` e a altura do
+    /// `.action-list-submenu-viewport` quando o painel tem um.
+    panel_style_top: Option<f64>,
+    panel_style_left: Option<f64>,
+    panel_style_width: Option<f64>,
+    panel_viewport_height: Option<f64>,
+    /// Quantas vezes o `_layoutSubmenu` do painel aberto reposicionou o painel.
+    layout_submenu_count: usize,
 }
 
 /// O cabeçalho do painel: o texto do markdown renderizado ou o elemento do chamador.
 #[derive(Clone)]
 enum PanelHeader {
     Text(String),
+    /// O markdown renderizado: o `textContent` e quantos `<a>` ele tem.
+    Rendered { text: String, links: usize },
     Element(Rc<HoverElement>),
 }
 
@@ -748,6 +826,17 @@ pub struct ActionListWidget<T: ActionListItemData> {
     panel_subscriptions: Rc<DisposableStore>,
     /// `_list.domId`: o prefixo do id de cada linha (`getElementID`).
     list_dom_id: String,
+    /// `IKeybindingService.softDispatch`: o comando que a tecla resolve, se algum.
+    keybinding_resolver: RefCell<Option<KeybindingResolver>>,
+}
+
+/// O que o `softDispatch` do `IKeybindingService` devolve para uma tecla: o `commandId` quando há uma regra
+/// (`ResultKind.KbFound`) e `None` quando não há (`ResultKind.NoMatchingKb`).
+pub type KeybindingResolver = Rc<dyn Fn(&UiKeyEvent) -> Option<String>>;
+
+/// `actionWidgetKeybindingCommands`.
+fn is_action_widget_keybinding_command(command_id: &str) -> bool {
+    command_id == ACCEPT_SELECTED_ACTION_COMMAND || command_id == PREVIEW_SELECTED_ACTION_COMMAND || command_id == "toggleSectionCodeAction"
 }
 
 /// Os atributos de acessibilidade do campo de filtro (`role`, `aria-*`).
@@ -784,6 +873,11 @@ fn has_expandable_panel<T: ActionListItemData>(item: &IActionListItem<T>) -> boo
 
 fn has_submenu_indicator<T: ActionListItemData>(item: &IActionListItem<T>) -> bool {
     has_expandable_panel(item) && item.hover.as_ref().and_then(|hover| hover.show_indicator) != Some(false)
+}
+
+/// `${value}px` de uma propriedade de `style`: o zero negativo sai como `0px`.
+fn css_px(value: f64) -> String {
+    format!("{}px", value + 0.0)
 }
 
 /// `stripNewlines(str)`.
@@ -874,12 +968,21 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 zoom: 1.0,
                 window_size: (1280.0, 800.0),
                 panel_rect: None,
+                opening_panel_top: None,
+                opening_panel_height: None,
+                submenu_max_width: 0.0,
+                panel_style_top: None,
+                panel_style_left: None,
+                panel_style_width: None,
+                panel_viewport_height: None,
+                layout_submenu_count: 0,
             }),
             measurer: RefCell::new(Rc::new(|_| 0.0)),
             is_submenu_panel: Cell::new(false),
             disposed: Cell::new(false),
             panel_subscriptions: DisposableStore::new(),
             list_dom_id: next_list_dom_id(),
+            keybinding_resolver: RefCell::new(None),
         });
 
         widget.apply_filter(false, true, None);
@@ -1047,6 +1150,67 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// O widget do submenu aberto.
     pub fn submenu_widget(&self) -> Option<Rc<ActionListWidget<ActionRef>>> {
         self.state.borrow().current_submenu_widget.clone()
+    }
+
+    /// O serviço de teclas (`IKeybindingService.softDispatch`) que o campo de filtro de um submenu consulta; o submenu que este
+    /// widget abre herda o mesmo, como o `createInstance` do original.
+    pub fn set_keybinding_resolver(&self, resolver: KeybindingResolver) {
+        *self.keybinding_resolver.borrow_mut() = Some(resolver);
+    }
+
+    /// `_submenuContainer.style.top`.
+    pub fn panel_style_top(&self) -> Option<String> {
+        self.state.borrow().panel_style_top.map(css_px)
+    }
+
+    /// `_submenuContainer.style.left`.
+    pub fn panel_style_left(&self) -> Option<String> {
+        self.state.borrow().panel_style_left.map(css_px)
+    }
+
+    /// `_submenuContainer.style.width`.
+    pub fn panel_style_width(&self) -> Option<String> {
+        self.state.borrow().panel_style_width.map(css_px)
+    }
+
+    /// `.action-list-submenu-viewport`.style.height em px, quando o painel tem esse viewport.
+    pub fn panel_viewport_height(&self) -> Option<f64> {
+        self.state.borrow().panel_viewport_height
+    }
+
+    /// O texto do rodapé (`footerContainer.textContent`).
+    pub fn footer_text(&self) -> Option<String> {
+        self.footer_container.as_ref()?;
+        self.opts().and_then(|o| o.footer_text.clone())
+    }
+
+    /// Quantas vezes o `_layoutSubmenu` do painel aberto deste widget reposicionou o painel.
+    pub fn submenu_layout_count(&self) -> usize {
+        self.state.borrow().layout_submenu_count
+    }
+
+    /// `_list.scrollTop = value`: o `scroll` da lista reposiciona o painel aberto (`_layoutSubmenu`). O limite da rolagem é do
+    /// `List` (ver `reveal`); aqui o valor é o que o elemento recebeu.
+    pub fn set_scroll_top(&self, scroll_top: f64) {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = (state.scroll_top - scroll_top).abs() > f64::EPSILON;
+            state.scroll_top = scroll_top;
+            changed
+        };
+        if changed {
+            self.layout_submenu();
+        }
+    }
+
+    /// O evento `resize` da janela: o painel aberto cancela o que estava agendado e se reposiciona.
+    pub fn window_resized(&self) {
+        let open = self.state.borrow().current_submenu_element.is_some();
+        if open {
+            self.cancel_submenu_show();
+            self.reset_submenu_pointer();
+            self.layout_submenu();
+        }
     }
 
     /// `this.domNode.isConnected`: a lista já está dentro de um widget.
@@ -1942,9 +2106,11 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         }
         self.set_keyboard_navigation(Some(true));
         if !e.is_composing && self.is_submenu_panel.get() {
-            // Typing in a submenu filter must not reach the parent list (the keybinding branch of softDispatch is part of
-            // the ActionList slice).
-            if e.key.chars().count() == 1 && !e.ctrl_key && !e.meta_key && !e.alt_key {
+            // Typing in a submenu filter must not reach the parent list, nor the keybindings the action widget owns.
+            let resolver = self.keybinding_resolver.borrow().clone();
+            let command_id = resolver.and_then(|resolve| resolve(e));
+            let is_action_widget_keybinding = command_id.as_deref().is_some_and(is_action_widget_keybinding_command);
+            if is_action_widget_keybinding || (e.key.chars().count() == 1 && !e.ctrl_key && !e.meta_key && !e.alt_key) {
                 e.stop_propagation();
             }
         }
@@ -2113,6 +2279,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// closing the widget.
     pub fn update_items(&self, items: &[Rc<IActionListItem<T>>], focus_item_id: Option<&str>, options: Option<IActionListUpdateOptions>) {
         let options = options.unwrap_or_default();
+        let preserved_scroll_top = options.preserve_scroll_position.then(|| self.state.borrow().scroll_top);
         let pending = self.state.borrow().pending_submenu_element.clone();
         if let Some(pending) = pending {
             let pending_id = pending.item_id();
@@ -2190,6 +2357,9 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         } else if let Some(focus_item_id) = focus_item_id {
             self.focus_item_by_id(focus_item_id);
         }
+        if let Some(scroll_top) = preserved_scroll_top {
+            self.set_scroll_top(scroll_top);
+        }
     }
 
     fn remove_item(&self, item: &Rc<IActionListItem<T>>) {
@@ -2264,6 +2434,11 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             HoverContent::Lazy(build) => PanelHeader::Element(build()),
             HoverContent::Element(element) => PanelHeader::Element(element),
             HoverContent::Text(text) => PanelHeader::Text(text),
+            HoverContent::Markdown { text, markdown } => {
+                // `appendText` is literal and the line break it adds renders as `<br>`, so only the markdown part is parsed.
+                let (rendered, links) = render_markdown(&markdown);
+                PanelHeader::Rendered { text: format!("{text}{rendered}"), links }
+            }
         });
         {
             let mut state = self.state.borrow_mut();
@@ -2278,17 +2453,33 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             let delegate: Rc<dyn IActionListDelegate<ActionRef>> = Rc::new(SubmenuDelegate::<T> { parent: self.this.clone() });
             let widget = ActionListWidget::<ActionRef>::new(false, &submenu_items, delegate, element.submenu_options.clone());
             widget.is_submenu_panel.set(true);
+            let resolver = self.keybinding_resolver.borrow().clone();
+            if let Some(resolver) = resolver {
+                widget.set_keybinding_resolver(resolver);
+            }
             self.state.borrow_mut().current_submenu_widget = Some(widget.clone());
 
             // The submenu widget's constructor focuses its first item by default; clear that until the user actually navigates
             // into the submenu (via ArrowRight) so it doesn't render as if selected while the parent list still has focus.
             widget.clear_focus();
 
+            let header_width = match &self.state.borrow().panel_header {
+                Some(PanelHeader::Element(content)) => content.size().0,
+                _ => 0.0,
+            };
             let total_height = widget.compute_list_height();
             widget.layout(total_height, None);
-            let max_width = widget.compute_max_width(0.0);
+            let max_width = header_width.max(widget.compute_max_width(0.0));
             widget.layout(total_height, Some(max_width));
             widget.dom_node.set_size(max_width, total_height);
+            widget.dom_node.style_set_property("width", &css_px(max_width));
+            {
+                let mut state = self.state.borrow_mut();
+                state.submenu_max_width = max_width;
+                if element.submenu_options.is_some() {
+                    state.panel_style_width = Some(max_width + 10.0);
+                }
+            }
 
             let parent = self.this.clone();
             let submenu = Rc::downgrade(&widget);
@@ -2339,6 +2530,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         if trigger_differs {
             self.state.borrow_mut().expanded_trigger = if row_exists { Some(current.clone()) } else { None };
         }
+        self.state.borrow_mut().layout_submenu_count += 1;
         self.layout_hover_panel(&current, self.list_index_of(&current));
     }
 
@@ -2358,16 +2550,17 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             let state = self.state.borrow();
             (state.zoom, state.window_size, state.panel_header.clone(), state.current_submenu_widget.is_some())
         };
+        if has_submenu_widget {
+            self.layout_submenu_list_panel(current, index);
+            return;
+        }
         let Some(PanelHeader::Element(content)) = header else {
             self.state.borrow_mut().panel_rect = None;
             return;
         };
-        if has_submenu_widget {
-            return;
-        }
         let hover = current.hover.clone().unwrap_or_default();
         let persistent = self.opts().is_some_and(|o| o.persistent_hover);
-        let align_to_parent = persistent || hover.align_to_parent_bottom;
+        let align_to_parent = persistent || hover.align_to_parent || hover.align_to_parent_bottom;
         let parent_rect = self.dom_node.rect();
         let edge_rect = if align_to_parent {
             self.dom_node.parent_element().and_then(|parent| parent.closest("action-widget")).map_or(parent_rect, |widget| widget.rect())
@@ -2376,7 +2569,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         };
         let (content_width, content_height) = content.size();
         let chrome = ACTION_WIDGET_VERTICAL_CHROME_HEIGHT;
-        let scrollable = hover.align_to_parent_bottom || (!persistent && !align_to_parent);
+        let scrollable = hover.preserve_vertical_position || hover.align_to_parent_bottom || (!persistent && !align_to_parent);
 
         let mut panel_width = if align_to_parent { (content_width + chrome) * zoom } else { content_width + chrome };
         let gap = if align_to_parent { 0.0 } else { 4.0 };
@@ -2435,7 +2628,140 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         self.state.borrow_mut().panel_rect = Some((parent_rect.top + top, parent_rect.left + left, panel_width, height));
     }
 
-    /// `_submenuContainer.getBoundingClientRect()` depois do último `_layoutSubmenu` de um painel de conteúdo.
+    /// O ramo com lista de submenu do `layout` de `_showSubmenuForElement`: largura, lado, topo e a altura da lista dentro do
+    /// painel. O painel só tem o viewport que rola quando o item preserva a posição vertical ou alinha pelo rodapé do pai.
+    fn layout_submenu_list_panel(&self, current: &Rc<IActionListItem<T>>, index: Option<usize>) {
+        let (zoom_level, (window_width, window_height), header, submenu, max_width, opening_top, opening_height, previous_viewport, previous_panel) = {
+            let state = self.state.borrow();
+            (
+                state.zoom,
+                state.window_size,
+                state.panel_header.clone(),
+                state.current_submenu_widget.clone(),
+                state.submenu_max_width,
+                state.opening_panel_top,
+                state.opening_panel_height,
+                state.panel_viewport_height,
+                state.panel_rect,
+            )
+        };
+        let Some(submenu) = submenu else {
+            return;
+        };
+        let hover = current.hover.clone().unwrap_or_default();
+        let persistent = self.opts().is_some_and(|o| o.persistent_hover);
+        let preserve = hover.preserve_vertical_position;
+        let has_viewport = preserve || hover.align_to_parent_bottom;
+        let align_to_parent = persistent || hover.align_to_parent || hover.align_to_parent_bottom;
+        let parent_rect = self.dom_node.rect();
+        let edge_rect = if align_to_parent {
+            self.dom_node.parent_element().and_then(|parent| parent.closest("action-widget")).map_or(parent_rect, |widget| widget.rect())
+        } else {
+            parent_rect
+        };
+        let anchor_rect = index.map(|index| self.row_rect(index));
+        let zoom = if align_to_parent || preserve { zoom_level } else { 1.0 };
+        let chrome = ACTION_WIDGET_VERTICAL_CHROME_HEIGHT;
+
+        let header_height = match &header {
+            Some(PanelHeader::Element(content)) => content.size().1,
+            _ => 0.0,
+        };
+        let offset_height = |element: Option<Rc<ViewElement>>| element.map_or(0.0, |element| element.size().height);
+        let submenu_chrome = offset_height(submenu.header_container()) + offset_height(submenu.filter_container()) + offset_height(submenu.footer_container());
+        let total_height = submenu.compute_list_height();
+        // The scroll viewport still has its previous height when content changes.
+        let viewport_height = previous_viewport.unwrap_or(header_height + submenu_chrome + total_height);
+
+        let mut panel_width = if persistent {
+            edge_rect.width
+        } else if align_to_parent {
+            (max_width + chrome) * zoom
+        } else {
+            max_width + chrome
+        };
+        let gap = if align_to_parent { 0.0 } else { 4.0 };
+        let viewport_margin = 4.0;
+        let edge_right = edge_rect.left + edge_rect.width;
+        let space_right = window_width - viewport_margin - edge_right - gap;
+        let space_left = edge_rect.left - viewport_margin - gap;
+
+        // On a narrow viewport neither side may have room for the panel next to its anchor: clamp it to what fits on screen.
+        let mut style_width = if persistent { Some(edge_rect.width / zoom) } else { None };
+        if !align_to_parent {
+            let available_width = window_width - 2.0 * viewport_margin;
+            if panel_width > available_width {
+                panel_width = available_width.max(0.0);
+            }
+            style_width = Some(panel_width);
+        }
+
+        let show_right = space_right >= panel_width || space_right >= space_left;
+        let mut left = if show_right { edge_right - parent_rect.left + gap } else { edge_rect.left - parent_rect.left - panel_width - gap };
+        let page_left = parent_rect.left + left;
+        if page_left < viewport_margin {
+            left += viewport_margin - page_left;
+        } else if page_left + panel_width > window_width - viewport_margin {
+            left -= (page_left + panel_width) - (window_width - viewport_margin);
+        }
+
+        let panel_height = (chrome + viewport_height) * zoom;
+        let mut state_opening_height = opening_height;
+        if preserve && state_opening_height.is_none() {
+            state_opening_height = Some(panel_height / zoom);
+        }
+        let anchor_height = state_opening_height.map_or(panel_height, |height| height * zoom);
+        let edge_bottom = edge_rect.top + edge_rect.height;
+        let bottom_boundary = if hover.align_to_parent_bottom { edge_bottom.min(window_height) } else { window_height };
+        let mut top = if hover.align_to_parent_bottom {
+            bottom_boundary - parent_rect.top - anchor_height
+        } else if let Some(opening_top) = opening_top {
+            opening_top * zoom
+        } else if let (Some(anchor), true) = (anchor_rect, hover.align_to_anchor_top) {
+            anchor.top - parent_rect.top
+        } else if let Some(anchor) = anchor_rect {
+            anchor.top - parent_rect.top + (anchor.height - anchor_height) / 2.0
+        } else {
+            previous_panel.map_or(parent_rect.top, |(panel_top, _, _, _)| panel_top) - parent_rect.top
+        };
+        let keeps_anchor_top = preserve && hover.align_to_anchor_top;
+        if keeps_anchor_top && has_viewport {
+            let desired_panel_height = chrome * zoom + (submenu_chrome + total_height) * zoom;
+            top = top.min(window_height - parent_rect.top - desired_panel_height - 8.0);
+        }
+        let panel_bottom = parent_rect.top + top + anchor_height;
+        if panel_bottom > bottom_boundary && !keeps_anchor_top {
+            top -= panel_bottom - bottom_boundary + 8.0;
+        }
+        if parent_rect.top + top < 0.0 {
+            top = -parent_rect.top;
+        }
+        let state_opening_top = if preserve && opening_top.is_none() { Some(top / zoom) } else { opening_top };
+        let available_panel_height = if hover.align_to_parent_bottom { bottom_boundary - 8.0 } else { window_height - parent_rect.top - top - 8.0 };
+        let mut new_viewport = previous_viewport;
+        let mut new_panel_height = panel_height;
+        if has_viewport {
+            let available_height = (available_panel_height / zoom - chrome).max(0.0);
+            let submenu_height = if total_height == 0.0 { 0.0 } else { ACTION_LINE_HEIGHT.max(total_height.min(available_height - submenu_chrome)) };
+            submenu.layout(submenu_height, Some(max_width));
+            new_viewport = Some(submenu_chrome + submenu_height);
+            new_panel_height = (chrome + submenu_chrome + submenu_height) * zoom;
+        }
+        if hover.align_to_parent_bottom {
+            top = (bottom_boundary - new_panel_height).max(0.0) - parent_rect.top;
+        }
+
+        let mut state = self.state.borrow_mut();
+        state.opening_panel_height = state_opening_height;
+        state.opening_panel_top = state_opening_top;
+        state.panel_viewport_height = new_viewport;
+        state.panel_style_top = Some(top / zoom);
+        state.panel_style_left = Some(left / zoom);
+        if style_width.is_some() {
+            state.panel_style_width = style_width;
+        }
+        state.panel_rect = Some((parent_rect.top + top, parent_rect.left + left, panel_width, new_panel_height));
+    }
     pub fn panel_rect(&self) -> Option<IRect> {
         self.state.borrow().panel_rect.map(|(top, left, width, height)| IRect { top, left, width, height })
     }
@@ -2510,7 +2836,9 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 icon: Some(if action.checked().unwrap_or(false) { "check" } else { "blank" }.to_owned()),
                 icon_color: None,
             });
-            item.tooltip = Some(if tooltip.is_empty() { label } else { tooltip });
+            item.tooltip = Some(if tooltip.is_empty() { label.clone() } else { tooltip });
+            item.hover = hover_content_of(action)
+                .map(|markdown| IActionListItemHover { content: Some(HoverContent::Markdown { text: label, markdown }), ..IActionListItemHover::default() });
             item.on_remove = on_remove_of(action);
             item.submenu_actions = submenu;
             Rc::new(item)
@@ -2570,6 +2898,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             state.panel_animated = false;
             state.panel_header = None;
             state.panel_rect = None;
+            state.opening_panel_top = None;
+            state.opening_panel_height = None;
+            state.submenu_max_width = 0.0;
+            state.panel_style_top = None;
+            state.panel_style_left = None;
+            state.panel_style_width = None;
+            state.panel_viewport_height = None;
             // The row that opened the panel is no longer expanded.
             state.expanded_trigger = None;
             state.current_submenu_widget.take()
@@ -2728,6 +3063,29 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     pub fn pointer_leave(&self) {
         self.cancel_submenu_show();
         self.reset_submenu_pointer();
+    }
+
+    /// O `mousedown` no botão da barra da linha `index`: a barra sempre cancela o padrão (o foco fica onde estava), e com
+    /// `stopToolbarPointerPropagation` o evento também não chega aos tratadores da lista. Devolve `defaultPrevented`.
+    pub fn toolbar_pointer_down(&self, index: usize) -> bool {
+        let Some(element) = self.element(index) else {
+            return false;
+        };
+        let has_toolbar = element.toolbar_actions.as_ref().is_some_and(|actions| !actions.is_empty()) || element.on_remove.is_some();
+        if has_toolbar && !self.opts().is_some_and(|o| o.stop_toolbar_pointer_propagation) {
+            self.set_keyboard_navigation(Some(false));
+        }
+        has_toolbar
+    }
+
+    /// O `click` no botão `action_id` da barra da linha `index`: com `stopToolbarPointerPropagation` o clique para na barra;
+    /// sem ele sobe até a lista, que não seleciona a linha por um clique na barra.
+    pub fn click_toolbar_action(&self, index: usize, action_id: &str) -> Option<Promise<()>> {
+        let label = self.element(index)?.label.clone()?;
+        if !self.opts().is_some_and(|o| o.stop_toolbar_pointer_propagation) {
+            self.click_row(index, PointerTarget::Toolbar);
+        }
+        self.run_item_toolbar_action(&label, action_id)
     }
 
     /// O clique no chevron da linha `index`: abre o painel dela sem selecionar a linha.
@@ -3344,6 +3702,8 @@ pub struct RowState {
     /// `aria-setsize` e `aria-posinset` (`getSetSize` e `getPosInSet`): só as ações contam.
     pub aria_set_size: usize,
     pub aria_pos_in_set: usize,
+    /// `.description`.textContent da linha.
+    pub description_text: String,
 }
 
 fn row_badges(badges: &[ActionListBadge]) -> Vec<RowBadge> {
@@ -3391,6 +3751,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             let hover_text = match content {
                 HoverContent::Text(text) => Some(text),
                 HoverContent::Element(element) => Some(element.text()),
+                HoverContent::Markdown { text, markdown } => Some(format!("{text}\n{markdown}")),
                 HoverContent::Lazy(_) => None,
             };
             if let Some(hover_text) = hover_text.filter(|text| !text.is_empty()) {
@@ -3487,6 +3848,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         row.badge_text = element.badge.clone().unwrap_or_default();
         row.badge_hidden = row.badge_text.is_empty();
         row.badge_aria_hidden = "true".to_owned();
+        row.description_text = element.description.clone().unwrap_or_default();
         row.badge_after_title = !element.badge_before_label;
         row.title_and_badge_order =
             if element.badge_before_label { vec![row.badge_text.clone(), row.title_text.clone()] } else { vec![row.title_text.clone(), row.badge_text.clone()] };
@@ -3655,7 +4017,16 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     pub fn panel_hover_text(&self) -> Option<String> {
         match self.state.borrow().panel_header.clone()? {
             PanelHeader::Text(text) => Some(text),
+            PanelHeader::Rendered { text, .. } => Some(text),
             PanelHeader::Element(element) => Some(element.text()),
+        }
+    }
+
+    /// `panel.querySelectorAll('.action-list-submenu-hover-header a').length`.
+    pub fn panel_hover_links(&self) -> usize {
+        match self.state.borrow().panel_header {
+            Some(PanelHeader::Rendered { links, .. }) => links,
+            _ => 0,
         }
     }
 
@@ -3667,6 +4038,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         };
         let mut text = match header {
             Some(PanelHeader::Text(text)) => text,
+            Some(PanelHeader::Rendered { text, .. }) => text,
             Some(PanelHeader::Element(element)) => element.text(),
             None => String::new(),
         };
