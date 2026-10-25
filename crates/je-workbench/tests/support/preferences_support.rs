@@ -307,7 +307,7 @@ pub fn create_services(
     let services = SettingsTreeServices {
         configuration_service: configuration.clone(),
         language_service: Rc::new(StubLanguageService),
-        user_data_profile_service: TestUserDataProfileService::new(),
+        user_data_profile_service: TestUserDataProfileService::with_default_profile(),
         product_service: Rc::new(TestProductService::default()),
         environment_service: TestEnvironmentService::with_overrides(EnvironmentOverrides { is_sessions_window, ..Default::default() }),
         experimental_settings_service: experimental_settings_service.clone(),
