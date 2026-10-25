@@ -78,7 +78,7 @@ pub const TREE_EXPAND_MODE: &str = "workbench.tree.expandMode";
 pub const TREE_STICKY_SCROLL: &str = "workbench.tree.enableStickyScroll";
 pub const TREE_STICKY_SCROLL_MAX_ELEMENTS: &str = "workbench.tree.stickyScrollMaxItemCount";
 
-fn config_number(service: &dyn IConfigurationService, key: &str) -> Option<f64> {
+pub(crate) fn config_number(service: &dyn IConfigurationService, key: &str) -> Option<f64> {
     match service.get_value(Some(key), None) {
         Dynamic::Number(number) => Some(number),
         _ => None,
@@ -93,8 +93,44 @@ fn config_string(service: &dyn IConfigurationService, key: &str) -> Option<Strin
 }
 
 /// `Boolean(configurationService.getValue(key))`.
-fn config_bool(service: &dyn IConfigurationService, key: &str) -> bool {
+pub(crate) fn config_bool(service: &dyn IConfigurationService, key: &str) -> bool {
     service.get_value(Some(key), None).is_truthy()
+}
+
+/// `createScopedContextKeyService(contextKeyService, widget)`: o serviço de chaves escopado ao widget, com a chave de foco da
+/// lista ligada. Comum às árvores e à `WorkbenchTable`.
+pub(crate) fn create_scoped_context_key_service(context_key_service: &Rc<dyn IContextKeyService>) -> Rc<dyn IScopedContextKeyService> {
+    let result = context_key_service.create_scoped(ContextKeyTarget::new());
+    raw_workbench_list_focus_context_key().bind_to(&*result);
+    result
+}
+
+/// `createScrollObserver(contextKeyService, widget)`: mantém a chave `listScrollAtBoundary` (`both`, `top`, `bottom`, `none`)
+/// conforme a rolagem do widget, que chega como as leituras e o evento. Comum às árvores e à `WorkbenchTable`.
+pub(crate) fn create_scroll_observer(
+    context_key_service: &dyn IContextKeyService,
+    scroll_top: impl Fn() -> f64 + 'static,
+    scroll_height: impl Fn() -> f64 + 'static,
+    render_height: impl Fn() -> f64 + 'static,
+    on_did_scroll: &Event<()>,
+) -> DisposableRef {
+    let list_scroll_at = raw_workbench_list_scroll_at_boundary_context_key().bind_to(context_key_service);
+    let update = move || {
+        let at_top = scroll_top() == 0.0;
+
+        // We need a threshold `1` since scrollHeight is rounded.
+        // https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollHeight#determine_if_an_element_has_been_totally_scrolled
+        let at_bottom = scroll_height() - render_height() - scroll_top() < 1.0;
+        let position = match (at_top, at_bottom) {
+            (true, true) => "both",
+            (true, false) => "top",
+            (false, true) => "bottom",
+            (false, false) => "none",
+        };
+        list_scroll_at.set(Dynamic::string(position));
+    };
+    update();
+    on_did_scroll.listen(move |_| update())
 }
 
 /// `useAltAsMultipleSelectionModifier(configurationService)`.
@@ -445,32 +481,13 @@ impl WorkbenchTreeInternals {
         let base = Disposable::new();
 
         // createScopedContextKeyService
-        let context_key_service = services.context_key_service.create_scoped(ContextKeyTarget::new());
+        let context_key_service = create_scoped_context_key_service(&services.context_key_service);
         let keys: &dyn IContextKeyService = &*context_key_service;
-        raw_workbench_list_focus_context_key().bind_to(keys);
         base.register(context_key_service.clone());
 
         // createScrollObserver
-        let list_scroll_at = raw_workbench_list_scroll_at_boundary_context_key().bind_to(keys);
-        let update_scroll = {
-            let host = host.clone();
-            move || {
-                let at_top = host.scroll_top() == 0.0;
-
-                // We need a threshold `1` since scrollHeight is rounded.
-                // https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollHeight#determine_if_an_element_has_been_totally_scrolled
-                let at_bottom = host.scroll_height() - host.render_height() - host.scroll_top() < 1.0;
-                let position = match (at_top, at_bottom) {
-                    (true, true) => "both",
-                    (true, false) => "top",
-                    (false, true) => "bottom",
-                    (false, false) => "none",
-                };
-                list_scroll_at.set(Dynamic::string(position));
-            }
-        };
-        update_scroll();
-        base.register(host.on_did_scroll().listen(move |_| update_scroll()));
+        let (top, height, render) = (host.clone(), host.clone(), host.clone());
+        base.register(create_scroll_observer(keys, move || top.scroll_top(), move || height.scroll_height(), move || render.render_height(), &host.on_did_scroll()));
 
         let list_supports_multi_select = workbench_list_supports_multi_select_context_key().bind_to(keys);
         list_supports_multi_select.set(Dynamic::Bool(options.multiple_selection_support != Some(false)));

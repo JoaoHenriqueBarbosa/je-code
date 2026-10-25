@@ -18,6 +18,7 @@ pub mod list;
 pub mod gridview;
 pub mod paneview;
 pub mod splitview;
+pub mod table;
 pub mod tree;
 pub mod text_field;
 pub mod input_box;
