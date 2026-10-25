@@ -21,7 +21,8 @@
 //! - `super.updateOptions(...)` é o `update_options` do editor interno. O `override updateOptions` é
 //!   [`EmbeddedCodeEditorWidget::update_options`], que quem usava o embutido por essa porta continua chamando;
 //! - `instanceof EmbeddedCodeEditorWidget` do `getOuterEditor` é a consulta a um registro dos editores embutidos vivos
-//!   (pelo endereço do editor interno), mantido pelo construtor e pelo `dispose`;
+//!   (pelo endereço do editor interno), mantido pelo construtor e pelo `dispose`; a mesma consulta, sem o pai, é
+//!   [`is_embedded_code_editor`];
 //! - `this._register(parentEditor.onDidChangeConfiguration(...))` e o próprio editor interno ficam no `base` do embutido,
 //!   que o descarta junto.
 
@@ -121,6 +122,12 @@ impl IDisposable for EmbeddedCodeEditorWidget {
         EMBEDDED_EDITORS.with(|editors| editors.borrow_mut().retain(|(entry, _)| *entry != key));
         self.base.dispose();
     }
+}
+
+/// `editor instanceof EmbeddedCodeEditorWidget`: o editor é o interno de um embutido vivo.
+pub fn is_embedded_code_editor(editor: &Rc<CodeEditorWidget>) -> bool {
+    let key = editor_key(editor);
+    EMBEDDED_EDITORS.with(|editors| editors.borrow().iter().any(|(entry, _)| *entry == key))
 }
 
 /// `getOuterEditor(accessor)`: o editor com foco, ou o pai dele se for um editor embutido.

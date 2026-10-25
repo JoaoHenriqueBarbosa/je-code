@@ -33,9 +33,8 @@
 //!   `createFocusTracker` e chama `IHoverService.showInstantHover({ target, content })`. O hover e o rastreador de foco são
 //!   do pintor nativo (o `HoverService` do `je-platform` recebe um elemento do DOM como conteúdo): entram pelo
 //!   [`IGutterMenuHoverPresenter`]. O [`GutterIndicatorMenuHost`] implementa o `IGutterIndicatorHost::show_menu` do indicador
-//!   (cria o conteúdo com o `onClose` do pedido, monta o visual e o entrega ao apresentador) e recebe a altura do sticky
-//!   scroll, que ainda não tem porte (`const_observable(0.0)` sem controller). O descarte do hover, o foco no menu e o
-//!   `_hoverVisible` ficam no indicador, como no original.
+//!   (cria o conteúdo com o `onClose` do pedido, monta o visual e o entrega ao apresentador). O descarte do hover, o foco no
+//!   menu e o `_hoverVisible` ficam no indicador, como no original.
 
 use std::rc::Rc;
 
@@ -464,22 +463,15 @@ pub trait IGutterMenuHoverPresenter {
 pub struct GutterIndicatorMenuHost {
     services: GutterIndicatorMenuServices,
     presenter: Rc<dyn IGutterMenuHoverPresenter>,
-    sticky_scroll_height: IObservable<f64>,
 }
 
 impl GutterIndicatorMenuHost {
-    /// `sticky_scroll_height` é o `stickyScrollWidgetHeight` do `StickyScrollController` do editor
-    /// (`const_observable(0.0)` sem controller).
-    pub fn new(services: GutterIndicatorMenuServices, presenter: Rc<dyn IGutterMenuHoverPresenter>, sticky_scroll_height: IObservable<f64>) -> Rc<Self> {
-        Rc::new(Self { services, presenter, sticky_scroll_height })
+    pub fn new(services: GutterIndicatorMenuServices, presenter: Rc<dyn IGutterMenuHoverPresenter>) -> Rc<Self> {
+        Rc::new(Self { services, presenter })
     }
 }
 
 impl IGutterIndicatorHost for GutterIndicatorMenuHost {
-    fn sticky_scroll_height(&self) -> IObservable<f64> {
-        Rc::clone(&self.sticky_scroll_height)
-    }
-
     fn show_menu(&self, request: GutterIndicatorMenuRequest) -> Option<Rc<dyn IGutterIndicatorMenuSession>> {
         let GutterIndicatorMenuRequest { editor, data, target, on_close } = request;
         let content = GutterIndicatorMenuContent::new(&editor, data, on_close, self.services.clone());

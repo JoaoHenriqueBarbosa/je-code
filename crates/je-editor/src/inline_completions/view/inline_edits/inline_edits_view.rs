@@ -199,8 +199,7 @@ pub struct InlineEditsViewServices {
     pub side_by_side_host: Rc<dyn ISideBySideViewHost>,
     pub embedded_code_editor_factory: Rc<dyn IEmbeddedCodeEditorFactory>,
     pub preview_text_model_factory: Rc<dyn IPreviewTextModelFactory>,
-    /// O menu e o sticky scroll do indicador da margem (o da `InlineSuggestionsView` e o do editor de prévia da dica de
-    /// longa distância).
+    /// O menu do indicador da margem (o da `InlineSuggestionsView` e o do editor de prévia da dica de longa distância).
     pub gutter_indicator_host: Rc<dyn IGutterIndicatorHost>,
     /// A trilha de símbolos e o arquivo alvo da dica de longa distância.
     pub long_distance_hint_host: Rc<dyn ILongDistanceHintHost>,

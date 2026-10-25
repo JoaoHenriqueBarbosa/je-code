@@ -24,9 +24,9 @@
 //!   [`InlineEditsGutterIndicator::notify_mouse_enter`] e [`InlineEditsGutterIndicator::notify_mouse_leave`], que o pintor
 //!   chama (o `focus()` do editor no clique é feito aqui). `readModifierKeyStatus(...).shiftKey` é o
 //!   [`InlineEditsGutterIndicator::notify_shift_key`], como nas views irmãs (o estado do shift enquanto o editor tem o foco);
-//! - `StickyScrollController.get(editor)` (e o evento `onDidChangeStickyScrollHeight`) ainda não tem porte: a altura do
-//!   sticky scroll chega pelo [`IGutterIndicatorHost::sticky_scroll_height`] (`0` sem controller, como o `constObservable(0)`
-//!   do original);
+//! - `StickyScrollController.get(editor)` e o `observableFromEvent(onDidChangeStickyScrollHeight, () =>
+//!   stickyScrollWidgetHeight)` são o [`StickyScrollController::get`] e o [`observable_from_event`] sobre o evento do
+//!   controlador (`const_observable(0.0)` sem controller);
 //! - **ponto de abertura do menu.** `_showHover` cria o `GutterIndicatorMenuContent` (`gutter_indicator_menu`), mede o foco
 //!   nele com `createFocusTracker` e o mostra com `IHoverService.showInstantHover`. Essas três peças são do menu, então a
 //!   view só conhece o contrato [`IGutterIndicatorHost::show_menu`]: recebe o [`GutterIndicatorMenuRequest`] (o editor, o
@@ -68,7 +68,8 @@ use je_base::nls::localize;
 use je_base::observable::observables::observable_value::ObservableValue;
 use je_base::observable::utils::utils::{DebounceMs, debounced_observable};
 use je_base::observable::{
-    IObservable, Observable, ObservableExt, SettableExt, autorun, const_observable, derived, derived_with_store, observable_value, run_on_change,
+    IObservable, Observable, ObservableExt, SettableExt, autorun, const_observable, derived, derived_with_store, observable_from_event, observable_value,
+    run_on_change,
 };
 use je_base::promise::{Promise, Resolver};
 use je_base::themables::ThemeIcon;
@@ -89,6 +90,7 @@ use crate::line_range::LineRange;
 use crate::observable_code_editor::{ObservableCodeEditor, ValueOrObservable};
 use crate::offset_range::OffsetRange;
 use crate::services::theme_service::IThemeService;
+use crate::sticky_scroll::sticky_scroll_controller::{IStickyScrollController, StickyScrollController};
 
 use super::super::inline_edits_view_interface::InlineEditTabAction;
 use super::super::inline_edits_views::NonOverflowOverlayWidget;
@@ -261,12 +263,8 @@ pub trait IGutterIndicatorMenuSession {
     fn dispose(&self);
 }
 
-/// O que o indicador não tem em si e a fatia do menu (e o sticky scroll) fornece.
+/// O que o indicador não tem em si e a fatia do menu fornece.
 pub trait IGutterIndicatorHost {
-    /// `stickyScrollWidgetHeight` do `StickyScrollController` do editor, que muda com `onDidChangeStickyScrollHeight`
-    /// (`const_observable(0.0)` sem controller).
-    fn sticky_scroll_height(&self) -> IObservable<f64>;
-
     /// O corpo de `_showHover` que cria e mostra o menu: `None` quando o hover não aparece.
     fn show_menu(&self, request: GutterIndicatorMenuRequest) -> Option<Rc<dyn IGutterIndicatorMenuSession>>;
 }
@@ -486,7 +484,14 @@ impl InlineEditsGutterIndicator {
 
         let original_range_obs = map_out_falsy(&data.map(|d, _| d.map(|d| d.original_range)));
 
-        let sticky_scroll_height = host.sticky_scroll_height();
+        // `StickyScrollController.get(editor)` e `observableFromEvent(onDidChangeStickyScrollHeight, () => stickyScrollWidgetHeight)`.
+        let sticky_scroll_height: IObservable<f64> = match StickyScrollController::get(&editor.editor) {
+            Some(sticky_scroll_controller) => {
+                let controller = Rc::clone(&sticky_scroll_controller);
+                observable_from_event(sticky_scroll_controller.on_did_change_sticky_scroll_height(), move |_| controller.sticky_scroll_widget_height())
+            }
+            None => const_observable(0.0),
+        };
 
         let is_hovered_over_inline_edit_debounced = debounced_observable(is_hovering_over_inline_edit, DebounceMs::Fixed(HOVER_DEBOUNCE_MS));
 

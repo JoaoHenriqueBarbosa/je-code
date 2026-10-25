@@ -66,7 +66,7 @@ pub struct LongDistanceHintServices {
     pub accessibility_service: Rc<dyn IAccessibilityService>,
     /// O que cria o `CodeEditorWidget` do `EmbeddedCodeEditorWidget` (o `@IInstantiationService` do editor de prévia).
     pub embedded_code_editor_factory: Rc<dyn IEmbeddedCodeEditorFactory>,
-    /// O menu e o sticky scroll do indicador da margem que o editor de prévia mostra.
+    /// O menu do indicador da margem que o editor de prévia mostra.
     pub gutter_indicator_host: Rc<dyn IGutterIndicatorHost>,
     pub host: Rc<dyn ILongDistanceHintHost>,
 }
