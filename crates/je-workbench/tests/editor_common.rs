@@ -757,12 +757,16 @@ fn test_when_editor_closed(side_by_side: bool, custom: bool, paths: &[&str]) {
 
         for resource in &resources {
             if custom {
-                let input: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                let input = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                let input: EditorInputRef = input;
                 editor_service.open_editor_typed(&input, Some(pinned()), None).await.unwrap();
             } else if side_by_side {
-                let primary: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
-                let secondary: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
-                let input: EditorInputRef = disposables.add_rc(SideBySideEditorInput::new(Some("testSideBySideEditor"), None, primary, secondary, editor_service.clone()));
+                let primary = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                let primary: EditorInputRef = primary;
+                let secondary = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                let secondary: EditorInputRef = secondary;
+                let input = disposables.add_rc(SideBySideEditorInput::new(Some("testSideBySideEditor"), None, primary, secondary, editor_service.clone()));
+                let input: EditorInputRef = input;
                 editor_service.open_editor_typed(&input, Some(pinned()), None).await.unwrap();
             } else {
                 let untyped = UntypedEditorInput { resource: Some(resource.clone()), options: Some(pinned()), ..UntypedEditorInput::default() };
