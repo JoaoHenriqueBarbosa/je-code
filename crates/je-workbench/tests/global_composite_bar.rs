@@ -13,6 +13,12 @@
 //!   autenticação sem provedores e sem sessões e a sessão do embedder resolvida como `undefined`.
 //! - **`avatarImg` e `label`.** O `<img>` é o [`AvatarImage`] do núcleo e o `label` é um nó da árvore, onde a classe
 //!   `has-avatar` é lida.
+//! - **Recorte de escopo (camada de IA, `platform/agentHost`).** O menu "Sign in to ChatGPT"
+//!   (`createCodexAccountMenuActions`) não existe na produção: o contrato `ICodexAccountService` fica vazio de consumidores
+//!   e o `codexAccountService` sai das dependências do [`AccountsCore`]. O caso `places shared sign-in before ChatGPT and
+//!   unrelated account commands`, que só existe para esse menu, está marcado com `#[ignore]` e mantém a expectativa original.
+//!   O caso `delays ChatGPT without hiding other account commands...` segue ativo: o que ele afirma (o "Loading..." não esconde
+//!   os demais comandos de conta) vale sem o menu do Codex.
 //! - **`deepStrictEqual` de objetos literais** é `assert_eq!` de tuplas, com os mesmos campos, na mesma ordem.
 
 #[path = "../../je-base/tests/common/mod.rs"]
@@ -39,7 +45,6 @@ use je_workbench::browser::parts::global_composite_bar::{
     AccountsCore, AccountsCoreDeps, AvatarImage, GlobalCompositeBar, GroupedAccount, IAccountsAuthentication, IAccountsDefaultAccount,
 };
 use je_workbench::common::activity::{ACCOUNTS_SHARED_SIGN_IN_GROUP, GLOBAL_ACTIVITY_ID};
-use je_workbench::services::agent_host::codex_account_service::{CodexAccountStatus, ICodexAccountInfo, ICodexAccountService};
 use je_workbench::services::authentication::authentication::{
     AuthenticationProviderInformation, AuthenticationSession, AuthenticationSessionAccount, AuthenticationSessionsChange, IAuthenticationProvider,
 };
@@ -59,7 +64,7 @@ fn create_global_bar(guard: &LeakGuard, accounts_visible: bool) -> (Rc<GlobalCom
         if accounts_visible {
             bar.global_activity_action_bar().push_action(bar.account_action().clone(), IActionOptions::default());
         }
-        bar.global_activity_action_bar().push_action(Action::new(GLOBAL_ACTIVITY_ID, "", "", true, None), IActionOptions::default());
+        bar.global_activity_action_bar().push_action(guard.add_rc(Action::new(GLOBAL_ACTIVITY_ID, "", "", true, None)), IActionOptions::default());
     }
     guard.add_rc(bar.clone());
     (bar, action_bar)
@@ -191,31 +196,11 @@ impl ICommandService for NullCommandService {
     }
 }
 
-/// `codexAccountService: { agent: 'codex', account: { status }, onDidChangeAccount: Event.None, signIn() {}, signOut() {} }`.
-struct CodexAccountStub {
-    status: CodexAccountStatus,
-}
-
-impl ICodexAccountService for CodexAccountStub {
-    fn account(&self) -> ICodexAccountInfo {
-        ICodexAccountInfo { status: self.status, email: None }
-    }
-
-    fn on_did_change_account(&self) -> Event<ICodexAccountInfo> {
-        Event::none()
-    }
-
-    fn sign_in(&self) {}
-
-    fn sign_out(&self) {}
-}
-
 /// O `this` do item de contas: o [`AccountsCore`] com as dependências do caso.
 fn create_accounts_core(
     ui: &Ui,
     configuration: impl Fn(Option<&str>) -> Dynamic + 'static,
     current_default_account: Option<IDefaultAccount>,
-    codex_status: CodexAccountStatus,
 ) -> Rc<AccountsCore> {
     let configuration_service = TestConfigurationService::new(None);
     configuration_service.stub_get_value_with(move |section, _| configuration(section));
@@ -227,7 +212,6 @@ fn create_accounts_core(
             configuration_service,
             log_service: NullLogService::shared(),
             command_service: Rc::new(NullCommandService),
-            codex_account_service: Rc::new(CodexAccountStub { status: codex_status }),
             // `FileAccess.uriToBrowserUri` deixa intacto o que não é `file` nem `vscode-remote`.
             uri_to_browser_uri: Rc::new(|uri| uri.clone()),
             session_from_embedder: Rc::new(|| Promise::resolved(None)),
@@ -254,7 +238,7 @@ fn update_avatar_for(first_icon: &URI, default_icon: Option<URI>, default_accoun
     let ui = Ui::new();
     let root = ui.root();
     let label = ui.tree_mut().create(root, Role::Generic);
-    let core = create_accounts_core(&ui, |_| Dynamic::Bool(true), default_account, CodexAccountStatus::SignedOut);
+    let core = create_accounts_core(&ui, |_| Dynamic::Bool(true), default_account);
     core.grouped_accounts().set("github", vec![account("first-id", "first-account", Some(first_icon.clone()))]);
     core.grouped_accounts().set("microsoft", vec![account("default-id", "default-account", default_icon)]);
     core.attach_label(label);
@@ -297,7 +281,7 @@ fn updates_the_icon_of_an_existing_account_including_clearing_a_stale_one() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
     run_with_faked_timers(async {
         let ui = Ui::new();
-        let core = create_accounts_core(&ui, |_| Dynamic::Bool(true), None, CodexAccountStatus::SignedOut);
+        let core = create_accounts_core(&ui, |_| Dynamic::Bool(true), None);
         core.grouped_accounts().set("github", vec![account("account-id", "account", Some(uri("https://example.com/stale.png")))]);
         let icon_of = |core: &AccountsCore| core.grouped_accounts().get("github").and_then(|accounts| accounts[0].account.icon.clone());
 
@@ -319,7 +303,7 @@ fn resolve_labels(initialized: bool) -> Vec<String> {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ui = Ui::new();
     // `getValue: key => key === 'chat.disableAIFeatures' ? false : true`.
-    let core = create_accounts_core(&ui, |section| Dynamic::Bool(section != Some("chat.disableAIFeatures")), None, CodexAccountStatus::SignedOut);
+    let core = create_accounts_core(&ui, |section| Dynamic::Bool(section != Some("chat.disableAIFeatures")), None);
     core.set_initialized(initialized);
     let action_disposables = DisposableStore::new();
     guard.add(action_disposables.clone());
@@ -347,6 +331,7 @@ fn delays_chatgpt_without_hiding_other_account_commands_while_shared_accounts_re
 }
 
 #[test]
+#[ignore = "recorte de escopo do user: camada de IA (agentHost)"]
 fn places_shared_sign_in_before_chatgpt_and_unrelated_account_commands() {
     assert_eq!(resolve_labels(true), vec!["Sign in with GitHub", "separator", "Sign in to ChatGPT", "separator", "Manage Language Model Access"]);
 }

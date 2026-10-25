@@ -66,7 +66,6 @@ use crate::browser::parts::composite_bar_actions::{
 use crate::browser::parts::pane_composite_bar::{ActivityHoverOptions, CompositeBarColors, ContentElement, IGlobalCompositeBar, global_composite_bar_height};
 use crate::common::activity::{ACCOUNTS_ACTIVITY_ID, ACCOUNTS_SHARED_SIGN_IN_GROUP, GLOBAL_ACTIVITY_ID};
 use crate::services::activity::activity::{ActivityChangeTarget, IActivityService};
-use crate::services::agent_host::codex_account_service::{ICodexAccountService, create_codex_account_menu_actions, should_show_codex_account};
 use crate::services::authentication::authentication::{
     ACCOUNTS_AVATAR_SETTING, AuthenticationProviderInformation, AuthenticationSession, AuthenticationSessionAccount, AuthenticationSessionsChange,
     IAuthenticationProvider, IAuthenticationServiceProviders, INTERNAL_AUTH_PROVIDER_PREFIX,
@@ -188,7 +187,6 @@ pub struct GlobalCompositeBarServices {
     pub secret_storage_service: Rc<dyn ISecretStorageService>,
     pub log_service: LogServiceRef,
     pub command_service: Rc<dyn ICommandService>,
-    pub codex_account_service: Rc<dyn ICodexAccountService>,
     pub default_account_service: Rc<dyn IAccountsDefaultAccount>,
     /// `FileAccess.uriToBrowserUri(uri)`, que o original chama no global.
     pub uri_to_browser_uri: Rc<dyn Fn(&URI) -> URI>,
@@ -834,7 +832,6 @@ pub struct AccountsCore {
     configuration_service: Rc<dyn IConfigurationService>,
     log_service: LogServiceRef,
     command_service: Rc<dyn ICommandService>,
-    codex_account_service: Rc<dyn ICodexAccountService>,
     uri_to_browser_uri: Rc<dyn Fn(&URI) -> URI>,
 }
 
@@ -846,7 +843,6 @@ pub struct AccountsCoreDeps {
     pub configuration_service: Rc<dyn IConfigurationService>,
     pub log_service: LogServiceRef,
     pub command_service: Rc<dyn ICommandService>,
-    pub codex_account_service: Rc<dyn ICodexAccountService>,
     pub uri_to_browser_uri: Rc<dyn Fn(&URI) -> URI>,
     /// O executor do `new Lazy(() => getCurrentAuthenticationSessionInfo(secretStorageService, productService))`.
     pub session_from_embedder: Rc<dyn Fn() -> Promise<Option<AuthenticationSessionInfo>>>,
@@ -863,7 +859,6 @@ impl AccountsCoreDeps {
             configuration_service: services.configuration_service.clone(),
             log_service: services.log_service.clone(),
             command_service: services.command_service.clone(),
-            codex_account_service: services.codex_account_service.clone(),
             uri_to_browser_uri: services.uri_to_browser_uri.clone(),
             session_from_embedder: Rc::new(move || get_current_authentication_session_info(secret_storage_service.clone(), product_service.clone())),
         }
@@ -887,7 +882,6 @@ impl AccountsCore {
             configuration_service: deps.configuration_service,
             log_service: deps.log_service,
             command_service: deps.command_service,
-            codex_account_service: deps.codex_account_service,
             uri_to_browser_uri: deps.uri_to_browser_uri,
         })
     }
@@ -1265,23 +1259,7 @@ impl AccountsCore {
             };
             append_command_groups(&mut menus, shared_account_command_groups);
 
-            let codex_account_actions = if this.initialized.get() {
-                create_codex_account_menu_actions(&this.codex_account_service, should_show_codex_account(&*this.configuration_service, false))
-            } else {
-                Vec::new()
-            };
-            if !codex_account_actions.is_empty() {
-                if !menus.is_empty() {
-                    menus.push(Separator::new());
-                }
-                for action in codex_account_actions {
-                    if action.as_base_action().is_some() {
-                        disposables.add(Rc::new(DisposedAction(action.clone())));
-                    }
-                    menus.push(action);
-                }
-            }
-
+            // O menu "Sign in to ChatGPT" (`createCodexAccountMenuActions`) é da camada de IA, recortada do produto.
             append_command_groups(&mut menus, remaining_command_groups);
 
             Ok(menus)
