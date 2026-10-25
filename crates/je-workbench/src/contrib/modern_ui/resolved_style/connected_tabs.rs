@@ -15,6 +15,8 @@
 //!   [`ModernUiStyle::connected_tab_fill_border_top_color`] devolve `None` nesse caso.
 
 use je_theme::color::{Color, Srgba};
+use je_theme::size_utils::get_size_registry;
+use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, STROKE_THICKNESS};
 
 use super::{ClassList, EditorTabState, ModernUiStyle};
 use crate::common::theme::{EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BORDER};
@@ -213,6 +215,8 @@ impl<'a> ModernUiStyle<'a> {
                 self.tab_custom("action-hover-background").or_else(|| self.tab_variable("--modern-ui-editor-tab-unfocused-hover-background", tab))
             }
             "--modern-ui-connected-tab-border" => self.connected_tab_border(tab),
+            // Declaradas só pelos participantes de tema de `connectedEditorTabs.ts` (linhas 24 a 40), na raiz.
+            "--modern-ui-connected-tab-strip-background" | "--modern-ui-connected-tab-upper-hover-background" => self.declared(name),
             _ => self.variable(name),
         }
     }
@@ -363,4 +367,85 @@ impl<'a> ModernUiStyle<'a> {
         };
         TabBorderContainer { display, background: background.unwrap_or_else(Color::transparent_color) }
     }
+
+    /// `background-color` da fileira de abas (`.tabs-and-actions-container`, linhas 145 a 150), da máscara das abas fixas
+    /// (`.sticky-tabs-background`, linhas 264 a 266) e do fundo do `::before` do botão de nova aba (linha 584): todos leem
+    /// `var(--modern-ui-connected-tab-strip-background, var(--vscode-editorGroupHeader-tabsBackground))`, então a fileira,
+    /// a máscara e o apoio do botão pintam a mesma superfície. `None` fora das abas conectadas e sem a cor da fileira.
+    pub fn connected_tab_strip_background(&self) -> Option<Color> {
+        if !self.connected_tabs() {
+            return None;
+        }
+        self.strip_background()
+    }
+
+    /// `background-color` do `.tabs-bar-add-tab`: transparente nas abas conectadas (linhas 268 a 270; o apoio é o
+    /// `::before`), o fundo do editor fora delas (`tabs.css`, linha 348).
+    pub fn add_tab_background(&self) -> Color {
+        if self.connected_tabs() {
+            return Color::transparent_color();
+        }
+        self.chain(&["editor.background"])
+    }
+
+    /// A cor do traço que une a aba ativa ao resto da superfície nas pontas dos ombros (`.tab-fill::before` com
+    /// `border-right` e `::after` com `border-left`, linhas 373 a 386, 391 e 481) e a da linha sob a fileira
+    /// (`.tabs-and-actions-container::after`, linhas 286 a 289): `--modern-ui-connected-tab-border` do elemento.
+    /// `None` fora das abas conectadas.
+    pub fn connected_tab_separator_color(&self, tab: &TabElement) -> Option<Color> {
+        if !self.connected_tabs() {
+            return None;
+        }
+        self.connected_tab_border(tab)
+    }
+
+    /// `background-color` do `.tab-actions`. Só o alto contraste pinta o fundo, e só sob o ponteiro ou o foco
+    /// (`tabs.css`, linhas 920 a 923, `!important`): a cadeia começa em `--modern-ui-editor-tab-action-overlay-background`,
+    /// que as abas conectadas declaram `transparent` (linha 112) para a máscara não cobrir a pílula. As demais abas caem
+    /// no fundo do cabeçalho.
+    pub fn tab_actions_background(&self, tab: &TabElement, actions_focus_within: bool) -> Color {
+        let masks = self.has("monaco-workbench") && self.has("modern-ui-tabs") && self.high_contrast() && (tab.hovered || actions_focus_within);
+        if !masks || self.connected_tabs() {
+            return Color::transparent_color();
+        }
+        self.chain(&[EDITOR_GROUP_HEADER_TABS_BACKGROUND, "editor.background"])
+    }
+
+    /// O `::after` do `.editor-group-container` em alto contraste (linhas 39 a 48, e 56 a 58 no editor da grade): a moldura
+    /// contínua do grupo. `part` é o `.part.editor` e `in_grid_view` é o `.monaco-grid-view` entre a raiz e a parte. `None`
+    /// quando o pseudoelemento não existe (`content: none`).
+    pub fn connected_group_frame(&self, part: &ClassList, in_grid_view: bool) -> Option<ConnectedGroupFrame> {
+        if !self.connected_tabs() || !self.high_contrast() || !part.contains("editor-tabs-multiple") {
+            return None;
+        }
+        // Linha 56: o editor da grade do Modern UI deixa a moldura para a borda da parte.
+        if in_grid_view && self.has("modern-ui") && !self.has("agent-sessions-workbench") && !part.contains("modal-editor-part") {
+            return None;
+        }
+        let size = |id| get_size_registry().resolve_default_size(id, self.theme).map_or(0.0, |size| size.value);
+        Some(ConnectedGroupFrame {
+            border_width: size(STROKE_THICKNESS),
+            // `--modern-ui-connected-well-border` (linha 27); `None` é a variável sem cor, que o `border` resolve como `currentColor`.
+            color: self.first(&["modernPanel.border", "contrastBorder"]),
+            radius: size(CORNER_RADIUS_LARGE),
+            pointer_events_none: true,
+        })
+    }
+}
+
+/// O que o `::after` de `.editor-group-container` pinta em alto contraste: a largura da borda, a cor, o raio e o
+/// `pointer-events`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectedGroupFrame {
+    pub border_width: f64,
+    pub color: Option<Color>,
+    pub radius: f64,
+    /// `pointer-events: none`.
+    pub pointer_events_none: bool,
+}
+
+/// `display` do `> .title` e do `> .editor-container` de um `.editor-group-container` (`editorgroupview.css`, linhas 217 a
+/// 219 e 253 a 255, a mesma regra para os dois): `none` no grupo `.empty`, `block` nos demais.
+pub fn editor_group_child_display(group: &ClassList) -> &'static str {
+    if group.contains("empty") { "none" } else { "block" }
 }

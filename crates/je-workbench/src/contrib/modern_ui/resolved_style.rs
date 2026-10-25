@@ -28,7 +28,7 @@ mod card_border_layers;
 mod connected_tabs;
 
 pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
-pub use connected_tabs::{TabBorderContainer, TabBorderIndicator, TabElement};
+pub use connected_tabs::{ConnectedGroupFrame, TabBorderContainer, TabBorderIndicator, TabElement, editor_group_child_display};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
