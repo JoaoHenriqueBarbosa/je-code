@@ -12,8 +12,8 @@
 //! editor da célula, da fábrica do editor e do `IActiveNotebookEditorDelegate`, e o `MarkdownCellRenderTemplate`).
 //!
 //! O `cellRenderer.ts` (`view/renderers/cell_renderer.rs`) monta os templates e fornece as implementações dos contratos estreitos
-//! abaixo (o `IRenderedEditors` e as fábricas e os anfitriões do editor da célula, que o widget implementa). `cell_dnd.rs` ganhou a
-//! `CellDragAndDropPart` e os contratos do `CellDragAndDropController`, que o renderizador usa. Faltam os 5 casos de
+//! abaixo (o `IRenderedEditors` e as fábricas e os anfitriões do editor da célula, que o widget implementa). `cell_dnd.rs` tem o
+//! `CellDragAndDropController` inteiro, a `CellDragAndDropPart` e `performCellDropEdits`. Faltam os 5 casos de
 //! `cellEditorOverflowWidgets.test.ts` (fatia 5).
 //!
 //! Divergências comuns a todas as partes desta pasta:

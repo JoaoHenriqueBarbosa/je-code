@@ -39,13 +39,14 @@
 //! - **`CellChatPart`** (o chat embutido da célula, `cellParts/chat/cellChatPart.ts`) está fora do escopo do porte (chat cortado), então
 //!   a parte não entra nas coleções de partes; o contêiner `.cell-chat-part` continua criado na mesma posição do original, e a
 //!   altura de chat da célula fica em zero.
-//! - **`CellDragAndDropController`** é o contrato [`ICellDragAndDropController`] (ver `cell_dnd.rs`): só o `registerDragHandle` é chamado
-//!   aqui. A imagem de arraste da célula de código é montada por `CodeCellDragImageRenderer` quando o controlador a pede.
+//! - **`CellDragAndDropController`** é a classe [`CellDragAndDropController`] de `cell_dnd.rs`, ligada aos eventos de arrastar e
+//!   soltar do `je-ui`. O renderizador de código chama o `registerDragHandle` dela; a imagem de arraste da célula de código é
+//!   montada por `CodeCellDragImageRenderer` quando o controlador a pede.
 //! - **`DOM.getWindow(rootContainer)`** é a janela do editor de notebook (`ICodeCellNotebookEditor::target_window`), a mesma que a
 //!   linha usa.
-//! - **`NotebookCellListDelegate`.** `createBareFontInfoFromRawSettings` e `PixelRatio` não têm porte (ver `font_info_from_settings.rs`),
-//!   então a altura de linha do editor vem de um [`EditorLineHeightResolver`] que o widget fornece. `IListVirtualDelegate` é o trait
-//!   de `je-widgets`, e `getDynamicHeight` de uma célula de markup é `None` (o `null` do original).
+//! - **`NotebookCellListDelegate`.** `PixelRatio.getInstance(targetWindow)` é o monitor de `je_base::browser::pixel_ratio`, que o
+//!   shell da janela alimenta com o fator de escala. `IListVirtualDelegate` é o trait de `je-widgets`, e `getDynamicHeight` de uma
+//!   célula de markup é `None` (o `null` do original).
 //! - **`IListRenderer`.** `renderTemplate` devolve o [`TemplateData`] (um `Rc<dyn Any>`), que `renderElement` converte de volta. Os
 //!   elementos da lista são [`CellViewModel`] (o `MarkupCellViewModel` e o `CodeCellViewModel` do original); a linha de um tipo
 //!   errado é erro de programação e lança. O `styles` do tema (cores, fontes, medidas) chega em [`CellRendererStyles`], montado
@@ -55,11 +56,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::browser::dom::CodeWindow;
+use je_base::browser::pixel_ratio::PixelRatio;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable};
 use je_base::nls::localize;
+use je_editor::config::font_info_from_settings::create_bare_font_info_from_raw_settings;
 use je_editor::language_service::ILanguageService;
 use je_editor::modes_registry::PLAINTEXT_LANGUAGE_ID;
 use je_instantiation::{InstantiationService, ServiceCollection};
@@ -83,7 +86,7 @@ use crate::contrib::notebook::browser::view::cell_part::{CellContentPart, CellOv
 use crate::contrib::notebook::browser::view::cell_parts::cell_comments::{CellComments, ICellCommentService, ICellCommentThreadWidgetFactory, ICellCommentsEditor};
 use crate::contrib::notebook::browser::view::cell_parts::cell_context_keys::{CellContextKeyPart, ICellContextKeyEditor};
 use crate::contrib::notebook::browser::view::cell_parts::cell_decorations::{CellDecorations, ICellDecorationsEditor};
-use crate::contrib::notebook::browser::view::cell_parts::cell_dnd::{CellDragAndDropPart, ICellDragAndDropController, ICellDragHandleTemplate};
+use crate::contrib::notebook::browser::view::cell_parts::cell_dnd::{CellDragAndDropController, CellDragAndDropPart, ICellDragHandleTemplate};
 use crate::contrib::notebook::browser::view::cell_parts::cell_drag_renderer::{CellDragImageType, CodeCellDragImageRenderer, ICellDragImageEditor, ICellDragImageTemplate};
 use crate::contrib::notebook::browser::view::cell_parts::cell_editor_options::{CellEditorOptions, merge_options};
 use crate::contrib::notebook::browser::view::cell_parts::cell_editor_overflow_widgets::CellEditorOverflowWidgets;
@@ -111,10 +114,6 @@ use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::Cel
 use crate::contrib::notebook::common::notebook_common::CellKind;
 use crate::contrib::notebook::common::notebook_execution_state_service::INotebookExecutionStateService;
 use crate::contrib::notebook::common::notebook_logging_service::INotebookLoggingService;
-
-/// A altura de linha do editor (`createBareFontInfoFromRawSettings(editorOptions, PixelRatio.getInstance(targetWindow).value).lineHeight`)
-/// a partir das opções `editor` da configuração e da janela (ver as divergências do módulo).
-pub type EditorLineHeightResolver = Rc<dyn Fn(&Dynamic, &CodeWindow) -> f64>;
 
 /// `contextKeyServiceProvider`: o serviço de chaves de contexto escopado ao contêiner.
 pub type ContextKeyServiceProvider = Rc<dyn Fn(NodeId) -> Rc<dyn IScopedContextKeyService>>;
@@ -281,9 +280,9 @@ pub struct NotebookCellListDelegate {
 }
 
 impl NotebookCellListDelegate {
-    pub fn new(target_window: &CodeWindow, configuration_service: &dyn IConfigurationService, line_height_of_editor_options: &dyn Fn(&Dynamic, &CodeWindow) -> f64) -> Rc<Self> {
+    pub fn new(target_window: &CodeWindow, configuration_service: &dyn IConfigurationService) -> Rc<Self> {
         let editor_options = configuration_service.get_value(Some("editor"), None);
-        let line_height = line_height_of_editor_options(&editor_options, target_window);
+        let line_height = create_bare_font_info_from_raw_settings(&editor_options, PixelRatio::get_instance(target_window).value(), false).line_height;
         Rc::new(Self { base: Disposable::new(), line_height })
     }
 
@@ -359,7 +358,7 @@ struct AbstractCellRenderer {
     services: Rc<CellRendererServices>,
     context_key_service_provider: ContextKeyServiceProvider,
     editor_options: Rc<CellEditorOptions>,
-    dnd_controller: RefCell<Option<Rc<dyn ICellDragAndDropController>>>,
+    dnd_controller: RefCell<Option<Rc<CellDragAndDropController>>>,
 }
 
 impl AbstractCellRenderer {
@@ -371,7 +370,7 @@ impl AbstractCellRenderer {
         services: Rc<CellRendererServices>,
         context_key_service_provider: ContextKeyServiceProvider,
         language: &str,
-        dnd_controller: Option<Rc<dyn ICellDragAndDropController>>,
+        dnd_controller: Option<Rc<CellDragAndDropController>>,
     ) -> Self {
         let base = Disposable::new();
         let editor_options = CellEditorOptions::new(
@@ -537,7 +536,7 @@ impl MarkupCellRenderer {
     pub fn new(
         ui: &Ui,
         notebook_editor: Rc<dyn INotebookEditorDelegate>,
-        dnd_controller: Rc<dyn ICellDragAndDropController>,
+        dnd_controller: Rc<CellDragAndDropController>,
         rendered_editors: Rc<RenderedEditors>,
         context_key_service_provider: ContextKeyServiceProvider,
         instantiation_service: Rc<InstantiationService>,
@@ -721,7 +720,7 @@ impl CodeCellRenderer {
         notebook_editor: Rc<dyn INotebookEditorDelegate>,
         rendered_editors: Rc<RenderedEditors>,
         editor_pool: Rc<dyn ICodeCellEditorPool>,
-        dnd_controller: Rc<dyn ICellDragAndDropController>,
+        dnd_controller: Rc<CellDragAndDropController>,
         context_key_service_provider: ContextKeyServiceProvider,
         instantiation_service: Rc<InstantiationService>,
         services: Rc<CellRendererServices>,

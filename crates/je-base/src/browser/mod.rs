@@ -11,3 +11,4 @@ pub mod html_entities;
 pub mod html_parser;
 pub mod html_to_markdown;
 pub mod keyboard_event;
+pub mod pixel_ratio;
