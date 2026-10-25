@@ -97,3 +97,5 @@ pub mod diagnostics;
 
 pub mod metered_connection;
 pub mod observable;
+
+pub mod git;
