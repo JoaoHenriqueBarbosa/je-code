@@ -14,7 +14,7 @@ use std::cell::RefCell;
 
 use je_base::product::{
     ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExeBasedExtensionTip, IExtensionRecommendations,
-    IExtensionsGallery, IRemoteExtensionTip, IStringDictionary, IVirtualWorkspaceExtensionTip, StringsOrDictionary,
+    IExtensionsGallery, IRemoteExtensionTip, IStringDictionary, ITasConfig, IVirtualWorkspaceExtensionTip, StringsOrDictionary,
 };
 use je_base::product::IConfigBasedExtensionTip as IRawConfigBasedExtensionTip;
 use je_instantiation::service_id;
@@ -155,6 +155,11 @@ pub trait IProductService {
     fn extension_synced_keys(&self) -> Option<&IStringDictionary<Vec<String>>> {
         None
     }
+    /// `tasConfig`: o endpoint do serviço de experimentos (TAS) e os nomes da telemetria dele, quando o produto declara.
+    /// Padrão: o produto não declara.
+    fn tas_config(&self) -> Option<&ITasConfig> {
+        None
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -229,6 +234,8 @@ pub struct ProductService {
     pub config_based_extension_tips: Option<IStringDictionary<IRawConfigBasedExtensionTip>>,
     /// `exeBasedExtensionTips`.
     pub exe_based_extension_tips: Option<IStringDictionary<IExeBasedExtensionTip>>,
+    /// `tasConfig`.
+    pub tas_config: Option<ITasConfig>,
 }
 
 impl Default for ProductService {
@@ -270,6 +277,7 @@ impl Default for ProductService {
             virtual_workspace_extension_tips: None,
             config_based_extension_tips: None,
             exe_based_extension_tips: None,
+            tas_config: None,
         }
     }
 }
@@ -395,9 +403,15 @@ impl IProductService for ProductService {
     fn exe_based_extension_tips(&self) -> Option<&IStringDictionary<IExeBasedExtensionTip>> {
         self.exe_based_extension_tips.as_ref()
     }
+    fn tas_config(&self) -> Option<&ITasConfig> {
+        self.tas_config.as_ref()
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
+    fn tas_config(&self) -> Option<&ITasConfig> {
+        self.tas_config.as_ref()
+    }
     fn keymap_extension_tips(&self) -> Option<&Vec<String>> {
         self.keymap_extension_tips.as_ref()
     }
