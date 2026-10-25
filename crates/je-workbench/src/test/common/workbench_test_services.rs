@@ -1114,7 +1114,13 @@ pub struct TestFileService {
     pub read_file_stream_operations: RefCell<Vec<URI>>,
     /// `watches`.
     pub watches: Rc<RefCell<Vec<URI>>>,
+    /// `override resolve()` de uma subclasse ou `stub(fileService, 'resolve').callsFake(...)`: quando definido, `resolve`
+    /// devolve o que o gancho montar, no lugar do stat do `createFileStat(resource, readonly)`.
+    resolve_stub: RefCell<Option<ResolveStub>>,
 }
+
+/// O gancho de [`TestFileService::stub_resolve`].
+type ResolveStub = Rc<dyn Fn(&URI) -> Promise<je_platform::files::files::FileStat>>;
 
 impl TestFileService {
     pub fn new() -> Rc<Self> {
@@ -1144,7 +1150,14 @@ impl TestFileService {
             read_operations: RefCell::new(Vec::new()),
             read_file_stream_operations: RefCell::new(Vec::new()),
             watches: Rc::default(),
+            resolve_stub: RefCell::new(None),
         })
+    }
+
+    /// `override resolve(resource)` ou `stub(fileService, 'resolve').callsFake(...)`: troca o `resolve` pelo gancho (um novo
+    /// gancho substitui o anterior).
+    pub fn stub_resolve(&self, hook: impl Fn(&URI) -> Promise<je_platform::files::files::FileStat> + 'static) {
+        *self.resolve_stub.borrow_mut() = Some(Rc::new(hook));
     }
 
     /// `setContent(content)`.
@@ -1256,8 +1269,13 @@ impl IFileService for TestFileService {
         })
     }
 
-    /// `resolve(resource, options?)`: o stat do `createFileStat(resource, readonly)`.
+    /// `resolve(resource, options?)`: o stat do `createFileStat(resource, readonly)`, ou o que o gancho de
+    /// [`TestFileService::stub_resolve`] devolver.
     fn resolve(&self, resource: &URI, _options: Option<je_platform::files::files::ResolveFileOptions>) -> Promise<je_platform::files::files::FileStat> {
+        let hook = self.resolve_stub.borrow().clone();
+        if let Some(hook) = hook {
+            return hook(resource);
+        }
         Promise::resolved(je_platform::files::files::FileStat::clone(&self.file_stat(resource)))
     }
 

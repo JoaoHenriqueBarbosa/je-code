@@ -1582,6 +1582,7 @@ mod quick_input_and_extension {
     use je_base::event::Event;
     use je_base::observable::base::IObservable;
     use je_base::promise::Promise;
+    use je_platform::quickinput::quick_access::IQuickAccessController;
     use je_platform::quickinput::quick_input::{
         IInputBox, IInputOptions, IKeyMods, IPickOptions, IQuickInputService, IQuickItem, IQuickNavigateConfiguration, IQuickPick, IQuickPickItem, IQuickTree,
         QuickInputAlignment, QuickInputAlignmentSetting, QuickInputAnchor, QuickInputAnchorPosition, QuickInputButtonRef, QuickInputHideReason, QuickInputRef,
@@ -1594,20 +1595,36 @@ mod quick_input_and_extension {
     pub struct TestQuickInputService {
         /// O que `sinon.stub(service, 'input').resolves(...)` fixa: `Some(valor)` troca o retorno de `input`.
         input_stub: RefCell<Option<Option<String>>>,
+        /// O `quickAccess` que um teste atribui ao serviço (`stub(IQuickInputService, new class extends mock<...>() {
+        /// override readonly quickAccess = ... })`): sem ele, `quickAccess` lança `TypeError`, como o dublê do original.
+        quick_access: RefCell<Option<Rc<dyn IQuickAccessController>>>,
     }
 
     impl TestQuickInputService {
         pub fn new() -> Rc<Self> {
-            Rc::new(Self { input_stub: RefCell::new(None) })
+            Rc::new(Self { input_stub: RefCell::new(None), quick_access: RefCell::new(None) })
         }
 
         /// `sinon.stub(quickInputService, 'input').resolves(value)`.
         pub fn stub_input_resolves(&self, value: Option<String>) {
             *self.input_stub.borrow_mut() = Some(value);
         }
+
+        /// `quickAccess = controller`.
+        pub fn stub_quick_access(&self, controller: Rc<dyn IQuickAccessController>) {
+            *self.quick_access.borrow_mut() = Some(controller);
+        }
     }
 
     impl IQuickInputService for TestQuickInputService {
+        /// `quickAccess`: o controlador que o teste atribuiu.
+        fn quick_access(&self) -> Rc<dyn IQuickAccessController> {
+            match self.quick_access.borrow().clone() {
+                Some(controller) => controller,
+                None => panic!("quickAccess is not defined"),
+            }
+        }
+
         /// `options ? 'resolved' + options.prompt : 'resolved'`: `prompt` ausente é `undefined`, que o `+` escreve como texto.
         fn input(&self, options: Option<&IInputOptions>, _token: Option<&CancellationToken>) -> Promise<Option<String>> {
             if let Some(stub) = &*self.input_stub.borrow() {
