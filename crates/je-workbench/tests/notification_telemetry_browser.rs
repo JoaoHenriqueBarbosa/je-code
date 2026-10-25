@@ -565,7 +565,10 @@ fn center_exposures_count_intersecting_rows_not_all_model_entries_or_overscan_an
     let mut top = 0.0;
     while top < scroll_height {
         if top > 0.0 {
-            ui.ui.wheel_input(WheelData::new((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0, 0.0, render_height - 10.0, DeltaMode::Pixel));
+            // `StandardWheelEvent` converte pixels em `-delta / 40` e o scrollable multiplica por 50: 1 px de
+            // roda rola 1,25 px; o delta é escalado de volta para a lista andar exatamente `renderHeight - 10`.
+            let wheel_delta = (render_height - 10.0) * 40.0 / 50.0;
+            ui.ui.wheel_input(WheelData::new((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0, 0.0, wheel_delta, DeltaMode::Pixel));
         }
         ui.render();
         top += render_height - 10.0;
