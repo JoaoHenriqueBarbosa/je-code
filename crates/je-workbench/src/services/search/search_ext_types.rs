@@ -276,6 +276,13 @@ pub type ProviderResult<T> = Promise<Option<T>>;
 pub trait FileSearchProvider2 {
     /// Provide the set of files that match a certain file path pattern.
     fn provide_file_search_results(&self, pattern: &str, options: &FileSearchProviderOptions, token: &CancellationToken) -> ProviderResult<Vec<URI>>;
+
+    /// `this.provider instanceof OldFileSearchProviderConverter`: o `FileSearchManager` entrega a um provedor antigo o token da
+    /// sessão (no `session` das opções, como um [`CancellationToken`]) e a um provedor novo o objeto da sessão. Só o
+    /// `OldFileSearchProviderConverter` (`searchExtConversionTypes`) devolve `true`.
+    fn is_old_file_search_provider_converter(&self) -> bool {
+        false
+    }
 }
 
 /// `TextSearchProvider2`: provides search results for text results inside files in the workspace.
