@@ -38,12 +38,13 @@
 //! Divergências:
 //! - **`editor.invokeWithinContext`.** É o [`CodeEditorWidget::invoke_within_context`], com o serviço de instanciação do
 //!   comando como reserva para o editor que não tem o próprio.
-//! - **O peek e a mensagem.** O `ReferencesController` (`peek/referencesController.ts`, o widget de referências) e o
-//!   `MessageController` (`message/browser/messageController.ts`) ainda não têm porte. Onde o original faz
-//!   `ReferencesController.get(editor)` e `MessageController.get(editor)?.showMessage(...)` este módulo lê os contratos
-//!   [`IReferencesControllerLookup`] e [`IMessageControllerLookup`] do `accessor` (`try_get`: sem serviço instalado é como o
-//!   editor sem o controlador, o `get` que devolve `null`). A fatia do peek os implementa e registra
-//!   ([`I_REFERENCES_CONTROLLER_LOOKUP`] e [`I_MESSAGE_CONTROLLER_LOOKUP`]).
+//! - **O peek e a mensagem.** O `ReferencesController` (`peek/referencesController.ts`) é o de
+//!   [`super::peek::references_controller`], que implementa o contrato [`IReferencesController`] e registra o
+//!   [`IReferencesControllerLookup`] ([`I_REFERENCES_CONTROLLER_LOOKUP`]). O `MessageController`
+//!   (`message/browser/messageController.ts`) ainda não tem porte. Onde o original faz `ReferencesController.get(editor)` e
+//!   `MessageController.get(editor)?.showMessage(...)` este módulo lê os contratos [`IReferencesControllerLookup`] e
+//!   [`IMessageControllerLookup`] do `accessor` (`try_get`: sem serviço instalado é como o editor sem o controlador, o
+//!   `get` que devolve `null`). A fatia da mensagem implementa e registra o [`I_MESSAGE_CONTROLLER_LOOKUP`].
 //! - **Alertas.** O `alert` de `aria.js` é o `alert` do `IAccessibilityService`.
 //! - `MenuId.EditorContext` ganha o submenu `EditorContextPeek` ("Peek") na carga do módulo; aqui isso é a chamada de
 //!   [`register`], idempotente por thread como a dos demais serviços do porte, que registra também as ações e os comandos.

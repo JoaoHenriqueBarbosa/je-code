@@ -25,6 +25,7 @@
 //! chama não é de `goToCommands.ts`: é de `inlayHints/browser/inlayHintsLocations.ts` ([`crate::inlay_hints_locations`]).
 
 pub mod go_to_commands;
+pub mod peek;
 pub mod references_model;
 pub mod symbol_navigation;
 

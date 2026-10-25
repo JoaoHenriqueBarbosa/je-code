@@ -276,6 +276,7 @@ pub mod inlay_hints;
 pub mod goto_symbol;
 pub mod inlay_hints_locations;
 pub mod peek_view;
+pub mod zone_widget;
 pub mod click_link_gesture;
 pub mod rename;
 pub mod semantic_tokens;
