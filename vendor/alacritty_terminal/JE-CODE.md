@@ -22,3 +22,10 @@ Removidos da cópia: `tests/`, `Cargo.lock`, `Cargo.toml.orig` e `CHANGELOG.md`.
 - `src/tty/unix.rs`: o `Pty` ganhou `child_mut`, `set_blocking`, `send_signal` e `foreground_process_group`, a API segura
   que o pty cru do `je-terminal` (`pty.rs`, o papel do `node-pty` sob o `TerminalProcess`) usa sem o laço de eventos
   (o crate `je-terminal` proíbe `unsafe`, então os `fcntl`, `kill` e `tcgetpgrp` ficam aqui).
+- `src/tty/windows/mod.rs`: o `Pty` ganhou `child_pid`, `try_read`, `try_write`, `try_resize` e `terminate_child`, a mesma API
+  segura no ConPTY: leitura e escrita sem bloqueio pelos pipes internos (`UnblockedReader` e `UnblockedWriter`), o pid do
+  filho, o redimensionamento que devolve o erro e o encerramento do filho.
+- `src/tty/windows/conpty.rs`: o `assert_eq!(result, S_OK)` do `CreatePseudoConsole` virou erro ("Cannot launch conpty: ..."),
+  que o `TerminalProcess` mostra como o `node-pty`; `Conpty::try_resize` devolve o HRESULT ruim e o `on_resize` do trait só
+  registra o aviso em vez de derrubar o processo.
+- `src/tty/windows/child.rs`: `ChildExitWatcher::terminate` chama o `TerminateProcess` no filho.

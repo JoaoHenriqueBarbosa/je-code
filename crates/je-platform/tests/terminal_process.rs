@@ -95,11 +95,15 @@ impl Fixture {
 
 type ThrottleHook = Rc<dyn Fn() -> Promise<()>>;
 
-/// O `/bin/sh -c 'sleep 0.25'` do `shellLaunchConfig` padrão.
+/// O `/bin/sh -c 'sleep 0.25'` do `shellLaunchConfig` padrão; no Windows, o PowerShell dormindo os mesmos 250 ms.
 fn default_shell_launch_config() -> IShellLaunchConfig {
+    #[cfg(unix)]
+    let (executable, args) = ("/bin/sh", ["-c", "sleep 0.25"]);
+    #[cfg(windows)]
+    let (executable, args) = ("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 250"]);
     IShellLaunchConfig {
-        executable: Some("/bin/sh".to_owned()),
-        args: Some(OneOrMany::Many(vec!["-c".to_owned(), "sleep 0.25".to_owned()])),
+        executable: Some(executable.to_owned()),
+        args: Some(OneOrMany::Many(args.iter().map(|arg| (*arg).to_owned()).collect())),
         ..IShellLaunchConfig::default()
     }
 }

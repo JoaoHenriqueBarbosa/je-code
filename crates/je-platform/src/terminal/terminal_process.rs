@@ -12,8 +12,9 @@
 //!   disparado ou uma promessa é aguardada). O `protected _throttleKillSpawn()` que um teste sobrescreve numa subclasse é
 //!   [`TerminalProcess::override_throttle_kill_spawn`].
 //! - `Reflect.get(terminal, '_ptyProcess')` e `'_titleInterval'` dos testes são [`TerminalProcess::observe`].
-//! - O Windows (ConPTY) ainda não tem pty cru: o `WindowsShellHelper` e o `DelayedResizer` (só do `Git\bin\bash.exe`, com
-//!   `cols` e `rows` zero) não foram portados, e [`RawPty::spawn`] devolve `Unsupported` lá.
+//! - No Windows o pty cru é o ConPTY do Alacritty (ver [`je_terminal::pty`]), `kill` com sinal falha e `process` é o nome do
+//!   executável, como no `node-pty`. O `WindowsShellHelper` ([`WindowsShellHelper`]) e o `DelayedResizer` ([`DelayedResizer`],
+//!   só do `Git\bin\bash.exe`, com `cols` e `rows` zero) são os do original.
 //! - `exitMessage` nunca é escrito no original e o getter não existe aqui. `ptyProcess.process` é o nome do grupo de
 //!   processos em primeiro plano (ver [`RawPty::process`]).
 //! - Os timers de encerramento (`_closeTimeout` e o de `MaximumShutdownTime`) são cancelados no `dispose`; o original
@@ -42,6 +43,8 @@ use je_base::runtime::{self, TimerId};
 use je_terminal::pty::{PtyEvent, PtySpawn, RawPty};
 
 use super::child_process_monitor::ChildProcessMonitor;
+use super::delayed_resizer::DelayedResizer;
+use super::windows_shell_helper::WindowsShellHelper;
 use super::node_terminal_environment::{
     OptionalProcessEnvironment, ShellIntegrationInjection, get_shell_integration_injection, sanitize_env_for_logging,
 };
@@ -155,6 +158,8 @@ pub struct TerminalProcess {
     current_title: RefCell<String>,
     process_startup_complete: RefCell<Option<Promise<()>>>,
     child_process_monitor: RefCell<Option<Rc<ChildProcessMonitor>>>,
+    windows_shell_helper: RefCell<Option<Rc<WindowsShellHelper>>>,
+    delayed_resizer: RefCell<Option<Rc<DelayedResizer>>>,
     title_interval: RefCell<Option<IntervalHandle>>,
     is_pty_paused: Cell<bool>,
     unacknowledged_char_count: Cell<usize>,
@@ -192,6 +197,8 @@ impl TerminalProcess {
         };
         let use_conpty = is_windows && get_windows_build_number_sync() >= 18309;
         let use_conpty_dll = use_conpty && options.windows_use_conpty_dll;
+        // Delay resizes to avoid conpty not respecting very early resize calls.
+        let needs_delayed_resizer = is_windows && use_conpty && cols == 0 && rows == 0 && shell_launch_config.executable.as_deref().is_some_and(|executable| executable.ends_with("Git\\bin\\bash.exe"));
 
         let base = Disposable::new();
         let on_process_data: Rc<Emitter<ProcessData>> = Emitter::new();
@@ -231,6 +238,8 @@ impl TerminalProcess {
             current_title: RefCell::new(String::new()),
             process_startup_complete: RefCell::new(None),
             child_process_monitor: RefCell::new(None),
+            windows_shell_helper: RefCell::new(None),
+            delayed_resizer: RefCell::new(None),
             title_interval: RefCell::new(None),
             is_pty_paused: Cell::new(false),
             unacknowledged_char_count: Cell::new(0),
@@ -243,6 +252,59 @@ impl TerminalProcess {
         });
 
         let weak = Rc::downgrade(&this);
+        if needs_delayed_resizer {
+            let resizer = DelayedResizer::new();
+            this.base.register(resizer.clone());
+            this.base.register(resizer.on_trigger().listen({
+                let weak = weak.clone();
+                move |dimensions| {
+                    let Some(this) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Some(resizer) = this.delayed_resizer.borrow_mut().take() {
+                        resizer.dispose();
+                    }
+                    if let (Some(cols), Some(rows)) = (dimensions.cols, dimensions.rows) {
+                        if cols != 0 && rows != 0 {
+                            let _ = this.resize(cols, rows, None, None);
+                        }
+                    }
+                }
+            }));
+            *this.delayed_resizer.borrow_mut() = Some(resizer);
+        }
+        if is_windows {
+            // WindowsShellHelper is used to fetch the process title and shell type.
+            this.base.register(this.on_process_ready.event().listen({
+                let weak = weak.clone();
+                move |event: &IProcessReadyEvent| {
+                    let Some(this) = weak.upgrade() else {
+                        return;
+                    };
+                    let Ok(helper) = WindowsShellHelper::new(event.pid.max(0) as u32, this.file_access.clone()) else {
+                        return;
+                    };
+                    this.base.register(helper.clone());
+                    this.base.register(helper.on_shell_type_changed().listen({
+                        let weak = weak.clone();
+                        move |value| {
+                            if let Some(this) = weak.upgrade() {
+                                this.fire_property(IProcessProperty::ShellType(*value));
+                            }
+                        }
+                    }));
+                    this.base.register(helper.on_shell_name_changed().listen({
+                        let weak = weak.clone();
+                        move |value: &String| {
+                            if let Some(this) = weak.upgrade() {
+                                this.fire_property(IProcessProperty::Title(value.clone()));
+                            }
+                        }
+                    }));
+                    *this.windows_shell_helper.borrow_mut() = Some(helper);
+                }
+            }));
+        }
         this.base.register(to_disposable({
             let weak = weak.clone();
             move || {
@@ -276,16 +338,16 @@ impl TerminalProcess {
         self.shell_launch_config.borrow().clone()
     }
 
-    /// `get currentTitle()`.
+    /// `get currentTitle()`: `this._windowsShellHelper?.shellTitle || this._currentTitle`.
     pub fn current_title(&self) -> String {
-        self.current_title.borrow().clone()
+        let shell_title = self.windows_shell_helper.borrow().as_ref().map(|helper| helper.shell_title()).filter(|title| !title.is_empty());
+        shell_title.unwrap_or_else(|| self.current_title.borrow().clone())
     }
 
     /// `get shellType()`.
     pub fn shell_type(&self) -> TerminalShellType {
         if Platform::detect().is_windows {
-            // O `WindowsShellHelper` ainda não foi portado.
-            return None;
+            return self.windows_shell_helper.borrow().as_ref().and_then(|helper| helper.shell_type());
         }
         known_shell_type(&self.current_title.borrow())
     }
@@ -564,6 +626,10 @@ impl TerminalProcess {
         if self.close_timeout.borrow().is_some() {
             self.queue_process_exit();
         }
+        let helper = self.windows_shell_helper.borrow().clone();
+        if let Some(helper) = helper {
+            helper.check_shell();
+        }
         let monitor = self.child_process_monitor.borrow().clone();
         if let Some(monitor) = monitor {
             monitor.handle_output();
@@ -614,7 +680,7 @@ impl TerminalProcess {
         *self.current_title.borrow_mut() = title.clone();
         self.fire_property(IProcessProperty::Title(title.clone()));
         // If fig is installed it may change the title of the process.
-        let mut sanitized_title = title.strip_suffix(" (figterm)").unwrap_or(&title).to_owned();
+        let mut sanitized_title = self.current_title().strip_suffix(" (figterm)").map(str::to_owned).unwrap_or_else(|| self.current_title());
         // Ensure any prefixed path is removed so that the executable name since we use this to detect the shell type.
         if !Platform::detect().is_windows {
             let host = HostEnvironment;
@@ -888,6 +954,12 @@ impl ITerminalChildProcess for TerminalProcess {
         let Some(pty) = pty else {
             return Ok(());
         };
+        // Delay resize if needed.
+        let resizer = self.delayed_resizer.borrow().clone();
+        if let Some(resizer) = resizer {
+            resizer.set_dimensions(cols.max(1), rows.max(1));
+            return Ok(());
+        }
         let cols = cols.clamp(1, i32::from(u16::MAX)) as u16;
         let rows = rows.clamp(1, i32::from(u16::MAX)) as u16;
         self.log_service.trace(&format!("node-pty.IPty#resize {cols} {rows}"));

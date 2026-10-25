@@ -38,6 +38,8 @@ pub mod auto_replies_contrib_controller;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod child_process_monitor;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod delayed_resizer;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod local_pty_channel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pty_host;
@@ -47,3 +49,5 @@ pub mod pty_host_service;
 pub mod terminal_auto_responder;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod terminal_process;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod windows_shell_helper;
