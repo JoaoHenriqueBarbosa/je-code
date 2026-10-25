@@ -62,6 +62,8 @@ const TAB_BUTTON_HEIGHT: f64 = 22.0;
 /// O `padding` horizontal de uma aba, a largura do ícone (`--vscode-codiconFontSize`) com a margem de `0 0.2em` e o `gap`.
 const TAB_PADDING_HORIZONTAL: f64 = 6.0;
 const TAB_ICON_WIDTH: f64 = 16.0;
+/// `.action-widget { min-width: 100px }` de `actionWidget.css`.
+const ACTION_WIDGET_MIN_WIDTH: f64 = 100.0;
 const TAB_ICON_MARGIN: f64 = 4.0;
 /// A largura de um caractere do rótulo de uma aba, enquanto o renderizador nativo não mede.
 const DEFAULT_TAB_CHARACTER_WIDTH: f64 = 7.0;
@@ -1281,9 +1283,10 @@ impl<T: ActionListItemData> RenderedPopup<T> {
         self.elements.body_content.set_measure(measure(RenderedPopup::body_content_height));
     }
 
-    /// `parseFloat(widget.style.width)`.
+    /// A largura que o DOM mede no popup: `style.width` limitado por `min-width: 100px` do `.action-widget`
+    /// (`actionWidget.css`), que vale mesmo quando a largura do conteúdo é menor.
     fn widget_width(&self) -> f64 {
-        parse_px(self.elements.widget.style_get_property("width"))
+        parse_px(self.elements.widget.style_get_property("width")).max(ACTION_WIDGET_MIN_WIDTH)
     }
 
     // #endregion

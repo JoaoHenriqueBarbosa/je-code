@@ -714,7 +714,7 @@ impl ActionViewItem {
     }
 
     /// O id do codicon da classe da ação (`codicon codicon-add` vira `add`).
-    pub(crate) fn codicon_id(class: &str) -> Option<String> {
+    pub fn codicon_id(class: &str) -> Option<String> {
         class.split_whitespace().find_map(|c| c.strip_prefix("codicon-")).filter(|id| !id.starts_with("modifier-")).map(str::to_owned)
     }
 
