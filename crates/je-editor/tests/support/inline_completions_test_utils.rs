@@ -103,6 +103,15 @@ use super::test_code_editor::{
     CodeEditorServices, TestCodeEditor, TestCodeEditorInstantiationOptions, run_editor_command, with_async_test_code_editor,
 };
 
+/// `ensureNoDisposablesAreLeakedInTestSuite()` depois do registro global dos comandos do editor. No original esse
+/// registro acontece quando o módulo é importado, antes de o guarda começar a rastrear; aqui ele é preguiçoso, então o
+/// teste o força antes de armar o guarda para que os atalhos dos comandos não contem como vazamento do caso.
+pub fn ensure_no_leaks_after_global_registrations() -> crate::common::LeakGuard {
+    let _ = core_editing_commands::instance();
+    let _ = core_navigation_commands::instance();
+    crate::common::ensure_no_disposables_are_leaked_in_test_suite()
+}
+
 // #region MockInlineCompletionsProvider
 
 /// `MockInlineCompletionsProvider`.
