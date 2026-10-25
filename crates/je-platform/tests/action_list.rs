@@ -38,24 +38,35 @@ use je_base::actions::{ActionRef, SubmenuAction, ToActionProps, to_action};
 use je_base::async_::timeout;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
+use je_base::event::{Emitter, Event};
 use je_base::key_codes::KeyCode;
+use je_base::layout::{AnchorPosition, IAnchor};
 use je_base::promise::{DeferredPromise, Promise};
 use je_platform::action_widget::action_list::{
-    ActionListBadge, ActionListGroup, ActionListItemData, ActionListItemKind, ActionListWidget, CssColor, FilterRequest, HoverContent, HoverElement,
-    IActionListDelegate, IActionListItem, IActionListItemHover, IActionListItemInlineToggle, IActionListOptions, IActionListUpdateOptions, KeyTarget,
-    PointerEvent, PointerTarget, RowState, action_item_badge_metrics, toggle_info_icon_center_offset,
+    ACTION_WIDGET_VERTICAL_CHROME_HEIGHT, ActionList, ActionListBadge, ActionListGroup, ActionListItemData, ActionListItemKind, ActionListWidget, CssColor,
+    FilterRequest, HoverContent, HoverElement, IActionListDelegate, IActionListHeaderLink, IActionListItem, IActionListItemHover, IActionListItemInlineToggle,
+    IActionListOptions, IActionListUpdateOptions, KeyTarget, LIST_VERTICAL_SCROLLBAR_SIZE, PointerEvent, PointerTarget, ReserveSubmenuSpace, RowState,
+    SubmenuGutter, action_item_badge_metrics, toggle_info_icon_center_offset,
 };
+use je_base::uri::URI;
+use je_platform::contextview::context_view::{AnchorTarget, IContextViewDelegate, IContextViewService};
 use je_platform::contextview::view_element::{UiKeyEvent, ViewElement};
+use je_platform::layout::layout_service::{ILayoutService, LayoutContainerEvent, Viewport};
 
 /// `ITestActionItem`: `{ id, checked? }`.
 #[derive(Clone)]
 struct Item {
     id: String,
+    checked: bool,
 }
 
 impl ActionListItemData for Item {
     fn list_item_id(&self) -> Option<String> {
         Some(self.id.clone())
+    }
+
+    fn list_item_checked(&self) -> bool {
+        self.checked
     }
 }
 
@@ -63,7 +74,7 @@ type TestItem = IActionListItem<Item>;
 
 /// `action(id)`.
 fn action(id: &str) -> TestItem {
-    IActionListItem::action(id, Item { id: id.to_owned() })
+    IActionListItem::action(id, Item { id: id.to_owned(), checked: false })
 }
 
 /// `separator(label)`.
@@ -181,6 +192,10 @@ fn create_action_list_widget(_guard: &LeakGuard, config: Config) -> Widget {
     let items = rcs(if config.items.is_empty() { vec![action("initial")] } else { config.items });
     let widget = ActionListWidget::new(false, &items, delegate, Some(Rc::new(config.list_options)));
     let body = ViewElement::new();
+    // The header banner is a standalone element the caller attaches (like the filter container), so the test appends it.
+    if let Some(header) = widget.header_container() {
+        header.set_parent(Some(body.clone()));
+    }
     widget.dom_node().set_parent(Some(body.clone()));
     widget.layout(200.0, Some(200.0));
     Widget { widget, _body: body }
@@ -1865,6 +1880,92 @@ fn does_not_double_count_a_detail_row_toolbar_when_computing_max_width() {
 }
 
 #[test]
+fn keeps_detail_row_geometry_stable_when_its_toolbar_becomes_visible() {
+    // O CSS calculado e os retângulos são a `row_toolbar_geometry` do estado nativo; a classe `focused` posta à mão nas duas
+    // linhas é o argumento `focused_or_hovered`.
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let toolbar = || Some(vec![to_action_with("toolbar", "Toolbar", None, None, noop())]);
+    let mut items = vec![
+        IActionListItem { toolbar_actions: toolbar(), ..action("plain") },
+        IActionListItem { detail: Some("Description".to_owned()), toolbar_actions: toolbar(), ..action("detail") },
+    ];
+    items.extend((0..20).map(|index| action(&format!("filler-{index}"))));
+    let widget = create_action_list_widget(&guard, config(items));
+
+    let has_class = |row: &RowState, class: &str| row.classes.iter().any(|name| name == class);
+    let plain_row = widget.row_state(0).unwrap();
+    let detail_row = widget.row_state(1).unwrap();
+    let initial = widget.row_toolbar_geometry(1, false).unwrap();
+    let focused = widget.row_toolbar_geometry(1, true).unwrap();
+    let plain_focused = widget.row_toolbar_geometry(0, true).unwrap();
+
+    assert_eq!(
+        (has_class(&plain_row, "has-detail"), has_class(&plain_row, "has-toolbar"), has_class(&detail_row, "has-detail"), has_class(&detail_row, "has-toolbar")),
+        (false, true, true, true),
+    );
+    assert_eq!(
+        (initial.row_height, initial.display, initial.visibility, initial.margin_right),
+        (48.0, "flex", "hidden", 6.0),
+    );
+    assert_eq!(
+        (
+            focused.row_height,
+            focused.detail_top == initial.detail_top,
+            focused.display,
+            focused.visibility,
+            focused.margin_right,
+            // `detailRow.right - toolbar.right >= verticalScrollbar.width`
+            focused.right_inset >= LIST_VERTICAL_SCROLLBAR_SIZE,
+            // `detailRow.right - toolbar.right === plainRow.right - plainToolbar.right`
+            focused.right_inset == plain_focused.right_inset,
+        ),
+        (48.0, true, "flex", "visible", 6.0, true, true),
+    );
+}
+
+#[test]
+fn detail_links_open_from_pointer_and_keyboard_without_selecting_their_item() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let links = Rc::new(RefCell::new(Vec::<String>::new()));
+    let selections = Rc::new(RefCell::new(Vec::<String>::new()));
+    let link_handler: Rc<dyn Fn(&URI)> = {
+        let links = links.clone();
+        Rc::new(move |uri| links.borrow_mut().push(uri.to_string(true).to_string()))
+    };
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            on_select: recording(&selections),
+            list_options: IActionListOptions { show_filter: false, link_handler: Some(link_handler), ..IActionListOptions::default() },
+            ..config(vec![
+                action("first"),
+                IActionListItem {
+                    detail: Some("Description".to_owned()),
+                    detail_link: Some(IActionListHeaderLink { label: "Learn more".to_owned(), uri: URI::parse("https://example.com/docs", false) }),
+                    ..action("documented")
+                },
+            ])
+        },
+    );
+    widget.focus();
+    widget.focus_next();
+    let link = widget.detail_link_element(1).unwrap();
+
+    dispatch_key(&widget, key_event("Tab"), KeyTarget::List);
+    let tab_focused_link = widget.is_control_focused(&link);
+    dispatch_key(&widget, key_with_code("Enter", KeyCode::Enter), KeyTarget::DetailLink);
+    widget.click_detail_link(1);
+    let mut shift_tab = key_event("Tab");
+    shift_tab.shift_key = true;
+    dispatch_key(&widget, shift_tab, KeyTarget::DetailLink);
+
+    assert_eq!(
+        (tab_focused_link, widget.is_list_focused(), links.borrow().clone(), selections.borrow().clone()),
+        (true, true, strings(&["https://example.com/docs", "https://example.com/docs"]), Vec::<String>::new()),
+    );
+}
+
+#[test]
 fn keeps_titled_separator_above_first_filtered_match() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let widget = create_action_list_widget(
@@ -1919,6 +2020,487 @@ fn excludes_separators_from_accessible_list_positions_after_filtering() {
         (
             vec![position("selected", 3, 1), position("alpha", 3, 2), position("beta", 3, 3)],
             vec![position("alpha", 2, 1), position("beta", 2, 2)],
+        ),
+    );
+}
+
+thread_local! {
+    /// `window.innerHeight` da janela dos casos de altura (o `Viewport` do serviço de layout).
+    static WINDOW_INNER_HEIGHT: Cell<f64> = const { Cell::new(800.0) };
+}
+
+/// `withWindowInnerHeight(height, callback)`: o valor anterior volta ao fim, mesmo se o `callback` falhar.
+fn with_window_inner_height<R>(height: f64, callback: impl FnOnce() -> R) -> R {
+    struct Restore(f64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WINDOW_INNER_HEIGHT.with(|inner_height| inner_height.set(self.0));
+        }
+    }
+    let _restore = Restore(WINDOW_INNER_HEIGHT.with(|inner_height| inner_height.replace(height)));
+    callback()
+}
+
+/// `instantiationService.stub(ILayoutService, { getContainer, mainContainer, activeContainer, ... })`.
+struct StubLayoutService {
+    container: Rc<ViewElement>,
+    layout: Rc<Emitter<LayoutContainerEvent>>,
+}
+
+impl ILayoutService for StubLayoutService {
+    fn main_container(&self) -> Rc<ViewElement> {
+        self.container.clone()
+    }
+
+    fn active_container(&self) -> Rc<ViewElement> {
+        self.container.clone()
+    }
+
+    fn get_container(&self) -> Rc<ViewElement> {
+        self.container.clone()
+    }
+
+    fn on_did_layout_container(&self) -> Event<LayoutContainerEvent> {
+        self.layout.event()
+    }
+
+    fn window_viewport(&self) -> Viewport {
+        Viewport { inner_width: 1280.0, inner_height: WINDOW_INNER_HEIGHT.with(Cell::get), page_x_offset: 0.0, page_y_offset: 0.0 }
+    }
+}
+
+/// `instantiationService.stub(IContextViewService, { layout, hideContextView, getContextViewElement })`.
+struct StubContextViewService {
+    element: Rc<ViewElement>,
+}
+
+impl IContextViewService for StubContextViewService {
+    fn show_context_view(&self, _delegate: Rc<dyn IContextViewDelegate>, _container: Option<Rc<ViewElement>>, _shadow_root: bool) {}
+
+    fn hide_context_view(&self, _data: Option<bool>) {}
+
+    fn layout(&self) {}
+
+    fn get_context_view_element(&self) -> Rc<ViewElement> {
+        self.element.clone()
+    }
+}
+
+/// O que o `createActionList` devolve: a lista e o `.action-widget` que a contém (o pai de `list.domNode`).
+struct ListFixture {
+    list: Rc<ActionList<Item>>,
+    widget: Rc<ViewElement>,
+}
+
+/// `createActionList(disposables, items, { listOptions, anchor })`: o `showFilter: true` de quem chama vem em `list_options`.
+fn create_action_list(guard: &LeakGuard, items: Vec<TestItem>, list_options: IActionListOptions, anchor: Option<IAnchor>) -> ListFixture {
+    let body = ViewElement::new();
+    let layout = Emitter::new();
+    guard.add_rc(layout.clone());
+    let layout_service: Rc<dyn ILayoutService> = Rc::new(StubLayoutService { container: body.clone(), layout });
+    let context_view_service: Rc<dyn IContextViewService> = Rc::new(StubContextViewService { element: body.clone() });
+    let delegate = Rc::new(TestDelegate { on_hide: noop(), on_select: Rc::new(|_| {}), on_filter: None });
+    let list = guard.add_rc(ActionList::new(
+        false,
+        &rcs(items),
+        delegate,
+        Some(Rc::new(list_options)),
+        AnchorTarget::Anchor(anchor.unwrap_or(IAnchor { x: 10.0, y: 150.0, width: Some(20.0), height: Some(20.0) })),
+        context_view_service,
+        layout_service,
+    ));
+    let widget = ViewElement::with_classes(&["action-widget"]);
+    widget.set_parent(Some(body));
+    if let Some(filter_container) = list.filter_container() {
+        filter_container.set_parent(Some(widget.clone()));
+    }
+    list.dom_node().set_parent(Some(widget.clone()));
+    ListFixture { list, widget }
+}
+
+/// `options.items` do `createActionList` para N ações `item-${i}`.
+fn numbered_actions(count: usize) -> Vec<TestItem> {
+    (0..count).map(|index| action(&format!("item-{index}"))).collect()
+}
+
+fn with_filter() -> IActionListOptions {
+    IActionListOptions { show_filter: true, ..IActionListOptions::default() }
+}
+
+/// `parseFloat(element.style.height)`.
+fn style_height(element: &Rc<ViewElement>) -> f64 {
+    element.style_get_property("height").and_then(|value| value.trim_end_matches("px").parse().ok()).unwrap_or(f64::NAN)
+}
+
+#[test]
+fn leaves_room_for_action_widget_chrome_when_clamping_dynamic_height() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(300.0, || {
+        let fixture = create_action_list(&guard, numbered_actions(50), with_filter(), None);
+
+        fixture.list.layout(200.0, None);
+
+        let filter_height = 36.0;
+        let available_space_above_anchor = 150.0;
+        let list_height = style_height(&fixture.list.dom_node());
+        assert!(list_height + filter_height + ACTION_WIDGET_VERTICAL_CHROME_HEIGHT <= available_space_above_anchor);
+    });
+}
+
+#[test]
+fn forced_above_anchor_position_can_clamp_dynamic_height_without_the_default_minimum_floor() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(300.0, || {
+        let fixture = create_action_list(
+            &guard,
+            numbered_actions(50),
+            IActionListOptions { anchor_position: Some(AnchorPosition::Above), ..with_filter() },
+            Some(IAnchor { x: 10.0, y: 20.0, width: Some(20.0), height: Some(20.0) }),
+        );
+
+        fixture.list.layout(200.0, None);
+
+        assert_eq!((fixture.list.anchor_position(), style_height(&fixture.list.dom_node())), (Some(AnchorPosition::Above), 0.0));
+    });
+}
+
+/// O corpo de `preferred anchor ${preferred} at ${top} resolves to ${expected} and stays stable after filtering`.
+fn preferred_anchor(preferred: AnchorPosition, top: f64, expected: AnchorPosition) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(600.0, || {
+        let fixture = create_action_list(
+            &guard,
+            vec![action("first"), action("second"), action("third")],
+            IActionListOptions { preferred_anchor_position: Some(preferred), ..with_filter() },
+            Some(IAnchor { x: 10.0, y: top, width: Some(20.0), height: Some(20.0) }),
+        );
+        fixture.list.layout(200.0, None);
+        let initial = (fixture.list.anchor_position(), fixture.list.dom_node().size().height);
+        fixture.list.widget().filter_input_input("first");
+        assert_eq!(
+            (initial, fixture.list.anchor_position(), fixture.list.dom_node().size().height),
+            ((Some(expected), 72.0), Some(expected), 24.0),
+        );
+    });
+}
+
+#[test]
+fn preferred_anchor_above_at_250_resolves_to_above_and_stays_stable_after_filtering() {
+    preferred_anchor(AnchorPosition::Above, 250.0, AnchorPosition::Above);
+}
+
+#[test]
+fn preferred_anchor_below_at_250_resolves_to_below_and_stays_stable_after_filtering() {
+    preferred_anchor(AnchorPosition::Below, 250.0, AnchorPosition::Below);
+}
+
+#[test]
+fn preferred_anchor_above_at_118_resolves_to_above_and_stays_stable_after_filtering() {
+    preferred_anchor(AnchorPosition::Above, 118.0, AnchorPosition::Above);
+}
+
+#[test]
+fn preferred_anchor_below_at_432_resolves_to_below_and_stays_stable_after_filtering() {
+    preferred_anchor(AnchorPosition::Below, 432.0, AnchorPosition::Below);
+}
+
+#[test]
+fn preferred_anchor_above_at_110_resolves_to_below_and_stays_stable_after_filtering() {
+    preferred_anchor(AnchorPosition::Above, 110.0, AnchorPosition::Below);
+}
+
+#[test]
+fn preferred_anchor_below_at_460_resolves_to_above_and_stays_stable_after_filtering() {
+    preferred_anchor(AnchorPosition::Below, 460.0, AnchorPosition::Above);
+}
+
+#[test]
+fn preferred_placement_sizes_against_the_capped_height_and_fixed_placement_takes_precedence() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(600.0, || {
+        let positions: Vec<Option<AnchorPosition>> = [None, Some(AnchorPosition::Above)]
+            .into_iter()
+            .map(|anchor_position| {
+                let fixture = create_action_list(
+                    &guard,
+                    numbered_actions(50),
+                    IActionListOptions { preferred_anchor_position: Some(AnchorPosition::Below), anchor_position, ..with_filter() },
+                    Some(IAnchor { x: 10.0, y: 150.0, width: Some(20.0), height: Some(20.0) }),
+                );
+                fixture.list.layout(200.0, None);
+                fixture.list.anchor_position()
+            })
+            .collect();
+        assert_eq!(positions, vec![Some(AnchorPosition::Below), Some(AnchorPosition::Above)]);
+    });
+}
+
+#[test]
+fn preferred_placement_uses_the_larger_available_side_when_neither_fits_without_a_minimum_height_floor() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(180.0, || {
+        let fixture = create_action_list(
+            &guard,
+            numbered_actions(50),
+            IActionListOptions { preferred_anchor_position: Some(AnchorPosition::Below), ..with_filter() },
+            Some(IAnchor { x: 10.0, y: 75.0, width: Some(20.0), height: Some(20.0) }),
+        );
+        fixture.list.layout(200.0, None);
+        // `parentElement.getBoundingClientRect().height`: o filtro, a lista e o enchimento mais a borda do `.action-widget`.
+        fixture.widget.set_size(0.0, fixture.list.chrome_height() + fixture.list.dom_node().size().height + ACTION_WIDGET_VERTICAL_CHROME_HEIGHT);
+        assert_eq!(
+            (fixture.list.anchor_position(), fixture.widget.rect().height <= 75.0),
+            (Some(AnchorPosition::Above), true),
+        );
+    });
+}
+
+#[test]
+fn full_height_menus_show_all_content_instead_of_scrolling_within_the_viewport_fraction_cap() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(560.0, || {
+        let states: Vec<(bool, f64, f64, f64)> = [false, true]
+            .into_iter()
+            .map(|use_full_height| {
+                let items = (0..17)
+                    .map(|index| IActionListItem::action(&format!("item-{index}"), Item { id: format!("item-{index}"), checked: index == 16 }))
+                    .collect();
+                let fixture = create_action_list(
+                    &guard,
+                    items,
+                    IActionListOptions { show_filter: false, anchor_position: Some(AnchorPosition::Above), use_full_height, ..IActionListOptions::default() },
+                    Some(IAnchor { x: 10.0, y: 432.0, width: Some(100.0), height: Some(24.0) }),
+                );
+                fixture.list.layout(260.0, None);
+                fixture.list.focus();
+                let widget = fixture.list.widget();
+                (use_full_height, fixture.list.dom_node().size().height, widget.rows_height(), widget.rows_top())
+            })
+            .collect();
+
+        assert_eq!(states, vec![(false, 336.0, 408.0, -72.0), (true, 408.0, 408.0, 0.0)]);
+    });
+}
+
+#[test]
+fn max_visible_items_caps_the_height_at_the_rows_through_that_many_actions_recomputed_after_filtering() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(600.0, || {
+        let mut items = vec![action("first"), separator(None), IActionListItem { detail: Some("Second line".to_owned()), ..action("detailed") }, separator(Some("Group"))];
+        items.extend(numbered_actions(20));
+        let fixture = create_action_list(
+            &guard,
+            items,
+            IActionListOptions { anchor_position: Some(AnchorPosition::Below), max_visible_items: Some(3), ..with_filter() },
+            Some(IAnchor { x: 10.0, y: 20.0, width: Some(20.0), height: Some(20.0) }),
+        );
+        fixture.list.layout(200.0, None);
+        let initial = fixture.list.dom_node().size().height;
+        fixture.list.widget().filter_input_input("item-1");
+
+        // 24px action + 8px separator + 48px detail action + 24px labeled separator + 24px action,
+        // then the labeled separator kept as a section header above three 24px matches.
+        assert_eq!((initial, fixture.list.dom_node().size().height), (128.0, 96.0));
+    });
+}
+
+#[test]
+fn max_visible_items_placement_accounts_for_rows_hidden_by_the_initial_filter() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    with_window_inner_height(600.0, || {
+        let fixture = create_action_list(
+            &guard,
+            vec![action("first"), action("second"), action("third")],
+            IActionListOptions {
+                initial_filter_value: Some("first".to_owned()),
+                max_visible_items: Some(3),
+                preferred_anchor_position: Some(AnchorPosition::Below),
+                ..with_filter()
+            },
+            Some(IAnchor { x: 10.0, y: 460.0, width: Some(20.0), height: Some(20.0) }),
+        );
+        fixture.list.layout(200.0, None);
+
+        assert_eq!((fixture.list.anchor_position(), fixture.list.dom_node().size().height), (Some(AnchorPosition::Above), 24.0));
+    });
+}
+
+#[test]
+fn header_dismiss_removes_the_banner_and_requests_a_re_layout() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let dismissed = Rc::new(Cell::new(false));
+    let layout_requested = Rc::new(Cell::new(false));
+    let on_dismiss = dismissed.clone();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions {
+                show_filter: true,
+                header_text: Some("Cache hint".to_owned()),
+                header_dismiss: Some(Rc::new(move || on_dismiss.set(true))),
+                ..IActionListOptions::default()
+            },
+            ..config(Vec::new())
+        },
+    );
+    let on_layout = layout_requested.clone();
+    guard.add(widget.on_did_request_layout().listen(move |_| on_layout.set(true)));
+
+    let header = widget.header_container().expect("header banner should render when headerText + headerDismiss are set");
+    assert!(widget.header_dismiss_button().is_some(), "dismiss button should render");
+
+    widget.header_dismiss_mouse_up();
+
+    assert_eq!(
+        (dismissed.get(), layout_requested.get(), widget.header_container().is_none(), header.parent_element().is_some()),
+        (true, true, true, false),
+    );
+}
+
+/// `rows()`: as linhas `.monaco-list-row.action` do widget, fora do painel.
+fn action_rows(widget: &ActionListWidget<Item>) -> Vec<RowState> {
+    (0..widget.visible_labels().len())
+        .filter_map(|index| widget.row_state(index))
+        .filter(|row| row.classes.iter().any(|class| class == "action"))
+        .collect()
+}
+
+fn hover_panel(content: &str, expandable: bool) -> Option<IActionListItemHover> {
+    Some(IActionListItemHover { content: Some(HoverContent::Text(content.to_owned())), expandable, ..IActionListItemHover::default() })
+}
+
+#[test]
+fn an_expandable_row_names_the_panel_it_opens_and_stops_when_it_closes() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions {
+                show_filter: true,
+                reserve_submenu_space: Some(ReserveSubmenuSpace::Always),
+                ..IActionListOptions::default()
+            },
+            ..config(vec![IActionListItem { hover: hover_panel("panel", true), ..action("auto") }, action("plain")])
+        },
+    );
+    let state = || -> Vec<(Option<String>, Option<String>)> { action_rows(&widget).into_iter().map(|row| (row.aria_haspopup, row.aria_expanded)).collect() };
+    let popup = |expanded: &str| vec![(Some("dialog".to_owned()), Some(expanded.to_owned())), (None, None)];
+
+    let initial = state();
+    // The chevron is what opens the panel; ArrowRight does the same from the keyboard.
+    widget.click_submenu_indicator(0);
+    let opened = state();
+    let panel_role = widget.panel_role();
+    let panel_label = widget.panel_aria_label();
+    // Escape inside the panel is the way back to the row.
+    widget.dispatch_key_down(&key_event("Escape"), KeyTarget::SubmenuPanel);
+    let closed = state();
+
+    // The plain row opens nothing, so it says nothing.
+    assert_eq!(
+        (initial, opened, closed, panel_role, panel_label),
+        (popup("false"), popup("true"), popup("false"), Some("dialog".to_owned()), Some("auto".to_owned())),
+    );
+}
+
+#[test]
+fn a_submenu_beneath_hover_content_is_still_advertised_by_its_chevron_and_popup_state() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let child = to_action_with("child", "Child", None, None, noop());
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![
+                IActionListItem { hover: hover_panel("About this item", false), submenu_actions: Some(vec![child]), ..action("menu") },
+                IActionListItem { hover: hover_panel("About this item", false), ..action("hover") },
+            ])
+        },
+    );
+    let state = || -> Vec<(bool, Option<String>, Option<String>)> {
+        action_rows(&widget).into_iter().map(|row| (row.submenu_indicator, row.aria_haspopup, row.aria_expanded)).collect()
+    };
+
+    let initial = state();
+    widget.click_submenu_indicator(0);
+
+    // A row with only hover content has no menu to advertise.
+    assert_eq!(
+        (initial, state()[0].2.clone(), widget.panel_hover_text(), widget.submenu_rows()),
+        (
+            vec![(true, Some("menu".to_owned()), Some("false".to_owned())), (false, None, None)],
+            Some("true".to_owned()),
+            Some("About this item".to_owned()),
+            Some(vec![Some("Child".to_owned())]),
+        ),
+    );
+}
+
+#[test]
+fn the_submenu_gutter_follows_the_items_the_list_currently_holds() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let expandable = |id: &str| IActionListItem { hover: hover_panel("panel", true), ..action(id) };
+    let gutters = |widget: &ActionListWidget<Item>| -> Vec<SubmenuGutter> { action_rows(widget).into_iter().map(|row| row.submenu_gutter).collect() };
+
+    let widget = create_action_list_widget(&guard, config(vec![expandable("one"), action("two")]));
+    let always = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions {
+                show_filter: true,
+                reserve_submenu_space: Some(ReserveSubmenuSpace::Always),
+                ..IActionListOptions::default()
+            },
+            ..config(vec![expandable("one"), action("two")])
+        },
+    );
+
+    let before = (gutters(&widget), gutters(&always));
+    // The chevrons go away, so by default the gutter goes with them.
+    widget.update_items(&[rc(action("one")), rc(action("two"))], None, None);
+    always.update_items(&[rc(action("one")), rc(action("two"))], None, None);
+
+    assert_eq!(
+        (before, (gutters(&widget), gutters(&always))),
+        (
+            (vec![SubmenuGutter::Shown, SubmenuGutter::Hidden], vec![SubmenuGutter::Shown, SubmenuGutter::Hidden]),
+            (vec![SubmenuGutter::None, SubmenuGutter::None], vec![SubmenuGutter::Hidden, SubmenuGutter::Hidden]),
+        ),
+    );
+}
+
+#[test]
+fn hidden_hover_chevrons_preserve_keyboard_access_without_reserving_a_gutter() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: false, reserve_submenu_space: Some(ReserveSubmenuSpace::Never), ..IActionListOptions::default() },
+            ..config(vec![IActionListItem {
+                hover: Some(IActionListItemHover {
+                    content: Some(HoverContent::Text("Model details".to_owned())),
+                    expandable: true,
+                    show_indicator: Some(false),
+                    ..IActionListItemHover::default()
+                }),
+                ..action("model")
+            }])
+        },
+    );
+
+    let row = || first_action_row(&widget);
+    let initial = (row().submenu_gutter, row().aria_haspopup, row().aria_expanded);
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let opened = (widget.panel_role(), widget.is_panel_focused(), row().aria_expanded);
+    dispatch_key(&widget, key_event("ArrowLeft"), KeyTarget::SubmenuPanel);
+
+    assert_eq!(
+        (initial, opened, (row().aria_expanded, widget.is_list_focused() && !widget.panel_contains_focus())),
+        (
+            (SubmenuGutter::None, Some("dialog".to_owned()), Some("false".to_owned())),
+            (Some("dialog".to_owned()), true, Some("true".to_owned())),
+            (Some("false".to_owned()), true),
         ),
     );
 }
