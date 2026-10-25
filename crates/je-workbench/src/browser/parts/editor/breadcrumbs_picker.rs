@@ -75,6 +75,7 @@ use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeFilter, ITreeSorter, I
 use super::breadcrumbs::{BreadcrumbsConfig, BreadcrumbsConfigKeys, SymbolSortOrder};
 use super::breadcrumbs_model::{BreadcrumbsElement, FileElement, OutlineElement2, OutlineElementValue};
 use crate::browser::labels::{FileDecorations, IFileLabelOptions, IResourceLabel, IResourceLabelOptions, ResourceLabels, ResourceLabelsServices, default_labels_container};
+use crate::browser::workbench_tree::workbench_tree_data_preamble;
 use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use crate::contrib::notebook::browser::contrib::outline::notebook_outline::IFileIconTheme;
 use crate::services::editor::editor_groups_service::PreferredGroup;
@@ -742,6 +743,10 @@ impl IBreadcrumbsPickerKind for FilePickerKind {
         options.filter = Some(filter);
         options.identity_provider = Some(Rc::new(FileIdentityProvider));
         options.keyboard_navigation_label_provider = Some(Rc::new(FileNavigationLabelProvider));
+        // O original cria uma `WorkbenchAsyncDataTree`: o modo de expansão (`workbench.tree.expandMode`, o padrão é o clique simples)
+        // vem da configuração. Sem isso a árvore pura usa o padrão dela (expandir só no twistie) e o clique na linha de uma pasta
+        // não a expande.
+        workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.update, &mut options.keyboard_support);
 
         let tree = AsyncDataTree::<_, _, _, ObjectBackend>::new(
             "BreadcrumbsFilePicker",
