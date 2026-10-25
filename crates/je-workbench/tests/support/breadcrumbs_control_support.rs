@@ -902,7 +902,8 @@ impl Harness {
         let file_read = Rc::new(DeferredPromise::new());
         gate_resolve(&workbench.file_service, file_read.clone(), uri_file(RESOURCE_PATH));
 
-        let context_keys: Rc<dyn IContextKeyService> = guard.add_rc(ContextKeyService::new(configuration_service.clone()));
+        let context_keys = guard.add_rc(ContextKeyService::new(configuration_service.clone()));
+        let context_keys: Rc<dyn IContextKeyService> = context_keys;
         let context_view_service = guard.add_rc(NativeContextViewService::new(&ui, root));
         let breadcrumbs_service = Rc::new(BreadcrumbsService::new());
 
@@ -1041,7 +1042,8 @@ impl Harness {
         let mut services = self.base_services.clone();
         services.model_services.outline_service = Rc::new(TestOutlineService { outline });
 
-        let input: EditorInputRef = self.guard.add_rc(TestFileEditorInput::new(self.resource(), "testEditorInput"));
+        let input = self.guard.add_rc(TestFileEditorInput::new(self.resource(), "testEditorInput"));
+        let input: EditorInputRef = input;
         let pane: Rc<dyn IEditorPane> = Rc::new(MockPane { state: Rc::downgrade(&self.state) });
         let groups_view: Rc<dyn IEditorGroupsView> = Rc::new(MockGroupsView { state: Rc::downgrade(&self.state) });
         let group = Rc::new(MockGroup { id: GROUP_ID, state: Rc::downgrade(&self.state), input: Some(input), pane: Some(pane), groups_view: Some(groups_view), primary: true });
