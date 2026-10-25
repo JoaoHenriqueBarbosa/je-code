@@ -6,6 +6,9 @@ pub mod frosted_glass_configuration;
 // O material do vidro fosco (`browser/media/frostedGlass.css`).
 pub mod frosted_glass;
 
+// A contribuição que liga o vidro fosco nos contêineres (`electron-browser/frostedGlass.contribution.ts`).
+pub mod frosted_glass_contribution;
+
 // A contribuição que liga as classes do Modern UI nos contêineres (`browser/modernUI.contribution.ts`).
 pub mod modern_ui_contribution;
 
