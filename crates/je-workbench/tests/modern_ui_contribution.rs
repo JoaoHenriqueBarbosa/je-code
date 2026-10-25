@@ -84,7 +84,9 @@ use je_widgets::paneview::{Pane, PaneContent, PaneOptions};
 use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
-use je_workbench::contrib::modern_ui::resolved_style::{ActionTabState, ClassList, EditorTabState, ListRowHost, ModernUiStyle, css_rgb};
+use je_workbench::contrib::modern_ui::resolved_style::{
+    ActionTabState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, ModernUiStyle, NotificationInsets, NotificationsPlacement, PaneHost, PaneState, css_rgb,
+};
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
     AddedContainer, LayoutContainerId, LayoutSettings, ModernUiDensity, ModernUiEditorTabStyle,
@@ -543,6 +545,186 @@ fn insets_multi_diff_file_rows_like_explorer_rows_in_both_layout_densities() {
     let compact = state("modern-ui modern-ui-compact");
 
     assert_eq!((standard, modern, compact), ((0.0, 0.0), (4.0, 4.0), (2.0, 2.0)));
+}
+
+/// O valor em px que o `getComputedStyle` escreve.
+fn px(value: f64) -> String {
+    format!("{value}px")
+}
+
+/// Os quatro deslocamentos de uma caixa posicionada, na ordem `top`, `right`, `bottom`, `left`, como o computado (`auto` é
+/// o deslocamento que nenhuma regra define).
+fn offsets_css(offsets: BoxOffsets) -> [String; 4] {
+    [offsets.top, offsets.right, offsets.bottom, offsets.left].map(|offset| offset.map_or_else(|| "auto".to_owned(), px))
+}
+
+/// O `border-radius` computado: o shorthand de um valor quando os cantos são iguais, senão os quatro.
+fn radii_css(radii: CornerRadii) -> String {
+    let CornerRadii(top_left, top_right, bottom_right, bottom_left) = radii;
+    if top_left == top_right && top_right == bottom_right && bottom_right == bottom_left {
+        px(top_left)
+    } else {
+        format!("{} {} {} {}", px(top_left), px(top_right), px(bottom_right), px(bottom_left))
+    }
+}
+
+#[test]
+fn supports_isolated_notification_and_dialog_presentation() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // Os `--vscode-spacing-*` e `--vscode-cornerRadius-large` que o caso escreve na raiz são os valores do tema; só as duas
+    // variáveis `--modern-ui-notifications-*` são do shell.
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-notifications-dialogs");
+    style.set_notification_insets(NotificationInsets { inline: Some(12.0), block_start: Some(24.0), block_end: None });
+
+    let center = style.notifications_center_offsets(NotificationsPlacement::BottomRight).map(offsets_css);
+    let top_center = style.notifications_center_offsets(NotificationsPlacement::TopRight).map(offsets_css);
+    let toasts = style.notifications_toasts_offsets(NotificationsPlacement::BottomRight).map(offsets_css);
+    let top_toasts = style.notifications_toasts_offsets(NotificationsPlacement::TopRight).map(offsets_css);
+    let padding = style.notification_item_padding().map(|padding| format!("{} {}", px(padding.vertical), px(padding.horizontal)));
+
+    assert_eq!(
+        (
+            padding,
+            center.as_ref().map(|offsets| (offsets[1].clone(), offsets[2].clone())),
+            style.notifications_center_radius().map(px),
+            style.notifications_center_row_radius(true).map(radii_css),
+            top_center.as_ref().map(|offsets| offsets[0].clone()),
+            toasts.as_ref().map(|offsets| (offsets[1].clone(), offsets[2].clone())),
+            style.notifications_toast_radius().map(radii_css),
+            top_toasts.as_ref().map(|offsets| offsets[0].clone()),
+            (px(style.notification_toast_margin_bottom(false)), px(style.notification_toast_margin_bottom(true))),
+            style.dialog_padding().map(px),
+            style.dialog_min_width().map(px),
+        ),
+        (
+            Some("6px 2px".to_owned()),
+            Some(("12px".to_owned(), "36px".to_owned())),
+            Some("8px".to_owned()),
+            Some("0px 0px 8px 8px".to_owned()),
+            Some("24px".to_owned()),
+            Some(("8px".to_owned(), "32px".to_owned())),
+            Some("8px".to_owned()),
+            Some("20px".to_owned()),
+            ("0px".to_owned(), "4px".to_owned()),
+            Some("4px".to_owned()),
+            Some("440px".to_owned()),
+        )
+    );
+}
+
+/// O `ModernUITestPane` dentro de `.part.<host>`, com a pilha e a orientação do caso.
+fn pane_state(host: PaneHost, first_in_stack: bool, horizontal: bool) -> PaneState {
+    PaneState { host, first_in_stack, horizontal, header_hovered: false }
+}
+
+#[test]
+fn uses_part_specific_pane_colors_and_only_draws_panel_header_separators_in_vertical_layouts() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[
+        ("sideBar.background", "#FF8888"),
+        ("sideBarSectionHeader.border", "#FF0000"),
+        ("panel.background", "#8888FF"),
+        ("panelSectionHeader.border", "#0000FF"),
+    ]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui");
+    let rgb = |color: Option<Color>| color.map(|color| css_rgb(&color));
+
+    // `followingSideBarPane` e `followingVerticalPane`: o segundo pane de uma pilha vertical.
+    let following_side_bar = pane_state(PaneHost::SideBar, false, false);
+    let first_vertical = pane_state(PaneHost::Panel, true, false);
+    let following_vertical = pane_state(PaneHost::Panel, false, false);
+    let first_horizontal = pane_state(PaneHost::Panel, true, true);
+    let following_horizontal = pane_state(PaneHost::Panel, false, true);
+    // `leftBorder: '#FF0000'` só vale no pane horizontal; a borda inline é `1px solid` dessa cor.
+    let left_border = Color::from_hex("#FF0000");
+
+    assert_eq!(
+        (
+            rgb(style.pane_background(following_side_bar.host)),
+            rgb(style.pane_header_background(following_side_bar)),
+            rgb(style.pane_header_separator_color(following_side_bar.host)),
+            rgb(style.pane_background(following_vertical.host)),
+            rgb(style.pane_header_background(following_vertical)),
+            rgb(style.pane_header_separator_color(following_vertical.host)),
+            style.pane_header_separator_visible(first_vertical),
+            style.pane_header_separator_visible(following_vertical),
+            style.pane_header_border_top_width().map(px),
+            style.pane_header_separator_visible(first_horizontal),
+            style.pane_header_separator_visible(following_horizontal),
+            (following_horizontal.horizontal.then(|| px(1.0)), following_horizontal.horizontal.then(|| css_rgb(&left_border))),
+        ),
+        (
+            Some("rgb(255, 136, 136)".to_owned()),
+            Some("rgb(255, 136, 136)".to_owned()),
+            Some("rgb(255, 0, 0)".to_owned()),
+            Some("rgb(136, 136, 255)".to_owned()),
+            Some("rgb(136, 136, 255)".to_owned()),
+            Some("rgb(0, 0, 255)".to_owned()),
+            false,
+            true,
+            Some("0px".to_owned()),
+            false,
+            false,
+            (Some("1px".to_owned()), Some("rgb(255, 0, 0)".to_owned())),
+        )
+    );
+}
+
+#[test]
+fn falls_back_to_the_surface_border_for_pane_header_separators() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[("surface.border", "#123456")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui");
+
+    let colors = [PaneHost::SideBar, PaneHost::Panel].map(|host| style.pane_header_separator_color(host).map(|color| css_rgb(&color)));
+
+    assert_eq!(colors, [Some("rgb(18, 52, 86)".to_owned()), Some("rgb(18, 52, 86)".to_owned())]);
+}
+
+#[test]
+fn provides_opaque_default_colors_for_high_contrast_pane_dividers() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let divider_state = |theme: ColorTheme| {
+        let colors = ["sideBarSectionHeader.border", "panelSectionHeader.border", "panelSection.border"].map(|id| theme.resolve_color(id, true));
+        (colors.clone().map(|color| color.is_some()), colors.map(|color| color.map(|color| color.is_opaque())))
+    };
+
+    let hc_dark = divider_state(unloaded_theme(ThemeType::HighContrastDark));
+    let hc_light = divider_state(unloaded_theme(ThemeType::HighContrastLight));
+
+    let expected = ([true, true, true], [Some(true), Some(true), Some(true)]);
+    assert_eq!((hc_dark, hc_light), (expected, expected));
+}
+
+#[test]
+fn respects_customized_high_contrast_pane_dividers() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let colors = [
+        ("contrastBorder", "#6FC3DF"),
+        ("sideBarSectionHeader.border", "#6F7783"),
+        ("panelSectionHeader.border", "#6F7783"),
+        ("panelSection.border", "#6F7783"),
+    ];
+    // `root.classList.replace('hc-black', 'hc-light')` troca o tipo do tema e a classe da raiz.
+    let get_divider_colors = |theme_type: ThemeType, root_class_name: &str| {
+        let mut theme = unloaded_theme(theme_type);
+        theme.set_custom_colors(colors.iter().copied());
+        let style = ModernUiStyle::new(&theme, root_class_name);
+        let rgb = |color: Option<Color>| color.map(|color| css_rgb(&color));
+        (
+            rgb(style.pane_header_separator_color(PaneHost::SideBar)),
+            rgb(style.pane_header_separator_color(PaneHost::Panel)),
+            // `leftBorder: 'var(--vscode-panelSection-border)'`.
+            rgb(style.variable("--vscode-panelSection-border")),
+        )
+    };
+
+    let dark = get_divider_colors(ThemeType::HighContrastDark, "monaco-workbench modern-ui hc-black");
+    let light = get_divider_colors(ThemeType::HighContrastLight, "monaco-workbench modern-ui hc-light");
+
+    let expected = (Some("rgb(111, 119, 131)".to_owned()), Some("rgb(111, 119, 131)".to_owned()), Some("rgb(111, 119, 131)".to_owned()));
+    assert_eq!((dark, light), (expected.clone(), expected));
 }
 
 /// O `IWorkspace` literal `{ id: 'test', folders: [], configuration }` do caso.

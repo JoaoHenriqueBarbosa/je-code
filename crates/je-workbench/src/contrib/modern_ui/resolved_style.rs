@@ -20,7 +20,7 @@ use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
 use je_theme::registry::{as_css_variable_name, color_registry};
 use je_theme::size_utils::get_size_registry;
-use je_theme::sizes::base_sizes::{SPACING_SIZE20, SPACING_SIZE40};
+use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, SPACING_NONE, SPACING_SIZE20, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -120,11 +120,12 @@ pub struct ActionTabState {
 pub struct ModernUiStyle<'a> {
     theme: &'a ColorTheme,
     root: ClassList,
+    notification_insets: NotificationInsets,
 }
 
 impl<'a> ModernUiStyle<'a> {
     pub fn new(theme: &'a ColorTheme, root_class_name: &str) -> Self {
-        Self { theme, root: ClassList::new(root_class_name) }
+        Self { theme, root: ClassList::new(root_class_name), notification_insets: NotificationInsets::default() }
     }
 
     /// Troca as classes da raiz (`root.className = ...`).
@@ -385,6 +386,232 @@ impl<'a> ModernUiStyle<'a> {
             "modernEditorTab.hoverActionBackground"
         };
         self.color(id)
+    }
+}
+
+/// Onde uma lista de notificações ou os toasts ficam (`.notifications-center` e `.notifications-toasts`): a classe de
+/// posição do elemento.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotificationsPlacement {
+    /// Sem classe de posição: canto inferior direito.
+    #[default]
+    BottomRight,
+    /// `.bottom-left`.
+    BottomLeft,
+    /// `.top-right`.
+    TopRight,
+}
+
+/// As propriedades `--modern-ui-notifications-*-inset` que o shell define na raiz (`None` é a variável indefinida e
+/// vale o espaçamento padrão da cadeia `var()`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NotificationInsets {
+    /// `--modern-ui-notifications-inline-inset`.
+    pub inline: Option<f64>,
+    /// `--modern-ui-notifications-block-start-inset`.
+    pub block_start: Option<f64>,
+    /// `--modern-ui-notifications-block-end-inset`.
+    pub block_end: Option<f64>,
+}
+
+/// Os deslocamentos `top`, `right`, `bottom` e `left` calculados, em px. `None` é `auto` (ou o valor que nenhuma regra do
+/// Modern UI define).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoxOffsets {
+    pub top: Option<f64>,
+    pub right: Option<f64>,
+    pub bottom: Option<f64>,
+    pub left: Option<f64>,
+}
+
+/// O `padding` calculado de uma caixa, em px (vertical e horizontal, como o shorthand de dois valores).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxPadding {
+    pub vertical: f64,
+    pub horizontal: f64,
+}
+
+/// O `border-radius` calculado de uma caixa, em px, na ordem do shorthand: canto superior esquerdo, superior direito,
+/// inferior direito e inferior esquerdo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CornerRadii(pub f64, pub f64, pub f64, pub f64);
+
+impl CornerRadii {
+    fn uniform(radius: f64) -> Self {
+        Self(radius, radius, radius, radius)
+    }
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// `.modern-ui-notifications-dialogs.monaco-workbench` (notificationsDialogs.css): o módulo está ligado.
+    fn notifications_dialogs(&self) -> bool {
+        self.has("modern-ui-notifications-dialogs")
+    }
+
+    /// `var(--vscode-<size>)`, em px; `0` quando o tamanho não existe para o tema.
+    fn size(&self, id: &str) -> f64 {
+        get_size_registry().resolve_default_size(id, self.theme).map_or(0.0, |size| size.value)
+    }
+
+    /// Define as variáveis `--modern-ui-notifications-*-inset` (`root.style.setProperty`).
+    pub fn set_notification_insets(&mut self, insets: NotificationInsets) {
+        self.notification_insets = insets;
+    }
+
+    /// `padding` de `.notification-list-item` (linhas 17 a 19).
+    pub fn notification_item_padding(&self) -> Option<BoxPadding> {
+        self.notifications_dialogs().then(|| BoxPadding { vertical: self.size(SPACING_SIZE60), horizontal: self.size(SPACING_SIZE20) })
+    }
+
+    /// `var(--modern-ui-notifications-inline-inset, var(--vscode-spacing-size80))`.
+    fn inline_inset(&self) -> f64 {
+        self.notification_insets.inline.unwrap_or_else(|| self.size(SPACING_SIZE80))
+    }
+
+    /// `var(--modern-ui-notifications-block-end-inset, <fallback>)`: a barra de status (size360) ou, sem ela, size320.
+    fn block_end_inset(&self, placement: NotificationsPlacement) -> f64 {
+        let fallback = if self.has("nostatusbar") && placement != NotificationsPlacement::TopRight { SPACING_SIZE320 } else { SPACING_SIZE360 };
+        self.notification_insets.block_end.unwrap_or_else(|| self.size(fallback))
+    }
+
+    /// `var(--modern-ui-notifications-block-start-inset, var(--vscode-spacing-size360))`.
+    fn block_start_inset(&self) -> f64 {
+        self.notification_insets.block_start.unwrap_or_else(|| self.size(SPACING_SIZE360))
+    }
+
+    /// `right`, `bottom`, `left` e `top` de `.notifications-center` (linhas 47 a 66).
+    pub fn notifications_center_offsets(&self, placement: NotificationsPlacement) -> Option<BoxOffsets> {
+        if !self.notifications_dialogs() {
+            return None;
+        }
+        let inline = self.inline_inset();
+        let bottom = self.block_end_inset(placement);
+        Some(match placement {
+            NotificationsPlacement::BottomRight => BoxOffsets { right: Some(inline), bottom: Some(bottom), ..BoxOffsets::default() },
+            NotificationsPlacement::BottomLeft => BoxOffsets { left: Some(inline), bottom: Some(bottom), ..BoxOffsets::default() },
+            NotificationsPlacement::TopRight => BoxOffsets { top: Some(self.block_start_inset()), right: Some(inline), ..BoxOffsets::default() },
+        })
+    }
+
+    /// `right`, `bottom`, `left` e `top` de `.notifications-toasts` (linhas 73 a 95): cada deslocamento perde a margem de
+    /// `spacing.size40` do toast.
+    pub fn notifications_toasts_offsets(&self, placement: NotificationsPlacement) -> Option<BoxOffsets> {
+        let center = self.notifications_center_offsets(placement)?;
+        let margin = self.size(SPACING_SIZE40);
+        let reduce = |offset: Option<f64>| offset.map(|value| value - margin);
+        Some(BoxOffsets { top: reduce(center.top), right: reduce(center.right), bottom: reduce(center.bottom), left: reduce(center.left) })
+    }
+
+    /// `border-radius` de `.notifications-center` (linhas 47 a 51).
+    pub fn notifications_center_radius(&self) -> Option<f64> {
+        self.notifications_dialogs().then(|| self.size(CORNER_RADIUS_LARGE))
+    }
+
+    /// `border-radius` de um `.monaco-list-row` da central de notificações (linhas 101 a 103): só a última linha arredonda
+    /// os cantos de baixo.
+    pub fn notifications_center_row_radius(&self, last_child: bool) -> Option<CornerRadii> {
+        (self.notifications_dialogs() && last_child).then(|| {
+            let radius = self.size(CORNER_RADIUS_LARGE);
+            CornerRadii(0.0, 0.0, radius, radius)
+        })
+    }
+
+    /// `border-radius` do `.notifications-toasts`, da lista, do `.notification-toast`, da rolagem e das linhas dos toasts
+    /// (linhas 105 a 112).
+    pub fn notifications_toast_radius(&self) -> Option<CornerRadii> {
+        self.notifications_dialogs().then(|| CornerRadii::uniform(self.size(CORNER_RADIUS_LARGE)))
+    }
+
+    /// `margin-bottom` de `.notification-toast`: a margem de 4px de `notificationsToasts.css` (linha 39), zerada nos
+    /// toasts que não são o último (linhas 78 a 80).
+    pub fn notification_toast_margin_bottom(&self, last_child: bool) -> f64 {
+        if self.notifications_dialogs() && !last_child {
+            self.size(SPACING_NONE)
+        } else {
+            4.0
+        }
+    }
+
+    /// `padding` de `.monaco-dialog-box` (linhas 114 a 117).
+    pub fn dialog_padding(&self) -> Option<f64> {
+        self.notifications_dialogs().then(|| self.size(SPACING_SIZE40))
+    }
+
+    /// `min-width` de `.monaco-dialog-box`, em px (linhas 114 a 117).
+    pub fn dialog_min_width(&self) -> Option<f64> {
+        self.notifications_dialogs().then_some(440.0)
+    }
+}
+
+/// Em que parte um `.pane` está (`.part.sidebar`, `.part.auxiliarybar`, `.part.panel`), para `paneHeaders.css`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneHost {
+    SideBar,
+    AuxiliaryBar,
+    Panel,
+    /// Qualquer outra parte: nenhuma regra de cor do Modern UI alcança o pane.
+    Other,
+}
+
+/// O estado de um `.pane` que as regras de `paneHeaders.css` testam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneState {
+    pub host: PaneHost,
+    /// `.split-view-view:first-of-type`: o primeiro pane da pilha vertical.
+    pub first_in_stack: bool,
+    /// `.pane.horizontal`.
+    pub horizontal: bool,
+    /// `:hover` no cabeçalho.
+    pub header_hovered: bool,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// `background-color` do `.pane` (paneHeaders.css, linhas 65 a 72, `!important`).
+    pub fn pane_background(&self, host: PaneHost) -> Option<Color> {
+        if !self.has("modern-ui") {
+            return None;
+        }
+        match host {
+            PaneHost::SideBar | PaneHost::AuxiliaryBar => self.color("sideBar.background"),
+            PaneHost::Panel => self.color("panel.background"),
+            PaneHost::Other => None,
+        }
+    }
+
+    /// `background-color` do `.pane-header` (paneHeaders.css, linhas 82 a 88 e 99 a 101): a cor da superfície em repouso e
+    /// a de `list.hoverBackground` com o ponteiro em cima.
+    pub fn pane_header_background(&self, pane: PaneState) -> Option<Color> {
+        if !self.has("modern-ui") {
+            return None;
+        }
+        if pane.header_hovered {
+            return self.color("list.hoverBackground");
+        }
+        self.pane_background(pane.host)
+    }
+
+    /// `background-color` do `::before` do `.pane-header`, o separador recuado (paneHeaders.css, linhas 47 a 53).
+    pub fn pane_header_separator_color(&self, host: PaneHost) -> Option<Color> {
+        if !self.has("modern-ui") {
+            return None;
+        }
+        match host {
+            PaneHost::SideBar | PaneHost::AuxiliaryBar => self.first(&["sideBarSectionHeader.border", "surface.border"]),
+            PaneHost::Panel => self.first(&["panelSectionHeader.border", "panel.border", "surface.border"]),
+            PaneHost::Other => None,
+        }
+    }
+
+    /// `display` do `::before` do `.pane-header` é diferente de `none` (paneHeaders.css, linhas 60 a 63): o primeiro pane da
+    /// pilha vertical e os panes horizontais não têm o separador.
+    pub fn pane_header_separator_visible(&self, pane: PaneState) -> bool {
+        self.has("modern-ui") && !pane.first_in_stack && !pane.horizontal
+    }
+
+    /// `border-top-width` do `.pane-header`: o Modern UI zera a borda que o `PaneView` aplica inline (paneHeaders.css,
+    /// linhas 29 a 31, `!important`). `None` sem `.modern-ui`: vale o valor inline.
+    pub fn pane_header_border_top_width(&self) -> Option<f64> {
+        self.has("modern-ui").then_some(0.0)
     }
 }
 
