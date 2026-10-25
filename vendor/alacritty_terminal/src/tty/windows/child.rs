@@ -10,8 +10,8 @@ use polling::{Event, Poller};
 
 use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE};
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWait,
-    WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
+    GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, TerminateProcess,
+    UnregisterWait, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
 };
 
 use crate::tty::ChildEvent;
@@ -114,6 +114,13 @@ impl ChildExitWatcher {
     /// timeout error, and the child watcher will emit an `Exited` event.
     pub fn raw_handle(&self) -> HANDLE {
         self.child_handle.load(Ordering::Relaxed) as HANDLE
+    }
+
+    /// je-code: encerra o processo filho (`TerminateProcess`), com `exit_code` como código de saída. O `child_exit_callback`
+    /// registrado em `new` emite o `ChildEvent::Exited` quando o processo morre.
+    pub fn terminate(&self, exit_code: u32) -> Result<(), Error> {
+        let ok = unsafe { TerminateProcess(self.raw_handle(), exit_code) };
+        if ok == FALSE { Err(Error::last_os_error()) } else { Ok(()) }
     }
 
     /// Retrieve the Process ID associated to the underlying child process.

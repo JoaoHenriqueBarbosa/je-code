@@ -56,6 +56,10 @@ ureq = { version = "3", default-features = false, features = ["rustls-no-provide
 rustls-rustcrypto = "0.0.2-alpha"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
+# O pty cru (`je_terminal::pty::RawPty`, o papel do `node-pty`) sob o `TerminalProcess` (`terminal/terminal_process.rs`). O
+# Alacritty é Rust puro; no wasm não há processo local.
+je-terminal = { path = "../je-terminal" }
+
 # O `TunnelProxy` (`tunnel/tunnel_proxy.rs`): o servidor HTTPS em `127.0.0.1` é o `rustls` (com o mesmo provedor RustCrypto,
 # Rust puro) sobre `std::net`; o certificado autoassinado ECDSA P-256 (`tunnel/self_signed_cert.rs`) é assinado com o
 # `p256` e identificado por SHA-256; as credenciais aleatórias vêm do `rand_core` (`OsRng`). Todos de Rust puro, sem C.

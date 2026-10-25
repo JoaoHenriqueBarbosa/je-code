@@ -50,6 +50,31 @@ impl Pty {
     pub fn child_watcher(&self) -> &ChildExitWatcher {
         &self.child_watcher
     }
+
+    /// je-code: o pid do processo filho.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child_watcher.pid().map(std::num::NonZeroU32::get)
+    }
+
+    /// je-code: lê o que o ConPTY já produziu, sem bloquear; `0` quer dizer que não há nada agora.
+    pub fn try_read(&mut self, buf: &mut [u8]) -> usize {
+        self.conout.try_read(buf)
+    }
+
+    /// je-code: escreve o que couber no pipe de entrada, sem bloquear; devolve quantos bytes entraram.
+    pub fn try_write(&mut self, buf: &[u8]) -> usize {
+        self.conin.try_write(buf)
+    }
+
+    /// je-code: redimensiona o ConPTY devolvendo o erro.
+    pub fn try_resize(&mut self, window_size: WindowSize) -> Result<()> {
+        self.backend.try_resize(window_size)
+    }
+
+    /// je-code: encerra o processo filho.
+    pub fn terminate_child(&self, exit_code: u32) -> Result<()> {
+        self.child_watcher.terminate(exit_code)
+    }
 }
 
 fn with_key(mut event: Event, key: usize) -> Event {

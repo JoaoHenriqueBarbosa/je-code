@@ -16,6 +16,29 @@ use je_base::errors::Error;
 use je_base::runtime;
 use je_platform::remote_tunnel::code_tunnel_cli_process::{KillSignal, TunnelChildHandlers, TunnelChildProcess};
 use je_platform::telemetry::telemetry::{CommonPropertyValue, ITelemetryData, ITelemetryService, TelemetryLevel};
+use je_base::path::{FixedEnvironment, Platform};
+use je_platform::environment::NativeParsedArgs;
+use je_platform::environment::environment_service::{AbstractNativeEnvironmentService, NativeEnvironmentPaths};
+use je_platform::product::ProductService;
+
+/// `{ appRoot: 'installation', isBuilt: true, logsHome: URI.file('logs'), userDataPath: 'custom-user-data' } as
+/// INativeEnvironmentService`: o ambiente nativo de verdade com esses quatro valores.
+pub fn test_native_environment() -> Rc<AbstractNativeEnvironmentService> {
+    let args = NativeParsedArgs::default();
+    args.set("logsPath", Dynamic::string("logs"));
+    let paths = NativeEnvironmentPaths {
+        user_data_dir: "custom-user-data".to_owned(),
+        home_dir: "/home".to_owned(),
+        tmp_dir: "/tmp".to_owned(),
+        app_root: "installation".to_owned(),
+    };
+    Rc::new(AbstractNativeEnvironmentService::new(args, paths, ProductService::default(), Rc::new(FixedEnvironment::new(Platform::Posix, "/"))))
+}
+
+/// `{ tunnelApplicationName: 'code-tunnel' } as IProductService`.
+pub fn test_tunnel_product() -> ProductService {
+    ProductService { tunnel_application_name: Some("code-tunnel".to_owned()), ..ProductService::default() }
+}
 
 /// O `ChildProcess` falso.
 pub struct TestChild {

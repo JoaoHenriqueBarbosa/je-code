@@ -27,6 +27,8 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, T
 #[cfg(not(target_arch = "wasm32"))]
 mod local;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod pty;
+#[cfg(not(target_arch = "wasm32"))]
 pub use local::{PtyNotifier, default_shell};
 
 /// Uma cor opaca RGB.

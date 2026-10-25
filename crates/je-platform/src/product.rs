@@ -173,6 +173,15 @@ pub trait IProductService {
     fn tas_config(&self) -> Option<&ITasConfig> {
         None
     }
+    /// `tunnelApplicationName`: o nome do executável da CLI do túnel remoto (lido pelo `CodeTunnelCli`). Padrão: o
+    /// produto não declara.
+    fn tunnel_application_name(&self) -> Option<&str> {
+        None
+    }
+    /// `win32VersionedUpdate`: se a instalação no Windows usa a pasta versionada (lido pelo `CodeTunnelCli`). Padrão: falso.
+    fn win32_versioned_update(&self) -> bool {
+        false
+    }
 }
 
 /// `IDefaultChatAgent`, reduzido aos identificadores das extensões do agente de chat.
@@ -255,6 +264,10 @@ pub struct ProductService {
     pub exe_based_extension_tips: Option<IStringDictionary<IExeBasedExtensionTip>>,
     /// `tasConfig`.
     pub tas_config: Option<ITasConfig>,
+    /// `tunnelApplicationName`.
+    pub tunnel_application_name: Option<String>,
+    /// `win32VersionedUpdate`.
+    pub win32_versioned_update: bool,
 }
 
 impl Default for ProductService {
@@ -300,6 +313,8 @@ impl Default for ProductService {
             config_based_extension_tips: None,
             exe_based_extension_tips: None,
             tas_config: None,
+            tunnel_application_name: None,
+            win32_versioned_update: false,
         }
     }
 }
@@ -437,9 +452,21 @@ impl IProductService for ProductService {
     fn tas_config(&self) -> Option<&ITasConfig> {
         self.tas_config.as_ref()
     }
+    fn tunnel_application_name(&self) -> Option<&str> {
+        self.tunnel_application_name.as_deref()
+    }
+    fn win32_versioned_update(&self) -> bool {
+        self.win32_versioned_update
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
+    fn tunnel_application_name(&self) -> Option<&str> {
+        self.tunnel_application_name.as_deref()
+    }
+    fn win32_versioned_update(&self) -> bool {
+        self.win32_versioned_update.unwrap_or(false)
+    }
     fn tas_config(&self) -> Option<&ITasConfig> {
         self.tas_config.as_ref()
     }

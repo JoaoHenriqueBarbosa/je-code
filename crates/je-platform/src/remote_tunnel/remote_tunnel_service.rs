@@ -5,9 +5,7 @@
 //! - `IRemoteTunnelService` é o trait de `remote_tunnel.rs`, e o serviço é um `Rc<RemoteTunnelService>` (como o
 //!   `ConfigurationService`): os métodos assíncronos e os ouvintes precisam do próprio `Rc`, que o serviço guarda
 //!   como `Weak` (`me`).
-//! - O `IProductService` do construtor (`_productService`) nunca é lido pelo serviço e não existe aqui; o
-//!   `INativeEnvironmentService` é o trait reduzido [`RemoteTunnelEnvironment`], e o `ISharedProcessLifecycleService`
-//!   (que ainda não tem porte) é o trait [`ISharedProcessLifecycleService`] deste arquivo, só com o `onWillShutdown`.
+//! - O `IProductService` do construtor (`_productService`) nunca é lido pelo serviço e não existe aqui.
 //! - `publicLog2<E, T>` é `public_log2` com o dado como [`Dynamic`]; os campos `undefined` do original ficam fora do
 //!   objeto, exceto `tunnelName` do evento `remoteTunnel.enablement`, que o original envia como `undefined`.
 //! - `this._logger.error(error)` é `error_args` com o [`Error`]; `JSON.parse` do `restoreMode` é o `json::parse` estrito,
@@ -32,12 +30,13 @@ use super::remote_tunnel::{
     ActiveTunnelMode, CONFIGURATION_KEY_HOST_NAME, CONFIGURATION_KEY_PREVENT_SLEEP, ConnectionInfo, IRemoteTunnelService, IRemoteTunnelSession, LOG_ID, TunnelMode,
     TunnelStatus, inactive_tunnel_mode, logger_name, tunnel_states,
 };
-use super::remote_tunnel_environment::RemoteTunnelEnvironment;
 use super::tunnel_machine_status::TunnelMachineStatus;
 use super::tunnel_process_coordinator::{ITunnelProcessCoordinator, ITunnelProcessMachineStatus, ITunnelProcessOutput, ITunnelProcessStatus, TunnelProcessMode};
 use crate::configuration::models::ConfigurationChangeEvent;
 use crate::configuration::service::IConfigurationService;
+use crate::environment::environment::{EnvironmentService, NativeEnvironmentServiceApi};
 use crate::js::from_json;
+use crate::lifecycle::shared_process_lifecycle_service::ISharedProcessLifecycleService;
 use crate::log::{LogArg, LogMessage, Logger, LoggerOptions, LoggerRef, LoggerService, ResourceOrId};
 use crate::resources::join_path;
 use crate::storage::storage::{StorageScope, StorageService, StorageTarget};
@@ -47,11 +46,6 @@ const RESTART_TUNNEL_ON_CONFIGURATION_CHANGES: [&str; 2] = [CONFIGURATION_KEY_HO
 
 const TUNNEL_ACCESS_SESSION: &str = "remoteTunnelSession";
 const TUNNEL_ACCESS_IS_SERVICE: &str = "remoteTunnelIsService";
-
-/// `ISharedProcessLifecycleService`, reduzido ao que o serviço lê: o `onWillShutdown`.
-pub trait ISharedProcessLifecycleService {
-    fn on_will_shutdown(&self) -> Event<()>;
-}
 
 /// Publishes Remote Tunnel Access status while the coordinator owns the CLI process.
 pub struct RemoteTunnelService {
@@ -66,7 +60,7 @@ pub struct RemoteTunnelService {
     tunnel_status: RefCell<TunnelStatus>,
     initialized: Cell<bool>,
     telemetry_service: Rc<dyn ITelemetryService>,
-    environment: Rc<dyn RemoteTunnelEnvironment>,
+    environment: Rc<dyn NativeEnvironmentServiceApi>,
     storage_service: Rc<dyn StorageService>,
     tunnel_process_coordinator: Rc<dyn ITunnelProcessCoordinator>,
 }
@@ -84,7 +78,7 @@ fn forward<T: 'static>(weak: &Weak<RemoteTunnelService>, handler: impl Fn(&Remot
 impl RemoteTunnelService {
     pub fn new(
         telemetry_service: Rc<dyn ITelemetryService>,
-        environment: Rc<dyn RemoteTunnelEnvironment>,
+        environment: Rc<dyn NativeEnvironmentServiceApi>,
         logger_service: Rc<dyn LoggerService>,
         shared_process_lifecycle_service: Rc<dyn ISharedProcessLifecycleService>,
         configuration_service: Rc<dyn IConfigurationService>,

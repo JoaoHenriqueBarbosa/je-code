@@ -27,22 +27,19 @@ use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::runtime;
-use je_base::uri::URI;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::log::LogLevel;
 use je_platform::remote_tunnel::code_tunnel_cli_process::{
     CodeTunnelCli, CodeTunnelCliOptions, CodeTunnelLog, CodeTunnelSpawn, SpawnOptions, TunnelChildHandlers, TunnelChildProcess,
 };
 use je_platform::remote_tunnel::remote_tunnel::{ActiveTunnelMode, IRemoteTunnelSession, TunnelMode, TunnelStatus, inactive_tunnel_mode, tunnel_states};
-use je_platform::remote_tunnel::remote_tunnel_environment::RemoteTunnelEnvironment;
 use je_platform::remote_tunnel::tunnel_process_coordinator::{
     ITunnelProcessCoordinator, ITunnelProcessMachineStatus, ITunnelProcessStatus, TunnelCliFactory, TunnelProcessConnectionState, TunnelProcessCoordinator, TunnelProcessMode,
-    TunnelProduct, resolve_tunnel_process_mode,
+    resolve_tunnel_process_mode,
 };
 use je_platform::remote_tunnel::tunnel_service_headers::ITunnelServiceCorrelation;
-use je_platform::resources::uri_file;
 use je_platform::telemetry::telemetry::ITelemetryService;
-use remote_tunnel_support::{RecordingTelemetryService, TestChild};
+use remote_tunnel_support::{RecordingTelemetryService, TestChild, test_native_environment, test_tunnel_product};
 
 /// `TestChildProcess`: o filho falso e o que o `spawn` recebeu.
 struct TestProcess {
@@ -52,26 +49,6 @@ struct TestProcess {
 }
 
 type Processes = Rc<RefCell<Vec<Rc<TestProcess>>>>;
-
-struct TestEnvironment;
-
-impl RemoteTunnelEnvironment for TestEnvironment {
-    fn app_root(&self) -> String {
-        "installation".to_owned()
-    }
-
-    fn is_built(&self) -> bool {
-        true
-    }
-
-    fn user_data_path(&self) -> String {
-        "custom-user-data".to_owned()
-    }
-
-    fn logs_home(&self) -> URI {
-        uri_file("logs")
-    }
-}
 
 fn active_mode(as_service: bool) -> TunnelMode {
     TunnelMode::Active(ActiveTunnelMode {
@@ -167,8 +144,8 @@ fn create_coordinator(options: CoordinatorOptions) -> (Rc<TunnelProcessCoordinat
     let coordinator = TunnelProcessCoordinator::new(
         Some(factory),
         configuration,
-        Rc::new(TestEnvironment),
-        &TunnelProduct { tunnel_application_name: Some("code-tunnel".to_owned()), win32_versioned_update: false },
+        test_native_environment(),
+        &test_tunnel_product(),
         telemetry,
     );
     (coordinator, processes)
