@@ -11,10 +11,14 @@
 //! - **Carregador.** `_loadCommonJSModule` é o `require(path)` do programa Node do `NodeRunner`: `require` só existe no escopo do
 //!   módulo principal, então o programa principal publica a ponte `globalThis.__jeRequire = (p) => require(p)`
 //!   ([`crate::runtime::HOST_MAIN_SOURCE`]). Extensões ESM (`.mjs`, `"type": "module"`) falham a ativação com um erro explícito.
-//! - **`ExtensionContext`** reduzido ao que o host já sustenta: `subscriptions`, `extensionPath`, `asAbsolutePath` e `extensionMode`.
-//!   `globalState`, `workspaceState`, `secrets`, `storageUri`, `globalStorageUri`, `logUri`, `extension` e
-//!   `environmentVariableCollection` dependem do `ExtHostStorage`, do `ExtHostSecretState` e do `IExtensionStoragePaths`, ainda não
-//!   portados no host.
+//! - **`ExtensionContext`** montado por [`crate::api::extension_context`] (`_loadExtensionContext`): `globalState` e `workspaceState`
+//!   (`ExtensionGlobalMemento` e `ExtensionMemento` sobre o `ExtHostStorage`), `secrets` (`ExtensionSecrets` sobre o
+//!   `ExtHostSecretState`), `subscriptions`, `extensionUri`, `extensionPath`, `asAbsolutePath`, `storageUri` e `storagePath`,
+//!   `globalStorageUri` e `globalStoragePath`, `logUri` e `logPath`, `extensionMode`, `extension` e `environmentVariableCollection`
+//!   (sobre o `ExtHostTerminalService`). Cada grupo existe se o binder do host registrou o cliente `MainThread*` de que ele depende
+//!   (`MainThreadStorage`, `MainThreadSecretState`, `MainThreadTerminalService`) e, para os URIs, entregou o
+//!   `extension_storage_environment`; `languageModelAccessInformation`, `extensionRuntime` e `messagePassingProtocol` ficam de fora.
+//!   O contexto é montado sem congelar e com os acessores lidos uma vez (detalhes no cabeçalho do módulo `extension_context`).
 //! - **`_startExtensionHost`** cobre a ativação `*` e `onStartupFinished`. `workspaceContains:` (precisa do `ExtHostWorkspace`) e
 //!   `onResolveRemoteAuthority:` (host local não tem autoridade) ficam de fora; a espera de 10 s do original pelo término das
 //!   ativações antes de `onStartupFinished` é a própria espera pelas ativações eager (sem relógio).
@@ -66,10 +70,9 @@ use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner};
 
 use crate::api::commands::settle_js_result;
 use crate::api::disposable::DisposableTable;
-use crate::convert::{dynamic_to_js, field, js_to_dynamic, js_to_error};
+use crate::api::extension_context::{ExtensionContextServices, LoadedContext, load_extension_context};
+use crate::convert::{dynamic_to_js, field, js_to_error};
 
-/// `ExtensionMode.Production`.
-const EXTENSION_MODE_PRODUCTION: f64 = 1.0;
 
 /// `SyncedActivationEventsReader`: os eventos de ativação que o workbench calculou (ele conhece todos os pontos de extensão), por
 /// extensão.
@@ -161,6 +164,7 @@ pub struct ExtHostExtensionService {
     global_registry: Rc<ExtensionDescriptionRegistry>,
     my_registry: Rc<ExtensionDescriptionRegistry>,
     activator: RefCell<Option<Rc<ExtensionsActivator>>>,
+    context_services: RefCell<ExtensionContextServices>,
     started: Cell<bool>,
     auto_start: bool,
 }
@@ -232,6 +236,7 @@ impl ExtHostExtensionService {
             global_registry: global_registry.clone(),
             my_registry: my_registry.clone(),
             activator: RefCell::new(None),
+            context_services: RefCell::new(ExtensionContextServices::default()),
             started: Cell::new(false),
             auto_start,
         });
@@ -375,8 +380,8 @@ impl ExtHostExtensionService {
                 activation_times_builder.borrow_mut().code_loading_stop();
                 loaded?
             };
-            let (context_data, subscriptions) = this.load_extension_context(&extension_description);
-            this.call_activate(&extension_description.identifier, extension_module, context_data, subscriptions, activation_times_builder).await
+            let loaded = this.load_extension_context(&extension_description).await?;
+            this.call_activate(&extension_description.identifier, extension_module, loaded, activation_times_builder).await
         })
     }
 
@@ -411,30 +416,17 @@ impl ExtHostExtensionService {
         Ok(ExtensionModule { activate, deactivate })
     }
 
-    /// `_loadExtensionContext(extensionDescription, extensionInternalStore)`, reduzido (ver a nota do módulo). Devolve o contexto e o
-    /// array `subscriptions` que a extensão preenche.
-    fn load_extension_context(&self, extension_description: &ExtensionDescription) -> (Dynamic, Rc<JsHandle>) {
+    /// `_loadExtensionContext(extensionDescription, extensionInternalStore)`: ver [`crate::api::extension_context`].
+    fn load_extension_context(&self, extension_description: &SharedExtensionDescription) -> Promise<LoadedContext> {
         self.log_service.trace(&format!("ExtensionService#loadExtensionContext {}", extension_description.identifier.value));
-        let subscriptions = Rc::new(self.runner.eval("[]", "je-exthost/subscriptions.js").expect("um array literal avalia"));
-        let extension_path = file_system_path(&extension_description.extension_location).unwrap_or_default();
-        let as_absolute_path = {
-            let base = extension_path.clone();
-            Rc::new(self.runner.make_function(
-                "asAbsolutePath",
-                1,
-                Rc::new(move |args| match args.first() {
-                    Some(JsData::Str(relative)) => Ok(JsData::Str(Path::new(&base).join(relative).to_string_lossy().into_owned())),
-                    _ => Err("asAbsolutePath: o caminho relativo precisa ser texto".to_owned()),
-                }),
-            ))
-        };
-        let context = JsData::Object(vec![
-            ("subscriptions".to_owned(), JsData::Handle(subscriptions.clone())),
-            ("extensionPath".to_owned(), JsData::Str(extension_path)),
-            ("asAbsolutePath".to_owned(), JsData::Handle(as_absolute_path)),
-            ("extensionMode".to_owned(), JsData::Num(EXTENSION_MODE_PRODUCTION)),
-        ]);
-        (js_to_dynamic(&context), subscriptions)
+        let services = self.context_services.borrow().clone();
+        load_extension_context(&self.runner, &services, &self.disposables, extension_description)
+    }
+
+    /// Liga os serviços de que o `ExtensionContext` depende (o host os monta depois de criar o serviço; ver
+    /// `ExtensionHost::bind_extension_service`).
+    pub fn bind_context_services(&self, services: ExtensionContextServices) {
+        *self.context_services.borrow_mut() = services;
     }
 
     /// `_callActivate(...)` e `_callActivateOptional(...)`.
@@ -442,13 +434,13 @@ impl ExtHostExtensionService {
         &self,
         extension_id: &ExtensionIdentifier,
         extension_module: ExtensionModule,
-        context: Dynamic,
-        subscriptions: Rc<JsHandle>,
+        loaded: LoadedContext,
         activation_times_builder: Rc<RefCell<ExtensionActivationTimesBuilder>>,
     ) -> Promise<Rc<ActivatedExtension>> {
         let this = self.this();
         let extension_id = extension_id.clone();
         async_fn(async move {
+            let LoadedContext { context, subscriptions, internal_store } = loaded;
             let exports = match &extension_module.activate {
                 Some(activate) => {
                     activation_times_builder.borrow_mut().activate_call_start();
@@ -466,7 +458,13 @@ impl ExtHostExtensionService {
             };
             let runner = this.runner.clone();
             let table = this.disposables.clone();
-            let disposable: DisposableRef = to_disposable(move || dispose_subscriptions(&runner, &table, &subscriptions));
+            let disposable: DisposableRef = to_disposable(move || {
+                dispose_subscriptions(&runner, &table, &subscriptions);
+                // `extensionInternalStore`: os mementos e os segredos da extensão.
+                for item in &internal_store {
+                    item.dispose();
+                }
+            });
             let times = activation_times_builder.borrow().build();
             Ok(Rc::new(ActivatedExtension::new(false, None, times, extension_module, Some(exports), disposable)))
         })

@@ -61,7 +61,7 @@ use je_workbench::api::common::ext_host_protocol::{
 };
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
-use je_workbench::api::common::ext_host_protocol::{
+use je_workbench::api::common::ext_host_protocol::{ExtHostSecretStateShape, ExtHostStorageShape};use je_workbench::api::common::ext_host_protocol::{
     ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
     INotebookDocumentsAndEditorsDelta, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
 };
@@ -84,6 +84,7 @@ use je_workbench::api::common::ext_host_protocol::{
 use je_platform::files::files::{FileDeleteOptions, FileOpenOptions, FileOperation, FileOverwriteOptions, FileType, FileWriteOptions, Stat, WatchOptions};
 
 use crate::api::env::HostEnvironment;
+use crate::extension_storage_paths::ExtensionStorageEnvironment;
 use crate::local_context::LocalContext;
 
 /// O que o host precisa do lado do processo dele para criar canais de saída: no original o `ExtHostOutputService` usa o `ILoggerService`
@@ -122,6 +123,12 @@ pub trait IMainThreadBinder {
 
     /// O `IClipboardService` do workbench, que `vscode.env.clipboard` usa. Sem ele o membro não existe.
     fn clipboard_service(&self) -> Option<Rc<dyn IClipboardService>> {
+        None
+    }
+
+    /// Os diretórios de log e de armazenamento que o `ExtensionContext` expõe (`logUri`, `storageUri`, `globalStorageUri` e os caminhos
+    /// equivalentes). Sem eles esses membros ficam de fora do contexto.
+    fn extension_storage_environment(&self) -> Option<ExtensionStorageEnvironment> {
         None
     }
 }
@@ -1236,8 +1243,31 @@ impl ExtHostDebugServiceShape for LateExtHostDebugService {
     }
 }
 
+/// O `ExtHostStorageShape` que ainda não existe quando o `MainThreadStorage` do workbench nasce.
+#[derive(Default)]
+pub struct LateExtHostStorage(pub Late<dyn ExtHostStorageShape>);
+
+impl ExtHostStorageShape for LateExtHostStorage {
+    fn rpc_accept_value(&self, shared: bool, extension_id: &str, value: &str) {
+        let (extension_id, value) = (extension_id.to_owned(), value.to_owned());
+        self.0.call_void(move |target| target.rpc_accept_value(shared, &extension_id, &value));
+    }
+}
+
+/// O `ExtHostSecretStateShape` que ainda não existe quando o `MainThreadSecretState` do workbench nasce.
+#[derive(Default)]
+pub struct LateExtHostSecretState(pub Late<dyn ExtHostSecretStateShape>);
+
+impl ExtHostSecretStateShape for LateExtHostSecretState {
+    fn rpc_on_did_change_password(&self, extension_id: &str, key: &str) -> Promise<()> {
+        self.0.bound().rpc_on_did_change_password(extension_id, key)
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
+    pub storage: Rc<LateExtHostStorage>,
+    pub secret_state: Rc<LateExtHostSecretState>,
     pub editor_tabs: Rc<LateExtHostEditorTabs>,
     pub scm: Rc<LateExtHostSCM>,
     pub comments: Rc<LateExtHostComments>,
@@ -1267,6 +1297,12 @@ pub struct LateForwarders {
 impl LateForwarders {
     /// Cria os encaminhadores e os registra em `local` (onde os clientes do workbench os encontram com `get_proxy`).
     pub fn register(local: &LocalContext) -> LateForwarders {
+        let storage = Rc::new(LateExtHostStorage::default());
+        let as_storage: Rc<dyn ExtHostStorageShape> = storage.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_STORAGE.sid, Rc::new(as_storage));
+        let secret_state = Rc::new(LateExtHostSecretState::default());
+        let as_secret_state: Rc<dyn ExtHostSecretStateShape> = secret_state.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_SECRET_STATE.sid, Rc::new(as_secret_state));
         let workspace = Rc::new(LateExtHostWorkspace::default());
         let configuration = Rc::new(LateExtHostConfiguration::default());
         let status_bar = Rc::new(LateExtHostStatusBar::default());
@@ -1339,7 +1375,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

@@ -13,9 +13,9 @@
 //!
 //! Falta: `Terminal#shellIntegration` e `onDidChangeTerminalShellIntegration`, `onDidStartTerminalShellExecution`,
 //! `onDidEndTerminalShellExecution` (o `ExtHostTerminalShellIntegration` portado existe, mas ainda não é criado nem ligado pelo host
-//! em processo), `environmentVariableCollection` do `ExtensionContext` (o `ExtHostExtensionService` ainda não monta o contexto com o
-//! `ExtHostStorage`), `onDidExecuteTerminalCommand`, `registerTerminalQuickFixProvider` e `registerTerminalCompletionProvider`
-//! (propostas de API fora do pedido).
+//! em processo), `onDidExecuteTerminalCommand`, `registerTerminalQuickFixProvider` e `registerTerminalCompletionProvider`
+//! (propostas de API fora do pedido). `environmentVariableCollection` do `ExtensionContext` está em
+//! [`crate::api::environment_variable_collection`].
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões e a extensão do host não habilita proposta: `onDidChangeTerminalDimensions` e
