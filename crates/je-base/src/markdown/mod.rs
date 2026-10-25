@@ -29,7 +29,7 @@ pub mod incomplete;
 pub mod render;
 pub mod sanitize;
 
-mod re;
+pub(crate) mod re;
 
 pub use incomplete::fill_in_incomplete_tokens;
 pub use render::{

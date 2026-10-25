@@ -43,6 +43,9 @@ pub struct Attribute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node {
     Text(JsString),
+    /// Um nó de comentário (`<!--...-->` ou comentário falso), com o `data` dele. Só existe no corpo; fora do
+    /// `textContent` e de `children`.
+    Comment(JsString),
     Element(Element),
 }
 
@@ -76,6 +79,7 @@ impl Element {
             match child {
                 Node::Text(text) => out.push_units(text.units()),
                 Node::Element(element) => element.collect_text(out),
+                Node::Comment(_) => {}
             }
         }
     }
@@ -89,7 +93,7 @@ impl Element {
     pub fn element_children(&self) -> impl Iterator<Item = &Element> {
         self.children.iter().filter_map(|child| match child {
             Node::Element(element) => Some(element),
-            Node::Text(_) => None,
+            Node::Text(_) | Node::Comment(_) => None,
         })
     }
 }
@@ -377,9 +381,20 @@ impl Parser {
         true
     }
 
-    /// Um comentário falso vai até o `>` (inclusive) ou o fim da entrada.
+    /// Um comentário falso vai até o `>` (inclusive) ou o fim da entrada; o `data` começa em `from`.
     fn bogus_comment(&mut self, from: usize) {
-        self.pos = find_unit(&self.units, from, cc::GreaterThan).map_or(self.units.len(), |index| index + 1);
+        let close = find_unit(&self.units, from, cc::GreaterThan);
+        self.emit_comment(from, close.unwrap_or(self.units.len()));
+        self.pos = close.map_or(self.units.len(), |index| index + 1);
+    }
+
+    /// Anexa o comentário cujo `data` é `units[start..end]` (só depois de o corpo abrir; antes dele o
+    /// comentário pertence ao documento, fora do `body`).
+    fn emit_comment(&mut self, start: usize, end: usize) {
+        if self.in_body {
+            let data = self.units[start..end].iter().map(|&unit| if unit == 0 { 0xFFFD } else { unit }).collect();
+            self.append(Node::Comment(JsString::from_units(data)));
+        }
     }
 
     fn markup_declaration(&mut self) {
@@ -402,24 +417,27 @@ impl Parser {
     /// O comentário que começa em `start` (depois de `<!--`).
     fn comment(&mut self, start: usize) {
         let tail = &self.units[start..];
-        self.pos = if tail.starts_with(&[cc::GreaterThan]) {
-            start + 1
+        // (fim do `data`, posição depois do comentário)
+        let (data_end, after) = if tail.starts_with(&[cc::GreaterThan]) {
+            (start, start + 1)
         } else if tail.starts_with(&[cc::Dash, cc::GreaterThan]) {
-            start + 2
+            (start, start + 2)
         } else {
             (start..self.units.len())
                 .find_map(|i| {
                     let rest = &self.units[i..];
                     if rest.starts_with(&[cc::Dash, cc::Dash, cc::GreaterThan]) {
-                        Some(i + 3)
+                        Some((i, i + 3))
                     } else if rest.starts_with(&[cc::Dash, cc::Dash, cc::ExclamationMark, cc::GreaterThan]) {
-                        Some(i + 4)
+                        Some((i, i + 4))
                     } else {
                         None
                     }
                 })
-                .unwrap_or(self.units.len())
+                .unwrap_or((self.units.len(), self.units.len()))
         };
+        self.emit_comment(start, data_end);
+        self.pos = after;
     }
 
     /// Tag de início ou de fim em `pos`. Uma tag sem `>` antes do fim da entrada é descartada.
