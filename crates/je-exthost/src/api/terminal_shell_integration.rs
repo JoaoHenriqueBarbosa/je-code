@@ -238,7 +238,7 @@ pub fn define_classes(runner: &NodeRunner, objects: &Rc<TerminalObjects>) {
         (
             "read".to_owned(),
             0,
-            Rc::new(move |this: &JsData, _: &[JsData]| read_to_js(&runner, &adapter, &objects.shell.execution_of(this)?)) as MethodCallback,
+            Rc::new(move |this: &JsData, _: &[JsData]| read_to_js(&runner, &adapter, &*objects.shell.execution_of(this)?)) as MethodCallback,
         )
     };
     runner.define_class(ClassSpec {
