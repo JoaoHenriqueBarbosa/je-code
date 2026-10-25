@@ -72,7 +72,8 @@ fn local_storage_get(key: &str) -> Option<String> {
     LOCAL_STORAGE.with(|storage| storage.borrow().get(key).cloned())
 }
 
-fn local_storage_set(key: &str, value: &str) {
+/// `localStorage.setItem(key, value)`: público porque os testes do original gravam a marca do cache de padrões direto.
+pub fn local_storage_set(key: &str, value: &str) {
     LOCAL_STORAGE.with(|storage| storage.borrow_mut().insert(key.to_owned(), value.to_owned()));
 }
 
