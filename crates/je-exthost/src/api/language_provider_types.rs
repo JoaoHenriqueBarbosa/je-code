@@ -18,21 +18,24 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::errors::Error;
-use je_workbench::api::common::ext_host_language_features_api::{ApiPrepareRename, ApiSemanticTokensResult, ApiSignatureHelpRef, CodeLensRef, InlayHintRef};
+use je_workbench::api::common::ext_host_language_features_api::{
+    ApiPrepareRename, ApiSemanticTokensResult, ApiSignatureHelpRef, CodeLensRef, DocumentLinkRef, InlayHintRef, OneOrMany,
+};
 use je_workbench::api::common::ext_host_types::{
-    CodeLens, Command, DocumentHighlight, DocumentHighlightKind, Documentation, FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, InlayHintLabelPart,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Color, ColorInformation, ColorPresentation, Command, DocumentHighlight, DocumentLink,
+    RangeOrPosition, Range, SymbolInformation, SymbolKind, SymbolTag, TypeHierarchyItem, DocumentHighlightKind, Documentation, FoldingRange, FoldingRangeKind, InlayHint, InlayHintKind, InlayHintLabel, InlayHintLabelPart,
     Location, ParameterInformation, ParameterLabel, SelectionRange, SemanticTokens, SemanticTokensBuilder, SemanticTokensEdit, SemanticTokensEdits, SemanticTokensLegend,
     SignatureHelp, SignatureInformation,
 };
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner};
 
 use crate::api::language_types::{
-    class_fields, command_from_js, define, define_with_getters, documentation_from_js, location_from_js, number_arg, range_field, required, strings_of, text_arg,
-    text_edits_from_js,
+    class_fields, command_from_js, define, define_with_getters, documentation_from_js, location_from_js, number_arg, range_field, required, strings_of, symbol_information_from_js,
+    symbol_kind_of, symbol_tags_of, text_arg, text_edit_from_js, text_edits_from_js,
 };
 use crate::api::types::{position_data, range_data, to_position, to_range};
 use crate::api::{handle_field, handle_object};
-use crate::convert::{api_to_js, field, is_nullish, opt_bool, opt_number, opt_string, string_arg};
+use crate::convert::{api_to_js, field, is_nullish, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
 
 fn error(message: impl Into<String>) -> Error {
     Error::new(message.into())
@@ -374,7 +377,304 @@ fn define_builder_class(runner: &NodeRunner, builders: &Rc<SemanticTokensBuilder
     })))
 }
 
+// --- links, cores
+
+fn document_link_value(value: &JsData) -> Result<DocumentLink, Error> {
+    let target = match field(value, "target") {
+        Some(target) if !is_nullish(Some(target)) => Some(uri_from_js(target).map_err(error)?),
+        _ => None,
+    };
+    let mut link = DocumentLink::new(range_field(value, "range")?, target)?;
+    link.tooltip = opt_string(field(value, "tooltip"));
+    Ok(link)
+}
+
+/// `DocumentLink | undefined | null` (o resultado de `resolveDocumentLink`).
+pub fn document_link_from_js(value: &JsData) -> Result<Option<DocumentLinkRef>, Error> {
+    one_of(value, |value| document_link_value(value).map(shared))
+}
+
+/// `DocumentLink[] | undefined | null`.
+pub fn document_links_from_js(value: &JsData) -> Result<Option<Vec<DocumentLinkRef>>, Error> {
+    list_of(value, |value| document_link_value(value).map(shared))
+}
+
+fn color_from_js(value: &JsData) -> Result<Color, Error> {
+    let channel = |name: &str| opt_number(field(value, name)).ok_or_else(|| error(format!("Color.{name} must be a number")));
+    Ok(Color::new(channel("red")?, channel("green")?, channel("blue")?, channel("alpha")?))
+}
+
+fn color_information_from_js(value: &JsData) -> Result<ColorInformation, Error> {
+    ColorInformation::new(range_field(value, "range")?, color_from_js(field(value, "color").ok_or_else(|| error("ColorInformation.color must be a Color"))?)?)
+}
+
+/// `ColorInformation[] | undefined | null`.
+pub fn color_informations_from_js(value: &JsData) -> Result<Option<Vec<ColorInformation>>, Error> {
+    list_of(value, color_information_from_js)
+}
+
+fn color_presentation_from_js(value: &JsData) -> Result<ColorPresentation, Error> {
+    let mut presentation = ColorPresentation::new(&opt_string(field(value, "label")).unwrap_or_default())?;
+    presentation.text_edit = match field(value, "textEdit") {
+        Some(edit) if !is_nullish(Some(edit)) => Some(text_edit_from_js(edit)?),
+        _ => None,
+    };
+    presentation.additional_text_edits = match field(value, "additionalTextEdits") {
+        Some(edits) => text_edits_from_js(edits)?,
+        None => None,
+    };
+    Ok(presentation)
+}
+
+/// `ColorPresentation[] | undefined | null`.
+pub fn color_presentations_from_js(value: &JsData) -> Result<Option<Vec<ColorPresentation>>, Error> {
+    list_of(value, color_presentation_from_js)
+}
+
+// --- hierarquias de chamadas e de tipos
+
+fn hierarchy_ranges_from_js(value: &JsData) -> Result<Vec<Range>, Error> {
+    match field(value, "fromRanges") {
+        Some(JsData::Array(ranges)) => ranges.iter().map(|range| to_range(range).map_err(error)).collect(),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// `CallHierarchyItem` e `TypeHierarchyItem` têm os mesmos campos: o leitor, o `JsData` e o construtor da classe são um só, a
+/// diferença é o tipo de `ext_host_types`.
+macro_rules! hierarchy_item {
+    ($item:ident, $reader:ident, $to_js:ident) => {
+        fn $reader(value: &JsData) -> Result<$item, Error> {
+            let uri = uri_from_js(field(value, "uri").ok_or_else(|| error(concat!(stringify!($item), ".uri must be a Uri")))?).map_err(error)?;
+            let mut item = $item::new(
+                symbol_kind_of(value)?,
+                &opt_string(field(value, "name")).unwrap_or_default(),
+                "",
+                uri,
+                range_field(value, "range")?,
+                range_field(value, "selectionRange")?,
+            );
+            item.detail = opt_string(field(value, "detail"));
+            item.tags = symbol_tags_of(value);
+            Ok(item)
+        }
+
+        /// O item como o objeto que o provedor recebe em `provide*Calls`/`provide*types`.
+        pub fn $to_js(item: &$item) -> JsData {
+            hierarchy_item_to_js(item.kind, item.tags.as_deref(), &item.name, item.detail.as_deref(), &item.uri, item.range, item.selection_range)
+        }
+    };
+}
+
+fn hierarchy_item_to_js(kind: SymbolKind, tags: Option<&[SymbolTag]>, name: &str, detail: Option<&str>, uri: &je_base::uri::URI, range: Range, selection_range: Range) -> JsData {
+    JsData::Object(
+        [
+            Some(("name", JsData::Str(name.to_owned()))),
+            Some(("kind", JsData::Num(f64::from(kind.value())))),
+            tags.map(|tags| ("tags", JsData::Array(tags.iter().map(|tag| JsData::Num(f64::from(tag.value()))).collect()))),
+            detail.map(|detail| ("detail", JsData::Str(detail.to_owned()))),
+            Some(("uri", uri_to_js(uri))),
+            Some(("range", range_data(range))),
+            Some(("selectionRange", range_data(selection_range))),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect(),
+    )
+}
+
+hierarchy_item!(CallHierarchyItem, call_hierarchy_item_from_js, call_hierarchy_item_to_js);
+hierarchy_item!(TypeHierarchyItem, type_hierarchy_item_from_js, type_hierarchy_item_to_js);
+
+/// `T | T[] | undefined | null`.
+fn one_or_many_from_js<T>(value: &JsData, read: impl Fn(&JsData) -> Result<T, Error>) -> Result<Option<OneOrMany<T>>, Error> {
+    match value {
+        JsData::Array(items) => items.iter().map(read).collect::<Result<Vec<_>, _>>().map(|items| Some(OneOrMany::Many(items))),
+        value => one_of(value, read).map(|item| item.map(OneOrMany::One)),
+    }
+}
+
+/// O resultado de `prepareCallHierarchy`.
+pub fn call_hierarchy_items_from_js(value: &JsData) -> Result<Option<OneOrMany<CallHierarchyItem>>, Error> {
+    one_or_many_from_js(value, call_hierarchy_item_from_js)
+}
+
+/// O resultado de `prepareTypeHierarchy`.
+pub fn type_hierarchy_items_from_js(value: &JsData) -> Result<Option<OneOrMany<TypeHierarchyItem>>, Error> {
+    one_or_many_from_js(value, type_hierarchy_item_from_js)
+}
+
+/// `TypeHierarchyItem[] | undefined | null` (supertipos e subtipos).
+pub fn type_hierarchy_item_list_from_js(value: &JsData) -> Result<Option<Vec<TypeHierarchyItem>>, Error> {
+    list_of(value, type_hierarchy_item_from_js)
+}
+
+/// `CallHierarchyIncomingCall[] | undefined | null`.
+pub fn call_hierarchy_incoming_calls_from_js(value: &JsData) -> Result<Option<Vec<CallHierarchyIncomingCall>>, Error> {
+    list_of(value, |call| {
+        let from = call_hierarchy_item_from_js(field(call, "from").ok_or_else(|| error("CallHierarchyIncomingCall.from must be a CallHierarchyItem"))?)?;
+        Ok(CallHierarchyIncomingCall::new(from, hierarchy_ranges_from_js(call)?))
+    })
+}
+
+/// `CallHierarchyOutgoingCall[] | undefined | null`.
+pub fn call_hierarchy_outgoing_calls_from_js(value: &JsData) -> Result<Option<Vec<CallHierarchyOutgoingCall>>, Error> {
+    list_of(value, |call| {
+        let to = call_hierarchy_item_from_js(field(call, "to").ok_or_else(|| error("CallHierarchyOutgoingCall.to must be a CallHierarchyItem"))?)?;
+        Ok(CallHierarchyOutgoingCall::new(to, hierarchy_ranges_from_js(call)?))
+    })
+}
+
+// --- símbolos do espaço de trabalho
+
+/// `SymbolInformation[] | undefined | null`.
+pub fn symbol_informations_from_js(value: &JsData) -> Result<Option<Vec<SymbolInformation>>, Error> {
+    list_of(value, symbol_information_from_js)
+}
+
+/// `SymbolInformation | undefined | null` (o resultado de `resolveWorkspaceSymbol`).
+pub fn symbol_information_result_from_js(value: &JsData) -> Result<Option<SymbolInformation>, Error> {
+    one_of(value, symbol_information_from_js)
+}
+
+/// O símbolo como o objeto que `resolveWorkspaceSymbol` recebe.
+pub fn symbol_information_to_js(symbol: &SymbolInformation) -> JsData {
+    JsData::Object(
+        [
+            Some(("name", JsData::Str(symbol.name.clone()))),
+            Some(("kind", JsData::Num(f64::from(symbol.kind.value())))),
+            symbol.container_name.as_ref().map(|name| ("containerName", JsData::Str(name.clone()))),
+            symbol.tags.as_ref().map(|tags| ("tags", JsData::Array(tags.iter().map(|tag| JsData::Num(f64::from(tag.value()))).collect()))),
+            Some(("location", api_to_js(&symbol.location))),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect(),
+    )
+}
+
 // --- classes
+
+/// `new SymbolInformation(name, kind, containerName, location)` ou `new SymbolInformation(name, kind, range, uri?, containerName?)`.
+fn symbol_information_class_fields(args: &[JsData]) -> Result<JsData, String> {
+    let name = string_arg(args, 0, "SymbolInformation: o nome")?;
+    let kind = number_arg(args, 1).ok_or("SymbolInformation: o tipo (kind) é obrigatório")?;
+    let by_range = args.get(2).is_some_and(|value| field(value, "start").is_some());
+    let (location, container_name) = if by_range {
+        let range = to_range(required(args, 2, "SymbolInformation: o intervalo")?)?;
+        let uri = args.get(3).filter(|uri| !is_nullish(Some(*uri))).map(uri_from_js).transpose()?;
+        (api_to_js(&Location::new(uri, Some(RangeOrPosition::Range(range)))), text_arg(args, 4))
+    } else {
+        (required(args, 3, "SymbolInformation: a localização")?.clone(), text_arg(args, 2))
+    };
+    Ok(class_fields(vec![
+        ("name", Some(JsData::Str(name))),
+        ("kind", Some(kind)),
+        ("containerName", container_name.map(JsData::Str)),
+        ("location", Some(location)),
+    ]))
+}
+
+/// `new CallHierarchyItem(kind, name, detail, uri, range, selectionRange)` (e o `TypeHierarchyItem`, que tem os mesmos argumentos).
+fn hierarchy_class_fields(class: &str, args: &[JsData]) -> Result<JsData, String> {
+    Ok(class_fields(vec![
+        ("kind", Some(number_arg(args, 0).ok_or_else(|| format!("{class}: o tipo (kind) é obrigatório"))?)),
+        ("name", Some(JsData::Str(string_arg(args, 1, &format!("{class}: o nome"))?))),
+        ("detail", text_arg(args, 2).map(JsData::Str)),
+        ("uri", Some(required(args, 3, &format!("{class}: a uri"))?.clone())),
+        ("range", Some(range_data(to_range(required(args, 4, &format!("{class}: o intervalo"))?)?))),
+        ("selectionRange", Some(range_data(to_range(required(args, 5, &format!("{class}: o intervalo de seleção"))?)?))),
+    ]))
+}
+
+/// As classes de links, cores, hierarquias e símbolos do espaço de trabalho.
+fn hierarchy_classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
+    let entry = |name: &str, value: JsData| (name.to_owned(), value);
+    let calls = |name: &'static str, second: &'static str| {
+        define(
+            runner,
+            name,
+            2,
+            move |args| Ok(class_fields(vec![(second, Some(required(args, 0, &format!("{name}: o item"))?.clone())), ("fromRanges", Some(array_or_empty(args, 1)))])),
+            vec![],
+        )
+    };
+    vec![
+        entry(
+            "DocumentLink",
+            define(
+                runner,
+                "DocumentLink",
+                2,
+                |args| {
+                    let range = to_range(required(args, 0, "DocumentLink: o intervalo")?)?;
+                    if range.is_empty() {
+                        return Err("DocumentLink: o intervalo não pode ser vazio".to_owned());
+                    }
+                    Ok(class_fields(vec![("range", Some(range_data(range))), ("target", optional_arg(args, 1))]))
+                },
+                vec![],
+            ),
+        ),
+        entry(
+            "Color",
+            define(
+                runner,
+                "Color",
+                4,
+                |args| {
+                    let channel = |index: usize, name: &str| number_arg(args, index).ok_or_else(|| format!("Color: {name} é obrigatório"));
+                    Ok(class_fields(vec![
+                        ("red", Some(channel(0, "red")?)),
+                        ("green", Some(channel(1, "green")?)),
+                        ("blue", Some(channel(2, "blue")?)),
+                        ("alpha", Some(channel(3, "alpha")?)),
+                    ]))
+                },
+                vec![],
+            ),
+        ),
+        entry(
+            "ColorInformation",
+            define(
+                runner,
+                "ColorInformation",
+                2,
+                |args| {
+                    let range = to_range(required(args, 0, "ColorInformation: o intervalo")?)?;
+                    if range.is_empty() {
+                        return Err("ColorInformation: o intervalo não pode ser vazio".to_owned());
+                    }
+                    Ok(class_fields(vec![("range", Some(range_data(range))), ("color", Some(required(args, 1, "ColorInformation: a cor")?.clone()))]))
+                },
+                vec![],
+            ),
+        ),
+        entry(
+            "ColorPresentation",
+            define(
+                runner,
+                "ColorPresentation",
+                1,
+                |args| {
+                    let label = string_arg(args, 0, "ColorPresentation: o rótulo")?;
+                    if label.is_empty() {
+                        return Err("ColorPresentation: o rótulo não pode ser vazio".to_owned());
+                    }
+                    Ok(class_fields(vec![("label", Some(JsData::Str(label)))]))
+                },
+                vec![],
+            ),
+        ),
+        entry("SymbolInformation", define(runner, "SymbolInformation", 4, symbol_information_class_fields, vec![])),
+        entry("CallHierarchyItem", define(runner, "CallHierarchyItem", 6, |args| hierarchy_class_fields("CallHierarchyItem", args), vec![])),
+        entry("TypeHierarchyItem", define(runner, "TypeHierarchyItem", 6, |args| hierarchy_class_fields("TypeHierarchyItem", args), vec![])),
+        entry("CallHierarchyIncomingCall", calls("CallHierarchyIncomingCall", "from")),
+        entry("CallHierarchyOutgoingCall", calls("CallHierarchyOutgoingCall", "to")),
+    ]
+}
 
 fn array_or_empty(args: &[JsData], index: usize) -> JsData {
     match args.get(index) {
@@ -561,4 +861,7 @@ pub fn classes(runner: &NodeRunner, builders: &Rc<SemanticTokensBuilders>) -> Ve
         ),
         entry("SemanticTokensBuilder", define_builder_class(runner, builders)),
     ]
+    .into_iter()
+    .chain(hierarchy_classes(runner))
+    .collect()
 }

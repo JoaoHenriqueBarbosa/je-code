@@ -360,17 +360,17 @@ pub(crate) fn code_action_raw_entries(entries: &[JsData]) -> impl Iterator<Item 
     entries.iter().filter(|entry| !is_nullish(Some(*entry)))
 }
 
-fn symbol_kind_of(value: &JsData) -> Result<SymbolKind, Error> {
+pub(crate) fn symbol_kind_of(value: &JsData) -> Result<SymbolKind, Error> {
     opt_number(field(value, "kind"))
         .and_then(|kind| SymbolKind::from_value(kind as i32))
         .ok_or_else(|| Error::type_error("SymbolKind must be a number of the SymbolKind enum"))
 }
 
-fn symbol_tags_of(value: &JsData) -> Option<Vec<SymbolTag>> {
+pub(crate) fn symbol_tags_of(value: &JsData) -> Option<Vec<SymbolTag>> {
     numbers_of(field(value, "tags")).map(|tags| tags.into_iter().filter_map(SymbolTag::from_value).collect())
 }
 
-fn symbol_information_from_js(value: &JsData) -> Result<SymbolInformation, Error> {
+pub(crate) fn symbol_information_from_js(value: &JsData) -> Result<SymbolInformation, Error> {
     let location = field(value, "location").ok_or_else(|| error("SymbolInformation.location must be a Location"))?;
     let mut information = SymbolInformation::new(
         &opt_string(field(value, "name")).unwrap_or_default(),

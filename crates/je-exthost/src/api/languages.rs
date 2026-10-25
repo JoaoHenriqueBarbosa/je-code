@@ -477,6 +477,18 @@ pub(crate) struct Registrar {
 }
 
 impl Registrar {
+    /// O provedor JavaScript (o objeto por referência) com o que a conversão precisa.
+    pub(crate) fn js_provider(&self, provider: &Rc<JsHandle>) -> JsProvider {
+        JsProvider {
+            provider: provider.clone(),
+            objects: self.objects.clone(),
+            events: self.events.clone(),
+            js: self.js.clone(),
+            table: self.table.clone(),
+            edits: self.edits.clone(),
+        }
+    }
+
     /// Os argumentos `(selector, provider, ...rest)` de um `register*Provider`: lê o seletor, monta o provedor e devolve o `Disposable`
     /// do registro.
     pub(crate) fn register(
@@ -486,14 +498,7 @@ impl Registrar {
     ) -> Result<JsData, String> {
         let selector = selector_from(&exported(&self.runner, args.first().ok_or("o seletor é obrigatório")?))?;
         let Some(JsData::Handle(provider)) = args.get(1) else { return Err("o provedor precisa ser um objeto".to_owned()) };
-        let provider = JsProvider {
-            provider: provider.clone(),
-            objects: self.objects.clone(),
-            events: self.events.clone(),
-            js: self.js.clone(),
-            table: self.table.clone(),
-            edits: self.edits.clone(),
-        };
+        let provider = self.js_provider(provider);
         let registration = build(&*self.features, &*self.extension, &selector, provider, args.get(2..).unwrap_or(&[]));
         Ok(self.table.to_js(registration))
     }

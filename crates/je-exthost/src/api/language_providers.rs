@@ -4,18 +4,21 @@
 //! `registerOnTypeFormattingEditProvider`, `registerFoldingRangeProvider` (com `onDidChangeFoldingRanges`),
 //! `registerSelectionRangeProvider`, `registerDocumentSemanticTokensProvider` (com `provideDocumentSemanticTokensEdits` e
 //! `onDidChangeSemanticTokens`), `registerDocumentRangeSemanticTokensProvider` e `registerInlayHintsProvider` (com `resolveInlayHint` e
-//! `onDidChangeInlayHints`).
+//! `onDidChangeInlayHints`), e, na terceira leva, `registerDocumentLinkProvider` (com `resolveDocumentLink`), `registerColorProvider`,
+//! `registerCallHierarchyProvider`, `registerTypeHierarchyProvider` e `registerWorkspaceSymbolProvider` (com `resolveWorkspaceSymbol`).
 //!
 //! Ligam o provedor JavaScript (por referência, com o `this` da classe) ao `ExtHostLanguageFeatures` portado, no mesmo molde dos de
 //! `languages`: a infraestrutura (`JsProvider`, `Registrar`, `member`, `simple`, `Originals`) é a de lá, as classes de valor e os leitores
 //! estão em `language_provider_types`. Os `has_*` do trait são `typeof provider.resolveX === 'function'` lido no objeto do provedor.
 //!
-//! Falta (o serviço do host tem, falta só a ponte): `registerDocumentLinkProvider`, `registerColorProvider`,
-//! `registerCallHierarchyProvider`, `registerTypeHierarchyProvider`, `registerWorkspaceSymbolProvider`,
-//! `registerEvaluatableExpressionProvider`, `registerInlineValuesProvider`, `registerLinkedEditingRangeProvider`,
-//! `registerMultiDocumentHighlightProvider`, `registerDocumentPasteEditProvider`, `registerDocumentDropEditProvider` e as propostas.
+//! Falta (o serviço do host tem, falta só a ponte): `registerEvaluatableExpressionProvider`, `registerInlineValuesProvider`,
+//! `registerLinkedEditingRangeProvider`, `registerMultiDocumentHighlightProvider`, `registerDocumentPasteEditProvider`,
+//! `registerDocumentDropEditProvider` e as propostas.
 //!
 //! Divergências:
+//! - Os itens de hierarquia (`CallHierarchyItem`, `TypeHierarchyItem`) e o `SymbolInformation` do `resolveWorkspaceSymbol` chegam ao provedor
+//!   como objetos novos feitos do valor do host (o host os guarda por valor, não por referência): uma propriedade extra que o provedor
+//!   pôs no item devolvido não volta nele.
 //! - O evento `onDidChangeX` do provedor é lido uma vez, no registro: o evento que o provedor troca depois não vale.
 //! - `FoldingContext` é um objeto vazio (como no `vscode.d.ts`).
 //! - `provideDocumentSemanticTokens` devolve `SemanticTokens`, e `provideDocumentSemanticTokensEdits` aceita também `SemanticTokensEdits`
@@ -30,28 +33,32 @@ use je_editor::folding::syntax_range_provider::FoldingContext;
 use je_workbench::api::common::ext_host_document_data::TextDocument;
 use je_workbench::api::common::ext_host_language_features::ExtHostLanguageFeatures;
 use je_workbench::api::common::ext_host_language_features_api::{
-    ApiCodeLensProvider, ApiDocumentHighlightProvider, ApiDocumentRangeSemanticTokensProvider, ApiDocumentSemanticTokensProvider, ApiFoldingRangeProvider, ApiInlayHintsProvider,
-    ApiOnTypeFormattingEditProvider, ApiPrepareRename, ApiProviderResult, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider, ApiSemanticTokensResult,
-    ApiSignatureHelpContext, ApiSignatureHelpProvider, ApiSignatureHelpRef, CodeLensRef, InlayHintRef, SignatureHelpMetadataOrTriggerChars,
+    ApiCallHierarchyProvider, ApiCodeLensProvider, ApiColorPresentationContext, ApiDocumentColorProvider, ApiDocumentHighlightProvider, ApiDocumentLinkProvider,
+    ApiDocumentRangeSemanticTokensProvider, ApiDocumentSemanticTokensProvider, ApiFoldingRangeProvider, ApiInlayHintsProvider, ApiOnTypeFormattingEditProvider, ApiPrepareRename,
+    ApiProviderResult, ApiReferenceProvider, ApiRenameProvider, ApiSelectionRangeProvider, ApiSemanticTokensResult, ApiSignatureHelpContext, ApiSignatureHelpProvider,
+    ApiSignatureHelpRef, ApiTypeHierarchyProvider, ApiWorkspaceSymbolProvider, CodeLensRef, DocumentLinkRef, InlayHintRef, OneOrMany, SignatureHelpMetadataOrTriggerChars,
 };
 use je_workbench::api::common::ext_host_protocol::{FormattingOptions, ReferenceContext};
 use je_workbench::api::common::ext_host_type_converters::DocumentSelectorInput;
 use je_workbench::api::common::ext_host_types::{
-    CodeLens, DocumentHighlight, FoldingRange, InlayHint, Location, Position, Range, SelectionRange, SemanticTokens, SemanticTokensLegend, TextEdit, WorkspaceEdit,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeLens, Color, ColorInformation, ColorPresentation, DocumentHighlight, DocumentLink,
+    FoldingRange, InlayHint, Location, Position, Range, SelectionRange, SemanticTokens, SemanticTokensLegend, SymbolInformation, TextEdit, TypeHierarchyItem, WorkspaceEdit,
 };
 use je_extensions::scanner::ExtensionDescription;
 use je_base::lifecycle::DisposableRef;
 use zjsc::api::embed_node::{JsData, NodeRunner};
 
 use crate::api::language_provider_types::{
-    code_lens_from_js, code_lenses_from_js, document_highlights_from_js, folding_ranges_from_js, inlay_hint_from_js, inlay_hints_from_js, locations_from_js,
-    prepare_rename_from_js, selection_ranges_from_js, semantic_tokens_from_js, semantic_tokens_legend_from_js, semantic_tokens_result_from_js, signature_help_from_js,
-    signature_help_to_js,
+    call_hierarchy_incoming_calls_from_js, call_hierarchy_item_to_js, call_hierarchy_items_from_js, call_hierarchy_outgoing_calls_from_js, code_lens_from_js,
+    code_lenses_from_js, color_informations_from_js, color_presentations_from_js, document_highlights_from_js, document_link_from_js, document_links_from_js,
+    folding_ranges_from_js, inlay_hint_from_js, inlay_hints_from_js, locations_from_js, prepare_rename_from_js, selection_ranges_from_js, semantic_tokens_from_js,
+    semantic_tokens_legend_from_js, semantic_tokens_result_from_js, signature_help_from_js, signature_help_to_js, symbol_information_result_from_js,
+    symbol_information_to_js, symbol_informations_from_js, type_hierarchy_item_list_from_js, type_hierarchy_item_to_js, type_hierarchy_items_from_js,
 };
 use crate::api::language_types::{strings_of, text_edits_from_js};
 use crate::api::languages::{formatting_options_to_js, member, simple, JsProvider, Originals, Registrar};
 use crate::api::types::{position_data, range_data};
-use crate::convert::{exported, field, is_nullish, opt_string};
+use crate::convert::{api_to_js, exported, field, is_nullish, opt_string};
 
 // --- lente de código
 
@@ -270,6 +277,99 @@ impl ApiInlayHintsProvider for InlayHintsProvider {
     }
 }
 
+// --- links, cores
+
+struct DocumentLinkProvider {
+    js: JsProvider,
+    originals: Rc<Originals<DocumentLink>>,
+}
+
+impl ApiDocumentLinkProvider for DocumentLinkProvider {
+    fn provide_document_links(&self, document: &TextDocument, token: CancellationToken) -> ApiProviderResult<Vec<DocumentLinkRef>> {
+        let originals = self.originals.clone();
+        self.js.invoke("provideDocumentLinks", vec![self.js.document(document), self.js.token(token)], move |value| {
+            let links = document_links_from_js(value)?;
+            if let (Some(links), JsData::Array(raw)) = (&links, value) {
+                originals.remember(links.iter().zip(raw));
+            }
+            Ok(links)
+        })
+    }
+
+    fn has_resolve_document_link(&self) -> bool {
+        self.js.has_method("resolveDocumentLink")
+    }
+
+    fn resolve_document_link(&self, link: &DocumentLinkRef, token: CancellationToken) -> ApiProviderResult<DocumentLinkRef> {
+        self.js.resolve("resolveDocumentLink", &self.originals, link, token, document_link_from_js)
+    }
+}
+
+struct ColorProvider(JsProvider);
+
+impl ApiDocumentColorProvider for ColorProvider {
+    fn provide_document_colors(&self, document: &TextDocument, token: CancellationToken) -> ApiProviderResult<Vec<ColorInformation>> {
+        self.0.invoke("provideDocumentColors", vec![self.0.document(document), self.0.token(token)], color_informations_from_js)
+    }
+
+    fn provide_color_presentations(&self, color: &Color, context: &ApiColorPresentationContext, token: CancellationToken) -> ApiProviderResult<Vec<ColorPresentation>> {
+        let context = JsData::Object(vec![("document".to_owned(), self.0.document(&context.document)), ("range".to_owned(), range_data(context.range))]);
+        self.0.invoke("provideColorPresentations", vec![api_to_js(color), context, self.0.token(token)], color_presentations_from_js)
+    }
+}
+
+// --- hierarquias
+
+struct CallHierarchyProvider(JsProvider);
+
+impl ApiCallHierarchyProvider for CallHierarchyProvider {
+    fn prepare_call_hierarchy(&self, document: &TextDocument, position: &Position, token: CancellationToken) -> ApiProviderResult<OneOrMany<CallHierarchyItem>> {
+        self.0.invoke("prepareCallHierarchy", vec![self.0.document(document), position_data(*position), self.0.token(token)], call_hierarchy_items_from_js)
+    }
+
+    fn provide_call_hierarchy_incoming_calls(&self, item: &CallHierarchyItem, token: CancellationToken) -> ApiProviderResult<Vec<CallHierarchyIncomingCall>> {
+        self.0.invoke("provideCallHierarchyIncomingCalls", vec![call_hierarchy_item_to_js(item), self.0.token(token)], call_hierarchy_incoming_calls_from_js)
+    }
+
+    fn provide_call_hierarchy_outgoing_calls(&self, item: &CallHierarchyItem, token: CancellationToken) -> ApiProviderResult<Vec<CallHierarchyOutgoingCall>> {
+        self.0.invoke("provideCallHierarchyOutgoingCalls", vec![call_hierarchy_item_to_js(item), self.0.token(token)], call_hierarchy_outgoing_calls_from_js)
+    }
+}
+
+struct TypeHierarchyProvider(JsProvider);
+
+impl ApiTypeHierarchyProvider for TypeHierarchyProvider {
+    fn prepare_type_hierarchy(&self, document: &TextDocument, position: &Position, token: CancellationToken) -> ApiProviderResult<OneOrMany<TypeHierarchyItem>> {
+        self.0.invoke("prepareTypeHierarchy", vec![self.0.document(document), position_data(*position), self.0.token(token)], type_hierarchy_items_from_js)
+    }
+
+    fn provide_type_hierarchy_supertypes(&self, item: &TypeHierarchyItem, token: CancellationToken) -> ApiProviderResult<Vec<TypeHierarchyItem>> {
+        self.0.invoke("provideTypeHierarchySupertypes", vec![type_hierarchy_item_to_js(item), self.0.token(token)], type_hierarchy_item_list_from_js)
+    }
+
+    fn provide_type_hierarchy_subtypes(&self, item: &TypeHierarchyItem, token: CancellationToken) -> ApiProviderResult<Vec<TypeHierarchyItem>> {
+        self.0.invoke("provideTypeHierarchySubtypes", vec![type_hierarchy_item_to_js(item), self.0.token(token)], type_hierarchy_item_list_from_js)
+    }
+}
+
+// --- símbolos do espaço de trabalho
+
+struct WorkspaceSymbolProvider(JsProvider);
+
+impl ApiWorkspaceSymbolProvider for WorkspaceSymbolProvider {
+    fn provide_workspace_symbols(&self, query: &str, token: CancellationToken) -> ApiProviderResult<Vec<SymbolInformation>> {
+        self.0.invoke("provideWorkspaceSymbols", vec![JsData::Str(query.to_owned()), self.0.token(token)], symbol_informations_from_js)
+    }
+
+    fn has_resolve_workspace_symbol(&self) -> bool {
+        self.0.has_method("resolveWorkspaceSymbol")
+    }
+
+    fn resolve_workspace_symbol(&self, symbol: &SymbolInformation, token: CancellationToken) -> ApiProviderResult<SymbolInformation> {
+        self.0.invoke("resolveWorkspaceSymbol", vec![symbol_information_to_js(symbol), self.0.token(token)], symbol_information_result_from_js)
+    }
+}
+
 // --- os registros
 
 /// `registerSignatureHelpProvider(selector, provider, firstItem?, ...remaining)`: um objeto é o `SignatureHelpProviderMetadata`, o resto são
@@ -300,6 +400,24 @@ fn register_semantic_tokens(
 /// As funções `register*Provider` desta leva, cada uma por referência.
 pub(crate) fn members(runner: &NodeRunner, registrar: &Rc<Registrar>) -> Vec<(String, JsData)> {
     vec![
+        simple(runner, registrar, "registerDocumentLinkProvider", |features, extension, selector, provider| {
+            features.register_document_link_provider(extension, selector, Rc::new(DocumentLinkProvider { js: provider, originals: Rc::default() }))
+        }),
+        simple(runner, registrar, "registerColorProvider", |features, extension, selector, provider| {
+            features.register_color_provider(extension, selector, Rc::new(ColorProvider(provider)))
+        }),
+        simple(runner, registrar, "registerCallHierarchyProvider", |features, extension, selector, provider| {
+            features.register_call_hierarchy_provider(extension, selector, Rc::new(CallHierarchyProvider(provider)))
+        }),
+        simple(runner, registrar, "registerTypeHierarchyProvider", |features, extension, selector, provider| {
+            features.register_type_hierarchy_provider(extension, selector, Rc::new(TypeHierarchyProvider(provider)))
+        }),
+        // `registerWorkspaceSymbolProvider(provider)`: sem seletor.
+        member(runner, registrar, "registerWorkspaceSymbolProvider", 1, |registrar, args| {
+            let Some(JsData::Handle(provider)) = args.first() else { return Err("o provedor precisa ser um objeto".to_owned()) };
+            let registration = registrar.features.register_workspace_symbol_provider(&registrar.extension, Rc::new(WorkspaceSymbolProvider(registrar.js_provider(provider))));
+            Ok(registrar.table.to_js(registration))
+        }),
         simple(runner, registrar, "registerCodeLensProvider", |features, extension, selector, provider| {
             features.register_code_lens_provider(extension, selector, Rc::new(CodeLensProvider::new(provider)))
         }),
