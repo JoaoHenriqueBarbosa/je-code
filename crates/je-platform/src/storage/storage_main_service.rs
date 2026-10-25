@@ -22,6 +22,11 @@
 //!   de aplicação; `hasScope`, `switchToProfile` e `switchToWorkspace` lançam, como no original. O estreitamento do
 //!   escopo no tipo (`ApplicationStorageScope`) não existe: qualquer outro escopo não tem armazém (`getStorage` devolve
 //!   `None`). O `switch()` sobrescrito é [`ApplicationStorageMainService::switch`].
+//! - **`onWillShutdown`** fecha os armazéns que ainda estão no mapa do serviço (aplicação, compartilhado, perfis e
+//!   workspaces), como o original. O cliente do processo único ([`SqliteStorageService`](super::SqliteStorageService))
+//!   fecha por conta própria só o armazém do workspace; o `onDidCloseStorage` o tira do mapa, então ele não é fechado de
+//!   novo aqui. O `onDidChangeStorage` e o `onDidChangeProfileStorage` carregam só a chave (`IStorageChangeEvent` de
+//!   `storageMain.ts`); o `external` do cliente vem de [`IStorageMain::on_did_change_client_storage`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};

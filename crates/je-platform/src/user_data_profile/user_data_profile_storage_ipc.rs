@@ -29,12 +29,11 @@ use je_base::errors::Error;
 use je_base::event::{DebounceOptions, Emitter, EmitterOptions, Event};
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, MutableDisposable};
 use je_base::promise::Promise;
-use je_storage::StorageChangeEvent;
 
 use super::user_data_profile_storage_service::{ProfileStorageChanges, ProfileStorageValueChanges};
 use super::{IUserDataProfilesService, UserDataProfile};
 use crate::log::{LogServiceRef, Logger};
-use crate::storage::{IStorageMain, IStorageMainService, ProfileStorageChangeEvent, StorageScope, StorageTarget, StorageValueChangeEvent, TARGET_KEY, load_key_targets};
+use crate::storage::{IStorageMain, IStorageMainService, ProfileStorageChangeEvent, StorageMainChangeEvent, StorageScope, StorageTarget, StorageValueChangeEvent, TARGET_KEY, load_key_targets};
 
 /// O valor acumulado por perfil durante o debounce: `{ profile, keys, storage }`.
 struct PendingProfileChanges {
@@ -94,7 +93,7 @@ impl ProfileStorageChangesListenerChannel {
         let disposables = DisposableStore::new();
 
         let on_did_change_application_storage = self.storage_main_service.application_storage().on_did_change_storage().debounce(
-            |keys: Option<Vec<String>>, e: &StorageChangeEvent| {
+            |keys: Option<Vec<String>>, e: &StorageMainChangeEvent| {
                 let mut keys = keys.unwrap_or_default();
                 keys.push(e.key.clone());
                 keys

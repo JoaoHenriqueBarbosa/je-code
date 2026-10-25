@@ -18,7 +18,7 @@ pub use sqlite_storage_service::{SqliteStorageService, StorageServiceOptions};
 pub use storage::*;
 pub use storage_ipc::{SerializableItemsChangeEvent, StorageCallResult, StorageDatabaseChannel, StorageRequest};
 pub use storage_main::{
-    ApplicationSharedStorageMain, ApplicationStorageMain, BaseStorageMain, IStorageMain, InMemoryStorageMain, ProfileStorageMain, StorageMainOptions, WorkspaceStorageMain,
+    ApplicationSharedStorageMain, ApplicationStorageMain, BaseStorageMain, IStorageMain, InMemoryStorageMain, ProfileStorageMain, StorageMainChangeEvent, StorageMainOptions, WorkspaceStorageMain,
 };
 pub use storage_main_service::{
     ApplicationStorageMainService, I_STORAGE_MAIN_SERVICE, IStorageMainService, ProfileStorageChangeEvent, StorageMainService,

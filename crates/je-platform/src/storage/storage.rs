@@ -6,8 +6,9 @@
 //!   (`doInitialize`, `getStorage`, `getLogDetails`, `hasScope`, `switchToProfile`, `switchToWorkspace`,
 //!   `shouldFlushWhenIdle`) como um [`StorageBackend`]. O [`InMemoryStorageService`] e o
 //!   [`SqliteStorageService`](super::SqliteStorageService) são backends diferentes sobre o mesmo núcleo.
-//! - **`IUserDataProfile` e `IAnyWorkspaceIdentifier`** (de `userDataProfile` e `workspace`, não portados) são os
-//!   tipos mínimos [`StorageProfile`] e [`StorageWorkspace`], só com o que o armazenamento lê.
+//! - **`IUserDataProfile` e `IAnyWorkspaceIdentifier`** (de `userDataProfile` e `workspace`) são os tipos mínimos
+//!   [`StorageProfile`] e [`StorageWorkspace`], só com o que o armazenamento lê (o workspace leva também o identificador
+//!   completo, para o armazém do main gravar o `workspace.json`).
 //! - **Sobrecargas** de `get`, `getBoolean`, `getNumber` e `getObject` (com e sem `fallbackValue`) são um
 //!   único método com `fallback_value: Option<...>`, que devolve `Option`; os valores vêm do `je-storage`
 //!   (`StorageValue`, e o objeto como [`Value`] JSON).
@@ -28,6 +29,8 @@ use je_base::map::OrderedMap;
 use je_base::promise::Promise;
 use je_instantiation::service_id;
 use je_storage::{IStorage, InMemoryStorageDatabase, Storage, StorageChangeEvent, StorageHint, StorageOptions, StorageValue};
+
+use crate::workspace::AnyWorkspaceIdentifier;
 
 pub const IS_NEW_KEY: &str = "__$__isNewStorageMarker";
 pub const TARGET_KEY: &str = "__$__targetStorageMarker";
@@ -110,10 +113,26 @@ pub struct StorageProfile {
     pub global_storage_home: je_base::uri::URI,
 }
 
-/// `IAnyWorkspaceIdentifier`, só com o `id`.
+/// `IAnyWorkspaceIdentifier`: o `id` que o armazenamento lê, mais o identificador completo quando quem troca de
+/// workspace o tem (o armazém do main grava o `workspace.json` com a origem do workspace, que o `id` sozinho não traz).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageWorkspace {
     pub id: String,
+    /// O identificador completo; `None` para quem só conhece o `id` (o armazém do navegador, que não tem pasta).
+    pub identifier: Option<AnyWorkspaceIdentifier>,
+}
+
+impl StorageWorkspace {
+    /// Um workspace conhecido só pelo `id`.
+    pub fn from_id(id: impl Into<String>) -> Self {
+        Self { id: id.into(), identifier: None }
+    }
+}
+
+impl From<&AnyWorkspaceIdentifier> for StorageWorkspace {
+    fn from(workspace: &AnyWorkspaceIdentifier) -> Self {
+        Self { id: workspace.id().to_string(), identifier: Some(workspace.clone()) }
+    }
 }
 
 /// O `IAnyWorkspaceIdentifier | IUserDataProfile` de `hasScope` e `switch`.

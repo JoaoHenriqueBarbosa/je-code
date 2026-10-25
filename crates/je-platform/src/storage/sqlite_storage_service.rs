@@ -12,27 +12,37 @@
 //! - compartilhado: `<appSharedDataHome>/sharedStorage/state.vscdb`;
 //! - workspace: `<User>/workspaceStorage/<id>/state.vscdb`.
 //!
-//! Divergências:
-//! - o `close()` do original fecha os `Storage` do cliente (que só avisam o IPC); aqui os armazéns são do
-//!   [`StorageMainService`], que os fecha no `onWillShutdown`. O `close()` avisa o `onWillSaveState` (`SHUTDOWN`) como o
-//!   original e descarrega as escritas pendentes dos armazéns (`flush` com `SHUTDOWN`), para o que foi gravado estar no
-//!   disco quando a promessa assentar.
-//! - na troca de perfil o armazém antigo não é fechado (é do [`StorageMainService`] e outras janelas podem usá-lo).
-//! - o destino de `switch` para um workspace traz só o `id` ([`StorageWorkspace`]): o armazém trocado é aberto pelo
-//!   identificador de janela vazia daquele `id`, então o `workspace.json` de um workspace que ainda não tem pasta de
-//!   armazém não é gravado nessa troca (o workspace inicial, que vem completo, grava).
+//! Ciclo de vida (o mesmo do original, no processo único): o `RemoteStorageService` tem `Storage` do cliente sobre
+//! bancos de IPC cujo `close()` nunca fecha o banco real dos escopos compartilhados entre janelas (aplicação,
+//! compartilhado, perfil: `ApplicationStorageDatabaseClient`, `ApplicationSharedStorageDatabaseClient` e
+//! `ProfileStorageDatabaseClient` só descartam o ouvinte), e quem os fecha é o `onWillShutdown` do
+//! [`StorageMainService`](super::StorageMainService). Aqui o cliente e o main dividem o `Storage`, então:
+//! - `close()` para o agendador de descarga, avisa o `onWillSaveState` (`SHUTDOWN`) e, na ordem do original (aplicação,
+//!   compartilhado, perfil, workspace), descarrega as escritas pendentes dos três primeiros (o que o `Storage` do cliente
+//!   faria ao fechar, para o dado estar no banco do main) e fecha o armazém do workspace, que só esta instância usa
+//!   (`WorkspaceStorageDatabaseClient`). O armazém fechado sai do mapa do [`StorageMainService`] pelo
+//!   `onDidCloseStorage`, e este serviço lembra que o fechou: nem o `onWillShutdown` nem um segundo `close()` o fecham
+//!   de novo. Os outros três o `onWillShutdown` fecha.
+//! - `switch` para um workspace fecha o armazém antigo e só então abre o novo, como o `switchToWorkspace` do original, e
+//!   abre pelo identificador completo (o `workspace.json` é gravado quando a pasta do armazém nasce).
+//! - na troca de perfil o armazém antigo não é fechado: o original só fecha o `Storage` do cliente (que não fecha o
+//!   banco), e o armazém do perfil é do [`StorageMainService`] e de outras janelas.
+//! - o evento de mudança que alimenta o `onDidChangeValue` é o do `Storage` do cliente, com o `external`
+//!   ([`IStorageMain::on_did_change_client_storage`]), não o `onDidChangeStorage` do main, que só tem a chave.
+//! - o destino de `switch` para um workspace que só traz o `id` ([`StorageWorkspace::from_id`]) abre o armazém pelo
+//!   identificador de janela vazia daquele `id`, sem `workspace.json`; quem tem o workspace inteiro usa
+//!   `StorageWorkspace::from`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
+use je_base::async_::async_fn;
 use je_base::errors::Error;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable};
 use je_base::promise::Promise;
 use je_storage::IStorage;
 
-use super::storage::{
-    AbstractStorageService, StorageBackend, StorageProfile, StorageScope, StorageService, StorageServiceCoreOptions, StorageSwitchTarget, StorageWorkspace, WillSaveStateReason,
-};
+use super::storage::{AbstractStorageService, StorageBackend, StorageProfile, StorageScope, StorageServiceCoreOptions, StorageSwitchTarget, StorageWorkspace, WillSaveStateReason};
 use super::storage_main::{IStorageMain, file_fs_path};
 use super::storage_main_service::IStorageMainService;
 use crate::user_data_profile::user_data_profile_storage_service::storage_profile;
@@ -57,12 +67,15 @@ struct State {
     profile_storage: Rc<dyn IStorageMain>,
     workspace_storage_id: Option<String>,
     workspace_storage: Option<Rc<dyn IStorageMain>>,
+    /// Se o armazém do workspace atual já foi fechado (por este serviço ou pelo main): ninguém o fecha de novo.
+    workspace_closed: Rc<Cell<bool>>,
 }
 
-/// Liga o `onDidChangeStorage` de um armazém ao `emitDidChangeValue` do serviço, no escopo dado.
+/// Liga o `onDidChangeStorage` do `Storage` do cliente de um armazém ao `emitDidChangeValue` do serviço, no escopo dado.
 type StorageWiring = Rc<dyn Fn(StorageScope, &Rc<dyn IStorageMain>) -> DisposableRef>;
 
 struct SqliteBackend {
+    me: Weak<SqliteBackend>,
     storage_main_service: Rc<dyn IStorageMainService>,
     user_data_profiles_service: Rc<dyn IUserDataProfilesService>,
     state: RefCell<State>,
@@ -95,10 +108,46 @@ impl SqliteBackend {
         // First clear any previously associated disposables
         self.workspace_storages.clear();
 
+        // Remember workspace ID for logging later
         self.state.borrow_mut().workspace_storage_id = workspace.map(|w| w.id().to_string());
         let workspace_storage = self.storage_main_service.workspace_storage(workspace?);
         self.workspace_storages.add(self.wire(StorageScope::Workspace, &workspace_storage));
+
+        // Whoever closes the storage (this service or the main process on shutdown), it is closed only once
+        let closed = Rc::new(Cell::new(false));
+        let flag = closed.clone();
+        self.workspace_storages.add(workspace_storage.on_did_close_storage().once().listen(move |_| flag.set(true)));
+        self.state.borrow_mut().workspace_closed = closed;
         Some(workspace_storage)
+    }
+
+    /// Descarrega as escritas pendentes de um escopo compartilhado: o que o `Storage` do cliente faz ao fechar, sem fechar
+    /// o banco (que é do main).
+    fn flush_storage(&self, scope: StorageScope) -> Promise<()> {
+        self.get_storage(scope).map_or_else(|| Promise::resolved(()), |storage| storage.flush(Some(0) /* as soon as possible */))
+    }
+
+    /// Fecha o armazém do workspace, que só esta instância usa, se ainda não foi fechado.
+    fn close_workspace_storage(&self) -> Promise<()> {
+        let (storage, closed) = {
+            let state = self.state.borrow();
+            (state.workspace_storage.clone(), state.workspace_closed.clone())
+        };
+        match storage {
+            Some(storage) if !closed.replace(true) => storage.close(),
+            _ => Promise::resolved(()),
+        }
+    }
+
+    /// O `Promises.settled([...close()])` do `RemoteStorageService.close()`, na ordem do original.
+    fn close_storages(&self) -> Promise<()> {
+        Promise::all_settled(vec![
+            self.flush_storage(StorageScope::Application),
+            self.flush_storage(StorageScope::ApplicationShared),
+            self.flush_storage(StorageScope::Profile),
+            self.close_workspace_storage(),
+        ])
+        .then(|_| ())
     }
 }
 
@@ -170,16 +219,24 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn switch_to_workspace(&self, service: &Rc<AbstractStorageService>, to_workspace: &StorageWorkspace, _preserve_data: bool) -> Promise<()> {
-        let old_items = self.state.borrow().workspace_storage.as_ref().map(|storage| storage.items().snapshot()).unwrap_or_default();
-
-        // Create new workspace storage & init
-        let workspace = AnyWorkspaceIdentifier::Empty(EmptyWorkspaceIdentifier { id: to_workspace.id.clone() });
-        let new_storage = self.create_workspace_storage(Some(&workspace)).expect("há workspace");
-        self.state.borrow_mut().workspace_storage = Some(new_storage.clone());
-
-        // Handle data switch and eventing
+        let this = self.me.upgrade().expect("o backend está vivo enquanto o serviço o usa");
         let service = service.clone();
-        new_storage.init().then(move |()| service.switch_data(&old_items, new_storage.storage().as_ref(), StorageScope::Workspace))
+        let workspace = to_workspace.identifier.clone().unwrap_or_else(|| AnyWorkspaceIdentifier::Empty(EmptyWorkspaceIdentifier { id: to_workspace.id.clone() }));
+        async_fn(async move {
+            let old_items = this.state.borrow().workspace_storage.as_ref().map(|storage| storage.items().snapshot()).unwrap_or_default();
+
+            // Close old workspace storage
+            this.close_workspace_storage().await?;
+
+            // Create new workspace storage & init
+            let new_storage = this.create_workspace_storage(Some(&workspace)).expect("há workspace");
+            this.state.borrow_mut().workspace_storage = Some(new_storage.clone());
+            new_storage.init().await?;
+
+            // Handle data switch and eventing
+            service.switch_data(&old_items, new_storage.storage().as_ref(), StorageScope::Workspace);
+            Ok(())
+        })
     }
 }
 
@@ -187,6 +244,7 @@ impl StorageBackend for SqliteBackend {
 pub struct SqliteStorageService {
     base: Rc<Disposable>,
     service: Rc<AbstractStorageService>,
+    backend: Rc<SqliteBackend>,
 }
 
 impl SqliteStorageService {
@@ -195,10 +253,17 @@ impl SqliteStorageService {
         let application_storage = storage_main_service.application_storage();
         let application_shared_storage = storage_main_service.application_shared_storage();
 
-        let backend = Rc::new(SqliteBackend {
+        let backend = Rc::new_cyclic(|me| SqliteBackend {
+            me: me.clone(),
             storage_main_service,
             user_data_profiles_service,
-            state: RefCell::new(State { profile_storage_profile: current_profile.clone(), profile_storage: application_storage.clone(), workspace_storage_id: None, workspace_storage: None }),
+            state: RefCell::new(State {
+                profile_storage_profile: current_profile.clone(),
+                profile_storage: application_storage.clone(),
+                workspace_storage_id: None,
+                workspace_storage: None,
+                workspace_closed: Rc::new(Cell::new(false)),
+            }),
             profile_storages: DisposableStore::new(),
             workspace_storages: DisposableStore::new(),
             wiring: RefCell::new(None),
@@ -208,7 +273,7 @@ impl SqliteStorageService {
         let weak = Rc::downgrade(&service);
         *backend.wiring.borrow_mut() = Some(Rc::new(move |scope, storage: &Rc<dyn IStorageMain>| {
             let weak = weak.clone();
-            storage.on_did_change_storage().listen(move |e| {
+            storage.on_did_change_client_storage().listen(move |e| {
                 if let Some(service) = weak.upgrade() {
                     service.emit_did_change_value(scope, e);
                 }
@@ -226,7 +291,7 @@ impl SqliteStorageService {
         base.register(backend.workspace_storages.clone());
         base.register(service.clone());
 
-        Rc::new(Self { base, service })
+        Rc::new(Self { base, service, backend })
     }
 
     /// O serviço de armazenamento (`IStorageService`).
@@ -239,14 +304,18 @@ impl SqliteStorageService {
         self.service.initialize()
     }
 
-    /// `close()`: avisa o `onWillSaveState` (`SHUTDOWN`) e descarrega as escritas pendentes. Os bancos são fechados pelo
+    /// `close()` do `RemoteStorageService`: para o agendador, avisa o `onWillSaveState` (`SHUTDOWN`) e fecha o que é do
+    /// cliente (ver o ciclo de vida no topo do módulo). Os bancos dos escopos compartilhados são fechados pelo
     /// [`StorageMainService`](super::StorageMainService), no `onWillShutdown`.
     pub fn close(&self) -> Promise<()> {
         // Stop periodic scheduler and idle runner as we now collect state normally
         self.service.stop_flush_when_idle();
 
-        // Signal as event so that clients can still store data, and flush what is pending
-        StorageService::flush(&self.service, WillSaveStateReason::Shutdown)
+        // Signal as event so that clients can still store data
+        self.service.emit_will_save_state(WillSaveStateReason::Shutdown);
+
+        // Do it
+        self.backend.close_storages()
     }
 }
 
