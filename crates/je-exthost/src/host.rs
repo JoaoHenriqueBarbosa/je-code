@@ -16,6 +16,7 @@ use je_platform::resources::ext_uri;
 use je_workbench::api::common::ext_host_notebook::{ExtHostNotebookController, IExtHostConsumerFileSystem};
 use je_workbench::api::common::ext_host_notebook_document_save_participant::ExtHostNotebookDocumentSaveParticipant;
 use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
+use je_workbench::api::common::ext_host_notebook_editors::ExtHostNotebookEditors;
 use je_workbench::api::common::ext_host_notebook_kernels::ExtHostNotebookKernels;
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
 use je_workbench::api::common::ext_host_commands::ExtHostCommands;
@@ -42,7 +43,7 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
+    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookEditorsShape, ExtHostNotebookKernelsShape,
     ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
@@ -455,6 +456,9 @@ impl ExtensionHost {
                     let documents = ExtHostNotebookDocuments::new(controller.clone());
                     let documents_shape: Rc<dyn ExtHostNotebookDocumentsShape> = documents.clone();
                     late.notebook_documents.0.bind(documents_shape);
+                    let editors = ExtHostNotebookEditors::new(log_service.clone(), controller.clone());
+                    let editors_shape: Rc<dyn ExtHostNotebookEditorsShape> = editors.clone();
+                    late.notebook_editors.0.bind(editors_shape);
                     // O `onWillSaveNotebookDocument` aplica as edições que os ouvintes devolvem: pede o cliente `MainThreadBulkEdits`.
                     let will_save = bulk_edits.as_ref().map(|(_, edits)| {
                         let participant = Rc::new(ExtHostNotebookDocumentSaveParticipant::new(
@@ -482,6 +486,7 @@ impl ExtensionHost {
                     Some(NotebookApi {
                         notebooks: controller,
                         documents,
+                        editors,
                         will_save,
                         kernels,
                         objects: notebook_objects.clone(),

@@ -2,7 +2,8 @@
 //! `vscode.workspace` (`notebookDocuments`, `openNotebookDocument`, `registerNotebookSerializer`, `onDidOpenNotebookDocument`,
 //! `onDidCloseNotebookDocument`, `onDidChangeNotebookDocument`, `onDidSaveNotebookDocument`, `onWillSaveNotebookDocument`), os de
 //! `vscode.window` (`activeNotebookEditor`, `visibleNotebookEditors`, `showNotebookDocument`, `onDidChangeActiveNotebookEditor`,
-//! `onDidChangeVisibleNotebookEditors`) e as classes `NotebookRange`, `NotebookData`, `NotebookCellData`, `NotebookCellOutput`,
+//! `onDidChangeVisibleNotebookEditors`, `onDidChangeNotebookEditorSelection`, `onDidChangeNotebookEditorVisibleRanges`) e as classes
+//! `NotebookRange`, `NotebookData`, `NotebookCellData`, `NotebookCellOutput`, `NotebookEdit`,
 //! `NotebookCellOutputItem` e `NotebookCellStatusBarItem`, mais as classes nativas `NotebookDocument`, `NotebookCell`, `NotebookEditor`,
 //! `NotebookController` e `NotebookCellExecution`.
 //!
@@ -22,9 +23,8 @@
 //!
 //! Falta (o serviço do host tem, falta só a ponte, ou depende de proposta que o host nunca habilita):
 //! - `NotebookEditor#replOptions` e `NotebookDocumentShowOptions#asRepl` além do que o host já entende (propostas `notebookReplDocument`);
-//!   `onDidChangeNotebookEditorSelection` e `onDidChangeNotebookEditorVisibleRanges` (o serviço `ExtHostNotebookEditors` ainda não é ligado
-//!   pelo host, então `NotebookEditor#visibleRanges` só muda com o delta de documentos e editores);
-//! - `NotebookEdit` em `WorkspaceEdit`, `createRendererMessaging`, `NotebookController#asWebviewUri`, `onDidReceiveMessage`, `postMessage`,
+//!   (propostas `notebookReplDocument`);
+//! - `createRendererMessaging`, `NotebookController#asWebviewUri`, `onDidReceiveMessage`, `postMessage`,
 //!   `variableProvider`, `createNotebookExecution`, `createNotebookControllerDetectionTask` e `registerKernelSourceActionProvider`
 //!   (propostas `notebookMessaging`, `notebookVariableProvider`, `notebookExecution`, `notebookKernelSource`);
 //! - `NotebookCellStatusBarItem#accessibilityInformation`, o terceiro argumento `executionError` de `NotebookCellExecution#end` e
@@ -64,12 +64,13 @@ use je_workbench::api::common::ext_host_notebook_document::{NotebookCell, Notebo
 use je_workbench::api::common::ext_host_notebook_document_save_participant::{ExtHostNotebookDocumentSaveParticipant, NotebookDocumentWillSaveEvent};
 use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
 use je_workbench::api::common::ext_host_notebook_editor::NotebookEditor;
+use je_workbench::api::common::ext_host_notebook_editors::{ExtHostNotebookEditors, NotebookEditorSelectionChangeEvent, NotebookEditorVisibleRangesChangeEvent};
 use je_workbench::api::common::ext_host_notebook_kernels::{
     ExtHostNotebookKernels, NotebookCellExecution, NotebookController, NotebookExecuteHandler, NotebookInterruptHandler, NotebookSelectionChange,
 };
 use je_workbench::api::common::ext_host_types::{
     ErrorLike, IdOrMetadata, NotebookCellData, NotebookCellKind, NotebookCellOutput, NotebookCellOutputItem, NotebookCellStatusBarAlignment,
-    NotebookCellStatusBarCommand, NotebookCellStatusBarItem, NotebookControllerAffinity2, NotebookData, NotebookDocumentContentOptions, NotebookEditorRevealType,
+    NotebookCellStatusBarCommand, NotebookCellStatusBarItem, NotebookControllerAffinity2, NotebookData, NotebookDocumentContentOptions, NotebookEdit, NotebookEditorRevealType,
     NotebookRange,
 };
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner};
@@ -100,6 +101,8 @@ pub struct NotebookApi {
     pub notebooks: Rc<ExtHostNotebookController>,
     /// Os eventos de mudança e de gravação dos documentos.
     pub documents: Rc<ExtHostNotebookDocuments>,
+    /// Os eventos de seleção e de intervalos visíveis dos editores.
+    pub editors: Rc<ExtHostNotebookEditors>,
     /// Sem o cliente `MainThreadBulkEdits` não há `onWillSaveNotebookDocument`.
     pub will_save: Option<WillSaveApi>,
     /// Sem o cliente `MainThreadNotebookKernels` não há `createNotebookController`.
@@ -1069,10 +1072,109 @@ pub fn classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
         statics: vec![],
         parent: None,
     });
-    [("NotebookRange", range), ("NotebookCellData", cell_data), ("NotebookData", data), ("NotebookCellOutput", output), ("NotebookCellOutputItem", item), ("NotebookCellStatusBarItem", status_bar_item)]
-        .into_iter()
-        .map(|(name, constructor)| (name.to_owned(), JsData::Handle(Rc::new(constructor))))
-        .collect()
+    let edit = runner.define_class(ClassSpec {
+        name: "NotebookEdit".to_owned(),
+        length: 2,
+        construct: Rc::new(|args| notebook_edit_to_js(&args.first().map(notebook_range_of).transpose()?.ok_or("NotebookEdit: falta o intervalo")?, new_cells_arg(args.get(1))?, None, None)),
+        methods: vec![],
+        getters: vec![],
+        statics: vec![
+            (
+                "isNotebookCellEdit".to_owned(),
+                1,
+                Rc::new(|args| Ok(JsData::Bool(args.first().is_some_and(is_notebook_edit)))),
+            ),
+            (
+                "replaceCells".to_owned(),
+                2,
+                Rc::new(|args| notebook_edit_to_js(&notebook_range_of(args.first().ok_or("replaceCells: falta o intervalo")?)?, new_cells_arg(args.get(1))?, None, None)),
+            ),
+            (
+                "insertCells".to_owned(),
+                2,
+                Rc::new(|args| {
+                    let index = opt_number(args.first()).ok_or("insertCells: o índice precisa ser um número")?;
+                    let range = NotebookRange::new(index, index).map_err(|error| error.message)?;
+                    notebook_edit_to_js(&range, new_cells_arg(args.get(1))?, None, None)
+                }),
+            ),
+            (
+                "deleteCells".to_owned(),
+                1,
+                Rc::new(|args| notebook_edit_to_js(&notebook_range_of(args.first().ok_or("deleteCells: falta o intervalo")?)?, JsData::Array(Vec::new()), None, None)),
+            ),
+            (
+                "updateCellMetadata".to_owned(),
+                2,
+                Rc::new(|args| {
+                    let index = opt_number(args.first()).ok_or("updateCellMetadata: o índice precisa ser um número")?;
+                    let range = NotebookRange::new(index, index).map_err(|error| error.message)?;
+                    notebook_edit_to_js(&range, JsData::Array(Vec::new()), Some(args.get(1).cloned().unwrap_or(JsData::Undefined)), None)
+                }),
+            ),
+            (
+                "updateNotebookMetadata".to_owned(),
+                1,
+                Rc::new(|args| {
+                    let range = NotebookRange::new(0.0, 0.0).map_err(|error| error.message)?;
+                    notebook_edit_to_js(&range, JsData::Array(Vec::new()), None, Some(args.first().cloned().unwrap_or(JsData::Undefined)))
+                }),
+            ),
+        ],
+        parent: None,
+    });
+    [
+        ("NotebookRange", range),
+        ("NotebookCellData", cell_data),
+        ("NotebookData", data),
+        ("NotebookCellOutput", output),
+        ("NotebookCellOutputItem", item),
+        ("NotebookCellStatusBarItem", status_bar_item),
+        ("NotebookEdit", edit),
+    ]
+    .into_iter()
+    .map(|(name, constructor)| (name.to_owned(), JsData::Handle(Rc::new(constructor))))
+    .collect()
+}
+
+/// As `newCells` de `NotebookEdit`: a lista de `NotebookCellData`, validada célula a célula (o original não valida, mas uma célula
+/// inválida só falharia mais tarde, ao converter a edição).
+fn new_cells_arg(value: Option<&JsData>) -> Result<JsData, String> {
+    match value {
+        Some(cells @ JsData::Array(items)) => {
+            items.iter().try_for_each(|item| cell_data_of(item).map(drop))?;
+            Ok(cells.clone())
+        }
+        _ => Err("NotebookEdit: as novas células precisam ser uma lista de NotebookCellData".to_owned()),
+    }
+}
+
+/// O objeto `vscode.NotebookEdit` (os campos são atribuíveis, como no original).
+fn notebook_edit_to_js(range: &NotebookRange, new_cells: JsData, new_cell_metadata: Option<JsData>, new_notebook_metadata: Option<JsData>) -> Result<JsData, String> {
+    let mut fields = vec![("range".to_owned(), notebook_range_fields(range)), ("newCells".to_owned(), new_cells)];
+    fields.extend(new_cell_metadata.map(|metadata| ("newCellMetadata".to_owned(), metadata)));
+    fields.extend(new_notebook_metadata.map(|metadata| ("newNotebookMetadata".to_owned(), metadata)));
+    Ok(marked("NotebookEdit", fields))
+}
+
+/// `NotebookEdit.isNotebookCellEdit`: uma instância, ou um objeto com `range` de notebook e `newCells` em lista.
+pub(crate) fn is_notebook_edit(value: &JsData) -> bool {
+    class_name(value) == Some("NotebookEdit")
+        || (matches!(field(value, "newCells"), Some(JsData::Array(_)))
+            && field(value, "range").is_some_and(|range| opt_number(field(range, "start")).is_some() && opt_number(field(range, "end")).is_some()))
+}
+
+/// A `NotebookEdit` do host que `value` representa.
+pub(crate) fn notebook_edit_of(value: &JsData) -> Result<NotebookEdit, String> {
+    let range = notebook_range_of(field(value, "range").ok_or("NotebookEdit.range precisa ser um NotebookRange")?)?;
+    let new_cells = match field(value, "newCells") {
+        Some(JsData::Array(items)) => items.iter().map(cell_data_of).collect::<Result<Vec<_>, String>>()?,
+        _ => return Err("NotebookEdit.newCells precisa ser uma lista de NotebookCellData".to_owned()),
+    };
+    let mut edit = NotebookEdit::new(range, new_cells);
+    edit.new_cell_metadata = dynamic_field(value, "newCellMetadata");
+    edit.new_notebook_metadata = dynamic_field(value, "newNotebookMetadata");
+    Ok(edit)
 }
 
 /// `NotebookCellOutputItem.text(value, mime = 'text/plain')`.
@@ -1322,6 +1424,8 @@ pub fn window_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<Disposa
     let (active_api, visible_api) = (api.clone(), api.clone());
     let (active_runner, active_table, active_event_api) = (runner.clone(), table.clone(), api.clone());
     let (visible_runner, visible_table, visible_event_api) = (runner.clone(), table.clone(), api.clone());
+    let (selection_runner, selection_table, selection_event_api) = (runner.clone(), table.clone(), api.clone());
+    let (ranges_runner, ranges_table, ranges_event_api) = (runner.clone(), table.clone(), api.clone());
     let getters: Vec<(String, MethodCallback)> = vec![
         (
             "activeNotebookEditor".to_owned(),
@@ -1354,6 +1458,42 @@ pub fn window_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<Disposa
                     "onDidChangeVisibleNotebookEditors",
                     visible_event_api.notebooks.on_did_change_visible_notebook_editors(),
                     move |editors: &Vec<NotebookEditor>| JsData::Array(editors.iter().map(|editor| objects.editor_to_js(editor)).collect()),
+                ))
+            }),
+        ),
+        (
+            "onDidChangeNotebookEditorSelection".to_owned(),
+            Rc::new(move |_, _| {
+                let objects = selection_event_api.objects.clone();
+                Ok(event_function(
+                    &selection_runner,
+                    &selection_table,
+                    "onDidChangeNotebookEditorSelection",
+                    selection_event_api.editors.on_did_change_notebook_editor_selection(),
+                    move |event: &NotebookEditorSelectionChangeEvent| {
+                        JsData::Object(vec![
+                            ("notebookEditor".to_owned(), objects.editor_to_js(&event.notebook_editor)),
+                            ("selections".to_owned(), JsData::Array(event.selections.iter().map(notebook_range_fields).collect())),
+                        ])
+                    },
+                ))
+            }),
+        ),
+        (
+            "onDidChangeNotebookEditorVisibleRanges".to_owned(),
+            Rc::new(move |_, _| {
+                let objects = ranges_event_api.objects.clone();
+                Ok(event_function(
+                    &ranges_runner,
+                    &ranges_table,
+                    "onDidChangeNotebookEditorVisibleRanges",
+                    ranges_event_api.editors.on_did_change_notebook_editor_visible_ranges(),
+                    move |event: &NotebookEditorVisibleRangesChangeEvent| {
+                        JsData::Object(vec![
+                            ("notebookEditor".to_owned(), objects.editor_to_js(&event.notebook_editor)),
+                            ("visibleRanges".to_owned(), JsData::Array(event.visible_ranges.iter().map(notebook_range_fields).collect())),
+                        ])
+                    },
                 ))
             }),
         ),

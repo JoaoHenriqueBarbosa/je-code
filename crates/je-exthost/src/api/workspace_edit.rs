@@ -6,11 +6,10 @@
 //! `scm` guarda os grupos), porque o motor entrega o objeto por cópia e um método de classe nunca altera o receptor.
 //!
 //! O `WorkspaceEdit` tem `replace`, `insert`, `delete`, `set`, `createFile`, `deleteFile`, `renameFile`, `has`, `get`, `entries`,
-//! `size` e `toJSON`. `set(uri, edits)` aceita `TextEdit`, `SnippetTextEdit` e as tuplas `[edit, metadata]`; `set(uri, null)` remove as
+//! `size` e `toJSON`. `set(uri, edits)` aceita `TextEdit`, `SnippetTextEdit`, `NotebookEdit` e as tuplas `[edit, metadata]`; `set(uri, null)` remove as
 //! edições de `uri`. Os metadados (`needsConfirmation`, `label`, `description`, `iconPath`) valem em todos os métodos que os recebem.
 //!
-//! Falta: `NotebookEdit` em `set` (a classe `NotebookEdit` ainda não existe no `vscode` do host, então uma edição com `newCells`,
-//! `newCellMetadata` ou `newNotebookMetadata` recebe um erro explícito) e `contents` de `createFile` (`Uint8Array` e `DataTransferFile`
+//! Falta: `contents` de `createFile` (`Uint8Array` e `DataTransferFile`
 //! não atravessam a fronteira do motor; informar `contents` lança `TypeError`).
 //!
 //! Divergências:
@@ -34,6 +33,7 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner};
 
 use crate::api::commands::promise_to_js;
 use crate::api::languages::host_extension;
+use crate::api::notebooks::{is_notebook_edit, notebook_edit_of};
 use crate::api::language_types::text_edit_from_js;
 use crate::api::types::{to_position, to_range};
 use crate::convert::{api_to_js, class_name, field, is_nullish, js_to_dynamic, opt_bool, opt_string, uri_from_js, uri_to_js};
@@ -152,8 +152,8 @@ fn set_item_of(value: &JsData) -> Result<Option<SetEditItem>, String> {
     if is_nullish(Some(edit)) {
         return Ok(None);
     }
-    if ["newCells", "newCellMetadata", "newNotebookMetadata"].iter().any(|name| field(edit, name).is_some()) {
-        return Err("WorkspaceEdit.set: NotebookEdit ainda não é suportado pelo host".to_owned());
+    if is_notebook_edit(edit) {
+        return Ok(Some(SetEditItem::from((notebook_edit_of(edit)?, metadata))));
     }
     if let Some(snippet) = field(edit, "snippet") {
         let range = to_range(field(edit, "range").ok_or("Illegal argument: SnippetTextEdit sem range")?)?;
