@@ -37,6 +37,8 @@ use je_base::promise::Promise;
 use je_editor::code_action::languages::Command;
 use je_editor::services::theme_service::{IColorTheme, IThemeService};
 use je_instantiation::Injectable;
+use je_platform::contextview::context_view::IContextViewService;
+use je_base::lifecycle::IDisposable as _;
 use je_platform::accessibility::{AccessibilitySupport, IAccessibilityService};
 use je_platform::commands::commands::{CommandEvent, ICommandService};
 use je_platform::configuration::service::IConfigurationService;

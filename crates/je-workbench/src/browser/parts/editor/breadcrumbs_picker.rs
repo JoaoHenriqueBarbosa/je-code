@@ -591,7 +591,7 @@ fn update_file_excludes(
     let posix = PathModule::posix(&ProcessEnvironment);
     for folder in workspace_service.get_workspace().folders() {
         let overrides = ConfigurationOverrides { resource: Some(folder.uri.clone()), ..ConfigurationOverrides::default() };
-        let Some(excludes_config @ Dynamic::Object(_)) = config.get_value(Some(&overrides)) else {
+        let Some(Dynamic::Object(excludes_config)) = config.get_value(Some(&overrides)) else {
             continue;
         };
         // adjust patterns to be absolute in case they aren't
@@ -742,7 +742,7 @@ impl IBreadcrumbsPickerKind for FilePickerKind {
         options.identity_provider = Some(Rc::new(FileIdentityProvider));
         options.keyboard_navigation_label_provider = Some(Rc::new(FileNavigationLabelProvider));
 
-        let tree = AsyncDataTree::new(
+        let tree = AsyncDataTree::<_, _, _, ObjectBackend>::new(
             "BreadcrumbsFilePicker",
             &services.ui,
             container,
