@@ -1,12 +1,10 @@
 //! Porte de `src/vs/platform/actions/test/common/menuService.test.ts` (suíte `MenuService`), caso a caso e na mesma ordem.
 //!
-//! Pendente: `createMenu collects menu items only once` e `getMenuActions filters before sorting and does not collect
-//! event dependencies` espiam (`sinon.spy`) chamadas de `MenuRegistry.getMenuItems`, de `MenuRegistry.onDidChangeMenu` e
-//! de `ContextKeyExpression.keys`, e contam leituras do getter `title` de um objeto literal: não há espião em Rust nem
-//! objeto com getter. `getMenuActions observes changes to registered titles, orders and groups`, `getMenuContexts observes
-//! changes to registered expressions` e `getMenuActions observes changes to implicit command palette exclusions` mudam
-//! o objeto do item depois de registrado (`item.command.title = 'Z'`): o `MenuRegistry` do porte guarda o item por
-//! valor, e a mutação não chega a ele.
+//! Divergência de `getMenuActions filters before sorting...`: o contador `hiddenTitleReads` (leituras do getter `title`
+//! de um objeto literal) não existe com `Title` por valor; o filtro antes da ordenação é conferido pelas ações
+//! resultantes, pela leitura única do registro, por zero chamadas de `keys` e por zero assinaturas de `onDidChangeMenu`.
+//! Os itens que o teste altera depois de registrados vão ao registro como `SharedMenuItem`, a referência compartilhada
+//! que faz o papel do objeto `IMenuItem` do original.
 //!
 //! Divergências: o `TestContextKeyService` é o `ContextKeyService` real (o do original avalia a regra contra as
 //! chaves, que é o que o real faz); o `NullCommandService.executeCommand` espiado é um serviço de comandos que registra
@@ -28,11 +26,11 @@ use je_base::promise::Promise;
 use je_base::uuid::generate_uuid;
 use je_platform::action::{CommandAction, CommandActionTitle, CommandActionToggleInfo, Title, Toggled};
 use je_platform::actions::{
-    AnyMenuItem, IMenu, IMenuService, MenuAction, MenuActionGroup, MenuActionOptions, MenuCreateOptions, MenuId, MenuItem, MenuService, SubmenuItem, menu_ids,
-    menu_registry,
+    AnyMenuItem, IMenu, IMenuService, MenuAction, MenuActionGroup, MenuActionOptions, MenuCreateOptions, MenuId, MenuItem, MenuService, SharedMenuItem, SubmenuItem,
+    menu_ids, menu_registry,
 };
 use je_platform::commands::{CommandEvent, ICommandService};
-use je_platform::contextkey::ContextKeyExpr;
+use je_platform::contextkey::{ContextKeyExpr, ContextKeyExpression};
 use je_platform::contextkey::IContextKeyService;
 use je_platform::contextkey::service::ContextKeyService;
 use je_platform::storage::storage::InMemoryStorageService;
@@ -116,6 +114,35 @@ fn sorted_contexts(menu_service: &MenuService, id: &MenuId) -> Vec<String> {
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|v| (*v).to_owned()).collect()
+}
+
+#[test]
+fn create_menu_collects_menu_items_only_once() {
+    let f = setup();
+    let before = menu_registry().menu_item_reads(&f.test_menu_id);
+    track(&f.guard, f.menu_service.create_menu(&f.test_menu_id, f.context_key_service.clone(), None));
+
+    assert_eq!(menu_registry().menu_item_reads(&f.test_menu_id) - before, 1);
+}
+
+#[test]
+fn get_menu_actions_filters_before_sorting_and_does_not_collect_event_dependencies() {
+    let f = setup();
+    let when = ContextKeyExpr::equals("view", "anotherView");
+    for i in 0..875 {
+        append(&f, &f.test_menu_id, MenuItem { when: Some(when.clone()), ..item(&format!("hidden{i}"), &format!("Hidden {i}")) });
+    }
+    append(&f, &f.test_menu_id, item("z", "Z"));
+    append(&f, &f.test_menu_id, item("a", "A"));
+    let (reads_before, keys_before, listens_before) =
+        (menu_registry().menu_item_reads(&f.test_menu_id), ContextKeyExpression::keys_call_count(), menu_registry().change_subscriptions());
+
+    let groups = f.menu_service.get_menu_actions(&f.test_menu_id, &*f.context_key_service, None);
+
+    assert_eq!(ids(&groups), vec![(String::new(), strings(&["a", "z"]))]);
+    assert_eq!(menu_registry().menu_item_reads(&f.test_menu_id) - reads_before, 1);
+    assert_eq!(ContextKeyExpression::keys_call_count() - keys_before, 0);
+    assert_eq!(menu_registry().change_subscriptions() - listens_before, 0);
 }
 
 #[test]
@@ -224,6 +251,103 @@ fn get_menu_actions_observes_implicit_command_palette_items_synchronously() {
     snapshots.push(contains_command());
 
     assert_eq!(snapshots, [false, true, false]);
+}
+
+/// Registra um item que o teste altera depois, como o objeto `IMenuItem` do original.
+fn append_shared(f: &Fixture, id: &MenuId, item: MenuItem) -> SharedMenuItem {
+    let shared: SharedMenuItem = Rc::new(RefCell::new(AnyMenuItem::Menu(item)));
+    f.guard.add(menu_registry().append_shared_menu_item(id, shared.clone()));
+    shared
+}
+
+fn edit(shared: &SharedMenuItem, change: impl FnOnce(&mut MenuItem)) {
+    let AnyMenuItem::Menu(item) = &mut *shared.borrow_mut() else { panic!("devia ser um item de comando") };
+    change(item);
+}
+
+fn action_label(action: &MenuAction) -> String {
+    match action {
+        MenuAction::Item(item) => item.label(),
+        MenuAction::Submenu(submenu) => submenu.as_action().label(),
+    }
+}
+
+#[test]
+fn get_menu_actions_observes_changes_to_registered_titles_orders_and_groups() {
+    let f = setup();
+    let dynamic = append_shared(&f, &f.test_menu_id, group_item("dynamic", "A", "primary", None));
+    append(&f, &f.test_menu_id, group_item("fixed", "B", "primary", None));
+    let snapshot = || -> Vec<(String, Vec<String>)> {
+        f.menu_service
+            .get_menu_actions(&f.test_menu_id, &*f.context_key_service, None)
+            .iter()
+            .map(|(group, actions)| (group.clone(), actions.iter().map(action_label).collect()))
+            .collect()
+    };
+    let mut snapshots = vec![snapshot()];
+    edit(&dynamic, |item| item.command.title = Title::from("Z"));
+    snapshots.push(snapshot());
+    edit(&dynamic, |item| item.order = Some(-1.0));
+    snapshots.push(snapshot());
+    edit(&dynamic, |item| item.group = Some("navigation".into()));
+    snapshots.push(snapshot());
+
+    let group = |name: &str, labels: &[&str]| (name.to_owned(), strings(labels));
+    assert_eq!(
+        snapshots,
+        vec![
+            vec![group("primary", &["A", "B"])],
+            vec![group("primary", &["B", "Z"])],
+            vec![group("primary", &["Z", "B"])],
+            vec![group("navigation", &["Z"]), group("primary", &["B"])],
+        ]
+    );
+}
+
+#[test]
+fn get_menu_contexts_observes_changes_to_registered_expressions() {
+    let f = setup();
+    let mut command = CommandAction::new("command", "Command");
+    command.precondition = Some(ContextKeyExpr::has("enabled"));
+    command.toggled = Some(Toggled::Info(CommandActionToggleInfo { condition: ContextKeyExpr::has("toggled"), icon: None, tooltip: None, title: None, mnemonic_title: None }));
+    let shared = append_shared(&f, &f.test_menu_id, MenuItem { when: Some(ContextKeyExpr::has("visible")), ..MenuItem::new(command) });
+    let mut snapshots = vec![sorted_contexts(&f.menu_service, &f.test_menu_id)];
+    edit(&shared, |item| {
+        item.when = Some(ContextKeyExpr::has("newVisible"));
+        item.command.precondition = Some(ContextKeyExpr::has("newEnabled"));
+        item.command.toggled =
+            Some(Toggled::Info(CommandActionToggleInfo { condition: ContextKeyExpr::has("newToggled"), icon: None, tooltip: None, title: None, mnemonic_title: None }));
+    });
+    snapshots.push(sorted_contexts(&f.menu_service, &f.test_menu_id));
+
+    assert_eq!(snapshots, vec![strings(&["enabled", "toggled", "visible"]), strings(&["newEnabled", "newToggled", "newVisible"])]);
+}
+
+#[test]
+fn get_menu_actions_observes_changes_to_implicit_command_palette_exclusions() {
+    let f = setup();
+    let prefix = format!("testo/{}", generate_uuid());
+    let first = CommandAction::new(format!("{prefix}/first"), "First");
+    let second = CommandAction::new(format!("{prefix}/second"), "Second");
+    f.guard.add(menu_registry().add_command(first.clone()));
+    f.guard.add(menu_registry().add_command(second.clone()));
+    let explicit = append_shared(
+        &f,
+        &menu_ids::command_palette(),
+        MenuItem { alt: Some(first), ..item(&format!("{prefix}/explicit"), "Explicit") },
+    );
+    let snapshot = || -> Vec<String> {
+        f.menu_service
+            .get_menu_actions(&menu_ids::command_palette(), &*f.context_key_service, None)
+            .iter()
+            .flat_map(|(_, actions)| actions.iter().filter(|a| action_id(a).starts_with(&prefix)).map(action_label))
+            .collect()
+    };
+    let mut snapshots = vec![snapshot()];
+    edit(&explicit, |item| item.alt = Some(second));
+    snapshots.push(snapshot());
+
+    assert_eq!(snapshots, vec![strings(&["Explicit", "Second"]), strings(&["Explicit", "First"])]);
 }
 
 #[test]
