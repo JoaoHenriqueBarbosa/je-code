@@ -584,6 +584,12 @@ pub struct CompositeEntry {
 }
 
 impl CompositeEntry {
+    /// Um descritor de composite com o nome e a fábrica dados (para os registros que instanciam mais que o [`Composite`], como o
+    /// de painéis).
+    pub fn new(id: &str, name: &str, instantiate: CompositeFactory<Composite>) -> Self {
+        Self { id: id.to_owned(), name: name.to_owned(), instantiate }
+    }
+
     /// `descriptor.instantiate(instantiationService)`.
     pub fn instantiate(&self, instantiation_service: &Rc<InstantiationService>) -> Rc<Composite> {
         (self.instantiate)(instantiation_service)

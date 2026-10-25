@@ -19,6 +19,7 @@ use je_editor::code_action::platform::IProgressIndicator;
 use je_editor::code_editor_widget::CodeEditorWidget;
 use je_instantiation::service_id;
 
+use crate::browser::composite::Composite;
 use crate::browser::pane_composite::{PaneCompositeDescriptor, pane_composite_registry};
 use crate::common::views::ViewContainerLocation;
 use crate::services::layout::layout_service::Parts;
@@ -32,6 +33,27 @@ pub trait IPaneComposite {
     /// controla, se ele é um editor de texto.
     fn text_editor_code_control(&self) -> Option<Rc<CodeEditorWidget>> {
         None
+    }
+
+    /// O `Composite` que o painel é (a `PaneComposite` estende o `Composite`): o que o `CompositePart` guarda, mostra e
+    /// destrói. `None` para um painel que não tem composite (os dublês que só informam o identificador).
+    fn composite(&self) -> Option<Rc<Composite>> {
+        None
+    }
+
+    /// `getOptimalWidth()`: a largura ideal do painel, ou `None` quando ele não a informa (o `undefined` do original).
+    fn get_optimal_width(&self) -> Option<f64> {
+        None
+    }
+
+    /// `getViewPaneContainer()?.viewContainer.id`: o identificador do contêiner de visões do painel, quando ele tem um.
+    fn get_view_container_id(&self) -> Option<String> {
+        None
+    }
+
+    /// `openView(id, focus)`: abre a visão no painel (`undefined` quando o painel não a tem).
+    fn open_view(&self, _id: &str, _focus: bool) -> bool {
+        false
     }
 }
 
