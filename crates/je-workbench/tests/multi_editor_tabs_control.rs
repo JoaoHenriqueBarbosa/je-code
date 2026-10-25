@@ -297,8 +297,8 @@ impl Layout {
         if self.options.borrow().tab_height == TabHeight::Compact { 20.0 } else { 24.0 }
     }
 
-    /// A coluna da ação: 28px (`--vscode-spacing-size280`, o `--modern-ui-tab-action-fit-padding` inicial) e, no estilo
-    /// conectado, `calc((tab-height + size40 * 2 + strokeThickness - size200) / 2 + size240)` (`connectedEditorTabs.css`).
+    /// `--modern-ui-tab-action-fit-padding`: 28px (`--vscode-spacing-size280`, o valor inicial) e, no estilo conectado,
+    /// `calc((tab-height + size40 * 2 + strokeThickness - size200) / 2 + size240)` (`connectedEditorTabs.css`).
     fn action_column_width(&self) -> f64 {
         let parent = self.parent.get();
         if parent.in_modern_ui_tabs && parent.in_connected_editor_tabs {
@@ -306,6 +306,29 @@ impl Layout {
         } else {
             ACTION_COLUMN
         }
+    }
+
+    /// `--modern-ui-tab-action-padding` computado da aba: o recuo real do lado da ação, que difere do `fit-padding` no estilo
+    /// conectado. Na linha superior vale `size280`, ou a fórmula do `fit-padding` com a aba suja ou fixada
+    /// (`connectedEditorTabs.css` L702 e L742). Fora da linha superior e da quebra vale `inset + size240` (L521), com
+    /// `inset = (row-height - fill-block-inset + strokeThickness - size200) / 2`, onde a barra superior usa `tab-height + size40`
+    /// com `fill-block-inset = size20` (L119 e L125) e o resto `tab-height + size40 * 2 - strokeThickness` com
+    /// `fill-block-inset = -strokeThickness` (L158 e L164). Na quebra vale `size280` (L121).
+    fn action_padding(&self, tab: &Tab, container: &TabsContainerView) -> f64 {
+        let parent = self.parent.get();
+        if !(parent.in_modern_ui_tabs && parent.in_connected_editor_tabs) {
+            return ACTION_COLUMN;
+        }
+        if tab.state.connected_tab_upper_row {
+            return if tab.state.dirty || tab.state.sticky { self.action_column_width() } else { ACTION_COLUMN };
+        }
+        if container.wrapping {
+            return ACTION_COLUMN;
+        }
+        let height = self.css_tab_height();
+        let (row_height, fill_inset) =
+            if container.connected_tab_upper_bar { (height + TAB_GUTTER, SPACING_SIZE20) } else { (height + TAB_GUTTER * 2.0 - STROKE, -STROKE) };
+        (row_height - fill_inset + STROKE - SPACING_SIZE200) / 2.0 + SPACING_SIZE240
     }
 
     /// A aba aloca a coluna da ação na largura: sem o Modern UI a coluna é sempre alocada, com ele só com a reserva de espaço
@@ -317,8 +340,8 @@ impl Layout {
     }
 
     /// A largura de uma aba sem a restrição da linha (`max-width` solto).
-    fn natural_width(&self, tab: &Tab, rest: bool) -> f64 {
-        let column = if self.has_action_column(tab, rest) { self.action_column_width() } else { 0.0 };
+    fn natural_width(&self, container: &TabsContainerView, tab: &Tab, rest: bool) -> f64 {
+        let column = if self.has_action_column(tab, rest) { self.action_padding(tab, container) } else { 0.0 };
         let badge = if self.has_badge(tab) { BADGE_WIDTH } else { 0.0 };
         let description = if self.show_descriptions.get() { tab.state.label.description.chars().count() as f64 * CHAR_WIDTH } else { 0.0 };
         TAB_PADDING + name_chars(tab) * CHAR_WIDTH + column + badge + description
@@ -332,9 +355,9 @@ impl Layout {
     /// A largura do `.tab-label` de uma aba: a caixa menos o recuo de cada lado e, com a coluna da ação visível (reserva,
     /// ação persistente ou ação transitória sob `:hover`, `:focus-within` ou aba ativa), a coluna da ação no lugar do recuo
     /// daquele lado.
-    fn label_width(&self, box_width: f64, action_column: bool) -> f64 {
+    fn label_width(&self, box_width: f64, action_padding: Option<f64>) -> f64 {
         let side = TAB_PADDING / 2.0;
-        box_width - side - if action_column { self.action_column_width() } else { side }
+        box_width - side - action_padding.unwrap_or(side)
     }
 
     /// `--modern-ui-tab-terminal-gutter`: o vão depois da última aba quebrada (só no Modern UI).
@@ -412,7 +435,7 @@ impl Layout {
                     style.margin_end += extra_margin;
                 }
 
-                TabFlexItem { style, content_width: self.natural_width(tab, tab.state.tab_action_sizing_rest) }
+                TabFlexItem { style, content_width: self.natural_width(container, tab, tab.state.tab_action_sizing_rest) }
             })
             .collect();
         let margins: Vec<f64> = items.iter().map(|item| item.style.margin_end).collect();
@@ -478,7 +501,7 @@ impl Layout {
 }
 
 impl TabsMeasurer for Layout {
-    fn measure_fit_tabs(&self, tabs: &[Tab], indexes: &[usize]) -> Vec<FitTabMetrics> {
+    fn measure_fit_tabs(&self, container: &TabsContainerView, tabs: &[Tab], indexes: &[usize]) -> Vec<FitTabMetrics> {
         self.fit_reads.borrow_mut().push(indexes.to_vec());
         indexes
             .iter()
@@ -487,10 +510,12 @@ impl TabsMeasurer for Layout {
                 let name = name_chars(tab) * CHAR_WIDTH;
                 // O recuo do lado da ação inclui a coluna quando a aba a aloca (o `padding` computado dela).
                 let side = TAB_PADDING / 2.0;
-                let column = if self.has_action_column(tab, tab.state.tab_action_sizing_rest) { self.action_column_width() } else { 0.0 };
+                let column = if self.has_action_column(tab, tab.state.tab_action_sizing_rest) { self.action_padding(tab, container) } else { 0.0 };
                 let (padding_left, padding_right) = if tab.state.tab_actions_left { (side + column, side) } else { (side, side + column) };
+                // O selo fica no `.tab-label` fora do `.monaco-icon-label-container`: é o adorno que `getFitTabWidth` subtrai.
+                let badge = if self.has_badge(tab) { BADGE_WIDTH } else { 0.0 };
                 FitTabMetrics {
-                    width: self.natural_width(tab, tab.state.tab_action_sizing_rest),
+                    width: self.natural_width(container, tab, tab.state.tab_action_sizing_rest),
                     font_size: 13.0,
                     padding_left,
                     padding_right,
@@ -498,7 +523,7 @@ impl TabsMeasurer for Layout {
                     border_right_width: 0.0,
                     action_fit_padding: Some(self.action_column_width()),
                     name_width: Some(name),
-                    label_widths: Some((name, name)),
+                    label_widths: Some((name + badge, name)),
                 }
             })
             .collect()
@@ -866,16 +891,16 @@ impl Fixture {
         self.frame();
     }
 
-    /// A coluna da ação está visível na aba: a reserva de espaço, uma ação persistente (suja ou fixada) ou a ação transitória
-    /// da aba ativa ou sob `:hover` e `:focus-within`.
-    fn action_column_visible(&self, tab_index: usize, transient: bool) -> bool {
+    /// A coluna da ação (`--modern-ui-tab-action-padding` da aba) quando está visível: a reserva de espaço, uma ação
+    /// persistente (suja ou fixada) ou a ação transitória da aba ativa ou sob `:hover` e `:focus-within`.
+    fn action_padding(&self, tab_index: usize, transient: bool) -> Option<f64> {
         let tab = &self.state.tabs[tab_index];
-        self.layout.has_action_column(tab, false) || transient || tab.state.active
+        (self.layout.has_action_column(tab, false) || transient || tab.state.active).then(|| self.layout.action_padding(tab, &self.state.container))
     }
 
     /// `getBoundingClientRect().width` do `.tab-label` da aba.
     fn label_width(&self, tab_index: usize, transient: bool) -> f64 {
-        self.layout.label_width(self.geometry().widths[tab_index], self.action_column_visible(tab_index, transient))
+        self.layout.label_width(self.geometry().widths[tab_index], self.action_padding(tab_index, transient))
     }
 
     /// `hoverTab(tabIndex)`.
@@ -1685,7 +1710,7 @@ fn connected_shrink_tabs_preserve_icons_as_the_editor_width_changes() {
             trimmed_names: tabs
                 .iter()
                 .enumerate()
-                .filter(|(index, tab)| fx.layout.natural_width(tab, tab.state.tab_action_sizing_rest) > geometry.widths[*index])
+                .filter(|(index, tab)| fx.layout.natural_width(&fx.state.container, tab, tab.state.tab_action_sizing_rest) > geometry.widths[*index])
                 .count(),
             full_names: tabs.iter().all(|tab| tab.state.label.name.as_deref().is_some_and(|name| name.ends_with(".txt"))),
         });
@@ -2048,7 +2073,7 @@ fn wrapped_fit_labels_ellipsize_oversized_names_within_the_header() {
             wrapped: fx.state.container.wrapping,
             contained: right <= geometry.visible_width + 1.0 / 64.0,
             // `scrollWidth > clientWidth` do nome: o conteúdo natural passa da caixa. O `text-overflow: ellipsis` é pintura.
-            trimmed: fx.layout.natural_width(tab, tab.state.tab_action_sizing_rest) > geometry.widths[0],
+            trimmed: fx.layout.natural_width(&fx.state.container, tab, tab.state.tab_action_sizing_rest) > geometry.widths[0],
         });
     }
 
@@ -2452,7 +2477,7 @@ fn transient_actions_do_not_resize_fixed_or_shrink_tabs_with_reservation_on_or_o
                             // Em coordenadas lógicas: o texto vai do recuo ao início da coluna da ação (ação à direita) ou
                             // do fim da coluna ao recuo do outro lado (ação à esquerda), e fica dentro da aba.
                             let side = TAB_PADDING / 2.0;
-                            let column = fx.layout.action_column_width();
+                            let column = fx.layout.action_padding(&fx.state.tabs[1], &fx.state.container);
                             let text = fx.label_width(1, true);
                             let clear = match tab_action_location {
                                 TabActionLocation::Right => side + text <= after[1] - column + 1.0 / 32.0,
