@@ -245,6 +245,8 @@ impl<'a> Builder<'a> {
             match node {
                 Node::Text(text) => self.push_text(&text.to_string_lossy(), ctx),
                 Node::Element(element) => self.element(element, ctx),
+                // Comentários não têm texto visível.
+                Node::Comment(_) => {}
             }
         }
     }
@@ -315,6 +317,7 @@ impl<'a> Builder<'a> {
                 }
                 Node::Element(other) => self.element(other, &inner),
                 Node::Text(text) => self.push_text(&text.to_string_lossy(), &inner),
+                Node::Comment(_) => {}
             }
         }
         self.flush();

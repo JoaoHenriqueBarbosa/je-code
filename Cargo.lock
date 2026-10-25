@@ -4195,6 +4195,7 @@ dependencies = [
 name = "je-platform"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "indexmap",
  "je-base",
  "je-codicons",
@@ -4203,7 +4204,9 @@ dependencies = [
  "jiff",
  "libc",
  "notify",
+ "rustls-rustcrypto",
  "tempfile",
+ "ureq",
  "url",
  "zyarr",
 ]
